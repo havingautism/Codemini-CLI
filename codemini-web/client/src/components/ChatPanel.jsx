@@ -30,6 +30,23 @@ function truncate(text, max = 36) {
   return s.length > max ? s.slice(0, max) + "..." : s;
 }
 
+function resolveUserAnchorId(messages, messageId) {
+  const targetIndex = messages.findIndex((message) => message?.id === messageId);
+  if (targetIndex < 0) return messageId;
+  if (messages[targetIndex]?.role === "you") return messageId;
+  const userMessage = [...messages.slice(0, targetIndex)]
+    .reverse()
+    .find((message) => message?.role === "you");
+  return userMessage?.id || messageId;
+}
+
+function isAnchorReady(viewport, anchorId) {
+  const anchorEl = viewport?.querySelector(`[data-message-id="${anchorId}"]`);
+  if (!anchorEl) return false;
+  const itemEl = anchorEl.closest('[data-slot="message-scroller-item"]');
+  return (itemEl?.getBoundingClientRect().height || anchorEl.getBoundingClientRect().height) > 48;
+}
+
 function UserMessageNav({ userMessages, activeNavIndex, scrollToMessage }) {
   const [expanded, setExpanded] = useState(false);
   const [hoveredIndex, setHoveredIndex] = useState(-1);
@@ -91,6 +108,7 @@ function UserMessageNav({ userMessages, activeNavIndex, scrollToMessage }) {
                 <button
                   key={um.id}
                   type="button"
+                  data-quick-jump-id={um.id}
                   aria-current={isActive ? "location" : undefined}
                   aria-label={`${i + 1}. ${messageText}`}
                   title={messageText}
@@ -124,6 +142,7 @@ function UserMessageNav({ userMessages, activeNavIndex, scrollToMessage }) {
           <button
             key={um.id}
             type="button"
+            data-quick-jump-id={um.id}
             aria-current={i === activeNavIndex ? "location" : undefined}
             aria-label={`${t("quickJump")} ${i + 1}: ${um.text || "..."}`}
             title={um.text || "..."}
@@ -157,10 +176,16 @@ function ChatPanelContent({
   gitInfo,
   messagesLoading,
   isGeneral = false,
+  targetMessageId = "",
+  onTargetMessageHandled,
   onRetryMessage,
 }) {
   const scrollRef = useRef(null);
+  const settleTimerRef = useRef(0);
+  const jumpFinishTimerRef = useRef(0);
   const [activeNavIndex, setActiveNavIndex] = useState(-1);
+  const [pendingScrollTargetId, setPendingScrollTargetId] = useState("");
+  const [layoutSettled, setLayoutSettled] = useState(false);
   const { pauseFollowEnd } = useMessageScroller();
   const hasConversation = useMemo(
     () => hasConversationContent(messages),
@@ -185,14 +210,13 @@ function ChatPanelContent({
     [messages],
   );
 
-  const scrollToMessage = useCallback((msgId) => {
+  const scrollToMessage = useCallback((msgId, { behavior = "smooth" } = {}) => {
     const el = scrollRef.current?.querySelector(`[data-message-id="${msgId}"]`);
-    if (el) {
-      pauseFollowEnd();
-      const targetIndex = userMessages.findIndex((message) => message.id === msgId);
-      if (targetIndex >= 0) setActiveNavIndex(targetIndex);
-      el.scrollIntoView({ behavior: "smooth", block: "center" });
-    }
+    if (!el) return;
+    pauseFollowEnd();
+    const targetIndex = userMessages.findIndex((message) => message.id === msgId);
+    if (targetIndex >= 0) setActiveNavIndex(targetIndex);
+    el.scrollIntoView({ behavior, block: "center" });
   }, [pauseFollowEnd, userMessages]);
 
   const updateScrollState = useCallback(() => {
@@ -236,6 +260,76 @@ function ChatPanelContent({
       requestAnimationFrame(updateScrollState);
     });
   }, [messages, messagesLoading, updateScrollState]);
+
+  useEffect(() => {
+    const viewport = scrollRef.current;
+    if (!viewport || messagesLoading) {
+      setLayoutSettled(false);
+      return;
+    }
+    setLayoutSettled(false);
+    const markSettledSoon = () => {
+      window.clearTimeout(settleTimerRef.current);
+      settleTimerRef.current = window.setTimeout(() => {
+        setLayoutSettled(true);
+      }, 80);
+    };
+    const observer = new ResizeObserver(() => {
+      setLayoutSettled(false);
+      markSettledSoon();
+    });
+    observer.observe(viewport);
+    if (viewport.firstElementChild) observer.observe(viewport.firstElementChild);
+    requestAnimationFrame(() => {
+      requestAnimationFrame(markSettledSoon);
+    });
+    return () => {
+      observer.disconnect();
+      window.clearTimeout(settleTimerRef.current);
+    };
+  }, [messages, messagesLoading]);
+
+  useEffect(() => {
+    const nextTargetId = String(targetMessageId || "").trim();
+    if (!nextTargetId) return;
+    setPendingScrollTargetId(nextTargetId);
+  }, [targetMessageId]);
+
+  useEffect(() => {
+    const messageId = String(pendingScrollTargetId || "").trim();
+    if (!messageId || messagesLoading || !layoutSettled) return;
+    const anchorId = resolveUserAnchorId(messages, messageId);
+    const viewport = scrollRef.current;
+    if (!isAnchorReady(viewport, anchorId)) return;
+
+    let cancelled = false;
+    const finishJump = () => {
+      if (cancelled) return;
+      setPendingScrollTargetId("");
+      onTargetMessageHandled?.();
+    };
+    const handleScrollEnd = () => {
+      window.clearTimeout(jumpFinishTimerRef.current);
+      finishJump();
+    };
+
+    scrollToMessage(anchorId);
+    viewport.addEventListener("scrollend", handleScrollEnd);
+    jumpFinishTimerRef.current = window.setTimeout(handleScrollEnd, 1500);
+
+    return () => {
+      cancelled = true;
+      viewport.removeEventListener("scrollend", handleScrollEnd);
+      window.clearTimeout(jumpFinishTimerRef.current);
+    };
+  }, [
+    layoutSettled,
+    messages,
+    messagesLoading,
+    onTargetMessageHandled,
+    pendingScrollTargetId,
+    scrollToMessage,
+  ]);
 
   return (
     <div className="flex-1 relative overflow-hidden">
@@ -305,7 +399,11 @@ function ChatPanelContent({
             <div className="w-[calc(100%_-_32px)] max-w-[920px] sm:w-[calc(100%_-_64px)] mx-auto">
               <Suspense fallback={null}>
                 {messages.map((msg) => (
-                  <MessageScrollerItem key={msg.id}>
+                  <MessageScrollerItem
+                    key={msg.id}
+                    data-msg-scroll-id={msg.id}
+                    data-scroll-anchor-id={msg.id}
+                  >
                     <MessageBubble
                       message={msg}
                       skills={skills}
@@ -329,8 +427,9 @@ function ChatPanelContent({
 }
 
 export function ChatPanel(props) {
+  const hasScrollTarget = Boolean(String(props.targetMessageId || "").trim());
   return (
-    <MessageScrollerProvider>
+    <MessageScrollerProvider initialFollowEnd={!hasScrollTarget}>
       <ChatPanelContent {...props} />
     </MessageScrollerProvider>
   );

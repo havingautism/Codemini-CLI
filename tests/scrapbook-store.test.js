@@ -8,6 +8,8 @@ import { DatabaseSync } from 'node:sqlite';
 import { closeSqliteDatabasesForTests } from '../src/core/sqlite-database.js';
 import {
   buildScrapbookSummarySystemPrompt,
+  createChatAnswerScrapbookEntry,
+  createChatAnswerScrapbookEntryWithSummary,
   createManualScrapbookEntry,
   createUrlScrapbookEntry,
   getScrapbookEntryForApi,
@@ -116,6 +118,25 @@ test('scrapbook entry store supports create, update, list and delete', async () 
   });
 });
 
+test('scrapbook entry store persists chat_answer provenance metadata', async () => {
+  await withGlobalDir(async () => {
+    const entry = createScrapbookEntry({
+      sourceType: 'chat_answer',
+      sourceSessionId: 'session-123',
+      sourceMessageId: 'message-456',
+      sourceQuestionText: 'Why did the build fail?',
+      title: '📝 Build failure answer',
+      contentText: 'Because the env var was missing.',
+      fetchStatus: 'ready',
+    });
+    const stored = getScrapbookEntry(entry.id);
+    assert.equal(stored?.sourceType, 'chat_answer');
+    assert.equal(stored?.sourceSessionId, 'session-123');
+    assert.equal(stored?.sourceMessageId, 'message-456');
+    assert.equal(stored?.sourceQuestionText, 'Why did the build fail?');
+  });
+});
+
 test('scrapbook summary jobs track latest job per entry', async () => {
   await withGlobalDir(async () => {
     const entry = createScrapbookEntry({
@@ -173,6 +194,23 @@ test('scrapbook service remains global-only and exposes latest job in API shape'
   });
 });
 
+test('chat answer scrapbook entries default to ready content with provenance metadata', async () => {
+  await withGlobalDir(async () => {
+    const entry = createChatAnswerScrapbookEntry({
+      sessionId: 'sess-chat',
+      messageId: 'msg-answer',
+      questionText: 'How do I fix it?',
+      answerText: 'Set CODEMINI_GLOBAL_DIR before startup.',
+    });
+    assert.equal(entry.sourceType, 'chat_answer');
+    assert.equal(entry.sourceSessionId, 'sess-chat');
+    assert.equal(entry.sourceMessageId, 'msg-answer');
+    assert.equal(entry.sourceQuestionText, 'How do I fix it?');
+    assert.equal(entry.fetchStatus, 'ready');
+    assert.match(entry.title, /How do I fix it|📝/);
+  });
+});
+
 test('scrapbook summary job uses model-generated summary and stores it back on the entry', async () => {
   await withGlobalDir(async () => {
     const entry = createManualScrapbookEntry({
@@ -202,6 +240,57 @@ test('scrapbook summary job uses model-generated summary and stores it back on t
     assert.equal(String(latest?.resultSummary || ''), 'Model-made summary');
     assert.equal(String(getScrapbookEntry(entry.id)?.summary || ''), 'Model-made summary');
     assert.equal(String(getScrapbookEntry(entry.id)?.title || ''), '🧪 Async summary note');
+  });
+});
+
+test('chat answer scrapbook creation immediately starts a reusable summary job', async () => {
+  await withGlobalDir(async () => {
+    const { entry, job } = createChatAnswerScrapbookEntryWithSummary(
+      {
+        sessionId: 'sess-1',
+        messageId: 'msg-1',
+        questionText: 'What changed?',
+        answerText: 'The server now persists scrapbook banners.',
+      },
+      {
+        generateSummary: async () => 'Title: 🧪 Persisted banners\nSummary:\nThe server now persists scrapbook banners.',
+      },
+    );
+    assert.equal(entry.sourceType, 'chat_answer');
+    assert.equal(job.entryId, entry.id);
+    assert.equal(job.status, 'pending');
+    let latest = getLatestScrapbookSummaryJob(entry.id);
+    for (let attempt = 0; attempt < 20 && latest?.status !== 'completed'; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      latest = getLatestScrapbookSummaryJob(entry.id);
+    }
+    assert.equal(latest?.status, 'completed');
+  });
+});
+
+test('scrapbook summary generation passes sourceQuestionText to the model payload', async () => {
+  await withGlobalDir(async () => {
+    const entry = createChatAnswerScrapbookEntry({
+      sessionId: 'sess-q',
+      messageId: 'msg-a',
+      questionText: 'What is the root cause?',
+      answerText: 'The summary job migration was missing.',
+    });
+    const seenPrompts = [];
+    const started = startScrapbookSummaryJob(entry.id, {
+      generateSummary: async (payload) => {
+        seenPrompts.push(payload);
+        return 'Title: 🧪 Root cause\nSummary:\nMigration issue.';
+      },
+    });
+    assert.equal(started.status, 'pending');
+    let latest = getLatestScrapbookSummaryJob(entry.id);
+    for (let attempt = 0; attempt < 20 && latest?.status !== 'completed'; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      latest = getLatestScrapbookSummaryJob(entry.id);
+    }
+    assert.equal(latest?.status, 'completed');
+    assert.equal(seenPrompts[0]?.sourceQuestionText, 'What is the root cause?');
   });
 });
 

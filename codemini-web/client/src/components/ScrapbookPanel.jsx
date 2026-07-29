@@ -89,6 +89,14 @@ function sourceHostname(raw) {
   }
 }
 
+function scrapbookSourceLabel(entry) {
+  if (entry?.sourceType === "chat_answer") return t("scrapbookChatAnswer");
+  if (entry?.sourceType === "url") {
+    return sourceHostname(entry.sourceUrl) || t("scrapbookWebSource");
+  }
+  return t("scrapbookManualEntry");
+}
+
 function notebookTone(toneIndex) {
   return NOTEBOOK_TONES[Math.abs(Number(toneIndex) || 0) % NOTEBOOK_TONES.length];
 }
@@ -159,14 +167,14 @@ function ScrapbookLibraryCard({
   menuOpen,
   onOpen,
   onToggleMenu,
-  onOpenSource,
+  onOpenOrigin,
   onDelete,
 }) {
   const isList = viewMode === "list";
   const SourceIcon = entry.sourceType === "url" ? Globe : Notebook;
-  const sourceLabel =
-    sourceHostname(entry.sourceUrl) ||
-    (entry.sourceType === "url" ? t("scrapbookWebSource") : t("scrapbookManualEntry"));
+  const sourceLabel = scrapbookSourceLabel(entry);
+  const canJumpToMessage = entry.sourceType === "chat_answer" && entry.sourceSessionId && entry.sourceMessageId;
+  const canOpenSource = entry.sourceType === "url" && entry.sourceUrl;
   const titleParts = splitEmojiTitle(entryTitle(entry));
 
   return (
@@ -251,14 +259,24 @@ function ScrapbookLibraryCard({
         </button>
         {menuOpen ? (
           <div className="absolute right-0 top-9 z-20 w-40 overflow-hidden rounded-xl border border-(--surface-edge) bg-(--material-elevated) p-1 shadow-[var(--surface-shadow)]">
-            {entry.sourceUrl ? (
+            {canOpenSource ? (
               <button
                 type="button"
-                onClick={() => onOpenSource(entry.sourceUrl)}
+                onClick={() => onOpenOrigin(entry)}
                 className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-[12px] text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary)"
               >
                 <ArrowSquareOut size={14} />
                 {t("scrapbookOpenSource")}
+              </button>
+            ) : null}
+            {canJumpToMessage ? (
+              <button
+                type="button"
+                onClick={() => onOpenOrigin(entry)}
+                className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-[12px] text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary)"
+              >
+                <ArrowSquareOut size={14} />
+                {t("scrapbookJumpToMessage")}
               </button>
             ) : null}
             <button
@@ -688,9 +706,15 @@ export function ScrapbookPanel() {
                     onToggleMenu={(entryId) =>
                       setMenuEntryId((current) => (current === entryId ? "" : entryId))
                     }
-                    onOpenSource={(sourceUrl) => {
+                    onOpenOrigin={(target) => {
                       setMenuEntryId("");
-                      window.open(sourceUrl, "_blank", "noopener,noreferrer");
+                      if (target?.sourceType === "chat_answer") {
+                        void actions.openChatMessage(target.sourceSessionId, target.sourceMessageId);
+                        return;
+                      }
+                      if (target?.sourceUrl) {
+                        window.open(target.sourceUrl, "_blank", "noopener,noreferrer");
+                      }
                     }}
                     onDelete={(target) => {
                       setMenuEntryId("");
@@ -756,14 +780,14 @@ export function ScrapbookPanel() {
                 <div className="text-[24px] font-semibold leading-8 text-(--text-primary)">
                   {entryTitle(selectedEntry)}
                 </div>
-                {sourceHostname(selectedEntry.sourceUrl) ? (
+                {scrapbookSourceLabel(selectedEntry) ? (
                   <div className="mt-3">
                     <span className="inline-flex items-center rounded-full border border-(--border-default) bg-(--bg-primary) px-2.5 py-1 text-[11px] text-(--text-secondary)">
-                      {sourceHostname(selectedEntry.sourceUrl)}
+                      {scrapbookSourceLabel(selectedEntry)}
                     </span>
                   </div>
                 ) : null}
-                {selectedEntry.sourceUrl ? (
+                {selectedEntry.sourceType === "url" && selectedEntry.sourceUrl ? (
                   <a
                     href={selectedEntry.sourceUrl}
                     target="_blank"
@@ -773,6 +797,23 @@ export function ScrapbookPanel() {
                     <Globe size={14} />
                     {selectedEntry.sourceUrl}
                   </a>
+                ) : null}
+                {selectedEntry.sourceType === "chat_answer" &&
+                selectedEntry.sourceSessionId &&
+                selectedEntry.sourceMessageId ? (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      actions.openChatMessage(
+                        selectedEntry.sourceSessionId,
+                        selectedEntry.sourceMessageId,
+                      )
+                    }
+                    className="mt-3 inline-flex items-center gap-2 text-[12px] text-(--text-muted) hover:text-(--text-primary)"
+                  >
+                    <ArrowSquareOut size={14} />
+                    {t("scrapbookJumpToMessage")}
+                  </button>
                 ) : null}
               </section>
 

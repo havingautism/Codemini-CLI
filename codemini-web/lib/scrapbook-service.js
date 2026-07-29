@@ -99,6 +99,20 @@ function fallbackGeneratedTitle({ title, sourceUrl, contentText }) {
   }
 }
 
+function fallbackChatAnswerTitle({ questionText, answerText }) {
+  const question = String(questionText || '').trim();
+  if (question) {
+    return normalizeGeneratedTitle(Array.from(question).slice(0, 36).join(''));
+  }
+  const firstAnswerLine = String(answerText || '')
+    .split(/\r?\n/)
+    .map((line) => line.replace(/^#+\s*/, '').trim())
+    .find(Boolean);
+  return firstAnswerLine
+    ? normalizeGeneratedTitle(Array.from(firstAnswerLine).slice(0, 36).join(''))
+    : '📝 Chat answer';
+}
+
 function buildScrapbookContextText(entry, summary) {
   const lines = [
     '<scrapbook_context>',
@@ -200,7 +214,13 @@ function isPlaceholderTitle(title, sourceUrl) {
   return !normalizedTitle || (normalizedUrl && normalizedTitle === normalizedUrl);
 }
 
-async function generateSummaryWithModel({ title, sourceUrl, contentText, onTextDelta = null }) {
+async function generateSummaryWithModel({
+  title,
+  sourceUrl,
+  contentText,
+  sourceQuestionText = '',
+  onTextDelta = null,
+}) {
   const config = await loadConfig();
   const model = resolveFastModel(config);
   if (!model) throw new Error('No model configured for scrapbook summaries');
@@ -219,8 +239,12 @@ async function generateSummaryWithModel({ title, sourceUrl, contentText, onTextD
         content: [
           title ? `Title: ${title}` : '',
           sourceUrl ? `Source URL: ${sourceUrl}` : '',
+          sourceQuestionText ? `Original user question: ${sourceQuestionText}` : '',
           '',
           'Please write a detailed scrapbook summary for future follow-up questions.',
+          sourceQuestionText
+            ? 'Use the original user question only as supporting context for understanding what the answer is responding to.'
+            : '',
           'Cover the main point, important details, key facts, structure, and any actionable takeaways.',
           'If the source contains image references that are important for understanding, keep them in the summary.',
           '',
@@ -306,6 +330,7 @@ async function runSummaryJob(jobId, options = {}) {
       title: title || entry.title,
       sourceUrl: entry.sourceUrl,
       contentText: contentText || entry.contentText,
+      sourceQuestionText: entry.sourceQuestionText,
     }) || '').trim();
     const generated = parseGeneratedScrapbookResult(generatedText);
     const finalSummary = generated.summary;
@@ -360,6 +385,31 @@ export function createManualScrapbookEntry(payload = {}) {
     sourceType: 'manual',
     sourceUrl: String(payload.sourceUrl || ''),
     title: String(payload.title || ''),
+    contentText,
+    tags: normalizeTags(payload.tags),
+    fetchStatus: 'ready',
+  });
+}
+
+export function createChatAnswerScrapbookEntry(payload = {}) {
+  const contentText = String(
+    payload.contentText || payload.answerText || payload.content || '',
+  ).trim();
+  if (!contentText) throw new Error('Chat answer scrapbook entry requires content');
+  const sourceQuestionText = String(
+    payload.sourceQuestionText || payload.questionText || '',
+  ).trim();
+  return createScrapbookEntry({
+    sourceType: 'chat_answer',
+    sourceSessionId: String(payload.sourceSessionId || payload.sessionId || '').trim(),
+    sourceMessageId: String(payload.sourceMessageId || payload.messageId || '').trim(),
+    sourceQuestionText,
+    title:
+      String(payload.title || '').trim() ||
+      fallbackChatAnswerTitle({
+        questionText: sourceQuestionText,
+        answerText: contentText,
+      }),
     contentText,
     tags: normalizeTags(payload.tags),
     fetchStatus: 'ready',
@@ -430,6 +480,15 @@ export function buildScrapbookAskPayload(entryId) {
       title: entry.title,
       sourceUrl: entry.sourceUrl,
     },
+  };
+}
+
+export function createChatAnswerScrapbookEntryWithSummary(payload = {}, options = {}) {
+  const entry = createChatAnswerScrapbookEntry(payload);
+  const job = startScrapbookSummaryJob(entry.id, options);
+  return {
+    entry: getScrapbookEntry(entry.id) || entry,
+    job,
   };
 }
 

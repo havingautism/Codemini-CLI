@@ -11,11 +11,11 @@ import {
 
 const MessageScrollerContext = React.createContext(null);
 
-function MessageScrollerProvider({ children }) {
+function MessageScrollerProvider({ children, initialFollowEnd = true }) {
   const [viewport, setViewport] = React.useState(null);
   const [atStart, setAtStart] = React.useState(true);
   const [atEnd, setAtEnd] = React.useState(true);
-  const followEndRef = React.useRef(true);
+  const followEndRef = React.useRef(initialFollowEnd);
   const userScrollRef = React.useRef(false);
 
   const measure = React.useCallback((node, { isUserDriven = false } = {}) => {
@@ -155,12 +155,23 @@ function MessageScrollerContent({ className, ...props }) {
   return <div data-slot="message-scroller-content" className={cn("flex h-max min-h-full flex-col gap-8", className)} {...props} />;
 }
 
-function MessageScrollerItem({ className, scrollAnchor = false, ...props }) {
+function MessageScrollerItem({
+  className,
+  scrollAnchor = false,
+  disableVirtualization = false,
+  ...props
+}) {
   return (
     <div
       data-slot="message-scroller-item"
       data-scroll-anchor={scrollAnchor || undefined}
-      className={cn("min-w-0 shrink-0 [contain-intrinsic-size:auto_10rem] [content-visibility:auto]", className)}
+      className={cn(
+        "min-w-0 shrink-0",
+        disableVirtualization
+          ? "[contain-intrinsic-size:auto] [content-visibility:visible]"
+          : "[contain-intrinsic-size:auto_10rem] [content-visibility:auto]",
+        className
+      )}
       {...props}
     />
   );

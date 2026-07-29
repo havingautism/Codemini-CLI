@@ -12,8 +12,16 @@ import { collectMessageEmbeds } from "@/lib/message-embeds.js";
 import { buildRenderGroups } from "@/lib/message-render-groups.js";
 import { layoutAnswerProcessWithPlans } from "@/lib/answer-process.js";
 import { TodoList } from "./TodoList";
-import { ConfirmDialog } from "@/components/ConfirmDialog.jsx";
 import { FileTypeIcon } from "@/components/FileTypeIcon.jsx";
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { LinearRing, LinearStatusDot, Spinner } from "@/components/ui/spinner";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -26,6 +34,7 @@ import {
   AttachmentTrigger,
 } from "@/components/ui/attachment";
 import { cn } from "@/lib/utils";
+import { useApp } from "@/context/app-context.jsx";
 import {
   isManualSkillCommand,
   parseUserSkillPrompt,
@@ -1981,17 +1990,40 @@ function MessageActions({
   showUsage = true,
   retryPrompt = "",
   canRetry = false,
+  canSaveToScrapbook = false,
+  onSaveToScrapbook,
   onRetry,
   align = "left",
   className,
 }) {
+  const { actions } = useApp();
   const [copied, setCopied] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [saveDialogOpen, setSaveDialogOpen] = useState(false);
 
   async function handleCopy() {
     const ok = await writeClipboard(text);
     if (!ok) return;
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1200);
+  }
+
+  async function handleSaveToScrapbook(navigateAfterSave = false) {
+    if (!canSaveToScrapbook || saving) return;
+    setSaveDialogOpen(false);
+    setSaving(true);
+    const result = await onSaveToScrapbook?.();
+    setSaving(false);
+    if (result?.error) return;
+    setSaved(true);
+    if (navigateAfterSave) {
+      const entryId = result?.entry?.id;
+      setSaved(false);
+      if (entryId) actions.openScrapbookEntry(entryId);
+      return;
+    }
+    window.setTimeout(() => setSaved(false), 1400);
   }
 
   const actionButtons = (
@@ -2005,6 +2037,17 @@ function MessageActions({
       >
         <Copy size={17} />
       </MessageActionButton>
+      {canSaveToScrapbook && (
+        <MessageActionButton
+          label={saving ? t("scrapbookSavingAnswer") : t("scrapbookSaveAnswer")}
+          copiedLabel={t("scrapbookSavedAnswer")}
+          copied={saved}
+          disabled={!text || saving}
+          onClick={() => setSaveDialogOpen(true)}
+        >
+          <Notebook size={17} />
+        </MessageActionButton>
+      )}
       {canRetry && (
         <MessageActionButton
           label={t("retry")}
@@ -2038,6 +2081,45 @@ function MessageActions({
           {actionButtons}
         </div>
       )}
+      <Dialog open={saveDialogOpen} onOpenChange={(open) => !saving && setSaveDialogOpen(open)}>
+        <DialogContent className="sm:max-w-[420px] gap-5">
+          <DialogHeader showCloseButton={!saving}>
+            <DialogTitle>{t("scrapbookSaveAnswer")}</DialogTitle>
+            <DialogDescription className="text-[13px] leading-6">
+              {t("scrapbookSaveAnswerDescription")}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="sm:justify-stretch sm:flex-col-reverse">
+            <Button
+              type="button"
+              variant="outline"
+              disabled={saving}
+              onClick={() => setSaveDialogOpen(false)}
+              className="sm:w-full"
+            >
+              {t("cancel")}
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={saving}
+              onClick={() => handleSaveToScrapbook(false)}
+              className="sm:w-full"
+            >
+              {saving ? t("scrapbookSavingAnswer") : t("scrapbookSaveAndStay")}
+            </Button>
+            <Button
+              type="button"
+              variant="default"
+              disabled={saving}
+              onClick={() => handleSaveToScrapbook(true)}
+              className="sm:w-full"
+            >
+              {saving ? t("scrapbookSavingAnswer") : t("scrapbookSaveAndOpen")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -2122,6 +2204,7 @@ export const MessageBubble = memo(function MessageBubble({
   skills = [],
   onRetry,
 }) {
+  const { actions } = useApp();
   const {
     role,
     segments,
@@ -2343,6 +2426,14 @@ export const MessageBubble = memo(function MessageBubble({
     responseStatus === "error" &&
     Boolean(retryPrompt) &&
     message.retryable !== false;
+  const canSaveToScrapbook =
+    role !== "you" &&
+    role !== "system" &&
+    role !== "divider" &&
+    displayRole !== "error" &&
+    messageComplete &&
+    Boolean(String(messageText || "").trim()) &&
+    Boolean(message?.id);
   const showActions = shouldShowMessageActions(message, messageComplete);
   const showFileChanges = shouldShowFileChanges(
     message,
@@ -2402,6 +2493,7 @@ export const MessageBubble = memo(function MessageBubble({
             showUsage={messageComplete}
             retryPrompt={retryPrompt}
             canRetry={canRetry}
+            canSaveToScrapbook={false}
             onRetry={onRetry}
             align="right"
             className={cn(
@@ -2495,6 +2587,13 @@ export const MessageBubble = memo(function MessageBubble({
               showUsage={showActions}
               retryPrompt={retryPrompt}
               canRetry={canRetry}
+              canSaveToScrapbook={canSaveToScrapbook}
+              onSaveToScrapbook={() =>
+                actions.saveAssistantReplyToScrapbook({
+                  messageId: message.id,
+                  answerText: messageText,
+                })
+              }
               onRetry={onRetry}
               className={cn("mt-2 min-h-8", !showActions && "hidden")}
             />

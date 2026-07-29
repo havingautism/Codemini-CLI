@@ -5,6 +5,7 @@ import fs from 'node:fs/promises';
 test('server exposes scrapbook routes without project binding', async () => {
   const source = await fs.readFile('codemini-web/server.js', 'utf8');
   assert.match(source, /\/api\/scrapbook\/entries/);
+  assert.match(source, /\/api\/scrapbook\/entries\/chat-answer/);
   assert.match(source, /\/api\/scrapbook\/summary-jobs\//);
   assert.match(source, /\/api\/scrapbook\/summary-jobs\/'.*stream|\/api\/scrapbook\/summary-jobs\/\$\{encodeURIComponent\(jobId\)\}\/stream|\/stream/);
   assert.match(source, /buildScrapbookAskPayload/);
@@ -21,6 +22,7 @@ test('use-api exposes scrapbook helpers without project arguments', async () => 
     'fetchScrapbookEntries',
     'createManualScrapbookEntry',
     'createUrlScrapbookEntry',
+    'createChatAnswerScrapbookEntry',
     'fetchScrapbookEntry',
     'deleteScrapbookEntry',
     'summarizeScrapbookEntry',

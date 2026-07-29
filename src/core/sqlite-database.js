@@ -3,7 +3,7 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { getBaseConfigDir, getProjectIndexDir } from './paths.js';
 
-const GLOBAL_SCHEMA_VERSION = 4;
+const GLOBAL_SCHEMA_VERSION = 5;
 const PROJECT_SCHEMA_VERSION = 5;
 const databases = new Map();
 
@@ -137,6 +137,9 @@ function createGlobalSchema(db, currentVersion = 0) {
       updated_at TEXT NOT NULL,
       source_type TEXT NOT NULL DEFAULT 'manual',
       source_url TEXT NOT NULL DEFAULT '',
+      source_session_id TEXT NOT NULL DEFAULT '',
+      source_message_id TEXT NOT NULL DEFAULT '',
+      source_question_text TEXT NOT NULL DEFAULT '',
       title TEXT NOT NULL DEFAULT '',
       content_text TEXT NOT NULL DEFAULT '',
       summary TEXT NOT NULL DEFAULT '',
@@ -181,6 +184,30 @@ function createGlobalSchema(db, currentVersion = 0) {
       db.exec(`
         ALTER TABLE scrapbook_summary_jobs
         ADD COLUMN error_text TEXT NOT NULL DEFAULT '';
+      `);
+    }
+  }
+  if (currentVersion < 5) {
+    const columns = db
+      .prepare(`SELECT name FROM pragma_table_info('scrapbook_entries')`)
+      .all()
+      .map((row) => String(row.name || ''));
+    if (columns.length > 0 && !columns.includes('source_session_id')) {
+      db.exec(`
+        ALTER TABLE scrapbook_entries
+        ADD COLUMN source_session_id TEXT NOT NULL DEFAULT '';
+      `);
+    }
+    if (columns.length > 0 && !columns.includes('source_message_id')) {
+      db.exec(`
+        ALTER TABLE scrapbook_entries
+        ADD COLUMN source_message_id TEXT NOT NULL DEFAULT '';
+      `);
+    }
+    if (columns.length > 0 && !columns.includes('source_question_text')) {
+      db.exec(`
+        ALTER TABLE scrapbook_entries
+        ADD COLUMN source_question_text TEXT NOT NULL DEFAULT '';
       `);
     }
   }

@@ -178,7 +178,11 @@ function parseRoute() {
   const chatMatch = path.match(/^\/chat\/([^/]+)$/);
   const scrapbookMatch = path.match(/^\/scrapbook\/([^/]+)$/);
   if (chatMatch)
-    return { view: "chat", sessionId: decodeURIComponent(chatMatch[1]) };
+    return {
+      view: "chat",
+      sessionId: decodeURIComponent(chatMatch[1]),
+      targetMessageId: params.get("message") || "",
+    };
   if (path === "/sessions") return { view: "sessions" };
   if (scrapbookMatch) {
     return {
@@ -206,21 +210,25 @@ function routeFor(view, sessionId, options = {}) {
       ? `/codewiki?project=${encodeURIComponent(projectPath)}`
       : "/codewiki";
   }
-  return sessionId ? `/chat/${encodeURIComponent(sessionId)}` : "/";
+  const messageId = String(options.messageId || "").trim();
+  return sessionId
+    ? `/chat/${encodeURIComponent(sessionId)}${messageId ? `?message=${encodeURIComponent(messageId)}` : ""}`
+    : "/";
 }
 
 function updateRoute(
   view,
   sessionId,
-  { replace = false, projectPath = "", scrapbookEntryId = "" } = {},
+  { replace = false, projectPath = "", scrapbookEntryId = "", messageId = "" } = {},
 ) {
-  const next = routeFor(view, sessionId, { projectPath, scrapbookEntryId });
+  const next = routeFor(view, sessionId, { projectPath, scrapbookEntryId, messageId });
   if (`${window.location.pathname}${window.location.search}` === next) return;
   const st = {
     view,
     sessionId: sessionId || null,
     projectPath: projectPath || null,
     scrapbookEntryId: scrapbookEntryId || null,
+    targetMessageId: messageId || null,
   };
   if (replace) window.history.replaceState(st, "", next);
   else window.history.pushState(st, "", next);
@@ -237,6 +245,7 @@ const initialState = {
   busy: false,
   currentView: "chat",
   scrapbookEntryId: null,
+  targetMessageId: null,
   pendingScrapbookContext: null,
   runtimeState: null,
   currentSessionId: null,
@@ -2831,6 +2840,7 @@ export function AppProvider({ children }) {
       if (!alive) return;
       update({
         currentView: route.view,
+        targetMessageId: route.view === "chat" ? route.targetMessageId || null : null,
         scrapbookEntryId:
           route.view === "scrapbook"
             ? route.scrapbookEntryId || null
@@ -2903,7 +2913,10 @@ export function AppProvider({ children }) {
         } catch {}
       })();
       if (route.view === "chat" && rs?.sessionId) {
-        updateRoute("chat", rs.sessionId, { replace: true });
+        updateRoute("chat", rs.sessionId, {
+          replace: true,
+          messageId: route.targetMessageId || "",
+        });
       } else if (route.view === "codewiki") {
         const projectPath = route.projectPath || rs?.cwd || "";
         update({ currentView: "codewiki", codewikiProjectPath: projectPath });
@@ -2935,6 +2948,7 @@ export function AppProvider({ children }) {
       const route = parseRoute();
       update({
         currentView: route.view,
+        targetMessageId: route.view === "chat" ? route.targetMessageId || null : null,
         scrapbookEntryId:
           route.view === "scrapbook"
             ? route.scrapbookEntryId || null
@@ -2955,6 +2969,8 @@ export function AppProvider({ children }) {
             ]);
             loadSessions();
             loadGitInfo({ sessionId: route.sessionId });
+          } else {
+            update({ targetMessageId: route.targetMessageId || null });
           }
         } catch {
           update({ messagesLoading: false });
@@ -3586,16 +3602,17 @@ export function AppProvider({ children }) {
 
       dismissPlanProgress: () => update({ planSteps: [] }),
 
-      switchSession: async (sessionId) => {
+      switchSession: async (sessionId, options = {}) => {
         const currentSessionId = stateRef.current.currentSessionId;
         if (!sessionId || sessionId === currentSessionId) return;
+        const targetMessageId = String(options.targetMessageId || "").trim();
         update({ currentView: "chat", messagesLoading: true, gitInfo: null });
         try {
           const result = await api.switchSession(sessionId);
           if (result.ok) {
             const cachedTargetMessages =
               stateRef.current.sessionMessagesById?.[sessionId] || [];
-            updateRoute("chat", sessionId);
+            updateRoute("chat", sessionId, { messageId: targetMessageId });
             activateSessionView(sessionId);
             restoreActiveMsgRef(
               cachedTargetMessages,
@@ -3608,6 +3625,7 @@ export function AppProvider({ children }) {
             if (result.state)
               setState((prev) => ({
                 ...prev,
+                targetMessageId,
                 runtimeState: result.state,
                 sessionRuntimeById: {
                   ...prev.sessionRuntimeById,
@@ -3630,6 +3648,7 @@ export function AppProvider({ children }) {
               update({
                 live: !!rs?.busy,
                 stageLabel: rs?.busy ? t("waitingResponse") : "",
+                targetMessageId,
               });
             }
 
@@ -3821,6 +3840,106 @@ export function AppProvider({ children }) {
         }
       },
 
+      saveAssistantReplyToScrapbook: async ({ messageId, answerText } = {}) => {
+        const sessionId = String(stateRef.current.currentSessionId || "").trim();
+        const targetMessageId = String(messageId || "").trim();
+        const contentText = String(answerText || "").trim();
+        if (!sessionId || !targetMessageId || !contentText) {
+          return { error: true, message: "Missing scrapbook source message" };
+        }
+        const messages = Array.isArray(stateRef.current.messages)
+          ? stateRef.current.messages
+          : [];
+        const answerIndex = messages.findIndex((message) => message?.id === targetMessageId);
+        const sourceQuestionText =
+          answerIndex > 0
+            ? [...messages.slice(0, answerIndex)]
+                .reverse()
+                .find((message) => message?.role === "you")
+                ?.text || ""
+            : "";
+        try {
+          return await api.createChatAnswerScrapbookEntry({
+            sessionId,
+            messageId: targetMessageId,
+            questionText: sourceQuestionText,
+            answerText: contentText,
+          });
+        } catch (err) {
+          return { error: true, message: String(err?.message || "Failed to save scrapbook answer") };
+        }
+      },
+
+      openChatMessage: async (sessionId, messageId) => {
+        const targetSessionId = String(sessionId || "").trim();
+        const targetMessageId = String(messageId || "").trim();
+        if (!targetSessionId || !targetMessageId) {
+          return { error: true, message: "Missing chat message target" };
+        }
+        if (stateRef.current.currentSessionId === targetSessionId) {
+          update({
+            currentView: "chat",
+            targetMessageId: targetMessageId,
+            scrapbookEntryId: null,
+          });
+          updateRoute("chat", targetSessionId, { messageId: targetMessageId });
+          return { ok: true };
+        }
+        await api.switchSession(targetSessionId)
+          .then(async (result) => {
+            if (!result?.ok) {
+              throw new Error(result?.message || "Could not open the source chat");
+            }
+            const cachedTargetMessages =
+              stateRef.current.sessionMessagesById?.[targetSessionId] || [];
+            update({ currentView: "chat", messagesLoading: true, gitInfo: null });
+            updateRoute("chat", targetSessionId, { messageId: targetMessageId });
+            activateSessionView(targetSessionId);
+            restoreActiveMsgRef(
+              cachedTargetMessages,
+              result.state?.busy === true ||
+                ACTIVE_SESSION_STATUSES.has(
+                  stateRef.current.sessionRuntimeById?.[targetSessionId]?.status,
+                ),
+            );
+            if (result.state) {
+              setState((prev) => ({
+                ...prev,
+                targetMessageId,
+                runtimeState: result.state,
+                sessionRuntimeById: {
+                  ...prev.sessionRuntimeById,
+                  [targetSessionId]: {
+                    ...prev.sessionRuntimeById[targetSessionId],
+                    ...result.state,
+                  },
+                },
+                projectCwd: projectNameFromRuntimeState(result.state),
+                isGeneral: !!result.state.isGeneral,
+                live: !!result.state.busy,
+                stageLabel: result.state.busy ? t("waitingResponse") : "",
+              }));
+            } else {
+              await loadState(targetSessionId);
+              const rs = stateRef.current.runtimeState;
+              update({
+                live: !!rs?.busy,
+                stageLabel: rs?.busy ? t("waitingResponse") : "",
+                targetMessageId,
+              });
+            }
+            const msgPromise = loadSessionMessages(
+              result.sessionData,
+              { sessionId: targetSessionId, reconcileCached: true },
+            );
+            loadSessions();
+            loadGitInfo({ sessionId: targetSessionId });
+            await msgPromise;
+            update({ messagesLoading: false });
+          });
+        return { ok: true };
+      },
+
       openProject: async (projectPath, options = {}) => {
         const nextView = options.view || "chat";
         const openingGeneral =
@@ -3836,6 +3955,7 @@ export function AppProvider({ children }) {
           messagesLoading: nextView === "chat",
           codewikiProjectPath: pendingCodeWikiProjectPath,
           isGeneral: openingGeneral,
+          targetMessageId: null,
           gitInfo: null,
         });
         try {
@@ -3858,7 +3978,7 @@ export function AppProvider({ children }) {
               });
               if (result.sessionId) activateSessionView(result.sessionId);
             } else if (result.sessionId) {
-              updateRoute("chat", result.sessionId);
+              updateRoute("chat", result.sessionId, { messageId: "" });
               activateSessionView(result.sessionId);
             }
             if (result.state) {
@@ -3918,7 +4038,7 @@ export function AppProvider({ children }) {
             : stateRef.current.codewikiProjectPath;
         const scrapbookEntryId =
           view === "scrapbook" ? options.scrapbookEntryId || null : null;
-        update({ currentView: view, codewikiProjectPath, scrapbookEntryId });
+        update({ currentView: view, codewikiProjectPath, scrapbookEntryId, targetMessageId: null });
         if (view === "codewiki") {
           updateRoute(view, null, { projectPath: codewikiProjectPath });
         }
@@ -3928,18 +4048,18 @@ export function AppProvider({ children }) {
         }
         if (view === "chat") {
           const rs = stateRef.current.runtimeState;
-          updateRoute("chat", rs?.sessionId);
+          updateRoute("chat", rs?.sessionId, { messageId: "" });
         }
       },
 
       openScrapbookHome: () => {
-        update({ currentView: "scrapbook", scrapbookEntryId: null });
+        update({ currentView: "scrapbook", scrapbookEntryId: null, targetMessageId: null });
         updateRoute("scrapbook", null, { scrapbookEntryId: "" });
       },
 
       openScrapbookEntry: (entryId) => {
         const scrapbookEntryId = String(entryId || "").trim();
-        update({ currentView: "scrapbook", scrapbookEntryId });
+        update({ currentView: "scrapbook", scrapbookEntryId, targetMessageId: null });
         updateRoute("scrapbook", null, { scrapbookEntryId });
       },
 
@@ -3970,6 +4090,7 @@ export function AppProvider({ children }) {
       setHooksOpen: (open) => update({ hooksOpen: open }),
       setMemoryOpen: (open) => update({ memoryOpen: open }),
       clearPendingScrapbookContext: () => update({ pendingScrapbookContext: null }),
+      clearChatMessageTarget: () => update({ targetMessageId: null }),
       prepareChatAction: (actionName) => {
         if (actionName === CHAT_ACTION_NAMES.REFLECT) {
           update({

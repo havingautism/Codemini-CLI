@@ -49,6 +49,7 @@ import {
 } from './lib/message-context-parsers.js';
 import {
   buildScrapbookAskPayload,
+  createChatAnswerScrapbookEntryWithSummary,
   createManualScrapbookEntry,
   createUrlScrapbookEntry,
   deleteScrapbookEntryForApi,
@@ -3073,6 +3074,15 @@ async function main() {
         jsonResponse(res, { ok: true, entry: createUrlScrapbookEntry(body || {}) });
       } catch (error) {
         jsonResponse(res, { error: true, message: error?.message || 'Failed to import scrapbook URL' }, 400);
+      }
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/api/scrapbook/entries/chat-answer') {
+      const body = await readBody(req);
+      try {
+        jsonResponse(res, { ok: true, ...createChatAnswerScrapbookEntryWithSummary(body || {}) });
+      } catch (error) {
+        jsonResponse(res, { error: true, message: error?.message || 'Failed to save scrapbook answer' }, 400);
       }
       return;
     }

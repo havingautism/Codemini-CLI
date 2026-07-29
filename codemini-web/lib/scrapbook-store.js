@@ -28,6 +28,9 @@ function mapEntry(row) {
     updatedAt: row.updated_at,
     sourceType: row.source_type,
     sourceUrl: row.source_url,
+    sourceSessionId: row.source_session_id || '',
+    sourceMessageId: row.source_message_id || '',
+    sourceQuestionText: row.source_question_text || '',
     title: row.title,
     contentText: row.content_text,
     summary: row.summary,
@@ -84,6 +87,9 @@ export function createScrapbookEntry(payload = {}) {
     updatedAt: String(payload.updatedAt || now),
     sourceType: String(payload.sourceType || 'manual'),
     sourceUrl: String(payload.sourceUrl || ''),
+    sourceSessionId: String(payload.sourceSessionId || ''),
+    sourceMessageId: String(payload.sourceMessageId || ''),
+    sourceQuestionText: String(payload.sourceQuestionText || ''),
     title: String(payload.title || ''),
     contentText: String(payload.contentText || ''),
     summary: String(payload.summary || ''),
@@ -92,14 +98,18 @@ export function createScrapbookEntry(payload = {}) {
   };
   db.prepare(`
     INSERT INTO scrapbook_entries(
-      id, created_at, updated_at, source_type, source_url, title, content_text, summary, tags_json, fetch_status
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      id, created_at, updated_at, source_type, source_url, source_session_id, source_message_id,
+      source_question_text, title, content_text, summary, tags_json, fetch_status
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     entry.id,
     entry.createdAt,
     entry.updatedAt,
     entry.sourceType,
     entry.sourceUrl,
+    entry.sourceSessionId,
+    entry.sourceMessageId,
+    entry.sourceQuestionText,
     entry.title,
     entry.contentText,
     entry.summary,
@@ -122,12 +132,16 @@ export function updateScrapbookEntry(entryId, patch = {}) {
   };
   getGlobalDatabase().prepare(`
     UPDATE scrapbook_entries
-    SET updated_at = ?, source_type = ?, source_url = ?, title = ?, content_text = ?, summary = ?, tags_json = ?, fetch_status = ?
+    SET updated_at = ?, source_type = ?, source_url = ?, source_session_id = ?, source_message_id = ?,
+        source_question_text = ?, title = ?, content_text = ?, summary = ?, tags_json = ?, fetch_status = ?
     WHERE id = ?
   `).run(
     next.updatedAt,
     next.sourceType,
     next.sourceUrl,
+    next.sourceSessionId,
+    next.sourceMessageId,
+    next.sourceQuestionText,
     next.title,
     next.contentText,
     next.summary,

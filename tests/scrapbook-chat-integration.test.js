@@ -39,3 +39,31 @@ test('chat submission forwards extra modelText context for scrapbook attachments
   assert.doesNotMatch(source, /<uploaded_attachments>[\s\S]{0,120}scrapbook/);
   assert.match(source, /parseScrapbookAttachmentFromModelContent/);
 });
+
+test('assistant replies can be saved into scrapbook and jumped back by message id', async () => {
+  const messageBubble = await fs.readFile('codemini-web/client/src/components/MessageBubble.jsx', 'utf8');
+  const appContext = await fs.readFile('codemini-web/client/src/context/app-context.jsx', 'utf8');
+  const chatPanel = await fs.readFile('codemini-web/client/src/components/ChatPanel.jsx', 'utf8');
+  assert.match(messageBubble, /scrapbookSaveAnswer/);
+  assert.match(messageBubble, /saveAssistantReplyToScrapbook/);
+  assert.match(appContext, /createChatAnswerScrapbookEntry/);
+  assert.match(appContext, /openChatMessage/);
+  assert.match(appContext, /targetMessageId/);
+  assert.match(chatPanel, /scrollIntoView/);
+  assert.doesNotMatch(chatPanel, /highlightedMessageId/);
+  assert.doesNotMatch(
+    chatPanel,
+    /disableVirtualization=\{hasPendingScrollTarget\}/,
+    'scrapbook jump should keep message virtualization enabled',
+  );
+  assert.match(
+    chatPanel,
+    /scrollToMessage\(anchorId\)/,
+    'scrapbook jump should reuse the same smooth scroll path as quick jump',
+  );
+  assert.match(
+    chatPanel,
+    /scrollend/,
+    'scrapbook jump should wait for scroll completion before clearing the target',
+  );
+});

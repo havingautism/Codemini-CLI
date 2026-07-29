@@ -664,6 +664,15 @@ export async function createUrlScrapbookEntry(payload) {
   return res.json();
 }
 
+export async function createChatAnswerScrapbookEntry(payload) {
+  const res = await api('/api/scrapbook/entries/chat-answer', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify(payload || {}),
+  });
+  return res.json();
+}
+
 export async function fetchScrapbookEntry(entryId) {
   const res = await api(`/api/scrapbook/entries/${encodeURIComponent(entryId)}`);
   return res.json();

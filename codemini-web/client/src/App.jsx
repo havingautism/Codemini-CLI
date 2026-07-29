@@ -522,6 +522,8 @@ function Shell() {
               gitInfo={state.gitInfo}
               messagesLoading={state.messagesLoading}
               isGeneral={state.isGeneral}
+              targetMessageId={state.targetMessageId}
+              onTargetMessageHandled={actions.clearChatMessageTarget}
               onRetryMessage={retryMessage}
             />
 
