@@ -59,6 +59,7 @@ test('scrapbook cards expose hover delete and origin actions', async () => {
   const source = await fs.readFile('codemini-web/client/src/components/ScrapbookPanel.jsx', 'utf8');
   assert.match(source, /ScrapbookLibraryCard/);
   assert.match(source, /DotsThreeVertical/);
+  assert.match(source, /Popover[\s\S]{0,80}onOpenChange/);
   assert.match(source, /window\.open\(target\.sourceUrl,\s*"_blank"/);
   assert.match(source, /openChatMessage/);
   assert.match(source, /scrapbookJumpToMessage/);

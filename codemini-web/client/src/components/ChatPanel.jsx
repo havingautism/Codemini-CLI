@@ -406,7 +406,6 @@ function ChatPanelContent({
                   >
                     <MessageBubble
                       message={msg}
-                      skills={skills}
                       onRetry={onRetryMessage}
                     />
                   </MessageScrollerItem>

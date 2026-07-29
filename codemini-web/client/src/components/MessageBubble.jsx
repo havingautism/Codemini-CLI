@@ -1569,43 +1569,29 @@ function UserText({ text }) {
   return <StreamdownRenderer text={text} streaming={false} />;
 }
 
-function UserSkillChips({ badges = [], skills = [], className }) {
+function UserSkillChips({ badges = [], className }) {
   const items = userSkillChipBadges(badges);
   if (!items.length) return null;
   return (
     <div className={cn("flex max-w-full flex-wrap gap-1.5", className)}>
       {items.map(({ name, status }) => {
-        const description =
-          skills.find((item) => item.name === name)?.description || "";
         const always = status === "always";
         return (
-          <Tooltip key={name}>
-            <TooltipTrigger asChild>
-              <span
-                className={cn(
-                  "codemini-status-chip inline-flex max-w-full items-center gap-1.5 px-2 py-1 text-[12px]",
-                  always
-                    ? "border-(--border-default) bg-(--bg-secondary) text-(--text-secondary)"
-                    : "border-(--accent-purple)/25 bg-(--accent-purple-bg) text-accent-purple",
-                )}
-              >
-                <Hammer
-                  size={14}
-                  className={cn("shrink-0", always && "opacity-70")}
-                />
-                <span className="max-w-[220px] truncate">{name}</span>
-              </span>
-            </TooltipTrigger>
-            {description ? (
-              <TooltipContent
-                side="top"
-                sideOffset={8}
-                className="max-w-75 px-4 py-3 leading-relaxed whitespace-normal"
-              >
-                {description}
-              </TooltipContent>
-            ) : null}
-          </Tooltip>
+          <span
+            key={name}
+            className={cn(
+              "codemini-status-chip inline-flex max-w-full items-center gap-1.5 px-2 py-1 text-[12px]",
+              always
+                ? "border-(--border-default) bg-(--bg-secondary) text-(--text-secondary)"
+                : "border-(--accent-purple)/25 bg-(--accent-purple-bg) text-accent-purple",
+            )}
+          >
+            <Hammer
+              size={14}
+              className={cn("shrink-0", always && "opacity-70")}
+            />
+            <span className="max-w-[220px] truncate">{name}</span>
+          </span>
         );
       })}
     </div>
@@ -2201,7 +2187,6 @@ function AnswerProcessFold({ groups, durationMs }) {
 
 export const MessageBubble = memo(function MessageBubble({
   message,
-  skills = [],
   onRetry,
 }) {
   const { actions } = useApp();
@@ -2463,7 +2448,7 @@ export const MessageBubble = memo(function MessageBubble({
       )}
     >
       {role === "you" ? (
-        <div className="flex w-fit max-w-full flex-col items-end">
+        <div className="flex w-fit max-w-[85%] flex-col items-end">
           {specExecutionDetails ? (
             <SpecExecutionCard details={specExecutionDetails} />
           ) : (
@@ -2476,7 +2461,7 @@ export const MessageBubble = memo(function MessageBubble({
                   )}
                 >
                   {userSkillChips.length > 0 && (
-                    <UserSkillChips badges={userSkillChips} skills={skills} />
+                    <UserSkillChips badges={userSkillChips} />
                   )}
                   <UserAttachments attachments={attachments} />
                 </div>

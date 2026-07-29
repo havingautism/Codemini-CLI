@@ -36,6 +36,11 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog.jsx";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover.jsx";
 
 const NOTEBOOK_TONES = [
   "#c7829a",
@@ -166,7 +171,7 @@ function ScrapbookLibraryCard({
   viewMode,
   menuOpen,
   onOpen,
-  onToggleMenu,
+  onMenuOpenChange,
   onOpenOrigin,
   onDelete,
 }) {
@@ -245,20 +250,21 @@ function ScrapbookLibraryCard({
       </div>
 
       <div className="absolute right-3 top-3 z-10">
-        <button
-          type="button"
-          onClick={(event) => {
-            event.stopPropagation();
-            onToggleMenu(entry.id);
-          }}
-          className="flex size-8 items-center justify-center rounded-full text-(--text-secondary) transition hover:bg-black/10 hover:text-(--text-primary) focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
-          aria-label={t("scrapbookNotebookActions")}
-          aria-expanded={menuOpen}
+        <Popover
+          open={menuOpen}
+          onOpenChange={(open) => onMenuOpenChange(open ? entry.id : "")}
         >
-          <DotsThreeVertical size={18} weight="bold" />
-        </button>
-        {menuOpen ? (
-          <div className="absolute right-0 top-9 z-20 w-40 overflow-hidden rounded-xl border border-(--surface-edge) bg-(--material-elevated) p-1 shadow-[var(--surface-shadow)]">
+          <PopoverTrigger asChild>
+            <button
+              type="button"
+              onClick={(event) => event.stopPropagation()}
+              className="flex size-8 items-center justify-center rounded-full text-(--text-secondary) transition hover:bg-black/10 hover:text-(--text-primary) focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
+              aria-label={t("scrapbookNotebookActions")}
+            >
+              <DotsThreeVertical size={18} weight="bold" />
+            </button>
+          </PopoverTrigger>
+          <PopoverContent align="end" sideOffset={4} className="w-40 p-1">
             {canOpenSource ? (
               <button
                 type="button"
@@ -287,8 +293,8 @@ function ScrapbookLibraryCard({
               <Trash size={14} />
               {t("scrapbookDelete")}
             </button>
-          </div>
-        ) : null}
+          </PopoverContent>
+        </Popover>
       </div>
     </article>
   );
@@ -703,9 +709,7 @@ export function ScrapbookPanel() {
                     viewMode={viewMode}
                     menuOpen={menuEntryId === entry.id}
                     onOpen={actions.openScrapbookEntry}
-                    onToggleMenu={(entryId) =>
-                      setMenuEntryId((current) => (current === entryId ? "" : entryId))
-                    }
+                    onMenuOpenChange={setMenuEntryId}
                     onOpenOrigin={(target) => {
                       setMenuEntryId("");
                       if (target?.sourceType === "chat_answer") {
