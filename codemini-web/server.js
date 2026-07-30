@@ -440,11 +440,11 @@ async function resolveProjectSpecFile(projectDir, rawPath = '') {
 function getGeneralChatSystemPromptBlock() {
   return `# General Chat Mode
 
-This is a general conversation, not an opened project workspace.
-- The working directory is Codemini's internal general workspace. Do not treat it as a user project.
-- Use filesystem read, write, and edit tools only as auxiliary scratch or artifact tools when the user explicitly needs local files.
+This is a general conversation backed by Codemini's shared general workspace.
+- The working directory is a real shared workspace for general sessions, not a user project repository.
+- Filesystem and terminal tools are available when they help with the user's request. Keep all operations inside this workspace unless the user explicitly opens a project.
 - When the user asks to rewrite or transform remote content, fetch or read the content and answer with the rewritten text unless they explicitly ask you to create or modify a local file.
-- Before making persistent filesystem changes in this mode, make sure the user requested a local artifact and use an obvious user-facing path or file name.`;
+- Before making persistent filesystem changes, make sure the user requested a local artifact and use an obvious user-facing path or file name.`;
 }
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -2557,10 +2557,6 @@ async function main() {
 
     if (req.method === 'GET' && url.pathname === '/api/workspace/tree') {
       const cwd = await resolveTerminalCwd();
-      if (isGeneralProjectDir(cwd)) {
-        jsonResponse(res, { error: true, message: 'Open a project before browsing files.' }, 400);
-        return;
-      }
       try {
         const relativePath = String(url.searchParams.get('path') || '').trim();
         const result = await listWorkspaceChildren(cwd, relativePath);
@@ -2575,10 +2571,6 @@ async function main() {
 
     if (req.method === 'GET' && url.pathname === '/api/workspace/preview') {
       const cwd = await resolveTerminalCwd();
-      if (isGeneralProjectDir(cwd)) {
-        jsonResponse(res, { error: true, message: 'Open a project before previewing files.' }, 400);
-        return;
-      }
       try {
         const relativePath = String(url.searchParams.get('path') || '').trim();
         const result = await previewWorkspaceFile(cwd, relativePath);
@@ -2617,10 +2609,6 @@ async function main() {
       const body = await readBody(req);
       const config = await loadConfig();
       const cwd = await resolveTerminalCwd(body);
-      if (isGeneralProjectDir(cwd)) {
-        jsonResponse(res, { ok: false, error: 'Open a project before using the terminal.' }, 400);
-        return;
-      }
       const result = runTerminalCommand({
         cwd,
         command: body?.command,
@@ -2634,10 +2622,6 @@ async function main() {
       const body = await readBody(req);
       const config = await loadConfig();
       const cwd = await resolveTerminalCwd(body);
-      if (isGeneralProjectDir(cwd)) {
-        jsonResponse(res, { ok: false, error: 'Open a project before using the terminal.' }, 400);
-        return;
-      }
       jsonResponse(
         res,
         writeTerminalInput(cwd, body?.data, config.shell?.default),

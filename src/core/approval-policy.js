@@ -42,7 +42,7 @@ export function toolRequiresUserApproval({
     ? String(approvalMode || '').toLowerCase()
     : 'review';
   const name = String(toolName || '').trim();
-  const isFileWriteTool = name === 'edit' || name === 'create' || name === 'write' || name === 'commit_write' || name === 'apply_patch' || name === 'delete';
+  const isFileWriteTool = name === 'edit' || name === 'create' || name === 'write' || name === 'commit_write' || name === 'apply_patch' || name === 'delete' || name === 'add_code_comment' || name === 'update_code_comment';
   const alwaysAllowSet = new Set(
     (Array.isArray(alwaysAllowTools) ? alwaysAllowTools : []).map((item) => String(item || '').trim()).filter(Boolean)
   );
@@ -63,7 +63,9 @@ const FILE_MUTATION_TOOLS = new Set([
   'write',
   'commit_write',
   'apply_patch',
-  'delete'
+  'delete',
+  'add_code_comment',
+  'update_code_comment'
 ]);
 
 function pathIsWithin(root, candidate) {

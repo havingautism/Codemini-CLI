@@ -1574,7 +1574,7 @@ export function CodeWikiPanel({
           onMouseDown={handleQaResizeStart}
         >
           <span className="codewiki-resizer-handle">
-            <DotsSixVertical size={14} aria-hidden="true" />
+            <DotsSixVertical size={10} aria-hidden="true" />
           </span>
         </div>
 

@@ -5,6 +5,7 @@ import fs from 'node:fs/promises';
 const FILE_TREE_PATH = 'codemini-web/client/src/components/FileTreePanel.jsx';
 const WORKSPACE_RAIL_PATH =
   'codemini-web/client/src/components/WorkspaceRail.jsx';
+const WEB_STYLE_PATH = 'codemini-web/client/style.css';
 
 test('workspace file tree exposes responsive filtering and tree controls', async () => {
   const source = await fs.readFile(FILE_TREE_PATH, 'utf8');
@@ -29,7 +30,10 @@ test('workspace file tree ignores stale browse and preview responses', async () 
 });
 
 test('workspace rail keeps resize behavior without drawing hard panel borders', async () => {
-  const source = await fs.readFile(WORKSPACE_RAIL_PATH, 'utf8');
+  const [source, styles] = await Promise.all([
+    fs.readFile(WORKSPACE_RAIL_PATH, 'utf8'),
+    fs.readFile(WEB_STYLE_PATH, 'utf8'),
+  ]);
   const asideClass =
     source.match(/<aside[\s\S]*?className="([^"]+)"/)?.[1] || '';
   const headerClass =
@@ -38,6 +42,17 @@ test('workspace rail keeps resize behavior without drawing hard panel borders', 
   assert.doesNotMatch(asideClass, /\bborder-l\b/);
   assert.doesNotMatch(headerClass, /\bborder-b\b/);
   assert.match(source, /codemini-terminal-resizer[^"]*border-0!/);
-  assert.match(source, /codemini-terminal-resizer[^"]*w-4 cursor-col-resize/);
+  assert.match(
+    source,
+    /codemini-terminal-resizer[^"]*-left-1[^"]*w-2 cursor-col-resize/,
+  );
   assert.match(source, /className="codewiki-resizer-handle"/);
+  assert.match(
+    styles,
+    /\.codewiki-resizer-handle\s*\{[\s\S]*?pointer-events:\s*none;[\s\S]*?width:\s*16px;[\s\S]*?height:\s*40px;/,
+  );
+  assert.match(
+    styles,
+    /\.codemini-terminal-resizer\s*\{[\s\S]*?min-width:\s*8px;/,
+  );
 });

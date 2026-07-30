@@ -125,7 +125,7 @@
 
 .codewiki-layout {
   display: grid;
-  grid-template-columns: 276px minmax(0, 1fr) 9px var(--codewiki-qa-width, 420px);
+  grid-template-columns: 276px minmax(0, 1fr) 12px var(--codewiki-qa-width, 420px);
   background: var(--bg-primary);
   color: var(--text-primary);
   font-family:
@@ -377,7 +377,9 @@
 
 .codewiki-resizer {
   position: relative;
-  min-width: 9px;
+  box-sizing: border-box;
+  min-width: 12px;
+  padding-inline: 2px;
   cursor: col-resize;
   background: transparent;
   border-left: 1px solid color-mix(in srgb, var(--text-primary) 6%, transparent);
@@ -388,9 +390,10 @@
   position: absolute;
   top: 50%;
   left: 50%;
+  pointer-events: none;
   display: inline-flex;
-  width: 22px;
-  height: 44px;
+  width: 16px;
+  height: 40px;
   align-items: center;
   justify-content: center;
   transform: translate(-50%, -50%);
@@ -3545,7 +3548,7 @@ samp {
 
 .codemini-terminal-resizer {
   position: absolute;
-  min-width: 9px;
+  min-width: 8px;
   height: 100%;
   cursor: col-resize;
   background: transparent;

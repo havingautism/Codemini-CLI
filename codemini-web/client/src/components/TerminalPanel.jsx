@@ -66,6 +66,12 @@ function readTheme() {
     cyan: "#06b6d4",
     white: "#e4e4e7",
     brightBlack: "#71717a",
+    brightRed: "#fb7185",
+    brightGreen: "#4ade80",
+    brightYellow: "#facc15",
+    brightBlue: "#60a5fa",
+    brightMagenta: "#c084fc",
+    brightCyan: "#22d3ee",
     brightWhite: "#fafafa",
   };
 }
@@ -183,7 +189,14 @@ export function TerminalPanel({
     helperTextarea?.setAttribute("aria-label", t("terminalInputLabel"));
     const inputDisposable = terminal.onData(queueInput);
     const resizeObserver = new ResizeObserver(() => fitAndSync());
+    const themeObserver = new MutationObserver(() => {
+      terminal.options.theme = readTheme();
+    });
     resizeObserver.observe(host);
+    themeObserver.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["data-theme", "data-palette", "style"],
+    });
     window.requestAnimationFrame(() => {
       fitAndSync();
       terminal.focus();
@@ -216,7 +229,9 @@ export function TerminalPanel({
           return;
         }
         if (data.type === "status") {
-          setConnection(data.connected === false ? "disconnected" : "connected");
+          setConnection(
+            data.connected === false ? "disconnected" : "connected",
+          );
         }
       } catch {
         setError(t("terminalStreamError"));
@@ -230,6 +245,7 @@ export function TerminalPanel({
     return () => {
       source.close();
       resizeObserver.disconnect();
+      themeObserver.disconnect();
       inputDisposable.dispose();
       if (inputTimerRef.current) window.clearTimeout(inputTimerRef.current);
       if (resizeSyncTimerRef.current) {
@@ -413,12 +429,12 @@ export function TerminalPanel({
             />
             <span className="sr-only">{statusLabel}</span>
           </div>
-          <div
+          {/* <div
             className="truncate font-mono text-[11px] text-(--text-muted)"
             title={cwd}
           >
             {cwd || projectCwd || "—"}
-          </div>
+          </div> */}
         </div>
         <button
           type="button"

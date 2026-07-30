@@ -100,6 +100,30 @@ test('an explicit impact query satisfies the next mutation preflight', async () 
   assert.equal(queries, 0);
 });
 
+test('CodeWiki comment mutations are covered by project graph preflight', async () => {
+  const queriedFiles = [];
+  const preflight = createMutationGraphPreflight({
+    queryGraph: async ({ files }) => {
+      queriedFiles.push(files);
+      return impactResult(files);
+    },
+  });
+
+  for (const [step, toolName] of ['add_code_comment', 'update_code_comment'].entries()) {
+    const result = await preflight.inspect({
+      toolName,
+      args: { path: `src/comment-${step}.js`, line: 1, comment: 'why' },
+      step: step + 1,
+    });
+    assert.equal(result.required, true);
+  }
+
+  assert.deepEqual(queriedFiles, [
+    ['src/comment-0.js'],
+    ['src/comment-1.js'],
+  ]);
+});
+
 test('agent loop injects graph context before executing a write', async () => {
   let completionCall = 0;
   let writeCalls = 0;

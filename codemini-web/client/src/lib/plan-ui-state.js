@@ -1,5 +1,8 @@
-import { applyStreamEventToMessage } from "../../../shared/transcript-segments.js";
-import { appendUniqueFileChanges } from "../../../shared/transcript-segments.js";
+import {
+  applyStreamEventToMessage,
+  appendUniqueFileChanges,
+  normalizeUsage,
+} from "../../../shared/transcript-segments.js";
 import { stripPlanProgressText } from "../../../shared/plan-progress-text.js";
 
 export function isCompletedStatus(status) {
@@ -480,6 +483,7 @@ export function applyPlanEventToMessage(message, event) {
           blockedBy: Array.isArray(event.blockedBy)
             ? event.blockedBy
             : existing.blockedBy || [],
+          usage: normalizeUsage(event.usage) || existing.usage || null,
           toolCallId: cardId || existing.toolCallId || "",
           segments,
         };

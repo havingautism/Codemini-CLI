@@ -65,6 +65,8 @@ test('applyPlanEventToMessage keeps plan progress on create_plan card', () => {
     title: 'Inspect',
     status: 'done',
     output: 'Handoff done',
+    usage: { inputTokens: 80, outputTokens: 20, totalTokens: 100, requests: 1 },
+    usageScope: 'subagent',
   });
   message = applyPlanEventToMessage(message, {
     type: 'plan:step_done',
@@ -79,6 +81,7 @@ test('applyPlanEventToMessage keeps plan progress on create_plan card', () => {
   assert.equal(card.status, 'done');
   assert.equal(card.planRun.phase, 'completed');
   assert.equal(card.displayName, 'Subagent · 完成');
+  assert.equal(card.planRun.steps[0].usage.totalTokens, 100);
   assert.equal(card.planRun.steps[1].segments[0].type, 'text');
 });
 

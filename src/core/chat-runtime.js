@@ -3,6 +3,8 @@ import {
   loadCommandsAndSkills,
   loadIndexedSkills,
   buildSkillIndexPromptBlock,
+  isSkillIndexEligible,
+  isSkillModelInvocationDisabled,
   isUserInvocableSkill,
   renderCommandPrompt
 } from './command-loader.js';
@@ -81,10 +83,15 @@ import { queryProjectKnowledgeGraph } from './project-knowledge-graph.js';
 import { captureToInbox, listInbox } from './memory-store.js';
 import {
   classifyMemoryRoute,
+  isSensitiveMemoryContent,
   shouldAutoCaptureUserPrompt as shouldAutoCaptureUserPromptShared,
   buildMemoryDecisionGraphBlock,
   buildMemoryRouteHintBlock
 } from './memory-policy.js';
+import {
+  buildCodingRouteDecisionBlock,
+  evaluateCodingRouteGraph,
+} from './coding-route-graph.js';
 import {
   buildCleanContextHandoff
 } from './workflow-gates.js';
@@ -548,6 +555,30 @@ function mergeModelUsage(left, right) {
   };
 }
 
+export function createTurnUsageAccumulator() {
+  let delegatedUsage = null;
+
+  return {
+    addDelegated(usage) {
+      delegatedUsage = mergeModelUsage(delegatedUsage, usage);
+      return cloneModelUsage(delegatedUsage);
+    },
+    consumeInto(ownUsage) {
+      const total = mergeModelUsage(ownUsage, delegatedUsage);
+      delegatedUsage = null;
+      return total;
+    },
+    takePending() {
+      const pending = cloneModelUsage(delegatedUsage);
+      delegatedUsage = null;
+      return pending;
+    },
+    peekPending() {
+      return cloneModelUsage(delegatedUsage);
+    }
+  };
+}
+
 function collectAssistantUsage(messages = []) {
   let usage = null;
   for (const msg of Array.isArray(messages) ? messages : []) {
@@ -593,6 +624,7 @@ export const EXECUTION_MODE_TOOL_POLICY = {
   plan: [
     'read', 'search_code', 'grep', 'ast_grep', 'list', 'glob', 'ast_query', 'read_ast_node',
     'query_project_index', 'query_project_graph', 'tool_search', 'skill', 'web_fetch', 'web_search',
+    'save_memory',
     'update_todos',
     'edit', 'write', 'begin_write', 'write_chunk', 'commit_write', 'abort_write', 'apply_patch', 'delete', 'run',
     'run_subagent', 'request_user_input'
@@ -2269,6 +2301,21 @@ export function buildAlwaysSkillPromptBlock(commands, config, dismissedSkills = 
   const selected = getAlwaysSkillCommands(commands, config, dismissedSkills, activeMode);
   if (selected.length === 0) return '';
   return selected.map((skill) => `[Always skill: ${skill.name}]\n${skill.content}`).join('\n\n');
+}
+
+function buildSelectedSkillPromptBlock(commands, names = [], config = {}, executionMode = 'code') {
+  const selected = [];
+  for (const name of names) {
+    const skill = commands?.get?.(name);
+    if (
+      !skill
+      || !isSkillIndexEligible(skill)
+      || isSkillModelInvocationDisabled(skill)
+      || !isSkillEnabled(config, name, skill, executionMode)
+    ) continue;
+    selected.push(`[Lite-selected skill: ${skill.name}]\n${skill.content}`);
+  }
+  return selected.join('\n\n');
 }
 
 export function shouldInjectAlwaysSkills(executionMode) {
@@ -3965,6 +4012,30 @@ function resolveFastModel(config) {
   return String(config?.model?.fast_name || config?.model?.lite_name || config?.model?.name || '').trim();
 }
 
+async function judgeCodingRouteNodes({ request, config, model, signal }) {
+  const routeModel = resolveFastModel(config) || model || config?.model?.name;
+  if (!routeModel) return null;
+  const result = await createChatCompletion({
+    sdkProvider: config?.sdk?.provider,
+    baseUrl: config?.gateway?.base_url,
+    apiKey: config?.gateway?.api_key,
+    model: routeModel,
+    messages: [
+      { role: 'system', content: request.systemPrompt },
+      { role: 'user', content: request.userPrompt },
+    ],
+    tools: [],
+    temperature: 0,
+    reasoningEffort: 'off',
+    maxTokens: 480,
+    payloadExtras: { max_tokens: 480 },
+    timeoutMs: Math.min(Number(config?.gateway?.timeout_ms || 30000), 30000),
+    maxRetries: 0,
+    signal,
+  });
+  return result?.text || '';
+}
+
 export function resolveSubAgentModel(config, fallbackModel = '') {
   return String(
     config?.model?.fast_name
@@ -4614,6 +4685,7 @@ async function askModel({
     resultDir: path.join(getSessionsDir(), String(session.id))
   });
 
+  const turnUsage = createTurnUsageAccumulator();
   const subAgentDependencies = createSubAgentDependencyCoordinator();
   const { definitions, handlers, formatters, deferredDefinitions, displayLabels, dispose: disposeTools } = getBuiltinTools({
     workspaceRoot,
@@ -4754,6 +4826,7 @@ async function askModel({
           const scopedTask = contextSections.length
             ? `${contextSections.join('\n\n')}\n\nTask:\n${taskPrompt}`
             : taskPrompt;
+          let childUsage = null;
           try {
             const output = await runSubAgentTask({
               role: taskRole,
@@ -4771,6 +4844,10 @@ async function askModel({
               backupManager,
               parentToolCallId: callId,
               tools: toolAllowList,
+              onUsage: (usage) => {
+                childUsage = mergeModelUsage(childUsage, usage);
+                turnUsage.addDelegated(usage);
+              },
               projectIsGit: resolveApprovalProjectIsGit({
                 projectIsGit,
                 changeTrackerEnabled: Boolean(changeTracker?.enabled),
@@ -4790,7 +4867,8 @@ async function askModel({
               taskId: dependencyTaskId,
               dependsOn: dependencyRegistration.dependencies,
               summary: trimInline(output.text || '', 160),
-              output: formatPlanStepOutputForDisplay(output.text || '')
+              output: formatPlanStepOutputForDisplay(output.text || ''),
+              ...(childUsage ? { usage: childUsage, usageScope: 'subagent' } : {})
             });
             const fileChanges = subAgentAllowListMayMutate(resolvedTools)
               ? collectPlanImplementationFileChanges([
@@ -4804,6 +4882,7 @@ async function askModel({
               role: persona,
               tools: resolvedTools,
               text: output.text || '',
+              ...(childUsage ? { usage: childUsage } : {}),
               artifactPaths: output.artifactPaths || [],
               ...(fileChanges.length ? { fileChanges } : {}),
               message: [
@@ -4828,9 +4907,15 @@ async function askModel({
               status: 'failed',
               taskId: dependencyTaskId,
               dependsOn: dependencyRegistration.dependencies,
-              summary: String(err?.message || err)
+              summary: String(err?.message || err),
+              ...(childUsage ? { usage: childUsage, usageScope: 'subagent' } : {})
             });
-            const result = { ok: false, error: String(err?.message || err), text: '' };
+            const result = {
+              ok: false,
+              error: String(err?.message || err),
+              text: '',
+              ...(childUsage ? { usage: childUsage } : {})
+            };
             dependencyRegistration.settle(result);
             return result;
           }
@@ -5011,7 +5096,8 @@ async function askModel({
         if (persistSession) scheduleSessionSave();
       }
     } else if (event?.type === 'assistant:response') {
-      const eventUsage = normalizeModelUsage(event.usage || event.assistantMessage?.usage);
+      const ownUsage = normalizeModelUsage(event.usage || event.assistantMessage?.usage);
+      const eventUsage = turnUsage.consumeInto(ownUsage);
       if (eventUsage) event.usage = eventUsage;
       if (activeAssistantIndex >= 0 && session.messages[activeAssistantIndex]) {
         const current = session.messages[activeAssistantIndex];
@@ -5204,6 +5290,24 @@ async function askModel({
     }
   });
 
+  const pendingDelegatedUsage = turnUsage.takePending();
+  if (pendingDelegatedUsage) {
+    for (let i = session.messages.length - 1; i >= sessionLenBeforeLoop; i -= 1) {
+      const message = session.messages[i];
+      if (message?.role !== 'assistant') continue;
+      message.usage = mergeModelUsage(message.usage, pendingDelegatedUsage);
+      message.at = new Date().toISOString();
+      break;
+    }
+    if (onAgentEvent) {
+      onAgentEvent({
+        type: 'assistant:usage',
+        usage: pendingDelegatedUsage,
+        source: 'subagents'
+      });
+    }
+  }
+
   if (persistSession) {
     // Sync new messages to compacted view
     if (compacted) {
@@ -5258,6 +5362,7 @@ export async function runSubAgentTask({
   backupManager = null,
   parentToolCallId = '',
   tools = null,
+  onUsage = null,
   projectIsGit = Boolean(config?.runtime?.project_is_git),
   workspaceRoot = process.cwd()
 }) {
@@ -5299,6 +5404,10 @@ export async function runSubAgentTask({
   const wrappedOnAgentEvent = (evt) => {
     if (evt?.type === 'tool:blocked') blockedCount += 1;
     if (evt?.type === 'tool:error') toolErrorCount += 1;
+    if (evt?.type === 'assistant:response' && typeof onUsage === 'function') {
+      const usage = normalizeModelUsage(evt.usage || evt.assistantMessage?.usage);
+      if (usage) onUsage(usage);
+    }
     collectSubAgentArtifactsFromEvent(evt, artifactPaths, seenArtifactPaths);
     if (
       role !== 'summarizer' &&
@@ -5809,7 +5918,12 @@ ${diffReview}`.trim();
         : trimInline(stepRecord.output, 160),
       output: formatPlanStepOutputForDisplay(stepRecord.output),
       ...(stepRecord.retryCount > 0 ? { retryCount: stepRecord.retryCount } : {}),
-      ...(displayUsage ? { usage: displayUsage } : {})
+      ...(displayUsage
+        ? {
+            usage: displayUsage,
+            usageScope: step.role === 'summarizer' ? 'turn-total' : 'subagent'
+          }
+        : {})
     });
 
     if (stepRecord.failed && i < steps.length - 1) {
@@ -5895,6 +6009,7 @@ ${diffReview}`.trim();
     aborted: !!signal?.aborted,
     results,
     transcript,
+    usage: totalUsage,
     verificationGap: Boolean(hadImplementation && (!testerRan || !testerPassed)),
     sessionText:
       [...results].reverse().find((r) => r.role === 'summarizer')?.output ||
@@ -7733,11 +7848,7 @@ export async function createChatRuntime({
     }).catch(() => null);
   };
 
-  const buildActiveSystemPrompt = async () => {
-    const memoryGuide = [
-      `Persistent memory is for self-evolution: when the user asks you to remember something lasting, call save_memory. Use scope="user" kind="preference" for tastes/interests, scope="project" kind="convention" for project rules, and kind="lesson" for reusable learnings. Write memory content and summary in ${getReplyLanguageName(config)}. Verify changeable details from files; never store secrets. Do not duplicate an equivalent fact already present in Persistent Memory.`,
-      buildMemoryDecisionGraphBlock()
-    ].join('\n\n');
+  const getSkillIndexPrompt = async () => {
     const skillIndexCacheKey = `${executionMode}:${JSON.stringify(config.skills || {})}`;
     if (
       !skillIndexPromptCache
@@ -7747,15 +7858,28 @@ export async function createChatRuntime({
       skillIndexPromptCache = {
         key: skillIndexCacheKey,
         expiresAt: Date.now() + COMMAND_RELOAD_TTL_MS,
-        value: buildSkillIndexPromptBlock(root, config, executionMode),
+        value: buildSkillIndexPromptBlock(root, config, executionMode, {
+          modelInvocableOnly: true,
+        }),
       };
     }
+    return Promise.resolve(skillIndexPromptCache.value);
+  };
+
+  const buildActiveSystemPrompt = async ({
+    includeSkillIndex = true,
+    includeMemoryGuide = true,
+  } = {}) => {
+    const memoryGuide = [
+      `Persistent memory is for self-evolution: when the user asks you to remember something lasting, call save_memory. Use scope="user" kind="preference" for tastes/interests, scope="project" kind="convention" for project rules, and kind="lesson" for reusable learnings. Write memory content and summary in ${getReplyLanguageName(config)}. Verify changeable details from files; never store secrets. Do not duplicate an equivalent fact already present in Persistent Memory.`,
+      buildMemoryDecisionGraphBlock()
+    ].join('\n\n');
     return composeSystemPrompt({
       shellRulesPrompt: baseSystemPrompt,
       config,
       workspaceRoot: root,
-      skillsPrompt: skillIndexPromptCache.value,
-      extraPrompts: [memoryGuide],
+      skillsPrompt: includeSkillIndex ? getSkillIndexPrompt() : '',
+      extraPrompts: includeMemoryGuide ? [memoryGuide] : [],
       soulContext: normalizeExecutionMode(executionMode) === 'plan' ? 'coding' : 'daily',
     });
   };
@@ -7774,7 +7898,11 @@ export async function createChatRuntime({
     // 每次提交创建新的 AbortController，替代旧的
     activeAbortController = new AbortController();
     const { signal } = activeAbortController;
-    const activeReplySystemPrompt = await buildActiveSystemPrompt();
+    const codingRouteEnabled = normalizeExecutionMode(executionMode) === 'plan';
+    const activeReplySystemPrompt = await buildActiveSystemPrompt({
+      includeSkillIndex: !codingRouteEnabled,
+      includeMemoryGuide: !codingRouteEnabled,
+    });
     const inputText = String(line || '');
     const optionModelText = typeof options?.modelText === 'string' && options.modelText.trim()
       ? await expandFileMentions(options.modelText, root)
@@ -8216,6 +8344,68 @@ export async function createChatRuntime({
     ];
 
     const autoRoute = classifyAutoRoute(expandedText);
+    const isCodingMode = normalizeExecutionMode(executionMode) === 'plan';
+    const memoryRoute = classifyMemoryRoute(expandedText);
+    const codingSkillIndexPrompt = isCodingMode ? await getSkillIndexPrompt() : '';
+    const routingRuntimeState = isCodingMode
+      ? buildRuntimeStateSnapshot({
+          currentSession,
+          config,
+          model,
+          executionMode,
+          extraSession: null,
+          workspaceRoot: root,
+        })
+      : null;
+    const codingRoute = await evaluateCodingRouteGraph({
+      executionMode: normalizeExecutionMode(executionMode),
+      text: expandedText,
+      autoRoute,
+      memoryRoute,
+      skillIndexPrompt: codingSkillIndexPrompt,
+      contextUsage: routingRuntimeState
+        ? {
+            estimated_tokens: routingRuntimeState.currentContextTokens,
+            max_tokens: routingRuntimeState.maxContextTokens,
+            usage_pct: routingRuntimeState.contextUsagePct,
+          }
+        : {},
+      sensitive: isSensitiveMemoryContent(expandedText),
+      judge: isCodingMode
+        ? (request) => judgeCodingRouteNodes({ request, config, model, signal })
+        : null,
+    });
+    if (codingRoute.active) {
+      onAgentEvent?.({
+        type: 'routing:graph',
+        graphVersion: codingRoute.graph_version,
+        path: codingRoute.path,
+        source: codingRoute.source,
+        decisions: codingRoute.decisions,
+      });
+    }
+    const graphSelectedSkillNames = (
+      codingRoute?.decisions?.skills?.selected_names || []
+    ).filter((name) => {
+      const skill = commands?.get?.(name);
+      return Boolean(
+        skill
+        && isSkillIndexEligible(skill)
+        && !isSkillModelInvocationDisabled(skill)
+        && isSkillEnabled(config, name, skill, executionMode)
+      );
+    });
+    if (graphSelectedSkillNames.length > 0) {
+      onAgentEvent?.({
+        type: 'skill:auto-selected',
+        names: graphSelectedSkillNames,
+        source: 'coding-route-graph',
+      });
+      await Promise.all(
+        graphSelectedSkillNames.map((skillName) =>
+          armSkillHooksByName(skillName, { onAgentEvent })),
+      );
+    }
     const injectAlwaysSkills = shouldInjectAlwaysSkills(executionMode);
     const alwaysSkills = injectAlwaysSkills
       ? getAlwaysSkillCommands(commands, config, dismissedAlwaysSkills, executionMode)
@@ -8233,19 +8423,40 @@ export async function createChatRuntime({
       [stripReplyLanguageDirective(prompt || ''), ...parts.filter(Boolean)].join('\n\n'),
       config,
     );
-    const skillPrompt = alwaysSkillPrompt
-      ? appendPromptParts(activeReplySystemPrompt, [alwaysSkillPrompt])
-      : activeReplySystemPrompt;
-    const isCodingMode = normalizeExecutionMode(executionMode) === 'plan';
-    const memoryRoute = classifyMemoryRoute(expandedText);
-    const memoryHint = buildMemoryRouteHintBlock(memoryRoute);
+    const routedSkillIndexPrompt = codingRoute?.decisions?.skills?.inject_index
+      ? codingSkillIndexPrompt
+      : '';
+    const routedSelectedSkillPrompt = buildSelectedSkillPromptBlock(
+      commands,
+      graphSelectedSkillNames,
+      config,
+      executionMode,
+    );
+    const skillPrompt = appendPromptParts(activeReplySystemPrompt, [
+      routedSkillIndexPrompt,
+      routedSelectedSkillPrompt,
+      alwaysSkillPrompt,
+    ]);
+    const memoryHint = isCodingMode ? '' : buildMemoryRouteHintBlock(memoryRoute);
     const routedSystemPrompt = appendPromptParts(skillPrompt, [
       isCodingMode && autoRoute.mode === 'direct_medium' ? buildMediumTaskPromptBlock() : '',
       memoryHint,
+      buildCodingRouteDecisionBlock(codingRoute),
     ]);
     const systemPromptWithHookContext = hookContexts.length > 0
       ? appendPromptParts(routedSystemPrompt, hookContexts)
       : routedSystemPrompt;
+    const codingRouteAllowedTools = isCodingMode
+      ? EXECUTION_MODE_TOOL_POLICY.plan.filter((toolName) => {
+          if (toolName === 'run_subagent') {
+            return codingRoute?.decisions?.subagents?.enabled === true;
+          }
+          if (toolName === 'save_memory') {
+            return codingRoute?.decisions?.memory?.allow_save_memory === true;
+          }
+          return true;
+        })
+      : undefined;
     const result = await askModel({
       text: expandedText,
       ...(optionModelText ? { modelText: optionModelText } : {}),
@@ -8258,6 +8469,7 @@ export async function createChatRuntime({
       requestToolApproval: activeRequestToolApproval,
       requestUserInput: activeRequestUserInput,
       executionMode,
+      allowedTools: codingRouteAllowedTools,
       signal,
       compactedForModel,
       onCompactedUpdate: setCompactedView,
@@ -8266,7 +8478,10 @@ export async function createChatRuntime({
       titleCoordinator,
       onExecutionModeSync: syncExecutionModeWithSession,
       workspaceRoot: root,
-      selectedSkillNames: options?.selectedSkillNames,
+      selectedSkillNames: [
+        ...(Array.isArray(options?.selectedSkillNames) ? options.selectedSkillNames : []),
+        ...graphSelectedSkillNames,
+      ],
       skillHooksSession,
       onSkillLoaded: (skillName) => armSkillHooksByName(skillName, { onAgentEvent })
     });

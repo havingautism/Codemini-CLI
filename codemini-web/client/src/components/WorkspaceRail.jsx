@@ -17,14 +17,12 @@ export function WorkspaceRail({
   onTabChange,
   sessionId = "",
   projectCwd = "",
-  isGeneral = false,
   onClose,
 }) {
   const [panelWidth, setPanelWidth] = useState(DEFAULT_PANEL_WIDTH);
   const resizingRef = useRef(false);
   const activeTab = tab === "terminal" ? "terminal" : "files";
-  const filesDisabled = Boolean(isGeneral);
-  const terminalDisabled = Boolean(isGeneral);
+  const workspaceDisabled = !String(projectCwd || "").trim();
 
   const updatePanelWidth = (clientX) => {
     const maxWidth = Math.max(
@@ -49,7 +47,7 @@ export function WorkspaceRail({
       aria-label={t("workspaceRailTitle")}
     >
       <div
-        className="codemini-terminal-resizer absolute inset-y-0 -left-2 z-10 flex w-4 cursor-col-resize touch-none select-none items-center justify-center border-0! max-md:hidden"
+        className="codemini-terminal-resizer absolute inset-y-0 -left-1 z-10 flex w-2 cursor-col-resize touch-none select-none items-center justify-center border-0! max-md:hidden"
         role="separator"
         aria-label={t("workspaceRailResize")}
         aria-orientation="vertical"
@@ -80,7 +78,7 @@ export function WorkspaceRail({
         }}
       >
         <span className="codewiki-resizer-handle">
-          <DotsSixVertical size={14} aria-hidden="true" />
+          <DotsSixVertical size={10} aria-hidden="true" />
         </span>
       </div>
 
@@ -90,9 +88,11 @@ export function WorkspaceRail({
             type="button"
             className={tabButtonClass(activeTab === "files")}
             aria-pressed={activeTab === "files"}
-            disabled={filesDisabled}
+            disabled={workspaceDisabled}
             title={
-              filesDisabled ? t("workspaceNeedsProject") : t("workspaceFilesTab")
+              workspaceDisabled
+                ? t("workspaceNeedsProject")
+                : t("workspaceFilesTab")
             }
             onClick={() => onTabChange?.("files")}
           >
@@ -132,7 +132,7 @@ export function WorkspaceRail({
           <FileTreePanel
             sessionId={sessionId}
             projectCwd={projectCwd}
-            disabled={filesDisabled}
+            disabled={workspaceDisabled}
           />
         </div>
         <div
@@ -145,7 +145,7 @@ export function WorkspaceRail({
           <TerminalPanel
             sessionId={sessionId}
             projectCwd={projectCwd}
-            disabled={terminalDisabled}
+            disabled={workspaceDisabled}
             embedded
           />
         </div>

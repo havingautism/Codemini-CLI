@@ -651,6 +651,7 @@ export class RuntimeBridge {
       case 'assistant:delta':
       case 'assistant:reasoning_delta':
       case 'assistant:response':
+      case 'assistant:usage':
       case 'assistant:tool_call_delta':
       case 'tool:start':
       case 'tool:end':
@@ -668,6 +669,14 @@ export class RuntimeBridge {
             : null;
         const targetId = createPlanTargetId || this.#uiActiveMsgId;
         if (!targetId) break;
+
+        if (event.type === 'assistant:usage') {
+          this.#updateUiMessage(targetId, (message) =>
+            applyStreamEventToMessage(message, event, streamOptions)
+          );
+          publishedMessageId = targetId;
+          break;
+        }
 
         // Nest plan-owned streams into the create_plan card / running step.
         if (
@@ -900,12 +909,13 @@ export class RuntimeBridge {
         }
         break;
       }
+      case 'skill:auto-selected':
       case 'skill:always': {
         const names = (event.names || []).join(', ');
         if (!names) break;
         const badge = {
           name: names,
-          status: 'always',
+          status: event.type === 'skill:always' ? 'always' : 'selected',
           startedAt: event.startedAt || new Date().toISOString()
         };
         if (this.#uiActiveMsgId) {

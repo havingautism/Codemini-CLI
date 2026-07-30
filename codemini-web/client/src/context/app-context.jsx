@@ -66,6 +66,7 @@ import { buildHookSegmentEvent } from "../../../shared/hook-ui.js";
 import { skillBadgesFromSessionMessage } from "../lib/user-skill-prompt.js";
 
 const AppContext = createContext(null);
+const AppActionsContext = createContext(null);
 const RuntimeModeContext = createContext("normal");
 const CurrentSessionIdContext = createContext(null);
 
@@ -2083,6 +2084,10 @@ export function AppProvider({ children }) {
           break;
         }
 
+        case "assistant:usage": {
+          break;
+        }
+
         case "tool:end": {
           const eventChanges =
             Array.isArray(event.fileChanges) && event.fileChanges.length
@@ -2264,11 +2269,12 @@ export function AppProvider({ children }) {
           }
           break;
         }
+        case "skill:auto-selected":
         case "skill:always": {
           const names = (event.names || []).join(", ");
           const badge = {
             name: names,
-            status: "always",
+            status: event.type === "skill:always" ? "always" : "selected",
             startedAt: event.startedAt || new Date().toISOString(),
           };
           if (!names) break;
@@ -4173,13 +4179,15 @@ export function AppProvider({ children }) {
   );
   return (
     <AppContext.Provider value={value}>
-      <RuntimeModeContext.Provider
-        value={projectedState.runtimeState?.mode || "normal"}
-      >
-        <CurrentSessionIdContext.Provider value={projectedState.currentSessionId}>
-          {children}
-        </CurrentSessionIdContext.Provider>
-      </RuntimeModeContext.Provider>
+      <AppActionsContext.Provider value={actions}>
+        <RuntimeModeContext.Provider
+          value={projectedState.runtimeState?.mode || "normal"}
+        >
+          <CurrentSessionIdContext.Provider value={projectedState.currentSessionId}>
+            {children}
+          </CurrentSessionIdContext.Provider>
+        </RuntimeModeContext.Provider>
+      </AppActionsContext.Provider>
     </AppContext.Provider>
   );
 }
@@ -4188,6 +4196,12 @@ export function useApp() {
   const ctx = useContext(AppContext);
   if (!ctx) throw new Error("useApp must be used within AppProvider");
   return ctx;
+}
+
+export function useAppActions() {
+  const actions = useContext(AppActionsContext);
+  if (!actions) throw new Error("useAppActions must be used within AppProvider");
+  return actions;
 }
 
 export function useRuntimeMode() {

@@ -35,7 +35,6 @@ import {
   AttachmentTrigger,
 } from "@/components/ui/attachment";
 import { cn } from "@/lib/utils";
-import { useApp } from "@/context/app-context.jsx";
 import {
   isManualSkillCommand,
   parseUserSkillPrompt,
@@ -53,6 +52,7 @@ import * as api from "@/hooks/use-api.js";
 import { useRotatingLabel } from "@/hooks/use-rotating-label.js";
 import { executionModeSkillContext } from "@/lib/skill-visibility.js";
 import {
+  useAppActions,
   useCurrentSessionId,
   useRuntimeMode,
 } from "@/context/app-context.jsx";
@@ -1983,7 +1983,7 @@ function MessageActions({
   align = "left",
   className,
 }) {
-  const { actions } = useApp();
+  const actions = useAppActions();
   const [copied, setCopied] = useState(false);
   const [saved, setSaved] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -2190,7 +2190,7 @@ export const MessageBubble = memo(function MessageBubble({
   message,
   onRetry,
 }) {
-  const { actions } = useApp();
+  const actions = useAppActions();
   const {
     role,
     segments,

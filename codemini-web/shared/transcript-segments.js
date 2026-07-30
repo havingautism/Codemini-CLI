@@ -465,6 +465,14 @@ export function applyStreamEventToMessage(message, event, options = {}) {
         segments,
       };
     }
+    case "assistant:usage": {
+      const incomingUsage = normalizeUsage(event.usage);
+      if (!incomingUsage) return message;
+      return {
+        ...message,
+        usage: mergeUsage(message.usage, incomingUsage),
+      };
+    }
     case "assistant:tool_call_delta":
     case "tool:start": {
       const toolCard = buildToolCardFromEvent(event, options);
@@ -645,6 +653,7 @@ export function isTranscriptStreamEvent(type) {
     value === "assistant:delta" ||
     value === "assistant:reasoning_delta" ||
     value === "assistant:response" ||
+    value === "assistant:usage" ||
     value === "assistant:tool_call_delta" ||
     value === "tool:start" ||
     value === "tool:end" ||

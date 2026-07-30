@@ -461,19 +461,12 @@ function Shell() {
                     "inline-flex size-8 items-center justify-center rounded-md border-0 cursor-pointer " +
                     (sideRailOpen && sideRailTab === "files"
                       ? "bg-(--bg-hover) text-(--text-primary)"
-                      : "bg-transparent text-(--text-muted) hover:bg-(--bg-hover) hover:text-(--text-primary)") +
-                    (state.isGeneral ? " opacity-40 cursor-not-allowed" : "")
+                      : "bg-transparent text-(--text-muted) hover:bg-(--bg-hover) hover:text-(--text-primary)")
                   }
                   aria-label={t("workspaceFilesTab")}
-                  title={
-                    state.isGeneral
-                      ? t("workspaceNeedsProject")
-                      : t("workspaceFilesTab")
-                  }
+                  title={t("workspaceFilesTab")}
                   aria-pressed={sideRailOpen && sideRailTab === "files"}
-                  disabled={Boolean(state.isGeneral)}
                   onClick={() => {
-                    if (state.isGeneral) return;
                     if (sideRailOpen && sideRailTab === "files") {
                       setSideRailOpen(false);
                       return;
@@ -602,7 +595,6 @@ function Shell() {
                   projectCwd={
                     state.runtimeState?.cwd || state.projectCwd || ""
                   }
-                  isGeneral={Boolean(state.isGeneral)}
                   onClose={() => setSideRailOpen(false)}
                 />
               </Suspense>

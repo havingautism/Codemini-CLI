@@ -4,6 +4,8 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import {
   _resetTerminalSessionsForTests,
+  buildPowerShellColorBootstrap,
+  buildTerminalColorEnv,
   formatTerminalPlainText,
   getTerminalSnapshot,
   resizeTerminal,
@@ -34,6 +36,59 @@ async function withTempCwd(fn) {
 test('stripAnsi removes color codes', () => {
   assert.equal(stripAnsi('\u001b[32mok\u001b[0m'), 'ok');
 });
+
+test('terminal environment requests truecolor ANSI output', () => {
+  const env = buildTerminalColorEnv({ NO_COLOR: '1', PATH: 'test-path' });
+  assert.equal(env.TERM, 'xterm-256color');
+  assert.equal(env.COLORTERM, 'truecolor');
+  assert.equal(env.FORCE_COLOR, '1');
+  assert.equal(env.NO_COLOR, undefined);
+  assert.equal(env.PATH, 'test-path');
+});
+
+test('PowerShell bootstrap configures semantic command and file colors', () => {
+  const bootstrap = buildPowerShellColorBootstrap();
+  assert.match(bootstrap, /\$PSStyle\.FileInfo\.Directory=.*BrightBlue/);
+  assert.match(bootstrap, /Extension\['\.ts'\].*BrightCyan/);
+  assert.match(bootstrap, /Extension\['\.json'\].*BrightYellow/);
+  assert.match(bootstrap, /Set-PSReadLineOption -Colors/);
+});
+
+test(
+  'PowerShell 7 terminal emits ANSI colors for directory listings',
+  { skip: process.platform !== 'win32' },
+  async () => {
+    await withTempCwd(async (cwd) => {
+      await fs.mkdir(path.join(cwd, 'sample-folder'));
+      await fs.writeFile(path.join(cwd, 'sample.ts'), 'export {};\n', 'utf8');
+      await fs.writeFile(path.join(cwd, 'config.json'), '{}\n', 'utf8');
+
+      runTerminalCommand({
+        cwd,
+        command: 'Get-ChildItem',
+        shellDefault: 'powershell',
+      });
+
+      let raw = '';
+      for (let index = 0; index < 50; index += 1) {
+        raw = getTerminalSnapshot(cwd, 'powershell').data;
+        if (
+          raw.includes('sample-folder')
+          && raw.includes('sample.ts')
+          && raw.includes('config.json')
+        ) break;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+
+      assert.match(
+        raw,
+        /\u001b\[94m(?:\u001b\[[0-9;]*C)?sample-folder\u001b\[[0-9;]*m/,
+      );
+      assert.match(raw, /\u001b\[96msample\.ts\u001b\[[0-9;]*m/);
+      assert.match(raw, /\u001b\[93mconfig\.json\u001b\[[0-9;]*m/);
+    });
+  },
+);
 
 test('formatTerminalPlainText is copy-friendly', () => {
   const text = formatTerminalPlainText(

@@ -497,8 +497,14 @@ export async function buildSkillIndexDebugEntries(cwd = process.cwd(), config = 
     });
 }
 
-export async function buildSkillIndexPromptBlock(cwd = process.cwd(), config = {}, executionMode = config?.execution?.mode) {
-  const entries = await buildSkillIndexDebugEntries(cwd, config, executionMode);
+export async function buildSkillIndexPromptBlock(
+  cwd = process.cwd(),
+  config = {},
+  executionMode = config?.execution?.mode,
+  options = {},
+) {
+  const entries = (await buildSkillIndexDebugEntries(cwd, config, executionMode))
+    .filter((entry) => options.modelInvocableOnly !== true || !entry.disableModelInvocation);
   return formatSkillIndexPromptBlock(entries);
 }
 

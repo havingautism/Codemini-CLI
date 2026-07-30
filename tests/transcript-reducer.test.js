@@ -3,9 +3,37 @@ import assert from 'node:assert/strict';
 
 import {
   applyStreamEventToMessage,
+  isTranscriptStreamEvent,
   replaceLastTextSegment,
 } from '../codemini-web/shared/transcript-segments.js';
 import { reduceSessionTranscriptEvent } from '../codemini-web/client/src/lib/session-state.js';
+
+test('assistant usage events add delegated tokens to the parent message', () => {
+  const message = applyStreamEventToMessage(
+    { id: 'parent', usage: { totalTokens: 35, requests: 1 }, segments: [] },
+    {
+      type: 'assistant:usage',
+      usage: {
+        inputTokens: 100,
+        outputTokens: 20,
+        totalTokens: 120,
+        requests: 2,
+      },
+    },
+  );
+
+  assert.equal(isTranscriptStreamEvent('assistant:usage'), true);
+  assert.deepEqual(message.usage, {
+    inputTokens: 100,
+    outputTokens: 20,
+    totalTokens: 155,
+    cachedInputTokens: 0,
+    cacheMissInputTokens: 0,
+    cacheWriteInputTokens: 0,
+    reasoningOutputTokens: 0,
+    requests: 3,
+  });
+});
 
 test('applyStreamEventToMessage persists hook start/end as skill segments', () => {
   let message = {

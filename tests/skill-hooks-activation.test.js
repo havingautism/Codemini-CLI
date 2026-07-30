@@ -4,6 +4,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {
+  buildSkillIndexPromptBlock,
   buildSkillIndexPreview,
   composeExplicitSkillPrompt,
   isSkillIndexEligible,
@@ -227,5 +228,22 @@ test('skill tool blocks loading a skill by name when disableModelInvocation is t
     const openLoadResult = await handlers.skill({ name: 'open-skill' });
     assert.equal(openLoadResult.error, undefined);
     assert.match(openLoadResult.content, /Do the thing\./);
+  });
+});
+
+test('Lite skill routing index excludes skills that disable model invocation', async () => {
+  await withTempCwd(async (cwd) => {
+    await writeGlobalSkill('locked-skill', { catalogEntry: { disableModelInvocation: true } });
+    await writeGlobalSkill('open-skill', { catalogEntry: { disableModelInvocation: false } });
+
+    const prompt = await buildSkillIndexPromptBlock(
+      cwd,
+      { execution: { mode: 'code' } },
+      'code',
+      { modelInvocableOnly: true },
+    );
+
+    assert.doesNotMatch(prompt, /locked-skill/);
+    assert.match(prompt, /open-skill/);
   });
 });

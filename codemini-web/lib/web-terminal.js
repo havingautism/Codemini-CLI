@@ -2,6 +2,10 @@ import { fork } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveShell } from '../../src/core/shell.js';
+export {
+  buildPowerShellColorBootstrap,
+  buildTerminalColorEnv,
+} from './terminal-env.js';
 
 const MAX_TRANSCRIPT_CHARS = 1_000_000;
 const MAX_LINES = 2000;
@@ -97,7 +101,7 @@ function handleHostMessage(message) {
     return;
   }
   if (message.type === 'error') {
-    const data = `\r\n[terminal error: ${message.error}]\r\n`;
+    const data = `\r\n\u001b[31m[terminal error: ${message.error}]\u001b[0m\r\n`;
     appendTranscript(session, data);
     broadcast(session, { type: 'data', data });
     return;
@@ -108,7 +112,8 @@ function handleHostMessage(message) {
     const suffix = message.signal
       ? `signal ${message.signal}`
       : `code ${message.exitCode}`;
-    const data = `\r\n[terminal exited with ${suffix}]\r\n`;
+    const color = Number(message.exitCode) === 0 && !message.signal ? 32 : 31;
+    const data = `\r\n\u001b[${color}m[terminal exited with ${suffix}]\u001b[0m\r\n`;
     appendTranscript(session, data);
     broadcast(session, { type: 'data', data });
     broadcast(session, { type: 'status', connected: false });

@@ -9,6 +9,7 @@ import {
   subAgentAllowListMayMutate,
   subAgentRunFailed,
   resolveSubAgentModel,
+  createTurnUsageAccumulator,
 } from '../src/core/chat-runtime.js';
 import {
   applyPlanEventToMessage,
@@ -110,6 +111,47 @@ test('run_subagent uses the configured lite model instead of inheriting the pare
     resolveSubAgentModel({ model: { name: 'main-model' } }, 'parent-turn-model'),
     'parent-turn-model',
   );
+});
+
+test('parent turn usage accumulator merges parallel subagents exactly once', () => {
+  const usage = createTurnUsageAccumulator();
+  usage.addDelegated({
+    inputTokens: 100,
+    outputTokens: 20,
+    totalTokens: 120,
+    cachedInputTokens: 40,
+    requests: 1,
+  });
+  usage.addDelegated({
+    inputTokens: 60,
+    outputTokens: 10,
+    totalTokens: 70,
+    cachedInputTokens: 0,
+    requests: 1,
+  });
+
+  assert.deepEqual(usage.peekPending(), {
+    inputTokens: 160,
+    outputTokens: 30,
+    totalTokens: 190,
+    cachedInputTokens: 40,
+    cacheMissInputTokens: 0,
+    cacheWriteInputTokens: 0,
+    reasoningOutputTokens: 0,
+    requests: 2,
+    raw: [],
+  });
+  assert.equal(
+    usage.consumeInto({
+      inputTokens: 30,
+      outputTokens: 5,
+      totalTokens: 35,
+      requests: 1,
+    }).totalTokens,
+    225,
+  );
+  assert.equal(usage.peekPending(), null);
+  assert.equal(usage.consumeInto(null), null);
 });
 
 test('parallel run_subagent handlers actually overlap in wall time', async () => {
