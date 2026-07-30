@@ -50,7 +50,7 @@ export function AboutDialog({ open, onOpenChange, version }) {
             <img
               src="/logos/codemini_logo.png"
               alt="Codemini"
-              className="h-16 w-16 shrink-0 rounded-[14px] border border-(--border-default) bg-(--bg-secondary) p-2"
+              className="size-20 shrink-0 rounded-[18px] border border-(--border-default) bg-(--bg-secondary) p-1.5"
             />
             <div className="min-w-0">
               {/* <div className="text-[12px] font-medium uppercase tracking-[0.18em] text-(--text-muted)">

@@ -664,12 +664,74 @@ export async function createUrlScrapbookEntry(payload) {
   return res.json();
 }
 
+export async function createMultiSourceScrapbookEntry({
+  title = '',
+  urls = [],
+  contentText = '',
+  files = [],
+} = {}) {
+  const form = new FormData();
+  form.set('title', title);
+  form.set('contentText', contentText);
+  for (const url of urls) form.append('urls', url);
+  for (const file of files) form.append('files', file);
+  const res = await api('/api/scrapbook/entries/notebook', {
+    method: 'POST',
+    body: form,
+  });
+  return res.json();
+}
+
 export async function createChatAnswerScrapbookEntry(payload) {
   const res = await api('/api/scrapbook/entries/chat-answer', {
     method: 'POST',
     headers: JSON_HEADERS,
     body: JSON.stringify(payload || {}),
   });
+  return res.json();
+}
+
+export async function addScrapbookSource(entryId, payload) {
+  const res = await api(`/api/scrapbook/entries/${encodeURIComponent(entryId)}/sources`, {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify(payload || {}),
+  });
+  return res.json();
+}
+
+export async function uploadScrapbookSources(entryId, files = []) {
+  const form = new FormData();
+  for (const file of files) form.append('files', file);
+  const res = await api(`/api/scrapbook/entries/${encodeURIComponent(entryId)}/sources/upload`, {
+    method: 'POST',
+    body: form,
+  });
+  return res.json();
+}
+
+export async function setScrapbookSourceSelection(entryId, selectedSourceIds) {
+  const res = await api(`/api/scrapbook/entries/${encodeURIComponent(entryId)}/sources/selection`, {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ selectedSourceIds }),
+  });
+  return res.json();
+}
+
+export async function removeScrapbookSource(entryId, sourceId) {
+  const res = await api(
+    `/api/scrapbook/entries/${encodeURIComponent(entryId)}/sources/${encodeURIComponent(sourceId)}`,
+    { method: 'DELETE' },
+  );
+  return res.json();
+}
+
+export async function generateScrapbookArtifact(entryId, kind) {
+  const res = await api(
+    `/api/scrapbook/entries/${encodeURIComponent(entryId)}/artifacts/${encodeURIComponent(kind)}`,
+    { method: 'POST' },
+  );
   return res.json();
 }
 

@@ -3,7 +3,7 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { getBaseConfigDir, getProjectIndexDir } from './paths.js';
 
-const GLOBAL_SCHEMA_VERSION = 5;
+const GLOBAL_SCHEMA_VERSION = 6;
 const PROJECT_SCHEMA_VERSION = 5;
 const databases = new Map();
 
@@ -144,7 +144,9 @@ function createGlobalSchema(db, currentVersion = 0) {
       content_text TEXT NOT NULL DEFAULT '',
       summary TEXT NOT NULL DEFAULT '',
       tags_json TEXT NOT NULL DEFAULT '[]',
-      fetch_status TEXT NOT NULL DEFAULT 'ready'
+      fetch_status TEXT NOT NULL DEFAULT 'ready',
+      sources_json TEXT NOT NULL DEFAULT '[]',
+      artifacts_json TEXT NOT NULL DEFAULT '{}'
     ) STRICT;
     CREATE INDEX IF NOT EXISTS scrapbook_entries_updated_idx
       ON scrapbook_entries(updated_at DESC, created_at DESC);
@@ -208,6 +210,24 @@ function createGlobalSchema(db, currentVersion = 0) {
       db.exec(`
         ALTER TABLE scrapbook_entries
         ADD COLUMN source_question_text TEXT NOT NULL DEFAULT '';
+      `);
+    }
+  }
+  if (currentVersion < 6) {
+    const columns = db
+      .prepare(`SELECT name FROM pragma_table_info('scrapbook_entries')`)
+      .all()
+      .map((row) => String(row.name || ''));
+    if (columns.length > 0 && !columns.includes('sources_json')) {
+      db.exec(`
+        ALTER TABLE scrapbook_entries
+        ADD COLUMN sources_json TEXT NOT NULL DEFAULT '[]';
+      `);
+    }
+    if (columns.length > 0 && !columns.includes('artifacts_json')) {
+      db.exec(`
+        ALTER TABLE scrapbook_entries
+        ADD COLUMN artifacts_json TEXT NOT NULL DEFAULT '{}';
       `);
     }
   }

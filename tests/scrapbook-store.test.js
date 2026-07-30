@@ -7,6 +7,7 @@ import { DatabaseSync } from 'node:sqlite';
 
 import { closeSqliteDatabasesForTests } from '../src/core/sqlite-database.js';
 import {
+  addScrapbookSource,
   buildScrapbookSummarySystemPrompt,
   createChatAnswerScrapbookEntry,
   createChatAnswerScrapbookEntryWithSummary,
@@ -16,6 +17,8 @@ import {
   listScrapbookEntriesForApi,
   parseGeneratedScrapbookResult,
   parseJinaReaderResponse,
+  removeScrapbookSource,
+  setScrapbookSourceSelection,
   startScrapbookSummaryJob,
 } from '../codemini-web/lib/scrapbook-service.js';
 import {
@@ -63,6 +66,35 @@ test('scrapbook summary prompt follows the configured reply language', () => {
   );
 });
 
+test('scrapbook notebooks persist multiple sources and invalidate derived content on changes', async () => {
+  await withGlobalDir(async () => {
+    const created = createManualScrapbookEntry({
+      title: 'Research notebook',
+      contentText: 'First source body',
+    });
+    const added = addScrapbookSource(created.id, {
+      type: 'manual',
+      name: 'Second source',
+      contentText: 'Second source body',
+    });
+    assert.equal(added.entry.sources.length, 2);
+
+    updateScrapbookEntry(created.id, {
+      summary: 'Old summary',
+      artifacts: { report: { content: 'Old report' } },
+    });
+    const selected = setScrapbookSourceSelection(created.id, [created.sources[0].id]);
+    assert.equal(selected.sources[0].selected, true);
+    assert.equal(selected.sources[1].selected, false);
+    assert.equal(selected.summary, '');
+    assert.deepEqual(selected.artifacts, {});
+
+    const removed = removeScrapbookSource(created.id, added.source.id);
+    assert.equal(removed.sources.length, 1);
+    assert.equal(getScrapbookEntry(created.id).sources.length, 1);
+  });
+});
+
 async function withGlobalDir(task) {
   closeSqliteDatabasesForTests();
   const previous = process.env.CODEMINI_GLOBAL_DIR;
@@ -74,7 +106,7 @@ async function withGlobalDir(task) {
     closeSqliteDatabasesForTests();
     if (previous === undefined) delete process.env.CODEMINI_GLOBAL_DIR;
     else process.env.CODEMINI_GLOBAL_DIR = previous;
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 25 });
   }
 }
 

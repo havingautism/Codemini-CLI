@@ -1,5 +1,6 @@
 import { Component, useMemo, useRef } from 'react';
 import { Streamdown } from 'streamdown';
+import { mermaid } from '@streamdown/mermaid';
 import { cn } from '@/lib/utils';
 import { createCodePlugin } from '@/lib/shiki-plugin';
 import {
@@ -118,7 +119,7 @@ function MarkdownStreamdown({
       isAnimating={streaming}
       parseIncompleteMarkdown
       showLineNumbers={false}
-      plugins={{ code: codePlugin }}
+      plugins={{ code: codePlugin, mermaid }}
       controls={streamdownControls}
       components={components}
     >

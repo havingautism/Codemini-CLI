@@ -3,8 +3,33 @@
 
 @import "streamdown/styles.css";
 @source "../node_modules/streamdown/dist/*.js";
+@source "../node_modules/@streamdown/mermaid/dist/*.js";
 @import "@uiw/react-md-editor/markdown-editor.css";
 @import "@uiw/react-markdown-preview/markdown.css";
+
+.scrapbook-mindmap-expanded svg.mindmapDiagram {
+  width: auto !important;
+  max-width: 76vw !important;
+  height: min(700px, calc(100dvh - 190px)) !important;
+}
+
+.scrapbook-mindmap-preview [data-streamdown="mermaid-block"] {
+  margin-top: 0.75rem !important;
+}
+
+.scrapbook-mindmap-preview [data-streamdown="mermaid-block"] > div:first-child > span,
+.scrapbook-mindmap-expanded [data-streamdown="mermaid-block"] > div:first-child > span {
+  display: none;
+}
+
+.scrapbook-mindmap-preview [data-streamdown="mermaid-block"] > div:last-child,
+.scrapbook-mindmap-expanded [data-streamdown="mermaid-block"] > div:last-child {
+  margin-top: 0.5rem;
+}
+
+.scrapbook-mindmap-expanded [data-streamdown="mermaid-block"] {
+  margin-block: 0 !important;
+}
 
 .codemini-md-editor {
   min-height: 0;

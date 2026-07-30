@@ -48,14 +48,19 @@ import {
   pickScrapbookAttachments,
 } from './lib/message-context-parsers.js';
 import {
+  addScrapbookSource,
   buildScrapbookAskPayload,
   createChatAnswerScrapbookEntryWithSummary,
   createManualScrapbookEntry,
+  createMultiSourceScrapbookEntry,
   createUrlScrapbookEntry,
   deleteScrapbookEntryForApi,
   getScrapbookEntryForApi,
   getScrapbookSummaryJobForApi,
+  generateScrapbookArtifact,
   listScrapbookEntriesForApi,
+  removeScrapbookSource,
+  setScrapbookSourceSelection,
   startScrapbookSummaryJob,
   subscribeScrapbookSummaryJob,
 } from './lib/scrapbook-service.js';
@@ -3061,12 +3066,166 @@ async function main() {
       }
       return;
     }
+    if (req.method === 'POST' && url.pathname === '/api/scrapbook/entries/notebook') {
+      try {
+        const form = await readMultipartForm(req);
+        const title = String(form.get('title') || '').trim();
+        const contentText = String(form.get('contentText') || '').trim();
+        const urls = form.getAll('urls')
+          .map((value) => String(value || '').trim())
+          .filter(Boolean);
+        const files = form.getAll('files').filter(
+          (item) => item && typeof item.arrayBuffer === 'function',
+        );
+        const sources = urls.map((sourceUrl) => ({
+          type: 'url',
+          name: sourceUrl,
+          url: sourceUrl,
+        }));
+        if (contentText) {
+          sources.push({
+            type: 'manual',
+            name: title || 'Manual note',
+            contentText,
+          });
+        }
+        for (const file of files) {
+          if (Number(file.size || 0) > 20 * 1024 * 1024) {
+            throw new Error(`${file.name || 'File'} exceeds the 20 MB limit`);
+          }
+          const name = safeUploadFileName(file.name || 'source');
+          const ext = path.extname(name).toLowerCase();
+          if (!['.pdf', '.docx', '.txt', '.md', '.markdown'].includes(ext)) {
+            throw new Error('Unsupported source type. Use PDF, DOCX, TXT, or Markdown.');
+          }
+          const buffer = Buffer.from(await file.arrayBuffer());
+          const extractedText = ['.txt', '.md', '.markdown'].includes(ext)
+            ? buffer.toString('utf8').trim()
+            : await extractAttachmentText(buffer, ext);
+          if (!extractedText) throw new Error(`No readable text found in ${name}`);
+          sources.push({
+            type: 'file',
+            name,
+            mime: String(file.type || 'application/octet-stream'),
+            contentText: extractedText,
+          });
+        }
+        const entry = createMultiSourceScrapbookEntry({ title, sources });
+        const job = startScrapbookSummaryJob(entry.id);
+        jsonResponse(res, { ok: true, entry, job });
+      } catch (error) {
+        jsonResponse(res, {
+          error: true,
+          message: error?.message || 'Failed to create notebook',
+        }, 400);
+      }
+      return;
+    }
     if (req.method === 'POST' && url.pathname === '/api/scrapbook/entries/chat-answer') {
       const body = await readBody(req);
       try {
         jsonResponse(res, { ok: true, ...createChatAnswerScrapbookEntryWithSummary(body || {}) });
       } catch (error) {
         jsonResponse(res, { error: true, message: error?.message || 'Failed to save scrapbook answer' }, 400);
+      }
+      return;
+    }
+    if (req.method === 'POST' && /^\/api\/scrapbook\/entries\/[^/]+\/sources$/.test(url.pathname)) {
+      const entryId = decodeURIComponent(
+        url.pathname.slice('/api/scrapbook/entries/'.length, -'/sources'.length),
+      );
+      try {
+        const body = await readBody(req);
+        const result = addScrapbookSource(entryId, body || {});
+        const job = startScrapbookSummaryJob(entryId);
+        jsonResponse(res, { ok: true, ...result, job });
+      } catch (error) {
+        jsonResponse(res, { error: true, message: error?.message || 'Failed to add source' }, 400);
+      }
+      return;
+    }
+    if (req.method === 'POST' && /^\/api\/scrapbook\/entries\/[^/]+\/sources\/upload$/.test(url.pathname)) {
+      const entryId = decodeURIComponent(
+        url.pathname.slice('/api/scrapbook/entries/'.length, -'/sources/upload'.length),
+      );
+      try {
+        const form = await readMultipartForm(req);
+        const files = form.getAll('files').filter(
+          (item) => item && typeof item.arrayBuffer === 'function',
+        );
+        if (!files.length) throw new Error('Missing source file');
+        const sources = [];
+        for (const file of files) {
+          if (Number(file.size || 0) > 20 * 1024 * 1024) {
+            throw new Error(`${file.name || 'File'} exceeds the 20 MB limit`);
+          }
+          const name = safeUploadFileName(file.name || 'source');
+          const ext = path.extname(name).toLowerCase();
+          if (!['.pdf', '.docx', '.txt', '.md', '.markdown'].includes(ext)) {
+            throw new Error('Unsupported source type. Use PDF, DOCX, TXT, or Markdown.');
+          }
+          const buffer = Buffer.from(await file.arrayBuffer());
+          const contentText = ['.txt', '.md', '.markdown'].includes(ext)
+            ? buffer.toString('utf8').trim()
+            : await extractAttachmentText(buffer, ext);
+          if (!contentText) throw new Error(`No readable text found in ${name}`);
+          const result = addScrapbookSource(entryId, {
+            type: 'file',
+            name,
+            mime: String(file.type || 'application/octet-stream'),
+            contentText,
+          });
+          sources.push(result.source);
+        }
+        const job = startScrapbookSummaryJob(entryId);
+        jsonResponse(res, {
+          ok: true,
+          sources,
+          entry: getScrapbookEntryForApi(entryId),
+          job,
+        });
+      } catch (error) {
+        jsonResponse(res, { error: true, message: error?.message || 'Failed to upload source' }, 400);
+      }
+      return;
+    }
+    if (req.method === 'POST' && /^\/api\/scrapbook\/entries\/[^/]+\/sources\/selection$/.test(url.pathname)) {
+      const entryId = decodeURIComponent(
+        url.pathname.slice('/api/scrapbook/entries/'.length, -'/sources/selection'.length),
+      );
+      try {
+        const body = await readBody(req);
+        const entry = setScrapbookSourceSelection(entryId, body?.selectedSourceIds);
+        const job = startScrapbookSummaryJob(entryId);
+        jsonResponse(res, { ok: true, entry, job });
+      } catch (error) {
+        jsonResponse(res, { error: true, message: error?.message || 'Failed to update sources' }, 400);
+      }
+      return;
+    }
+    if (req.method === 'DELETE' && /^\/api\/scrapbook\/entries\/[^/]+\/sources\/[^/]+$/.test(url.pathname)) {
+      const match = url.pathname.match(/^\/api\/scrapbook\/entries\/([^/]+)\/sources\/([^/]+)$/);
+      try {
+        const entryId = decodeURIComponent(match[1]);
+        const sourceId = decodeURIComponent(match[2]);
+        const entry = removeScrapbookSource(entryId, sourceId);
+        const job = entry.sources.length ? startScrapbookSummaryJob(entryId) : null;
+        jsonResponse(res, { ok: true, entry, job });
+      } catch (error) {
+        jsonResponse(res, { error: true, message: error?.message || 'Failed to remove source' }, 400);
+      }
+      return;
+    }
+    if (req.method === 'POST' && /^\/api\/scrapbook\/entries\/[^/]+\/artifacts\/(mindmap|report)$/.test(url.pathname)) {
+      const match = url.pathname.match(/^\/api\/scrapbook\/entries\/([^/]+)\/artifacts\/(mindmap|report)$/);
+      try {
+        const result = await generateScrapbookArtifact(
+          decodeURIComponent(match[1]),
+          match[2],
+        );
+        jsonResponse(res, { ok: true, ...result });
+      } catch (error) {
+        jsonResponse(res, { error: true, message: error?.message || 'Failed to generate artifact' }, 400);
       }
       return;
     }

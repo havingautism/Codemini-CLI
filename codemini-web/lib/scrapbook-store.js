@@ -20,8 +20,56 @@ function normalizeTags(tags = []) {
     .filter(Boolean))];
 }
 
+function normalizeSources(sources = []) {
+  if (!Array.isArray(sources)) return [];
+  return sources
+    .map((source) => ({
+      id: String(source?.id || `source_${randomUUID()}`),
+      type: String(source?.type || 'manual'),
+      name: String(source?.name || source?.url || 'Untitled source'),
+      url: String(source?.url || ''),
+      mime: String(source?.mime || 'text/plain'),
+      contentText: String(source?.contentText || ''),
+      selected: source?.selected !== false,
+      status: String(source?.status || 'ready'),
+      createdAt: String(source?.createdAt || nowIso()),
+    }))
+    .filter((source) => source.name || source.url || source.contentText);
+}
+
+function normalizeArtifacts(artifacts = {}) {
+  if (!artifacts || typeof artifacts !== 'object' || Array.isArray(artifacts)) return {};
+  return Object.fromEntries(
+    Object.entries(artifacts)
+      .filter(([kind, value]) => kind && value && typeof value === 'object')
+      .map(([kind, value]) => [
+        kind,
+        {
+          content: String(value.content || ''),
+          updatedAt: String(value.updatedAt || ''),
+        },
+      ]),
+  );
+}
+
+function legacySource(row) {
+  const contentText = String(row.content_text || '');
+  const sourceUrl = String(row.source_url || '');
+  if (!contentText && !sourceUrl) return [];
+  return normalizeSources([{
+    id: `source_${row.id}`,
+    type: row.source_type || 'manual',
+    name: row.title || sourceUrl || 'Saved note',
+    url: sourceUrl,
+    contentText,
+    status: row.fetch_status || 'ready',
+    createdAt: row.created_at,
+  }]);
+}
+
 function mapEntry(row) {
   if (!row) return null;
+  const storedSources = normalizeSources(parseJson(row.sources_json, []));
   return {
     id: row.id,
     createdAt: row.created_at,
@@ -36,6 +84,8 @@ function mapEntry(row) {
     summary: row.summary,
     tags: normalizeTags(parseJson(row.tags_json, [])),
     fetchStatus: row.fetch_status,
+    sources: storedSources.length ? storedSources : legacySource(row),
+    artifacts: normalizeArtifacts(parseJson(row.artifacts_json, {})),
   };
 }
 
@@ -95,12 +145,15 @@ export function createScrapbookEntry(payload = {}) {
     summary: String(payload.summary || ''),
     tags: normalizeTags(payload.tags),
     fetchStatus: String(payload.fetchStatus || 'ready'),
+    sources: normalizeSources(payload.sources),
+    artifacts: normalizeArtifacts(payload.artifacts),
   };
   db.prepare(`
     INSERT INTO scrapbook_entries(
       id, created_at, updated_at, source_type, source_url, source_session_id, source_message_id,
-      source_question_text, title, content_text, summary, tags_json, fetch_status
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      source_question_text, title, content_text, summary, tags_json, fetch_status,
+      sources_json, artifacts_json
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     entry.id,
     entry.createdAt,
@@ -115,6 +168,8 @@ export function createScrapbookEntry(payload = {}) {
     entry.summary,
     JSON.stringify(entry.tags),
     entry.fetchStatus,
+    JSON.stringify(entry.sources),
+    JSON.stringify(entry.artifacts),
   );
   return entry;
 }
@@ -129,11 +184,14 @@ export function updateScrapbookEntry(entryId, patch = {}) {
     createdAt: current.createdAt,
     updatedAt: String(patch.updatedAt || nowIso()),
     tags: normalizeTags(patch.tags ?? current.tags),
+    sources: normalizeSources(patch.sources ?? current.sources),
+    artifacts: normalizeArtifacts(patch.artifacts ?? current.artifacts),
   };
   getGlobalDatabase().prepare(`
     UPDATE scrapbook_entries
     SET updated_at = ?, source_type = ?, source_url = ?, source_session_id = ?, source_message_id = ?,
-        source_question_text = ?, title = ?, content_text = ?, summary = ?, tags_json = ?, fetch_status = ?
+        source_question_text = ?, title = ?, content_text = ?, summary = ?, tags_json = ?, fetch_status = ?,
+        sources_json = ?, artifacts_json = ?
     WHERE id = ?
   `).run(
     next.updatedAt,
@@ -147,6 +205,8 @@ export function updateScrapbookEntry(entryId, patch = {}) {
     next.summary,
     JSON.stringify(next.tags),
     next.fetchStatus,
+    JSON.stringify(next.sources),
+    JSON.stringify(next.artifacts),
     entryId,
   );
   return next;

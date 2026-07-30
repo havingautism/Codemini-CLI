@@ -16,6 +16,7 @@
     "@lottiefiles/dotlottie-react": "^0.19.9",
     "@phosphor-icons/react": "^2.1.10",
     "@pierre/diffs": "^1.1.21",
+    "@streamdown/mermaid": "^1.0.2",
     "@tailwindcss/vite": "^4.2.4",
     "@tanstack/react-router": "^1.169.1",
     "@uiw/react-md-editor": "^4.1.1",

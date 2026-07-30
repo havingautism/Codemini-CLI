@@ -542,7 +542,7 @@ export function Sidebar({
           <img
             src="/logos/codemini_logo.png"
             alt=""
-            className="size-5 shrink-0 rounded-[5px]"
+            className="size-7 shrink-0 rounded-[7px]"
             draggable={false}
           />
           <div className="min-w-0 flex-1 truncate text-[17px] font-semibold leading-5 text-(--text-primary)">

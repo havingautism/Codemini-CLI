@@ -10,6 +10,7 @@ import {
   updateScrapbookEntry,
   updateScrapbookSummaryJob,
 } from './scrapbook-store.js';
+import { randomUUID } from 'node:crypto';
 import { webFetchPage } from '../../src/core/tools.js';
 import { loadConfig } from '../../src/core/config-store.js';
 import { createChatCompletionStream } from '../../src/core/provider/index.js';
@@ -114,15 +115,22 @@ function fallbackChatAnswerTitle({ questionText, answerText }) {
 }
 
 function buildScrapbookContextText(entry, summary) {
+  const sources = selectedNotebookSources(entry);
   const lines = [
     '<scrapbook_context>',
-    'The user previously saved and read the following scrapbook entry.',
-    'Treat it as user-provided reading context and prefer answering from it before fetching the source again.',
+    'The user previously saved and read the following multi-source notebook.',
+    'Treat its synthesized summary and source list as user-provided reading context.',
     '',
     `Title: ${entry.title || '(untitled)'}`,
     `Entry ID: ${entry.id}`,
   ];
   if (entry.sourceUrl) lines.push(`Source URL: ${entry.sourceUrl}`);
+  if (sources.length) {
+    lines.push(`Selected sources (${sources.length}):`);
+    for (const source of sources) {
+      lines.push(`- ${source.name || source.url || 'Untitled source'}${source.url ? ` — ${source.url}` : ''}`);
+    }
+  }
   lines.push('');
   lines.push('Summary:');
   lines.push(summary || 'No summary available yet.');
@@ -204,6 +212,43 @@ function truncateForSummaryInput(text = '', maxChars = 12000) {
   return normalized.length > maxChars ? `${normalized.slice(0, maxChars).trimEnd()}\n\n[truncated]` : normalized;
 }
 
+function createNotebookSource(payload = {}) {
+  return {
+    id: String(payload.id || `source_${randomUUID()}`),
+    type: String(payload.type || 'manual'),
+    name: String(payload.name || payload.url || 'Untitled source'),
+    url: String(payload.url || ''),
+    mime: String(payload.mime || 'text/plain'),
+    contentText: String(payload.contentText || ''),
+    selected: payload.selected !== false,
+    status: String(payload.status || 'ready'),
+    createdAt: String(payload.createdAt || new Date().toISOString()),
+  };
+}
+
+function selectedNotebookSources(entry) {
+  const sources = Array.isArray(entry?.sources) ? entry.sources : [];
+  return sources.filter((source) => source?.selected !== false);
+}
+
+function combineNotebookSources(sources = [], maxChars = 24000) {
+  let remaining = maxChars;
+  const sections = [];
+  for (const source of sources) {
+    if (remaining <= 0) break;
+    const body = String(source?.contentText || '').trim();
+    if (!body) continue;
+    const clipped = body.slice(0, remaining);
+    sections.push([
+      `## Source: ${String(source?.name || source?.url || 'Untitled')}`,
+      source?.url ? `URL: ${source.url}` : '',
+      clipped,
+    ].filter(Boolean).join('\n'));
+    remaining -= clipped.length;
+  }
+  return sections.join('\n\n---\n\n');
+}
+
 function resolveFastModel(config) {
   return String(config?.model?.fast_name || config?.model?.lite_name || config?.model?.name || '').trim();
 }
@@ -283,10 +328,61 @@ async function runSummaryJob(jobId, options = {}) {
     errorText: '',
   });
   if (current) publishSummaryJobEvent(current);
+  const stopIfSuperseded = () => {
+    if (getLatestScrapbookSummaryJob(entry.id)?.id === jobId) return false;
+    current = updateScrapbookSummaryJob(jobId, {
+      status: 'failed',
+      errorText: 'Superseded by a newer summary request',
+    });
+    if (current) publishSummaryJobEvent(current);
+    return true;
+  };
   try {
-    let contentText = String(entry.contentText || '').trim();
+    let sources = Array.isArray(entry.sources) ? [...entry.sources] : [];
+    for (let index = 0; index < sources.length; index += 1) {
+      const source = sources[index];
+      if (source?.type !== 'url' || source.contentText || !source.url) continue;
+      try {
+        const fetched = typeof options.fetchUrlContent === 'function'
+          ? await options.fetchUrlContent(source.url)
+          : await (async () => {
+              try {
+                const jina = await fetchViaJina(source.url);
+                if (jina?.text) return { title: jina.title, contentText: jina.text };
+              } catch {}
+              const web = await webFetchPage({ url: source.url });
+              return {
+                title: String(web?.title || '').trim(),
+                contentText: String(web?.text || '').trim(),
+              };
+            })();
+        const sourceText = String(fetched?.contentText || fetched?.text || '').trim();
+        sources[index] = {
+          ...source,
+          name: String(fetched?.title || '').trim() || source.name,
+          contentText: sourceText,
+          status: sourceText ? 'ready' : 'failed',
+        };
+      } catch {
+        sources[index] = { ...source, status: 'failed' };
+      }
+    }
+    if (stopIfSuperseded()) return;
+    const activeSources = sources.filter((source) => source?.selected !== false);
+    let contentText =
+      activeSources.length === 1
+        ? String(activeSources[0]?.contentText || '').trim()
+        : combineNotebookSources(activeSources);
+    if (!contentText) contentText = String(entry.contentText || '').trim();
     let title = entry.title;
-    if (!contentText && entry.sourceType === 'url' && entry.sourceUrl) {
+    if (
+      isPlaceholderTitle(title, entry.sourceUrl) &&
+      activeSources.length === 1 &&
+      activeSources[0]?.type === 'url'
+    ) {
+      title = String(activeSources[0].name || '').trim() || title;
+    }
+    if (!contentText && sources.length === 0 && entry.sourceType === 'url' && entry.sourceUrl) {
       const fetched = typeof options.fetchUrlContent === 'function'
         ? await options.fetchUrlContent(entry.sourceUrl)
         : await (async () => {
@@ -307,6 +403,14 @@ async function runSummaryJob(jobId, options = {}) {
       updateScrapbookEntry(entry.id, {
         title,
         contentText,
+        fetchStatus: contentText ? 'ready' : 'failed',
+      });
+    }
+    if (sources.length) {
+      updateScrapbookEntry(entry.id, {
+        sources,
+        contentText,
+        sourceUrl: activeSources.find((source) => source.url)?.url || entry.sourceUrl,
         fetchStatus: contentText ? 'ready' : 'failed',
       });
     }
@@ -332,6 +436,7 @@ async function runSummaryJob(jobId, options = {}) {
       contentText: contentText || entry.contentText,
       sourceQuestionText: entry.sourceQuestionText,
     }) || '').trim();
+    if (stopIfSuperseded()) return;
     const generated = parseGeneratedScrapbookResult(generatedText);
     const finalSummary = generated.summary;
     if (!finalSummary) throw new Error('Empty scrapbook summary');
@@ -343,6 +448,7 @@ async function runSummaryJob(jobId, options = {}) {
       }),
       contentText: contentText || entry.contentText,
       summary: finalSummary,
+      sources,
       fetchStatus: contentText || entry.contentText ? 'ready' : entry.fetchStatus,
     });
     current = completeScrapbookSummaryJob(jobId, {
@@ -381,11 +487,17 @@ export function getScrapbookEntryForApi(entryId) {
 export function createManualScrapbookEntry(payload = {}) {
   const contentText = String(payload.contentText || payload.content || '').trim();
   if (!contentText) throw new Error('Manual scrapbook entry requires content');
+  const source = createNotebookSource({
+    type: 'manual',
+    name: String(payload.title || '').trim() || 'Manual note',
+    contentText,
+  });
   return createScrapbookEntry({
     sourceType: 'manual',
     sourceUrl: String(payload.sourceUrl || ''),
     title: String(payload.title || ''),
     contentText,
+    sources: [source],
     tags: normalizeTags(payload.tags),
     fetchStatus: 'ready',
   });
@@ -399,18 +511,24 @@ export function createChatAnswerScrapbookEntry(payload = {}) {
   const sourceQuestionText = String(
     payload.sourceQuestionText || payload.questionText || '',
   ).trim();
+  const title =
+    String(payload.title || '').trim() ||
+    fallbackChatAnswerTitle({
+      questionText: sourceQuestionText,
+      answerText: contentText,
+    });
   return createScrapbookEntry({
     sourceType: 'chat_answer',
     sourceSessionId: String(payload.sourceSessionId || payload.sessionId || '').trim(),
     sourceMessageId: String(payload.sourceMessageId || payload.messageId || '').trim(),
     sourceQuestionText,
-    title:
-      String(payload.title || '').trim() ||
-      fallbackChatAnswerTitle({
-        questionText: sourceQuestionText,
-        answerText: contentText,
-      }),
+    title,
     contentText,
+    sources: [createNotebookSource({
+      type: 'chat_answer',
+      name: title,
+      contentText,
+    })],
     tags: normalizeTags(payload.tags),
     fetchStatus: 'ready',
   });
@@ -426,9 +544,152 @@ export function createUrlScrapbookEntry(payload = {}) {
     sourceUrl,
     title: sourceUrl,
     contentText: '',
+    sources: [createNotebookSource({
+      type: 'url',
+      name: sourceUrl,
+      url: sourceUrl,
+      status: 'pending_fetch',
+    })],
     tags: normalizeTags(payload.tags),
     fetchStatus: 'pending_fetch',
   });
+}
+
+export function createMultiSourceScrapbookEntry(payload = {}) {
+  const rawSources = Array.isArray(payload.sources) ? payload.sources : [];
+  if (!rawSources.length) throw new Error('Notebook requires at least one source');
+
+  const sources = rawSources.map((item) => {
+    const type = String(item?.type || 'manual');
+    const url = String(item?.url || '').trim();
+    const contentText = String(item?.contentText || '').trim();
+    if (type === 'url' && !/^https?:\/\//i.test(url)) {
+      throw new Error('Source URL requires an absolute http or https URL');
+    }
+    if (type !== 'url' && !contentText) {
+      throw new Error('Source content is required');
+    }
+    return createNotebookSource({
+      type,
+      url,
+      name: String(item?.name || url || '').trim() || 'Untitled source',
+      mime: item?.mime,
+      contentText,
+      status: type === 'url' && !contentText ? 'pending_fetch' : 'ready',
+    });
+  });
+  const first = sources[0];
+  const hasPendingSource = sources.some((source) => source.status === 'pending_fetch');
+
+  return createScrapbookEntry({
+    sourceType: sources.length > 1 ? 'notebook' : first.type,
+    sourceUrl: first.url,
+    title: String(payload.title || '').trim() || first.name,
+    contentText: first.contentText,
+    sources,
+    tags: normalizeTags(payload.tags),
+    fetchStatus: hasPendingSource ? 'pending_fetch' : 'ready',
+  });
+}
+
+export function addScrapbookSource(entryId, payload = {}) {
+  const entry = getScrapbookEntry(entryId);
+  if (!entry) throw new Error('Scrapbook entry not found');
+  const type = String(payload.type || 'manual');
+  const url = String(payload.url || '').trim();
+  const contentText = String(payload.contentText || '').trim();
+  if (type === 'url' && !/^https?:\/\//i.test(url)) {
+    throw new Error('Source URL requires an absolute http or https URL');
+  }
+  if (type !== 'url' && !contentText) throw new Error('Source content is required');
+  const source = createNotebookSource({
+    type,
+    url,
+    name: String(payload.name || url || '').trim() || 'Untitled source',
+    mime: payload.mime,
+    contentText,
+    status: type === 'url' && !contentText ? 'pending_fetch' : 'ready',
+  });
+  const sources = [...(entry.sources || []), source];
+  return {
+    source,
+    entry: updateScrapbookEntry(entry.id, {
+      sources,
+      artifacts: {},
+      summary: '',
+    }),
+  };
+}
+
+export function setScrapbookSourceSelection(entryId, selectedSourceIds = []) {
+  const entry = getScrapbookEntry(entryId);
+  if (!entry) throw new Error('Scrapbook entry not found');
+  const selected = new Set((Array.isArray(selectedSourceIds) ? selectedSourceIds : []).map(String));
+  const sources = (entry.sources || []).map((source) => ({
+    ...source,
+    selected: selected.has(source.id),
+  }));
+  if (!sources.some((source) => source.selected)) {
+    throw new Error('Select at least one source');
+  }
+  return updateScrapbookEntry(entry.id, { sources, artifacts: {}, summary: '' });
+}
+
+export function removeScrapbookSource(entryId, sourceId) {
+  const entry = getScrapbookEntry(entryId);
+  if (!entry) throw new Error('Scrapbook entry not found');
+  const sources = (entry.sources || []).filter((source) => source.id !== sourceId);
+  if (sources.length === (entry.sources || []).length) throw new Error('Source not found');
+  return updateScrapbookEntry(entry.id, { sources, artifacts: {}, summary: '' });
+}
+
+export async function generateScrapbookArtifact(entryId, kind) {
+  const entry = getScrapbookEntry(entryId);
+  if (!entry) throw new Error('Scrapbook entry not found');
+  if (!['mindmap', 'report'].includes(kind)) throw new Error('Unsupported artifact type');
+  const sourceText = combineNotebookSources(selectedNotebookSources(entry));
+  if (!sourceText) throw new Error('No selected source content is available');
+  const config = await loadConfig();
+  const model = resolveFastModel(config);
+  if (!model) throw new Error('No model configured for scrapbook generation');
+  const instruction = kind === 'mindmap'
+    ? [
+        'Create a concise Mermaid mindmap grounded only in the provided sources.',
+        'Return exactly one fenced mermaid block using Mermaid mindmap syntax.',
+        'Use a short root label and 2-4 levels. Keep node labels concise and avoid punctuation that breaks Mermaid.',
+      ].join(' ')
+    : [
+        'Write a polished research report grounded only in the provided sources.',
+        'Use Markdown with an executive summary, key findings, evidence grouped by source, and conclusions.',
+        'Call out disagreements or uncertainty instead of inventing facts.',
+      ].join(' ');
+  const result = await createChatCompletionStream({
+    sdkProvider: config.sdk?.provider,
+    baseUrl: config.gateway.base_url,
+    apiKey: config.gateway.api_key,
+    model,
+    messages: [
+      { role: 'system', content: appendStructuredOutputLanguageRule(instruction, config, {
+        fields: kind === 'mindmap' ? 'all mindmap labels' : 'the complete report',
+      }) },
+      { role: 'user', content: sourceText },
+    ],
+    tools: [],
+    timeoutMs: Math.min(Number(config.gateway?.timeout_ms || 30000), 120000),
+    maxRetries: config.gateway?.max_retries ?? 1,
+  });
+  const content = String(result?.text || '').trim();
+  if (!content) throw new Error('Model returned empty content');
+  const currentEntry = getScrapbookEntry(entry.id);
+  if (!currentEntry || currentEntry.updatedAt !== entry.updatedAt) {
+    throw new Error('Sources changed while generating; generate again');
+  }
+  const artifacts = {
+    ...(currentEntry.artifacts || {}),
+    [kind]: { content, updatedAt: new Date().toISOString() },
+  };
+  const updated = updateScrapbookEntry(entry.id, { artifacts });
+  return { artifact: updated.artifacts[kind], entry: updated };
 }
 
 export function deleteScrapbookEntryForApi(entryId) {
@@ -465,7 +726,7 @@ export function buildScrapbookAskPayload(entryId) {
   return {
     prompt: '请基于这条随手记回答我的后续问题。',
     summary,
-        modelText: buildScrapbookModelText(entry, summary),
+    modelText: buildScrapbookModelText(entry, summary),
     attachments: [
       {
         id: `scrapbook:${entry.id}`,
