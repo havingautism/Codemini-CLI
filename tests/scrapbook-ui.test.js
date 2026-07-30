@@ -47,6 +47,21 @@ test('scrapbook panel removes tag inputs and supports entry-detail routing', asy
   assert.match(source, /openScrapbookEntry|openScrapbookHome|scrapbookEntryId/);
 });
 
+test('scrapbook detail opens as a routed responsive modal while the library stays mounted', async () => {
+  const source = await fs.readFile('codemini-web/client/src/components/ScrapbookPanel.jsx', 'utf8');
+  assert.match(source, /<Dialog[\s\S]{0,80}open=\{isDetailView\}/);
+  assert.match(
+    source,
+    /onOpenChange=\{\(open\) => \{[\s\S]{0,100}!open[\s\S]{0,80}actions\.openScrapbookHome\(\)/,
+  );
+  assert.match(
+    source,
+    /h-\[calc\(100dvh-1rem\)\][\s\S]{0,180}sm:max-w-\[780px\]/,
+  );
+  assert.match(source, /min-h-0 overflow-y-auto overscroll-contain/);
+  assert.doesNotMatch(source, /\{!isDetailView \? \(/);
+});
+
 test('scrapbook panel refreshes entry details after summary completion', async () => {
   const source = await fs.readFile('codemini-web/client/src/components/ScrapbookPanel.jsx', 'utf8');
   assert.match(

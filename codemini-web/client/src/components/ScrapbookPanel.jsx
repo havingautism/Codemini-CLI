@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  ArrowLeft,
   ArrowSquareOut,
   CaretDown,
   CircleNotch,
@@ -526,8 +525,7 @@ export function ScrapbookPanel() {
 
   return (
     <div className="min-h-0 flex-1 overflow-y-auto bg-(--bg-primary)">
-      {!isDetailView ? (
-        <div className="mx-auto w-full max-w-[1540px] px-4 pb-12 pt-5 sm:px-7 lg:px-10 lg:pt-8">
+      <div className="mx-auto w-full max-w-[1540px] px-4 pb-12 pt-5 sm:px-7 lg:px-10 lg:pt-8">
           <header className="flex flex-col gap-5">
             <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
               <nav
@@ -729,77 +727,82 @@ export function ScrapbookPanel() {
               </div>
             )}
           </section>
-        </div>
-      ) : (
-        <div className="mx-auto flex w-full max-w-5xl flex-col gap-5 px-4 py-5 sm:px-6">
-          <div className="flex items-center justify-between gap-3">
+      </div>
+
+      <Dialog
+        open={isDetailView}
+        onOpenChange={(open) => {
+          if (!open) actions.openScrapbookHome();
+        }}
+      >
+        <DialogContent className="grid h-[calc(100dvh-1rem)] max-h-[860px] grid-rows-[auto_auto_minmax(0,1fr)] gap-0 overflow-hidden rounded-2xl p-0 sm:h-[min(86vh,860px)] sm:max-w-[780px]">
+          <DialogHeader className="shrink-0 px-5 pb-3 pt-5 sm:px-6">
+            <DialogTitle className="pr-2 text-[20px] leading-7">
+              {selectedEntry
+                ? entryTitle(selectedEntry)
+                : t("scrapbookLoading")}
+            </DialogTitle>
+            {selectedEntry ? (
+              <DialogDescription className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+                <span>{scrapbookSourceLabel(selectedEntry)}</span>
+                <span aria-hidden="true">·</span>
+                <span>{formatEntryDate(selectedEntry)}</span>
+              </DialogDescription>
+            ) : null}
+          </DialogHeader>
+
+          <div className="flex shrink-0 flex-wrap items-center gap-2 px-5 pb-4 sm:px-6">
             <button
               type="button"
-              onClick={() => actions.openScrapbookHome()}
-              className="inline-flex items-center gap-2 rounded-lg border border-(--border-default) px-3 py-2 text-[12px] text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary)"
+              onClick={handleAsk}
+              disabled={!selectedEntry || asking}
+              className="inline-flex items-center gap-2 rounded-lg bg-(--text-primary) px-3 py-2 text-[12px] font-medium text-(--bg-primary) hover:opacity-90 disabled:opacity-50"
             >
-              <ArrowLeft size={14} />
-              {t("scrapbook")}
+              <Sparkle size={14} />
+              {asking ? t("scrapbookAsking") : t("scrapbookAsk")}
             </button>
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={handleAsk}
-                disabled={asking}
-                className="inline-flex items-center gap-2 rounded-lg border border-(--border-default) px-3 py-2 text-[12px] text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary) disabled:opacity-60"
-              >
-                <Sparkle size={14} />
-                {asking ? t("scrapbookAsking") : t("scrapbookAsk")}
-              </button>
-              <button
-                type="button"
-                onClick={handleSummarize}
-                disabled={summaryBusy}
-                className="rounded-lg border border-(--border-default) px-3 py-2 text-[12px] text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary) disabled:opacity-60"
-              >
-                {summaryBusy
-                  ? t("scrapbookSummarizing")
-                  : selectedEntry?.summary
-                    ? t("scrapbookResummarize")
-                    : t("scrapbookSummarize")}
-              </button>
-              <button
-                type="button"
-                onClick={() => requestDelete(selectedEntry)}
-                className="inline-flex items-center gap-2 rounded-lg border border-(--border-default) px-3 py-2 text-[12px] text-accent-red hover:bg-(--accent-red-bg)"
-              >
-                <Trash size={14} />
-                {t("scrapbookDelete")}
-              </button>
-            </div>
+            <button
+              type="button"
+              onClick={handleSummarize}
+              disabled={!selectedEntry || summaryBusy}
+              className="rounded-lg border border-(--control-border) px-3 py-2 text-[12px] text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary) disabled:opacity-50"
+            >
+              {summaryBusy
+                ? t("scrapbookSummarizing")
+                : selectedEntry?.summary
+                  ? t("scrapbookResummarize")
+                  : t("scrapbookSummarize")}
+            </button>
+            <button
+              type="button"
+              onClick={() => requestDelete(selectedEntry)}
+              disabled={!selectedEntry}
+              className="ml-auto inline-flex items-center gap-2 rounded-lg px-3 py-2 text-[12px] text-accent-red hover:bg-(--accent-red-bg) disabled:opacity-50"
+            >
+              <Trash size={14} />
+              {t("scrapbookDelete")}
+            </button>
           </div>
 
-          {!selectedEntry ? (
-            <div className="rounded-xl border border-dashed border-(--border-default) px-4 py-10 text-center text-[12px] text-(--text-muted)">
-              {t("scrapbookLoading")}
-            </div>
-          ) : (
-            <>
-              <section className="rounded-xl border border-(--border-default) bg-(--bg-secondary) p-5 shadow-sm">
-                <div className="text-[24px] font-semibold leading-8 text-(--text-primary)">
-                  {entryTitle(selectedEntry)}
-                </div>
-                {scrapbookSourceLabel(selectedEntry) ? (
-                  <div className="mt-3">
-                    <span className="inline-flex items-center rounded-full border border-(--border-default) bg-(--bg-primary) px-2.5 py-1 text-[11px] text-(--text-secondary)">
-                      {scrapbookSourceLabel(selectedEntry)}
-                    </span>
-                  </div>
-                ) : null}
-                {selectedEntry.sourceType === "url" && selectedEntry.sourceUrl ? (
+          <div className="min-h-0 overflow-y-auto overscroll-contain px-5 pb-6 sm:px-6">
+            {!selectedEntry ? (
+              <div className="flex min-h-56 items-center justify-center text-[12px] text-(--text-muted)">
+                <CircleNotch size={18} className="mr-2 animate-spin" />
+                {t("scrapbookLoading")}
+              </div>
+            ) : (
+              <div className="grid gap-4">
+                {selectedEntry.sourceType === "url" &&
+                selectedEntry.sourceUrl ? (
                   <a
                     href={selectedEntry.sourceUrl}
                     target="_blank"
                     rel="noreferrer"
-                    className="mt-2 inline-flex items-center gap-2 text-[12px] text-(--text-muted) hover:text-(--text-primary)"
+                    className="flex min-w-0 items-center gap-2 rounded-xl bg-(--bg-secondary) px-4 py-3 text-[12px] text-(--text-muted) hover:text-(--text-primary)"
                   >
-                    <Globe size={14} />
-                    {selectedEntry.sourceUrl}
+                    <Globe size={14} className="shrink-0" />
+                    <span className="truncate">{selectedEntry.sourceUrl}</span>
+                    <ArrowSquareOut size={13} className="ml-auto shrink-0" />
                   </a>
                 ) : null}
                 {selectedEntry.sourceType === "chat_answer" &&
@@ -813,57 +816,60 @@ export function ScrapbookPanel() {
                         selectedEntry.sourceMessageId,
                       )
                     }
-                    className="mt-3 inline-flex items-center gap-2 text-[12px] text-(--text-muted) hover:text-(--text-primary)"
+                    className="flex w-full items-center gap-2 rounded-xl bg-(--bg-secondary) px-4 py-3 text-left text-[12px] text-(--text-muted) hover:text-(--text-primary)"
                   >
                     <ArrowSquareOut size={14} />
                     {t("scrapbookJumpToMessage")}
                   </button>
                 ) : null}
-              </section>
 
-              <section className="rounded-xl border border-(--border-default) bg-(--bg-secondary) p-5 shadow-sm">
-                <div className="mb-3 text-[12px] font-semibold uppercase tracking-[0.08em] text-(--text-muted)">
-                  {t("scrapbookSummary")}
-                </div>
-                {summaryBusy && !summaryPartialText ? (
-                  <ScrapbookSummaryLoading />
-                ) : (
-                  <StreamdownRenderer
-                    text={summaryText}
-                    streaming={summaryBusy}
-                    inlineEmbeds={false}
-                    className="text-[14px] leading-7 text-(--text-secondary)"
-                  />
-                )}
-              </section>
+                <section className="rounded-2xl bg-(--bg-secondary) p-5">
+                  <div className="mb-3 text-[12px] font-semibold uppercase tracking-[0.08em] text-(--text-muted)">
+                    {t("scrapbookSummary")}
+                  </div>
+                  {summaryBusy && !summaryPartialText ? (
+                    <ScrapbookSummaryLoading />
+                  ) : (
+                    <StreamdownRenderer
+                      text={summaryText}
+                      streaming={summaryBusy}
+                      inlineEmbeds={false}
+                      className="text-[14px] leading-7 text-(--text-secondary)"
+                    />
+                  )}
+                </section>
 
-              <section className="rounded-xl border border-(--border-default) bg-(--bg-secondary) p-5 shadow-sm">
-                <div className="flex items-center justify-between gap-3">
-                  <div className="text-[12px] font-semibold uppercase tracking-[0.08em] text-(--text-muted)">
-                    {t("scrapbookContent")}
+                <section className="rounded-2xl bg-(--bg-secondary) p-5">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="text-[12px] font-semibold uppercase tracking-[0.08em] text-(--text-muted)">
+                      {t("scrapbookContent")}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setContentExpanded((current) => !current)
+                      }
+                      className="rounded-lg px-3 py-1.5 text-[12px] text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary)"
+                    >
+                      {contentExpanded ? "收起原文" : "展开原文"}
+                    </button>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => setContentExpanded((current) => !current)}
-                    className="rounded-lg border border-(--border-default) px-3 py-1.5 text-[12px] text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary)"
-                  >
-                    {contentExpanded ? "收起原文" : "展开原文"}
-                  </button>
-                </div>
-                {contentExpanded ? (
-                  <div className="mt-4 whitespace-pre-wrap wrap-break-word text-[14px] leading-7 text-(--text-secondary)">
-                    {selectedEntry.contentText || t("scrapbookNoContent")}
-                  </div>
-                ) : (
-                  <div className="mt-4 text-[12px] text-(--text-muted)">
-                    默认折叠原始抓取内容，按需展开查看。
-                  </div>
-                )}
-              </section>
-            </>
-          )}
-        </div>
-      )}
+                  {contentExpanded ? (
+                    <div className="mt-4 whitespace-pre-wrap wrap-break-word text-[14px] leading-7 text-(--text-secondary)">
+                      {selectedEntry.contentText || t("scrapbookNoContent")}
+                    </div>
+                  ) : (
+                    <div className="mt-4 text-[12px] text-(--text-muted)">
+                      默认折叠原始抓取内容，按需展开查看。
+                    </div>
+                  )}
+                </section>
+              </div>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
+
       <Dialog
         open={composerOpen}
         onOpenChange={(open) => {
