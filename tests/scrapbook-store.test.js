@@ -240,6 +240,9 @@ test('chat answer scrapbook entries default to ready content with provenance met
     assert.equal(entry.sourceQuestionText, 'How do I fix it?');
     assert.equal(entry.fetchStatus, 'ready');
     assert.match(entry.title, /How do I fix it|📝/);
+    assert.equal(entry.sources?.[0]?.type, 'chat_answer');
+    assert.equal(entry.sources?.[0]?.sessionId, 'sess-chat');
+    assert.equal(entry.sources?.[0]?.messageId, 'msg-answer');
   });
 });
 

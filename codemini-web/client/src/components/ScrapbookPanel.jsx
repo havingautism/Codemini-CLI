@@ -5,7 +5,6 @@ import {
   ArrowSquareOut,
   ArrowsClockwise,
   CaretDown,
-  Check,
   CircleNotch,
   DotsThreeVertical,
   FileText,
@@ -32,7 +31,6 @@ import {
   generateScrapbookArtifact,
   openScrapbookSummaryJobStream,
   removeScrapbookSource,
-  setScrapbookSourceSelection,
   summarizeScrapbookEntry,
   uploadScrapbookSources,
 } from "@/hooks/use-api.js";
@@ -183,14 +181,11 @@ function ScrapbookLibraryCard({
   menuOpen,
   onOpen,
   onMenuOpenChange,
-  onOpenOrigin,
   onDelete,
 }) {
   const isList = viewMode === "list";
   const SourceIcon = entry.sourceType === "url" ? Globe : Notebook;
   const sourceLabel = scrapbookSourceLabel(entry);
-  const canJumpToMessage = entry.sourceType === "chat_answer" && entry.sourceSessionId && entry.sourceMessageId;
-  const canOpenSource = entry.sourceType === "url" && entry.sourceUrl;
   const titleParts = splitEmojiTitle(entryTitle(entry));
 
   return (
@@ -276,26 +271,6 @@ function ScrapbookLibraryCard({
             </button>
           </PopoverTrigger>
           <PopoverContent align="end" sideOffset={4} className="w-40 p-1">
-            {canOpenSource ? (
-              <button
-                type="button"
-                onClick={() => onOpenOrigin(entry)}
-                className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-[12px] text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary)"
-              >
-                <ArrowSquareOut size={14} />
-                {t("scrapbookOpenSource")}
-              </button>
-            ) : null}
-            {canJumpToMessage ? (
-              <button
-                type="button"
-                onClick={() => onOpenOrigin(entry)}
-                className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-[12px] text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary)"
-              >
-                <ArrowSquareOut size={14} />
-                {t("scrapbookJumpToMessage")}
-              </button>
-            ) : null}
             <button
               type="button"
               onClick={() => onDelete(entry)}
@@ -536,28 +511,6 @@ export function ScrapbookPanel() {
       setError(String(nextError?.message || t("scrapbookSourceUploadFailed")));
     } finally {
       setSourceAdding(false);
-    }
-  };
-
-  const handleToggleSource = async (sourceId) => {
-    if (!selectedEntry) return;
-    const sources = selectedEntry.sources || [];
-    const selectedSourceIds = sources
-      .filter((source) =>
-        source.id === sourceId ? source.selected === false : source.selected !== false,
-      )
-      .map((source) => source.id);
-    if (!selectedSourceIds.length) return;
-    setError("");
-    try {
-      const result = await setScrapbookSourceSelection(
-        selectedEntry.id,
-        selectedSourceIds,
-      );
-      if (result?.error) throw new Error(result.message);
-      applyNotebookMutation(result);
-    } catch (nextError) {
-      setError(String(nextError?.message || t("scrapbookSourceUpdateFailed")));
     }
   };
 
@@ -863,16 +816,6 @@ export function ScrapbookPanel() {
                     menuOpen={menuEntryId === entry.id}
                     onOpen={actions.openScrapbookEntry}
                     onMenuOpenChange={setMenuEntryId}
-                    onOpenOrigin={(target) => {
-                      setMenuEntryId("");
-                      if (target?.sourceType === "chat_answer") {
-                        void actions.openChatMessage(target.sourceSessionId, target.sourceMessageId);
-                        return;
-                      }
-                      if (target?.sourceUrl) {
-                        window.open(target.sourceUrl, "_blank", "noopener,noreferrer");
-                      }
-                    }}
                     onDelete={(target) => {
                       setMenuEntryId("");
                       requestDelete(target);
@@ -953,10 +896,7 @@ export function ScrapbookPanel() {
                     {t("scrapbookSources")}
                   </div>
                   <span className="text-[11px] text-(--text-muted)">
-                    {(selectedEntry?.sources || []).filter(
-                      (source) => source.selected !== false,
-                    ).length}
-                    /{(selectedEntry?.sources || []).length}
+                    {(selectedEntry?.sources || []).length}
                   </span>
                 </div>
                 <div className="flex gap-2">
@@ -1003,23 +943,19 @@ export function ScrapbookPanel() {
                       : source.type === "chat_answer"
                         ? Article
                         : FileText;
+                  const canOpenSource = Boolean(source.url);
+                  const jumpSessionId =
+                    source.sessionId ||
+                    (source.type === "chat_answer" ? selectedEntry?.sourceSessionId : "");
+                  const jumpMessageId =
+                    source.messageId ||
+                    (source.type === "chat_answer" ? selectedEntry?.sourceMessageId : "");
+                  const canJumpToMessage = Boolean(jumpSessionId && jumpMessageId);
                   return (
                     <div
                       key={source.id}
                       className="group flex items-center gap-2 rounded-xl px-2 py-2.5 hover:bg-(--bg-hover)"
                     >
-                      <button
-                        type="button"
-                        onClick={() => void handleToggleSource(source.id)}
-                        aria-label={source.name}
-                        className={`inline-flex size-4 shrink-0 items-center justify-center rounded ${
-                          source.selected !== false
-                            ? "bg-primary text-white"
-                            : "bg-(--bg-secondary) text-transparent ring-1 ring-(--control-border)"
-                        }`}
-                      >
-                        <Check size={11} weight="bold" />
-                      </button>
                       <SourceIcon
                         size={15}
                         className="shrink-0 text-(--text-muted)"
@@ -1034,14 +970,51 @@ export function ScrapbookPanel() {
                           </div>
                         ) : null}
                       </div>
-                      <button
-                        type="button"
-                        onClick={() => void handleRemoveSource(source.id)}
-                        aria-label={t("scrapbookRemoveSource")}
-                        className="inline-flex size-7 shrink-0 items-center justify-center rounded-lg text-(--text-muted) opacity-0 transition hover:bg-(--accent-red-bg) hover:text-accent-red group-hover:opacity-100 focus:opacity-100"
-                      >
-                        <Trash size={13} />
-                      </button>
+                      <Popover>
+                        <PopoverTrigger asChild>
+                          <button
+                            type="button"
+                            aria-label={t("scrapbookSourceActions")}
+                            className="inline-flex size-7 shrink-0 items-center justify-center rounded-lg text-(--text-muted) opacity-0 transition hover:bg-(--bg-secondary) hover:text-(--text-primary) group-hover:opacity-100 focus:opacity-100"
+                          >
+                            <DotsThreeVertical size={14} weight="bold" />
+                          </button>
+                        </PopoverTrigger>
+                        <PopoverContent align="end" sideOffset={4} className="w-40 p-1">
+                          {canOpenSource ? (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                window.open(source.url, "_blank", "noopener,noreferrer")
+                              }
+                              className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-[12px] text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary)"
+                            >
+                              <ArrowSquareOut size={14} />
+                              {t("scrapbookJumpToOriginalLink")}
+                            </button>
+                          ) : null}
+                          {canJumpToMessage ? (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                void actions.openChatMessage(jumpSessionId, jumpMessageId)
+                              }
+                              className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-[12px] text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary)"
+                            >
+                              <ArrowSquareOut size={14} />
+                              {t("scrapbookJumpToMessage")}
+                            </button>
+                          ) : null}
+                          <button
+                            type="button"
+                            onClick={() => void handleRemoveSource(source.id)}
+                            className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-[12px] text-accent-red hover:bg-(--accent-red-bg)"
+                          >
+                            <Trash size={14} />
+                            {t("scrapbookDelete")}
+                          </button>
+                        </PopoverContent>
+                      </Popover>
                     </div>
                   );
                 })}

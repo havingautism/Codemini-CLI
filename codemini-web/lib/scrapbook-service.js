@@ -220,6 +220,8 @@ function createNotebookSource(payload = {}) {
     url: String(payload.url || ''),
     mime: String(payload.mime || 'text/plain'),
     contentText: String(payload.contentText || ''),
+    sessionId: String(payload.sessionId || payload.sourceSessionId || ''),
+    messageId: String(payload.messageId || payload.sourceMessageId || ''),
     selected: payload.selected !== false,
     status: String(payload.status || 'ready'),
     createdAt: String(payload.createdAt || new Date().toISOString()),
@@ -517,10 +519,12 @@ export function createChatAnswerScrapbookEntry(payload = {}) {
       questionText: sourceQuestionText,
       answerText: contentText,
     });
+  const sourceSessionId = String(payload.sourceSessionId || payload.sessionId || '').trim();
+  const sourceMessageId = String(payload.sourceMessageId || payload.messageId || '').trim();
   return createScrapbookEntry({
     sourceType: 'chat_answer',
-    sourceSessionId: String(payload.sourceSessionId || payload.sessionId || '').trim(),
-    sourceMessageId: String(payload.sourceMessageId || payload.messageId || '').trim(),
+    sourceSessionId,
+    sourceMessageId,
     sourceQuestionText,
     title,
     contentText,
@@ -528,6 +532,8 @@ export function createChatAnswerScrapbookEntry(payload = {}) {
       type: 'chat_answer',
       name: title,
       contentText,
+      sessionId: sourceSessionId,
+      messageId: sourceMessageId,
     })],
     tags: normalizeTags(payload.tags),
     fetchStatus: 'ready',

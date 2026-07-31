@@ -1178,6 +1178,8 @@ export const en = {
   scrapbookNotebookActions: "Notebook actions",
   scrapbookOpenSource: "Open source",
   scrapbookJumpToMessage: "Jump to message",
+  scrapbookJumpToOriginalLink: "Open original link",
+  scrapbookSourceActions: "Source actions",
   scrapbookUrlImport: "Import URL",
   scrapbookManualEntry: "Manual entry",
   scrapbookChatAnswer: "Chat answer",

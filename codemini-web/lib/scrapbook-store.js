@@ -30,6 +30,8 @@ function normalizeSources(sources = []) {
       url: String(source?.url || ''),
       mime: String(source?.mime || 'text/plain'),
       contentText: String(source?.contentText || ''),
+      sessionId: String(source?.sessionId || source?.sourceSessionId || ''),
+      messageId: String(source?.messageId || source?.sourceMessageId || ''),
       selected: source?.selected !== false,
       status: String(source?.status || 'ready'),
       createdAt: String(source?.createdAt || nowIso()),
@@ -70,21 +72,31 @@ function legacySource(row) {
 function mapEntry(row) {
   if (!row) return null;
   const storedSources = normalizeSources(parseJson(row.sources_json, []));
+  const sourceSessionId = row.source_session_id || '';
+  const sourceMessageId = row.source_message_id || '';
+  let sources = storedSources.length ? storedSources : legacySource(row);
+  // ponytail: backfill legacy chat_answer sources that only stored ids on the entry
+  if (sourceSessionId && sourceMessageId) {
+    sources = sources.map((source) => {
+      if (source.type !== 'chat_answer' || source.sessionId) return source;
+      return { ...source, sessionId: sourceSessionId, messageId: sourceMessageId };
+    });
+  }
   return {
     id: row.id,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     sourceType: row.source_type,
     sourceUrl: row.source_url,
-    sourceSessionId: row.source_session_id || '',
-    sourceMessageId: row.source_message_id || '',
+    sourceSessionId,
+    sourceMessageId,
     sourceQuestionText: row.source_question_text || '',
     title: row.title,
     contentText: row.content_text,
     summary: row.summary,
     tags: normalizeTags(parseJson(row.tags_json, [])),
     fetchStatus: row.fetch_status,
-    sources: storedSources.length ? storedSources : legacySource(row),
+    sources,
     artifacts: normalizeArtifacts(parseJson(row.artifacts_json, {})),
   };
 }

@@ -80,15 +80,17 @@ test('scrapbook panel refreshes entry details after summary completion', async (
   );
 });
 
-test('scrapbook cards expose hover delete and origin actions', async () => {
+test('scrapbook cards expose hover delete without entry-level origin jumps', async () => {
   const source = await fs.readFile('codemini-web/client/src/components/ScrapbookPanel.jsx', 'utf8');
   assert.match(source, /ScrapbookLibraryCard/);
   assert.match(source, /DotsThreeVertical/);
   assert.match(source, /Popover[\s\S]{0,80}onOpenChange/);
-  assert.match(source, /window\.open\(target\.sourceUrl,\s*"_blank"/);
-  assert.match(source, /openChatMessage/);
-  assert.match(source, /scrapbookJumpToMessage/);
   assert.match(source, /requestDelete\(target\)|deleteScrapbookEntry\(deleteTarget\.id\)/);
+  assert.doesNotMatch(source, /onOpenOrigin/);
+  assert.doesNotMatch(
+    source,
+    /canJumpToMessage = entry\.sourceType === "chat_answer"/,
+  );
 });
 
 test('scrapbook panel uses ConfirmDialog and clamps overflowing card text', async () => {
@@ -139,6 +141,18 @@ test('new notebook composer accepts multiple links and documents at once', async
   assert.match(source, /setComposerFiles\(Array\.from/);
   assert.match(source, /type="file"[\s\S]{0,120}multiple/);
   assert.doesNotMatch(source, /setComposerMode/);
+});
+
+test('scrapbook source rows use a menu for open-link, jump-to-message and delete, without selection dots', async () => {
+  const source = await fs.readFile('codemini-web/client/src/components/ScrapbookPanel.jsx', 'utf8');
+  assert.match(source, /scrapbookJumpToOriginalLink/);
+  assert.match(source, /scrapbookJumpToMessage/);
+  assert.match(source, /scrapbookSourceActions/);
+  assert.match(source, /window\.open\(source\.url,\s*"_blank"/);
+  assert.match(source, /openChatMessage\(jumpSessionId,\s*jumpMessageId\)/);
+  assert.match(source, /handleRemoveSource\(source\.id\)/);
+  assert.doesNotMatch(source, /handleToggleSource/);
+  assert.doesNotMatch(source, /setScrapbookSourceSelection/);
 });
 
 test('scrapbook library follows notebook layout and creates entries in a modal', async () => {

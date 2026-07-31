@@ -1130,6 +1130,8 @@ export const zh = {
   scrapbookNotebookActions: "笔记本操作",
   scrapbookOpenSource: "打开来源",
   scrapbookJumpToMessage: "跳到原消息",
+  scrapbookJumpToOriginalLink: "跳转原链接",
+  scrapbookSourceActions: "来源操作",
   scrapbookUrlImport: "链接导入",
   scrapbookManualEntry: "手动录入",
   scrapbookChatAnswer: "AI 回答",
