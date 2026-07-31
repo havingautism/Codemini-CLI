@@ -366,7 +366,6 @@ function createResearchSubmitHandlers(sessionId, phase, emit) {
           maxRejects: MAX_PLAN_REJECTS,
         };
         if (planRejectCount >= MAX_PLAN_REJECTS) {
-          updateResearchSession(sessionId, { phase: 'failed' });
           emit?.({
             type: 'error',
             error: 'Research plan exceeded depth budget too many times',
@@ -510,7 +509,6 @@ export async function runResearchLeadTurn({
         emit({ type: 'aborted' });
         return { ok: false, aborted: true };
       }
-      updateResearchSession(sessionId, { phase: 'failed' });
       emit({ type: 'error', error: error instanceof Error ? error.message : String(error) });
       throw error;
     } finally {
@@ -602,7 +600,6 @@ export async function runResearchLeadTurn({
       emit({ type: 'aborted' });
       return { ok: false, aborted: true };
     }
-    updateResearchSession(sessionId, { phase: 'failed' });
     emit({ type: 'error', error: error instanceof Error ? error.message : String(error) });
     throw error;
   } finally {

@@ -20,6 +20,16 @@ async function readJsonResponse(res) {
   }
 }
 
+async function readJsonOrThrow(res) {
+  const data = await readJsonResponse(res);
+  if (!res.ok || data?.error === true) {
+    throw new Error(
+      String(data?.message || data?.error || `Request failed (${res.status})`),
+    );
+  }
+  return data;
+}
+
 export async function fetchEmbed(url) {
   const target = String(url || '').trim();
   if (!target) return { error: true, message: 'Missing url' };
@@ -771,16 +781,16 @@ export async function buildScrapbookAskPayload(entryId) {
 }
 
 // ── Deep Research ──
-export async function fetchResearchSessions(query = '') {
+export async function fetchResearchSessions(query = '', { signal } = {}) {
   const q = String(query || '').trim();
   const queryString = q ? `q=${encodeURIComponent(q)}` : '';
-  const res = await api(`/api/research/sessions${queryString ? `?${queryString}` : ''}`);
-  return res.json();
+  const res = await api(`/api/research/sessions${queryString ? `?${queryString}` : ''}`, { signal });
+  return readJsonOrThrow(res);
 }
 
-export async function fetchResearchSession(sessionId) {
-  const res = await api(`/api/research/sessions/${encodeURIComponent(sessionId)}`);
-  return res.json();
+export async function fetchResearchSession(sessionId, { signal } = {}) {
+  const res = await api(`/api/research/sessions/${encodeURIComponent(sessionId)}`, { signal });
+  return readJsonOrThrow(res);
 }
 
 export async function createResearchSession(payload = {}) {
@@ -789,7 +799,7 @@ export async function createResearchSession(payload = {}) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   });
-  return res.json();
+  return readJsonOrThrow(res);
 }
 
 export async function updateResearchPlan(sessionId, plan) {
@@ -798,7 +808,7 @@ export async function updateResearchPlan(sessionId, plan) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ plan }),
   });
-  return res.json();
+  return readJsonOrThrow(res);
 }
 
 export async function confirmResearchPlan(sessionId, plan) {
@@ -807,7 +817,7 @@ export async function confirmResearchPlan(sessionId, plan) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(plan ? { plan } : {}),
   });
-  return res.json();
+  return readJsonOrThrow(res);
 }
 
 export async function startResearchRun(sessionId, payload = {}) {
@@ -816,21 +826,21 @@ export async function startResearchRun(sessionId, payload = {}) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   });
-  return res.json();
+  return readJsonOrThrow(res);
 }
 
 export async function abortResearchRun(sessionId) {
   const res = await api(`/api/research/sessions/${encodeURIComponent(sessionId)}/abort`, {
     method: 'POST',
   });
-  return res.json();
+  return readJsonOrThrow(res);
 }
 
 export async function deleteResearchSession(sessionId) {
   const res = await api(`/api/research/sessions/${encodeURIComponent(sessionId)}`, {
     method: 'DELETE',
   });
-  return res.json();
+  return readJsonOrThrow(res);
 }
 
 export function openResearchRunStream(sessionId) {

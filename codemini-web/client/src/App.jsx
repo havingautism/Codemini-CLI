@@ -375,15 +375,15 @@ function Shell() {
             </Suspense>
           </div>
         ) : state.currentView === "research" ? (
-          <div className="flex flex-1 flex-col min-h-0 overflow-hidden">
-            <div className="flex h-12 shrink-0 items-center gap-2 border-b border-(--border-primary) px-3 md:px-4">
+          <div className="codemini-workspace-panel flex flex-1 flex-col min-h-0 overflow-hidden">
+            <div className="flex h-12 shrink-0 items-center gap-2.5 border-b border-(--border-default) px-3 sm:px-5">
               <button
                 type="button"
-                className="inline-flex size-8 items-center justify-center rounded-md border-0 bg-transparent text-(--text-muted) hover:bg-(--bg-hover) hover:text-(--text-primary) md:hidden"
-                aria-label={t("menu")}
+                className="inline-flex size-8 shrink-0 items-center justify-center rounded-md border-0 bg-transparent text-(--text-muted) hover:bg-(--bg-hover) hover:text-(--text-primary) md:hidden"
+                aria-label="Open sidebar"
                 onClick={() => setMobileSidebarOpen(true)}
               >
-                <SidebarSimple size={16} />
+                <List size={17} />
               </button>
               {sidebarCollapsed ? (
                 <button

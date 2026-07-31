@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  ArrowLeft,
   ArrowRight,
   BookOpen,
   CaretDown,
@@ -32,7 +31,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog.jsx";
-import { Button } from "@/components/ui/button.jsx";
 import {
   Popover,
   PopoverContent,
@@ -80,6 +78,10 @@ const CARD_TONES = [
 
 function researchTone(index) {
   return CARD_TONES[Math.abs(Number(index) || 0) % CARD_TONES.length];
+}
+
+function isAbortError(error) {
+  return error?.name === "AbortError";
 }
 
 function ResearchTerm({ children, explanation, className = "" }) {
@@ -368,22 +370,25 @@ function Stepper({ phase, focusStep, onFocusStep }) {
   const order = STEPS.map((s) => s.id);
   const activeIdx = order.indexOf(active);
   return (
-    <div className="flex flex-wrap items-center gap-1.5">
+    <nav
+      aria-label={t("deepResearchProgress")}
+      className="inline-flex max-w-full items-center gap-1 overflow-x-auto rounded-xl bg-(--bg-secondary) p-1"
+    >
       {STEPS.map((step, index) => {
         const done = index < activeIdx;
         const current = index === activeIdx;
         const reachable = researchStepReachable(phase, step.id);
         const interactive = reachable && typeof onFocusStep === "function";
         const className = cn(
-          "rounded-full px-3 py-1 text-[11px] font-semibold tracking-wide transition-colors",
-          current && "bg-primary text-white",
-          done && !current && "bg-primary/14 text-primary",
-          !done && !current && reachable && "bg-(--bg-secondary) text-(--text-secondary) hover:bg-(--bg-hover)",
-          !reachable && "bg-(--bg-secondary) text-(--text-muted) opacity-50",
+          "shrink-0 rounded-lg px-3.5 py-1.5 text-[11px] font-medium transition",
+          current && "bg-(--bg-primary) text-(--text-primary) shadow-sm ring-1 ring-(--border-default)/70",
+          done && !current && "text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary)",
+          !done && !current && reachable && "text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary)",
+          !reachable && "text-(--text-muted) opacity-55",
           interactive && "cursor-pointer",
         );
         return (
-          <div key={step.id} className="flex items-center gap-1.5">
+          <div key={step.id}>
             {interactive ? (
               <button
                 type="button"
@@ -396,13 +401,10 @@ function Stepper({ phase, focusStep, onFocusStep }) {
             ) : (
               <span className={className}>{t(step.labelKey)}</span>
             )}
-            {index < STEPS.length - 1 ? (
-              <span className="h-px w-3 bg-(--border-default)" aria-hidden="true" />
-            ) : null}
           </div>
         );
       })}
-    </div>
+    </nav>
   );
 }
 
@@ -505,7 +507,15 @@ function GuideComposer({ open, onOpenChange, busy, error, onSubmit }) {
   );
 }
 
-function PlanPane({ session, busy, onSave, onConfirm, onReplan, readOnly = false }) {
+function PlanPane({
+  session,
+  busy,
+  running,
+  onSave,
+  onConfirm,
+  onReplan,
+  readOnly = false,
+}) {
   const [goal, setGoal] = useState(session?.plan?.goal || session?.preferences?.goal || "");
   const [questions, setQuestions] = useState(
     Array.isArray(session?.plan?.questions) ? session.plan.questions : [],
@@ -535,17 +545,34 @@ function PlanPane({ session, busy, onSave, onConfirm, onReplan, readOnly = false
   );
 
   if (session?.phase === "planning" && !questions.length) {
+    const stopped = !running;
     return (
       <div className="relative overflow-hidden rounded-2xl border border-primary/15 bg-primary/[0.045] px-5 py-8">
         <div className="flex items-start gap-4">
           <span className="flex size-11 shrink-0 items-center justify-center rounded-xl bg-primary/12 text-primary">
-            <CircleNotch size={22} weight="bold" className="animate-spin" />
+            {running ? (
+              <CircleNotch size={22} weight="bold" className="animate-spin" />
+            ) : (
+              <WarningCircle size={22} weight="fill" />
+            )}
           </span>
-          <div>
+          <div className="min-w-0 flex-1">
             <div className="text-[14px] font-semibold text-(--text-primary)">
-              {t("deepResearchPlanning")}
+              {running ? t("deepResearchPlanning") : t("deepResearchPlanningStopped")}
             </div>
-            <p className="mt-1 text-[12px] text-(--text-muted)">{t("deepResearchPlanningHint")}</p>
+            <p className="mt-1 text-[12px] text-(--text-muted)">
+              {running ? t("deepResearchPlanningHint") : t("deepResearchPlanningStoppedHint")}
+            </p>
+            {stopped ? (
+              <button
+                type="button"
+                disabled={busy}
+                className="mt-4 inline-flex h-9 items-center rounded-full bg-(--text-primary) px-4 text-[12px] font-semibold text-(--bg-primary) disabled:opacity-40"
+                onClick={onReplan}
+              >
+                {t("deepResearchRetryPlanning")}
+              </button>
+            ) : null}
           </div>
         </div>
       </div>
@@ -567,7 +594,9 @@ function PlanPane({ session, busy, onSave, onConfirm, onReplan, readOnly = false
         </div>
       ) : null}
       <label className="flex flex-col gap-1.5">
-        <span className="text-[12px] font-medium text-(--text-secondary)">Goal</span>
+        <span className="text-[12px] font-medium text-(--text-secondary)">
+          {t("deepResearchGoal")}
+        </span>
         <input
           className="h-10 rounded-xl border border-(--border-default) bg-(--bg-secondary) px-3 text-[14px] outline-none focus:border-primary/40 disabled:opacity-70"
           value={goal}
@@ -589,9 +618,10 @@ function PlanPane({ session, busy, onSave, onConfirm, onReplan, readOnly = false
               value={q.text || ""}
               disabled={readOnly}
               onChange={(e) => {
-                const next = [...questions];
-                next[index] = { ...q, text: e.target.value };
-                setQuestions(next);
+                const value = e.target.value;
+                setQuestions((current) => current.map((item, itemIndex) => (
+                  itemIndex === index ? { ...item, text: value } : item
+                )));
               }}
             />
             {(normalizeCriteriaList(q.successCriteria).length) ? (
@@ -628,13 +658,18 @@ function PlanPane({ session, busy, onSave, onConfirm, onReplan, readOnly = false
           <button
             type="button"
             disabled={busy}
-            className="inline-flex h-10 items-center rounded-full bg-(--text-primary) px-5 text-[12px] font-semibold text-(--bg-primary) disabled:opacity-40"
-            onClick={async () => {
-              await onSave(draft);
-              await onConfirm(draft);
-            }}
+            className="inline-flex h-10 items-center rounded-full border border-(--border-default) px-4 text-[12px] font-medium text-(--text-secondary) hover:bg-(--bg-hover) disabled:opacity-40"
+            onClick={() => onSave(draft)}
           >
-            {t("deepResearchConfirmPlan")}
+            {t("deepResearchSavePlan")}
+          </button>
+          <button
+            type="button"
+            disabled={busy}
+            className="inline-flex h-10 items-center rounded-full bg-(--text-primary) px-5 text-[12px] font-semibold text-(--bg-primary) disabled:opacity-40"
+            onClick={() => onConfirm(draft)}
+          >
+            {t("deepResearchApproveAndStart")}
           </button>
           <button
             type="button"
@@ -1467,6 +1502,8 @@ function DetailBody({
   const readyForReport = phase === "ready_for_report";
   const incomplete = phase === "incomplete";
   const planning = phase === "planning" || phase === "awaiting_plan_confirm";
+  const runIssue = ["paused", "failed"].includes(session?.runState);
+  const displayedError = error || (session?.runState === "failed" ? session?.lastError : "") || "";
   const searchesRemaining =
     Number(session?.budget?.maxSearches || 0) - Number(session?.budgetUsed?.searches || 0);
   const wavesRemaining =
@@ -1497,6 +1534,7 @@ function DetailBody({
               </span>
               <button
                 type="button"
+                disabled={busy}
                 className="inline-flex h-9 items-center gap-1.5 rounded-full border border-(--border-default) px-3 text-[12px] font-medium hover:bg-(--bg-hover)"
                 onClick={onAbort}
               >
@@ -1510,7 +1548,8 @@ function DetailBody({
               {!readyForReport && canContinue ? (
                 <button
                   type="button"
-                  className="inline-flex h-9 items-center rounded-full border border-(--border-default) px-3 text-[12px] font-medium hover:bg-(--bg-hover)"
+                  disabled={busy}
+                  className="inline-flex h-9 items-center rounded-full border border-(--border-default) px-3 text-[12px] font-medium hover:bg-(--bg-hover) disabled:opacity-40"
                   onClick={onContinue}
                 >
                   {t("deepResearchContinue")}
@@ -1519,7 +1558,8 @@ function DetailBody({
               {readyForReport ? (
                 <button
                   type="button"
-                  className="inline-flex h-9 items-center gap-1.5 rounded-full bg-(--text-primary) px-4 text-[12px] font-semibold text-(--bg-primary)"
+                  disabled={busy}
+                  className="inline-flex h-9 items-center gap-1.5 rounded-full bg-(--text-primary) px-4 text-[12px] font-semibold text-(--bg-primary) disabled:opacity-40"
                   onClick={onWrite}
                 >
                   <BookOpen size={14} weight="bold" />
@@ -1531,9 +1571,17 @@ function DetailBody({
         </div>
       </div>
 
-      {error ? (
+      {displayedError ? (
         <div className="shrink-0 border-b border-(--accent-red-bg) bg-(--accent-red-bg) px-5 py-2 text-[12px] text-accent-red sm:px-6">
-          {error}
+          {displayedError}
+        </div>
+      ) : null}
+
+      {runIssue && !running ? (
+        <div className="shrink-0 border-b border-amber-500/20 bg-amber-500/8 px-5 py-2 text-[12px] text-amber-900 dark:text-amber-100 sm:px-6">
+          {session.runState === "paused"
+            ? t("deepResearchPausedHint")
+            : t("deepResearchFailedHint")}
         </div>
       ) : null}
 
@@ -1542,6 +1590,7 @@ function DetailBody({
           <PlanPane
             session={session}
             busy={busy || running}
+            running={running}
             readOnly={!planning}
             onSave={onSavePlan}
             onConfirm={onConfirmPlan}
@@ -1583,8 +1632,9 @@ function DetailBody({
                 </div>
                 <button
                   type="button"
+                  disabled={busy}
                   onClick={onWrite}
-                  className="inline-flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-full bg-emerald-600 px-4 text-[11px] font-semibold text-white hover:bg-emerald-500"
+                  className="inline-flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-full bg-emerald-600 px-4 text-[11px] font-semibold text-white hover:bg-emerald-500 disabled:opacity-40"
                 >
                   <BookOpen size={14} />
                   {t("deepResearchWriteReport")}
@@ -1661,7 +1711,18 @@ function DetailBody({
                     {leadStatus || t("deepResearchWriting")}
                   </div>
                 ) : (
-                  <div className="text-[13px] text-(--text-muted)">{t("deepResearchNoReport")}</div>
+                  <div className="flex flex-col items-start gap-3 text-[13px] text-(--text-muted)">
+                    <span>{t("deepResearchNoReport")}</span>
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={onWrite}
+                      className="inline-flex h-9 items-center gap-1.5 rounded-full bg-(--text-primary) px-4 text-[12px] font-semibold text-(--bg-primary) disabled:opacity-40"
+                    >
+                      <BookOpen size={14} />
+                      {t("deepResearchRetryWriting")}
+                    </button>
+                  </div>
                 )}
               </div>
             </div>
@@ -1712,6 +1773,7 @@ export function ResearchPanel() {
   const [viewMode, setViewMode] = useState("grid");
   const [sortMode, setSortMode] = useState("recent");
   const [loading, setLoading] = useState(false);
+  const [detailLoading, setDetailLoading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState("");
@@ -1722,44 +1784,82 @@ export function ResearchPanel() {
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [deleting, setDeleting] = useState(false);
   const streamRef = useRef(null);
+  const queryRef = useRef("");
+  const listRequestRef = useRef(0);
+  const sessionRequestRef = useRef(0);
 
   const isDetailView = Boolean(selectedId);
 
-  const refreshList = useCallback(async () => {
+  const refreshList = useCallback(async ({ signal } = {}) => {
+    const requestId = listRequestRef.current + 1;
+    listRequestRef.current = requestId;
     setLoading(true);
     try {
-      const data = await fetchResearchSessions(query);
+      const data = await fetchResearchSessions(queryRef.current, { signal });
+      if (requestId !== listRequestRef.current) return;
       setSessions(Array.isArray(data?.sessions) ? data.sessions : []);
     } catch (err) {
+      if (isAbortError(err) || requestId !== listRequestRef.current) return;
       setError(err?.message || String(err));
     } finally {
-      setLoading(false);
+      if (requestId === listRequestRef.current) setLoading(false);
     }
-  }, [query]);
+  }, []);
 
-  const loadSession = useCallback(async (id) => {
+  const loadSession = useCallback(async (id, { signal } = {}) => {
+    const requestId = sessionRequestRef.current + 1;
+    sessionRequestRef.current = requestId;
     if (!id) {
       setSession(null);
-      return;
+      setDetailLoading(false);
+      return null;
     }
-    const data = await fetchResearchSession(id);
+    setDetailLoading(true);
+    const data = await fetchResearchSession(id, { signal });
+    if (requestId !== sessionRequestRef.current) return null;
     setSession(data?.session || null);
     setRunning(Boolean(data?.running));
+    setDetailLoading(false);
+    return data;
   }, []);
 
   useEffect(() => {
-    refreshList().catch(() => {});
-  }, [refreshList]);
+    queryRef.current = query;
+    const controller = new AbortController();
+    const timer = window.setTimeout(
+      () => refreshList({ signal: controller.signal }).catch(() => {}),
+      query ? 250 : 0,
+    );
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [query, refreshList]);
 
   useEffect(() => {
     if (selectedId) {
-      loadSession(selectedId).catch((err) => setError(err.message || String(err)));
-      return;
+      const controller = new AbortController();
+      setSession(null);
+      setError("");
+      loadSession(selectedId, { signal: controller.signal }).catch((err) => {
+        if (!isAbortError(err)) {
+          setDetailLoading(false);
+          setError(err.message || String(err));
+        }
+      });
+      return () => {
+        controller.abort();
+        sessionRequestRef.current += 1;
+      };
     }
+    sessionRequestRef.current += 1;
     setSession(null);
+    setDetailLoading(false);
     setRunning(false);
+    setError("");
     setLiveScouts({});
     setLeadStatus("");
+    return undefined;
   }, [selectedId, loadSession]);
 
   useEffect(() => {
@@ -1795,6 +1895,7 @@ export function ResearchPanel() {
         if (payload.type === "session" && payload.session) setSession(payload.session);
         if (payload.type === "run:start" || payload.type === "run:status") {
           setRunning(true);
+          setError("");
           if (payload.type === "run:start") {
             setLiveScouts({});
             setLeadStatus(t("deepResearchRunning"));
@@ -1832,34 +1933,18 @@ export function ResearchPanel() {
         if (payload.type === "budget" && payload.delta) {
           setSession((prev) => {
             if (!prev) return prev;
-            const poolName = payload.pool || payload.delta.pool || "base";
-            const prevPools = prev.budgetUsed?.pools || {
-              base: { searches: 0, fetches: 0 },
-              followup: { searches: 0, fetches: 0 },
-            };
-            const nextPools = {
-              base: { ...(prevPools.base || { searches: 0, fetches: 0 }) },
-              followup: { ...(prevPools.followup || { searches: 0, fetches: 0 }) },
-            };
-            const active = poolName === "followup" ? "followup" : "base";
-            if (payload.delta.searches) {
-              nextPools[active].searches =
-                (Number(nextPools[active].searches) || 0) + (Number(payload.delta.searches) || 0);
-            }
-            if (payload.delta.fetches) {
-              nextPools[active].fetches =
-                (Number(nextPools[active].fetches) || 0) + (Number(payload.delta.fetches) || 0);
-            }
             const used = {
               ...(prev.budgetUsed || {}),
-              pools: nextPools,
-              searches: (Number(nextPools.base.searches) || 0) + (Number(nextPools.followup.searches) || 0),
-              fetches: (Number(nextPools.base.fetches) || 0) + (Number(nextPools.followup.fetches) || 0),
-              waves: Number(prev.budgetUsed?.waves) || 0,
+              searches:
+                (Number(prev.budgetUsed?.searches) || 0)
+                + (Number(payload.delta.searches) || 0),
+              fetches:
+                (Number(prev.budgetUsed?.fetches) || 0)
+                + (Number(payload.delta.fetches) || 0),
+              waves:
+                (Number(prev.budgetUsed?.waves) || 0)
+                + (Number(payload.delta.waves) || 0),
             };
-            if (payload.delta.waves) {
-              used.waves = used.waves + (Number(payload.delta.waves) || 0);
-            }
             return { ...prev, budgetUsed: used };
           });
           if (payload.scope === "scout") {
@@ -2030,6 +2115,7 @@ export function ResearchPanel() {
         if (payload.type === "aborted") {
           setRunning(false);
           setLeadStatus("");
+          loadSession(selectedId).catch(() => {});
         }
       } catch {
         // ignore
@@ -2056,6 +2142,25 @@ export function ResearchPanel() {
     return list;
   }, [sessions, activeFilter, sortMode]);
 
+  const performDetailAction = async (work, { optimisticRunning = false } = {}) => {
+    if (busy) return null;
+    setBusy(true);
+    setError("");
+    if (optimisticRunning) setRunning(true);
+    try {
+      const result = await work();
+      if (result?.session) setSession(result.session);
+      return result;
+    } catch (err) {
+      if (optimisticRunning) setRunning(false);
+      setError(err?.message || String(err));
+      if (selectedId) loadSession(selectedId).catch(() => {});
+      return null;
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const handleCreate = async (payload) => {
     setBusy(true);
     setError("");
@@ -2068,9 +2173,11 @@ export function ResearchPanel() {
         actions.openResearchSession(id);
         setSession(created.session);
         setRunning(true);
-        await startResearchRun(id, { phase: "planning" });
+        const started = await startResearchRun(id, { phase: "planning" });
+        if (started?.session) setSession(started.session);
       }
     } catch (err) {
+      setRunning(false);
       setError(err?.message || String(err));
     } finally {
       setBusy(false);
@@ -2154,6 +2261,8 @@ export function ResearchPanel() {
                     viewMode === "grid" ? "bg-primary/16 text-primary" : "text-(--text-secondary) hover:bg-(--bg-hover)",
                   )}
                   aria-pressed={viewMode === "grid"}
+                  aria-label={t("deepResearchGridView")}
+                  title={t("deepResearchGridView")}
                 >
                   <GridFour size={17} weight="bold" />
                 </button>
@@ -2165,6 +2274,8 @@ export function ResearchPanel() {
                     viewMode === "list" ? "bg-primary/16 text-primary" : "text-(--text-secondary) hover:bg-(--bg-hover)",
                   )}
                   aria-pressed={viewMode === "list"}
+                  aria-label={t("deepResearchListView")}
+                  title={t("deepResearchListView")}
                 >
                   <ListBullets size={17} weight="bold" />
                 </button>
@@ -2174,6 +2285,7 @@ export function ResearchPanel() {
                 <select
                   value={sortMode}
                   onChange={(e) => setSortMode(e.target.value)}
+                  aria-label={t("deepResearchSortLabel")}
                   className="h-10 appearance-none rounded-full border border-(--border-default) bg-(--bg-primary) pl-4 pr-9 text-[12px] font-medium text-(--text-secondary) outline-none hover:bg-(--bg-hover)"
                 >
                   <option value="recent">{t("deepResearchSortRecent")}</option>
@@ -2283,42 +2395,21 @@ export function ResearchPanel() {
         }}
       >
         <DialogContent
-          closeOnOutsideClick
-          className="flex h-[min(96dvh,1040px)] max-h-[calc(100dvh-1rem)] w-[calc(100vw-1rem)] max-w-[calc(100vw-1rem)] flex-col gap-0 overflow-hidden rounded-2xl p-0 sm:max-w-[calc(100vw-1rem)] xl:max-w-[1480px]"
+          className="grid h-[calc(100dvh-0.5rem)] max-h-[1040px] w-[calc(100vw-0.5rem)] max-w-[calc(100vw-0.5rem)] grid-rows-[auto_minmax(0,1fr)] gap-0 overflow-hidden rounded-2xl p-0 sm:h-[min(96vh,1040px)] sm:w-[calc(100vw-1rem)] sm:max-w-[calc(100vw-1rem)] xl:max-w-[1560px]"
         >
-          <DialogHeader className="shrink-0 border-b border-(--border-default) px-4 pt-4 pb-3 sm:px-6 sm:pt-5 sm:pb-4">
-            <div className="flex min-w-0 items-start gap-3">
-              <Button
-                type="button"
-                variant="close"
-                size="icon"
-                className="mt-0.5 shrink-0"
-                aria-label={t("deepResearchBack")}
-                onClick={() => actions.openResearchHome()}
-              >
-                <ArrowLeft />
-              </Button>
-              <div className="min-w-0 flex-1">
-                <DialogTitle className="text-[18px] leading-7 sm:text-[20px]">
-                  {session?.question || t("deepResearchLoading")}
-                </DialogTitle>
-                {session ? (
-                  <DialogDescription className="mt-1 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-                    <span className={cn("rounded-full px-2 py-0.5 text-[11px] font-medium", phaseChipClass(session.phase))}>
-                      {phaseLabel(session.phase)}
-                    </span>
-                    <span aria-hidden="true">·</span>
-                    <span>{formatDate(session.updatedAt)}</span>
-                    {session.preferences?.goal ? (
-                      <>
-                        <span aria-hidden="true">·</span>
-                        <span className="min-w-0 truncate">{session.preferences.goal}</span>
-                      </>
-                    ) : null}
-                  </DialogDescription>
-                ) : null}
-              </div>
-            </div>
+          <DialogHeader className="shrink-0 px-5 pb-3 pt-5 sm:px-6">
+            <DialogTitle className="pr-2 text-[20px] leading-7">
+              {session?.question || t("deepResearchLoading")}
+            </DialogTitle>
+            {session ? (
+              <DialogDescription className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+                <span className={cn("rounded-full px-2 py-0.5 text-[11px] font-medium", phaseChipClass(session.phase))}>
+                  {phaseLabel(session.phase)}
+                </span>
+                <span aria-hidden="true">·</span>
+                <span>{formatDate(session.updatedAt)}</span>
+              </DialogDescription>
+            ) : null}
           </DialogHeader>
 
           {session ? (
@@ -2331,39 +2422,65 @@ export function ResearchPanel() {
                 liveScouts={liveScouts}
                 leadStatus={leadStatus}
                 onSavePlan={async (plan) => {
-                  const res = await updateResearchPlan(session.id, plan);
-                  setSession(res.session);
+                  await performDetailAction(
+                    () => updateResearchPlan(session.id, plan),
+                  );
                 }}
                 onConfirmPlan={async (plan) => {
-                  setBusy(true);
-                  try {
+                  await performDetailAction(async () => {
                     const res = await confirmResearchPlan(session.id, plan);
-                    setSession(res.session);
-                    setRunning(true);
-                    await startResearchRun(session.id, { phase: "investigating" });
-                  } finally {
-                    setBusy(false);
-                  }
+                    const started = await startResearchRun(session.id, { phase: "investigating" });
+                    return started?.session ? started : res;
+                  }, { optimisticRunning: true });
                 }}
                 onReplan={async () => {
-                  setRunning(true);
-                  await startResearchRun(session.id, { phase: "planning" });
+                  await performDetailAction(
+                    () => startResearchRun(session.id, { phase: "planning" }),
+                    { optimisticRunning: true },
+                  );
                 }}
                 onContinue={async () => {
-                  setRunning(true);
-                  await startResearchRun(session.id, { phase: "investigating" });
+                  await performDetailAction(
+                    () => startResearchRun(session.id, { phase: "investigating" }),
+                    { optimisticRunning: true },
+                  );
                 }}
                 onWrite={async () => {
-                  setRunning(true);
-                  await startResearchRun(session.id, { phase: "writing" });
+                  await performDetailAction(
+                    () => startResearchRun(session.id, { phase: "writing" }),
+                    { optimisticRunning: true },
+                  );
                 }}
-                onAbort={() => abortResearchRun(session.id)}
+                onAbort={async () => {
+                  await performDetailAction(async () => {
+                    const result = await abortResearchRun(session.id);
+                    if (!result?.ok) throw new Error(t("deepResearchNothingToStop"));
+                    setLeadStatus(t("deepResearchPausing"));
+                    return result;
+                  });
+                }}
               />
             </div>
           ) : (
-            <div className="flex min-h-0 flex-1 items-center justify-center text-[13px] text-(--text-muted)">
-              <CircleNotch size={18} className="mr-2 animate-spin" />
-              {t("deepResearchLoading")}
+            <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 px-6 text-center text-[13px] text-(--text-muted)">
+              {detailLoading ? (
+                <>
+                  <CircleNotch size={18} className="animate-spin" />
+                  {t("deepResearchLoading")}
+                </>
+              ) : (
+                <>
+                  <WarningCircle size={24} weight="fill" className="text-accent-red" />
+                  <span>{error || t("deepResearchSessionUnavailable")}</span>
+                  <button
+                    type="button"
+                    className="inline-flex h-9 items-center rounded-full border border-(--border-default) px-4 text-[12px] font-medium text-(--text-secondary) hover:bg-(--bg-hover)"
+                    onClick={() => actions.openResearchHome()}
+                  >
+                    {t("deepResearchBackToLibrary")}
+                  </button>
+                </>
+              )}
             </div>
           )}
         </DialogContent>

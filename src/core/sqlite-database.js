@@ -3,7 +3,7 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { getBaseConfigDir, getProjectIndexDir } from './paths.js';
 
-const GLOBAL_SCHEMA_VERSION = 8;
+const GLOBAL_SCHEMA_VERSION = 9;
 const PROJECT_SCHEMA_VERSION = 5;
 const databases = new Map();
 
@@ -174,6 +174,9 @@ function createGlobalSchema(db, currentVersion = 0) {
       budget_json TEXT NOT NULL DEFAULT '{}',
       budget_used_json TEXT NOT NULL DEFAULT '{}',
       phase TEXT NOT NULL DEFAULT 'planning',
+      run_state TEXT NOT NULL DEFAULT 'idle',
+      last_run_phase TEXT NOT NULL DEFAULT '',
+      last_error TEXT NOT NULL DEFAULT '',
       plan_json TEXT NOT NULL DEFAULT '{}',
       timeline_json TEXT NOT NULL DEFAULT '[]',
       report_markdown TEXT NOT NULL DEFAULT ''
@@ -265,6 +268,21 @@ function createGlobalSchema(db, currentVersion = 0) {
       .map((row) => String(row.name || ''));
     if (evidenceColumns.length > 0 && !evidenceColumns.includes('origin_candidate_id')) {
       db.exec(`ALTER TABLE research_evidence ADD COLUMN origin_candidate_id TEXT NOT NULL DEFAULT ''`);
+    }
+  }
+  if (currentVersion < 9) {
+    const researchColumns = db
+      .prepare(`SELECT name FROM pragma_table_info('research_sessions')`)
+      .all()
+      .map((row) => String(row.name || ''));
+    if (researchColumns.length > 0 && !researchColumns.includes('run_state')) {
+      db.exec(`ALTER TABLE research_sessions ADD COLUMN run_state TEXT NOT NULL DEFAULT 'idle'`);
+    }
+    if (researchColumns.length > 0 && !researchColumns.includes('last_run_phase')) {
+      db.exec(`ALTER TABLE research_sessions ADD COLUMN last_run_phase TEXT NOT NULL DEFAULT ''`);
+    }
+    if (researchColumns.length > 0 && !researchColumns.includes('last_error')) {
+      db.exec(`ALTER TABLE research_sessions ADD COLUMN last_error TEXT NOT NULL DEFAULT ''`);
     }
   }
   db.exec(`

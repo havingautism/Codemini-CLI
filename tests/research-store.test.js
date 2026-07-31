@@ -22,6 +22,7 @@ import {
   planResearchBudget,
   reserveResearchBudget,
   updateResearchScoutRun,
+  updateResearchRunState,
   updateResearchWave,
   updateResearchSession,
   validateResearchPlanByDepth,
@@ -126,6 +127,34 @@ test('research session create confirm commit and summaries', async () => {
     const pack = buildResearchWritingPack(detail);
     assert.match(pack, /Accepted evidence/);
     assert.match(pack, /\$12\.0 billion/);
+  });
+});
+
+test('research run state persists the failed or paused phase independently', async () => {
+  await withGlobalDir(async () => {
+    const session = createResearchSession({ question: 'Recoverable research?' });
+    assert.equal(session.runState, 'idle');
+    assert.equal(session.lastRunPhase, '');
+    assert.equal(session.lastError, '');
+
+    const running = updateResearchRunState(session.id, {
+      state: 'running',
+      phase: 'planning',
+      error: '',
+    });
+    assert.equal(running.phase, 'planning');
+    assert.equal(running.runState, 'running');
+    assert.equal(running.lastRunPhase, 'planning');
+
+    const failed = updateResearchRunState(session.id, {
+      state: 'failed',
+      phase: 'planning',
+      error: 'planner unavailable',
+    });
+    assert.equal(failed.phase, 'planning');
+    assert.equal(failed.runState, 'failed');
+    assert.equal(failed.lastRunPhase, 'planning');
+    assert.equal(failed.lastError, 'planner unavailable');
   });
 });
 

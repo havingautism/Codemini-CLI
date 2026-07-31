@@ -250,6 +250,8 @@ const CREATED_FROM = new Set(['scout_handoff', 'lead_direct', 'seed']);
 const UNFINISHED_STATUSES = new Set(['pending', 'in_progress', 'open', 'partial', 'blocked']);
 const WAVE_STATUSES = new Set(['running', 'evaluating', 'completed', 'failed', 'aborted']);
 const SCOUT_RUN_STATUSES = new Set(['running', 'done', 'partial', 'blocked', 'failed', 'aborted']);
+const RESEARCH_RUN_STATES = new Set(['idle', 'running', 'paused', 'failed', 'completed']);
+const RESEARCH_RUN_PHASES = new Set(['planning', 'investigating', 'writing']);
 
 function nowIso() {
   return new Date().toISOString();
@@ -334,6 +336,16 @@ function normalizeConfidence(value) {
   return CONFIDENCE_LEVELS.has(raw) ? raw : 'medium';
 }
 
+function normalizeResearchRunState(value) {
+  const state = String(value || 'idle').toLowerCase();
+  return RESEARCH_RUN_STATES.has(state) ? state : 'idle';
+}
+
+function normalizeResearchRunPhase(value) {
+  const phase = String(value || '').toLowerCase();
+  return RESEARCH_RUN_PHASES.has(phase) ? phase : '';
+}
+
 function mapSession(row) {
   if (!row) return null;
   return {
@@ -346,6 +358,9 @@ function mapSession(row) {
     budget: normalizeBudget(parseJson(row.budget_json, {})),
     budgetUsed: normalizeBudgetUsed(parseJson(row.budget_used_json, {})),
     phase: row.phase || 'planning',
+    runState: normalizeResearchRunState(row.run_state),
+    lastRunPhase: normalizeResearchRunPhase(row.last_run_phase),
+    lastError: row.last_error || '',
     plan: parseJson(row.plan_json, {}) || {},
     timeline: Array.isArray(parseJson(row.timeline_json, [])) ? parseJson(row.timeline_json, []) : [],
     reportMarkdown: row.report_markdown || '',
@@ -515,6 +530,13 @@ export function updateResearchSession(sessionId, patch = {}) {
       ? normalizeBudgetUsed(patch.budgetUsed)
       : current.budgetUsed,
     phase: patch.phase != null ? String(patch.phase) : current.phase,
+    runState: patch.runState != null
+      ? normalizeResearchRunState(patch.runState)
+      : current.runState,
+    lastRunPhase: patch.lastRunPhase != null
+      ? normalizeResearchRunPhase(patch.lastRunPhase)
+      : current.lastRunPhase,
+    lastError: patch.lastError != null ? String(patch.lastError) : current.lastError,
     plan: patch.plan != null ? patch.plan : current.plan,
     timeline: patch.timeline != null
       ? (Array.isArray(patch.timeline) ? patch.timeline : current.timeline)
@@ -527,8 +549,9 @@ export function updateResearchSession(sessionId, patch = {}) {
   getGlobalDatabase().prepare(`
     UPDATE research_sessions
     SET updated_at = ?, question = ?, preferences_json = ?, seed_json = ?,
-        budget_json = ?, budget_used_json = ?, phase = ?, plan_json = ?,
-        timeline_json = ?, report_markdown = ?
+        budget_json = ?, budget_used_json = ?, phase = ?, run_state = ?,
+        last_run_phase = ?, last_error = ?, plan_json = ?, timeline_json = ?,
+        report_markdown = ?
     WHERE id = ?
   `).run(
     now,
@@ -538,12 +561,27 @@ export function updateResearchSession(sessionId, patch = {}) {
     toJson(next.budget),
     toJson(next.budgetUsed),
     next.phase,
+    next.runState,
+    next.lastRunPhase,
+    next.lastError,
     toJson(next.plan || {}),
     toJson(next.timeline || []),
     next.reportMarkdown,
     current.id,
   );
   return getResearchSession(current.id);
+}
+
+export function updateResearchRunState(sessionId, {
+  state,
+  phase,
+  error,
+} = {}) {
+  return updateResearchSession(sessionId, {
+    runState: state,
+    lastRunPhase: phase,
+    lastError: error == null ? undefined : String(error),
+  });
 }
 
 export function appendResearchTimeline(sessionId, entry) {
@@ -904,7 +942,8 @@ export function confirmResearchPlan(sessionId, planOverride = null) {
     db.prepare(`
       UPDATE research_sessions
       SET updated_at = ?, phase = 'investigating', plan_json = ?, preferences_json = ?,
-          timeline_json = '[]', budget_json = ?, budget_used_json = ?
+          timeline_json = '[]', budget_json = ?, budget_used_json = ?, run_state = 'idle',
+          last_run_phase = 'investigating', last_error = ''
       WHERE id = ?
     `).run(
       now,
