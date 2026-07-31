@@ -770,6 +770,73 @@ export async function buildScrapbookAskPayload(entryId) {
   return res.json();
 }
 
+// ── Deep Research ──
+export async function fetchResearchSessions(query = '') {
+  const q = String(query || '').trim();
+  const queryString = q ? `q=${encodeURIComponent(q)}` : '';
+  const res = await api(`/api/research/sessions${queryString ? `?${queryString}` : ''}`);
+  return res.json();
+}
+
+export async function fetchResearchSession(sessionId) {
+  const res = await api(`/api/research/sessions/${encodeURIComponent(sessionId)}`);
+  return res.json();
+}
+
+export async function createResearchSession(payload = {}) {
+  const res = await api('/api/research/sessions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  return res.json();
+}
+
+export async function updateResearchPlan(sessionId, plan) {
+  const res = await api(`/api/research/sessions/${encodeURIComponent(sessionId)}/plan`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ plan }),
+  });
+  return res.json();
+}
+
+export async function confirmResearchPlan(sessionId, plan) {
+  const res = await api(`/api/research/sessions/${encodeURIComponent(sessionId)}/confirm-plan`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(plan ? { plan } : {}),
+  });
+  return res.json();
+}
+
+export async function startResearchRun(sessionId, payload = {}) {
+  const res = await api(`/api/research/sessions/${encodeURIComponent(sessionId)}/run`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  return res.json();
+}
+
+export async function abortResearchRun(sessionId) {
+  const res = await api(`/api/research/sessions/${encodeURIComponent(sessionId)}/abort`, {
+    method: 'POST',
+  });
+  return res.json();
+}
+
+export async function deleteResearchSession(sessionId) {
+  const res = await api(`/api/research/sessions/${encodeURIComponent(sessionId)}`, {
+    method: 'DELETE',
+  });
+  return res.json();
+}
+
+export function openResearchRunStream(sessionId) {
+  return new EventSource(`/api/research/sessions/${encodeURIComponent(sessionId)}/stream`);
+}
+
 // ── Souls ──
 export async function fetchSouls() {
   const res = await api('/api/souls');

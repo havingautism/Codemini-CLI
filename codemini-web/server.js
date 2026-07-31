@@ -64,6 +64,17 @@ import {
   startScrapbookSummaryJob,
   subscribeScrapbookSummaryJob,
 } from './lib/scrapbook-service.js';
+import {
+  abortResearchSessionForApi,
+  confirmResearchPlanForApi,
+  createResearchSessionForApi,
+  deleteResearchSessionForApi,
+  getResearchSessionForApi,
+  listResearchSessionsForApi,
+  startResearchRunForApi,
+  subscribeResearchRun,
+  updateResearchPlanForApi,
+} from './lib/research-service.js';
 import { createPooledSessionEnsurer } from './lib/pooled-session-ensurer.js';
 import { loadSessionForSwitch } from './lib/session-switch-loader.js';
 import { resolveEmbed } from './lib/embed-resolver.js';
@@ -3040,6 +3051,99 @@ async function main() {
         jsonResponse(res, { error: true, message: err.message }, 500);
       }
       return;
+    }
+
+    // ── Deep Research ──
+    if (req.method === 'GET' && url.pathname === '/api/research/sessions') {
+      const query = String(url.searchParams.get('q') || '').trim();
+      jsonResponse(res, listResearchSessionsForApi({ query }));
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/api/research/sessions') {
+      try {
+        const body = await readBody(req);
+        jsonResponse(res, createResearchSessionForApi(body || {}));
+      } catch (error) {
+        jsonResponse(res, { error: true, message: error?.message || 'Failed to create research session' }, 400);
+      }
+      return;
+    }
+    if (req.method === 'GET' && url.pathname.startsWith('/api/research/sessions/') && url.pathname.endsWith('/stream')) {
+      const sessionId = decodeURIComponent(
+        url.pathname.slice('/api/research/sessions/'.length, -'/stream'.length),
+      );
+      subscribeResearchRun(sessionId, res);
+      return;
+    }
+    if (req.method === 'POST' && url.pathname.startsWith('/api/research/sessions/') && url.pathname.endsWith('/run')) {
+      const sessionId = decodeURIComponent(
+        url.pathname.slice('/api/research/sessions/'.length, -'/run'.length),
+      );
+      try {
+        const body = await readBody(req);
+        const config = await loadConfig();
+        jsonResponse(res, await startResearchRunForApi(sessionId, {
+          phase: body?.phase,
+          userPrompt: body?.userPrompt,
+          model: body?.model,
+          config,
+          workspaceRoot: currentProjectDir || process.cwd(),
+        }));
+      } catch (error) {
+        jsonResponse(res, { error: true, message: error?.message || 'Failed to start research run' }, 400);
+      }
+      return;
+    }
+    if (req.method === 'POST' && url.pathname.startsWith('/api/research/sessions/') && url.pathname.endsWith('/abort')) {
+      const sessionId = decodeURIComponent(
+        url.pathname.slice('/api/research/sessions/'.length, -'/abort'.length),
+      );
+      jsonResponse(res, abortResearchSessionForApi(sessionId));
+      return;
+    }
+    if (req.method === 'POST' && url.pathname.startsWith('/api/research/sessions/') && url.pathname.endsWith('/confirm-plan')) {
+      const sessionId = decodeURIComponent(
+        url.pathname.slice('/api/research/sessions/'.length, -'/confirm-plan'.length),
+      );
+      try {
+        const body = await readBody(req);
+        jsonResponse(res, confirmResearchPlanForApi(sessionId, body || {}));
+      } catch (error) {
+        jsonResponse(res, { error: true, message: error?.message || 'Failed to confirm plan' }, 400);
+      }
+      return;
+    }
+    if (req.method === 'PATCH' && url.pathname.startsWith('/api/research/sessions/') && url.pathname.endsWith('/plan')) {
+      const sessionId = decodeURIComponent(
+        url.pathname.slice('/api/research/sessions/'.length, -'/plan'.length),
+      );
+      try {
+        const body = await readBody(req);
+        jsonResponse(res, updateResearchPlanForApi(sessionId, body || {}));
+      } catch (error) {
+        jsonResponse(res, { error: true, message: error?.message || 'Failed to update plan' }, 400);
+      }
+      return;
+    }
+    if (req.method === 'GET' && url.pathname.startsWith('/api/research/sessions/')) {
+      const sessionId = decodeURIComponent(url.pathname.slice('/api/research/sessions/'.length));
+      if (!sessionId.includes('/')) {
+        const payload = getResearchSessionForApi(sessionId);
+        if (!payload) jsonResponse(res, { error: true, message: 'Not found' }, 404);
+        else jsonResponse(res, payload);
+        return;
+      }
+    }
+    if (req.method === 'DELETE' && url.pathname.startsWith('/api/research/sessions/')) {
+      const sessionId = decodeURIComponent(url.pathname.slice('/api/research/sessions/'.length));
+      if (!sessionId.includes('/')) {
+        try {
+          jsonResponse(res, deleteResearchSessionForApi(sessionId));
+        } catch (error) {
+          jsonResponse(res, { error: true, message: error?.message || 'Failed to delete' }, 404);
+        }
+        return;
+      }
     }
 
     // ── Scrapbook ──

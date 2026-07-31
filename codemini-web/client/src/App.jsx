@@ -68,6 +68,11 @@ const ScrapbookPanel = lazy(() =>
     default: module.ScrapbookPanel,
   })),
 );
+const ResearchPanel = lazy(() =>
+  import("@/components/ResearchPanel.jsx").then((module) => ({
+    default: module.ResearchPanel,
+  })),
+);
 const SoulDialog = lazy(() =>
   import("@/components/SoulDialog.jsx").then((module) => ({
     default: module.SoulDialog,
@@ -225,6 +230,7 @@ function Shell() {
   const openHooks = useCallback(() => actions.setHooksOpen(true), [actions]);
   const openMemory = useCallback(() => actions.setMemoryOpen(true), [actions]);
   const openScrapbook = useCallback(() => actions.switchView("scrapbook"), [actions]);
+  const openResearch = useCallback(() => actions.openResearchHome(), [actions]);
   const openSouls = useCallback(() => actions.setSoulsOpen(true), [actions]);
   const retryMessage = useCallback((prompt) => actions.submit(prompt), [actions]);
   const openAbout = useCallback(() => actions.setAboutOpen(true), [actions]);
@@ -279,6 +285,7 @@ function Shell() {
         onOpenHooks={openHooks}
         onOpenMemory={openMemory}
         onOpenScrapbook={openScrapbook}
+        onOpenResearch={openResearch}
         onOpenSouls={openSouls}
         onOpenAbout={openAbout}
         gitBatch={state.gitBatch}
@@ -365,6 +372,36 @@ function Shell() {
             </div>
             <Suspense fallback={null}>
               <ScrapbookPanel />
+            </Suspense>
+          </div>
+        ) : state.currentView === "research" ? (
+          <div className="flex flex-1 flex-col min-h-0 overflow-hidden">
+            <div className="flex h-12 shrink-0 items-center gap-2 border-b border-(--border-primary) px-3 md:px-4">
+              <button
+                type="button"
+                className="inline-flex size-8 items-center justify-center rounded-md border-0 bg-transparent text-(--text-muted) hover:bg-(--bg-hover) hover:text-(--text-primary) md:hidden"
+                aria-label={t("menu")}
+                onClick={() => setMobileSidebarOpen(true)}
+              >
+                <SidebarSimple size={16} />
+              </button>
+              {sidebarCollapsed ? (
+                <button
+                  type="button"
+                  className="hidden size-8 shrink-0 items-center justify-center rounded-md border-0 bg-transparent text-(--text-muted) hover:bg-(--bg-hover) hover:text-(--text-primary) md:inline-flex"
+                  aria-label={t("expandSidebar")}
+                  title={t("expandSidebar")}
+                  onClick={() => setSidebarCollapsedAndPersist(false)}
+                >
+                  <SidebarSimple size={16} />
+                </button>
+              ) : null}
+              <span className="truncate text-[14px] font-medium text-(--text-primary)">
+                {t("deepResearch")}
+              </span>
+            </div>
+            <Suspense fallback={null}>
+              <ResearchPanel />
             </Suspense>
           </div>
         ) : state.currentView === "codewiki" ? (

@@ -16,6 +16,7 @@ import {
   Monitor,
   Moon,
   Notebook,
+  MagnifyingGlass,
   PencilLine,
   PlugsConnected,
   Plus,
@@ -241,6 +242,7 @@ export function Sidebar({
   onOpenHooks,
   onOpenMemory,
   onOpenScrapbook,
+  onOpenResearch,
   onOpenSouls,
   onOpenAbout,
   gitBatch,
@@ -652,6 +654,20 @@ export function Sidebar({
             className="text-(--text-secondary) shrink-0"
           />
           <span className="truncate">{t("scrapbook")}</span>
+        </button>
+        <button
+          className={cn(
+            "w-full border-0 bg-transparent flex items-center gap-2.5 h-[30px] px-2 rounded-md cursor-pointer text-left text-[13px] hover:bg-(--bg-hover)",
+            currentView === "research" ? "bg-(--bg-hover) text-(--text-primary)" : "text-(--text-primary)",
+          )}
+          onClick={onOpenResearch}
+        >
+          <MagnifyingGlass
+            size={15}
+            strokeWidth={2}
+            className="text-(--text-secondary) shrink-0"
+          />
+          <span className="truncate">{t("deepResearch")}</span>
         </button>
         <Separator className="my-1.5 bg-transparent" />
       </div>

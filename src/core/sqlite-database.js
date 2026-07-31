@@ -3,7 +3,7 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { getBaseConfigDir, getProjectIndexDir } from './paths.js';
 
-const GLOBAL_SCHEMA_VERSION = 6;
+const GLOBAL_SCHEMA_VERSION = 8;
 const PROJECT_SCHEMA_VERSION = 5;
 const databases = new Map();
 
@@ -163,6 +163,114 @@ function createGlobalSchema(db, currentVersion = 0) {
     ) STRICT;
     CREATE INDEX IF NOT EXISTS scrapbook_summary_jobs_entry_idx
       ON scrapbook_summary_jobs(entry_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS research_sessions (
+      id TEXT PRIMARY KEY,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      question TEXT NOT NULL DEFAULT '',
+      preferences_json TEXT NOT NULL DEFAULT '{}',
+      seed_json TEXT NOT NULL DEFAULT '[]',
+      budget_json TEXT NOT NULL DEFAULT '{}',
+      budget_used_json TEXT NOT NULL DEFAULT '{}',
+      phase TEXT NOT NULL DEFAULT 'planning',
+      plan_json TEXT NOT NULL DEFAULT '{}',
+      timeline_json TEXT NOT NULL DEFAULT '[]',
+      report_markdown TEXT NOT NULL DEFAULT ''
+    ) STRICT;
+    CREATE INDEX IF NOT EXISTS research_sessions_updated_idx
+      ON research_sessions(updated_at DESC, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS research_questions (
+      id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL REFERENCES research_sessions(id) ON DELETE CASCADE,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      ordinal INTEGER NOT NULL DEFAULT 0,
+      text TEXT NOT NULL DEFAULT '',
+      success_criteria_json TEXT NOT NULL DEFAULT '[]',
+      depends_on_json TEXT NOT NULL DEFAULT '[]',
+      status TEXT NOT NULL DEFAULT 'pending',
+      criteria_met_json TEXT NOT NULL DEFAULT '[]',
+      gaps_json TEXT NOT NULL DEFAULT '[]',
+      last_scout_at TEXT NOT NULL DEFAULT ''
+    ) STRICT;
+    CREATE INDEX IF NOT EXISTS research_questions_session_idx
+      ON research_questions(session_id, ordinal);
+
+    CREATE TABLE IF NOT EXISTS research_evidence (
+      id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL REFERENCES research_sessions(id) ON DELETE CASCADE,
+      question_id TEXT NOT NULL REFERENCES research_questions(id) ON DELETE CASCADE,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      claim TEXT NOT NULL DEFAULT '',
+      snippet TEXT NOT NULL DEFAULT '',
+      url TEXT NOT NULL DEFAULT '',
+      source_label TEXT NOT NULL DEFAULT '',
+      confidence TEXT NOT NULL DEFAULT 'medium',
+      status TEXT NOT NULL DEFAULT 'accepted',
+      created_from TEXT NOT NULL DEFAULT 'scout_handoff',
+      origin_candidate_id TEXT NOT NULL DEFAULT ''
+    ) STRICT;
+    CREATE INDEX IF NOT EXISTS research_evidence_session_idx
+      ON research_evidence(session_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS research_evidence_question_idx
+      ON research_evidence(question_id, status);
+
+    CREATE TABLE IF NOT EXISTS research_waves (
+      id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL REFERENCES research_sessions(id) ON DELETE CASCADE,
+      wave_no INTEGER NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      started_at TEXT NOT NULL DEFAULT '',
+      completed_at TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'running',
+      targets_json TEXT NOT NULL DEFAULT '[]',
+      evaluation_json TEXT NOT NULL DEFAULT '{}',
+      UNIQUE(session_id, wave_no)
+    ) STRICT;
+    CREATE INDEX IF NOT EXISTS research_waves_session_idx
+      ON research_waves(session_id, wave_no);
+
+    CREATE TABLE IF NOT EXISTS research_scout_runs (
+      id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL REFERENCES research_sessions(id) ON DELETE CASCADE,
+      wave_id TEXT NOT NULL REFERENCES research_waves(id) ON DELETE CASCADE,
+      question_id TEXT NOT NULL REFERENCES research_questions(id) ON DELETE CASCADE,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      completed_at TEXT NOT NULL DEFAULT '',
+      name TEXT NOT NULL DEFAULT 'Scout',
+      status TEXT NOT NULL DEFAULT 'running',
+      ledger_json TEXT NOT NULL DEFAULT '{}',
+      decision_json TEXT NOT NULL DEFAULT '{}',
+      handoff_markdown TEXT NOT NULL DEFAULT '',
+      search_count INTEGER NOT NULL DEFAULT 0,
+      fetch_count INTEGER NOT NULL DEFAULT 0,
+      committed_candidate_ids_json TEXT NOT NULL DEFAULT '[]',
+      committed_evidence_ids_json TEXT NOT NULL DEFAULT '[]',
+      error_text TEXT NOT NULL DEFAULT ''
+    ) STRICT;
+    CREATE INDEX IF NOT EXISTS research_scout_runs_wave_idx
+      ON research_scout_runs(wave_id, created_at);
+    CREATE INDEX IF NOT EXISTS research_scout_runs_question_idx
+      ON research_scout_runs(question_id, created_at DESC);
+  `);
+  if (currentVersion < 8) {
+    const evidenceColumns = db
+      .prepare(`SELECT name FROM pragma_table_info('research_evidence')`)
+      .all()
+      .map((row) => String(row.name || ''));
+    if (evidenceColumns.length > 0 && !evidenceColumns.includes('origin_candidate_id')) {
+      db.exec(`ALTER TABLE research_evidence ADD COLUMN origin_candidate_id TEXT NOT NULL DEFAULT ''`);
+    }
+  }
+  db.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS research_evidence_candidate_idx
+      ON research_evidence(session_id, origin_candidate_id)
+      WHERE origin_candidate_id <> '';
   `);
   if (currentVersion < 2) {
     db.exec(`

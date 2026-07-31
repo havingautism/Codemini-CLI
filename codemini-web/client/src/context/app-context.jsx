@@ -178,6 +178,7 @@ function parseRoute() {
   const params = new URLSearchParams(window.location.search);
   const chatMatch = path.match(/^\/chat\/([^/]+)$/);
   const scrapbookMatch = path.match(/^\/scrapbook\/([^/]+)$/);
+  const researchMatch = path.match(/^\/research\/([^/]+)$/);
   if (chatMatch)
     return {
       view: "chat",
@@ -192,6 +193,13 @@ function parseRoute() {
     };
   }
   if (path === "/scrapbook") return { view: "scrapbook" };
+  if (researchMatch) {
+    return {
+      view: "research",
+      researchSessionId: decodeURIComponent(researchMatch[1]),
+    };
+  }
+  if (path === "/research") return { view: "research" };
   if (path === "/codewiki")
     return { view: "codewiki", projectPath: params.get("project") || "" };
   return { view: "chat" };
@@ -204,6 +212,12 @@ function routeFor(view, sessionId, options = {}) {
     return scrapbookEntryId
       ? `/scrapbook/${encodeURIComponent(scrapbookEntryId)}`
       : "/scrapbook";
+  }
+  if (view === "research") {
+    const researchSessionId = String(options.researchSessionId || "").trim();
+    return researchSessionId
+      ? `/research/${encodeURIComponent(researchSessionId)}`
+      : "/research";
   }
   if (view === "codewiki") {
     const projectPath = String(options.projectPath || "").trim();
@@ -220,15 +234,16 @@ function routeFor(view, sessionId, options = {}) {
 function updateRoute(
   view,
   sessionId,
-  { replace = false, projectPath = "", scrapbookEntryId = "", messageId = "" } = {},
+  { replace = false, projectPath = "", scrapbookEntryId = "", researchSessionId = "", messageId = "" } = {},
 ) {
-  const next = routeFor(view, sessionId, { projectPath, scrapbookEntryId, messageId });
+  const next = routeFor(view, sessionId, { projectPath, scrapbookEntryId, researchSessionId, messageId });
   if (`${window.location.pathname}${window.location.search}` === next) return;
   const st = {
     view,
     sessionId: sessionId || null,
     projectPath: projectPath || null,
     scrapbookEntryId: scrapbookEntryId || null,
+    researchSessionId: researchSessionId || null,
     targetMessageId: messageId || null,
   };
   if (replace) window.history.replaceState(st, "", next);
@@ -246,6 +261,7 @@ const initialState = {
   busy: false,
   currentView: "chat",
   scrapbookEntryId: null,
+  researchSessionId: null,
   targetMessageId: null,
   pendingScrapbookContext: null,
   runtimeState: null,
@@ -2851,6 +2867,10 @@ export function AppProvider({ children }) {
           route.view === "scrapbook"
             ? route.scrapbookEntryId || null
             : stateRef.current.scrapbookEntryId,
+        researchSessionId:
+          route.view === "research"
+            ? route.researchSessionId || null
+            : stateRef.current.researchSessionId,
         codewikiProjectPath:
           route.view === "codewiki"
             ? route.projectPath || ""
@@ -2959,6 +2979,10 @@ export function AppProvider({ children }) {
           route.view === "scrapbook"
             ? route.scrapbookEntryId || null
             : stateRef.current.scrapbookEntryId,
+        researchSessionId:
+          route.view === "research"
+            ? route.researchSessionId || null
+            : stateRef.current.researchSessionId,
         codewikiProjectPath:
           route.view === "codewiki"
             ? route.projectPath || ""
@@ -4044,13 +4068,18 @@ export function AppProvider({ children }) {
             : stateRef.current.codewikiProjectPath;
         const scrapbookEntryId =
           view === "scrapbook" ? options.scrapbookEntryId || null : null;
-        update({ currentView: view, codewikiProjectPath, scrapbookEntryId, targetMessageId: null });
+        const researchSessionId =
+          view === "research" ? options.researchSessionId || null : null;
+        update({ currentView: view, codewikiProjectPath, scrapbookEntryId, researchSessionId, targetMessageId: null });
         if (view === "codewiki") {
           updateRoute(view, null, { projectPath: codewikiProjectPath });
         }
         if (view === "sessions") updateRoute(view, null);
         if (view === "scrapbook") {
           updateRoute(view, null, { scrapbookEntryId });
+        }
+        if (view === "research") {
+          updateRoute(view, null, { researchSessionId });
         }
         if (view === "chat") {
           const rs = stateRef.current.runtimeState;
@@ -4059,14 +4088,25 @@ export function AppProvider({ children }) {
       },
 
       openScrapbookHome: () => {
-        update({ currentView: "scrapbook", scrapbookEntryId: null, targetMessageId: null });
+        update({ currentView: "scrapbook", scrapbookEntryId: null, researchSessionId: null, targetMessageId: null });
         updateRoute("scrapbook", null, { scrapbookEntryId: "" });
       },
 
       openScrapbookEntry: (entryId) => {
         const scrapbookEntryId = String(entryId || "").trim();
-        update({ currentView: "scrapbook", scrapbookEntryId, targetMessageId: null });
+        update({ currentView: "scrapbook", scrapbookEntryId, researchSessionId: null, targetMessageId: null });
         updateRoute("scrapbook", null, { scrapbookEntryId });
+      },
+
+      openResearchHome: () => {
+        update({ currentView: "research", researchSessionId: null, scrapbookEntryId: null, targetMessageId: null });
+        updateRoute("research", null, { researchSessionId: "" });
+      },
+
+      openResearchSession: (sessionId) => {
+        const researchSessionId = String(sessionId || "").trim();
+        update({ currentView: "research", researchSessionId, scrapbookEntryId: null, targetMessageId: null });
+        updateRoute("research", null, { researchSessionId });
       },
 
       toggleTheme: () => {

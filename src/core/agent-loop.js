@@ -766,6 +766,7 @@ export async function runAgentLoop({
   skillHooksSession = null,
   onSkillLoaded = null,
   toolDisplayLabels = {},
+  shouldCheckpoint = null,
   workspaceRoot = config?.workspaceRoot || process.cwd()
 }) {
   const activeToolResultStore = toolResultStore || createToolResultStore();
@@ -1632,6 +1633,23 @@ export async function runAgentLoop({
       await maybeRunAutoDream(step, { force: true });
       await fireStopHooks(workflowCompleteText);
       return { text: workflowCompleteText, messages, steps: step, workflowComplete: true };
+    }
+    if (typeof shouldCheckpoint === 'function') {
+      const checkpoint = await shouldCheckpoint({
+        step,
+        messages,
+        toolCalls,
+      });
+      if (checkpoint) {
+        const checkpointText = lastAssistantText || '';
+        if (onEvent) onEvent({ type: 'checkpoint', step });
+        return {
+          text: checkpointText,
+          messages,
+          steps: step,
+          checkpoint: true,
+        };
+      }
     }
   }
 
