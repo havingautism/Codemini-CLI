@@ -3,6 +3,8 @@ import {
   ArrowRight,
   BookOpen,
   CaretDown,
+  CaretLeft,
+  CaretRight,
   CheckCircle,
   CircleNotch,
   Database,
@@ -184,12 +186,6 @@ function priorityLabel(priority) {
   if (priority === "high") return t("deepResearchPriorityHigh");
   if (priority === "low") return t("deepResearchPriorityLow");
   return t("deepResearchPriorityNormal");
-}
-
-function priorityTone(priority) {
-  if (priority === "high") return "bg-rose-500/12 text-rose-700 dark:text-rose-300";
-  if (priority === "low") return "bg-(--bg-hover) text-(--text-muted)";
-  return "bg-sky-500/12 text-sky-700 dark:text-sky-300";
 }
 
 function latestWaveLimitations(session) {
@@ -440,6 +436,7 @@ function GuideComposer({ open, onOpenChange, busy, error, onSubmit }) {
   const [goal, setGoal] = useState("");
   const [constraints, setConstraints] = useState("");
   const [seedText, setSeedText] = useState("");
+  const [contextOpen, setContextOpen] = useState(false);
 
   useEffect(() => {
     if (!open) {
@@ -447,87 +444,166 @@ function GuideComposer({ open, onOpenChange, busy, error, onSubmit }) {
       setGoal("");
       setConstraints("");
       setSeedText("");
+      setContextOpen(false);
     }
   }, [open]);
 
+  const trimmedQuestion = question.trim();
+  const contextCount = [goal, constraints, seedText].filter((value) => value.trim()).length;
+
+  const handleSubmit = () => {
+    if (busy || !trimmedQuestion) return;
+    onSubmit({
+      question: trimmedQuestion,
+      preferences: { goal: goal.trim(), constraints: constraints.trim() },
+      seed: seedText.trim() ? [{ label: "paste", text: seedText.trim() }] : [],
+    });
+  };
+
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-[640px]">
-        <DialogHeader>
-          <DialogTitle>{t("deepResearchNew")}</DialogTitle>
-          <DialogDescription>{t("deepResearchEmpty")}</DialogDescription>
+    <Dialog
+      open={open}
+      onOpenChange={(nextOpen) => {
+        if (!busy || nextOpen) onOpenChange(nextOpen);
+      }}
+    >
+      <DialogContent
+        className="flex max-h-[min(760px,calc(100dvh-1rem))] flex-col gap-0 overflow-hidden p-0 sm:max-w-[660px]"
+        onKeyDown={(event) => {
+          if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+            event.preventDefault();
+            handleSubmit();
+          }
+        }}
+      >
+        <DialogHeader showCloseButton={!busy} className="shrink-0 border-b border-(--separator) px-5 py-4 sm:px-6">
+          <div className="flex min-w-0 items-start gap-3">
+            <span className="mt-0.5 flex size-9 shrink-0 items-center justify-center rounded-[11px] bg-primary/14 text-primary ring-1 ring-primary/15">
+              <Lightning size={18} weight="duotone" aria-hidden="true" />
+            </span>
+            <div className="min-w-0">
+              <DialogTitle>{t("deepResearchNew")}</DialogTitle>
+              <DialogDescription className="mt-0.5">{t("deepResearchComposerDescription")}</DialogDescription>
+            </div>
+          </div>
         </DialogHeader>
-        <div className="flex flex-col gap-4 py-2">
-          <label className="flex flex-col gap-1.5">
-            <span className="text-[12px] font-medium text-(--text-secondary)">
-              {t("deepResearchQuestion")} *
+
+        <div className="min-h-0 flex-1 overflow-y-auto px-5 py-5 sm:px-6">
+          <label className="block">
+            <span className="mb-2 flex items-center justify-between gap-3 text-[11px] font-semibold uppercase tracking-[0.08em] text-(--text-muted)">
+              <span>{t("deepResearchQuestion")}</span>
+              <span className="normal-case tracking-normal text-(--text-muted)">{t("deepResearchRequired")}</span>
             </span>
             <textarea
-              className="min-h-[100px] rounded-xl border border-(--border-default) bg-(--bg-secondary) px-3 py-2.5 text-[14px] text-(--text-primary) outline-none transition focus:border-primary/40"
+              autoFocus
+              rows={4}
+              className="min-h-[124px] w-full resize-none rounded-2xl border border-(--border-default) bg-(--bg-secondary)/70 px-4 py-3.5 text-[15px] leading-6 text-(--text-primary) outline-none transition-[border-color,box-shadow,background-color] placeholder:text-(--text-muted) hover:bg-(--bg-secondary) focus:border-primary/45 focus:bg-(--bg-primary) focus:shadow-[0_0_0_3px_color-mix(in_srgb,var(--primary)_12%,transparent)]"
               value={question}
               onChange={(e) => setQuestion(e.target.value)}
               placeholder={t("deepResearchQuestionPlaceholder")}
             />
           </label>
-          <label className="flex flex-col gap-1.5">
-            <span className="text-[12px] font-medium text-(--text-secondary)">
-              {t("deepResearchGoal")}
-            </span>
-            <input
-              className="h-10 rounded-xl border border-(--border-default) bg-(--bg-secondary) px-3 text-[14px] outline-none focus:border-primary/40"
-              value={goal}
-              onChange={(e) => setGoal(e.target.value)}
-              placeholder={t("deepResearchGoalPlaceholder")}
-            />
-          </label>
-          <label className="flex flex-col gap-1.5">
-            <span className="text-[12px] font-medium text-(--text-secondary)">
-              {t("deepResearchConstraints")}
-            </span>
-            <textarea
-              className="min-h-[72px] rounded-xl border border-(--border-default) bg-(--bg-secondary) px-3 py-2.5 text-[14px] outline-none focus:border-primary/40"
-              value={constraints}
-              onChange={(e) => setConstraints(e.target.value)}
-            />
-          </label>
-          <label className="flex flex-col gap-1.5">
-            <span className="text-[12px] font-medium text-(--text-secondary)">
-              {t("deepResearchSeed")}
-            </span>
-            <textarea
-              className="min-h-[88px] rounded-xl border border-(--border-default) bg-(--bg-secondary) px-3 py-2.5 text-[14px] outline-none focus:border-primary/40"
-              value={seedText}
-              onChange={(e) => setSeedText(e.target.value)}
-              placeholder={t("deepResearchSeedPlaceholder")}
-            />
-          </label>
+
+          <div className="mt-4 overflow-hidden rounded-2xl border border-(--border-default) bg-(--bg-secondary)/40">
+            <button
+              type="button"
+              aria-expanded={contextOpen}
+              aria-controls="deep-research-context-fields"
+              onClick={() => setContextOpen((value) => !value)}
+              className="flex w-full items-center gap-3 px-4 py-3 text-left transition hover:bg-(--bg-hover) focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary/50"
+            >
+              <span className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-(--bg-primary) text-(--text-secondary) ring-1 ring-(--border-default)">
+                <Target size={15} weight="duotone" aria-hidden="true" />
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block text-[12px] font-medium text-(--text-primary)">
+                  {t("deepResearchAddContext")}
+                  {contextCount ? ` · ${contextCount}` : ""}
+                </span>
+                <span className="mt-0.5 block text-[10px] leading-4 text-(--text-muted)">
+                  {t("deepResearchContextHint")}
+                </span>
+              </span>
+              <CaretDown
+                size={14}
+                weight="bold"
+                aria-hidden="true"
+                className={cn("shrink-0 text-(--text-muted) transition-transform", contextOpen && "rotate-180")}
+              />
+            </button>
+
+            {contextOpen ? (
+              <div id="deep-research-context-fields" className="grid gap-4 border-t border-(--separator) px-4 py-4 sm:grid-cols-2">
+                <label className="flex flex-col gap-1.5 sm:col-span-2">
+                  <span className="text-[11px] font-medium text-(--text-secondary)">{t("deepResearchGoal")}</span>
+                  <input
+                    className="h-10 rounded-xl border border-(--border-default) bg-(--bg-primary) px-3 text-[13px] text-(--text-primary) outline-none transition focus:border-primary/45 focus:shadow-[0_0_0_3px_color-mix(in_srgb,var(--primary)_10%,transparent)]"
+                    value={goal}
+                    onChange={(e) => setGoal(e.target.value)}
+                    placeholder={t("deepResearchGoalPlaceholder")}
+                  />
+                </label>
+                <label className="flex flex-col gap-1.5">
+                  <span className="text-[11px] font-medium text-(--text-secondary)">{t("deepResearchConstraints")}</span>
+                  <textarea
+                    rows={3}
+                    className="min-h-[84px] resize-none rounded-xl border border-(--border-default) bg-(--bg-primary) px-3 py-2.5 text-[13px] leading-5 text-(--text-primary) outline-none transition placeholder:text-(--text-muted) focus:border-primary/45 focus:shadow-[0_0_0_3px_color-mix(in_srgb,var(--primary)_10%,transparent)]"
+                    value={constraints}
+                    onChange={(e) => setConstraints(e.target.value)}
+                    placeholder={t("deepResearchConstraintsPlaceholder")}
+                  />
+                </label>
+                <label className="flex flex-col gap-1.5">
+                  <span className="text-[11px] font-medium text-(--text-secondary)">{t("deepResearchSeed")}</span>
+                  <textarea
+                    rows={3}
+                    className="min-h-[84px] resize-none rounded-xl border border-(--border-default) bg-(--bg-primary) px-3 py-2.5 text-[13px] leading-5 text-(--text-primary) outline-none transition placeholder:text-(--text-muted) focus:border-primary/45 focus:shadow-[0_0_0_3px_color-mix(in_srgb,var(--primary)_10%,transparent)]"
+                    value={seedText}
+                    onChange={(e) => setSeedText(e.target.value)}
+                    placeholder={t("deepResearchSeedPlaceholder")}
+                  />
+                </label>
+              </div>
+            ) : null}
+          </div>
+
+          <div className="mt-4 flex items-center gap-2.5 rounded-xl px-1 text-[10px] leading-4 text-(--text-muted)">
+            <span className="inline-flex items-center gap-1"><Target size={13} />{t("deepResearchStepPlan")}</span>
+            <ArrowRight size={11} aria-hidden="true" />
+            <span className="inline-flex items-center gap-1"><Globe size={13} />{t("deepResearchStepInvestigate")}</span>
+            <ArrowRight size={11} aria-hidden="true" />
+            <span className="inline-flex items-center gap-1"><BookOpen size={13} />{t("deepResearchStepReport")}</span>
+          </div>
+
           {error ? (
-            <div className="rounded-xl bg-(--accent-red-bg) px-3 py-2 text-[12px] text-accent-red">{error}</div>
+            <div role="alert" className="mt-4 flex items-start gap-2 rounded-xl bg-(--accent-red-bg) px-3 py-2.5 text-[12px] leading-5 text-accent-red">
+              <WarningCircle size={15} weight="fill" className="mt-0.5 shrink-0" />
+              <span>{error}</span>
+            </div>
           ) : null}
         </div>
-        <DialogFooter>
+
+        <DialogFooter className="shrink-0 items-center border-t border-(--separator) bg-(--bg-secondary)/35 px-5 py-3 sm:justify-between sm:px-6">
+          <span className="hidden text-[10px] text-(--text-muted) sm:block">{t("deepResearchSubmitShortcut")}</span>
+          <div className="flex w-full items-center justify-end gap-2 sm:w-auto">
           <button
             type="button"
-            className="rounded-full px-4 py-2 text-[12px] text-(--text-secondary) hover:bg-(--bg-hover)"
+            disabled={busy}
+            className="h-9 rounded-full px-4 text-[12px] font-medium text-(--text-secondary) transition hover:bg-(--bg-hover) disabled:opacity-40"
             onClick={() => onOpenChange(false)}
           >
             {t("cancel")}
           </button>
           <button
             type="button"
-            disabled={busy || !question.trim()}
-            className="inline-flex h-10 items-center gap-2 rounded-full bg-(--text-primary) px-5 text-[12px] font-semibold text-(--bg-primary) disabled:opacity-40"
-            onClick={() =>
-              onSubmit({
-                question: question.trim(),
-                preferences: { goal: goal.trim(), constraints: constraints.trim() },
-                seed: seedText.trim() ? [{ label: "paste", text: seedText.trim() }] : [],
-              })
-            }
+            disabled={busy || !trimmedQuestion}
+            className="inline-flex h-9 min-w-[112px] items-center justify-center gap-2 rounded-full bg-(--text-primary) px-4 text-[12px] font-semibold text-(--bg-primary) shadow-sm transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+            onClick={handleSubmit}
           >
             {busy ? <CircleNotch size={14} className="animate-spin" /> : <Lightning size={14} weight="bold" />}
-            {t("deepResearchStart")}
+            {busy ? t("deepResearchStarting") : t("deepResearchStart")}
           </button>
+          </div>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -607,85 +683,93 @@ function PlanPane({
   }
 
   return (
-    <div className="flex flex-col gap-4">
-      {session?.plan?.depth ? (
-        <div className="flex flex-wrap items-center gap-2 text-[12px] text-(--text-secondary)">
-          <span className="rounded-full bg-(--bg-hover) px-2.5 py-1 font-medium uppercase tracking-wide text-(--text-primary)">
-            {t(`deepResearchDepth_${session.plan.depth}`) || session.plan.depth}
-          </span>
-          <span className="text-(--text-muted)">
-            <ResearchTerm explanation={t("deepResearchTipDepth")}>
-              {t("deepResearchDepth")}
-            </ResearchTerm>
-          </span>
+    <div className="mx-auto w-full max-w-4xl">
+      <div className="flex flex-wrap items-end justify-between gap-3 border-b border-(--border-default) pb-4">
+        <div>
+          <div className="text-[11px] font-medium text-(--text-muted)">{t("deepResearchStepPlan")}</div>
+          <h3 className="mt-1 text-[18px] font-semibold tracking-[-0.02em] text-(--text-primary)">
+            {session?.question || t("deepResearchUntitled")}
+          </h3>
         </div>
-      ) : null}
-      <label className="flex flex-col gap-1.5">
-        <span className="text-[12px] font-medium text-(--text-secondary)">
-          {t("deepResearchGoal")}
-        </span>
-        <input
-          className="h-10 rounded-xl border border-(--border-default) bg-(--bg-secondary) px-3 text-[14px] outline-none focus:border-primary/40 disabled:opacity-70"
-          value={goal}
-          disabled={readOnly}
-          onChange={(e) => setGoal(e.target.value)}
-        />
-      </label>
-      <div className="flex flex-col gap-3">
+        {session?.plan?.depth ? (
+          <div className="text-right text-[11px] text-(--text-muted)">
+            <ResearchTerm explanation={t("deepResearchTipDepth")}>{t("deepResearchDepth")}</ResearchTerm>
+            <span className="ml-2 font-medium text-(--text-secondary)">
+              {t(`deepResearchDepth_${session.plan.depth}`) || session.plan.depth}
+            </span>
+          </div>
+        ) : null}
+      </div>
+
+      <section className="border-b border-(--border-default) py-5">
+        <div className="mb-2 text-[11px] font-medium text-(--text-muted)">{t("deepResearchGoal")}</div>
+        {readOnly ? (
+          <p className="max-w-3xl text-[13px] leading-6 text-(--text-secondary)">{goal || "—"}</p>
+        ) : (
+          <input
+            className="h-10 w-full rounded-lg border border-(--border-default) bg-(--bg-primary) px-3 text-[13px] text-(--text-primary) outline-none focus:border-primary/40"
+            value={goal}
+            onChange={(e) => setGoal(e.target.value)}
+          />
+        )}
+      </section>
+
+      <div className="divide-y divide-(--border-default)">
         {questions.map((q, index) => (
-          <div
+          <section
             key={q.tempId || q.id || index}
-            className="rounded-2xl border border-(--border-default) bg-(--bg-secondary)/60 p-4"
+            className="grid gap-3 py-5 sm:grid-cols-[36px_minmax(0,1fr)]"
           >
-            <div className="mb-2 text-[11px] font-medium text-(--text-muted)">
-              {q.tempId || q.id || `q${index + 1}`}
+            <div className="pt-0.5 text-[12px] tabular-nums text-(--text-muted)">
+              {String(index + 1).padStart(2, "0")}
             </div>
-            <textarea
-              className="min-h-[72px] w-full rounded-xl border border-(--border-default) bg-(--bg-primary) px-3 py-2 text-[13px] outline-none focus:border-primary/40 disabled:opacity-70"
-              value={q.text || ""}
-              disabled={readOnly}
-              onChange={(e) => {
-                const value = e.target.value;
-                setQuestions((current) => current.map((item, itemIndex) => (
-                  itemIndex === index ? { ...item, text: value } : item
-                )));
-              }}
-            />
-            {(normalizeCriteriaList(q.successCriteria).length) ? (
-              <div className="mt-2 space-y-1.5">
-                <div className="text-[11px] font-medium text-(--text-muted)">
+            <div className="min-w-0">
+              {readOnly ? (
+                <h4 className="text-[14px] font-medium leading-6 text-(--text-primary)">{q.text || "—"}</h4>
+              ) : (
+                <textarea
+                  className="min-h-[72px] w-full resize-y rounded-lg border border-(--border-default) bg-(--bg-primary) px-3 py-2.5 text-[13px] leading-5 text-(--text-primary) outline-none focus:border-primary/40"
+                  value={q.text || ""}
+                  onChange={(e) => {
+                    const value = e.target.value;
+                    setQuestions((current) => current.map((item, itemIndex) => (
+                      itemIndex === index ? { ...item, text: value } : item
+                    )));
+                  }}
+                />
+              )}
+              {normalizeCriteriaList(q.successCriteria).length ? (
+                <div className="mt-3">
+                  <div className="mb-1.5 text-[10px] font-medium uppercase tracking-[0.08em] text-(--text-muted)">
                   <ResearchTerm explanation={t("deepResearchTipPriority")}>
                     {t("deepResearchCriteria")}
                   </ResearchTerm>
-                </div>
-                <div className="flex flex-wrap gap-1.5">
+                  </div>
+                  <ul className="space-y-1.5">
                   {normalizeCriteriaList(q.successCriteria).map((criterion, criterionIndex) => (
-                    <span
+                    <li
                       key={`${criterion.text}-${criterionIndex}`}
                       title={criterion.text}
-                      className={cn(
-                        "inline-flex max-w-full min-w-0 items-center gap-1 rounded-full px-2.5 py-1 text-[10px] font-medium",
-                        priorityTone(criterion.priority),
-                      )}
+                      className="grid min-w-0 grid-cols-[12px_minmax(0,1fr)_auto] items-start gap-2 text-[11px] leading-5"
                     >
-                      <span className="shrink-0 uppercase tracking-wide">
-                        {priorityLabel(criterion.priority)}
-                      </span>
-                      <span className="min-w-0 truncate">{criterion.text}</span>
-                    </span>
+                      <span className="mt-2 size-1 rounded-full bg-(--text-muted)" aria-hidden="true" />
+                      <span className="min-w-0 text-(--text-secondary)">{criterion.text}</span>
+                      <span className="shrink-0 text-[10px] text-(--text-muted)">{priorityLabel(criterion.priority)}</span>
+                    </li>
                   ))}
+                  </ul>
                 </div>
-              </div>
-            ) : null}
-          </div>
+              ) : null}
+            </div>
+          </section>
         ))}
       </div>
       {!readOnly ? (
-        <div className="flex flex-wrap gap-2">
+        <div className="flex flex-wrap justify-end gap-2 border-t border-(--border-default) pt-4">
           <button
             type="button"
             disabled={busy}
-            className="inline-flex h-10 items-center rounded-full border border-(--border-default) px-4 text-[12px] font-medium text-(--text-secondary) hover:bg-(--bg-hover) disabled:opacity-40"
+            className="inline-flex h-9 items-center rounded-lg border border-(--border-default) px-3.5 text-[12px] font-medium text-(--text-secondary) hover:bg-(--bg-hover) disabled:opacity-40"
             onClick={() => onSave(draft)}
           >
             {t("deepResearchSavePlan")}
@@ -693,7 +777,7 @@ function PlanPane({
           <button
             type="button"
             disabled={busy}
-            className="inline-flex h-10 items-center rounded-full bg-(--text-primary) px-5 text-[12px] font-semibold text-(--bg-primary) disabled:opacity-40"
+            className="inline-flex h-9 items-center rounded-lg bg-(--text-primary) px-4 text-[12px] font-semibold text-(--bg-primary) disabled:opacity-40"
             onClick={() => onConfirm(draft)}
           >
             {t("deepResearchApproveAndStart")}
@@ -701,7 +785,7 @@ function PlanPane({
           <button
             type="button"
             disabled={busy}
-            className="inline-flex h-10 items-center rounded-full border border-(--border-default) px-4 text-[12px] font-medium text-(--text-secondary) hover:bg-(--bg-hover) disabled:opacity-40"
+            className="inline-flex h-9 items-center rounded-lg border border-(--border-default) px-3.5 text-[12px] font-medium text-(--text-secondary) hover:bg-(--bg-hover) disabled:opacity-40"
             onClick={onReplan}
           >
             {t("deepResearchReplan")}
@@ -892,24 +976,24 @@ function ScoutCard({
   return (
     <details
       open={running || failed}
-      className="group/scout overflow-hidden rounded-2xl border border-(--border-default) bg-(--bg-primary) shadow-[0_1px_0_rgba(255,255,255,0.03)_inset]"
+      className="group/scout border-b border-(--border-default) last:border-b-0"
     >
-      <summary className="flex cursor-pointer list-none items-center gap-3 px-4 py-3.5 [&::-webkit-details-marker]:hidden">
+      <summary className="flex cursor-pointer list-none items-center gap-3 px-1 py-3.5 [&::-webkit-details-marker]:hidden">
         <span
           className={cn(
-            "flex size-8 shrink-0 items-center justify-center rounded-xl",
-            running && "bg-sky-500/12 text-sky-600 dark:text-sky-300",
-            completed && "bg-emerald-500/12 text-emerald-700 dark:text-emerald-300",
-            partial && "bg-amber-500/12 text-amber-800 dark:text-amber-300",
-            failed && "bg-red-500/12 text-red-700 dark:text-red-300",
+            "flex size-5 shrink-0 items-center justify-center",
+            running && "text-sky-600 dark:text-sky-300",
+            completed && "text-emerald-700 dark:text-emerald-300",
+            partial && "text-amber-800 dark:text-amber-300",
+            failed && "text-red-700 dark:text-red-300",
           )}
         >
           {running ? (
-            <CircleNotch size={16} className="animate-spin" />
+            <CircleNotch size={14} className="animate-spin" />
           ) : failed || partial ? (
-            <WarningCircle size={17} weight="fill" />
+            <WarningCircle size={14} weight="fill" />
           ) : (
-            <CheckCircle size={17} weight="fill" />
+            <CheckCircle size={14} weight="fill" />
           )}
         </span>
         <span className="min-w-0 flex-1">
@@ -934,7 +1018,7 @@ function ScoutCard({
             </ResearchTerm>
           </span>
         </span>
-        <span className={cn("rounded-full px-2.5 py-1 text-[10px] font-semibold", statusTone(status))}>
+        <span className="text-[10px] font-medium text-(--text-muted)">
           <ResearchTerm explanation={runStatusHelp(status, cap)}>{status}</ResearchTerm>
         </span>
         <CaretDown
@@ -943,7 +1027,7 @@ function ScoutCard({
         />
       </summary>
 
-      <div className="border-t border-(--border-default) px-4 py-4">
+      <div className="border-t border-(--separator) px-8 py-4">
         {criteria.length ? (
           <div>
             <div className="mb-2 text-[10px] font-semibold uppercase tracking-[0.12em] text-(--text-muted)">
@@ -951,7 +1035,7 @@ function ScoutCard({
                 {t("deepResearchCoverage")}
               </ResearchTerm>
             </div>
-            <div className="flex flex-wrap gap-1.5">
+            <div className="divide-y divide-(--separator)">
               {criteria.map((criterion) => {
                 const isActive = running && criterion.id === activeCriterionId;
                 const used = isActive && Number.isFinite(liveTools)
@@ -959,29 +1043,21 @@ function ScoutCard({
                   : (Number(criterion.toolCount) || 0);
                 const atCap = used >= cap;
                 return (
-                  <span
+                  <div
                     key={criterion.id}
                     title={criterion.text}
-                    className={cn(
-                      "inline-flex max-w-full min-w-0 items-center rounded-full px-2.5 py-1 text-[10px] font-medium",
-                      coverageClass(criterion.status),
-                      isActive && "ring-1 ring-sky-500/40",
-                    )}
+                    className={cn("grid min-w-0 grid-cols-[minmax(0,1fr)_auto] gap-3 py-2 text-[10px]", isActive && "text-sky-700 dark:text-sky-300")}
                   >
                     <ResearchTerm
                       explanation={`${coverageHelp(criterion.status, cap)} ${criterionToolsTip}`}
-                      className="min-w-0 truncate"
+                      className="min-w-0 text-(--text-secondary)"
                     >
-                      {shortResearchLabel(criterion.text, 28) || criterion.id}
-                      {criterion.id ? ` (${criterion.id})` : ""}
-                      {criterion.priority ? ` · ${priorityLabel(criterion.priority)}` : ""}
-                      {" · "}
-                      {used}/{cap}
-                      {atCap ? ` · ${t("deepResearchSearchCapReached")}` : ""}
-                      {" · "}
-                      {criterion.status}
+                      {criterion.text || criterion.id}
                     </ResearchTerm>
-                  </span>
+                    <span className="shrink-0 tabular-nums text-(--text-muted)">
+                      {criterion.status} · {used}/{cap}{atCap ? ` · ${t("deepResearchSearchCapReached")}` : ""}
+                    </span>
+                  </div>
                 );
               })}
             </div>
@@ -1111,7 +1187,7 @@ function InvestigationBoard({
 
   if (!displayWaves.length) {
     return (
-      <div className="rounded-3xl border border-dashed border-(--border-default) bg-(--bg-secondary)/20 px-6 py-14 text-center">
+      <div className="border-y border-dashed border-(--border-default) px-6 py-12 text-center">
         <Target size={28} weight="duotone" className="mx-auto text-(--text-muted)" />
         <div className="mt-3 text-[12px] text-(--text-muted)">{t("deepResearchTimelineEmpty")}</div>
       </div>
@@ -1119,10 +1195,10 @@ function InvestigationBoard({
   }
 
   return (
-    <div className="space-y-5">
+    <div>
       {leadStatus ? (
-        <div className="sticky top-0 z-10 flex items-center gap-2 rounded-2xl border border-primary/15 bg-(--bg-primary)/90 px-4 py-3 text-[11px] text-(--text-secondary) shadow-sm backdrop-blur-xl">
-          <Lightning size={14} weight="fill" className="text-primary" />
+        <div className="sticky top-0 z-10 flex items-center gap-2 border-y border-(--border-default) bg-(--bg-primary)/95 px-1 py-2.5 text-[11px] text-(--text-secondary) backdrop-blur-xl">
+          <CircleNotch size={13} className="animate-spin text-(--text-muted)" />
           <span className="truncate">{leadStatus}</span>
         </div>
       ) : null}
@@ -1149,24 +1225,16 @@ function InvestigationBoard({
           (question.coverage?.criteria || []).length
           && (question.coverage.criteria || []).every((item) => item.status === "covered")).length;
         return (
-          <section key={wave.id || `${wave.wave}-${index}`} className="relative pl-5 sm:pl-8">
-            <div className="absolute top-0 -bottom-5 left-1.75 w-px bg-(--border-default) sm:left-2.75" />
-            <div
-              className={cn(
-                "absolute top-5 left-0 z-1 size-3.75 rounded-full border-[3px] border-(--bg-primary) sm:left-1",
-                wave.status === "completed" ? "bg-emerald-500" : "bg-sky-500 animate-pulse",
-              )}
-            />
-            <div className="overflow-hidden rounded-3xl border border-(--border-default) bg-(--bg-secondary)/35 shadow-[0_12px_32px_rgba(0,0,0,0.04)]">
-              <div className="flex flex-col gap-3 border-b border-(--border-default) px-4 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-5">
+          <section key={wave.id || `${wave.wave}-${index}`} className="border-t border-(--border-default) first:border-t-0">
+              <div className="flex flex-col gap-3 py-4 sm:flex-row sm:items-start sm:justify-between">
                 <div>
                   <div className="flex items-center gap-2">
-                    <span className="text-[15px] font-semibold tracking-[-0.02em] text-(--text-primary)">
+                    <span className="text-[13px] font-semibold text-(--text-primary)">
                       <ResearchTerm explanation={t("deepResearchTipWave")}>
                         {t("deepResearchInvestigationTitle")}
                       </ResearchTerm>
                     </span>
-                    <span className={cn("rounded-full px-2 py-0.5 text-[9px] font-semibold uppercase tracking-wider", statusTone(wave.status))}>
+                    <span className="text-[10px] font-medium text-(--text-muted)">
                       <ResearchTerm explanation={runStatusHelp(wave.status)}>
                         {wave.status}
                       </ResearchTerm>
@@ -1190,18 +1258,11 @@ function InvestigationBoard({
                   </div>
                 </div>
                 {evaluation.decision ? (
-                  <div
-                    className={cn(
-                      "flex max-w-xl items-center gap-2 rounded-xl px-3 py-2 text-[10px]",
-                      evaluation.decision === "incomplete"
-                        ? "bg-red-500/8 text-red-700 dark:text-red-200"
-                        : "bg-emerald-500/8 text-emerald-800 dark:text-emerald-200",
-                    )}
-                  >
+                  <div className="flex max-w-xl items-start gap-2 text-[10px] leading-5 text-(--text-secondary)">
                     {evaluation.decision === "incomplete" ? (
-                      <WarningCircle size={13} weight="fill" />
+                      <WarningCircle size={13} weight="fill" className="mt-0.5 shrink-0 text-red-600" />
                     ) : (
-                      <CheckCircle size={13} weight="fill" />
+                      <CheckCircle size={13} weight="fill" className="mt-0.5 shrink-0 text-emerald-600" />
                     )}
                     <span className="min-w-0 break-words [overflow-wrap:anywhere]">
                       <ResearchTerm explanation={t("deepResearchTipWaveDecision")}>
@@ -1217,7 +1278,7 @@ function InvestigationBoard({
                   </div>
                 )}
               </div>
-              <div className="space-y-2.5 p-3 sm:p-4">
+              <div className="border-t border-(--separator)">
                 {scouts.length ? scouts.map((scout) => {
                   const live = liveScouts[scout.id]
                     || liveList.find((item) =>
@@ -1245,7 +1306,6 @@ function InvestigationBoard({
                   </div>
                 )}
               </div>
-            </div>
           </section>
         );
       })}
@@ -1255,8 +1315,8 @@ function InvestigationBoard({
 
 function QuestionsBoard({ questions = [] }) {
   return (
-    <div className="flex min-w-0 flex-col gap-2 overflow-hidden">
-      <div className="text-[12px] font-semibold text-(--text-primary)">
+    <section className="min-w-0 overflow-hidden">
+      <div className="mb-2 text-[12px] font-semibold text-(--text-primary)">
         <ResearchTerm explanation={t("deepResearchTipQuestions")}>
           {t("deepResearchQuestions")}
         </ResearchTerm>
@@ -1264,32 +1324,29 @@ function QuestionsBoard({ questions = [] }) {
       {!questions.length ? (
         <div className="text-[12px] text-(--text-muted)">—</div>
       ) : (
-        questions.map((q) => (
-          <div key={q.id} className="min-w-0 overflow-hidden rounded-xl border border-(--border-default) bg-(--bg-primary) px-3 py-2.5">
-            <div className="mb-1 flex min-w-0 items-center gap-2">
-              <span className={cn("shrink-0 rounded-full px-2 py-0.5 text-[10px] font-medium", statusTone(q.status))}>
+        <div className="divide-y divide-(--separator) border-y border-(--border-default)">
+          {questions.map((q, index) => (
+          <div key={q.id} className="grid min-w-0 grid-cols-[24px_minmax(0,1fr)_auto] gap-2 py-2.5">
+            <span className="text-[10px] tabular-nums text-(--text-muted)">{String(index + 1).padStart(2, "0")}</span>
+            <div className="min-w-0">
+              <div className="break-words text-[11px] leading-5 text-(--text-primary) [overflow-wrap:anywhere]">
+                {q.text}
+              </div>
+              {q.gaps?.length ? (
+                <div className="mt-1 break-words text-[10px] leading-4 text-amber-700 [overflow-wrap:anywhere] dark:text-amber-300">
+                  <ResearchTerm explanation={t("deepResearchTipGaps")}>gaps</ResearchTerm>
+                  {`: ${q.gaps.join("; ")}`}
+                </div>
+              ) : null}
+            </div>
+              <span className="shrink-0 text-[10px] font-medium text-(--text-muted)">
                 <ResearchTerm explanation={runStatusHelp(q.status)}>{q.status}</ResearchTerm>
               </span>
-            </div>
-            <div className="break-words text-[12px] leading-5 text-(--text-primary) [overflow-wrap:anywhere]">
-              {q.text}
-            </div>
-            {q.id ? (
-              <div className="mt-1 truncate text-[10px] text-(--text-muted)" title={q.id}>
-                {q.id}
-              </div>
-            ) : null}
-            {q.gaps?.length ? (
-              <div className="mt-1.5 break-words text-[11px] leading-4 text-amber-700 [overflow-wrap:anywhere] dark:text-amber-300">
-                <ResearchTerm explanation={t("deepResearchTipGaps")}>gaps</ResearchTerm>
-                {": "}
-                <span className="line-clamp-5">{q.gaps.join("; ")}</span>
-              </div>
-            ) : null}
           </div>
-        ))
+          ))}
+        </div>
       )}
-    </div>
+    </section>
   );
 }
 
@@ -1301,9 +1358,17 @@ function sourceHostname(url) {
   }
 }
 
-function EvidenceList({ evidence = [], title, variant = "stack" }) {
+const EVIDENCE_PAGE_SIZE = 9; // 3 cols × 3 rows
+
+function EvidenceList({ evidence = [], title, countLabel }) {
+  const [page, setPage] = useState(0);
   const accepted = evidence.filter((ev) => ev.status === "accepted");
-  const isGrid = variant === "grid";
+  const totalPages = Math.max(1, Math.ceil(accepted.length / EVIDENCE_PAGE_SIZE));
+  const safePage = Math.min(page, totalPages - 1);
+  const showPager = accepted.length > EVIDENCE_PAGE_SIZE;
+  const visible = showPager
+    ? accepted.slice(safePage * EVIDENCE_PAGE_SIZE, (safePage + 1) * EVIDENCE_PAGE_SIZE)
+    : accepted;
   return (
     <section className="min-w-0">
       <div className="mb-3 flex flex-wrap items-end justify-between gap-2">
@@ -1315,7 +1380,7 @@ function EvidenceList({ evidence = [], title, variant = "stack" }) {
           </div>
           {accepted.length ? (
             <div className="mt-0.5 text-[10px] text-(--text-muted)">
-              {t("deepResearchSourcesCount").replace("{n}", String(accepted.length))}
+              {(countLabel || t("deepResearchSourcesCount")).replace("{n}", String(accepted.length))}
             </div>
           ) : null}
         </div>
@@ -1325,54 +1390,72 @@ function EvidenceList({ evidence = [], title, variant = "stack" }) {
           {t("deepResearchNoEvidence")}
         </div>
       ) : (
-        <div
-          className={cn(
-            isGrid
-              ? "grid gap-3 sm:grid-cols-2 xl:grid-cols-3"
-              : "flex flex-col gap-2",
-          )}
-        >
-          {accepted.map((ev) => {
-            const host = sourceHostname(ev.url);
-            return (
-              <article
-                key={ev.id}
-                className="group flex min-w-0 flex-col overflow-hidden rounded-2xl border border-(--border-default) bg-(--bg-primary) px-3.5 py-3 transition-colors hover:border-primary/25"
-              >
-                <div className="mb-2 flex min-w-0 items-center gap-2">
-                  <span className={cn("shrink-0 rounded-full px-2 py-0.5 text-[10px] font-medium", confidenceTone(ev.confidence))}>
-                    <ResearchTerm explanation={t("deepResearchTipConfidence")}>
-                      {ev.confidence}
-                    </ResearchTerm>
-                  </span>
-                  {host ? (
-                    <span className="min-w-0 truncate text-[10px] text-(--text-muted)" title={ev.url}>
-                      {host}
+        <>
+          <div className="grid gap-x-8 sm:grid-cols-2">
+            {visible.map((ev) => {
+              const host = sourceHostname(ev.url);
+              return (
+                <article
+                  key={ev.id}
+                  className="group flex min-w-0 flex-col border-t border-(--border-default) py-3.5"
+                >
+                  <div className="mb-1.5 flex min-w-0 items-center gap-2 text-[10px] text-(--text-muted)">
+                    <span className="shrink-0 font-medium">
+                      <ResearchTerm explanation={t("deepResearchTipConfidence")}>
+                        {ev.confidence}
+                      </ResearchTerm>
                     </span>
+                    {host ? (
+                      <span className="min-w-0 truncate text-[10px] text-(--text-muted)" title={ev.url}>
+                        {host}
+                      </span>
+                    ) : null}
+                  </div>
+                  <p className="line-clamp-4 text-[11px] leading-5 text-(--text-secondary) [overflow-wrap:anywhere]">
+                    {ev.claim}
+                  </p>
+                  {ev.url ? (
+                    <a
+                      href={ev.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="mt-2 inline-flex max-w-full items-center gap-1 truncate text-[10px] text-(--text-secondary) hover:text-(--text-primary) hover:underline"
+                      title={ev.url}
+                    >
+                      <Globe size={12} className="shrink-0 opacity-70" />
+                      <span className="truncate">{host || ev.url}</span>
+                    </a>
                   ) : null}
-                </div>
-                <p className={cn(
-                  "text-[12px] leading-5 text-(--text-primary) [overflow-wrap:anywhere]",
-                  isGrid ? "line-clamp-4" : "break-words",
-                )}>
-                  {ev.claim}
-                </p>
-                {ev.url ? (
-                  <a
-                    href={ev.url}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="mt-2 inline-flex max-w-full items-center gap-1 truncate text-[11px] text-primary hover:underline"
-                    title={ev.url}
-                  >
-                    <Globe size={12} className="shrink-0 opacity-70" />
-                    <span className="truncate">{host || ev.url}</span>
-                  </a>
-                ) : null}
-              </article>
-            );
-          })}
-        </div>
+                </article>
+              );
+            })}
+          </div>
+          {showPager ? (
+            <div className="mt-3 flex items-center justify-center gap-2">
+              <button
+                type="button"
+                disabled={safePage <= 0}
+                onClick={() => setPage(safePage - 1)}
+                className="inline-flex size-8 items-center justify-center rounded-full border border-(--border-default) bg-(--bg-primary) text-(--text-secondary) hover:bg-(--bg-hover) disabled:pointer-events-none disabled:opacity-35"
+                aria-label="Previous page"
+              >
+                <CaretLeft size={14} />
+              </button>
+              <span className="min-w-12 text-center text-[12px] tabular-nums text-(--text-muted)">
+                {safePage + 1} / {totalPages}
+              </span>
+              <button
+                type="button"
+                disabled={safePage >= totalPages - 1}
+                onClick={() => setPage(safePage + 1)}
+                className="inline-flex size-8 items-center justify-center rounded-full border border-(--border-default) bg-(--bg-primary) text-(--text-secondary) hover:bg-(--bg-hover) disabled:pointer-events-none disabled:opacity-35"
+                aria-label="Next page"
+              >
+                <CaretRight size={14} />
+              </button>
+            </div>
+          ) : null}
+        </>
       )}
     </section>
   );
@@ -1383,43 +1466,32 @@ function ResearchMetrics({ session }) {
   const evidence = (session?.evidence || []).filter((item) => item.status === "accepted");
   const waves = session?.waves || [];
   const covered = questions.filter((question) => question.status === "done").length;
-  const progress = questions.length ? Math.round((covered / questions.length) * 100) : 0;
   const metrics = [
     {
-      icon: Target,
       label: t("deepResearchQuestions"),
       help: t("deepResearchTipQuestions"),
       value: `${covered}/${questions.length}`,
-      accent: "text-sky-600 dark:text-sky-300 bg-sky-500/10",
     },
     {
-      icon: Database,
       label: t("deepResearchEvidence"),
       help: t("deepResearchTipEvidence"),
       value: evidence.length,
-      accent: "text-emerald-700 dark:text-emerald-300 bg-emerald-500/10",
     },
     {
-      icon: Lightning,
       label: t("deepResearchWavesLabel"),
       help: t("deepResearchTipScout"),
       value: `${Math.max(waves.flatMap((wave) => wave.scouts || []).filter((scout) =>
         ["done", "partial", "blocked", "failed", "aborted"].includes(scout.status)).length, covered)}/${Math.max(questions.length, 1)}`,
-      accent: "text-amber-700 dark:text-amber-300 bg-amber-500/10",
     },
   ];
   return (
-    <div className="overflow-hidden rounded-3xl border border-(--border-default) bg-(--bg-secondary)/35">
-      <div className="grid grid-cols-3 divide-x divide-(--border-default)">
+    <div className="border-y border-(--border-default)">
+      <div className="grid grid-cols-3 divide-x divide-(--separator)">
         {metrics.map((metric) => {
-          const Icon = metric.icon;
           return (
-            <div key={metric.label} className="flex min-w-0 items-center gap-3 px-4 py-3.5">
-              <span className={cn("flex size-8 shrink-0 items-center justify-center rounded-xl", metric.accent)}>
-                <Icon size={15} weight="duotone" />
-              </span>
+            <div key={metric.label} className="min-w-0 px-3 py-3 first:pl-0 sm:px-4">
               <span className="min-w-0">
-                <span className="block text-[15px] font-semibold tracking-[-0.02em] text-(--text-primary)">
+                <span className="block text-[14px] font-semibold tabular-nums text-(--text-primary)">
                   {metric.value}
                 </span>
                 <span className="block text-[9px] uppercase tracking-widest text-(--text-muted)">
@@ -1430,20 +1502,14 @@ function ResearchMetrics({ session }) {
           );
         })}
       </div>
-      <div className="h-1 bg-(--bg-hover)">
-        <div
-          className="h-full bg-emerald-500 transition-[width] duration-500"
-          style={{ width: `${progress}%` }}
-        />
-      </div>
     </div>
   );
 }
 
 function LimitationsBoard({ limitations = [], questions = [] }) {
   return (
-    <div className="flex min-w-0 flex-col gap-2 overflow-hidden">
-      <div className="text-[12px] font-semibold text-(--text-primary)">
+    <section className="min-w-0 overflow-hidden">
+      <div className="mb-2 text-[12px] font-semibold text-(--text-primary)">
         <ResearchTerm explanation={t("deepResearchTipLimitations")}>
           {t("deepResearchLimitations")}
         </ResearchTerm>
@@ -1451,17 +1517,18 @@ function LimitationsBoard({ limitations = [], questions = [] }) {
       {!limitations.length ? (
         <div className="text-[12px] text-(--text-muted)">{t("deepResearchNoLimitations")}</div>
       ) : (
-        limitations.map((item, index) => (
+        <div className="divide-y divide-(--separator) border-y border-(--border-default)">
+          {limitations.map((item, index) => (
           <div
             key={`${item.questionId}-${item.criterionId}-${index}`}
-            className="min-w-0 overflow-hidden rounded-xl border border-amber-500/20 bg-amber-500/[0.06] px-3 py-2.5"
+            className="min-w-0 overflow-hidden py-2.5"
           >
             <div className="mb-1 flex min-w-0 flex-wrap items-center gap-1.5 text-[10px] text-(--text-muted)">
               <span className="min-w-0 break-words [overflow-wrap:anywhere]">
                 {formatResearchRef(item.questionId, item.criterionId, questions)}
               </span>
               {item.status ? (
-                <span className={cn("rounded-full px-2 py-0.5 font-medium", coverageClass(item.status) || statusTone(item.status))}>
+                <span className="font-medium text-(--text-muted)">
                   {item.status}
                 </span>
               ) : null}
@@ -1470,9 +1537,10 @@ function LimitationsBoard({ limitations = [], questions = [] }) {
               {humanizeResearchText(item.gap || item.reason || item.text || "—", questions)}
             </div>
           </div>
-        ))
+          ))}
+        </div>
       )}
-    </div>
+    </section>
   );
 }
 
@@ -1592,33 +1660,32 @@ function DetailBody({
         ) : null}
 
         {showInvestigate ? (
-          <div className="space-y-5">
-            <div className="relative overflow-hidden rounded-3xl border border-(--border-default) bg-(--bg-primary) px-5 py-5 sm:px-6">
-              <div className="pointer-events-none absolute -top-20 -right-16 size-56 rounded-full bg-primary/5.5 blur-3xl" />
-              <div className="relative max-w-4xl">
-                <div className="text-[9px] font-semibold uppercase tracking-[0.16em] text-primary">
+          <div className="mx-auto w-full max-w-6xl space-y-6">
+            <header className="border-b border-(--border-default) pb-5">
+              <div className="max-w-4xl">
+                <div className="text-[10px] font-medium text-(--text-muted)">
                   {t("deepResearchQuestion")}
                 </div>
-                <div className="mt-2 text-[18px] font-semibold leading-7 tracking-tight text-(--text-primary)">
+                <h3 className="mt-1 text-[18px] font-semibold leading-7 tracking-[-0.02em] text-(--text-primary)">
                   {session?.question}
-                </div>
+                </h3>
                 {session?.preferences?.goal ? (
-                  <div className="mt-2 text-[11px] leading-5 text-(--text-secondary)">
+                  <p className="mt-2 max-w-3xl text-[11px] leading-5 text-(--text-secondary)">
                     {session.preferences.goal}
-                  </div>
+                  </p>
                 ) : null}
               </div>
-            </div>
+            </header>
             <ResearchMetrics session={session} />
             {readyForReport && investigating ? (
-              <div className="flex flex-col gap-3 rounded-3xl border border-emerald-500/20 bg-emerald-500/5.5 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
-                <div className="flex items-start gap-3">
-                  <CheckCircle size={22} weight="fill" className="mt-0.5 shrink-0 text-emerald-600" />
+              <div className="flex flex-col gap-3 border-b border-(--border-default) pb-5 sm:flex-row sm:items-center sm:justify-between">
+                <div className="flex items-start gap-2.5">
+                  <CheckCircle size={16} weight="fill" className="mt-0.5 shrink-0 text-emerald-600" />
                   <div>
-                    <div className="text-[13px] font-semibold text-(--text-primary)">
+                    <div className="text-[12px] font-medium text-(--text-primary)">
                       {t("deepResearchReadyTitle")}
                     </div>
-                    <div className="mt-1 text-[11px] text-(--text-secondary)">
+                    <div className="mt-0.5 text-[10px] text-(--text-muted)">
                       {t("deepResearchReadyDescription")}
                     </div>
                   </div>
@@ -1627,7 +1694,7 @@ function DetailBody({
                   type="button"
                   disabled={busy}
                   onClick={onWrite}
-                  className="inline-flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-full bg-emerald-600 px-4 text-[11px] font-semibold text-white hover:bg-emerald-500 disabled:opacity-40"
+                  className="inline-flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-lg bg-(--text-primary) px-3 text-[11px] font-semibold text-(--bg-primary) hover:opacity-90 disabled:opacity-40"
                 >
                   <BookOpen size={14} />
                   {t("deepResearchWriteReport")}
@@ -1635,13 +1702,13 @@ function DetailBody({
               </div>
             ) : null}
             {incomplete ? (
-              <div className="flex items-start gap-3 rounded-3xl border border-red-500/20 bg-red-500/5.5 px-5 py-4">
-                <WarningCircle size={22} weight="fill" className="mt-0.5 shrink-0 text-red-600" />
+              <div className="flex items-start gap-2.5 border-b border-(--border-default) pb-5">
+                <WarningCircle size={16} weight="fill" className="mt-0.5 shrink-0 text-red-600" />
                 <div>
-                  <div className="text-[13px] font-semibold text-(--text-primary)">
+                  <div className="text-[12px] font-medium text-(--text-primary)">
                     {t("deepResearchIncompleteTitle")}
                   </div>
-                  <div className="mt-1 text-[11px] leading-5 text-(--text-secondary)">
+                  <div className="mt-0.5 text-[10px] leading-5 text-(--text-secondary)">
                     {humanizeResearchText(
                       latestEvaluation.reason || "",
                       session?.questions || [],
@@ -1651,8 +1718,8 @@ function DetailBody({
               </div>
             ) : null}
 
-            <div>
-              <div className="mb-3">
+            <section>
+              <div className="mb-2">
                 <div className="text-[13px] font-semibold text-(--text-primary)">
                   <ResearchTerm explanation={t("deepResearchTipTimeline")}>
                     {t("deepResearchTimeline")}
@@ -1671,35 +1738,38 @@ function DetailBody({
                 leadStatus={running ? leadStatus : ""}
                 toolsCap={researchSessionToolsCap(session)}
               />
-            </div>
+            </section>
 
-            <div className="grid gap-5 border-t border-(--border-default) pt-5 lg:grid-cols-2 xl:grid-cols-3">
-              <QuestionsBoard questions={session?.questions || []} />
-              <LimitationsBoard
-                limitations={latestWaveLimitations(session)}
-                questions={session?.questions || []}
-              />
-              <div className="lg:col-span-2 xl:col-span-1">
-                <EvidenceList evidence={session?.evidence || []} variant="stack" />
+            <div className="flex flex-col gap-6 border-t border-(--border-default) pt-5">
+              <div className="grid gap-5 lg:grid-cols-2">
+                <QuestionsBoard questions={session?.questions || []} />
+                <LimitationsBoard
+                  limitations={latestWaveLimitations(session)}
+                  questions={session?.questions || []}
+                />
               </div>
+              <EvidenceList
+                evidence={session?.evidence || []}
+                countLabel={t("deepResearchEvidenceCount")}
+              />
             </div>
           </div>
         ) : null}
 
         {showReport ? (
-          <div className="mx-auto flex w-full max-w-5xl flex-col gap-8">
-            <div className="overflow-hidden rounded-3xl border border-(--border-default) bg-(--bg-primary)">
-              <div className="border-b border-(--border-default) px-5 py-3.5 sm:px-7">
-                <div className="text-[9px] font-semibold uppercase tracking-[0.16em] text-primary">
+          <article className="mx-auto flex w-full max-w-[860px] flex-col gap-10 pb-8">
+            <div>
+              <header className="border-b border-(--border-default) pb-4">
+                <div className="text-[10px] font-medium text-(--text-muted)">
                   {t("deepResearchStepReport")}
                 </div>
-                <div className="mt-1 text-[15px] font-semibold tracking-tight text-(--text-primary)">
+                <div className="mt-1 text-[16px] font-semibold tracking-[-0.02em] text-(--text-primary)">
                   {session?.question || t("deepResearchUntitled")}
                 </div>
-              </div>
-              <div className="px-5 py-6 sm:px-7 sm:py-8">
+              </header>
+              <div className="pt-7">
                 {session?.reportMarkdown ? (
-                  <MarkdownPreview value={session.reportMarkdown} className="max-w-none" />
+                  <MarkdownPreview value={session.reportMarkdown} className="max-w-none [&_h1]:tracking-[-0.025em] [&_h2]:tracking-[-0.02em]" />
                 ) : running ? (
                   <div className="flex items-center gap-2 text-[13px] text-(--text-secondary)">
                     <CircleNotch size={16} className="animate-spin" />
@@ -1726,12 +1796,11 @@ function DetailBody({
               <EvidenceList
                 evidence={session?.evidence || []}
                 title={t("deepResearchSources")}
-                variant="grid"
               />
             ) : null}
 
             {(session?.waves?.length || session?.timeline?.length) ? (
-              <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-(--border-default) bg-(--bg-secondary)/40 px-4 py-3.5">
+              <div className="flex flex-wrap items-center justify-between gap-3 border-t border-(--border-default) pt-4">
                 <div className="min-w-0">
                   <div className="text-[12px] font-semibold text-(--text-primary)">
                     {t("deepResearchReplayTimeline")}
@@ -1742,7 +1811,7 @@ function DetailBody({
                 </div>
                 <button
                   type="button"
-                  className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-full border border-(--border-default) bg-(--bg-primary) px-3.5 text-[12px] font-medium text-(--text-secondary) hover:bg-(--bg-hover)"
+                  className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg border border-(--border-default) bg-(--bg-primary) px-3 text-[11px] font-medium text-(--text-secondary) hover:bg-(--bg-hover)"
                   onClick={() => setFocusStep("investigate")}
                 >
                   <ListBullets size={14} />
@@ -1750,7 +1819,7 @@ function DetailBody({
                 </button>
               </div>
             ) : null}
-          </div>
+          </article>
         ) : null}
       </div>
     </div>
@@ -2414,19 +2483,26 @@ export function ResearchPanel() {
         <DialogContent
           className="grid h-[calc(100dvh-0.5rem)] max-h-[1040px] w-[calc(100vw-0.5rem)] max-w-[calc(100vw-0.5rem)] grid-rows-[auto_minmax(0,1fr)] gap-0 overflow-hidden rounded-2xl p-0 sm:h-[min(96vh,1040px)] sm:w-[calc(100vw-1rem)] sm:max-w-[calc(100vw-1rem)] xl:max-w-[1560px]"
         >
-          <DialogHeader className="shrink-0 px-5 pb-3 pt-5 sm:px-6">
-            <DialogTitle className="pr-2 text-[20px] leading-7">
-              {session?.question || t("deepResearchLoading")}
-            </DialogTitle>
-            {session ? (
-              <DialogDescription className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-                <span className={cn("rounded-full px-2 py-0.5 text-[11px] font-medium", phaseChipClass(session.phase))}>
-                  {phaseLabel(session.phase)}
-                </span>
-                <span aria-hidden="true">·</span>
-                <span>{formatDate(session.updatedAt)}</span>
-              </DialogDescription>
-            ) : null}
+          <DialogHeader className="shrink-0 border-b border-(--separator) bg-(--material-elevated) px-5 py-4 sm:px-6">
+            <div className="flex min-w-0 items-start gap-3">
+              <span className="mt-0.5 flex size-9 shrink-0 items-center justify-center rounded-[11px] bg-primary/14 text-primary ring-1 ring-primary/15">
+                <Lightning size={18} weight="duotone" aria-hidden="true" />
+              </span>
+              <div className="min-w-0">
+                <DialogTitle className="line-clamp-2 pr-2 text-[17px] leading-6">
+                  {session?.question || t("deepResearchLoading")}
+                </DialogTitle>
+                {session ? (
+                  <DialogDescription className="mt-1 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+                    <span className={cn("rounded-full px-2 py-0.5 text-[10px] font-medium", phaseChipClass(session.phase))}>
+                      {phaseLabel(session.phase)}
+                    </span>
+                    <span aria-hidden="true">·</span>
+                    <span>{formatDate(session.updatedAt)}</span>
+                  </DialogDescription>
+                ) : null}
+              </div>
+            </div>
           </DialogHeader>
 
           {session ? (
