@@ -496,7 +496,7 @@ function mapScoutRun(row) {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     completedAt: row.completed_at || '',
-    name: row.name || 'Scout',
+    name: row.name || 'Investigator',
     status: row.status || 'running',
     ledger: parseJson(row.ledger_json, {}) || {},
     decision: parseJson(row.decision_json, {}) || {},
@@ -809,7 +809,7 @@ export function createResearchScoutRun({
   sessionId,
   waveId,
   questionId,
-  name = 'Scout',
+  name = 'Investigator',
   ledger = {},
   status = 'running',
 } = {}) {
@@ -834,7 +834,7 @@ export function createResearchScoutRun({
     question.id,
     now,
     now,
-    String(name || 'Scout'),
+    String(name || 'Investigator'),
     normalizedStatus,
     toJson(ledger || {}),
   );

@@ -248,7 +248,7 @@ function createGlobalSchema(db, currentVersion = 0) {
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       completed_at TEXT NOT NULL DEFAULT '',
-      name TEXT NOT NULL DEFAULT 'Scout',
+      name TEXT NOT NULL DEFAULT 'Investigator',
       status TEXT NOT NULL DEFAULT 'running',
       ledger_json TEXT NOT NULL DEFAULT '{}',
       decision_json TEXT NOT NULL DEFAULT '{}',

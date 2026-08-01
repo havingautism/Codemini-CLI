@@ -963,6 +963,15 @@ const TERMINAL_SCOUT_STATUSES = new Set([
   "error",
 ]);
 
+/** Map persisted/runtime names (Scout N / Investigator N) to the active locale. */
+function formatScoutLabel(name, translate = t) {
+  const raw = String(name || "").trim();
+  const matched = raw.match(/^(?:Scout|Investigator|调查员)\s+(\d+)$/i);
+  if (matched) return translate("deepResearchScoutNamed").replace("{n}", matched[1]);
+  if (!raw || /^(?:Scout|Investigator|调查员)$/i.test(raw)) return translate("deepResearchScout");
+  return raw;
+}
+
 function mergeScoutCard(scout, live) {
   const persisted = scout?.status;
   const liveStatus = live?.status;
@@ -1035,11 +1044,11 @@ function ScoutCard({
         </span>
         <span className="min-w-0 flex-1">
           <span className="block truncate text-[13px] font-semibold text-(--text-primary)">
-            {question?.text || card.questionText || card.name || t("deepResearchScout")}
+            {question?.text || card.questionText || formatScoutLabel(card.name)}
           </span>
           <span className="mt-0.5 flex flex-wrap items-center gap-x-2 text-[10px] text-(--text-muted)">
             <ResearchTerm explanation={t("deepResearchTipScout")}>
-              {card.name || t("deepResearchScout")}
+              {formatScoutLabel(card.name)}
             </ResearchTerm>
             {activeCriterionId ? (
               <ResearchTerm explanation={t("deepResearchTipCheckpoint")}>
@@ -1280,7 +1289,7 @@ function InvestigationBoard({
                   <div className="mt-1 text-[10px] text-(--text-muted)">
                     {completed}/{Math.max(scouts.length, wave.targets?.length || 0)}{" "}
                     <ResearchTerm explanation={t("deepResearchTipScout")}>
-                      scouts
+                      {t("deepResearchWavesLabel")}
                     </ResearchTerm>
                     {" · "}
                     {coveredQuestions}/{questions.length || 0}{" "}
@@ -1977,7 +1986,7 @@ export function ResearchPanel() {
       setLiveScouts((prev) => {
         const current = prev[key] || {
           questionId: key,
-          name: "Scout",
+          name: t("deepResearchScout"),
           status: "running",
           tools: [],
           draft: "",
@@ -2074,7 +2083,7 @@ export function ResearchPanel() {
             waveId: payload.waveId || "",
             wave: payload.wave || 1,
             questionId: payload.questionId || key,
-            name: payload.name || "Scout",
+            name: payload.name || t("deepResearchScout"),
             questionText: payload.questionText || "",
             status: "running",
             tools: [],
@@ -2102,7 +2111,7 @@ export function ResearchPanel() {
               ].slice(-12),
             }));
             setLeadStatus(
-              `${payload.scoutName || "Scout"} · ${payload.displayName || payload.name || "tool"}`,
+              `${formatScoutLabel(payload.scoutName)} · ${payload.displayName || payload.name || "tool"}`,
             );
           }
           if (payload.type === "tool:end" || payload.type === "tool:error") {
@@ -2139,7 +2148,7 @@ export function ResearchPanel() {
                 || current.criterionId,
             }));
             setLeadStatus(
-              `${payload.scoutName || t("deepResearchScout")} · ${
+              `${formatScoutLabel(payload.scoutName)} · ${
                 payload.criterionId || payload.targetGap?.criterionId || t("deepResearchCriterionPass")
               }`,
             );

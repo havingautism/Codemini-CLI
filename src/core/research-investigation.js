@@ -989,7 +989,7 @@ async function runScoutForQuestion({
     sessionId: session.id,
     waveId: wave.id,
     questionId: question.id,
-    name: `Scout ${question.ordinal + 1}`,
+    name: `Investigator ${question.ordinal + 1}`,
     ledger: { version: 2, questionId: question.id, queries: [] },
   });
 
