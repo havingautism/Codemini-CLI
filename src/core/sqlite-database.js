@@ -3,7 +3,7 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { getBaseConfigDir, getProjectIndexDir } from './paths.js';
 
-const GLOBAL_SCHEMA_VERSION = 9;
+const GLOBAL_SCHEMA_VERSION = 11;
 const PROJECT_SCHEMA_VERSION = 5;
 const databases = new Map();
 
@@ -179,6 +179,7 @@ function createGlobalSchema(db, currentVersion = 0) {
       last_error TEXT NOT NULL DEFAULT '',
       plan_json TEXT NOT NULL DEFAULT '{}',
       timeline_json TEXT NOT NULL DEFAULT '[]',
+      conclusions_json TEXT NOT NULL DEFAULT '[]',
       report_markdown TEXT NOT NULL DEFAULT ''
     ) STRICT;
     CREATE INDEX IF NOT EXISTS research_sessions_updated_idx
@@ -196,6 +197,7 @@ function createGlobalSchema(db, currentVersion = 0) {
       status TEXT NOT NULL DEFAULT 'pending',
       criteria_met_json TEXT NOT NULL DEFAULT '[]',
       gaps_json TEXT NOT NULL DEFAULT '[]',
+      coverage_json TEXT NOT NULL DEFAULT '{}',
       last_scout_at TEXT NOT NULL DEFAULT ''
     ) STRICT;
     CREATE INDEX IF NOT EXISTS research_questions_session_idx
@@ -214,7 +216,8 @@ function createGlobalSchema(db, currentVersion = 0) {
       confidence TEXT NOT NULL DEFAULT 'medium',
       status TEXT NOT NULL DEFAULT 'accepted',
       created_from TEXT NOT NULL DEFAULT 'scout_handoff',
-      origin_candidate_id TEXT NOT NULL DEFAULT ''
+      origin_candidate_id TEXT NOT NULL DEFAULT '',
+      criterion_ids_json TEXT NOT NULL DEFAULT '[]'
     ) STRICT;
     CREATE INDEX IF NOT EXISTS research_evidence_session_idx
       ON research_evidence(session_id, created_at DESC);
@@ -283,6 +286,31 @@ function createGlobalSchema(db, currentVersion = 0) {
     }
     if (researchColumns.length > 0 && !researchColumns.includes('last_error')) {
       db.exec(`ALTER TABLE research_sessions ADD COLUMN last_error TEXT NOT NULL DEFAULT ''`);
+    }
+  }
+  if (currentVersion < 10) {
+    const researchColumns = db
+      .prepare(`SELECT name FROM pragma_table_info('research_sessions')`)
+      .all()
+      .map((row) => String(row.name || ''));
+    if (researchColumns.length > 0 && !researchColumns.includes('conclusions_json')) {
+      db.exec(`ALTER TABLE research_sessions ADD COLUMN conclusions_json TEXT NOT NULL DEFAULT '[]'`);
+    }
+  }
+  if (currentVersion < 11) {
+    const questionColumns = db
+      .prepare(`SELECT name FROM pragma_table_info('research_questions')`)
+      .all()
+      .map((row) => String(row.name || ''));
+    if (questionColumns.length > 0 && !questionColumns.includes('coverage_json')) {
+      db.exec(`ALTER TABLE research_questions ADD COLUMN coverage_json TEXT NOT NULL DEFAULT '{}'`);
+    }
+    const evidenceColumns = db
+      .prepare(`SELECT name FROM pragma_table_info('research_evidence')`)
+      .all()
+      .map((row) => String(row.name || ''));
+    if (evidenceColumns.length > 0 && !evidenceColumns.includes('criterion_ids_json')) {
+      db.exec(`ALTER TABLE research_evidence ADD COLUMN criterion_ids_json TEXT NOT NULL DEFAULT '[]'`);
     }
   }
   db.exec(`

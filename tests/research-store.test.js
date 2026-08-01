@@ -10,6 +10,8 @@ import {
   applyResearchCommit,
   buildResearchDbSummary,
   buildResearchWritingPack,
+  buildDeterministicResearchConclusions,
+  normalizeResearchConclusions,
   confirmResearchPlan,
   createResearchScoutRun,
   createResearchSession,
@@ -20,8 +22,10 @@ import {
   listResearchEvidence,
   listResearchQuestions,
   planResearchBudget,
+  researchDepthRuntimeLimits,
   reserveResearchBudget,
   updateResearchScoutRun,
+  updateResearchQuestion,
   updateResearchRunState,
   updateResearchWave,
   updateResearchSession,
@@ -194,13 +198,15 @@ test('research budget reservation is atomic and never exceeds its limit', async 
 test('research budget scales with criterion count and expands under-provisioned sessions', async () => {
   await withGlobalDir(async () => {
     const small = planResearchBudget(2);
-    assert.equal(small.maxSearches, 50);
-    assert.equal(small.maxFetches, 400);
+    assert.equal(small.maxSearches, 20);
+    assert.equal(small.maxFetches, 20);
+    assert.equal(small.maxWaves, 1);
     assert.equal(small.pools, undefined);
 
     const large = planResearchBudget(18);
-    assert.equal(large.maxSearches, 450);
-    assert.equal(large.maxFetches, 3600);
+    assert.equal(large.maxSearches, 180);
+    assert.equal(large.maxFetches, 180);
+    assert.equal(large.maxWaves, 1);
 
     const session = createResearchSession({
       question: 'Six-question front-end study',
@@ -223,8 +229,9 @@ test('research budget scales with criterion count and expands under-provisioned 
     const confirmed = confirmResearchPlan(session.id);
     assert.equal(confirmed.plan.depth, 'deep');
     assert.equal(confirmed.questions.length, 6);
-    assert.equal(confirmed.budget.maxSearches, 450);
-    assert.equal(confirmed.budget.maxFetches, 3600);
+    assert.equal(confirmed.budget.maxSearches, 180);
+    assert.equal(confirmed.budget.maxFetches, 180);
+    assert.equal(confirmed.budget.maxWaves, 1);
     assert.equal(confirmed.budget.pools, undefined);
     assert.equal(confirmed.questions[0].successCriteria[0].priority, 'high');
     assert.equal(confirmed.questions[0].successCriteria[2].priority, 'low');
@@ -238,8 +245,8 @@ test('research budget scales with criterion count and expands under-provisioned 
       },
     });
     const expanded = ensureResearchSessionBudget(session.id);
-    assert.equal(expanded.budget.maxSearches, 450);
-    assert.equal(expanded.budget.maxFetches, 3600);
+    assert.equal(expanded.budget.maxSearches, 180);
+    assert.equal(expanded.budget.maxFetches, 180);
 
     const tight = createResearchSession({
       question: 'Tight budget stays tight',
@@ -290,7 +297,7 @@ test('legacy dual-pool budgets migrate to flat totals', async () => {
     assert.equal(detail.budget.pools, undefined);
   });
 });
-test('research waves and scout ledgers persist and link committed candidates', async () => {
+test('research waves persist and evidence commit is idempotent with criterion ids', async () => {
   await withGlobalDir(async () => {
     const session = createResearchSession({ question: 'Can Product X work offline?' });
     updateResearchSession(session.id, {
@@ -313,22 +320,29 @@ test('research waves and scout ledgers persist and link committed candidates', a
       sessionId: session.id,
       waveId: wave.id,
       questionId,
-      ledger: {
-        criteria: [{ id: 'c1', text: 'Offline editing confirmed', status: 'covered' }],
-        candidates: [{
-          id: 'cand_offline',
-          criterionIds: ['c1'],
-          claim: 'Product X supports offline editing',
-          confidence: 'high',
-          sources: [{ url: 'https://example.com/offline', snippet: 'Edit while offline.' }],
-        }],
-      },
+      ledger: { version: 2, questionId, queries: [] },
     });
     updateResearchScoutRun(scout.id, {
       status: 'done',
       decision: { decision: 'done' },
       handoffMarkdown: 'Self-status: done',
       searchCount: 2,
+      committedEvidenceIds: [],
+    });
+    updateResearchQuestion(questionId, {
+      coverage: {
+        version: 1,
+        questionId,
+        criteria: [{
+          id: 'c1',
+          text: 'Offline editing confirmed',
+          status: 'covered',
+          evidenceIds: [],
+          toolCount: 2,
+          reason: 'Accepted verified claim',
+        }],
+      },
+      status: 'done',
     });
     updateResearchWave(wave.id, {
       status: 'completed',
@@ -341,16 +355,17 @@ test('research waves and scout ledgers persist and link committed candidates', a
         claim: 'Product X supports offline editing',
         url: 'https://example.com/offline',
         confidence: 'high',
+        criterionIds: ['c1'],
       }],
     });
     assert.equal(commit.insertedEvidenceIds.length, 1);
 
-    // Candidate identity makes commit idempotent.
     const repeated = applyResearchCommit(session.id, {
       acceptEvidence: [{
         candidateId: 'cand_offline',
         questionId,
         claim: 'Product X supports offline editing',
+        criterionIds: ['c1'],
       }],
     });
     assert.deepEqual(repeated.insertedEvidenceIds, []);
@@ -359,12 +374,13 @@ test('research waves and scout ledgers persist and link committed candidates', a
     const detail = getResearchSessionDetail(session.id);
     assert.equal(detail.waves.length, 1);
     assert.equal(detail.waves[0].status, 'completed');
-    assert.equal(detail.waves[0].scouts[0].ledger.candidates[0].id, 'cand_offline');
+    assert.equal(detail.questions[0].coverage.criteria[0].status, 'covered');
     assert.equal(detail.evidence[0].originCandidateId, 'cand_offline');
+    assert.deepEqual(detail.evidence[0].criterionIds, ['c1']);
   });
 });
 
-test('report readiness exposes optional follow-ups without blocking a caveated report', async () => {
+test('report readiness uses coverage evidence ids and caveats uncovered criteria', async () => {
   await withGlobalDir(async () => {
     const session = createResearchSession({ question: 'Compare offline and export support' });
     updateResearchSession(session.id, {
@@ -383,42 +399,47 @@ test('report readiness exposes optional follow-ups without blocking a caveated r
       wave: 1,
       targets: [{ questionId, gap: 'Initial coverage' }],
     });
-    const candidates = [
-      {
-        id: 'cand_offline',
-        criterionIds: ['c1'],
-        claim: 'Offline works',
-        confidence: 'high',
-        sources: [{ url: 'https://example.com/offline', snippet: 'Offline' }],
-      },
-      {
-        id: 'cand_export',
-        criterionIds: ['c2'],
-        claim: 'Export works',
-        confidence: 'high',
-        sources: [{ url: 'https://example.com/export', snippet: 'Export' }],
-      },
-    ];
     const scout = createResearchScoutRun({
       sessionId: session.id,
       waveId: wave.id,
       questionId,
-      ledger: {
-        criteria: [
-          { id: 'c1', text: 'Offline support', status: 'covered', candidateIds: ['cand_offline'] },
-          { id: 'c2', text: 'Export support', status: 'covered', candidateIds: ['cand_export'] },
-        ],
-        candidates,
-      },
+      ledger: { version: 2, questionId, queries: [] },
     });
     updateResearchScoutRun(scout.id, { status: 'done' });
-    applyResearchCommit(session.id, {
+
+    const offline = applyResearchCommit(session.id, {
       acceptEvidence: [{
         candidateId: 'cand_offline',
         questionId,
         claim: 'Offline works',
         url: 'https://example.com/offline',
+        criterionIds: ['c1'],
       }],
+    });
+    updateResearchQuestion(questionId, {
+      coverage: {
+        version: 1,
+        questionId,
+        criteria: [
+          {
+            id: 'c1',
+            text: 'Offline support',
+            status: 'covered',
+            evidenceIds: offline.insertedEvidenceIds,
+            toolCount: 3,
+            reason: 'Verified',
+          },
+          {
+            id: 'c2',
+            text: 'Export support',
+            status: 'covered',
+            evidenceIds: [],
+            toolCount: 2,
+            reason: 'Marked covered without accepted evidence',
+          },
+        ],
+      },
+      status: 'partial',
     });
 
     const caveated = deterministicResearchReadiness(getResearchSessionDetail(session.id));
@@ -426,13 +447,39 @@ test('report readiness exposes optional follow-ups without blocking a caveated r
     assert.equal(caveated.eligibleTargets.some((target) => target.criterionId === 'c2'), true);
     assert.equal(caveated.limitations.some((target) => target.criterionId === 'c2'), true);
 
-    applyResearchCommit(session.id, {
+    const exportCommit = applyResearchCommit(session.id, {
       acceptEvidence: [{
         candidateId: 'cand_export',
         questionId,
         claim: 'Export works',
         url: 'https://example.com/export',
+        criterionIds: ['c2'],
       }],
+    });
+    updateResearchQuestion(questionId, {
+      coverage: {
+        version: 1,
+        questionId,
+        criteria: [
+          {
+            id: 'c1',
+            text: 'Offline support',
+            status: 'covered',
+            evidenceIds: offline.insertedEvidenceIds,
+            toolCount: 3,
+            reason: 'Verified',
+          },
+          {
+            id: 'c2',
+            text: 'Export support',
+            status: 'covered',
+            evidenceIds: exportCommit.insertedEvidenceIds,
+            toolCount: 2,
+            reason: 'Verified',
+          },
+        ],
+      },
+      status: 'done',
     });
     const complete = deterministicResearchReadiness(getResearchSessionDetail(session.id));
     assert.equal(complete.ready, true);
@@ -543,5 +590,176 @@ test('confirmResearchPlan accepts a brief-sized plan when main question asks for
     assert.equal(confirmed.plan.depth, 'brief');
     assert.equal(confirmed.questions.length, 2);
     assert.equal(confirmed.questions[0].successCriteria.length, 2);
+    assert.equal(confirmed.budget.maxWaves, 1);
+    // 3 criteria × 10 tools (single round)
+    assert.equal(confirmed.budget.maxSearches, 30);
+    assert.equal(confirmed.budget.maxFetches, 30);
+  });
+});
+
+test('researchDepthRuntimeLimits use one round and a shared tool fuse', () => {
+  assert.deepEqual(researchDepthRuntimeLimits('brief'), {
+    maxWaves: 1,
+    toolsPerCriterion: 10,
+    searchesPerCriterionPerWave: 10,
+  });
+  assert.deepEqual(researchDepthRuntimeLimits('standard'), {
+    maxWaves: 1,
+    toolsPerCriterion: 10,
+    searchesPerCriterionPerWave: 10,
+  });
+  assert.deepEqual(researchDepthRuntimeLimits('deep'), {
+    maxWaves: 1,
+    toolsPerCriterion: 10,
+    searchesPerCriterionPerWave: 10,
+  });
+  const briefBudget = planResearchBudget(2, {
+    maxWaves: 3,
+    searchesPerWave: 3,
+  });
+  assert.equal(briefBudget.maxSearches, 6);
+  assert.equal(briefBudget.maxWaves, 1);
+});
+
+test('confirmResearchPlan always syncs maxWaves to single investigation round', async () => {
+  await withGlobalDir(async () => {
+    const session = createResearchSession({
+      question: '简短研究一下：产品对比',
+      budget: {
+        maxWaves: 5,
+        maxSearches: 40,
+        maxFetches: 320,
+        maxParallelScouts: 3,
+      },
+    });
+    updateResearchSession(session.id, {
+      plan: {
+        depth: 'brief',
+        questions: [{
+          tempId: 'q1',
+          text: 'Core angle',
+          successCriteria: ['a'],
+          dependsOn: [],
+        }],
+      },
+    });
+    const confirmed = confirmResearchPlan(session.id);
+    assert.equal(confirmed.plan.depth, 'brief');
+    assert.equal(confirmed.budget.maxWaves, 1);
+    assert.equal(confirmed.budget.maxSearches, 40);
+  });
+});
+
+test('writing pack includes conclusions, limitations, and accepted evidence', async () => {
+  await withGlobalDir(async () => {
+    const session = createResearchSession({ question: 'How did X evolve?' });
+    updateResearchSession(session.id, {
+      plan: { depth: 'standard', goal: 'Decision memo', questions: [] },
+      conclusions: [{
+        questionId: 'q_fake',
+        completeness: 'partial',
+        summary: 'Direction is clear; timeline is not.',
+        limitations: 'No official GA table.',
+        evidenceIds: ['ev_keep'],
+      }],
+    });
+    const detail = {
+      ...getResearchSessionDetail(session.id),
+      questions: [{ id: 'q_fake', text: 'Milestones?', status: 'partial', gaps: ['dates'] }],
+      evidence: [{
+        id: 'ev_keep',
+        questionId: 'q_fake',
+        status: 'accepted',
+        confidence: 'high',
+        claim: 'Product moved toward agents',
+        snippet: 'blog line',
+        url: 'https://example.com/a',
+        sourceLabel: 'Blog',
+      }],
+      waves: [{
+        evaluation: {
+          limitations: [{
+            questionId: 'q_fake',
+            criterionId: 'c1',
+            gap: 'Stop chasing GA dates',
+          }],
+        },
+      }],
+      conclusions: normalizeResearchConclusions([{
+        questionId: 'q_fake',
+        completeness: 'partial',
+        summary: 'Direction is clear; timeline is not.',
+        limitations: 'No official GA table.',
+        evidenceIds: ['ev_keep', 'ev_bogus'],
+      }]).map((item) => ({
+        ...item,
+        evidenceIds: item.evidenceIds.filter((id) => id === 'ev_keep'),
+      })),
+    };
+    const pack = buildResearchWritingPack(detail);
+    assert.match(pack, /Depth: standard/);
+    assert.match(pack, /Sub-question conclusions/);
+    assert.match(pack, /Direction is clear/);
+    assert.match(pack, /Session limitations/);
+    assert.match(pack, /Stop chasing GA dates/);
+    assert.match(pack, /Accepted evidence/);
+    assert.match(pack, /ev_keep/);
+    assert.doesNotMatch(pack, /ev_bogus/);
+  });
+});
+
+test('deterministic conclusions strip to accepted evidence and coverage', async () => {
+  await withGlobalDir(async () => {
+    const session = createResearchSession({ question: 'Topic' });
+    updateResearchSession(session.id, {
+      plan: {
+        depth: 'brief',
+        questions: [{ tempId: 'q1', text: 'Angle', successCriteria: ['a'], dependsOn: [] }],
+      },
+    });
+    const confirmed = confirmResearchPlan(session.id);
+    const questionId = confirmed.questions[0].id;
+    const wave = createResearchWave(session.id, { wave: 1, status: 'completed' });
+    createResearchScoutRun({
+      sessionId: session.id,
+      waveId: wave.id,
+      questionId,
+      status: 'partial',
+      ledger: { version: 2, questionId, queries: [] },
+    });
+    updateResearchQuestion(questionId, {
+      coverage: {
+        version: 1,
+        questionId,
+        criteria: [{
+          id: 'c1',
+          text: 'a',
+          status: 'blocked',
+          reason: 'No stable timeline',
+          evidenceIds: [],
+          toolCount: 3,
+        }],
+      },
+      status: 'partial',
+      gaps: ['No stable timeline'],
+    });
+    applyResearchCommit(session.id, {
+      acceptEvidence: [{
+        questionId,
+        claim: 'Capability broadened',
+        snippet: 'snippet',
+        url: 'https://example.com/x',
+        confidence: 'high',
+        createdFrom: 'scout_handoff',
+        criterionIds: ['c1'],
+      }],
+    });
+    const detail = getResearchSessionDetail(session.id);
+    const conclusions = buildDeterministicResearchConclusions(detail);
+    assert.equal(conclusions.length, 1);
+    assert.equal(conclusions[0].questionId, questionId);
+    assert.equal(conclusions[0].completeness, 'partial');
+    assert.equal(conclusions[0].evidenceIds.length, 1);
+    assert.match(conclusions[0].limitations, /timeline/i);
   });
 });

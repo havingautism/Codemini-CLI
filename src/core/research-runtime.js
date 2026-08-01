@@ -4,16 +4,16 @@ import { runAgentLoop } from './agent-loop.js';
 import { createChatCompletionStream } from './provider/index.js';
 import { resolveConfiguredReasoningEffort } from './provider/reasoning-effort.js';
 import { getBuiltinTools } from './tools.js';
-import { runResearchInvestigation } from './research-investigation.js';
+import { runResearchInvestigation, generateResearchConclusions } from './research-investigation.js';
 import {
   appendResearchTimeline,
-  applyResearchCommit,
   buildResearchDbSummary,
   buildResearchWritingPack,
   getResearchSessionDetail,
   inferResearchPlanDepth,
   normalizeResearchPlanDepth,
   researchPlanDepthLimits,
+  researchDepthRuntimeLimits,
   updateResearchSession,
   getResearchSession,
   validateResearchPlanByDepth,
@@ -118,14 +118,18 @@ function parseToolArgs(raw) {
 function buildLeadSystemPrompt(phase, session) {
   const budget = session.budget || {};
   const used = session.budgetUsed || {};
+  const depth = normalizeResearchPlanDepth(session.plan?.depth, 'standard');
+  const runtime = researchDepthRuntimeLimits(depth);
+  const toolsCap = runtime.toolsPerCriterion || runtime.searchesPerCriterionPerWave || 10;
+  const maxWaves = 1;
   const common = [
     'You are the Lead researcher for Codemini Deep Research.',
     `Main question: ${session.question}`,
     session.preferences?.goal ? `Goal: ${session.preferences.goal}` : '',
     session.preferences?.constraints ? `Constraints: ${session.preferences.constraints}` : '',
-    `Budget: waves ${used.waves || 0}/${budget.maxWaves || 5}, searches ${used.searches || 0}/${budget.maxSearches || 25}, fetches ${used.fetches || 0}/${budget.maxFetches || 200}.`,
-    'Each success criterion may use at most 5 web_search calls per wave; follow-up waves reset that allowance for targeted criteria.',
-    `Max parallel scouts per wave: ${budget.maxParallelScouts || 3}.`,
+    `Budget: investigation rounds ${used.waves || 0}/${maxWaves}, searches ${used.searches || 0}/${budget.maxSearches || 25}, fetches ${used.fetches || 0}/${budget.maxFetches || 200}.`,
+    `Each success criterion may use at most ${toolsCap} tool calls (web_search + web_fetch). Investigation runs a single round — gaps become report limitations, not follow-up waves.`,
+    `Max parallel scouts: ${budget.maxParallelScouts || 3}.`,
   ];
 
   if (phase === 'planning' || phase === 'awaiting_plan_confirm') {
@@ -157,10 +161,35 @@ function buildLeadSystemPrompt(phase, session) {
   }
 
   if (phase === 'writing') {
+    const depthGuidance = depth === 'brief'
+      ? [
+        'Depth is brief: aim for about 800-2000 Chinese characters (or proportional English length).',
+        'Short answers are fine; still state what remains unverified in a few sentences.',
+      ]
+      : depth === 'deep'
+        ? [
+          'Depth is deep: aim for about 4000-10000 Chinese characters when the pack supports it.',
+          'Expand mechanisms, contrasts, and evidence strength; still no academic template requirement.',
+        ]
+        : [
+          'Depth is standard: aim for about 2000-5000 Chinese characters when the pack supports it.',
+          'Prefer clear subheadings; keep substance over padding.',
+        ];
     return [
       ...common,
       'Phase: writing.',
       'Write the final research report from the writing pack only.',
+      'Hard rules:',
+      '- Use only the writing pack. Do not invent facts, dates, or sources outside it.',
+      '- Affirmative claims must be supportable by accepted evidence entries in the pack.',
+      '- Limitations and unverified items from conclusions/session limitations must appear in the report.',
+      '- Do not write a vendor marketing checklist.',
+      'Soft guidance:',
+      '- Organize by theme (themes may come from sub-questions; merge/rename headings freely).',
+      '- Use criterion coverage/completeness as in-section detail, not mandatory section titles.',
+      '- Prefer conclusion → evidence → limitations for substantive blocks (brief may compress this).',
+      ...depthGuidance,
+      'Length follows the pack: a thin pack means a shorter report is correct; do not pad.',
       'Do not call run_subagent or submit_research_commit.',
       'Do not require inline citation markers.',
       'Call submit_research_report with markdown report body when finished.',
@@ -170,11 +199,8 @@ function buildLeadSystemPrompt(phase, session) {
   return [
     ...common,
     'Phase: investigating.',
-    'Dispatch Scouts with run_subagent (read-only tools: web_search, web_fetch) — one Scout per sub-question.',
-    'Pass an explicit tools list ["web_search","web_fetch"] so independent Scouts can run in parallel.',
-    'After Scout markdown handoffs return, call submit_research_commit to accept evidence and update sub-question status (not the question text).',
-    'Then continue with another wave if unfinished questions remain and budget allows; otherwise call nothing further and wait for writing phase.',
-    'Prefer one commit after a wave of handoffs rather than one commit per Scout.',
+    'Investigation is orchestrated automatically: Scouts search/fetch per criterion, submit candidates, and verified claims become evidence.',
+    'Manual submit_research_commit is unused on this path.',
   ].filter(Boolean).join('\n');
 }
 
@@ -396,36 +422,15 @@ function createResearchSubmitHandlers(sessionId, phase, emit) {
         maxCriteriaPerQuestion: limits.maxCriteriaPerQuestion,
       };
     },
-    submit_research_commit: async (args = {}) => {
-      try {
-        const parsed = parseToolArgs(args);
-        const result = applyResearchCommit(sessionId, parsed);
-        const detail = getResearchSessionDetail(sessionId);
-        appendResearchTimeline(sessionId, {
-          type: 'commit',
-          insertedEvidenceIds: result.insertedEvidenceIds,
-          updatedQuestionIds: result.updatedQuestionIds,
-          revokedEvidenceIds: result.revokedEvidenceIds,
-        });
-        emit?.({
-          type: 'commit',
-          ...result,
-          summary: buildResearchDbSummary(detail),
-          detail: {
-            questions: detail?.questions,
-            evidence: detail?.evidence,
-            budgetUsed: detail?.budgetUsed,
-          },
-        });
-        return { ...result, dbSummary: buildResearchDbSummary(detail) };
-      } catch (error) {
-        return {
-          ok: false,
-          error: error instanceof Error ? error.message : String(error),
-          errors: error?.errors || [],
-        };
-      }
-    },
+    submit_research_commit: async () => ({
+      ok: true,
+      noop: true,
+      message: 'Evidence is verified and committed automatically during investigation. Manual submit_research_commit is unused.',
+      insertedEvidenceIds: [],
+      reusedEvidenceIds: [],
+      revokedEvidenceIds: [],
+      updatedQuestionIds: [],
+    }),
     submit_research_report: async (args = {}) => {
       const parsed = parseToolArgs(args);
       const reportMarkdown = String(parsed.reportMarkdown || parsed.report || '').trim();
@@ -529,6 +534,17 @@ export async function runResearchLeadTurn({
   const bundle = getBuiltinTools({ workspaceRoot, config });
 
   try {
+    let writingDetail = detail;
+    if (resolvedPhase === 'writing') {
+      await generateResearchConclusions({
+        sessionId,
+        config,
+        model: model || config.model?.name,
+        signal: runSignal,
+        emit,
+      });
+      writingDetail = getResearchSessionDetail(sessionId) || detail;
+    }
     const filtered = filterToolBundle(
       bundle.definitions,
       bundle.handlers,
@@ -543,7 +559,7 @@ export async function runResearchLeadTurn({
     let leadUserPrompt = userPrompt;
     if (!leadUserPrompt) {
       if (resolvedPhase === 'planning' || resolvedPhase === 'awaiting_plan_confirm') {
-        const seedText = (detail.seed || []).map((s) => `### ${s.label}\n${s.text}`).join('\n\n').slice(0, 6000);
+        const seedText = (writingDetail.seed || []).map((s) => `### ${s.label}\n${s.text}`).join('\n\n').slice(0, 6000);
         leadUserPrompt = [
           'Draft the research plan now and call submit_research_plan.',
           seedText ? `Seed material:\n${seedText}` : 'No seed material.',
@@ -551,12 +567,12 @@ export async function runResearchLeadTurn({
       } else if (resolvedPhase === 'writing') {
         leadUserPrompt = [
           'Write the final report from this writing pack, then call submit_research_report.',
-          buildResearchWritingPack(detail),
+          buildResearchWritingPack(writingDetail),
         ].join('\n\n');
       } else {
         leadUserPrompt = [
           'Continue the investigation. Dispatch Scouts for unfinished questions, then submit_research_commit.',
-          buildResearchDbSummary(detail),
+          buildResearchDbSummary(writingDetail),
         ].join('\n\n');
       }
     }
@@ -565,7 +581,7 @@ export async function runResearchLeadTurn({
 
     const emitLead = (evt) => emit({ ...evt, scope: 'lead' });
     const result = await runAgentLoop({
-      systemPrompt: buildLeadSystemPrompt(resolvedPhase, detail),
+      systemPrompt: buildLeadSystemPrompt(resolvedPhase, writingDetail),
       userPrompt: leadUserPrompt,
       model: model || config.model?.name,
       toolDefinitions: definitions,

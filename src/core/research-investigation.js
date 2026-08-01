@@ -20,59 +20,38 @@ import {
   updateResearchWave,
   ensureResearchSessionBudget,
   normalizeSuccessCriteria,
-  RESEARCH_CRITERION_SEARCHES_PER_WAVE,
+  normalizeResearchPlanDepth,
+  buildDeterministicResearchConclusions,
+  normalizeResearchConclusions,
+  researchDepthRuntimeLimits,
+  RESEARCH_SCOUT_TOOLS_PER_CRITERION,
 } from './research-store.js';
 
-const CHECKPOINT_TOOL_FUSE = 32;
-const MAX_CRITERION_SEARCHES_PER_WAVE = RESEARCH_CRITERION_SEARCHES_PER_WAVE;
-const MAX_SCOUT_CYCLES = 24;
-const MAX_BATCH_RESULT_CHARS = 18000;
+const MAX_URL_TEXT_CHARS = 6000;
 const VALID_COVERAGE = new Set(['missing', 'partial', 'covered', 'conflicted', 'blocked']);
 const TERMINAL_COVERAGE = new Set(['covered', 'partial', 'blocked']);
 const TERMINAL_SCOUT = new Set(['done', 'partial', 'blocked']);
-/** Statuses the evaluator may set via coverageUpdates before allowance clamping. */
-const PATCHABLE_COVERAGE = new Set(['missing', 'covered', 'conflicted']);
+const MAX_URL_TEXT_FOR_VERIFY = 2500;
 
 function text(value, max = 8000) {
   return String(value || '').trim().slice(0, max);
 }
 
-function formatCriterionSearchBudget(searchCount) {
-  const used = Math.max(0, Math.floor(Number(searchCount) || 0));
-  const remaining = Math.max(0, MAX_CRITERION_SEARCHES_PER_WAVE - used);
-  return {
-    used,
-    remaining,
-    atCap: used >= MAX_CRITERION_SEARCHES_PER_WAVE,
-    label: `${used}/${MAX_CRITERION_SEARCHES_PER_WAVE}`,
-    note: remaining > 0
-      ? `Program search budget: ${used}/${MAX_CRITERION_SEARCHES_PER_WAVE} used, ${remaining} remaining this wave.`
-      : `Program search budget: ${used}/${MAX_CRITERION_SEARCHES_PER_WAVE} used (cap reached this wave).`,
-  };
+function resolveToolsCap(value) {
+  const n = Math.floor(Number(value));
+  return Number.isFinite(n) && n > 0 ? n : RESEARCH_SCOUT_TOOLS_PER_CRITERION;
 }
 
-/** Strip model claims about quota; program owns searchCount. */
-function sanitizeCriterionReason(reason, searchCount, { allowanceDone = false } = {}) {
-  const budget = formatCriterionSearchBudget(searchCount);
-  let cleaned = text(reason, 600);
-  if (!cleaned) return budget.note;
-  // Remove false "quota exhausted / 5/5 / last search allowance" claims when not at cap.
-  if (!allowanceDone) {
-    cleaned = cleaned
-      .replace(/搜索配额已用尽[^。；;\n]*/g, '')
-      .replace(/search quota (has been )?exhausted[^.;\n]*/gi, '')
-      .replace(/\b5\s*\/\s*5\b/g, '')
-      .replace(/最后一次搜索配额[^。；;\n]*/g, '')
-      .replace(/last search (quota|allowance)[^.;\n]*/gi, '')
-      .replace(/\s{2,}/g, ' ')
-      .replace(/^[\s·,;；。]+|[\s·,;；。]+$/g, '')
-      .trim();
-    return text(`${budget.note} ${cleaned}`.trim(), 600);
+function appendToolBudgetNote(payload, used, cap) {
+  const remaining = Math.max(0, cap - used);
+  const note = `[tools ${used}/${cap} used, ${remaining} left]`;
+  if (payload == null) return note;
+  if (typeof payload === 'string') return `${payload}\n\n${note}`;
+  try {
+    return `${JSON.stringify(payload)}\n\n${note}`;
+  } catch {
+    return `${String(payload)}\n\n${note}`;
   }
-  if (!/\d+\s*\/\s*5/.test(cleaned) && !/Program search budget/i.test(cleaned)) {
-    return text(`${budget.note} ${cleaned}`.trim(), 600);
-  }
-  return cleaned || budget.note;
 }
 
 function normalizeQuery(value) {
@@ -93,23 +72,6 @@ function normalizeUrl(value) {
   } catch {
     return String(value || '').trim().replace(/\/$/, '');
   }
-}
-
-function collectUrlsFromSearchResult(result) {
-  const urls = new Set();
-  const results = Array.isArray(result?.results) ? result.results : [];
-  for (const item of results) {
-    const url = normalizeUrl(item?.url);
-    if (url) urls.add(url);
-  }
-  return urls;
-}
-
-function normalizeClaim(value) {
-  return String(value || '')
-    .toLowerCase()
-    .replace(/[^\p{L}\p{N}]+/gu, '')
-    .slice(0, 500);
 }
 
 function parseJsonObject(raw) {
@@ -140,122 +102,117 @@ function criterionEntries(question) {
     text: String(criterion.text || '').trim(),
     priority: criterion.priority || 'normal',
     status: 'missing',
-    candidateIds: [],
-    attempts: 0,
-    searchCount: 0,
+    evidenceIds: [],
+    toolCount: 0,
     reason: '',
   }));
 }
 
-function createInitialLedger(question) {
-  const criteria = criterionEntries(question);
+function createEmptyCoverage(question) {
   return {
     version: 1,
     questionId: question.id,
-    criteria,
+    criteria: criterionEntries(question),
+  };
+}
+
+function coverageFromLegacyLedger(question, ledger) {
+  const base = createEmptyCoverage(question);
+  if (!ledger || typeof ledger !== 'object') return base;
+  const byId = new Map((base.criteria || []).map((item) => [item.id, item]));
+  for (const criterion of ledger.criteria || []) {
+    const id = String(criterion?.id || '');
+    if (!id) continue;
+    const current = byId.get(id) || {
+      id,
+      text: text(criterion.text, 600),
+      priority: criterion.priority || 'normal',
+      status: 'missing',
+      evidenceIds: [],
+      toolCount: 0,
+      reason: '',
+    };
+    const status = VALID_COVERAGE.has(criterion.status) ? criterion.status : current.status;
+    current.status = status;
+    current.toolCount = Number(criterion.toolCount) || 0;
+    current.reason = text(criterion.reason, 600);
+    current.evidenceIds = [];
+    byId.set(id, current);
+  }
+  return {
+    version: 1,
+    questionId: question.id,
+    criteria: [...byId.values()],
+  };
+}
+
+function resolveQuestionCoverage(question, scoutRun = null) {
+  const stored = question?.coverage;
+  if (stored && Array.isArray(stored.criteria) && stored.criteria.length) {
+    return {
+      version: Number(stored.version) || 1,
+      questionId: question.id,
+      criteria: stored.criteria.map((item) => ({
+        id: String(item.id || ''),
+        text: text(item.text, 600),
+        priority: item.priority || 'normal',
+        status: VALID_COVERAGE.has(item.status) ? item.status : 'missing',
+        evidenceIds: Array.isArray(item.evidenceIds) ? item.evidenceIds.map(String) : [],
+        toolCount: Number(item.toolCount) || 0,
+        reason: text(item.reason, 600),
+      })).filter((item) => item.id),
+    };
+  }
+  if (scoutRun?.ledger?.criteria?.length) {
+    return coverageFromLegacyLedger(question, scoutRun.ledger);
+  }
+  return createEmptyCoverage(question);
+}
+
+function createInitialLedger(question) {
+  // Kept for resume compatibility / empty scout_run seed. Candidates are no longer stored here.
+  const coverage = createEmptyCoverage(question);
+  return {
+    version: 2,
+    questionId: question.id,
+    criteria: coverage.criteria.map((criterion) => ({
+      id: criterion.id,
+      text: criterion.text,
+      priority: criterion.priority,
+      status: criterion.status,
+      candidateIds: [],
+      attempts: 0,
+      searchCount: 0,
+      toolCount: criterion.toolCount,
+      reason: criterion.reason,
+    })),
     candidates: [],
     queries: [],
-    gaps: criteria.map((criterion) => ({
+    gaps: coverage.criteria.map((criterion) => ({
       criterionId: criterion.id,
       text: criterion.text,
       status: 'open',
     })),
     decision: 'continue',
-    nextGap: criteria[0]
-      ? { criterionId: criteria[0].id, reason: criteria[0].text }
+    nextGap: coverage.criteria[0]
+      ? { criterionId: coverage.criteria[0].id, reason: coverage.criteria[0].text }
       : null,
     cycles: 0,
   };
 }
 
-function compactLedger(ledger) {
+function compactProgress(coverage) {
   return {
-    version: ledger.version || 1,
-    questionId: ledger.questionId,
-    criteria: (ledger.criteria || []).map((criterion) => ({
+    questionId: coverage.questionId,
+    criteria: (coverage.criteria || []).map((criterion) => ({
       id: criterion.id,
       text: criterion.text,
       priority: criterion.priority || 'normal',
       status: criterion.status,
-      candidateIds: criterion.candidateIds || [],
-      attempts: Number(criterion.attempts) || 0,
-      searchCount: Number(criterion.searchCount) || 0,
+      evidenceIds: criterion.evidenceIds || [],
+      toolCount: Number(criterion.toolCount) || 0,
       reason: criterion.reason || '',
     })),
-    candidates: (ledger.candidates || []).map((candidate) => ({
-      id: candidate.id,
-      criterionIds: candidate.criterionIds || [],
-      claim: candidate.claim,
-      confidence: candidate.confidence,
-      relation: candidate.relation || 'supports',
-      sources: (candidate.sources || []).slice(0, 5),
-    })),
-    queries: (ledger.queries || []).slice(-20),
-    gaps: ledger.gaps || [],
-    nextGap: ledger.nextGap || null,
-    cycles: Number(ledger.cycles) || 0,
-  };
-}
-
-function ledgerProgressSignature(ledger) {
-  return JSON.stringify({
-    criteria: (ledger.criteria || []).map((criterion) => ({
-      id: criterion.id,
-      candidateIds: criterion.candidateIds || [],
-    })),
-    candidates: (ledger.candidates || []).map((candidate) => ({
-      id: candidate.id,
-      sources: (candidate.sources || []).map((source) => source.url),
-    })),
-  });
-}
-
-/**
- * Checkpoint ends only when the Scout calls finish_scout_cycle (or a safety fuse trips).
- * One web_search is allowed per cycle; further searches are rejected until finish.
- */
-function createScoutCheckpointController() {
-  let finished = false;
-  let searchStartedThisCycle = false;
-  return {
-    hasSearchStarted() {
-      return searchStartedThisCycle;
-    },
-    markSearchStarted() {
-      searchStartedThisCycle = true;
-    },
-    markFinished() {
-      finished = true;
-    },
-    isFinished() {
-      return finished;
-    },
-    shouldCheckpoint({ budgetExhausted = false, tools = 0 } = {}) {
-      return finished || budgetExhausted || tools >= CHECKPOINT_TOOL_FUSE;
-    },
-  };
-}
-
-function createFinishScoutCycleDefinition() {
-  return {
-    type: 'function',
-    function: {
-      name: 'finish_scout_cycle',
-      description: [
-        'End this Scout checkpoint cycle so the evaluator can score the current target criterion.',
-        'Call after you have searched once and fetched any useful allowlisted URLs from that search.',
-        'Do not call web_search again in this cycle — finish first; the next cycle may search again.',
-      ].join(' '),
-      parameters: {
-        type: 'object',
-        properties: {
-          reason: {
-            type: 'string',
-            description: 'Optional short note on why this search batch is done.',
-          },
-        },
-      },
-    },
   };
 }
 
@@ -281,6 +238,7 @@ function createResearchSearchDefinition(baseDefinition) {
   fn.description = [
     String(fn.description || 'Search the web.'),
     'Research Scout rule: criterionId must match the current target criterion.',
+    'Search and fetch freely within the per-criterion tool fuse; finish by calling submit_criterion_candidates.',
   ].join(' ');
   const parameters = fn.parameters && typeof fn.parameters === 'object'
     ? fn.parameters
@@ -297,6 +255,40 @@ function createResearchSearchDefinition(baseDefinition) {
   return cloned;
 }
 
+function createSubmitCandidatesDefinition() {
+  return {
+    type: 'function',
+    function: {
+      name: 'submit_criterion_candidates',
+      description: [
+        'End search/fetch for the current criterion and deliver candidate findings.',
+        'Call this when you have enough attributable evidence, or with an empty candidates array if blocked.',
+        'This tool does not count toward the search/fetch fuse.',
+      ].join(' '),
+      parameters: {
+        type: 'object',
+        properties: {
+          candidates: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                claim: { type: 'string' },
+                urls: { type: 'array', items: { type: 'string' } },
+                quote: { type: 'string' },
+                confidence: { type: 'string', enum: ['high', 'medium', 'low'] },
+              },
+              required: ['claim', 'urls'],
+            },
+          },
+          note: { type: 'string' },
+        },
+        required: ['candidates'],
+      },
+    },
+  };
+}
+
 function filterScoutBundle(bundle) {
   const active = [...(bundle.definitions || [])];
   const deferred = bundle.deferredDefinitions || {};
@@ -305,7 +297,7 @@ function filterScoutBundle(bundle) {
   const definitions = [
     createResearchSearchDefinition(webSearch),
     ...(webFetch ? [structuredClone(webFetch)] : []),
-    createFinishScoutCycleDefinition(),
+    createSubmitCandidatesDefinition(),
   ];
   return { definitions, handlers: bundle.handlers || {} };
 }
@@ -344,6 +336,7 @@ function makeStreamingCompletion(config, emit, reasoningEffort = 'low') {
       },
     });
     if (!started && (result?.text || result?.toolCalls?.length)) start();
+    emit?.({ type: 'assistant:done', text: result?.text || '', toolCalls: result?.toolCalls || [] });
     return result;
   };
 }
@@ -401,234 +394,6 @@ async function callJsonModel({
   throw lastError || new Error('Evaluator failed');
 }
 
-function normalizeObjectList(value) {
-  if (Array.isArray(value)) return value.filter((item) => item && typeof item === 'object');
-  if (!value || typeof value !== 'object') return [];
-  if ('claim' in value || 'id' in value || 'candidateId' in value) return [value];
-  return Object.values(value).filter((item) => item && typeof item === 'object');
-}
-
-function normalizeCoverageUpdates(value) {
-  if (!value || typeof value !== 'object') return {};
-  if (!Array.isArray(value)) return value;
-  const updates = {};
-  for (const item of value) {
-    if (Array.isArray(item)) {
-      const criterionId = String(item[0] || '');
-      if (criterionId) updates[criterionId] = item[1];
-      continue;
-    }
-    if (!item || typeof item !== 'object') continue;
-    const criterionId = String(item.criterionId || item.criterion_id || item.id || '');
-    if (!criterionId) continue;
-    const status = item.status || item.coverage || item.value;
-    updates[criterionId] = item.reason
-      ? { status, reason: text(item.reason, 600) }
-      : status;
-  }
-  return updates;
-}
-
-function normalizeCriterionStatus(value) {
-  const normalized = String(value || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
-  if (['covered', 'done', 'complete', 'completed'].includes(normalized)) return 'covered';
-  if (['partial', 'incomplete'].includes(normalized)) return 'partial';
-  if (['blocked', 'unavailable'].includes(normalized)) return 'blocked';
-  if (['needs_more', 'continue', 'missing', 'conflicted'].includes(normalized)) return 'needs_more';
-  return '';
-}
-
-function validateScoutEvaluatorPatch(value) {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    throw new Error('Scout evaluator output must be an object');
-  }
-  const rawDecision = String(value.decision || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
-  const decision = ['done', 'complete', 'completed'].includes(rawDecision)
-    ? 'done'
-    : ['partial', 'incomplete'].includes(rawDecision)
-      ? 'partial'
-      : rawDecision === 'blocked'
-        ? 'blocked'
-        : 'continue';
-  const rawCriterionDecision =
-    value.criterionDecision
-    || value.criterion_decision
-    || value.currentCriterion
-    || null;
-  const criterionDecision = rawCriterionDecision && typeof rawCriterionDecision === 'object'
-    ? {
-      criterionId: String(
-        rawCriterionDecision.criterionId
-        || rawCriterionDecision.criterion_id
-        || rawCriterionDecision.id
-        || '',
-      ),
-      status: normalizeCriterionStatus(
-        rawCriterionDecision.status || rawCriterionDecision.decision,
-      ),
-      reason: text(rawCriterionDecision.reason || rawCriterionDecision.rationale, 600),
-    }
-    : null;
-  return {
-    newCandidates: normalizeObjectList(value.newCandidates || value.new_candidates),
-    updateCandidates: normalizeObjectList(value.updateCandidates || value.update_candidates),
-    coverageUpdates: normalizeCoverageUpdates(
-      value.coverageUpdates || value.coverage_updates || value.coverage,
-    ),
-    gaps: Array.isArray(value.gaps) ? value.gaps : null,
-    decision,
-    nextGap: (
-      value.nextGap
-      || value.next_gap
-    ) && typeof (value.nextGap || value.next_gap) === 'object'
-      ? (value.nextGap || value.next_gap)
-      : null,
-    criterionDecision,
-  };
-}
-
-function normalizeEvaluatorCandidate(item, targetId) {
-  if (!item || typeof item !== 'object') return [];
-  const rawClaims = [
-    item.claim,
-    ...(Array.isArray(item.claims) ? item.claims : []),
-  ];
-  const claims = [...new Set(rawClaims.map((claim) => text(claim, 1000)).filter(Boolean))];
-  if (!claims.length) return [];
-  const rawSources = Array.isArray(item.sources) && item.sources.length
-    ? item.sources
-    : item.url
-      ? [{
-        url: item.url,
-        snippet: item.snippet || item.excerpt || item.quote,
-        label: item.source || item.sourceLabel || item.sourceType,
-      }]
-      : [];
-  const sources = rawSources.map((source) => {
-    if (typeof source === 'string') return { url: source, snippet: '', label: '' };
-    return {
-      url: source?.url || source?.href,
-      snippet: source?.snippet || source?.excerpt || source?.quote || '',
-      label: source?.label || source?.sourceLabel || source?.title || '',
-    };
-  }).filter((source) => source.url);
-  return claims.map((claim) => ({
-    criterionIds: [targetId],
-    claim,
-    confidence: item.confidence,
-    relation: item.relation,
-    sources: sources.map((source) => ({
-      ...source,
-      snippet: source.snippet || claim,
-    })),
-  }));
-}
-
-function scopeScoutEvaluatorPatch(value, ledger) {
-  const patch = validateScoutEvaluatorPatch(value);
-  const targetId = String(ledger?.nextGap?.criterionId || '');
-  if (!targetId) throw new Error('Scout ledger has no current criterion');
-  const targetCriterion = (ledger?.criteria || []).find((item) => item.id === targetId);
-  const searchCount = Number(targetCriterion?.searchCount) || 0;
-  const allowanceDone = searchCount >= MAX_CRITERION_SEARCHES_PER_WAVE;
-  const rawCoverage = patch.coverageUpdates[targetId];
-  const rawCoverageStatus = typeof rawCoverage === 'object' ? rawCoverage?.status : rawCoverage;
-  let inferredStatus =
-    normalizeCriterionStatus(patch.criterionDecision?.status)
-    || normalizeCriterionStatus(rawCoverageStatus)
-    || (patch.decision === 'done'
-      ? 'covered'
-      : patch.decision === 'partial'
-        ? 'partial'
-        : patch.decision === 'blocked'
-          ? 'blocked'
-          : 'needs_more');
-  // Program owns early-stop rules: only covered may finish before search cap.
-  if (!allowanceDone && (inferredStatus === 'partial' || inferredStatus === 'blocked')) {
-    inferredStatus = 'needs_more';
-  }
-  patch.criterionDecision = {
-    criterionId: targetId,
-    status: inferredStatus,
-    reason: text(
-      patch.criterionDecision?.reason
-      || (typeof rawCoverage === 'object' ? rawCoverage?.reason : '')
-      || patch.nextGap?.reason
-      || patch.nextGap?.text,
-      600,
-    ),
-  };
-  const targetCandidateIds = new Set(
-    (ledger?.candidates || [])
-      .filter((candidate) => (candidate.criterionIds || []).includes(targetId))
-      .map((candidate) => candidate.id),
-  );
-  const criterionStatus = String(patch.criterionDecision.status || '');
-  const rawStatus = typeof rawCoverage === 'object' ? rawCoverage?.status : rawCoverage;
-  let scopedCoverage = criterionStatus === 'needs_more'
-    ? (rawStatus === 'conflicted' ? 'conflicted' : 'missing')
-    : criterionStatus;
-  // coverageUpdates must never carry partial/blocked — advanceLedger owns those terminals.
-  if (scopedCoverage === 'partial' || scopedCoverage === 'blocked' || !PATCHABLE_COVERAGE.has(scopedCoverage)) {
-    scopedCoverage = scopedCoverage === 'covered' ? 'covered' : (rawStatus === 'conflicted' ? 'conflicted' : 'missing');
-  }
-  if (scopedCoverage === 'covered' && criterionStatus !== 'covered') {
-    scopedCoverage = 'missing';
-  }
-  return {
-    ...patch,
-    newCandidates: patch.newCandidates
-      .filter((candidate) => {
-        const ids = Array.isArray(candidate?.criterionIds)
-          ? candidate.criterionIds.map(String)
-          : [String(candidate?.criterionId || '')];
-        return ids.every((id) => !id) || ids.includes(targetId);
-      })
-      .flatMap((candidate) => normalizeEvaluatorCandidate(candidate, targetId)),
-    updateCandidates: patch.updateCandidates
-      .filter((candidate) =>
-        targetCandidateIds.has(String(candidate?.id || candidate?.candidateId || '')))
-      .map((candidate) => {
-        const normalized = normalizeEvaluatorCandidate({
-          ...candidate,
-          claim: candidate.claim || 'Existing candidate update',
-        }, targetId)[0];
-        return {
-          ...candidate,
-          attachSources: normalized?.sources || candidate.attachSources || candidate.sources || [],
-        };
-      }),
-    coverageUpdates: { [targetId]: scopedCoverage },
-  };
-}
-
-function validateLeadReview(value) {
-  if (!value || typeof value !== 'object' || !Array.isArray(value.acceptCandidateIds)) {
-    throw new Error('Lead reviewer must return acceptCandidateIds');
-  }
-  return {
-    acceptCandidateIds: value.acceptCandidateIds.map(String),
-    reason: text(value.reason, 1000),
-  };
-}
-
-function validateWaveEvaluation(value) {
-  if (!value || typeof value !== 'object') throw new Error('Wave evaluator output must be an object');
-  const decision = String(value.decision || '');
-  if (!['ready_for_report', 'next_wave'].includes(decision)) {
-    throw new Error(`Wave evaluator returned invalid decision: ${decision || '(empty)'}`);
-  }
-  if (decision === 'next_wave' && !Array.isArray(value.targets)) {
-    throw new Error('Wave evaluator next_wave decision requires targets');
-  }
-  return {
-    decision,
-    reason: text(value.reason, 1000),
-    targets: Array.isArray(value.targets) ? value.targets : [],
-    limitations: Array.isArray(value.limitations) ? value.limitations : [],
-  };
-}
-
 function targetKey(item = {}) {
   return `${String(item.questionId || '')}:${String(item.criterionId || '')}`;
 }
@@ -677,442 +442,529 @@ function partitionWaveTargetsAndLimitations({
   return { targets: cleanTargets, limitations: cleanLimitations };
 }
 
-function collectAllowedUrls(batchEvents) {
-  const urls = new Set();
-  const regex = /https?:\/\/[^\s"'<>()[\]{}]+/g;
-  for (const event of batchEvents) {
-    const values = [
-      event?.arguments?.url,
-      event?.content,
-      event?.summary,
-    ];
-    for (const value of values) {
-      const source = String(value || '');
-      if (/^https?:\/\//i.test(source)) urls.add(normalizeUrl(source));
-      for (const match of source.match(regex) || []) urls.add(normalizeUrl(match.replace(/[.,;:]+$/, '')));
-    }
-  }
-  return urls;
-}
-
-function mergeSources(existing, incoming, allowedUrls) {
-  const merged = [...(Array.isArray(existing) ? existing : [])];
-  const seen = new Set(merged.map((source) => normalizeUrl(source?.url)));
-  for (const source of Array.isArray(incoming) ? incoming : []) {
-    const url = normalizeUrl(source?.url);
-    if (!url || !allowedUrls.has(url) || seen.has(url)) continue;
-    merged.push({
-      url,
-      snippet: text(source?.snippet, 1200),
-      label: text(source?.label || source?.sourceLabel, 160),
+function indexSearchResult(urlIndex, result) {
+  const results = Array.isArray(result?.results) ? result.results : [];
+  for (const item of results) {
+    const url = normalizeUrl(item?.url);
+    if (!url) continue;
+    const existing = urlIndex.get(url);
+    if (existing?.source === 'fetch') continue;
+    const snippet = [item?.title, item?.snippet || item?.content || item?.description]
+      .map((part) => text(part, 800))
+      .filter(Boolean)
+      .join('\n');
+    urlIndex.set(url, {
+      source: 'search',
+      text: text(snippet || url, MAX_URL_TEXT_CHARS),
     });
-    seen.add(url);
   }
-  return merged.slice(0, 8);
 }
 
-function applyLedgerPatch(ledger, patch, batchEvents) {
-  const next = structuredClone(ledger);
-  const criterionIds = new Set((next.criteria || []).map((criterion) => criterion.id));
-  const allowedUrls = collectAllowedUrls(batchEvents);
-  const candidateById = new Map((next.candidates || []).map((candidate) => [candidate.id, candidate]));
-  const candidateByClaim = new Map(
-    (next.candidates || []).map((candidate) => [
-      `${(candidate.criterionIds || []).slice().sort().join(',')}:${normalizeClaim(candidate.claim)}`,
-      candidate,
-    ]),
+function indexFetchResult(urlIndex, args, result) {
+  const requested = normalizeUrl(args?.url);
+  const finalUrl = normalizeUrl(result?.final_url || result?.finalUrl || result?.url || requested);
+  const body = text(
+    result?.text || result?.content || result?.markdown || result?.body || '',
+    MAX_URL_TEXT_CHARS,
   );
-
-  for (const update of Array.isArray(patch?.updateCandidates) ? patch.updateCandidates : []) {
-    const candidate = candidateById.get(String(update?.id || update?.candidateId || ''));
-    if (!candidate) continue;
-    candidate.sources = mergeSources(candidate.sources, update.attachSources || update.sources, allowedUrls);
-    if (['high', 'medium', 'low'].includes(String(update.confidence))) {
-      candidate.confidence = String(update.confidence);
+  if (finalUrl && body) {
+    urlIndex.set(finalUrl, { source: 'fetch', text: body });
+  }
+  if (requested && requested !== finalUrl && body) {
+    const existing = urlIndex.get(requested);
+    if (!existing || existing.source !== 'fetch') {
+      urlIndex.set(requested, { source: 'fetch', text: body });
     }
   }
+}
 
-  for (const item of Array.isArray(patch?.newCandidates) ? patch.newCandidates : []) {
+function normalizeSubmittedCandidates(rawCandidates, criterionId) {
+  const list = Array.isArray(rawCandidates) ? rawCandidates : [];
+  const out = [];
+  for (const item of list) {
     const claim = text(item?.claim, 1000);
-    const ids = [...new Set(
-      (Array.isArray(item?.criterionIds) ? item.criterionIds : [item?.criterionId])
-        .map(String)
-        .filter((id) => criterionIds.has(id)),
+    const urls = [...new Set(
+      (Array.isArray(item?.urls) ? item.urls : [item?.url])
+        .map((url) => normalizeUrl(url))
+        .filter(Boolean),
     )];
-    if (!claim || !ids.length) continue;
-    const key = `${ids.slice().sort().join(',')}:${normalizeClaim(claim)}`;
-    const existing = candidateByClaim.get(key);
-    if (existing) {
-      existing.sources = mergeSources(existing.sources, item.sources, allowedUrls);
-      continue;
-    }
-    const sources = mergeSources([], item.sources, allowedUrls);
-    if (!sources.length) continue;
-    const candidate = {
+    if (!claim || !urls.length) continue;
+    out.push({
       id: `cand_${randomUUID()}`,
-      criterionIds: ids,
+      criterionIds: [String(criterionId)],
       claim,
+      quote: text(item?.quote, 1200),
       confidence: ['high', 'medium', 'low'].includes(String(item?.confidence))
         ? String(item.confidence)
         : 'medium',
-      relation: ['supports', 'conflicts'].includes(String(item?.relation))
-        ? String(item.relation)
-        : 'supports',
-      sources,
-    };
-    next.candidates.push(candidate);
-    candidateById.set(candidate.id, candidate);
-    candidateByClaim.set(key, candidate);
-  }
-
-  const updates = patch?.coverageUpdates && typeof patch.coverageUpdates === 'object'
-    ? patch.coverageUpdates
-    : {};
-  for (const criterion of next.criteria || []) {
-    const raw = updates[criterion.id];
-    const status = typeof raw === 'object' ? raw.status : raw;
-    // Never apply partial/blocked from the model here — only covered may early-stop,
-    // and partial/blocked are decided later from program searchCount.
-    if (PATCHABLE_COVERAGE.has(String(status))) criterion.status = String(status);
-    criterion.candidateIds = (next.candidates || [])
-      .filter((candidate) => (candidate.criterionIds || []).includes(criterion.id))
-      .map((candidate) => candidate.id);
-  }
-
-  const executedQueries = batchEvents
-    .filter((event) => event.type === 'tool:result' && event.name === 'web_search' && !event.error)
-    .map((event) => ({
-      criterionId: String(event?.arguments?.criterionId || ''),
-      query: text(event?.arguments?.query, 500),
-      normalized: normalizeQuery(event?.arguments?.query),
-    }))
-    .filter((entry) => entry.query);
-  const seenQueries = new Set((next.queries || []).map((entry) => entry.normalized || normalizeQuery(entry.query)));
-  for (const query of executedQueries) {
-    if (!seenQueries.has(query.normalized)) {
-      next.queries.push(query);
-      seenQueries.add(query.normalized);
-    }
-  }
-
-  next.gaps = Array.isArray(patch?.gaps)
-    ? patch.gaps.map((gap) => ({
-      criterionId: String(gap?.criterionId || ''),
-      text: text(gap?.text || gap?.reason, 600),
-      status: String(gap?.status || 'open'),
-    })).filter((gap) => criterionIds.has(gap.criterionId) && gap.text)
-    : (next.criteria || [])
-      .filter((criterion) => criterion.status !== 'covered')
-      .map((criterion) => ({
-        criterionId: criterion.id,
-        text: criterion.text,
-        status: criterion.status === 'conflicted' ? 'conflicted' : 'open',
-      }));
-
-  const unresolved = (next.criteria || []).filter((criterion) => criterion.status !== 'covered');
-  let decision = ['continue', 'done', 'partial'].includes(String(patch?.decision))
-    ? String(patch.decision)
-    : unresolved.length ? 'continue' : 'done';
-  if (decision === 'done' && unresolved.length) decision = 'partial';
-  let nextGap = null;
-  if (decision === 'continue') {
-    const proposedId = String(patch?.nextGap?.criterionId || patch?.nextCriterionId || '');
-    const criterion = unresolved.find((item) => item.id === proposedId) || unresolved[0];
-    if (!criterion) {
-      decision = 'done';
-    } else {
-      nextGap = {
-        criterionId: criterion.id,
-        reason: text(patch?.nextGap?.reason || patch?.nextGap?.text || criterion.text, 600),
-        suggestedQuery: text(patch?.nextGap?.suggestedQuery || patch?.nextQuery, 500),
-      };
-    }
-  }
-
-  next.decision = decision;
-  next.nextGap = nextGap;
-  next.cycles = (Number(next.cycles) || 0) + 1;
-  return next;
-}
-
-function advanceLedgerAfterCheckpoint(ledger, {
-  patch,
-  targetCriterionId,
-  budgetExhausted = false,
-} = {}) {
-  const next = structuredClone(ledger);
-  const current = (next.criteria || []).find((criterion) => criterion.id === targetCriterionId);
-  if (!current) throw new Error(`Unknown target criterion: ${targetCriterionId}`);
-  current.attempts = (Number(current.attempts) || 0) + 1;
-  const searchesUsed = Number(current.searchCount) || 0;
-  const searchBudgetSpent = searchesUsed >= MAX_CRITERION_SEARCHES_PER_WAVE;
-  const allowanceDone = searchBudgetSpent || budgetExhausted;
-  const hasCandidates = (criterion) => (criterion.candidateIds || []).length > 0;
-  const budget = formatCriterionSearchBudget(searchesUsed);
-
-  const criterionDecision = patch?.criterionDecision;
-  let requestedStatus = '';
-  if (criterionDecision && String(criterionDecision.criterionId || '') === current.id) {
-    requestedStatus = String(criterionDecision.status || '');
-    if (requestedStatus === 'covered') {
-      // Only covered may early-close, and only with attributable candidates.
-      if (hasCandidates(current)) {
-        current.status = 'covered';
-      } else if (!TERMINAL_COVERAGE.has(current.status) || current.status === 'partial' || current.status === 'blocked') {
-        current.status = current.status === 'conflicted' ? 'conflicted' : 'missing';
-        current.reason = 'Evaluator marked covered without attributable candidate evidence.';
-      }
-    } else if (requestedStatus === 'conflicted') {
-      current.status = 'conflicted';
-    } else if (requestedStatus === 'partial' || requestedStatus === 'blocked') {
-      // Intent only — program decides terminal partial/blocked after allowance.
-      if (!allowanceDone) {
-        current.status = 'missing';
-      }
-    } else if (requestedStatus === 'needs_more' || requestedStatus === 'missing') {
-      if (!TERMINAL_COVERAGE.has(current.status) || current.status === 'partial' || current.status === 'blocked') {
-        if (!allowanceDone) current.status = 'missing';
-      }
-    }
-  }
-
-  // Hard clamp: coverageUpdates or stale state must not leave early partial/blocked.
-  if (!allowanceDone && (current.status === 'partial' || current.status === 'blocked')) {
-    current.status = 'missing';
-  }
-
-  if (current.status === 'covered' && !hasCandidates(current)) {
-    current.status = 'missing';
-    current.reason = current.reason || 'Coverage requires attributable candidate evidence.';
-  }
-
-  if (allowanceDone && !TERMINAL_COVERAGE.has(current.status)) {
-    if (hasCandidates(current)) {
-      current.status = 'partial';
-    } else {
-      current.status = 'blocked';
-    }
-  }
-
-  // Normalize end-state split: evidence ⇒ partial, no evidence ⇒ blocked (only at allowance end).
-  if (allowanceDone) {
-    if (current.status === 'partial' && !hasCandidates(current)) {
-      current.status = 'blocked';
-    } else if (current.status === 'blocked' && hasCandidates(current)) {
-      current.status = 'partial';
-    } else if (current.status === 'covered' && !hasCandidates(current)) {
-      current.status = 'blocked';
-    }
-  }
-
-  // Program owns budget wording; keep useful evidence notes from the model when present.
-  const modelReason = text(criterionDecision?.reason, 600);
-  if (current.status === 'covered') {
-    current.reason = sanitizeCriterionReason(
-      modelReason || current.reason || 'Covered with attributable evidence.',
-      searchesUsed,
-      { allowanceDone: true },
-    );
-  } else if (allowanceDone && (current.status === 'partial' || current.status === 'blocked')) {
-    const fallback = current.status === 'partial'
-      ? 'Search allowance used with incomplete but attributable evidence.'
-      : (searchBudgetSpent
-        ? 'Per-criterion search limit reached for this wave before the criterion was resolved.'
-        : 'Research safety budget exhausted before this criterion was resolved.');
-    current.reason = sanitizeCriterionReason(modelReason || current.reason || fallback, searchesUsed, {
-      allowanceDone: true,
+      urls,
     });
-  } else {
-    const continueHint = requestedStatus === 'partial' || requestedStatus === 'blocked'
-      ? 'Early partial/blocked ignored; continue searching this criterion.'
-      : '';
-    current.reason = sanitizeCriterionReason(
-      [modelReason || current.reason || current.text, continueHint].filter(Boolean).join(' '),
-      searchesUsed,
-      { allowanceDone: false },
-    );
   }
-
-  const unresolved = (next.criteria || []).filter((criterion) => !TERMINAL_COVERAGE.has(criterion.status));
-  if (!unresolved.length) {
-    next.decision = (next.criteria || []).every((criterion) => criterion.status === 'covered')
-      ? 'done'
-      : 'partial';
-    next.nextGap = null;
-  } else {
-    const proposedId = String(patch?.nextGap?.criterionId || '');
-    const proposed = unresolved.find((criterion) => criterion.id === proposedId);
-    const target = !TERMINAL_COVERAGE.has(current.status)
-      ? current
-      : proposed || unresolved[0];
-    next.decision = 'continue';
-    const targetBudget = formatCriterionSearchBudget(target.searchCount);
-    const modelGap = text(
-      target.id === proposedId
-        ? patch?.nextGap?.reason || patch?.nextGap?.text
-        : target.reason || target.text,
-      400,
-    );
-    next.nextGap = {
-      criterionId: target.id,
-      reason: sanitizeCriterionReason(modelGap || target.text, target.searchCount, {
-        allowanceDone: targetBudget.atCap,
-      }),
-      suggestedQuery: target.id === proposedId
-        ? text(patch?.nextGap?.suggestedQuery || patch?.nextQuery, 500)
-        : '',
-    };
-  }
-  next.gaps = (next.criteria || [])
-    .filter((criterion) => criterion.status !== 'covered')
-    .map((criterion) => ({
-      criterionId: criterion.id,
-      text: criterion.reason || criterion.text,
-      status: TERMINAL_COVERAGE.has(criterion.status) ? criterion.status : 'open',
-    }));
-  return next;
+  return out;
 }
 
-async function evaluateScoutCheckpoint({
+function parseCandidatesFromText(raw, criterionId) {
+  const parsed = parseJsonObject(raw);
+  if (!parsed) return [];
+  const list = Array.isArray(parsed.candidates) ? parsed.candidates : [];
+  return normalizeSubmittedCandidates(list, criterionId);
+}
+
+function gateCandidatesByUrl(candidates, urlIndex) {
+  const accepted = [];
+  const rejected = [];
+  for (const candidate of candidates) {
+    const urls = (candidate.urls || []).map(normalizeUrl).filter(Boolean);
+    const missing = urls.filter((url) => !urlIndex.has(url));
+    if (!urls.length || missing.length) {
+      rejected.push({
+        ...candidate,
+        reason: missing.length
+          ? `URL(s) not seen in tool results: ${missing.join(', ')}`
+          : 'No URLs provided',
+      });
+      continue;
+    }
+    accepted.push({
+      ...candidate,
+      urls,
+      slices: urls.map((url) => ({
+        url,
+        toolText: text(urlIndex.get(url)?.text, MAX_URL_TEXT_FOR_VERIFY),
+      })),
+    });
+  }
+  return { accepted, rejected };
+}
+
+function validateSupportVerdicts(value, candidateIds) {
+  if (!value || typeof value !== 'object') throw new Error('Support check must return an object');
+  const raw = Array.isArray(value.verdicts) ? value.verdicts : [];
+  const byId = new Map();
+  for (const item of raw) {
+    const id = String(item?.candidateId || item?.id || '');
+    if (!id) continue;
+    byId.set(id, {
+      candidateId: id,
+      supported: Boolean(item?.supported ?? item?.accept ?? item?.ok),
+      reason: text(item?.reason, 400),
+    });
+  }
+  return candidateIds.map((id) => byId.get(id) || {
+    candidateId: id,
+    supported: false,
+    reason: 'Missing verdict',
+  });
+}
+
+async function verifyCandidateSupport({
   config,
-  mainModel,
+  model,
   question,
-  ledger,
-  batchEvents,
+  criterion,
+  gatedCandidates,
   signal,
 }) {
-  const resultText = batchEvents
-    .filter((event) => event.type === 'tool:result')
-    .map((event) => [
-      `TOOL ${event.name}`,
-      `ARGS ${JSON.stringify(event.arguments || {})}`,
-      text(event.content, 7000),
-    ].join('\n'))
-    .join('\n\n')
-    .slice(0, MAX_BATCH_RESULT_CHARS);
-  const fastModel = resolveSubAgentModel(config, mainModel);
+  if (!gatedCandidates.length) return [];
   try {
-    const evaluated = await callJsonModel({
+    const reviewed = await callJsonModel({
       config,
-      model: fastModel,
-      fallbackModel: mainModel,
-      reasoningEffort: 'medium',
+      model: resolveSubAgentModel(config, model),
+      fallbackModel: model || config.model?.name,
+      reasoningEffort: 'low',
       signal,
       systemPrompt: [
-        'You are a research checkpoint evaluator. You have no tools.',
-        'Update the working evidence ledger using only URLs and facts in NEW TOOL RESULTS.',
-        'Do not repeat an existing claim; use updateCandidates to attach a new source.',
-        'Search-result snippets may become low-confidence candidates when they contain an attributable claim and URL; fetched primary text is preferred for medium/high confidence.',
-        'Evaluate the CURRENT target criterion, not the whole sub-question.',
-        'Mark a criterion covered only when attributable evidence supports it — that is the only early stop.',
-        'Do NOT mark partial or blocked before the program search budget is exhausted. The program tracks searchCount; never invent 5/5 or "quota exhausted" in reasons.',
-        'While searchCount is below 5, prefer needs_more and describe evidence gaps only.',
-        'After the program has used 5 searches: partial = incomplete but attributable evidence exists; blocked = little or no usable attributable evidence.',
-        'Return strict JSON only with keys: newCandidates, updateCandidates, coverageUpdates, gaps, criterionDecision, decision, nextGap.',
-        'Each newCandidates item must be {"criterionIds":["c1"],"claim":"","confidence":"high|medium|low","relation":"supports|conflicts","sources":[{"url":"","snippet":"","label":""}]}.',
-        'coverageUpdates must be an object map such as {"c1":"covered"} or {"c1":"missing"}, not partial/blocked.',
-        'criterionDecision is {"criterionId":"","status":"covered|partial|blocked|needs_more","reason":""}. Prefer needs_more while searchCount is below 5.',
-        'decision is continue while any criterion still needs work; done only when every criterion is covered; partial only when all remaining criteria are terminal partial/blocked.',
+        'You verify whether tool-result text supports research claims.',
+        'For each candidate, judge ONLY from the provided URL toolText slices — not from the candidate quote alone.',
+        'A claim may paraphrase the source; accept if the tool text substantively supports the claim.',
+        'If any one URL slice supports the claim, mark supported=true.',
+        'Return strict JSON only: {"verdicts":[{"candidateId":"","supported":true,"reason":""}]}',
       ].join('\n'),
       userPrompt: [
-        `QUESTION\n${question.text}`,
-        `SUCCESS CRITERIA\n${JSON.stringify(criterionEntries(question))}`,
-        `PROGRAM SEARCH COUNTS (authoritative)\n${JSON.stringify(
-          (ledger.criteria || []).map((criterion) => ({
-            id: criterion.id,
-            ...formatCriterionSearchBudget(criterion.searchCount),
-          })),
-        )}`,
-        `CURRENT LEDGER\n${JSON.stringify(compactLedger(ledger))}`,
-        `NEW TOOL RESULTS\n${resultText || '(none)'}`,
+        `Sub-question: ${question.text}`,
+        `Criterion (${criterion.id}): ${criterion.text}`,
+        `Candidates:\n${JSON.stringify(gatedCandidates.map((item) => ({
+          candidateId: item.id,
+          claim: item.claim,
+          slices: item.slices,
+        })))}`,
       ].join('\n\n'),
-      validate: (value) => scopeScoutEvaluatorPatch(value, ledger),
+      validate: (value) => ({
+        verdicts: validateSupportVerdicts(value, gatedCandidates.map((item) => item.id)),
+      }),
     });
-    return {
-      patch: evaluated.data,
-      evaluator: {
-        ok: true,
-        model: evaluated.model,
-        attempt: evaluated.attempt,
-        rawText: evaluated.rawText,
-      },
-    };
+    return reviewed.data.verdicts;
   } catch (error) {
-    return {
-      patch: {
-        newCandidates: [],
-        updateCandidates: [],
-        coverageUpdates: {},
-        gaps: null,
-        decision: 'continue',
-        nextGap: ledger.nextGap || null,
-        criterionDecision: {
-          criterionId: ledger.nextGap?.criterionId || '',
-          status: 'needs_more',
-          reason: 'Evaluator failed; preserve the criterion for retry.',
-        },
-      },
-      evaluator: {
-        ok: false,
-        error: error instanceof Error ? error.message : String(error),
-      },
-    };
+    // Deterministic fallback: accept gated candidates that have fetch-backed text or non-empty snippets.
+    return gatedCandidates.map((item) => ({
+      candidateId: item.id,
+      supported: item.slices.some((slice) => text(slice.toolText, 80).length >= 40),
+      reason: error instanceof Error ? error.message : String(error),
+    }));
   }
 }
 
-function buildScoutHandoff(question, ledger) {
+function candidateToEvidence(candidate, questionId) {
+  const primaryUrl = candidate.urls?.[0] || '';
+  const primarySlice = (candidate.slices || []).find((slice) => slice.url === primaryUrl)
+    || candidate.slices?.[0]
+    || {};
+  return {
+    candidateId: candidate.id,
+    questionId,
+    claim: candidate.claim,
+    snippet: text(candidate.quote || primarySlice.toolText, 1200),
+    url: primaryUrl,
+    sourceLabel: '',
+    confidence: candidate.confidence || 'medium',
+    createdFrom: 'scout_handoff',
+    criterionIds: candidate.criterionIds || [],
+  };
+}
+
+function buildScoutHandoff(question, coverage, evidence = []) {
   const lines = [
     `Question: ${question.id} — ${question.text}`,
     '',
-    'Candidate Evidence:',
+    'Accepted Evidence:',
   ];
-  if (!(ledger.candidates || []).length) lines.push('- No attributable candidate evidence found.');
-  for (const candidate of ledger.candidates || []) {
-    lines.push(`- Candidate ID: ${candidate.id}`);
-    lines.push(`  Claim: ${candidate.claim}`);
-    lines.push(`  Criteria: ${(candidate.criterionIds || []).join(', ')}`);
-    lines.push(`  Confidence: ${candidate.confidence}`);
-    for (const source of candidate.sources || []) {
-      lines.push(`  URL: ${source.url}`);
-      if (source.snippet) lines.push(`  Snippet: ${source.snippet}`);
-    }
+  const forQuestion = evidence.filter((item) => item.questionId === question.id && item.status === 'accepted');
+  if (!forQuestion.length) lines.push('- No accepted evidence yet.');
+  for (const item of forQuestion) {
+    lines.push(`- ${item.id}: ${item.claim}`);
+    if (item.url) lines.push(`  URL: ${item.url}`);
+    if (item.criterionIds?.length) lines.push(`  Criteria: ${item.criterionIds.join(', ')}`);
   }
-  lines.push('', 'Suggested Gaps:');
-  if (!(ledger.gaps || []).length) lines.push('- None');
-  for (const gap of ledger.gaps || []) lines.push(`- [${gap.criterionId}] ${gap.text}`);
-  lines.push('', `Self-status: ${ledger.decision === 'done' ? 'done' : 'partial'}`);
+  lines.push('', 'Coverage:');
+  for (const criterion of coverage.criteria || []) {
+    lines.push(`- [${criterion.id}] ${criterion.status}: ${criterion.reason || criterion.text}`);
+  }
   return lines.join('\n');
 }
 
-function buildScoutCyclePrompt({ session, question, ledger, targetGap }) {
-  const targetCriterion = (ledger.criteria || []).find((item) =>
-    item.id === String(targetGap?.criterionId || ''));
-  const used = Number(targetCriterion?.searchCount) || 0;
-  const remaining = Math.max(0, MAX_CRITERION_SEARCHES_PER_WAVE - used);
+function buildScoutCriterionPrompt({ session, question, criterion, toolsCap, toolsUsed = 0 }) {
+  const cap = resolveToolsCap(toolsCap);
+  const remaining = Math.max(0, cap - toolsUsed);
   return [
     'Investigate exactly ONE target criterion for this research sub-question.',
-    'This checkpoint allows at most ONE web_search.',
-    'After that search, fetch as many promising allowlisted URLs as you need (multiple fetch rounds are OK).',
-    'When you are done fetching — or if snippets alone are enough — call finish_scout_cycle so the evaluator can run.',
-    'If you want a different query, call finish_scout_cycle first. A second web_search in this cycle is rejected.',
+    'Use web_search and web_fetch freely and continuously.',
+    'There is no URL allowlist — fetch any relevant URL.',
+    `Hard fuse: at most ${cap} search/fetch tool calls combined for this criterion.`,
+    'submit_criterion_candidates does NOT count toward the fuse.',
     'Every web_search call must include the supplied criterionId.',
-    'Do not investigate criteria already marked covered.',
+    'When finished searching, you MUST call submit_criterion_candidates with your candidates.',
+    'Do not stop with only prose — always submit candidates (empty array if blocked).',
     'Prefer primary and authoritative sources.',
     `Main question: ${session.question}`,
     session.preferences?.goal ? `Goal: ${session.preferences.goal}` : '',
     `Sub-question: ${question.text}`,
-    `Target criterion id: ${targetGap.criterionId}`,
-    `Target criterion: ${targetGap.reason}`,
-    `Search budget for this criterion this wave: ${used} of ${MAX_CRITERION_SEARCHES_PER_WAVE} used (${remaining} remaining).`
-      + (remaining > 0
-        ? ` You may still search ${remaining} more time(s) across later cycles. The hard cap is ${MAX_CRITERION_SEARCHES_PER_WAVE}/${MAX_CRITERION_SEARCHES_PER_WAVE}, not 4/5.`
-        : ' No searches remain for this criterion this wave; finish with current evidence.'),
-    targetGap.suggestedQuery ? `Suggested starting query: ${targetGap.suggestedQuery}` : '',
-    `Working ledger:\n${JSON.stringify(compactLedger(ledger))}`,
+    `Target criterion id: ${criterion.id}`,
+    `Target criterion: ${criterion.text}`,
+    `Tool budget for this criterion: ${toolsUsed} of ${cap} used (${remaining} remaining).`,
   ].filter(Boolean).join('\n\n');
 }
 
-async function runScoutWithCheckpoints({
+async function runCriterionScoutLoop({
+  session,
+  wave,
+  question,
+  criterion,
+  run,
+  coverage,
+  config,
+  model,
+  workspaceRoot,
+  signal,
+  emit,
+  toolsCap,
+  baseDefinitions,
+  baseHandlers,
+  bundle,
+}) {
+  const urlIndex = new Map();
+  const knownQueries = new Set();
+  let toolsUsed = 0;
+  let cycleSearches = 0;
+  let cycleFetches = 0;
+  let findingsSubmitted = false;
+  let submittedCandidates = [];
+  let submitNote = '';
+  let fuseRejectCount = 0;
+  let forceAfterFuseMiss = false;
+  let budgetExhausted = false;
+
+  const emitScout = (event) => {
+    const stamped = {
+      ...event,
+      scope: 'scout',
+      wave: wave.wave,
+      waveId: wave.id,
+      scoutRunId: run.id,
+      questionId: question.id,
+      scoutName: run.name,
+      toolsUsed,
+      toolsCap,
+      criterionId: criterion.id,
+    };
+    emit(stamped);
+  };
+
+  const handlers = {
+    web_search: async (args = {}, ctx) => {
+      if (toolsUsed >= toolsCap) {
+        fuseRejectCount += 1;
+        if (fuseRejectCount >= 2) forceAfterFuseMiss = true;
+        return `Tool fuse reached (${toolsCap}/${toolsCap}). Call submit_criterion_candidates with your candidates now.`;
+      }
+      const criterionId = String(args?.criterionId || '');
+      if (criterionId !== criterion.id) {
+        throw new Error(`Search rejected: current target criterion is ${criterion.id}`);
+      }
+      const query = String(args?.query || '').trim();
+      const normalized = normalizeQuery(query);
+      if (!normalized) throw new Error('Search rejected: query is required');
+      if (knownQueries.has(normalized)) {
+        throw new Error('Search rejected: duplicate query for this criterion');
+      }
+      knownQueries.add(normalized);
+      const reserved = reserveResearchBudget(session.id, 'searches', 1);
+      if (!reserved.ok) {
+        budgetExhausted = reserved.reason === 'exhausted';
+        throw new Error('Session search safety budget exhausted');
+      }
+      toolsUsed += 1;
+      cycleSearches += 1;
+      emitScout({
+        type: 'budget',
+        delta: { searches: 1 },
+        scoutUsed: {
+          searches: run.searchCount + cycleSearches,
+          fetches: run.fetchCount + cycleFetches,
+          tools: toolsUsed,
+          toolsCap,
+        },
+      });
+      const result = await baseHandlers.web_search({
+        ...args,
+        query,
+        criterionId: undefined,
+      }, ctx);
+      indexSearchResult(urlIndex, result);
+      return appendToolBudgetNote(result, toolsUsed, toolsCap);
+    },
+    web_fetch: async (args = {}, ctx) => {
+      if (toolsUsed >= toolsCap) {
+        fuseRejectCount += 1;
+        if (fuseRejectCount >= 2) forceAfterFuseMiss = true;
+        return `Tool fuse reached (${toolsCap}/${toolsCap}). Call submit_criterion_candidates with your candidates now.`;
+      }
+      const url = normalizeUrl(args?.url);
+      if (!url) throw new Error('Fetch rejected: url is required');
+      const reserved = reserveResearchBudget(session.id, 'fetches', 1);
+      if (!reserved.ok) {
+        budgetExhausted = reserved.reason === 'exhausted';
+        throw new Error('Session fetch safety budget exhausted');
+      }
+      toolsUsed += 1;
+      cycleFetches += 1;
+      emitScout({
+        type: 'budget',
+        delta: { fetches: 1 },
+        scoutUsed: {
+          searches: run.searchCount + cycleSearches,
+          fetches: run.fetchCount + cycleFetches,
+          tools: toolsUsed,
+          toolsCap,
+        },
+      });
+      const result = await baseHandlers.web_fetch(args, ctx);
+      indexFetchResult(urlIndex, args, result);
+      return appendToolBudgetNote(result, toolsUsed, toolsCap);
+    },
+    submit_criterion_candidates: async (args = {}) => {
+      submittedCandidates = normalizeSubmittedCandidates(args?.candidates, criterion.id);
+      submitNote = text(args?.note, 600);
+      findingsSubmitted = true;
+      emitScout({
+        type: 'finding',
+        candidateCount: submittedCandidates.length,
+        note: submitNote,
+      });
+      return {
+        ok: true,
+        acceptedForVerification: submittedCandidates.length,
+        message: 'Candidates received. Criterion search is complete.',
+      };
+    },
+  };
+
+  emitScout({
+    type: 'criterion:start',
+    targetGap: { criterionId: criterion.id, reason: criterion.text },
+    toolsCap,
+  });
+  // Compatibility alias for older UI listeners.
+  emitScout({
+    type: 'scout:checkpoint_start',
+    cycle: Number(coverage.criteria?.findIndex((item) => item.id === criterion.id) || 0) + 1,
+    targetGap: { criterionId: criterion.id, reason: criterion.text },
+    toolsCap,
+  });
+
+  const systemPrompt = [
+    'You are a focused, read-only research Scout.',
+    'Investigate only the target criterion in the user prompt.',
+    'Search and fetch freely. When done, call submit_criterion_candidates.',
+    'Do not write a final report.',
+  ].join('\n');
+
+  let loopResult = await runAgentLoop({
+    systemPrompt,
+    userPrompt: buildScoutCriterionPrompt({
+      session, question, criterion, toolsCap, toolsUsed: 0,
+    }),
+    model: resolveSubAgentModel(config, model),
+    toolDefinitions: baseDefinitions,
+    toolHandlers: handlers,
+    deferredDefinitions: {},
+    toolFormatters: bundle.formatters,
+    toolDisplayLabels: bundle.displayLabels || {},
+    executionMode: 'normal',
+    approvalMode: 'auto',
+    alwaysAllowTools: ['web_search', 'web_fetch', 'submit_criterion_candidates'],
+    projectIsGit: false,
+    toolResultMaxChars: config.context?.tool_result_max_chars || 12000,
+    config: { ...config, workspaceRoot },
+    signal,
+    skipAnalysisNudge: true,
+    requestCompletion: makeStreamingCompletion(config, emitScout, 'low'),
+    onEvent: emitScout,
+    shouldCheckpoint: () => findingsSubmitted || forceAfterFuseMiss || budgetExhausted,
+  });
+
+  if (!findingsSubmitted && !signal?.aborted) {
+    const priorMessages = Array.isArray(loopResult?.messages)
+      ? loopResult.messages.filter((message) => message?.role !== 'system')
+      : [];
+    loopResult = await runAgentLoop({
+      systemPrompt,
+      userPrompt: [
+        'You have not called submit_criterion_candidates yet.',
+        'Call submit_criterion_candidates now with your candidates array.',
+        'If you cannot produce attributable candidates, submit an empty array.',
+        'Alternatively reply with JSON only: {"candidates":[{"claim":"","urls":[""],"quote":""}]}',
+      ].join(' '),
+      initialMessages: priorMessages,
+      model: resolveSubAgentModel(config, model),
+      toolDefinitions: baseDefinitions,
+      toolHandlers: handlers,
+      deferredDefinitions: {},
+      toolFormatters: bundle.formatters,
+      toolDisplayLabels: bundle.displayLabels || {},
+      executionMode: 'normal',
+      approvalMode: 'auto',
+      alwaysAllowTools: ['web_search', 'web_fetch', 'submit_criterion_candidates'],
+      projectIsGit: false,
+      toolResultMaxChars: config.context?.tool_result_max_chars || 12000,
+      config: { ...config, workspaceRoot },
+      signal,
+      skipAnalysisNudge: true,
+      requestCompletion: makeStreamingCompletion(config, emitScout, 'low'),
+      onEvent: emitScout,
+      shouldCheckpoint: () => findingsSubmitted || true,
+    });
+  }
+
+  if (!findingsSubmitted) {
+    submittedCandidates = parseCandidatesFromText(loopResult?.text, criterion.id);
+    findingsSubmitted = true;
+  }
+
+  const { accepted: gated, rejected: urlRejected } = gateCandidatesByUrl(submittedCandidates, urlIndex);
+  const verdicts = await verifyCandidateSupport({
+    config,
+    model,
+    question,
+    criterion,
+    gatedCandidates: gated,
+    signal,
+  });
+  const verdictById = new Map(verdicts.map((item) => [item.candidateId, item]));
+  const supported = gated.filter((item) => verdictById.get(item.id)?.supported);
+  const supportRejected = gated.filter((item) => !verdictById.get(item.id)?.supported);
+
+  const acceptEvidence = supported.map((candidate) => candidateToEvidence(candidate, question.id));
+  const commitResult = acceptEvidence.length
+    ? applyResearchCommit(session.id, { acceptEvidence })
+    : { insertedEvidenceIds: [], reusedEvidenceIds: [] };
+  const evidenceIds = [
+    ...(commitResult.insertedEvidenceIds || []),
+    ...(commitResult.reusedEvidenceIds || []),
+  ];
+
+  let status = 'blocked';
+  let reason = submitNote || 'No attributable candidates were verified.';
+  if (supported.length) {
+    status = supportRejected.length || urlRejected.length ? 'partial' : 'covered';
+    reason = status === 'covered'
+      ? `Accepted ${supported.length} verified claim(s).`
+      : `Accepted ${supported.length} claim(s); ${supportRejected.length + urlRejected.length} rejected.`;
+  } else if (submittedCandidates.length) {
+    status = 'blocked';
+    reason = urlRejected[0]?.reason
+      || supportRejected.map((item) => verdictById.get(item.id)?.reason).filter(Boolean)[0]
+      || 'Candidates failed URL or support checks.';
+  } else if (toolsUsed <= 0) {
+    reason = 'Scout ended without searching or submitting candidates.';
+  }
+
+  const coverageCriterion = (coverage.criteria || []).find((item) => item.id === criterion.id);
+  if (coverageCriterion) {
+    coverageCriterion.status = status;
+    coverageCriterion.toolCount = toolsUsed;
+    coverageCriterion.reason = reason;
+    coverageCriterion.evidenceIds = evidenceIds;
+  }
+
+  for (const evidenceId of commitResult.insertedEvidenceIds || []) {
+    emitScout({ type: 'evidence:accepted', evidenceId, criterionId: criterion.id });
+  }
+
+  emitScout({
+    type: 'criterion:coverage',
+    criterionId: criterion.id,
+    status,
+    reason,
+    toolCount: toolsUsed,
+    evidenceIds,
+    coverage: compactProgress(coverage),
+  });
+  // Compatibility alias.
+  emitScout({
+    type: 'scout:checkpoint',
+    cycle: (coverage.criteria || []).filter((item) => TERMINAL_COVERAGE.has(item.status)).length,
+    decision: 'continue',
+    coverage: coverage.criteria,
+    nextGap: null,
+    candidateCount: supported.length,
+    searchCount: run.searchCount + cycleSearches,
+    fetchCount: run.fetchCount + cycleFetches,
+    toolsUsed,
+    toolsCap,
+  });
+
+  return {
+    toolsUsed,
+    cycleSearches,
+    cycleFetches,
+    evidenceIds,
+    status,
+    reason,
+    commitResult,
+  };
+}
+
+async function runScoutForQuestion({
   session,
   wave,
   question,
@@ -1122,70 +974,36 @@ async function runScoutWithCheckpoints({
   signal,
   emit,
   existingRun = null,
-  seedLedger = null,
-  followupTargets = [],
 }) {
-  const initialLedger = seedLedger ? structuredClone(seedLedger) : createInitialLedger(question);
-  for (const criterion of initialLedger.criteria || []) {
-    criterion.attempts = Number(criterion.attempts) || 0;
-    criterion.searchCount = Number(criterion.searchCount) || 0;
-    criterion.reason = criterion.reason || '';
-    delete criterion.stalledCycles;
-  }
-  const normalizedFollowups = Array.isArray(followupTargets) ? followupTargets : [];
-  if (normalizedFollowups.length && seedLedger) {
-    for (const [index, followupTarget] of normalizedFollowups.entries()) {
-      let criterion = (initialLedger.criteria || []).find((item) =>
-        item.id === String(followupTarget.criterionId || ''));
-      if (!criterion) {
-        criterion = {
-          id: `f${wave.wave}_${index + 1}`,
-          text: text(followupTarget.gap, 600),
-          status: 'missing',
-          candidateIds: [],
-          attempts: 0,
-          searchCount: 0,
-          reason: '',
-        };
-        initialLedger.criteria = [...(initialLedger.criteria || []), criterion];
-      } else {
-        criterion.status = 'missing';
-        criterion.attempts = 0;
-        criterion.searchCount = 0;
-        delete criterion.stalledCycles;
-      }
-      criterion.reason = text(followupTarget.gap || criterion.text, 600);
+  const coverage = resolveQuestionCoverage(question, existingRun);
+  for (const criterion of coverage.criteria || []) {
+    if (!TERMINAL_COVERAGE.has(criterion.status)) {
+      criterion.status = 'missing';
+      criterion.evidenceIds = [];
+      criterion.toolCount = 0;
+      criterion.reason = '';
     }
-    const firstFollowup = normalizedFollowups[0];
-    const firstCriterion = (initialLedger.criteria || []).find((criterion) =>
-      criterion.id === String(firstFollowup.criterionId || ''))
-      || (initialLedger.criteria || []).find((criterion) => criterion.status === 'missing');
-    initialLedger.decision = 'continue';
-    initialLedger.nextGap = firstCriterion
-      ? { criterionId: firstCriterion.id, reason: firstCriterion.reason || firstCriterion.text }
-      : null;
-    initialLedger.gaps = (initialLedger.criteria || [])
-      .filter((criterion) => criterion.status !== 'covered')
-      .map((criterion) => ({
-        criterionId: criterion.id,
-        text: criterion.reason || criterion.text,
-        status: TERMINAL_COVERAGE.has(criterion.status) ? criterion.status : 'open',
-      }));
-    initialLedger.cycles = 0;
   }
+
   let run = existingRun || createResearchScoutRun({
     sessionId: session.id,
     waveId: wave.id,
     questionId: question.id,
     name: `Scout ${question.ordinal + 1}`,
-    ledger: initialLedger,
+    ledger: { version: 2, questionId: question.id, queries: [] },
   });
-  let ledger = run.ledger && Object.keys(run.ledger).length ? run.ledger : initialLedger;
+
   const bundle = getBuiltinTools({ workspaceRoot, config });
   const { definitions: baseDefinitions, handlers: baseHandlers } = filterScoutBundle(bundle);
-  const allowedFetchUrls = new Set();
+  const depth = normalizeResearchPlanDepth(session?.plan?.depth);
+  const toolsCap = researchDepthRuntimeLimits(depth).toolsPerCriterion
+    || RESEARCH_SCOUT_TOOLS_PER_CRITERION;
 
-  updateResearchQuestion(question.id, { status: 'in_progress', lastScoutAt: new Date().toISOString() });
+  updateResearchQuestion(question.id, {
+    status: 'in_progress',
+    coverage,
+    lastScoutAt: new Date().toISOString(),
+  });
   emit({
     type: 'scout:start',
     scope: 'scout',
@@ -1198,243 +1016,82 @@ async function runScoutWithCheckpoints({
   });
 
   try {
-    while (ledger.decision === 'continue' && Number(ledger.cycles || 0) < MAX_SCOUT_CYCLES) {
+    const pending = (coverage.criteria || []).filter((item) => !TERMINAL_COVERAGE.has(item.status));
+    let totalSearches = 0;
+    let totalFetches = 0;
+    const committedEvidenceIds = [];
+
+    for (const criterion of pending) {
       if (signal?.aborted) throw Object.assign(new Error('aborted'), { name: 'AbortError' });
-      const targetGap = ledger.nextGap || {
-        criterionId: ledger.criteria?.find((criterion) =>
-          !TERMINAL_COVERAGE.has(criterion.status))?.id,
-        reason: ledger.criteria?.find((criterion) =>
-          !TERMINAL_COVERAGE.has(criterion.status))?.text,
-      };
-      if (!targetGap?.criterionId) {
-        ledger.decision = 'done';
-        break;
-      }
-
-      const batchEvents = [];
-      let cycleSearches = 0;
-      let cycleFetches = 0;
-      let cycleTools = 0;
-      let budgetExhausted = false;
-      const checkpointController = createScoutCheckpointController();
-      const knownQueries = new Set((ledger.queries || []).map((entry) => entry.normalized || normalizeQuery(entry.query)));
-      const emitScout = (event) => {
-        const stamped = {
-          ...event,
-          scope: 'scout',
-          wave: wave.wave,
-          waveId: wave.id,
-          scoutRunId: run.id,
-          questionId: question.id,
-          scoutName: run.name,
-        };
-        if (event?.type?.startsWith('tool:')) batchEvents.push(stamped);
-        emit(stamped);
-      };
-
-      const handlers = {
-        web_search: async (args = {}, ctx) => {
-          cycleTools += 1;
-          // Per-cycle gate: count searches started in THIS cycle only (not criterion.searchCount).
-          if (checkpointController.hasSearchStarted()) {
-            throw new Error(
-              'Search rejected: this checkpoint already used its one web_search. '
-              + 'Call finish_scout_cycle first; the next cycle may search again.',
-            );
-          }
-          const criterionId = String(args?.criterionId || '');
-          if (criterionId !== targetGap.criterionId) {
-            throw new Error(`Search rejected: current target criterion is ${targetGap.criterionId}`);
-          }
-          const query = String(args?.query || '').trim();
-          const normalized = normalizeQuery(query);
-          if (!normalized) throw new Error('Search rejected: query is required');
-          if (knownQueries.has(normalized)) {
-            throw new Error('Search rejected: duplicate query in this Scout ledger');
-          }
-          const criterion = (ledger.criteria || []).find((item) => item.id === criterionId);
-          const usedSearches = Number(criterion?.searchCount) || 0;
-          if (usedSearches >= MAX_CRITERION_SEARCHES_PER_WAVE) {
-            budgetExhausted = true;
-            throw new Error(
-              `Search rejected: criterion ${criterionId} already used `
-              + `${MAX_CRITERION_SEARCHES_PER_WAVE}/${MAX_CRITERION_SEARCHES_PER_WAVE} searches this wave; `
-              + 'call finish_scout_cycle with current evidence',
-            );
-          }
-          // Mark before any await so a parallel second search in the same batch is rejected.
-          checkpointController.markSearchStarted();
-          knownQueries.add(normalized);
-          const reserved = reserveResearchBudget(session.id, 'searches', 1);
-          if (!reserved.ok) {
-            budgetExhausted = reserved.reason === 'exhausted';
-            throw new Error('Session search safety budget exhausted; call finish_scout_cycle');
-          }
-          if (criterion) criterion.searchCount = usedSearches + 1;
-          cycleSearches += 1;
-          emitScout({
-            type: 'budget',
-            delta: { searches: 1 },
-            scoutUsed: {
-              searches: run.searchCount + cycleSearches,
-              fetches: run.fetchCount + cycleFetches,
-            },
-          });
-          const result = await baseHandlers.web_search({ ...args, query, criterionId: undefined }, ctx);
-          for (const url of collectUrlsFromSearchResult(result)) allowedFetchUrls.add(url);
-          return result;
-        },
-        web_fetch: async (args = {}, ctx) => {
-          cycleTools += 1;
-          const url = normalizeUrl(args?.url);
-          if (!url) throw new Error('Fetch rejected: url is required');
-          if (!allowedFetchUrls.has(url)) {
-            throw new Error(
-              'Fetch rejected: url must come from a web_search result in this Scout wave',
-            );
-          }
-          const reserved = reserveResearchBudget(session.id, 'fetches', 1);
-          if (!reserved.ok) {
-            budgetExhausted = reserved.reason === 'exhausted';
-            throw new Error('Session fetch safety budget exhausted; call finish_scout_cycle');
-          }
-          cycleFetches += 1;
-          emitScout({
-            type: 'budget',
-            delta: { fetches: 1 },
-            scoutUsed: {
-              searches: run.searchCount + cycleSearches,
-              fetches: run.fetchCount + cycleFetches,
-            },
-          });
-          return baseHandlers.web_fetch(args, ctx);
-        },
-        finish_scout_cycle: async (args = {}) => {
-          cycleTools += 1;
-          checkpointController.markFinished();
-          const reason = String(args?.reason || '').trim();
-          return {
-            ok: true,
-            finished: true,
-            message: reason
-              ? `Checkpoint finished: ${reason}`
-              : 'Checkpoint finished. Evaluator will review this search batch.',
-          };
-        },
-      };
-
-      emitScout({
-        type: 'scout:checkpoint_start',
-        cycle: Number(ledger.cycles || 0) + 1,
-        targetGap,
-      });
-      await runAgentLoop({
-        systemPrompt: [
-          'You are a focused, read-only research Scout.',
-          'Investigate only the target criterion in the user prompt.',
-          'Search at most once this cycle, then fetch useful allowlisted URLs across as many rounds as needed.',
-          'When done with this search batch, call finish_scout_cycle before searching again.',
-          'Do not write a final report; gather attributable evidence for the checkpoint evaluator.',
-        ].join('\n'),
-        userPrompt: buildScoutCyclePrompt({ session, question, ledger, targetGap }),
-        model: resolveSubAgentModel(config, model),
-        toolDefinitions: baseDefinitions,
-        toolHandlers: handlers,
-        deferredDefinitions: {},
-        toolFormatters: bundle.formatters,
-        toolDisplayLabels: {
-          ...(bundle.displayLabels || {}),
-          finish_scout_cycle: 'Finish cycle',
-        },
-        executionMode: 'normal',
-        approvalMode: 'auto',
-        alwaysAllowTools: ['web_search', 'web_fetch', 'finish_scout_cycle'],
-        projectIsGit: false,
-        toolResultMaxChars: config.context?.tool_result_max_chars || 12000,
-        config: { ...config, workspaceRoot },
-        signal,
-        requestCompletion: makeStreamingCompletion(config, emitScout, 'low'),
-        onEvent: emitScout,
-        shouldCheckpoint: () => checkpointController.shouldCheckpoint({
-          tools: cycleTools,
-          budgetExhausted,
-        }),
-      });
-
-      const before = ledgerProgressSignature(ledger);
-      const evaluation = await evaluateScoutCheckpoint({
-        config,
-        mainModel: model || config.model?.name,
+      const result = await runCriterionScoutLoop({
+        session,
+        wave,
         question,
-        ledger,
-        batchEvents,
+        criterion,
+        run,
+        coverage,
+        config,
+        model,
+        workspaceRoot,
         signal,
+        emit,
+        toolsCap,
+        baseDefinitions,
+        baseHandlers,
+        bundle,
       });
-      if (!evaluation.evaluator.ok) {
-        throw new Error(`Scout checkpoint evaluator failed: ${evaluation.evaluator.error}`);
-      }
-      const patchedLedger = applyLedgerPatch(ledger, evaluation.patch, batchEvents);
-      const after = ledgerProgressSignature(patchedLedger);
-      ledger = advanceLedgerAfterCheckpoint(patchedLedger, {
-        patch: evaluation.patch,
-        targetCriterionId: targetGap.criterionId,
-        progressed: before !== after && (cycleSearches > 0 || cycleFetches > 0),
-        budgetExhausted,
-      });
+      totalSearches += result.cycleSearches;
+      totalFetches += result.cycleFetches;
+      committedEvidenceIds.push(...result.evidenceIds);
       run = updateResearchScoutRun(run.id, {
-        ledger,
+        ledger: { version: 2, questionId: question.id, queries: [] },
         decision: {
-          decision: ledger.decision,
-          nextGap: ledger.nextGap,
+          decision: 'continue',
+          criterionId: criterion.id,
+          status: result.status,
           evaluatedAt: new Date().toISOString(),
-          evaluator: evaluation.evaluator,
         },
-        searchCount: run.searchCount + cycleSearches,
-        fetchCount: run.fetchCount + cycleFetches,
+        searchCount: run.searchCount + result.cycleSearches,
+        fetchCount: run.fetchCount + result.cycleFetches,
+        committedEvidenceIds: [...new Set([
+          ...(run.committedEvidenceIds || []),
+          ...result.evidenceIds,
+        ])],
       });
-      emitScout({
-        type: 'scout:checkpoint',
-        cycle: ledger.cycles,
-        decision: ledger.decision,
-        coverage: ledger.criteria,
-        nextGap: ledger.nextGap,
-        candidateCount: ledger.candidates.length,
-        searchCount: run.searchCount,
-        fetchCount: run.fetchCount,
-      });
+      updateResearchQuestion(question.id, { coverage: structuredClone(coverage) });
     }
 
-    if (ledger.decision === 'continue') {
-      for (const criterion of ledger.criteria || []) {
-        if (!TERMINAL_COVERAGE.has(criterion.status)) {
-          criterion.status = 'blocked';
-          criterion.reason = 'Scout cycle safety limit reached.';
-        }
+    for (const criterion of coverage.criteria || []) {
+      if (!TERMINAL_COVERAGE.has(criterion.status)) {
+        criterion.status = 'blocked';
+        criterion.reason = criterion.reason || 'Scout pass safety limit reached.';
       }
-      ledger.decision = 'partial';
-      ledger.nextGap = null;
-      ledger.gaps = (ledger.criteria || [])
-        .filter((criterion) => criterion.status !== 'covered')
-        .map((criterion) => ({
-          criterionId: criterion.id,
-          text: criterion.reason || criterion.text,
-          status: criterion.status,
-        }));
     }
-    const status = ledger.decision === 'done' ? 'done' : 'partial';
-    const handoff = buildScoutHandoff(question, ledger);
+
+    const allCovered = (coverage.criteria || []).every((item) => item.status === 'covered');
+    const anyEvidence = (coverage.criteria || []).some((item) => (item.evidenceIds || []).length);
+    const status = allCovered ? 'done' : (anyEvidence ? 'partial' : 'blocked');
+    const evidence = listResearchEvidence(session.id);
+    const handoff = buildScoutHandoff(question, coverage, evidence);
+
     run = updateResearchScoutRun(run.id, {
       status,
-      ledger,
-      decision: { decision: status, gaps: ledger.gaps || [] },
+      ledger: { version: 2, questionId: question.id, queries: [] },
+      decision: { decision: status, coverage: compactProgress(coverage) },
       handoffMarkdown: handoff,
+      searchCount: Math.max(run.searchCount, totalSearches),
+      fetchCount: Math.max(run.fetchCount, totalFetches),
+      committedEvidenceIds: [...new Set(committedEvidenceIds)],
     });
     updateResearchQuestion(question.id, {
-      status,
-      criteriaMet: (ledger.criteria || [])
-        .filter((criterion) => criterion.status === 'covered')
-        .map((criterion) => criterion.id),
-      gaps: (ledger.gaps || []).map((gap) => gap.text),
+      status: status === 'done' ? 'done' : status,
+      coverage: structuredClone(coverage),
+      criteriaMet: (coverage.criteria || [])
+        .filter((item) => item.status === 'covered')
+        .map((item) => item.id),
+      gaps: (coverage.criteria || [])
+        .filter((item) => item.status !== 'covered')
+        .map((item) => item.reason || item.text),
       lastScoutAt: new Date().toISOString(),
     });
     emit({
@@ -1447,7 +1104,7 @@ async function runScoutWithCheckpoints({
       name: run.name,
       status,
       handoff,
-      ledger: compactLedger(ledger),
+      coverage: compactProgress(coverage),
     });
     return run;
   } catch (error) {
@@ -1455,11 +1112,12 @@ async function runScoutWithCheckpoints({
     const errorMessage = error instanceof Error ? error.message : String(error);
     run = updateResearchScoutRun(run.id, {
       status: aborted ? 'aborted' : 'failed',
-      ledger,
+      ledger: { version: 2, questionId: question.id, queries: [] },
       error: errorMessage,
     });
     updateResearchQuestion(question.id, {
       status: aborted ? 'open' : 'blocked',
+      coverage: structuredClone(coverage),
       gaps: [aborted ? 'Investigation stopped by user' : errorMessage],
     });
     emit({
@@ -1472,7 +1130,7 @@ async function runScoutWithCheckpoints({
       name: run.name,
       status: aborted ? 'aborted' : 'failed',
       error: errorMessage,
-      ledger: compactLedger(ledger),
+      coverage: compactProgress(coverage),
     });
     throw error;
   } finally {
@@ -1480,144 +1138,26 @@ async function runScoutWithCheckpoints({
   }
 }
 
-async function reviewWaveCandidates({ config, model, session, wave, scoutRuns, signal }) {
-  const candidates = scoutRuns.flatMap((run) =>
-    (run.ledger?.candidates || []).map((candidate) => ({
-      ...candidate,
-      scoutRunId: run.id,
-      questionId: run.questionId,
-    })));
-  if (!candidates.length) return { acceptCandidateIds: [], reason: 'No candidates' };
-  try {
-    const reviewed = await callJsonModel({
-      config,
-      model: model || config.model?.name,
-      fallbackModel: resolveSubAgentModel(config, model),
-      reasoningEffort: 'medium',
-      signal,
-      systemPrompt: [
-        'You are the Lead research evidence reviewer.',
-        'Select candidate IDs that are attributable, relevant, and useful.',
-        'Prefer primary sources. Do not rewrite evidence.',
-        'Return strict JSON only: {"acceptCandidateIds":[],"reason":""}.',
-      ].join('\n'),
-      userPrompt: [
-        `Main question: ${session.question}`,
-        `Wave: ${wave.wave}`,
-        `Candidates:\n${JSON.stringify(candidates)}`,
-      ].join('\n\n'),
-      validate: validateLeadReview,
-    });
-    const validIds = new Set(candidates.map((candidate) => candidate.id));
-    const acceptedCandidateIds = reviewed.data.acceptCandidateIds
-      .filter((candidateId) => validIds.has(candidateId));
-    const resolvedIds = acceptedCandidateIds.length
-      ? acceptedCandidateIds
-      : candidates
-        .filter((candidate) => candidate.sources?.length)
-        .map((candidate) => candidate.id);
-    return {
-      ...reviewed.data,
-      acceptCandidateIds: resolvedIds,
-      reason: acceptedCandidateIds.length
-        ? reviewed.data.reason
-        : 'No candidate was selected; retained attributable candidates with explicit confidence.',
-      evaluator: {
-        ok: true,
-        model: reviewed.model,
-        attempt: reviewed.attempt,
-        rawText: reviewed.rawText,
-      },
-    };
-  } catch (error) {
-    return {
-      acceptCandidateIds: candidates
-        .filter((candidate) => candidate.sources?.length)
-        .map((candidate) => candidate.id),
-      reason: 'Deterministic fallback retained attributable candidates with explicit confidence.',
-      evaluator: {
-        ok: false,
-        error: error instanceof Error ? error.message : String(error),
-      },
-    };
-  }
-}
-
-function candidateToEvidence(candidate, questionId) {
-  const primary = candidate.sources?.[0] || {};
-  return {
-    candidateId: candidate.id,
-    questionId,
-    claim: candidate.claim,
-    snippet: primary.snippet || '',
-    url: primary.url || '',
-    sourceLabel: primary.label || '',
-    confidence: candidate.confidence,
-    createdFrom: 'scout_handoff',
-  };
-}
-
-async function commitWave({ config, model, session, wave, scoutRuns, signal, emit }) {
-  const review = await reviewWaveCandidates({ config, model, session, wave, scoutRuns, signal });
-  const acceptedIds = new Set(Array.isArray(review?.acceptCandidateIds) ? review.acceptCandidateIds.map(String) : []);
-  const acceptEvidence = [];
-  for (const run of scoutRuns) {
-    for (const candidate of run.ledger?.candidates || []) {
-      if (acceptedIds.has(candidate.id)) acceptEvidence.push(candidateToEvidence(candidate, run.questionId));
-    }
-  }
-  const result = applyResearchCommit(session.id, { acceptEvidence });
-  const evidence = listResearchEvidence(session.id);
-  for (const run of scoutRuns) {
-    const candidateIds = (run.ledger?.candidates || [])
-      .map((candidate) => candidate.id)
-      .filter((id) => acceptedIds.has(id));
-    const evidenceIds = evidence
-      .filter((item) => candidateIds.includes(item.originCandidateId))
-      .map((item) => item.id);
-    updateResearchScoutRun(run.id, {
-      committedCandidateIds: candidateIds,
-      committedEvidenceIds: evidenceIds,
-    });
-  }
-  appendResearchTimeline(session.id, {
-    type: 'commit',
-    wave: wave.wave,
-    insertedEvidenceIds: result.insertedEvidenceIds,
-    reusedEvidenceIds: result.reusedEvidenceIds,
-    updatedQuestionIds: [],
-    revokedEvidenceIds: [],
-    reviewer: review?.evaluator || null,
-    reviewReason: review?.reason || '',
-  });
-  emit({
-    type: 'commit',
-    scope: 'lead',
-    wave: wave.wave,
-    waveId: wave.id,
-    ...result,
-    acceptedCandidateIds: [...acceptedIds],
-    reason: review?.reason || '',
-    evaluator: review?.evaluator || null,
-  });
-  return result;
-}
+/** @deprecated Alias for older imports / tests. */
+const runScoutWithCheckpoints = runScoutForQuestion;
 
 function deterministicResearchReadiness(detail) {
   const acceptedByQuestion = new Map();
-  const acceptedCandidateIds = new Set();
+  const acceptedById = new Set();
   for (const evidence of detail.evidence || []) {
     if (evidence.status !== 'accepted') continue;
-    if (evidence.originCandidateId) acceptedCandidateIds.add(evidence.originCandidateId);
+    acceptedById.add(evidence.id);
     acceptedByQuestion.set(
       evidence.questionId,
       (acceptedByQuestion.get(evidence.questionId) || 0) + 1,
     );
   }
   const latestByQuestion = new Map();
-  for (const run of listResearchScoutRuns({ sessionId: detail.id })) {
-    if (TERMINAL_SCOUT.has(run.status) || run.status === 'failed') {
-      latestByQuestion.set(run.questionId, run);
+  if (detail.id) {
+    for (const run of listResearchScoutRuns({ sessionId: detail.id })) {
+      if (TERMINAL_SCOUT.has(run.status) || run.status === 'failed') {
+        latestByQuestion.set(run.questionId, run);
+      }
     }
   }
   const requiredTargets = [];
@@ -1629,13 +1169,10 @@ function deterministicResearchReadiness(detail) {
   };
   for (const question of detail.questions || []) {
     const run = latestByQuestion.get(question.id);
-    const criteria = Array.isArray(run?.ledger?.criteria) && run.ledger.criteria.length
-      ? run.ledger.criteria
-      : criterionEntries(question);
-    for (const criterion of criteria) {
-      const attempts = Number(criterion.attempts) || 0;
-      const hasAcceptedEvidence = (criterion.candidateIds || [])
-        .some((candidateId) => acceptedCandidateIds.has(candidateId));
+    const coverage = resolveQuestionCoverage(question, run);
+    for (const criterion of coverage.criteria || []) {
+      const evidenceIds = Array.isArray(criterion.evidenceIds) ? criterion.evidenceIds : [];
+      const hasAcceptedEvidence = evidenceIds.some((id) => acceptedById.has(id));
       const item = {
         questionId: question.id,
         criterionId: criterion.id,
@@ -1653,7 +1190,7 @@ function deterministicResearchReadiness(detail) {
         limitations.push({
           ...item,
           status: criterion.status,
-          attempts,
+          attempts: 1,
           reason: criterion.status === 'covered'
             ? 'No accepted evidence was retained for this criterion.'
             : item.gap,
@@ -1681,169 +1218,37 @@ function deterministicResearchReadiness(detail) {
   };
 }
 
-async function evaluateWave({ config, model, session, wave, scoutRuns, signal }) {
-  const detail = getResearchSessionDetail(session.id);
+function finalizeInvestigationRound(session, scoutRuns = []) {
+  const detail = (session?.id ? getResearchSessionDetail(session.id) : null) || session || {};
   const readiness = deterministicResearchReadiness(detail);
-  const compact = {
-    wave: wave.wave,
-    maxWaves: detail.budget?.maxWaves || 5,
-    questions: (detail.questions || []).map((question) => ({
-      id: question.id,
-      label: text(question.text, 120),
-      text: question.text,
-      status: question.status,
-      criteriaMet: question.criteriaMet,
-      gaps: question.gaps,
-      successCriteria: normalizeSuccessCriteria(question.successCriteria).map((criterion, index) => ({
-        id: `c${index + 1}`,
-        label: text(criterion.text, 80),
-        text: criterion.text,
-        priority: criterion.priority,
-      })),
-    })),
-    scouts: scoutRuns.map((run) => ({
+  const partitioned = partitionWaveTargetsAndLimitations({
+    targets: [],
+    limitations: readiness.limitations,
+    unresolved: [...readiness.targets, ...readiness.eligibleTargets],
+  });
+  const readyForReport = readiness.ready || readiness.acceptedEvidenceCount > 0;
+  return {
+    decision: readyForReport ? 'ready_for_report' : 'incomplete',
+    reason: readyForReport
+      ? (readiness.ready
+        ? 'Single investigation round complete; ready for report.'
+        : 'Single investigation round complete with partial evidence; remaining gaps recorded as limitations.')
+      : 'Single investigation round finished without enough accepted evidence for a report.',
+    targets: [],
+    limitations: partitioned.limitations,
+    readiness,
+    scoutStatuses: (scoutRuns || []).map((run) => ({
       questionId: run.questionId,
-      questionLabel: text(
-        (detail.questions || []).find((question) => question.id === run.questionId)?.text,
-        120,
-      ),
       status: run.status,
-      error: run.error || '',
-      coverage: run.ledger?.criteria || [],
-      gaps: run.ledger?.gaps || [],
-      candidateCount: run.ledger?.candidates?.length || 0,
+      evidenceCount: run.committedEvidenceIds?.length || 0,
     })),
-    acceptedEvidence: (detail.evidence || [])
-      .filter((item) => item.status === 'accepted')
-      .map((item) => ({ questionId: item.questionId, claim: item.claim, confidence: item.confidence })),
-    requiredTargets: readiness.targets,
-    eligibleFollowups: readiness.eligibleTargets,
-    seedLimitations: readiness.limitations,
   };
-  if (wave.wave >= (detail.budget?.maxWaves || 5) && !readiness.ready) {
-    const partitioned = partitionWaveTargetsAndLimitations({
-      targets: [],
-      limitations: readiness.limitations,
-      unresolved: [...readiness.targets, ...readiness.eligibleTargets],
-    });
-    return {
-      decision: 'incomplete',
-      reason: 'Maximum research waves reached with unresolved evidence requirements.',
-      targets: [],
-      limitations: partitioned.limitations,
-      readiness,
-    };
-  }
-  try {
-    const evaluated = await callJsonModel({
-      config,
-      model: resolveSubAgentModel(config, model),
-      fallbackModel: model || config.model?.name,
-      reasoningEffort: 'medium',
-      signal,
-      systemPrompt: [
-        'You are a wave-level research evaluator with no tools.',
-        'Decide whether the whole research is ready for a report or needs one targeted follow-up wave.',
-        'Use a next wave only for important, researchable gaps. Each targeted criterion gets a fresh search allowance in the next wave.',
-        'Return targets for criteria worth deep-following; return limitations for gaps you will NOT chase.',
-        'A criterion must not appear in both targets and limitations.',
-        'Targets must come from eligibleFollowups. Prefer ready_for_report when no requiredTargets remain.',
-        'In reason, refer to sub-questions by their label text and keep questionId/criterionId only in targets/limitations arrays.',
-        'Return strict JSON only: {"decision":"ready_for_report|next_wave","reason":"","targets":[{"questionId":"","criterionId":"","gap":""}],"limitations":[{"questionId":"","criterionId":"","gap":""}]}.',
-      ].join('\n'),
-      userPrompt: JSON.stringify(compact),
-      validate: validateWaveEvaluation,
-    });
-    const result = evaluated.data;
-    const validQuestionIds = new Set((detail.questions || []).map((question) => question.id));
-    const unresolvedTargetKeys = new Set(
-      readiness.eligibleTargets.map((target) => targetKey(target)),
-    );
-    const modelTargets = (Array.isArray(result?.targets) ? result.targets : [])
-      .map((target) => ({
-        questionId: String(target?.questionId || ''),
-        criterionId: String(target?.criterionId || ''),
-        gap: text(target?.gap || target?.reason, 600),
-      }))
-      .filter((target) =>
-        validQuestionIds.has(target.questionId)
-        && target.gap
-        && unresolvedTargetKeys.has(targetKey(target)));
-    let chosenTargets = modelTargets;
-    if (!readiness.ready) {
-      const combined = [...modelTargets, ...readiness.targets];
-      const seen = new Set();
-      chosenTargets = combined.filter((target) => {
-        const key = targetKey(target);
-        if (seen.has(key)) return false;
-        seen.add(key);
-        return true;
-      });
-    } else if (result.decision !== 'next_wave') {
-      chosenTargets = [];
-    }
-    const partitioned = partitionWaveTargetsAndLimitations({
-      targets: chosenTargets,
-      limitations: result?.limitations || readiness.limitations,
-      unresolved: readiness.eligibleTargets,
-    });
-    const decision = partitioned.targets.length
-      ? 'next_wave'
-      : (readiness.ready || readiness.acceptedEvidenceCount > 0 ? 'ready_for_report' : 'incomplete');
-    return {
-      decision,
-      reason: text(
-        result.reason
-          || (decision === 'next_wave'
-            ? 'Follow-up wave approved for important unresolved criteria.'
-            : 'Ready for report with explicit limitations.'),
-        1000,
-      ),
-      targets: partitioned.targets,
-      limitations: partitioned.limitations,
-      readiness,
-      evaluator: {
-        ok: true,
-        model: evaluated.model,
-        attempt: evaluated.attempt,
-        rawText: evaluated.rawText,
-      },
-    };
-  } catch (error) {
-    const errText = error instanceof Error ? error.message : String(error);
-    if (!readiness.ready) {
-      const partitioned = partitionWaveTargetsAndLimitations({
-        targets: readiness.targets,
-        limitations: readiness.limitations,
-        unresolved: readiness.eligibleTargets,
-      });
-      return {
-        decision: partitioned.targets.length ? 'next_wave' : 'incomplete',
-        reason: 'Deterministic readiness checks found unresolved evidence requirements.',
-        targets: partitioned.targets,
-        limitations: partitioned.limitations,
-        readiness,
-        evaluator: { ok: false, error: errText },
-      };
-    }
-    const partitioned = partitionWaveTargetsAndLimitations({
-      targets: [],
-      limitations: readiness.limitations,
-      unresolved: [...readiness.targets, ...readiness.eligibleTargets],
-    });
-    return {
-      decision: readiness.ready || readiness.acceptedEvidenceCount > 0 ? 'ready_for_report' : 'incomplete',
-      reason: readiness.ready
-        ? 'Deterministic readiness checks passed after the wave evaluator failed.'
-        : 'Deterministic readiness checks found unresolved evidence requirements.',
-      targets: [],
-      limitations: partitioned.limitations,
-      readiness,
-      evaluator: { ok: false, error: errText },
-    };
-  }
 }
 
+/** @deprecated Multi-wave evaluator removed; single-round finalize only. */
+async function evaluateWave({ session, scoutRuns }) {
+  return finalizeInvestigationRound(session, scoutRuns);
+}
 
 function selectWaveTargets(detail, previousEvaluation) {
   if (!previousEvaluation) {
@@ -1867,12 +1272,6 @@ async function runWaveScouts({
   const detail = getResearchSessionDetail(session.id);
   const questionById = new Map((detail.questions || []).map((question) => [question.id, question]));
   const targets = (wave.targets || []).filter((target) => questionById.has(target.questionId));
-  const targetsByQuestion = new Map();
-  for (const target of targets) {
-    const list = targetsByQuestion.get(target.questionId) || [];
-    list.push(target);
-    targetsByQuestion.set(target.questionId, list);
-  }
   const existingRuns = listResearchScoutRuns({ waveId: wave.id });
   const terminalByQuestion = new Map(
     existingRuns.filter((run) => TERMINAL_SCOUT.has(run.status)).map((run) => [run.questionId, run]),
@@ -1898,9 +1297,6 @@ async function runWaveScouts({
     const settled = await Promise.allSettled(batchIds.map(async (questionId) => {
       const question = questionById.get(questionId);
       const stale = existingRuns.find((run) => run.questionId === questionId && run.status === 'running');
-      const prior = listResearchScoutRuns({ questionId })
-        .filter((run) => run.waveId !== wave.id && TERMINAL_SCOUT.has(run.status))
-        .at(-1);
       return runScoutWithCheckpoints({
         session,
         wave,
@@ -1911,8 +1307,6 @@ async function runWaveScouts({
         signal,
         emit,
         existingRun: stale || null,
-        seedLedger: prior?.ledger || null,
-        followupTargets: wave.wave > 1 ? targetsByQuestion.get(questionId) || [] : [],
       });
     }));
     if (signal?.aborted) throw Object.assign(new Error('aborted'), { name: 'AbortError' });
@@ -1954,138 +1348,262 @@ export async function runResearchInvestigation({
   if (!detail) throw new Error('research session not found');
   ensureResearchSessionBudget(sessionId);
   detail = getResearchSessionDetail(sessionId);
-  let previousEvaluation = null;
   const waves = listResearchWaves(sessionId);
   const completedWaves = waves.filter((wave) => wave.status === 'completed');
-  if (completedWaves.length) previousEvaluation = completedWaves.at(-1).evaluation;
-  let waveNo = completedWaves.length + 1;
-
-  while (waveNo <= (detail.budget?.maxWaves || 5)) {
-    detail = getResearchSessionDetail(sessionId);
-    const existing = waves.find((wave) =>
-      wave.wave === waveNo && ['running', 'evaluating', 'aborted', 'failed'].includes(wave.status));
-    const targets = existing?.targets?.length
-      ? existing.targets
-      : selectWaveTargets(detail, previousEvaluation);
-    if (!targets.length) {
-      const readiness = deterministicResearchReadiness(detail);
-      updateResearchSession(sessionId, { phase: readiness.ready ? 'ready_for_report' : 'incomplete' });
-      return {
-        ok: readiness.ready,
-        readyForReport: readiness.ready,
-        evaluation: previousEvaluation || {
-          decision: readiness.ready ? 'ready_for_report' : 'incomplete',
-          reason: readiness.ready
-            ? 'Deterministic readiness checks passed.'
-            : 'No actionable targets were available for unresolved requirements.',
-          targets: readiness.targets,
-          readiness,
-        },
-      };
-    }
-    if (!existing) {
-      const reserved = reserveResearchBudget(sessionId, 'waves');
-      if (!reserved.ok) {
-        updateResearchSession(sessionId, { phase: 'incomplete' });
-        return {
-          ok: false,
-          readyForReport: false,
-          evaluation: {
-            decision: 'incomplete',
-            reason: 'Wave safety budget exhausted.',
-            targets,
-          },
-        };
-      }
-    }
-    const wave = existing || createResearchWave(sessionId, { wave: waveNo, targets });
-    if (existing && ['aborted', 'failed'].includes(existing.status)) {
-      updateResearchWave(existing.id, { status: 'running', evaluation: {} });
-      wave.status = 'running';
-      wave.evaluation = {};
-    }
-    appendResearchTimeline(sessionId, { type: 'wave:start', wave: wave.wave, waveId: wave.id });
-    emit({ type: 'wave:start', scope: 'lead', wave: wave.wave, waveId: wave.id, targets });
-    try {
-      const scoutRuns = await runWaveScouts({
-        session: detail,
-        wave,
-        config,
-        model,
-        workspaceRoot,
-        signal,
-        emit,
-      });
-      updateResearchWave(wave.id, { status: 'evaluating' });
-      await commitWave({ config, model, session: detail, wave, scoutRuns, signal, emit });
-      const evaluation = await evaluateWave({ config, model, session: detail, wave, scoutRuns, signal });
-      updateResearchWave(wave.id, {
-        status: 'completed',
-        evaluation,
-        completedAt: new Date().toISOString(),
-      });
-      appendResearchTimeline(sessionId, {
-        type: 'wave:evaluation',
-        wave: wave.wave,
-        waveId: wave.id,
-        evaluation,
-      });
-      emit({
-        type: 'wave:evaluation',
-        scope: 'lead',
-        wave: wave.wave,
-        waveId: wave.id,
-        evaluation,
-      });
-      if (evaluation.decision === 'ready_for_report') {
-        updateResearchSession(sessionId, { phase: 'ready_for_report' });
-        return { ok: true, readyForReport: true, evaluation };
-      }
-      if (evaluation.decision === 'incomplete') {
-        updateResearchSession(sessionId, { phase: 'incomplete' });
-        return { ok: false, readyForReport: false, evaluation };
-      }
-      previousEvaluation = evaluation;
-      detail = getResearchSessionDetail(sessionId);
-      waveNo += 1;
-    } catch (error) {
-      updateResearchWave(wave.id, {
-        status: signal?.aborted || error?.name === 'AbortError' ? 'aborted' : 'failed',
-        evaluation: {
-          decision: 'interrupted',
-          reason: error instanceof Error ? error.message : String(error),
-        },
-      });
-      throw error;
-    }
+  if (completedWaves.length) {
+    const previousEvaluation = completedWaves.at(-1).evaluation || {};
+    const ready = previousEvaluation.decision === 'ready_for_report'
+      || deterministicResearchReadiness(detail).acceptedEvidenceCount > 0;
+    updateResearchSession(sessionId, { phase: ready ? 'ready_for_report' : 'incomplete' });
+    return {
+      ok: ready,
+      readyForReport: ready,
+      evaluation: previousEvaluation.decision
+        ? previousEvaluation
+        : finalizeInvestigationRound(detail),
+    };
   }
 
-  detail = getResearchSessionDetail(sessionId);
-  const readiness = deterministicResearchReadiness(detail);
-  updateResearchSession(sessionId, { phase: readiness.ready ? 'ready_for_report' : 'incomplete' });
-  return {
-    ok: readiness.ready,
-    readyForReport: readiness.ready,
-    evaluation: readiness.ready
-      ? { decision: 'ready_for_report', reason: 'Deterministic readiness checks passed.' }
-      : {
-        decision: 'incomplete',
-        reason: 'Wave safety limit reached with unresolved evidence requirements.',
+  const existing = waves.find((wave) =>
+    wave.wave === 1 && ['running', 'evaluating', 'aborted', 'failed'].includes(wave.status));
+  const targets = existing?.targets?.length
+    ? existing.targets
+    : selectWaveTargets(detail, null);
+  if (!targets.length) {
+    const readiness = deterministicResearchReadiness(detail);
+    updateResearchSession(sessionId, { phase: readiness.ready ? 'ready_for_report' : 'incomplete' });
+    return {
+      ok: readiness.ready,
+      readyForReport: readiness.ready,
+      evaluation: {
+        decision: readiness.ready ? 'ready_for_report' : 'incomplete',
+        reason: readiness.ready
+          ? 'Deterministic readiness checks passed.'
+          : 'No actionable targets were available for unresolved requirements.',
         targets: readiness.targets,
         readiness,
       },
-  };
+    };
+  }
+  if (!existing) {
+    const reserved = reserveResearchBudget(sessionId, 'waves');
+    if (!reserved.ok) {
+      updateResearchSession(sessionId, { phase: 'incomplete' });
+      return {
+        ok: false,
+        readyForReport: false,
+        evaluation: {
+          decision: 'incomplete',
+          reason: 'Investigation safety budget exhausted.',
+          targets,
+        },
+      };
+    }
+  }
+  const wave = existing || createResearchWave(sessionId, { wave: 1, targets });
+  if (existing && ['aborted', 'failed'].includes(existing.status)) {
+    updateResearchWave(existing.id, { status: 'running', evaluation: {} });
+    wave.status = 'running';
+    wave.evaluation = {};
+  }
+  appendResearchTimeline(sessionId, { type: 'wave:start', wave: wave.wave, waveId: wave.id });
+  emit({ type: 'wave:start', scope: 'lead', wave: wave.wave, waveId: wave.id, targets });
+  try {
+    const scoutRuns = await runWaveScouts({
+      session: detail,
+      wave,
+      config,
+      model,
+      workspaceRoot,
+      signal,
+      emit,
+    });
+    updateResearchWave(wave.id, { status: 'evaluating' });
+    // Evidence is committed per criterion during Scout; no Lead Reviewer pass.
+    const evaluation = finalizeInvestigationRound(detail, scoutRuns);
+    updateResearchWave(wave.id, {
+      status: 'completed',
+      evaluation,
+      completedAt: new Date().toISOString(),
+    });
+    appendResearchTimeline(sessionId, {
+      type: 'wave:evaluation',
+      wave: wave.wave,
+      waveId: wave.id,
+      evaluation,
+    });
+    emit({
+      type: 'wave:evaluation',
+      scope: 'lead',
+      wave: wave.wave,
+      waveId: wave.id,
+      evaluation,
+    });
+    const ready = evaluation.decision === 'ready_for_report';
+    updateResearchSession(sessionId, { phase: ready ? 'ready_for_report' : 'incomplete' });
+    return { ok: ready, readyForReport: ready, evaluation };
+  } catch (error) {
+    updateResearchWave(wave.id, {
+      status: signal?.aborted || error?.name === 'AbortError' ? 'aborted' : 'failed',
+      evaluation: {
+        decision: 'interrupted',
+        reason: error instanceof Error ? error.message : String(error),
+      },
+    });
+    throw error;
+  }
+}
+
+function validateConclusionsPayload(value, detail) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('Conclusions output must be an object');
+  }
+  const raw = Array.isArray(value.conclusions) ? value.conclusions : [];
+  const acceptedIds = new Set(
+    (detail.evidence || [])
+      .filter((item) => item.status === 'accepted')
+      .map((item) => String(item.id)),
+  );
+  const questionIds = new Set((detail.questions || []).map((item) => String(item.id)));
+  const normalized = normalizeResearchConclusions(raw)
+    .filter((item) => questionIds.has(item.questionId))
+    .map((item) => ({
+      ...item,
+      evidenceIds: (item.evidenceIds || []).filter((id) => acceptedIds.has(id)),
+    }));
+  if (!normalized.length && (detail.questions || []).length) {
+    throw new Error('Conclusions output missing per-question entries');
+  }
+  return { conclusions: normalized };
+}
+
+function buildConclusionCoverageInput(detail) {
+  return (detail.questions || []).map((question) => {
+    const coverage = resolveQuestionCoverage(question);
+    return {
+      questionId: question.id,
+      text: question.text,
+      status: question.status,
+      gaps: question.gaps || [],
+      criteria: (coverage.criteria || []).map((criterion) => ({
+        id: criterion.id,
+        text: criterion.text,
+        status: criterion.status,
+        reason: criterion.reason || '',
+        evidenceIds: criterion.evidenceIds || [],
+      })),
+    };
+  });
+}
+
+function buildConclusionLimitationsInput(detail) {
+  const items = [];
+  for (const question of detail.questions || []) {
+    const coverage = resolveQuestionCoverage(question);
+    for (const criterion of coverage.criteria || []) {
+      if (criterion.status === 'covered') continue;
+      items.push({
+        questionId: question.id,
+        criterionId: criterion.id,
+        gap: criterion.reason || criterion.text,
+        status: criterion.status,
+      });
+    }
+  }
+  for (const wave of detail.waves || []) {
+    for (const item of wave.evaluation?.limitations || []) {
+      items.push(item);
+    }
+  }
+  return items;
+}
+
+/**
+ * Once after investigation: write per-question research conclusions for the writing pack.
+ * No tools. Facts from accepted evidence only; coverage for completeness/gaps.
+ */
+export async function generateResearchConclusions({
+  sessionId,
+  config,
+  model,
+  signal,
+  emit,
+  force = false,
+} = {}) {
+  const detail = getResearchSessionDetail(sessionId);
+  if (!detail) throw new Error('research session not found');
+  if (!force && Array.isArray(detail.conclusions) && detail.conclusions.length) {
+    return { ok: true, conclusions: detail.conclusions, reused: true };
+  }
+
+  const fallback = buildDeterministicResearchConclusions(detail);
+  try {
+    const reviewed = await callJsonModel({
+      config,
+      model: model || config.model?.name,
+      fallbackModel: resolveSubAgentModel(config, model),
+      reasoningEffort: 'medium',
+      signal,
+      systemPrompt: [
+        'You write concise research conclusions for each sub-question.',
+        'Use only accepted evidence. Coverage marks gaps and completeness.',
+        'Return strict JSON only: {"conclusions":[{"questionId":"","completeness":"complete|partial|insufficient","summary":"","limitations":"","evidenceIds":[]}]}',
+      ].join('\n'),
+      userPrompt: [
+        `Main question: ${detail.question}`,
+        `Coverage:\n${JSON.stringify(buildConclusionCoverageInput(detail))}`,
+        `Limitations:\n${JSON.stringify(buildConclusionLimitationsInput(detail))}`,
+        `Accepted evidence:\n${JSON.stringify((detail.evidence || []).filter((item) => item.status === 'accepted'))}`,
+      ].join('\n\n'),
+      validate: (value) => validateConclusionsPayload(value, detail),
+    });
+    const conclusions = reviewed.data.conclusions;
+    updateResearchSession(sessionId, { conclusions });
+    emit?.({ type: 'conclusions', count: conclusions.length, fallback: false });
+    appendResearchTimeline(sessionId, { type: 'conclusions', count: conclusions.length });
+    return { ok: true, conclusions, reused: false, fallback: false };
+  } catch (error) {
+    updateResearchSession(sessionId, { conclusions: fallback });
+    emit?.({
+      type: 'conclusions',
+      count: fallback.length,
+      fallback: true,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    appendResearchTimeline(sessionId, {
+      type: 'conclusions',
+      count: fallback.length,
+      fallback: true,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return {
+      ok: true,
+      conclusions: fallback,
+      reused: false,
+      fallback: true,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
 }
 
 export {
-  applyLedgerPatch,
+  appendToolBudgetNote,
   buildScoutHandoff,
+  createEmptyCoverage,
   createInitialLedger,
   createResearchSearchDefinition,
-  createScoutCheckpointController,
+  createSubmitCandidatesDefinition,
   deterministicResearchReadiness,
-  ledgerProgressSignature,
-  advanceLedgerAfterCheckpoint,
-  scopeScoutEvaluatorPatch,
+  finalizeInvestigationRound,
+  gateCandidatesByUrl,
+  indexFetchResult,
+  indexSearchResult,
+  normalizeSubmittedCandidates,
+  normalizeUrl,
   partitionWaveTargetsAndLimitations,
+  resolveQuestionCoverage,
+  resolveToolsCap,
+  runScoutForQuestion,
+  verifyCandidateSupport,
+  RESEARCH_SCOUT_TOOLS_PER_CRITERION,
 };

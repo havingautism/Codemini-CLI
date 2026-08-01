@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { getGlobalDatabase, transaction } from './sqlite-database.js';
 
 export const DEFAULT_RESEARCH_BUDGET = Object.freeze({
-  maxWaves: 5,
+  maxWaves: 1,
   maxParallelScouts: 3,
   maxSearches: 25,
   maxFetches: 200,
@@ -15,10 +15,23 @@ export const DEFAULT_BUDGET_USED = Object.freeze({
   fetches: 0,
 });
 
-/** Per criterion per wave hard cap for web_search (session max = count * this * maxWaves). */
-export const RESEARCH_CRITERION_SEARCHES_PER_WAVE = 5;
-/** Loose session fetch ceiling vs planned searches (runaway fuse only). */
-export const RESEARCH_BUDGET_FETCHES_PER_SEARCH = 8;
+/**
+ * Soft-stop Scout: max tool calls (web_search + web_fetch) per success criterion.
+ * Depth no longer gates per-criterion search counts.
+ */
+export const RESEARCH_SCOUT_TOOLS_PER_CRITERION = 10;
+/** @deprecated Kept for older tests; investigation uses RESEARCH_SCOUT_TOOLS_PER_CRITERION. */
+export const RESEARCH_CRITERION_SEARCHES_PER_WAVE = RESEARCH_SCOUT_TOOLS_PER_CRITERION;
+/**
+ * Single investigation round (no multi-wave chase). Depth only sizes the plan skeleton.
+ */
+export const RESEARCH_DEPTH_RUNTIME_LIMITS = Object.freeze({
+  brief: Object.freeze({ maxWaves: 1, toolsPerCriterion: RESEARCH_SCOUT_TOOLS_PER_CRITERION }),
+  standard: Object.freeze({ maxWaves: 1, toolsPerCriterion: RESEARCH_SCOUT_TOOLS_PER_CRITERION }),
+  deep: Object.freeze({ maxWaves: 1, toolsPerCriterion: RESEARCH_SCOUT_TOOLS_PER_CRITERION }),
+});
+/** Loose session fetch ceiling vs planned tool budget (runaway fuse only). */
+export const RESEARCH_BUDGET_FETCHES_PER_SEARCH = 1;
 /** Explicit tiny budgets below this stay untouched by ensureResearchSessionBudget. */
 export const RESEARCH_BUDGET_MIN_SEARCHES = 25;
 export const RESEARCH_BUDGET_MIN_FETCHES = 200;
@@ -40,6 +53,18 @@ export function normalizeResearchPlanDepth(value, fallback = 'standard') {
 export function researchPlanDepthLimits(depth) {
   const key = normalizeResearchPlanDepth(depth);
   return RESEARCH_PLAN_DEPTH_LIMITS[key] || RESEARCH_PLAN_DEPTH_LIMITS.standard;
+}
+
+/** Max waves for investigation (always one round) + tools-per-criterion fuse. */
+export function researchDepthRuntimeLimits(depth) {
+  const key = normalizeResearchPlanDepth(depth);
+  const row = RESEARCH_DEPTH_RUNTIME_LIMITS[key] || RESEARCH_DEPTH_RUNTIME_LIMITS.standard;
+  return {
+    maxWaves: 1,
+    toolsPerCriterion: Number(row.toolsPerCriterion) || RESEARCH_SCOUT_TOOLS_PER_CRITERION,
+    // Compat alias for older call sites / UI that still read search caps.
+    searchesPerCriterionPerWave: Number(row.toolsPerCriterion) || RESEARCH_SCOUT_TOOLS_PER_CRITERION,
+  };
 }
 
 /**
@@ -176,20 +201,24 @@ export function countResearchCriteria(questions = []) {
 
 /**
  * Plan flat session tool budgets from criterion count.
- * maxSearches = criteria * searchesPerWave * maxWaves (matches per-criterion hard caps).
- * maxFetches is a loose runaway fuse only.
+ * maxWaves is always 1 (single investigation round).
+ * maxSearches/maxFetches are loose session fuses ≈ criteria × tools-per-criterion.
  */
 export function planResearchBudget(criterionCount, overrides = {}) {
   const count = Math.max(1, Math.floor(Number(criterionCount) || 1));
-  const maxWaves = Number(overrides.maxWaves) > 0
-    ? Math.floor(Number(overrides.maxWaves))
-    : DEFAULT_RESEARCH_BUDGET.maxWaves;
+  const maxWaves = 1;
+  const toolsPerCriterion = Number(overrides.toolsPerCriterion) > 0
+    ? Math.floor(Number(overrides.toolsPerCriterion))
+    : (Number(overrides.searchesPerWave) > 0
+      ? Math.floor(Number(overrides.searchesPerWave))
+      : RESEARCH_SCOUT_TOOLS_PER_CRITERION);
+  const toolBudget = count * toolsPerCriterion;
   const maxSearches = overrides.maxSearches != null
     ? Math.max(0, Math.floor(Number(overrides.maxSearches) || 0))
-    : count * RESEARCH_CRITERION_SEARCHES_PER_WAVE * maxWaves;
+    : toolBudget;
   const maxFetches = overrides.maxFetches != null
     ? Math.max(0, Math.floor(Number(overrides.maxFetches) || 0))
-    : maxSearches * RESEARCH_BUDGET_FETCHES_PER_SEARCH;
+    : toolBudget * RESEARCH_BUDGET_FETCHES_PER_SEARCH;
   return normalizeBudget({
     maxWaves,
     maxParallelScouts: overrides.maxParallelScouts,
@@ -209,12 +238,15 @@ export function ensureResearchSessionBudget(sessionId) {
     ? detail.questions
     : detail.plan?.questions || []);
   if (!criterionCount) return detail;
+  const runtime = researchDepthRuntimeLimits(detail.plan?.depth);
   const planned = planResearchBudget(criterionCount, {
-    maxWaves: detail.budget.maxWaves,
+    maxWaves: runtime.maxWaves,
+    searchesPerWave: runtime.searchesPerCriterionPerWave,
     maxParallelScouts: detail.budget.maxParallelScouts,
   });
   const currentSearches = Number(detail.budget.maxSearches) || 0;
   const currentFetches = Number(detail.budget.maxFetches) || 0;
+  const currentWaves = Number(detail.budget.maxWaves) || 0;
   // Test / explicit tight budgets stay below the auto floor.
   if (
     currentSearches < RESEARCH_BUDGET_MIN_SEARCHES
@@ -224,12 +256,16 @@ export function ensureResearchSessionBudget(sessionId) {
   }
   const next = normalizeBudget({
     ...detail.budget,
-    maxWaves: detail.budget.maxWaves,
+    maxWaves: runtime.maxWaves,
     maxParallelScouts: detail.budget.maxParallelScouts,
     maxSearches: Math.max(currentSearches, planned.maxSearches),
     maxFetches: Math.max(currentFetches, planned.maxFetches),
   });
-  if (next.maxSearches === currentSearches && next.maxFetches === currentFetches) {
+  if (
+    next.maxSearches === currentSearches
+    && next.maxFetches === currentFetches
+    && next.maxWaves === currentWaves
+  ) {
     return detail;
   }
   return updateResearchSession(sessionId, { budget: next });
@@ -336,6 +372,27 @@ function normalizeConfidence(value) {
   return CONFIDENCE_LEVELS.has(raw) ? raw : 'medium';
 }
 
+const CONCLUSION_COMPLETENESS = new Set(['complete', 'partial', 'insufficient']);
+
+export function normalizeResearchConclusions(value) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((item) => item && typeof item === 'object')
+    .map((item) => {
+      const completeness = String(item.completeness || 'partial').toLowerCase();
+      return {
+        questionId: String(item.questionId || item.question_id || '').trim(),
+        completeness: CONCLUSION_COMPLETENESS.has(completeness) ? completeness : 'partial',
+        summary: String(item.summary || '').trim(),
+        limitations: String(item.limitations || '').trim(),
+        evidenceIds: Array.isArray(item.evidenceIds || item.evidence_ids)
+          ? [...new Set((item.evidenceIds || item.evidence_ids).map((id) => String(id || '').trim()).filter(Boolean))]
+          : [],
+      };
+    })
+    .filter((item) => item.questionId);
+}
+
 function normalizeResearchRunState(value) {
   const state = String(value || 'idle').toLowerCase();
   return RESEARCH_RUN_STATES.has(state) ? state : 'idle';
@@ -363,12 +420,14 @@ function mapSession(row) {
     lastError: row.last_error || '',
     plan: parseJson(row.plan_json, {}) || {},
     timeline: Array.isArray(parseJson(row.timeline_json, [])) ? parseJson(row.timeline_json, []) : [],
+    conclusions: normalizeResearchConclusions(parseJson(row.conclusions_json, [])),
     reportMarkdown: row.report_markdown || '',
   };
 }
 
 function mapQuestion(row) {
   if (!row) return null;
+  const coverage = parseJson(row.coverage_json, {}) || {};
   return {
     id: row.id,
     sessionId: row.session_id,
@@ -385,12 +444,14 @@ function mapQuestion(row) {
       ? parseJson(row.criteria_met_json, [])
       : [],
     gaps: Array.isArray(parseJson(row.gaps_json, [])) ? parseJson(row.gaps_json, []) : [],
+    coverage: coverage && typeof coverage === 'object' && !Array.isArray(coverage) ? coverage : {},
     lastScoutAt: row.last_scout_at || '',
   };
 }
 
 function mapEvidence(row) {
   if (!row) return null;
+  const criterionIds = parseJson(row.criterion_ids_json, []);
   return {
     id: row.id,
     sessionId: row.session_id,
@@ -405,6 +466,7 @@ function mapEvidence(row) {
     status: row.status || 'accepted',
     createdFrom: row.created_from || 'scout_handoff',
     originCandidateId: row.origin_candidate_id || '',
+    criterionIds: Array.isArray(criterionIds) ? criterionIds.map(String).filter(Boolean) : [],
   };
 }
 
@@ -544,6 +606,9 @@ export function updateResearchSession(sessionId, patch = {}) {
     reportMarkdown: patch.reportMarkdown != null
       ? String(patch.reportMarkdown)
       : current.reportMarkdown,
+    conclusions: patch.conclusions != null
+      ? normalizeResearchConclusions(patch.conclusions)
+      : current.conclusions,
   };
   const now = nowIso();
   getGlobalDatabase().prepare(`
@@ -551,7 +616,7 @@ export function updateResearchSession(sessionId, patch = {}) {
     SET updated_at = ?, question = ?, preferences_json = ?, seed_json = ?,
         budget_json = ?, budget_used_json = ?, phase = ?, run_state = ?,
         last_run_phase = ?, last_error = ?, plan_json = ?, timeline_json = ?,
-        report_markdown = ?
+        conclusions_json = ?, report_markdown = ?
     WHERE id = ?
   `).run(
     now,
@@ -566,6 +631,7 @@ export function updateResearchSession(sessionId, patch = {}) {
     next.lastError,
     toJson(next.plan || {}),
     toJson(next.timeline || []),
+    toJson(next.conclusions || []),
     next.reportMarkdown,
     current.id,
   );
@@ -637,6 +703,11 @@ export function updateResearchQuestion(questionId, patch = {}) {
     gaps: patch.gaps != null
       ? (Array.isArray(patch.gaps) ? patch.gaps.map((g) => String(g)) : current.gaps)
       : current.gaps,
+    coverage: patch.coverage != null
+      ? (patch.coverage && typeof patch.coverage === 'object' && !Array.isArray(patch.coverage)
+        ? patch.coverage
+        : current.coverage)
+      : current.coverage,
     lastScoutAt: patch.lastScoutAt != null ? String(patch.lastScoutAt) : current.lastScoutAt,
     ordinal: patch.ordinal != null ? Number(patch.ordinal) : current.ordinal,
   };
@@ -644,7 +715,7 @@ export function updateResearchQuestion(questionId, patch = {}) {
   getGlobalDatabase().prepare(`
     UPDATE research_questions
     SET updated_at = ?, ordinal = ?, text = ?, success_criteria_json = ?, depends_on_json = ?,
-        status = ?, criteria_met_json = ?, gaps_json = ?, last_scout_at = ?
+        status = ?, criteria_met_json = ?, gaps_json = ?, coverage_json = ?, last_scout_at = ?
     WHERE id = ?
   `).run(
     now,
@@ -655,6 +726,7 @@ export function updateResearchQuestion(questionId, patch = {}) {
     next.status,
     toJson(next.criteriaMet),
     toJson(next.gaps),
+    toJson(next.coverage || {}),
     next.lastScoutAt,
     current.id,
   );
@@ -878,8 +950,9 @@ export function confirmResearchPlan(sessionId, planOverride = null) {
     const insertQ = db.prepare(`
       INSERT INTO research_questions(
         id, session_id, created_at, updated_at, ordinal, text,
-        success_criteria_json, depends_on_json, status, criteria_met_json, gaps_json, last_scout_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', '[]', '[]', '')
+        success_criteria_json, depends_on_json, status, criteria_met_json, gaps_json,
+        coverage_json, last_scout_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', '[]', '[]', '{}', '')
     `);
 
     const resolvedQuestions = questions.map((q, index) => {
@@ -929,15 +1002,20 @@ export function confirmResearchPlan(sessionId, planOverride = null) {
       coverageChecklist: Array.isArray(plan?.coverageChecklist) ? plan.coverageChecklist : [],
     };
     const criterionCount = countResearchCriteria(resolvedQuestions);
+    const runtime = researchDepthRuntimeLimits(depth);
     const autoBudget = planResearchBudget(criterionCount, {
-      maxWaves: session.budget.maxWaves,
+      maxWaves: runtime.maxWaves,
+      searchesPerWave: runtime.searchesPerCriterionPerWave,
       maxParallelScouts: session.budget.maxParallelScouts,
     });
     const looksLikeDefaultBudget = session.budget.maxSearches === DEFAULT_RESEARCH_BUDGET.maxSearches
       && session.budget.maxFetches === DEFAULT_RESEARCH_BUDGET.maxFetches;
     const plannedBudget = looksLikeDefaultBudget
       ? autoBudget
-      : normalizeBudget(session.budget);
+      : normalizeBudget({
+        ...session.budget,
+        maxWaves: runtime.maxWaves,
+      });
 
     db.prepare(`
       UPDATE research_sessions
@@ -1020,8 +1098,8 @@ export function applyResearchCommit(sessionId, commit = {}) {
     const insertEv = db.prepare(`
       INSERT INTO research_evidence(
         id, session_id, question_id, created_at, updated_at, claim, snippet, url,
-        source_label, confidence, status, created_from, origin_candidate_id
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'accepted', ?, ?)
+        source_label, confidence, status, created_from, origin_candidate_id, criterion_ids_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'accepted', ?, ?, ?)
     `);
     const existingCandidate = db.prepare(`
       SELECT id FROM research_evidence
@@ -1039,6 +1117,9 @@ export function applyResearchCommit(sessionId, commit = {}) {
       const createdFrom = CREATED_FROM.has(String(item.createdFrom || ''))
         ? String(item.createdFrom)
         : 'scout_handoff';
+      const criterionIds = Array.isArray(item.criterionIds)
+        ? item.criterionIds.map(String).filter(Boolean)
+        : (item.criterionId ? [String(item.criterionId)] : []);
       insertEv.run(
         id,
         session.id,
@@ -1052,6 +1133,7 @@ export function applyResearchCommit(sessionId, commit = {}) {
         normalizeConfidence(item.confidence),
         createdFrom,
         candidateId,
+        toJson(criterionIds),
       );
       insertedEvidenceIds.push(id);
     }
@@ -1075,6 +1157,11 @@ export function applyResearchCommit(sessionId, commit = {}) {
       if (item.gaps != null) patch.gaps = Array.isArray(item.gaps) ? item.gaps.map(String) : [];
       if (item.criteriaMet != null) {
         patch.criteriaMet = Array.isArray(item.criteriaMet) ? item.criteriaMet : [];
+      }
+      if (item.coverage != null
+        && typeof item.coverage === 'object'
+        && !Array.isArray(item.coverage)) {
+        patch.coverage = item.coverage;
       }
       if (item.lastScoutAt != null) patch.lastScoutAt = String(item.lastScoutAt);
       updateResearchQuestion(qid, patch);
@@ -1230,16 +1317,40 @@ export function buildResearchDbSummary(detail) {
 
 export function buildResearchWritingPack(detail) {
   if (!detail) return '';
+  const depth = normalizeResearchPlanDepth(detail.plan?.depth, 'standard');
   const lines = [];
   lines.push(`Main question: ${detail.question}`);
   if (detail.preferences?.goal) lines.push(`Goal: ${detail.preferences.goal}`);
   if (detail.preferences?.constraints) lines.push(`Constraints: ${detail.preferences.constraints}`);
+  lines.push(`Depth: ${depth}`);
   lines.push('');
-  lines.push('Sub-questions:');
-  for (const q of detail.questions || []) {
-    lines.push(`- ${q.id} [${q.status}] ${q.text}`);
-    if (q.gaps?.length) lines.push(`  gaps: ${q.gaps.join('; ')}`);
+
+  const conclusions = normalizeResearchConclusions(detail.conclusions);
+  const questions = detail.questions || [];
+  lines.push('Sub-question conclusions:');
+  if (!conclusions.length) {
+    lines.push('(none — write carefully from accepted evidence and note gaps)');
+  } else {
+    for (const conclusion of conclusions) {
+      const question = questions.find((item) => item.id === conclusion.questionId);
+      lines.push(`- ${conclusion.questionId} [${conclusion.completeness}] ${question?.text || ''}`.trim());
+      if (conclusion.summary) lines.push(`  summary: ${conclusion.summary}`);
+      if (conclusion.limitations) lines.push(`  limitations: ${conclusion.limitations}`);
+      if (conclusion.evidenceIds?.length) {
+        lines.push(`  evidenceIds: ${conclusion.evidenceIds.join(', ')}`);
+      }
+    }
   }
+
+  const sessionLimitations = collectResearchSessionLimitations(detail);
+  lines.push('');
+  lines.push('Session limitations:');
+  if (!sessionLimitations.length) {
+    lines.push('(none recorded)');
+  } else {
+    for (const item of sessionLimitations) lines.push(`- ${item}`);
+  }
+
   lines.push('');
   lines.push('Accepted evidence:');
   const accepted = (detail.evidence || []).filter((ev) => ev.status === 'accepted');
@@ -1256,6 +1367,81 @@ export function buildResearchWritingPack(detail) {
     }
   }
   return lines.join('\n');
+}
+
+/** Flatten coverage / wave limitations into short lines for the writing pack. */
+export function collectResearchSessionLimitations(detail) {
+  const lines = [];
+  const seen = new Set();
+  const push = (text) => {
+    const cleaned = String(text || '').trim();
+    if (!cleaned || seen.has(cleaned)) return;
+    seen.add(cleaned);
+    lines.push(cleaned);
+  };
+  for (const question of detail.questions || []) {
+    const criteria = Array.isArray(question?.coverage?.criteria) ? question.coverage.criteria : [];
+    for (const item of criteria) {
+      if (!item || item.status === 'covered') continue;
+      const gap = item.reason || item.text || '';
+      push([question.text || question.id, item.id, gap].filter(Boolean).join(' — '));
+    }
+  }
+  for (const wave of detail.waves || []) {
+    const evaluation = wave.evaluation || {};
+    for (const item of evaluation.limitations || []) {
+      if (typeof item === 'string') {
+        push(item);
+        continue;
+      }
+      if (!item || typeof item !== 'object') continue;
+      const question = (detail.questions || []).find((q) => q.id === item.questionId);
+      const label = question?.text || item.questionId || '';
+      const gap = item.gap || item.reason || item.text || '';
+      push([label, item.criterionId, gap].filter(Boolean).join(' — '));
+    }
+  }
+  return lines;
+}
+
+export function buildDeterministicResearchConclusions(detail) {
+  const accepted = (detail.evidence || []).filter((ev) => ev.status === 'accepted');
+  const byQuestion = new Map();
+  for (const ev of accepted) {
+    const list = byQuestion.get(ev.questionId) || [];
+    list.push(ev);
+    byQuestion.set(ev.questionId, list);
+  }
+  return (detail.questions || []).map((question) => {
+    const evidence = byQuestion.get(question.id) || [];
+    const criteria = Array.isArray(question?.coverage?.criteria) ? question.coverage.criteria : [];
+    const uncovered = criteria.filter((item) => item.status !== 'covered');
+    const completeness = !criteria.length && !evidence.length
+      ? 'insufficient'
+      : uncovered.length === 0 && evidence.length
+        ? 'complete'
+        : evidence.length
+          ? 'partial'
+          : 'insufficient';
+    const gapBits = [
+      ...(Array.isArray(question.gaps) ? question.gaps : []),
+      ...uncovered.map((item) => item.reason || item.text || item.id).filter(Boolean),
+    ];
+    return {
+      questionId: question.id,
+      completeness,
+      summary: evidence.length
+        ? `Accepted evidence covers ${evidence.length} claim(s). `
+          + (completeness === 'complete'
+            ? 'Criteria look covered.'
+            : 'Some criteria remain incomplete.')
+        : 'No accepted evidence was retained for this sub-question.',
+      limitations: gapBits.length
+        ? gapBits.slice(0, 6).join('; ')
+        : (completeness === 'complete' ? '' : 'Coverage remains incomplete.'),
+      evidenceIds: evidence.map((item) => item.id),
+    };
+  });
 }
 
 export {
