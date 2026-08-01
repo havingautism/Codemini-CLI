@@ -5,6 +5,15 @@ import {
   fetchResearchSession,
   fetchResearchSessions,
 } from '../codemini-web/client/src/hooks/use-api.js';
+import fs from 'node:fs/promises';
+import { listResearchSessionsForApi } from '../codemini-web/lib/research-service.js';
+import {
+  createResearchSession,
+  updateResearchSession,
+} from '../src/core/research-store.js';
+import { closeSqliteDatabasesForTests } from '../src/core/sqlite-database.js';
+import os from 'node:os';
+import path from 'node:path';
 
 test('research client helpers reject non-success responses', async () => {
   const originalFetch = globalThis.fetch;
@@ -38,5 +47,32 @@ test('research list requests forward abort signals', async () => {
     assert.equal(receivedSignal, controller.signal);
   } finally {
     globalThis.fetch = originalFetch;
+  }
+});
+
+test('research cards lift a generated title emoji into the top-left visual', async () => {
+  const source = await fs.readFile('codemini-web/client/src/components/ResearchPanel.jsx', 'utf8');
+  assert.match(source, /function splitEmojiTitle/);
+  assert.match(source, /session\?\.title \|\| session\?\.plan\?\.title/);
+  assert.match(source, /titleParts\.emoji/);
+  assert.match(source, /titleParts\.title/);
+});
+
+test('research list summaries expose generated titles to library cards', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-research-title-'));
+  const previous = process.env.CODEMINI_GLOBAL_DIR;
+  process.env.CODEMINI_GLOBAL_DIR = dir;
+  closeSqliteDatabasesForTests();
+  try {
+    const session = createResearchSession({ question: 'City Pop history' });
+    updateResearchSession(session.id, {
+      plan: { title: '🎵 City Pop 前世今生', depth: 'brief', questions: [] },
+    });
+    const listed = listResearchSessionsForApi().sessions.find((item) => item.id === session.id);
+    assert.equal(listed.title, '🎵 City Pop 前世今生');
+  } finally {
+    closeSqliteDatabasesForTests();
+    if (previous === undefined) delete process.env.CODEMINI_GLOBAL_DIR;
+    else process.env.CODEMINI_GLOBAL_DIR = previous;
   }
 });

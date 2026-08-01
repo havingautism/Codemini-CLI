@@ -60,6 +60,7 @@ export function listResearchSessionsForApi({ query = '' } = {}) {
   return {
     sessions: listResearchSessions({ query }).map((session) => ({
       id: session.id,
+      title: session.plan?.title || '',
       question: session.question,
       phase: session.phase,
       runState: session.runState,

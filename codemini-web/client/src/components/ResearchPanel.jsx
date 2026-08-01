@@ -282,6 +282,30 @@ function formatDate(raw) {
   }).format(date);
 }
 
+function splitEmojiTitle(value) {
+  const fullTitle = String(value || "").trim();
+  if (!fullTitle) return { emoji: "", title: "" };
+
+  const firstGrapheme =
+    typeof Intl !== "undefined" && typeof Intl.Segmenter === "function"
+      ? [...new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(fullTitle)][0]
+          ?.segment || ""
+      : Array.from(fullTitle)[0] || "";
+  const isEmoji =
+    /\p{Extended_Pictographic}/u.test(firstGrapheme) ||
+    /\p{Regional_Indicator}/u.test(firstGrapheme);
+
+  if (!isEmoji) return { emoji: "", title: fullTitle };
+  return {
+    emoji: firstGrapheme,
+    title: fullTitle.slice(firstGrapheme.length).trimStart() || fullTitle,
+  };
+}
+
+function researchDisplayTitle(session) {
+  return splitEmojiTitle(session?.title || session?.plan?.title || session?.question || "");
+}
+
 function ResearchLibraryCard({
   session,
   toneIndex,
@@ -292,6 +316,7 @@ function ResearchLibraryCard({
   onDelete,
 }) {
   const isList = viewMode === "list";
+  const titleParts = researchDisplayTitle(session);
   return (
     <article
       className={cn(
@@ -308,7 +333,7 @@ function ResearchLibraryCard({
         type="button"
         onClick={() => onOpen(session.id)}
         className="absolute inset-0 z-0 rounded-2xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
-        aria-label={`${t("deepResearchOpen")}: ${session.question}`}
+        aria-label={`${t("deepResearchOpen")}: ${titleParts.title || session.question}`}
       />
       <div
         className={cn(
@@ -316,15 +341,27 @@ function ResearchLibraryCard({
           isList ? "items-center gap-4 px-5 py-4 pr-14" : "min-h-52 flex-col px-5 pb-5 pt-5",
         )}
       >
-        <span
-          className="flex size-11 shrink-0 items-center justify-center rounded-xl"
-          style={{
-            color: "var(--research-tint)",
-            backgroundColor: "color-mix(in srgb, var(--research-tint) 20%, transparent)",
-          }}
-        >
-          <Lightning size={25} weight="duotone" aria-hidden="true" />
-        </span>
+        {titleParts.emoji ? (
+          <span
+            className={cn(
+              "flex shrink-0 items-center justify-center",
+              isList ? "size-11 text-[30px]" : "size-14 text-[42px]",
+            )}
+            aria-hidden="true"
+          >
+            {titleParts.emoji}
+          </span>
+        ) : (
+          <span
+            className="flex size-11 shrink-0 items-center justify-center rounded-xl"
+            style={{
+              color: "var(--research-tint)",
+              backgroundColor: "color-mix(in srgb, var(--research-tint) 20%, transparent)",
+            }}
+          >
+            <Lightning size={25} weight="duotone" aria-hidden="true" />
+          </span>
+        )}
         <div className={isList ? "min-w-0 flex-1" : "mt-auto min-w-0"}>
           <h3
             className={cn(
@@ -332,7 +369,7 @@ function ResearchLibraryCard({
               isList ? "text-[15px] leading-5" : "text-[18px] leading-6",
             )}
           >
-            {session.question || t("deepResearchUntitled")}
+            {titleParts.title || t("deepResearchUntitled")}
           </h3>
           {session.goal ? (
             <p className="mt-1 line-clamp-1 text-[12px] text-(--text-secondary)">{session.goal}</p>
@@ -1571,6 +1608,7 @@ function DetailBody({
     Number(session?.budget?.maxWaves || 0) - Number(session?.budgetUsed?.waves || 0);
   const canContinue = !incomplete || (searchesRemaining > 0 && wavesRemaining > 0);
   const latestEvaluation = session?.waves?.at(-1)?.evaluation || {};
+  const displayTitle = researchDisplayTitle(session);
   const [focusStep, setFocusStep] = useState(null);
 
   useEffect(() => {
@@ -1764,7 +1802,7 @@ function DetailBody({
                   {t("deepResearchStepReport")}
                 </div>
                 <div className="mt-1 text-[16px] font-semibold tracking-[-0.02em] text-(--text-primary)">
-                  {session?.question || t("deepResearchUntitled")}
+                  {displayTitle.title || t("deepResearchUntitled")}
                 </div>
               </header>
               <div className="pt-7">
@@ -2485,12 +2523,18 @@ export function ResearchPanel() {
         >
           <DialogHeader className="shrink-0 border-b border-(--separator) bg-(--material-elevated) px-5 py-4 sm:px-6">
             <div className="flex min-w-0 items-start gap-3">
-              <span className="mt-0.5 flex size-9 shrink-0 items-center justify-center rounded-[11px] bg-primary/14 text-primary ring-1 ring-primary/15">
-                <Lightning size={18} weight="duotone" aria-hidden="true" />
-              </span>
+              {researchDisplayTitle(session).emoji ? (
+                <span className="mt-0.5 flex size-9 shrink-0 items-center justify-center text-[25px]" aria-hidden="true">
+                  {researchDisplayTitle(session).emoji}
+                </span>
+              ) : (
+                <span className="mt-0.5 flex size-9 shrink-0 items-center justify-center rounded-[11px] bg-primary/14 text-primary ring-1 ring-primary/15">
+                  <Lightning size={18} weight="duotone" aria-hidden="true" />
+                </span>
+              )}
               <div className="min-w-0">
                 <DialogTitle className="line-clamp-2 pr-2 text-[17px] leading-6">
-                  {session?.question || t("deepResearchLoading")}
+                  {researchDisplayTitle(session).title || t("deepResearchLoading")}
                 </DialogTitle>
                 {session ? (
                   <DialogDescription className="mt-1 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">

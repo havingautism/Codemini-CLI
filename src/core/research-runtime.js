@@ -18,6 +18,7 @@ import {
   getResearchSession,
   validateResearchPlanByDepth,
 } from './research-store.js';
+import { normalizeGeneratedSessionTitle } from './session-title.js';
 
 const activeRuns = new Map();
 
@@ -149,7 +150,8 @@ function buildLeadSystemPrompt(phase, session) {
       '- deep: at most 6 sub-questions, at most 3 success criteria each',
       `For this run stay within ${limits.maxQuestions} sub-questions and ${limits.maxCriteriaPerQuestion} criteria per question unless the user explicitly requests a deeper study.`,
       'Create a research plan. If goal is empty, invent a concise goal in the same plan.',
-      'Call submit_research_plan with JSON fields: depth, goal, coverageChecklist, questions.',
+      'Call submit_research_plan with JSON fields: title, depth, goal, coverageChecklist, questions.',
+      'title must be one relevant emoji followed by one space and a concise natural topic label, matching the configured reply language. Do not add a Title: prefix or ending punctuation.',
       'depth must be one of brief|standard|deep.',
       'Each question needs tempId, text, successCriteria, dependsOn (tempId array).',
       'Each successCriteria item should be {"text":"...","priority":"high|normal|low"} (priority defaults to normal).',
@@ -213,6 +215,10 @@ function researchSubmitDefinitions(phase) {
       parameters: {
         type: 'object',
         properties: {
+          title: {
+            type: 'string',
+            description: 'One relevant emoji followed by one space and a concise research title.',
+          },
           goal: { type: 'string' },
           depth: {
             type: 'string',
@@ -248,7 +254,7 @@ function researchSubmitDefinitions(phase) {
             },
           },
         },
-        required: ['depth', 'questions'],
+        required: ['title', 'depth', 'questions'],
       },
     },
   };
@@ -347,6 +353,7 @@ function createResearchSubmitHandlers(sessionId, phase, emit) {
         : inferred;
       const depth = inferred === 'brief' ? 'brief' : requested;
       const draft = {
+        title: normalizeGeneratedSessionTitle(parsed.title, session?.question || ''),
         goal: String(parsed.goal || '').trim(),
         depth,
         coverageChecklist: Array.isArray(parsed.coverageChecklist)

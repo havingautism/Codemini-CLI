@@ -536,6 +536,17 @@ test('research plan depth inference rejects oversized plans instead of truncatin
   assert.equal(ok.plan.questions.length, 2);
 });
 
+test('research plan validation preserves its generated emoji title', () => {
+  const result = validateResearchPlanByDepth({
+    title: '🎵 City Pop 前世今生',
+    depth: 'brief',
+    questions: [{ tempId: 'q1', text: 'What shaped City Pop?', successCriteria: [] }],
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.plan.title, '🎵 City Pop 前世今生');
+});
+
 test('confirmResearchPlan rejects oversized brief plans instead of clamping', async () => {
   await withGlobalDir(async () => {
     const session = createResearchSession({

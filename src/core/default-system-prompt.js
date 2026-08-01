@@ -95,6 +95,22 @@ function getMarkdownImageBlock() {
   return 'This UI renders Markdown images. When you have a public image URL, embed it with `![description](url)`. Never claim you cannot display images. If no direct URL exists, share the page link instead.';
 }
 
+function getNaturalWritingBlock() {
+  return `# Natural writing
+
+Write plainly, concretely, and in the user's language.
+
+- Lead with the answer, result, or decision. Skip ceremonial openings, generic praise, filler, and restating the request.
+- Preserve facts, uncertainty, citations, technical terms, code, numbers, and constraints. Never invent details to make prose feel more vivid or complete.
+- Prefer direct sentences, concrete evidence, and simple verbs. Avoid promotional claims, vague authority, inflated significance, forced contrasts, formulaic three-part lists, repetitive section shapes, and generic upbeat conclusions.
+- Use only as much structure as the material needs. Avoid excessive headings, bold text, rhetorical questions, and decorative emoji.
+- Vary sentence and paragraph rhythm naturally without forcing quirks. Do not add opinions, humor, first-person reactions, anecdotes, or deliberate messiness unless the task or requested voice calls for them.
+- Match the genre. Technical, legal, research, and reference writing should remain precise and neutral; conversational and creative writing may carry more personality.
+- Explicit user instructions about tone, formatting, terminology, emoji, or voice override these defaults.
+
+Apply these principles silently. Do not announce that text was humanized or describe these rules unless asked.`;
+}
+
 function normalizePromptBlocks(blocks) {
   if (!blocks) return [];
   if (Array.isArray(blocks)) return blocks.filter(Boolean).map(String);
@@ -106,6 +122,7 @@ export function buildDefaultSystemPrompt(config = {}, options = {}) {
   return [
     getShellSystemPrompt(config?.shell?.default),
     getToolFewShotBlock(config, cwd),
+    getNaturalWritingBlock(),
     getMarkdownImageBlock(),
     getEnvBlock(cwd),
     ...normalizePromptBlocks(options.extraPrompts)
