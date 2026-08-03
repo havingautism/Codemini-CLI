@@ -165,7 +165,8 @@ test('createEmptyCoverage seeds missing criteria', () => {
   assert.equal(coverage.criteria.length, 2);
   assert.equal(coverage.criteria[0].id, 'c1');
   assert.equal(coverage.criteria[0].status, 'missing');
-  assert.equal(coverage.criteria[1].priority, 'high');
+  assert.equal(coverage.criteria[1].text, 'Sync conflict handling');
+  assert.equal(coverage.criteria[1].priority, undefined);
 });
 
 test('wave targets and limitations stay mutually exclusive', () => {

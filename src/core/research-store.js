@@ -35,7 +35,6 @@ export const RESEARCH_BUDGET_FETCHES_PER_SEARCH = 1;
 /** Explicit tiny budgets below this stay untouched by ensureResearchSessionBudget. */
 export const RESEARCH_BUDGET_MIN_SEARCHES = 25;
 export const RESEARCH_BUDGET_MIN_FETCHES = 200;
-export const RESEARCH_CRITERION_PRIORITIES = Object.freeze(['high', 'normal', 'low']);
 export const RESEARCH_PLAN_DEPTHS = Object.freeze(['brief', 'standard', 'deep']);
 export const RESEARCH_PLAN_DEPTH_LIMITS = Object.freeze({
   brief: Object.freeze({ maxQuestions: 2, maxCriteriaPerQuestion: 2 }),
@@ -166,7 +165,7 @@ export function validateResearchPlanByDepth(plan = {}, options = {}) {
         ...question,
         successCriteria: question.successCriteria.length
           ? question.successCriteria
-          : [{ text: 'Answer with reliable, attributable evidence', priority: 'normal' }],
+          : [{ text: 'Answer with reliable, attributable evidence' }],
       })),
     },
   };
@@ -174,14 +173,11 @@ export function validateResearchPlanByDepth(plan = {}, options = {}) {
 
 export function normalizeSuccessCriterion(item) {
   if (item && typeof item === 'object' && !Array.isArray(item)) {
-    const priorityRaw = String(item.priority || 'normal').toLowerCase();
-    const priority = RESEARCH_CRITERION_PRIORITIES.includes(priorityRaw) ? priorityRaw : 'normal';
     const text = String(item.text || item.criterion || item.description || '').trim();
-    return { text, priority };
+    return { text };
   }
   return {
     text: String(item || '').trim(),
-    priority: 'normal',
   };
 }
 

@@ -161,6 +161,69 @@ function runStatusHelp(status, toolsCap = 10) {
   return t(key).replaceAll("{n}", String(toolsCap));
 }
 
+/** Localized label for research/scout/coverage/wave status codes. */
+function formatResearchStatus(status) {
+  const raw = String(status || "").trim().toLowerCase();
+  const key = {
+    done: "deepResearchStatusDone",
+    completed: "deepResearchStatusCompleted",
+    partial: "deepResearchStatusPartial",
+    covered: "deepResearchStatusCovered",
+    missing: "deepResearchStatusMissing",
+    blocked: "deepResearchStatusBlocked",
+    conflicted: "deepResearchStatusConflicted",
+    running: "deepResearchStatusRunning",
+    in_progress: "deepResearchStatusRunning",
+    pending: "deepResearchStatusPending",
+    evaluating: "deepResearchStatusEvaluating",
+    failed: "deepResearchStatusFailed",
+    error: "deepResearchStatusFailed",
+    aborted: "deepResearchStatusAborted",
+    open: "deepResearchStatusOpen",
+    ready_for_report: "deepResearchStatusReadyForReport",
+    incomplete: "deepResearchStatusIncomplete",
+  }[raw];
+  if (key) return t(key);
+  return String(status || "").replaceAll("_", " ");
+}
+
+function formatEvaluationBanner(evaluation = {}) {
+  const decision = String(evaluation.decision || "").trim();
+  const code = String(evaluation.reasonCode || "").trim();
+  const reasonRaw = String(evaluation.reason || "");
+  let decisionLabel = formatResearchStatus(decision);
+  let reasonLabel = "";
+  if (code === "ready_full" || (!code && /ready for report\.$/i.test(reasonRaw) && !/partial/i.test(reasonRaw))) {
+    reasonLabel = t("deepResearchEvalReadyFull");
+  } else if (code === "ready_partial" || (!code && /partial evidence/i.test(reasonRaw))) {
+    reasonLabel = t("deepResearchEvalReadyPartial");
+  } else if (code === "incomplete_no_evidence" || decision === "incomplete") {
+    reasonLabel = t("deepResearchEvalIncomplete");
+  } else if (reasonRaw) {
+    reasonLabel = reasonRaw;
+  }
+  if (decision === "ready_for_report") decisionLabel = t("deepResearchStatusReadyForReport");
+  return { decisionLabel, reasonLabel };
+}
+
+function formatConfidenceLabel(level) {
+  const raw = String(level || "").trim().toLowerCase();
+  if (raw === "high") return t("deepResearchConfidenceHigh");
+  if (raw === "medium") return t("deepResearchConfidenceMedium");
+  if (raw === "low") return t("deepResearchConfidenceLow");
+  return String(level || "");
+}
+
+const SETTLED_QUESTION_STATUSES = new Set(["done", "partial", "blocked"]);
+const TERMINAL_COVERAGE_STATUSES = new Set(["covered", "partial", "blocked", "conflicted"]);
+
+function isQuestionSettled(question) {
+  if (SETTLED_QUESTION_STATUSES.has(String(question?.status || "").toLowerCase())) return true;
+  const criteria = question?.coverage?.criteria || [];
+  if (!criteria.length) return false;
+  return criteria.every((item) => TERMINAL_COVERAGE_STATUSES.has(String(item?.status || "").toLowerCase()));
+}
+
 function researchToolHelp(name, toolsCap = 10) {
   if (name === "web_search" || name === "web_fetch") {
     return t("deepResearchTipTools").replaceAll("{n}", String(toolsCap));
@@ -172,20 +235,12 @@ function normalizeCriteriaList(list = []) {
   if (!Array.isArray(list)) return [];
   return list.map((item) => {
     if (item && typeof item === "object") {
-      const priority = String(item.priority || "normal").toLowerCase();
       return {
         text: String(item.text || item.criterion || "").trim(),
-        priority: ["high", "normal", "low"].includes(priority) ? priority : "normal",
       };
     }
-    return { text: String(item || "").trim(), priority: "normal" };
+    return { text: String(item || "").trim() };
   }).filter((item) => item.text);
-}
-
-function priorityLabel(priority) {
-  if (priority === "high") return t("deepResearchPriorityHigh");
-  if (priority === "low") return t("deepResearchPriorityLow");
-  return t("deepResearchPriorityNormal");
 }
 
 function latestWaveLimitations(session) {
@@ -778,7 +833,7 @@ function PlanPane({
               {normalizeCriteriaList(q.successCriteria).length ? (
                 <div className="mt-3">
                   <div className="mb-1.5 text-[10px] font-medium uppercase tracking-[0.08em] text-(--text-muted)">
-                  <ResearchTerm explanation={t("deepResearchTipPriority")}>
+                  <ResearchTerm explanation={t("deepResearchTipCriteria")}>
                     {t("deepResearchCriteria")}
                   </ResearchTerm>
                   </div>
@@ -787,11 +842,10 @@ function PlanPane({
                     <li
                       key={`${criterion.text}-${criterionIndex}`}
                       title={criterion.text}
-                      className="grid min-w-0 grid-cols-[12px_minmax(0,1fr)_auto] items-start gap-2 text-[11px] leading-5"
+                      className="grid min-w-0 grid-cols-[12px_minmax(0,1fr)] items-start gap-2 text-[11px] leading-5"
                     >
                       <span className="mt-2 size-1 rounded-full bg-(--text-muted)" aria-hidden="true" />
                       <span className="min-w-0 text-(--text-secondary)">{criterion.text}</span>
-                      <span className="shrink-0 text-[10px] text-(--text-muted)">{priorityLabel(criterion.priority)}</span>
                     </li>
                   ))}
                   </ul>
@@ -1016,8 +1070,12 @@ function ScoutCard({
   const partial = status === "partial";
   const cap = Math.max(1, Math.floor(Number(toolsCap) || RESEARCH_TOOLS_PER_CRITERION));
   const liveTools = Number(card.toolsUsed);
-  const criterionToolsTip = t("deepResearchTipCriterionTools").replaceAll("{n}", String(cap));
   const activeCriterionId = String(card.activeCriterionId || "");
+  const scoutToolTotal = (Number(card.searchCount) || 0) + (Number(card.fetchCount) || 0);
+  const summaryTools = Number.isFinite(liveTools) && running
+    ? liveTools
+    : (scoutToolTotal || (Number.isFinite(liveTools) ? liveTools : 0));
+  const criterionToolsTip = t("deepResearchTipCriterionTools").replaceAll("{n}", String(cap));
 
   return (
     <details
@@ -1055,17 +1113,16 @@ function ScoutCard({
                 {activeCriterionId}
               </ResearchTerm>
             ) : null}
-            <ResearchTerm explanation={researchToolHelp("web_search", cap)}>
-              {Number.isFinite(liveTools) ? liveTools : (card.searchCount || 0) + (card.fetchCount || 0)}
-              /{cap} {t("deepResearchToolsLabel").toLowerCase()}
+            <ResearchTerm explanation={t("deepResearchTipScoutTools")}>
+              {summaryTools} {t("deepResearchToolsLabel")}
             </ResearchTerm>
             <ResearchTerm explanation={t("deepResearchTipEvidence")}>
-              {acceptedEvidence.length} {t("deepResearchEvidenceLabel").toLowerCase()}
+              {acceptedEvidence.length} {t("deepResearchEvidenceLabel")}
             </ResearchTerm>
           </span>
         </span>
         <span className="text-[10px] font-medium text-(--text-muted)">
-          <ResearchTerm explanation={runStatusHelp(status, cap)}>{status}</ResearchTerm>
+          <ResearchTerm explanation={runStatusHelp(status, cap)}>{formatResearchStatus(status)}</ResearchTerm>
         </span>
         <CaretDown
           size={14}
@@ -1101,7 +1158,7 @@ function ScoutCard({
                       {criterion.text || criterion.id}
                     </ResearchTerm>
                     <span className="shrink-0 tabular-nums text-(--text-muted)">
-                      {criterion.status} · {used}/{cap}{atCap ? ` · ${t("deepResearchSearchCapReached")}` : ""}
+                      {formatResearchStatus(criterion.status)} · {used}/{cap}{atCap ? ` · ${t("deepResearchSearchCapReached")}` : ""}
                     </span>
                   </div>
                 );
@@ -1266,10 +1323,9 @@ function InvestigationBoard({
         }
         const completed = scouts.filter((scout) => TERMINAL_SCOUT_STATUSES.has(scout.status)).length;
         const evaluation = wave.evaluation || {};
-        const evaluationReason = humanizeResearchText(evaluation.reason || "", questions);
-        const coveredQuestions = questions.filter((question) =>
-          (question.coverage?.criteria || []).length
-          && (question.coverage.criteria || []).every((item) => item.status === "covered")).length;
+        const evaluationBanner = formatEvaluationBanner(evaluation);
+        const evaluationReason = humanizeResearchText(evaluationBanner.reasonLabel || "", questions);
+        const settledQuestions = questions.filter((question) => isQuestionSettled(question)).length;
         return (
           <section key={wave.id || `${wave.wave}-${index}`} className="border-t border-(--border-default) first:border-t-0">
               <div className="flex flex-col gap-3 py-4 sm:flex-row sm:items-start sm:justify-between">
@@ -1282,7 +1338,7 @@ function InvestigationBoard({
                     </span>
                     <span className="text-[10px] font-medium text-(--text-muted)">
                       <ResearchTerm explanation={runStatusHelp(wave.status)}>
-                        {wave.status}
+                        {formatResearchStatus(wave.status)}
                       </ResearchTerm>
                     </span>
                   </div>
@@ -1292,14 +1348,14 @@ function InvestigationBoard({
                       {t("deepResearchWavesLabel")}
                     </ResearchTerm>
                     {" · "}
-                    {coveredQuestions}/{questions.length || 0}{" "}
+                    {settledQuestions}/{questions.length || 0}{" "}
                     <ResearchTerm explanation={t("deepResearchTipQuestions")}>
-                      {t("deepResearchQuestionsLabel").toLowerCase()}
+                      {t("deepResearchQuestionsLabel")}
                     </ResearchTerm>
                     {" · "}
                     {evidence.filter((item) => item.status === "accepted").length}{" "}
                     <ResearchTerm explanation={t("deepResearchTipEvidence")}>
-                      {t("deepResearchEvidenceLabel").toLowerCase()}
+                      {t("deepResearchEvidenceLabel")}
                     </ResearchTerm>
                   </div>
                 </div>
@@ -1312,7 +1368,7 @@ function InvestigationBoard({
                     )}
                     <span className="min-w-0 break-words [overflow-wrap:anywhere]">
                       <ResearchTerm explanation={t("deepResearchTipWaveDecision")}>
-                        <strong>{evaluation.decision.replaceAll("_", " ")}</strong>
+                        <strong>{evaluationBanner.decisionLabel}</strong>
                       </ResearchTerm>
                       {evaluationReason ? ` · ${evaluationReason}` : ""}
                     </span>
@@ -1380,13 +1436,13 @@ function QuestionsBoard({ questions = [] }) {
               </div>
               {q.gaps?.length ? (
                 <div className="mt-1 break-words text-[10px] leading-4 text-amber-700 [overflow-wrap:anywhere] dark:text-amber-300">
-                  <ResearchTerm explanation={t("deepResearchTipGaps")}>gaps</ResearchTerm>
+                  <ResearchTerm explanation={t("deepResearchTipGaps")}>{t("deepResearchGaps")}</ResearchTerm>
                   {`: ${q.gaps.join("; ")}`}
                 </div>
               ) : null}
             </div>
               <span className="shrink-0 text-[10px] font-medium text-(--text-muted)">
-                <ResearchTerm explanation={runStatusHelp(q.status)}>{q.status}</ResearchTerm>
+                <ResearchTerm explanation={runStatusHelp(q.status)}>{formatResearchStatus(q.status)}</ResearchTerm>
               </span>
           </div>
           ))}
@@ -1448,7 +1504,7 @@ function EvidenceList({ evidence = [], title, countLabel }) {
                   <div className="mb-1.5 flex min-w-0 items-center gap-2 text-[10px] text-(--text-muted)">
                     <span className="shrink-0 font-medium">
                       <ResearchTerm explanation={t("deepResearchTipConfidence")}>
-                        {ev.confidence}
+                        {formatConfidenceLabel(ev.confidence)}
                       </ResearchTerm>
                     </span>
                     {host ? (
@@ -1511,12 +1567,12 @@ function ResearchMetrics({ session }) {
   const questions = session?.questions || [];
   const evidence = (session?.evidence || []).filter((item) => item.status === "accepted");
   const waves = session?.waves || [];
-  const covered = questions.filter((question) => question.status === "done").length;
+  const settled = questions.filter((question) => isQuestionSettled(question)).length;
   const metrics = [
     {
       label: t("deepResearchQuestions"),
       help: t("deepResearchTipQuestions"),
-      value: `${covered}/${questions.length}`,
+      value: `${settled}/${questions.length}`,
     },
     {
       label: t("deepResearchEvidence"),
@@ -1527,7 +1583,7 @@ function ResearchMetrics({ session }) {
       label: t("deepResearchWavesLabel"),
       help: t("deepResearchTipScout"),
       value: `${Math.max(waves.flatMap((wave) => wave.scouts || []).filter((scout) =>
-        ["done", "partial", "blocked", "failed", "aborted"].includes(scout.status)).length, covered)}/${Math.max(questions.length, 1)}`,
+        ["done", "partial", "blocked", "failed", "aborted"].includes(scout.status)).length, settled)}/${Math.max(questions.length, 1)}`,
     },
   ];
   return (
@@ -1575,7 +1631,7 @@ function LimitationsBoard({ limitations = [], questions = [] }) {
               </span>
               {item.status ? (
                 <span className="font-medium text-(--text-muted)">
-                  {item.status}
+                  {formatResearchStatus(item.status)}
                 </span>
               ) : null}
             </div>

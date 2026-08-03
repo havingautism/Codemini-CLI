@@ -218,9 +218,9 @@ test('research budget scales with criterion count and expands under-provisioned 
           tempId: `q${index + 1}`,
           text: `Sub-question ${index + 1}`,
           successCriteria: [
-            { text: 'c1', priority: 'high' },
-            { text: 'c2', priority: 'normal' },
-            { text: 'c3', priority: 'low' },
+            { text: 'c1' },
+            { text: 'c2' },
+            { text: 'c3' },
           ],
           dependsOn: [],
         })),
@@ -233,8 +233,9 @@ test('research budget scales with criterion count and expands under-provisioned 
     assert.equal(confirmed.budget.maxFetches, 180);
     assert.equal(confirmed.budget.maxWaves, 1);
     assert.equal(confirmed.budget.pools, undefined);
-    assert.equal(confirmed.questions[0].successCriteria[0].priority, 'high');
-    assert.equal(confirmed.questions[0].successCriteria[2].priority, 'low');
+    assert.equal(confirmed.questions[0].successCriteria[0].text, 'c1');
+    assert.equal(confirmed.questions[0].successCriteria[2].text, 'c3');
+    assert.equal(confirmed.questions[0].successCriteria[0].priority, undefined);
 
     updateResearchSession(session.id, {
       budget: {
@@ -267,7 +268,7 @@ test('research budget scales with criterion count and expands under-provisioned 
     assert.equal(stillTight.budget.maxSearches, 2);
     assert.equal(stillTight.budget.maxFetches, 1);
     assert.equal(stillTight.questions[0].successCriteria[0].text, 'a');
-    assert.equal(stillTight.questions[0].successCriteria[0].priority, 'normal');
+    assert.equal(stillTight.questions[0].successCriteria[0].priority, undefined);
 
     const firstReserve = reserveResearchBudget(tight.id, 'searches', 1);
     assert.equal(firstReserve.ok, true);
@@ -498,10 +499,10 @@ test('research plan depth inference rejects oversized plans instead of truncatin
       tempId: `q${index + 1}`,
       text: `Question ${index + 1}`,
       successCriteria: [
-        { text: 'a', priority: 'high' },
-        { text: 'b', priority: 'normal' },
-        { text: 'c', priority: 'low' },
-        { text: 'd', priority: 'low' },
+        { text: 'a' },
+        { text: 'b' },
+        { text: 'c' },
+        { text: 'd' },
       ],
     })),
   }, { depth: 'brief' });
@@ -516,9 +517,9 @@ test('research plan depth inference rejects oversized plans instead of truncatin
       tempId: 'q1',
       text: 'Only question',
       successCriteria: [
-        { text: 'a', priority: 'high' },
-        { text: 'b', priority: 'normal' },
-        { text: 'c', priority: 'low' },
+        { text: 'a' },
+        { text: 'b' },
+        { text: 'c' },
       ],
     }],
   }, { depth: 'brief' });

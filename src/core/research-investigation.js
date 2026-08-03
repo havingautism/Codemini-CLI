@@ -96,11 +96,10 @@ function criterionEntries(question) {
   const criteria = normalizeSuccessCriteria(question?.successCriteria);
   const list = criteria.length
     ? criteria
-    : [{ text: 'Answer the sub-question with reliable, attributable evidence', priority: 'normal' }];
+    : [{ text: 'Answer the sub-question with reliable, attributable evidence' }];
   return list.map((criterion, index) => ({
     id: `c${index + 1}`,
     text: String(criterion.text || '').trim(),
-    priority: criterion.priority || 'normal',
     status: 'missing',
     evidenceIds: [],
     toolCount: 0,
@@ -126,7 +125,6 @@ function coverageFromLegacyLedger(question, ledger) {
     const current = byId.get(id) || {
       id,
       text: text(criterion.text, 600),
-      priority: criterion.priority || 'normal',
       status: 'missing',
       evidenceIds: [],
       toolCount: 0,
@@ -155,7 +153,6 @@ function resolveQuestionCoverage(question, scoutRun = null) {
       criteria: stored.criteria.map((item) => ({
         id: String(item.id || ''),
         text: text(item.text, 600),
-        priority: item.priority || 'normal',
         status: VALID_COVERAGE.has(item.status) ? item.status : 'missing',
         evidenceIds: Array.isArray(item.evidenceIds) ? item.evidenceIds.map(String) : [],
         toolCount: Number(item.toolCount) || 0,
@@ -178,7 +175,6 @@ function createInitialLedger(question) {
     criteria: coverage.criteria.map((criterion) => ({
       id: criterion.id,
       text: criterion.text,
-      priority: criterion.priority,
       status: criterion.status,
       candidateIds: [],
       attempts: 0,
@@ -207,7 +203,6 @@ function compactProgress(coverage) {
     criteria: (coverage.criteria || []).map((criterion) => ({
       id: criterion.id,
       text: criterion.text,
-      priority: criterion.priority || 'normal',
       status: criterion.status,
       evidenceIds: criterion.evidenceIds || [],
       toolCount: Number(criterion.toolCount) || 0,
@@ -1227,8 +1222,12 @@ function finalizeInvestigationRound(session, scoutRuns = []) {
     unresolved: [...readiness.targets, ...readiness.eligibleTargets],
   });
   const readyForReport = readiness.ready || readiness.acceptedEvidenceCount > 0;
+  const reasonCode = readyForReport
+    ? (readiness.ready ? 'ready_full' : 'ready_partial')
+    : 'incomplete_no_evidence';
   return {
     decision: readyForReport ? 'ready_for_report' : 'incomplete',
+    reasonCode,
     reason: readyForReport
       ? (readiness.ready
         ? 'Single investigation round complete; ready for report.'

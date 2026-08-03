@@ -154,8 +154,7 @@ function buildLeadSystemPrompt(phase, session) {
       'title must be one relevant emoji followed by one space and a concise natural topic label, matching the configured reply language. Do not add a Title: prefix or ending punctuation.',
       'depth must be one of brief|standard|deep.',
       'Each question needs tempId, text, successCriteria, dependsOn (tempId array).',
-      'Each successCriteria item should be {"text":"...","priority":"high|normal|low"} (priority defaults to normal).',
-      'Mark criteria that are central to answering the main question as high; nice-to-have as low.',
+      'Each successCriteria item should be a short string, or {"text":"..."}.',
       'Prefer fewer, sharper sub-questions over a long checklist. Merge overlapping angles.',
       'If submit_research_plan returns ok:false because the plan exceeds the depth budget, silently resubmit a smaller plan that fits — do not explain the rejection to the user.',
       'Do not search the web in this phase. Do not call run_subagent.',
@@ -246,7 +245,7 @@ function researchSubmitDefinitions(phase) {
                 text: { type: 'string' },
                 successCriteria: {
                   type: 'array',
-                  description: 'Criterion objects {text, priority: high|normal|low} or plain strings.',
+                  description: 'Criterion strings or objects {text}.',
                 },
                 dependsOn: { type: 'array', items: { type: 'string' } },
               },
@@ -370,13 +369,9 @@ function createResearchSubmitHandlers(sessionId, phase, emit) {
             successCriteria: Array.isArray(q?.successCriteria)
               ? q.successCriteria.map((item) => {
                 if (item && typeof item === 'object') {
-                  const priority = String(item.priority || 'normal').toLowerCase();
-                  return {
-                    text: String(item.text || '').trim(),
-                    priority: ['high', 'normal', 'low'].includes(priority) ? priority : 'normal',
-                  };
+                  return { text: String(item.text || '').trim() };
                 }
-                return { text: String(item || '').trim(), priority: 'normal' };
+                return { text: String(item || '').trim() };
               }).filter((item) => item.text)
               : [],
             dependsOn: Array.isArray(q?.dependsOn) ? q.dependsOn.map(String) : [],
