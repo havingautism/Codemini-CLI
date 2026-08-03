@@ -4,7 +4,7 @@ import { runAgentLoop } from './agent-loop.js';
 import { createChatCompletionStream } from './provider/index.js';
 import { resolveConfiguredReasoningEffort } from './provider/reasoning-effort.js';
 import { getBuiltinTools } from './tools.js';
-import { runResearchInvestigation, generateResearchConclusions } from './research-investigation.js';
+import { runResearchInvestigation } from './research-investigation.js';
 import {
   appendResearchTimeline,
   buildResearchDbSummary,
@@ -183,12 +183,12 @@ function buildLeadSystemPrompt(phase, session) {
       'Hard rules:',
       '- Use only the writing pack. Do not invent facts, dates, or sources outside it.',
       '- Affirmative claims must be supportable by accepted evidence entries in the pack.',
-      '- Limitations and unverified items from conclusions/session limitations must appear in the report.',
+      '- Uncovered criteria and gap lines in Coverage by criterion must appear as limitations in the report.',
       '- Do not write a vendor marketing checklist.',
       'Soft guidance:',
       '- Organize by theme (themes may come from sub-questions; merge/rename headings freely).',
-      '- Use criterion coverage/completeness as in-section detail, not mandatory section titles.',
-      '- Prefer conclusion → evidence → limitations for substantive blocks (brief may compress this).',
+      '- Use criterion coverage as in-section detail, not mandatory section titles.',
+      '- Prefer findings → evidence → limitations for substantive blocks (brief may compress this).',
       ...depthGuidance,
       'Length follows the pack: a thin pack means a shorter report is correct; do not pad.',
       'Do not call run_subagent or submit_research_commit.',
@@ -536,17 +536,7 @@ export async function runResearchLeadTurn({
   const bundle = getBuiltinTools({ workspaceRoot, config });
 
   try {
-    let writingDetail = detail;
-    if (resolvedPhase === 'writing') {
-      await generateResearchConclusions({
-        sessionId,
-        config,
-        model: model || config.model?.name,
-        signal: runSignal,
-        emit,
-      });
-      writingDetail = getResearchSessionDetail(sessionId) || detail;
-    }
+    const writingDetail = detail;
     const filtered = filterToolBundle(
       bundle.definitions,
       bundle.handlers,

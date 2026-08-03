@@ -4,17 +4,22 @@ import assert from 'node:assert/strict';
 import { runAgentLoop } from '../src/core/agent-loop.js';
 import {
   appendToolBudgetNote,
+  buildScoutHandoff,
   createEmptyCoverage,
   createResearchSearchDefinition,
   createSubmitCandidatesDefinition,
+  deriveQuestionGaps,
   finalizeInvestigationRound,
   gateCandidatesByUrl,
   indexFetchResult,
   indexSearchResult,
   normalizeSubmittedCandidates,
+  normalizeSubmitNarrative,
   normalizeUrl,
   partitionWaveTargetsAndLimitations,
   resolveToolsCap,
+  validateSupportVerdicts,
+  verifyCandidateSupport,
   RESEARCH_SCOUT_TOOLS_PER_CRITERION,
 } from '../src/core/research-investigation.js';
 
@@ -41,11 +46,14 @@ test('research search schema requires criterionId without max_results clamp', ()
   assert.doesNotMatch(scoped.function.description, /capped at 8/);
 });
 
-test('submit_criterion_candidates tool is defined for Scout delivery', () => {
+test('submit_criterion_candidates tool includes summary and gap fields without quote', () => {
   const def = createSubmitCandidatesDefinition();
   assert.equal(def.function.name, 'submit_criterion_candidates');
   assert.ok(def.function.parameters.properties.candidates);
-  assert.deepEqual(def.function.parameters.required, ['candidates']);
+  assert.ok(def.function.parameters.properties.summary);
+  assert.ok(def.function.parameters.properties.gap);
+  assert.equal(def.function.parameters.properties.candidates.items.properties.quote, undefined);
+  assert.deepEqual(def.function.parameters.required, ['candidates', 'summary', 'gap']);
 });
 
 test('tool budget note appends fuse progress', () => {
@@ -83,13 +91,81 @@ test('url index stores search snippets and fetch bodies without downgrading fetc
 
 test('normalizeSubmittedCandidates forces criterion id and drops empty claims', () => {
   const candidates = normalizeSubmittedCandidates([
-    { claim: 'Works offline', urls: ['https://example.com/a'], criterionIds: ['c9'] },
+    { claim: 'Works offline', urls: ['https://example.com/a'], criterionIds: ['c9'], quote: 'ignored' },
     { claim: '', urls: ['https://example.com/b'] },
     { claim: 'No urls', urls: [] },
   ], 'c1');
   assert.equal(candidates.length, 1);
   assert.deepEqual(candidates[0].criterionIds, ['c1']);
   assert.equal(candidates[0].claim, 'Works offline');
+  assert.equal(candidates[0].quote, undefined);
+});
+
+test('normalizeSubmittedCandidates keeps at most three URLs per claim', () => {
+  const candidates = normalizeSubmittedCandidates([{
+    claim: 'Supported by many pages',
+    urls: [
+      'https://example.com/1',
+      'https://example.com/2',
+      'https://example.com/3',
+      'https://example.com/4',
+      'https://example.com/2',
+    ],
+  }], 'c1');
+  assert.equal(candidates.length, 1);
+  assert.deepEqual(candidates[0].urls, [
+    'https://example.com/1',
+    'https://example.com/2',
+    'https://example.com/3',
+  ]);
+});
+
+test('submit_criterion_candidates schema caps urls at three per claim', () => {
+  const def = createSubmitCandidatesDefinition();
+  assert.equal(def.function.parameters.properties.candidates.items.properties.urls.maxItems, 3);
+  assert.equal(def.function.parameters.properties.candidates.maxItems, 3);
+});
+
+test('normalizeSubmittedCandidates keeps at most three claims', () => {
+  const candidates = normalizeSubmittedCandidates([
+    { claim: 'A', urls: ['https://example.com/a'] },
+    { claim: 'B', urls: ['https://example.com/b'] },
+    { claim: 'C', urls: ['https://example.com/c'] },
+    { claim: 'D', urls: ['https://example.com/d'] },
+  ], 'c1');
+  assert.equal(candidates.length, 3);
+  assert.deepEqual(candidates.map((item) => item.claim), ['A', 'B', 'C']);
+});
+
+test('validateSupportVerdicts requires support and criterion relevance to accept', () => {
+  const gated = [{
+    id: 'cand_1',
+    claim: 'Offline editing works',
+    slices: [{ url: 'https://example.com', toolText: 'Offline editing works in desktop.' }],
+  }];
+  const verdicts = validateSupportVerdicts({
+    verdicts: [{
+      candidateId: 'cand_1',
+      supported: true,
+      relevantToCriterion: false,
+      snippet: 'Offline editing works in desktop.',
+      reason: 'True but off-topic for pricing criterion',
+    }],
+  }, gated);
+  assert.equal(verdicts[0].supported, true);
+  assert.equal(verdicts[0].relevantToCriterion, false);
+  assert.equal(verdicts[0].snippet, 'Offline editing works in desktop.');
+});
+
+test('normalizeSubmitNarrative keeps summary and gap text', () => {
+  const narrative = normalizeSubmitNarrative({
+    summary: 'Offline editing is supported.',
+    gap: 'Mobile support unclear.',
+    note: 'optional',
+  });
+  assert.equal(narrative.summary, 'Offline editing is supported.');
+  assert.equal(narrative.gap, 'Mobile support unclear.');
+  assert.equal(narrative.note, 'optional');
 });
 
 test('URL gate keeps only candidates whose urls appear in tool results', () => {
@@ -191,4 +267,58 @@ test('finalizeInvestigationRound never returns next_wave', () => {
   assert.notEqual(evaluation.decision, 'next_wave');
   assert.ok(['ready_for_report', 'incomplete'].includes(evaluation.decision));
   assert.deepEqual(evaluation.targets, []);
+});
+
+test('buildScoutHandoff lists summary and gap instead of reason', () => {
+  const handoff = buildScoutHandoff(
+    { id: 'q1', text: 'Does offline editing work?' },
+    {
+      criteria: [{
+        id: 'c1',
+        status: 'partial',
+        reason: 'Accepted 1 claim(s); internal only',
+        summary: 'Offline docs editing works in the browser app.',
+        gap: 'Mobile offline editing is still unclear.',
+      }],
+    },
+    [],
+  );
+  assert.match(handoff, /summary: Offline docs editing works/);
+  assert.match(handoff, /gap: Mobile offline editing/);
+  assert.doesNotMatch(handoff, /Accepted 1 claim/);
+});
+
+test('deriveQuestionGaps uses over-approved gap only', () => {
+  const gaps = deriveQuestionGaps({
+    criteria: [
+      { id: 'c1', status: 'covered', gap: '', reason: 'Accepted 2 claim(s).' },
+      { id: 'c2', status: 'blocked', gap: 'Need primary source for pricing.', reason: 'Accepted 0' },
+      { id: 'c3', status: 'partial', gap: '', reason: 'should not appear' },
+    ],
+  });
+  assert.deepEqual(gaps, ['Need primary source for pricing.']);
+});
+
+test('verifyCandidateSupport throws instead of silently accepting on model failure', async () => {
+  await assert.rejects(
+    () => verifyCandidateSupport({
+      config: {
+        model: { name: 'dummy' },
+        gateway: { base_url: 'http://127.0.0.1:9', api_key: 'x', timeout_ms: 50, max_retries: 0 },
+        sdk: {},
+      },
+      model: 'dummy',
+      question: { text: 'Q' },
+      criterion: { id: 'c1', text: 'Criterion' },
+      gatedCandidates: [{
+        id: 'cand_1',
+        claim: 'Claim',
+        urls: ['https://example.com'],
+        slices: [{ url: 'https://example.com', toolText: 'enough text '.repeat(20) }],
+      }],
+      scoutSummary: 'Summary',
+      scoutGap: 'Gap',
+    }),
+    /./,
+  );
 });

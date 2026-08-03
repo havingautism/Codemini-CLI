@@ -7,6 +7,7 @@ import { resolveSubAgentModel } from './chat-runtime.js';
 import {
   appendResearchTimeline,
   applyResearchCommit,
+  clearResearchResumeCheckpoint,
   createResearchScoutRun,
   createResearchWave,
   getResearchSessionDetail,
@@ -14,6 +15,7 @@ import {
   listResearchScoutRuns,
   listResearchWaves,
   reserveResearchBudget,
+  setResearchResumeCheckpoint,
   updateResearchQuestion,
   updateResearchScoutRun,
   updateResearchSession,
@@ -32,6 +34,10 @@ const VALID_COVERAGE = new Set(['missing', 'partial', 'covered', 'conflicted', '
 const TERMINAL_COVERAGE = new Set(['covered', 'partial', 'blocked']);
 const TERMINAL_SCOUT = new Set(['done', 'partial', 'blocked']);
 const MAX_URL_TEXT_FOR_VERIFY = 2500;
+/** Cap supporting sources per claim — enough for attribution, bounds evaluator prompt size. */
+const MAX_URLS_PER_CLAIM = 3;
+/** Cap claims per criterion submit — bounds evaluator prompt size. */
+const MAX_CANDIDATES_PER_CRITERION = 3;
 
 function text(value, max = 8000) {
   return String(value || '').trim().slice(0, max);
@@ -104,6 +110,8 @@ function criterionEntries(question) {
     evidenceIds: [],
     toolCount: 0,
     reason: '',
+    summary: '',
+    gap: '',
   }));
 }
 
@@ -157,6 +165,8 @@ function resolveQuestionCoverage(question, scoutRun = null) {
         evidenceIds: Array.isArray(item.evidenceIds) ? item.evidenceIds.map(String) : [],
         toolCount: Number(item.toolCount) || 0,
         reason: text(item.reason, 600),
+        summary: text(item.summary, 1200),
+        gap: text(item.gap, 1200),
       })).filter((item) => item.id),
     };
   }
@@ -207,6 +217,8 @@ function compactProgress(coverage) {
       evidenceIds: criterion.evidenceIds || [],
       toolCount: Number(criterion.toolCount) || 0,
       reason: criterion.reason || '',
+      summary: criterion.summary || '',
+      gap: criterion.gap || '',
     })),
   };
 }
@@ -257,6 +269,9 @@ function createSubmitCandidatesDefinition() {
       name: 'submit_criterion_candidates',
       description: [
         'End search/fetch for the current criterion and deliver candidate findings.',
+        'Include a concise summary of what you found and a gap note for what remains unresolved.',
+        `Submit at most ${MAX_CANDIDATES_PER_CRITERION} strongest claims for this criterion (extras are dropped).`,
+        `For each claim, include at most ${MAX_URLS_PER_CLAIM} strongest supporting URLs (extras are dropped).`,
         'Call this when you have enough attributable evidence, or with an empty candidates array if blocked.',
         'This tool does not count toward the search/fetch fuse.',
       ].join(' '),
@@ -265,20 +280,34 @@ function createSubmitCandidatesDefinition() {
         properties: {
           candidates: {
             type: 'array',
+            maxItems: MAX_CANDIDATES_PER_CRITERION,
+            description: `Up to ${MAX_CANDIDATES_PER_CRITERION} strongest claims for this criterion, strongest first.`,
             items: {
               type: 'object',
               properties: {
                 claim: { type: 'string' },
-                urls: { type: 'array', items: { type: 'string' } },
-                quote: { type: 'string' },
+                urls: {
+                  type: 'array',
+                  items: { type: 'string' },
+                  maxItems: MAX_URLS_PER_CLAIM,
+                  description: `Up to ${MAX_URLS_PER_CLAIM} strongest supporting URLs for this claim, strongest first.`,
+                },
                 confidence: { type: 'string', enum: ['high', 'medium', 'low'] },
               },
               required: ['claim', 'urls'],
             },
           },
+          summary: {
+            type: 'string',
+            description: 'Concise summary of findings for this criterion, grounded in the sources you fetched.',
+          },
+          gap: {
+            type: 'string',
+            description: 'What remains unresolved or weakly supported for this criterion. Empty if covered.',
+          },
           note: { type: 'string' },
         },
-        required: ['candidates'],
+        required: ['candidates', 'summary', 'gap'],
       },
     },
   };
@@ -482,27 +511,42 @@ function normalizeSubmittedCandidates(rawCandidates, criterionId) {
       (Array.isArray(item?.urls) ? item.urls : [item?.url])
         .map((url) => normalizeUrl(url))
         .filter(Boolean),
-    )];
+    )].slice(0, MAX_URLS_PER_CLAIM);
     if (!claim || !urls.length) continue;
     out.push({
       id: `cand_${randomUUID()}`,
       criterionIds: [String(criterionId)],
       claim,
-      quote: text(item?.quote, 1200),
       confidence: ['high', 'medium', 'low'].includes(String(item?.confidence))
         ? String(item.confidence)
         : 'medium',
       urls,
     });
   }
-  return out;
+  return out.slice(0, MAX_CANDIDATES_PER_CRITERION);
+}
+
+function normalizeSubmitNarrative(args = {}) {
+  return {
+    summary: text(args?.summary, 1200),
+    gap: text(args?.gap, 1200),
+    note: text(args?.note, 600),
+  };
 }
 
 function parseCandidatesFromText(raw, criterionId) {
   const parsed = parseJsonObject(raw);
-  if (!parsed) return [];
+  if (!parsed) {
+    return { candidates: [], summary: '', gap: '', note: '' };
+  }
   const list = Array.isArray(parsed.candidates) ? parsed.candidates : [];
-  return normalizeSubmittedCandidates(list, criterionId);
+  const narrative = normalizeSubmitNarrative(parsed);
+  return {
+    candidates: normalizeSubmittedCandidates(list, criterionId),
+    summary: narrative.summary,
+    gap: narrative.gap,
+    note: narrative.note,
+  };
 }
 
 function gateCandidatesByUrl(candidates, urlIndex) {
@@ -532,24 +576,61 @@ function gateCandidatesByUrl(candidates, urlIndex) {
   return { accepted, rejected };
 }
 
-function validateSupportVerdicts(value, candidateIds) {
+function validateSupportVerdicts(value, gatedCandidates) {
   if (!value || typeof value !== 'object') throw new Error('Support check must return an object');
+  const candidateIds = gatedCandidates.map((item) => item.id);
+  const textByCandidate = new Map(
+    gatedCandidates.map((item) => [
+      item.id,
+      (item.slices || []).map((slice) => String(slice.toolText || '')).join('\n'),
+    ]),
+  );
   const raw = Array.isArray(value.verdicts) ? value.verdicts : [];
   const byId = new Map();
   for (const item of raw) {
     const id = String(item?.candidateId || item?.id || '');
     if (!id) continue;
+    const snippet = text(item?.snippet || item?.quote, 1200);
+    const corpus = textByCandidate.get(id) || '';
+    const verifiedSnippet = snippet && corpus.includes(snippet) ? snippet : '';
+    const supported = Boolean(item?.supported ?? item?.accept ?? item?.ok);
+    const relevantToCriterion = item?.relevantToCriterion == null
+      ? item?.relevant == null
+        ? false
+        : Boolean(item.relevant)
+      : Boolean(item.relevantToCriterion);
     byId.set(id, {
       candidateId: id,
-      supported: Boolean(item?.supported ?? item?.accept ?? item?.ok),
+      supported,
+      relevantToCriterion,
       reason: text(item?.reason, 400),
+      snippet: verifiedSnippet,
     });
   }
   return candidateIds.map((id) => byId.get(id) || {
     candidateId: id,
     supported: false,
+    relevantToCriterion: false,
     reason: 'Missing verdict',
+    snippet: '',
   });
+}
+
+function isAcceptedClaimVerdict(verdict) {
+  return Boolean(verdict?.supported && verdict?.relevantToCriterion);
+}
+
+function validateNarrativeField(value, fallback = '') {
+  const raw = value && typeof value === 'object' ? value : {};
+  const rewritten = text(raw.text, 1200);
+  const ok = raw.ok !== false;
+  if (ok && rewritten) return { ok: true, text: rewritten, reason: text(raw.reason, 400) };
+  if (rewritten) return { ok: false, text: rewritten, reason: text(raw.reason, 400) };
+  return {
+    ok: false,
+    text: text(fallback, 1200),
+    reason: text(raw.reason, 400) || 'Missing narrative',
+  };
 }
 
 async function verifyCandidateSupport({
@@ -558,57 +639,83 @@ async function verifyCandidateSupport({
   question,
   criterion,
   gatedCandidates,
+  scoutSummary = '',
+  scoutGap = '',
   signal,
 }) {
-  if (!gatedCandidates.length) return [];
-  try {
-    const reviewed = await callJsonModel({
-      config,
-      model: resolveSubAgentModel(config, model),
-      fallbackModel: model || config.model?.name,
-      reasoningEffort: 'low',
-      signal,
-      systemPrompt: [
-        'You verify whether tool-result text supports research claims.',
-        'For each candidate, judge ONLY from the provided URL toolText slices — not from the candidate quote alone.',
-        'A claim may paraphrase the source; accept if the tool text substantively supports the claim.',
-        'If any one URL slice supports the claim, mark supported=true.',
-        'Return strict JSON only: {"verdicts":[{"candidateId":"","supported":true,"reason":""}]}',
-      ].join('\n'),
-      userPrompt: [
-        `Sub-question: ${question.text}`,
-        `Criterion (${criterion.id}): ${criterion.text}`,
-        `Candidates:\n${JSON.stringify(gatedCandidates.map((item) => ({
-          candidateId: item.id,
-          claim: item.claim,
-          slices: item.slices,
-        })))}`,
-      ].join('\n\n'),
-      validate: (value) => ({
-        verdicts: validateSupportVerdicts(value, gatedCandidates.map((item) => item.id)),
-      }),
-    });
-    return reviewed.data.verdicts;
-  } catch (error) {
-    // Deterministic fallback: accept gated candidates that have fetch-backed text or non-empty snippets.
-    return gatedCandidates.map((item) => ({
-      candidateId: item.id,
-      supported: item.slices.some((slice) => text(slice.toolText, 80).length >= 40),
-      reason: error instanceof Error ? error.message : String(error),
-    }));
-  }
+  const reviewed = await callJsonModel({
+    config,
+    model: resolveSubAgentModel(config, model),
+    fallbackModel: model || config.model?.name,
+    reasoningEffort: 'low',
+    signal,
+    systemPrompt: [
+      'You verify research claims for one success criterion.',
+      'For each claim, judge two things:',
+      '1) supported: does the provided URL toolText substantively support the claim? Judge ONLY from toolText.',
+      '2) relevantToCriterion: does the claim itself address the target criterion (not merely true but off-topic)?',
+      'If any one URL slice supports the claim, mark supported=true.',
+      'For supported=true, snippet must be an exact substring of one provided toolText slice (short).',
+      'Accept into evidence only when supported=true AND relevantToCriterion=true.',
+      'Also review scout summary and gap even when candidates is empty: keep if accurate; rewrite if empty, off-topic, exaggerated, or unsupported.',
+      'summary/gap must be plain prose about this criterion only — never write Accepted N claim(s) or tool-count statistics.',
+      'Return strict JSON only:',
+      '{"verdicts":[{"candidateId":"","supported":true,"relevantToCriterion":true,"reason":"","snippet":""}],'
+      + '"summary":{"ok":true,"text":"","reason":""},"gap":{"ok":true,"text":"","reason":""}}',
+    ].join('\n'),
+    userPrompt: [
+      `Sub-question: ${question.text}`,
+      `Criterion (${criterion.id}): ${criterion.text}`,
+      `Scout summary: ${scoutSummary || '(empty)'}`,
+      `Scout gap: ${scoutGap || '(empty)'}`,
+      `Candidates:\n${JSON.stringify((gatedCandidates || []).map((item) => ({
+        candidateId: item.id,
+        claim: item.claim,
+        slices: item.slices,
+      })), null, 2)}`,
+    ].join('\n\n'),
+    validate: (value) => ({
+      verdicts: validateSupportVerdicts(value, gatedCandidates || []),
+      summary: validateNarrativeField(value?.summary, scoutSummary),
+      gap: validateNarrativeField(value?.gap, scoutGap),
+    }),
+  });
+  return reviewed.data;
 }
 
-function candidateToEvidence(candidate, questionId) {
+function criterionGapText(criterion = {}) {
+  return text(criterion.gap, 1200);
+}
+
+function deriveQuestionGaps(coverage) {
+  return (coverage?.criteria || [])
+    .filter((item) => item.status !== 'covered')
+    .map((item) => criterionGapText(item))
+    .filter(Boolean);
+}
+
+function serializePendingVerifyCandidate(item) {
+  return {
+    id: item.id,
+    claim: item.claim,
+    urls: item.urls || [],
+    confidence: item.confidence || 'medium',
+    criterionIds: item.criterionIds || [],
+    slices: (item.slices || []).map((slice) => ({
+      url: slice.url,
+      toolText: text(slice.toolText, MAX_URL_TEXT_FOR_VERIFY),
+    })),
+  };
+}
+
+function candidateToEvidence(candidate, questionId, verdict = null) {
   const primaryUrl = candidate.urls?.[0] || '';
-  const primarySlice = (candidate.slices || []).find((slice) => slice.url === primaryUrl)
-    || candidate.slices?.[0]
-    || {};
+  const snippet = text(verdict?.snippet, 1200);
   return {
     candidateId: candidate.id,
     questionId,
     claim: candidate.claim,
-    snippet: text(candidate.quote || primarySlice.toolText, 1200),
+    snippet,
     url: primaryUrl,
     sourceLabel: '',
     confidence: candidate.confidence || 'medium',
@@ -632,7 +739,9 @@ function buildScoutHandoff(question, coverage, evidence = []) {
   }
   lines.push('', 'Coverage:');
   for (const criterion of coverage.criteria || []) {
-    lines.push(`- [${criterion.id}] ${criterion.status}: ${criterion.reason || criterion.text}`);
+    lines.push(`- [${criterion.id}] ${criterion.status}`);
+    if (criterion.summary) lines.push(`  summary: ${criterion.summary}`);
+    if (criterion.gap) lines.push(`  gap: ${criterion.gap}`);
   }
   return lines.join('\n');
 }
@@ -647,7 +756,10 @@ function buildScoutCriterionPrompt({ session, question, criterion, toolsCap, too
     `Hard fuse: at most ${cap} search/fetch tool calls combined for this criterion.`,
     'submit_criterion_candidates does NOT count toward the fuse.',
     'Every web_search call must include the supplied criterionId.',
-    'When finished searching, you MUST call submit_criterion_candidates with your candidates.',
+    'When finished searching, you MUST call submit_criterion_candidates with candidates, summary, and gap.',
+    'summary/gap are relative to this criterion only; never write Accepted N claim(s) or tool-count statistics.',
+    `Submit at most ${MAX_CANDIDATES_PER_CRITERION} strongest claims for this criterion (strongest first); extras are dropped.`,
+    `Each claim may list at most ${MAX_URLS_PER_CLAIM} strongest supporting URLs (strongest first); extras are dropped.`,
     'Do not stop with only prose — always submit candidates (empty array if blocked).',
     'Prefer primary and authoritative sources.',
     `Main question: ${session.question}`,
@@ -683,6 +795,8 @@ async function runCriterionScoutLoop({
   let cycleFetches = 0;
   let findingsSubmitted = false;
   let submittedCandidates = [];
+  let submittedSummary = '';
+  let submittedGap = '';
   let submitNote = '';
   let fuseRejectCount = 0;
   let forceAfterFuseMiss = false;
@@ -778,11 +892,16 @@ async function runCriterionScoutLoop({
     },
     submit_criterion_candidates: async (args = {}) => {
       submittedCandidates = normalizeSubmittedCandidates(args?.candidates, criterion.id);
-      submitNote = text(args?.note, 600);
+      const narrative = normalizeSubmitNarrative(args);
+      submittedSummary = narrative.summary;
+      submittedGap = narrative.gap;
+      submitNote = narrative.note;
       findingsSubmitted = true;
       emitScout({
         type: 'finding',
         candidateCount: submittedCandidates.length,
+        summary: submittedSummary,
+        gap: submittedGap,
         note: submitNote,
       });
       return {
@@ -809,8 +928,8 @@ async function runCriterionScoutLoop({
   const systemPrompt = [
     'You are a focused, read-only research Scout.',
     'Investigate only the target criterion in the user prompt.',
-    'Search and fetch freely. When done, call submit_criterion_candidates.',
-    'Do not write a final report.',
+    'Search and fetch freely. When done, call submit_criterion_candidates with candidates, summary, and gap.',
+    'Do not invent quote fields. Do not write a final report.',
   ].join('\n');
 
   let loopResult = await runAgentLoop({
@@ -845,9 +964,9 @@ async function runCriterionScoutLoop({
       systemPrompt,
       userPrompt: [
         'You have not called submit_criterion_candidates yet.',
-        'Call submit_criterion_candidates now with your candidates array.',
-        'If you cannot produce attributable candidates, submit an empty array.',
-        'Alternatively reply with JSON only: {"candidates":[{"claim":"","urls":[""],"quote":""}]}',
+        'Call submit_criterion_candidates now with candidates, summary, and gap.',
+        'If you cannot produce attributable candidates, submit an empty array with an honest summary/gap.',
+        'Alternatively reply with JSON only: {"candidates":[{"claim":"","urls":[""]}],"summary":"","gap":""}',
       ].join(' '),
       initialMessages: priorMessages,
       model: resolveSubAgentModel(config, model),
@@ -871,24 +990,145 @@ async function runCriterionScoutLoop({
   }
 
   if (!findingsSubmitted) {
-    submittedCandidates = parseCandidatesFromText(loopResult?.text, criterion.id);
+    const parsed = parseCandidatesFromText(loopResult?.text, criterion.id);
+    submittedCandidates = parsed.candidates;
+    submittedSummary = parsed.summary;
+    submittedGap = parsed.gap;
+    submitNote = parsed.note;
     findingsSubmitted = true;
   }
 
   const { accepted: gated, rejected: urlRejected } = gateCandidatesByUrl(submittedCandidates, urlIndex);
-  const verdicts = await verifyCandidateSupport({
-    config,
-    model,
+  return finalizeCriterionVerification({
+    session,
+    wave,
     question,
     criterion,
-    gatedCandidates: gated,
+    run,
+    coverage,
+    config,
+    model,
     signal,
+    emit: emitScout,
+    toolsUsed,
+    toolsCap,
+    cycleSearches,
+    cycleFetches,
+    submittedCandidates,
+    submittedSummary,
+    submittedGap,
+    submitNote,
+    gatedCandidates: gated,
+    urlRejected,
   });
-  const verdictById = new Map(verdicts.map((item) => [item.candidateId, item]));
-  const supported = gated.filter((item) => verdictById.get(item.id)?.supported);
-  const supportRejected = gated.filter((item) => !verdictById.get(item.id)?.supported);
+}
 
-  const acceptEvidence = supported.map((candidate) => candidateToEvidence(candidate, question.id));
+async function finalizeCriterionVerification({
+  session,
+  wave,
+  question,
+  criterion,
+  run,
+  coverage,
+  config,
+  model,
+  signal,
+  emit,
+  toolsUsed,
+  toolsCap,
+  cycleSearches,
+  cycleFetches,
+  submittedCandidates = [],
+  submittedSummary = '',
+  submittedGap = '',
+  submitNote = '',
+  gatedCandidates = [],
+  urlRejected = [],
+}) {
+  const gated = Array.isArray(gatedCandidates) ? gatedCandidates : [];
+  const rejected = Array.isArray(urlRejected) ? urlRejected : [];
+  const pendingVerify = {
+    questionId: question.id,
+    criterionId: criterion.id,
+    scoutRunId: run.id,
+    toolsUsed,
+    toolsCap,
+    cycleSearches,
+    cycleFetches,
+    submittedSummary,
+    submittedGap,
+    submitNote,
+    gatedCandidates: gated.map(serializePendingVerifyCandidate),
+    urlRejected: rejected.map((item) => ({
+      id: item.id,
+      claim: item.claim,
+      urls: item.urls || [],
+      reason: item.reason || '',
+    })),
+  };
+
+  updateResearchScoutRun(run.id, {
+    ledger: {
+      version: 2,
+      questionId: question.id,
+      queries: [],
+      pendingVerify,
+    },
+  });
+
+  emit({
+    type: 'criterion:verify_start',
+    criterionId: criterion.id,
+    candidateCount: gated.length,
+    summary: submittedSummary,
+    gap: submittedGap,
+  });
+
+  let review;
+  try {
+    review = await verifyCandidateSupport({
+      config,
+      model,
+      question,
+      criterion,
+      gatedCandidates: gated,
+      scoutSummary: submittedSummary,
+      scoutGap: submittedGap,
+      signal,
+    });
+  } catch (error) {
+    updateResearchScoutRun(run.id, {
+      ledger: {
+        version: 2,
+        questionId: question.id,
+        queries: [],
+        pendingVerify,
+      },
+    });
+    setResearchResumeCheckpoint(session.id, {
+      step: 'verify',
+      questionId: question.id,
+      criterionId: criterion.id,
+      scoutRunId: run.id,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    const wrapped = error instanceof Error ? error : new Error(String(error));
+    wrapped.resumeStep = 'verify';
+    throw wrapped;
+  }
+
+  clearResearchResumeCheckpoint(session.id);
+  updateResearchScoutRun(run.id, {
+    ledger: { version: 2, questionId: question.id, queries: [] },
+  });
+
+  const verdicts = Array.isArray(review?.verdicts) ? review.verdicts : [];
+  const verdictById = new Map(verdicts.map((item) => [item.candidateId, item]));
+  const accepted = gated.filter((item) => isAcceptedClaimVerdict(verdictById.get(item.id)));
+  const rejectedByReview = gated.filter((item) => !isAcceptedClaimVerdict(verdictById.get(item.id)));
+
+  const acceptEvidence = accepted.map((candidate) =>
+    candidateToEvidence(candidate, question.id, verdictById.get(candidate.id)));
   const commitResult = acceptEvidence.length
     ? applyResearchCommit(session.id, { acceptEvidence })
     : { insertedEvidenceIds: [], reusedEvidenceIds: [] };
@@ -897,18 +1137,21 @@ async function runCriterionScoutLoop({
     ...(commitResult.reusedEvidenceIds || []),
   ];
 
+  const finalSummary = text(review?.summary?.text || submittedSummary, 1200);
+  const finalGap = text(review?.gap?.text || submittedGap, 1200);
+
   let status = 'blocked';
-  let reason = submitNote || 'No attributable candidates were verified.';
-  if (supported.length) {
-    status = supportRejected.length || urlRejected.length ? 'partial' : 'covered';
+  let reason = submitNote || finalGap || 'No attributable candidates were verified.';
+  if (accepted.length) {
+    status = rejectedByReview.length || rejected.length ? 'partial' : 'covered';
     reason = status === 'covered'
-      ? `Accepted ${supported.length} verified claim(s).`
-      : `Accepted ${supported.length} claim(s); ${supportRejected.length + urlRejected.length} rejected.`;
-  } else if (submittedCandidates.length) {
+      ? `Accepted ${accepted.length} verified claim(s).`
+      : `Accepted ${accepted.length} claim(s); ${rejectedByReview.length + rejected.length} rejected.`;
+  } else if (submittedCandidates.length || gated.length) {
     status = 'blocked';
-    reason = urlRejected[0]?.reason
-      || supportRejected.map((item) => verdictById.get(item.id)?.reason).filter(Boolean)[0]
-      || 'Candidates failed URL or support checks.';
+    reason = rejected[0]?.reason
+      || rejectedByReview.map((item) => verdictById.get(item.id)?.reason).filter(Boolean)[0]
+      || 'Candidates failed URL, support, or criterion-relevance checks.';
   } else if (toolsUsed <= 0) {
     reason = 'Scout ended without searching or submitting candidates.';
   }
@@ -919,29 +1162,33 @@ async function runCriterionScoutLoop({
     coverageCriterion.toolCount = toolsUsed;
     coverageCriterion.reason = reason;
     coverageCriterion.evidenceIds = evidenceIds;
+    coverageCriterion.summary = finalSummary;
+    coverageCriterion.gap = status === 'covered' ? (finalGap || '') : finalGap;
   }
 
   for (const evidenceId of commitResult.insertedEvidenceIds || []) {
-    emitScout({ type: 'evidence:accepted', evidenceId, criterionId: criterion.id });
+    emit({ type: 'evidence:accepted', evidenceId, criterionId: criterion.id });
   }
 
-  emitScout({
+  emit({
     type: 'criterion:coverage',
     criterionId: criterion.id,
     status,
     reason,
+    summary: finalSummary,
+    gap: coverageCriterion?.gap || finalGap,
     toolCount: toolsUsed,
     evidenceIds,
     coverage: compactProgress(coverage),
   });
   // Compatibility alias.
-  emitScout({
+  emit({
     type: 'scout:checkpoint',
     cycle: (coverage.criteria || []).filter((item) => TERMINAL_COVERAGE.has(item.status)).length,
     decision: 'continue',
     coverage: coverage.criteria,
     nextGap: null,
-    candidateCount: supported.length,
+    candidateCount: accepted.length,
     searchCount: run.searchCount + cycleSearches,
     fetchCount: run.fetchCount + cycleFetches,
     toolsUsed,
@@ -977,6 +1224,8 @@ async function runScoutForQuestion({
       criterion.evidenceIds = [];
       criterion.toolCount = 0;
       criterion.reason = '';
+      criterion.summary = '';
+      criterion.gap = '';
     }
   }
 
@@ -1011,10 +1260,71 @@ async function runScoutForQuestion({
   });
 
   try {
-    const pending = (coverage.criteria || []).filter((item) => !TERMINAL_COVERAGE.has(item.status));
     let totalSearches = 0;
     let totalFetches = 0;
     const committedEvidenceIds = [];
+
+    const pendingVerify = run.ledger?.pendingVerify;
+    if (pendingVerify?.criterionId && pendingVerify.scoutRunId === run.id) {
+      const criterion = (coverage.criteria || []).find((item) => item.id === pendingVerify.criterionId);
+      if (criterion && !TERMINAL_COVERAGE.has(criterion.status)) {
+        const emitScout = (event) => emit({
+          ...event,
+          scope: 'scout',
+          wave: wave.wave,
+          waveId: wave.id,
+          scoutRunId: run.id,
+          questionId: question.id,
+          scoutName: run.name,
+          criterionId: criterion.id,
+        });
+        const result = await finalizeCriterionVerification({
+          session,
+          wave,
+          question,
+          criterion,
+          run,
+          coverage,
+          config,
+          model,
+          signal,
+          emit: emitScout,
+          toolsUsed: Number(pendingVerify.toolsUsed) || 0,
+          toolsCap: Number(pendingVerify.toolsCap) || toolsCap,
+          cycleSearches: Number(pendingVerify.cycleSearches) || 0,
+          cycleFetches: Number(pendingVerify.cycleFetches) || 0,
+          submittedCandidates: [],
+          submittedSummary: pendingVerify.submittedSummary || '',
+          submittedGap: pendingVerify.submittedGap || '',
+          submitNote: pendingVerify.submitNote || '',
+          gatedCandidates: Array.isArray(pendingVerify.gatedCandidates)
+            ? pendingVerify.gatedCandidates
+            : [],
+          urlRejected: Array.isArray(pendingVerify.urlRejected) ? pendingVerify.urlRejected : [],
+        });
+        totalSearches += result.cycleSearches;
+        totalFetches += result.cycleFetches;
+        committedEvidenceIds.push(...result.evidenceIds);
+        run = updateResearchScoutRun(run.id, {
+          ledger: { version: 2, questionId: question.id, queries: [] },
+          decision: {
+            decision: 'continue',
+            criterionId: criterion.id,
+            status: result.status,
+            evaluatedAt: new Date().toISOString(),
+          },
+          searchCount: run.searchCount + result.cycleSearches,
+          fetchCount: run.fetchCount + result.cycleFetches,
+          committedEvidenceIds: [...new Set([
+            ...(run.committedEvidenceIds || []),
+            ...result.evidenceIds,
+          ])],
+        });
+        updateResearchQuestion(question.id, { coverage: structuredClone(coverage) });
+      }
+    }
+
+    const pending = (coverage.criteria || []).filter((item) => !TERMINAL_COVERAGE.has(item.status));
 
     for (const criterion of pending) {
       if (signal?.aborted) throw Object.assign(new Error('aborted'), { name: 'AbortError' });
@@ -1060,6 +1370,7 @@ async function runScoutForQuestion({
       if (!TERMINAL_COVERAGE.has(criterion.status)) {
         criterion.status = 'blocked';
         criterion.reason = criterion.reason || 'Scout pass safety limit reached.';
+        if (!criterion.gap) criterion.gap = criterionGapText(criterion) || criterion.reason;
       }
     }
 
@@ -1068,7 +1379,9 @@ async function runScoutForQuestion({
     const status = allCovered ? 'done' : (anyEvidence ? 'partial' : 'blocked');
     const evidence = listResearchEvidence(session.id);
     const handoff = buildScoutHandoff(question, coverage, evidence);
+    const gaps = deriveQuestionGaps(coverage);
 
+    clearResearchResumeCheckpoint(session.id);
     run = updateResearchScoutRun(run.id, {
       status,
       ledger: { version: 2, questionId: question.id, queries: [] },
@@ -1084,9 +1397,7 @@ async function runScoutForQuestion({
       criteriaMet: (coverage.criteria || [])
         .filter((item) => item.status === 'covered')
         .map((item) => item.id),
-      gaps: (coverage.criteria || [])
-        .filter((item) => item.status !== 'covered')
-        .map((item) => item.reason || item.text),
+      gaps,
       lastScoutAt: new Date().toISOString(),
     });
     emit({
@@ -1105,15 +1416,29 @@ async function runScoutForQuestion({
   } catch (error) {
     const aborted = signal?.aborted || error?.name === 'AbortError';
     const errorMessage = error instanceof Error ? error.message : String(error);
+    const keepPendingVerify = error?.resumeStep === 'verify';
     run = updateResearchScoutRun(run.id, {
       status: aborted ? 'aborted' : 'failed',
-      ledger: { version: 2, questionId: question.id, queries: [] },
+      ...(keepPendingVerify ? {} : {
+        ledger: { version: 2, questionId: question.id, queries: [] },
+      }),
       error: errorMessage,
     });
+    if (!aborted && !keepPendingVerify) {
+      setResearchResumeCheckpoint(session.id, {
+        step: 'scout',
+        questionId: question.id,
+        criterionId: '',
+        scoutRunId: run.id,
+        error: errorMessage,
+      });
+    }
     updateResearchQuestion(question.id, {
       status: aborted ? 'open' : 'blocked',
       coverage: structuredClone(coverage),
-      gaps: [aborted ? 'Investigation stopped by user' : errorMessage],
+      gaps: keepPendingVerify
+        ? deriveQuestionGaps(coverage)
+        : [aborted ? 'Investigation stopped by user' : errorMessage],
     });
     emit({
       type: 'scout:error',
@@ -1171,7 +1496,7 @@ function deterministicResearchReadiness(detail) {
       const item = {
         questionId: question.id,
         criterionId: criterion.id,
-        gap: text(criterion.reason || criterion.text || 'Criterion remains unresolved', 600),
+        gap: text(criterion.gap || 'Criterion remains unresolved', 600),
       };
       if (['missing', 'conflicted'].includes(criterion.status)) {
         pushUnique(requiredTargets, item);
@@ -1295,7 +1620,23 @@ async function runWaveScouts({
     });
     const settled = await Promise.allSettled(batchIds.map(async (questionId) => {
       const question = questionById.get(questionId);
-      const stale = existingRuns.find((run) => run.questionId === questionId && run.status === 'running');
+      const reusable = existingRuns.find((run) => {
+        if (run.questionId !== questionId) return false;
+        if (run.status === 'running') return true;
+        if (run.status === 'failed' && run.ledger?.pendingVerify) return true;
+        if (run.status === 'failed' || run.status === 'aborted') {
+          const coverage = resolveQuestionCoverage(question, run);
+          return (coverage.criteria || []).some((item) => !TERMINAL_COVERAGE.has(item.status));
+        }
+        return false;
+      });
+      let existingRun = reusable || null;
+      if (existingRun && ['failed', 'aborted'].includes(existingRun.status)) {
+        existingRun = updateResearchScoutRun(existingRun.id, {
+          status: 'running',
+          error: '',
+        });
+      }
       return runScoutWithCheckpoints({
         session,
         wave,
@@ -1305,10 +1646,16 @@ async function runWaveScouts({
         workspaceRoot,
         signal,
         emit,
-        existingRun: stale || null,
+        existingRun,
       });
     }));
     if (signal?.aborted) throw Object.assign(new Error('aborted'), { name: 'AbortError' });
+    const verifyFailure = settled.find((result) => (
+      result.status === 'rejected'
+      && result.reason?.resumeStep === 'verify'
+    ));
+    if (verifyFailure) throw verifyFailure.reason;
+
     for (const [index, result] of settled.entries()) {
       const questionId = batchIds[index];
       if (result.status === 'rejected') {
@@ -1592,17 +1939,22 @@ export {
   createInitialLedger,
   createResearchSearchDefinition,
   createSubmitCandidatesDefinition,
+  deriveQuestionGaps,
   deterministicResearchReadiness,
   finalizeInvestigationRound,
   gateCandidatesByUrl,
   indexFetchResult,
   indexSearchResult,
   normalizeSubmittedCandidates,
+  normalizeSubmitNarrative,
   normalizeUrl,
   partitionWaveTargetsAndLimitations,
   resolveQuestionCoverage,
   resolveToolsCap,
   runScoutForQuestion,
+  validateSupportVerdicts,
   verifyCandidateSupport,
+  MAX_CANDIDATES_PER_CRITERION,
+  MAX_URLS_PER_CLAIM,
   RESEARCH_SCOUT_TOOLS_PER_CRITERION,
 };

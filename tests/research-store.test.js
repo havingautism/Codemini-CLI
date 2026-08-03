@@ -12,11 +12,13 @@ import {
   buildResearchWritingPack,
   buildDeterministicResearchConclusions,
   normalizeResearchConclusions,
+  clearResearchResumeCheckpoint,
   confirmResearchPlan,
   createResearchScoutRun,
   createResearchSession,
   createResearchWave,
   ensureResearchSessionBudget,
+  extractResearchResumeCheckpoint,
   getResearchSessionDetail,
   inferResearchPlanDepth,
   listResearchEvidence,
@@ -24,6 +26,7 @@ import {
   planResearchBudget,
   researchDepthRuntimeLimits,
   reserveResearchBudget,
+  setResearchResumeCheckpoint,
   updateResearchScoutRun,
   updateResearchQuestion,
   updateResearchRunState,
@@ -662,22 +665,29 @@ test('confirmResearchPlan always syncs maxWaves to single investigation round', 
   });
 });
 
-test('writing pack includes conclusions, limitations, and accepted evidence', async () => {
+test('writing pack includes coverage by criterion and accepted evidence', async () => {
   await withGlobalDir(async () => {
     const session = createResearchSession({ question: 'How did X evolve?' });
     updateResearchSession(session.id, {
       plan: { depth: 'standard', goal: 'Decision memo', questions: [] },
-      conclusions: [{
-        questionId: 'q_fake',
-        completeness: 'partial',
-        summary: 'Direction is clear; timeline is not.',
-        limitations: 'No official GA table.',
-        evidenceIds: ['ev_keep'],
-      }],
     });
     const detail = {
       ...getResearchSessionDetail(session.id),
-      questions: [{ id: 'q_fake', text: 'Milestones?', status: 'partial', gaps: ['dates'] }],
+      questions: [{
+        id: 'q_fake',
+        text: 'Milestones?',
+        status: 'partial',
+        gaps: ['Need GA dates'],
+        coverage: {
+          criteria: [{
+            id: 'c1',
+            text: 'Timeline known',
+            status: 'partial',
+            summary: 'Direction is clear; timeline is not.',
+            gap: 'No official GA table.',
+          }],
+        },
+      }],
       evidence: [{
         id: 'ev_keep',
         questionId: 'q_fake',
@@ -697,26 +707,38 @@ test('writing pack includes conclusions, limitations, and accepted evidence', as
           }],
         },
       }],
-      conclusions: normalizeResearchConclusions([{
-        questionId: 'q_fake',
-        completeness: 'partial',
-        summary: 'Direction is clear; timeline is not.',
-        limitations: 'No official GA table.',
-        evidenceIds: ['ev_keep', 'ev_bogus'],
-      }]).map((item) => ({
-        ...item,
-        evidenceIds: item.evidenceIds.filter((id) => id === 'ev_keep'),
-      })),
     };
     const pack = buildResearchWritingPack(detail);
     assert.match(pack, /Depth: standard/);
-    assert.match(pack, /Sub-question conclusions/);
+    assert.match(pack, /Coverage by criterion/);
     assert.match(pack, /Direction is clear/);
-    assert.match(pack, /Session limitations/);
-    assert.match(pack, /Stop chasing GA dates/);
+    assert.match(pack, /No official GA table/);
+    assert.doesNotMatch(pack, /Sub-question conclusions/);
+    assert.doesNotMatch(pack, /Session limitations/);
     assert.match(pack, /Accepted evidence/);
     assert.match(pack, /ev_keep/);
-    assert.doesNotMatch(pack, /ev_bogus/);
+  });
+});
+
+test('resume checkpoint is stored on timeline and exposed on session', async () => {
+  await withGlobalDir(async () => {
+    const session = createResearchSession({ question: 'Resume check' });
+    setResearchResumeCheckpoint(session.id, {
+      step: 'verify',
+      questionId: 'q1',
+      criterionId: 'c1',
+      scoutRunId: 'sr1',
+      error: 'evaluator unavailable',
+    });
+    const detail = getResearchSessionDetail(session.id);
+    assert.equal(detail.resumeCheckpoint?.step, 'verify');
+    assert.equal(detail.resumeCheckpoint?.criterionId, 'c1');
+    assert.equal(
+      extractResearchResumeCheckpoint(detail.timeline)?.error,
+      'evaluator unavailable',
+    );
+    clearResearchResumeCheckpoint(session.id);
+    assert.equal(getResearchSessionDetail(session.id).resumeCheckpoint, null);
   });
 });
 

@@ -399,8 +399,30 @@ function normalizeResearchRunPhase(value) {
   return RESEARCH_RUN_PHASES.has(phase) ? phase : '';
 }
 
+export function extractResearchResumeCheckpoint(timeline = []) {
+  const list = Array.isArray(timeline) ? timeline : [];
+  for (let index = list.length - 1; index >= 0; index -= 1) {
+    const entry = list[index];
+    if (entry?.type !== 'resume_checkpoint') continue;
+    const step = String(entry.step || '').trim();
+    if (!step) continue;
+    return {
+      step,
+      questionId: String(entry.questionId || ''),
+      criterionId: String(entry.criterionId || ''),
+      scoutRunId: String(entry.scoutRunId || ''),
+      error: String(entry.error || ''),
+      at: String(entry.at || ''),
+    };
+  }
+  return null;
+}
+
 function mapSession(row) {
   if (!row) return null;
+  const timeline = Array.isArray(parseJson(row.timeline_json, []))
+    ? parseJson(row.timeline_json, [])
+    : [];
   return {
     id: row.id,
     createdAt: row.created_at,
@@ -415,7 +437,8 @@ function mapSession(row) {
     lastRunPhase: normalizeResearchRunPhase(row.last_run_phase),
     lastError: row.last_error || '',
     plan: parseJson(row.plan_json, {}) || {},
-    timeline: Array.isArray(parseJson(row.timeline_json, [])) ? parseJson(row.timeline_json, []) : [],
+    timeline,
+    resumeCheckpoint: extractResearchResumeCheckpoint(timeline),
     conclusions: normalizeResearchConclusions(parseJson(row.conclusions_json, [])),
     reportMarkdown: row.report_markdown || '',
   };
@@ -656,6 +679,31 @@ export function appendResearchTimeline(sessionId, entry) {
     ...(entry && typeof entry === 'object' ? entry : {}),
   };
   const timeline = [...(current.timeline || []), nextEntry];
+  return updateResearchSession(sessionId, { timeline });
+}
+
+export function setResearchResumeCheckpoint(sessionId, checkpoint = {}) {
+  const current = getResearchSession(sessionId);
+  if (!current) return null;
+  const timeline = (current.timeline || []).filter((entry) => entry?.type !== 'resume_checkpoint');
+  timeline.push({
+    id: `tl_${randomUUID()}`,
+    at: nowIso(),
+    type: 'resume_checkpoint',
+    step: String(checkpoint.step || ''),
+    questionId: String(checkpoint.questionId || ''),
+    criterionId: String(checkpoint.criterionId || ''),
+    scoutRunId: String(checkpoint.scoutRunId || ''),
+    error: String(checkpoint.error || ''),
+  });
+  return updateResearchSession(sessionId, { timeline });
+}
+
+export function clearResearchResumeCheckpoint(sessionId) {
+  const current = getResearchSession(sessionId);
+  if (!current) return null;
+  const timeline = (current.timeline || []).filter((entry) => entry?.type !== 'resume_checkpoint');
+  if (timeline.length === (current.timeline || []).length) return current;
   return updateResearchSession(sessionId, { timeline });
 }
 
@@ -1321,31 +1369,22 @@ export function buildResearchWritingPack(detail) {
   lines.push(`Depth: ${depth}`);
   lines.push('');
 
-  const conclusions = normalizeResearchConclusions(detail.conclusions);
   const questions = detail.questions || [];
-  lines.push('Sub-question conclusions:');
-  if (!conclusions.length) {
-    lines.push('(none — write carefully from accepted evidence and note gaps)');
-  } else {
-    for (const conclusion of conclusions) {
-      const question = questions.find((item) => item.id === conclusion.questionId);
-      lines.push(`- ${conclusion.questionId} [${conclusion.completeness}] ${question?.text || ''}`.trim());
-      if (conclusion.summary) lines.push(`  summary: ${conclusion.summary}`);
-      if (conclusion.limitations) lines.push(`  limitations: ${conclusion.limitations}`);
-      if (conclusion.evidenceIds?.length) {
-        lines.push(`  evidenceIds: ${conclusion.evidenceIds.join(', ')}`);
-      }
+  lines.push('Coverage by criterion:');
+  let coverageRows = 0;
+  for (const question of questions) {
+    const criteria = Array.isArray(question?.coverage?.criteria) ? question.coverage.criteria : [];
+    for (const criterion of criteria) {
+      coverageRows += 1;
+      lines.push(
+        `- ${question.id} / ${criterion.id} [${criterion.status || 'missing'}] `
+        + `${criterion.text || ''}`.trim(),
+      );
+      if (criterion.summary) lines.push(`  summary: ${criterion.summary}`);
+      if (criterion.gap) lines.push(`  gap: ${criterion.gap}`);
     }
   }
-
-  const sessionLimitations = collectResearchSessionLimitations(detail);
-  lines.push('');
-  lines.push('Session limitations:');
-  if (!sessionLimitations.length) {
-    lines.push('(none recorded)');
-  } else {
-    for (const item of sessionLimitations) lines.push(`- ${item}`);
-  }
+  if (!coverageRows) lines.push('(none recorded)');
 
   lines.push('');
   lines.push('Accepted evidence:');
@@ -1365,7 +1404,7 @@ export function buildResearchWritingPack(detail) {
   return lines.join('\n');
 }
 
-/** Flatten coverage / wave limitations into short lines for the writing pack. */
+/** Flatten coverage / wave limitations into short lines (UI / diagnostics). */
 export function collectResearchSessionLimitations(detail) {
   const lines = [];
   const seen = new Set();
@@ -1379,7 +1418,8 @@ export function collectResearchSessionLimitations(detail) {
     const criteria = Array.isArray(question?.coverage?.criteria) ? question.coverage.criteria : [];
     for (const item of criteria) {
       if (!item || item.status === 'covered') continue;
-      const gap = item.reason || item.text || '';
+      const gap = String(item.gap || '').trim();
+      if (!gap) continue;
       push([question.text || question.id, item.id, gap].filter(Boolean).join(' — '));
     }
   }
@@ -1393,7 +1433,8 @@ export function collectResearchSessionLimitations(detail) {
       if (!item || typeof item !== 'object') continue;
       const question = (detail.questions || []).find((q) => q.id === item.questionId);
       const label = question?.text || item.questionId || '';
-      const gap = item.gap || item.reason || item.text || '';
+      const gap = String(item.gap || '').trim();
+      if (!gap) continue;
       push([label, item.criterionId, gap].filter(Boolean).join(' — '));
     }
   }
@@ -1421,7 +1462,7 @@ export function buildDeterministicResearchConclusions(detail) {
           : 'insufficient';
     const gapBits = [
       ...(Array.isArray(question.gaps) ? question.gaps : []),
-      ...uncovered.map((item) => item.reason || item.text || item.id).filter(Boolean),
+      ...uncovered.map((item) => item.gap || item.id).filter(Boolean),
     ];
     return {
       questionId: question.id,

@@ -249,7 +249,30 @@ function latestWaveLimitations(session) {
     const limitations = waves[index]?.evaluation?.limitations;
     if (Array.isArray(limitations) && limitations.length) return limitations;
   }
-  return [];
+  const derived = [];
+  for (const question of session?.questions || []) {
+    for (const criterion of question?.coverage?.criteria || []) {
+      if (!criterion || criterion.status === "covered") continue;
+      const gap = String(criterion.gap || "").trim();
+      if (!gap) continue;
+      derived.push({
+        questionId: question.id,
+        criterionId: criterion.id,
+        status: criterion.status,
+        gap,
+      });
+    }
+  }
+  return derived;
+}
+
+function failedResumeHint(session) {
+  const step = String(session?.resumeCheckpoint?.step || "").trim();
+  if (step === "verify") return t("deepResearchFailedVerifyHint");
+  if (step === "scout") return t("deepResearchFailedScoutHint");
+  if (session?.lastRunPhase === "writing") return t("deepResearchFailedWritingHint");
+  if (session?.lastRunPhase === "planning") return t("deepResearchFailedPlanningHint");
+  return t("deepResearchFailedHint");
 }
 
 function phaseToStep(phase) {
@@ -1145,21 +1168,36 @@ function ScoutCard({
                   ? liveTools
                   : (Number(criterion.toolCount) || 0);
                 const atCap = used >= cap;
+                const summaryText = String(criterion.summary || "").trim();
+                const gapText = String(criterion.gap || "").trim();
                 return (
                   <div
                     key={criterion.id}
-                    title={criterion.text}
-                    className={cn("grid min-w-0 grid-cols-[minmax(0,1fr)_auto] gap-3 py-2 text-[10px]", isActive && "text-sky-700 dark:text-sky-300")}
+                    className={cn("grid min-w-0 gap-1 py-2 text-[10px]", isActive && "text-sky-700 dark:text-sky-300")}
                   >
-                    <ResearchTerm
-                      explanation={`${coverageHelp(criterion.status, cap)} ${criterionToolsTip}`}
-                      className="min-w-0 text-(--text-secondary)"
-                    >
-                      {criterion.text || criterion.id}
-                    </ResearchTerm>
-                    <span className="shrink-0 tabular-nums text-(--text-muted)">
-                      {formatResearchStatus(criterion.status)} · {used}/{cap}{atCap ? ` · ${t("deepResearchSearchCapReached")}` : ""}
-                    </span>
+                    <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] gap-3">
+                      <ResearchTerm
+                        explanation={`${coverageHelp(criterion.status, cap)} ${criterionToolsTip}`}
+                        className="min-w-0 text-(--text-secondary)"
+                      >
+                        {criterion.text || criterion.id}
+                      </ResearchTerm>
+                      <span className="shrink-0 tabular-nums text-(--text-muted)">
+                        {formatResearchStatus(criterion.status)} · {used}/{cap}{atCap ? ` · ${t("deepResearchSearchCapReached")}` : ""}
+                      </span>
+                    </div>
+                    {summaryText ? (
+                      <div className="min-w-0 break-words text-(--text-secondary) [overflow-wrap:anywhere]">
+                        <span className="font-medium text-(--text-muted)">{t("deepResearchSummary")}: </span>
+                        {summaryText}
+                      </div>
+                    ) : null}
+                    {gapText ? (
+                      <div className="min-w-0 break-words text-amber-700 [overflow-wrap:anywhere] dark:text-amber-300">
+                        <ResearchTerm explanation={t("deepResearchTipGaps")}>{t("deepResearchGaps")}</ResearchTerm>
+                        {`: ${gapText}`}
+                      </div>
+                    ) : null}
                   </div>
                 );
               })}
@@ -1745,7 +1783,7 @@ function DetailBody({
         <div className="shrink-0 border-b border-amber-500/20 bg-amber-500/8 px-5 py-2 text-[12px] text-amber-900 dark:text-amber-100 sm:px-6">
           {session.runState === "paused"
             ? t("deepResearchPausedHint")
-            : t("deepResearchFailedHint")}
+            : failedResumeHint(session)}
         </div>
       ) : null}
 
