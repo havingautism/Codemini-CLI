@@ -76,6 +76,7 @@ import {
   updateResearchPlanForApi,
 } from './lib/research-service.js';
 import { createPooledSessionEnsurer } from './lib/pooled-session-ensurer.js';
+import { resolveCodeWikiBridge } from './lib/codewiki-bridge.js';
 import { loadSessionForSwitch } from './lib/session-switch-loader.js';
 import { resolveEmbed } from './lib/embed-resolver.js';
 import { canUpdateSkillPackage, installSkillSource, listSkillEntries, previewSkillPackageUpdate, previewSkillSource, updateSkillPackage } from '../src/commands/skill.js';
@@ -2203,6 +2204,17 @@ async function main() {
     }
   });
 
+  const pickCodeWikiBridge = (codeWikiProjectDir) => resolveCodeWikiBridge({
+    codeWikiProjectDir,
+    currentProjectDir,
+    currentBridge: bridge,
+    ensurePooledSession,
+    createSession,
+    findPreferredSessionId: findPreferredSessionForProject,
+    sameProject: (left, right) =>
+      normalizeProjectDirKey(left) === normalizeProjectDirKey(right),
+  });
+
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, `http://localhost:${args.port}`);
 
@@ -2461,15 +2473,10 @@ async function main() {
         ? String(format).toLowerCase()
         : 'html';
       const codeWikiProjectDir = await resolveCodeWikiProjectDir(url, currentProjectDir);
-      const sameProject =
-        normalizeProjectDirKey(codeWikiProjectDir) === normalizeProjectDirKey(currentProjectDir);
-      // Don't block CodeWiki on an in-progress chat: reuse current bridge only when
-      // idle and already on this project; otherwise spin up a dedicated session.
-      let codeWikiBridge = bridge;
-      if (!sameProject || codeWikiBridge.isBusy()) {
-        const session = await createSession(codeWikiProjectDir);
-        codeWikiBridge = (await ensurePooledSession(session.id)).bridge;
-      }
+      // Reuse current bridge when idle on this project; otherwise prefer an
+      // existing project session, or create one so CodeWiki is not blocked by
+      // an in-progress chat.
+      const { bridge: codeWikiBridge } = await pickCodeWikiBridge(codeWikiProjectDir);
       if (codeWikiBridge.isBusy()) {
         jsonResponse(res, { error: true, message: 'Runtime is busy' }, 409);
         return;
@@ -2499,11 +2506,12 @@ async function main() {
         return;
       }
       const selectedReport = isCodeWikiReportFile(reportFile) ? reportFile : '';
-      if (bridge.isBusy()) {
+      const codeWikiProjectDir = await resolveCodeWikiProjectDir(url, currentProjectDir);
+      const { bridge: codeWikiBridge } = await pickCodeWikiBridge(codeWikiProjectDir);
+      if (codeWikiBridge.isBusy()) {
         jsonResponse(res, { error: true, message: 'Runtime is busy' }, 409);
         return;
       }
-      const codeWikiProjectDir = await resolveCodeWikiProjectDir(url, currentProjectDir);
       const reportPath = selectedReport
         ? path.join(getRequirementsDir(codeWikiProjectDir), selectedReport)
         : getRequirementsDir(codeWikiProjectDir);
@@ -2511,7 +2519,7 @@ async function main() {
         question,
         reportPath,
         projectDir: codeWikiProjectDir,
-        replyLanguage: bridge.getState()?.replyLanguage,
+        replyLanguage: codeWikiBridge.getState()?.replyLanguage,
         history: Array.isArray(history) ? history : []
       });
 
@@ -2525,7 +2533,7 @@ async function main() {
           res.write(`${JSON.stringify(event)}\n`);
         } catch {}
       };
-      await bridge.handleCodeWikiAsk(prompt, writeEvent);
+      await codeWikiBridge.handleCodeWikiAsk(prompt, writeEvent);
       res.end();
       return;
     }
