@@ -1498,7 +1498,7 @@ function sourceHostname(url) {
   }
 }
 
-const EVIDENCE_PAGE_SIZE = 9; // 3 cols × 3 rows
+const EVIDENCE_PAGE_SIZE = 8; // 2 cols × 4 rows
 
 function EvidenceList({ evidence = [], title, countLabel }) {
   const [page, setPage] = useState(0);
