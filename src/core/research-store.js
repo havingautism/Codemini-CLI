@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 
 import { getGlobalDatabase, transaction } from './sqlite-database.js';
+import { cleanupResearchSessionArtifacts } from './research-artifacts.js';
 
 export const DEFAULT_RESEARCH_BUDGET = Object.freeze({
   maxWaves: 1,
@@ -624,9 +625,14 @@ export function getResearchSession(sessionId) {
 }
 
 export function deleteResearchSession(sessionId) {
+  const id = String(sessionId || '');
   const result = getGlobalDatabase()
     .prepare('DELETE FROM research_sessions WHERE id = ?')
-    .run(String(sessionId || ''));
+    .run(id);
+  if (result.changes > 0) {
+    // Fire-and-forget disk cleanup; DB row is already gone.
+    void cleanupResearchSessionArtifacts(id);
+  }
   return result.changes > 0;
 }
 

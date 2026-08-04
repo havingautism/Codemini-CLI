@@ -1,5 +1,4 @@
 import fs from 'node:fs/promises';
-import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 
@@ -16,6 +15,10 @@ import {
   executeResearchWebFetch,
   executeResearchWebSearch,
 } from './research-tools.js';
+import {
+  cleanupResearchCriterionArtifacts,
+  researchArtifactDirForScope,
+} from './research-artifacts.js';
 import {
   appendResearchTimeline,
   applyResearchCommit,
@@ -137,13 +140,7 @@ function parseJsonObject(raw) {
 }
 
 function artifactDirForScope({ sessionId, scoutRunId, criterionId, rootDir = '' }) {
-  const baseDir = String(rootDir || '').trim() || path.join(os.tmpdir(), 'codemini-research-artifacts');
-  return path.join(
-    baseDir,
-    String(sessionId || 'session'),
-    String(scoutRunId || 'scout'),
-    String(criterionId || 'criterion'),
-  );
+  return researchArtifactDirForScope({ sessionId, scoutRunId, criterionId, rootDir });
 }
 
 function createResearchArtifactStore({ sessionId, scoutRunId, criterionId, rootDir = '' }) {
@@ -241,12 +238,23 @@ function createResearchArtifactStore({ sessionId, scoutRunId, criterionId, rootD
     for (const item of Array.isArray(items) ? items : []) record(item);
   }
 
+  async function cleanup() {
+    await cleanupResearchCriterionArtifacts({
+      sessionId,
+      scoutRunId,
+      criterionId,
+      rootDir,
+    });
+  }
+
   return {
     artifactForUrl,
+    cleanup,
     listArtifactIds,
     loadManifest,
     persistFetch,
     readArtifact,
+    targetDir,
     toManifest,
   };
 }
@@ -1902,6 +1910,10 @@ async function finalizeCriterionVerification({
     toolsCap,
   });
 
+  // Criterion verify succeeded — Scout/Evaluator no longer need on-disk bodies.
+  // Writing pack only uses DB claims/snippets, so this is safe for report generation.
+  await artifactStore?.cleanup?.().catch(() => {});
+
   return {
     toolsUsed,
     cycleSearches,
@@ -2783,3 +2795,11 @@ export {
   MAX_URLS_PER_CLAIM,
   RESEARCH_SCOUT_TOOLS_PER_CRITERION,
 };
+
+export {
+  cleanupResearchCriterionArtifacts,
+  cleanupResearchSessionArtifacts,
+  getResearchArtifactsRoot,
+  researchArtifactDirForScope,
+  researchSessionArtifactsDir,
+} from './research-artifacts.js';

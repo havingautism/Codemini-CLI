@@ -19,6 +19,7 @@ import {
 } from './research-store.js';
 import { normalizeGeneratedSessionTitle } from './session-title.js';
 import { getReplyLanguageName } from './reply-language.js';
+import { cleanupResearchSessionArtifacts } from './research-artifacts.js';
 
 const activeRuns = new Map();
 
@@ -449,6 +450,8 @@ function createResearchSubmitHandlers(sessionId, phase, emit) {
         phase: 'done',
       });
       emit?.({ type: 'report', reportMarkdown: updated?.reportMarkdown, phase: 'done' });
+      // Belt-and-suspenders: clear any leftover criterion dirs after report is stored in DB.
+      void cleanupResearchSessionArtifacts(sessionId);
       return { ok: true, phase: 'done' };
     },
   };

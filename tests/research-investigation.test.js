@@ -12,6 +12,7 @@ import {
   buildUpstreamDependencySummary,
   collectDependencyContextForQuestion,
   candidateToEvidence,
+  cleanupResearchSessionArtifacts,
   createEmptyCoverage,
   buildFetchArtifactPreview,
   createReadArtifactDefinition,
@@ -22,12 +23,14 @@ import {
   deriveQuestionGaps,
   finalizeInvestigationRound,
   gateCandidatesByUrl,
+  getResearchArtifactsRoot,
   indexFetchResult,
   indexSearchResult,
   normalizeSubmittedCandidates,
   normalizeSubmitNarrative,
   normalizeUrl,
   partitionWaveTargetsAndLimitations,
+  researchArtifactDirForScope,
   resolveToolsCap,
   selectReadyWaveBatch,
   validateSupportVerdicts,
@@ -384,6 +387,95 @@ test('artifact store persists fetched text for later reads', async () => {
     restored.loadManifest(store.toManifest());
     const restoredChunk = await restored.readArtifact({ artifactId: artifact.artifactId, offset: 8, maxChars: 4 });
     assert.equal(restoredChunk.text, '89ab');
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test('artifact store defaults under codemini-global research-artifacts root', () => {
+  const prev = process.env.CODEMINI_GLOBAL_DIR;
+  const fakeGlobal = path.join(os.tmpdir(), `codemini-global-artifacts-${Date.now()}`);
+  process.env.CODEMINI_GLOBAL_DIR = fakeGlobal;
+  try {
+    assert.equal(
+      getResearchArtifactsRoot(),
+      path.join(fakeGlobal, 'research-artifacts'),
+    );
+    assert.equal(
+      researchArtifactDirForScope({
+        sessionId: 'rs_1',
+        scoutRunId: 'sr_1',
+        criterionId: 'c1',
+      }),
+      path.join(fakeGlobal, 'research-artifacts', 'rs_1', 'sr_1', 'c1'),
+    );
+  } finally {
+    if (prev == null) delete process.env.CODEMINI_GLOBAL_DIR;
+    else process.env.CODEMINI_GLOBAL_DIR = prev;
+  }
+});
+
+test('artifact cleanup removes criterion files but keeps siblings until cleaned', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-research-cleanup-'));
+  try {
+    const c1 = createResearchArtifactStore({
+      sessionId: 'rs_clean',
+      scoutRunId: 'sr_1',
+      criterionId: 'c1',
+      rootDir: root,
+    });
+    const c2 = createResearchArtifactStore({
+      sessionId: 'rs_clean',
+      scoutRunId: 'sr_1',
+      criterionId: 'c2',
+      rootDir: root,
+    });
+    const art1 = await c1.persistFetch('https://example.com/1', {
+      final_url: 'https://example.com/1',
+      text: 'body-one',
+    });
+    const art2 = await c2.persistFetch('https://example.com/2', {
+      final_url: 'https://example.com/2',
+      text: 'body-two',
+    });
+    await fs.access(art1.filePath);
+    await fs.access(art2.filePath);
+
+    await c1.cleanup();
+    await assert.rejects(() => fs.access(art1.filePath), /ENOENT/);
+    await fs.access(art2.filePath);
+
+    await cleanupResearchSessionArtifacts('rs_clean', root);
+    await assert.rejects(() => fs.access(art2.filePath), /ENOENT/);
+    await assert.rejects(
+      () => fs.access(path.join(root, 'rs_clean')),
+      /ENOENT/,
+    );
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test('artifact cleanup does not break reads before cleanup is called', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-research-read-'));
+  try {
+    const store = createResearchArtifactStore({
+      sessionId: 'rs_read',
+      scoutRunId: 'sr_1',
+      criterionId: 'c1',
+      rootDir: root,
+    });
+    const artifact = await store.persistFetch('https://example.com/x', {
+      final_url: 'https://example.com/x',
+      text: 'hello-world-body',
+    });
+    const before = await store.readArtifact({ artifactId: artifact.artifactId, maxChars: 20 });
+    assert.equal(before.text, 'hello-world-body');
+    await store.cleanup();
+    await assert.rejects(
+      () => store.readArtifact({ artifactId: artifact.artifactId }),
+      /ENOENT|no such file/i,
+    );
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }
