@@ -1,9 +1,8 @@
 import { randomUUID } from 'node:crypto';
 
-import { runAgentLoop } from './agent-loop.js';
+import { runResearchAgentLoop } from './research-agent-loop.js';
 import { createChatCompletionStream } from './provider/index.js';
 import { resolveConfiguredReasoningEffort } from './provider/reasoning-effort.js';
-import { getBuiltinTools } from './tools.js';
 import { runResearchInvestigation } from './research-investigation.js';
 import {
   appendResearchTimeline,
@@ -19,6 +18,7 @@ import {
   validateResearchPlanByDepth,
 } from './research-store.js';
 import { normalizeGeneratedSessionTitle } from './session-title.js';
+import { getReplyLanguageName } from './reply-language.js';
 
 const activeRuns = new Map();
 
@@ -116,7 +116,7 @@ function parseToolArgs(raw) {
   }
 }
 
-function buildLeadSystemPrompt(phase, session) {
+function buildLeadSystemPrompt(phase, session, config = {}) {
   const budget = session.budget || {};
   const used = session.budgetUsed || {};
   const depth = normalizeResearchPlanDepth(session.plan?.depth, 'standard');
@@ -129,7 +129,7 @@ function buildLeadSystemPrompt(phase, session) {
     session.preferences?.goal ? `Goal: ${session.preferences.goal}` : '',
     session.preferences?.constraints ? `Constraints: ${session.preferences.constraints}` : '',
     `Budget: investigation rounds ${used.waves || 0}/${maxWaves}, searches ${used.searches || 0}/${budget.maxSearches || 25}, fetches ${used.fetches || 0}/${budget.maxFetches || 200}.`,
-    `Each success criterion may use at most ${toolsCap} tool calls (web_search + web_fetch). Investigation runs a single round — gaps become report limitations, not follow-up waves.`,
+    `Each success criterion may use at most ${toolsCap} tool calls (research_web_search + research_web_fetch + successful read_artifact). Investigation runs a single round — gaps become report limitations, not follow-up waves.`,
     `Max parallel scouts: ${budget.maxParallelScouts || 3}.`,
   ];
 
@@ -154,6 +154,8 @@ function buildLeadSystemPrompt(phase, session) {
       'title must be one relevant emoji followed by one space and a concise natural topic label, matching the configured reply language. Do not add a Title: prefix or ending punctuation.',
       'depth must be one of brief|standard|deep.',
       'Each question needs tempId, text, successCriteria, dependsOn (tempId array).',
+      'Use dependsOn only for discover→deep-dive chains (DAG allowed: many questions may depend on one upstream). Parallel independent angles should leave dependsOn empty.',
+      'Dependent Scouts later receive a compact upstream summary (accepted claims + criterion notes), not full transcripts.',
       'Each successCriteria item should be a short string, or {"text":"..."}.',
       'Prefer fewer, sharper sub-questions over a long checklist. Merge overlapping angles.',
       'If submit_research_plan returns ok:false because the plan exceeds the depth budget, silently resubmit a smaller plan that fits — do not explain the rejection to the user.',
@@ -162,6 +164,7 @@ function buildLeadSystemPrompt(phase, session) {
   }
 
   if (phase === 'writing') {
+    const replyLanguage = getReplyLanguageName(config);
     const depthGuidance = depth === 'brief'
       ? [
         'Depth is brief: aim for about 800-2000 Chinese characters (or proportional English length).',
@@ -180,15 +183,19 @@ function buildLeadSystemPrompt(phase, session) {
       ...common,
       'Phase: writing.',
       'Write the final research report from the writing pack only.',
+      `Write the entire report markdown in ${replyLanguage} (Codemini reply-language preference).`,
+      'Synthesize claims, summaries, gaps, and conclusions from the writing pack into that language as needed.',
+      'Keep source URLs unchanged. Keep quoted source snippets faithful to the original language unless a short translation is required for readability.',
       'Hard rules:',
       '- Use only the writing pack. Do not invent facts, dates, or sources outside it.',
       '- Affirmative claims must be supportable by accepted evidence entries in the pack.',
-      '- Uncovered criteria and gap lines in Coverage by criterion must appear as limitations in the report.',
+      '- Treat verify=WARNING / warning / gap lines as caution or limitations in the report.',
+      '- Uncovered criteria and Risks / limitations sections must appear in the report.',
       '- Do not write a vendor marketing checklist.',
       'Soft guidance:',
-      '- Organize by theme (themes may come from sub-questions; merge/rename headings freely).',
-      '- Use criterion coverage as in-section detail, not mandatory section titles.',
+      '- Follow Suggested outline as a starting point; merge or rename headings freely.',
       '- Prefer findings → evidence → limitations for substantive blocks (brief may compress this).',
+      '- When evidence lists multiple sources, prefer the strongest primary ones in prose.',
       ...depthGuidance,
       'Length follows the pack: a thin pack means a shorter report is correct; do not pad.',
       'Do not call run_subagent or submit_research_commit.',
@@ -524,29 +531,10 @@ export async function runResearchLeadTurn({
     }
   }
 
-  let allowNames;
-  if (resolvedPhase === 'planning' || resolvedPhase === 'awaiting_plan_confirm') {
-    allowNames = ['submit_research_plan'];
-  } else if (resolvedPhase === 'writing') {
-    allowNames = ['submit_research_report'];
-  } else {
-    allowNames = [];
-  }
-
-  const bundle = getBuiltinTools({ workspaceRoot, config });
-
   try {
     const writingDetail = detail;
-    const filtered = filterToolBundle(
-      bundle.definitions,
-      bundle.handlers,
-      bundle.deferredDefinitions,
-      allowNames.filter((n) => !n.startsWith('submit_')),
-    );
-    const submitDefs = researchSubmitDefinitions(resolvedPhase);
-    const submitHandlers = createResearchSubmitHandlers(sessionId, resolvedPhase, emit);
-    const definitions = [...filtered.definitions, ...submitDefs];
-    const handlers = { ...filtered.handlers, ...submitHandlers };
+    const definitions = researchSubmitDefinitions(resolvedPhase);
+    const handlers = createResearchSubmitHandlers(sessionId, resolvedPhase, emit);
 
     let leadUserPrompt = userPrompt;
     if (!leadUserPrompt) {
@@ -572,26 +560,18 @@ export async function runResearchLeadTurn({
     emit({ type: 'phase', phase: resolvedPhase });
 
     const emitLead = (evt) => emit({ ...evt, scope: 'lead' });
-    const result = await runAgentLoop({
-      systemPrompt: buildLeadSystemPrompt(resolvedPhase, writingDetail),
+    const result = await runResearchAgentLoop({
+      systemPrompt: buildLeadSystemPrompt(resolvedPhase, writingDetail, config),
       userPrompt: leadUserPrompt,
       model: model || config.model?.name,
       toolDefinitions: definitions,
       toolHandlers: handlers,
-      deferredDefinitions: filtered.deferredDefinitions,
-      toolFormatters: bundle.formatters,
       toolDisplayLabels: {
-        ...(bundle.displayLabels || {}),
         submit_research_plan: 'Submit plan',
         submit_research_commit: 'Commit evidence',
         submit_research_report: 'Submit report',
       },
-      executionMode: 'normal',
-      approvalMode: 'auto',
-      alwaysAllowTools: allowNames,
-      projectIsGit: false,
       toolResultMaxChars: config.context?.tool_result_max_chars || 12000,
-      config: { ...config, workspaceRoot },
       signal: runSignal,
       requestCompletion: makeCompletionFn(config, emitLead),
       onEvent: emitLead,
@@ -613,7 +593,6 @@ export async function runResearchLeadTurn({
   } finally {
     const current = activeRuns.get(sessionId);
     if (current?.runId === runId) activeRuns.delete(sessionId);
-    await bundle.dispose?.();
   }
 }
 

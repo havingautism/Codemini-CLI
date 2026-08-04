@@ -1,5 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  TERMINAL_SCOUT_STATUSES,
+  collectWaveScoutEntries,
+  isActivelyRunningScout,
+  isQuestionSettled,
+  isRealScoutRunId,
+  resolveScoutLive,
+  unresolvedDependencyIds,
+} from "../lib/research-board-scouts.js";
+import {
   ArrowRight,
   BookOpen,
   CaretDown,
@@ -148,6 +157,8 @@ function runStatusHelp(status, toolsCap = 10) {
     running: "deepResearchTipRunning",
     in_progress: "deepResearchTipRunning",
     evaluating: "deepResearchTipEvaluating",
+    verifying: "deepResearchTipVerifying",
+    waiting: "deepResearchTipWaitingDeps",
     done: "deepResearchTipDone",
     completed: "deepResearchTipDone",
     partial: "deepResearchTipScoutPartial",
@@ -176,6 +187,8 @@ function formatResearchStatus(status) {
     in_progress: "deepResearchStatusRunning",
     pending: "deepResearchStatusPending",
     evaluating: "deepResearchStatusEvaluating",
+    verifying: "deepResearchStatusVerifying",
+    waiting: "deepResearchStatusWaitingDeps",
     failed: "deepResearchStatusFailed",
     error: "deepResearchStatusFailed",
     aborted: "deepResearchStatusAborted",
@@ -185,6 +198,14 @@ function formatResearchStatus(status) {
   }[raw];
   if (key) return t(key);
   return String(status || "").replaceAll("_", " ");
+}
+
+function formatVerificationLabel(value) {
+  const raw = String(value || "").trim().toUpperCase();
+  if (raw === "PASS") return t("deepResearchVerifyPass");
+  if (raw === "WARNING") return t("deepResearchVerifyWarning");
+  if (raw === "FAIL") return t("deepResearchVerifyFail");
+  return "";
 }
 
 function formatEvaluationBanner(evaluation = {}) {
@@ -214,18 +235,30 @@ function formatConfidenceLabel(level) {
   return String(level || "");
 }
 
-const SETTLED_QUESTION_STATUSES = new Set(["done", "partial", "blocked"]);
-const TERMINAL_COVERAGE_STATUSES = new Set(["covered", "partial", "blocked", "conflicted"]);
-
-function isQuestionSettled(question) {
-  if (SETTLED_QUESTION_STATUSES.has(String(question?.status || "").toLowerCase())) return true;
-  const criteria = question?.coverage?.criteria || [];
-  if (!criteria.length) return false;
-  return criteria.every((item) => TERMINAL_COVERAGE_STATUSES.has(String(item?.status || "").toLowerCase()));
+/** Human label like "02 · harness design…" for dependency chips. */
+function formatQuestionDepLabel(depId, questions = [], { maxText = 42 } = {}) {
+  const list = Array.isArray(questions) ? questions : [];
+  const index = list.findIndex((item) => item.id === depId || item.tempId === depId);
+  if (index < 0) {
+    const raw = String(depId || "").trim();
+    if (/^rq_/i.test(raw)) return t("deepResearchUpstreamQuestion");
+    return raw.slice(0, 12) || t("deepResearchUpstreamQuestion");
+  }
+  const question = list[index];
+  const num = String(index + 1).padStart(2, "0");
+  const text = String(question?.text || "").trim().replace(/\s+/g, " ");
+  if (!text) return num;
+  const short = text.length > maxText ? `${text.slice(0, maxText)}…` : text;
+  return `${num} · ${short}`;
 }
 
 function researchToolHelp(name, toolsCap = 10) {
-  if (name === "web_search" || name === "web_fetch") {
+  if (
+    name === "web_search"
+    || name === "web_fetch"
+    || name === "research_web_search"
+    || name === "research_web_fetch"
+  ) {
     return t("deepResearchTipTools").replaceAll("{n}", String(toolsCap));
   }
   return "";
@@ -874,6 +907,32 @@ function PlanPane({
                   </ul>
                 </div>
               ) : null}
+              {Array.isArray(q.dependsOn) && q.dependsOn.length ? (
+                <div className="mt-3">
+                  <div className="mb-1.5 text-[10px] font-medium uppercase tracking-[0.08em] text-(--text-muted)">
+                    <ResearchTerm explanation={t("deepResearchTipDependsOn")}>
+                      {t("deepResearchDependsOn")}
+                    </ResearchTerm>
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {q.dependsOn.map((depId) => {
+                      const label = formatQuestionDepLabel(depId, questions);
+                      return (
+                        <span
+                          key={`${q.tempId || q.id}-${depId}`}
+                          title={label}
+                          className="max-w-full truncate rounded-md border border-(--border-default) bg-(--bg-secondary)/50 px-2 py-1 text-[10px] text-(--text-secondary)"
+                        >
+                          {t("deepResearchDependsOnChip").replace("{label}", label)}
+                        </span>
+                      );
+                    })}
+                  </div>
+                  <p className="mt-1.5 text-[10px] leading-4 text-(--text-muted)">
+                    {t("deepResearchDependsOnHint")}
+                  </p>
+                </div>
+              ) : null}
             </div>
           </section>
         ))}
@@ -921,8 +980,12 @@ function summarizeResearchToolArgs(name, args) {
   }
   if (!parsed || typeof parsed !== "object") return "";
   const tool = String(name || "");
-  if (tool === "web_search") return String(parsed.query || parsed.q || "").slice(0, 140);
-  if (tool === "web_fetch") return String(parsed.url || "").slice(0, 160);
+  if (tool === "web_search" || tool === "research_web_search") {
+    return String(parsed.query || parsed.q || "").slice(0, 140);
+  }
+  if (tool === "web_fetch" || tool === "research_web_fetch") {
+    return String(parsed.url || "").slice(0, 160);
+  }
   return "";
 }
 
@@ -937,7 +1000,82 @@ function scoutLiveKey(payload = {}) {
   ).trim();
 }
 
-const LIVE_DRAFT_MAX = 6000;
+const LIVE_DRAFT_MAX = 100000;
+
+function LiveDraftStream({ label, text = "", active = false, placeholder = "" }) {
+  const [open, setOpen] = useState(Boolean(active));
+  useEffect(() => {
+    if (active) setOpen(true);
+  }, [active]);
+  if (!active && !String(text || "").trim()) return null;
+  return (
+    <details
+      open={open}
+      onToggle={(event) => setOpen(event.currentTarget.open)}
+      className="mt-3 rounded-xl border border-(--border-default) bg-(--bg-secondary)/40 px-3 py-2"
+    >
+      <summary className="flex cursor-pointer list-none items-center justify-between gap-2 text-[10px] font-semibold uppercase tracking-[0.08em] text-(--text-muted) [&::-webkit-details-marker]:hidden">
+        <span>{label}</span>
+        <span className="inline-flex items-center gap-1.5 font-medium normal-case tracking-normal">
+          {active ? (
+            <span className="inline-flex items-center gap-1 text-sky-600 dark:text-sky-300">
+              <CircleNotch size={10} className="animate-spin" />
+              {t("deepResearchDraftStreaming")}
+            </span>
+          ) : (
+            <span className="text-(--text-muted)">{t("deepResearchDraftCollapsed")}</span>
+          )}
+          <CaretDown size={12} className={cn("text-(--text-muted) transition-transform", open && "rotate-180")} />
+        </span>
+      </summary>
+      <pre className="mt-2 max-h-72 overflow-auto whitespace-pre-wrap break-words text-[11px] leading-5 text-(--text-secondary)">
+        {String(text || "").trim() ? text : placeholder}
+      </pre>
+    </details>
+  );
+}
+
+function appendLiveDraft(current, field, chunk, max = LIVE_DRAFT_MAX) {
+  const next = `${current[field] || ""}${chunk || ""}`;
+  return next.length > max ? next.slice(-max) : next;
+}
+
+function formatScoutActivityLine(payload = {}) {
+  const tool = payload.displayName || payload.name || "";
+  const detail = summarizeResearchToolArgs(payload.name, payload.arguments);
+  if (tool && detail) return `${tool} (${detail})`;
+  if (tool) return String(tool);
+  return "";
+}
+
+function aggregateInvestigateLeadStatus(liveScouts = {}, fallback = "") {
+  const list = Object.values(liveScouts || {}).filter((item) => (
+    item?.status === "running"
+    && isRealScoutRunId(item?.scoutRunId)
+  ));
+  const waiting = Object.values(liveScouts || {}).filter((item) => item?.status === "waiting");
+  const running = list;
+  if (!running.length && !waiting.length) return fallback;
+  const verifying = running.filter((item) => item.phase === "verifying").length;
+  const parts = [];
+  if (running.length > 1) {
+    parts.push(t("deepResearchParallelRunning").replace("{n}", String(running.length)));
+  } else if (running.length === 1) {
+    parts.push(
+      verifying
+        ? t("deepResearchStatusVerifying")
+        : t("deepResearchPhaseInvestigating"),
+    );
+  }
+  if (waiting.length) {
+    parts.push(t("deepResearchWaitingQueue").replace("{n}", String(waiting.length)));
+  } else if (verifying && running.length > 1) {
+    parts.push(
+      t("deepResearchVerifyingCount").replace("{n}", String(verifying)),
+    );
+  }
+  return parts.filter(Boolean).join(" · ") || fallback;
+}
 
 function legacyWavesFromTimeline(timeline = []) {
   const waves = [];
@@ -1031,15 +1169,6 @@ function humanizeResearchText(text, questions = []) {
   return out;
 }
 
-const TERMINAL_SCOUT_STATUSES = new Set([
-  "done",
-  "partial",
-  "blocked",
-  "failed",
-  "aborted",
-  "error",
-]);
-
 /** Map persisted/runtime names (Scout N / Investigator N) to the active locale. */
 function formatScoutLabel(name, translate = t) {
   const raw = String(name || "").trim();
@@ -1067,13 +1196,23 @@ function mergeScoutCard(scout, live) {
     tools: live?.tools || [],
     handoff: live?.handoff || scout?.handoffMarkdown || "",
     error: live?.error || scout?.error || "",
+    phase: live?.phase || "",
     activeCriterionId: live?.activeCriterionId || live?.criterionId || "",
+    activeCriterionText: live?.activeCriterionText || live?.nextGap?.reason || "",
+    scoutDraft: live?.scoutDraft || live?.draft || "",
+    evaluatorDraft: live?.evaluatorDraft || "",
+    dependsOn: live?.dependsOn || scout?.dependsOn || [],
+    waitingOn: live?.waitingOn || [],
+    dependencySummary: live?.dependencySummary || "",
+    dependencyUpstreams: live?.dependencyUpstreams || [],
+    activityLine: live?.activityLine || "",
   };
 }
 
 function ScoutCard({
   scout,
   question,
+  questions = [],
   live,
   toolsCap = 10,
   evidence = [],
@@ -1087,35 +1226,70 @@ function ScoutCard({
   const acceptedEvidence = (evidence || []).filter((item) =>
     item.status === "accepted" && item.questionId === (card.questionId || question?.id));
   const status = card.status || "running";
+  const waiting = status === "waiting" || (Array.isArray(card.waitingOn) && card.waitingOn.length > 0 && status !== "running" && status !== "done" && status !== "partial" && status !== "failed" && status !== "blocked" && status !== "aborted" && status !== "error");
   const running = status === "running";
+  const verifying = running && card.phase === "verifying";
   const failed = status === "failed" || status === "error" || status === "blocked";
   const completed = status === "done";
   const partial = status === "partial";
-  const cap = Math.max(1, Math.floor(Number(toolsCap) || RESEARCH_TOOLS_PER_CRITERION));
+  const dependsOn = Array.isArray(card.dependsOn) && card.dependsOn.length
+    ? card.dependsOn
+    : (Array.isArray(question?.dependsOn) ? question.dependsOn : []);
+  const dependencySummary = String(card.dependencySummary || "").trim();
+  const dependencyUpstreams = Array.isArray(card.dependencyUpstreams) ? card.dependencyUpstreams : [];
+  const waitingOn = Array.isArray(card.waitingOn) ? card.waitingOn : [];
+  const cap = Math.max(1, Math.floor(Number(card.toolsCap) || Number(toolsCap) || RESEARCH_TOOLS_PER_CRITERION));
   const liveTools = Number(card.toolsUsed);
   const activeCriterionId = String(card.activeCriterionId || "");
+  const activeCriterion = criteria.find((item) => item.id === activeCriterionId);
+  const activeCriterionText = String(
+    card.activeCriterionText
+    || card.nextGap?.reason
+    || activeCriterion?.text
+    || "",
+  ).trim();
   const scoutToolTotal = (Number(card.searchCount) || 0) + (Number(card.fetchCount) || 0);
-  const summaryTools = Number.isFinite(liveTools) && running
-    ? liveTools
-    : (scoutToolTotal || (Number.isFinite(liveTools) ? liveTools : 0));
+  const criterionTools = Number.isFinite(liveTools) ? liveTools : 0;
+  const summaryTools = running
+    ? criterionTools
+    : (scoutToolTotal || criterionTools);
   const criterionToolsTip = t("deepResearchTipCriterionTools").replaceAll("{n}", String(cap));
+  const activityLine = String(card.activityLine || "").trim();
+  const questionList = Array.isArray(questions) && questions.length
+    ? questions
+    : (question ? [question] : []);
+  const scoutStatusText = waiting
+    ? (waitingOn.length
+      ? t("deepResearchWaitingOnUpstream").replace(
+        "{list}",
+        waitingOn.map((id) => formatQuestionDepLabel(id, questionList, { maxText: 28 })).join(" · "),
+      )
+      : (activityLine || t("deepResearchWaitingParallelSlot")))
+    : verifying
+      ? (activityLine || t("deepResearchStatusVerifying"))
+      : (activityLine || (activeCriterionText
+        ? `${t("deepResearchStatusRunning")} · ${activeCriterionText}`
+        : t("deepResearchStatusRunning")));
 
   return (
     <details
-      open={running || failed}
+      open={running || waiting || failed}
       className="group/scout border-b border-(--border-default) last:border-b-0"
     >
       <summary className="flex cursor-pointer list-none items-center gap-3 px-1 py-3.5 [&::-webkit-details-marker]:hidden">
         <span
           className={cn(
             "flex size-5 shrink-0 items-center justify-center",
+            waiting && "text-amber-700 dark:text-amber-300",
             running && "text-sky-600 dark:text-sky-300",
             completed && "text-emerald-700 dark:text-emerald-300",
             partial && "text-amber-800 dark:text-amber-300",
             failed && "text-red-700 dark:text-red-300",
           )}
         >
-          {running ? (
+          {waiting ? (
+            <Hourglass size={14} />
+          ) : running ? (
             <CircleNotch size={14} className="animate-spin" />
           ) : failed || partial ? (
             <WarningCircle size={14} weight="fill" />
@@ -1127,17 +1301,34 @@ function ScoutCard({
           <span className="block truncate text-[13px] font-semibold text-(--text-primary)">
             {question?.text || card.questionText || formatScoutLabel(card.name)}
           </span>
-          <span className="mt-0.5 flex flex-wrap items-center gap-x-2 text-[10px] text-(--text-muted)">
+          <span className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] text-(--text-muted)">
             <ResearchTerm explanation={t("deepResearchTipScout")}>
               {formatScoutLabel(card.name)}
             </ResearchTerm>
-            {activeCriterionId ? (
-              <ResearchTerm explanation={t("deepResearchTipCheckpoint")}>
-                {activeCriterionId}
+            {waiting ? (
+              <ResearchTerm explanation={t("deepResearchTipWaitingDeps")}>
+                {t("deepResearchStatusWaitingDeps")}
               </ResearchTerm>
             ) : null}
-            <ResearchTerm explanation={t("deepResearchTipScoutTools")}>
-              {summaryTools} {t("deepResearchToolsLabel")}
+            {dependsOn.length ? (
+              <ResearchTerm explanation={t("deepResearchTipDependsOn")}>
+                {t("deepResearchDependsOnShort").replace("{n}", String(dependsOn.length))}
+              </ResearchTerm>
+            ) : null}
+            {verifying ? (
+              <ResearchTerm explanation={t("deepResearchTipVerifying")}>
+                {t("deepResearchStatusVerifying")}
+              </ResearchTerm>
+            ) : null}
+            {activeCriterionText || activeCriterionId ? (
+              <ResearchTerm explanation={t("deepResearchTipCheckpoint")}>
+                {activeCriterionText || activeCriterionId}
+              </ResearchTerm>
+            ) : null}
+            <ResearchTerm explanation={running ? criterionToolsTip : t("deepResearchTipScoutTools")}>
+              {running
+                ? `${summaryTools}/${cap} ${t("deepResearchToolsLabel")}`
+                : `${summaryTools} ${t("deepResearchToolsLabel")}`}
             </ResearchTerm>
             <ResearchTerm explanation={t("deepResearchTipEvidence")}>
               {acceptedEvidence.length} {t("deepResearchEvidenceLabel")}
@@ -1145,7 +1336,11 @@ function ScoutCard({
           </span>
         </span>
         <span className="text-[10px] font-medium text-(--text-muted)">
-          <ResearchTerm explanation={runStatusHelp(status, cap)}>{formatResearchStatus(status)}</ResearchTerm>
+          <ResearchTerm explanation={runStatusHelp(waiting ? "waiting" : verifying ? "verifying" : status, cap)}>
+            {waiting
+              ? t("deepResearchStatusWaitingDeps")
+              : formatResearchStatus(verifying ? "verifying" : status)}
+          </ResearchTerm>
         </span>
         <CaretDown
           size={14}
@@ -1154,6 +1349,21 @@ function ScoutCard({
       </summary>
 
       <div className="border-t border-(--separator) px-8 py-4">
+        {(running || waiting) ? (
+          <div className="mb-3 flex items-center gap-2 rounded-xl border border-(--border-default) bg-(--bg-secondary)/50 px-3 py-2 text-[11px] text-(--text-secondary)">
+            {waiting ? (
+              <Hourglass size={13} className="shrink-0 text-amber-600" />
+            ) : (
+              <CircleNotch size={13} className="shrink-0 animate-spin text-sky-500" />
+            )}
+            <span className="min-w-0 flex-1 truncate">{scoutStatusText}</span>
+            {running ? (
+              <span className="shrink-0 tabular-nums text-[10px] text-(--text-muted)">
+                {summaryTools}/{cap} {t("deepResearchToolsLabel")}
+              </span>
+            ) : null}
+          </div>
+        ) : null}
         {criteria.length ? (
           <div>
             <div className="mb-2 text-[10px] font-semibold uppercase tracking-[0.12em] text-(--text-muted)">
@@ -1170,6 +1380,8 @@ function ScoutCard({
                 const atCap = used >= cap;
                 const summaryText = String(criterion.summary || "").trim();
                 const gapText = String(criterion.gap || "").trim();
+                const warningText = String(criterion.warning || "").trim();
+                const verificationLabel = formatVerificationLabel(criterion.verification);
                 return (
                   <div
                     key={criterion.id}
@@ -1183,13 +1395,25 @@ function ScoutCard({
                         {criterion.text || criterion.id}
                       </ResearchTerm>
                       <span className="shrink-0 tabular-nums text-(--text-muted)">
-                        {formatResearchStatus(criterion.status)} · {used}/{cap}{atCap ? ` · ${t("deepResearchSearchCapReached")}` : ""}
+                        {isActive && verifying
+                          ? formatResearchStatus("verifying")
+                          : formatResearchStatus(criterion.status)}
+                        {verificationLabel ? ` · ${verificationLabel}` : ""}
+                        {" · "}
+                        {used}/{cap}
+                        {atCap ? ` · ${t("deepResearchSearchCapReached")}` : ""}
                       </span>
                     </div>
                     {summaryText ? (
                       <div className="min-w-0 break-words text-(--text-secondary) [overflow-wrap:anywhere]">
                         <span className="font-medium text-(--text-muted)">{t("deepResearchSummary")}: </span>
                         {summaryText}
+                      </div>
+                    ) : null}
+                    {warningText ? (
+                      <div className="min-w-0 break-words text-amber-700 [overflow-wrap:anywhere] dark:text-amber-300">
+                        <ResearchTerm explanation={t("deepResearchTipWarning")}>{t("deepResearchWarning")}</ResearchTerm>
+                        {`: ${warningText}`}
                       </div>
                     ) : null}
                     {gapText ? (
@@ -1245,45 +1469,106 @@ function ScoutCard({
               </ResearchTerm>
             </div>
             <div className="space-y-2">
-              {acceptedEvidence.slice(0, 8).map((item) => (
-                <div key={item.id} className="rounded-xl border border-(--border-default) bg-(--bg-secondary)/35 px-3 py-2.5">
-                  <div className="flex items-start gap-2">
-                    <Database size={13} className="mt-0.5 shrink-0 text-(--text-muted)" />
-                    <div className="min-w-0 flex-1">
-                      <div className="text-[11px] leading-5 text-(--text-primary)">{item.claim}</div>
-                      <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[9px] text-(--text-muted)">
-                        <span>{item.id}</span>
-                        {item.criterionIds?.length ? (
-                          <>
-                            <span>·</span>
-                            <span>{item.criterionIds.join(", ")}</span>
-                          </>
-                        ) : null}
-                        {item.url ? (
-                          <>
-                            <span>·</span>
-                            <span className="truncate">{item.url}</span>
-                          </>
-                        ) : null}
+              {acceptedEvidence.slice(0, 8).map((item) => {
+                const sources = Array.isArray(item.sources) && item.sources.length
+                  ? item.sources
+                  : (item.url || item.snippet
+                    ? [{ url: item.url || "", snippet: item.snippet || "" }]
+                    : []);
+                return (
+                  <div key={item.id} className="rounded-xl border border-(--border-default) bg-(--bg-secondary)/35 px-3 py-2.5">
+                    <div className="flex items-start gap-2">
+                      <Database size={13} className="mt-0.5 shrink-0 text-(--text-muted)" />
+                      <div className="min-w-0 flex-1">
+                        <div className="text-[11px] leading-5 text-(--text-primary)">{item.claim}</div>
+                        <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[9px] text-(--text-muted)">
+                          <span>{item.id}</span>
+                          {item.criterionIds?.length ? (
+                            <>
+                              <span>·</span>
+                              <span>{item.criterionIds.join(", ")}</span>
+                            </>
+                          ) : null}
+                        </div>
+                        {sources.map((source, sourceIndex) => (
+                          <div key={`${item.id}-src-${sourceIndex}`} className="mt-1 text-[9px] text-(--text-muted)">
+                            {source.snippet ? <div className="leading-4">{source.snippet}</div> : null}
+                            {source.url ? <div className="truncate">{source.url}</div> : null}
+                          </div>
+                        ))}
                       </div>
                     </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         ) : null}
 
-        {card.draft && !card.handoff ? (
-          <details className="mt-3 rounded-xl bg-(--bg-secondary)/50 px-3 py-2">
-            <summary className="cursor-pointer text-[10px] font-medium text-(--text-muted)">
-              {t("deepResearchScoutDraft")}
-            </summary>
-            <pre className="mt-2 max-h-36 overflow-auto whitespace-pre-wrap text-[10px] leading-5 text-(--text-secondary)">
-              {String(card.draft).slice(-LIVE_DRAFT_MAX)}
-            </pre>
-          </details>
+        {(dependsOn.length || waitingOn.length || dependencySummary) ? (
+          <div className="mb-3 rounded-xl border border-amber-500/20 bg-amber-500/5 px-3 py-2.5">
+            <div className="text-[10px] font-semibold uppercase tracking-[0.08em] text-amber-800 dark:text-amber-200">
+              <ResearchTerm explanation={t("deepResearchTipDependsOn")}>
+                {t("deepResearchDependencyContext")}
+              </ResearchTerm>
+            </div>
+            {waiting && waitingOn.length ? (
+              <p className="mt-1.5 text-[11px] leading-5 text-(--text-secondary)">
+                {t("deepResearchWaitingOnUpstream").replace(
+                  "{list}",
+                  waitingOn.map((id) => {
+                    const upstream = dependencyUpstreams.find((item) => item.questionId === id);
+                    return upstream?.text || id;
+                  }).join(" · ") || waitingOn.join(" · "),
+                )}
+              </p>
+            ) : null}
+            {dependsOn.length ? (
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {dependsOn.map((depId) => {
+                  const upstream = dependencyUpstreams.find((item) => item.questionId === depId);
+                  const label = formatQuestionDepLabel(depId, questionList);
+                  const claims = Number(upstream?.claimCount);
+                  return (
+                    <span
+                      key={depId}
+                      title={label}
+                      className="max-w-full truncate rounded-md border border-(--border-default) bg-(--bg-primary)/60 px-2 py-1 text-[10px] text-(--text-secondary)"
+                    >
+                      {label}
+                      {Number.isFinite(claims) && claims > 0
+                        ? ` · ${claims} ${t("deepResearchCandidatesLabel")}`
+                        : ""}
+                    </span>
+                  );
+                })}
+              </div>
+            ) : null}
+            {dependencySummary ? (
+              <details className="mt-2">
+                <summary className="cursor-pointer text-[10px] font-medium text-(--text-muted)">
+                  {t("deepResearchDependencySummary")}
+                </summary>
+                <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-words text-[10px] leading-5 text-(--text-secondary)">
+                  {dependencySummary}
+                </pre>
+              </details>
+            ) : null}
+          </div>
         ) : null}
+
+        <LiveDraftStream
+          label={t("deepResearchScoutDraft")}
+          text={card.scoutDraft || card.draft || ""}
+          active={running && !waiting && !verifying && !card.handoff}
+          placeholder={t("deepResearchDraftWaiting")}
+        />
+        <LiveDraftStream
+          label={t("deepResearchEvaluatorDraft")}
+          text={card.evaluatorDraft || ""}
+          active={running && verifying && !card.handoff}
+          placeholder={t("deepResearchDraftWaiting")}
+        />
 
         {card.handoff ? (
           <details className="mt-3 rounded-xl border border-(--border-default) px-3 py-2">
@@ -1345,21 +1630,17 @@ function InvestigationBoard({
       ) : null}
 
       {displayWaves.map((wave, index) => {
-        const liveForWave = liveList.filter((item) =>
-          item.waveId ? item.waveId === wave.id : Number(item.wave || 1) === Number(wave.wave || 1));
-        const scouts = [...(wave.scouts || [])];
-        for (const live of liveForWave) {
-          if (!scouts.some((scout) => scout.id === live.scoutRunId || scout.questionId === live.questionId)) {
-            scouts.push({
-              id: live.scoutRunId || live.questionId,
-              questionId: live.questionId,
-              name: live.name,
-              status: live.status,
-              coverage: live.coverage || [],
-            });
-          }
-        }
-        const completed = scouts.filter((scout) => TERMINAL_SCOUT_STATUSES.has(scout.status)).length;
+        const visibleScouts = collectWaveScoutEntries({
+          wave,
+          waveIndex: index,
+          waveCount: displayWaves.length,
+          liveList,
+          questions,
+        });
+        const completed = visibleScouts.filter((scout) => {
+          const live = resolveScoutLive(scout, liveScouts, liveList);
+          return TERMINAL_SCOUT_STATUSES.has(live?.status || scout.status);
+        }).length;
         const evaluation = wave.evaluation || {};
         const evaluationBanner = formatEvaluationBanner(evaluation);
         const evaluationReason = humanizeResearchText(evaluationBanner.reasonLabel || "", questions);
@@ -1381,7 +1662,7 @@ function InvestigationBoard({
                     </span>
                   </div>
                   <div className="mt-1 text-[10px] text-(--text-muted)">
-                    {completed}/{Math.max(scouts.length, wave.targets?.length || 0)}{" "}
+                    {completed}/{Math.max(visibleScouts.length, 1)}{" "}
                     <ResearchTerm explanation={t("deepResearchTipScout")}>
                       {t("deepResearchWavesLabel")}
                     </ResearchTerm>
@@ -1419,12 +1700,8 @@ function InvestigationBoard({
                 )}
               </div>
               <div className="border-t border-(--separator)">
-                {scouts.length ? scouts.map((scout) => {
-                  const live = liveScouts[scout.id]
-                    || liveList.find((item) =>
-                      item.scoutRunId === scout.id
-                      || (item.questionId === scout.questionId
-                        && (!item.waveId || item.waveId === wave.id)));
+                {visibleScouts.length ? visibleScouts.map((scout) => {
+                  const live = resolveScoutLive(scout, liveScouts, liveList);
                   const liveForCard = wave.status === "completed"
                     && live?.status === "running"
                     && TERMINAL_SCOUT_STATUSES.has(scout.status)
@@ -1435,6 +1712,7 @@ function InvestigationBoard({
                       key={scout.id || scout.questionId}
                       scout={scout}
                       question={questionById.get(scout.questionId)}
+                      questions={questions}
                       live={liveForCard}
                       toolsCap={toolsCap}
                       evidence={evidence}
@@ -1453,7 +1731,20 @@ function InvestigationBoard({
   );
 }
 
-function QuestionsBoard({ questions = [] }) {
+function QuestionsBoard({ questions = [], liveScouts = {} }) {
+  const liveByQuestion = useMemo(() => {
+    const map = new Map();
+    for (const live of Object.values(liveScouts || {})) {
+      const qid = String(live?.questionId || "").trim();
+      if (!qid) continue;
+      const prev = map.get(qid);
+      if (!prev || live.status === "running" || (live.status === "waiting" && prev.status !== "running")) {
+        map.set(qid, live);
+      }
+    }
+    return map;
+  }, [liveScouts]);
+
   return (
     <section className="min-w-0 overflow-hidden">
       <div className="mb-2 text-[12px] font-semibold text-(--text-primary)">
@@ -1465,25 +1756,68 @@ function QuestionsBoard({ questions = [] }) {
         <div className="text-[12px] text-(--text-muted)">—</div>
       ) : (
         <div className="divide-y divide-(--separator) border-y border-(--border-default)">
-          {questions.map((q, index) => (
-          <div key={q.id} className="grid min-w-0 grid-cols-[24px_minmax(0,1fr)_auto] gap-2 py-2.5">
-            <span className="text-[10px] tabular-nums text-(--text-muted)">{String(index + 1).padStart(2, "0")}</span>
-            <div className="min-w-0">
-              <div className="break-words text-[11px] leading-5 text-(--text-primary) [overflow-wrap:anywhere]">
-                {q.text}
-              </div>
-              {q.gaps?.length ? (
-                <div className="mt-1 break-words text-[10px] leading-4 text-amber-700 [overflow-wrap:anywhere] dark:text-amber-300">
-                  <ResearchTerm explanation={t("deepResearchTipGaps")}>{t("deepResearchGaps")}</ResearchTerm>
-                  {`: ${q.gaps.join("; ")}`}
+          {questions.map((q, index) => {
+            const live = liveByQuestion.get(q.id);
+            const unresolved = unresolvedDependencyIds(q, questions);
+            const activelyRunning = isActivelyRunningScout(live);
+            const queuedWaiting = live?.status === "waiting"
+              || (unresolved.length > 0 && !isQuestionSettled(q) && !activelyRunning);
+            const deps = Array.isArray(q.dependsOn) ? q.dependsOn : [];
+            const statusKey = queuedWaiting
+              ? "waiting"
+              : (activelyRunning ? "running" : q.status);
+            return (
+              <div key={q.id} className="grid min-w-0 grid-cols-[24px_minmax(0,1fr)_auto] gap-2 py-2.5">
+                <span className="text-[10px] tabular-nums text-(--text-muted)">
+                  {String(index + 1).padStart(2, "0")}
+                </span>
+                <div className="min-w-0">
+                  <div className="break-words text-[11px] leading-5 text-(--text-primary) [overflow-wrap:anywhere]">
+                    {q.text}
+                  </div>
+                  {deps.length ? (
+                    <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[10px] text-(--text-muted)">
+                      <ResearchTerm explanation={t("deepResearchTipDependsOn")}>
+                        {t("deepResearchDependsOn")}
+                      </ResearchTerm>
+                      {deps.map((depId) => (
+                        <span
+                          key={`${q.id}-${depId}`}
+                          title={formatQuestionDepLabel(depId, questions, { maxText: 80 })}
+                          className="max-w-[14rem] truncate rounded-md border border-(--border-default) bg-(--bg-secondary)/40 px-1.5 py-0.5 text-(--text-secondary)"
+                        >
+                          {formatQuestionDepLabel(depId, questions, { maxText: 28 })}
+                        </span>
+                      ))}
+                    </div>
+                  ) : null}
+                  {queuedWaiting && unresolved.length ? (
+                    <div className="mt-1 text-[10px] leading-4 text-amber-700 dark:text-amber-300">
+                      {t("deepResearchWaitingOnUpstream").replace(
+                        "{list}",
+                        unresolved
+                          .map((id) => formatQuestionDepLabel(id, questions, { maxText: 24 }))
+                          .join(" · "),
+                      )}
+                    </div>
+                  ) : null}
+                  {q.gaps?.length ? (
+                    <div className="mt-1 break-words text-[10px] leading-4 text-amber-700 [overflow-wrap:anywhere] dark:text-amber-300">
+                      <ResearchTerm explanation={t("deepResearchTipGaps")}>{t("deepResearchGaps")}</ResearchTerm>
+                      {`: ${q.gaps.join("; ")}`}
+                    </div>
+                  ) : null}
                 </div>
-              ) : null}
-            </div>
-              <span className="shrink-0 text-[10px] font-medium text-(--text-muted)">
-                <ResearchTerm explanation={runStatusHelp(q.status)}>{formatResearchStatus(q.status)}</ResearchTerm>
-              </span>
-          </div>
-          ))}
+                <span className="shrink-0 text-[10px] font-medium text-(--text-muted)">
+                  <ResearchTerm explanation={runStatusHelp(statusKey)}>
+                    {queuedWaiting
+                      ? t("deepResearchStatusWaitingDeps")
+                      : formatResearchStatus(statusKey)}
+                  </ResearchTerm>
+                </span>
+              </div>
+            );
+          })}
         </div>
       )}
     </section>
@@ -1722,6 +2056,13 @@ function DetailBody({
   const showPlan = activeStep === "plan";
   const showInvestigate = activeStep === "investigate";
   const showReport = activeStep === "report";
+  const headerStatus = (() => {
+    if (!running) return "";
+    if (planning) return leadStatus || t("deepResearchPlanning");
+    if (phase === "writing") return leadStatus || t("deepResearchWriting");
+    const aggregate = aggregateInvestigateLeadStatus(liveScouts, "");
+    return aggregate || leadStatus || t("deepResearchRunning");
+  })();
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
@@ -1730,9 +2071,9 @@ function DetailBody({
         <div className="flex flex-wrap items-center gap-2">
           {running ? (
             <>
-              <span className="inline-flex items-center gap-1.5 text-[12px] text-(--text-secondary)">
-                <CircleNotch size={14} className="animate-spin" />
-                {leadStatus || t("deepResearchRunning")}
+              <span className="inline-flex max-w-[min(420px,55vw)] items-center gap-1.5 text-[12px] text-(--text-secondary)">
+                <CircleNotch size={14} className="shrink-0 animate-spin" />
+                <span className="truncate">{headerStatus}</span>
               </span>
               <button
                 type="button"
@@ -1876,14 +2217,19 @@ function DetailBody({
                 questions={session?.questions || []}
                 evidence={session?.evidence || []}
                 liveScouts={liveScouts}
-                leadStatus={running ? leadStatus : ""}
+                leadStatus={running
+                  ? (aggregateInvestigateLeadStatus(liveScouts, leadStatus) || leadStatus)
+                  : ""}
                 toolsCap={researchSessionToolsCap(session)}
               />
             </section>
 
             <div className="flex flex-col gap-6 border-t border-(--border-default) pt-5">
               <div className="grid gap-5 lg:grid-cols-2">
-                <QuestionsBoard questions={session?.questions || []} />
+                <QuestionsBoard
+                  questions={session?.questions || []}
+                  liveScouts={liveScouts}
+                />
                 <LimitationsBoard
                   limitations={latestWaveLimitations(session)}
                   questions={session?.questions || []}
@@ -2084,6 +2430,8 @@ export function ResearchPanel() {
           status: "running",
           tools: [],
           draft: "",
+          scoutDraft: "",
+          evaluatorDraft: "",
           handoff: "",
           questionText: "",
         };
@@ -2172,19 +2520,70 @@ export function ResearchPanel() {
 
         if (payload.type === "scout:start") {
           const key = scoutLiveKey(payload);
-          upsertLiveScout(key, {
-            scoutRunId: payload.scoutRunId || key,
-            waveId: payload.waveId || "",
-            wave: payload.wave || 1,
-            questionId: payload.questionId || key,
-            name: payload.name || t("deepResearchScout"),
-            questionText: payload.questionText || "",
-            status: "running",
-            tools: [],
-            draft: "",
-            handoff: "",
-            error: "",
+          const questionId = String(payload.questionId || "").trim();
+          setLiveScouts((prev) => {
+            const next = { ...prev };
+            // Drop the queued placeholder keyed by questionId once the real scout run starts.
+            if (questionId && next[questionId]?.status === "waiting") {
+              delete next[questionId];
+            }
+            next[key] = {
+              scoutRunId: payload.scoutRunId || key,
+              waveId: payload.waveId || "",
+              wave: payload.wave || 1,
+              questionId: payload.questionId || key,
+              name: payload.name || t("deepResearchScout"),
+              questionText: payload.questionText || "",
+              status: "running",
+              phase: "investigating",
+              tools: [],
+              draft: "",
+              scoutDraft: "",
+              evaluatorDraft: "",
+              handoff: "",
+              error: "",
+              dependsOn: Array.isArray(payload.dependsOn) ? payload.dependsOn : [],
+              waitingOn: [],
+              activityLine: t("deepResearchStatusRunning"),
+            };
+            return next;
           });
+        }
+
+        if (payload.type === "scout:waiting_deps") {
+          const key = String(payload.questionId || "").trim();
+          if (key) {
+            upsertLiveScout(key, (current) => ({
+              ...current,
+              waveId: payload.waveId || current.waveId,
+              wave: payload.wave || current.wave,
+              questionId: payload.questionId || current.questionId,
+              questionText: payload.questionText || current.questionText,
+              name: current.name || t("deepResearchScout"),
+              status: current.status === "running" ? "running" : "waiting",
+              dependsOn: Array.isArray(payload.dependsOn) ? payload.dependsOn : (current.dependsOn || []),
+              waitingOn: Array.isArray(payload.waitingOn) ? payload.waitingOn : [],
+            }));
+          }
+        }
+
+        if (payload.type === "scout:dependency_context") {
+          const key = scoutLiveKey(payload);
+          // Only attach to a real scout run — never promote a questionId waiting placeholder.
+          if (!payload.scoutRunId && !isRealScoutRunId(key)) {
+            // ignore
+          } else {
+            upsertLiveScout(key, (current) => ({
+              ...current,
+              status: "running",
+              scoutRunId: payload.scoutRunId || current.scoutRunId || key,
+              dependsOn: Array.isArray(payload.dependsOn) ? payload.dependsOn : (current.dependsOn || []),
+              dependencyUpstreams: Array.isArray(payload.upstreams) ? payload.upstreams : [],
+              dependencySummary: payload.summary || current.dependencySummary || "",
+              waitingOn: [],
+              activityLine: t("deepResearchStatusRunning"),
+            }));
+          }
         }
 
         if (payload.scope === "scout") {
@@ -2193,6 +2592,12 @@ export function ResearchPanel() {
             upsertLiveScout(key, (current) => ({
               ...current,
               status: "running",
+              waitingOn: [],
+              activityLine: formatScoutActivityLine(payload)
+                || payload.displayName
+                || payload.name
+                || current.activityLine
+                || "",
               tools: [
                 ...(current.tools || []).filter((step) => step.id !== payload.id),
                 {
@@ -2204,13 +2609,15 @@ export function ResearchPanel() {
                 },
               ].slice(-12),
             }));
-            setLeadStatus(
-              `${formatScoutLabel(payload.scoutName)} · ${payload.displayName || payload.name || "tool"}`,
-            );
           }
           if (payload.type === "tool:end" || payload.type === "tool:error") {
             upsertLiveScout(key, (current) => ({
               ...current,
+              activityLine: payload.type === "tool:error"
+                ? `${payload.displayName || payload.name || "tool"} · error`
+                : (current.phase === "verifying"
+                  ? t("deepResearchStatusVerifying")
+                  : t("deepResearchStatusRunning")),
               tools: (current.tools || []).map((step) =>
                 step.id === payload.id
                   ? {
@@ -2221,48 +2628,160 @@ export function ResearchPanel() {
                   : step),
             }));
           }
+          if (payload.type === "assistant:start") {
+            const agent = payload.agent === "evaluator" || payload.agent === "scout"
+              ? payload.agent
+              : null;
+            upsertLiveScout(key, (current) => {
+              const target = agent
+                || (current.phase === "verifying" ? "evaluator" : "scout");
+              const field = target === "evaluator" ? "evaluatorDraft" : "scoutDraft";
+              const prev = String(current[field] || (target === "scout" ? current.draft : "") || "");
+              const activityLine = target === "evaluator"
+                ? t("deepResearchStatusVerifying")
+                : t("deepResearchDraftStreaming");
+              if (!prev.trim()) {
+                return { ...current, activityLine };
+              }
+              const next = appendLiveDraft(current, field, "\n\n——\n\n");
+              if (target === "evaluator") {
+                return { ...current, evaluatorDraft: next, activityLine };
+              }
+              return { ...current, scoutDraft: next, draft: next, activityLine };
+            });
+          }
           if (payload.type === "assistant:delta" && payload.text) {
-            upsertLiveScout(key, (current) => ({
-              ...current,
-              draft: `${current.draft || ""}${payload.text}`.slice(-LIVE_DRAFT_MAX),
-            }));
+            const agent = payload.agent === "evaluator" || payload.agent === "scout"
+              ? payload.agent
+              : null;
+            upsertLiveScout(key, (current) => {
+              const target = agent
+                || (current.phase === "verifying" ? "evaluator" : "scout");
+              if (target === "evaluator") {
+                const evaluatorDraft = appendLiveDraft(current, "evaluatorDraft", payload.text);
+                return { ...current, evaluatorDraft };
+              }
+              const scoutDraft = appendLiveDraft(current, "scoutDraft", payload.text);
+              return {
+                ...current,
+                scoutDraft,
+                draft: scoutDraft,
+              };
+            });
+          }
+          if (payload.type === "assistant:reasoning_delta" && payload.text) {
+            const agent = payload.agent === "evaluator" || payload.agent === "scout"
+              ? payload.agent
+              : null;
+            upsertLiveScout(key, (current) => {
+              const target = agent
+                || (current.phase === "verifying" ? "evaluator" : "scout");
+              const field = target === "evaluator" ? "evaluatorDraft" : "scoutDraft";
+              const next = appendLiveDraft(current, field, payload.text);
+              if (target === "evaluator") return { ...current, evaluatorDraft: next };
+              return { ...current, scoutDraft: next, draft: next };
+            });
+          }
+          if (payload.type === "assistant:done" && payload.text) {
+            const agent = payload.agent === "evaluator" || payload.agent === "scout"
+              ? payload.agent
+              : null;
+            upsertLiveScout(key, (current) => {
+              const target = agent
+                || (current.phase === "verifying" ? "evaluator" : "scout");
+              const full = String(payload.text || "");
+              if (!full.trim()) return current;
+              // Only backfill when streaming deltas were empty for this turn buffer.
+              if (target === "evaluator") {
+                if (String(current.evaluatorDraft || "").trim()) return current;
+                return { ...current, evaluatorDraft: full.slice(-LIVE_DRAFT_MAX) };
+              }
+              if (String(current.scoutDraft || current.draft || "").trim()) return current;
+              const scoutDraft = full.slice(-LIVE_DRAFT_MAX);
+              return { ...current, scoutDraft, draft: scoutDraft };
+            });
           }
           if (payload.type === "criterion:start" || payload.type === "scout:checkpoint_start") {
+            const criterionId = payload.criterionId
+              || payload.targetGap?.criterionId
+              || "";
+            const criterionText = payload.criterionText
+              || payload.targetGap?.reason
+              || "";
             upsertLiveScout(key, (current) => ({
               ...current,
               cycle: payload.cycle,
-              activeCriterionId: payload.criterionId
-                || payload.targetGap?.criterionId
-                || current.activeCriterionId,
+              phase: "investigating",
+              activeCriterionId: criterionId || current.activeCriterionId,
+              activeCriterionText: criterionText || current.activeCriterionText,
               nextGap: payload.targetGap || current.nextGap,
               toolsCap: payload.toolsCap ?? current.toolsCap,
               toolsUsed: 0,
-              criterionId: payload.criterionId
-                || payload.targetGap?.criterionId
-                || current.criterionId,
+              criterionId: criterionId || current.criterionId,
+              draft: "",
+              scoutDraft: "",
+              evaluatorDraft: "",
+              activityLine: criterionText || criterionId || t("deepResearchCriterionPass"),
             }));
-            setLeadStatus(
-              `${formatScoutLabel(payload.scoutName)} · ${
-                payload.criterionId || payload.targetGap?.criterionId || t("deepResearchCriterionPass")
-              }`,
-            );
           }
-          if (payload.type === "criterion:coverage" || payload.type === "scout:checkpoint") {
+          if (payload.type === "criterion:verify_start") {
+            const criterionId = payload.criterionId || "";
+            const criterionText = payload.criterionText || "";
             upsertLiveScout(key, (current) => ({
               ...current,
-              cycle: payload.cycle,
-              coverage: payload.coverage?.criteria || payload.coverage || current.coverage,
-              nextGap: payload.nextGap || null,
+              phase: "verifying",
+              activeCriterionId: criterionId || current.activeCriterionId,
+              activeCriterionText: criterionText || current.activeCriterionText,
               candidateCount: payload.candidateCount ?? current.candidateCount,
-              searchCount: payload.searchCount ?? current.searchCount,
-              fetchCount: payload.fetchCount ?? current.fetchCount,
-              toolsUsed: payload.toolsUsed ?? payload.toolCount ?? current.toolsUsed,
-              toolsCap: payload.toolsCap ?? current.toolsCap,
-              activeCriterionId: payload.criterionId || current.activeCriterionId,
-              status: payload.type === "criterion:coverage"
-                ? "running"
-                : (payload.decision === "continue" ? "running" : payload.decision),
+              evaluatorDraft: "",
+              activityLine: criterionText
+                ? `${t("deepResearchStatusVerifying")} · ${criterionText}`
+                : t("deepResearchStatusVerifying"),
             }));
+          }
+          if (payload.type === "criterion:verify_budget") {
+            upsertLiveScout(key, (current) => ({
+              ...current,
+              phase: "verifying",
+              verifyReads: payload.artifactReads,
+              verifyReadsCap: payload.artifactReadsCap,
+            }));
+          }
+          if (payload.type === "criterion:coverage" || payload.type === "scout:checkpoint") {
+            upsertLiveScout(key, (current) => {
+              const coverage = payload.coverage?.criteria || payload.coverage || current.coverage;
+              const nextCoverage = Array.isArray(coverage)
+                ? coverage.map((item) => (
+                  item?.id === payload.criterionId
+                    ? {
+                      ...item,
+                      status: payload.status || item.status,
+                      summary: payload.summary ?? item.summary,
+                      gap: payload.gap ?? item.gap,
+                      warning: payload.warning ?? item.warning,
+                      verification: payload.verification ?? item.verification,
+                      toolCount: payload.toolCount ?? payload.toolsUsed ?? item.toolCount,
+                    }
+                    : item
+                ))
+                : coverage;
+              return {
+                ...current,
+                cycle: payload.cycle,
+                phase: "investigating",
+                coverage: nextCoverage,
+                nextGap: payload.nextGap || null,
+                candidateCount: payload.candidateCount ?? current.candidateCount,
+                searchCount: payload.searchCount ?? current.searchCount,
+                fetchCount: payload.fetchCount ?? current.fetchCount,
+                toolsUsed: payload.toolsUsed ?? payload.toolCount ?? current.toolsUsed,
+                toolsCap: payload.toolsCap ?? current.toolsCap,
+                activeCriterionId: payload.criterionId || current.activeCriterionId,
+                status: payload.type === "criterion:coverage"
+                  ? "running"
+                  : (payload.decision === "continue" ? "running" : payload.decision),
+              };
+            });
             loadSession(selectedId).catch(() => {});
           }
           if (payload.type === "evidence:accepted" || payload.type === "finding") {
@@ -2284,13 +2803,44 @@ export function ResearchPanel() {
             status: payload.status || "done",
             handoff: payload.handoff || current.handoff,
             draft: "",
+            scoutDraft: current.scoutDraft || current.draft || "",
+            evaluatorDraft: current.evaluatorDraft || "",
           }));
         }
 
         if (payload.type === "batch:start") {
-          setLeadStatus(
-            t("deepResearchBatchRunning").replace("{n}", String(payload.questionIds?.length || 0)),
-          );
+          const waiting = Array.isArray(payload.waiting) ? payload.waiting : [];
+          const runningCount = Array.isArray(payload.questionIds) ? payload.questionIds.length : 0;
+          for (const item of waiting) {
+            const key = String(item.questionId || "").trim();
+            if (!key) continue;
+            upsertLiveScout(key, (current) => ({
+              ...current,
+              waveId: payload.waveId || current.waveId,
+              wave: payload.wave || current.wave,
+              questionId: item.questionId || current.questionId,
+              questionText: item.questionText || current.questionText,
+              name: current.name || t("deepResearchScout"),
+              status: current.status === "running" ? "running" : "waiting",
+              dependsOn: Array.isArray(item.dependsOn) ? item.dependsOn : (current.dependsOn || []),
+              waitingOn: Array.isArray(item.waitingOn) ? item.waitingOn : [],
+              activityLine: Array.isArray(item.waitingOn) && item.waitingOn.length
+                ? t("deepResearchStatusWaitingDeps")
+                : t("deepResearchWaitingParallelSlot"),
+            }));
+          }
+          // Aggregate header status is derived from liveScouts; keep a coarse fallback.
+          if (waiting.length && runningCount <= 1) {
+            setLeadStatus(
+              t("deepResearchBatchSerialDeps")
+                .replace("{running}", String(runningCount))
+                .replace("{waiting}", String(waiting.length)),
+            );
+          } else {
+            setLeadStatus(
+              t("deepResearchBatchRunning").replace("{n}", String(runningCount)),
+            );
+          }
         }
         if (payload.type === "wave:evaluation") {
           const waveId = payload.waveId || "";

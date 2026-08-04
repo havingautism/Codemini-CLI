@@ -3,7 +3,7 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { getBaseConfigDir, getProjectIndexDir } from './paths.js';
 
-const GLOBAL_SCHEMA_VERSION = 11;
+const GLOBAL_SCHEMA_VERSION = 12;
 const PROJECT_SCHEMA_VERSION = 5;
 const databases = new Map();
 
@@ -217,7 +217,8 @@ function createGlobalSchema(db, currentVersion = 0) {
       status TEXT NOT NULL DEFAULT 'accepted',
       created_from TEXT NOT NULL DEFAULT 'scout_handoff',
       origin_candidate_id TEXT NOT NULL DEFAULT '',
-      criterion_ids_json TEXT NOT NULL DEFAULT '[]'
+      criterion_ids_json TEXT NOT NULL DEFAULT '[]',
+      sources_json TEXT NOT NULL DEFAULT '[]'
     ) STRICT;
     CREATE INDEX IF NOT EXISTS research_evidence_session_idx
       ON research_evidence(session_id, created_at DESC);
@@ -311,6 +312,15 @@ function createGlobalSchema(db, currentVersion = 0) {
       .map((row) => String(row.name || ''));
     if (evidenceColumns.length > 0 && !evidenceColumns.includes('criterion_ids_json')) {
       db.exec(`ALTER TABLE research_evidence ADD COLUMN criterion_ids_json TEXT NOT NULL DEFAULT '[]'`);
+    }
+  }
+  if (currentVersion < 12) {
+    const evidenceColumns = db
+      .prepare(`SELECT name FROM pragma_table_info('research_evidence')`)
+      .all()
+      .map((row) => String(row.name || ''));
+    if (evidenceColumns.length > 0 && !evidenceColumns.includes('sources_json')) {
+      db.exec(`ALTER TABLE research_evidence ADD COLUMN sources_json TEXT NOT NULL DEFAULT '[]'`);
     }
   }
   db.exec(`

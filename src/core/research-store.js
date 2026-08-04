@@ -16,7 +16,7 @@ export const DEFAULT_BUDGET_USED = Object.freeze({
 });
 
 /**
- * Soft-stop Scout: max tool calls (web_search + web_fetch) per success criterion.
+ * Soft-stop Scout: max tool calls (research_web_search + research_web_fetch + successful read_artifact) per success criterion.
  * Depth no longer gates per-criterion search counts.
  */
 export const RESEARCH_SCOUT_TOOLS_PER_CRITERION = 10;
@@ -468,9 +468,40 @@ function mapQuestion(row) {
   };
 }
 
+function normalizeEvidenceSources(item = {}) {
+  const raw = Array.isArray(item?.sources) && item.sources.length
+    ? item.sources
+    : (String(item?.url || '').trim() || String(item?.snippet || '').trim()
+      ? [{
+        url: item.url,
+        snippet: item.snippet,
+        artifactId: item.artifactId || '',
+      }]
+      : []);
+  const seen = new Set();
+  const sources = [];
+  for (const source of raw) {
+    const url = String(source?.url || '').trim().replace(/\/$/, '');
+    const snippet = String(source?.snippet || '').trim().slice(0, 1200);
+    const artifactId = String(source?.artifactId || '').trim().slice(0, 120);
+    if (!url && !snippet) continue;
+    const key = url || `snippet:${snippet}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    sources.push({ url, snippet, artifactId });
+    if (sources.length >= 3) break;
+  }
+  return sources;
+}
+
 function mapEvidence(row) {
   if (!row) return null;
   const criterionIds = parseJson(row.criterion_ids_json, []);
+  const sources = normalizeEvidenceSources({
+    sources: parseJson(row.sources_json, []),
+    url: row.url,
+    snippet: row.snippet,
+  });
   return {
     id: row.id,
     sessionId: row.session_id,
@@ -478,8 +509,10 @@ function mapEvidence(row) {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     claim: row.claim || '',
-    snippet: row.snippet || '',
-    url: row.url || '',
+    sources,
+    // Compatibility mirrors for older readers.
+    snippet: sources[0]?.snippet || row.snippet || '',
+    url: sources[0]?.url || row.url || '',
     sourceLabel: row.source_label || '',
     confidence: normalizeConfidence(row.confidence),
     status: row.status || 'accepted',
@@ -1142,8 +1175,9 @@ export function applyResearchCommit(sessionId, commit = {}) {
     const insertEv = db.prepare(`
       INSERT INTO research_evidence(
         id, session_id, question_id, created_at, updated_at, claim, snippet, url,
-        source_label, confidence, status, created_from, origin_candidate_id, criterion_ids_json
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'accepted', ?, ?, ?)
+        source_label, confidence, status, created_from, origin_candidate_id, criterion_ids_json,
+        sources_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'accepted', ?, ?, ?, ?)
     `);
     const existingCandidate = db.prepare(`
       SELECT id FROM research_evidence
@@ -1164,6 +1198,7 @@ export function applyResearchCommit(sessionId, commit = {}) {
       const criterionIds = Array.isArray(item.criterionIds)
         ? item.criterionIds.map(String).filter(Boolean)
         : (item.criterionId ? [String(item.criterionId)] : []);
+      const sources = normalizeEvidenceSources(item);
       insertEv.run(
         id,
         session.id,
@@ -1171,13 +1206,14 @@ export function applyResearchCommit(sessionId, commit = {}) {
         now,
         now,
         String(item.claim || '').trim(),
-        String(item.snippet || '').trim(),
-        String(item.url || '').trim(),
+        String(sources[0]?.snippet || item.snippet || '').trim(),
+        String(sources[0]?.url || item.url || '').trim(),
         String(item.sourceLabel || '').trim(),
         normalizeConfidence(item.confidence),
         createdFrom,
         candidateId,
         toJson(criterionIds),
+        toJson(sources),
       );
       insertedEvidenceIds.push(id);
     }
@@ -1370,38 +1406,116 @@ export function buildResearchWritingPack(detail) {
   lines.push('');
 
   const questions = detail.questions || [];
-  lines.push('Coverage by criterion:');
-  let coverageRows = 0;
+  const accepted = (detail.evidence || []).filter((ev) => ev.status === 'accepted');
+  const evidenceByQuestion = new Map();
+  for (const ev of accepted) {
+    const list = evidenceByQuestion.get(ev.questionId) || [];
+    list.push(ev);
+    evidenceByQuestion.set(ev.questionId, list);
+  }
+
+  lines.push('Suggested outline (organize freely; do not invent facts):');
+  if (!questions.length) {
+    lines.push('(no sub-questions)');
+  } else {
+    questions.forEach((question, index) => {
+      lines.push(`${index + 1}. ${question.text || question.id}`);
+    });
+    lines.push(`${questions.length + 1}. Limitations / unresolved gaps`);
+  }
+  lines.push('');
+
   for (const question of questions) {
     const criteria = Array.isArray(question?.coverage?.criteria) ? question.coverage.criteria : [];
-    for (const criterion of criteria) {
-      coverageRows += 1;
-      lines.push(
-        `- ${question.id} / ${criterion.id} [${criterion.status || 'missing'}] `
-        + `${criterion.text || ''}`.trim(),
-      );
-      if (criterion.summary) lines.push(`  summary: ${criterion.summary}`);
-      if (criterion.gap) lines.push(`  gap: ${criterion.gap}`);
-    }
-  }
-  if (!coverageRows) lines.push('(none recorded)');
+    const qEvidence = evidenceByQuestion.get(question.id) || [];
+    lines.push(`## ${question.id} — ${question.text || ''}`.trim());
+    lines.push(`Status: ${question.status || 'pending'}`);
 
-  lines.push('');
-  lines.push('Accepted evidence:');
-  const accepted = (detail.evidence || []).filter((ev) => ev.status === 'accepted');
-  if (!accepted.length) {
-    lines.push('(none)');
-  } else {
-    for (const ev of accepted) {
-      lines.push(
-        `- ${ev.id} [q=${ev.questionId}] (${ev.confidence}) ${ev.claim}`,
-      );
-      if (ev.snippet) lines.push(`  snippet: ${ev.snippet}`);
-      if (ev.url) lines.push(`  url: ${ev.url}`);
-      if (ev.sourceLabel) lines.push(`  source: ${ev.sourceLabel}`);
+    if (criteria.length) {
+      lines.push('Criteria:');
+      for (const criterion of criteria) {
+        lines.push(
+          `- [${criterion.id}] [${criterion.status || 'missing'}]`
+          + (criterion.verification ? ` verify=${criterion.verification}` : '')
+          + ` ${criterion.text || ''}`.trimEnd(),
+        );
+        if (criterion.summary) lines.push(`  summary: ${criterion.summary}`);
+        if (criterion.gap) lines.push(`  gap: ${criterion.gap}`);
+        if (criterion.warning) lines.push(`  warning: ${criterion.warning}`);
+        const linked = qEvidence.filter((ev) =>
+          Array.isArray(ev.criterionIds) && ev.criterionIds.includes(criterion.id));
+        for (const ev of linked) {
+          lines.push(`  evidence ${ev.id} (${ev.confidence}): ${ev.claim}`);
+          const sources = Array.isArray(ev.sources) && ev.sources.length
+            ? ev.sources
+            : ((ev.url || ev.snippet)
+              ? [{ url: ev.url || '', snippet: ev.snippet || '', artifactId: '' }]
+              : []);
+          for (const source of sources) {
+            if (source.snippet) lines.push(`    snippet: ${source.snippet}`);
+            if (source.url) lines.push(`    url: ${source.url}`);
+          }
+        }
+      }
+    } else {
+      lines.push('Criteria: (none recorded)');
+    }
+
+    const unlinked = qEvidence.filter((ev) =>
+      !Array.isArray(ev.criterionIds) || !ev.criterionIds.length
+      || !criteria.some((criterion) => ev.criterionIds.includes(criterion.id)));
+    if (unlinked.length) {
+      lines.push('Additional accepted evidence:');
+      for (const ev of unlinked) {
+        lines.push(`- ${ev.id} (${ev.confidence}): ${ev.claim}`);
+        const sources = Array.isArray(ev.sources) && ev.sources.length
+          ? ev.sources
+          : ((ev.url || ev.snippet)
+            ? [{ url: ev.url || '', snippet: ev.snippet || '', artifactId: '' }]
+            : []);
+        for (const source of sources) {
+          if (source.snippet) lines.push(`  snippet: ${source.snippet}`);
+          if (source.url) lines.push(`  url: ${source.url}`);
+        }
+      }
+    }
+
+    const riskBits = [
+      ...(Array.isArray(question.gaps) ? question.gaps : []),
+      ...criteria
+        .filter((item) => item.status !== 'covered')
+        .flatMap((item) => [item.gap, item.warning].filter(Boolean)),
+    ].map((text) => String(text || '').trim()).filter(Boolean);
+    if (riskBits.length) {
+      lines.push('Risks / limitations for this section:');
+      for (const bit of [...new Set(riskBits)].slice(0, 8)) {
+        lines.push(`- ${bit}`);
+      }
+    }
+    lines.push('');
+  }
+
+  if (!questions.length) {
+    lines.push('Accepted evidence:');
+    if (!accepted.length) {
+      lines.push('(none)');
+    } else {
+      for (const ev of accepted) {
+        lines.push(`- ${ev.id} [q=${ev.questionId}] (${ev.confidence}) ${ev.claim}`);
+        const sources = Array.isArray(ev.sources) && ev.sources.length
+          ? ev.sources
+          : ((ev.url || ev.snippet)
+            ? [{ url: ev.url || '', snippet: ev.snippet || '', artifactId: '' }]
+            : []);
+        for (const source of sources) {
+          if (source.snippet) lines.push(`  snippet: ${source.snippet}`);
+          if (source.url) lines.push(`  url: ${source.url}`);
+        }
+      }
     }
   }
-  return lines.join('\n');
+
+  return lines.join('\n').trim() + '\n';
 }
 
 /** Flatten coverage / wave limitations into short lines (UI / diagnostics). */

@@ -248,7 +248,7 @@ function SkillEditor({ skill, onSave, onValidate, defaultContext = "global" }) {
                   <SelectGroup>
                     <SelectItem value="global">
                       {t("skillContextGlobal")}
-                    </SelectItem>
+                      </SelectItem>
                     <SelectItem value="coding">
                       {t("skillContextCoding")}
                     </SelectItem>
@@ -261,22 +261,22 @@ function SkillEditor({ skill, onSave, onValidate, defaultContext = "global" }) {
             </SettingsField>
           )}
           {(isNew || !isBuiltin(skill)) && (
-            <SettingsField
-              id="skill-editor-mode"
-              label={t("skillMode")}
-              description={t("skillModeHint")}
-            >
-              <SettingsSegmentedControl
-                idPrefix="skill-editor-mode"
-                value={mode}
-                onValueChange={setMode}
-                options={SKILL_MODES.map((item) => ({
-                  value: item,
-                  label: t(`skillMode_${item}`),
-                }))}
-                className="[&_button]:text-[11px] sm:[&_button]:text-[12px]"
-              />
-            </SettingsField>
+              <SettingsField
+                id="skill-editor-mode"
+                label={t("skillMode")}
+                description={t("skillModeHint")}
+              >
+                <SettingsSegmentedControl
+                  idPrefix="skill-editor-mode"
+                  value={mode}
+                  onValueChange={setMode}
+                  options={SKILL_MODES.map((item) => ({
+                    value: item,
+                    label: t(`skillMode_${item}`),
+                  }))}
+                  className="[&_button]:text-[11px] sm:[&_button]:text-[12px]"
+                />
+              </SettingsField>
           )}
           {mode === "agent_requested" && (isNew || !isBuiltin(skill)) && (
             <SettingsField id="skill-editor-triggers" label={t("skillTriggers")}>
@@ -288,24 +288,24 @@ function SkillEditor({ skill, onSave, onValidate, defaultContext = "global" }) {
             </SettingsField>
           )}
           {mode === "always" && (isNew || !isBuiltin(skill)) && (
-            <SettingsField id="skill-editor-priority" label={t("skillPriority")}>
-              <Input
-                type="number"
-                min="0"
-                max="100"
-                value={priority}
+                  <SettingsField id="skill-editor-priority" label={t("skillPriority")}>
+                    <Input
+                      type="number"
+                      min="0"
+                      max="100"
+                      value={priority}
                 onChange={(event) => setPriority(event.target.value)}
-              />
-            </SettingsField>
+                    />
+                  </SettingsField>
           )}
           <SettingsField id="skill-editor-name" label={t("name")}>
-            <Input
+                    <Input
               value={name}
               onChange={(e) => setName(e.target.value)}
               disabled={!isNew}
               placeholder="my-skill"
-            />
-          </SettingsField>
+                    />
+                  </SettingsField>
           <SettingsField id="skill-editor-description" label={t("description")}>
             <Textarea
               value={description}
@@ -316,14 +316,14 @@ function SkillEditor({ skill, onSave, onValidate, defaultContext = "global" }) {
           </SettingsField>
 
           <div className="flex items-center justify-between rounded-lg border border-(--border-default) bg-(--bg-subtle) px-4 py-3">
-            <span className="text-[13px] font-medium text-(--text-primary)">
-              {t("enabled")}
-            </span>
-            <Switch
-              checked={enabled}
-              onCheckedChange={setEnabled}
-              aria-label={enabled ? t("disable") : t("enable")}
-            />
+                <span className="text-[13px] font-medium text-(--text-primary)">
+                  {t("enabled")}
+                </span>
+                <Switch
+                  checked={enabled}
+                  onCheckedChange={setEnabled}
+                  aria-label={enabled ? t("disable") : t("enable")}
+                />
           </div>
 
           <SettingsField id="skill-editor-content" label={t("skillContent")}>
@@ -357,12 +357,12 @@ function SkillEditorDialog({ skill, open, onSave, onOpenChange, defaultContext =
   const saveRef = useRef(null);
 
   const handleValidate = useCallback(({ handleSave, isNew, canSave }) => {
-    saveRef.current = handleSave;
-    setFooterState((prev) =>
+      saveRef.current = handleSave;
+      setFooterState((prev) =>
       prev.isNew === isNew && prev.canSave === canSave
         ? prev
         : { isNew, canSave },
-    );
+      );
   }, []);
 
   return (
@@ -440,8 +440,8 @@ function SkillRoutingForm({ skill, onSave, onCancel }) {
         metadata.triggers =
           routeMode === "agent_requested"
             ? routeTriggers
-                .split(",")
-                .map((item) => item.trim())
+            .split(",")
+            .map((item) => item.trim())
                 .filter(Boolean)
             : [];
         metadata.priority = Number(routePriority) || 0;
@@ -512,25 +512,25 @@ function SkillRoutingForm({ skill, onSave, onCancel }) {
           </SettingsField>
           {routeMode === "agent_requested" ? (
             <SettingsField id="skill-detail-triggers" label={t("skillTriggers")}>
-              <Input
+                <Input
                 value={routeTriggers}
                 onChange={(event) => setRouteTriggers(event.target.value)}
-                placeholder="react, testing, docs"
+                  placeholder="react, testing, docs"
                 disabled={modeLocked}
-              />
-            </SettingsField>
+                />
+              </SettingsField>
           ) : null}
           {routeMode === "always" ? (
             <SettingsField id="skill-detail-priority" label={t("skillPriority")}>
-              <Input
-                type="number"
+                <Input
+                  type="number"
                 min="0"
                 max="100"
                 value={routePriority}
                 onChange={(event) => setRoutePriority(event.target.value)}
                 disabled={modeLocked}
-              />
-            </SettingsField>
+                />
+              </SettingsField>
           ) : null}
           {showUserInvocable ? (
             <SettingsField
@@ -635,7 +635,7 @@ function SkillDetailPane({
                   className="h-6 rounded-md px-2 text-[11px]"
                 >
                   {t("builtin")}
-                </Badge>
+              </Badge>
               ) : null}
               <span
                 className={cn(
@@ -852,7 +852,7 @@ function InstallDialog({
                   <SelectGroup>
                     <SelectItem value="global">
                       {t("skillContextGlobal")}
-                    </SelectItem>
+                      </SelectItem>
                     <SelectItem value="coding">
                       {t("skillContextCoding")}
                     </SelectItem>
@@ -1097,12 +1097,12 @@ function SkillCard({ skill, selected, onSelect }) {
             </span>
           )}
           {author && (
-            <Badge
+          <Badge
               variant="secondary"
               className="h-5 rounded-md px-1.5 text-[11px]"
-            >
+          >
               {author}
-            </Badge>
+          </Badge>
           )}
         </div>
       </div>
@@ -1124,17 +1124,17 @@ function SkillCards({ items, selectedSkill, onSelect }) {
 function SkillGroupHeader({ name, count, collapsed, title, onClick, actions }) {
   return (
     <div className="flex h-8 w-full items-center gap-1 rounded-lg px-1 text-[12px] font-medium text-foreground hover:bg-muted/50">
-      <button
-        type="button"
-        onClick={onClick}
+    <button
+      type="button"
+      onClick={onClick}
         className="flex min-w-0 flex-1 items-center gap-2 rounded-lg px-1 py-1 text-left"
-        title={title}
-      >
-        <Folder size={14} className="shrink-0 text-muted-foreground" />
-        <span className="min-w-0 flex-1 truncate">{name}</span>
-        <span className="shrink-0 text-muted-foreground">{count}</span>
-        {collapsed ? <CaretRight size={13} /> : <CaretDown size={13} />}
-      </button>
+      title={title}
+    >
+      <Folder size={14} className="shrink-0 text-muted-foreground" />
+      <span className="min-w-0 flex-1 truncate">{name}</span>
+      <span className="shrink-0 text-muted-foreground">{count}</span>
+      {collapsed ? <CaretRight size={13} /> : <CaretDown size={13} />}
+    </button>
       {actions ? (
         <div
           className="flex shrink-0 items-center gap-0.5 pr-0.5"
@@ -1544,9 +1544,9 @@ export function SkillPanel({ projectDirs = [] }) {
           includeHooks: installHooks,
           skillNames,
           contexts: skillSelect.contexts,
-        });
-        if (result?.error) throw new Error(result.message || "Install failed");
-        setInstallSource("");
+      });
+      if (result?.error) throw new Error(result.message || "Install failed");
+      setInstallSource("");
       }
       setSkillSelect(null);
       await loadSkills();
@@ -1554,7 +1554,7 @@ export function SkillPanel({ projectDirs = [] }) {
       if (skillSelect.mode === "update") {
         setActionError(err.message || t("updateSkillPackageFailed"));
       } else {
-        setInstallError(err.message || "Install failed");
+      setInstallError(err.message || "Install failed");
       }
     } finally {
       setInstalling(false);
@@ -1673,7 +1673,7 @@ export function SkillPanel({ projectDirs = [] }) {
         setSelectedSkill(refreshedSelection);
       return;
     }
-    setSelectedSkill(filteredSkills[0]);
+      setSelectedSkill(filteredSkills[0]);
   }, [filteredSkills, selectedSkill]);
 
   const toggleSkillGroup = useCallback((key) => {
@@ -1708,12 +1708,12 @@ export function SkillPanel({ projectDirs = [] }) {
         <div className="grid gap-2">
             {packageGroupedSkills.packages.map((pkg) => {
               const collapsed = !expandedGroups.has(pkg.key);
-              return (
+            return (
                 <div key={pkg.key} className="grid gap-1">
-                  <SkillGroupHeader
+                <SkillGroupHeader
                     name={pkg.packageName}
                     count={pkg.items.length}
-                    collapsed={collapsed}
+                  collapsed={collapsed}
                     title={pkg.packageSource || pkg.key}
                     onClick={() => toggleSkillGroup(pkg.key)}
                     actions={
@@ -1758,19 +1758,19 @@ export function SkillPanel({ projectDirs = [] }) {
                         </Button>
                       </>
                     }
-                  />
-                  {!collapsed && (
+                />
+                {!collapsed && (
                     <div className="grid gap-2 pl-1">
-                      <SkillCards
+                    <SkillCards
                         items={pkg.items}
-                        selectedSkill={selectedSkill}
-                        onSelect={setSelectedSkill}
-                      />
-                    </div>
-                  )}
-                </div>
-              );
-            })}
+                      selectedSkill={selectedSkill}
+                      onSelect={setSelectedSkill}
+                    />
+                  </div>
+                )}
+              </div>
+            );
+          })}
             {packageGroupedSkills.ungrouped.length > 0 && (
               <div className="grid gap-1">
                 <SkillGroupHeader
@@ -1791,8 +1791,8 @@ export function SkillPanel({ projectDirs = [] }) {
                 )}
               </div>
             )}
-          </div>
-        )}
+        </div>
+      )}
     </>
   );
 
@@ -1849,30 +1849,30 @@ export function SkillPanel({ projectDirs = [] }) {
             </div>
           </div>
 
-          <div className="flex flex-col gap-2">
-            <div className="relative min-w-0 flex-1">
-              <MagnifyingGlass
-                size={13}
-                className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-(--text-muted)"
-              />
-              <Input
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                placeholder={t("searchSkills")}
-                className="h-9 pl-8 text-[13px]"
+            <div className="flex flex-col gap-2">
+              <div className="relative min-w-0 flex-1">
+                <MagnifyingGlass
+                  size={13}
+                  className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-(--text-muted)"
+                />
+                <Input
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  placeholder={t("searchSkills")}
+                  className="h-9 pl-8 text-[13px]"
+                />
+              </div>
+              <SettingsSegmentedControl
+                idPrefix="skill-filter"
+                value={filter}
+                onValueChange={setFilter}
+                options={FILTERS.map((item) => ({
+                  value: item,
+                  label: t(`filter_${item}`),
+                }))}
+                className="w-full shrink-0 [&_button]:truncate [&_button]:text-[11px] sm:[&_button]:text-[12px]"
               />
             </div>
-            <SettingsSegmentedControl
-              idPrefix="skill-filter"
-              value={filter}
-              onValueChange={setFilter}
-              options={FILTERS.map((item) => ({
-                value: item,
-                label: t(`filter_${item}`),
-              }))}
-              className="w-full shrink-0 [&_button]:truncate [&_button]:text-[11px] sm:[&_button]:text-[12px]"
-            />
-          </div>
 
           {actionError ? (
             <div className="rounded-md border border-(--accent-red) bg-(--accent-red-bg) px-3 py-2 text-[12px] text-(--accent-red)">

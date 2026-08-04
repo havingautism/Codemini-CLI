@@ -1,9 +1,21 @@
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 
-import { runAgentLoop } from './agent-loop.js';
+import { runResearchAgentLoop } from './research-agent-loop.js';
 import { createChatCompletionStream } from './provider/index.js';
-import { getBuiltinTools } from './tools.js';
 import { resolveSubAgentModel } from './chat-runtime.js';
+import {
+  RESEARCH_SCOUT_DISPLAY_LABELS,
+  RESEARCH_WEB_FETCH,
+  RESEARCH_WEB_SEARCH,
+  createResearchSearchDefinition,
+  createResearchWebFetchDefinition,
+  createResearchWebSearchDefinition,
+  executeResearchWebFetch,
+  executeResearchWebSearch,
+} from './research-tools.js';
 import {
   appendResearchTimeline,
   applyResearchCommit,
@@ -35,9 +47,14 @@ const TERMINAL_COVERAGE = new Set(['covered', 'partial', 'blocked']);
 const TERMINAL_SCOUT = new Set(['done', 'partial', 'blocked']);
 const MAX_URL_TEXT_FOR_VERIFY = 2500;
 /** Cap supporting sources per claim — enough for attribution, bounds evaluator prompt size. */
-const MAX_URLS_PER_CLAIM = 3;
+const MAX_SOURCES_PER_CLAIM = 3;
+/** @deprecated Use MAX_SOURCES_PER_CLAIM. */
+const MAX_URLS_PER_CLAIM = MAX_SOURCES_PER_CLAIM;
 /** Cap claims per criterion submit — bounds evaluator prompt size. */
 const MAX_CANDIDATES_PER_CRITERION = 3;
+const MAX_ARTIFACT_READ_CHARS = 4000;
+const MAX_FETCH_ARTIFACT_PREVIEW_CHARS = 2500;
+const MAX_EVALUATOR_ARTIFACT_READS = 3;
 
 function text(value, max = 8000) {
   return String(value || '').trim().slice(0, max);
@@ -58,6 +75,27 @@ function appendToolBudgetNote(payload, used, cap) {
   } catch {
     return `${String(payload)}\n\n${note}`;
   }
+}
+
+/** Attach the stable artifact id so Scout/Evaluator can call read_artifact correctly. */
+function attachFetchArtifactMeta(result, artifact = null) {
+  const artifactId = artifact?.artifactId ? String(artifact.artifactId) : '';
+  const meta = artifactId
+    ? {
+      artifactId,
+      artifactPersisted: true,
+      artifactNote: 'Use this exact artifactId with read_artifact. Do not invent ids.',
+    }
+    : {
+      artifactId: null,
+      artifactPersisted: false,
+      artifactNote: 'No artifact persisted for this fetch (empty body). read_artifact is unavailable for this URL.',
+    };
+  // Put meta first (and re-apply last) so tool-result truncation keeps artifactId.
+  if (result && typeof result === 'object' && !Array.isArray(result)) {
+    return { ...meta, ...result, ...meta };
+  }
+  return { ...meta, fetchResult: result };
 }
 
 function normalizeQuery(value) {
@@ -98,6 +136,139 @@ function parseJsonObject(raw) {
   return null;
 }
 
+function artifactDirForScope({ sessionId, scoutRunId, criterionId, rootDir = '' }) {
+  const baseDir = String(rootDir || '').trim() || path.join(os.tmpdir(), 'codemini-research-artifacts');
+  return path.join(
+    baseDir,
+    String(sessionId || 'session'),
+    String(scoutRunId || 'scout'),
+    String(criterionId || 'criterion'),
+  );
+}
+
+function createResearchArtifactStore({ sessionId, scoutRunId, criterionId, rootDir = '' }) {
+  const byArtifactId = new Map();
+  const byUrl = new Map();
+  const targetDir = artifactDirForScope({ sessionId, scoutRunId, criterionId, rootDir });
+  let ready = false;
+
+  async function ensureDir() {
+    if (ready) return;
+    await fs.mkdir(targetDir, { recursive: true });
+    ready = true;
+  }
+
+  function record(meta) {
+    if (!meta?.artifactId || !meta?.filePath) return null;
+    const normalized = {
+      artifactId: String(meta.artifactId),
+      url: normalizeUrl(meta.url),
+      filePath: String(meta.filePath),
+      title: text(meta.title, 240),
+      text: text(meta.text, MAX_URL_TEXT_CHARS),
+      createdAt: String(meta.createdAt || new Date().toISOString()),
+    };
+    byArtifactId.set(normalized.artifactId, normalized);
+    if (normalized.url) byUrl.set(normalized.url, normalized);
+    return normalized;
+  }
+
+  async function persistFetch(url, result) {
+    const finalUrl = normalizeUrl(result?.final_url || result?.finalUrl || result?.url || url);
+    const body = text(result?.text || result?.content || result?.markdown || result?.body || '', 200000);
+    if (!finalUrl || !body) return null;
+    const existing = byUrl.get(finalUrl);
+    if (existing) {
+      record({
+        ...existing,
+        title: text(result?.title || existing.title, 240),
+        text: body,
+      });
+      return byUrl.get(finalUrl);
+    }
+    await ensureDir();
+    const artifactId = `art_${randomUUID()}`;
+    const filePath = path.join(targetDir, `${artifactId}.txt`);
+    await fs.writeFile(filePath, body, 'utf8');
+    return record({
+      artifactId,
+      url: finalUrl,
+      filePath,
+      title: result?.title,
+      text: body,
+    });
+  }
+
+  async function readArtifact({ artifactId, offset = 0, maxChars = MAX_ARTIFACT_READ_CHARS } = {}) {
+    const meta = byArtifactId.get(String(artifactId || ''));
+    if (!meta?.filePath) throw new Error('Artifact not found for this Scout run');
+    const fullText = await fs.readFile(meta.filePath, 'utf8');
+    const safeOffset = Math.max(0, Math.floor(Number(offset) || 0));
+    const safeMaxChars = Math.max(1, Math.min(MAX_ARTIFACT_READ_CHARS, Math.floor(Number(maxChars) || MAX_ARTIFACT_READ_CHARS)));
+    const chunk = fullText.slice(safeOffset, safeOffset + safeMaxChars);
+    return {
+      artifactId: meta.artifactId,
+      url: meta.url,
+      title: meta.title,
+      offset: safeOffset,
+      maxChars: safeMaxChars,
+      totalChars: fullText.length,
+      truncated: safeOffset + safeMaxChars < fullText.length,
+      text: chunk,
+    };
+  }
+
+  function artifactForUrl(url) {
+    return byUrl.get(normalizeUrl(url)) || null;
+  }
+
+  function toManifest() {
+    return [...byArtifactId.values()].map((item) => ({
+      artifactId: item.artifactId,
+      url: item.url,
+      filePath: item.filePath,
+      title: item.title,
+      text: item.text,
+      createdAt: item.createdAt,
+    }));
+  }
+
+  function listArtifactIds() {
+    return [...byArtifactId.keys()];
+  }
+
+  function loadManifest(items = []) {
+    for (const item of Array.isArray(items) ? items : []) record(item);
+  }
+
+  return {
+    artifactForUrl,
+    listArtifactIds,
+    loadManifest,
+    persistFetch,
+    readArtifact,
+    toManifest,
+  };
+}
+
+function buildFetchArtifactPreview(result = {}, previewText = '') {
+  const lines = [];
+  const title = text(result?.title, 240);
+  const finalUrl = normalizeUrl(result?.final_url || result?.finalUrl || result?.url);
+  const status = result?.metadata?.status ?? result?.status;
+  const fetchedAt = text(result?.metadata?.fetched_at || result?.metadata?.fetchedAt, 80);
+  const fetchMode = text(result?.metadata?.fetch_mode || result?.metadata?.fetchMode, 40);
+  const contentType = text(result?.metadata?.content_type || result?.metadata?.contentType, 120);
+  if (title) lines.push(`Title: ${title}`);
+  if (finalUrl) lines.push(`URL: ${finalUrl}`);
+  if (status != null && String(status).trim()) lines.push(`Status: ${status}`);
+  if (fetchMode) lines.push(`Mode: ${fetchMode}`);
+  if (contentType) lines.push(`Content-Type: ${contentType}`);
+  if (fetchedAt) lines.push(`Fetched At: ${fetchedAt}`);
+  if (previewText) lines.push('', previewText);
+  return lines.join('\n').trim();
+}
+
 function criterionEntries(question) {
   const criteria = normalizeSuccessCriteria(question?.successCriteria);
   const list = criteria.length
@@ -112,6 +283,8 @@ function criterionEntries(question) {
     reason: '',
     summary: '',
     gap: '',
+    warning: '',
+    verification: '',
   }));
 }
 
@@ -167,6 +340,8 @@ function resolveQuestionCoverage(question, scoutRun = null) {
         reason: text(item.reason, 600),
         summary: text(item.summary, 1200),
         gap: text(item.gap, 1200),
+        warning: text(item.warning, 1200),
+        verification: text(item.verification, 40),
       })).filter((item) => item.id),
     };
   }
@@ -219,47 +394,19 @@ function compactProgress(coverage) {
       reason: criterion.reason || '',
       summary: criterion.summary || '',
       gap: criterion.gap || '',
+      warning: criterion.warning || '',
+      verification: criterion.verification || '',
     })),
   };
 }
 
-function findDefinition(definitions, name) {
-  return (definitions || []).find((definition) =>
-    String(definition?.function?.name || definition?.name || '') === name);
-}
-
-function createResearchSearchDefinition(baseDefinition) {
-  const cloned = baseDefinition ? structuredClone(baseDefinition) : {
-    type: 'function',
-    function: {
-      name: 'web_search',
-      description: 'Search the web for the current research criterion.',
-      parameters: {
-        type: 'object',
-        properties: { query: { type: 'string' } },
-        required: ['query'],
-      },
-    },
-  };
-  const fn = cloned.function || cloned;
-  fn.description = [
-    String(fn.description || 'Search the web.'),
-    'Research Scout rule: criterionId must match the current target criterion.',
-    'Search and fetch freely within the per-criterion tool fuse; finish by calling submit_criterion_candidates.',
-  ].join(' ');
-  const parameters = fn.parameters && typeof fn.parameters === 'object'
-    ? fn.parameters
-    : { type: 'object', properties: {} };
-  parameters.properties = {
-    ...(parameters.properties || {}),
-    criterionId: {
-      type: 'string',
-      description: 'The current target criterion id supplied by the Scout prompt.',
-    },
-  };
-  parameters.required = [...new Set([...(parameters.required || []), 'criterionId'])];
-  fn.parameters = parameters;
-  return cloned;
+function createScoutToolDefinitions() {
+  return [
+    createResearchWebSearchDefinition(),
+    createResearchWebFetchDefinition(),
+    createReadArtifactDefinition(),
+    createSubmitCandidatesDefinition(),
+  ];
 }
 
 function createSubmitCandidatesDefinition() {
@@ -271,7 +418,8 @@ function createSubmitCandidatesDefinition() {
         'End search/fetch for the current criterion and deliver candidate findings.',
         'Include a concise summary of what you found and a gap note for what remains unresolved.',
         `Submit at most ${MAX_CANDIDATES_PER_CRITERION} strongest claims for this criterion (extras are dropped).`,
-        `For each claim, include at most ${MAX_URLS_PER_CLAIM} strongest supporting URLs (extras are dropped).`,
+        `For each claim, include at most ${MAX_SOURCES_PER_CLAIM} strongest sources (extras are dropped).`,
+        'Each source must bind its own url, a short support note/snippet, and artifactId when fetched.',
         'Call this when you have enough attributable evidence, or with an empty candidates array if blocked.',
         'This tool does not count toward the search/fetch fuse.',
       ].join(' '),
@@ -286,15 +434,34 @@ function createSubmitCandidatesDefinition() {
               type: 'object',
               properties: {
                 claim: { type: 'string' },
-                urls: {
+                sources: {
                   type: 'array',
-                  items: { type: 'string' },
-                  maxItems: MAX_URLS_PER_CLAIM,
-                  description: `Up to ${MAX_URLS_PER_CLAIM} strongest supporting URLs for this claim, strongest first.`,
+                  maxItems: MAX_SOURCES_PER_CLAIM,
+                  description: `Up to ${MAX_SOURCES_PER_CLAIM} strongest sources for this claim, strongest first.`,
+                  items: {
+                    type: 'object',
+                    properties: {
+                      url: { type: 'string' },
+                      snippet: {
+                        type: 'string',
+                        description: 'Short support note for display or review help. Need not be a verbatim source substring.',
+                      },
+                      artifactId: {
+                        type: 'string',
+                        description: 'Artifact id from research_web_fetch for this source, when available.',
+                      },
+                    },
+                    required: ['url', 'snippet'],
+                  },
                 },
                 confidence: { type: 'string', enum: ['high', 'medium', 'low'] },
+                riskFlags: {
+                  type: 'array',
+                  items: { type: 'string' },
+                  description: 'Optional risk hints such as numeric, causal, legal, medical, financial, or mismatch.',
+                },
               },
-              required: ['claim', 'urls'],
+              required: ['claim', 'sources'],
             },
           },
           summary: {
@@ -313,17 +480,101 @@ function createSubmitCandidatesDefinition() {
   };
 }
 
-function filterScoutBundle(bundle) {
-  const active = [...(bundle.definitions || [])];
-  const deferred = bundle.deferredDefinitions || {};
-  const webSearch = findDefinition(active, 'web_search') || deferred.web_search;
-  const webFetch = findDefinition(active, 'web_fetch') || deferred.web_fetch;
-  const definitions = [
-    createResearchSearchDefinition(webSearch),
-    ...(webFetch ? [structuredClone(webFetch)] : []),
-    createSubmitCandidatesDefinition(),
-  ];
-  return { definitions, handlers: bundle.handlers || {} };
+function createReadArtifactDefinition() {
+  return {
+    type: 'function',
+    function: {
+      name: 'read_artifact',
+      description: [
+        'Read more context from a source artifact previously fetched by this Scout run.',
+        'Pass the exact artifactId field returned by research_web_fetch in this criterion — never invent ids.',
+        'Successful reads count toward the same per-criterion tool budget as search and fetch.',
+        'Missing/invalid artifactId does not consume budget.',
+      ].join(' '),
+      parameters: {
+        type: 'object',
+        properties: {
+          artifactId: {
+            type: 'string',
+            description: 'Exact artifactId from a prior research_web_fetch result in this criterion (art_…).',
+          },
+          offset: {
+            type: 'number',
+            description: 'Character offset into the artifact text. Defaults to 0.',
+          },
+          maxChars: {
+            type: 'number',
+            description: `Maximum chars to read, up to ${MAX_ARTIFACT_READ_CHARS}.`,
+          },
+        },
+        required: ['artifactId'],
+      },
+    },
+  };
+}
+
+function createSubmitCriterionReviewDefinition() {
+  return {
+    type: 'function',
+    function: {
+      name: 'submit_criterion_review',
+      description: [
+        'Finish evaluator review for the current criterion.',
+        'Default to lightweight review of scout output.',
+        `Use read_artifact only for high-risk or doubtful claims, up to ${MAX_EVALUATOR_ARTIFACT_READS} times total for this criterion.`,
+        'Return plain-prose summary and gap for this criterion only; never write accepted/rejected counts.',
+      ].join(' '),
+      parameters: {
+        type: 'object',
+        properties: {
+          decision: {
+            type: 'string',
+            enum: ['PASS', 'WARNING', 'FAIL'],
+            description: 'PASS = criterion adequately supported, WARNING = usable but materially caveated, FAIL = insufficient or unreliable.',
+          },
+          warnings: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Short plain-prose caveats for the synthesizer and UI.',
+          },
+          verdicts: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                candidateId: { type: 'string' },
+                supported: { type: 'boolean' },
+                relevantToCriterion: { type: 'boolean' },
+                reason: { type: 'string' },
+                sources: {
+                  type: 'array',
+                  description: 'Optional source notes for display/review help when supported=true. Not a hard gate.',
+                  items: {
+                    type: 'object',
+                    properties: {
+                      url: { type: 'string' },
+                      snippet: { type: 'string' },
+                    },
+                    required: ['url', 'snippet'],
+                  },
+                },
+              },
+              required: ['candidateId', 'supported', 'relevantToCriterion'],
+            },
+          },
+          summary: {
+            type: 'string',
+            description: 'Clean criterion summary after review.',
+          },
+          gap: {
+            type: 'string',
+            description: 'What remains unresolved after review. Empty when genuinely covered.',
+          },
+        },
+        required: ['decision', 'verdicts', 'summary', 'gap'],
+      },
+    },
+  };
 }
 
 function makeStreamingCompletion(config, emit, reasoningEffort = 'low') {
@@ -484,22 +735,73 @@ function indexSearchResult(urlIndex, result) {
   }
 }
 
-function indexFetchResult(urlIndex, args, result) {
+function indexFetchResult(urlIndex, args, result, artifact = null) {
   const requested = normalizeUrl(args?.url);
   const finalUrl = normalizeUrl(result?.final_url || result?.finalUrl || result?.url || requested);
   const body = text(
     result?.text || result?.content || result?.markdown || result?.body || '',
     MAX_URL_TEXT_CHARS,
   );
-  if (finalUrl && body) {
-    urlIndex.set(finalUrl, { source: 'fetch', text: body });
+  const preview = buildFetchArtifactPreview(
+    {
+      ...result,
+      final_url: finalUrl || result?.final_url || result?.finalUrl || result?.url,
+      url: finalUrl || requested,
+    },
+    text(result?.text || result?.content || result?.markdown || result?.body || '', MAX_FETCH_ARTIFACT_PREVIEW_CHARS),
+  );
+  if (finalUrl && preview) {
+    urlIndex.set(finalUrl, {
+      source: 'fetch',
+      text: preview,
+      artifactId: artifact?.artifactId || '',
+      artifactPath: artifact?.filePath || '',
+      artifactTitle: artifact?.title || '',
+    });
   }
-  if (requested && requested !== finalUrl && body) {
+  if (requested && requested !== finalUrl && preview) {
     const existing = urlIndex.get(requested);
     if (!existing || existing.source !== 'fetch') {
-      urlIndex.set(requested, { source: 'fetch', text: body });
+      urlIndex.set(requested, {
+        source: 'fetch',
+        text: preview,
+        artifactId: artifact?.artifactId || '',
+        artifactPath: artifact?.filePath || '',
+        artifactTitle: artifact?.title || '',
+      });
     }
   }
+}
+
+function normalizeCandidateSources(item = {}) {
+  const legacySnippet = text(item?.snippet || item?.excerpt, 1200);
+  const legacyArtifactRefs = [...new Set(
+    (Array.isArray(item?.artifactRefs) ? item.artifactRefs : [item?.artifactId])
+      .map((value) => String(value || '').trim())
+      .filter(Boolean),
+  )];
+  const rawSources = Array.isArray(item?.sources)
+    ? item.sources
+    : (Array.isArray(item?.urls) ? item.urls : (item?.url ? [item.url] : []))
+      .map((url, index) => ({
+        url,
+        snippet: legacySnippet,
+        artifactId: legacyArtifactRefs[index] || '',
+      }));
+  const seen = new Set();
+  const sources = [];
+  for (const source of rawSources) {
+    const url = normalizeUrl(source?.url || source);
+    if (!url || seen.has(url)) continue;
+    seen.add(url);
+    sources.push({
+      url,
+      snippet: text(source?.snippet || source?.excerpt || legacySnippet, 1200),
+      artifactId: text(source?.artifactId || '', 120),
+    });
+    if (sources.length >= MAX_SOURCES_PER_CLAIM) break;
+  }
+  return sources;
 }
 
 function normalizeSubmittedCandidates(rawCandidates, criterionId) {
@@ -507,20 +809,23 @@ function normalizeSubmittedCandidates(rawCandidates, criterionId) {
   const out = [];
   for (const item of list) {
     const claim = text(item?.claim, 1000);
-    const urls = [...new Set(
-      (Array.isArray(item?.urls) ? item.urls : [item?.url])
-        .map((url) => normalizeUrl(url))
-        .filter(Boolean),
-    )].slice(0, MAX_URLS_PER_CLAIM);
-    if (!claim || !urls.length) continue;
+    const sources = normalizeCandidateSources(item);
+    if (!claim || !sources.length) continue;
     out.push({
       id: `cand_${randomUUID()}`,
       criterionIds: [String(criterionId)],
       claim,
+      sources,
+      // Compatibility mirrors for older callers/tests until evidence packing is redesigned.
+      urls: sources.map((source) => source.url),
       confidence: ['high', 'medium', 'low'].includes(String(item?.confidence))
         ? String(item.confidence)
         : 'medium',
-      urls,
+      riskFlags: [...new Set(
+        (Array.isArray(item?.riskFlags) ? item.riskFlags : [])
+          .map((value) => text(value, 80))
+          .filter(Boolean),
+      )].slice(0, 8),
     });
   }
   return out.slice(0, MAX_CANDIDATES_PER_CRITERION);
@@ -553,9 +858,27 @@ function gateCandidatesByUrl(candidates, urlIndex) {
   const accepted = [];
   const rejected = [];
   for (const candidate of candidates) {
-    const urls = (candidate.urls || []).map(normalizeUrl).filter(Boolean);
-    const missing = urls.filter((url) => !urlIndex.has(url));
-    if (!urls.length || missing.length) {
+    const rawSources = Array.isArray(candidate.sources) && candidate.sources.length
+      ? candidate.sources
+      : (candidate.urls || []).map((url) => ({ url, snippet: '', artifactId: '' }));
+    const kept = [];
+    const missing = [];
+    for (const source of rawSources) {
+      const url = normalizeUrl(source?.url);
+      if (!url) continue;
+      const indexed = urlIndex.get(url);
+      if (!indexed) {
+        missing.push(url);
+        continue;
+      }
+      kept.push({
+        url,
+        snippet: text(source?.snippet, 1200),
+        artifactId: text(source?.artifactId || indexed.artifactId, 120),
+        toolText: text(indexed.text, MAX_URL_TEXT_FOR_VERIFY),
+      });
+    }
+    if (!kept.length) {
       rejected.push({
         ...candidate,
         reason: missing.length
@@ -566,23 +889,24 @@ function gateCandidatesByUrl(candidates, urlIndex) {
     }
     accepted.push({
       ...candidate,
-      urls,
-      slices: urls.map((url) => ({
-        url,
-        toolText: text(urlIndex.get(url)?.text, MAX_URL_TEXT_FOR_VERIFY),
-      })),
+      sources: kept,
+      urls: kept.map((source) => source.url),
+      // Compatibility alias used by older resume/tests; prefer sources[].
+      slices: kept,
     });
   }
   return { accepted, rejected };
 }
 
-function validateSupportVerdicts(value, gatedCandidates) {
+function validateSupportVerdicts(value, gatedCandidates, _observedArtifactTexts = new Map()) {
   if (!value || typeof value !== 'object') throw new Error('Support check must return an object');
   const candidateIds = gatedCandidates.map((item) => item.id);
-  const textByCandidate = new Map(
+  const sourcesByCandidate = new Map(
     gatedCandidates.map((item) => [
       item.id,
-      (item.slices || []).map((slice) => String(slice.toolText || '')).join('\n'),
+      Array.isArray(item.sources) && item.sources.length
+        ? item.sources
+        : (item.slices || []),
     ]),
   );
   const raw = Array.isArray(value.verdicts) ? value.verdicts : [];
@@ -590,9 +914,26 @@ function validateSupportVerdicts(value, gatedCandidates) {
   for (const item of raw) {
     const id = String(item?.candidateId || item?.id || '');
     if (!id) continue;
-    const snippet = text(item?.snippet || item?.quote, 1200);
-    const corpus = textByCandidate.get(id) || '';
-    const verifiedSnippet = snippet && corpus.includes(snippet) ? snippet : '';
+    const candidateSources = sourcesByCandidate.get(id) || [];
+    const sourceByUrl = new Map(candidateSources.map((source) => [normalizeUrl(source.url), source]));
+    const rawSupportSources = Array.isArray(item?.sources) && item.sources.length
+      ? item.sources
+      : (item?.snippet || item?.quote
+        ? [{ url: candidateSources[0]?.url || '', snippet: item?.snippet || item?.quote }]
+        : []);
+    // Snippets are display/helper only — no exact-substring hard gate against corpus.
+    const attachedSources = [];
+    for (const support of rawSupportSources) {
+      const url = normalizeUrl(support?.url || candidateSources[0]?.url);
+      const snippet = text(support?.snippet || support?.quote, 1200);
+      const source = sourceByUrl.get(url);
+      if (!url || !source) continue;
+      attachedSources.push({
+        url,
+        snippet,
+        artifactId: text(source.artifactId, 120),
+      });
+    }
     const supported = Boolean(item?.supported ?? item?.accept ?? item?.ok);
     const relevantToCriterion = item?.relevantToCriterion == null
       ? item?.relevant == null
@@ -604,7 +945,9 @@ function validateSupportVerdicts(value, gatedCandidates) {
       supported,
       relevantToCriterion,
       reason: text(item?.reason, 400),
-      snippet: verifiedSnippet,
+      sources: attachedSources,
+      // Compatibility for evidence adapter until writing pack redesign.
+      snippet: attachedSources[0]?.snippet || text(item?.snippet || item?.quote, 1200),
     });
   }
   return candidateIds.map((id) => byId.get(id) || {
@@ -612,6 +955,7 @@ function validateSupportVerdicts(value, gatedCandidates) {
     supported: false,
     relevantToCriterion: false,
     reason: 'Missing verdict',
+    sources: [],
     snippet: '',
   });
 }
@@ -633,6 +977,19 @@ function validateNarrativeField(value, fallback = '') {
   };
 }
 
+function normalizeEvaluatorDecision(value, fallback = 'WARNING') {
+  const raw = String(value || fallback).trim().toUpperCase();
+  return ['PASS', 'WARNING', 'FAIL'].includes(raw) ? raw : fallback;
+}
+
+function normalizeEvaluatorWarnings(value) {
+  return [...new Set(
+    (Array.isArray(value) ? value : [value])
+      .map((item) => text(item, 240))
+      .filter(Boolean),
+  )].slice(0, 4);
+}
+
 async function verifyCandidateSupport({
   config,
   model,
@@ -641,46 +998,174 @@ async function verifyCandidateSupport({
   gatedCandidates,
   scoutSummary = '',
   scoutGap = '',
+  artifactStore,
   signal,
+  emit,
 }) {
-  const reviewed = await callJsonModel({
-    config,
-    model: resolveSubAgentModel(config, model),
-    fallbackModel: model || config.model?.name,
-    reasoningEffort: 'low',
-    signal,
-    systemPrompt: [
-      'You verify research claims for one success criterion.',
-      'For each claim, judge two things:',
-      '1) supported: does the provided URL toolText substantively support the claim? Judge ONLY from toolText.',
-      '2) relevantToCriterion: does the claim itself address the target criterion (not merely true but off-topic)?',
-      'If any one URL slice supports the claim, mark supported=true.',
-      'For supported=true, snippet must be an exact substring of one provided toolText slice (short).',
-      'Accept into evidence only when supported=true AND relevantToCriterion=true.',
-      'Also review scout summary and gap even when candidates is empty: keep if accurate; rewrite if empty, off-topic, exaggerated, or unsupported.',
-      'summary/gap must be plain prose about this criterion only — never write Accepted N claim(s) or tool-count statistics.',
-      'Return strict JSON only:',
-      '{"verdicts":[{"candidateId":"","supported":true,"relevantToCriterion":true,"reason":"","snippet":""}],'
-      + '"summary":{"ok":true,"text":"","reason":""},"gap":{"ok":true,"text":"","reason":""}}',
-    ].join('\n'),
+  const store = artifactStore || createResearchArtifactStore({
+    sessionId: 'session',
+    scoutRunId: 'scout',
+    criterionId: criterion.id,
+  });
+  let artifactReads = 0;
+  let submittedReview = null;
+  const observedArtifactTexts = new Map();
+
+  const evaluatorCandidates = (gatedCandidates || []).map((item) => ({
+    candidateId: item.id,
+    claim: item.claim,
+    confidence: item.confidence || 'medium',
+    riskFlags: item.riskFlags || [],
+    sources: (Array.isArray(item.sources) && item.sources.length
+      ? item.sources
+      : (item.slices || [])
+    ).map((source) => ({
+      url: source.url,
+      snippet: text(source.snippet, 1200),
+      artifactId: text(source.artifactId, 120),
+      toolText: text(source.toolText, MAX_URL_TEXT_FOR_VERIFY),
+    })),
+  }));
+
+  const handlers = {
+    read_artifact: async (args = {}) => {
+      if (artifactReads >= MAX_EVALUATOR_ARTIFACT_READS) {
+        return `Artifact read budget reached (${MAX_EVALUATOR_ARTIFACT_READS}/${MAX_EVALUATOR_ARTIFACT_READS}). Submit your review now.`;
+      }
+      const artifactId = String(args?.artifactId || '').trim();
+      if (!artifactId) {
+        return [
+          'Artifact read rejected: artifactId is required.',
+          'Use the artifactId field from each candidate source in the prompt.',
+          `Known artifacts: ${(store.listArtifactIds?.() || []).join(', ') || '(none)'}`,
+        ].join(' ');
+      }
+      let result;
+      try {
+        result = await store.readArtifact({
+          artifactId,
+          offset: args?.offset,
+          maxChars: args?.maxChars,
+        });
+      } catch (error) {
+        return [
+          error?.message || 'Artifact not found for this Scout run',
+          'Use an exact artifactId from the candidate sources.',
+          `Known artifacts: ${(store.listArtifactIds?.() || []).join(', ') || '(none)'}`,
+          'This failed read did not consume the artifact-read budget.',
+        ].join(' ');
+      }
+      artifactReads += 1;
+      emit?.({
+        type: 'criterion:verify_budget',
+        criterionId: criterion.id,
+        artifactReads,
+        artifactReadsCap: MAX_EVALUATOR_ARTIFACT_READS,
+      });
+      observedArtifactTexts.set(artifactId, `${observedArtifactTexts.get(artifactId) || ''}\n${result.text || ''}`.trim());
+      return result;
+    },
+    submit_criterion_review: async (args = {}) => {
+      submittedReview = {
+        decision: normalizeEvaluatorDecision(args?.decision, 'WARNING'),
+        warnings: normalizeEvaluatorWarnings(args?.warnings),
+        verdicts: validateSupportVerdicts(args, gatedCandidates || [], observedArtifactTexts),
+        summary: validateNarrativeField({ text: args?.summary, ok: true }, scoutSummary),
+        gap: validateNarrativeField({ text: args?.gap, ok: true }, scoutGap),
+      };
+      return {
+        ok: true,
+        artifactReads,
+        message: 'Criterion review recorded.',
+      };
+    },
+  };
+
+  const systemPrompt = [
+    'You are the Evaluator for one research criterion.',
+    'Default mode is lightweight review: inspect the Scout structured output first.',
+    `Use read_artifact only when needed, and never more than ${MAX_EVALUATOR_ARTIFACT_READS} times for this criterion.`,
+    'Use the exact artifactId from each candidate source. Failed/missing reads do not consume the artifact-read budget.',
+    'Escalate to read_artifact only for high-risk or doubtful cases: numeric/quantitative claims, causal claims, absolute claims, legal/medical/financial/safety claims, low-confidence claims, snippet mismatch, or when toolText appears too weak or ambiguous.',
+    'For each candidate, judge two things:',
+    '1) supported: does one or more sources substantively support the claim? Judge semantically from toolText / read_artifact; do not require verbatim quote matching.',
+    '2) relevantToCriterion: does the claim directly address this criterion?',
+    'A candidate becomes accepted evidence only when both are true.',
+    'When supported=true, return sources:[{url, snippet}] as optional display/helper notes. Snippets need not be exact substrings of the source text.',
+    'Review scout summary and gap too. Rewrite if overstated, off-topic, or vague.',
+    'summary and gap must be clean prose about this criterion only. Never mention accepted/rejected counts, tool budgets, or workflow statistics.',
+    'Finish by calling submit_criterion_review.',
+  ].join('\n');
+
+  let loopResult = await runResearchAgentLoop({
+    systemPrompt,
     userPrompt: [
       `Sub-question: ${question.text}`,
       `Criterion (${criterion.id}): ${criterion.text}`,
       `Scout summary: ${scoutSummary || '(empty)'}`,
       `Scout gap: ${scoutGap || '(empty)'}`,
-      `Candidates:\n${JSON.stringify((gatedCandidates || []).map((item) => ({
-        candidateId: item.id,
-        claim: item.claim,
-        slices: item.slices,
-      })), null, 2)}`,
+      `Artifact read budget: ${artifactReads}/${MAX_EVALUATOR_ARTIFACT_READS}`,
+      `Candidates:\n${JSON.stringify(evaluatorCandidates, null, 2)}`,
     ].join('\n\n'),
-    validate: (value) => ({
-      verdicts: validateSupportVerdicts(value, gatedCandidates || []),
-      summary: validateNarrativeField(value?.summary, scoutSummary),
-      gap: validateNarrativeField(value?.gap, scoutGap),
-    }),
+    model: resolveSubAgentModel(config, model),
+    toolDefinitions: [createReadArtifactDefinition(), createSubmitCriterionReviewDefinition()],
+    toolHandlers: handlers,
+    deferredDefinitions: {},
+    toolFormatters: {},
+    toolDisplayLabels: {},
+    executionMode: 'normal',
+    approvalMode: 'auto',
+    alwaysAllowTools: ['read_artifact', 'submit_criterion_review'],
+    projectIsGit: false,
+    toolResultMaxChars: config.context?.tool_result_max_chars || 12000,
+    config,
+    signal,
+    skipAnalysisNudge: true,
+    requestCompletion: makeStreamingCompletion(config, emit, 'low'),
+    onEvent: emit,
+    shouldCheckpoint: () => Boolean(submittedReview),
   });
-  return reviewed.data;
+
+  if (!submittedReview && !signal?.aborted) {
+    const priorMessages = Array.isArray(loopResult?.messages)
+      ? loopResult.messages.filter((message) => message?.role !== 'system')
+      : [];
+    loopResult = await runResearchAgentLoop({
+      systemPrompt,
+      userPrompt: 'Call submit_criterion_review now. If evidence is weak, use WARNING or FAIL and explain the gap plainly.',
+      initialMessages: priorMessages,
+      model: resolveSubAgentModel(config, model),
+      toolDefinitions: [createReadArtifactDefinition(), createSubmitCriterionReviewDefinition()],
+      toolHandlers: handlers,
+      deferredDefinitions: {},
+      toolFormatters: {},
+      toolDisplayLabels: {},
+      executionMode: 'normal',
+      approvalMode: 'auto',
+      alwaysAllowTools: ['read_artifact', 'submit_criterion_review'],
+      projectIsGit: false,
+      toolResultMaxChars: config.context?.tool_result_max_chars || 12000,
+      config,
+      signal,
+      skipAnalysisNudge: true,
+      requestCompletion: makeStreamingCompletion(config, emit, 'low'),
+      onEvent: emit,
+      shouldCheckpoint: () => true,
+    });
+  }
+
+  if (!submittedReview) {
+    const parsed = parseJsonObject(loopResult?.text) || {};
+    submittedReview = {
+      decision: normalizeEvaluatorDecision(parsed.decision, 'WARNING'),
+      warnings: normalizeEvaluatorWarnings(parsed.warnings),
+      verdicts: validateSupportVerdicts(parsed, gatedCandidates || [], observedArtifactTexts),
+      summary: validateNarrativeField({ text: parsed.summary, ok: true }, scoutSummary),
+      gap: validateNarrativeField({ text: parsed.gap, ok: true }, scoutGap),
+    };
+  }
+
+  return { ...submittedReview, artifactReads };
 }
 
 function criterionGapText(criterion = {}) {
@@ -695,28 +1180,45 @@ function deriveQuestionGaps(coverage) {
 }
 
 function serializePendingVerifyCandidate(item) {
+  const sources = (Array.isArray(item.sources) && item.sources.length
+    ? item.sources
+    : (item.slices || [])
+  ).map((source) => ({
+    url: source.url,
+    snippet: text(source.snippet, 1200),
+    artifactId: text(source.artifactId, 120),
+    toolText: text(source.toolText, MAX_URL_TEXT_FOR_VERIFY),
+  }));
   return {
     id: item.id,
     claim: item.claim,
-    urls: item.urls || [],
+    sources,
+    urls: sources.map((source) => source.url),
     confidence: item.confidence || 'medium',
+    riskFlags: Array.isArray(item.riskFlags) ? item.riskFlags.map(String).filter(Boolean) : [],
     criterionIds: item.criterionIds || [],
-    slices: (item.slices || []).map((slice) => ({
-      url: slice.url,
-      toolText: text(slice.toolText, MAX_URL_TEXT_FOR_VERIFY),
-    })),
+    // Compatibility alias for older resume payloads.
+    slices: sources,
   };
 }
 
 function candidateToEvidence(candidate, questionId, verdict = null) {
-  const primaryUrl = candidate.urls?.[0] || '';
-  const snippet = text(verdict?.snippet, 1200);
+  const sources = (Array.isArray(verdict?.sources) && verdict.sources.length
+    ? verdict.sources
+    : []
+  ).map((source) => ({
+    url: text(source.url, 2000),
+    snippet: text(source.snippet, 1200),
+    artifactId: text(source.artifactId, 120),
+  })).filter((source) => source.url || source.snippet);
   return {
     candidateId: candidate.id,
     questionId,
     claim: candidate.claim,
-    snippet,
-    url: primaryUrl,
+    sources,
+    // Compatibility mirrors until older readers are retired.
+    snippet: sources[0]?.snippet || '',
+    url: sources[0]?.url || '',
     sourceLabel: '',
     confidence: candidate.confidence || 'medium',
     createdFrom: 'scout_handoff',
@@ -734,37 +1236,169 @@ function buildScoutHandoff(question, coverage, evidence = []) {
   if (!forQuestion.length) lines.push('- No accepted evidence yet.');
   for (const item of forQuestion) {
     lines.push(`- ${item.id}: ${item.claim}`);
-    if (item.url) lines.push(`  URL: ${item.url}`);
+    const sources = Array.isArray(item.sources) && item.sources.length
+      ? item.sources
+      : (item.url ? [{ url: item.url, snippet: item.snippet || '' }] : []);
+    for (const source of sources) {
+      if (source.url) lines.push(`  URL: ${source.url}`);
+      if (source.snippet) lines.push(`  snippet: ${source.snippet}`);
+    }
     if (item.criterionIds?.length) lines.push(`  Criteria: ${item.criterionIds.join(', ')}`);
   }
   lines.push('', 'Coverage:');
   for (const criterion of coverage.criteria || []) {
     lines.push(`- [${criterion.id}] ${criterion.status}`);
+    if (criterion.verification) lines.push(`  verification: ${criterion.verification}`);
     if (criterion.summary) lines.push(`  summary: ${criterion.summary}`);
     if (criterion.gap) lines.push(`  gap: ${criterion.gap}`);
+    if (criterion.warning) lines.push(`  warning: ${criterion.warning}`);
   }
   return lines.join('\n');
 }
 
-function buildScoutCriterionPrompt({ session, question, criterion, toolsCap, toolsUsed = 0 }) {
+const MAX_DEP_CLAIMS_PER_UPSTREAM = 8;
+const MAX_DEP_CONTEXT_CHARS = 4000;
+
+/**
+ * Compact, deterministic summary of one upstream question for downstream Scout prompts.
+ * Safe to reuse across many dependents — same upstream yields the same summary from current store state.
+ */
+function buildUpstreamDependencySummary({
+  question,
+  coverage = null,
+  evidence = [],
+  maxClaims = MAX_DEP_CLAIMS_PER_UPSTREAM,
+} = {}) {
+  if (!question?.id) return '';
+  const resolved = coverage && Array.isArray(coverage.criteria)
+    ? coverage
+    : resolveQuestionCoverage(question, null);
+  const accepted = (Array.isArray(evidence) ? evidence : [])
+    .filter((item) => item.questionId === question.id && item.status === 'accepted');
+  const lines = [
+    `### Upstream: ${text(question.text || question.id, 240)}`,
+    `Id: ${question.id}`,
+    `Status: ${question.status || 'unknown'}`,
+    'Confirmed claims:',
+  ];
+  if (!accepted.length) {
+    lines.push('- (none yet)');
+  } else {
+    for (const item of accepted.slice(0, maxClaims)) {
+      lines.push(`- ${text(item.claim, 240)}`);
+    }
+    if (accepted.length > maxClaims) {
+      lines.push(`- … +${accepted.length - maxClaims} more`);
+    }
+  }
+  const notes = [];
+  for (const criterion of resolved.criteria || []) {
+    if (criterion.summary) notes.push(`- [${criterion.id}] summary: ${text(criterion.summary, 200)}`);
+    if (criterion.gap) notes.push(`- [${criterion.id}] gap: ${text(criterion.gap, 200)}`);
+    if (criterion.warning) notes.push(`- [${criterion.id}] warning: ${text(criterion.warning, 160)}`);
+  }
+  if (notes.length) {
+    lines.push('Criterion notes:');
+    lines.push(...notes.slice(0, 12));
+  }
+  return lines.join('\n');
+}
+
+/**
+ * Gather dependency summaries for question.dependsOn (DAG: many→one and one→many).
+ * Reads fresh session detail/evidence so each downstream Scout sees the same upstream snapshot.
+ */
+function collectDependencyContextForQuestion(sessionId, question, {
+  maxChars = MAX_DEP_CONTEXT_CHARS,
+} = {}) {
+  const depIds = [...new Set(
+    (Array.isArray(question?.dependsOn) ? question.dependsOn : []).map(String).filter(Boolean),
+  )];
+  if (!depIds.length) {
+    return { text: '', upstreams: [] };
+  }
+  const detail = getResearchSessionDetail(sessionId);
+  const evidence = listResearchEvidence(sessionId, { status: 'accepted' });
+  const questionById = new Map((detail?.questions || []).map((item) => [item.id, item]));
+  const sections = [];
+  const upstreams = [];
+  for (const depId of depIds) {
+    const upstream = questionById.get(depId);
+    if (!upstream) {
+      sections.push(`### Upstream: ${depId}\nStatus: missing`);
+      upstreams.push({
+        questionId: depId,
+        text: '',
+        status: 'missing',
+        claimCount: 0,
+        summary: `### Upstream: ${depId}\nStatus: missing`,
+      });
+      continue;
+    }
+    const coverage = resolveQuestionCoverage(upstream, null);
+    const summary = buildUpstreamDependencySummary({
+      question: upstream,
+      coverage,
+      evidence,
+    });
+    const claimCount = evidence.filter((item) => item.questionId === depId).length;
+    upstreams.push({
+      questionId: depId,
+      text: upstream.text || '',
+      status: upstream.status || 'unknown',
+      claimCount,
+      summary,
+    });
+    sections.push(summary);
+  }
+  let body = [
+    'Upstream dependency context (clues only — not verified evidence for this sub-question).',
+    'Use it to avoid duplicate discovery searches and to focus follow-up investigation.',
+    'Re-verify before treating any upstream claim as established for YOUR criterion.',
+    '',
+    ...sections,
+  ].join('\n\n');
+  if (body.length > maxChars) body = `${body.slice(0, Math.max(0, maxChars - 1))}…`;
+  return { text: body, upstreams };
+}
+
+function buildScoutCriterionPrompt({
+  session,
+  question,
+  criterion,
+  toolsCap,
+  toolsUsed = 0,
+  dependencyContext = '',
+}) {
   const cap = resolveToolsCap(toolsCap);
   const remaining = Math.max(0, cap - toolsUsed);
   return [
     'Investigate exactly ONE target criterion for this research sub-question.',
-    'Use web_search and web_fetch freely and continuously.',
+    'Use research_web_search and research_web_fetch freely and continuously.',
+    'research_web_fetch returns an artifactId field when the body is persisted — use that exact id with read_artifact; never invent ids.',
+    'Use read_artifact sparingly: only to confirm source context, resolve ambiguity, or validate a key claim from an already fetched source.',
     'There is no URL allowlist — fetch any relevant URL.',
-    `Hard fuse: at most ${cap} search/fetch tool calls combined for this criterion.`,
+    `Hard fuse: at most ${cap} tool calls combined for this criterion across research_web_search, research_web_fetch, and successful read_artifact.`,
+    'Failed read_artifact calls (missing/invalid artifactId) do not consume the fuse.',
     'submit_criterion_candidates does NOT count toward the fuse.',
-    'Every web_search call must include the supplied criterionId.',
+    'Every research_web_search call must include the supplied criterionId.',
     'When finished searching, you MUST call submit_criterion_candidates with candidates, summary, and gap.',
     'summary/gap are relative to this criterion only; never write Accepted N claim(s) or tool-count statistics.',
     `Submit at most ${MAX_CANDIDATES_PER_CRITERION} strongest claims for this criterion (strongest first); extras are dropped.`,
-    `Each claim may list at most ${MAX_URLS_PER_CLAIM} strongest supporting URLs (strongest first); extras are dropped.`,
+    `Each claim may list at most ${MAX_SOURCES_PER_CLAIM} strongest sources (strongest first); extras are dropped.`,
+    'Each source must include url, a short support note/snippet for display, and artifactId when the source was fetched.',
     'Do not stop with only prose — always submit candidates (empty array if blocked).',
     'Prefer primary and authoritative sources.',
     `Main question: ${session.question}`,
     session.preferences?.goal ? `Goal: ${session.preferences.goal}` : '',
     `Sub-question: ${question.text}`,
+    dependencyContext
+      ? [
+        'Dependency context from upstream sub-question(s) follows.',
+        'Treat it as shared discovery context — the same upstream summary may also be injected into other dependent Scouts.',
+        dependencyContext,
+      ].join('\n\n')
+      : '',
     `Target criterion id: ${criterion.id}`,
     `Target criterion: ${criterion.text}`,
     `Tool budget for this criterion: ${toolsUsed} of ${cap} used (${remaining} remaining).`,
@@ -785,10 +1419,14 @@ async function runCriterionScoutLoop({
   emit,
   toolsCap,
   baseDefinitions,
-  baseHandlers,
-  bundle,
+  dependencyContext = '',
 }) {
   const urlIndex = new Map();
+  const artifactStore = createResearchArtifactStore({
+    sessionId: session.id,
+    scoutRunId: run.id,
+    criterionId: criterion.id,
+  });
   const knownQueries = new Set();
   let toolsUsed = 0;
   let cycleSearches = 0;
@@ -806,6 +1444,7 @@ async function runCriterionScoutLoop({
     const stamped = {
       ...event,
       scope: 'scout',
+      agent: event.agent || 'scout',
       wave: wave.wave,
       waveId: wave.id,
       scoutRunId: run.id,
@@ -817,9 +1456,10 @@ async function runCriterionScoutLoop({
     };
     emit(stamped);
   };
+  const emitEvaluator = (event) => emitScout({ ...event, agent: 'evaluator' });
 
   const handlers = {
-    web_search: async (args = {}, ctx) => {
+    [RESEARCH_WEB_SEARCH]: async (args = {}) => {
       if (toolsUsed >= toolsCap) {
         fuseRejectCount += 1;
         if (fuseRejectCount >= 2) forceAfterFuseMiss = true;
@@ -853,15 +1493,14 @@ async function runCriterionScoutLoop({
           toolsCap,
         },
       });
-      const result = await baseHandlers.web_search({
-        ...args,
+      const result = await executeResearchWebSearch(config, {
         query,
-        criterionId: undefined,
-      }, ctx);
+        max_results: args?.max_results,
+      });
       indexSearchResult(urlIndex, result);
       return appendToolBudgetNote(result, toolsUsed, toolsCap);
     },
-    web_fetch: async (args = {}, ctx) => {
+    [RESEARCH_WEB_FETCH]: async (args = {}) => {
       if (toolsUsed >= toolsCap) {
         fuseRejectCount += 1;
         if (fuseRejectCount >= 2) forceAfterFuseMiss = true;
@@ -886,8 +1525,52 @@ async function runCriterionScoutLoop({
           toolsCap,
         },
       });
-      const result = await baseHandlers.web_fetch(args, ctx);
-      indexFetchResult(urlIndex, args, result);
+      const result = await executeResearchWebFetch(args);
+      const artifact = await artifactStore.persistFetch(url, result);
+      indexFetchResult(urlIndex, args, result, artifact);
+      return appendToolBudgetNote(attachFetchArtifactMeta(result, artifact), toolsUsed, toolsCap);
+    },
+    read_artifact: async (args = {}) => {
+      if (toolsUsed >= toolsCap) {
+        fuseRejectCount += 1;
+        if (fuseRejectCount >= 2) forceAfterFuseMiss = true;
+        return `Tool fuse reached (${toolsCap}/${toolsCap}). Call submit_criterion_candidates with your candidates now.`;
+      }
+      const artifactId = String(args?.artifactId || '').trim();
+      if (!artifactId) {
+        return [
+          'Artifact read rejected: artifactId is required.',
+          'Pass the exact artifactId field from a prior research_web_fetch result in this criterion.',
+          `Known artifacts: ${artifactStore.listArtifactIds().join(', ') || '(none)'}`,
+          'This failed read did not consume the tool budget.',
+        ].join(' ');
+      }
+      let result;
+      try {
+        result = await artifactStore.readArtifact({
+          artifactId,
+          offset: args?.offset,
+          maxChars: args?.maxChars,
+        });
+      } catch (error) {
+        return [
+          error?.message || 'Artifact not found for this Scout run',
+          'Pass the exact artifactId from research_web_fetch (field artifactId). Do not invent ids.',
+          `Known artifacts: ${artifactStore.listArtifactIds().join(', ') || '(none)'}`,
+          'This failed read did not consume the tool budget.',
+        ].join(' ');
+      }
+      toolsUsed += 1;
+      emitScout({
+        type: 'budget',
+        delta: { artifactReads: 1 },
+        scoutUsed: {
+          searches: run.searchCount + cycleSearches,
+          fetches: run.fetchCount + cycleFetches,
+          tools: toolsUsed,
+          toolsCap,
+        },
+      });
       return appendToolBudgetNote(result, toolsUsed, toolsCap);
     },
     submit_criterion_candidates: async (args = {}) => {
@@ -914,6 +1597,8 @@ async function runCriterionScoutLoop({
 
   emitScout({
     type: 'criterion:start',
+    criterionId: criterion.id,
+    criterionText: criterion.text,
     targetGap: { criterionId: criterion.id, reason: criterion.text },
     toolsCap,
   });
@@ -921,6 +1606,8 @@ async function runCriterionScoutLoop({
   emitScout({
     type: 'scout:checkpoint_start',
     cycle: Number(coverage.criteria?.findIndex((item) => item.id === criterion.id) || 0) + 1,
+    criterionId: criterion.id,
+    criterionText: criterion.text,
     targetGap: { criterionId: criterion.id, reason: criterion.text },
     toolsCap,
   });
@@ -928,29 +1615,30 @@ async function runCriterionScoutLoop({
   const systemPrompt = [
     'You are a focused, read-only research Scout.',
     'Investigate only the target criterion in the user prompt.',
-    'Search and fetch freely. When done, call submit_criterion_candidates with candidates, summary, and gap.',
+    'Search and fetch freely. research_web_fetch returns artifactId — use that exact id with read_artifact; never invent ids. Use read_artifact only when you need extra source context to validate or clarify a key claim.',
+    'If upstream dependency context is provided, use it as discovery clues only — re-verify before submitting claims.',
+    'When done, call submit_criterion_candidates with candidates, summary, and gap.',
     'Do not invent quote fields. Do not write a final report.',
   ].join('\n');
 
-  let loopResult = await runAgentLoop({
+  const toolDisplayLabels = { ...RESEARCH_SCOUT_DISPLAY_LABELS };
+
+  let loopResult = await runResearchAgentLoop({
     systemPrompt,
     userPrompt: buildScoutCriterionPrompt({
-      session, question, criterion, toolsCap, toolsUsed: 0,
+      session,
+      question,
+      criterion,
+      toolsCap,
+      toolsUsed: 0,
+      dependencyContext,
     }),
     model: resolveSubAgentModel(config, model),
     toolDefinitions: baseDefinitions,
     toolHandlers: handlers,
-    deferredDefinitions: {},
-    toolFormatters: bundle.formatters,
-    toolDisplayLabels: bundle.displayLabels || {},
-    executionMode: 'normal',
-    approvalMode: 'auto',
-    alwaysAllowTools: ['web_search', 'web_fetch', 'submit_criterion_candidates'],
-    projectIsGit: false,
+    toolDisplayLabels,
     toolResultMaxChars: config.context?.tool_result_max_chars || 12000,
-    config: { ...config, workspaceRoot },
     signal,
-    skipAnalysisNudge: true,
     requestCompletion: makeStreamingCompletion(config, emitScout, 'low'),
     onEvent: emitScout,
     shouldCheckpoint: () => findingsSubmitted || forceAfterFuseMiss || budgetExhausted,
@@ -960,29 +1648,21 @@ async function runCriterionScoutLoop({
     const priorMessages = Array.isArray(loopResult?.messages)
       ? loopResult.messages.filter((message) => message?.role !== 'system')
       : [];
-    loopResult = await runAgentLoop({
+    loopResult = await runResearchAgentLoop({
       systemPrompt,
       userPrompt: [
         'You have not called submit_criterion_candidates yet.',
         'Call submit_criterion_candidates now with candidates, summary, and gap.',
         'If you cannot produce attributable candidates, submit an empty array with an honest summary/gap.',
-        'Alternatively reply with JSON only: {"candidates":[{"claim":"","urls":[""]}],"summary":"","gap":""}',
+        'Alternatively reply with JSON only: {"candidates":[{"claim":"","sources":[{"url":"","snippet":""}]}],"summary":"","gap":""}',
       ].join(' '),
       initialMessages: priorMessages,
       model: resolveSubAgentModel(config, model),
       toolDefinitions: baseDefinitions,
       toolHandlers: handlers,
-      deferredDefinitions: {},
-      toolFormatters: bundle.formatters,
-      toolDisplayLabels: bundle.displayLabels || {},
-      executionMode: 'normal',
-      approvalMode: 'auto',
-      alwaysAllowTools: ['web_search', 'web_fetch', 'submit_criterion_candidates'],
-      projectIsGit: false,
+      toolDisplayLabels,
       toolResultMaxChars: config.context?.tool_result_max_chars || 12000,
-      config: { ...config, workspaceRoot },
       signal,
-      skipAnalysisNudge: true,
       requestCompletion: makeStreamingCompletion(config, emitScout, 'low'),
       onEvent: emitScout,
       shouldCheckpoint: () => findingsSubmitted || true,
@@ -1009,7 +1689,7 @@ async function runCriterionScoutLoop({
     config,
     model,
     signal,
-    emit: emitScout,
+    emit: emitEvaluator,
     toolsUsed,
     toolsCap,
     cycleSearches,
@@ -1018,6 +1698,7 @@ async function runCriterionScoutLoop({
     submittedSummary,
     submittedGap,
     submitNote,
+    artifactStore,
     gatedCandidates: gated,
     urlRejected,
   });
@@ -1042,6 +1723,7 @@ async function finalizeCriterionVerification({
   submittedSummary = '',
   submittedGap = '',
   submitNote = '',
+  artifactStore,
   gatedCandidates = [],
   urlRejected = [],
 }) {
@@ -1058,6 +1740,7 @@ async function finalizeCriterionVerification({
     submittedSummary,
     submittedGap,
     submitNote,
+    artifacts: artifactStore?.toManifest?.() || [],
     gatedCandidates: gated.map(serializePendingVerifyCandidate),
     urlRejected: rejected.map((item) => ({
       id: item.id,
@@ -1079,6 +1762,7 @@ async function finalizeCriterionVerification({
   emit({
     type: 'criterion:verify_start',
     criterionId: criterion.id,
+    criterionText: criterion.text,
     candidateCount: gated.length,
     summary: submittedSummary,
     gap: submittedGap,
@@ -1094,7 +1778,9 @@ async function finalizeCriterionVerification({
       gatedCandidates: gated,
       scoutSummary: submittedSummary,
       scoutGap: submittedGap,
+      artifactStore,
       signal,
+      emit,
     });
   } catch (error) {
     updateResearchScoutRun(run.id, {
@@ -1139,14 +1825,31 @@ async function finalizeCriterionVerification({
 
   const finalSummary = text(review?.summary?.text || submittedSummary, 1200);
   const finalGap = text(review?.gap?.text || submittedGap, 1200);
+  const verification = normalizeEvaluatorDecision(review?.decision, 'WARNING');
+  const warning = (review?.warnings || []).join('; ');
 
   let status = 'blocked';
-  let reason = submitNote || finalGap || 'No attributable candidates were verified.';
-  if (accepted.length) {
-    status = rejectedByReview.length || rejected.length ? 'partial' : 'covered';
-    reason = status === 'covered'
-      ? `Accepted ${accepted.length} verified claim(s).`
-      : `Accepted ${accepted.length} claim(s); ${rejectedByReview.length + rejected.length} rejected.`;
+  let reason = submitNote || warning || finalGap || 'No attributable candidates were verified.';
+  if (verification === 'PASS') {
+    status = accepted.length ? 'covered' : 'blocked';
+    reason = warning || finalSummary || 'Criterion passed review.';
+  } else if (verification === 'WARNING') {
+    status = accepted.length ? 'partial' : 'blocked';
+    reason = warning
+      || finalGap
+      || rejected[0]?.reason
+      || rejectedByReview.map((item) => verdictById.get(item.id)?.reason).filter(Boolean)[0]
+      || 'Criterion is usable but materially caveated.';
+  } else if (submittedCandidates.length || gated.length) {
+    status = 'blocked';
+    reason = warning
+      || rejected[0]?.reason
+      || rejectedByReview.map((item) => verdictById.get(item.id)?.reason).filter(Boolean)[0]
+      || finalGap
+      || 'Criterion failed verification.';
+  } else if (accepted.length) {
+    status = 'partial';
+    reason = warning || finalGap || finalSummary || 'Evidence exists but criterion remains incomplete.';
   } else if (submittedCandidates.length || gated.length) {
     status = 'blocked';
     reason = rejected[0]?.reason
@@ -1164,6 +1867,8 @@ async function finalizeCriterionVerification({
     coverageCriterion.evidenceIds = evidenceIds;
     coverageCriterion.summary = finalSummary;
     coverageCriterion.gap = status === 'covered' ? (finalGap || '') : finalGap;
+    coverageCriterion.warning = warning;
+    coverageCriterion.verification = verification;
   }
 
   for (const evidenceId of commitResult.insertedEvidenceIds || []) {
@@ -1177,6 +1882,8 @@ async function finalizeCriterionVerification({
     reason,
     summary: finalSummary,
     gap: coverageCriterion?.gap || finalGap,
+    warning,
+    verification,
     toolCount: toolsUsed,
     evidenceIds,
     coverage: compactProgress(coverage),
@@ -1226,6 +1933,8 @@ async function runScoutForQuestion({
       criterion.reason = '';
       criterion.summary = '';
       criterion.gap = '';
+      criterion.warning = '';
+      criterion.verification = '';
     }
   }
 
@@ -1237,8 +1946,7 @@ async function runScoutForQuestion({
     ledger: { version: 2, questionId: question.id, queries: [] },
   });
 
-  const bundle = getBuiltinTools({ workspaceRoot, config });
-  const { definitions: baseDefinitions, handlers: baseHandlers } = filterScoutBundle(bundle);
+  const baseDefinitions = createScoutToolDefinitions();
   const depth = normalizeResearchPlanDepth(session?.plan?.depth);
   const toolsCap = researchDepthRuntimeLimits(depth).toolsPerCriterion
     || RESEARCH_SCOUT_TOOLS_PER_CRITERION;
@@ -1257,7 +1965,29 @@ async function runScoutForQuestion({
     questionId: question.id,
     questionText: question.text,
     name: run.name,
+    dependsOn: Array.isArray(question.dependsOn) ? question.dependsOn : [],
   });
+
+  const dependency = collectDependencyContextForQuestion(session.id, question);
+  if (dependency.text) {
+    emit({
+      type: 'scout:dependency_context',
+      scope: 'scout',
+      wave: wave.wave,
+      waveId: wave.id,
+      scoutRunId: run.id,
+      questionId: question.id,
+      scoutName: run.name,
+      dependsOn: Array.isArray(question.dependsOn) ? question.dependsOn : [],
+      upstreams: dependency.upstreams.map((item) => ({
+        questionId: item.questionId,
+        text: item.text,
+        status: item.status,
+        claimCount: item.claimCount,
+      })),
+      summary: dependency.text,
+    });
+  }
 
   try {
     let totalSearches = 0;
@@ -1268,9 +1998,16 @@ async function runScoutForQuestion({
     if (pendingVerify?.criterionId && pendingVerify.scoutRunId === run.id) {
       const criterion = (coverage.criteria || []).find((item) => item.id === pendingVerify.criterionId);
       if (criterion && !TERMINAL_COVERAGE.has(criterion.status)) {
+        const artifactStore = createResearchArtifactStore({
+          sessionId: session.id,
+          scoutRunId: run.id,
+          criterionId: criterion.id,
+        });
+        artifactStore.loadManifest(pendingVerify.artifacts);
         const emitScout = (event) => emit({
           ...event,
           scope: 'scout',
+          agent: event.agent || 'scout',
           wave: wave.wave,
           waveId: wave.id,
           scoutRunId: run.id,
@@ -1278,6 +2015,7 @@ async function runScoutForQuestion({
           scoutName: run.name,
           criterionId: criterion.id,
         });
+        const emitEvaluator = (event) => emitScout({ ...event, agent: 'evaluator' });
         const result = await finalizeCriterionVerification({
           session,
           wave,
@@ -1288,7 +2026,7 @@ async function runScoutForQuestion({
           config,
           model,
           signal,
-          emit: emitScout,
+          emit: emitEvaluator,
           toolsUsed: Number(pendingVerify.toolsUsed) || 0,
           toolsCap: Number(pendingVerify.toolsCap) || toolsCap,
           cycleSearches: Number(pendingVerify.cycleSearches) || 0,
@@ -1297,6 +2035,7 @@ async function runScoutForQuestion({
           submittedSummary: pendingVerify.submittedSummary || '',
           submittedGap: pendingVerify.submittedGap || '',
           submitNote: pendingVerify.submitNote || '',
+          artifactStore,
           gatedCandidates: Array.isArray(pendingVerify.gatedCandidates)
             ? pendingVerify.gatedCandidates
             : [],
@@ -1342,8 +2081,7 @@ async function runScoutForQuestion({
         emit,
         toolsCap,
         baseDefinitions,
-        baseHandlers,
-        bundle,
+        dependencyContext: dependency.text,
       });
       totalSearches += result.cycleSearches;
       totalFetches += result.cycleFetches;
@@ -1453,13 +2191,71 @@ async function runScoutForQuestion({
       coverage: compactProgress(coverage),
     });
     throw error;
-  } finally {
-    await bundle.dispose?.();
   }
 }
 
 /** @deprecated Alias for older imports / tests. */
 const runScoutWithCheckpoints = runScoutForQuestion;
+
+/**
+ * Pick the next scout batch for a wave.
+ * Dependents wait until every dependsOn id is completed (or settled outside this wave).
+ * Never expands to "all pending" when some questions are still blocked on deps.
+ */
+function selectReadyWaveBatch({
+  pendingIds,
+  completedIds,
+  questionById,
+  maxParallel = 3,
+} = {}) {
+  const pending = new Set(
+    (Array.isArray(pendingIds) ? pendingIds : []).map(String).filter(Boolean),
+  );
+  const completed = new Set(
+    (Array.isArray(completedIds) ? completedIds : []).map(String).filter(Boolean),
+  );
+  const cap = Math.max(1, Math.floor(Number(maxParallel) || 1));
+  const byId = questionById instanceof Map
+    ? questionById
+    : new Map(Object.entries(questionById || {}));
+
+  const isDepSatisfied = (depId) => {
+    const dep = String(depId || '');
+    if (!dep) return true;
+    if (completed.has(dep)) return true;
+    if (pending.has(dep)) return false;
+    const upstream = byId.get(dep);
+    if (!upstream) return false;
+    const status = String(upstream.status || '').toLowerCase();
+    return ['done', 'partial', 'blocked'].includes(status);
+  };
+
+  const ready = [...pending].filter((questionId) => {
+    const question = byId.get(questionId);
+    const deps = Array.isArray(question?.dependsOn) ? question.dependsOn : [];
+    return deps.every((dep) => isDepSatisfied(dep));
+  });
+
+  // Prefer ready. If none (e.g. cycle), take a single pending item to avoid deadlock —
+  // but never dump the entire pending set.
+  const batchIds = (ready.length ? ready : [...pending].slice(0, 1)).slice(0, cap);
+  const waiting = [...pending]
+    .filter((questionId) => !batchIds.includes(questionId))
+    .map((questionId) => {
+      const question = byId.get(questionId);
+      const waitingOn = (Array.isArray(question?.dependsOn) ? question.dependsOn : [])
+        .map(String)
+        .filter((dep) => dep && !isDepSatisfied(dep));
+      return {
+        questionId,
+        questionText: question?.text || '',
+        dependsOn: Array.isArray(question?.dependsOn) ? question.dependsOn.map(String) : [],
+        waitingOn,
+      };
+    });
+
+  return { batchIds, waiting, readyIds: ready };
+}
 
 function deterministicResearchReadiness(detail) {
   const acceptedByQuestion = new Map();
@@ -1606,18 +2402,34 @@ async function runWaveScouts({
 
   while (pending.size) {
     if (signal?.aborted) throw Object.assign(new Error('aborted'), { name: 'AbortError' });
-    const ready = [...pending].filter((questionId) => {
-      const question = questionById.get(questionId);
-      return (question?.dependsOn || []).every((dep) => !pending.has(dep) || completed.has(dep));
+    const { batchIds, waiting } = selectReadyWaveBatch({
+      pendingIds: [...pending],
+      completedIds: [...completed],
+      questionById,
+      maxParallel,
     });
-    const batchIds = (ready.length ? ready : [...pending]).slice(0, maxParallel);
     emit({
       type: 'batch:start',
       scope: 'lead',
       wave: wave.wave,
       waveId: wave.id,
       questionIds: batchIds,
+      waiting,
+      maxParallel,
     });
+    for (const item of waiting) {
+      if (!item.waitingOn.length) continue;
+      emit({
+        type: 'scout:waiting_deps',
+        scope: 'lead',
+        wave: wave.wave,
+        waveId: wave.id,
+        questionId: item.questionId,
+        questionText: item.questionText,
+        dependsOn: item.dependsOn,
+        waitingOn: item.waitingOn,
+      });
+    }
     const settled = await Promise.allSettled(batchIds.map(async (questionId) => {
       const question = questionById.get(questionId);
       const reusable = existingRuns.find((run) => {
@@ -1835,7 +2647,10 @@ function buildConclusionCoverageInput(detail) {
         id: criterion.id,
         text: criterion.text,
         status: criterion.status,
-        reason: criterion.reason || '',
+        verification: criterion.verification || '',
+        summary: criterion.summary || '',
+        gap: criterion.gap || '',
+        warning: criterion.warning || '',
         evidenceIds: criterion.evidenceIds || [],
       })),
     };
@@ -1851,7 +2666,7 @@ function buildConclusionLimitationsInput(detail) {
       items.push({
         questionId: question.id,
         criterionId: criterion.id,
-        gap: criterion.reason || criterion.text,
+        gap: criterion.gap || criterion.warning || criterion.text,
         status: criterion.status,
       });
     }
@@ -1934,11 +2749,20 @@ export async function generateResearchConclusions({
 
 export {
   appendToolBudgetNote,
+  attachFetchArtifactMeta,
+  buildFetchArtifactPreview,
   buildScoutHandoff,
+  buildUpstreamDependencySummary,
+  collectDependencyContextForQuestion,
   createEmptyCoverage,
+  selectReadyWaveBatch,
   createInitialLedger,
+  createReadArtifactDefinition,
+  createResearchArtifactStore,
   createResearchSearchDefinition,
   createSubmitCandidatesDefinition,
+  createSubmitCriterionReviewDefinition,
+  candidateToEvidence,
   deriveQuestionGaps,
   deterministicResearchReadiness,
   finalizeInvestigationRound,
@@ -1955,6 +2779,7 @@ export {
   validateSupportVerdicts,
   verifyCandidateSupport,
   MAX_CANDIDATES_PER_CRITERION,
+  MAX_SOURCES_PER_CLAIM,
   MAX_URLS_PER_CLAIM,
   RESEARCH_SCOUT_TOOLS_PER_CRITERION,
 };

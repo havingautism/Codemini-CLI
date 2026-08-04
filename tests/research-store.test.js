@@ -5,7 +5,10 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { closeSqliteDatabasesForTests } from '../src/core/sqlite-database.js';
-import { deterministicResearchReadiness } from '../src/core/research-investigation.js';
+import {
+  collectDependencyContextForQuestion,
+  deterministicResearchReadiness,
+} from '../src/core/research-investigation.js';
 import {
   applyResearchCommit,
   buildResearchDbSummary,
@@ -132,8 +135,123 @@ test('research session create confirm commit and summaries', async () => {
     assert.match(summary, /ev_/);
 
     const pack = buildResearchWritingPack(detail);
-    assert.match(pack, /Accepted evidence/);
+    assert.match(pack, /Accepted evidence|Additional accepted evidence|Suggested outline/);
     assert.match(pack, /\$12\.0 billion/);
+  });
+});
+
+test('dependency context reuses one upstream summary for many dependents', async () => {
+  await withGlobalDir(async () => {
+    const session = createResearchSession({ question: 'Agent harness evolution?' });
+    updateResearchSession(session.id, {
+      phase: 'awaiting_plan_confirm',
+      plan: {
+        goal: 'Map discovery then deep-dives',
+        depth: 'standard',
+        questions: [
+          {
+            tempId: 'q1',
+            text: 'What are the main approaches?',
+            successCriteria: ['List dominant patterns'],
+            dependsOn: [],
+          },
+          {
+            tempId: 'q2',
+            text: 'How does pattern A manage context?',
+            successCriteria: ['Explain mechanism'],
+            dependsOn: ['q1'],
+          },
+          {
+            tempId: 'q3',
+            text: 'How does pattern B isolate tools?',
+            successCriteria: ['Explain isolation'],
+            dependsOn: ['q1'],
+          },
+        ],
+      },
+    });
+    const confirmed = confirmResearchPlan(session.id);
+    const [q1, q2, q3] = confirmed.questions;
+    assert.deepEqual(q2.dependsOn, [q1.id]);
+    assert.deepEqual(q3.dependsOn, [q1.id]);
+
+    applyResearchCommit(session.id, {
+      acceptEvidence: [{
+        questionId: q1.id,
+        claim: 'Pattern A uses tool budgets.',
+        snippet: 'tool budgets',
+        url: 'https://example.com/a',
+        confidence: 'high',
+      }],
+      questionUpdates: [{
+        questionId: q1.id,
+        status: 'done',
+        coverage: {
+          version: 1,
+          questionId: q1.id,
+          criteria: [{
+            id: 'c1',
+            text: 'List dominant patterns',
+            status: 'covered',
+            summary: 'A and B dominate.',
+            gap: 'Need latency data.',
+            warning: '',
+            evidenceIds: [],
+            toolCount: 2,
+            reason: '',
+            verification: 'PASS',
+          }],
+        },
+      }],
+    });
+
+    const forQ2 = collectDependencyContextForQuestion(session.id, q2);
+    const forQ3 = collectDependencyContextForQuestion(session.id, q3);
+    assert.match(forQ2.text, /Pattern A uses tool budgets/);
+    assert.match(forQ2.text, /summary: A and B dominate/);
+    assert.match(forQ2.text, /gap: Need latency data/);
+    assert.equal(forQ2.upstreams.length, 1);
+    assert.equal(forQ2.upstreams[0].questionId, q1.id);
+    assert.equal(forQ2.upstreams[0].claimCount, 1);
+    // Same upstream snapshot for both dependents (one→many reuse).
+    assert.equal(forQ2.upstreams[0].summary, forQ3.upstreams[0].summary);
+    assert.match(forQ3.text, /Pattern A uses tool budgets/);
+  });
+});
+
+test('research evidence commit stores multi-source payload', async () => {
+  await withGlobalDir(async () => {
+    const session = createResearchSession({ question: 'Multi-source evidence?' });
+    updateResearchSession(session.id, {
+      plan: {
+        depth: 'brief',
+        questions: [{ tempId: 'q1', text: 'Angle', successCriteria: ['a'], dependsOn: [] }],
+      },
+    });
+    const confirmed = confirmResearchPlan(session.id);
+    const questionId = confirmed.questions[0].id;
+    const commit = applyResearchCommit(session.id, {
+      acceptEvidence: [{
+        questionId,
+        candidateId: 'cand_ms_1',
+        claim: 'Offline editing works',
+        confidence: 'high',
+        sources: [
+          { url: 'https://example.com/a', snippet: 'edit offline', artifactId: 'art_1' },
+          { url: 'https://example.com/b', snippet: 'works offline', artifactId: '' },
+        ],
+      }],
+    });
+    assert.equal(commit.ok, true);
+    const evidence = listResearchEvidence(session.id, { status: 'accepted' });
+    assert.equal(evidence.length, 1);
+    assert.equal(evidence[0].sources.length, 2);
+    assert.equal(evidence[0].url, 'https://example.com/a');
+    assert.equal(evidence[0].snippet, 'edit offline');
+    assert.equal(evidence[0].sources[1].url, 'https://example.com/b');
+    const pack = buildResearchWritingPack(getResearchSessionDetail(session.id));
+    assert.match(pack, /works offline/);
+    assert.match(pack, /https:\/\/example.com\/b/);
   });
 });
 
@@ -683,8 +801,10 @@ test('writing pack includes coverage by criterion and accepted evidence', async 
             id: 'c1',
             text: 'Timeline known',
             status: 'partial',
+            verification: 'WARNING',
             summary: 'Direction is clear; timeline is not.',
             gap: 'No official GA table.',
+            warning: 'Dates depend on secondary reporting.',
           }],
         },
       }],
@@ -694,8 +814,10 @@ test('writing pack includes coverage by criterion and accepted evidence', async 
         status: 'accepted',
         confidence: 'high',
         claim: 'Product moved toward agents',
-        snippet: 'blog line',
-        url: 'https://example.com/a',
+        sources: [
+          { url: 'https://example.com/a', snippet: 'blog line', artifactId: 'art_a' },
+          { url: 'https://example.com/b', snippet: 'second cite', artifactId: '' },
+        ],
         sourceLabel: 'Blog',
       }],
       waves: [{
@@ -710,13 +832,18 @@ test('writing pack includes coverage by criterion and accepted evidence', async 
     };
     const pack = buildResearchWritingPack(detail);
     assert.match(pack, /Depth: standard/);
-    assert.match(pack, /Coverage by criterion/);
+    assert.match(pack, /Suggested outline/);
+    assert.match(pack, /## q_fake — Milestones\?/);
+    assert.match(pack, /verify=WARNING/);
     assert.match(pack, /Direction is clear/);
     assert.match(pack, /No official GA table/);
+    assert.match(pack, /warning: Dates depend on secondary reporting/);
+    assert.match(pack, /Risks \/ limitations for this section/);
     assert.doesNotMatch(pack, /Sub-question conclusions/);
     assert.doesNotMatch(pack, /Session limitations/);
-    assert.match(pack, /Accepted evidence/);
-    assert.match(pack, /ev_keep/);
+    assert.match(pack, /blog line/);
+    assert.match(pack, /second cite/);
+    assert.match(pack, /https:\/\/example.com\/b/);
   });
 });
 

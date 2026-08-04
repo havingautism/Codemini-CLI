@@ -726,7 +726,8 @@ export async function webFetchPage(args = {}) {
   }
 }
 
-async function webSearchQuery(config, args = {}) {
+/** Shared HTTP search primitive (chat + research). Product tool names stay separate. */
+export async function webSearchQuery(config, args = {}) {
   if (config?.web?.search_enabled === false) {
     throw new Error(
       "web_search is disabled by config. Set web.search_enabled=true to enable network search.",
