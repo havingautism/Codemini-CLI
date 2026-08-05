@@ -36,7 +36,15 @@ export function HomeEmptyVisual({ mode, children }) {
     >
       <div className="codemini-home-empty-glow" aria-hidden="true" />
       <div className="codemini-home-empty-media">
-        {visual.type === "css" && visual.id === "printing-press" ? (
+        {visual.type === "image" ? (
+          <img
+            src={visual.src}
+            alt=""
+            aria-hidden="true"
+            className="codemini-home-empty-image"
+            draggable="false"
+          />
+        ) : visual.type === "css" && visual.id === "printing-press" ? (
           <div className="codemini-home-empty-press">
             <PrintingPress />
           </div>

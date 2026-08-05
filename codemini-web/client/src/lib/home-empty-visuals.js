@@ -1,39 +1,24 @@
+const DARK_DECO_VISUALS = [
+  {
+    type: "image",
+    id: "dark-deco-boulevard",
+    src: "/images/home/dark-deco-boulevard.webp",
+  },
+  {
+    type: "image",
+    id: "dark-deco-bar",
+    src: "/images/home/dark-deco-bar.webp",
+  },
+  {
+    type: "image",
+    id: "dark-deco-lounge",
+    src: "/images/home/dark-deco-lounge.webp",
+  },
+];
+
 export const HOME_EMPTY_VISUAL_POOLS = {
-  general: [
-    { type: "css", id: "printing-press" },
-    {
-      type: "lottie",
-      id: "celebration",
-      src: "/animations/home/general/celebration.lottie",
-    },
-    {
-      type: "lottie",
-      id: "working-cat",
-      src: "/animations/home/project/working-cat.lottie",
-    },
-    {
-      type: "lottie",
-      id: "loader-cat-dark",
-      src: "/animations/home/general/loader-cat-dark.lottie",
-    },
-  ],
-  project: [
-    {
-      type: "lottie",
-      id: "working-cat",
-      src: "/animations/home/project/working-cat.lottie",
-    },
-    {
-      type: "lottie",
-      id: "celebration",
-      src: "/animations/home/general/celebration.lottie",
-    },
-    {
-      type: "lottie",
-      id: "loader-cat-dark",
-      src: "/animations/home/general/loader-cat-dark.lottie",
-    },
-  ],
+  general: DARK_DECO_VISUALS,
+  project: DARK_DECO_VISUALS,
 };
 
 export function pickHomeEmptyVisual(mode, rng = Math.random) {

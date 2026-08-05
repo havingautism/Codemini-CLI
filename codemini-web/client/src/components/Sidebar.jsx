@@ -574,17 +574,36 @@ export function Sidebar({
           <span className="truncate">{t("newChat")}</span>
         </button>
 
-        {/* <button
-          className="w-full border-0 bg-transparent flex items-center gap-2.5 h-[32px] px-2 rounded-lg cursor-pointer text-left text-[13px] hover:bg-(--bg-hover) text-(--text-primary)"
-          onClick={() => {}}
+        <button
+          className={cn(
+            "w-full border-0 bg-transparent flex items-center gap-2.5 h-[30px] px-2 rounded-md cursor-pointer text-left text-[13px] hover:bg-(--bg-hover)",
+            currentView === "scrapbook" ? "bg-(--bg-hover) text-(--text-primary)" : "text-(--text-primary)",
+          )}
+          onClick={onOpenScrapbook}
         >
-          <Search
+          <Notebook
             size={15}
             strokeWidth={2}
             className="text-(--text-secondary) shrink-0"
           />
-          <span className="truncate">搜索</span>
-        </button> */}
+          <span className="truncate">{t("scrapbook")}</span>
+        </button>
+        <button
+          className={cn(
+            "w-full border-0 bg-transparent flex items-center gap-2.5 h-[30px] px-2 rounded-md cursor-pointer text-left text-[13px] hover:bg-(--bg-hover)",
+            currentView === "research" ? "bg-(--bg-hover) text-(--text-primary)" : "text-(--text-primary)",
+          )}
+          onClick={onOpenResearch}
+        >
+          <MagnifyingGlass
+            size={15}
+            strokeWidth={2}
+            className="text-(--text-secondary) shrink-0"
+          />
+          <span className="truncate">{t("deepResearch")}</span>
+        </button>
+
+        <Separator className="mx-2 my-2 bg-(--border-default)/40" />
 
         <button
           className="w-full border-0 bg-transparent flex items-center gap-2.5 h-[30px] px-2 rounded-md cursor-pointer text-left text-[13px] hover:bg-(--bg-hover) text-(--text-primary)"
@@ -643,31 +662,6 @@ export function Sidebar({
             className="text-(--text-secondary) shrink-0"
           />
           <span className="truncate">{t("memory")}</span>
-        </button>
-        <button
-          className="w-full border-0 bg-transparent flex items-center gap-2.5 h-[30px] px-2 rounded-md cursor-pointer text-left text-[13px] hover:bg-(--bg-hover) text-(--text-primary)"
-          onClick={onOpenScrapbook}
-        >
-          <Notebook
-            size={15}
-            strokeWidth={2}
-            className="text-(--text-secondary) shrink-0"
-          />
-          <span className="truncate">{t("scrapbook")}</span>
-        </button>
-        <button
-          className={cn(
-            "w-full border-0 bg-transparent flex items-center gap-2.5 h-[30px] px-2 rounded-md cursor-pointer text-left text-[13px] hover:bg-(--bg-hover)",
-            currentView === "research" ? "bg-(--bg-hover) text-(--text-primary)" : "text-(--text-primary)",
-          )}
-          onClick={onOpenResearch}
-        >
-          <MagnifyingGlass
-            size={15}
-            strokeWidth={2}
-            className="text-(--text-secondary) shrink-0"
-          />
-          <span className="truncate">{t("deepResearch")}</span>
         </button>
         <Separator className="my-1.5 bg-transparent" />
       </div>
