@@ -587,7 +587,7 @@ function ToolGroup({ cards }) {
       )}
       {hasRunningTool && (
         <div className="msg-process-meta__detail flex items-center gap-2 px-3 py-1.5 text-[11px] my-2">
-          <Spinner />
+          <Spinner className="loading-dots--prism" />
           <RotatingStatusLabel phrases={toolingPhrases} active />
         </div>
       )}

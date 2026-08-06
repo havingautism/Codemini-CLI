@@ -1809,19 +1809,102 @@ body {
   font-size: 12px !important;
 }
 
-/* Chat input shell — soft elevation + theme glow on hover / focus */
+/* Chat input shell — glass fill + traveling metallic rim */
+@property --input-shell-angle {
+  syntax: "<angle>";
+  initial-value: 0deg;
+  inherits: false;
+}
+
+@keyframes input-shell-border-spin {
+  to {
+    --input-shell-angle: 360deg;
+  }
+}
+
 .codemini-input-shell {
-  border: 1px solid var(--surface-edge);
-  border-color: var(--selected-edge);
+  --input-shell-glass: color-mix(in srgb, var(--control-bg) 82%, transparent);
+  --input-shell-rim: color-mix(in srgb, var(--text-primary) 14%, transparent);
+  --input-shell-streak-a: color-mix(in srgb, #67e8f9 70%, transparent);
+  --input-shell-streak-b: color-mix(in srgb, #c4b5fd 85%, white 8%);
+  --input-shell-streak-c: color-mix(in srgb, #60a5fa 75%, transparent);
+  position: relative;
+  isolation: isolate;
+  border: 1px solid var(--input-shell-rim);
   border-radius: var(--radius-xl);
-  background: var(--control-bg);
+  background: var(--input-shell-glass);
+  backdrop-filter: blur(18px) saturate(160%);
+  -webkit-backdrop-filter: blur(18px) saturate(160%);
   box-shadow:
     0 1px 2px color-mix(in srgb, black 4%, transparent),
-    0 8px 18px color-mix(in srgb, black 6%, transparent);
+    0 10px 28px color-mix(in srgb, black 8%, transparent),
+    inset 0 1px 0 color-mix(in srgb, white 6%, transparent);
   transition:
     border-color var(--transition),
     box-shadow 220ms ease,
     background var(--transition);
+}
+
+.codemini-input-shell::before {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  padding: 1px;
+  background: conic-gradient(
+    from var(--input-shell-angle) at 50% 50%,
+    transparent 0deg,
+    transparent 250deg,
+    var(--input-shell-streak-a) 290deg,
+    var(--input-shell-streak-b) 318deg,
+    var(--input-shell-streak-c) 346deg,
+    transparent 360deg
+  );
+  -webkit-mask:
+    linear-gradient(#fff 0 0) content-box,
+    linear-gradient(#fff 0 0);
+  mask:
+    linear-gradient(#fff 0 0) content-box,
+    linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+  z-index: 1;
+  animation: input-shell-border-spin 8.5s linear infinite;
+}
+
+/* Shared metallic loader palette — cool mercury, not rainbow */
+:root {
+  --metal-hi: #f4f6fa;
+  --metal-mid: #c7d0de;
+  --metal-lo: #8e9bb0;
+  --metal-mist: #b7b3c9;
+  --metal-glow: color-mix(in srgb, #d5dde8 42%, transparent);
+}
+
+.codemini-input-shell--busy {
+  --input-shell-rim: color-mix(in srgb, white 18%, transparent);
+  box-shadow:
+    0 1px 2px color-mix(in srgb, black 4%, transparent),
+    0 12px 32px color-mix(in srgb, black 10%, transparent),
+    0 0 28px color-mix(in srgb, #a78bfa 22%, transparent),
+    inset 0 1px 0 color-mix(in srgb, white 10%, transparent);
+}
+
+.codemini-input-shell--busy::before {
+  background: conic-gradient(
+    from var(--input-shell-angle) at 50% 50%,
+    #fb7185 0deg,
+    #fbbf24 50deg,
+    #34d399 100deg,
+    #22d3ee 150deg,
+    #60a5fa 200deg,
+    #a78bfa 260deg,
+    #f472b6 310deg,
+    #fb7185 360deg
+  );
+  animation-duration: 2.2s;
+  opacity: 0.95;
 }
 
 :root[data-theme="dark"],
@@ -1836,15 +1919,33 @@ body {
 }
 
 .codemini-input-shell:focus-within {
-  border-color: var(--selected-edge);
-  background: var(--bg-primary);
+  --input-shell-rim: color-mix(in srgb, var(--text-primary) 20%, transparent);
+  --input-shell-streak-a: color-mix(in srgb, #67e8f9 85%, transparent);
+  --input-shell-streak-b: color-mix(in srgb, #ddd6fe 92%, white 12%);
+  --input-shell-streak-c: color-mix(in srgb, #93c5fd 85%, transparent);
+  border-color: var(--input-shell-rim);
+  background: var(--input-shell-glass);
   box-shadow:
     0 1px 2px color-mix(in srgb, black 4%, transparent),
-    0 8px 18px color-mix(in srgb, black 6%, transparent);
+    0 12px 32px color-mix(in srgb, black 10%, transparent),
+    0 0 24px color-mix(in srgb, #818cf8 16%, transparent),
+    inset 0 1px 0 color-mix(in srgb, white 8%, transparent);
+}
+
+[data-theme="dark"] .codemini-input-shell {
+  --input-shell-glass: color-mix(in srgb, var(--control-bg) 72%, transparent);
+  --input-shell-rim: color-mix(in srgb, white 12%, transparent);
 }
 
 [data-theme="dark"] .codemini-input-shell:focus-within {
-  background: var(--control-bg);
+  --input-shell-glass: color-mix(in srgb, var(--control-bg) 78%, transparent);
+  background: var(--input-shell-glass);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .codemini-input-shell::before {
+    animation: none;
+  }
 }
 
 .codemini-input-chip {
@@ -1986,6 +2087,18 @@ samp {
 }
 
 /* ── Linear loaders (theme + palette aware) ── */
+@property --loader-ring-angle {
+  syntax: "<angle>";
+  initial-value: 0deg;
+  inherits: false;
+}
+
+@keyframes loader-ring-spin {
+  to {
+    --loader-ring-angle: 360deg;
+  }
+}
+
 .loading-dots {
   display: inline-flex;
   gap: 3px;
@@ -2010,6 +2123,36 @@ samp {
   animation-delay: 0.36s;
 }
 
+/* Tool-call loader: bouncing mercury beads */
+.loading-dots--prism {
+  gap: 4px;
+}
+
+.loading-dots--prism span {
+  width: 4px;
+  height: 4px;
+  opacity: 1;
+  animation: prism-dot-bounce 0.95s ease-in-out infinite;
+}
+
+.loading-dots--prism span:nth-child(1) {
+  background: var(--metal-hi);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--metal-hi) 45%, transparent);
+  animation-delay: 0s;
+}
+
+.loading-dots--prism span:nth-child(2) {
+  background: var(--metal-mid);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--metal-mid) 40%, transparent);
+  animation-delay: 0.14s;
+}
+
+.loading-dots--prism span:nth-child(3) {
+  background: var(--metal-mist);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--metal-mist) 40%, transparent);
+  animation-delay: 0.28s;
+}
+
 @keyframes linear-dot-pulse {
 
   0%,
@@ -2025,19 +2168,53 @@ samp {
   }
 }
 
+@keyframes prism-dot-bounce {
+  0%,
+  70%,
+  100% {
+    opacity: 0.35;
+    transform: translateY(0) scale(0.82);
+  }
+
+  35% {
+    opacity: 1;
+    transform: translateY(-3.5px) scale(1.12);
+  }
+}
+
 .linear-loader-ring {
+  --loader-ring-thickness: 1.5px;
   display: inline-block;
   flex-shrink: 0;
   border-radius: 50%;
-  border: 1.5px solid var(--loader-track);
-  border-top-color: var(--loader-fg);
-  animation: linear-ring-spin 0.9s linear infinite;
+  border: 0;
+  background: conic-gradient(
+    from var(--loader-ring-angle),
+    transparent 0deg,
+    color-mix(in srgb, var(--metal-lo) 40%, transparent) 80deg,
+    var(--metal-mid) 140deg,
+    var(--metal-hi) 180deg,
+    var(--metal-mist) 220deg,
+    transparent 280deg,
+    transparent 360deg
+  );
+  -webkit-mask: radial-gradient(
+    farthest-side,
+    transparent calc(100% - var(--loader-ring-thickness)),
+    #000 calc(100% - var(--loader-ring-thickness) + 0.35px)
+  );
+  mask: radial-gradient(
+    farthest-side,
+    transparent calc(100% - var(--loader-ring-thickness)),
+    #000 calc(100% - var(--loader-ring-thickness) + 0.35px)
+  );
+  animation: loader-ring-spin 1.25s linear infinite;
 }
 
 .linear-loader-ring--sm {
   width: 12px;
   height: 12px;
-  border-width: 1.25px;
+  --loader-ring-thickness: 1.25px;
 }
 
 .linear-loader-ring--md {
@@ -2050,23 +2227,40 @@ samp {
   height: 16px;
 }
 
-@keyframes linear-ring-spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
 .linear-status-dot {
   display: inline-block;
   flex-shrink: 0;
   border-radius: 50%;
-  background: var(--loader-status-running);
-  animation: linear-status-pulse 1.35s ease-in-out infinite;
+  background: linear-gradient(135deg, var(--metal-hi), var(--metal-mid), var(--metal-mist));
+  background-size: 200% 200%;
+  box-shadow: 0 0 6px var(--metal-glow);
+  animation:
+    linear-status-pulse 1.35s ease-in-out infinite,
+    prism-status-shift 1.8s linear infinite;
 }
 
 .linear-status-dot--sm {
   width: 6px;
   height: 6px;
+}
+
+@keyframes linear-status-pulse {
+  0%,
+  100% {
+    opacity: 0.45;
+    transform: scale(0.85);
+  }
+
+  50% {
+    opacity: 1;
+    transform: scale(1.15);
+  }
+}
+
+@keyframes prism-status-shift {
+  to {
+    background-position: 100% 100%;
+  }
 }
 
 /* ── Prevent I-beam cursor on non-editable text ── */
@@ -2155,35 +2349,71 @@ samp {
   background: var(--accent-red);
 }
 
-/* ── Streaming cursor (Linear-style soft caret) ── */
+/* ── Streaming cursor (mercury typewriter caret) ── */
 .streaming-cursor::after {
   content: "";
   display: inline-block;
-  width: 2px;
+  width: 2.5px;
   height: 1.05em;
   max-height: 18px;
-  margin-left: 2px;
-  border-radius: 1px;
+  margin-left: 3px;
+  border-radius: 999px;
   vertical-align: text-bottom;
-  background: color-mix(in srgb, var(--text-secondary) 78%, transparent);
-  animation: stream-caret-pulse 1.15s ease-in-out infinite;
+  background: linear-gradient(
+    180deg,
+    var(--metal-lo) 0%,
+    var(--metal-hi) 35%,
+    var(--metal-mid) 65%,
+    var(--metal-mist) 100%
+  );
+  background-size: 100% 220%;
+  box-shadow:
+    0 0 5px color-mix(in srgb, var(--metal-hi) 40%, transparent),
+    0 0 10px var(--metal-glow);
+  animation:
+    stream-caret-flow 1.6s linear infinite,
+    stream-caret-pulse 1.25s ease-in-out infinite;
 }
 
 .streaming-cursor--pending {
   display: inline-flex;
-  align-items: baseline;
+  align-items: center;
   min-height: 1.625rem;
 }
 
 .streaming-cursor--pending::after {
+  width: 14px;
+  height: 14px;
+  max-height: none;
   margin-left: 0;
+  border-radius: 50%;
+  vertical-align: middle;
+  box-shadow: 0 0 10px var(--metal-glow);
+  background: conic-gradient(
+    from var(--loader-ring-angle),
+    transparent 0deg,
+    transparent 220deg,
+    var(--metal-lo) 265deg,
+    var(--metal-hi) 300deg,
+    var(--metal-mist) 335deg,
+    transparent 360deg
+  );
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 1.75px), #000 calc(100% - 1.75px + 0.35px));
+  mask: radial-gradient(farthest-side, transparent calc(100% - 1.75px), #000 calc(100% - 1.75px + 0.35px));
+  animation: loader-ring-spin 1.35s linear infinite;
+}
+
+@keyframes stream-caret-flow {
+  to {
+    background-position: 0 100%;
+  }
 }
 
 @keyframes stream-caret-pulse {
 
   0%,
   100% {
-    opacity: 0.3;
+    opacity: 0.55;
   }
 
   50% {
@@ -3503,7 +3733,12 @@ samp {
 
 :root:not([data-theme="dark"]) .codemini-input-shell,
 :root:not([data-theme="dark"]) .codemini-input-shell:focus-within {
-  background: rgba(255, 255, 255, 0.96);
+  --input-shell-glass: rgba(255, 255, 255, 0.82);
+  --input-shell-rim: rgba(29, 29, 31, 0.08);
+  --input-shell-streak-a: color-mix(in srgb, #38bdf8 45%, transparent);
+  --input-shell-streak-b: color-mix(in srgb, #a78bfa 50%, white 20%);
+  --input-shell-streak-c: color-mix(in srgb, #60a5fa 45%, transparent);
+  background: var(--input-shell-glass);
 }
 
 :root:not([data-theme="dark"]) .codemini-input-chip--selected {

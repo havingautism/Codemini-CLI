@@ -1019,7 +1019,12 @@ export function InputBar({
         hasConversation={hasConversation}
         onClose={() => setPaletteOpen(false)}
       />
-      <div className="codemini-input-shell flex flex-col gap-2.5 px-2 py-2 sm:px-2.5">
+      <div
+        className={cn(
+          "codemini-input-shell flex flex-col gap-2.5 px-2 py-2 sm:px-2.5",
+          busy && "codemini-input-shell--busy",
+        )}
+      >
         {(selectedSkills.length > 0 ||
           visibleDefaultSkillNames.length > 0 ||
           attachments.length > 0 ||
