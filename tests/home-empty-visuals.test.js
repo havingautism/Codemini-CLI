@@ -5,25 +5,18 @@ import {
   pickHomeEmptyVisual,
 } from "../codemini-web/client/src/lib/home-empty-visuals.js";
 
-test("general pool includes the dark deco banners", () => {
+test("general pool includes randomized Gemini palettes", () => {
   const ids = HOME_EMPTY_VISUAL_POOLS.general.map((v) => v.id);
-  assert.deepEqual(ids, [
-    "dark-deco-boulevard",
-    "dark-deco-bar",
-    "dark-deco-lounge",
-  ]);
+  assert.deepEqual(ids, ["gemini", "aurora", "spectrum", "violet"]);
 });
 
-test("project pool includes the dark deco banners", () => {
+test("project pool uses the same theme-aware palettes", () => {
   const ids = HOME_EMPTY_VISUAL_POOLS.project.map((v) => v.id);
-  assert.deepEqual(ids, [
-    "dark-deco-boulevard",
-    "dark-deco-bar",
-    "dark-deco-lounge",
-  ]);
+  assert.deepEqual(ids, ["gemini", "aurora", "spectrum", "violet"]);
+  assert.ok(HOME_EMPTY_VISUAL_POOLS.project.every((v) => v.light.length === v.dark.length));
 });
 
 test("pickHomeEmptyVisual uses rng index within pool", () => {
   const picked = pickHomeEmptyVisual("general", () => 0.99);
-  assert.equal(picked.id, "dark-deco-lounge");
+  assert.equal(picked.id, "violet");
 });

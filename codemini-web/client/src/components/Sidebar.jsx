@@ -663,7 +663,7 @@ export function Sidebar({
           />
           <span className="truncate">{t("memory")}</span>
         </button>
-        <Separator className="my-1.5 bg-transparent" />
+        <Separator className="mx-2 my-2 bg-(--border-default)/40" />
       </div>
 
       <div
