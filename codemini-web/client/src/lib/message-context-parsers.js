@@ -6,7 +6,7 @@ export function parseScrapbookAttachmentFromModelContent(modelContent = "") {
   const block = String(blockMatch?.[1] || "");
   if (!block.trim()) return null;
 
-  const title = block.match(/^Title:\s*(.+)$/m)?.[1]?.trim() || "scrapbook";
+  const title = block.match(/^Title:\s*(.+)$/m)?.[1]?.trim() || "note";
   const entryId = block.match(/^Entry ID:\s*(.+)$/m)?.[1]?.trim() || "";
   const sourceUrl = block.match(/^Source URL:\s*(.+)$/m)?.[1]?.trim() || "";
 
@@ -57,7 +57,7 @@ export function normalizeScrapbookAttachment(item = {}) {
   const kind = String(item?.kind || "").trim();
   const isScrapbook = kind === "scrapbook" || id.startsWith("scrapbook:");
   if (!isScrapbook) return null;
-  const name = String(item?.name || "").trim() || "scrapbook";
+  const name = String(item?.name || "").trim() || "note";
   return {
     id: id || `scrapbook:${name}`,
     name,

@@ -18,7 +18,7 @@ import { appendStructuredOutputLanguageRule } from '../../src/core/reply-languag
 
 const summaryJobClients = new Map();
 const SCRAPBOOK_SUMMARY_SYSTEM_PROMPT = [
-  'You are writing a detailed scrapbook summary for later follow-up questions.',
+  'You are writing a detailed note summary for later follow-up questions.',
   'Summarize only the provided source material.',
   'Your first line must be exactly `Title: <one relevant emoji> <concise title>`.',
   'Keep the generated title specific, natural, and under 36 characters.',
@@ -118,7 +118,7 @@ function buildScrapbookContextText(entry, summary) {
   const sources = selectedNotebookSources(entry);
   const lines = [
     '<scrapbook_context>',
-    'The user previously saved and read the following multi-source notebook.',
+    'The user previously saved and read the following multi-source note.',
     'Treat its synthesized summary and source list as user-provided reading context.',
     '',
     `Title: ${entry.title || '(untitled)'}`,
@@ -270,7 +270,7 @@ async function generateSummaryWithModel({
 }) {
   const config = await loadConfig();
   const model = resolveFastModel(config);
-  if (!model) throw new Error('No model configured for scrapbook summaries');
+  if (!model) throw new Error('No model configured for note summaries');
   const sourceBody = truncateForSummaryInput(contentText);
   if (!sourceBody) return 'No summary available yet.';
   let partialText = '';
@@ -288,7 +288,7 @@ async function generateSummaryWithModel({
           sourceUrl ? `Source URL: ${sourceUrl}` : '',
           sourceQuestionText ? `Original user question: ${sourceQuestionText}` : '',
           '',
-          'Please write a detailed scrapbook summary for future follow-up questions.',
+          'Please write a detailed note summary for future follow-up questions.',
           sourceQuestionText
             ? 'Use the original user question only as supporting context for understanding what the answer is responding to.'
             : '',
@@ -308,7 +308,7 @@ async function generateSummaryWithModel({
     },
   });
   const text = String(result?.text || partialText || '').trim();
-  if (!text) throw new Error('Model returned empty scrapbook summary');
+  if (!text) throw new Error('Model returned empty note summary');
   return text;
 }
 
@@ -319,7 +319,7 @@ async function runSummaryJob(jobId, options = {}) {
   if (!entry) {
     const failed = updateScrapbookSummaryJob(jobId, {
       status: 'failed',
-      errorText: 'Scrapbook entry not found',
+      errorText: 'Note not found',
     });
     if (failed) publishSummaryJobEvent(failed);
     return;
@@ -441,7 +441,7 @@ async function runSummaryJob(jobId, options = {}) {
     if (stopIfSuperseded()) return;
     const generated = parseGeneratedScrapbookResult(generatedText);
     const finalSummary = generated.summary;
-    if (!finalSummary) throw new Error('Empty scrapbook summary');
+    if (!finalSummary) throw new Error('Empty note summary');
     updateScrapbookEntry(entry.id, {
       title: generated.title || fallbackGeneratedTitle({
         title: title || entry.title,
@@ -488,7 +488,7 @@ export function getScrapbookEntryForApi(entryId) {
 
 export function createManualScrapbookEntry(payload = {}) {
   const contentText = String(payload.contentText || payload.content || '').trim();
-  if (!contentText) throw new Error('Manual scrapbook entry requires content');
+  if (!contentText) throw new Error('Manual note requires content');
   const source = createNotebookSource({
     type: 'manual',
     name: String(payload.title || '').trim() || 'Manual note',
@@ -509,7 +509,7 @@ export function createChatAnswerScrapbookEntry(payload = {}) {
   const contentText = String(
     payload.contentText || payload.answerText || payload.content || '',
   ).trim();
-  if (!contentText) throw new Error('Chat answer scrapbook entry requires content');
+  if (!contentText) throw new Error('Chat answer note requires content');
   const sourceQuestionText = String(
     payload.sourceQuestionText || payload.questionText || '',
   ).trim();
@@ -543,7 +543,7 @@ export function createChatAnswerScrapbookEntry(payload = {}) {
 export function createUrlScrapbookEntry(payload = {}) {
   const sourceUrl = String(payload.sourceUrl || payload.url || '').trim();
   if (!/^https?:\/\//i.test(sourceUrl)) {
-    throw new Error('Scrapbook URL import requires an absolute http or https URL');
+    throw new Error('Note URL import requires an absolute http or https URL');
   }
   return createScrapbookEntry({
     sourceType: 'url',
@@ -600,7 +600,7 @@ export function createMultiSourceScrapbookEntry(payload = {}) {
 
 export function addScrapbookSource(entryId, payload = {}) {
   const entry = getScrapbookEntry(entryId);
-  if (!entry) throw new Error('Scrapbook entry not found');
+  if (!entry) throw new Error('Note not found');
   const type = String(payload.type || 'manual');
   const url = String(payload.url || '').trim();
   const contentText = String(payload.contentText || '').trim();
@@ -629,7 +629,7 @@ export function addScrapbookSource(entryId, payload = {}) {
 
 export function setScrapbookSourceSelection(entryId, selectedSourceIds = []) {
   const entry = getScrapbookEntry(entryId);
-  if (!entry) throw new Error('Scrapbook entry not found');
+  if (!entry) throw new Error('Note not found');
   const selected = new Set((Array.isArray(selectedSourceIds) ? selectedSourceIds : []).map(String));
   const sources = (entry.sources || []).map((source) => ({
     ...source,
@@ -643,7 +643,7 @@ export function setScrapbookSourceSelection(entryId, selectedSourceIds = []) {
 
 export function removeScrapbookSource(entryId, sourceId) {
   const entry = getScrapbookEntry(entryId);
-  if (!entry) throw new Error('Scrapbook entry not found');
+  if (!entry) throw new Error('Note not found');
   const sources = (entry.sources || []).filter((source) => source.id !== sourceId);
   if (sources.length === (entry.sources || []).length) throw new Error('Source not found');
   return updateScrapbookEntry(entry.id, { sources, artifacts: {}, summary: '' });
@@ -651,13 +651,13 @@ export function removeScrapbookSource(entryId, sourceId) {
 
 export async function generateScrapbookArtifact(entryId, kind) {
   const entry = getScrapbookEntry(entryId);
-  if (!entry) throw new Error('Scrapbook entry not found');
+  if (!entry) throw new Error('Note not found');
   if (!['mindmap', 'report'].includes(kind)) throw new Error('Unsupported artifact type');
   const sourceText = combineNotebookSources(selectedNotebookSources(entry));
   if (!sourceText) throw new Error('No selected source content is available');
   const config = await loadConfig();
   const model = resolveFastModel(config);
-  if (!model) throw new Error('No model configured for scrapbook generation');
+  if (!model) throw new Error('No model configured for note generation');
   const instruction = kind === 'mindmap'
     ? [
         'Create a concise Mermaid mindmap grounded only in the provided sources.',
@@ -714,7 +714,7 @@ function summarizeEntry(entry) {
 
 export function startScrapbookSummaryJob(entryId, options = {}) {
   const entry = getScrapbookEntry(entryId);
-  if (!entry) throw new Error('Scrapbook entry not found');
+  if (!entry) throw new Error('Note not found');
   const job = createScrapbookSummaryJob({
     entryId: entry.id,
     status: 'pending',
@@ -727,16 +727,16 @@ export function startScrapbookSummaryJob(entryId, options = {}) {
 
 export function buildScrapbookAskPayload(entryId) {
   const entry = getScrapbookEntry(entryId);
-  if (!entry) throw new Error('Scrapbook entry not found');
+  if (!entry) throw new Error('Note not found');
   const summary = getLatestScrapbookSummaryJob(entry.id)?.resultSummary || entry.summary || summarizeEntry(entry);
   return {
-    prompt: '请基于这条随手记回答我的后续问题。',
+    prompt: '请基于这条笔记回答我的后续问题。',
     summary,
     modelText: buildScrapbookModelText(entry, summary),
     attachments: [
       {
         id: `scrapbook:${entry.id}`,
-        name: entry.title || entry.sourceUrl || 'scrapbook',
+        name: entry.title || entry.sourceUrl || 'note',
         kind: 'scrapbook',
         mime: 'text/plain',
         size: buildScrapbookContextText(entry, summary).length,

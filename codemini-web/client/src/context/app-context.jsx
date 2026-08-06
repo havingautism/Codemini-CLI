@@ -3820,7 +3820,7 @@ export function AppProvider({ children }) {
         try {
           const payloadResult = await api.buildScrapbookAskPayload(entryId);
           if (payloadResult?.error || !payloadResult?.payload) {
-            throw new Error(payloadResult?.message || "Could not prepare scrapbook context");
+            throw new Error(payloadResult?.message || "Could not prepare note context");
           }
           const result = await api.openProject("__codemini_general__", { newSession: true });
           if (!result?.ok || !result?.sessionId) {
@@ -3866,7 +3866,7 @@ export function AppProvider({ children }) {
           return { ok: true, sessionId: result.sessionId };
         } catch (err) {
           update({ messagesLoading: false });
-          return { error: true, message: String(err?.message || "Could not ask about scrapbook entry") };
+          return { error: true, message: String(err?.message || "Could not ask about note") };
         }
       },
 
@@ -3875,7 +3875,7 @@ export function AppProvider({ children }) {
         const targetMessageId = String(messageId || "").trim();
         const contentText = String(answerText || "").trim();
         if (!sessionId || !targetMessageId || !contentText) {
-          return { error: true, message: "Missing scrapbook source message" };
+          return { error: true, message: "Missing note source message" };
         }
         const messages = Array.isArray(stateRef.current.messages)
           ? stateRef.current.messages
@@ -3896,7 +3896,7 @@ export function AppProvider({ children }) {
             answerText: contentText,
           });
         } catch (err) {
-          return { error: true, message: String(err?.message || "Failed to save scrapbook answer") };
+          return { error: true, message: String(err?.message || "Failed to save note") };
         }
       },
 
