@@ -1455,7 +1455,7 @@ export const en = {
   scrapbookPreparingSummary: "Preparing this note",
   scrapbookPreparingDescription: "Codemini is reading the source and generating a title and summary in your reply language.",
   scrapbookLoadingSource: "Extracting content",
-  scrapbookLoadingTitle: "Generating emoji title",
+  scrapbookLoadingTitle: "Organizing key points",
   scrapbookLoadingSummary: "Writing summary",
   scrapbookContent: "Content",
   scrapbookNoSummary: "No summary yet",

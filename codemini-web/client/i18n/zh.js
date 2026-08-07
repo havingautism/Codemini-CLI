@@ -1407,7 +1407,7 @@ export const zh = {
   scrapbookPreparingSummary: "正在整理这条笔记",
   scrapbookPreparingDescription: "Codemini 正在读取来源，并按你的回复语言生成标题与总结。",
   scrapbookLoadingSource: "提取内容",
-  scrapbookLoadingTitle: "生成 emoji 标题",
+  scrapbookLoadingTitle: "整理要点",
   scrapbookLoadingSummary: "撰写总结",
   scrapbookContent: "内容",
   scrapbookNoSummary: "暂无总结",
