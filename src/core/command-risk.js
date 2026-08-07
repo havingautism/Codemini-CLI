@@ -10,7 +10,7 @@ export const READ_ONLY_TOKENS = new Set([
   'get-item', 'get-process', 'type', 'select-string', 'select-object', 'select', 'where-object',
   'foreach-object', 'measure-object', 'sort-object', 'compare-object',
   'resolve-path', 'test-path',
-  'git', 'node', 'npm', 'npx', 'python', 'python3', 'py', 'pip', 'pip3',
+  'git',
   'echo', 'printf', 'seq', 'yes'
 ]);
 
@@ -27,19 +27,6 @@ const READ_ONLY_SUBCOMMANDS = {
     'config', '--version', 'var', 'for-each-ref', 'name-rev',
     'merge-base', 'cherry'
   ]),
-  node: new Set(['--version', '-v', '-e', '--eval', '--print', '-p', '--help']),
-  npm: new Set([
-    '--version', '-v', 'view', 'info', 'list', 'ls', 'll', 'la',
-    'outdated', 'audit', 'pack', 'cache', 'config', 'doctor',
-    'help', 'explore', 'run', 'run-script', 'start', 'test',
-    'restart', 'stop', 'version', 'whoami'
-  ]),
-  npx: new Set(['--version', '-v', '--help']),
-  python: new Set(['--version', '-V', '--help', '-c', '-m']),
-  python3: new Set(['--version', '-V', '--help', '-c', '-m']),
-  py: new Set(['--version', '-V', '--help', '-c', '-m']),
-  pip: new Set(['--version', '-V', 'list', 'show', 'search', 'check', 'debug', 'help']),
-  pip3: new Set(['--version', '-V', 'list', 'show', 'search', 'check', 'debug', 'help'])
 };
 
 /* ── 高风险 pattern ────────────────────────────────────────────── */

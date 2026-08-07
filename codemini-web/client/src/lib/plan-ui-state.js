@@ -5,6 +5,18 @@ import {
 } from "../../../shared/transcript-segments.js";
 import { stripPlanProgressText } from "../../../shared/plan-progress-text.js";
 
+const PLAN_NESTED_STREAM_EVENTS = new Set([
+  "assistant:delta",
+  "assistant:reasoning_delta",
+  "assistant:response",
+  "assistant:tool_call_delta",
+  "tool:start",
+  "tool:end",
+  "tool:result",
+  "tool:error",
+  "tool:blocked",
+]);
+
 export function isCompletedStatus(status) {
   return ["done", "failed", "error", "blocked", "completed"].includes(
     String(status || "").toLowerCase(),
@@ -189,6 +201,33 @@ export function findActivePlanParentMessage(messages = []) {
     .find((message) => messageHasActivePlanRun(message));
 }
 
+export function shouldNestStreamEventInPlan(message, event) {
+  if (!messageHasActivePlanRun(message)) return false;
+  if (!PLAN_NESTED_STREAM_EVENTS.has(String(event?.type || ""))) return false;
+  if (isCreatePlanToolEvent(event)) return false;
+
+  const parentToolCallId = String(event?.parentToolCallId || "").trim();
+  if (parentToolCallId) {
+    return Boolean(findCreatePlanCard(message, parentToolCallId)?.planRun?.steps?.length);
+  }
+
+  const card = findCreatePlanCard(message);
+  const cardName = String(card?.name || "").toLowerCase().replace(/\(.*$/, "");
+  if (cardName === "run_subagent") return false;
+
+  if (
+    event.type === "assistant:delta" ||
+    event.type === "assistant:reasoning_delta" ||
+    event.type === "assistant:response"
+  ) {
+    return (card?.planRun?.steps || []).some(
+      (step) => String(step?.status || "").toLowerCase() === "running",
+    );
+  }
+
+  return Boolean(card?.planRun?.steps?.length);
+}
+
 export function isCreatePlanToolEvent(event) {
   const name = String(event?.name || event?.toolName || event?.toolCall?.name || "")
     .toLowerCase()
@@ -297,7 +336,7 @@ export function applyStreamEventToPlanRun(message, event, options = {}) {
 
   if (!messageHasActivePlanRun(message)) return message;
 
-      const cardId = String(event.parentToolCallId || event.toolCallId || "").trim();
+  const cardId = String(event.parentToolCallId || event.toolCallId || "").trim();
   let nestedFileChanges = [];
   const next = upsertCreatePlanCard(
     message,
@@ -630,6 +669,60 @@ export function settleRunningCreatePlanCards(message, { reason = "aborted" } = {
   return changed ? { ...message, segments } : message;
 }
 
+function reconcileDuplicatedPlanToolCards(message) {
+  const topLevelIds = new Set();
+  for (const segment of Array.isArray(message?.segments) ? message.segments : []) {
+    if (segment?.type !== "tools") continue;
+    for (const card of segment.cards || []) {
+      if (!isCreatePlanCard(card) && card?.id) topLevelIds.add(String(card.id));
+    }
+  }
+  if (!topLevelIds.size) return message;
+
+  const nestedCardsById = new Map();
+  const segments = (message.segments || []).map((segment) => {
+    if (segment?.type !== "tools" || !Array.isArray(segment.cards)) return segment;
+    return {
+      ...segment,
+      cards: segment.cards.map((card) => {
+        if (!isCreatePlanCard(card) || !card?.planRun?.steps) return card;
+        const steps = card.planRun.steps.map((step) => ({
+          ...step,
+          segments: (step.segments || []).flatMap((stepSegment) => {
+            if (stepSegment?.type !== "tools" || !Array.isArray(stepSegment.cards)) {
+              return [stepSegment];
+            }
+            const cards = stepSegment.cards.filter((nestedCard) => {
+              const id = String(nestedCard?.id || "");
+              if (!id || !topLevelIds.has(id)) return true;
+              nestedCardsById.set(id, nestedCard);
+              return false;
+            });
+            return cards.length ? [{ ...stepSegment, cards }] : [];
+          }),
+        }));
+        return { ...card, planRun: { ...card.planRun, steps } };
+      }),
+    };
+  });
+  if (!nestedCardsById.size) return message;
+
+  return {
+    ...message,
+    segments: segments.map((segment) => {
+      if (segment?.type !== "tools" || !Array.isArray(segment.cards)) return segment;
+      return {
+        ...segment,
+        cards: segment.cards.map((card) => {
+          if (isCreatePlanCard(card)) return card;
+          const nestedCard = nestedCardsById.get(String(card?.id || ""));
+          return nestedCard ? { ...card, ...nestedCard } : card;
+        }),
+      };
+    }),
+  };
+}
+
 export function settleCompletedPlanToolCards(messages) {
   const list = Array.isArray(messages) ? messages : [];
   if (!list.length) return list;
@@ -637,7 +730,9 @@ export function settleCompletedPlanToolCards(messages) {
   return list.map((message) => {
     const card = findCreatePlanCard(message);
     if (card?.planRun && isPlanRunComplete(card.planRun)) {
-      return settleRunningCreatePlanCards(message, { reason: "completed" });
+      return reconcileDuplicatedPlanToolCards(
+        settleRunningCreatePlanCards(message, { reason: "completed" }),
+      );
     }
     if (isPlanOverviewComplete(message)) {
       // Legacy overview path kept for old transcripts.

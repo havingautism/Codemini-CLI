@@ -6,47 +6,10 @@ import { stripPlanProgressText } from "../../../shared/plan-progress-text.js";
 import {
   applyStreamEventToPlanRun,
   findActivePlanParentMessage,
-  findCreatePlanCard,
   isCreatePlanToolEvent,
   messageHasActivePlanRun,
+  shouldNestStreamEventInPlan,
 } from "./plan-ui-state.js";
-
-const PLAN_NESTED_STREAM_EVENTS = new Set([
-  "assistant:delta",
-  "assistant:reasoning_delta",
-  "assistant:response",
-  "assistant:tool_call_delta",
-  "tool:start",
-  "tool:end",
-  "tool:result",
-  "tool:error",
-  "tool:blocked",
-]);
-
-function hasRunningPlanStep(message) {
-  const steps = findCreatePlanCard(message)?.planRun?.steps;
-  return (Array.isArray(steps) ? steps : []).some(
-    (step) => String(step?.status || "").toLowerCase() === "running",
-  );
-}
-
-function shouldNestStreamEventInPlan(message, event) {
-  if (!messageHasActivePlanRun(message)) return false;
-  if (!PLAN_NESTED_STREAM_EVENTS.has(String(event?.type || ""))) return false;
-  // create_plan itself updates the parent card, not a step body.
-  if (isCreatePlanToolEvent(event)) return false;
-  // Parent preamble (thinking/text) often arrives after tool_call_delta.
-  // Only nest into steps once a plan step is actually running.
-  if (
-    event.type === "assistant:delta" ||
-    event.type === "assistant:reasoning_delta" ||
-    event.type === "assistant:response"
-  ) {
-    return hasRunningPlanStep(message);
-  }
-  // Child tool calls during plan execution always belong to the step.
-  return Boolean(findCreatePlanCard(message)?.planRun?.steps?.length);
-}
 
 function planStepNumberFromMessageId(messageId) {
   const match = String(messageId || "").match(/^plan-step-(\d+)(?:-|$)/);

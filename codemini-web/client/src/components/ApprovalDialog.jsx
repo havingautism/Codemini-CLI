@@ -15,6 +15,21 @@ function riskDotClass(risk) {
   return 'bg-(--text-muted)';
 }
 
+function localizeRisk(risk) {
+  const level = String(risk || '').trim().toLowerCase();
+  if (level === 'low') return t('approvalRiskLow');
+  if (level === 'medium') return t('approvalRiskMedium');
+  if (level === 'high') return t('approvalRiskHigh');
+  return String(risk || '');
+}
+
+function localizeRecommendation(recommendation) {
+  const value = String(recommendation || '').trim().toLowerCase();
+  if (value === 'allow') return t('approvalRecommendAllow');
+  if (value === 'deny') return t('approvalRecommendDeny');
+  return String(recommendation || '');
+}
+
 function detectVariant(toolName, details) {
   if (toolName === 'delete') return 'delete';
   if (toolName === 'run') return 'run';
@@ -65,7 +80,7 @@ function RiskDetailRow({ label, risk }) {
           className={cn('inline-block size-2 rounded-full shrink-0', riskDotClass(risk))}
           aria-hidden
         />
-        <span className="font-mono capitalize">{String(risk)}</span>
+        <span className="font-mono">{localizeRisk(risk)}</span>
       </span>
     </div>
   );
@@ -121,7 +136,12 @@ function ApprovalBody({ variant, args, details }) {
           />
         </ReviewSection>
         {details?.risk && <RiskDetailRow label={t('approvalFieldRisk')} risk={details.risk} />}
-        {details?.evaluation?.recommendation && <DetailRow label={t('approvalFieldRecommend')} value={details.evaluation.recommendation} />}
+        {details?.evaluation?.recommendation && (
+          <DetailRow
+            label={t('approvalFieldRecommend')}
+            value={localizeRecommendation(details.evaluation.recommendation)}
+          />
+        )}
         {details?.policyBlock?.reason && <DetailRow label={t('approvalFieldPolicy')} value={details.policyBlock.reason} />}
         {(details?.description || details?.evaluation?.description) && (
           <DetailRow label={t('approvalFieldInfo')} value={details.description || details.evaluation.description} />

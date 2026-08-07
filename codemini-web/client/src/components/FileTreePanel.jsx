@@ -9,7 +9,7 @@ import {
 import { Tree } from "react-arborist";
 import {
   ArrowClockwise,
-  ArrowUp,
+  ArrowLeft,
   CaretDown,
   CaretRight,
   CaretUp,
@@ -24,9 +24,23 @@ import {
 } from "@/hooks/use-api.js";
 import { FileTypeIcon } from "@/components/FileTypeIcon.jsx";
 import { FilePreviewCode } from "@/components/FilePreviewCode.jsx";
+import { ImagePreviewDialog } from "@/components/MarkdownLightboxImage.jsx";
 import { Input } from "@/components/ui/input";
 import { LinearRing } from "@/components/ui/spinner";
 import { t } from "../../i18n/index.js";
+
+const WORKSPACE_IMAGE_EXT = /\.(png|jpe?g|webp|gif)$/i;
+
+function isWorkspaceImagePath(filePath = "") {
+  return WORKSPACE_IMAGE_EXT.test(String(filePath || ""));
+}
+
+function workspaceFileUrl(sessionId, relativePath = "") {
+  const params = new URLSearchParams();
+  if (sessionId) params.set("sessionId", sessionId);
+  params.set("path", String(relativePath || "").trim());
+  return `/api/workspace/file?${params.toString()}`;
+}
 
 function markUnloaded(nodes = []) {
   return nodes.map((node) => {
@@ -153,11 +167,11 @@ function PathBar({
           title={t("workspaceGoUp")}
           onClick={onGoUp}
         >
-          <ArrowUp size={14} />
+          <ArrowLeft size={14} />
         </button>
       ) : null}
       <nav
-        className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto font-mono text-[11px] text-(--text-muted) [scrollbar-width:none]"
+        className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto text-[12px] text-(--text-muted) [scrollbar-width:none]"
         aria-label={t("workspaceBreadcrumb")}
       >
         {hasDeeper ? (
@@ -209,14 +223,14 @@ function NodeRenderer({ node, style, dragHandle, onEnterDirectory }) {
     <div
       ref={dragHandle}
       style={style}
-      className="group flex items-center px-2 text-[12px] text-(--text-secondary)"
+      className="group flex items-center px-2 text-[13px] text-(--text-secondary)"
     >
       <button
         type="button"
         className={
-          "flex h-7 min-w-0 flex-1 items-center gap-1.5 rounded-md px-2 text-left transition-[background-color,color,box-shadow] focus-visible:bg-(--bg-hover) focus-visible:text-(--text-primary) focus-visible:outline-none " +
+          "flex h-8 min-w-0 flex-1 items-center gap-1.5 rounded-md px-2 text-left transition-[background-color,color] focus-visible:bg-(--bg-hover) focus-visible:text-(--text-primary) focus-visible:outline-none " +
           (node.isSelected
-            ? "bg-[color-mix(in_srgb,var(--accent-blue)_14%,transparent)] text-(--text-primary) shadow-[inset_2px_0_0_var(--accent-blue)]"
+            ? "bg-(--selected-bg) text-(--text-primary)"
             : "hover:bg-(--bg-hover) hover:text-(--text-primary)")
         }
         onClick={(event) => {
@@ -273,6 +287,7 @@ export function FileTreePanel({
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewError, setPreviewError] = useState("");
   const [searchTerm, setSearchTerm] = useState("");
+  const [imagePreview, setImagePreview] = useState(null);
   const deferredSearchTerm = useDeferredValue(searchTerm);
   const containerRef = useRef(null);
   const treeRef = useRef(null);
@@ -378,6 +393,14 @@ export function FileTreePanel({
     async (node) => {
       const data = node?.data;
       if (!data || data.type !== "file") return;
+      const relativePath = data.path || data.id || "";
+      if (isWorkspaceImagePath(relativePath) || isWorkspaceImagePath(data.name)) {
+        setImagePreview({
+          src: workspaceFileUrl(sessionId, relativePath),
+          alt: data.name || relativePath,
+        });
+        return;
+      }
       const requestId = previewRequestRef.current + 1;
       previewRequestRef.current = requestId;
       setMode("preview");
@@ -385,10 +408,19 @@ export function FileTreePanel({
       setPreviewError("");
       setPreviewLoading(true);
       try {
-        const result = await fetchWorkspacePreview(sessionId, data.path || data.id);
+        const result = await fetchWorkspacePreview(sessionId, relativePath);
         if (previewRequestRef.current !== requestId) return;
         if (result?.error) {
           throw new Error(result.message || t("workspacePreviewFailed"));
+        }
+        if (result?.kind === "image") {
+          setMode("tree");
+          setPreviewLoading(false);
+          setImagePreview({
+            src: workspaceFileUrl(sessionId, result.path || relativePath),
+            alt: data.name || result.path || relativePath,
+          });
+          return;
         }
         setPreview(result);
       } catch (err) {
@@ -417,6 +449,7 @@ export function FileTreePanel({
 
   const handleGoUp = useCallback(() => {
     if (mode === "preview") {
+      // Root-level files → ""; nested files → their parent folder.
       const parent = parentBrowsePath(preview?.path || "");
       navigateToBrowsePath(parent);
       return;
@@ -445,8 +478,8 @@ export function FileTreePanel({
     [preview?.path, projectCwd, rootPath],
   );
   const treeCanGoUp = Boolean(normalizeBrowsePath(browsePath));
-  // Show up only when leaving a nested path (not project root / root-level file).
-  const previewCanGoUp = Boolean(parentBrowsePath(preview?.path || ""));
+  // Preview always offers up/back: root files return to project tree, nested files to parent folder.
+  const previewCanGoUp = true;
 
   const renderNode = useCallback(
     (props) => (
@@ -480,43 +513,54 @@ export function FileTreePanel({
 
   if (mode === "preview") {
     return (
-      <div className="flex min-h-0 flex-1 flex-col">
-        <PathBar
-          projectName={projectName}
-          segments={previewSegments}
-          absoluteTitle={absolutePreviewPath}
-          canGoUp={previewCanGoUp}
-          onGoUp={handleGoUp}
-          onNavigate={navigateToBrowsePath}
-        />
-        <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-          {previewLoading ? (
-            <div className="p-3 text-[12px] text-(--text-muted)">
-              {t("workspacePreviewLoading")}
-            </div>
-          ) : null}
-          {previewError ? (
-            <div className="p-3 text-[12px] text-(--accent-red)">{previewError}</div>
-          ) : null}
-          {!previewLoading && !previewError && preview?.kind === "unsupported" ? (
-            <div className="p-3 text-[12px] text-(--text-muted)">
-              {preview.message || t("workspacePreviewUnsupported")}
-            </div>
-          ) : null}
-          {!previewLoading && !previewError && preview?.kind === "text" ? (
-            <FilePreviewCode
-              path={preview.path}
-              content={preview.content || ""}
-              truncated={Boolean(preview.truncated)}
-            />
-          ) : null}
+      <>
+        <div className="flex min-h-0 flex-1 flex-col">
+          <PathBar
+            projectName={projectName}
+            segments={previewSegments}
+            absoluteTitle={absolutePreviewPath}
+            canGoUp={previewCanGoUp}
+            onGoUp={handleGoUp}
+            onNavigate={navigateToBrowsePath}
+          />
+          <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+            {previewLoading ? (
+              <div className="p-3 text-[12px] text-(--text-muted)">
+                {t("workspacePreviewLoading")}
+              </div>
+            ) : null}
+            {previewError ? (
+              <div className="p-3 text-[12px] text-(--accent-red)">{previewError}</div>
+            ) : null}
+            {!previewLoading && !previewError && preview?.kind === "unsupported" ? (
+              <div className="p-3 text-[12px] text-(--text-muted)">
+                {preview.message || t("workspacePreviewUnsupported")}
+              </div>
+            ) : null}
+            {!previewLoading && !previewError && preview?.kind === "text" ? (
+              <FilePreviewCode
+                path={preview.path}
+                content={preview.content || ""}
+                truncated={Boolean(preview.truncated)}
+              />
+            ) : null}
+          </div>
         </div>
-      </div>
+        {imagePreview ? (
+          <ImagePreviewDialog
+            src={imagePreview.src}
+            alt={imagePreview.alt}
+            caption={imagePreview.alt}
+            onClose={() => setImagePreview(null)}
+          />
+        ) : null}
+      </>
     );
   }
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
+    <>
+      <div className="flex min-h-0 flex-1 flex-col">
       <PathBar
         projectName={projectName}
         segments={browseSegments}
@@ -535,7 +579,7 @@ export function FileTreePanel({
           <Input
             value={searchTerm}
             onChange={(event) => setSearchTerm(event.target.value)}
-            className="h-8 pl-8 pr-8 text-[11px]"
+            className="h-8 pl-8 pr-8 text-[12px]"
             placeholder={t("workspaceSearchPlaceholder")}
             aria-label={t("workspaceSearchPlaceholder")}
             spellCheck={false}
@@ -615,7 +659,7 @@ export function FileTreePanel({
             data={treeData}
             width={treeSize.width}
             height={treeSize.height}
-            rowHeight={28}
+            rowHeight={32}
             indent={14}
             openByDefault={false}
             searchTerm={deferredSearchTerm}
@@ -645,6 +689,15 @@ export function FileTreePanel({
             : t("workspaceLoadedCount").replace("{{count}}", loadedItemCount)}
         </div>
       ) : null}
-    </div>
+      </div>
+      {imagePreview ? (
+        <ImagePreviewDialog
+          src={imagePreview.src}
+          alt={imagePreview.alt}
+          caption={imagePreview.alt}
+          onClose={() => setImagePreview(null)}
+        />
+      ) : null}
+    </>
   );
 }

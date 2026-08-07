@@ -203,10 +203,8 @@ test('expanded sub-agents keep a compact indent and reveal adaptive task details
     planToolCard,
     /type="auto"[\s\S]*?className="mt-1 h-48 rounded-md bg-\(--bg-tertiary\) dark:bg-\(--bg-primary\)"/,
   );
-  assert.match(
-    planToolCard,
-    /!open\s*\?\s*\([\s\S]*?min-w-0 flex-1 truncate[\s\S]*?\)\s*:\s*\([\s\S]*?flex-1/,
-  );
+  assert.match(planToolCard, /msg-process-meta__detail ml-1\.5 min-w-0 truncate/);
+  assert.match(planToolCard, /goal\.length > 96/);
   assert.match(
     planToolCard,
     /className="px-3 pb-3 pt-2"[\s\S]*?<SubagentTaskDetails task=\{goal\}/,
@@ -228,7 +226,7 @@ test('long tool call arguments end with an ellipsis before the status indicator'
     toolCard,
     /msg-process-meta__detail ml-1 block min-w-0 flex-1 truncate font-mono/,
   );
-  assert.match(toolCard, /LinearStatusDot className="shrink-0"/);
+  assert.match(toolCard, /LinearStatusDot className="mr-1\.5 shrink-0"/);
 });
 
 test('memory management owns the Inbox experience instead of the action palette', () => {
@@ -237,7 +235,7 @@ test('memory management owns the Inbox experience instead of the action palette'
   assert.match(memoryDialog, /api\.discardInboxEntry/);
   assert.match(memoryDialog, /api\.runInboxDream/);
   assert.doesNotMatch(inputBar, /name:\s*"inbox"/);
-  assert.match(webServer, /url\.pathname === '\/api\/memory\/inbox'/);
-  assert.match(webServer, /url\.pathname\.startsWith\('\/api\/memory\/inbox\/'\)/);
-  assert.match(webServer, /url\.pathname === '\/api\/memory\/inbox\/dream'/);
+  assert.match(webServer, /url\.pathname === ["']\/api\/memory\/inbox["']/);
+  assert.match(webServer, /url\.pathname\.startsWith\(["']\/api\/memory\/inbox\/["']\)/);
+  assert.match(webServer, /url\.pathname === ["']\/api\/memory\/inbox\/dream["']/);
 });

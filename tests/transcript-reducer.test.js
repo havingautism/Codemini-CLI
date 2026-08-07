@@ -226,6 +226,100 @@ test('reduceSessionTranscriptEvent uses shared reducer for tool-after-text respo
   assert.equal(segments[1].type, 'tools');
 });
 
+function runningSubagentMessage({ includeSibling = false } = {}) {
+  return {
+    id: 'msg-subagent',
+    role: 'general',
+    isComplete: false,
+    segments: [
+      {
+        type: 'tools',
+        cards: [
+          {
+            id: 'subagent-1',
+            name: 'run_subagent',
+            status: 'running',
+            planRun: {
+              phase: 'executing',
+              steps: [
+                {
+                  index: 1,
+                  role: 'Rex',
+                  status: 'running',
+                  toolCallId: 'subagent-1',
+                  segments: [],
+                },
+              ],
+            },
+          },
+          ...(includeSibling
+            ? [{ id: 'list-1', name: 'list', status: 'running' }]
+            : []),
+        ],
+      },
+    ],
+  };
+}
+
+test('subagent sibling tools stay top-level and finish without a nested duplicate', () => {
+  let state = {
+    sessionMessagesById: {
+      'session-subagent': [runningSubagentMessage({ includeSibling: true })],
+    },
+  };
+
+  for (const type of ['tool:start', 'tool:end']) {
+    state = reduceSessionTranscriptEvent(state, {
+      type,
+      sessionId: 'session-subagent',
+      messageId: 'msg-subagent',
+      id: 'list-1',
+      name: 'list',
+    });
+  }
+
+  const message = state.sessionMessagesById['session-subagent'][0];
+  const planCard = message.segments[0].cards.find((card) => card.id === 'subagent-1');
+  const sibling = message.segments[0].cards.find((card) => card.id === 'list-1');
+  const nestedCards = planCard.planRun.steps[0].segments
+    .filter((segment) => segment.type === 'tools')
+    .flatMap((segment) => segment.cards);
+
+  assert.equal(sibling.status, 'done');
+  assert.equal(nestedCards.some((card) => card.id === 'list-1'), false);
+});
+
+test('subagent child tools with parentToolCallId stay nested', () => {
+  let state = {
+    sessionMessagesById: {
+      'session-subagent': [runningSubagentMessage()],
+    },
+  };
+
+  for (const type of ['tool:start', 'tool:end']) {
+    state = reduceSessionTranscriptEvent(state, {
+      type,
+      sessionId: 'session-subagent',
+      messageId: 'msg-subagent',
+      id: 'read-1',
+      name: 'read',
+      parentToolCallId: 'subagent-1',
+    });
+  }
+
+  const message = state.sessionMessagesById['session-subagent'][0];
+  const planCard = message.segments[0].cards.find((card) => card.id === 'subagent-1');
+  const nestedCards = planCard.planRun.steps[0].segments
+    .filter((segment) => segment.type === 'tools')
+    .flatMap((segment) => segment.cards);
+  const topLevelCards = message.segments
+    .filter((segment) => segment.type === 'tools')
+    .flatMap((segment) => segment.cards);
+
+  assert.equal(nestedCards.find((card) => card.id === 'read-1')?.status, 'done');
+  assert.equal(topLevelCards.some((card) => card.id === 'read-1'), false);
+});
+
 test('reduceSessionTranscriptEvent keeps SDK and model metadata on a new answer', () => {
   const next = reduceSessionTranscriptEvent(
     { sessionMessagesById: { 'session-a': [] } },

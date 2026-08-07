@@ -1963,7 +1963,7 @@ async function deletePath(root, args, config = {}) {
   };
 }
 
-async function runCommand(root, config, args) {
+async function runCommand(root, config, args, context = {}) {
   const command = args?.command || "";
   if (!command.trim()) {
     throw new Error("run requires command");
@@ -2002,6 +2002,7 @@ async function runCommand(root, config, args) {
         args?.timeoutMs ||
         config.shell.timeout_ms,
     ),
+    signal: context.signal,
   });
   const payload = { ...result, command };
   const failureMessage = buildRunFailureMessage(payload);
@@ -6258,7 +6259,7 @@ export function getBuiltinTools({
         sections,
       });
     },
-    run: Object.assign((args) => runCommand(workspaceRoot, config, args), {
+    run: Object.assign((args, context) => runCommand(workspaceRoot, config, args, context), {
       prepareApproval: async (args) => {
         const evaluation = args?._evaluation || null;
         const risk = String(args?._risk || "").trim() ||

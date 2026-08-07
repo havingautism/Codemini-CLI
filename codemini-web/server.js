@@ -55,6 +55,8 @@ import {
 import {
   listWorkspaceChildren,
   previewWorkspaceFile,
+  resolveWorkspacePath,
+  isPreviewableImagePath,
 } from "./lib/workspace-files.js";
 import {
   parseScrapbookAttachmentFromModelContent,
@@ -589,6 +591,10 @@ const MIME_TYPES = {
   ".md": "text/markdown; charset=utf-8",
   ".svg": "image/svg+xml",
   ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".webp": "image/webp",
+  ".gif": "image/gif",
   ".ico": "image/x-icon",
 };
 
@@ -3161,6 +3167,45 @@ async function main() {
           )
             ? 400
             : 500;
+        jsonResponse(res, { error: true, message }, status);
+      }
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/workspace/file") {
+      const cwd = await resolveTerminalCwd();
+      try {
+        const relativePath = String(url.searchParams.get("path") || "").trim();
+        if (!relativePath) {
+          jsonResponse(res, { error: true, message: "File path required" }, 400);
+          return;
+        }
+        if (!isPreviewableImagePath(relativePath)) {
+          jsonResponse(
+            res,
+            { error: true, message: "Only image files can be served" },
+            400,
+          );
+          return;
+        }
+        const { absolutePath } = await resolveWorkspacePath(cwd, relativePath);
+        const stat = await fs.stat(absolutePath);
+        if (!stat.isFile()) {
+          jsonResponse(res, { error: true, message: "Path is not a file" }, 400);
+          return;
+        }
+        const ext = path.extname(absolutePath).toLowerCase();
+        const contentType = MIME_TYPES[ext] || "application/octet-stream";
+        const data = await fs.readFile(absolutePath);
+        res.writeHead(200, {
+          "Content-Type": contentType,
+          "Content-Length": data.length,
+          "Cache-Control": "private, max-age=120",
+        });
+        res.end(data);
+      } catch (err) {
+        const message = String(err?.message || "Unable to read file");
+        const status = /outside|does not exist/i.test(message) ? 400 : 500;
         jsonResponse(res, { error: true, message }, status);
       }
       return;

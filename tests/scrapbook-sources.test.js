@@ -5,7 +5,7 @@ import fs from 'node:fs/promises';
 test('scrapbook source mutations automatically start a fresh summary job', async () => {
   const source = await fs.readFile('codemini-web/server.js', 'utf8');
   assert.match(source, /addScrapbookSource\(entryId/);
-  assert.match(source, /setScrapbookSourceSelection\(entryId/);
+  assert.match(source, /setScrapbookSourceSelection\(\s*entryId/);
   assert.match(source, /removeScrapbookSource\(entryId/);
   assert.ok(
     (source.match(/startScrapbookSummaryJob\(entryId\)/g) || []).length >= 4,
@@ -30,8 +30,8 @@ test('new notebooks accept multiple source types and start one summary job', asy
   const service = await fs.readFile('codemini-web/lib/scrapbook-service.js', 'utf8');
 
   assert.match(server, /\/api\/scrapbook\/entries\/notebook/);
-  assert.match(server, /form\.getAll\('urls'\)/);
-  assert.match(server, /form\.getAll\('files'\)/);
+  assert.match(server, /form\s*\.getAll\(["']urls["']\)/);
+  assert.match(server, /form\s*\.getAll\(["']files["']\)/);
   assert.match(
     server,
     /createMultiSourceScrapbookEntry\(\{ title, sources \}\)[\s\S]{0,120}startScrapbookSummaryJob\(entry\.id\)/,

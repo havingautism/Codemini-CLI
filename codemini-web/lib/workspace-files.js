@@ -23,6 +23,14 @@ const EXTRA_TEXT_EXTENSIONS = new Set([
   '.lock',
 ]);
 
+const IMAGE_PREVIEW_EXTENSIONS = new Set([
+  '.png',
+  '.jpg',
+  '.jpeg',
+  '.webp',
+  '.gif',
+]);
+
 export function isPathInside(parentDir, candidatePath) {
   const parent = path.resolve(parentDir);
   const candidate = path.resolve(candidatePath);
@@ -147,6 +155,11 @@ export function isPreviewableTextPath(filePath) {
   return false;
 }
 
+export function isPreviewableImagePath(filePath) {
+  const ext = path.extname(String(filePath || '')).toLowerCase();
+  return IMAGE_PREVIEW_EXTENSIONS.has(ext);
+}
+
 export async function previewWorkspaceFile(workspaceRoot, rawRelativePath = '') {
   const relativeInput = normalizeWorkspaceRelativePath(rawRelativePath);
   if (!relativeInput) throw new Error('Preview requires a file path');
@@ -157,6 +170,16 @@ export async function previewWorkspaceFile(workspaceRoot, rawRelativePath = '') 
   );
   const stat = await fs.stat(absolutePath);
   if (!stat.isFile()) throw new Error('Path is not a file');
+
+  if (isPreviewableImagePath(relativePath)) {
+    return {
+      kind: 'image',
+      path: relativePath,
+      absolutePath,
+      rootPath: root,
+      byteLength: stat.size,
+    };
+  }
 
   if (!isPreviewableTextPath(relativePath)) {
     return {

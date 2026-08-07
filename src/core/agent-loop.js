@@ -4,14 +4,13 @@ import { captureToInbox, listInbox } from './memory-store.js';
 import { requiresApprovalEvaluation } from './command-risk.js';
 import { evaluateCommandPolicy } from './command-policy.js';
 import { buildRunFailureMessage, getToolOutputSanitizeOptions, sanitizeTextForModel } from './tool-output.js';
-import { normalizeToolArguments } from './tool-schemas.js';
+import { createToolRuntime, buildInvalidToolArgumentsResult } from './tool-runtime.js';
 import { createToolResultStore, summarizeToolResult } from './tool-result-store.js';
 import { applyAggressiveToolPruneBeta } from './context-compact.js';
 import {
   markOutsideWorkspaceMutationApproved,
   markRunCommandSafeModeApproved
 } from './tools.js';
-import { formatToolDisplayName } from './tool-display.js';
 import {
   MEMORY_ALWAYS_ALLOW_TOOLS,
   STAGED_WRITE_ALWAYS_ALLOW_TOOLS
@@ -24,26 +23,9 @@ import { createMutationGraphPreflight } from './mutation-graph-preflight.js';
 import { fireSkillHookEvent, formatHookContextLines } from './skill-hooks-runtime.js';
 import {
   isCompletionTruncated,
-  looksLikeTruncatedJson,
 } from './provider/completion-status.js';
 
-/**
- * 安全解析 JSON 字符串。
- * 解析失败时返回带 _raw 和 _invalid_json 标记的对象，
- * 调用方可据此决定是回退到原始文本还是报告错误。
- */
-function safeJsonParse(raw) {
-  if (!raw || typeof raw !== 'string') return {};
-  try {
-    return JSON.parse(raw);
-  } catch (parseError) {
-    return {
-      _raw: String(raw),
-      _invalid_json: true,
-      _parseError: parseError.message
-    };
-  }
-}
+export { buildInvalidToolArgumentsResult } from './tool-runtime.js';
 
 function buildDeleteApprovalDetails(source, rawPath) {
   const existing =
@@ -105,90 +87,6 @@ function buildApprovalBlockedResult(toolName, args = {}, approvalReason = '') {
     blocked: true,
     reason: feedback || 'Tool call requires approval in daily mode',
     ...(feedback ? { user_feedback: feedback } : {})
-  };
-}
-
-const LARGE_PAYLOAD_TOOLS = new Set([
-  'create',
-  'write',
-  'write_chunk',
-  'edit',
-  'apply_patch',
-  'run',
-  'create_plan',
-  'run_subagent',
-  'update_plan',
-  'create_spec',
-  'update_todos',
-  'request_user_input',
-  'save_memory',
-  'add_code_comment',
-  'update_code_comment',
-]);
-
-function suggestionForInvalidToolArgs(toolName, { truncated = false } = {}) {
-  const name = String(toolName || 'tool').trim() || 'tool';
-  if (truncated) {
-    if (name === 'run') {
-      return 'write a script file in small chunks, then run a short command such as powershell -File path.ps1';
-    }
-    if (name === 'apply_patch' || name === 'edit') {
-      return 'apply smaller hunks across multiple tool calls';
-    }
-    if (name === 'create' || name === 'write') {
-      return 'use begin_write, smaller sequential write_chunk calls, then commit_write';
-    }
-    if (name === 'write_chunk') {
-      return 'retry the same sequence with a smaller content chunk';
-    }
-    if (LARGE_PAYLOAD_TOOLS.has(name)) {
-      return 'split the payload across multiple smaller tool calls';
-    }
-    return 'retry with compact JSON arguments';
-  }
-  if (name === 'run') {
-    return 'create/edit a script file, then run a short command';
-  }
-  if (LARGE_PAYLOAD_TOOLS.has(name)) {
-    return 'keep arguments compact; move large text into files via smaller writes/edits';
-  }
-  return 'fix JSON escaping and keep arguments compact';
-}
-
-export function buildInvalidToolArgumentsResult(toolName, args = {}) {
-  const parseError = String(args?._parseError || '').trim();
-  const name = String(toolName || 'tool').trim() || 'tool';
-  const truncated = args?._truncated === true
-    || looksLikeTruncatedJson(parseError, args?._raw);
-  const suggestion = suggestionForInvalidToolArgs(name, { truncated });
-
-  if (truncated) {
-    const writeHint = LARGE_PAYLOAD_TOOLS.has(name)
-      ? ' The model output was cut off before the tool JSON finished. Do not retry the same giant payload. Use smaller chunks across multiple tool calls.'
-      : ' The model output was cut off before the tool JSON finished. Retry with smaller arguments.';
-    return {
-      error: `Truncated tool arguments for ${name}`,
-      reason: (parseError
-        ? `Tool call JSON was incomplete (likely max output tokens): ${parseError}`
-        : 'Tool call JSON was incomplete (likely max output tokens).') + writeHint,
-      truncated: true,
-      suggestion,
-      raw: String(args?._raw || '')
-    };
-  }
-
-  const hint = name === 'run'
-    ? ' Do not embed large scripts or file contents in run arguments. Write a file first (create/edit), then run a short command such as `powershell -File path.ps1`.'
-    : LARGE_PAYLOAD_TOOLS.has(name)
-      ? ' Keep this tool\'s arguments compact. Prefer multiple smaller calls over one huge JSON payload.'
-      : ' Retry with valid, compact JSON arguments.';
-  return {
-    error: `Invalid JSON arguments for ${name}`,
-    reason: (parseError
-      ? `Tool arguments could not be parsed as JSON: ${parseError}`
-      : 'Tool arguments could not be parsed as JSON') + hint,
-    suggestion,
-    raw: String(args?._raw || '')
   };
 }
 
@@ -291,31 +189,6 @@ function compactToolResult(result, toolName, args, maxChars = 12000) {
 
   // Fallback: clip with reduced limit
   return clipToolResult(obj, Math.min(maxChars, 4000));
-}
-
-// ─── P1a: Parallel-safe tool classification ─────────────────────────
-
-const PARALLEL_SAFE_TOOLS = new Set([
-  'read', 'search_code', 'grep', 'ast_grep', 'glob', 'list',
-  'ast_query', 'read_ast_node',
-  'web_fetch', 'web_search',
-  'list_background_tasks', 'get_background_task',
-  'read_plan',
-  'query_project_index', 'tool_search',
-  'skill',
-]);
-
-const PARALLEL_SAFE_SUBAGENT_TOOLS = new Set([
-  'read', 'search_code', 'grep', 'ast_grep', 'glob', 'list',
-  'ast_query', 'read_ast_node', 'web_fetch', 'web_search',
-  'query_project_index', 'query_project_graph', 'tool_search',
-]);
-
-function isParallelSafeToolCall(toolName, args = {}) {
-  if (toolName !== 'run_subagent') return PARALLEL_SAFE_TOOLS.has(toolName);
-  return Array.isArray(args?.tools) && args.tools.every((name) =>
-    PARALLEL_SAFE_SUBAGENT_TOOLS.has(String(name || '').trim().toLowerCase())
-  );
 }
 
 // ─── Auto-capture tool errors to dream loop inbox ────────────────────
@@ -725,14 +598,12 @@ function shouldPersistLargeToolResult(toolName) {
 
 // ─── Format a single tool result using per-tool formatter or fallback ──
 
-function formatToolResult(toolResult, toolName, args, toolFormatters, toolResultMaxChars) {
+function formatToolResult(toolResult, toolName, args, toolRuntime, toolResultMaxChars) {
   const sanitizeOptions = getToolOutputSanitizeOptions(toolName);
-  if (toolFormatters && typeof toolFormatters[toolName] === 'function') {
-    const formatted = toolFormatters[toolName](toolResult, args);
-    if (typeof formatted === 'string') {
-      const sanitized = sanitizeTextForModel(formatted, sanitizeOptions);
-      return sanitized.trim() ? sanitized : emptyToolResultMarker(toolName);
-    }
+  const formattedByRegistry = toolRuntime.format(toolName, toolResult, args);
+  if (typeof formattedByRegistry === 'string') {
+    const sanitized = sanitizeTextForModel(formattedByRegistry, sanitizeOptions);
+    return sanitized.trim() ? sanitized : emptyToolResultMarker(toolName);
   }
   const fallback = compactToolResult(toolResult, toolName, args, toolResultMaxChars);
   const sanitizedFallback = sanitizeTextForModel(fallback, sanitizeOptions);
@@ -746,6 +617,8 @@ export async function runAgentLoop({
   userPrompt,
   model,
   requestCompletion,
+  toolRuntime: providedToolRuntime = null,
+  toolRegistry: providedToolRegistry = null,
   toolHandlers = {},
   toolDefinitions = [],
   initialMessages = [],
@@ -766,13 +639,22 @@ export async function runAgentLoop({
   skillHooksSession = null,
   onSkillLoaded = null,
   toolDisplayLabels = {},
+  toolMetadata = {},
   shouldCheckpoint = null,
   workspaceRoot = config?.workspaceRoot || process.cwd()
 }) {
+  const toolRuntime = providedToolRuntime || createToolRuntime({
+    toolRegistry: providedToolRegistry,
+    definitions: toolDefinitions,
+    handlers: toolHandlers,
+    formatters: toolFormatters,
+    deferredDefinitions,
+    displayLabels: toolDisplayLabels,
+    metadata: toolMetadata,
+    maxParallelCalls: config?.tools?.max_parallel_calls,
+  });
   const activeToolResultStore = toolResultStore || createToolResultStore();
-  const formatDisplayName = (toolName, args) => (
-    formatToolDisplayName(toolName, args, { displayLabels: toolDisplayLabels })
-  );
+  const formatDisplayName = (toolName, args) => toolRuntime.displayName(toolName, args);
   const messages = [];
   if (systemPrompt) {
     messages.push({ role: 'system', content: systemPrompt });
@@ -795,11 +677,13 @@ export async function runAgentLoop({
   ]);
   let lastAutoDreamCheckStep = 0;
 
-  // Mutable tool list — grows as tool_search loads deferred tools
-  const activeTools = [...toolDefinitions];
   const mutationGraphPreflight = createMutationGraphPreflight({
-    queryGraph: typeof toolHandlers.query_project_graph === 'function'
-      ? (args) => toolHandlers.query_project_graph(args)
+    queryGraph: toolRuntime.has('query_project_graph')
+      ? (args) => toolRuntime.execute('query_project_graph', args, {
+          signal,
+          workspaceRoot,
+          orchestrationId: 'mutation-graph-preflight',
+        })
       : null,
     onError: (error, context) => {
       if (!onEvent) return;
@@ -840,11 +724,14 @@ export async function runAgentLoop({
     lastAutoDreamCheckStep = normalizedStep;
     const autoDreamResult = await checkAutoDreamThreshold(config);
     if (!autoDreamResult) return;
-    const dreamTool = toolHandlers['dream_consolidate'];
-    if (typeof dreamTool !== 'function') return;
+    if (!toolRuntime.has('dream_consolidate')) return;
     if (onEvent) onEvent({ type: 'dream:auto', message: 'inbox threshold reached' });
     try {
-      const report = await dreamTool({});
+      const report = await toolRuntime.execute('dream_consolidate', {}, {
+        signal,
+        workspaceRoot,
+        orchestrationId: `auto-dream:${normalizedStep}`,
+      });
       if (onEvent) {
         onEvent({ type: 'dream:complete', report });
       }
@@ -882,7 +769,7 @@ export async function runAgentLoop({
     const completion = await requestCompletion({
       model,
       messages,
-      tools: activeTools,
+      tools: toolRuntime.definitions(),
       signal
     });
 
@@ -964,49 +851,32 @@ export async function runAgentLoop({
       ? String(approvalMode || '').toLowerCase()
       : 'review';
 
-    // ─── P1a: Partition into parallel-safe and serial tool calls ─────
-
     const completionTruncated = isCompletionTruncated(completion?.finishReason);
-    const callsWithMeta = toolCalls.map((call) => {
-      const toolName = normalizeToolCallName(call.name);
-      let args;
-      try {
-        if (call.argumentsComplete === false) {
-          throw Object.assign(
-            new Error('Tool argument stream ended before its completion event'),
-            { code: 'TOOL_ARGUMENT_STREAM_INCOMPLETE' },
-          );
-        }
-        args = normalizeToolArguments(toolName, safeJsonParse(call.arguments), call.arguments);
-      } catch (normalizeError) {
-        args = {
-          _invalid_json: true,
-          _raw: String(call.arguments || ''),
-          _parseError: normalizeError?.message || 'Failed to normalize tool arguments',
-          _truncated: call.argumentsComplete === false
-            || completionTruncated
-            || looksLikeTruncatedJson(normalizeError?.message, call.arguments),
-        };
-      }
-      if (args?._invalid_json) {
-        args._truncated = args._truncated === true
-          || completionTruncated
-          || looksLikeTruncatedJson(args._parseError, args._raw);
-      }
-      const displayName = formatDisplayName(toolName, args);
-      const isParallelSafe = isParallelSafeToolCall(toolName, args);
-      return { call, args, toolName, displayName, isParallelSafe };
-    });
+    const {
+      calls: callsWithMeta,
+      visibleNames: visibleToolNames,
+    } = toolRuntime.beginModelResponse(toolCalls, { completionTruncated });
 
     // Approval checks first — must be done synchronously before any execution
     const approvalResults = new Map();
-    for (const { call, toolName, displayName, args } of callsWithMeta) {
+    for (const { call, toolName, displayName, args, isModelVisible } of callsWithMeta) {
       let approved = true;
       let approvalReason = '';
       let approvalArgs = args;
       let preflightErrorContent = '';
       let outsideWorkspaceApproval = null;
-      if (args?._invalid_json) {
+      if (!isModelVisible) {
+        approvalResults.set(call.id, {
+          approved: false,
+          args: approvalArgs,
+          errorContent: clipToolResult({
+            error: `Tool "${toolName}" is not available in this model turn`,
+            available_tools: visibleToolNames,
+          }, toolResultMaxChars),
+        });
+        continue;
+      }
+      if (args?._invalid_json || args?._invalid_schema) {
         approvalResults.set(call.id, {
           approved: false,
           args: approvalArgs,
@@ -1058,13 +928,12 @@ export async function runAgentLoop({
       });
       if (needsApproval) {
         approved = false;
-        const handler = toolHandlers[toolName];
-        if (toolName === 'delete' && typeof handler?.prepareApproval === 'function') {
+        if (toolName === 'delete') {
           try {
-            const approval = await handler.prepareApproval(args);
-            const normalizedApproval = buildDeleteApprovalDetails({ approval }, args?.path);
-            if (normalizedApproval) {
-              approvalArgs = { ...args, approval: normalizedApproval };
+            const approval = await toolRuntime.prepareApproval(toolName, args);
+            if (approval !== undefined) {
+              const normalizedApproval = buildDeleteApprovalDetails({ approval }, args?.path);
+              if (normalizedApproval) approvalArgs = { ...args, approval: normalizedApproval };
             }
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
@@ -1123,12 +992,12 @@ export async function runAgentLoop({
                 : null
             };
           }
-          if (typeof handler?.prepareApproval === 'function') {
-            try {
-              const approval = await handler.prepareApproval(approvalArgs);
+          try {
+            const approval = await toolRuntime.prepareApproval(toolName, approvalArgs);
+            if (approval !== undefined) {
               approvalArgs = { ...approvalArgs, approval };
-            } catch (_) { /* skip */ }
-          }
+            }
+          } catch (_) { /* skip */ }
         }
         if (preflightErrorContent) {
           approvalResults.set(call.id, {
@@ -1181,6 +1050,18 @@ export async function runAgentLoop({
       const approvalState = approvalResults.get(call.id) || { approved: true, args };
       let effectiveArgs = approvalState.args || args;
 
+      if (signal?.aborted) {
+        const reason = 'Tool call aborted before dispatch';
+        return {
+          callId: call.id,
+          content: clipToolResult({ error: reason, code: 'ABORTED_BEFORE_DISPATCH' }, toolResultMaxChars),
+          error: true,
+          durationMs: 0,
+          summary: reason,
+          status: 'error',
+        };
+      }
+
       if (approvalState.graphPreflightContent) {
         const summary = 'Project graph impact review required before mutation';
         if (onEvent) {
@@ -1230,9 +1111,8 @@ export async function runAgentLoop({
         };
       }
 
-      const handler = toolHandlers[toolName];
-      if (!handler) {
-        const available = Object.keys(toolHandlers).join(', ');
+      if (!toolRuntime.has(toolName)) {
+        const available = visibleToolNames.join(', ');
         const msg = `Unknown tool: "${toolName}". Available tools: ${available || '(none)'}`;
         const summary = trimInline(msg, 200);
         if (onEvent) {
@@ -1368,6 +1248,23 @@ export async function runAgentLoop({
         }
       }
 
+      const invalidArgs = toolRuntime.invalidArguments(toolName, effectiveArgs);
+      if (invalidArgs) {
+        const invalid = buildInvalidToolArgumentsResult(toolName, invalidArgs);
+        const summary = trimInline(invalid.reason, 120);
+        if (onEvent) {
+          onEvent({ type: 'tool:error', name: toolName, displayName, id: call.id, arguments: effectiveArgs, durationMs: Date.now() - startedAt, summary });
+        }
+        return {
+          callId: call.id,
+          content: clipToolResult(invalid, toolResultMaxChars),
+          error: true,
+          durationMs: Date.now() - startedAt,
+          summary,
+          status: 'error',
+        };
+      }
+
       if (onEvent) onEvent({ type: 'tool:start', name: toolName, displayName, id: call.id, arguments: effectiveArgs });
 
       let captureScope = null;
@@ -1379,10 +1276,14 @@ export async function runAgentLoop({
 
       let toolResult;
       try {
-        toolResult = await handler(effectiveArgs, {
+        toolResult = await toolRuntime.execute(toolName, effectiveArgs, {
           rawArguments: call.arguments,
           toolCallId: call.id,
           orchestrationId: step,
+          signal,
+          workspaceRoot,
+          executionMode,
+          approvalMode: normalizedApprovalMode,
         });
       } catch (error) {
         const durationMs = Date.now() - startedAt;
@@ -1427,7 +1328,7 @@ export async function runAgentLoop({
         if (isAutoCaptureEnabled(config) && shouldAutoCaptureRunFailure(runFailureMessage)) {
           await captureToolFailure(toolName, runFailureMessage, effectiveArgs, config).catch(() => {});
         }
-        let formatted = formatToolResult(toolResult, toolName, effectiveArgs, toolFormatters, toolResultMaxChars);
+        let formatted = formatToolResult(toolResult, toolName, effectiveArgs, toolRuntime, toolResultMaxChars);
         if (!String(formatted || '').trim() || formatted === emptyToolResultMarker(toolName)) {
           formatted = runFailureMessage;
         } else if (!/^error:/im.test(formatted)) {
@@ -1519,21 +1420,16 @@ export async function runAgentLoop({
       }
 
       // P1b: Use per-tool formatter if available, else fallback
-      let formatted = formatToolResult(toolResult, toolName, effectiveArgs, toolFormatters, toolResultMaxChars);
+      let formatted = formatToolResult(toolResult, toolName, effectiveArgs, toolRuntime, toolResultMaxChars);
       const hookContexts = [...preToolContexts, ...postToolContexts].filter(Boolean);
       if (hookContexts.length > 0) {
         formatted = `${formatted}\n\n[Hook context]\n${hookContexts.join('\n')}`;
       }
       noteAnalysisEvidence(analysisGuard, toolName, effectiveArgs, toolResult);
 
-      // P2: If tool_search loaded deferred tools, inject their schemas into activeTools
+      // A loaded deferred schema becomes visible on the next model response.
       if (toolName === 'tool_search' && toolResult && Array.isArray(toolResult.schemas)) {
-        for (const schema of toolResult.schemas) {
-          const name = schema?.function?.name;
-          if (name && !activeTools.some((t) => t?.function?.name === name)) {
-            activeTools.push(schema);
-          }
-        }
+        toolRuntime.activateSchemas(toolResult.schemas);
       }
 
       // P0: Persist to disk if still large
@@ -1556,29 +1452,11 @@ export async function runAgentLoop({
       };
     }
 
-    // Execute consecutive read-only batches in parallel, but never move them
-    // across state-changing or approval-blocked calls.
-    let parallelBatch = [];
-    const flushParallelBatch = async () => {
-      if (parallelBatch.length === 0) return;
-      const results = await Promise.all(parallelBatch.map((c) => executeOne(c)));
-      for (const r of results) {
-        resultEntries.set(r.callId, r);
-      }
-      parallelBatch = [];
-    };
-
-    for (const c of callsWithMeta) {
-      const canRunInCurrentParallelBatch = c.isParallelSafe && approvalResults.get(c.call.id)?.approved;
-      if (canRunInCurrentParallelBatch) {
-        parallelBatch.push(c);
-        continue;
-      }
-      await flushParallelBatch();
-      const r = await executeOne(c);
-      resultEntries.set(r.callId, r);
-    }
-    await flushParallelBatch();
+    const orderedResults = await toolRuntime.executeOrdered(callsWithMeta, {
+      canRunConcurrently: (candidate) => approvalResults.get(candidate.call.id)?.approved === true,
+      execute: executeOne,
+    });
+    for (const result of orderedResults) resultEntries.set(result.callId, result);
 
     // Write results to messages in original tool call order
     for (const { call, toolName, displayName, args } of callsWithMeta) {
@@ -1672,15 +1550,6 @@ export async function runAgentLoop({
     messages,
     steps: step
   };
-}
-
-function callsToPlanSummary(toolCalls = [], toolDisplayLabels = {}) {
-  return toolCalls
-    .slice(0, 8)
-    .map((call) => {
-      const args = safeJsonParse(call?.arguments);
-      return `- ${formatToolDisplayName(normalizeToolCallName(call?.name), args, { displayLabels: toolDisplayLabels })}`;
-    });
 }
 
 function attachToolCallSessionMeta(assistantMessage, callId, meta = {}) {

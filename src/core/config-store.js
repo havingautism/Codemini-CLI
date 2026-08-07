@@ -67,6 +67,7 @@ const DEFAULT_CONFIG = {
     ]
   },
   tools: {
+    max_parallel_calls: 10,
     write_chunk_max_chars: 12000,
     staged_write_max_chars: 4194304
   },

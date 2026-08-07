@@ -160,6 +160,49 @@ test('settleRunningCreatePlanCards stops running steps and nested tools', () => 
   assert.equal(card.planRun.steps[0].segments[0].cards[0].status, 'error');
 });
 
+test('settleCompletedPlanToolCards repairs a duplicated sibling tool from an old snapshot', () => {
+  const messages = [
+    {
+      id: 'parent',
+      role: 'general',
+      isComplete: true,
+      segments: [
+        {
+          type: 'tools',
+          cards: [
+            {
+              id: 'subagent',
+              name: 'run_subagent',
+              status: 'done',
+              planRun: {
+                phase: 'completed',
+                steps: [
+                  {
+                    status: 'done',
+                    segments: [
+                      {
+                        type: 'tools',
+                        cards: [{ id: 'list', name: 'list', status: 'done', result: 'files' }],
+                      },
+                    ],
+                  },
+                ],
+              },
+            },
+            { id: 'list', name: 'list', status: 'running' },
+          ],
+        },
+      ],
+    },
+  ];
+
+  const [message] = settleCompletedPlanToolCards(messages);
+  const [subagent, list] = message.segments[0].cards;
+  assert.equal(list.status, 'done');
+  assert.equal(list.result, 'files');
+  assert.deepEqual(subagent.planRun.steps[0].segments, []);
+});
+
 test('applyStreamEventToPlanRun nests thinking and tools into the running step', () => {
   let message = {
     id: 'parent',

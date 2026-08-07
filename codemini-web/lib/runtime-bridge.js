@@ -15,9 +15,9 @@ import { stripPlanProgressText } from '../shared/plan-progress-text.js';
 import {
   applyPlanEventToMessage,
   applyStreamEventToPlanRun,
-  findCreatePlanCard,
   isCreatePlanToolEvent,
   messageHasActivePlanRun,
+  shouldNestStreamEventInPlan,
   settleRunningCreatePlanCards,
 } from '../client/src/lib/plan-ui-state.js';
 import fs from 'node:fs/promises';
@@ -687,20 +687,7 @@ export class RuntimeBridge {
             if (isCreatePlanToolEvent(event)) {
               return applyStreamEventToPlanRun(message, event, streamOptions);
             }
-            const nestedCardId = String(event.parentToolCallId || event.toolCallId || '').trim();
-            const card = findCreatePlanCard(message, nestedCardId);
-            const hasRunningStep = (card?.planRun?.steps || []).some(
-              (step) => String(step?.status || '').toLowerCase() === 'running'
-            );
-            const isAssistantEvent =
-              event.type === 'assistant:delta' ||
-              event.type === 'assistant:reasoning_delta' ||
-              event.type === 'assistant:response';
-            // Keep parent preamble before the plan card until a step is running.
-            if (isAssistantEvent && !hasRunningStep) {
-              return applyStreamEventToMessage(message, event, streamOptions);
-            }
-            if (messageHasActivePlanRun(message) && (hasRunningStep || card?.planRun?.steps?.length || nestedCardId)) {
+            if (shouldNestStreamEventInPlan(message, event)) {
               return applyStreamEventToPlanRun(message, event, streamOptions);
             }
             return applyStreamEventToMessage(message, event, streamOptions);

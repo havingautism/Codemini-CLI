@@ -4,6 +4,7 @@ import { runAgentLoop } from '../core/agent-loop.js';
 import { createChatCompletion } from '../core/provider/index.js';
 import { resolveConfiguredReasoningEffort } from '../core/provider/reasoning-effort.js';
 import { getBuiltinTools } from '../core/tools.js';
+import { createToolRuntime } from '../core/tool-runtime.js';
 import { getSubAgentRolePrompt, ROLE_TOOL_POLICY } from '../core/chat-runtime.js';
 import { composeSystemPrompt } from '../core/system-prompt-composer.js';
 import { normalizePlanState } from '../core/plan-state.js';
@@ -142,11 +143,14 @@ async function runHarness({ role, task, config, systemPrompt, model }) {
       systemPrompt: harnessSystemPrompt,
       userPrompt: task,
       model: model || config.model.name,
-      toolDefinitions: filtered.definitions,
-      toolHandlers: filtered.handlers,
-      toolFormatters: formatters,
-      deferredDefinitions: filtered.deferredDefinitions,
-      toolDisplayLabels: displayLabels || {},
+      toolRuntime: createToolRuntime({
+        definitions: filtered.definitions,
+        handlers: filtered.handlers,
+        formatters,
+        deferredDefinitions: filtered.deferredDefinitions,
+        displayLabels: displayLabels || {},
+        maxParallelCalls: config.tools?.max_parallel_calls
+      }),
       ...(await buildAgentLoopRuntimeOptions(config, workspaceRoot)),
       requestCompletion: makeCompletionFn(config)
     });
@@ -408,11 +412,14 @@ export async function handleRun(args) {
       systemPrompt,
       userPrompt: effectiveTask,
       model: selectedModel || config.model.name,
-      toolDefinitions: definitions,
-      toolHandlers: handlers,
-      toolFormatters: formatters,
-      deferredDefinitions,
-      toolDisplayLabels: displayLabels || {},
+      toolRuntime: createToolRuntime({
+        definitions,
+        handlers,
+        formatters,
+        deferredDefinitions,
+        displayLabels: displayLabels || {},
+        maxParallelCalls: config.tools?.max_parallel_calls
+      }),
       ...(await buildAgentLoopRuntimeOptions(config, workspaceRoot)),
 
       requestCompletion: makeCompletionFn(config)

@@ -17,6 +17,6 @@ test('settings exposes a lazy storage tab with folder-open actions', async () =>
   assert.match(storage, /api\.openStorageFolder\(target\)/);
   assert.match(api, /fetchStorageInfo/);
   assert.match(api, /openStorageFolder/);
-  assert.match(server, /url\.pathname === '\/api\/storage'/);
-  assert.match(server, /url\.pathname === '\/api\/storage\/open'/);
+  assert.match(server, /url\.pathname === ["']\/api\/storage["']/);
+  assert.match(server, /url\.pathname === ["']\/api\/storage\/open["']/);
 });

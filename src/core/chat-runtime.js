@@ -47,6 +47,7 @@ import {
 } from './provider/index.js';
 import { isDangerousCommand, runShellCommand } from './shell.js';
 import { getBuiltinTools } from './tools.js';
+import { createToolRuntime } from './tool-runtime.js';
 import {
   deriveSessionTitle,
   loadSession,
@@ -5198,14 +5199,21 @@ async function askModel({
   };
 
   const sessionLenBeforeLoop = session.messages.length;
+  const toolRuntime = createToolRuntime({
+    definitions: filteredDefinitions,
+    handlers: filteredHandlers,
+    formatters,
+    deferredDefinitions: filteredDeferred,
+    displayLabels: displayLabels || {},
+    maxParallelCalls: toolConfig.tools?.max_parallel_calls
+  });
   const loopResult = await runAgentLoop({
     systemPrompt: effectiveSystemPrompt,
     userPrompt: loopUserPrompt,
     model: model || config.model.name,
 
 
-    toolDefinitions: filteredDefinitions,
-    toolHandlers: filteredHandlers,
+    toolRuntime,
     initialMessages: initialMessagesForModel,
     onEvent: wrappedAgentEvent,
     executionMode: normalizedExecutionMode,
@@ -5217,10 +5225,7 @@ async function askModel({
     }),
     alwaysAllowTools: effectiveAlwaysAllowTools,
     toolResultMaxChars: config.context?.tool_result_max_chars || 12000,
-    toolFormatters: formatters,
-    deferredDefinitions: filteredDeferred,
     toolResultStore,
-    toolDisplayLabels: displayLabels || {},
     requestToolApproval,
     signal,
     skipAnalysisNudge,

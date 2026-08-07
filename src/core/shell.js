@@ -186,6 +186,15 @@ function collectDescendantPids(rootPid, seen = new Set()) {
 export function terminateChild(child, signal = 'SIGTERM') {
   if (!child) return;
   const pid = Number(child.pid);
+  if (process.platform === 'win32' && Number.isInteger(pid) && pid > 0) {
+    try {
+      spawn('taskkill', ['/pid', String(pid), '/T', '/F'], {
+        stdio: 'ignore',
+        windowsHide: true,
+      }).unref();
+    } catch {}
+    return;
+  }
   if (process.platform !== 'win32' && Number.isInteger(pid) && pid > 0) {
     const descendants = collectDescendantPids(pid);
     for (const targetPid of descendants.reverse()) {
@@ -226,8 +235,12 @@ export function runShellCommand({
   command,
   cwd = process.cwd(),
   shell = 'powershell',
-  timeoutMs = 1800000
+  timeoutMs = 1800000,
+  signal,
 }) {
+  if (signal?.aborted) {
+    return Promise.reject(Object.assign(new Error('Command aborted before dispatch'), { code: 'ABORT_ERR' }));
+  }
   const shellSpec = resolveShell(shell);
   const shellCommand =
     process.platform !== 'win32' && /(?:^|\/)bash(?:\.exe)?$/i.test(shellSpec.command)
@@ -244,6 +257,7 @@ export function runShellCommand({
     let stderr = '';
     let timedOut = false;
     let autoStopped = false;
+    let aborted = false;
     let stopReason = '';
     let finalized = false;
     const longRunningCommand = isLikelyLongRunningCommand(command);
@@ -256,6 +270,7 @@ export function runShellCommand({
       finalized = true;
       clearTimeout(timer);
       if (autoStopTimer) clearTimeout(autoStopTimer);
+      signal?.removeEventListener('abort', abortCommand);
       resolve(value);
     };
 
@@ -264,6 +279,7 @@ export function runShellCommand({
       finalized = true;
       clearTimeout(timer);
       if (autoStopTimer) clearTimeout(autoStopTimer);
+      signal?.removeEventListener('abort', abortCommand);
       reject(error);
     };
 
@@ -277,6 +293,14 @@ export function runShellCommand({
             finalizeAutoStop('startup_window');
           }, autoStopWindowMs)
         : null;
+
+    const abortCommand = () => {
+      if (finalized || aborted) return;
+      aborted = true;
+      terminateChild(child, 'SIGTERM');
+    };
+    signal?.addEventListener('abort', abortCommand, { once: true });
+    if (signal?.aborted) abortCommand();
 
     const finalizeAutoStop = (reason) => {
       if (timedOut || autoStopped || finalized) return;
@@ -309,6 +333,10 @@ export function runShellCommand({
 
     child.on('close', (code) => {
       if (finalized) return;
+      if (aborted) {
+        finalizeReject(Object.assign(new Error('Command aborted'), { code: 'ABORT_ERR' }));
+        return;
+      }
       if (timedOut) {
         finalizeReject(new Error(`Command timed out after ${timeoutMs}ms`));
         return;

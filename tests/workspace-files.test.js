@@ -81,3 +81,12 @@ test('previewWorkspaceFile rejects escape and unsupported types', async () => {
     assert.equal(unsupported.kind, 'unsupported');
   });
 });
+
+test('previewWorkspaceFile returns image kind for common image extensions', async () => {
+  await withTempDir(async (root) => {
+    await fs.writeFile(path.join(root, 'shot.jpg'), Buffer.from([0xff, 0xd8, 0xff, 0xd9]));
+    const preview = await previewWorkspaceFile(root, 'shot.jpg');
+    assert.equal(preview.kind, 'image');
+    assert.equal(preview.path, 'shot.jpg');
+  });
+});

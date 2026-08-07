@@ -20,6 +20,26 @@ test('workspace file tree exposes responsive filtering and tree controls', async
   assert.match(source, /FileTypeIcon/);
 });
 
+test('workspace file tree opens images with shared ImagePreviewDialog', async () => {
+  const source = await fs.readFile(FILE_TREE_PATH, 'utf8');
+
+  assert.match(source, /ImagePreviewDialog/);
+  assert.match(source, /\/api\/workspace\/file/);
+  assert.match(source, /isWorkspaceImagePath/);
+  assert.match(source, /setImagePreview/);
+});
+
+test('workspace file tree always shows go-up while previewing files', async () => {
+  const source = await fs.readFile(FILE_TREE_PATH, 'utf8');
+
+  assert.match(source, /const previewCanGoUp = true/);
+  assert.match(source, /canGoUp=\{previewCanGoUp\}/);
+  assert.match(
+    source,
+    /mode === "preview"[\s\S]*?parentBrowsePath\(preview\?\.path/,
+  );
+});
+
 test('workspace file tree ignores stale browse and preview responses', async () => {
   const source = await fs.readFile(FILE_TREE_PATH, 'utf8');
 
