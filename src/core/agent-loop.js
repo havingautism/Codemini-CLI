@@ -19,6 +19,7 @@ import {
   inspectOutsideWorkspaceMutation,
   toolRequiresUserApproval
 } from './approval-policy.js';
+import { resolveSandboxPolicy } from './sandbox-policy.js';
 import { createMutationGraphPreflight } from './mutation-graph-preflight.js';
 import { fireSkillHookEvent, formatHookContextLines } from './skill-hooks-runtime.js';
 import {
@@ -850,6 +851,11 @@ export async function runAgentLoop({
     const normalizedApprovalMode = ['review', 'auto', 'full_access'].includes(String(approvalMode || '').toLowerCase())
       ? String(approvalMode || '').toLowerCase()
       : 'review';
+    const osSandboxConfining = resolveSandboxPolicy({
+      config,
+      cwd: workspaceRoot,
+      platform: process.platform,
+    }).enabled;
 
     const completionTruncated = isCompletionTruncated(completion?.finishReason);
     const {
@@ -908,11 +914,14 @@ export async function runAgentLoop({
         && config?.policy?.safe_mode !== false
         && (isSafeModePolicyBlocked || requiresApprovalEvaluation(args?.command || '', config?.shell?.default));
       try {
-        outsideWorkspaceApproval = await inspectOutsideWorkspaceMutation({
-          workspaceRoot,
-          toolName,
-          arguments: args
-        });
+        // OS sandbox already fences outside writes; skip the soft outside-dir review.
+        if (!osSandboxConfining) {
+          outsideWorkspaceApproval = await inspectOutsideWorkspaceMutation({
+            workspaceRoot,
+            toolName,
+            arguments: args
+          });
+        }
       } catch (error) {
         preflightErrorContent = clipToolResult({
           error: `Could not inspect file mutation target: ${error instanceof Error ? error.message : String(error)}`
@@ -924,6 +933,7 @@ export async function runAgentLoop({
         toolName,
         isSafeModeRun,
         isOutsideWorkspaceMutation: Boolean(outsideWorkspaceApproval),
+        osSandboxConfining,
         alwaysAllowTools: [...alwaysAllowSet]
       });
       if (needsApproval) {

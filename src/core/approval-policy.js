@@ -36,6 +36,7 @@ export function toolRequiresUserApproval({
   toolName = '',
   isSafeModeRun = false,
   isOutsideWorkspaceMutation = false,
+  osSandboxConfining = false,
   alwaysAllowTools = []
 } = {}) {
   const normalizedApprovalMode = ['review', 'auto', 'full_access'].includes(String(approvalMode || '').toLowerCase())
@@ -47,9 +48,9 @@ export function toolRequiresUserApproval({
     (Array.isArray(alwaysAllowTools) ? alwaysAllowTools : []).map((item) => String(item || '').trim()).filter(Boolean)
   );
 
-  // An allowed path outside the opened project is a separate trust boundary.
-  // Never let daily/auto/full-access modes or role allowlists silently cross it.
-  if (isOutsideWorkspaceMutation) return true;
+  // Outside the opened project is a soft trust boundary on Windows / when OS sandbox is off.
+  // When OS sandbox is confining, the fence already blocks those writes — skip the prompt.
+  if (isOutsideWorkspaceMutation && !osSandboxConfining) return true;
   if (normalizedApprovalMode === 'full_access') return false;
   if (normalizedApprovalMode === 'auto') {
     return (!projectIsGit && isFileWriteTool) || Boolean(isSafeModeRun);

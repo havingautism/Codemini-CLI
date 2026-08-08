@@ -112,7 +112,7 @@ codemini config set sandbox.enabled false          # disable OS confine
 
 If the sandbox cannot start, Codemini **refuses** to run the command unconfined. Linux needs `bubblewrap` (see sandbox-runtime docs); macOS uses `sandbox-exec`.
 
-**Windows:** sandbox-runtime is not used. Approval mode stays available. Tools and command-policy stay as before (including staged writes and `apply_patch`). On Linux/mac, CRUD prefers DeepSeek-style `edit` (`old_string`/`new_string`) with always-on `glob`/`grep`; staged write tools and `apply_patch` are omitted. OS sandbox and soft approval work together: sandbox limits writes outside the workspace, while approval mode (default `auto`) skips prompts in Git repos and still reviews non-Git file mutations. When sandbox mode is `read-only`, soft approval is skipped and the approval selector is hidden. Unique tools (`search_code`, memory, plan, …) remain.
+**Windows:** sandbox-runtime is not used. Approval mode stays available, including the soft “outside current project” review for file mutations. Tools and command-policy stay as before (including staged writes and `apply_patch`). On Linux/mac, CRUD prefers DeepSeek-style `edit` (`old_string`/`new_string`) with always-on `glob`/`grep`; staged write tools and `apply_patch` are omitted. OS sandbox and soft approval work together: sandbox limits writes outside the workspace (so the outside-dir soft review is skipped while the sandbox is confining), while approval mode (default `auto`) skips prompts in Git repos and still reviews non-Git file mutations. When sandbox mode is `read-only`, soft approval is skipped and the approval selector is hidden. Unique tools (`search_code`, memory, plan, …) remain.
 
 ### Run diagnostics
 

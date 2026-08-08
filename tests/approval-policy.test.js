@@ -107,7 +107,7 @@ test('review mode still prompts for coder edits unless role tools are always-all
   );
 });
 
-test('outside-workspace mutations always require approval in every mode', () => {
+test('outside-workspace mutations require approval unless OS sandbox confines', () => {
   for (const approvalMode of ['review', 'auto', 'full_access']) {
     assert.equal(
       toolRequiresUserApproval({
@@ -118,6 +118,21 @@ test('outside-workspace mutations always require approval in every mode', () => 
         alwaysAllowTools: ['write']
       }),
       true
+    );
+  }
+  // OS sandbox already fences outside writes — soft outside-dir review is skipped.
+  for (const approvalMode of ['review', 'auto', 'full_access']) {
+    assert.equal(
+      toolRequiresUserApproval({
+        approvalMode,
+        projectIsGit: true,
+        toolName: 'write',
+        isOutsideWorkspaceMutation: true,
+        osSandboxConfining: true,
+        alwaysAllowTools: ['write']
+      }),
+      false,
+      approvalMode
     );
   }
 });
@@ -190,7 +205,7 @@ test('agent loop requests review before a full-access outside write', async () =
         return { approved: false };
       },
       skipAnalysisNudge: true,
-      config: { memory: { enabled: false } }
+      config: { memory: { enabled: false }, sandbox: { enabled: false } }
     });
 
     assert.equal(result.text, 'done');
@@ -212,7 +227,8 @@ test('approval grants one exact outside write without changing allowed_paths', a
   const config = {
     memory: { enabled: false },
     policy: { allowed_paths: [] },
-    runtime: {}
+    runtime: {},
+    sandbox: { enabled: false }
   };
   let completionIndex = 0;
   let tools;
