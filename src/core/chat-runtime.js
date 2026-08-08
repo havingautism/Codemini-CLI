@@ -676,7 +676,7 @@ export function buildExecutionModePromptBlock(executionMode) {
       'Subagent tool (run_subagent):',
       '- Default: do the work yourself. Call run_subagent only for a bounded, independently verifiable chunk where clean context materially helps, for parallel read-only investigation across unrelated areas, or for an independent review of high-risk work.',
       '- Do not delegate the whole ambiguous request, use a subagent merely to make a plan, or use one to avoid inspecting the relevant code yourself. The parent agent owns decomposition, integration, and the final answer.',
-      '- Always pass a complete prompt (task + success criteria + out-of-scope). Put durable handoff notes in context.',
+      '- Always pass a one- or two-sentence summary for the collapsed UI card and a separate complete prompt (task + success criteria + out-of-scope) for the expanded details and worker. Put durable handoff notes in context.',
       '- Invent a short human name for each worker (e.g. David, Mira, Kai) via `name` — do not use preset role enums. Capability comes from `tools`, not the name.',
       '- Default tools allow edits. For read-only explore/review, pass a read-only tools list (e.g. read, search_code, web_search). For verify/test, include run when needed.',
       '- Subagents run on the configured Lite/Fast model. Keep assignments narrow and provide enough evidence and acceptance criteria for that model to finish without rediscovering the parent task.',
@@ -7054,7 +7054,10 @@ async function runProjectRequirementsSingleAgent({
     renderProjectRequirementsDepthContract(options.depth),
     'Use one coherent agent pass: inspect the project, build the evidence map, decompose APIs/interfaces, write the report, and self-check before answering.',
     options.depth === 'fast'
-      ? 'Stay inside the fast budget: finish the core surface, then stop with explicit gaps instead of expanding scope.'
+      ? [
+          'Stay inside the fast budget: finish the core surface, then stop with explicit gaps instead of expanding scope.',
+          'Use at most three evidence-gathering rounds before writing. Batch independent graph queries, searches, and reads in the same round; do not re-read unchanged files.'
+        ].join(' ')
       : 'Prefer a complete, evidence-backed report. If the project is too large, cover the most important entry points first and clearly list gaps.',
     'Do not invent dates; use the report paths above.'
   ].join('\n');

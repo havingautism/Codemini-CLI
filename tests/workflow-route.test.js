@@ -40,6 +40,7 @@ test('coding prompt keeps subagent delegation bounded and parent-owned', () => {
 test('run_subagent UI receives the complete task instead of a clipped label', () => {
   assert.match(chatRuntimeSource, /goal:\s*taskPrompt/);
   assert.doesNotMatch(chatRuntimeSource, /trimInline\(taskPrompt,\s*96\)/);
+  assert.match(buildExecutionModePromptBlock('coding'), /one- or two-sentence summary/);
 });
 
 test('coding prompt creates design docs only for material decisions', () => {

@@ -196,15 +196,17 @@ test('expanded sub-agents keep a compact indent and reveal adaptive task details
   assert.doesNotMatch(planToolCard, /rounded-t-xl/);
   assert.match(
     planToolCard,
-    /rounded-md bg-\(--bg-tertiary\)[^"]*dark:bg-\(--bg-primary\)[\s\S]*?<ScrollArea[\s\S]*?type="auto"[\s\S]*?className="max-h-28 min-w-0 flex-1"[\s\S]*?viewportClassName="max-h-28/,
+    /rounded-md bg-\(--bg-tertiary\)[^"]*text-\[12px\][^"]*dark:bg-\(--bg-primary\)[\s\S]*?<ScrollArea[\s\S]*?type="auto"[\s\S]*?className="max-h-32 min-w-0 flex-1"[\s\S]*?viewportClassName="max-h-32/,
   );
   assert.doesNotMatch(planToolCard, /h-\[76px\]/);
   assert.match(
     planToolCard,
     /type="auto"[\s\S]*?className="mt-1 h-48 rounded-md bg-\(--bg-tertiary\) dark:bg-\(--bg-primary\)"/,
   );
-  assert.match(planToolCard, /msg-process-meta__detail ml-1\.5 min-w-0 truncate/);
-  assert.match(planToolCard, /goal\.length > 96/);
+  assert.match(planToolCard, /card\?\.arguments\?\.summary \|\| card\?\.arguments\?\.goal \|\| goal/);
+  assert.match(planToolCard, /taskSummary && !expanded/);
+  assert.match(planToolCard, /msg-process-meta__detail ml-1\.5 line-clamp-2[^\"]*whitespace-normal/);
+  assert.doesNotMatch(planToolCard, /goal\.length > 96/);
   assert.match(
     planToolCard,
     /className="px-3 pb-3 pt-2"[\s\S]*?<SubagentTaskDetails task=\{goal\}/,

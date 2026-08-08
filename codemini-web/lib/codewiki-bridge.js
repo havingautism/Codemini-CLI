@@ -10,10 +10,12 @@ export async function resolveCodeWikiBridge({
   codeWikiProjectDir,
   currentProjectDir,
   currentBridge,
+  currentSessionId,
   ensurePooledSession,
   createSession,
   findPreferredSessionId,
   sameProject,
+  isSessionBusy,
 } = {}) {
   if (typeof ensurePooledSession !== 'function') {
     throw new TypeError('ensurePooledSession must be a function');
@@ -28,9 +30,24 @@ export async function resolveCodeWikiBridge({
   const onSameProject = typeof sameProject === 'function'
     ? sameProject(codeWikiProjectDir, currentProjectDir)
     : String(codeWikiProjectDir || '') === String(currentProjectDir || '');
+  const resolvedCurrentSessionId = String(
+    currentSessionId || currentBridge.getSessionId?.() || '',
+  ).trim();
+  const sessionBusy = (sessionId) =>
+    typeof isSessionBusy === 'function' && isSessionBusy(sessionId) === true;
 
-  if (onSameProject && !currentBridge.isBusy()) {
-    return { bridge: currentBridge, source: 'current' };
+  if (
+    onSameProject &&
+    !currentBridge.isBusy() &&
+    !sessionBusy(resolvedCurrentSessionId)
+  ) {
+    return {
+      bridge: currentBridge,
+      source: 'current',
+      ...(resolvedCurrentSessionId
+        ? { sessionId: resolvedCurrentSessionId }
+        : {}),
+    };
   }
 
   if (typeof findPreferredSessionId === 'function') {
@@ -38,7 +55,12 @@ export async function resolveCodeWikiBridge({
     if (preferredId) {
       const entry = await ensurePooledSession(preferredId);
       const preferredBridge = entry?.bridge;
-      if (preferredBridge && typeof preferredBridge.isBusy === 'function' && !preferredBridge.isBusy()) {
+      if (
+        preferredBridge &&
+        typeof preferredBridge.isBusy === 'function' &&
+        !preferredBridge.isBusy() &&
+        !sessionBusy(preferredId)
+      ) {
         return { bridge: preferredBridge, source: 'preferred', sessionId: preferredId };
       }
     }

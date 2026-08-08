@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { t } from "../../i18n/index.js";
+import { t, getLocale } from "../../i18n/index.js";
 import {
   ArrowUp,
   ArrowClockwise,
@@ -47,6 +47,43 @@ const CODEWIKI_QA_DEFAULT_WIDTH = 420;
 const CODEWIKI_GENERATION_POLL_MS = 4000;
 const CODEWIKI_SYMBOL_GRAPH_ENABLED = true;
 
+/** Map backend English CodeWiki stage/step titles to i18n keys. */
+const CODEWIKI_LABEL_KEYS = {
+  "Generate project requirements report": "codewikiStepGenerateReport",
+  "Write requirements report": "codewikiStepWriteReport",
+  "Review API coverage and traceability": "codewikiStepReviewCoverage",
+  "Summarize final report and unresolved questions": "codewikiStepSummarize",
+  "Map evidence and interfaces": "codewikiStepMapEvidence",
+  "Synthesize requirements, flows, and risks": "codewikiStepSynthesize",
+  "Review and summarize coverage": "codewikiStepReviewSummarize",
+  "Map entry points and evidence sources": "codewikiStepMapEntry",
+  "Build API and interface inventory": "codewikiStepBuildInventory",
+  "Decompose requirements, flows, data, and risks": "codewikiStepDecompose",
+  "Failed to load code graph": "failedToLoadCodeGraph",
+};
+
+function stripLeadingDecorators(label = "") {
+  return String(label || "")
+    .replace(/^[\s\p{Extended_Pictographic}\p{Symbol}\p{Punctuation}]+/u, "")
+    .trim();
+}
+
+function localizeCodeWikiLabel(label) {
+  const raw = String(label || "").trim();
+  if (!raw) return "";
+  const key =
+    CODEWIKI_LABEL_KEYS[raw] || CODEWIKI_LABEL_KEYS[stripLeadingDecorators(raw)];
+  if (key) return t(key);
+  const roleMatch = raw.match(/^([^:]+):\s*(.+)$/);
+  if (roleMatch) {
+    const localizedTitle = localizeCodeWikiLabel(roleMatch[2]);
+    if (localizedTitle !== roleMatch[2]) {
+      return `${roleMatch[1]}: ${localizedTitle}`;
+    }
+  }
+  return raw;
+}
+
 function isReportInProgress(report) {
   const status = String(report?.manifestStatus || "").toLowerCase();
   return status === "running" || status === "pending";
@@ -84,7 +121,7 @@ function GenerationProgress({ planSteps, stageLabel }) {
             {t("generatingCodeWiki")}
           </p>
           <p className="mt-0.5 truncate text-[11px] text-(--text-secondary)">
-            {stageLabel || t("preparingScan")}
+            {localizeCodeWikiLabel(stageLabel) || t("preparingScan")}
           </p>
         </div>
         {steps.length > 0 && (
@@ -131,7 +168,8 @@ function GenerationProgress({ planSteps, stageLabel }) {
                   />
                 )}
                 <span className="min-w-0 truncate">
-                  {step?.title || `${t("report")} ${index + 1}`}
+                  {localizeCodeWikiLabel(step?.title) ||
+                    `${t("report")} ${index + 1}`}
                 </span>
               </li>
             );
@@ -167,7 +205,7 @@ function getGenerationFormats() {
 function formatReportDate(value) {
   if (!value) return "";
   try {
-    return new Intl.DateTimeFormat("zh-CN", {
+    return new Intl.DateTimeFormat(getLocale() === "zh" ? "zh-CN" : "en-US", {
       month: "short",
       day: "numeric",
       hour: "2-digit",
@@ -324,7 +362,7 @@ function SymbolGraphView({ graph, loading, error, onRefresh, onExplore }) {
             value={graphMode}
             onChange={(event) => setGraphMode(event.target.value)}
             className="h-8 rounded-md border border-(--border-default) bg-(--bg-secondary) px-2 text-[12px] text-(--text-primary)"
-            aria-label="Atlas query mode"
+            aria-label={t("graphQueryMode")}
           >
             <option value="query">{t("graphRelated")}</option>
             <option value="path">{t("graphPath")}</option>
@@ -379,7 +417,7 @@ function SymbolGraphView({ graph, loading, error, onRefresh, onExplore }) {
             height={layout.height}
             viewBox={`0 0 ${layout.width} ${layout.height}`}
             role="img"
-            aria-label="Code symbol graph"
+            aria-label={t("symbolGraph")}
           >
             <defs>
               <marker
@@ -476,8 +514,9 @@ function SymbolGraphView({ graph, loading, error, onRefresh, onExplore }) {
               Code Graph
             </p>
             <p className="mt-1 text-[11px] text-(--text-muted)">
-              {graph?.stats?.displayed_nodes || 0} nodes ·{" "}
-              {graph?.stats?.displayed_edges || 0} edges
+              {t("graphNodesEdges")
+                .replace("{{nodes}}", String(graph?.stats?.displayed_nodes || 0))
+                .replace("{{edges}}", String(graph?.stats?.displayed_edges || 0))}
             </p>
           </div>
           <Button
@@ -485,7 +524,8 @@ function SymbolGraphView({ graph, loading, error, onRefresh, onExplore }) {
             variant="ghost"
             size="icon-sm"
             onClick={onRefresh}
-            aria-label="Refresh graph"
+            aria-label={t("refreshGraph")}
+            title={t("refreshGraph")}
           >
             <ArrowClockwise size={14} />
           </Button>
@@ -530,7 +570,7 @@ function SymbolGraphView({ graph, loading, error, onRefresh, onExplore }) {
               <div className="mt-2 flex flex-col gap-1.5">
                 {(selectedConnections.length
                   ? selectedConnections
-                  : [{ id: "none", relation: "None", confidence: "" }]
+                  : [{ id: "none", relation: t("graphRelationNone"), confidence: "" }]
                 ).map((edge) => (
                   <button
                     type="button"
@@ -712,7 +752,7 @@ export function CodeWikiPanel({
         setSymbolGraph(data);
         if (data?.error) setGraphError(data.error);
       } catch (err) {
-        setGraphError(err?.message || "Failed to load code graph");
+        setGraphError(err?.message || t("failedToLoadCodeGraph"));
       } finally {
         setGraphLoading(false);
       }
@@ -1204,7 +1244,7 @@ export function CodeWikiPanel({
                 )}
                 <span className="truncate">
                   {generating
-                    ? stageLabel || t("generating")
+                    ? localizeCodeWikiLabel(stageLabel) || t("generating")
                     : reports.length
                       ? t("generateNew")
                       : t("generate")}
@@ -1230,8 +1270,8 @@ export function CodeWikiPanel({
                 loadReports({ preferNewest: true });
                 if (CODEWIKI_SYMBOL_GRAPH_ENABLED) loadSymbolGraph();
               }}
-              title="Refresh"
-              aria-label="Refresh"
+              title={t("refresh")}
+              aria-label={t("refresh")}
             >
               <ArrowClockwise size={14} />
             </Button>
@@ -1264,8 +1304,16 @@ export function CodeWikiPanel({
                 </span>
                 <span className="mt-1 block truncate pl-6 text-[11px] text-(--text-muted)">
                   {symbolGraph?.stats
-                    ? `${symbolGraph.stats.displayed_nodes || 0} nodes 路 ${symbolGraph.stats.displayed_edges || 0} edges`
-                    : "Symbol Graph"}
+                    ? t("graphNodesEdges")
+                        .replace(
+                          "{{nodes}}",
+                          String(symbolGraph.stats.displayed_nodes || 0),
+                        )
+                        .replace(
+                          "{{edges}}",
+                          String(symbolGraph.stats.displayed_edges || 0),
+                        )
+                    : t("symbolGraph")}
                 </span>
               </div>
             )}
@@ -1569,8 +1617,8 @@ export function CodeWikiPanel({
           className="codewiki-resizer max-xl:hidden"
           role="separator"
           aria-orientation="vertical"
-          aria-label="Resize CodeWiki Q&A panel"
-          title="Drag to resize"
+          aria-label={t("resizeCodeWikiPanel")}
+          title={t("dragToResize")}
           onMouseDown={handleQaResizeStart}
         >
           <span className="codewiki-resizer-handle">

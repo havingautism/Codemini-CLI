@@ -178,6 +178,42 @@ export function loadPersistedUiMessages(sessionId) {
 function toCodeWikiGenerateProgress(event) {
   if (!event?.type) return null;
   const now = new Date().toISOString();
+  if (event.type === 'step:start') {
+    return {
+      type: 'codewiki:generate_progress',
+      phase: 'agent_step',
+      timestamp: now,
+      step: 1,
+      total: 1,
+      status: 'running',
+      summary: `Analyzing project (round ${Number(event.step || 1)})`
+    };
+  }
+  if (event.type === 'assistant:start') {
+    return {
+      type: 'codewiki:generate_progress',
+      phase: 'model_start',
+      timestamp: now,
+      step: 1,
+      total: 1,
+      status: 'running',
+      summary: event.model ? `Waiting for ${event.model}` : 'Waiting for model response'
+    };
+  }
+  if (event.type === 'tool:start' || event.type === 'tool:end' || event.type === 'tool:error' || event.type === 'tool:blocked') {
+    const label = event.displayName || event.name || 'tool';
+    return {
+      type: 'codewiki:generate_progress',
+      phase: event.type.replace(':', '_'),
+      timestamp: now,
+      step: 1,
+      total: 1,
+      status: 'running',
+      summary: event.type === 'tool:start'
+        ? `Running ${label}`
+        : (event.summary || `${label} finished`)
+    };
+  }
   if (event.type === 'plan:steps') {
     return {
       type: 'codewiki:generate_progress',
@@ -1172,13 +1208,24 @@ export class RuntimeBridge {
     );
   }
 
-  handleCodeWikiGenerate(line) {
+  handleCodeWikiGenerate(line, { operationId = '' } = {}) {
     if (this.#busy) return { error: true, message: 'A request is already in progress' };
+    const operationMeta = operationId ? { operationId } : {};
     this.#busy = true;
     this.#publishLifecycle('running');
     const submitToken = this.#invalidateSubmit();
     const requestRuntime = this.#runtime;
     this.#codeWikiGenerating = true;
+    this.#publish({
+      type: 'codewiki:generate_progress',
+      ...operationMeta,
+      phase: 'preparing',
+      timestamp: new Date().toISOString(),
+      step: 1,
+      total: 1,
+      status: 'running',
+      title: 'Generate project requirements report'
+    });
     let terminalPublished = false;
     const publishTerminal = (status) => {
       if (terminalPublished) return;
@@ -1190,7 +1237,7 @@ export class RuntimeBridge {
       if (timedOut || !this.#isSubmitActive(submitToken)) return;
       try {
         const progress = toCodeWikiGenerateProgress(event);
-        if (progress) this.#publish(progress);
+        if (progress) this.#publish({ ...progress, ...operationMeta });
       } catch {}
     };
     // Keep this above the model gateway timeout used by the runtime. Large CodeWiki
@@ -1204,7 +1251,11 @@ export class RuntimeBridge {
       try { requestRuntime.abort?.(); } catch {}
       this.#busy = false;
       this.#codeWikiGenerating = false;
-      this.#publish({ type: 'codewiki:generate_error', message: 'CodeWiki generation timed out' });
+      this.#publish({
+        type: 'codewiki:generate_error',
+        ...operationMeta,
+        message: 'CodeWiki generation timed out'
+      });
       this.#broadcastRuntimeState();
     }, CODEWIKI_GENERATE_TIMEOUT_MS);
     const clearSafetyTimer = () => clearTimeout(safetyTimer);
@@ -1214,6 +1265,7 @@ export class RuntimeBridge {
       if (result?.aborted) {
         this.#broadcast({
           type: 'codewiki:generate_error',
+          ...operationMeta,
           message: result?.text || 'CodeWiki generation failed'
         });
         publishTerminal('aborted');
@@ -1221,6 +1273,7 @@ export class RuntimeBridge {
       }
       this.#broadcast({
         type: 'codewiki:generate_done',
+        ...operationMeta,
         result: {
           type: result?.type || 'assistant',
           aborted: !!result?.aborted,
@@ -1233,6 +1286,7 @@ export class RuntimeBridge {
       if (timedOut || !this.#isSubmitActive(submitToken)) return;
       this.#broadcast({
         type: 'codewiki:generate_error',
+        ...operationMeta,
         message: err?.message || 'CodeWiki generation failed'
       });
       publishTerminal(isAbortLikeError(err) ? 'aborted' : 'failed');

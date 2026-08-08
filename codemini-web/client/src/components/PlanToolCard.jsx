@@ -269,14 +269,14 @@ function SubagentTaskDetails({ task }) {
   if (!text) return null;
 
   return (
-    <div className="mb-2 flex items-start gap-2.5 rounded-md bg-(--bg-tertiary) px-2.5 py-2 text-[13px] leading-relaxed dark:bg-(--bg-primary)">
+    <div className="mb-2 flex items-start gap-2.5 rounded-md bg-(--bg-tertiary) px-2.5 py-2 text-[12px] leading-relaxed dark:bg-(--bg-primary)">
       <span className="shrink-0 pt-px font-medium text-(--text-muted)">
         {t("planStepTask")}
       </span>
       <ScrollArea
         type="auto"
-        className="max-h-28 min-w-0 flex-1"
-        viewportClassName="max-h-28 pr-2 text-(--text-secondary)"
+        className="max-h-32 min-w-0 flex-1"
+        viewportClassName="max-h-32 pr-2 text-(--text-secondary)"
       >
         <StreamdownRenderer
           text={text}
@@ -402,6 +402,9 @@ export function PlanToolCard({ card, grouped = false }) {
           card?.summary ||
           "",
   ).trim();
+  const taskSummary = String(
+    isSubagent ? card?.arguments?.summary || card?.arguments?.goal || goal : goal,
+  ).trim();
   const title = isSubagent
     ? persona || t("subagentWorker")
     : card?.displayName || planPhaseTitle(phase);
@@ -436,17 +439,17 @@ export function PlanToolCard({ card, grouped = false }) {
         <span className={ICON_CLASS}>
           <UserCircle size={15} aria-hidden="true" />
         </span>
-        <span className="flex min-w-0 flex-1 items-baseline overflow-hidden whitespace-nowrap leading-[18px]">
+        <span className="flex min-w-0 flex-1 items-start overflow-hidden leading-[18px]">
           <span className="shrink-0 font-medium text-(--text-primary)">
             {title}
           </span>
-          {goal ? (
+          {taskSummary && !expanded ? (
             <span
-              className="msg-process-meta__detail ml-1.5 min-w-0 truncate text-xs font-normal leading-[18px]"
-              title={goal}
+              className="msg-process-meta__detail ml-1.5 line-clamp-2 min-w-0 whitespace-normal text-xs font-normal leading-[18px]"
+              title={taskSummary}
             >
               <span aria-hidden="true">· </span>
-              {goal.length > 96 ? `${goal.slice(0, 93).trimEnd()}...` : goal}
+              {taskSummary}
             </span>
           ) : null}
         </span>

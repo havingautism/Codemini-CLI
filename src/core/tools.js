@@ -4615,6 +4615,11 @@ export function getBuiltinTools({
               description:
                 "Full task prompt for the subagent: goal, targets, success criteria, out-of-scope, and verification intent.",
             },
+            summary: {
+              type: "string",
+              description:
+                "One or two concise sentences describing the task for the collapsed Subagent card. Always provide this separately from prompt.",
+            },
             name: {
               type: "string",
               description:
@@ -6206,6 +6211,7 @@ export function getBuiltinTools({
       }
       return onRunSubAgent({
         prompt,
+        summary: String(args?.summary || "").trim(),
         name: String(args?.name || "").trim(),
         role: String(args?.role || "").trim(),
         context: String(args?.context || "").trim(),

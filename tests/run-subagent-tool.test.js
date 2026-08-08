@@ -32,6 +32,7 @@ test('run_subagent forwards invented name to handler', async () => {
   });
   const def = definitions.find((item) => item.function?.name === 'run_subagent');
   assert.equal(Boolean(def?.function?.parameters?.properties?.name), true);
+  assert.equal(Boolean(def?.function?.parameters?.properties?.summary), true);
   assert.equal(Boolean(def?.function?.parameters?.properties?.task_id), true);
   assert.equal(Boolean(def?.function?.parameters?.properties?.depends_on), true);
   assert.match(String(def?.function?.description || ''), /David|invent/i);
@@ -39,6 +40,7 @@ test('run_subagent forwards invented name to handler', async () => {
   await handlers.run_subagent(
     {
       prompt: 'Implement X',
+      summary: 'Implement the requested feature.',
       name: 'david',
       task_id: 'implement',
       depends_on: ['inspect'],
@@ -47,6 +49,7 @@ test('run_subagent forwards invented name to handler', async () => {
     { toolCallId: 'call-1', orchestrationId: 'turn-1' }
   );
   assert.equal(seen.prompt, 'Implement X');
+  assert.equal(seen.summary, 'Implement the requested feature.');
   assert.equal(seen.name, 'david');
   assert.equal(seen.toolCallId, 'call-1');
   assert.equal(seen.orchestrationId, 'turn-1');

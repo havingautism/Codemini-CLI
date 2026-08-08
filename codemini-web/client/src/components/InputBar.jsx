@@ -116,7 +116,10 @@ function compactBytes(bytes = 0) {
 
 function getScrapbookPreviewText(entry) {
   return String(
-    entry?.summary || entry?.contentText || entry?.sourceUrl || t("scrapbookNoContent"),
+    entry?.summary ||
+      entry?.contentText ||
+      entry?.sourceUrl ||
+      t("scrapbookNoContent"),
   )
     .replace(/\s+/g, " ")
     .trim();
@@ -517,14 +520,16 @@ function ActionSkillPalette({
                 key={item.key}
                 type="button"
                 disabled={item.disabled}
-                title={item.disabled ? t("actionRequiresConversation") : undefined}
+                title={
+                  item.disabled ? t("actionRequiresConversation") : undefined
+                }
                 className={cn(
                   "w-full border-0 rounded-md px-2.5 py-2 text-left cursor-pointer grid grid-cols-[22px_minmax(96px,180px)_minmax(0,1fr)_auto] items-start gap-2 text-[12px] transition-colors",
                   item.disabled
                     ? "cursor-not-allowed bg-transparent text-(--text-muted) opacity-45"
                     : isHovered
-                    ? "bg-(--bg-hover) text-(--text-primary)"
-                    : "bg-transparent text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary)",
+                      ? "bg-(--bg-hover) text-(--text-primary)"
+                      : "bg-transparent text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary)",
                 )}
                 onClick={() => onSelect(item)}
                 onMouseEnter={() => setHoveredItem(item.key)}
@@ -744,7 +749,11 @@ export function InputBar({
     const hasAttachments = attachments.length > 0;
     const hasScrapbookContext = Boolean(scrapbookContext);
     const hasSkills = selectedSkills.length > 0;
-    if ((!hasText && !hasAttachments && !hasScrapbookContext && !hasSkills) || inputLocked) return;
+    if (
+      (!hasText && !hasAttachments && !hasScrapbookContext && !hasSkills) ||
+      inputLocked
+    )
+      return;
 
     let fallbackText = val;
     if (!hasText && (hasAttachments || hasScrapbookContext)) {
@@ -757,9 +766,13 @@ export function InputBar({
         text: fallbackText,
         skillNames: selectedSkillNames,
         attachmentIds: attachments.map((item) => item.id).filter(Boolean),
-        attachments: scrapbookContext ? [...attachments, scrapbookContext.attachment] : attachments,
+        attachments: scrapbookContext
+          ? [...attachments, scrapbookContext.attachment]
+          : attachments,
         dismissedAlwaysSkills: dismissedSkills,
-        ...(scrapbookContext?.modelText ? { modelText: scrapbookContext.modelText } : {}),
+        ...(scrapbookContext?.modelText
+          ? { modelText: scrapbookContext.modelText }
+          : {}),
       });
     } catch {
       return;
@@ -1262,31 +1275,33 @@ export function InputBar({
                   ) : (
                     <>
                       {visibleScrapbookEntries.map((entry) => (
-                      <button
-                        key={entry.id}
-                        type="button"
-                        className={cn(
-                          "group relative flex w-full min-w-0 shrink-0 flex-col items-stretch gap-1.5 overflow-hidden rounded-xl border px-3 py-3 text-left transition-[background-color,box-shadow,transform] duration-150",
-                          scrapbookContext?.entryId === entry.id
-                            ? "border-(--border-strong) bg-(--bg-subtle)"
-                            : "border-transparent hover:-translate-y-px hover:bg-(--bg-subtle)/80 hover:shadow-[0_10px_24px_color-mix(in_srgb,var(--text-primary)_10%,transparent)]",
-                        )}
-                        onClick={() => selectScrapbookEntry(entry.id)}
-                      >
-                        <div className="flex w-full min-w-0 items-start justify-between gap-2">
-                          <span className="min-w-0 flex-1 truncate text-[12px] font-medium leading-5 text-(--text-primary)">
-                            {entry.title || entry.sourceUrl || t("scrapbookUntitled")}
-                          </span>
-                          {scrapbookContext?.entryId === entry.id ? (
-                            <span className="shrink-0 rounded-full bg-(--bg-hover) px-2 py-0.5 text-[10px] font-medium leading-5 text-(--text-secondary)">
-                              {t("scrapbookPickerActive")}
+                        <button
+                          key={entry.id}
+                          type="button"
+                          className={cn(
+                            "group relative flex w-full min-w-0 shrink-0 flex-col items-stretch gap-1.5 overflow-hidden rounded-xl border px-3 py-3 text-left transition-[background-color,box-shadow,transform] duration-150",
+                            scrapbookContext?.entryId === entry.id
+                              ? "border-(--border-strong) bg-(--bg-subtle)"
+                              : "border-transparent hover:-translate-y-px hover:bg-(--bg-subtle)/80 hover:shadow-[0_10px_24px_color-mix(in_srgb,var(--text-primary)_10%,transparent)]",
+                          )}
+                          onClick={() => selectScrapbookEntry(entry.id)}
+                        >
+                          <div className="flex w-full min-w-0 items-start justify-between gap-2">
+                            <span className="min-w-0 flex-1 truncate text-[12px] font-medium leading-5 text-(--text-primary)">
+                              {entry.title ||
+                                entry.sourceUrl ||
+                                t("scrapbookUntitled")}
                             </span>
-                          ) : null}
-                        </div>
-                        <div className="min-w-0 w-full truncate text-[12px] leading-5 text-(--text-muted)">
-                          {getScrapbookPreviewText(entry)}
-                        </div>
-                      </button>
+                            {scrapbookContext?.entryId === entry.id ? (
+                              <span className="shrink-0 rounded-full bg-(--bg-hover) px-2 py-0.5 text-[10px] font-medium leading-5 text-(--text-secondary)">
+                                {t("scrapbookPickerActive")}
+                              </span>
+                            ) : null}
+                          </div>
+                          <div className="min-w-0 w-full truncate text-[12px] leading-5 text-(--text-muted)">
+                            {getScrapbookPreviewText(entry)}
+                          </div>
+                        </button>
                       ))}
                       {hasMoreScrapbookEntries ? (
                         <button

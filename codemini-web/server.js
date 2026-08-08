@@ -2633,12 +2633,23 @@ async function main() {
       codeWikiProjectDir,
       currentProjectDir,
       currentBridge: bridge,
+      currentSessionId: bridge.getSessionId?.(),
       ensurePooledSession,
       createSession,
       findPreferredSessionId: findPreferredSessionForProject,
       sameProject: (left, right) =>
         normalizeProjectDirKey(left) === normalizeProjectDirKey(right),
+      isSessionBusy: (sessionId) =>
+        ACTIVE_RUNTIME_STATUSES.has(pool.getSessionState(sessionId)?.status),
     });
+  const submitCodeWikiOperation = (sessionId, line, operationId) =>
+    pool.submit(sessionId, (target) =>
+      typeof target.runPooled === "function"
+        ? target.runPooled(() =>
+            target.handleCodeWikiGenerate(line, { operationId }),
+          )
+        : target.handleCodeWikiGenerate(line, { operationId }),
+    );
 
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, `http://localhost:${args.port}`);
@@ -2996,16 +3007,33 @@ async function main() {
       // Reuse current bridge when idle on this project; otherwise prefer an
       // existing project session, or create one so CodeWiki is not blocked by
       // an in-progress chat.
-      const { bridge: codeWikiBridge } =
+      const { bridge: codeWikiBridge, sessionId: selectedSessionId } =
         await pickCodeWikiBridge(codeWikiProjectDir);
       if (codeWikiBridge.isBusy()) {
         jsonResponse(res, { error: true, message: "Runtime is busy" }, 409);
         return;
       }
-      const result = codeWikiBridge.handleCodeWikiGenerate(
+      const codeWikiSessionId =
+        selectedSessionId || codeWikiBridge.getSessionId?.();
+      if (!codeWikiSessionId) {
+        jsonResponse(
+          res,
+          { error: true, message: "CodeWiki runtime has no session id" },
+          500,
+        );
+        return;
+      }
+      const operationId = `codewiki-${randomUUID()}`;
+      const result = submitCodeWikiOperation(
+        codeWikiSessionId,
         `/project-requirements --${normalizedDepth} --${normalizedFormat}`,
+        operationId,
       );
-      jsonResponse(res, result);
+      jsonResponse(
+        res,
+        { ...result, sessionId: codeWikiSessionId, operationId },
+        result.accepted ? 202 : 409,
+      );
       return;
     }
 
