@@ -1,6 +1,8 @@
 import fs from "node:fs/promises";
-import { realpathSync } from "node:fs";
+import { createReadStream, realpathSync } from "node:fs";
+import { createInterface } from "node:readline";
 import path from "node:path";
+import os from "node:os";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { rgPath } from "@vscode/ripgrep";
@@ -11,6 +13,7 @@ import {
   hasReadyOutput,
   isDangerousCommand,
   isLikelyLongRunningCommand,
+  resolveSandboxShell,
   resolveShell,
   runShellCommand,
   terminateChild,
@@ -18,9 +21,8 @@ import {
 import { evaluateCommandPolicy } from "./command-policy.js";
 import {
   assertSandboxWriteAllowed,
-  normalizeSandboxMode,
   resolveSandboxPolicy,
-  SANDBOX_MODES,
+  validateSandboxEscalationArgs,
 } from "./sandbox-policy.js";
 import {
   findEnclosingSymbol,
@@ -108,6 +110,7 @@ const MAX_AST_ENCLOSING_LINES = 5_000;
 const SKILL_ALIASES = new Map();
 const RUN_COMMAND_SAFE_MODE_APPROVED = Symbol("runCommandSafeModeApproved");
 const OUTSIDE_WORKSPACE_MUTATION_APPROVED = Symbol("outsideWorkspaceMutationApproved");
+const SANDBOX_ESCALATION_APPROVED = Symbol("sandboxEscalationApproved");
 const backgroundTaskRegistry = new Map();
 let backgroundTaskCounter = 0;
 let backgroundTaskLogCursorCounter = 0;
@@ -123,6 +126,19 @@ export function markRunCommandSafeModeApproved(args = {}) {
 
 export function hasRunCommandSafeModeApproval(args = {}) {
   return Boolean(args?.[RUN_COMMAND_SAFE_MODE_APPROVED]);
+}
+
+export function markSandboxEscalationApproved(args = {}) {
+  const next = { ...(args && typeof args === "object" ? args : {}) };
+  Object.defineProperty(next, SANDBOX_ESCALATION_APPROVED, {
+    value: true,
+    enumerable: false,
+  });
+  return next;
+}
+
+export function hasSandboxEscalationApproval(args = {}) {
+  return Boolean(args?.[SANDBOX_ESCALATION_APPROVED]);
 }
 
 export function markOutsideWorkspaceMutationApproved(args = {}, approval = {}) {
@@ -250,7 +266,12 @@ async function resolveInWorkspace(root, targetPath = ".", config = {}) {
   return absTarget;
 }
 
-async function getBackgroundTasksDir(root) {
+async function getBackgroundTasksDir(root, config = {}) {
+  const sandbox = resolveSandboxPolicy({ config, cwd: root });
+  if (sandbox.enabled && sandbox.mode === "read-only") {
+    const workspaceKey = createHash("sha256").update(path.resolve(root)).digest("hex").slice(0, 12);
+    return path.join(os.tmpdir(), "codemini-background-tasks", workspaceKey);
+  }
   return path.join(await resolveInWorkspace(root, ".codemini"), "tasks");
 }
 
@@ -1579,6 +1600,78 @@ async function readFile(root, args, config = {}, toolResultStore = null) {
   };
 }
 
+async function writeTextFile(target, content, config = {}) {
+  if (config?.runtime?.atomic_file_mutations === true) {
+    return atomicWriteUtf8(target, content);
+  }
+  return fs.writeFile(target, content, "utf8");
+}
+
+async function readDshFile(root, args, config = {}) {
+  const normalizedArgs = normalizeReadArgs(args);
+  const relativePath = String(normalizedArgs?.path || "").trim();
+  if (!relativePath) throw new Error("file_path must be a non-empty string");
+  const offset = args?.offset === undefined ? 1 : Number(args.offset);
+  const limit = args?.limit === undefined ? 2000 : Number(args.limit);
+  if (!Number.isSafeInteger(offset) || offset < 1) {
+    throw new Error("offset must be a positive integer");
+  }
+  if (!Number.isSafeInteger(limit) || limit < 1) {
+    throw new Error("limit must be a positive integer");
+  }
+  if (limit > 2000) throw new Error("limit must be less than or equal to 2000");
+
+  const target = await resolveInWorkspace(root, relativePath, config);
+  let stat;
+  try {
+    stat = await fs.stat(target);
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      const notFound = new Error(`cannot read "${relativePath}": not found`);
+      notFound.code = "FS_NOT_FOUND";
+      throw notFound;
+    }
+    throw error;
+  }
+  if (!stat.isFile()) {
+    const notFile = new Error(`cannot read "${relativePath}": not a regular file`);
+    notFile.code = "FS_NOT_REGULAR_FILE";
+    throw notFile;
+  }
+
+  const lines = [];
+  let totalLines = 0;
+  let outputBytes = 0;
+  let capped = false;
+  const input = createReadStream(target, { encoding: "utf8" });
+  const reader = createInterface({ input, crlfDelay: Infinity });
+  for await (const rawLine of reader) {
+    totalLines += 1;
+    if (totalLines < offset || lines.length >= limit || capped) continue;
+    const text = rawLine.length > 2000
+      ? `${rawLine.slice(0, 2000)}... (line truncated to 2000 chars)`
+      : rawLine;
+    const nextBytes = Buffer.byteLength(`${totalLines}: ${text}\n`, "utf8");
+    if (outputBytes + nextBytes > 51200) {
+      capped = true;
+      continue;
+    }
+    outputBytes += nextBytes;
+    lines.push({ number: totalLines, text });
+  }
+  if (offset > Math.max(1, totalLines)) {
+    throw new Error(`offset ${offset} is out of range for "${relativePath}" (${totalLines} lines)`);
+  }
+  return {
+    path: relativePath,
+    phase: "dsh_content",
+    offset,
+    lines,
+    total_lines: totalLines,
+    capped,
+  };
+}
+
 async function writeFile(root, args, config = {}) {
   const normalizedArgs = normalizeWriteArgs(args);
   const rawPath = String(normalizedArgs?.path || "").trim();
@@ -1673,7 +1766,7 @@ async function writeAnyFile(root, args, config = {}) {
   }
   const nextContent = String(normalizedArgs.content ?? "");
   await fs.mkdir(path.dirname(target), { recursive: true });
-  await fs.writeFile(target, nextContent, "utf8");
+  await writeTextFile(target, nextContent, config);
   const beforeLines = splitLines(beforeContent);
   const afterLines = splitLines(nextContent);
   return {
@@ -1994,21 +2087,13 @@ async function runCommand(root, config, args, context = {}) {
     args?.background === true ||
     isLikelyLongRunningCommand(command);
 
-  let sandboxMode =
-    args?.sandbox_permissions || args?.sandbox_mode || args?.sandboxMode || "";
-  if (sandboxMode && process.platform !== "win32") {
-    const current = resolveSandboxPolicy({ config, cwd: root });
-    const requested = normalizeSandboxMode(sandboxMode);
-    const rank = (mode) => SANDBOX_MODES.indexOf(mode);
-    if (rank(requested) <= rank(current.mode)) {
-      throw new Error(
-        `sandbox_permissions "${requested}" must be strictly wider than current mode "${current.mode}"`,
-      );
-    }
-    sandboxMode = requested;
-  } else {
-    sandboxMode = undefined;
+  const escalation = process.platform === "win32"
+    ? null
+    : validateSandboxEscalationArgs(args, { config, cwd: root });
+  if (escalation && !hasSandboxEscalationApproval(args)) {
+    throw new Error("sandbox escalation requires explicit user approval");
   }
+  const sandboxMode = escalation?.mode;
 
   if (shouldBackground) {
     return startBackgroundTask(root, config, {
@@ -2221,7 +2306,7 @@ async function startBackgroundTask(root, config, args) {
   );
   const portProbe = Number(args?.port_probe || args?.portProbe || 0) || 0;
   const httpProbe = normalizeHttpProbe(args?.http_probe || args?.httpProbe);
-  const outputDir = await getBackgroundTasksDir(root);
+  const outputDir = await getBackgroundTasksDir(root, config);
   await fs.mkdir(outputDir, { recursive: true });
   const outputFileAbs = path.join(outputDir, `${taskId}.log`);
   await fs.writeFile(outputFileAbs, "", "utf8");
@@ -2233,10 +2318,7 @@ async function startBackgroundTask(root, config, args) {
       command,
       config,
       cwd: root,
-      binShell:
-        config.shell.default === "powershell"
-          ? "bash"
-          : config.shell.default || "bash",
+      binShell: resolveSandboxShell(config.shell.default),
       mode: args?.sandbox_permissions || args?.sandbox_mode || args?.sandboxMode,
     });
     if (wrap.wrapped) sandboxedCommand = wrap.command;
@@ -2271,7 +2353,10 @@ async function startBackgroundTask(root, config, args) {
     portProbe,
     httpProbe,
     outputFileAbs,
-    outputFile: toWorkspaceRelative(root, outputFileAbs),
+    outputFile:
+      resolveSandboxPolicy({ config, cwd: root }).mode === "read-only"
+        ? normalizePath(outputFileAbs)
+        : toWorkspaceRelative(root, outputFileAbs),
     recentLogs: [],
     exitCode: null,
     signal: null,
@@ -2390,8 +2475,9 @@ function toRipgrepGlob(value) {
   return `**/*.${text.replace(/^\./, "")}`;
 }
 
-function buildRipgrepArgs(pattern, normalizedArgs, targetPath, maxResults) {
+function buildRipgrepArgs(pattern, normalizedArgs, targetPath, dshMode = false) {
   const args = [
+    ...(dshMode ? ["--no-config"] : []),
     "--json",
     "--line-number",
     "--column",
@@ -2402,9 +2488,13 @@ function buildRipgrepArgs(pattern, normalizedArgs, targetPath, maxResults) {
     "500",
     "--max-columns-preview",
   ];
-  if (!normalizedArgs?.regex) args.push("--fixed-strings");
-  if (!normalizedArgs?.case_sensitive) args.push("--ignore-case");
-  for (const dirName of SKIP_DIRS) {
+  if (dshMode) args.push("--hidden", "--no-ignore");
+  if (!dshMode && !normalizedArgs?.regex) args.push("--fixed-strings");
+  if (!dshMode && !normalizedArgs?.case_sensitive) args.push("--ignore-case");
+  const skipDirs = dshMode
+    ? [".git", ".svn", ".hg", ".bzr", ".jj", ".sl"]
+    : SKIP_DIRS;
+  for (const dirName of skipDirs) {
     args.push("--glob", `!**/${dirName}/**`);
   }
   const fileTypes = normalizeFileTypes(normalizedArgs);
@@ -2416,19 +2506,22 @@ function buildRipgrepArgs(pattern, normalizedArgs, targetPath, maxResults) {
   return args;
 }
 
-async function runRipgrepSearch(root, normalizedArgs, config = {}) {
+async function runRipgrepSearch(root, normalizedArgs, config = {}, dshMode = false) {
   if (!rgPath) return null;
   const pattern = String(normalizedArgs?.pattern || "").trim();
   const maxResults = Math.max(
     1,
-    Math.min(200, Number(normalizedArgs?.max_results || 50)),
+    Math.min(
+      dshMode ? 250 : 200,
+      Number(normalizedArgs?.max_results || (dshMode ? 250 : 50)),
+    ),
   );
   const target = await resolveInWorkspace(
     root,
     normalizedArgs?.path || ".",
     config,
   );
-  const args = buildRipgrepArgs(pattern, normalizedArgs, target, maxResults);
+  const args = buildRipgrepArgs(pattern, normalizedArgs, target, dshMode);
   const child = spawn(rgPath, args, {
     cwd: root,
     windowsHide: true,
@@ -2436,19 +2529,55 @@ async function runRipgrepSearch(root, normalizedArgs, config = {}) {
   });
   let stdout = "";
   let stderr = "";
+  let timedOut = false;
+  let overflow = false;
+  const timer = dshMode
+    ? setTimeout(() => {
+        timedOut = true;
+        terminateChild(child, "SIGKILL");
+      }, 30000)
+    : null;
   child.stdout.on("data", (chunk) => {
     stdout += chunk.toString("utf8");
+    if (dshMode && Buffer.byteLength(stdout, "utf8") > 20_000_000) {
+      overflow = true;
+      terminateChild(child, "SIGKILL");
+    }
   });
   child.stderr.on("data", (chunk) => {
     stderr += chunk.toString("utf8");
+    if (dshMode && Buffer.byteLength(stderr, "utf8") > 65_536) {
+      stderr = stderr.slice(-65_536);
+    }
   });
   const exitCode = await new Promise((resolve) => {
     child.on("error", () => resolve(null));
     child.on("close", (code) => resolve(code));
   });
-  if (exitCode == null) return null;
+  if (timer) clearTimeout(timer);
+  if (timedOut) {
+    const error = new Error("grep aborted after 30000ms");
+    error.code = "SEARCH_ABORTED";
+    throw error;
+  }
+  if (overflow) {
+    const error = new Error("grep raw output exceeded 20000000 bytes; narrow the query");
+    error.code = "SEARCH_RAW_OUTPUT_OVERFLOW";
+    throw error;
+  }
+  if (exitCode == null) {
+    if (!dshMode) return null;
+    const error = new Error("failed to start packaged ripgrep");
+    error.code = "SEARCH_FAILED";
+    throw error;
+  }
   if (exitCode !== 0 && exitCode !== 1) {
-    throw new Error(`ripgrep failed: ${stderr.trim() || `exit ${exitCode}`}`);
+    const detail = stderr.trim() || `exit ${exitCode}`;
+    const error = new Error(`ripgrep failed: ${detail}`);
+    error.code = /regex parse error|invalid regex/i.test(detail)
+      ? "SEARCH_INVALID_PATTERN"
+      : "SEARCH_FAILED";
+    throw error;
   }
   const matches = [];
   for (const line of stdout.split(/\r?\n/)) {
@@ -2495,7 +2624,7 @@ async function stopBackgroundTask(_root, args) {
   return { ...snapshotBackgroundTask(task), stopped: true };
 }
 
-async function builtinGrep(root, args, config = {}) {
+async function builtinGrep(root, args, config = {}, dshMode = false) {
   const normalizedArgs = normalizePatternArgs(
     args,
     ["query", "symbol", "q"],
@@ -2505,11 +2634,11 @@ async function builtinGrep(root, args, config = {}) {
   if (!pattern) throw new Error("grep requires pattern");
   const maxResults = Math.max(
     1,
-    Math.min(200, Number(normalizedArgs?.max_results || 50)),
+    Math.min(dshMode ? 250 : 200, Number(normalizedArgs?.max_results || (dshMode ? 250 : 50))),
   );
-  const rgResult = await runRipgrepSearch(root, normalizedArgs, config).catch(
+  const rgResult = await runRipgrepSearch(root, normalizedArgs, config, dshMode).catch(
     (error) => {
-      if (config?.tools?.ripgrep_strict === true) throw error;
+      if (dshMode || config?.tools?.ripgrep_strict === true) throw error;
       return null;
     },
   );
@@ -2551,7 +2680,82 @@ async function builtinGrep(root, args, config = {}) {
   return { pattern, matches, truncated: false, engine: "js" };
 }
 
-async function builtinGlob(root, args, config = {}) {
+async function runRipgrepGlob(root, args, config = {}) {
+  if (!rgPath) {
+    const error = new Error("packaged ripgrep is unavailable");
+    error.code = "SEARCH_FAILED";
+    throw error;
+  }
+  const pattern = String(args?.pattern || "").trim();
+  if (!pattern) throw new Error("glob requires pattern");
+  const target = await resolveInWorkspace(root, args?.path || ".", config);
+  const rgArgs = [
+    "--no-config", "--files", "--hidden", "--no-ignore", "--sort=modified",
+    "--glob", pattern,
+  ];
+  for (const dirName of [".git", ".svn", ".hg", ".bzr", ".jj", ".sl"]) {
+    rgArgs.push("--glob", `!**/${dirName}/**`);
+  }
+  rgArgs.push("--", target);
+  const child = spawn(rgPath, rgArgs, {
+    cwd: root,
+    windowsHide: true,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let stdout = "";
+  let stderr = "";
+  let timedOut = false;
+  let overflow = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    terminateChild(child, "SIGKILL");
+  }, 30000);
+  child.stdout.on("data", (chunk) => {
+    stdout += chunk.toString("utf8");
+    if (Buffer.byteLength(stdout, "utf8") > 20_000_000) {
+      overflow = true;
+      terminateChild(child, "SIGKILL");
+    }
+  });
+  child.stderr.on("data", (chunk) => {
+    stderr += chunk.toString("utf8");
+    if (Buffer.byteLength(stderr, "utf8") > 65_536) stderr = stderr.slice(-65_536);
+  });
+  const exitCode = await new Promise((resolve) => {
+    child.on("error", () => resolve(null));
+    child.on("close", (code) => resolve(code));
+  });
+  clearTimeout(timer);
+  if (timedOut) {
+    const error = new Error("glob aborted after 30000ms");
+    error.code = "SEARCH_ABORTED";
+    throw error;
+  }
+  if (overflow) {
+    const error = new Error("glob raw output exceeded 20000000 bytes; narrow the path or pattern");
+    error.code = "SEARCH_RAW_OUTPUT_OVERFLOW";
+    throw error;
+  }
+  if (exitCode == null || (exitCode !== 0 && exitCode !== 1)) {
+    const error = new Error(`ripgrep failed: ${stderr.trim() || `exit ${exitCode}`}`);
+    error.code = "SEARCH_FAILED";
+    throw error;
+  }
+  const allMatches = stdout
+    .split(/\r?\n/)
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .map((value) => toWorkspaceRelative(root, path.resolve(root, value)));
+  return {
+    pattern,
+    matches: allMatches.slice(0, 100),
+    truncated: allMatches.length > 100,
+    total: allMatches.length,
+    engine: "ripgrep",
+  };
+}
+
+async function builtinGlob(root, args, config = {}, dshMode = false) {
   const normalizedArgs = normalizePatternArgs(
     args,
     ["glob", "query"],
@@ -2559,6 +2763,7 @@ async function builtinGlob(root, args, config = {}) {
   );
   const pattern = String(normalizedArgs?.pattern || "").trim();
   if (!pattern) throw new Error("glob requires pattern");
+  if (dshMode) return runRipgrepGlob(root, normalizedArgs, config);
   const maxResults = Math.max(
     1,
     Math.min(500, Number(normalizedArgs?.max_results || 200)),
@@ -3114,7 +3319,7 @@ async function replaceBlock(root, args, config = {}) {
     ...state.lines.slice(resolved.end_line),
   ];
   const afterContent = joinFileLines(nextLines, fileEol);
-  await fs.writeFile(state.target, afterContent, "utf8");
+  await writeTextFile(state.target, afterContent, config);
   return editResult(
     relativePath,
     "replace_block",
@@ -3176,7 +3381,7 @@ async function replaceText(root, args, config = {}) {
       const afterContent = effectiveRange
         ? `${state.content.slice(0, effectiveRange.startOffset)}${applied.replaced}${state.content.slice(effectiveRange.endOffset)}`
         : applied.replaced;
-      await fs.writeFile(state.target, afterContent, "utf8");
+      await writeTextFile(state.target, afterContent, config);
       const changedLine = changedLineForMatch(
         state.content,
         effectiveSearchContent,
@@ -3245,7 +3450,7 @@ async function insertRelative(root, args, mode, config = {}) {
       ? `${insertContent}${originalAnchor}`
       : `${originalAnchor}${insertContent}`;
   afterContent = `${state.content.slice(0, match.start)}${replacement}${state.content.slice(match.end)}`;
-  await fs.writeFile(state.target, afterContent, "utf8");
+  await writeTextFile(state.target, afterContent, config);
   const changedLine = splitLines(state.content.slice(0, anchorStart)).length;
   return editResult(
     relativePath,
@@ -3635,7 +3840,7 @@ async function editTarget(root, args, config = {}) {
     const beforeContent = resolved.content;
     const node = resolved.node;
     const afterContent = `${beforeContent.slice(0, node.startIndex)}${edit.new_content || ""}${beforeContent.slice(node.endIndex)}`;
-    await fs.writeFile(resolved.absolutePath, afterContent, "utf8");
+    await writeTextFile(resolved.absolutePath, afterContent, config);
     resolved.tree.delete();
     resolved.parser.delete();
     return editResult(
@@ -3729,7 +3934,7 @@ async function editTarget(root, args, config = {}) {
     }
     const state = await getFileState(root, file, config);
     const afterContent = String(edit.new_content ?? "");
-    await fs.writeFile(state.target, afterContent, "utf8");
+    await writeTextFile(state.target, afterContent, config);
     return editResult(file, "rewrite_file", state.content, afterContent, 1);
   }
   throw new Error(`edit does not support kind: ${kind}`);
@@ -3763,10 +3968,108 @@ export function getBuiltinTools({
     cwd: workspaceRoot,
     platform,
   });
-  const assertFsSandbox = (absolutePath) => {
-    const denied = assertSandboxWriteAllowed(absolutePath, sandboxPolicy);
+  const sandboxEscalationProperties = isWin
+    ? {}
+    : {
+        sandbox_permissions: {
+          type: "string",
+          enum: ["workspace-write", "danger-full-access"],
+          description:
+            "The wider sandbox mode this file operation needs. Requires justification and explicit user approval.",
+        },
+        justification: {
+          type: "string",
+          description:
+            "Required with sandbox_permissions: why this exact operation needs wider access.",
+        },
+      };
+  const unixReadParameters = {
+    type: "object",
+    properties: {
+      file_path: {
+        type: "string",
+        description: "Path to the UTF-8 text file to read.",
+      },
+      offset: {
+        type: "integer",
+        minimum: 1,
+        description: "1-based first line to return. Defaults to 1.",
+      },
+      limit: {
+        type: "integer",
+        minimum: 1,
+        maximum: 2000,
+        description: "Maximum lines to return. Defaults to 2000.",
+      },
+    },
+    required: ["file_path"],
+  };
+  const unixEditParameters = {
+    type: "object",
+    properties: {
+      file_path: { type: "string", description: "Path to the UTF-8 text file to edit." },
+      old_string: { type: "string", description: "Literal text to replace. Must match exactly." },
+      new_string: { type: "string", description: "Literal replacement text. Empty deletes the match." },
+      replace_all: { type: "boolean", description: "Replace every match. Defaults to false." },
+      ...sandboxEscalationProperties,
+    },
+    required: ["file_path", "old_string", "new_string"],
+  };
+  const unixWriteParameters = {
+    type: "object",
+    properties: {
+      file_path: { type: "string", description: "Path to create or fully replace." },
+      ...sandboxEscalationProperties,
+      content: { type: "string", description: "Full UTF-8 text content to write." },
+    },
+    required: ["file_path", "content"],
+  };
+  const unixDeleteParameters = {
+    type: "object",
+    properties: {
+      file_path: { type: "string", description: "File or directory path to delete." },
+      ...sandboxEscalationProperties,
+    },
+    required: ["file_path"],
+  };
+  const unixGrepParameters = {
+    type: "object",
+    properties: {
+      pattern: { type: "string", description: "Ripgrep regular expression." },
+      path: { type: "string", description: "Optional file or directory target." },
+      include: { type: "string", description: "Optional single positive glob filter." },
+    },
+    required: ["pattern"],
+  };
+  const unixGlobParameters = {
+    type: "object",
+    properties: {
+      pattern: { type: "string", description: "Ripgrep file glob pattern." },
+      path: { type: "string", description: "Optional directory search root." },
+    },
+    required: ["pattern"],
+  };
+  const assertFsSandbox = (absolutePath, args = {}, allowEscalation = false) => {
+    let policy = sandboxPolicy;
+    if (allowEscalation && !isWin) {
+      const escalation = validateSandboxEscalationArgs(args, {
+        config,
+        cwd: workspaceRoot,
+        platform,
+      });
+      if (escalation) {
+        if (!hasSandboxEscalationApproval(args)) {
+          throw new Error("sandbox escalation requires explicit user approval");
+        }
+        policy = escalation.policy;
+      }
+    }
+    const denied = assertSandboxWriteAllowed(absolutePath, policy);
     if (denied) {
-      const error = new Error(denied);
+      const retryHint = !isWin
+        ? " Retry this exact operation once with sandbox_permissions and a justification for user approval."
+        : "";
+      const error = new Error(`${denied}${retryHint}`);
       error.code = "FS_SANDBOX_DENIED";
       throw error;
     }
@@ -3797,7 +4100,15 @@ export function getBuiltinTools({
     const error = new Error(
       `File changed since this session observed it: ${relativePath}. Reread the file and retry.`,
     );
-    error.code = "FILE_CONFLICT";
+    error.code = isWin ? "FILE_CONFLICT" : "FS_STALE_VERSION";
+    error.path = relativePath;
+    return error;
+  };
+  const createNotObservedError = (operation, relativePath) => {
+    const error = new Error(
+      `${operation} requires reading "${relativePath}" first — read the file, then retry`,
+    );
+    error.code = "FS_NOT_OBSERVED";
     error.path = relativePath;
     return error;
   };
@@ -3818,8 +4129,23 @@ export function getBuiltinTools({
     operation,
     prepare,
     mutate,
+    observationPolicy = "auto",
   }) => {
-    if (operation !== "create") {
+    if (observationPolicy === "required") {
+      for (const item of targets) {
+        if (!fileObservations.has(item.target)) {
+          throw createNotObservedError(operation, item.path);
+        }
+      }
+    } else if (observationPolicy === "create-if-unobserved") {
+      for (const item of targets) {
+        if (fileObservations.has(item.target)) continue;
+        if ((await hashFileOrNull(item.target)) !== null) {
+          throw createNotObservedError(operation, item.path);
+        }
+        fileObservations.set(item.target, null);
+      }
+    } else if (operation !== "create") {
       for (const item of targets) {
         if (!fileObservations.has(item.target)) {
           await observeFile(item.target);
@@ -4052,9 +4378,10 @@ export function getBuiltinTools({
       type: "function",
       function: {
         name: "read",
-        description:
-          'Inspect code or text files before generating or editing code. Use search_code first to locate the file/range or ast_target, then read that precise context. Use {path} for normal reads; file_path/file are accepted aliases. Use start_line/end_line or path:"src/app.ts:10-40" for ranges. If ast_target comes from search_code structure results, read returns the exact structural node. Normal code reads include enclosing symbol metadata when available; read with query is a Tree-sitter-query fallback that returns the matched AST node and ast_target.',
-        parameters: {
+        description: isWin
+          ? 'Inspect code or text files before generating or editing code. Use search_code first to locate the file/range or ast_target, then read that precise context. Use {path} for normal reads; file_path/file are accepted aliases. Use start_line/end_line or path:"src/app.ts:10-40" for ranges. If ast_target comes from search_code structure results, read returns the exact structural node. Normal code reads include enclosing symbol metadata when available; read with query is a Tree-sitter-query fallback that returns the matched AST node and ast_target.'
+          : 'Read a UTF-8 text file and return line-numbered content. Use offset and limit to continue reading large files.',
+        parameters: isWin ? {
           type: "object",
           properties: {
             path: {
@@ -4094,7 +4421,7 @@ export function getBuiltinTools({
             },
           },
           required: [],
-        },
+        } : unixReadParameters,
       },
     },
     {
@@ -4157,7 +4484,7 @@ export function getBuiltinTools({
         description: isWin
           ? 'Edit an existing file after reading enough surrounding code. Tool arguments must be valid JSON; escape file-content newlines as \\n in JSON strings. Use exactly one canonical shape: {path, old_text, new_text} for text replacement; {path, new_content} for a small full-file rewrite; {path, anchor_text, content, position:"before"|"after"} for inserts; or {path, kind:"replace_block", target|ast_target, new_content} for structural replacement. Keep generated content fields near the end of the object. For a long whole-file rewrite, use begin_write/write_chunk/commit_write instead. If old_text is repeated, use path:"file:10-30" or rely on the most recent read range. Set replace_all=true to replace every match.'
           : 'Edit an existing file after reading it. Prefer {path|file_path, old_string, new_string, replace_all?} for unique literal replacement (DeepSeek/Claude-compatible). old_text/new_text remain accepted aliases. Tool arguments must be valid JSON; escape newlines as \\n. Also supports {path, new_content} full rewrite and insert/replace_block shapes. Set replace_all=true to replace every match.',
-        parameters: {
+        parameters: isWin ? {
           type: "object",
           properties: {
             path: {
@@ -4213,10 +4540,11 @@ export function getBuiltinTools({
               type: "string",
               description: "Content to insert with anchor_text/position, placed near the end. Use new_text with old_text replacements, and new_content for full-file rewrites.",
             },
+            ...sandboxEscalationProperties,
             new_content: { type: "string", description: "Small full-file or structural-block replacement content. Keep this field last. For long whole-file output, use the staged write tools. In JSON text, encode newlines as \\n." },
           },
           required: ["path"],
-        },
+        } : unixEditParameters,
       },
     },
     {
@@ -4226,7 +4554,7 @@ export function getBuiltinTools({
         description: isWin
           ? "Write an entire small file. Use for new files, or for an intentional full-file overwrite of an existing file with overwrite=true. Always include exactly {path, overwrite?, content}, with content last. Tool arguments must be valid JSON; escape file-content newlines as \\n in JSON strings. For long content that might approach the model output limit, use begin_write, sequential write_chunk calls, then commit_write. For small changes in existing files, prefer edit with {path, old_text, new_text}."
           : "Create or overwrite a file with {path|file_path, content, overwrite?}. Prefer edit with old_string/new_string for small edits. Tool arguments must be valid JSON; escape newlines as \\n.",
-        parameters: {
+        parameters: isWin ? {
           type: "object",
           properties: {
             path: {
@@ -4240,13 +4568,14 @@ export function getBuiltinTools({
               description:
                 "Set true to intentionally replace an existing file. Defaults to false.",
             },
+            ...sandboxEscalationProperties,
             content: {
               type: "string",
               description: "Complete file content. Keep this field last. In JSON text, encode newlines as \\n.",
             },
           },
           required: ["path", "content"],
-        },
+        } : unixWriteParameters,
       },
     },
     {
@@ -4372,7 +4701,7 @@ export function getBuiltinTools({
         name: "delete",
         description:
           "Delete a file or directory inside the workspace. Missing targets fail. Workspace escape attempts are rejected.",
-        parameters: {
+        parameters: isWin ? {
           type: "object",
           properties: {
             path: {
@@ -4385,7 +4714,7 @@ export function getBuiltinTools({
             target: { type: "string", description: "Alias for path" },
           },
           required: ["path"],
-        },
+        } : unixDeleteParameters,
       },
     },
     {
@@ -4861,7 +5190,7 @@ export function getBuiltinTools({
         name: "grep",
         description:
           "Low-level plain text search. Prefer search_code unless you specifically need raw grep/ripgrep-style output.",
-        parameters: {
+        parameters: isWin ? {
           type: "object",
           properties: {
             pattern: {
@@ -4891,7 +5220,7 @@ export function getBuiltinTools({
             },
           },
           required: ["pattern"],
-        },
+        } : unixGrepParameters,
       },
     },
     ast_grep: {
@@ -5021,7 +5350,7 @@ export function getBuiltinTools({
         name: "glob",
         description:
           "Find files by glob pattern. Use this when you already know a filename pattern such as src/**/*.ts.",
-        parameters: {
+        parameters: isWin ? {
           type: "object",
           properties: {
             pattern: { type: "string", description: "Glob pattern" },
@@ -5033,7 +5362,7 @@ export function getBuiltinTools({
             max_results: { type: "number", description: "Max results" },
           },
           required: ["pattern"],
-        },
+        } : unixGlobParameters,
       },
     },
     ast_query: {
@@ -5357,6 +5686,7 @@ export function getBuiltinTools({
       ["directory", "dir", "cwd"],
     );
     if (
+      isWin &&
       !resolvesOutsideRoot(workspaceRoot, normalizedArgs?.path || ".") &&
       activeFffAdapter?.grep
     ) {
@@ -5365,6 +5695,25 @@ export function getBuiltinTools({
         const result = await activeFffAdapter.grep(args);
         if (result && Array.isArray(result.matches)) return result;
       } catch {}
+    }
+    if (!isWin) {
+      const include = String(args?.include || "").trim();
+      if (include.startsWith("!") || include.replace(/\{[^}]*\}/g, "").includes(",")) {
+        throw new Error("grep include must be one positive glob pattern");
+      }
+      return builtinGrep(
+        workspaceRoot,
+        {
+          pattern: args?.pattern,
+          path: args?.path,
+          regex: true,
+          case_sensitive: true,
+          max_results: 250,
+          file_types: include ? [include] : [],
+        },
+        config,
+        true,
+      );
     }
     return builtinGrep(workspaceRoot, args, config);
   }
@@ -5708,6 +6057,7 @@ export function getBuiltinTools({
       ["directory", "dir", "cwd"],
     );
     if (
+      isWin &&
       !resolvesOutsideRoot(workspaceRoot, normalizedArgs?.path || ".") &&
       activeFffAdapter?.glob
     ) {
@@ -5717,7 +6067,7 @@ export function getBuiltinTools({
         if (result && Array.isArray(result.matches)) return result;
       } catch {}
     }
-    return builtinGlob(workspaceRoot, args, config);
+    return builtinGlob(workspaceRoot, args, config, !isWin);
   }
 
   async function list(args) {
@@ -5821,19 +6171,21 @@ export function getBuiltinTools({
         };
       }
 
-      const result = await readFile(
-        workspaceRoot,
-        {
-          ...args,
-          default_lines: config.context?.read_file_default_lines ?? 120,
-          max_chars:
-            typeof args?.max_chars === "number"
-              ? args.max_chars
-              : (config.context?.read_file_max_chars ?? 12000),
-        },
-        config,
-        activeToolResultStore,
-      );
+      const result = isWin
+        ? await readFile(
+            workspaceRoot,
+            {
+              ...args,
+              default_lines: config.context?.read_file_default_lines ?? 120,
+              max_chars:
+                typeof args?.max_chars === "number"
+                  ? args.max_chars
+                  : (config.context?.read_file_max_chars ?? 12000),
+            },
+            config,
+            activeToolResultStore,
+          )
+        : await readDshFile(workspaceRoot, args, config);
       const readPath = normalizePath(result?.path || args?.path || "").trim();
       if (readPath && result?.phase !== "directory_listing") {
         const readTarget = await resolveInWorkspace(workspaceRoot, readPath, config);
@@ -5889,6 +6241,7 @@ export function getBuiltinTools({
         { stripInlineRange: true },
       ).trim();
       const commentTarget = await resolveInWorkspace(workspaceRoot, commentPath, config);
+      assertFsSandbox(commentTarget);
       const result = await commitManagedMutation({
         targets: [{ target: commentTarget, path: commentPath }],
         operation: "add_code_comment",
@@ -5908,6 +6261,7 @@ export function getBuiltinTools({
         { stripInlineRange: true },
       ).trim();
       const commentTarget = await resolveInWorkspace(workspaceRoot, commentPath, config);
+      assertFsSandbox(commentTarget);
       const result = await commitManagedMutation({
         targets: [{ target: commentTarget, path: commentPath }],
         operation: "update_code_comment",
@@ -5922,7 +6276,24 @@ export function getBuiltinTools({
     },
     edit: async (args) => {
       await ensureProjectIndex();
-      const mutationConfig = configWithApprovedMutationPaths(config, args);
+      if (!isWin) {
+        if (!String(args?.file_path || "").trim()) {
+          throw new Error("file_path must be a non-empty string");
+        }
+        if (String(args?.old_string ?? "").length === 0) {
+          throw new Error("old_string must be a non-empty string");
+        }
+        if (String(args.old_string) === String(args?.new_string ?? "")) {
+          throw new Error("old_string and new_string must differ");
+        }
+      }
+      const baseMutationConfig = configWithApprovedMutationPaths(config, args);
+      const mutationConfig = isWin
+        ? baseMutationConfig
+        : {
+            ...baseMutationConfig,
+            runtime: { ...baseMutationConfig?.runtime, atomic_file_mutations: true },
+          };
       const normalizedKind = String(args?.kind || "").trim();
       const hasReplaceTextArgs =
         args?.old_text != null || args?.old_string != null;
@@ -5959,10 +6330,11 @@ export function getBuiltinTools({
         throw new Error("edit requires an explicit path so the mutation target can be reviewed");
       }
       const editTargetPath = await resolveInWorkspace(workspaceRoot, observedPath, mutationConfig);
-      assertFsSandbox(editTargetPath);
+      assertFsSandbox(editTargetPath, args, true);
       const result = await commitManagedMutation({
         targets: [{ target: editTargetPath, path: observedPath }],
         operation: "edit",
+        observationPolicy: isWin ? "auto" : "required",
         prepare: () => backupNonGitPathOnce(observedPath),
         mutate: async (backup) => attachBackup(
           await editTarget(
@@ -6006,19 +6378,35 @@ export function getBuiltinTools({
     },
     write: async (args) => {
       await ensureProjectIndex();
-      const mutationConfig = configWithApprovedMutationPaths(config, args);
+      if (!isWin && !String(args?.file_path || "").trim()) {
+        throw new Error("file_path must be a non-empty string");
+      }
+      const baseMutationConfig = configWithApprovedMutationPaths(config, args);
+      const mutationConfig = isWin
+        ? baseMutationConfig
+        : {
+            ...baseMutationConfig,
+            runtime: { ...baseMutationConfig?.runtime, atomic_file_mutations: true },
+          };
       const writePath = normalizeFilePathValue(
         args?.path || args?.file_path || "",
         { stripInlineRange: true },
       ).trim();
       const writeTarget = await resolveInWorkspace(workspaceRoot, writePath, mutationConfig);
-      assertFsSandbox(writeTarget);
+      assertFsSandbox(writeTarget, args, true);
       const result = await commitManagedMutation({
         targets: [{ target: writeTarget, path: writePath }],
         operation: "write",
+        observationPolicy: isWin ? "auto" : "create-if-unobserved",
         prepare: () => backupNonGitPathOnce(writePath),
         mutate: async (backup) => attachBackup(
-          await writeAnyFile(workspaceRoot, args, mutationConfig),
+          await writeAnyFile(
+            workspaceRoot,
+            isWin
+              ? args
+              : { ...args, path: args?.file_path, overwrite: true },
+            mutationConfig,
+          ),
           backup,
         ),
       });
@@ -6189,7 +6577,7 @@ export function getBuiltinTools({
           { stripInlineRange: true },
         ).trim();
         const deleteTarget = await resolveInWorkspace(workspaceRoot, deletePathValue, mutationConfig);
-        assertFsSandbox(deleteTarget);
+        assertFsSandbox(deleteTarget, args, !isWin);
         const result = await commitManagedMutation({
           targets: [{ target: deleteTarget, path: deletePathValue }],
           operation: "delete",
@@ -6649,6 +7037,21 @@ export function getBuiltinTools({
     read(result) {
       if (typeof result === "string") return result;
       if (!result || typeof result !== "object") return String(result);
+      if (!isWin && result.phase === "dsh_content") {
+        const lines = Array.isArray(result.lines) ? result.lines : [];
+        const first = lines[0]?.number ?? result.offset ?? 1;
+        const last = lines.at(-1)?.number ?? Math.max(0, first - 1);
+        let footer;
+        if (result.capped) {
+          footer = `(Output capped. Showing lines ${first}-${last}. Use offset=${last + 1} to continue.)`;
+        } else if (last < Number(result.total_lines || 0)) {
+          footer = `(Showing lines ${first}-${last} of ${result.total_lines}. Use offset=${last + 1} to continue.)`;
+        } else {
+          footer = `(End of file - total ${Number(result.total_lines || 0)} lines)`;
+        }
+        const body = lines.map((line) => `${line.number}: ${line.text}`).join("\n");
+        return `<path>${result.path}</path>\n<type>file</type>\n<content>\n${body}${body ? "\n\n" : ""}${footer}\n</content>`;
+      }
       if (result.node && typeof result.content === "string") {
         const header = `[AST: ${result.path || "?"} ${result.node.node_type || "node"} ${result.node.start_line || "?"}-${result.node.end_line || "?"}${result.matches ? `, matches ${result.matches}` : ""}]`;
         const contextLines = [];

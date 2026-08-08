@@ -1,10 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { SandboxRuntimeConfigSchema } from '@anthropic-ai/sandbox-runtime';
 import {
   __setSandboxRuntimeTestHooks,
   SandboxUnavailableError,
   wrapShellCommandForSandbox,
 } from '../src/core/sandbox-runtime.js';
+import { resolveSandboxShell } from '../src/core/shell.js';
+
+test('Unix sandbox uses pwsh for a PowerShell-configured shell', () => {
+  assert.equal(resolveSandboxShell('powershell'), 'pwsh');
+  assert.equal(resolveSandboxShell('bash'), 'bash');
+});
 
 test('wrapShellCommandForSandbox skips on win32', async () => {
   __setSandboxRuntimeTestHooks({
@@ -36,7 +43,7 @@ test('wrapShellCommandForSandbox wraps on linux via SandboxManager', async () =>
   __setSandboxRuntimeTestHooks({
     SandboxManager: {
       async initialize(config) {
-        initConfig = config;
+        initConfig = SandboxRuntimeConfigSchema.parse(config);
       },
       isSandboxingEnabled: () => true,
       isSupportedPlatform: () => true,
@@ -56,7 +63,36 @@ test('wrapShellCommandForSandbox wraps on linux via SandboxManager', async () =>
     assert.equal(out.wrapped, true);
     assert.equal(out.command, 'bwrap -- echo hi');
     assert.ok(Array.isArray(initConfig?.filesystem?.allowWrite));
-    assert.equal(initConfig.network, undefined);
+    assert.deepEqual(initConfig.network.allowedDomains, []);
+    assert.deepEqual(initConfig.network.deniedDomains, []);
+  } finally {
+    __setSandboxRuntimeTestHooks(null);
+  }
+});
+
+test('read-only sandbox validates against the real runtime schema and blocks network', async () => {
+  let initConfig = null;
+  __setSandboxRuntimeTestHooks({
+    SandboxManager: {
+      async initialize(config) {
+        initConfig = SandboxRuntimeConfigSchema.parse(config);
+      },
+      isSandboxingEnabled: () => true,
+      isSupportedPlatform: () => true,
+      async wrapWithSandbox(command) {
+        return command;
+      },
+    },
+  });
+  try {
+    await wrapShellCommandForSandbox({
+      command: 'echo hi',
+      config: { sandbox: { enabled: true, mode: 'read-only' } },
+      cwd: '/tmp/project',
+      platform: 'linux',
+      binShell: 'bash',
+    });
+    assert.deepEqual(initConfig.network.allowedDomains, []);
   } finally {
     __setSandboxRuntimeTestHooks(null);
   }

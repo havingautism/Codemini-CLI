@@ -1388,14 +1388,26 @@ export class RuntimeBridge {
   async setApprovalMode(mode) {
     if (this.#busy) return false;
     const ok = await this.#runtime.setApprovalMode?.(mode);
-    if (ok) this.#publish({ type: 'approval-mode:changed', approvalMode: mode, ...this.getState() });
+    if (ok) {
+      this.#publish({
+        ...this.getState(),
+        type: 'approval-mode:changed',
+        approvalMode: mode,
+      });
+    }
     return ok;
   }
 
   async setSandboxMode(mode) {
     if (this.#busy) return false;
     const ok = await this.#runtime.setSandboxMode?.(mode);
-    if (ok) this.#publish({ type: 'sandbox-mode:changed', sandboxMode: mode, ...this.getState() });
+    if (ok) {
+      this.#publish({
+        ...this.getState(),
+        type: 'sandbox-mode:changed',
+        sandboxMode: mode,
+      });
+    }
     return ok;
   }
 

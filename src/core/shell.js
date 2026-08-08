@@ -226,6 +226,10 @@ export function resolveShell(defaultShell) {
   return { command: '/bin/bash', args: ['-lc'] };
 }
 
+export function resolveSandboxShell(defaultShell) {
+  return defaultShell === 'powershell' ? 'pwsh' : defaultShell || 'bash';
+}
+
 export function isDangerousCommand(command, blockedPatterns = []) {
   const lowered = command.toLowerCase();
   return blockedPatterns.some((pattern) => lowered.includes(String(pattern).toLowerCase()));
@@ -273,7 +277,7 @@ export async function runShellCommand({
       command: String(command || ''),
       config,
       cwd,
-      binShell: shell === 'powershell' ? 'bash' : shell || 'bash',
+      binShell: resolveSandboxShell(shell),
       abortSignal: signal,
       mode: sandboxMode,
     });

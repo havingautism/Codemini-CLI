@@ -35,6 +35,7 @@ export function toolRequiresUserApproval({
   projectIsGit = false,
   toolName = '',
   isSafeModeRun = false,
+  isSandboxEscalation = false,
   isOutsideWorkspaceMutation = false,
   osSandboxConfining = false,
   alwaysAllowTools = []
@@ -51,6 +52,7 @@ export function toolRequiresUserApproval({
   // Outside the opened project is a soft trust boundary on Windows / when OS sandbox is off.
   // When OS sandbox is confining, the fence already blocks those writes — skip the prompt.
   if (isOutsideWorkspaceMutation && !osSandboxConfining) return true;
+  if (isSandboxEscalation) return true;
   if (normalizedApprovalMode === 'full_access') return false;
   if (normalizedApprovalMode === 'auto') {
     return (!projectIsGit && isFileWriteTool) || Boolean(isSafeModeRun);

@@ -196,12 +196,12 @@ test('expanded sub-agents keep a compact indent and reveal adaptive task details
   assert.doesNotMatch(planToolCard, /rounded-t-xl/);
   assert.match(
     planToolCard,
-    /rounded-md bg-\(--bg-tertiary\)[^"]*text-\[12px\][^"]*dark:bg-\(--bg-primary\)[\s\S]*?<ScrollArea[\s\S]*?type="auto"[\s\S]*?className="max-h-32 min-w-0 flex-1"[\s\S]*?viewportClassName="max-h-32/,
+    /rounded-md bg-\(--bg-tertiary\)[^"]*text-\[11px\][^"]*dark:bg-\(--bg-primary\)[\s\S]*?<ScrollArea[\s\S]*?type="auto"[\s\S]*?className="max-h-48 min-w-0 flex-1"[\s\S]*?viewportClassName="max-h-48/,
   );
   assert.doesNotMatch(planToolCard, /h-\[76px\]/);
   assert.match(
     planToolCard,
-    /type="auto"[\s\S]*?className="mt-1 h-48 rounded-md bg-\(--bg-tertiary\) dark:bg-\(--bg-primary\)"/,
+    /type="auto"[\s\S]*?className="mt-1 h-64 rounded-md bg-\(--bg-tertiary\) dark:bg-\(--bg-primary\)"/,
   );
   assert.match(planToolCard, /card\?\.arguments\?\.summary \|\| card\?\.arguments\?\.goal \|\| goal/);
   assert.match(planToolCard, /taskSummary && !expanded/);
@@ -228,7 +228,7 @@ test('long tool call arguments end with an ellipsis before the status indicator'
     toolCard,
     /msg-process-meta__detail ml-1 block min-w-0 flex-1 truncate font-mono/,
   );
-  assert.match(toolCard, /LinearStatusDot className="mr-1\.5 shrink-0"/);
+  assert.match(toolCard, /SessionOrb state="working" className="mr-1\.5"/);
 });
 
 test('memory management owns the Inbox experience instead of the action palette', () => {

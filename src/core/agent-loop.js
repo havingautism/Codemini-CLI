@@ -9,7 +9,8 @@ import { createToolResultStore, summarizeToolResult } from './tool-result-store.
 import { applyAggressiveToolPruneBeta } from './context-compact.js';
 import {
   markOutsideWorkspaceMutationApproved,
-  markRunCommandSafeModeApproved
+  markRunCommandSafeModeApproved,
+  markSandboxEscalationApproved,
 } from './tools.js';
 import {
   MEMORY_ALWAYS_ALLOW_TOOLS,
@@ -19,7 +20,10 @@ import {
   inspectOutsideWorkspaceMutation,
   toolRequiresUserApproval
 } from './approval-policy.js';
-import { resolveSandboxPolicy } from './sandbox-policy.js';
+import {
+  resolveSandboxPolicy,
+  validateSandboxEscalationArgs,
+} from './sandbox-policy.js';
 import { createMutationGraphPreflight } from './mutation-graph-preflight.js';
 import { fireSkillHookEvent, formatHookContextLines } from './skill-hooks-runtime.js';
 import {
@@ -890,6 +894,26 @@ export async function runAgentLoop({
         });
         continue;
       }
+      let sandboxEscalation = null;
+      try {
+        if (process.platform !== 'win32') {
+          sandboxEscalation = validateSandboxEscalationArgs(args, {
+            config,
+            cwd: workspaceRoot,
+            platform: process.platform,
+          });
+        }
+      } catch (error) {
+        approvalResults.set(call.id, {
+          approved: false,
+          args: approvalArgs,
+          errorContent: clipToolResult({
+            error: error instanceof Error ? error.message : String(error),
+          }, toolResultMaxChars),
+        });
+        continue;
+      }
+      const isSandboxEscalation = Boolean(sandboxEscalation);
       const graphPreflight = await mutationGraphPreflight.inspect({
         toolName,
         args,
@@ -932,6 +956,7 @@ export async function runAgentLoop({
         projectIsGit,
         toolName,
         isSafeModeRun,
+        isSandboxEscalation,
         isOutsideWorkspaceMutation: Boolean(outsideWorkspaceApproval),
         osSandboxConfining,
         alwaysAllowTools: [...alwaysAllowSet]
@@ -984,6 +1009,7 @@ export async function runAgentLoop({
             /* Auto mode: allow low/medium + allow without a panel; high still needs review. */
             if (
               !isSafeModePolicyBlocked
+              && !isSandboxEscalation
               && normalizedApprovalMode !== 'review'
               && evaluation.recommendation === 'allow'
               && evaluation.risk !== 'high'
@@ -1050,6 +1076,9 @@ export async function runAgentLoop({
           }
           if (approved && toolName === 'run' && isSafeModePolicyBlocked) {
             approvalArgs = markRunCommandSafeModeApproved(approvalArgs);
+          }
+          if (approved && isSandboxEscalation) {
+            approvalArgs = markSandboxEscalationApproved(approvalArgs);
           }
         }
       }

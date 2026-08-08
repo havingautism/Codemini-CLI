@@ -30,6 +30,10 @@ function buildSrtConfig(policy) {
       : [policy.workspaceRoot, path.resolve(os.tmpdir())].filter(Boolean);
 
   const config = {
+    network: {
+      allowedDomains: [],
+      deniedDomains: [],
+    },
     filesystem: {
       allowWrite,
       denyWrite: [],
@@ -37,12 +41,6 @@ function buildSrtConfig(policy) {
       allowRead: [],
     },
   };
-
-  // v1: workspace-write omits network.allowedDomains → no network fence (npm/git work).
-  // read-only: empty allowlist blocks outbound network.
-  if (policy.mode === 'read-only') {
-    config.network = { allowedDomains: [], deniedDomains: [] };
-  }
 
   return config;
 }

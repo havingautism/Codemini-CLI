@@ -137,6 +137,22 @@ test('outside-workspace mutations require approval unless OS sandbox confines', 
   }
 });
 
+test('sandbox escalation always requires explicit approval', () => {
+  for (const approvalMode of ['review', 'auto', 'full_access']) {
+    assert.equal(
+      toolRequiresUserApproval({
+        approvalMode,
+        projectIsGit: true,
+        toolName: 'run',
+        isSandboxEscalation: true,
+        alwaysAllowTools: ['run'],
+      }),
+      true,
+      approvalMode,
+    );
+  }
+});
+
 test('outside-workspace inspection reports resolved absolute targets', async () => {
   const parent = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-outside-approval-'));
   const project = path.join(parent, 'project');

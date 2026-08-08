@@ -23,7 +23,23 @@ function getToolFewShotBlock(config = {}, cwd = process.cwd()) {
   const isWin = process.platform === 'win32';
   const editExample = isWin
     ? `Tool: edit({"path":${authServicePath},"old_text":"loginUser","new_text":"signInUser"})`
-    : `Tool: edit({"path":${authServicePath},"old_string":"loginUser","new_string":"signInUser"})`;
+    : `Tool: edit({"file_path":${authServicePath},"old_string":"loginUser","new_string":"signInUser"})`;
+  const readExample = isWin
+    ? `Tool: read({"path":${authServicePath}})`
+    : `Tool: read({"file_path":${authServicePath}})`;
+  const rangeReadExample = isWin
+    ? `Tool: read({"path":${reducerRangePath}})`
+    : `Tool: read({"file_path":${JSON.stringify(path.join(cwd, 'src', 'store', 'reducer.ts'))},"offset":110,"limit":41})`;
+  const rewriteExample = isWin
+    ? `For an existing file full rewrite, use edit with new_content:
+Tool: edit({"path":${authServicePath},"new_content":"export function signInUser() {\\n  return true;\\n}\\n"})
+If the intent is explicitly whole-file output or overwrite, write is also available:
+Tool: write({"path":${authServicePath},"content":"export function signInUser() {\\n  return true;\\n}\\n","overwrite":true})`
+    : `Before editing or overwriting an existing file, read it first. Use write for an intentional whole-file replacement:
+Tool: write({"file_path":${authServicePath},"content":"export function signInUser() {\\n  return true;\\n}\\n"})`;
+  const newFileExample = isWin
+    ? `Tool: write({"path":${notesPath},"content":"todo\\n"})`
+    : `Tool: write({"file_path":${notesPath},"content":"todo\\n"})`;
   const discoveryHint = isWin
     ? `If the visible tool list does not include a needed deferred capability, load it with tool_search instead of assuming it does not exist.
 Example:
@@ -51,7 +67,7 @@ Tool arguments must be valid JSON objects. When a string contains file content, 
 User: compare the auth flow
 Assistant: first narrow the search with the project index
 Tool: search_code({"query":"auth flow","path":"src","max_results":3})
-Tool: read({"path":${authServicePath}})
+${readExample}
 
 ${discoveryHint}
 To discover or load Codemini skills, use the skill tool directly against the indexed registry:
@@ -66,20 +82,17 @@ Assistant: first find the exact occurrences
 Tool: grep({"pattern":"loginUser","path":"src"})
 ${editExample}
 
-For an existing file full rewrite, use edit with new_content:
-Tool: edit({"path":${authServicePath},"new_content":"export function signInUser() {\\n  return true;\\n}\\n"})
-If the intent is explicitly whole-file output or overwrite, write is also available:
-Tool: write({"path":${authServicePath},"content":"export function signInUser() {\\n  return true;\\n}\\n","overwrite":true})
+${rewriteExample}
 
 3. Read a specific range
 User: inspect the reducer around line 120
 Assistant: read only the needed range
-Tool: read({"path":${reducerRangePath}})
+${rangeReadExample}
 
 4. Write a new file
 User: add a notes file
 Assistant: write the file directly
-Tool: write({"path":${notesPath},"content":"todo\\n"})
+${newFileExample}
 
 ${patchHint}
 

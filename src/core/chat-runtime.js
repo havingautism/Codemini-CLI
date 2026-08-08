@@ -666,8 +666,9 @@ function resolveExecutionModeAllowedTools(executionMode, callerAllowedTools, con
   return modePolicy;
 }
 
-export function buildExecutionModePromptBlock(executionMode) {
+export function buildExecutionModePromptBlock(executionMode, platform = process.platform) {
   if (normalizeExecutionMode(executionMode) === 'plan') {
+    const unixCrud = platform !== 'win32';
     return [
       'Execution Mode: coding',
       'You are in coding mode. Treat implementation requests as authorization to inspect the repository, make focused changes, and verify them. Prefer the smallest complete solution that follows the project\'s existing architecture and conventions.',
@@ -699,13 +700,19 @@ export function buildExecutionModePromptBlock(executionMode) {
       '- After confirmation, revise the document if needed and implement directly or with run_subagent.',
       '',
       'Tool discipline:',
-      '- Prefer dedicated project-index, search, read, edit, and patch tools over raw shell equivalents. Load deferred tools with tool_search only when needed.',
+      unixCrud
+        ? '- Prefer dedicated project-index, search, read, edit, and write tools over raw shell equivalents. Load deferred tools with tool_search only when needed.'
+        : '- Prefer dedicated project-index, search, read, edit, and patch tools over raw shell equivalents. Load deferred tools with tool_search only when needed.',
       '- Choose the narrowest relevant project-native verification, and use run for tests, builds, type checks, linters, generators, and version-control inspection—not as the default way to read or search source code.',
-      '- Use edit for precise existing-file changes, apply_patch for coherent multi-file changes, and write only for small new files or intentional whole-file output. For long whole-file content, use begin_write, bounded sequential write_chunk calls, then commit_write; abort unfinished transactions.',
+      unixCrud
+        ? '- Use read with file_path/offset/limit. Read an existing file before edit or overwrite; use edit with file_path/old_string/new_string and write with file_path/content.'
+        : '- Use edit for precise existing-file changes, apply_patch for coherent multi-file changes, and write only for small new files or intentional whole-file output. For long whole-file content, use begin_write, bounded sequential write_chunk calls, then commit_write; abort unfinished transactions.',
       '- Search the web for current external documentation, versions, compatibility, or unfamiliar APIs when that information affects correctness; prefer primary sources and link the sources that support material claims.',
       '',
       'Workflow boundaries:',
-      '- Do not claim edit/write/begin_write/write_chunk/commit_write/apply_patch/delete/run are unavailable in coding mode; they are available for direct tasks.',
+      unixCrud
+        ? '- Do not claim edit/write/delete/run are unavailable in coding mode; they are available for direct tasks.'
+        : '- Do not claim edit/write/begin_write/write_chunk/commit_write/apply_patch/delete/run are unavailable in coding mode; they are available for direct tasks.',
       '- Do not call run_subagent for a simple localized edit you can finish yourself.',
       '- Preserve unrelated user changes in a dirty worktree. Never discard, overwrite, or reformat work outside the requested scope.',
       '- If the request is too unknown to act on safely, ask one focused question instead of guessing.'
@@ -1427,6 +1434,7 @@ function extractPathFromToolArguments(toolName, args = {}) {
   if (!['edit', 'create', 'write', 'commit_write', 'apply_patch', 'delete'].includes(name)) return '';
   return String(
     args.path ||
+    args.file_path ||
     ''
   ).trim();
 }

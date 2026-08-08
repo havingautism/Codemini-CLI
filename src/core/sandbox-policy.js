@@ -56,6 +56,48 @@ export function resolveSandboxPolicy({
   };
 }
 
+export function validateSandboxEscalationArgs(
+  args = {},
+  {
+    config = {},
+    cwd = process.cwd(),
+    platform = process.platform,
+  } = {},
+) {
+  const hasMode = args?.sandbox_permissions !== undefined;
+  const hasJustification = args?.justification !== undefined;
+  if (hasMode !== hasJustification) {
+    throw new Error(
+      hasMode
+        ? 'sandbox_permissions requires a justification'
+        : 'justification is only valid together with sandbox_permissions',
+    );
+  }
+  if (!hasMode) return null;
+
+  const justification = String(args.justification || '').trim();
+  if (!justification) throw new Error('justification must be a non-empty sentence');
+
+  const rawMode = String(args.sandbox_permissions || '').trim().toLowerCase().replace(/_/g, '-');
+  if (!['workspace-write', 'danger-full-access'].includes(rawMode)) {
+    throw new Error(`invalid sandbox_permissions: ${args.sandbox_permissions}`);
+  }
+  const current = resolveSandboxPolicy({ config, cwd, platform });
+  if (!current.enabled || platform === 'win32') {
+    throw new Error('sandbox_permissions is not available without a confining sandbox');
+  }
+  if (SANDBOX_MODES.indexOf(rawMode) <= SANDBOX_MODES.indexOf(current.mode)) {
+    throw new Error(
+      `sandbox_permissions "${rawMode}" must be strictly wider than current mode "${current.mode}"`,
+    );
+  }
+  return {
+    mode: rawMode,
+    justification,
+    policy: resolveSandboxPolicy({ config, cwd, platform, mode: rawMode }),
+  };
+}
+
 /**
  * Soft approval is redundant when OS sandbox is already read-only (no writes).
  * Windows always shows approval (no OS sandbox).

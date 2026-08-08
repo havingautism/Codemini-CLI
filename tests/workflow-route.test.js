@@ -49,3 +49,13 @@ test('coding prompt creates design docs only for material decisions', () => {
   assert.match(prompt, /Do not create a design document for routine fixes/);
   assert.match(prompt, /wait for confirmation before implementing those material choices/);
 });
+
+test('coding prompt describes the platform-specific write tools', () => {
+  const unixPrompt = buildExecutionModePromptBlock('coding', 'linux');
+  assert.match(unixPrompt, /old_string\/new_string/);
+  assert.doesNotMatch(unixPrompt, /apply_patch|staged writes/);
+
+  const windowsPrompt = buildExecutionModePromptBlock('coding', 'win32');
+  assert.match(windowsPrompt, /apply_patch/);
+  assert.match(windowsPrompt, /begin_write/);
+});

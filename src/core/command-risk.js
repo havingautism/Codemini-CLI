@@ -84,13 +84,21 @@ const HIGH_RISK_PATTERNS = [
   /\|&\s*\S/
 ];
 
+const SHELL_WRITE_SYNTAX_PATTERNS = [/>\s*\S/, />>\s*\S/, /\|&\s*\S/];
+
 /* ── 核心分类逻辑 ──────────────────────────────────────────────── */
 
 /**
  * 判断单个 token 是否为只读命令（含子命令检查）。
  */
-function isReadOnlyToken(token, rawSegment) {
+function isReadOnlyToken(token, rawSegment, platform) {
   if (!READ_ONLY_TOKENS.has(token)) return false;
+  if (platform !== 'win32') {
+    if (
+      token === 'find'
+      && /(?:^|\s)-(?:delete|exec|execdir|ok|okdir)\b/i.test(String(rawSegment || ''))
+    ) return false;
+  }
 
   /* 需要 子命令 校验的 token */
   const allowedSubs = READ_ONLY_SUBCOMMANDS[token];
@@ -112,6 +120,14 @@ function isReadOnlyToken(token, rawSegment) {
   }
   /* 只有 token 本身或全部是 flags → 视为安全（version-style probes） */
   if (!subcmd) return true;
+  if (
+    platform !== 'win32'
+    && (
+      (token === 'git' && ['branch', 'tag', 'stash', 'remote', 'config'].includes(subcmd))
+      || (token === 'npm' && subcmd === 'version')
+      || (token === 'go' && subcmd === 'env')
+    )
+  ) return false;
   if (allowedSubs.has(subcmd)) return true;
   /* 子命令 不在白名单 → 不确定 */
   return false;
@@ -124,8 +140,8 @@ function matchesHighRiskPattern(text) {
   return HIGH_RISK_PATTERNS.some((p) => p.test(text));
 }
 
-function allSegmentsReadOnly(tokens) {
-  return tokens.length > 0 && tokens.every(({ token, raw }) => isReadOnlyToken(token, raw));
+function allSegmentsReadOnly(tokens, platform) {
+  return tokens.length > 0 && tokens.every(({ token, raw }) => isReadOnlyToken(token, raw, platform));
 }
 
 /**
@@ -134,7 +150,7 @@ function allSegmentsReadOnly(tokens) {
  * @param {string} [shellName='bash']
  * @returns {'read-only'|'write-high-risk'|'ambiguous'}
  */
-export function classifyCommandRisk(command, shellName = 'bash') {
+export function classifyCommandRisk(command, shellName = 'bash', platform = process.platform) {
   const cmd = String(command || '').trim();
   if (!cmd) return 'read-only';
 
@@ -142,9 +158,13 @@ export function classifyCommandRisk(command, shellName = 'bash') {
   const tokens = collectCommandTokens(cmd);
   if (tokens.length === 0) return 'ambiguous';
 
+  if (platform !== 'win32' && SHELL_WRITE_SYNTAX_PATTERNS.some((pattern) => pattern.test(cmd))) {
+    return 'write-high-risk';
+  }
+
   // Pure inspectors first — so `rg install` / `git log --grep=commit` stay read-only
   // instead of being poisoned by HIGH_RISK_PATTERNS on the argument text.
-  if (allSegmentsReadOnly(tokens)) return 'read-only';
+  if (allSegmentsReadOnly(tokens, platform)) return 'read-only';
 
   /* 高风险 pattern 仅作用于非纯只读命令 */
   if (matchesHighRiskPattern(cmd)) return 'write-high-risk';
@@ -153,7 +173,7 @@ export function classifyCommandRisk(command, shellName = 'bash') {
   const RISK_ORDER = { 'read-only': 0, ambiguous: 1, 'write-high-risk': 2 };
 
   for (const { token, raw } of tokens) {
-    if (isReadOnlyToken(token, raw)) {
+    if (isReadOnlyToken(token, raw, platform)) {
       /* 保持当前级别 */
     } else {
       /* 不在只读集合 → 至少 ambiguous */
@@ -171,6 +191,6 @@ export function classifyCommandRisk(command, shellName = 'bash') {
  * 是否需要进入审批评估流程。
  * 只读命令跳过，其余都需要。
  */
-export function requiresApprovalEvaluation(command, shellName = 'bash') {
-  return classifyCommandRisk(command, shellName) !== 'read-only';
+export function requiresApprovalEvaluation(command, shellName = 'bash', platform = process.platform) {
+  return classifyCommandRisk(command, shellName, platform) !== 'read-only';
 }

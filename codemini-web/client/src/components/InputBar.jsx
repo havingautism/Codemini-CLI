@@ -11,6 +11,7 @@ import {
   ArrowUp,
   Camera,
   CaretDown,
+  CircleNotch,
   FileText,
   Hammer,
   ImageSquare,
@@ -324,12 +325,13 @@ function SandboxModeSelector({ sessionId, current, disabled = false }) {
   const ActiveIcon = active.icon;
 
   const handleSelect = async (mode) => {
-    if (mode === current || switching || disabled) return;
+    if (!mode || mode === current || switching || disabled) return;
     setSwitching(true);
     try {
       const result = await api.setSandboxMode(sessionId, mode);
-      if (result?.error)
+      if (result?.error || result?.ok === false) {
         throw new Error(result.message || "Failed to switch sandbox mode");
+      }
     } catch {
     } finally {
       setSwitching(false);
@@ -338,7 +340,7 @@ function SandboxModeSelector({ sessionId, current, disabled = false }) {
   };
 
   return (
-    <Popover open={open} onOpenChange={(next) => !disabled && setOpen(next)}>
+    <Popover open={open} onOpenChange={(next) => !disabled && !switching && setOpen(next)}>
       <PopoverTrigger asChild>
         <button
           type="button"
@@ -347,10 +349,15 @@ function SandboxModeSelector({ sessionId, current, disabled = false }) {
             "px-2.5",
             (switching || disabled) && "opacity-50 pointer-events-none",
           )}
-          disabled={disabled}
+          disabled={disabled || switching}
+          aria-busy={switching}
           title={disabled ? t("switchModeDisabled") : t("switchSandboxMode")}
         >
-          <ActiveIcon size={13} />
+          {switching ? (
+            <CircleNotch size={13} className="animate-spin" />
+          ) : (
+            <ActiveIcon size={13} />
+          )}
           <span className="truncate">{active.label}</span>
           <CaretDown size={11} />
         </button>

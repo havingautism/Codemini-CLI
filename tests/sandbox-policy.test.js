@@ -8,6 +8,7 @@ import {
   normalizeSandboxMode,
   resolveApprovalUiEnabled,
   resolveSandboxPolicy,
+  validateSandboxEscalationArgs,
   writableRootsForMode,
 } from '../src/core/sandbox-policy.js';
 
@@ -15,6 +16,33 @@ test('normalizeSandboxMode defaults by platform', () => {
   assert.equal(normalizeSandboxMode('', { platform: 'win32' }), 'danger-full-access');
   assert.equal(normalizeSandboxMode('', { platform: 'linux' }), 'workspace-write');
   assert.equal(normalizeSandboxMode('read_only'), 'read-only');
+});
+
+test('sandbox escalation requires paired fields and a strictly wider mode', () => {
+  const options = {
+    config: { sandbox: { enabled: true, mode: 'read-only' } },
+    cwd: '/tmp/ws',
+    platform: 'linux',
+  };
+  assert.throws(
+    () => validateSandboxEscalationArgs({ sandbox_permissions: 'workspace-write' }, options),
+    /requires a justification/,
+  );
+  assert.throws(
+    () => validateSandboxEscalationArgs({ justification: 'why' }, options),
+    /only valid together/,
+  );
+  assert.throws(
+    () => validateSandboxEscalationArgs({ sandbox_permissions: 'workspace-write', justification: ' ' }, options),
+    /non-empty sentence/,
+  );
+  assert.equal(
+    validateSandboxEscalationArgs({
+      sandbox_permissions: 'workspace-write',
+      justification: 'the operation needs workspace writes',
+    }, options).mode,
+    'workspace-write',
+  );
 });
 
 test('isSandboxEnabled auto is off on Windows and on elsewhere', () => {

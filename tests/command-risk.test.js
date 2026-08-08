@@ -47,7 +47,32 @@ test('read-only scanners do not inherit high-risk keywords from arguments', () =
 });
 
 test('mutating package and shell commands stay elevated', () => {
-  for (const command of ['npm install', 'rm -rf dist', 'git commit -m x', 'mkdir foo']) {
+  for (const command of [
+    'npm install',
+    'rm -rf dist',
+    'git commit -m x',
+    'mkdir foo',
+  ]) {
     assert.equal(classifyCommandRisk(command), 'write-high-risk', command);
+  }
+});
+
+test('Unix tightens dual-use commands without changing Windows classification', () => {
+  for (const command of [
+    'find . -exec rm -rf {} +',
+    'git status > status.txt',
+  ]) {
+    assert.equal(classifyCommandRisk(command, 'bash', 'linux'), 'write-high-risk', command);
+    assert.equal(classifyCommandRisk(command, 'powershell', 'win32'), 'read-only', command);
+  }
+  for (const command of [
+    'git branch -D tmp',
+    'git tag -d v1',
+    'git config user.email x@y',
+    'npm version patch',
+    'go env -w GOPROXY=off',
+  ]) {
+    assert.notEqual(classifyCommandRisk(command, 'bash', 'linux'), 'read-only', command);
+    assert.equal(classifyCommandRisk(command, 'powershell', 'win32'), 'read-only', command);
   }
 });
