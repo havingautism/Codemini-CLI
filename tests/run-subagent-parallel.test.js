@@ -56,6 +56,30 @@ test('freeform persona names use coder tool baseline', () => {
   assert.equal(tools.includes('run_subagent'), false);
 });
 
+test('unix subagent baselines drop staged write and promote glob/grep', () => {
+  const coder = resolveSubAgentToolAllowList({ role: 'coder', platform: 'linux' });
+  assert.equal(coder.includes('edit'), true);
+  assert.equal(coder.includes('glob'), true);
+  assert.equal(coder.includes('grep'), true);
+  for (const name of ['begin_write', 'write_chunk', 'commit_write', 'abort_write', 'apply_patch']) {
+    assert.equal(coder.includes(name), false, name);
+  }
+  const explorer = resolveSubAgentToolAllowList({ role: 'explorer', platform: 'linux' });
+  assert.ok(explorer.includes('glob'));
+  assert.ok(explorer.includes('grep'));
+  assert.equal(
+    resolveSubAgentToolAllowList({
+      role: 'coder',
+      tools: ['read', 'edit', 'begin_write', 'apply_patch'],
+      platform: 'linux',
+    }).includes('begin_write'),
+    false,
+  );
+  const winCoder = resolveSubAgentToolAllowList({ role: 'coder', platform: 'win32' });
+  assert.ok(winCoder.includes('begin_write'));
+  assert.ok(winCoder.includes('apply_patch'));
+});
+
 test('persona name normalization keeps playful short names', () => {
   assert.equal(normalizeSubAgentPersonaName('david'), 'David');
   assert.equal(normalizeSubAgentPersonaName(''), 'Alex');

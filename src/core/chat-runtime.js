@@ -654,10 +654,14 @@ function displayExecutionMode(mode) {
 
 function resolveExecutionModeAllowedTools(executionMode, callerAllowedTools, config) {
   const mode = normalizeExecutionMode(executionMode);
-  const modePolicy = normalizeToolPolicy(EXECUTION_MODE_TOOL_POLICY[mode] || [], config);
+  const modePolicy = adaptToolNamesForPlatform(
+    normalizeToolPolicy(EXECUTION_MODE_TOOL_POLICY[mode] || [], config),
+  );
   if (!modePolicy.length) return callerAllowedTools;
   if (Array.isArray(callerAllowedTools)) {
-    return normalizeToolPolicy(callerAllowedTools, config).filter((name) => modePolicy.includes(name));
+    return adaptToolNamesForPlatform(
+      normalizeToolPolicy(callerAllowedTools, config).filter((name) => modePolicy.includes(name)),
+    );
   }
   return modePolicy;
 }
@@ -752,9 +756,46 @@ export const ROLE_TOOL_POLICY = {
 /** Subagents must never spawn nested agents / workflow orchestrators. */
 export const SUBAGENT_FORBIDDEN_TOOLS = ['run_subagent', 'create_plan', 'create_spec'];
 
+const WINDOWS_STAGED_WRITE_TOOLS = [
+  'begin_write',
+  'write_chunk',
+  'commit_write',
+  'abort_write',
+  'apply_patch',
+];
+
 const SUBAGENT_MUTATING_TOOLS = new Set([
   'edit', 'write', 'begin_write', 'write_chunk', 'commit_write', 'apply_patch', 'delete'
 ]);
+
+/**
+ * Align allow-lists with the platform CRUD surface: drop Windows staged write /
+ * apply_patch on unix, and ensure glob/grep for inspect-capable roles.
+ */
+export function adaptToolNamesForPlatform(toolNames = [], platform = process.platform) {
+  const source = Array.isArray(toolNames) ? toolNames : [];
+  if (platform === 'win32') {
+    return source.map((name) => String(name || '').trim()).filter(Boolean);
+  }
+  const drop = new Set(WINDOWS_STAGED_WRITE_TOOLS);
+  const out = [];
+  const seen = new Set();
+  for (const name of source) {
+    const normalized = String(name || '').trim();
+    if (!normalized || drop.has(normalized) || seen.has(normalized)) continue;
+    seen.add(normalized);
+    out.push(normalized);
+  }
+  if (out.includes('search_code') || out.includes('read')) {
+    const extras = ['glob', 'grep'].filter((name) => !seen.has(name));
+    if (extras.length) {
+      const anchor = out.indexOf('search_code');
+      const at = anchor >= 0 ? anchor + 1 : out.length;
+      out.splice(at, 0, ...extras);
+    }
+  }
+  return out;
+}
 
 export function normalizeSubAgentPersonaName(value, fallback = 'Alex') {
   const text = String(value || '')
@@ -784,16 +825,28 @@ export function getSubAgentPersonaPrompt(name = 'Alex') {
 /**
  * Role/persona policy ∩ optional parent allow-list, minus forbidden spawn tools.
  * Unknown persona names (e.g. "David") use the coder tool baseline; parent restricts via `tools`.
+ * On Linux/mac, allow-lists follow the DSH-aligned CRUD surface (no staged write / apply_patch).
  */
-export function resolveSubAgentToolAllowList({ role = 'coder', tools = null, config } = {}) {
+export function resolveSubAgentToolAllowList({
+  role = 'coder',
+  tools = null,
+  config,
+  platform = process.platform,
+} = {}) {
   const key = String(role || '').trim().toLowerCase();
   const basePolicy = ROLE_TOOL_POLICY[key] || ROLE_TOOL_POLICY.coder;
-  const roleTools = normalizeToolPolicy(basePolicy, config).filter(
-    (name) => !SUBAGENT_FORBIDDEN_TOOLS.includes(name)
+  const roleTools = adaptToolNamesForPlatform(
+    normalizeToolPolicy(basePolicy, config).filter(
+      (name) => !SUBAGENT_FORBIDDEN_TOOLS.includes(name)
+    ),
+    platform,
   );
   if (!Array.isArray(tools)) return roleTools;
-  const requested = normalizeToolPolicy(tools, config).filter(
-    (name) => !SUBAGENT_FORBIDDEN_TOOLS.includes(name)
+  const requested = adaptToolNamesForPlatform(
+    normalizeToolPolicy(tools, config).filter(
+      (name) => !SUBAGENT_FORBIDDEN_TOOLS.includes(name)
+    ),
+    platform,
   );
   const roleSet = new Set(roleTools);
   return requested.filter((name) => roleSet.has(name));

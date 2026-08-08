@@ -4758,7 +4758,7 @@ export function getBuiltinTools({
               type: "array",
               items: { type: "string" },
               description:
-                "Optional tool allow-list. Defaults to the coding edit baseline. Use a read-only subset for explore/review. run_subagent/create_plan/create_spec are always forbidden.",
+                "Optional tool allow-list. Defaults to the coding edit baseline. Use a read-only subset for explore/review. On Linux/mac staged write and apply_patch are unavailable (prefer edit/write); glob/grep are part of the inspect baseline. run_subagent/create_plan/create_spec are always forbidden.",
             },
           },
           required: ["prompt"],
