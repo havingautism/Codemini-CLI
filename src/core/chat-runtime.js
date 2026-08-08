@@ -4005,7 +4005,7 @@ function buildRuntimeStateSnapshot({ currentSession, config, model, executionMod
     sessionTitle: currentSession?.title || '',
     messageCount: Array.isArray(currentSession?.messages) ? currentSession.messages.length : 0,
     mode: resolvedMode,
-    approvalMode: config.execution?.approval_mode || 'review',
+    approvalMode: config.execution?.approval_mode || 'auto',
     sandboxMode: config.sandbox?.mode
       || (process.platform === 'win32' ? 'danger-full-access' : 'workspace-write'),
     sandboxUiEnabled: process.platform !== 'win32',
@@ -5280,13 +5280,16 @@ async function askModel({
     initialMessages: initialMessagesForModel,
     onEvent: wrappedAgentEvent,
     executionMode: normalizedExecutionMode,
-    approvalMode: resolveSandboxPolicy({
-      config,
-      cwd: workspaceRoot,
-      platform: process.platform,
-    }).enabled
-      ? 'full_access'
-      : (config.execution?.approval_mode || 'review'),
+    approvalMode: (() => {
+      const sandbox = resolveSandboxPolicy({
+        config,
+        cwd: workspaceRoot,
+        platform: process.platform,
+      });
+      // Read-only OS sandbox already blocks writes — skip soft approval prompts.
+      if (sandbox.enabled && sandbox.mode === 'read-only') return 'full_access';
+      return config.execution?.approval_mode || 'auto';
+    })(),
     projectIsGit: resolveApprovalProjectIsGit({
       projectIsGit,
       changeTrackerEnabled: Boolean(changeTracker?.enabled),

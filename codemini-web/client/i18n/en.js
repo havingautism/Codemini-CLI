@@ -699,7 +699,7 @@ export const en = {
   replyLanguageEn: "English",
   settingsUnsavedChanges: "Unsaved changes",
   approvalModeHelp:
-    "Review: confirm edits, deletes, and risky shell commands. Auto: auto-run in Git repos; non-Git file changes still need approval. Full access: skip approval prompts. On Linux/mac this control is hidden (and soft approval skipped) while the OS sandbox is confining; it reappears when sandbox is off or danger-full-access.",
+    "Review: confirm edits, deletes, and risky shell commands. Auto: auto-run in Git repos; non-Git file changes still need approval. Full access: skip approval prompts. Works alongside the OS sandbox; when sandbox is read-only, approval is hidden because writes are already blocked.",
   sandboxModeHelp:
     "Linux/macOS only. Read-only: commands cannot write disk. Workspace-write: can write the current workspace. Danger full access: disable the OS sandbox fence. Ignored on Windows.",
 

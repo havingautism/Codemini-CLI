@@ -9,7 +9,7 @@
   "scripts": {
     "build": "vite build --config vite.config.js",
     "start": "node server.js",
-    "dev": "bun scripts/dev.js",
+    "dev": "node scripts/dev.js",
     "api": "node server.js --port 5000"
   },
   "dependencies": {

@@ -16,6 +16,7 @@ Rules:
 - Consider the active shell and OS context, including Windows PowerShell command names and aliases.
 - Commands that install/uninstall packages, modify files, push code, start servers, or have network side effects are medium or high.
 - Destructive commands (rm -rf, format, sudo, dd) are high risk and deny.
+- Do not mark pure inspection as medium: searching for words like install/rm/commit inside rg/grep/find/git log arguments is still low risk.
 - Consider the workspace context: the command runs in the project directory.
 - Write description and sideEffects in ${replyLanguage}. Keep risk and recommendation enum values in English exactly as specified.
 - Be concise. Maximum 1 sentence per field.`;

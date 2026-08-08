@@ -752,7 +752,7 @@ export function InputBar({
 
   const rs = runtimeState || {};
   const mode = rs.mode || "normal";
-  const approvalMode = rs.approvalMode || "review";
+  const approvalMode = rs.approvalMode || "auto";
   const approvalUiEnabled = rs.approvalUiEnabled !== false;
   const sandboxMode = rs.sandboxMode || "workspace-write";
   const sandboxUiEnabled = rs.sandboxUiEnabled === true;

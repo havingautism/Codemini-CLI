@@ -44,10 +44,10 @@ test('resolveSandboxPolicy enables workspace-write on linux', () => {
   assert.equal(policy.workspaceRoot, path.resolve('/tmp/ws'));
 });
 
-test('approval UI only when OS sandbox is not confining', () => {
+test('approval UI hidden only for non-Windows read-only sandbox', () => {
   assert.equal(
     resolveApprovalUiEnabled({
-      config: { sandbox: { mode: 'workspace-write', enabled: 'auto' } },
+      config: { sandbox: { mode: 'read-only', enabled: 'auto' } },
       cwd: '/tmp/ws',
       platform: 'linux',
     }),
@@ -55,23 +55,15 @@ test('approval UI only when OS sandbox is not confining', () => {
   );
   assert.equal(
     resolveApprovalUiEnabled({
-      config: { sandbox: { mode: 'danger-full-access', enabled: 'auto' } },
-      cwd: '/tmp/ws',
-      platform: 'linux',
-    }),
-    true,
-  );
-  assert.equal(
-    resolveApprovalUiEnabled({
-      config: { sandbox: { enabled: false } },
-      cwd: '/tmp/ws',
-      platform: 'linux',
-    }),
-    true,
-  );
-  assert.equal(
-    resolveApprovalUiEnabled({
       config: { sandbox: { mode: 'workspace-write', enabled: 'auto' } },
+      cwd: '/tmp/ws',
+      platform: 'linux',
+    }),
+    true,
+  );
+  assert.equal(
+    resolveApprovalUiEnabled({
+      config: { sandbox: { mode: 'read-only', enabled: 'auto' } },
       cwd: '/tmp/ws',
       platform: 'win32',
     }),

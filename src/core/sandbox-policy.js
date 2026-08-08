@@ -56,13 +56,18 @@ export function resolveSandboxPolicy({
   };
 }
 
-/** Soft approval UI/gating only when OS sandbox is not confining the agent. */
+/**
+ * Soft approval is redundant when OS sandbox is already read-only (no writes).
+ * Windows always shows approval (no OS sandbox).
+ */
 export function resolveApprovalUiEnabled({
   config = {},
   cwd = process.cwd(),
   platform = process.platform,
 } = {}) {
-  return !resolveSandboxPolicy({ config, cwd, platform }).enabled;
+  const policy = resolveSandboxPolicy({ config, cwd, platform });
+  if (platform === 'win32') return true;
+  return !(policy.enabled && policy.mode === 'read-only');
 }
 
 export function writableRootsForMode(policy) {

@@ -57,7 +57,8 @@ const DEFAULT_CONFIG = {
   },
   execution: {
     mode: 'normal',
-    approval_mode: 'review',
+    // Auto: skip soft prompts in git workspaces; non-git file mutations still review.
+    approval_mode: 'auto',
     always_allow_tools: [
       'read',
       'search_code',
@@ -217,7 +218,7 @@ function normalizePolicyLists(config) {
     : (['normal', 'plan'].includes(rawExecutionMode) ? rawExecutionMode : 'normal');
   next.execution.approval_mode = ['review', 'auto', 'full_access'].includes(rawApprovalMode)
     ? rawApprovalMode
-    : 'review';
+    : 'auto';
   delete next.execution.plan_execution_model;
   const rawTools = Array.isArray(next.execution.always_allow_tools)
     ? next.execution.always_allow_tools

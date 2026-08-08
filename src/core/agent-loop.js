@@ -624,7 +624,7 @@ export async function runAgentLoop({
   initialMessages = [],
   onEvent,
   executionMode = 'normal',
-  approvalMode = 'review',
+  approvalMode = 'auto',
   projectIsGit = false,
   alwaysAllowTools = [],
   requestToolApproval,
@@ -971,8 +971,13 @@ export async function runAgentLoop({
               });
               continue;
             }
-            /* LLM says low-risk + allow → auto-approve, skip confirmation panel */
-            if (!isSafeModePolicyBlocked && normalizedApprovalMode !== 'review' && evaluation.risk === 'low' && evaluation.recommendation === 'allow') {
+            /* Auto mode: allow low/medium + allow without a panel; high still needs review. */
+            if (
+              !isSafeModePolicyBlocked
+              && normalizedApprovalMode !== 'review'
+              && evaluation.recommendation === 'allow'
+              && evaluation.risk !== 'high'
+            ) {
               approvalResults.set(call.id, { approved: true, args: approvalArgs });
               continue;
             }

@@ -686,7 +686,7 @@ export const zh = {
   replyLanguageEn: "English",
   settingsUnsavedChanges: "有未保存的更改",
   approvalModeHelp:
-    "审阅：编辑、删除和风险命令需确认。自动：Git 项目自动执行，非 Git 文件变更仍需审阅。完全访问：工具调用不弹确认。Linux/mac 在 OS 沙箱围栏开启时隐藏此选项并跳过软审阅；关闭沙箱（或危险完全访问）后重新出现。",
+    "审阅：编辑、删除和风险命令需确认。自动：Git 项目自动执行，非 Git 文件变更仍需审阅。完全访问：工具调用不弹确认。可与 OS 沙箱同时使用；沙箱为只读时隐藏审阅（写操作已被围栏挡住）。",
   sandboxModeHelp:
     "仅 Linux/macOS 生效。只读：命令无法写盘。工作区可写：可写当前工作区。危险完全访问：关闭 OS 沙箱围栏。Windows 忽略此设置。",
 
