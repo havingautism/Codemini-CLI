@@ -87,10 +87,16 @@ function canConnect(port) {
   });
 }
 
-async function waitForPort(port, { timeoutMs = 10000, intervalMs = 100 } = {}) {
-  const deadline = Date.now() + timeoutMs;
+async function waitForPort(port, { timeoutMs = 60000, intervalMs = 200, label = 'service' } = {}) {
+  const started = Date.now();
+  const deadline = started + timeoutMs;
+  let lastLog = 0;
   while (Date.now() < deadline) {
     if (await canConnect(port)) return true;
+    if (Date.now() - lastLog > 5000) {
+      lastLog = Date.now();
+      console.log(`[${label}] waiting for http://127.0.0.1:${port} (${Math.round((Date.now() - started) / 1000)}s)...`);
+    }
     await new Promise((resolve) => setTimeout(resolve, intervalMs));
   }
   return false;
@@ -110,7 +116,7 @@ startProcess({
   args: ['server.js', '--port', String(apiPort), '--no-open']
 });
 
-if (!await waitForPort(apiPort)) {
+if (!await waitForPort(apiPort, { label: 'api' })) {
   console.error(`[api] did not start on http://127.0.0.1:${apiPort}`);
   stopAll(1);
 }
