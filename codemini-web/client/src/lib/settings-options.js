@@ -2,11 +2,14 @@ import {
   Code,
   Coffee,
   Command,
+  HardDrives,
+  Lock,
   LockOpen,
   ShieldWarning,
   Sparkle,
   Terminal,
   TerminalWindow,
+  Warning,
   WindowsLogo,
 } from "@phosphor-icons/react";
 import { t } from "../../i18n/index.js";
@@ -47,6 +50,29 @@ export function getApprovalModeOptions() {
       label: t("fullAccessMode"),
       description: t("fullAccessModeDesc"),
       icon: LockOpen,
+    },
+  ];
+}
+
+export function getSandboxModeOptions() {
+  return [
+    {
+      value: "read-only",
+      label: t("sandboxReadOnlyMode"),
+      description: t("sandboxReadOnlyModeDesc"),
+      icon: Lock,
+    },
+    {
+      value: "workspace-write",
+      label: t("sandboxWorkspaceWriteMode"),
+      description: t("sandboxWorkspaceWriteModeDesc"),
+      icon: HardDrives,
+    },
+    {
+      value: "danger-full-access",
+      label: t("sandboxDangerFullAccessMode"),
+      description: t("sandboxDangerFullAccessModeDesc"),
+      icon: Warning,
     },
   ];
 }
@@ -130,6 +156,7 @@ export function getReplyLanguageOptions() {
 const OPTION_GETTERS = {
   executionMode: getExecutionModeOptions,
   approvalMode: getApprovalModeOptions,
+  sandboxMode: getSandboxModeOptions,
   provider: getProviderOptions,
   searchProvider: getSearchProviderOptions,
   shell: getShellOptions,

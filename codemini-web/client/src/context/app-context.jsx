@@ -2654,6 +2654,18 @@ export function AppProvider({ children }) {
           break;
         }
 
+        case "sandbox-mode:changed": {
+          const rs = event;
+          update({
+            runtimeState: {
+              ...stateRef.current.runtimeState,
+              sandboxMode: rs.sandboxMode,
+              ...rs,
+            },
+          });
+          break;
+        }
+
         case "runtime:state": {
           const rs = event.state || {};
           const runtimeState = { ...stateRef.current.runtimeState, ...rs };

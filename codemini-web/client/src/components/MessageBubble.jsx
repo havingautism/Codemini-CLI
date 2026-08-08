@@ -1,6 +1,7 @@
 import { memo, useEffect, useState, useMemo } from "react";
 import { ToolCard } from "./ToolCard";
 import { PlanToolCardGroup } from "./PlanToolCard.jsx";
+import { UsageBadge } from "./UsageBadge.jsx";
 import { isCreatePlanCard } from "@/lib/plan-ui-state.js";
 import { StreamdownRenderer } from "./StreamdownRenderer";
 import { EmbedBanner } from "./EmbedBanner.jsx";
@@ -23,7 +24,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { LinearRing, LinearStatusDot, Spinner } from "@/components/ui/spinner";
+import { LinearRing, SessionOrb } from "@/components/ui/spinner";
 import { Badge } from "@/components/ui/badge";
 import {
   Attachment,
@@ -257,7 +258,7 @@ function ThoughtBlock({ segment }) {
         <span
           className={cn(COLLAPSE_ICON_CLASS, "text-(--text-process-detail)")}
         >
-          {streaming ? <LinearRing size="md" /> : <Brain size={15} />}
+          {streaming ? <SessionOrb state="composing" /> : <Brain size={15} />}
         </span>
         {streaming ? (
           <RotatingStatusLabel phrases={thinkingPhrases} active />
@@ -500,7 +501,7 @@ function DreamNotice({ notice }) {
           )}
         >
           {showRing ? (
-            <LinearRing size="md" />
+            <SessionOrb state="breathing" />
           ) : (
             <Icon
               size={14}
@@ -564,7 +565,7 @@ function ToolGroup({ cards }) {
           )}
           <span className={COLLAPSE_ICON_CLASS}>
             {hasRunningTool ? (
-              <LinearStatusDot />
+              <SessionOrb state="working" />
             ) : (
               <span className="inline-block size-1.5 rounded-full bg-(--accent-green)" />
             )}
@@ -587,7 +588,7 @@ function ToolGroup({ cards }) {
       )}
       {hasRunningTool && (
         <div className="msg-process-meta__detail flex items-center gap-2 px-3 py-1.5 text-[11px] my-2">
-          <Spinner className="loading-dots--prism" />
+          <SessionOrb state="weaving" />
           <RotatingStatusLabel phrases={toolingPhrases} active />
         </div>
       )}
@@ -676,7 +677,7 @@ function SkillStatusDot({ status }) {
   return (
     <span className={COLLAPSE_ICON_CLASS}>
       {status === "running" ? (
-        <LinearStatusDot />
+        <SessionOrb state="working" />
       ) : (
         <span
           className={cn(
@@ -1793,85 +1794,6 @@ function MessageActionButton({
       </TooltipTrigger>
       <TooltipContent side="bottom" sideOffset={6}>
         {copied ? copiedLabel || label : label}
-      </TooltipContent>
-    </Tooltip>
-  );
-}
-
-function formatUsageNumber(value) {
-  const number = Number(value);
-  if (!Number.isFinite(number)) return "0";
-  if (number >= 1_000_000)
-    return `${(number / 1_000_000).toFixed(number >= 10_000_000 ? 0 : 1)}M`;
-  if (number >= 1000)
-    return `${(number / 1000).toFixed(number >= 10_000 ? 0 : 1)}k`;
-  return String(Math.round(number));
-}
-
-function getUsageSummary(usage) {
-  if (!usage || typeof usage !== "object") return null;
-  const total = Number(usage.totalTokens || 0);
-  const input = Number(usage.inputTokens || 0);
-  const output = Number(usage.outputTokens || 0);
-  const cached = Number(usage.cachedInputTokens || 0);
-  const cacheMiss = Number(usage.cacheMissInputTokens || 0);
-  const cacheWrite = Number(usage.cacheWriteInputTokens || 0);
-  const reasoning = Number(usage.reasoningOutputTokens || 0);
-  const requests = Number(usage.requests || 0);
-  if (
-    ![total, input, output, cached, cacheWrite, reasoning].some(
-      (value) => Number.isFinite(value) && value > 0,
-    )
-  )
-    return null;
-  const cacheBase =
-    cacheMiss > 0 || cacheWrite > 0 ? cached + cacheMiss + cacheWrite : input;
-  const cachePct = cacheBase > 0 ? (cached / cacheBase) * 100 : 0;
-  const labelParts = [
-    `${formatUsageNumber(total || input + output)} ${t("usageTokens")}`,
-  ];
-  if (cached > 0 || input > 0) {
-    labelParts.push(
-      `${t("usageCache")} ${formatUsageNumber(cached)} (${cachePct.toFixed(1)}%)`,
-    );
-  }
-  const detailParts = [
-    `${t("usageInput")} ${formatUsageNumber(input)}`,
-    `${t("usageOutput")} ${formatUsageNumber(output)}`,
-    `${t("usageTotal")} ${formatUsageNumber(total || input + output)}`,
-  ];
-  if (cached > 0 || input > 0)
-    detailParts.push(
-      `${t("usageCacheHit")} ${formatUsageNumber(cached)} (${cachePct.toFixed(1)}%)`,
-    );
-  if (cacheMiss > 0)
-    detailParts.push(`${t("usageCacheMiss")} ${formatUsageNumber(cacheMiss)}`);
-  if (cacheWrite > 0)
-    detailParts.push(
-      `${t("usageCacheWrite")} ${formatUsageNumber(cacheWrite)}`,
-    );
-  if (reasoning > 0)
-    detailParts.push(`${t("usageReasoning")} ${formatUsageNumber(reasoning)}`);
-  if (requests > 1)
-    detailParts.push(t("usageRequests").replace("{{count}}", requests));
-  return {
-    label: labelParts.join(" · "),
-    details: detailParts.join(" · "),
-  };
-}
-
-function UsageBadge({ usage }) {
-  const summary = getUsageSummary(usage);
-  if (!summary) return null;
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <span className="inline-flex h-8 max-w-full items-center truncate rounded-md px-1.5 text-[11px] text-(--text-muted)">
-          {summary.label}
-        </span>
-      </TooltipTrigger>
-      <TooltipContent side="bottom" sideOffset={6}>
-        {summary.details}
       </TooltipContent>
     </Tooltip>
   );

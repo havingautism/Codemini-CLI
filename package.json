@@ -61,6 +61,7 @@
     "access": "public"
   },
   "dependencies": {
+    "@anthropic-ai/sandbox-runtime": "^0.0.71",
     "@ast-grep/napi": "^0.43.0",
     "@cursorless/tree-sitter-wasms": "^0.8.1",
     "@modelcontextprotocol/sdk": "^1.29.0",

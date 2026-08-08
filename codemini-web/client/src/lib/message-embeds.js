@@ -1,4 +1,8 @@
-import { extractLinksFromMarkdownText, stripLinksFromMarkdownText } from '@/lib/markdown-embeds.js';
+import {
+  extractLinksFromMarkdownText,
+  isPublicHttpUrl,
+  stripLinksFromMarkdownText,
+} from '@/lib/markdown-embeds.js';
 import { extractToolName, parseMaybeJson } from '@/lib/tool-card-display.js';
 
 const MAX_MESSAGE_EMBEDS = 8;
@@ -55,7 +59,7 @@ export function collectMessageEmbeds(segments = []) {
 
   const addItem = (item) => {
     const url = String(item?.url || '').trim();
-    if (!url || seen.has(url)) return;
+    if (!url || seen.has(url) || !isPublicHttpUrl(url)) return;
     seen.add(url);
     items.push(item);
   };

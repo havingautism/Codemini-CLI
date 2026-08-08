@@ -8,7 +8,7 @@ import {
 } from '../codemini-web/shared/transcript-segments.js';
 import { reduceSessionTranscriptEvent } from '../codemini-web/client/src/lib/session-state.js';
 
-test('assistant usage events add delegated tokens to the parent message', () => {
+test('assistant usage events add tokens to the parent message', () => {
   const message = applyStreamEventToMessage(
     { id: 'parent', usage: { totalTokens: 35, requests: 1 }, segments: [] },
     {

@@ -686,7 +686,9 @@ export const zh = {
   replyLanguageEn: "English",
   settingsUnsavedChanges: "有未保存的更改",
   approvalModeHelp:
-    "审阅：编辑、删除和风险命令需确认。自动：Git 项目自动执行，非 Git 文件变更仍需审阅。完全访问：工具调用不弹确认。",
+    "审阅：编辑、删除和风险命令需确认。自动：Git 项目自动执行，非 Git 文件变更仍需审阅。完全访问：工具调用不弹确认。Linux/mac 在 OS 沙箱围栏开启时隐藏此选项并跳过软审阅；关闭沙箱（或危险完全访问）后重新出现。",
+  sandboxModeHelp:
+    "仅 Linux/macOS 生效。只读：命令无法写盘。工作区可写：可写当前工作区。危险完全访问：关闭 OS 沙箱围栏。Windows 忽略此设置。",
 
   // Misc
   backToTop: "回到顶部",
@@ -853,6 +855,13 @@ export const zh = {
   autoModeDesc: "Git 项目自动执行；非 Git 文件变更需审阅",
   fullAccessMode: "完全访问",
   fullAccessModeDesc: "工具调用不弹审阅确认",
+  sandboxMode: "沙箱",
+  sandboxReadOnlyMode: "只读",
+  sandboxReadOnlyModeDesc: "命令在沙箱内运行，无法写入磁盘",
+  sandboxWorkspaceWriteMode: "工作区可写",
+  sandboxWorkspaceWriteModeDesc: "可写当前工作区；工作区外仍受限制",
+  sandboxDangerFullAccessMode: "危险完全访问",
+  sandboxDangerFullAccessModeDesc: "关闭 OS 沙箱围栏，命令不受沙箱限制",
   planMode: "编码",
   planModeDesc: "面向代码任务，支持直接编辑与按需调用 Subagent",
   specMode: "Spec",
@@ -884,6 +893,7 @@ export const zh = {
   closePlanProgress: "关闭执行进度",
   switchMode: "切换工作模式",
   switchApprovalMode: "切换审阅权限",
+  switchSandboxMode: "切换沙箱模式",
   editApproval: "确认编辑文件？",
   createApproval: "确认创建文件？",
   writeApproval: "确认写入文件？",

@@ -15,7 +15,7 @@ import {
   Trash,
   Wrench,
 } from "@phosphor-icons/react";
-import { LinearRing, LinearStatusDot } from "@/components/ui/spinner";
+import { LinearRing, SessionOrb } from "@/components/ui/spinner";
 import { FileTypeIcon } from "@/components/FileTypeIcon.jsx";
 import { openWorkspaceFile } from "@/hooks/use-api.js";
 import { cn } from "@/lib/utils";
@@ -418,7 +418,7 @@ export function ToolCard({ card }) {
           </div>
         )}
         {card.status === "running" ? (
-          <LinearStatusDot className="mr-1.5 shrink-0" />
+          <SessionOrb state="working" className="mr-1.5" />
         ) : (
           <span
             className={cn(

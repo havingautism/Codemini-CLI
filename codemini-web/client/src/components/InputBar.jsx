@@ -51,6 +51,7 @@ import {
 import {
   getExecutionModeOptions,
   getApprovalModeOptions,
+  getSandboxModeOptions,
 } from "@/lib/settings-options.js";
 
 const IMPLICIT_SKILLS = new Set();
@@ -281,6 +282,87 @@ function ApprovalModeSelector({ sessionId, current, disabled = false }) {
       >
         <div className="px-0.5 pb-1.5 text-[11px] font-medium text-muted-foreground">
           {t("approvalMode")}
+        </div>
+        <ToggleGroup
+          type="single"
+          value={current}
+          onValueChange={handleSelect}
+          disabled={disabled || switching}
+          size="auto"
+          className="flex w-full flex-col items-stretch gap-0.5"
+        >
+          {MODE_OPTIONS.map((opt) => {
+            const Icon = opt.icon;
+            return (
+              <ToggleGroupItem
+                key={opt.value}
+                value={opt.value}
+                className="gap-2 data-[state=on]:shadow-none"
+              >
+                <Icon data-icon="inline-start" className="mt-0.5" />
+                <span className="min-w-0 flex-1 overflow-hidden">
+                  <span className="block truncate">{opt.label}</span>
+                  <span className="block wrap-break-word text-[11px] font-normal leading-snug text-muted-foreground">
+                    {opt.description}
+                  </span>
+                </span>
+              </ToggleGroupItem>
+            );
+          })}
+        </ToggleGroup>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+function SandboxModeSelector({ sessionId, current, disabled = false }) {
+  const [open, setOpen] = useState(false);
+  const [switching, setSwitching] = useState(false);
+  const MODE_OPTIONS = getSandboxModeOptions();
+  const active =
+    MODE_OPTIONS.find((m) => m.value === current) || MODE_OPTIONS[0];
+  const ActiveIcon = active.icon;
+
+  const handleSelect = async (mode) => {
+    if (mode === current || switching || disabled) return;
+    setSwitching(true);
+    try {
+      const result = await api.setSandboxMode(sessionId, mode);
+      if (result?.error)
+        throw new Error(result.message || "Failed to switch sandbox mode");
+    } catch {
+    } finally {
+      setSwitching(false);
+    }
+    setOpen(false);
+  };
+
+  return (
+    <Popover open={open} onOpenChange={(next) => !disabled && setOpen(next)}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          className={cn(
+            INPUT_PILL_CLASS,
+            "px-2.5",
+            (switching || disabled) && "opacity-50 pointer-events-none",
+          )}
+          disabled={disabled}
+          title={disabled ? t("switchModeDisabled") : t("switchSandboxMode")}
+        >
+          <ActiveIcon size={13} />
+          <span className="truncate">{active.label}</span>
+          <CaretDown size={11} />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent
+        side="top"
+        align="start"
+        sideOffset={6}
+        className="w-72 max-w-[calc(100vw-32px)] p-2"
+      >
+        <div className="px-0.5 pb-1.5 text-[11px] font-medium text-muted-foreground">
+          {t("sandboxMode")}
         </div>
         <ToggleGroup
           type="single"
@@ -671,6 +753,9 @@ export function InputBar({
   const rs = runtimeState || {};
   const mode = rs.mode || "normal";
   const approvalMode = rs.approvalMode || "review";
+  const approvalUiEnabled = rs.approvalUiEnabled !== false;
+  const sandboxMode = rs.sandboxMode || "workspace-write";
+  const sandboxUiEnabled = rs.sandboxUiEnabled === true;
   const reasoningEnabled = rs.reasoningEnabled !== false;
   const reasoningEffort = rs.reasoningEffort || "auto";
   const defaultSkillNames = useMemo(
@@ -1340,11 +1425,20 @@ export function InputBar({
               effort={reasoningEffort}
               disabled={inputLocked}
             />
-            <ApprovalModeSelector
-              sessionId={rs.sessionId}
-              current={approvalMode}
-              disabled={inputLocked}
-            />
+            {approvalUiEnabled ? (
+              <ApprovalModeSelector
+                sessionId={rs.sessionId}
+                current={approvalMode}
+                disabled={inputLocked}
+              />
+            ) : null}
+            {sandboxUiEnabled ? (
+              <SandboxModeSelector
+                sessionId={rs.sessionId}
+                current={sandboxMode}
+                disabled={inputLocked}
+              />
+            ) : null}
             <SoulQuickSwitch disabled={inputLocked} mode={mode} />
           </div>
           <div className="flex items-center gap-1.5 ml-auto shrink-0">

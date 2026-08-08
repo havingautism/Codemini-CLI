@@ -81,6 +81,14 @@ export function buildSettingsFields() {
       help: t("approvalModeHelp"),
     },
     {
+      tab: "execution",
+      path: "sandbox.mode",
+      control: "choiceList",
+      optionsKey: "sandboxMode",
+      label: t("sandboxMode"),
+      help: t("sandboxModeHelp"),
+    },
+    {
       tab: "model",
       path: "ui.reply_language",
       control: "segmented",

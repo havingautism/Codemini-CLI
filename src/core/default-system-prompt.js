@@ -20,6 +20,24 @@ function getToolFewShotBlock(config = {}, cwd = process.cwd()) {
   const authServicePath = formatToolPath(cwd, 'src', 'auth', 'service.ts');
   const reducerRangePath = JSON.stringify(`${path.join(cwd, 'src', 'store', 'reducer.ts')}:110-150`);
   const notesPath = formatToolPath(cwd, 'notes.txt');
+  const isWin = process.platform === 'win32';
+  const editExample = isWin
+    ? `Tool: edit({"path":${authServicePath},"old_text":"loginUser","new_text":"signInUser"})`
+    : `Tool: edit({"path":${authServicePath},"old_string":"loginUser","new_string":"signInUser"})`;
+  const discoveryHint = isWin
+    ? `If the visible tool list does not include a needed deferred capability, load it with tool_search instead of assuming it does not exist.
+Example:
+Tool: tool_search({"query":"glob"})
+Tool: glob({"pattern":"src/**/*.ts"})`
+    : `glob and grep are always available on Linux/mac. Example:
+Tool: glob({"pattern":"src/**/*.ts"})
+Tool: grep({"pattern":"loginUser","path":"src"})
+Load other deferred tools with tool_search when needed.`;
+  const patchHint = isWin
+    ? `For a large or multi-file code patch, use apply_patch with one escaped patch_text string:
+Tool: apply_patch({"patch_text":"*** Begin Patch\\n*** Update File: ${path.join('src', 'auth', 'service.ts').replace(/\\/g, '/')}\\n@@\\n-export const enabled = false;\\n+export const enabled = true;\\n*** End Patch"})`
+    : `On Linux/mac, prefer edit old_string/new_string for edits (multi-hunk via multiple edit calls). Shell commands run under sandbox-runtime (default workspace-write); denials include [sandbox: ...] markers.`;
+
   return `# Tool Examples
 
 Use these as style examples for tool calls:
@@ -32,13 +50,10 @@ Tool arguments must be valid JSON objects. When a string contains file content, 
 1. File discovery then read
 User: compare the auth flow
 Assistant: first narrow the search with the project index
-Tool: query_project_index({"query":"auth flow","path":"src","max_results":3})
+Tool: search_code({"query":"auth flow","path":"src","max_results":3})
 Tool: read({"path":${authServicePath}})
 
-If the visible tool list does not include a needed deferred capability, load it with tool_search instead of assuming it does not exist.
-Example:
-Tool: tool_search({"query":"glob"})
-Tool: glob({"pattern":"src/**/*.ts"})
+${discoveryHint}
 To discover or load Codemini skills, use the skill tool directly against the indexed registry:
 Tool: skill({"query":"fix ts generic error"})
 Tool: skill({"name":"list"})
@@ -49,7 +64,7 @@ Do not grep or list skills directories to discover skills.
 User: rename loginUser to signInUser
 Assistant: first find the exact occurrences
 Tool: grep({"pattern":"loginUser","path":"src"})
-Tool: edit({"path":${authServicePath},"old_text":"loginUser","new_text":"signInUser"})
+${editExample}
 
 For an existing file full rewrite, use edit with new_content:
 Tool: edit({"path":${authServicePath},"new_content":"export function signInUser() {\\n  return true;\\n}\\n"})
@@ -66,8 +81,7 @@ User: add a notes file
 Assistant: write the file directly
 Tool: write({"path":${notesPath},"content":"todo\\n"})
 
-For a large or multi-file code patch, use apply_patch with one escaped patch_text string:
-Tool: apply_patch({"patch_text":"*** Begin Patch\\n*** Update File: ${path.join('src', 'auth', 'service.ts').replace(/\\/g, '/')}\\n@@\\n-export const enabled = false;\\n+export const enabled = true;\\n*** End Patch"})
+${patchHint}
 
 Use update_todos for genuinely multi-step work. When the user asks you to remember lasting preferences/interests, call save_memory(scope="user", kind="preference"); for project rules use scope="project" kind="convention"; for reusable learnings use kind="lesson". Do not duplicate an equivalent fact already in Persistent Memory. Load web_fetch or web_search through tool_search when current external information is needed.
 
@@ -75,12 +89,17 @@ Prefer these direct tool shapes over multi-step metadata reads or shell fallback
 Prefer explicit absolute path values when the current working directory is known.`;
 }
 
-function getEnvBlock(cwd = process.cwd()) {
+function getEnvBlock(cwd = process.cwd(), config = {}) {
   let isGitRepo = false;
   try {
     fs.accessSync(path.join(cwd, '.git'));
     isGitRepo = true;
   } catch {}
+
+  const sandboxMode =
+    process.platform === 'win32'
+      ? 'off (Windows uses command policy)'
+      : String(config?.sandbox?.mode || 'workspace-write');
 
   return `<env>
 Working directory: ${cwd}
@@ -88,6 +107,7 @@ Is directory a git repo: ${isGitRepo ? 'Yes' : 'No'}
 Platform: ${process.platform}
 Shell: ${os.userInfo().shell || 'unknown'}
 OS Version: ${os.version || os.release()}
+Sandbox: ${sandboxMode}
 </env>`;
 }
 
@@ -124,7 +144,7 @@ export function buildDefaultSystemPrompt(config = {}, options = {}) {
     getToolFewShotBlock(config, cwd),
     getNaturalWritingBlock(),
     getMarkdownImageBlock(),
-    getEnvBlock(cwd),
+    getEnvBlock(cwd, config),
     ...normalizePromptBlocks(options.extraPrompts)
   ].filter(Boolean).join('\n\n');
 }

@@ -241,3 +241,19 @@ test('memory management owns the Inbox experience instead of the action palette'
   assert.match(webServer, /url\.pathname\.startsWith\(["']\/api\/memory\/inbox\/["']\)/);
   assert.match(webServer, /url\.pathname === ["']\/api\/memory\/inbox\/dream["']/);
 });
+
+test('sandbox mode selector mirrors approval mode and stays separate', () => {
+  assert.match(inputBar, /function SandboxModeSelector/);
+  assert.match(inputBar, /getSandboxModeOptions/);
+  assert.match(inputBar, /api\.setSandboxMode/);
+  assert.match(inputBar, /sandboxUiEnabled \? \(/);
+  assert.match(inputBar, /approvalUiEnabled \? \(/);
+  assert.match(inputBar, /<SandboxModeSelector/);
+  assert.match(webServer, /\/api\/sandbox-mode/);
+  const settingsOptions = source('codemini-web/client/src/lib/settings-options.js');
+  assert.match(settingsOptions, /export function getSandboxModeOptions/);
+  assert.match(settingsOptions, /sandboxMode: getSandboxModeOptions/);
+  const settingsConfig = source('codemini-web/client/src/lib/settings-config.js');
+  assert.match(settingsConfig, /path: "sandbox\.mode"/);
+  assert.match(settingsConfig, /optionsKey: "sandboxMode"/);
+});

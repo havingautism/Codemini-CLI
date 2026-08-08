@@ -1392,6 +1392,13 @@ export class RuntimeBridge {
     return ok;
   }
 
+  async setSandboxMode(mode) {
+    if (this.#busy) return false;
+    const ok = await this.#runtime.setSandboxMode?.(mode);
+    if (ok) this.#publish({ type: 'sandbox-mode:changed', sandboxMode: mode, ...this.getState() });
+    return ok;
+  }
+
   async reloadConfig(options = {}) {
     return this.#runtime.reloadConfig?.(options);
   }

@@ -129,6 +129,10 @@ import {
   resolveApprovalProjectIsGit
 } from './approval-policy.js';
 import {
+  resolveApprovalUiEnabled,
+  resolveSandboxPolicy,
+} from './sandbox-policy.js';
+import {
   normalizeToolPolicy,
 } from './provider/search-tool-registry.js';
 import { normalizeReasoningEffort, resolveConfiguredReasoningEffort } from './provider/reasoning-effort.js';
@@ -3949,6 +3953,14 @@ function buildRuntimeStateSnapshot({ currentSession, config, model, executionMod
     messageCount: Array.isArray(currentSession?.messages) ? currentSession.messages.length : 0,
     mode: resolvedMode,
     approvalMode: config.execution?.approval_mode || 'review',
+    sandboxMode: config.sandbox?.mode
+      || (process.platform === 'win32' ? 'danger-full-access' : 'workspace-write'),
+    sandboxUiEnabled: process.platform !== 'win32',
+    approvalUiEnabled: resolveApprovalUiEnabled({
+      config,
+      cwd: workspaceRoot,
+      platform: process.platform,
+    }),
     sdkProvider: config.sdk?.provider || 'openai-compatible',
     agentRole: 'general',
     model: model || config.model?.name || '',
@@ -4686,7 +4698,6 @@ async function askModel({
     resultDir: path.join(getSessionsDir(), String(session.id))
   });
 
-  const turnUsage = createTurnUsageAccumulator();
   const subAgentDependencies = createSubAgentDependencyCoordinator();
   const { definitions, handlers, formatters, deferredDefinitions, displayLabels, dispose: disposeTools } = getBuiltinTools({
     workspaceRoot,
@@ -4827,7 +4838,7 @@ async function askModel({
           const scopedTask = contextSections.length
             ? `${contextSections.join('\n\n')}\n\nTask:\n${taskPrompt}`
             : taskPrompt;
-          let childUsage = null;
+              let childUsage = null;
           try {
             const output = await runSubAgentTask({
               role: taskRole,
@@ -4847,7 +4858,6 @@ async function askModel({
               tools: toolAllowList,
               onUsage: (usage) => {
                 childUsage = mergeModelUsage(childUsage, usage);
-                turnUsage.addDelegated(usage);
               },
               projectIsGit: resolveApprovalProjectIsGit({
                 projectIsGit,
@@ -5097,8 +5107,8 @@ async function askModel({
         if (persistSession) scheduleSessionSave();
       }
     } else if (event?.type === 'assistant:response') {
-      const ownUsage = normalizeModelUsage(event.usage || event.assistantMessage?.usage);
-      const eventUsage = turnUsage.consumeInto(ownUsage);
+      // Keep parent usage own-only. Subagent tokens stay on plan:step_done (usageScope: subagent).
+      const eventUsage = normalizeModelUsage(event.usage || event.assistantMessage?.usage);
       if (eventUsage) event.usage = eventUsage;
       if (activeAssistantIndex >= 0 && session.messages[activeAssistantIndex]) {
         const current = session.messages[activeAssistantIndex];
@@ -5217,7 +5227,13 @@ async function askModel({
     initialMessages: initialMessagesForModel,
     onEvent: wrappedAgentEvent,
     executionMode: normalizedExecutionMode,
-    approvalMode: config.execution?.approval_mode || 'review',
+    approvalMode: resolveSandboxPolicy({
+      config,
+      cwd: workspaceRoot,
+      platform: process.platform,
+    }).enabled
+      ? 'full_access'
+      : (config.execution?.approval_mode || 'review'),
     projectIsGit: resolveApprovalProjectIsGit({
       projectIsGit,
       changeTrackerEnabled: Boolean(changeTracker?.enabled),
@@ -5294,24 +5310,6 @@ async function askModel({
       return result;
     }
   });
-
-  const pendingDelegatedUsage = turnUsage.takePending();
-  if (pendingDelegatedUsage) {
-    for (let i = session.messages.length - 1; i >= sessionLenBeforeLoop; i -= 1) {
-      const message = session.messages[i];
-      if (message?.role !== 'assistant') continue;
-      message.usage = mergeModelUsage(message.usage, pendingDelegatedUsage);
-      message.at = new Date().toISOString();
-      break;
-    }
-    if (onAgentEvent) {
-      onAgentEvent({
-        type: 'assistant:usage',
-        usage: pendingDelegatedUsage,
-        source: 'subagents'
-      });
-    }
-  }
 
   if (persistSession) {
     // Sync new messages to compacted view
@@ -8681,6 +8679,22 @@ export async function createChatRuntime({
       const normalized = String(next || '').toLowerCase().replace(/-/g, '_');
       if (!['review', 'auto', 'full_access'].includes(normalized)) return false;
       await setConfigValue('execution.approval_mode', normalized);
+      config = attachRuntimeState(await loadConfig());
+      return true;
+    },
+    setSandboxMode: async (next) => {
+      if (process.platform === 'win32') return false;
+      const { normalizeSandboxMode } = await import('./sandbox-policy.js');
+      const normalized = normalizeSandboxMode(next, { platform: process.platform });
+      if (!['read-only', 'workspace-write', 'danger-full-access'].includes(normalized)) return false;
+      await setConfigValue('sandbox.mode', normalized);
+      // Ensure sandbox stays enabled when user picks a confining mode from UI.
+      if (normalized !== 'danger-full-access') {
+        const enabled = config?.sandbox?.enabled;
+        if (enabled === false || enabled === 'false' || enabled === 'off' || enabled === 'never') {
+          await setConfigValue('sandbox.enabled', 'auto');
+        }
+      }
       config = attachRuntimeState(await loadConfig());
       return true;
     },

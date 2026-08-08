@@ -83,6 +83,8 @@ test('applyPlanEventToMessage keeps plan progress on create_plan card', () => {
   assert.equal(card.displayName, 'Subagent · 完成');
   assert.equal(card.planRun.steps[0].usage.totalTokens, 100);
   assert.equal(card.planRun.steps[1].segments[0].type, 'text');
+  // Parent message usage stays unset; subagent tokens live on the step only.
+  assert.equal(message.usage, undefined);
 });
 
 test('planRunFromTranscript builds completed card state', () => {

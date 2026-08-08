@@ -187,6 +187,15 @@ export async function setApprovalMode(sessionId, mode) {
   return res.json();
 }
 
+export async function setSandboxMode(sessionId, mode) {
+  const res = await api('/api/sandbox-mode', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ sessionId, mode })
+  });
+  return res.json();
+}
+
 export async function updatePendingReflect(sessionId, draft) {
   const res = await api('/api/pending-reflect', {
     method: 'POST',

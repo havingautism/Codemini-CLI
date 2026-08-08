@@ -17,6 +17,12 @@ import {
 } from "./shell.js";
 import { evaluateCommandPolicy } from "./command-policy.js";
 import {
+  assertSandboxWriteAllowed,
+  normalizeSandboxMode,
+  resolveSandboxPolicy,
+  SANDBOX_MODES,
+} from "./sandbox-policy.js";
+import {
   findEnclosingSymbol,
   queryAst,
   queryAstGrep,
@@ -1988,8 +1994,27 @@ async function runCommand(root, config, args, context = {}) {
     args?.background === true ||
     isLikelyLongRunningCommand(command);
 
+  let sandboxMode =
+    args?.sandbox_permissions || args?.sandbox_mode || args?.sandboxMode || "";
+  if (sandboxMode && process.platform !== "win32") {
+    const current = resolveSandboxPolicy({ config, cwd: root });
+    const requested = normalizeSandboxMode(sandboxMode);
+    const rank = (mode) => SANDBOX_MODES.indexOf(mode);
+    if (rank(requested) <= rank(current.mode)) {
+      throw new Error(
+        `sandbox_permissions "${requested}" must be strictly wider than current mode "${current.mode}"`,
+      );
+    }
+    sandboxMode = requested;
+  } else {
+    sandboxMode = undefined;
+  }
+
   if (shouldBackground) {
-    return startBackgroundTask(root, config, args);
+    return startBackgroundTask(root, config, {
+      ...args,
+      sandbox_mode: sandboxMode,
+    });
   }
 
   const result = await runShellCommand({
@@ -2003,12 +2028,22 @@ async function runCommand(root, config, args, context = {}) {
         config.shell.timeout_ms,
     ),
     signal: context.signal,
+    config,
+    sandboxMode,
   });
   const payload = { ...result, command };
   const failureMessage = buildRunFailureMessage(payload);
   if (failureMessage) {
     payload.failed = true;
     payload.error = failureMessage;
+  }
+  if (payload?.sandbox?.denied) {
+    payload.error = [
+      payload.error,
+      `[sandbox: escalation available — retry with sandbox_permissions (workspace-write|danger-full-access) + justification, or set sandbox.mode in config]`,
+    ]
+      .filter(Boolean)
+      .join("\n");
   }
   return payload;
 }
@@ -2191,18 +2226,42 @@ async function startBackgroundTask(root, config, args) {
   const outputFileAbs = path.join(outputDir, `${taskId}.log`);
   await fs.writeFile(outputFileAbs, "", "utf8");
 
+  let sandboxedCommand = "";
+  if (process.platform !== "win32") {
+    const { wrapShellCommandForSandbox } = await import("./sandbox-runtime.js");
+    const wrap = await wrapShellCommandForSandbox({
+      command,
+      config,
+      cwd: root,
+      binShell:
+        config.shell.default === "powershell"
+          ? "bash"
+          : config.shell.default || "bash",
+      mode: args?.sandbox_permissions || args?.sandbox_mode || args?.sandboxMode,
+    });
+    if (wrap.wrapped) sandboxedCommand = wrap.command;
+  }
+
+  const child = sandboxedCommand
+    ? spawn(sandboxedCommand, {
+        cwd: root,
+        shell: true,
+        stdio: ["ignore", "pipe", "pipe"],
+      })
+    : spawn(
+        shellSpec.command,
+        [...shellSpec.args, shellCommandForBackgroundTask(command, shellSpec)],
+        {
+          cwd: root,
+          stdio: ["ignore", "pipe", "pipe"],
+        },
+      );
+
   const task = {
     taskId,
     command,
     cwd: root,
-    child: spawn(
-      shellSpec.command,
-      [...shellSpec.args, shellCommandForBackgroundTask(command, shellSpec)],
-      {
-        cwd: root,
-        stdio: ["ignore", "pipe", "pipe"],
-      },
-    ),
+    child,
     startedAt: Date.now(),
     status: "starting",
     intentKind: classifyCommandIntent(command).kind,
@@ -3067,12 +3126,12 @@ async function replaceBlock(root, args, config = {}) {
 
 async function replaceText(root, args, config = {}) {
   const relativePath = String(args?.path || "").trim();
-  const oldText = String(args?.old_text || "");
-  const newText = String(args?.new_text || "");
+  const oldText = String(args?.old_text ?? args?.old_string ?? "");
+  const newText = String(args?.new_text ?? args?.new_string ?? "");
   const replaceAll = semanticBoolean(args?.replace_all);
   const state = await getFileState(root, relativePath, config);
   if (!oldText) {
-    throw new Error("replace_text requires old_text");
+    throw new Error("replace_text requires old_text or old_string");
   }
   const rangeStart = Number(args?.start_line || args?.line);
   const rangeEnd = Number(args?.end_line || args?.line);
@@ -3478,7 +3537,9 @@ async function openTarget(root, args, config = {}) {
 }
 
 function normalizeEditTargetArgs(args = {}) {
-  const rawFile = String(args?.path || args?.ast_target?.path || "").trim();
+  const rawFile = String(
+    args?.path || args?.file_path || args?.ast_target?.path || "",
+  ).trim();
   const inlineRange = parseInlineRangePath(rawFile);
   const file = normalizeFilePathValue(rawFile, {
     stripInlineRange: true,
@@ -3495,8 +3556,8 @@ function normalizeEditTargetArgs(args = {}) {
       kind: args?.kind,
       target: args?.target,
       new_content: args?.new_content,
-      old_text: args?.old_text,
-      new_text: args?.new_text,
+      old_text: args?.old_text ?? args?.old_string,
+      new_text: args?.new_text ?? args?.new_string,
       anchor_text: args?.anchor_text,
       content: args?.content,
       replace_all: args?.replace_all,
@@ -3693,8 +3754,23 @@ export function getBuiltinTools({
   fffAdapter,
   backupManager,
   toolResultStore,
+  platform = process.platform,
 }) {
   workspaceRoot = path.resolve(workspaceRoot);
+  const isWin = platform === "win32";
+  const sandboxPolicy = resolveSandboxPolicy({
+    config,
+    cwd: workspaceRoot,
+    platform,
+  });
+  const assertFsSandbox = (absolutePath) => {
+    const denied = assertSandboxWriteAllowed(absolutePath, sandboxPolicy);
+    if (denied) {
+      const error = new Error(denied);
+      error.code = "FS_SANDBOX_DENIED";
+      throw error;
+    }
+  };
   const activeToolResultStore = toolResultStore || createToolResultStore();
   const replyLanguageName = getReplyLanguageName(config);
   const fileObservations = providedFileObservations instanceof Map
@@ -4078,8 +4154,9 @@ export function getBuiltinTools({
       type: "function",
       function: {
         name: "edit",
-        description:
-          'Edit an existing file after reading enough surrounding code. Tool arguments must be valid JSON; escape file-content newlines as \\n in JSON strings. Use exactly one canonical shape: {path, old_text, new_text} for text replacement; {path, new_content} for a small full-file rewrite; {path, anchor_text, content, position:"before"|"after"} for inserts; or {path, kind:"replace_block", target|ast_target, new_content} for structural replacement. Keep generated content fields near the end of the object. For a long whole-file rewrite, use begin_write/write_chunk/commit_write instead. If old_text is repeated, use path:"file:10-30" or rely on the most recent read range. Set replace_all=true to replace every match.',
+        description: isWin
+          ? 'Edit an existing file after reading enough surrounding code. Tool arguments must be valid JSON; escape file-content newlines as \\n in JSON strings. Use exactly one canonical shape: {path, old_text, new_text} for text replacement; {path, new_content} for a small full-file rewrite; {path, anchor_text, content, position:"before"|"after"} for inserts; or {path, kind:"replace_block", target|ast_target, new_content} for structural replacement. Keep generated content fields near the end of the object. For a long whole-file rewrite, use begin_write/write_chunk/commit_write instead. If old_text is repeated, use path:"file:10-30" or rely on the most recent read range. Set replace_all=true to replace every match.'
+          : 'Edit an existing file after reading it. Prefer {path|file_path, old_string, new_string, replace_all?} for unique literal replacement (DeepSeek/Claude-compatible). old_text/new_text remain accepted aliases. Tool arguments must be valid JSON; escape newlines as \\n. Also supports {path, new_content} full rewrite and insert/replace_block shapes. Set replace_all=true to replace every match.',
         parameters: {
           type: "object",
           properties: {
@@ -4088,11 +4165,20 @@ export function getBuiltinTools({
               description:
                 "File path to edit. Inline ranges like src/app.js:10-30 are accepted.",
             },
-            old_text: { type: "string", description: "Exact text to replace" },
-            new_text: { type: "string", description: "Replacement text for old_text" },
+            file_path: { type: "string", description: "Alias for path" },
+            old_string: {
+              type: "string",
+              description: "Exact text to replace (preferred on Linux/mac)",
+            },
+            new_string: {
+              type: "string",
+              description: "Replacement text for old_string",
+            },
+            old_text: { type: "string", description: "Alias for old_string" },
+            new_text: { type: "string", description: "Alias for new_string" },
             replace_all: {
               type: "boolean",
-              description: "Replace all matching old_text occurrences",
+              description: "Replace all matching old_string/old_text occurrences",
             },
             start_line: {
               type: "number",
@@ -4137,8 +4223,9 @@ export function getBuiltinTools({
       type: "function",
       function: {
         name: "write",
-        description:
-          "Write an entire small file. Use for new files, or for an intentional full-file overwrite of an existing file with overwrite=true. Always include exactly {path, overwrite?, content}, with content last. Tool arguments must be valid JSON; escape file-content newlines as \\n in JSON strings. For long content that might approach the model output limit, use begin_write, sequential write_chunk calls, then commit_write. For small changes in existing files, prefer edit with {path, old_text, new_text}.",
+        description: isWin
+          ? "Write an entire small file. Use for new files, or for an intentional full-file overwrite of an existing file with overwrite=true. Always include exactly {path, overwrite?, content}, with content last. Tool arguments must be valid JSON; escape file-content newlines as \\n in JSON strings. For long content that might approach the model output limit, use begin_write, sequential write_chunk calls, then commit_write. For small changes in existing files, prefer edit with {path, old_text, new_text}."
+          : "Create or overwrite a file with {path|file_path, content, overwrite?}. Prefer edit with old_string/new_string for small edits. Tool arguments must be valid JSON; escape newlines as \\n.",
         parameters: {
           type: "object",
           properties: {
@@ -4147,6 +4234,7 @@ export function getBuiltinTools({
               description:
                 "Required file path like src/app.js or pages/index.html.",
             },
+            file_path: { type: "string", description: "Alias for path" },
             overwrite: {
               type: "boolean",
               description:
@@ -4462,8 +4550,9 @@ export function getBuiltinTools({
       type: "function",
       function: {
         name: "run",
-        description:
-          "Run a compact shell command. Use this for one-shot commands like install/build/test, and also for long-running commands by setting run_in_background=true. Long-running commands may also be backgrounded automatically. Put command last. Do not embed long scripts or generated file content; stage/write the file first, then run a short command that invokes it.",
+        description: isWin
+          ? "Run a compact shell command. Use this for one-shot commands like install/build/test, and also for long-running commands by setting run_in_background=true. Long-running commands may also be backgrounded automatically. Put command last. Do not embed long scripts or generated file content; stage/write the file first, then run a short command that invokes it."
+          : "Run a compact shell command under the OS file sandbox (sandbox-runtime). Default mode is workspace-write. On denial, stderr includes [sandbox: ...]; widen via config sandbox.mode or sandbox_permissions on retry (workspace-write|danger-full-access). Use run_in_background=true for long-running commands. Put command last.",
         parameters: {
           type: "object",
           properties: {
@@ -4496,6 +4585,21 @@ export function getBuiltinTools({
               description:
                 "Optional HTTP readiness probe for a background task",
             },
+            ...(isWin
+              ? {}
+              : {
+                  sandbox_permissions: {
+                    type: "string",
+                    enum: ["workspace-write", "danger-full-access"],
+                    description:
+                      "One-shot wider sandbox mode for this command after a denial",
+                  },
+                  justification: {
+                    type: "string",
+                    description:
+                      "Why wider sandbox_permissions are needed for this retry",
+                  },
+                }),
             command: {
               type: "string",
               description: "Compact shell command to execute. Keep this field last.",
@@ -5153,7 +5257,7 @@ export function getBuiltinTools({
 
   const enableCodeWikiCommentTools =
     config?.runtime?.codewiki_comment_tools === true;
-  const definitions = enableCodeWikiCommentTools
+  let definitions = enableCodeWikiCommentTools
     ? [
         ...primaryDefinitions,
         ...workflowToolDefinitions,
@@ -5161,6 +5265,29 @@ export function getBuiltinTools({
         ...codeWikiCommentToolDefinitions,
       ]
     : [...primaryDefinitions, ...workflowToolDefinitions, ...userInputToolDefinitions];
+
+  // Linux/mac: DSH-aligned CRUD — promote glob/grep; drop staged write + apply_patch entirely.
+  // Windows keeps the current always-on write toolkit (encoding-safe staged writes).
+  if (!isWin) {
+    const drop = new Set([
+      "begin_write",
+      "write_chunk",
+      "commit_write",
+      "abort_write",
+      "apply_patch",
+    ]);
+    const promote = ["grep", "glob"];
+    for (const name of promote) {
+      const def = deferredToolCatalog[name];
+      if (def && !definitions.some((d) => d?.function?.name === name)) {
+        definitions.push(def);
+      }
+      delete deferredToolCatalog[name];
+    }
+    definitions = definitions.filter((d) => !drop.has(d?.function?.name));
+    for (const name of drop) delete deferredToolCatalog[name];
+  }
+
   const activeFffAdapter =
     fffAdapter || createFffAdapter({ workspaceRoot, config });
   async function backupNonGitPathOnce(rawPath) {
@@ -5798,7 +5925,7 @@ export function getBuiltinTools({
       const mutationConfig = configWithApprovedMutationPaths(config, args);
       const normalizedKind = String(args?.kind || "").trim();
       const hasReplaceTextArgs =
-        args?.old_text != null;
+        args?.old_text != null || args?.old_string != null;
       const astTarget =
         hasReplaceTextArgs ||
         (normalizedKind && normalizedKind !== "replace_block")
@@ -5808,6 +5935,7 @@ export function getBuiltinTools({
             });
       const editPath = normalizeFilePathValue(
         args?.path ||
+          args?.file_path ||
           args?.ast_target?.path ||
           "",
         { stripInlineRange: true },
@@ -5831,6 +5959,7 @@ export function getBuiltinTools({
         throw new Error("edit requires an explicit path so the mutation target can be reviewed");
       }
       const editTargetPath = await resolveInWorkspace(workspaceRoot, observedPath, mutationConfig);
+      assertFsSandbox(editTargetPath);
       const result = await commitManagedMutation({
         targets: [{ target: editTargetPath, path: observedPath }],
         operation: "edit",
@@ -5862,6 +5991,7 @@ export function getBuiltinTools({
         { stripInlineRange: true },
       ).trim();
       const createTarget = await resolveInWorkspace(workspaceRoot, createPath, mutationConfig);
+      assertFsSandbox(createTarget);
       const result = await commitManagedMutation({
         targets: [{ target: createTarget, path: createPath }],
         operation: "create",
@@ -5878,10 +6008,11 @@ export function getBuiltinTools({
       await ensureProjectIndex();
       const mutationConfig = configWithApprovedMutationPaths(config, args);
       const writePath = normalizeFilePathValue(
-        args?.path || "",
+        args?.path || args?.file_path || "",
         { stripInlineRange: true },
       ).trim();
       const writeTarget = await resolveInWorkspace(workspaceRoot, writePath, mutationConfig);
+      assertFsSandbox(writeTarget);
       const result = await commitManagedMutation({
         targets: [{ target: writeTarget, path: writePath }],
         operation: "write",
@@ -5911,6 +6042,7 @@ export function getBuiltinTools({
         // reviewed and one-shot authorized by commit_write before atomic I/O.
         target = path.resolve(workspaceRoot, rawPath);
       }
+      assertFsSandbox(target);
       let existed = false;
       try {
         const stat = await fs.stat(target);
@@ -5959,6 +6091,7 @@ export function getBuiltinTools({
           `commit_write path mismatch: transaction targets ${transaction.path}, received ${commitPath || "(missing path)"}`,
         );
       }
+      assertFsSandbox(transaction.target);
       const result = await commitManagedMutation({
         targets: [{ target: transaction.target, path: transaction.path }],
         operation: transaction.existed ? "write" : "create",
@@ -6056,6 +6189,7 @@ export function getBuiltinTools({
           { stripInlineRange: true },
         ).trim();
         const deleteTarget = await resolveInWorkspace(workspaceRoot, deletePathValue, mutationConfig);
+        assertFsSandbox(deleteTarget);
         const result = await commitManagedMutation({
           targets: [{ target: deleteTarget, path: deletePathValue }],
           operation: "delete",

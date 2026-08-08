@@ -9,6 +9,7 @@ import {
 } from './constants.js';
 import { normalizeReasoningEffort } from './provider/reasoning-effort.js';
 import { normalizeSkillContexts } from './skill-contexts.js';
+import { normalizeSandboxMode } from './sandbox-policy.js';
 
 function normalizeUiLanguage(value) {
   const raw = String(value || '').trim().toLowerCase();
@@ -131,6 +132,12 @@ const DEFAULT_CONFIG = {
     blocked_commands: [],
     blocked_path_patterns: [],
     blocked_command_patterns: ['rm -rf /', 'format c:', 'del /f /s /q C:\\\\']
+  },
+  // Linux/mac: OS confine via @anthropic-ai/sandbox-runtime. Windows stays off (command-policy only).
+  sandbox: {
+    enabled: 'auto',
+    mode: process.platform === 'win32' ? 'danger-full-access' : 'workspace-write',
+    workspace_root: ''
   },
   skills: {
     enabled: {},
@@ -319,6 +326,22 @@ function normalizePolicyLists(config) {
   next.policy.blocked_path_patterns = uniqueStrings(
     Array.isArray(next.policy.blocked_path_patterns) ? next.policy.blocked_path_patterns : []
   );
+  next.sandbox = next.sandbox || {};
+  const enabledRaw = next.sandbox.enabled;
+  if (enabledRaw === true || enabledRaw === false) {
+    next.sandbox.enabled = enabledRaw;
+  } else {
+    const enabledStr = String(enabledRaw ?? 'auto').trim().toLowerCase();
+    next.sandbox.enabled = ['true', 'on', 'always', 'false', 'off', 'never', 'auto'].includes(enabledStr)
+      ? (enabledStr === 'true' || enabledStr === 'on' || enabledStr === 'always'
+        ? true
+        : enabledStr === 'false' || enabledStr === 'off' || enabledStr === 'never'
+          ? false
+          : 'auto')
+      : 'auto';
+  }
+  next.sandbox.mode = normalizeSandboxMode(next.sandbox.mode);
+  next.sandbox.workspace_root = String(next.sandbox.workspace_root || '').trim();
   return next;
 }
 

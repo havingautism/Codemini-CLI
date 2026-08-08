@@ -1,5 +1,7 @@
-const STANDALONE_URL_RE = /^https?:\/\/[^\s<>)\]"']+$/i;
-const INLINE_URL_RE = /https?:\/\/[^\s<>)\]"']+/gi;
+// Stop before whitespace, markdown delimiters, backticks, and common closers
+// (ASCII + fullwidth) so inline `http://127.0.0.1:3002`) +` does not swallow junk.
+const STANDALONE_URL_RE = /^https?:\/\/[^\s<>)\]"'`｀）】』」》]+$/i;
+const INLINE_URL_RE = /https?:\/\/[^\s<>)\]"'`｀）】』」》]+/gi;
 const MARKDOWN_LINK_RE = /(?<!!)\[([^\]\n]*)\]\((https?:\/\/[^\s)]+)\)/gi;
 const MARKDOWN_IMAGE_RE = /!\[([^\]\n]*)\]\((https?:\/\/[^\s)]+)\)/gi;
 const STANDALONE_MARKDOWN_IMAGE_RE = /^!\[([^\]\n]*)\]\((https?:\/\/[^\s)]+)\)$/i;
@@ -11,7 +13,32 @@ const LIST_ITEM_META_RE =
   /^(\s*(?:\d+\.|[-*+])\s+.+?)( — \d[\d,]*\s+points?\s+·\s+\d[\d,]*\s+comments?\b.*)$/gim;
 
 function trimUrlTrailingPunctuation(url) {
-  return String(url || '').replace(/[.,;:!?)]+$/g, '');
+  return String(url || '').replace(/[.,;:!?)'"`｀）】』」》]+$/gu, '');
+}
+
+/** Public http(s) only — skip loopback / RFC1918 / .local (not related-link material). */
+export function isPublicHttpUrl(value) {
+  let parsed;
+  try {
+    parsed = new URL(trimUrlTrailingPunctuation(String(value || '').trim()));
+  } catch {
+    return false;
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
+  const host = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  if (
+    host === 'localhost'
+    || host === '127.0.0.1'
+    || host === '::1'
+    || host === '0.0.0.0'
+    || host.endsWith('.local')
+    || /^10\./.test(host)
+    || /^192\.168\./.test(host)
+    || /^172\.(1[6-9]|2\d|3[01])\./.test(host)
+  ) {
+    return false;
+  }
+  return true;
 }
 
 function cleanupMarkdownText(text) {
@@ -77,7 +104,11 @@ export function splitInlineUrls(text) {
       if (start > lastIndex) {
         parts.push({ type: 'markdown', text: source.slice(lastIndex, start) });
       }
-      parts.push({ type: 'embed', url });
+      if (isPublicHttpUrl(url)) {
+        parts.push({ type: 'embed', url });
+      } else {
+        parts.push({ type: 'markdown', text: rawUrl });
+      }
       lastIndex = start + rawUrl.length;
     }
     match = INLINE_URL_RE.exec(source);
@@ -127,12 +158,12 @@ export function splitMarkdownForEmbeds(text, { includeLinks = true } = {}) {
       const url = trimUrlTrailingPunctuation(trimmed);
       // Image file URLs always become inline images, even when link embeds are off
       // (chat body uses includeLinks=false and shows non-image links in the banner).
-      if (isImageUrl(url)) {
+      if (isImageUrl(url) && isPublicHttpUrl(url)) {
         flushMarkdown();
         parts.push({ type: 'image', alt: '', url });
         continue;
       }
-      if (includeLinks) {
+      if (includeLinks && isPublicHttpUrl(url)) {
         flushMarkdown();
         parts.push({ type: 'embed', url });
         continue;
@@ -175,7 +206,7 @@ export function extractLinksFromMarkdownText(text) {
   const seen = new Set();
   const addItem = (item) => {
     const url = trimUrlTrailingPunctuation(String(item?.url || '').trim());
-    if (!url || seen.has(url) || isImageUrl(url)) return;
+    if (!url || seen.has(url) || isImageUrl(url) || !isPublicHttpUrl(url)) return;
     seen.add(url);
     items.push({
       type: item.type || 'link',

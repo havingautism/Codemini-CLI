@@ -1378,6 +1378,12 @@ export function createWebRuntimeApi({
           ok: await bridge.setApprovalMode(body.mode),
         }),
       ],
+      [
+        "/api/sandbox-mode",
+        async ({ bridge, body }) => ({
+          ok: await bridge.setSandboxMode(body.mode),
+        }),
+      ],
     ]);
     if (req.method === "POST" && directOperations.has(url.pathname)) {
       const body = await readBody(req);
@@ -1402,15 +1408,29 @@ export function createWebRuntimeApi({
         url.pathname === "/api/approval-mode" &&
         !["review", "auto", "full_access"].includes(body.mode)
       ) {
-        jsonResponse(
-          res,
-          { error: true, message: "Invalid approval mode" },
-          400,
-        );
+        jsonResponse(res, { error: true, message: "Invalid approval mode" }, 400);
         return true;
       }
+      if (url.pathname === "/api/sandbox-mode") {
+        const sandboxMode = String(body.mode || "")
+          .toLowerCase()
+          .replace(/_/g, "-");
+        if (
+          !["read-only", "workspace-write", "danger-full-access"].includes(
+            sandboxMode,
+          )
+        ) {
+          jsonResponse(
+            res,
+            { error: true, message: "Invalid sandbox mode" },
+            400,
+          );
+          return true;
+        }
+        body.mode = sandboxMode;
+      }
       if (
-        ["/api/execution-mode", "/api/approval-mode"].includes(url.pathname) &&
+        ["/api/execution-mode", "/api/approval-mode", "/api/sandbox-mode"].includes(url.pathname) &&
         (ACTIVE_RUNTIME_STATUSES.has(
           pool.getSessionState(body.sessionId)?.status,
         ) ||
@@ -1419,6 +1439,8 @@ export function createWebRuntimeApi({
         const message =
           url.pathname === "/api/execution-mode"
             ? "Cannot switch execution mode while a request is running"
+            : url.pathname === "/api/sandbox-mode"
+              ? "Cannot switch sandbox mode while a request is running"
             : "Cannot switch approval mode while a request is running";
         jsonResponse(res, { error: true, message }, 409);
         return true;

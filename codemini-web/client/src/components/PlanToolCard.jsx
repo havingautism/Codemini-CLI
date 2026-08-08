@@ -5,10 +5,11 @@ import {
   UserCircle,
   UsersThree,
 } from "@phosphor-icons/react";
-import { LinearRing, LinearStatusDot } from "@/components/ui/spinner";
+import { SessionOrb } from "@/components/ui/spinner";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { StreamdownRenderer } from "@/components/StreamdownRenderer.jsx";
 import { ToolCard } from "@/components/ToolCard.jsx";
+import { UsageBadge } from "@/components/UsageBadge.jsx";
 import { cn } from "@/lib/utils";
 import { planPhaseTitle, shouldExpandPlanStep } from "@/lib/plan-ui-state.js";
 import { t } from "../../i18n/index.js";
@@ -207,8 +208,8 @@ function StepAnswer({ segment }) {
       {open ? (
         <ScrollArea
           type="auto"
-          className="mt-1 h-48 rounded-md bg-(--bg-tertiary) dark:bg-(--bg-primary)"
-          viewportClassName="px-3 py-2 text-[13px] leading-relaxed text-(--text-secondary)"
+          className="mt-1 h-64 rounded-md bg-(--bg-tertiary) dark:bg-(--bg-primary)"
+          viewportClassName="px-3 py-2 text-[12px] leading-relaxed text-(--text-secondary)"
         >
           <StreamdownRenderer
             text={text}
@@ -231,20 +232,27 @@ function StepBody({ step }) {
 
   if (!hasContent) {
     return (
-      <div className="flex items-center gap-2 py-1 text-[12px] text-(--text-muted)">
-        {running ? (
-          <>
-            <LinearRing size="sm" />
-            <span>{t("thinking")}</span>
-          </>
-        ) : waiting ? (
-          <>
-            <span className="size-1.5 rounded-full bg-(--accent-orange)" />
-            <span>{t("subagentStatusWaiting")}</span>
-          </>
-        ) : (
-          "—"
-        )}
+      <div className="flex flex-col gap-1.5">
+        <div className="flex items-center gap-2 py-1 text-[12px] text-(--text-muted)">
+          {running ? (
+            <>
+              <SessionOrb state="composing" />
+              <span>{t("thinking")}</span>
+            </>
+          ) : waiting ? (
+            <>
+              <span className="size-1.5 rounded-full bg-(--accent-orange)" />
+              <span>{t("subagentStatusWaiting")}</span>
+            </>
+          ) : (
+            "—"
+          )}
+        </div>
+        {step?.usage ? (
+          <div className="flex justify-end">
+            <UsageBadge usage={step.usage} />
+          </div>
+        ) : null}
       </div>
     );
   }
@@ -260,6 +268,11 @@ function StepBody({ step }) {
           {step.summary}
         </div>
       )}
+      {step?.usage ? (
+        <div className="flex justify-end">
+          <UsageBadge usage={step.usage} />
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -269,14 +282,14 @@ function SubagentTaskDetails({ task }) {
   if (!text) return null;
 
   return (
-    <div className="mb-2 flex items-start gap-2.5 rounded-md bg-(--bg-tertiary) px-2.5 py-2 text-[12px] leading-relaxed dark:bg-(--bg-primary)">
+    <div className="mb-2 flex items-start gap-2.5 rounded-md bg-(--bg-tertiary) px-2.5 py-2 text-[11px] leading-relaxed dark:bg-(--bg-primary)">
       <span className="shrink-0 pt-px font-medium text-(--text-muted)">
         {t("planStepTask")}
       </span>
       <ScrollArea
         type="auto"
-        className="max-h-32 min-w-0 flex-1"
-        viewportClassName="max-h-32 pr-2 text-(--text-secondary)"
+        className="max-h-48 min-w-0 flex-1"
+        viewportClassName="max-h-48 pr-2 text-(--text-secondary)"
       >
         <StreamdownRenderer
           text={text}
@@ -353,7 +366,7 @@ function SubagentStepRow({ step, index }) {
           </span>
         </span>
         {status === "running" ? (
-          <LinearStatusDot className="shrink-0" />
+          <SessionOrb state="working" />
         ) : (
           <span
             className={cn(
@@ -455,7 +468,7 @@ export function PlanToolCard({ card, grouped = false }) {
         </span>
         <span className="flex shrink-0 items-center gap-1.5 text-[12px] text-(--text-secondary)">
           {running && phase !== "waiting" ? (
-            <LinearStatusDot className="shrink-0" />
+            <SessionOrb state="working" />
           ) : (
             <span
               aria-hidden="true"
@@ -496,7 +509,7 @@ export function PlanToolCard({ card, grouped = false }) {
             )
           ) : running ? (
             <div className="flex items-center gap-2 py-1 text-[12px] text-(--text-muted)">
-              <LinearRing size="sm" />
+              <SessionOrb state="composing" />
               <span>{t("thinking")}</span>
             </div>
           ) : (

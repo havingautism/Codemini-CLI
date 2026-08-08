@@ -699,7 +699,9 @@ export const en = {
   replyLanguageEn: "English",
   settingsUnsavedChanges: "Unsaved changes",
   approvalModeHelp:
-    "Review: confirm edits, deletes, and risky shell commands. Auto: auto-run in Git repos; non-Git file changes still need approval. Full access: skip approval prompts.",
+    "Review: confirm edits, deletes, and risky shell commands. Auto: auto-run in Git repos; non-Git file changes still need approval. Full access: skip approval prompts. On Linux/mac this control is hidden (and soft approval skipped) while the OS sandbox is confining; it reappears when sandbox is off or danger-full-access.",
+  sandboxModeHelp:
+    "Linux/macOS only. Read-only: commands cannot write disk. Workspace-write: can write the current workspace. Danger full access: disable the OS sandbox fence. Ignored on Windows.",
 
   // Misc
   backToTop: "Back to top",
@@ -877,6 +879,13 @@ export const en = {
   autoModeDesc: "Auto-run in Git projects; review non-Git file changes",
   fullAccessMode: "Full Access",
   fullAccessModeDesc: "Run tool calls without approval prompts",
+  sandboxMode: "Sandbox",
+  sandboxReadOnlyMode: "Read-only",
+  sandboxReadOnlyModeDesc: "Run commands in a sandbox with no disk writes",
+  sandboxWorkspaceWriteMode: "Workspace write",
+  sandboxWorkspaceWriteModeDesc: "Can write the current workspace; elsewhere still confined",
+  sandboxDangerFullAccessMode: "Danger full access",
+  sandboxDangerFullAccessModeDesc: "Disable the OS sandbox fence for commands",
   planMode: "Coding",
   planModeDesc: "Code-focused work with direct editing and optional subagents",
   specMode: "Spec",
@@ -909,6 +918,7 @@ export const en = {
   closePlanProgress: "Close execution progress",
   switchMode: "Switch Work Mode",
   switchApprovalMode: "Switch Approval Mode",
+  switchSandboxMode: "Switch Sandbox Mode",
   editApproval: "Confirm file edit?",
   createApproval: "Confirm file create?",
   writeApproval: "Confirm file write?",

@@ -93,6 +93,27 @@ codemini config set shell.default bash
 codemini config set ui.language zh
 ```
 
+### Sandbox (Linux / macOS)
+
+Shell `run` is wrapped with `@anthropic-ai/sandbox-runtime` when `sandbox.enabled` is `auto` (default on non-Windows) or `true`.
+
+```bash
+codemini config set sandbox.mode workspace-write   # default on Linux/mac
+codemini config set sandbox.mode read-only
+codemini config set sandbox.mode danger-full-access
+codemini config set sandbox.enabled false          # disable OS confine
+```
+
+| Mode | Effect |
+| --- | --- |
+| `workspace-write` | OS-limited writes to workspace (+ temp); network open in v1 |
+| `read-only` | No writes; network denied |
+| `danger-full-access` | No OS wrap |
+
+If the sandbox cannot start, Codemini **refuses** to run the command unconfined. Linux needs `bubblewrap` (see sandbox-runtime docs); macOS uses `sandbox-exec`.
+
+**Windows:** sandbox-runtime is not used. Approval mode stays available. Tools and command-policy stay as before (including staged writes and `apply_patch`). On Linux/mac, CRUD prefers DeepSeek-style `edit` (`old_string`/`new_string`) with always-on `glob`/`grep`; staged write tools and `apply_patch` are omitted. While OS sandbox is confining, soft approval prompts are skipped and the approval selector is hidden; turn sandbox off (or set `danger-full-access`) to use approval mode again. Unique tools (`search_code`, memory, plan, …) remain.
+
 ### Run diagnostics
 
 ```powershell
