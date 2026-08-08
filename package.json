@@ -72,6 +72,7 @@
     "fast-glob": "^3.3.3",
     "ink": "^7.0.0",
     "mammoth": "^1.12.0",
+    "node-addon-landlock-run": "0.0.0-test.0",
     "node-pty": "^1.1.0",
     "pdf-parse": "1.1.1",
     "react": "^19.2.5",

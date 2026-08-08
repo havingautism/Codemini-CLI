@@ -1,6 +1,5 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { SandboxRuntimeConfigSchema } from '@anthropic-ai/sandbox-runtime';
 import {
   __setSandboxRuntimeTestHooks,
   SandboxUnavailableError,
@@ -38,17 +37,15 @@ test('wrapShellCommandForSandbox skips on win32', async () => {
   }
 });
 
-test('wrapShellCommandForSandbox wraps on linux via SandboxManager', async () => {
-  let initConfig = null;
+test('workspace-write sandbox uses the npm Landlock launcher and leaves network unrestricted', async () => {
+  let grants = null;
   __setSandboxRuntimeTestHooks({
-    SandboxManager: {
-      async initialize(config) {
-        initConfig = SandboxRuntimeConfigSchema.parse(config);
-      },
-      isSandboxingEnabled: () => true,
-      isSupportedPlatform: () => true,
-      async wrapWithSandbox(command) {
-        return `bwrap -- ${command}`;
+    Landlock: {
+      launcherPath: () => '/npm/bin/landlock-run',
+      probe: () => 'full',
+      grantArgs(value) {
+        grants = value;
+        return ['--grant-test'];
       },
     },
   });
@@ -61,54 +58,79 @@ test('wrapShellCommandForSandbox wraps on linux via SandboxManager', async () =>
       binShell: 'bash',
     });
     assert.equal(out.wrapped, true);
-    assert.equal(out.command, 'bwrap -- echo hi');
-    assert.ok(Array.isArray(initConfig?.filesystem?.allowWrite));
-    assert.deepEqual(initConfig.network.allowedDomains, []);
-    assert.deepEqual(initConfig.network.deniedDomains, []);
+    assert.equal(out.executable, '/npm/bin/landlock-run');
+    assert.deepEqual(out.args, ['--grant-test', '--', 'bash', '-lc', 'echo hi']);
+    assert.deepEqual(grants.readOnly, ['/']);
+    assert.ok(grants.readWrite.includes(out.policy.workspaceRoot));
+    assert.equal(out.enforcement, 'full');
   } finally {
     __setSandboxRuntimeTestHooks(null);
   }
 });
 
-test('read-only sandbox validates against the real runtime schema and blocks network', async () => {
-  let initConfig = null;
+test('read-only Landlock grants only /dev/null for writes', async () => {
+  let grants = null;
   __setSandboxRuntimeTestHooks({
-    SandboxManager: {
-      async initialize(config) {
-        initConfig = SandboxRuntimeConfigSchema.parse(config);
-      },
-      isSandboxingEnabled: () => true,
-      isSupportedPlatform: () => true,
-      async wrapWithSandbox(command) {
-        return command;
+    Landlock: {
+      launcherPath: () => '/npm/bin/landlock-run',
+      probe: () => 'partial',
+      grantArgs(value) {
+        grants = value;
+        return [];
       },
     },
   });
   try {
-    await wrapShellCommandForSandbox({
+    const out = await wrapShellCommandForSandbox({
       command: 'echo hi',
       config: { sandbox: { enabled: true, mode: 'read-only' } },
       cwd: '/tmp/project',
       platform: 'linux',
       binShell: 'bash',
     });
-    assert.deepEqual(initConfig.network.allowedDomains, []);
+    assert.deepEqual(grants, { readOnly: ['/'], readWrite: ['/dev/null'] });
+    assert.equal(out.enforcement, 'partial');
   } finally {
     __setSandboxRuntimeTestHooks(null);
   }
 });
 
-test('wrapShellCommandForSandbox fail-closed when initialize fails', async () => {
+test('macOS keeps the built-in Seatbelt backend and allows network', async () => {
+  let networkCallback = null;
   __setSandboxRuntimeTestHooks({
     SandboxManager: {
-      async initialize() {
-        throw new Error('no bwrap');
+      async initialize(_config, callback) {
+        networkCallback = callback;
       },
-      isSandboxingEnabled: () => false,
+      isSandboxingEnabled: () => true,
       isSupportedPlatform: () => true,
-      async wrapWithSandbox() {
-        return 'x';
+      async wrapWithSandbox(command) {
+        return `sandbox-exec -- ${command}`;
       },
+    },
+  });
+  try {
+    const out = await wrapShellCommandForSandbox({
+      command: 'echo hi',
+      config: { sandbox: { enabled: true, mode: 'workspace-write' } },
+      cwd: '/tmp/project',
+      platform: 'darwin',
+      binShell: 'bash',
+    });
+    assert.equal(out.wrapped, true);
+    assert.equal(out.command, 'sandbox-exec -- echo hi');
+    assert.equal(await networkCallback({ host: 'example.com', port: 443 }), true);
+  } finally {
+    __setSandboxRuntimeTestHooks(null);
+  }
+});
+
+test('wrapShellCommandForSandbox fail-closed when Landlock is unavailable', async () => {
+  __setSandboxRuntimeTestHooks({
+    Landlock: {
+      launcherPath: () => '/missing/landlock-run',
+      probe: () => 'unusable',
+      grantArgs: () => [],
     },
   });
   try {
@@ -120,7 +142,11 @@ test('wrapShellCommandForSandbox fail-closed when initialize fails', async () =>
           cwd: '/tmp/project',
           platform: 'linux',
         }),
-      (err) => err instanceof SandboxUnavailableError && err.code === 'SANDBOX_UNAVAILABLE',
+      (err) =>
+        err instanceof SandboxUnavailableError
+        && err.code === 'SANDBOX_UNAVAILABLE'
+        && /npm install in this Linux environment/i.test(err.message)
+        && !/apt-get|bubblewrap|socat/i.test(err.message),
     );
   } finally {
     __setSandboxRuntimeTestHooks(null);

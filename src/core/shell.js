@@ -235,7 +235,13 @@ export function isDangerousCommand(command, blockedPatterns = []) {
   return blockedPatterns.some((pattern) => lowered.includes(String(pattern).toLowerCase()));
 }
 
-function spawnShellChild({ shellSpec, shellCommand, cwd, sandboxedCommand }) {
+function spawnShellChild({ shellSpec, shellCommand, cwd, sandboxedCommand, sandboxSpawn }) {
+  if (sandboxSpawn?.executable) {
+    return spawn(sandboxSpawn.executable, sandboxSpawn.args || [], {
+      cwd,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+  }
   if (sandboxedCommand) {
     return spawn(sandboxedCommand, {
       cwd,
@@ -268,6 +274,7 @@ export async function runShellCommand({
       : command;
 
   let sandboxedCommand = '';
+  let sandboxSpawn = null;
   let sandboxMeta = { wrapped: false, mode: '' };
   let annotateStderr = null;
   if (process.platform !== 'win32' && config) {
@@ -283,12 +290,16 @@ export async function runShellCommand({
     });
     if (wrap.wrapped) {
       sandboxedCommand = wrap.command;
+      if (wrap.executable) {
+        sandboxSpawn = { executable: wrap.executable, args: wrap.args };
+        sandboxedCommand = '';
+      }
       sandboxMeta = { wrapped: true, mode: wrap.policy?.mode || '' };
     }
   }
 
   return new Promise((resolve, reject) => {
-    const child = spawnShellChild({ shellSpec, shellCommand, cwd, sandboxedCommand });
+    const child = spawnShellChild({ shellSpec, shellCommand, cwd, sandboxedCommand, sandboxSpawn });
 
     let stdout = '';
     let stderr = '';

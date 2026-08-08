@@ -1,25 +1,7 @@
 import { collectCommandTokens, firstToken } from './command-policy.js';
+import { READ_ONLY_TOKENS, getReadOnlyCommandTokens } from './read-only-command-tokens.js';
 
-/* ── 只读命令 token ───────────────────────────────────────────── */
-export const READ_ONLY_TOKENS = new Set([
-  'ls', 'dir', 'tree', 'cat', 'head', 'tail', 'pwd', 'wc', 'sort', 'uniq',
-  'cut', 'tr', 'basename', 'dirname', 'test', 'true', 'false',
-  'whoami', 'uname', 'date', 'env', 'printenv', 'hostname', 'which', 'where', 'where.exe',
-  'stat', 'file', 'du', 'df', 'jq', 'hexdump', 'od', 'nl', 'less', 'more', 'man', 'help',
-  'rg', 'find', 'grep', 'ag', 'ack', 'fd', 'bat',
-  'get-childitem', 'gci', 'get-content', 'gc', 'get-location', 'gl', 'get-command', 'get-help',
-  'get-item', 'gi', 'get-process', 'type', 'select-string', 'sls', 'select-object', 'select', 'where-object',
-  'foreach-object', 'measure-object', 'sort-object', 'compare-object',
-  'resolve-path', 'test-path',
-  'git',
-  'npm', 'npx', 'pnpm', 'yarn', 'pip', 'pip3', 'node', 'nodejs', 'python', 'python3', 'py',
-  'cargo', 'go', 'dotnet', 'ruby', 'php',
-  'echo', 'printf', 'seq', 'yes'
-]);
-
-export function getReadOnlyCommandTokens() {
-  return [...READ_ONLY_TOKENS].sort();
-}
+export { READ_ONLY_TOKENS, getReadOnlyCommandTokens };
 
 /* 只读时需要检查子命令的 token */
 const READ_ONLY_SUBCOMMANDS = {
@@ -98,6 +80,18 @@ function isReadOnlyToken(token, rawSegment, platform) {
       token === 'find'
       && /(?:^|\s)-(?:delete|exec|execdir|ok|okdir)\b/i.test(String(rawSegment || ''))
     ) return false;
+    if (token === 'date' && /(?:^|\s)(?:-s\b|--set(?:=|\s))/i.test(String(rawSegment || ''))) {
+      return false;
+    }
+    if (token === 'sort' && /(?:^|\s)(?:-o\b|--output(?:=|\s))/i.test(String(rawSegment || ''))) {
+      return false;
+    }
+    if (token === 'env') {
+      const parts = String(rawSegment || '').trim().slice(token.length).trim().split(/\s+/).filter(Boolean);
+      if (parts.some((part) => !part.startsWith('-') && !/^[A-Za-z_][A-Za-z0-9_]*=/.test(part))) {
+        return false;
+      }
+    }
   }
 
   /* 需要 子命令 校验的 token */

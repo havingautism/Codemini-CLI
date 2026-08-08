@@ -134,7 +134,7 @@ const DEFAULT_CONFIG = {
     blocked_path_patterns: [],
     blocked_command_patterns: ['rm -rf /', 'format c:', 'del /f /s /q C:\\\\']
   },
-  // Linux/mac: OS confine via @anthropic-ai/sandbox-runtime. Windows stays off (command-policy only).
+  // Linux: npm-shipped Landlock; macOS: Seatbelt. Windows stays off (command-policy only).
   sandbox: {
     enabled: 'auto',
     mode: process.platform === 'win32' ? 'danger-full-access' : 'workspace-write',

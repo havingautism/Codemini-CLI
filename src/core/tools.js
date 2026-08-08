@@ -2312,6 +2312,7 @@ async function startBackgroundTask(root, config, args) {
   await fs.writeFile(outputFileAbs, "", "utf8");
 
   let sandboxedCommand = "";
+  let sandboxSpawn = null;
   if (process.platform !== "win32") {
     const { wrapShellCommandForSandbox } = await import("./sandbox-runtime.js");
     const wrap = await wrapShellCommandForSandbox({
@@ -2321,10 +2322,21 @@ async function startBackgroundTask(root, config, args) {
       binShell: resolveSandboxShell(config.shell.default),
       mode: args?.sandbox_permissions || args?.sandbox_mode || args?.sandboxMode,
     });
-    if (wrap.wrapped) sandboxedCommand = wrap.command;
+    if (wrap.wrapped) {
+      sandboxedCommand = wrap.command;
+      if (wrap.executable) {
+        sandboxSpawn = { executable: wrap.executable, args: wrap.args };
+        sandboxedCommand = "";
+      }
+    }
   }
 
-  const child = sandboxedCommand
+  const child = sandboxSpawn
+    ? spawn(sandboxSpawn.executable, sandboxSpawn.args, {
+        cwd: root,
+        stdio: ["ignore", "pipe", "pipe"],
+      })
+    : sandboxedCommand
     ? spawn(sandboxedCommand, {
         cwd: root,
         shell: true,
@@ -4881,7 +4893,7 @@ export function getBuiltinTools({
         name: "run",
         description: isWin
           ? "Run a compact shell command. Use this for one-shot commands like install/build/test, and also for long-running commands by setting run_in_background=true. Long-running commands may also be backgrounded automatically. Put command last. Do not embed long scripts or generated file content; stage/write the file first, then run a short command that invokes it."
-          : "Run a compact shell command under the OS file sandbox (sandbox-runtime). Default mode is workspace-write. On denial, stderr includes [sandbox: ...]; widen via config sandbox.mode or sandbox_permissions on retry (workspace-write|danger-full-access). Use run_in_background=true for long-running commands. Put command last.",
+          : "Run a compact shell command under the OS file sandbox. Default mode is workspace-write. On denial, stderr includes [sandbox: ...]; widen via config sandbox.mode or sandbox_permissions on retry (workspace-write|danger-full-access). Use run_in_background=true for long-running commands. Put command last.",
         parameters: {
           type: "object",
           properties: {

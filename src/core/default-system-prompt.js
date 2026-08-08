@@ -52,7 +52,7 @@ Load other deferred tools with tool_search when needed.`;
   const patchHint = isWin
     ? `For a large or multi-file code patch, use apply_patch with one escaped patch_text string:
 Tool: apply_patch({"patch_text":"*** Begin Patch\\n*** Update File: ${path.join('src', 'auth', 'service.ts').replace(/\\/g, '/')}\\n@@\\n-export const enabled = false;\\n+export const enabled = true;\\n*** End Patch"})`
-    : `On Linux/mac, prefer edit old_string/new_string for edits (multi-hunk via multiple edit calls). Shell commands run under sandbox-runtime (default workspace-write); denials include [sandbox: ...] markers.`;
+    : `On Linux/mac, prefer edit old_string/new_string for edits (multi-hunk via multiple edit calls). Shell commands run under the OS file sandbox (default workspace-write); denials include [sandbox: ...] markers.`;
 
   return `# Tool Examples
 

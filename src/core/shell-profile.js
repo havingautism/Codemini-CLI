@@ -1,5 +1,6 @@
 import path from 'node:path';
 import { getSearchToolHint, resolveSearchToolContext } from './provider/search-tool-registry.js';
+import { getReadOnlyCommandTokens } from './read-only-command-tokens.js';
 
 const DEFAULT_SHELL = process.platform === 'win32' ? 'powershell' : 'bash';
 
@@ -142,6 +143,7 @@ export function getEffectivePolicy(config) {
   return {
     ...policy,
     command_allowlist: uniqueStrings([
+      ...(profile.shell === 'bash' ? getReadOnlyCommandTokens() : []),
       ...(Array.isArray(profile.command_allowlist) ? profile.command_allowlist : []),
       ...(Array.isArray(policy.command_allowlist) ? policy.command_allowlist : [])
     ]),

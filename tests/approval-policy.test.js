@@ -10,7 +10,7 @@ import {
   toolRequiresUserApproval
 } from '../src/core/approval-policy.js';
 import { runAgentLoop } from '../src/core/agent-loop.js';
-import { getBuiltinTools } from '../src/core/tools.js';
+import { getBuiltinTools, hasRunCommandSafeModeApproval } from '../src/core/tools.js';
 import { closeSqliteDatabasesForTests } from '../src/core/sqlite-database.js';
 import { resolvePlanSubAgentApprovalOptions, ROLE_TOOL_POLICY } from '../src/core/chat-runtime.js';
 
@@ -285,6 +285,73 @@ test('approval grants one exact outside write without changing allowed_paths', a
     closeSqliteDatabasesForTests();
     await fs.rm(parent, { recursive: true, force: true });
   }
+});
+
+test('git auto mode executes low-risk allowed evaluations without manual review', async () => {
+  let completionIndex = 0;
+  let approvalRequests = 0;
+  let handlerArgs = null;
+  const config = {
+    memory: { enabled: false },
+    shell: { default: 'bash' },
+    policy: {
+      safe_mode: true,
+      allow_dangerous_commands: false,
+      allowed_paths: [],
+      command_allowlist: [],
+      blocked_commands: [],
+      blocked_path_patterns: [],
+      blocked_command_patterns: [],
+    },
+    sandbox: { enabled: false },
+  };
+
+  const result = await runAgentLoop({
+    systemPrompt: 'test',
+    userPrompt: 'inspect with a custom command',
+    model: 'test-model',
+    workspaceRoot: process.cwd(),
+    requestCompletion: async () => {
+      completionIndex += 1;
+      return completionIndex === 1
+        ? {
+            text: '',
+            toolCalls: [{
+              id: 'low-risk-run',
+              name: 'run',
+              arguments: JSON.stringify({ command: 'custom-inspect' }),
+              argumentsComplete: true,
+            }],
+          }
+        : { text: 'done', toolCalls: [] };
+    },
+    evaluateCommand: async () => ({
+      risk: 'low',
+      description: 'Reads local information.',
+      sideEffects: 'None.',
+      recommendation: 'allow',
+      failed: false,
+    }),
+    toolHandlers: {
+      run: async (args) => {
+        handlerArgs = args;
+        return { ok: true };
+      },
+    },
+    approvalMode: 'auto',
+    projectIsGit: true,
+    alwaysAllowTools: ['run'],
+    requestToolApproval: async () => {
+      approvalRequests += 1;
+      return { approved: false };
+    },
+    skipAnalysisNudge: true,
+    config,
+  });
+
+  assert.equal(result.text, 'done');
+  assert.equal(approvalRequests, 0);
+  assert.equal(hasRunCommandSafeModeApproval(handlerArgs), true);
 });
 
 test('plan sub-agent approval options inherit role tools and workspace git', () => {

@@ -622,6 +622,7 @@ export async function runAgentLoop({
   userPrompt,
   model,
   requestCompletion,
+  evaluateCommand = null,
   toolRuntime: providedToolRuntime = null,
   toolRegistry: providedToolRegistry = null,
   toolHandlers = {},
@@ -978,8 +979,10 @@ export async function runAgentLoop({
         /* Run tool: safe mode LLM-based command evaluation */
         if (toolName === 'run' && isSafeModeRun && !preflightErrorContent) {
           try {
-            const { evaluateCommandWithLLM } = await import('./command-evaluator.js');
-            const evaluation = await evaluateCommandWithLLM({
+            const evaluateCommandFn = typeof evaluateCommand === 'function'
+              ? evaluateCommand
+              : (await import('./command-evaluator.js')).evaluateCommandWithLLM;
+            const evaluation = await evaluateCommandFn({
               command: args?.command || '',
               config,
               workspaceRoot: config?.workspaceRoot || process.cwd()
@@ -1008,12 +1011,14 @@ export async function runAgentLoop({
             }
             /* Auto mode: allow low/medium + allow without a panel; high still needs review. */
             if (
-              !isSafeModePolicyBlocked
-              && !isSandboxEscalation
+              !isSandboxEscalation
               && normalizedApprovalMode !== 'review'
               && evaluation.recommendation === 'allow'
               && evaluation.risk !== 'high'
             ) {
+              if (isSafeModePolicyBlocked) {
+                approvalArgs = markRunCommandSafeModeApproved(approvalArgs);
+              }
               approvalResults.set(call.id, { approved: true, args: approvalArgs });
               continue;
             }
