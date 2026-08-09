@@ -96,13 +96,19 @@ const RESEARCH_DEPTH_RUNTIME_LIMITS = {
 };
 
 function researchDepthRuntimeLimits(depth) {
-  const key = String(depth || "standard").trim().toLowerCase();
-  return RESEARCH_DEPTH_RUNTIME_LIMITS[key] || RESEARCH_DEPTH_RUNTIME_LIMITS.standard;
+  const key = String(depth || "standard")
+    .trim()
+    .toLowerCase();
+  return (
+    RESEARCH_DEPTH_RUNTIME_LIMITS[key] || RESEARCH_DEPTH_RUNTIME_LIMITS.standard
+  );
 }
 
 function researchSessionToolsCap(session) {
-  return researchDepthRuntimeLimits(session?.plan?.depth).toolsPerCriterion
-    || RESEARCH_TOOLS_PER_CRITERION;
+  return (
+    researchDepthRuntimeLimits(session?.plan?.depth).toolsPerCriterion ||
+    RESEARCH_TOOLS_PER_CRITERION
+  );
 }
 
 function researchSessionMaxWaves(session) {
@@ -174,7 +180,9 @@ function runStatusHelp(status, toolsCap = 10) {
 
 /** Localized label for research/scout/coverage/wave status codes. */
 function formatResearchStatus(status) {
-  const raw = String(status || "").trim().toLowerCase();
+  const raw = String(status || "")
+    .trim()
+    .toLowerCase();
   const key = {
     done: "deepResearchStatusDone",
     completed: "deepResearchStatusCompleted",
@@ -201,7 +209,9 @@ function formatResearchStatus(status) {
 }
 
 function formatVerificationLabel(value) {
-  const raw = String(value || "").trim().toUpperCase();
+  const raw = String(value || "")
+    .trim()
+    .toUpperCase();
   if (raw === "PASS") return t("deepResearchVerifyPass");
   if (raw === "WARNING") return t("deepResearchVerifyWarning");
   if (raw === "FAIL") return t("deepResearchVerifyFail");
@@ -214,21 +224,32 @@ function formatEvaluationBanner(evaluation = {}) {
   const reasonRaw = String(evaluation.reason || "");
   let decisionLabel = formatResearchStatus(decision);
   let reasonLabel = "";
-  if (code === "ready_full" || (!code && /ready for report\.$/i.test(reasonRaw) && !/partial/i.test(reasonRaw))) {
+  if (
+    code === "ready_full" ||
+    (!code &&
+      /ready for report\.$/i.test(reasonRaw) &&
+      !/partial/i.test(reasonRaw))
+  ) {
     reasonLabel = t("deepResearchEvalReadyFull");
-  } else if (code === "ready_partial" || (!code && /partial evidence/i.test(reasonRaw))) {
+  } else if (
+    code === "ready_partial" ||
+    (!code && /partial evidence/i.test(reasonRaw))
+  ) {
     reasonLabel = t("deepResearchEvalReadyPartial");
   } else if (code === "incomplete_no_evidence" || decision === "incomplete") {
     reasonLabel = t("deepResearchEvalIncomplete");
   } else if (reasonRaw) {
     reasonLabel = reasonRaw;
   }
-  if (decision === "ready_for_report") decisionLabel = t("deepResearchStatusReadyForReport");
+  if (decision === "ready_for_report")
+    decisionLabel = t("deepResearchStatusReadyForReport");
   return { decisionLabel, reasonLabel };
 }
 
 function formatConfidenceLabel(level) {
-  const raw = String(level || "").trim().toLowerCase();
+  const raw = String(level || "")
+    .trim()
+    .toLowerCase();
   if (raw === "high") return t("deepResearchConfidenceHigh");
   if (raw === "medium") return t("deepResearchConfidenceMedium");
   if (raw === "low") return t("deepResearchConfidenceLow");
@@ -238,7 +259,9 @@ function formatConfidenceLabel(level) {
 /** Human label like "02 · harness design…" for dependency chips. */
 function formatQuestionDepLabel(depId, questions = [], { maxText = 42 } = {}) {
   const list = Array.isArray(questions) ? questions : [];
-  const index = list.findIndex((item) => item.id === depId || item.tempId === depId);
+  const index = list.findIndex(
+    (item) => item.id === depId || item.tempId === depId,
+  );
   if (index < 0) {
     const raw = String(depId || "").trim();
     if (/^rq_/i.test(raw)) return t("deepResearchUpstreamQuestion");
@@ -246,7 +269,9 @@ function formatQuestionDepLabel(depId, questions = [], { maxText = 42 } = {}) {
   }
   const question = list[index];
   const num = String(index + 1).padStart(2, "0");
-  const text = String(question?.text || "").trim().replace(/\s+/g, " ");
+  const text = String(question?.text || "")
+    .trim()
+    .replace(/\s+/g, " ");
   if (!text) return num;
   const short = text.length > maxText ? `${text.slice(0, maxText)}…` : text;
   return `${num} · ${short}`;
@@ -254,10 +279,10 @@ function formatQuestionDepLabel(depId, questions = [], { maxText = 42 } = {}) {
 
 function researchToolHelp(name, toolsCap = 10) {
   if (
-    name === "web_search"
-    || name === "web_fetch"
-    || name === "research_web_search"
-    || name === "research_web_fetch"
+    name === "web_search" ||
+    name === "web_fetch" ||
+    name === "research_web_search" ||
+    name === "research_web_fetch"
   ) {
     return t("deepResearchTipTools").replaceAll("{n}", String(toolsCap));
   }
@@ -266,14 +291,16 @@ function researchToolHelp(name, toolsCap = 10) {
 
 function normalizeCriteriaList(list = []) {
   if (!Array.isArray(list)) return [];
-  return list.map((item) => {
-    if (item && typeof item === "object") {
-      return {
-        text: String(item.text || item.criterion || "").trim(),
-      };
-    }
-    return { text: String(item || "").trim() };
-  }).filter((item) => item.text);
+  return list
+    .map((item) => {
+      if (item && typeof item === "object") {
+        return {
+          text: String(item.text || item.criterion || "").trim(),
+        };
+      }
+      return { text: String(item || "").trim() };
+    })
+    .filter((item) => item.text);
 }
 
 function latestWaveLimitations(session) {
@@ -303,13 +330,16 @@ function failedResumeHint(session) {
   const step = String(session?.resumeCheckpoint?.step || "").trim();
   if (step === "verify") return t("deepResearchFailedVerifyHint");
   if (step === "scout") return t("deepResearchFailedScoutHint");
-  if (session?.lastRunPhase === "writing") return t("deepResearchFailedWritingHint");
-  if (session?.lastRunPhase === "planning") return t("deepResearchFailedPlanningHint");
+  if (session?.lastRunPhase === "writing")
+    return t("deepResearchFailedWritingHint");
+  if (session?.lastRunPhase === "planning")
+    return t("deepResearchFailedPlanningHint");
   return t("deepResearchFailedHint");
 }
 
 function phaseToStep(phase) {
-  if (phase === "investigating" || phase === "incomplete" || phase === "failed") return "investigate";
+  if (phase === "investigating" || phase === "incomplete" || phase === "failed")
+    return "investigate";
   if (phase === "ready_for_report") return "report";
   if (phase === "writing" || phase === "done") return "report";
   return "plan";
@@ -377,7 +407,8 @@ function statusTone(status) {
 }
 
 function confidenceTone(level) {
-  if (level === "high") return "bg-emerald-500/14 text-emerald-700 dark:text-emerald-300";
+  if (level === "high")
+    return "bg-emerald-500/14 text-emerald-700 dark:text-emerald-300";
   if (level === "low") return "bg-(--accent-red-bg) text-accent-red";
   return "bg-amber-500/14 text-amber-800 dark:text-amber-300";
 }
@@ -399,8 +430,11 @@ function splitEmojiTitle(value) {
 
   const firstGrapheme =
     typeof Intl !== "undefined" && typeof Intl.Segmenter === "function"
-      ? [...new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(fullTitle)][0]
-          ?.segment || ""
+      ? [
+          ...new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(
+            fullTitle,
+          ),
+        ][0]?.segment || ""
       : Array.from(fullTitle)[0] || "";
   const isEmoji =
     /\p{Extended_Pictographic}/u.test(firstGrapheme) ||
@@ -414,7 +448,9 @@ function splitEmojiTitle(value) {
 }
 
 function researchDisplayTitle(session) {
-  return splitEmojiTitle(session?.title || session?.plan?.title || session?.question || "");
+  return splitEmojiTitle(
+    session?.title || session?.plan?.title || session?.question || "",
+  );
 }
 
 function ResearchLibraryCard({
@@ -449,7 +485,9 @@ function ResearchLibraryCard({
       <div
         className={cn(
           "pointer-events-none relative z-[1] flex h-full",
-          isList ? "items-center gap-4 px-5 py-4 pr-14" : "min-h-52 flex-col px-5 pb-5 pt-5",
+          isList
+            ? "items-center gap-4 px-5 py-4 pr-14"
+            : "min-h-52 flex-col px-5 pb-5 pt-5",
         )}
       >
         {titleParts.emoji ? (
@@ -467,7 +505,8 @@ function ResearchLibraryCard({
             className="flex size-11 shrink-0 items-center justify-center rounded-xl"
             style={{
               color: "var(--research-tint)",
-              backgroundColor: "color-mix(in srgb, var(--research-tint) 20%, transparent)",
+              backgroundColor:
+                "color-mix(in srgb, var(--research-tint) 20%, transparent)",
             }}
           >
             <Lightning size={25} weight="duotone" aria-hidden="true" />
@@ -483,10 +522,17 @@ function ResearchLibraryCard({
             {titleParts.title || t("deepResearchUntitled")}
           </h3>
           {session.goal ? (
-            <p className="mt-1 line-clamp-1 text-[12px] text-(--text-secondary)">{session.goal}</p>
+            <p className="mt-1 line-clamp-1 text-[12px] text-(--text-secondary)">
+              {session.goal}
+            </p>
           ) : null}
           <div className="mt-3 flex min-w-0 flex-wrap items-center gap-1.5 text-[11px] text-(--text-muted)">
-            <span className={cn("rounded-full px-2 py-0.5 font-medium", phaseChipClass(session.phase))}>
+            <span
+              className={cn(
+                "rounded-full px-2 py-0.5 font-medium",
+                phaseChipClass(session.phase),
+              )}
+            >
               {phaseLabel(session.phase)}
             </span>
             <span aria-hidden="true">·</span>
@@ -495,7 +541,10 @@ function ResearchLibraryCard({
         </div>
       </div>
       <div className="absolute right-3 top-3 z-10">
-        <Popover open={menuOpen} onOpenChange={(open) => onMenuOpenChange(open ? session.id : "")}>
+        <Popover
+          open={menuOpen}
+          onOpenChange={(open) => onMenuOpenChange(open ? session.id : "")}
+        >
           <PopoverTrigger asChild>
             <button
               type="button"
@@ -525,7 +574,8 @@ function ResearchLibraryCard({
 }
 
 function researchStepReachable(phase, stepId) {
-  const unlocked = phase === "ready_for_report" ? "investigate" : phaseToStep(phase);
+  const unlocked =
+    phase === "ready_for_report" ? "investigate" : phaseToStep(phase);
   const order = STEPS.map((s) => s.id);
   return order.indexOf(stepId) <= order.indexOf(unlocked);
 }
@@ -552,9 +602,15 @@ function Stepper({ phase, focusStep, onFocusStep }) {
         const interactive = reachable && typeof onFocusStep === "function";
         const className = cn(
           "shrink-0 rounded-lg px-3.5 py-1.5 text-[11px] font-medium transition",
-          current && "bg-(--bg-primary) text-(--text-primary) shadow-sm ring-1 ring-(--border-default)/70",
-          done && !current && "text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary)",
-          !done && !current && reachable && "text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary)",
+          current &&
+            "bg-(--bg-primary) text-(--text-primary) shadow-sm ring-1 ring-(--border-default)/70",
+          done &&
+            !current &&
+            "text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary)",
+          !done &&
+            !current &&
+            reachable &&
+            "text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary)",
           !reachable && "text-(--text-muted) opacity-55",
           interactive && "cursor-pointer",
         );
@@ -597,7 +653,9 @@ function GuideComposer({ open, onOpenChange, busy, error, onSubmit }) {
   }, [open]);
 
   const trimmedQuestion = question.trim();
-  const contextCount = [goal, constraints, seedText].filter((value) => value.trim()).length;
+  const contextCount = [goal, constraints, seedText].filter((value) =>
+    value.trim(),
+  ).length;
 
   const handleSubmit = () => {
     if (busy || !trimmedQuestion) return;
@@ -624,14 +682,19 @@ function GuideComposer({ open, onOpenChange, busy, error, onSubmit }) {
           }
         }}
       >
-        <DialogHeader showCloseButton={!busy} className="shrink-0 border-b border-(--separator) px-5 py-4 sm:px-6">
+        <DialogHeader
+          showCloseButton={!busy}
+          className="shrink-0 border-b border-(--separator) px-5 py-4 sm:px-6"
+        >
           <div className="flex min-w-0 items-start gap-3">
             <span className="mt-0.5 flex size-9 shrink-0 items-center justify-center rounded-[11px] bg-primary/14 text-primary ring-1 ring-primary/15">
               <Lightning size={18} weight="duotone" aria-hidden="true" />
             </span>
             <div className="min-w-0">
               <DialogTitle>{t("deepResearchNew")}</DialogTitle>
-              <DialogDescription className="mt-0.5">{t("deepResearchComposerDescription")}</DialogDescription>
+              <DialogDescription className="mt-0.5">
+                {t("deepResearchComposerDescription")}
+              </DialogDescription>
             </div>
           </div>
         </DialogHeader>
@@ -640,7 +703,9 @@ function GuideComposer({ open, onOpenChange, busy, error, onSubmit }) {
           <label className="block">
             <span className="mb-2 flex items-center justify-between gap-3 text-[11px] font-semibold uppercase tracking-[0.08em] text-(--text-muted)">
               <span>{t("deepResearchQuestion")}</span>
-              <span className="normal-case tracking-normal text-(--text-muted)">{t("deepResearchRequired")}</span>
+              <span className="normal-case tracking-normal text-(--text-muted)">
+                {t("deepResearchRequired")}
+              </span>
             </span>
             <textarea
               autoFocus
@@ -676,14 +741,22 @@ function GuideComposer({ open, onOpenChange, busy, error, onSubmit }) {
                 size={14}
                 weight="bold"
                 aria-hidden="true"
-                className={cn("shrink-0 text-(--text-muted) transition-transform", contextOpen && "rotate-180")}
+                className={cn(
+                  "shrink-0 text-(--text-muted) transition-transform",
+                  contextOpen && "rotate-180",
+                )}
               />
             </button>
 
             {contextOpen ? (
-              <div id="deep-research-context-fields" className="grid gap-4 border-t border-(--separator) px-4 py-4 sm:grid-cols-2">
+              <div
+                id="deep-research-context-fields"
+                className="grid gap-4 border-t border-(--separator) px-4 py-4 sm:grid-cols-2"
+              >
                 <label className="flex flex-col gap-1.5 sm:col-span-2">
-                  <span className="text-[11px] font-medium text-(--text-secondary)">{t("deepResearchGoal")}</span>
+                  <span className="text-[11px] font-medium text-(--text-secondary)">
+                    {t("deepResearchGoal")}
+                  </span>
                   <input
                     className="h-10 rounded-xl border border-(--border-default) bg-(--bg-primary) px-3 text-[13px] text-(--text-primary) outline-none transition focus:border-primary/45 focus:shadow-[0_0_0_3px_color-mix(in_srgb,var(--primary)_10%,transparent)]"
                     value={goal}
@@ -692,7 +765,9 @@ function GuideComposer({ open, onOpenChange, busy, error, onSubmit }) {
                   />
                 </label>
                 <label className="flex flex-col gap-1.5">
-                  <span className="text-[11px] font-medium text-(--text-secondary)">{t("deepResearchConstraints")}</span>
+                  <span className="text-[11px] font-medium text-(--text-secondary)">
+                    {t("deepResearchConstraints")}
+                  </span>
                   <textarea
                     rows={3}
                     className="min-h-[84px] resize-none rounded-xl border border-(--border-default) bg-(--bg-primary) px-3 py-2.5 text-[13px] leading-5 text-(--text-primary) outline-none transition placeholder:text-(--text-muted) focus:border-primary/45 focus:shadow-[0_0_0_3px_color-mix(in_srgb,var(--primary)_10%,transparent)]"
@@ -702,7 +777,9 @@ function GuideComposer({ open, onOpenChange, busy, error, onSubmit }) {
                   />
                 </label>
                 <label className="flex flex-col gap-1.5">
-                  <span className="text-[11px] font-medium text-(--text-secondary)">{t("deepResearchSeed")}</span>
+                  <span className="text-[11px] font-medium text-(--text-secondary)">
+                    {t("deepResearchSeed")}
+                  </span>
                   <textarea
                     rows={3}
                     className="min-h-[84px] resize-none rounded-xl border border-(--border-default) bg-(--bg-primary) px-3 py-2.5 text-[13px] leading-5 text-(--text-primary) outline-none transition placeholder:text-(--text-muted) focus:border-primary/45 focus:shadow-[0_0_0_3px_color-mix(in_srgb,var(--primary)_10%,transparent)]"
@@ -716,41 +793,63 @@ function GuideComposer({ open, onOpenChange, busy, error, onSubmit }) {
           </div>
 
           <div className="mt-4 flex items-center gap-2.5 rounded-xl px-1 text-[10px] leading-4 text-(--text-muted)">
-            <span className="inline-flex items-center gap-1"><Target size={13} />{t("deepResearchStepPlan")}</span>
+            <span className="inline-flex items-center gap-1">
+              <Target size={13} />
+              {t("deepResearchStepPlan")}
+            </span>
             <ArrowRight size={11} aria-hidden="true" />
-            <span className="inline-flex items-center gap-1"><Globe size={13} />{t("deepResearchStepInvestigate")}</span>
+            <span className="inline-flex items-center gap-1">
+              <Globe size={13} />
+              {t("deepResearchStepInvestigate")}
+            </span>
             <ArrowRight size={11} aria-hidden="true" />
-            <span className="inline-flex items-center gap-1"><BookOpen size={13} />{t("deepResearchStepReport")}</span>
+            <span className="inline-flex items-center gap-1">
+              <BookOpen size={13} />
+              {t("deepResearchStepReport")}
+            </span>
           </div>
 
           {error ? (
-            <div role="alert" className="mt-4 flex items-start gap-2 rounded-xl bg-(--accent-red-bg) px-3 py-2.5 text-[12px] leading-5 text-accent-red">
-              <WarningCircle size={15} weight="fill" className="mt-0.5 shrink-0" />
+            <div
+              role="alert"
+              className="mt-4 flex items-start gap-2 rounded-xl bg-(--accent-red-bg) px-3 py-2.5 text-[12px] leading-5 text-accent-red"
+            >
+              <WarningCircle
+                size={15}
+                weight="fill"
+                className="mt-0.5 shrink-0"
+              />
               <span>{error}</span>
             </div>
           ) : null}
         </div>
 
         <DialogFooter className="shrink-0 items-center border-t border-(--separator) bg-(--bg-secondary)/35 px-5 py-3 sm:justify-between sm:px-6">
-          <span className="hidden text-[10px] text-(--text-muted) sm:block">{t("deepResearchSubmitShortcut")}</span>
+          <span className="hidden text-[10px] text-(--text-muted) sm:block">
+            {t("deepResearchSubmitShortcut")}
+          </span>
           <div className="flex w-full items-center justify-end gap-2 sm:w-auto">
-          <button
-            type="button"
-            disabled={busy}
-            className="h-9 rounded-full px-4 text-[12px] font-medium text-(--text-secondary) transition hover:bg-(--bg-hover) disabled:opacity-40"
-            onClick={() => onOpenChange(false)}
-          >
-            {t("cancel")}
-          </button>
-          <button
-            type="button"
-            disabled={busy || !trimmedQuestion}
-            className="inline-flex h-9 min-w-[112px] items-center justify-center gap-2 rounded-full bg-(--text-primary) px-4 text-[12px] font-semibold text-(--bg-primary) shadow-sm transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
-            onClick={handleSubmit}
-          >
-            {busy ? <CircleNotch size={14} className="animate-spin" /> : <Lightning size={14} weight="bold" />}
-            {busy ? t("deepResearchStarting") : t("deepResearchStart")}
-          </button>
+            <button
+              type="button"
+              disabled={busy}
+              className="h-9 rounded-full px-4 text-[12px] font-medium text-(--text-secondary) transition hover:bg-(--bg-hover) disabled:opacity-40"
+              onClick={() => onOpenChange(false)}
+            >
+              {t("cancel")}
+            </button>
+            <button
+              type="button"
+              disabled={busy || !trimmedQuestion}
+              className="inline-flex h-9 min-w-[112px] items-center justify-center gap-2 rounded-full bg-(--text-primary) px-4 text-[12px] font-semibold text-(--bg-primary) shadow-sm transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+              onClick={handleSubmit}
+            >
+              {busy ? (
+                <CircleNotch size={14} className="animate-spin" />
+              ) : (
+                <Lightning size={14} weight="bold" />
+              )}
+              {busy ? t("deepResearchStarting") : t("deepResearchStart")}
+            </button>
           </div>
         </DialogFooter>
       </DialogContent>
@@ -767,15 +866,24 @@ function PlanPane({
   onReplan,
   readOnly = false,
 }) {
-  const [goal, setGoal] = useState(session?.plan?.goal || session?.preferences?.goal || "");
+  const [goal, setGoal] = useState(
+    session?.plan?.goal || session?.preferences?.goal || "",
+  );
   const [questions, setQuestions] = useState(
     Array.isArray(session?.plan?.questions) ? session.plan.questions : [],
   );
 
   useEffect(() => {
     setGoal(session?.plan?.goal || session?.preferences?.goal || "");
-    setQuestions(Array.isArray(session?.plan?.questions) ? session.plan.questions : []);
-  }, [session?.id, session?.updatedAt, session?.plan, session?.preferences?.goal]);
+    setQuestions(
+      Array.isArray(session?.plan?.questions) ? session.plan.questions : [],
+    );
+  }, [
+    session?.id,
+    session?.updatedAt,
+    session?.plan,
+    session?.preferences?.goal,
+  ]);
 
   const draft = useMemo(
     () => ({
@@ -785,7 +893,9 @@ function PlanPane({
       questions: questions.map((q, index) => ({
         tempId: q.tempId || q.id || `q${index + 1}`,
         text: q.text || "",
-        successCriteria: Array.isArray(q.successCriteria) ? q.successCriteria : [],
+        successCriteria: Array.isArray(q.successCriteria)
+          ? q.successCriteria
+          : [],
         dependsOn: Array.isArray(q.dependsOn) ? q.dependsOn : [],
       })),
       coverageChecklist: Array.isArray(session?.plan?.coverageChecklist)
@@ -809,10 +919,14 @@ function PlanPane({
           </span>
           <div className="min-w-0 flex-1">
             <div className="text-[14px] font-semibold text-(--text-primary)">
-              {running ? t("deepResearchPlanning") : t("deepResearchPlanningStopped")}
+              {running
+                ? t("deepResearchPlanning")
+                : t("deepResearchPlanningStopped")}
             </div>
             <p className="mt-1 text-[12px] text-(--text-muted)">
-              {running ? t("deepResearchPlanningHint") : t("deepResearchPlanningStoppedHint")}
+              {running
+                ? t("deepResearchPlanningHint")
+                : t("deepResearchPlanningStoppedHint")}
             </p>
             {stopped ? (
               <button
@@ -834,25 +948,34 @@ function PlanPane({
     <div className="mx-auto w-full max-w-4xl">
       <div className="flex flex-wrap items-end justify-between gap-3 border-b border-(--border-default) pb-4">
         <div>
-          <div className="text-[11px] font-medium text-(--text-muted)">{t("deepResearchStepPlan")}</div>
+          <div className="text-[11px] font-medium text-(--text-muted)">
+            {t("deepResearchStepPlan")}
+          </div>
           <h3 className="mt-1 text-[18px] font-semibold tracking-[-0.02em] text-(--text-primary)">
             {session?.question || t("deepResearchUntitled")}
           </h3>
         </div>
         {session?.plan?.depth ? (
           <div className="text-right text-[11px] text-(--text-muted)">
-            <ResearchTerm explanation={t("deepResearchTipDepth")}>{t("deepResearchDepth")}</ResearchTerm>
+            <ResearchTerm explanation={t("deepResearchTipDepth")}>
+              {t("deepResearchDepth")}
+            </ResearchTerm>
             <span className="ml-2 font-medium text-(--text-secondary)">
-              {t(`deepResearchDepth_${session.plan.depth}`) || session.plan.depth}
+              {t(`deepResearchDepth_${session.plan.depth}`) ||
+                session.plan.depth}
             </span>
           </div>
         ) : null}
       </div>
 
       <section className="border-b border-(--border-default) py-5">
-        <div className="mb-2 text-[11px] font-medium text-(--text-muted)">{t("deepResearchGoal")}</div>
+        <div className="mb-2 text-[11px] font-medium text-(--text-muted)">
+          {t("deepResearchGoal")}
+        </div>
         {readOnly ? (
-          <p className="max-w-3xl text-[13px] leading-6 text-(--text-secondary)">{goal || "—"}</p>
+          <p className="max-w-3xl text-[13px] leading-6 text-(--text-secondary)">
+            {goal || "—"}
+          </p>
         ) : (
           <input
             className="h-10 w-full rounded-lg border border-(--border-default) bg-(--bg-primary) px-3 text-[13px] text-(--text-primary) outline-none focus:border-primary/40"
@@ -873,37 +996,48 @@ function PlanPane({
             </div>
             <div className="min-w-0">
               {readOnly ? (
-                <h4 className="text-[14px] font-medium leading-6 text-(--text-primary)">{q.text || "—"}</h4>
+                <h4 className="text-[14px] font-medium leading-6 text-(--text-primary)">
+                  {q.text || "—"}
+                </h4>
               ) : (
                 <textarea
                   className="min-h-[72px] w-full resize-y rounded-lg border border-(--border-default) bg-(--bg-primary) px-3 py-2.5 text-[13px] leading-5 text-(--text-primary) outline-none focus:border-primary/40"
                   value={q.text || ""}
                   onChange={(e) => {
                     const value = e.target.value;
-                    setQuestions((current) => current.map((item, itemIndex) => (
-                      itemIndex === index ? { ...item, text: value } : item
-                    )));
+                    setQuestions((current) =>
+                      current.map((item, itemIndex) =>
+                        itemIndex === index ? { ...item, text: value } : item,
+                      ),
+                    );
                   }}
                 />
               )}
               {normalizeCriteriaList(q.successCriteria).length ? (
                 <div className="mt-3">
                   <div className="mb-1.5 text-[10px] font-medium uppercase tracking-[0.08em] text-(--text-muted)">
-                  <ResearchTerm explanation={t("deepResearchTipCriteria")}>
-                    {t("deepResearchCriteria")}
-                  </ResearchTerm>
+                    <ResearchTerm explanation={t("deepResearchTipCriteria")}>
+                      {t("deepResearchCriteria")}
+                    </ResearchTerm>
                   </div>
                   <ul className="space-y-1.5">
-                  {normalizeCriteriaList(q.successCriteria).map((criterion, criterionIndex) => (
-                    <li
-                      key={`${criterion.text}-${criterionIndex}`}
-                      title={criterion.text}
-                      className="grid min-w-0 grid-cols-[12px_minmax(0,1fr)] items-start gap-2 text-[11px] leading-5"
-                    >
-                      <span className="mt-2 size-1 rounded-full bg-(--text-muted)" aria-hidden="true" />
-                      <span className="min-w-0 text-(--text-secondary)">{criterion.text}</span>
-                    </li>
-                  ))}
+                    {normalizeCriteriaList(q.successCriteria).map(
+                      (criterion, criterionIndex) => (
+                        <li
+                          key={`${criterion.text}-${criterionIndex}`}
+                          title={criterion.text}
+                          className="grid min-w-0 grid-cols-[12px_minmax(0,1fr)] items-start gap-2 text-[11px] leading-5"
+                        >
+                          <span
+                            className="mt-2 size-1 rounded-full bg-(--text-muted)"
+                            aria-hidden="true"
+                          />
+                          <span className="min-w-0 text-(--text-secondary)">
+                            {criterion.text}
+                          </span>
+                        </li>
+                      ),
+                    )}
                   </ul>
                 </div>
               ) : null}
@@ -923,7 +1057,10 @@ function PlanPane({
                           title={label}
                           className="max-w-full truncate rounded-md border border-(--border-default) bg-(--bg-secondary)/50 px-2 py-1 text-[10px] text-(--text-secondary)"
                         >
-                          {t("deepResearchDependsOnChip").replace("{label}", label)}
+                          {t("deepResearchDependsOnChip").replace(
+                            "{label}",
+                            label,
+                          )}
                         </span>
                       );
                     })}
@@ -991,18 +1128,23 @@ function summarizeResearchToolArgs(name, args) {
 
 function scoutLiveKey(payload = {}) {
   return String(
-    payload.scoutRunId
-      || payload.questionId
-      || payload.parentToolCallId
-      || payload.toolCallId
-      || payload.taskId
-      || "",
+    payload.scoutRunId ||
+      payload.questionId ||
+      payload.parentToolCallId ||
+      payload.toolCallId ||
+      payload.taskId ||
+      "",
   ).trim();
 }
 
 const LIVE_DRAFT_MAX = 100000;
 
-function LiveDraftStream({ label, text = "", active = false, placeholder = "" }) {
+function LiveDraftStream({
+  label,
+  text = "",
+  active = false,
+  placeholder = "",
+}) {
   const [open, setOpen] = useState(Boolean(active));
   useEffect(() => {
     if (active) setOpen(true);
@@ -1023,9 +1165,17 @@ function LiveDraftStream({ label, text = "", active = false, placeholder = "" })
               {t("deepResearchDraftStreaming")}
             </span>
           ) : (
-            <span className="text-(--text-muted)">{t("deepResearchDraftCollapsed")}</span>
+            <span className="text-(--text-muted)">
+              {t("deepResearchDraftCollapsed")}
+            </span>
           )}
-          <CaretDown size={12} className={cn("text-(--text-muted) transition-transform", open && "rotate-180")} />
+          <CaretDown
+            size={12}
+            className={cn(
+              "text-(--text-muted) transition-transform",
+              open && "rotate-180",
+            )}
+          />
         </span>
       </summary>
       <pre className="mt-2 max-h-72 overflow-auto whitespace-pre-wrap break-words text-[11px] leading-5 text-(--text-secondary)">
@@ -1049,17 +1199,20 @@ function formatScoutActivityLine(payload = {}) {
 }
 
 function aggregateInvestigateLeadStatus(liveScouts = {}, fallback = "") {
-  const list = Object.values(liveScouts || {}).filter((item) => (
-    item?.status === "running"
-    && isRealScoutRunId(item?.scoutRunId)
-  ));
-  const waiting = Object.values(liveScouts || {}).filter((item) => item?.status === "waiting");
+  const list = Object.values(liveScouts || {}).filter(
+    (item) => item?.status === "running" && isRealScoutRunId(item?.scoutRunId),
+  );
+  const waiting = Object.values(liveScouts || {}).filter(
+    (item) => item?.status === "waiting",
+  );
   const running = list;
   if (!running.length && !waiting.length) return fallback;
   const verifying = running.filter((item) => item.phase === "verifying").length;
   const parts = [];
   if (running.length > 1) {
-    parts.push(t("deepResearchParallelRunning").replace("{n}", String(running.length)));
+    parts.push(
+      t("deepResearchParallelRunning").replace("{n}", String(running.length)),
+    );
   } else if (running.length === 1) {
     parts.push(
       verifying
@@ -1068,7 +1221,9 @@ function aggregateInvestigateLeadStatus(liveScouts = {}, fallback = "") {
     );
   }
   if (waiting.length) {
-    parts.push(t("deepResearchWaitingQueue").replace("{n}", String(waiting.length)));
+    parts.push(
+      t("deepResearchWaitingQueue").replace("{n}", String(waiting.length)),
+    );
   } else if (verifying && running.length > 1) {
     parts.push(
       t("deepResearchVerifyingCount").replace("{n}", String(verifying)),
@@ -1113,22 +1268,31 @@ function legacyWavesFromTimeline(timeline = []) {
 }
 
 function coverageClass(status) {
-  if (status === "covered") return "bg-emerald-500/16 text-emerald-700 dark:text-emerald-300";
-  if (status === "conflicted" || status === "blocked") return "bg-red-500/14 text-red-700 dark:text-red-300";
-  if (status === "partial") return "bg-amber-500/16 text-amber-800 dark:text-amber-300";
+  if (status === "covered")
+    return "bg-emerald-500/16 text-emerald-700 dark:text-emerald-300";
+  if (status === "conflicted" || status === "blocked")
+    return "bg-red-500/14 text-red-700 dark:text-red-300";
+  if (status === "partial")
+    return "bg-amber-500/16 text-amber-800 dark:text-amber-300";
   return "bg-(--bg-hover) text-(--text-muted)";
 }
 
 function shortResearchLabel(text, max = 48) {
-  const normalized = String(text || "").trim().replace(/\s+/g, " ");
+  const normalized = String(text || "")
+    .trim()
+    .replace(/\s+/g, " ");
   if (!normalized) return "";
-  return normalized.length > max ? `${normalized.slice(0, Math.max(1, max - 1))}…` : normalized;
+  return normalized.length > max
+    ? `${normalized.slice(0, Math.max(1, max - 1))}…`
+    : normalized;
 }
 
 function criterionLabelFromQuestion(question, criterionId) {
   const id = String(criterionId || "").trim();
   if (!id) return "";
-  const fromCoverage = (question?.coverage?.criteria || []).find((item) => item.id === id);
+  const fromCoverage = (question?.coverage?.criteria || []).find(
+    (item) => item.id === id,
+  );
   if (fromCoverage?.text) return shortResearchLabel(fromCoverage.text);
   const match = /^c(\d+)$/i.exec(id);
   if (match) {
@@ -1145,7 +1309,10 @@ function formatResearchRef(questionId, criterionId, questions = []) {
   const cid = String(criterionId || "").trim();
   const question = questions.find((item) => item.id === qid);
   const qLabel = shortResearchLabel(question?.text) || qid || "—";
-  const qPart = qid && shortResearchLabel(question?.text) ? `${qLabel} (${qid})` : (qid || qLabel);
+  const qPart =
+    qid && shortResearchLabel(question?.text)
+      ? `${qLabel} (${qid})`
+      : qid || qLabel;
   if (!cid) return qPart;
   const cLabel = criterionLabelFromQuestion(question, cid);
   const cPart = cLabel ? `${cLabel} (${cid})` : cid;
@@ -1173,8 +1340,10 @@ function humanizeResearchText(text, questions = []) {
 function formatScoutLabel(name, translate = t) {
   const raw = String(name || "").trim();
   const matched = raw.match(/^(?:Scout|Investigator|调查员)\s+(\d+)$/i);
-  if (matched) return translate("deepResearchScoutNamed").replace("{n}", matched[1]);
-  if (!raw || /^(?:Scout|Investigator|调查员)$/i.test(raw)) return translate("deepResearchScout");
+  if (matched)
+    return translate("deepResearchScoutNamed").replace("{n}", matched[1]);
+  if (!raw || /^(?:Scout|Investigator|调查员)$/i.test(raw))
+    return translate("deepResearchScout");
   return raw;
 }
 
@@ -1183,7 +1352,10 @@ function mergeScoutCard(scout, live) {
   const liveStatus = live?.status;
   let status = liveStatus || persisted || "running";
   // Persisted terminal wins over a stale live "running" after scout failure / wave end.
-  if (TERMINAL_SCOUT_STATUSES.has(persisted) && (!liveStatus || liveStatus === "running")) {
+  if (
+    TERMINAL_SCOUT_STATUSES.has(persisted) &&
+    (!liveStatus || liveStatus === "running")
+  ) {
     status = persisted;
   } else if (TERMINAL_SCOUT_STATUSES.has(liveStatus)) {
     status = liveStatus;
@@ -1192,13 +1364,19 @@ function mergeScoutCard(scout, live) {
     ...scout,
     ...live,
     status,
-    coverage: live?.coverage || scout?.coverage || live?.ledger?.criteria || scout?.ledger?.criteria || [],
+    coverage:
+      live?.coverage ||
+      scout?.coverage ||
+      live?.ledger?.criteria ||
+      scout?.ledger?.criteria ||
+      [],
     tools: live?.tools || [],
     handoff: live?.handoff || scout?.handoffMarkdown || "",
     error: live?.error || scout?.error || "",
     phase: live?.phase || "",
     activeCriterionId: live?.activeCriterionId || live?.criterionId || "",
-    activeCriterionText: live?.activeCriterionText || live?.nextGap?.reason || "",
+    activeCriterionText:
+      live?.activeCriterionText || live?.nextGap?.reason || "",
     scoutDraft: live?.scoutDraft || live?.draft || "",
     evaluatorDraft: live?.evaluatorDraft || "",
     dependsOn: live?.dependsOn || scout?.dependsOn || [],
@@ -1218,58 +1396,97 @@ function ScoutCard({
   evidence = [],
 }) {
   const card = mergeScoutCard(scout, live);
-  const criteria = Array.isArray(card.coverage) && card.coverage.length
-    ? card.coverage
-    : Array.isArray(question?.coverage?.criteria)
-      ? question.coverage.criteria
-      : [];
-  const acceptedEvidence = (evidence || []).filter((item) =>
-    item.status === "accepted" && item.questionId === (card.questionId || question?.id));
+  const criteria =
+    Array.isArray(card.coverage) && card.coverage.length
+      ? card.coverage
+      : Array.isArray(question?.coverage?.criteria)
+        ? question.coverage.criteria
+        : [];
+  const acceptedEvidence = (evidence || []).filter(
+    (item) =>
+      item.status === "accepted" &&
+      item.questionId === (card.questionId || question?.id),
+  );
   const status = card.status || "running";
-  const waiting = status === "waiting" || (Array.isArray(card.waitingOn) && card.waitingOn.length > 0 && status !== "running" && status !== "done" && status !== "partial" && status !== "failed" && status !== "blocked" && status !== "aborted" && status !== "error");
+  const waiting =
+    status === "waiting" ||
+    (Array.isArray(card.waitingOn) &&
+      card.waitingOn.length > 0 &&
+      status !== "running" &&
+      status !== "done" &&
+      status !== "partial" &&
+      status !== "failed" &&
+      status !== "blocked" &&
+      status !== "aborted" &&
+      status !== "error");
   const running = status === "running";
   const verifying = running && card.phase === "verifying";
-  const failed = status === "failed" || status === "error" || status === "blocked";
+  const failed =
+    status === "failed" || status === "error" || status === "blocked";
   const completed = status === "done";
   const partial = status === "partial";
-  const dependsOn = Array.isArray(card.dependsOn) && card.dependsOn.length
-    ? card.dependsOn
-    : (Array.isArray(question?.dependsOn) ? question.dependsOn : []);
+  const dependsOn =
+    Array.isArray(card.dependsOn) && card.dependsOn.length
+      ? card.dependsOn
+      : Array.isArray(question?.dependsOn)
+        ? question.dependsOn
+        : [];
   const dependencySummary = String(card.dependencySummary || "").trim();
-  const dependencyUpstreams = Array.isArray(card.dependencyUpstreams) ? card.dependencyUpstreams : [];
+  const dependencyUpstreams = Array.isArray(card.dependencyUpstreams)
+    ? card.dependencyUpstreams
+    : [];
   const waitingOn = Array.isArray(card.waitingOn) ? card.waitingOn : [];
-  const cap = Math.max(1, Math.floor(Number(card.toolsCap) || Number(toolsCap) || RESEARCH_TOOLS_PER_CRITERION));
+  const cap = Math.max(
+    1,
+    Math.floor(
+      Number(card.toolsCap) || Number(toolsCap) || RESEARCH_TOOLS_PER_CRITERION,
+    ),
+  );
   const liveTools = Number(card.toolsUsed);
   const activeCriterionId = String(card.activeCriterionId || "");
-  const activeCriterion = criteria.find((item) => item.id === activeCriterionId);
+  const activeCriterion = criteria.find(
+    (item) => item.id === activeCriterionId,
+  );
   const activeCriterionText = String(
-    card.activeCriterionText
-    || card.nextGap?.reason
-    || activeCriterion?.text
-    || "",
+    card.activeCriterionText ||
+      card.nextGap?.reason ||
+      activeCriterion?.text ||
+      "",
   ).trim();
-  const scoutToolTotal = (Number(card.searchCount) || 0) + (Number(card.fetchCount) || 0);
+  const scoutToolTotal =
+    (Number(card.searchCount) || 0) + (Number(card.fetchCount) || 0);
   const criterionTools = Number.isFinite(liveTools) ? liveTools : 0;
   const summaryTools = running
     ? criterionTools
-    : (scoutToolTotal || criterionTools);
-  const criterionToolsTip = t("deepResearchTipCriterionTools").replaceAll("{n}", String(cap));
+    : scoutToolTotal || criterionTools;
+  const criterionToolsTip = t("deepResearchTipCriterionTools").replaceAll(
+    "{n}",
+    String(cap),
+  );
   const activityLine = String(card.activityLine || "").trim();
-  const questionList = Array.isArray(questions) && questions.length
-    ? questions
-    : (question ? [question] : []);
+  const questionList =
+    Array.isArray(questions) && questions.length
+      ? questions
+      : question
+        ? [question]
+        : [];
   const scoutStatusText = waiting
-    ? (waitingOn.length
+    ? waitingOn.length
       ? t("deepResearchWaitingOnUpstream").replace(
-        "{list}",
-        waitingOn.map((id) => formatQuestionDepLabel(id, questionList, { maxText: 28 })).join(" · "),
-      )
-      : (activityLine || t("deepResearchWaitingParallelSlot")))
+          "{list}",
+          waitingOn
+            .map((id) =>
+              formatQuestionDepLabel(id, questionList, { maxText: 28 }),
+            )
+            .join(" · "),
+        )
+      : activityLine || t("deepResearchWaitingParallelSlot")
     : verifying
-      ? (activityLine || t("deepResearchStatusVerifying"))
-      : (activityLine || (activeCriterionText
-        ? `${t("deepResearchStatusRunning")} · ${activeCriterionText}`
-        : t("deepResearchStatusRunning")));
+      ? activityLine || t("deepResearchStatusVerifying")
+      : activityLine ||
+        (activeCriterionText
+          ? `${t("deepResearchStatusRunning")} · ${activeCriterionText}`
+          : t("deepResearchStatusRunning"));
 
   return (
     <details
@@ -1312,7 +1529,10 @@ function ScoutCard({
             ) : null}
             {dependsOn.length ? (
               <ResearchTerm explanation={t("deepResearchTipDependsOn")}>
-                {t("deepResearchDependsOnShort").replace("{n}", String(dependsOn.length))}
+                {t("deepResearchDependsOnShort").replace(
+                  "{n}",
+                  String(dependsOn.length),
+                )}
               </ResearchTerm>
             ) : null}
             {verifying ? (
@@ -1325,7 +1545,11 @@ function ScoutCard({
                 {activeCriterionText || activeCriterionId}
               </ResearchTerm>
             ) : null}
-            <ResearchTerm explanation={running ? criterionToolsTip : t("deepResearchTipScoutTools")}>
+            <ResearchTerm
+              explanation={
+                running ? criterionToolsTip : t("deepResearchTipScoutTools")
+              }
+            >
               {running
                 ? `${summaryTools}/${cap} ${t("deepResearchToolsLabel")}`
                 : `${summaryTools} ${t("deepResearchToolsLabel")}`}
@@ -1336,7 +1560,12 @@ function ScoutCard({
           </span>
         </span>
         <span className="text-[10px] font-medium text-(--text-muted)">
-          <ResearchTerm explanation={runStatusHelp(waiting ? "waiting" : verifying ? "verifying" : status, cap)}>
+          <ResearchTerm
+            explanation={runStatusHelp(
+              waiting ? "waiting" : verifying ? "verifying" : status,
+              cap,
+            )}
+          >
             {waiting
               ? t("deepResearchStatusWaitingDeps")
               : formatResearchStatus(verifying ? "verifying" : status)}
@@ -1349,12 +1578,15 @@ function ScoutCard({
       </summary>
 
       <div className="border-t border-(--separator) px-8 py-4">
-        {(running || waiting) ? (
+        {running || waiting ? (
           <div className="mb-3 flex items-center gap-2 rounded-xl border border-(--border-default) bg-(--bg-secondary)/50 px-3 py-2 text-[11px] text-(--text-secondary)">
             {waiting ? (
               <Hourglass size={13} className="shrink-0 text-amber-600" />
             ) : (
-              <CircleNotch size={13} className="shrink-0 animate-spin text-sky-500" />
+              <CircleNotch
+                size={13}
+                className="shrink-0 animate-spin text-sky-500"
+              />
             )}
             <span className="min-w-0 flex-1 truncate">{scoutStatusText}</span>
             {running ? (
@@ -1374,18 +1606,24 @@ function ScoutCard({
             <div className="divide-y divide-(--separator)">
               {criteria.map((criterion) => {
                 const isActive = running && criterion.id === activeCriterionId;
-                const used = isActive && Number.isFinite(liveTools)
-                  ? liveTools
-                  : (Number(criterion.toolCount) || 0);
+                const used =
+                  isActive && Number.isFinite(liveTools)
+                    ? liveTools
+                    : Number(criterion.toolCount) || 0;
                 const atCap = used >= cap;
                 const summaryText = String(criterion.summary || "").trim();
                 const gapText = String(criterion.gap || "").trim();
                 const warningText = String(criterion.warning || "").trim();
-                const verificationLabel = formatVerificationLabel(criterion.verification);
+                const verificationLabel = formatVerificationLabel(
+                  criterion.verification,
+                );
                 return (
                   <div
                     key={criterion.id}
-                    className={cn("grid min-w-0 gap-1 py-2 text-[10px]", isActive && "text-sky-700 dark:text-sky-300")}
+                    className={cn(
+                      "grid min-w-0 gap-1 py-2 text-[10px]",
+                      isActive && "text-sky-700 dark:text-sky-300",
+                    )}
                   >
                     <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] gap-3">
                       <ResearchTerm
@@ -1406,19 +1644,25 @@ function ScoutCard({
                     </div>
                     {summaryText ? (
                       <div className="min-w-0 break-words text-(--text-secondary) [overflow-wrap:anywhere]">
-                        <span className="font-medium text-(--text-muted)">{t("deepResearchSummary")}: </span>
+                        <span className="font-medium text-(--text-muted)">
+                          {t("deepResearchSummary")}:{" "}
+                        </span>
                         {summaryText}
                       </div>
                     ) : null}
                     {warningText ? (
                       <div className="min-w-0 break-words text-amber-700 [overflow-wrap:anywhere] dark:text-amber-300">
-                        <ResearchTerm explanation={t("deepResearchTipWarning")}>{t("deepResearchWarning")}</ResearchTerm>
+                        <ResearchTerm explanation={t("deepResearchTipWarning")}>
+                          {t("deepResearchWarning")}
+                        </ResearchTerm>
                         {`: ${warningText}`}
                       </div>
                     ) : null}
                     {gapText ? (
                       <div className="min-w-0 break-words text-amber-700 [overflow-wrap:anywhere] dark:text-amber-300">
-                        <ResearchTerm explanation={t("deepResearchTipGaps")}>{t("deepResearchGaps")}</ResearchTerm>
+                        <ResearchTerm explanation={t("deepResearchTipGaps")}>
+                          {t("deepResearchGaps")}
+                        </ResearchTerm>
                         {`: ${gapText}`}
                       </div>
                     ) : null}
@@ -1431,8 +1675,14 @@ function ScoutCard({
 
         {card.error ? (
           <div className="mt-3 flex items-start gap-2 rounded-xl bg-red-500/[0.07] px-3 py-2 text-[11px] leading-5 text-red-700 dark:text-red-200">
-            <WarningCircle size={14} className="mt-0.5 shrink-0" weight="fill" />
-            <span className="min-w-0 break-words [overflow-wrap:anywhere]">{card.error}</span>
+            <WarningCircle
+              size={14}
+              className="mt-0.5 shrink-0"
+              weight="fill"
+            />
+            <span className="min-w-0 break-words [overflow-wrap:anywhere]">
+              {card.error}
+            </span>
           </div>
         ) : null}
 
@@ -1444,7 +1694,10 @@ function ScoutCard({
                 className="flex items-center gap-2 rounded-lg bg-(--bg-secondary)/60 px-2.5 py-2 text-[10px]"
               >
                 {tool.status === "running" ? (
-                  <CircleNotch size={12} className="shrink-0 animate-spin text-sky-500" />
+                  <CircleNotch
+                    size={12}
+                    className="shrink-0 animate-spin text-sky-500"
+                  />
                 ) : (
                   <Globe size={12} className="shrink-0 text-(--text-muted)" />
                 )}
@@ -1470,17 +1723,26 @@ function ScoutCard({
             </div>
             <div className="space-y-2">
               {acceptedEvidence.slice(0, 8).map((item) => {
-                const sources = Array.isArray(item.sources) && item.sources.length
-                  ? item.sources
-                  : (item.url || item.snippet
-                    ? [{ url: item.url || "", snippet: item.snippet || "" }]
-                    : []);
+                const sources =
+                  Array.isArray(item.sources) && item.sources.length
+                    ? item.sources
+                    : item.url || item.snippet
+                      ? [{ url: item.url || "", snippet: item.snippet || "" }]
+                      : [];
                 return (
-                  <div key={item.id} className="rounded-xl border border-(--border-default) bg-(--bg-secondary)/35 px-3 py-2.5">
+                  <div
+                    key={item.id}
+                    className="rounded-xl border border-(--border-default) bg-(--bg-secondary)/35 px-3 py-2.5"
+                  >
                     <div className="flex items-start gap-2">
-                      <Database size={13} className="mt-0.5 shrink-0 text-(--text-muted)" />
+                      <Database
+                        size={13}
+                        className="mt-0.5 shrink-0 text-(--text-muted)"
+                      />
                       <div className="min-w-0 flex-1">
-                        <div className="text-[11px] leading-5 text-(--text-primary)">{item.claim}</div>
+                        <div className="text-[11px] leading-5 text-(--text-primary)">
+                          {item.claim}
+                        </div>
                         <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[9px] text-(--text-muted)">
                           <span>{item.id}</span>
                           {item.criterionIds?.length ? (
@@ -1491,9 +1753,16 @@ function ScoutCard({
                           ) : null}
                         </div>
                         {sources.map((source, sourceIndex) => (
-                          <div key={`${item.id}-src-${sourceIndex}`} className="mt-1 text-[9px] text-(--text-muted)">
-                            {source.snippet ? <div className="leading-4">{source.snippet}</div> : null}
-                            {source.url ? <div className="truncate">{source.url}</div> : null}
+                          <div
+                            key={`${item.id}-src-${sourceIndex}`}
+                            className="mt-1 text-[9px] text-(--text-muted)"
+                          >
+                            {source.snippet ? (
+                              <div className="leading-4">{source.snippet}</div>
+                            ) : null}
+                            {source.url ? (
+                              <div className="truncate">{source.url}</div>
+                            ) : null}
                           </div>
                         ))}
                       </div>
@@ -1505,7 +1774,7 @@ function ScoutCard({
           </div>
         ) : null}
 
-        {(dependsOn.length || waitingOn.length || dependencySummary) ? (
+        {dependsOn.length || waitingOn.length || dependencySummary ? (
           <div className="mb-3 rounded-xl border border-amber-500/20 bg-amber-500/5 px-3 py-2.5">
             <div className="text-[10px] font-semibold uppercase tracking-[0.08em] text-amber-800 dark:text-amber-200">
               <ResearchTerm explanation={t("deepResearchTipDependsOn")}>
@@ -1516,17 +1785,23 @@ function ScoutCard({
               <p className="mt-1.5 text-[11px] leading-5 text-(--text-secondary)">
                 {t("deepResearchWaitingOnUpstream").replace(
                   "{list}",
-                  waitingOn.map((id) => {
-                    const upstream = dependencyUpstreams.find((item) => item.questionId === id);
-                    return upstream?.text || id;
-                  }).join(" · ") || waitingOn.join(" · "),
+                  waitingOn
+                    .map((id) => {
+                      const upstream = dependencyUpstreams.find(
+                        (item) => item.questionId === id,
+                      );
+                      return upstream?.text || id;
+                    })
+                    .join(" · ") || waitingOn.join(" · "),
                 )}
               </p>
             ) : null}
             {dependsOn.length ? (
               <div className="mt-2 flex flex-wrap gap-1.5">
                 {dependsOn.map((depId) => {
-                  const upstream = dependencyUpstreams.find((item) => item.questionId === depId);
+                  const upstream = dependencyUpstreams.find(
+                    (item) => item.questionId === depId,
+                  );
                   const label = formatQuestionDepLabel(depId, questionList);
                   const claims = Number(upstream?.claimCount);
                   return (
@@ -1598,24 +1873,34 @@ function InvestigationBoard({
 }) {
   const persisted = waves.length ? waves : legacyWavesFromTimeline(timeline);
   const liveList = Object.values(liveScouts || {});
-  const questionById = new Map(questions.map((question) => [question.id, question]));
+  const questionById = new Map(
+    questions.map((question) => [question.id, question]),
+  );
   const displayWaves = persisted.length
     ? persisted
     : liveList.length
-      ? [{
-        id: liveList[0]?.waveId || "live",
-        wave: liveList[0]?.wave || 1,
-        status: "running",
-        scouts: [],
-        evaluation: {},
-      }]
+      ? [
+          {
+            id: liveList[0]?.waveId || "live",
+            wave: liveList[0]?.wave || 1,
+            status: "running",
+            scouts: [],
+            evaluation: {},
+          },
+        ]
       : [];
 
   if (!displayWaves.length) {
     return (
       <div className="border-y border-dashed border-(--border-default) px-6 py-12 text-center">
-        <Target size={28} weight="duotone" className="mx-auto text-(--text-muted)" />
-        <div className="mt-3 text-[12px] text-(--text-muted)">{t("deepResearchTimelineEmpty")}</div>
+        <Target
+          size={28}
+          weight="duotone"
+          className="mx-auto text-(--text-muted)"
+        />
+        <div className="mt-3 text-[12px] text-(--text-muted)">
+          {t("deepResearchTimelineEmpty")}
+        </div>
       </div>
     );
   }
@@ -1643,70 +1928,92 @@ function InvestigationBoard({
         }).length;
         const evaluation = wave.evaluation || {};
         const evaluationBanner = formatEvaluationBanner(evaluation);
-        const evaluationReason = humanizeResearchText(evaluationBanner.reasonLabel || "", questions);
-        const settledQuestions = questions.filter((question) => isQuestionSettled(question)).length;
+        const evaluationReason = humanizeResearchText(
+          evaluationBanner.reasonLabel || "",
+          questions,
+        );
+        const settledQuestions = questions.filter((question) =>
+          isQuestionSettled(question),
+        ).length;
         return (
-          <section key={wave.id || `${wave.wave}-${index}`} className="border-t border-(--border-default) first:border-t-0">
-              <div className="flex flex-col gap-3 py-4 sm:flex-row sm:items-start sm:justify-between">
-                <div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-[13px] font-semibold text-(--text-primary)">
-                      <ResearchTerm explanation={t("deepResearchTipWave")}>
-                        {t("deepResearchInvestigationTitle")}
-                      </ResearchTerm>
-                    </span>
-                    <span className="text-[10px] font-medium text-(--text-muted)">
-                      <ResearchTerm explanation={runStatusHelp(wave.status)}>
-                        {formatResearchStatus(wave.status)}
-                      </ResearchTerm>
-                    </span>
-                  </div>
-                  <div className="mt-1 text-[10px] text-(--text-muted)">
-                    {completed}/{Math.max(visibleScouts.length, 1)}{" "}
-                    <ResearchTerm explanation={t("deepResearchTipScout")}>
-                      {t("deepResearchWavesLabel")}
+          <section
+            key={wave.id || `${wave.wave}-${index}`}
+            className="border-t border-(--border-default) first:border-t-0"
+          >
+            <div className="flex flex-col gap-3 py-4 sm:flex-row sm:items-start sm:justify-between">
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="text-[13px] font-semibold text-(--text-primary)">
+                    <ResearchTerm explanation={t("deepResearchTipWave")}>
+                      {t("deepResearchInvestigationTitle")}
                     </ResearchTerm>
-                    {" · "}
-                    {settledQuestions}/{questions.length || 0}{" "}
-                    <ResearchTerm explanation={t("deepResearchTipQuestions")}>
-                      {t("deepResearchQuestionsLabel")}
+                  </span>
+                  <span className="text-[10px] font-medium text-(--text-muted)">
+                    <ResearchTerm explanation={runStatusHelp(wave.status)}>
+                      {formatResearchStatus(wave.status)}
                     </ResearchTerm>
-                    {" · "}
-                    {evidence.filter((item) => item.status === "accepted").length}{" "}
-                    <ResearchTerm explanation={t("deepResearchTipEvidence")}>
-                      {t("deepResearchEvidenceLabel")}
-                    </ResearchTerm>
-                  </div>
+                  </span>
                 </div>
-                {evaluation.decision ? (
-                  <div className="flex max-w-xl items-start gap-2 text-[10px] leading-5 text-(--text-secondary)">
-                    {evaluation.decision === "incomplete" ? (
-                      <WarningCircle size={13} weight="fill" className="mt-0.5 shrink-0 text-red-600" />
-                    ) : (
-                      <CheckCircle size={13} weight="fill" className="mt-0.5 shrink-0 text-emerald-600" />
-                    )}
-                    <span className="min-w-0 break-words [overflow-wrap:anywhere]">
-                      <ResearchTerm explanation={t("deepResearchTipWaveDecision")}>
-                        <strong>{evaluationBanner.decisionLabel}</strong>
-                      </ResearchTerm>
-                      {evaluationReason ? ` · ${evaluationReason}` : ""}
-                    </span>
-                  </div>
-                ) : (
-                  <div className="flex items-center gap-1.5 text-[10px] text-(--text-muted)">
-                    <Hourglass size={12} />
-                    {t("deepResearchWaveInProgress")}
-                  </div>
-                )}
+                <div className="mt-1 text-[10px] text-(--text-muted)">
+                  {completed}/{Math.max(visibleScouts.length, 1)}{" "}
+                  <ResearchTerm explanation={t("deepResearchTipScout")}>
+                    {t("deepResearchWavesLabel")}
+                  </ResearchTerm>
+                  {" · "}
+                  {settledQuestions}/{questions.length || 0}{" "}
+                  <ResearchTerm explanation={t("deepResearchTipQuestions")}>
+                    {t("deepResearchQuestionsLabel")}
+                  </ResearchTerm>
+                  {" · "}
+                  {
+                    evidence.filter((item) => item.status === "accepted").length
+                  }{" "}
+                  <ResearchTerm explanation={t("deepResearchTipEvidence")}>
+                    {t("deepResearchEvidenceLabel")}
+                  </ResearchTerm>
+                </div>
               </div>
-              <div className="border-t border-(--separator)">
-                {visibleScouts.length ? visibleScouts.map((scout) => {
+              {evaluation.decision ? (
+                <div className="flex max-w-xl items-start gap-2 text-[10px] leading-5 text-(--text-secondary)">
+                  {evaluation.decision === "incomplete" ? (
+                    <WarningCircle
+                      size={13}
+                      weight="fill"
+                      className="mt-0.5 shrink-0 text-red-600"
+                    />
+                  ) : (
+                    <CheckCircle
+                      size={13}
+                      weight="fill"
+                      className="mt-0.5 shrink-0 text-emerald-600"
+                    />
+                  )}
+                  <span className="min-w-0 break-words [overflow-wrap:anywhere]">
+                    <ResearchTerm
+                      explanation={t("deepResearchTipWaveDecision")}
+                    >
+                      <strong>{evaluationBanner.decisionLabel}</strong>
+                    </ResearchTerm>
+                    {evaluationReason ? ` · ${evaluationReason}` : ""}
+                  </span>
+                </div>
+              ) : (
+                <div className="flex items-center gap-1.5 text-[10px] text-(--text-muted)">
+                  <Hourglass size={12} />
+                  {t("deepResearchWaveInProgress")}
+                </div>
+              )}
+            </div>
+            <div className="border-t border-(--separator)">
+              {visibleScouts.length ? (
+                visibleScouts.map((scout) => {
                   const live = resolveScoutLive(scout, liveScouts, liveList);
-                  const liveForCard = wave.status === "completed"
-                    && live?.status === "running"
-                    && TERMINAL_SCOUT_STATUSES.has(scout.status)
-                    ? { ...live, status: scout.status }
-                    : live;
+                  const liveForCard =
+                    wave.status === "completed" &&
+                    live?.status === "running" &&
+                    TERMINAL_SCOUT_STATUSES.has(scout.status)
+                      ? { ...live, status: scout.status }
+                      : live;
                   return (
                     <ScoutCard
                       key={scout.id || scout.questionId}
@@ -1718,12 +2025,13 @@ function InvestigationBoard({
                       evidence={evidence}
                     />
                   );
-                }) : (
-                  <div className="px-2 py-6 text-center text-[11px] text-(--text-muted)">
-                    {t("deepResearchWaitingHandoff")}
-                  </div>
-                )}
-              </div>
+                })
+              ) : (
+                <div className="px-2 py-6 text-center text-[11px] text-(--text-muted)">
+                  {t("deepResearchWaitingHandoff")}
+                </div>
+              )}
+            </div>
           </section>
         );
       })}
@@ -1738,7 +2046,11 @@ function QuestionsBoard({ questions = [], liveScouts = {} }) {
       const qid = String(live?.questionId || "").trim();
       if (!qid) continue;
       const prev = map.get(qid);
-      if (!prev || live.status === "running" || (live.status === "waiting" && prev.status !== "running")) {
+      if (
+        !prev ||
+        live.status === "running" ||
+        (live.status === "waiting" && prev.status !== "running")
+      ) {
         map.set(qid, live);
       }
     }
@@ -1760,14 +2072,22 @@ function QuestionsBoard({ questions = [], liveScouts = {} }) {
             const live = liveByQuestion.get(q.id);
             const unresolved = unresolvedDependencyIds(q, questions);
             const activelyRunning = isActivelyRunningScout(live);
-            const queuedWaiting = live?.status === "waiting"
-              || (unresolved.length > 0 && !isQuestionSettled(q) && !activelyRunning);
+            const queuedWaiting =
+              live?.status === "waiting" ||
+              (unresolved.length > 0 &&
+                !isQuestionSettled(q) &&
+                !activelyRunning);
             const deps = Array.isArray(q.dependsOn) ? q.dependsOn : [];
             const statusKey = queuedWaiting
               ? "waiting"
-              : (activelyRunning ? "running" : q.status);
+              : activelyRunning
+                ? "running"
+                : q.status;
             return (
-              <div key={q.id} className="grid min-w-0 grid-cols-[24px_minmax(0,1fr)_auto] gap-2 py-2.5">
+              <div
+                key={q.id}
+                className="grid min-w-0 grid-cols-[24px_minmax(0,1fr)_auto] gap-2 py-2.5"
+              >
                 <span className="text-[10px] tabular-nums text-(--text-muted)">
                   {String(index + 1).padStart(2, "0")}
                 </span>
@@ -1783,10 +2103,14 @@ function QuestionsBoard({ questions = [], liveScouts = {} }) {
                       {deps.map((depId) => (
                         <span
                           key={`${q.id}-${depId}`}
-                          title={formatQuestionDepLabel(depId, questions, { maxText: 80 })}
+                          title={formatQuestionDepLabel(depId, questions, {
+                            maxText: 80,
+                          })}
                           className="max-w-[14rem] truncate rounded-md border border-(--border-default) bg-(--bg-secondary)/40 px-1.5 py-0.5 text-(--text-secondary)"
                         >
-                          {formatQuestionDepLabel(depId, questions, { maxText: 28 })}
+                          {formatQuestionDepLabel(depId, questions, {
+                            maxText: 28,
+                          })}
                         </span>
                       ))}
                     </div>
@@ -1796,14 +2120,20 @@ function QuestionsBoard({ questions = [], liveScouts = {} }) {
                       {t("deepResearchWaitingOnUpstream").replace(
                         "{list}",
                         unresolved
-                          .map((id) => formatQuestionDepLabel(id, questions, { maxText: 24 }))
+                          .map((id) =>
+                            formatQuestionDepLabel(id, questions, {
+                              maxText: 24,
+                            }),
+                          )
                           .join(" · "),
                       )}
                     </div>
                   ) : null}
                   {q.gaps?.length ? (
                     <div className="mt-1 break-words text-[10px] leading-4 text-amber-700 [overflow-wrap:anywhere] dark:text-amber-300">
-                      <ResearchTerm explanation={t("deepResearchTipGaps")}>{t("deepResearchGaps")}</ResearchTerm>
+                      <ResearchTerm explanation={t("deepResearchTipGaps")}>
+                        {t("deepResearchGaps")}
+                      </ResearchTerm>
                       {`: ${q.gaps.join("; ")}`}
                     </div>
                   ) : null}
@@ -1828,7 +2158,11 @@ function sourceHostname(url) {
   try {
     return new URL(String(url || "")).hostname.replace(/^www\./, "");
   } catch {
-    return String(url || "").replace(/^https?:\/\//, "").split("/")[0] || "";
+    return (
+      String(url || "")
+        .replace(/^https?:\/\//, "")
+        .split("/")[0] || ""
+    );
   }
 }
 
@@ -1837,11 +2171,17 @@ const EVIDENCE_PAGE_SIZE = 8; // 2 cols × 4 rows
 function EvidenceList({ evidence = [], title, countLabel }) {
   const [page, setPage] = useState(0);
   const accepted = evidence.filter((ev) => ev.status === "accepted");
-  const totalPages = Math.max(1, Math.ceil(accepted.length / EVIDENCE_PAGE_SIZE));
+  const totalPages = Math.max(
+    1,
+    Math.ceil(accepted.length / EVIDENCE_PAGE_SIZE),
+  );
   const safePage = Math.min(page, totalPages - 1);
   const showPager = accepted.length > EVIDENCE_PAGE_SIZE;
   const visible = showPager
-    ? accepted.slice(safePage * EVIDENCE_PAGE_SIZE, (safePage + 1) * EVIDENCE_PAGE_SIZE)
+    ? accepted.slice(
+        safePage * EVIDENCE_PAGE_SIZE,
+        (safePage + 1) * EVIDENCE_PAGE_SIZE,
+      )
     : accepted;
   return (
     <section className="min-w-0">
@@ -1854,7 +2194,10 @@ function EvidenceList({ evidence = [], title, countLabel }) {
           </div>
           {accepted.length ? (
             <div className="mt-0.5 text-[10px] text-(--text-muted)">
-              {(countLabel || t("deepResearchSourcesCount")).replace("{n}", String(accepted.length))}
+              {(countLabel || t("deepResearchSourcesCount")).replace(
+                "{n}",
+                String(accepted.length),
+              )}
             </div>
           ) : null}
         </div>
@@ -1875,12 +2218,17 @@ function EvidenceList({ evidence = [], title, countLabel }) {
                 >
                   <div className="mb-1.5 flex min-w-0 items-center gap-2 text-[10px] text-(--text-muted)">
                     <span className="shrink-0 font-medium">
-                      <ResearchTerm explanation={t("deepResearchTipConfidence")}>
+                      <ResearchTerm
+                        explanation={t("deepResearchTipConfidence")}
+                      >
                         {formatConfidenceLabel(ev.confidence)}
                       </ResearchTerm>
                     </span>
                     {host ? (
-                      <span className="min-w-0 truncate text-[10px] text-(--text-muted)" title={ev.url}>
+                      <span
+                        className="min-w-0 truncate text-[10px] text-(--text-muted)"
+                        title={ev.url}
+                      >
                         {host}
                       </span>
                     ) : null}
@@ -1937,9 +2285,13 @@ function EvidenceList({ evidence = [], title, countLabel }) {
 
 function ResearchMetrics({ session }) {
   const questions = session?.questions || [];
-  const evidence = (session?.evidence || []).filter((item) => item.status === "accepted");
+  const evidence = (session?.evidence || []).filter(
+    (item) => item.status === "accepted",
+  );
   const waves = session?.waves || [];
-  const settled = questions.filter((question) => isQuestionSettled(question)).length;
+  const settled = questions.filter((question) =>
+    isQuestionSettled(question),
+  ).length;
   const metrics = [
     {
       label: t("deepResearchQuestions"),
@@ -1954,8 +2306,16 @@ function ResearchMetrics({ session }) {
     {
       label: t("deepResearchWavesLabel"),
       help: t("deepResearchTipScout"),
-      value: `${Math.max(waves.flatMap((wave) => wave.scouts || []).filter((scout) =>
-        ["done", "partial", "blocked", "failed", "aborted"].includes(scout.status)).length, settled)}/${Math.max(questions.length, 1)}`,
+      value: `${Math.max(
+        waves
+          .flatMap((wave) => wave.scouts || [])
+          .filter((scout) =>
+            ["done", "partial", "blocked", "failed", "aborted"].includes(
+              scout.status,
+            ),
+          ).length,
+        settled,
+      )}/${Math.max(questions.length, 1)}`,
     },
   ];
   return (
@@ -1963,13 +2323,18 @@ function ResearchMetrics({ session }) {
       <div className="grid grid-cols-3 divide-x divide-(--separator)">
         {metrics.map((metric) => {
           return (
-            <div key={metric.label} className="min-w-0 px-3 py-3 first:pl-0 sm:px-4">
+            <div
+              key={metric.label}
+              className="min-w-0 px-3 py-3 first:pl-0 sm:px-4"
+            >
               <span className="min-w-0">
                 <span className="block text-[14px] font-semibold tabular-nums text-(--text-primary)">
                   {metric.value}
                 </span>
                 <span className="block text-[9px] uppercase tracking-widest text-(--text-muted)">
-                  <ResearchTerm explanation={metric.help}>{metric.label}</ResearchTerm>
+                  <ResearchTerm explanation={metric.help}>
+                    {metric.label}
+                  </ResearchTerm>
                 </span>
               </span>
             </div>
@@ -1989,28 +2354,37 @@ function LimitationsBoard({ limitations = [], questions = [] }) {
         </ResearchTerm>
       </div>
       {!limitations.length ? (
-        <div className="text-[12px] text-(--text-muted)">{t("deepResearchNoLimitations")}</div>
+        <div className="text-[12px] text-(--text-muted)">
+          {t("deepResearchNoLimitations")}
+        </div>
       ) : (
         <div className="divide-y divide-(--separator) border-y border-(--border-default)">
           {limitations.map((item, index) => (
-          <div
-            key={`${item.questionId}-${item.criterionId}-${index}`}
-            className="min-w-0 overflow-hidden py-2.5"
-          >
-            <div className="mb-1 flex min-w-0 flex-wrap items-center gap-1.5 text-[10px] text-(--text-muted)">
-              <span className="min-w-0 break-words [overflow-wrap:anywhere]">
-                {formatResearchRef(item.questionId, item.criterionId, questions)}
-              </span>
-              {item.status ? (
-                <span className="font-medium text-(--text-muted)">
-                  {formatResearchStatus(item.status)}
+            <div
+              key={`${item.questionId}-${item.criterionId}-${index}`}
+              className="min-w-0 overflow-hidden py-2.5"
+            >
+              <div className="mb-1 flex min-w-0 flex-wrap items-center gap-1.5 text-[10px] text-(--text-muted)">
+                <span className="min-w-0 break-words [overflow-wrap:anywhere]">
+                  {formatResearchRef(
+                    item.questionId,
+                    item.criterionId,
+                    questions,
+                  )}
                 </span>
-              ) : null}
+                {item.status ? (
+                  <span className="font-medium text-(--text-muted)">
+                    {formatResearchStatus(item.status)}
+                  </span>
+                ) : null}
+              </div>
+              <div className="break-words text-[12px] leading-5 text-amber-900 [overflow-wrap:anywhere] dark:text-amber-100">
+                {humanizeResearchText(
+                  item.gap || item.reason || item.text || "—",
+                  questions,
+                )}
+              </div>
             </div>
-            <div className="break-words text-[12px] leading-5 text-amber-900 [overflow-wrap:anywhere] dark:text-amber-100">
-              {humanizeResearchText(item.gap || item.reason || item.text || "—", questions)}
-            </div>
-          </div>
           ))}
         </div>
       )}
@@ -2033,17 +2407,26 @@ function DetailBody({
   onAbort,
 }) {
   const phase = session?.phase;
-  const investigating = ["investigating", "ready_for_report", "incomplete", "failed"].includes(phase);
+  const investigating = [
+    "investigating",
+    "ready_for_report",
+    "incomplete",
+    "failed",
+  ].includes(phase);
   const readyForReport = phase === "ready_for_report";
   const incomplete = phase === "incomplete";
   const planning = phase === "planning" || phase === "awaiting_plan_confirm";
   const runIssue = ["paused", "failed"].includes(session?.runState);
-  const displayedError = error || (session?.runState === "failed" ? session?.lastError : "") || "";
+  const displayedError =
+    error || (session?.runState === "failed" ? session?.lastError : "") || "";
   const searchesRemaining =
-    Number(session?.budget?.maxSearches || 0) - Number(session?.budgetUsed?.searches || 0);
+    Number(session?.budget?.maxSearches || 0) -
+    Number(session?.budgetUsed?.searches || 0);
   const wavesRemaining =
-    Number(session?.budget?.maxWaves || 0) - Number(session?.budgetUsed?.waves || 0);
-  const canContinue = !incomplete || (searchesRemaining > 0 && wavesRemaining > 0);
+    Number(session?.budget?.maxWaves || 0) -
+    Number(session?.budgetUsed?.waves || 0);
+  const canContinue =
+    !incomplete || (searchesRemaining > 0 && wavesRemaining > 0);
   const latestEvaluation = session?.waves?.at(-1)?.evaluation || {};
   const displayTitle = researchDisplayTitle(session);
   const [focusStep, setFocusStep] = useState(null);
@@ -2067,7 +2450,11 @@ function DetailBody({
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
       <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-(--border-default) px-5 py-3 sm:px-6">
-        <Stepper phase={phase} focusStep={focusStep} onFocusStep={setFocusStep} />
+        <Stepper
+          phase={phase}
+          focusStep={focusStep}
+          onFocusStep={setFocusStep}
+        />
         <div className="flex flex-wrap items-center gap-2">
           {running ? (
             <>
@@ -2162,7 +2549,11 @@ function DetailBody({
             {readyForReport && investigating ? (
               <div className="flex flex-col gap-3 border-b border-(--border-default) pb-5 sm:flex-row sm:items-center sm:justify-between">
                 <div className="flex items-start gap-2.5">
-                  <CheckCircle size={16} weight="fill" className="mt-0.5 shrink-0 text-emerald-600" />
+                  <CheckCircle
+                    size={16}
+                    weight="fill"
+                    className="mt-0.5 shrink-0 text-emerald-600"
+                  />
                   <div>
                     <div className="text-[12px] font-medium text-(--text-primary)">
                       {t("deepResearchReadyTitle")}
@@ -2185,7 +2576,11 @@ function DetailBody({
             ) : null}
             {incomplete ? (
               <div className="flex items-start gap-2.5 border-b border-(--border-default) pb-5">
-                <WarningCircle size={16} weight="fill" className="mt-0.5 shrink-0 text-red-600" />
+                <WarningCircle
+                  size={16}
+                  weight="fill"
+                  className="mt-0.5 shrink-0 text-red-600"
+                />
                 <div>
                   <div className="text-[12px] font-medium text-(--text-primary)">
                     {t("deepResearchIncompleteTitle")}
@@ -2217,9 +2612,12 @@ function DetailBody({
                 questions={session?.questions || []}
                 evidence={session?.evidence || []}
                 liveScouts={liveScouts}
-                leadStatus={running
-                  ? (aggregateInvestigateLeadStatus(liveScouts, leadStatus) || leadStatus)
-                  : ""}
+                leadStatus={
+                  running
+                    ? aggregateInvestigateLeadStatus(liveScouts, leadStatus) ||
+                      leadStatus
+                    : ""
+                }
                 toolsCap={researchSessionToolsCap(session)}
               />
             </section>
@@ -2256,7 +2654,10 @@ function DetailBody({
               </header>
               <div className="pt-7">
                 {session?.reportMarkdown ? (
-                  <MarkdownPreview value={session.reportMarkdown} className="max-w-none [&_h1]:tracking-[-0.025em] [&_h2]:tracking-[-0.02em]" />
+                  <MarkdownPreview
+                    value={session.reportMarkdown}
+                    className="max-w-none [&_h1]:tracking-[-0.025em] [&_h2]:tracking-[-0.02em]"
+                  />
                 ) : running ? (
                   <div className="flex items-center gap-2 text-[13px] text-(--text-secondary)">
                     <CircleNotch size={16} className="animate-spin" />
@@ -2279,14 +2680,16 @@ function DetailBody({
               </div>
             </div>
 
-            {(session?.evidence || []).some((ev) => ev.status === "accepted") ? (
+            {(session?.evidence || []).some(
+              (ev) => ev.status === "accepted",
+            ) ? (
               <EvidenceList
                 evidence={session?.evidence || []}
                 title={t("deepResearchSources")}
               />
             ) : null}
 
-            {(session?.waves?.length || session?.timeline?.length) ? (
+            {session?.waves?.length || session?.timeline?.length ? (
               <div className="flex flex-wrap items-center justify-between gap-3 border-t border-(--border-default) pt-4">
                 <div className="min-w-0">
                   <div className="text-[12px] font-semibold text-(--text-primary)">
@@ -2437,7 +2840,10 @@ export function ResearchPanel() {
         };
         return {
           ...prev,
-          [key]: typeof patch === "function" ? patch(current) : { ...current, ...patch },
+          [key]:
+            typeof patch === "function"
+              ? patch(current)
+              : { ...current, ...patch },
         };
       });
     };
@@ -2445,7 +2851,8 @@ export function ResearchPanel() {
     source.onmessage = (event) => {
       try {
         const payload = JSON.parse(event.data);
-        if (payload.type === "session" && payload.session) setSession(payload.session);
+        if (payload.type === "session" && payload.session)
+          setSession(payload.session);
         if (payload.type === "run:start" || payload.type === "run:status") {
           setRunning(true);
           setError("");
@@ -2472,14 +2879,14 @@ export function ResearchPanel() {
           refreshList().catch(() => {});
         }
         if (
-          payload.type === "plan"
-          || payload.type === "commit"
-          || payload.type === "report"
-          || payload.type === "handoff"
-          || payload.type === "scout:start"
-          || payload.type === "wave:start"
-          || payload.type === "wave:evaluation"
-          || payload.type === "batch:done"
+          payload.type === "plan" ||
+          payload.type === "commit" ||
+          payload.type === "report" ||
+          payload.type === "handoff" ||
+          payload.type === "scout:start" ||
+          payload.type === "wave:start" ||
+          payload.type === "wave:evaluation" ||
+          payload.type === "batch:done"
         ) {
           loadSession(selectedId).catch(() => {});
         }
@@ -2489,14 +2896,14 @@ export function ResearchPanel() {
             const used = {
               ...(prev.budgetUsed || {}),
               searches:
-                (Number(prev.budgetUsed?.searches) || 0)
-                + (Number(payload.delta.searches) || 0),
+                (Number(prev.budgetUsed?.searches) || 0) +
+                (Number(payload.delta.searches) || 0),
               fetches:
-                (Number(prev.budgetUsed?.fetches) || 0)
-                + (Number(payload.delta.fetches) || 0),
+                (Number(prev.budgetUsed?.fetches) || 0) +
+                (Number(payload.delta.fetches) || 0),
               waves:
-                (Number(prev.budgetUsed?.waves) || 0)
-                + (Number(payload.delta.waves) || 0),
+                (Number(prev.budgetUsed?.waves) || 0) +
+                (Number(payload.delta.waves) || 0),
             };
             return { ...prev, budgetUsed: used };
           });
@@ -2504,16 +2911,22 @@ export function ResearchPanel() {
             const key = scoutLiveKey(payload);
             upsertLiveScout(key, (current) => ({
               ...current,
-              searchCount: payload.scoutUsed?.searches
-                ?? ((Number(current.searchCount) || 0) + (Number(payload.delta.searches) || 0)),
-              fetchCount: payload.scoutUsed?.fetches
-                ?? ((Number(current.fetchCount) || 0) + (Number(payload.delta.fetches) || 0)),
-              toolsUsed: payload.scoutUsed?.tools
-                ?? payload.toolsUsed
-                ?? current.toolsUsed,
-              toolsCap: payload.scoutUsed?.toolsCap
-                ?? payload.toolsCap
-                ?? current.toolsCap,
+              searchCount:
+                payload.scoutUsed?.searches ??
+                (Number(current.searchCount) || 0) +
+                  (Number(payload.delta.searches) || 0),
+              fetchCount:
+                payload.scoutUsed?.fetches ??
+                (Number(current.fetchCount) || 0) +
+                  (Number(payload.delta.fetches) || 0),
+              toolsUsed:
+                payload.scoutUsed?.tools ??
+                payload.toolsUsed ??
+                current.toolsUsed,
+              toolsCap:
+                payload.scoutUsed?.toolsCap ??
+                payload.toolsCap ??
+                current.toolsCap,
             }));
           }
         }
@@ -2542,7 +2955,9 @@ export function ResearchPanel() {
               evaluatorDraft: "",
               handoff: "",
               error: "",
-              dependsOn: Array.isArray(payload.dependsOn) ? payload.dependsOn : [],
+              dependsOn: Array.isArray(payload.dependsOn)
+                ? payload.dependsOn
+                : [],
               waitingOn: [],
               activityLine: t("deepResearchStatusRunning"),
             };
@@ -2561,8 +2976,12 @@ export function ResearchPanel() {
               questionText: payload.questionText || current.questionText,
               name: current.name || t("deepResearchScout"),
               status: current.status === "running" ? "running" : "waiting",
-              dependsOn: Array.isArray(payload.dependsOn) ? payload.dependsOn : (current.dependsOn || []),
-              waitingOn: Array.isArray(payload.waitingOn) ? payload.waitingOn : [],
+              dependsOn: Array.isArray(payload.dependsOn)
+                ? payload.dependsOn
+                : current.dependsOn || [],
+              waitingOn: Array.isArray(payload.waitingOn)
+                ? payload.waitingOn
+                : [],
             }));
           }
         }
@@ -2577,9 +2996,14 @@ export function ResearchPanel() {
               ...current,
               status: "running",
               scoutRunId: payload.scoutRunId || current.scoutRunId || key,
-              dependsOn: Array.isArray(payload.dependsOn) ? payload.dependsOn : (current.dependsOn || []),
-              dependencyUpstreams: Array.isArray(payload.upstreams) ? payload.upstreams : [],
-              dependencySummary: payload.summary || current.dependencySummary || "",
+              dependsOn: Array.isArray(payload.dependsOn)
+                ? payload.dependsOn
+                : current.dependsOn || [],
+              dependencyUpstreams: Array.isArray(payload.upstreams)
+                ? payload.upstreams
+                : [],
+              dependencySummary:
+                payload.summary || current.dependencySummary || "",
               waitingOn: [],
               activityLine: t("deepResearchStatusRunning"),
             }));
@@ -2593,18 +3017,24 @@ export function ResearchPanel() {
               ...current,
               status: "running",
               waitingOn: [],
-              activityLine: formatScoutActivityLine(payload)
-                || payload.displayName
-                || payload.name
-                || current.activityLine
-                || "",
+              activityLine:
+                formatScoutActivityLine(payload) ||
+                payload.displayName ||
+                payload.name ||
+                current.activityLine ||
+                "",
               tools: [
-                ...(current.tools || []).filter((step) => step.id !== payload.id),
+                ...(current.tools || []).filter(
+                  (step) => step.id !== payload.id,
+                ),
                 {
                   id: payload.id,
                   name: payload.name,
                   displayName: payload.displayName || payload.name,
-                  detail: summarizeResearchToolArgs(payload.name, payload.arguments),
+                  detail: summarizeResearchToolArgs(
+                    payload.name,
+                    payload.arguments,
+                  ),
                   status: "running",
                 },
               ].slice(-12),
@@ -2613,33 +3043,43 @@ export function ResearchPanel() {
           if (payload.type === "tool:end" || payload.type === "tool:error") {
             upsertLiveScout(key, (current) => ({
               ...current,
-              activityLine: payload.type === "tool:error"
-                ? `${payload.displayName || payload.name || "tool"} · error`
-                : (current.phase === "verifying"
-                  ? t("deepResearchStatusVerifying")
-                  : t("deepResearchStatusRunning")),
+              activityLine:
+                payload.type === "tool:error"
+                  ? `${payload.displayName || payload.name || "tool"} · error`
+                  : current.phase === "verifying"
+                    ? t("deepResearchStatusVerifying")
+                    : t("deepResearchStatusRunning"),
               tools: (current.tools || []).map((step) =>
                 step.id === payload.id
                   ? {
-                    ...step,
-                    status: payload.type === "tool:error" ? "error" : "done",
-                    summary: payload.summary || step.summary,
-                  }
-                  : step),
+                      ...step,
+                      status: payload.type === "tool:error" ? "error" : "done",
+                      summary: payload.summary || step.summary,
+                    }
+                  : step,
+              ),
             }));
           }
           if (payload.type === "assistant:start") {
-            const agent = payload.agent === "evaluator" || payload.agent === "scout"
-              ? payload.agent
-              : null;
+            const agent =
+              payload.agent === "evaluator" || payload.agent === "scout"
+                ? payload.agent
+                : null;
             upsertLiveScout(key, (current) => {
-              const target = agent
-                || (current.phase === "verifying" ? "evaluator" : "scout");
-              const field = target === "evaluator" ? "evaluatorDraft" : "scoutDraft";
-              const prev = String(current[field] || (target === "scout" ? current.draft : "") || "");
-              const activityLine = target === "evaluator"
-                ? t("deepResearchStatusVerifying")
-                : t("deepResearchDraftStreaming");
+              const target =
+                agent ||
+                (current.phase === "verifying" ? "evaluator" : "scout");
+              const field =
+                target === "evaluator" ? "evaluatorDraft" : "scoutDraft";
+              const prev = String(
+                current[field] ||
+                  (target === "scout" ? current.draft : "") ||
+                  "",
+              );
+              const activityLine =
+                target === "evaluator"
+                  ? t("deepResearchStatusVerifying")
+                  : t("deepResearchDraftStreaming");
               if (!prev.trim()) {
                 return { ...current, activityLine };
               }
@@ -2647,21 +3087,36 @@ export function ResearchPanel() {
               if (target === "evaluator") {
                 return { ...current, evaluatorDraft: next, activityLine };
               }
-              return { ...current, scoutDraft: next, draft: next, activityLine };
+              return {
+                ...current,
+                scoutDraft: next,
+                draft: next,
+                activityLine,
+              };
             });
           }
           if (payload.type === "assistant:delta" && payload.text) {
-            const agent = payload.agent === "evaluator" || payload.agent === "scout"
-              ? payload.agent
-              : null;
+            const agent =
+              payload.agent === "evaluator" || payload.agent === "scout"
+                ? payload.agent
+                : null;
             upsertLiveScout(key, (current) => {
-              const target = agent
-                || (current.phase === "verifying" ? "evaluator" : "scout");
+              const target =
+                agent ||
+                (current.phase === "verifying" ? "evaluator" : "scout");
               if (target === "evaluator") {
-                const evaluatorDraft = appendLiveDraft(current, "evaluatorDraft", payload.text);
+                const evaluatorDraft = appendLiveDraft(
+                  current,
+                  "evaluatorDraft",
+                  payload.text,
+                );
                 return { ...current, evaluatorDraft };
               }
-              const scoutDraft = appendLiveDraft(current, "scoutDraft", payload.text);
+              const scoutDraft = appendLiveDraft(
+                current,
+                "scoutDraft",
+                payload.text,
+              );
               return {
                 ...current,
                 scoutDraft,
@@ -2670,44 +3125,55 @@ export function ResearchPanel() {
             });
           }
           if (payload.type === "assistant:reasoning_delta" && payload.text) {
-            const agent = payload.agent === "evaluator" || payload.agent === "scout"
-              ? payload.agent
-              : null;
+            const agent =
+              payload.agent === "evaluator" || payload.agent === "scout"
+                ? payload.agent
+                : null;
             upsertLiveScout(key, (current) => {
-              const target = agent
-                || (current.phase === "verifying" ? "evaluator" : "scout");
-              const field = target === "evaluator" ? "evaluatorDraft" : "scoutDraft";
+              const target =
+                agent ||
+                (current.phase === "verifying" ? "evaluator" : "scout");
+              const field =
+                target === "evaluator" ? "evaluatorDraft" : "scoutDraft";
               const next = appendLiveDraft(current, field, payload.text);
-              if (target === "evaluator") return { ...current, evaluatorDraft: next };
+              if (target === "evaluator")
+                return { ...current, evaluatorDraft: next };
               return { ...current, scoutDraft: next, draft: next };
             });
           }
           if (payload.type === "assistant:done" && payload.text) {
-            const agent = payload.agent === "evaluator" || payload.agent === "scout"
-              ? payload.agent
-              : null;
+            const agent =
+              payload.agent === "evaluator" || payload.agent === "scout"
+                ? payload.agent
+                : null;
             upsertLiveScout(key, (current) => {
-              const target = agent
-                || (current.phase === "verifying" ? "evaluator" : "scout");
+              const target =
+                agent ||
+                (current.phase === "verifying" ? "evaluator" : "scout");
               const full = String(payload.text || "");
               if (!full.trim()) return current;
               // Only backfill when streaming deltas were empty for this turn buffer.
               if (target === "evaluator") {
                 if (String(current.evaluatorDraft || "").trim()) return current;
-                return { ...current, evaluatorDraft: full.slice(-LIVE_DRAFT_MAX) };
+                return {
+                  ...current,
+                  evaluatorDraft: full.slice(-LIVE_DRAFT_MAX),
+                };
               }
-              if (String(current.scoutDraft || current.draft || "").trim()) return current;
+              if (String(current.scoutDraft || current.draft || "").trim())
+                return current;
               const scoutDraft = full.slice(-LIVE_DRAFT_MAX);
               return { ...current, scoutDraft, draft: scoutDraft };
             });
           }
-          if (payload.type === "criterion:start" || payload.type === "scout:checkpoint_start") {
-            const criterionId = payload.criterionId
-              || payload.targetGap?.criterionId
-              || "";
-            const criterionText = payload.criterionText
-              || payload.targetGap?.reason
-              || "";
+          if (
+            payload.type === "criterion:start" ||
+            payload.type === "scout:checkpoint_start"
+          ) {
+            const criterionId =
+              payload.criterionId || payload.targetGap?.criterionId || "";
+            const criterionText =
+              payload.criterionText || payload.targetGap?.reason || "";
             upsertLiveScout(key, (current) => ({
               ...current,
               cycle: payload.cycle,
@@ -2721,7 +3187,8 @@ export function ResearchPanel() {
               draft: "",
               scoutDraft: "",
               evaluatorDraft: "",
-              activityLine: criterionText || criterionId || t("deepResearchCriterionPass"),
+              activityLine:
+                criterionText || criterionId || t("deepResearchCriterionPass"),
             }));
           }
           if (payload.type === "criterion:verify_start") {
@@ -2747,23 +3214,33 @@ export function ResearchPanel() {
               verifyReadsCap: payload.artifactReadsCap,
             }));
           }
-          if (payload.type === "criterion:coverage" || payload.type === "scout:checkpoint") {
+          if (
+            payload.type === "criterion:coverage" ||
+            payload.type === "scout:checkpoint"
+          ) {
             upsertLiveScout(key, (current) => {
-              const coverage = payload.coverage?.criteria || payload.coverage || current.coverage;
+              const coverage =
+                payload.coverage?.criteria ||
+                payload.coverage ||
+                current.coverage;
               const nextCoverage = Array.isArray(coverage)
-                ? coverage.map((item) => (
-                  item?.id === payload.criterionId
-                    ? {
-                      ...item,
-                      status: payload.status || item.status,
-                      summary: payload.summary ?? item.summary,
-                      gap: payload.gap ?? item.gap,
-                      warning: payload.warning ?? item.warning,
-                      verification: payload.verification ?? item.verification,
-                      toolCount: payload.toolCount ?? payload.toolsUsed ?? item.toolCount,
-                    }
-                    : item
-                ))
+                ? coverage.map((item) =>
+                    item?.id === payload.criterionId
+                      ? {
+                          ...item,
+                          status: payload.status || item.status,
+                          summary: payload.summary ?? item.summary,
+                          gap: payload.gap ?? item.gap,
+                          warning: payload.warning ?? item.warning,
+                          verification:
+                            payload.verification ?? item.verification,
+                          toolCount:
+                            payload.toolCount ??
+                            payload.toolsUsed ??
+                            item.toolCount,
+                        }
+                      : item,
+                  )
                 : coverage;
               return {
                 ...current,
@@ -2771,20 +3248,29 @@ export function ResearchPanel() {
                 phase: "investigating",
                 coverage: nextCoverage,
                 nextGap: payload.nextGap || null,
-                candidateCount: payload.candidateCount ?? current.candidateCount,
+                candidateCount:
+                  payload.candidateCount ?? current.candidateCount,
                 searchCount: payload.searchCount ?? current.searchCount,
                 fetchCount: payload.fetchCount ?? current.fetchCount,
-                toolsUsed: payload.toolsUsed ?? payload.toolCount ?? current.toolsUsed,
+                toolsUsed:
+                  payload.toolsUsed ?? payload.toolCount ?? current.toolsUsed,
                 toolsCap: payload.toolsCap ?? current.toolsCap,
-                activeCriterionId: payload.criterionId || current.activeCriterionId,
-                status: payload.type === "criterion:coverage"
-                  ? "running"
-                  : (payload.decision === "continue" ? "running" : payload.decision),
+                activeCriterionId:
+                  payload.criterionId || current.activeCriterionId,
+                status:
+                  payload.type === "criterion:coverage"
+                    ? "running"
+                    : payload.decision === "continue"
+                      ? "running"
+                      : payload.decision,
               };
             });
             loadSession(selectedId).catch(() => {});
           }
-          if (payload.type === "evidence:accepted" || payload.type === "finding") {
+          if (
+            payload.type === "evidence:accepted" ||
+            payload.type === "finding"
+          ) {
             loadSession(selectedId).catch(() => {});
           }
         }
@@ -2799,7 +3285,10 @@ export function ResearchPanel() {
           upsertLiveScout(key, (current) => ({
             ...current,
             name: payload.name || current.name,
-            coverage: payload.coverage?.criteria || payload.coverage || current.coverage,
+            coverage:
+              payload.coverage?.criteria ||
+              payload.coverage ||
+              current.coverage,
             status: payload.status || "done",
             handoff: payload.handoff || current.handoff,
             draft: "",
@@ -2810,7 +3299,9 @@ export function ResearchPanel() {
 
         if (payload.type === "batch:start") {
           const waiting = Array.isArray(payload.waiting) ? payload.waiting : [];
-          const runningCount = Array.isArray(payload.questionIds) ? payload.questionIds.length : 0;
+          const runningCount = Array.isArray(payload.questionIds)
+            ? payload.questionIds.length
+            : 0;
           for (const item of waiting) {
             const key = String(item.questionId || "").trim();
             if (!key) continue;
@@ -2822,11 +3313,14 @@ export function ResearchPanel() {
               questionText: item.questionText || current.questionText,
               name: current.name || t("deepResearchScout"),
               status: current.status === "running" ? "running" : "waiting",
-              dependsOn: Array.isArray(item.dependsOn) ? item.dependsOn : (current.dependsOn || []),
+              dependsOn: Array.isArray(item.dependsOn)
+                ? item.dependsOn
+                : current.dependsOn || [],
               waitingOn: Array.isArray(item.waitingOn) ? item.waitingOn : [],
-              activityLine: Array.isArray(item.waitingOn) && item.waitingOn.length
-                ? t("deepResearchStatusWaitingDeps")
-                : t("deepResearchWaitingParallelSlot"),
+              activityLine:
+                Array.isArray(item.waitingOn) && item.waitingOn.length
+                  ? t("deepResearchStatusWaitingDeps")
+                  : t("deepResearchWaitingParallelSlot"),
             }));
           }
           // Aggregate header status is derived from liveScouts; keep a coarse fallback.
@@ -2838,7 +3332,10 @@ export function ResearchPanel() {
             );
           } else {
             setLeadStatus(
-              t("deepResearchBatchRunning").replace("{n}", String(runningCount)),
+              t("deepResearchBatchRunning").replace(
+                "{n}",
+                String(runningCount),
+              ),
             );
           }
         }
@@ -2904,22 +3401,38 @@ export function ResearchPanel() {
   const visibleSessions = useMemo(() => {
     let list = [...sessions];
     if (activeFilter === "planning") {
-      list = list.filter((s) => s.phase === "planning" || s.phase === "awaiting_plan_confirm");
+      list = list.filter(
+        (s) => s.phase === "planning" || s.phase === "awaiting_plan_confirm",
+      );
     } else if (activeFilter === "investigating") {
       list = list.filter((s) =>
-        ["investigating", "ready_for_report", "incomplete", "writing", "failed"].includes(s.phase));
+        [
+          "investigating",
+          "ready_for_report",
+          "incomplete",
+          "writing",
+          "failed",
+        ].includes(s.phase),
+      );
     } else if (activeFilter === "done") {
       list = list.filter((s) => s.phase === "done");
     }
     if (sortMode === "title") {
-      list.sort((a, b) => String(a.question || "").localeCompare(String(b.question || "")));
+      list.sort((a, b) =>
+        String(a.question || "").localeCompare(String(b.question || "")),
+      );
     } else {
-      list.sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")));
+      list.sort((a, b) =>
+        String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")),
+      );
     }
     return list;
   }, [sessions, activeFilter, sortMode]);
 
-  const performDetailAction = async (work, { optimisticRunning = false } = {}) => {
+  const performDetailAction = async (
+    work,
+    { optimisticRunning = false } = {},
+  ) => {
     if (busy) return null;
     setBusy(true);
     setError("");
@@ -2980,7 +3493,7 @@ export function ResearchPanel() {
   const listEmpty = !loading && visibleSessions.length === 0;
 
   return (
-    <div className="min-h-0 flex-1 overflow-y-auto bg-(--bg-primary)">
+    <div className="min-h-0 flex-1 overflow-y-auto">
       <div className="mx-auto w-full max-w-[1540px] px-4 pb-12 pt-5 sm:px-7 lg:px-10 lg:pt-8">
         <header className="flex flex-col gap-5">
           <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
@@ -3035,7 +3548,9 @@ export function ResearchPanel() {
                   onClick={() => setViewMode("grid")}
                   className={cn(
                     "flex w-10 items-center justify-center transition",
-                    viewMode === "grid" ? "bg-primary/16 text-primary" : "text-(--text-secondary) hover:bg-(--bg-hover)",
+                    viewMode === "grid"
+                      ? "bg-primary/16 text-primary"
+                      : "text-(--text-secondary) hover:bg-(--bg-hover)",
                   )}
                   aria-pressed={viewMode === "grid"}
                   aria-label={t("deepResearchGridView")}
@@ -3048,7 +3563,9 @@ export function ResearchPanel() {
                   onClick={() => setViewMode("list")}
                   className={cn(
                     "flex w-10 items-center justify-center border-l border-(--border-default) transition",
-                    viewMode === "list" ? "bg-primary/16 text-primary" : "text-(--text-secondary) hover:bg-(--bg-hover)",
+                    viewMode === "list"
+                      ? "bg-primary/16 text-primary"
+                      : "text-(--text-secondary) hover:bg-(--bg-hover)",
                   )}
                   aria-pressed={viewMode === "list"}
                   aria-label={t("deepResearchListView")}
@@ -3098,7 +3615,10 @@ export function ResearchPanel() {
               <p className="mt-1.5 text-[12px] text-(--text-muted)">
                 {loading
                   ? t("deepResearchLoading")
-                  : t("deepResearchCount").replace("{n}", String(visibleSessions.length))}
+                  : t("deepResearchCount").replace(
+                      "{n}",
+                      String(visibleSessions.length),
+                    )}
               </p>
             </div>
           </div>
@@ -3111,7 +3631,11 @@ export function ResearchPanel() {
 
           {listEmpty ? (
             <div className="mt-6 flex min-h-64 flex-col items-center justify-center rounded-2xl border border-dashed border-(--border-default) px-6 text-center">
-              <Lightning size={32} weight="duotone" className="text-(--text-muted)" />
+              <Lightning
+                size={32}
+                weight="duotone"
+                className="text-(--text-muted)"
+              />
               <div className="mt-3 text-[13px] font-medium text-(--text-secondary)">
                 {query ? t("deepResearchNoResults") : t("deepResearchEmpty")}
               </div>
@@ -3142,7 +3666,9 @@ export function ResearchPanel() {
                   <span className="flex size-14 items-center justify-center rounded-full bg-primary/14 text-primary transition group-hover:scale-105">
                     <Plus size={23} weight="bold" />
                   </span>
-                  <span className="mt-4 text-[14px] font-medium">{t("deepResearchNew")}</span>
+                  <span className="mt-4 text-[14px] font-medium">
+                    {t("deepResearchNew")}
+                  </span>
                 </button>
               ) : null}
               {visibleSessions.map((item, index) => (
@@ -3171,13 +3697,14 @@ export function ResearchPanel() {
           if (!open) actions.openResearchHome();
         }}
       >
-        <DialogContent
-          className="grid h-[calc(100dvh-0.5rem)] max-h-[1040px] w-[calc(100vw-0.5rem)] max-w-[calc(100vw-0.5rem)] grid-rows-[auto_minmax(0,1fr)] gap-0 overflow-hidden rounded-2xl p-0 sm:h-[min(96vh,1040px)] sm:w-[calc(100vw-1rem)] sm:max-w-[calc(100vw-1rem)] xl:max-w-[1560px]"
-        >
+        <DialogContent className="grid h-[calc(100dvh-0.5rem)] max-h-[1040px] w-[calc(100vw-0.5rem)] max-w-[calc(100vw-0.5rem)] grid-rows-[auto_minmax(0,1fr)] gap-0 overflow-hidden rounded-2xl p-0 sm:h-[min(96vh,1040px)] sm:w-[calc(100vw-1rem)] sm:max-w-[calc(100vw-1rem)] xl:max-w-[1560px]">
           <DialogHeader className="shrink-0 border-b border-(--separator) bg-(--material-elevated) px-5 py-4 sm:px-6">
             <div className="flex min-w-0 items-start gap-3">
               {researchDisplayTitle(session).emoji ? (
-                <span className="mt-0.5 flex size-9 shrink-0 items-center justify-center text-[25px]" aria-hidden="true">
+                <span
+                  className="mt-0.5 flex size-9 shrink-0 items-center justify-center text-[25px]"
+                  aria-hidden="true"
+                >
                   {researchDisplayTitle(session).emoji}
                 </span>
               ) : (
@@ -3187,11 +3714,17 @@ export function ResearchPanel() {
               )}
               <div className="min-w-0">
                 <DialogTitle className="line-clamp-2 pr-2 text-[17px] leading-6">
-                  {researchDisplayTitle(session).title || t("deepResearchLoading")}
+                  {researchDisplayTitle(session).title ||
+                    t("deepResearchLoading")}
                 </DialogTitle>
                 {session ? (
                   <DialogDescription className="mt-1 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-                    <span className={cn("rounded-full px-2 py-0.5 text-[10px] font-medium", phaseChipClass(session.phase))}>
+                    <span
+                      className={cn(
+                        "rounded-full px-2 py-0.5 text-[10px] font-medium",
+                        phaseChipClass(session.phase),
+                      )}
+                    >
                       {phaseLabel(session.phase)}
                     </span>
                     <span aria-hidden="true">·</span>
@@ -3212,16 +3745,21 @@ export function ResearchPanel() {
                 liveScouts={liveScouts}
                 leadStatus={leadStatus}
                 onSavePlan={async (plan) => {
-                  await performDetailAction(
-                    () => updateResearchPlan(session.id, plan),
+                  await performDetailAction(() =>
+                    updateResearchPlan(session.id, plan),
                   );
                 }}
                 onConfirmPlan={async (plan) => {
-                  await performDetailAction(async () => {
-                    const res = await confirmResearchPlan(session.id, plan);
-                    const started = await startResearchRun(session.id, { phase: "investigating" });
-                    return started?.session ? started : res;
-                  }, { optimisticRunning: true });
+                  await performDetailAction(
+                    async () => {
+                      const res = await confirmResearchPlan(session.id, plan);
+                      const started = await startResearchRun(session.id, {
+                        phase: "investigating",
+                      });
+                      return started?.session ? started : res;
+                    },
+                    { optimisticRunning: true },
+                  );
                 }}
                 onReplan={async () => {
                   await performDetailAction(
@@ -3231,7 +3769,8 @@ export function ResearchPanel() {
                 }}
                 onContinue={async () => {
                   await performDetailAction(
-                    () => startResearchRun(session.id, { phase: "investigating" }),
+                    () =>
+                      startResearchRun(session.id, { phase: "investigating" }),
                     { optimisticRunning: true },
                   );
                 }}
@@ -3244,7 +3783,8 @@ export function ResearchPanel() {
                 onAbort={async () => {
                   await performDetailAction(async () => {
                     const result = await abortResearchRun(session.id);
-                    if (!result?.ok) throw new Error(t("deepResearchNothingToStop"));
+                    if (!result?.ok)
+                      throw new Error(t("deepResearchNothingToStop"));
                     setLeadStatus(t("deepResearchPausing"));
                     return result;
                   });
@@ -3260,7 +3800,11 @@ export function ResearchPanel() {
                 </>
               ) : (
                 <>
-                  <WarningCircle size={24} weight="fill" className="text-accent-red" />
+                  <WarningCircle
+                    size={24}
+                    weight="fill"
+                    className="text-accent-red"
+                  />
                   <span>{error || t("deepResearchSessionUnavailable")}</span>
                   <button
                     type="button"

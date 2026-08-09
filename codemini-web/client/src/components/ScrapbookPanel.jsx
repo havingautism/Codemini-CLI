@@ -79,8 +79,11 @@ function splitEmojiTitle(value) {
 
   const firstGrapheme =
     typeof Intl !== "undefined" && typeof Intl.Segmenter === "function"
-      ? [...new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(fullTitle)][0]
-          ?.segment || ""
+      ? [
+          ...new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(
+            fullTitle,
+          ),
+        ][0]?.segment || ""
       : Array.from(fullTitle)[0] || "";
   const isEmoji =
     /\p{Extended_Pictographic}/u.test(firstGrapheme) ||
@@ -112,7 +115,9 @@ function scrapbookSourceLabel(entry) {
 }
 
 function notebookTone(toneIndex) {
-  return NOTEBOOK_TONES[Math.abs(Number(toneIndex) || 0) % NOTEBOOK_TONES.length];
+  return NOTEBOOK_TONES[
+    Math.abs(Number(toneIndex) || 0) % NOTEBOOK_TONES.length
+  ];
 }
 
 function formatEntryDate(entry) {
@@ -161,7 +166,9 @@ function ScrapbookSummaryLoading() {
               >
                 <span
                   className={`size-1.5 rounded-full ${
-                    index === 0 ? "bg-primary animate-pulse" : "bg-(--border-strong)"
+                    index === 0
+                      ? "bg-primary animate-pulse"
+                      : "bg-(--border-strong)"
                   }`}
                 />
                 <span>{label}</span>
@@ -381,7 +388,9 @@ export function ScrapbookPanel() {
         }
         if (payload?.job) {
           setSelectedEntry((current) =>
-            current?.id === selectedEntry.id ? { ...current, latestJob: payload.job } : current,
+            current?.id === selectedEntry.id
+              ? { ...current, latestJob: payload.job }
+              : current,
           );
           if (["completed", "failed"].includes(payload.job.status)) {
             const latest = await fetchScrapbookSummaryJob(jobId);
@@ -460,7 +469,9 @@ export function ScrapbookPanel() {
     const started = await summarizeScrapbookEntry(selectedEntry.id);
     if (started?.job) {
       setSelectedEntry((current) =>
-        current?.id === selectedEntry.id ? { ...current, latestJob: started.job } : current,
+        current?.id === selectedEntry.id
+          ? { ...current, latestJob: started.job }
+          : current,
       );
     }
     await loadEntries();
@@ -567,13 +578,17 @@ export function ScrapbookPanel() {
           220,
           Math.min(420, containerWidth - studioPaneWidth - 352),
         );
-        setSourcePaneWidth(Math.min(maxWidth, Math.max(220, initialWidth + delta)));
+        setSourcePaneWidth(
+          Math.min(maxWidth, Math.max(220, initialWidth + delta)),
+        );
       } else {
         const maxWidth = Math.max(
           280,
           Math.min(640, containerWidth - sourcePaneWidth - 352),
         );
-        setStudioPaneWidth(Math.min(maxWidth, Math.max(280, initialWidth - delta)));
+        setStudioPaneWidth(
+          Math.min(maxWidth, Math.max(280, initialWidth - delta)),
+        );
       }
     };
     const handleEnd = () => {
@@ -603,7 +618,8 @@ export function ScrapbookPanel() {
 
   const isDetailView = !!scrapbookEntryId;
   const summaryJob = selectedEntry?.latestJob || null;
-  const summaryBusy = summaryJob && ["pending", "running"].includes(summaryJob.status);
+  const summaryBusy =
+    summaryJob && ["pending", "running"].includes(summaryJob.status);
   const summaryPartialText = String(summaryJob?.partialText || "").trim();
   const summaryText =
     (summaryBusy ? summaryPartialText : "") ||
@@ -619,8 +635,12 @@ export function ScrapbookPanel() {
       if (sortMode === "title") {
         return entryTitle(left).localeCompare(entryTitle(right));
       }
-      const leftTime = new Date(left.updatedAt || left.createdAt || 0).getTime();
-      const rightTime = new Date(right.updatedAt || right.createdAt || 0).getTime();
+      const leftTime = new Date(
+        left.updatedAt || left.createdAt || 0,
+      ).getTime();
+      const rightTime = new Date(
+        right.updatedAt || right.createdAt || 0,
+      ).getTime();
       return rightTime - leftTime;
     });
   }, [activeFilter, entries, sortMode]);
@@ -632,199 +652,203 @@ export function ScrapbookPanel() {
     (!form.url.trim() && !form.content.trim() && composerFiles.length === 0);
 
   return (
-    <div className="min-h-0 flex-1 overflow-y-auto bg-(--bg-primary)">
+    <div className="min-h-0 flex-1 overflow-y-auto">
       <div className="mx-auto w-full max-w-[1540px] px-4 pb-12 pt-5 sm:px-7 lg:px-10 lg:pt-8">
-          <header className="flex flex-col gap-5">
-            <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
-              <nav
-                aria-label={t("scrapbookFilters")}
-                className="flex min-w-0 items-center gap-1 overflow-x-auto"
-              >
-                {[
-                  ["all", t("scrapbookFilterAll")],
-                  ["manual", t("scrapbookFilterNotes")],
-                  ["url", t("scrapbookFilterWeb")],
-                ].map(([filter, label]) => (
-                  <button
-                    key={filter}
-                    type="button"
-                    onClick={() => setActiveFilter(filter)}
-                    className={`shrink-0 rounded-full px-4 py-2 text-[12px] font-medium transition ${
-                      activeFilter === filter
-                        ? "bg-primary/16 text-(--text-primary)"
-                        : "text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary)"
-                    }`}
-                    aria-current={activeFilter === filter ? "page" : undefined}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </nav>
-
-              <div className="flex flex-wrap items-center gap-2">
-                <div
-                  className={`flex h-10 items-center overflow-hidden rounded-full border border-(--border-default) bg-(--bg-primary) transition-[width,border-color] ${
-                    searchOpen || query ? "w-full sm:w-56" : "w-10"
+        <header className="flex flex-col gap-5">
+          <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
+            <nav
+              aria-label={t("scrapbookFilters")}
+              className="flex min-w-0 items-center gap-1 overflow-x-auto"
+            >
+              {[
+                ["all", t("scrapbookFilterAll")],
+                ["manual", t("scrapbookFilterNotes")],
+                ["url", t("scrapbookFilterWeb")],
+              ].map(([filter, label]) => (
+                <button
+                  key={filter}
+                  type="button"
+                  onClick={() => setActiveFilter(filter)}
+                  className={`shrink-0 rounded-full px-4 py-2 text-[12px] font-medium transition ${
+                    activeFilter === filter
+                      ? "bg-primary/16 text-(--text-primary)"
+                      : "text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary)"
                   }`}
+                  aria-current={activeFilter === filter ? "page" : undefined}
                 >
-                  <button
-                    type="button"
-                    onClick={() => setSearchOpen((current) => !current)}
-                    className="flex size-10 shrink-0 items-center justify-center text-(--text-secondary) hover:text-(--text-primary)"
-                    aria-label={t("scrapbookSearchPlaceholder")}
-                    aria-expanded={searchOpen || !!query}
-                  >
-                    <MagnifyingGlass size={17} weight="bold" />
-                  </button>
-                  {searchOpen || query ? (
-                    <input
-                      value={query}
-                      onChange={(event) => setQuery(event.target.value)}
-                      placeholder={t("scrapbookSearchPlaceholder")}
-                      className="min-w-0 flex-1 bg-transparent pr-3 text-[12px] text-(--text-primary) outline-none placeholder:text-(--text-muted)"
-                      autoFocus
-                    />
-                  ) : null}
-                </div>
+                  {label}
+                </button>
+              ))}
+            </nav>
 
-                <div className="inline-flex h-10 overflow-hidden rounded-full border border-(--border-default)">
-                  <button
-                    type="button"
-                    onClick={() => setViewMode("grid")}
-                    className={`flex w-10 items-center justify-center transition ${
-                      viewMode === "grid"
-                        ? "bg-primary/16 text-primary"
-                        : "text-(--text-secondary) hover:bg-(--bg-hover)"
-                    }`}
-                    aria-label={t("scrapbookGridView")}
-                    aria-pressed={viewMode === "grid"}
-                  >
-                    <GridFour size={17} weight="bold" />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setViewMode("list")}
-                    className={`flex w-10 items-center justify-center border-l border-(--border-default) transition ${
-                      viewMode === "list"
-                        ? "bg-primary/16 text-primary"
-                        : "text-(--text-secondary) hover:bg-(--bg-hover)"
-                    }`}
-                    aria-label={t("scrapbookListView")}
-                    aria-pressed={viewMode === "list"}
-                  >
-                    <ListBullets size={17} weight="bold" />
-                  </button>
-                </div>
-
-                <label className="relative">
-                  <span className="sr-only">{t("scrapbookSortLabel")}</span>
-                  <select
-                    value={sortMode}
-                    onChange={(event) => setSortMode(event.target.value)}
-                    className="h-10 appearance-none rounded-full border border-(--border-default) bg-(--bg-primary) pl-4 pr-9 text-[12px] font-medium text-(--text-secondary) outline-none hover:bg-(--bg-hover)"
-                  >
-                    <option value="recent">{t("scrapbookSortRecent")}</option>
-                    <option value="title">{t("scrapbookSortTitle")}</option>
-                  </select>
-                  <CaretDown
-                    size={12}
-                    className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-(--text-muted)"
-                  />
-                </label>
-
+            <div className="flex flex-wrap items-center gap-2">
+              <div
+                className={`flex h-10 items-center overflow-hidden rounded-full border border-(--border-default) bg-(--bg-primary) transition-[width,border-color] ${
+                  searchOpen || query ? "w-full sm:w-56" : "w-10"
+                }`}
+              >
                 <button
                   type="button"
-                  onClick={() => {
-                    setError("");
-                    setComposerOpen(true);
-                  }}
-                  className="inline-flex h-10 items-center gap-2 rounded-full bg-(--text-primary) px-5 text-[12px] font-semibold text-(--bg-primary) shadow-sm transition hover:opacity-90"
+                  onClick={() => setSearchOpen((current) => !current)}
+                  className="flex size-10 shrink-0 items-center justify-center text-(--text-secondary) hover:text-(--text-primary)"
+                  aria-label={t("scrapbookSearchPlaceholder")}
+                  aria-expanded={searchOpen || !!query}
                 >
-                  <Plus size={15} weight="bold" />
-                  {t("scrapbookNewNotebook")}
+                  <MagnifyingGlass size={17} weight="bold" />
+                </button>
+                {searchOpen || query ? (
+                  <input
+                    value={query}
+                    onChange={(event) => setQuery(event.target.value)}
+                    placeholder={t("scrapbookSearchPlaceholder")}
+                    className="min-w-0 flex-1 bg-transparent pr-3 text-[12px] text-(--text-primary) outline-none placeholder:text-(--text-muted)"
+                    autoFocus
+                  />
+                ) : null}
+              </div>
+
+              <div className="inline-flex h-10 overflow-hidden rounded-full border border-(--border-default)">
+                <button
+                  type="button"
+                  onClick={() => setViewMode("grid")}
+                  className={`flex w-10 items-center justify-center transition ${
+                    viewMode === "grid"
+                      ? "bg-primary/16 text-primary"
+                      : "text-(--text-secondary) hover:bg-(--bg-hover)"
+                  }`}
+                  aria-label={t("scrapbookGridView")}
+                  aria-pressed={viewMode === "grid"}
+                >
+                  <GridFour size={17} weight="bold" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setViewMode("list")}
+                  className={`flex w-10 items-center justify-center border-l border-(--border-default) transition ${
+                    viewMode === "list"
+                      ? "bg-primary/16 text-primary"
+                      : "text-(--text-secondary) hover:bg-(--bg-hover)"
+                  }`}
+                  aria-label={t("scrapbookListView")}
+                  aria-pressed={viewMode === "list"}
+                >
+                  <ListBullets size={17} weight="bold" />
                 </button>
               </div>
-            </div>
-          </header>
 
-          <section className="mt-9">
-            <div className="flex items-end justify-between gap-4">
-              <div>
-                <h1 className="text-[24px] font-medium tracking-[-0.025em] text-(--text-primary)">
-                  {t("scrapbookLibraryTitle")}
-                </h1>
-                <p className="mt-1.5 text-[12px] text-(--text-muted)">
-                  {filteredCountLabel}
-                </p>
-              </div>
-              {loading ? (
-                <span className="text-[12px] text-(--text-muted)">
-                  {t("scrapbookLoading")}
-                </span>
-              ) : null}
-            </div>
+              <label className="relative">
+                <span className="sr-only">{t("scrapbookSortLabel")}</span>
+                <select
+                  value={sortMode}
+                  onChange={(event) => setSortMode(event.target.value)}
+                  className="h-10 appearance-none rounded-full border border-(--border-default) bg-(--bg-primary) pl-4 pr-9 text-[12px] font-medium text-(--text-secondary) outline-none hover:bg-(--bg-hover)"
+                >
+                  <option value="recent">{t("scrapbookSortRecent")}</option>
+                  <option value="title">{t("scrapbookSortTitle")}</option>
+                </select>
+                <CaretDown
+                  size={12}
+                  className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-(--text-muted)"
+                />
+              </label>
 
-            {error && !composerOpen ? (
-              <div className="mt-5 rounded-xl bg-(--accent-red-bg) px-4 py-3 text-[12px] text-accent-red">
-                {error}
-              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setError("");
+                  setComposerOpen(true);
+                }}
+                className="inline-flex h-10 items-center gap-2 rounded-full bg-(--text-primary) px-5 text-[12px] font-semibold text-(--bg-primary) shadow-sm transition hover:opacity-90"
+              >
+                <Plus size={15} weight="bold" />
+                {t("scrapbookNewNotebook")}
+              </button>
+            </div>
+          </div>
+        </header>
+
+        <section className="mt-9">
+          <div className="flex items-end justify-between gap-4">
+            <div>
+              <h1 className="text-[24px] font-medium tracking-[-0.025em] text-(--text-primary)">
+                {t("scrapbookLibraryTitle")}
+              </h1>
+              <p className="mt-1.5 text-[12px] text-(--text-muted)">
+                {filteredCountLabel}
+              </p>
+            </div>
+            {loading ? (
+              <span className="text-[12px] text-(--text-muted)">
+                {t("scrapbookLoading")}
+              </span>
             ) : null}
+          </div>
 
-            {listEmpty ? (
-              <div className="mt-6 flex min-h-64 flex-col items-center justify-center rounded-2xl border border-dashed border-(--border-default) px-6 text-center">
-                <Notebook size={32} weight="duotone" className="text-(--text-muted)" />
-                <div className="mt-3 text-[13px] font-medium text-(--text-secondary)">
-                  {query ? t("scrapbookNoResults") : t("scrapbookEmpty")}
-                </div>
+          {error && !composerOpen ? (
+            <div className="mt-5 rounded-xl bg-(--accent-red-bg) px-4 py-3 text-[12px] text-accent-red">
+              {error}
+            </div>
+          ) : null}
+
+          {listEmpty ? (
+            <div className="mt-6 flex min-h-64 flex-col items-center justify-center rounded-2xl border border-dashed border-(--border-default) px-6 text-center">
+              <Notebook
+                size={32}
+                weight="duotone"
+                className="text-(--text-muted)"
+              />
+              <div className="mt-3 text-[13px] font-medium text-(--text-secondary)">
+                {query ? t("scrapbookNoResults") : t("scrapbookEmpty")}
+              </div>
+              <button
+                type="button"
+                onClick={() => setComposerOpen(true)}
+                className="mt-4 inline-flex items-center gap-2 rounded-full bg-(--text-primary) px-4 py-2 text-[12px] font-semibold text-(--bg-primary)"
+              >
+                <Plus size={14} />
+                {t("scrapbookNewNotebook")}
+              </button>
+            </div>
+          ) : (
+            <div
+              className={`mt-6 ${
+                viewMode === "grid"
+                  ? "grid grid-cols-[repeat(auto-fill,minmax(220px,1fr))] gap-4"
+                  : "flex flex-col gap-3"
+              }`}
+            >
+              {viewMode === "grid" ? (
                 <button
                   type="button"
                   onClick={() => setComposerOpen(true)}
-                  className="mt-4 inline-flex items-center gap-2 rounded-full bg-(--text-primary) px-4 py-2 text-[12px] font-semibold text-(--bg-primary)"
+                  className="group flex min-h-52 flex-col items-center justify-center rounded-2xl border border-(--border-default) bg-transparent text-(--text-secondary) transition hover:border-(--border-strong) hover:bg-(--bg-hover) hover:text-(--text-primary) focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
                 >
-                  <Plus size={14} />
-                  {t("scrapbookNewNotebook")}
+                  <span className="flex size-14 items-center justify-center rounded-full bg-primary/14 text-primary transition group-hover:scale-105">
+                    <Plus size={23} weight="bold" />
+                  </span>
+                  <span className="mt-4 text-[14px] font-medium">
+                    {t("scrapbookNewNotebook")}
+                  </span>
                 </button>
-              </div>
-            ) : (
-              <div
-                className={`mt-6 ${
-                  viewMode === "grid"
-                    ? "grid grid-cols-[repeat(auto-fill,minmax(220px,1fr))] gap-4"
-                    : "flex flex-col gap-3"
-                }`}
-              >
-                {viewMode === "grid" ? (
-                  <button
-                    type="button"
-                    onClick={() => setComposerOpen(true)}
-                    className="group flex min-h-52 flex-col items-center justify-center rounded-2xl border border-(--border-default) bg-transparent text-(--text-secondary) transition hover:border-(--border-strong) hover:bg-(--bg-hover) hover:text-(--text-primary) focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
-                  >
-                    <span className="flex size-14 items-center justify-center rounded-full bg-primary/14 text-primary transition group-hover:scale-105">
-                      <Plus size={23} weight="bold" />
-                    </span>
-                    <span className="mt-4 text-[14px] font-medium">
-                      {t("scrapbookNewNotebook")}
-                    </span>
-                  </button>
-                ) : null}
-                {visibleEntries.map((entry, index) => (
-                  <ScrapbookLibraryCard
-                    key={entry.id}
-                    entry={entry}
-                    toneIndex={index}
-                    viewMode={viewMode}
-                    menuOpen={menuEntryId === entry.id}
-                    onOpen={actions.openScrapbookEntry}
-                    onMenuOpenChange={setMenuEntryId}
-                    onDelete={(target) => {
-                      setMenuEntryId("");
-                      requestDelete(target);
-                    }}
-                  />
-                ))}
-              </div>
-            )}
-          </section>
+              ) : null}
+              {visibleEntries.map((entry, index) => (
+                <ScrapbookLibraryCard
+                  key={entry.id}
+                  entry={entry}
+                  toneIndex={index}
+                  viewMode={viewMode}
+                  menuOpen={menuEntryId === entry.id}
+                  onOpen={actions.openScrapbookEntry}
+                  onMenuOpenChange={setMenuEntryId}
+                  onDelete={(target) => {
+                    setMenuEntryId("");
+                    requestDelete(target);
+                  }}
+                />
+              ))}
+            </div>
+          )}
+        </section>
       </div>
 
       <Dialog
@@ -946,11 +970,17 @@ export function ScrapbookPanel() {
                   const canOpenSource = Boolean(source.url);
                   const jumpSessionId =
                     source.sessionId ||
-                    (source.type === "chat_answer" ? selectedEntry?.sourceSessionId : "");
+                    (source.type === "chat_answer"
+                      ? selectedEntry?.sourceSessionId
+                      : "");
                   const jumpMessageId =
                     source.messageId ||
-                    (source.type === "chat_answer" ? selectedEntry?.sourceMessageId : "");
-                  const canJumpToMessage = Boolean(jumpSessionId && jumpMessageId);
+                    (source.type === "chat_answer"
+                      ? selectedEntry?.sourceMessageId
+                      : "");
+                  const canJumpToMessage = Boolean(
+                    jumpSessionId && jumpMessageId,
+                  );
                   return (
                     <div
                       key={source.id}
@@ -980,12 +1010,20 @@ export function ScrapbookPanel() {
                             <DotsThreeVertical size={14} weight="bold" />
                           </button>
                         </PopoverTrigger>
-                        <PopoverContent align="end" sideOffset={4} className="w-40 p-1">
+                        <PopoverContent
+                          align="end"
+                          sideOffset={4}
+                          className="w-40 p-1"
+                        >
                           {canOpenSource ? (
                             <button
                               type="button"
                               onClick={() =>
-                                window.open(source.url, "_blank", "noopener,noreferrer")
+                                window.open(
+                                  source.url,
+                                  "_blank",
+                                  "noopener,noreferrer",
+                                )
                               }
                               className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-[12px] text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary)"
                             >
@@ -997,7 +1035,10 @@ export function ScrapbookPanel() {
                             <button
                               type="button"
                               onClick={() =>
-                                void actions.openChatMessage(jumpSessionId, jumpMessageId)
+                                void actions.openChatMessage(
+                                  jumpSessionId,
+                                  jumpMessageId,
+                                )
                               }
                               className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-[12px] text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary)"
                             >
@@ -1238,7 +1279,9 @@ export function ScrapbookPanel() {
         <DialogContent className="max-h-[86vh] overflow-y-auto sm:max-w-[620px]">
           <DialogHeader>
             <DialogTitle>{t("scrapbookNewNotebook")}</DialogTitle>
-            <DialogDescription>{t("scrapbookCreateDescription")}</DialogDescription>
+            <DialogDescription>
+              {t("scrapbookCreateDescription")}
+            </DialogDescription>
           </DialogHeader>
 
           <form
@@ -1255,7 +1298,10 @@ export function ScrapbookPanel() {
               <input
                 value={form.title}
                 onChange={(event) =>
-                  setForm((current) => ({ ...current, title: event.target.value }))
+                  setForm((current) => ({
+                    ...current,
+                    title: event.target.value,
+                  }))
                 }
                 placeholder={t("scrapbookGeneratedTitleHint")}
                 className="h-11 w-full rounded-xl border border-(--border-default) bg-(--bg-primary) px-3.5 text-[13px] text-(--text-primary) outline-none transition focus:border-(--border-strong) focus:ring-2 focus:ring-primary/15"
@@ -1270,9 +1316,14 @@ export function ScrapbookPanel() {
               <textarea
                 value={form.url}
                 onChange={(event) =>
-                  setForm((current) => ({ ...current, url: event.target.value }))
+                  setForm((current) => ({
+                    ...current,
+                    url: event.target.value,
+                  }))
                 }
-                placeholder={"https://example.com/article\nhttps://example.com/report"}
+                placeholder={
+                  "https://example.com/article\nhttps://example.com/report"
+                }
                 className="min-h-24 w-full resize-y rounded-xl border border-(--border-default) bg-(--bg-primary) px-3.5 py-3 font-mono text-[12px] leading-5 text-(--text-primary) outline-none transition focus:border-(--border-strong) focus:ring-2 focus:ring-primary/15"
               />
             </label>
@@ -1302,13 +1353,20 @@ export function ScrapbookPanel() {
                       key={`${file.name}-${file.size}-${index}`}
                       className="flex items-center gap-2 rounded-lg bg-(--bg-secondary) px-3 py-2 text-[11px] text-(--text-secondary)"
                     >
-                      <FileText size={13} className="shrink-0 text-(--text-muted)" />
-                      <span className="min-w-0 flex-1 truncate">{file.name}</span>
+                      <FileText
+                        size={13}
+                        className="shrink-0 text-(--text-muted)"
+                      />
+                      <span className="min-w-0 flex-1 truncate">
+                        {file.name}
+                      </span>
                       <button
                         type="button"
                         onClick={() =>
                           setComposerFiles((current) =>
-                            current.filter((_, fileIndex) => fileIndex !== index),
+                            current.filter(
+                              (_, fileIndex) => fileIndex !== index,
+                            ),
                           )
                         }
                         aria-label={t("scrapbookRemoveSource")}
@@ -1340,11 +1398,17 @@ export function ScrapbookPanel() {
             </label>
 
             <div className="flex items-start gap-2.5 rounded-xl bg-primary/8 px-3.5 py-3 text-[12px] leading-5 text-(--text-secondary)">
-              <Sparkle size={16} weight="fill" className="mt-0.5 shrink-0 text-primary" />
+              <Sparkle
+                size={16}
+                weight="fill"
+                className="mt-0.5 shrink-0 text-primary"
+              />
               <span>{t("scrapbookAiTitleDescription")}</span>
             </div>
 
-            {error ? <div className="text-[12px] text-accent-red">{error}</div> : null}
+            {error ? (
+              <div className="text-[12px] text-accent-red">{error}</div>
+            ) : null}
 
             <DialogFooter>
               <button

@@ -1,4 +1,6 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
+import { Avatar, Style } from "@dicebear/core";
+import bottts from "@dicebear/styles/bottts.json" with { type: "json" };
 import {
   CaretDown,
   CaretRight,
@@ -22,6 +24,7 @@ const ICON_CLASS =
   "flex size-6 shrink-0 items-center justify-center rounded-full bg-(--bg-tertiary) text-(--text-secondary)";
 const FOLD_ROW_CLASS =
   "flex w-full items-center gap-2 rounded-md px-1.5 py-1 text-left text-[12px] text-(--text-muted) transition-colors hover:bg-(--bg-hover) hover:text-(--text-secondary)";
+const SUBAGENT_AVATAR_STYLE = new Style(bottts);
 
 const STATUS_DOT = {
   completed: "bg-[var(--accent-green)]",
@@ -51,6 +54,21 @@ function isRunSubagentCard(card) {
 
 function isProcessSegment(segment) {
   return segment?.type === "thinking" || segment?.type === "tools";
+}
+
+function SubagentAvatar({ seed }) {
+  const src = useMemo(
+    () =>
+      new Avatar(SUBAGENT_AVATAR_STYLE, {
+        seed,
+        size: 48,
+        borderRadius: 50,
+        backgroundColor: ["b6e3f4", "c0aede", "d1d4f9", "ffd5dc", "ffdfbf"],
+      }).toDataUri(),
+    [seed],
+  );
+
+  return <img src={src} alt="" className="size-6 rounded-full" />;
 }
 
 function splitStepSegments(segments = []) {
@@ -450,9 +468,17 @@ export function PlanToolCard({ card, grouped = false }) {
         ) : (
           <CaretRight size={14} className={CHEVRON_CLASS} />
         )}
-        <span className={ICON_CLASS}>
-          <UserCircle size={15} aria-hidden="true" />
-        </span>
+        {isSubagent ? (
+          persona ? (
+            <SubagentAvatar seed={persona} />
+          ) : (
+            <span className="size-6 shrink-0" aria-hidden="true" />
+          )
+        ) : (
+          <span className={ICON_CLASS}>
+            <UserCircle size={15} aria-hidden="true" />
+          </span>
+        )}
         <span className="flex min-w-0 flex-1 items-start overflow-hidden leading-[18px]">
           <span className="shrink-0 font-medium text-(--text-primary)">
             {title}

@@ -89,6 +89,20 @@ test('unix subagent baselines drop staged write and promote glob/grep', () => {
   const winCoder = resolveSubAgentToolAllowList({ role: 'coder', platform: 'win32' });
   assert.ok(winCoder.includes('begin_write'));
   assert.ok(winCoder.includes('apply_patch'));
+  for (const name of ['list', 'glob', 'grep', 'tool_search']) {
+    assert.ok(winCoder.includes(name), name);
+  }
+});
+
+test('Windows subagents keep explicitly requested inspection tools', () => {
+  assert.deepEqual(
+    resolveSubAgentToolAllowList({
+      role: 'coder',
+      tools: ['list', 'glob'],
+      platform: 'win32',
+    }),
+    ['list', 'glob', 'tool_search'],
+  );
 });
 
 test('persona name normalization keeps playful short names', () => {

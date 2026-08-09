@@ -186,6 +186,10 @@ test('markdown wide content keeps a persistent horizontal scroll affordance', ()
 });
 
 test('expanded sub-agents keep a compact indent and reveal adaptive task details', () => {
+  assert.match(planToolCard, /import \{ Avatar, Style \} from "@dicebear\/core"/);
+  assert.match(planToolCard, /new Avatar\(SUBAGENT_AVATAR_STYLE,[\s\S]*?seed,[\s\S]*?\.toDataUri\(\)/);
+  assert.match(planToolCard, /persona \? \([\s\S]*?<SubagentAvatar seed=\{persona\} \/>[\s\S]*?size-6 shrink-0/);
+  assert.doesNotMatch(planToolCard, /seed=\{persona \|\|/);
   assert.match(planToolCard, /function SubagentTaskDetails/);
   assert.match(planToolCard, /\{t\("planStepTask"\)\}/);
   assert.match(

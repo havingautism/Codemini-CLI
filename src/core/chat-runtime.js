@@ -779,14 +779,15 @@ const SUBAGENT_MUTATING_TOOLS = new Set([
 
 /**
  * Align allow-lists with the platform CRUD surface: drop Windows staged write /
- * apply_patch on unix, and ensure glob/grep for inspect-capable roles.
+ * apply_patch on unix, and ensure filesystem inspection tools on every platform.
  */
-export function adaptToolNamesForPlatform(toolNames = [], platform = process.platform) {
+export function adaptToolNamesForPlatform(
+  toolNames = [],
+  platform = process.platform,
+  { promoteInspection = true } = {},
+) {
   const source = Array.isArray(toolNames) ? toolNames : [];
-  if (platform === 'win32') {
-    return source.map((name) => String(name || '').trim()).filter(Boolean);
-  }
-  const drop = new Set(WINDOWS_STAGED_WRITE_TOOLS);
+  const drop = platform === 'win32' ? new Set() : new Set(WINDOWS_STAGED_WRITE_TOOLS);
   const out = [];
   const seen = new Set();
   for (const name of source) {
@@ -795,8 +796,8 @@ export function adaptToolNamesForPlatform(toolNames = [], platform = process.pla
     seen.add(normalized);
     out.push(normalized);
   }
-  if (out.includes('search_code') || out.includes('read')) {
-    const extras = ['glob', 'grep'].filter((name) => !seen.has(name));
+  if (promoteInspection && (out.includes('search_code') || out.includes('read'))) {
+    const extras = ['list', 'glob', 'grep'].filter((name) => !seen.has(name));
     if (extras.length) {
       const anchor = out.indexOf('search_code');
       const at = anchor >= 0 ? anchor + 1 : out.length;
@@ -856,9 +857,18 @@ export function resolveSubAgentToolAllowList({
       (name) => !SUBAGENT_FORBIDDEN_TOOLS.includes(name)
     ),
     platform,
+    { promoteInspection: false },
   );
   const roleSet = new Set(roleTools);
-  return requested.filter((name) => roleSet.has(name));
+  const granted = requested.filter((name) => roleSet.has(name));
+  if (
+    granted.some((name) => ['list', 'glob', 'grep'].includes(name))
+    && roleSet.has('tool_search')
+    && !granted.includes('tool_search')
+  ) {
+    granted.push('tool_search');
+  }
+  return granted;
 }
 
 export function subAgentAllowListMayMutate(tools = []) {
