@@ -2375,34 +2375,6 @@ samp {
     stream-caret-pulse 1.25s ease-in-out infinite;
 }
 
-.streaming-cursor--pending {
-  display: inline-flex;
-  align-items: center;
-  min-height: 1.625rem;
-}
-
-.streaming-cursor--pending::after {
-  width: 14px;
-  height: 14px;
-  max-height: none;
-  margin-left: 0;
-  border-radius: 50%;
-  vertical-align: middle;
-  box-shadow: 0 0 10px var(--metal-glow);
-  background: conic-gradient(
-    from var(--loader-ring-angle),
-    transparent 0deg,
-    transparent 220deg,
-    var(--metal-lo) 265deg,
-    var(--metal-hi) 300deg,
-    var(--metal-mist) 335deg,
-    transparent 360deg
-  );
-  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 1.75px), #000 calc(100% - 1.75px + 0.35px));
-  mask: radial-gradient(farthest-side, transparent calc(100% - 1.75px), #000 calc(100% - 1.75px + 0.35px));
-  animation: loader-ring-spin 1.35s linear infinite;
-}
-
 @keyframes stream-caret-flow {
   to {
     background-position: 0 100%;

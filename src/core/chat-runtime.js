@@ -47,6 +47,7 @@ import {
 } from './provider/index.js';
 import { isDangerousCommand, runShellCommand } from './shell.js';
 import { getBuiltinTools } from './tools.js';
+import { canonicalShellToolName, shellToolName, toolNameAllowed } from './shell-tool-name.js';
 import { createToolRuntime } from './tool-runtime.js';
 import {
   deriveSessionTitle,
@@ -655,18 +656,19 @@ function displayExecutionMode(mode) {
 function resolveExecutionModeAllowedTools(executionMode, callerAllowedTools, config) {
   const mode = normalizeExecutionMode(executionMode);
   const modePolicy = adaptToolNamesForPlatform(
-    normalizeToolPolicy(EXECUTION_MODE_TOOL_POLICY[mode] || [], config),
+    normalizeToolPolicy(EXECUTION_MODE_TOOL_POLICY[mode] || [], config).map(canonicalShellToolName),
   );
   if (!modePolicy.length) return callerAllowedTools;
   if (Array.isArray(callerAllowedTools)) {
     return adaptToolNamesForPlatform(
-      normalizeToolPolicy(callerAllowedTools, config).filter((name) => modePolicy.includes(name)),
+      normalizeToolPolicy(callerAllowedTools, config).map(canonicalShellToolName).filter((name) => modePolicy.includes(name)),
     );
   }
   return modePolicy;
 }
 
-export function buildExecutionModePromptBlock(executionMode, platform = process.platform) {
+export function buildExecutionModePromptBlock(executionMode, platform = process.platform, shell = '') {
+  const commandToolName = shellToolName({ platform, shell });
   if (normalizeExecutionMode(executionMode) === 'plan') {
     const unixCrud = platform !== 'win32';
     return [
@@ -687,7 +689,7 @@ export function buildExecutionModePromptBlock(executionMode, platform = process.
       '- Do not delegate the whole ambiguous request, use a subagent merely to make a plan, or use one to avoid inspecting the relevant code yourself. The parent agent owns decomposition, integration, and the final answer.',
       '- Always pass a one- or two-sentence summary for the collapsed UI card and a separate complete prompt (task + success criteria + out-of-scope) for the expanded details and worker. Put durable handoff notes in context.',
       '- Invent a short human name for each worker (e.g. David, Mira, Kai) via `name` — do not use preset role enums. Capability comes from `tools`, not the name.',
-      '- Default tools allow edits. For read-only explore/review, pass a read-only tools list (e.g. read, search_code, web_search). For verify/test, include run when needed.',
+      `- Default tools allow edits. For read-only explore/review, pass a read-only tools list (e.g. read, search_code, web_search). For verify/test, include ${commandToolName} when needed.`,
       '- Subagents run on the configured Lite/Fast model. Keep assignments narrow and provide enough evidence and acceptance criteria for that model to finish without rediscovering the parent task.',
       '- For parallel read-only work, emit multiple run_subagent calls in the same response and give each an explicit read-only tools list. Workers with default or mutating tools run sequentially because they share one worktree.',
       '- For dependent work in the same response, give upstream calls a task_id and later calls depends_on. Dependencies must reference earlier task_id values. The runtime waits and injects successful upstream handoffs automatically; do not duplicate them in context.',
@@ -703,7 +705,7 @@ export function buildExecutionModePromptBlock(executionMode, platform = process.
       unixCrud
         ? '- Prefer dedicated project-index, search, read, edit, and write tools over raw shell equivalents. Load deferred tools with tool_search only when needed.'
         : '- Prefer dedicated project-index, search, read, edit, and patch tools over raw shell equivalents. Load deferred tools with tool_search only when needed.',
-      '- Choose the narrowest relevant project-native verification, and use run for tests, builds, type checks, linters, generators, and version-control inspection—not as the default way to read or search source code.',
+      `- Choose the narrowest relevant project-native verification, and use ${commandToolName} for tests, builds, type checks, linters, generators, and version-control inspection—not as the default way to read or search source code.`,
       unixCrud
         ? '- Use read with file_path/offset/limit. Read an existing file before edit or overwrite; use edit with file_path/old_string/new_string and write with file_path/content.'
         : '- Use edit for precise existing-file changes, apply_patch for coherent multi-file changes, and write only for small new files or intentional whole-file output. For long whole-file content, use begin_write, bounded sequential write_chunk calls, then commit_write; abort unfinished transactions.',
@@ -711,8 +713,8 @@ export function buildExecutionModePromptBlock(executionMode, platform = process.
       '',
       'Workflow boundaries:',
       unixCrud
-        ? '- Do not claim edit/write/delete/run are unavailable in coding mode; they are available for direct tasks.'
-        : '- Do not claim edit/write/begin_write/write_chunk/commit_write/apply_patch/delete/run are unavailable in coding mode; they are available for direct tasks.',
+        ? `- Do not claim edit/write/delete/${commandToolName} are unavailable in coding mode; they are available for direct tasks.`
+        : `- Do not claim edit/write/begin_write/write_chunk/commit_write/apply_patch/delete/${commandToolName} are unavailable in coding mode; they are available for direct tasks.`,
       '- Do not call run_subagent for a simple localized edit you can finish yourself.',
       '- Preserve unrelated user changes in a dirty worktree. Never discard, overwrite, or reformat work outside the requested scope.',
       '- If the request is too unknown to act on safely, ask one focused question instead of guessing.'
@@ -723,7 +725,7 @@ export function buildExecutionModePromptBlock(executionMode, platform = process.
     'You are in normal mode. Help with everyday questions and lightweight tasks conversationally. Be proactive about clarifying underspecified requests and verifying external facts instead of guessing.',
     '',
     'Task boundaries:',
-    '- Match the action to the request: answer and explain without changing state; review or diagnose by inspecting and reporting; create, edit, run, or send only when the user asks for that outcome.',
+    `- Match the action to the request: answer and explain without changing state; review or diagnose by inspecting and reporting; create, edit, ${commandToolName}, or send only when the user asks for that outcome.`,
     '- Use the shared workspace for relevant read-only context when helpful, but do not turn an ordinary question into a repository task without a clear connection.',
     '- Make safe, reversible assumptions for low-impact details and state them briefly. Stop for user direction when different choices would materially change the result or require broader authority.',
     '- Preserve user data and existing work. Do not overwrite files, broaden scope, or perform external side effects merely because a tool is available.',
@@ -843,14 +845,14 @@ export function resolveSubAgentToolAllowList({
   const key = String(role || '').trim().toLowerCase();
   const basePolicy = ROLE_TOOL_POLICY[key] || ROLE_TOOL_POLICY.coder;
   const roleTools = adaptToolNamesForPlatform(
-    normalizeToolPolicy(basePolicy, config).filter(
+    normalizeToolPolicy(basePolicy, config).map(canonicalShellToolName).filter(
       (name) => !SUBAGENT_FORBIDDEN_TOOLS.includes(name)
     ),
     platform,
   );
   if (!Array.isArray(tools)) return roleTools;
   const requested = adaptToolNamesForPlatform(
-    normalizeToolPolicy(tools, config).filter(
+    normalizeToolPolicy(tools, config).map(canonicalShellToolName).filter(
       (name) => !SUBAGENT_FORBIDDEN_TOOLS.includes(name)
     ),
     platform,
@@ -4009,6 +4011,7 @@ function buildRuntimeStateSnapshot({ currentSession, config, model, executionMod
     : [];
   const snapshot = {
     workspaceRoot,
+    projectIsGit: Boolean(config?.runtime?.project_is_git),
     sessionId: currentSession?.id || '',
     sessionTitle: currentSession?.title || '',
     messageCount: Array.isArray(currentSession?.messages) ? currentSession.messages.length : 0,
@@ -4719,7 +4722,11 @@ async function askModel({
   const projectContextGuidance =
     'Use this project context as lightweight guidance and verify important details with fresh reads when needed.';
   const normalizedExecutionMode = normalizeExecutionMode(executionMode || config.execution?.mode || 'normal');
-  const executionModePrompt = buildExecutionModePromptBlock(normalizedExecutionMode);
+  const executionModePrompt = buildExecutionModePromptBlock(
+    normalizedExecutionMode,
+    process.platform,
+    config?.shell?.default,
+  );
   const projectContextSnippet = await projectContextPromise;
   // Compose effectiveSystemPrompt without redundant composeSystemPrompt wrapping:
   // systemPrompt already went through composeSystemPrompt in buildActiveSystemPrompt.
@@ -4922,7 +4929,7 @@ async function askModel({
               },
               projectIsGit: resolveApprovalProjectIsGit({
                 projectIsGit,
-                changeTrackerEnabled: Boolean(changeTracker?.enabled),
+                changeTrackerEnabled: changeTracker?.mode === 'git-oplog',
                 workspaceHasGit: Boolean(config?.runtime?.project_is_git)
               }),
               workspaceRoot
@@ -5009,10 +5016,10 @@ async function askModel({
     : Object.fromEntries(Object.entries(deferredDefinitions).filter(([name]) => name !== 'update_plan'));
   const modeAllowedTools = resolveExecutionModeAllowedTools(normalizedExecutionMode, allowedTools, config);
   const filteredDefinitions = Array.isArray(modeAllowedTools)
-    ? baseDefinitions.filter((t) => modeAllowedTools.includes(t.function?.name || t.name))
+    ? baseDefinitions.filter((t) => toolNameAllowed(modeAllowedTools, t.function?.name || t.name))
     : baseDefinitions;
   const filteredHandlers = Array.isArray(modeAllowedTools)
-    ? Object.fromEntries(Object.entries(baseHandlers).filter(([name]) => modeAllowedTools.includes(name)))
+    ? Object.fromEntries(Object.entries(baseHandlers).filter(([name]) => toolNameAllowed(modeAllowedTools, name)))
     : baseHandlers;
   const filteredDeferred = Array.isArray(modeAllowedTools)
     ? Object.fromEntries(Object.entries(baseDeferredDefinitions).filter(([name]) => modeAllowedTools.includes(name)))
@@ -5300,7 +5307,7 @@ async function askModel({
     })(),
     projectIsGit: resolveApprovalProjectIsGit({
       projectIsGit,
-      changeTrackerEnabled: Boolean(changeTracker?.enabled),
+      changeTrackerEnabled: changeTracker?.mode === 'git-oplog',
       workspaceHasGit: Boolean(config?.runtime?.project_is_git)
     }),
     alwaysAllowTools: effectiveAlwaysAllowTools,
@@ -5491,12 +5498,12 @@ export async function runSubAgentTask({
     }
   };
   const roleAllowedTools = resolveSubAgentToolAllowList({ role, tools, config });
-  const workspaceHasGit = Boolean(config?.runtime?.project_is_git) || Boolean(changeTracker?.enabled);
+  const workspaceHasGit = Boolean(config?.runtime?.project_is_git) || changeTracker?.mode === 'git-oplog';
   const approvalOptions = resolvePlanSubAgentApprovalOptions({
     role,
     config,
     projectIsGit,
-    changeTrackerEnabled: Boolean(changeTracker?.enabled),
+    changeTrackerEnabled: changeTracker?.mode === 'git-oplog',
     workspaceHasGit,
     tools
   });
@@ -5721,11 +5728,11 @@ async function executePlanWithSubAgents({
   workspaceRoot = process.cwd()
 }) {
   const workspaceHasGit = Boolean(config?.runtime?.project_is_git)
-    || Boolean(changeTracker?.enabled)
+    || changeTracker?.mode === 'git-oplog'
     || await detectWorkspaceIsGit(workspaceRoot);
   const resolvedProjectIsGit = resolveApprovalProjectIsGit({
     projectIsGit,
-    changeTrackerEnabled: Boolean(changeTracker?.enabled),
+    changeTrackerEnabled: changeTracker?.mode === 'git-oplog',
     workspaceHasGit
   });
   const steps = Array.isArray(planState.steps) ? planState.steps : [];
@@ -7687,11 +7694,11 @@ export async function createChatRuntime({
     workspaceRoot: root,
     sessionId: currentSession.id
   });
-  let workspaceIsGit = Boolean(changeTracker?.enabled);
+  let workspaceIsGit = changeTracker?.mode === 'git-oplog';
   if (!workspaceIsGit) {
     workspaceIsGit = await detectWorkspaceIsGit(root);
   }
-  let backupManager = changeTracker?.enabled
+  let backupManager = workspaceIsGit
     ? null
     : await createNonGitBackupManager({
         workspaceRoot: root,
@@ -8152,8 +8159,8 @@ export async function createChatRuntime({
         changeTracker,
         backupManager,
         projectIsGit: resolveApprovalProjectIsGit({
-          projectIsGit: Boolean(changeTracker?.enabled),
-          changeTrackerEnabled: Boolean(changeTracker?.enabled),
+          projectIsGit: changeTracker?.mode === 'git-oplog',
+          changeTrackerEnabled: changeTracker?.mode === 'git-oplog',
           workspaceHasGit: Boolean(config?.runtime?.project_is_git) || workspaceIsGit
         }),
         workspaceRoot: root

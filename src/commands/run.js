@@ -4,6 +4,7 @@ import { runAgentLoop } from '../core/agent-loop.js';
 import { createChatCompletion } from '../core/provider/index.js';
 import { resolveConfiguredReasoningEffort } from '../core/provider/reasoning-effort.js';
 import { getBuiltinTools } from '../core/tools.js';
+import { toolNameAllowed } from '../core/shell-tool-name.js';
 import { createToolRuntime } from '../core/tool-runtime.js';
 import { getSubAgentRolePrompt, ROLE_TOOL_POLICY } from '../core/chat-runtime.js';
 import { composeSystemPrompt } from '../core/system-prompt-composer.js';
@@ -67,8 +68,8 @@ function filterToolsForRole(definitions, handlers, deferredDefinitions, role) {
   const allowed = CLI_ROLE_TOOL_POLICY[role];
   if (!allowed) return { definitions, handlers, deferredDefinitions };
   return {
-    definitions: definitions.filter((t) => allowed.includes(t.function?.name || t.name)),
-    handlers: Object.fromEntries(Object.entries(handlers).filter(([name]) => allowed.includes(name))),
+    definitions: definitions.filter((t) => toolNameAllowed(allowed, t.function?.name || t.name)),
+    handlers: Object.fromEntries(Object.entries(handlers).filter(([name]) => toolNameAllowed(allowed, name))),
     deferredDefinitions: Object.fromEntries(Object.entries(deferredDefinitions || {}).filter(([name]) => allowed.includes(name)))
   };
 }

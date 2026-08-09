@@ -21,6 +21,26 @@ function exposedNames(bundle) {
   ]);
 }
 
+test('shell tool name follows the configured shell instead of the host platform', () => {
+  const bash = getBuiltinTools({
+    workspaceRoot: process.cwd(),
+    config: { shell: { default: 'bash' } },
+    platform: 'win32',
+  });
+  assert.ok(names(bash.definitions).includes('Bash'));
+  assert.equal(typeof bash.handlers.Bash, 'function');
+  assert.equal(bash.handlers.run, undefined);
+
+  const powershell = getBuiltinTools({
+    workspaceRoot: process.cwd(),
+    config: { shell: { default: 'powershell' } },
+    platform: 'linux',
+  });
+  assert.ok(names(powershell.definitions).includes('Powershell'));
+  assert.equal(typeof powershell.handlers.Powershell, 'function');
+  assert.equal(powershell.handlers.run, undefined);
+});
+
 test('Windows keeps staged write and apply_patch always-on; grep/glob deferred', () => {
   const bundle = getBuiltinTools({
     workspaceRoot: process.cwd(),
@@ -43,8 +63,8 @@ test('Windows keeps staged write and apply_patch always-on; grep/glob deferred',
   const write = bundle.definitions.find((d) => d?.function?.name === 'write');
   assert.deepEqual(write?.function?.parameters?.required, ['path', 'content']);
   assert.equal(write?.function?.parameters?.properties?.sandbox_permissions, undefined);
-  const run = bundle.definitions.find((d) => d?.function?.name === 'run');
-  assert.equal(run?.function?.parameters?.properties?.sandbox_permissions, undefined);
+  const shell = bundle.definitions.find((d) => d?.function?.name === 'Powershell');
+  assert.equal(shell?.function?.parameters?.properties?.sandbox_permissions, undefined);
 });
 
 test('Linux promotes grep/glob and drops staged write + apply_patch', () => {
@@ -89,8 +109,8 @@ test('Linux promotes grep/glob and drops staged write + apply_patch', () => {
   assert.deepEqual(Object.keys(grep.function.parameters.properties), ['pattern', 'path', 'include']);
   const glob = bundle.definitions.find((d) => d?.function?.name === 'glob');
   assert.deepEqual(Object.keys(glob.function.parameters.properties), ['pattern', 'path']);
-  const run = bundle.definitions.find((d) => d?.function?.name === 'run');
-  assert.ok(run?.function?.parameters?.properties?.sandbox_permissions);
+  const shell = bundle.definitions.find((d) => d?.function?.name === 'Bash');
+  assert.ok(shell?.function?.parameters?.properties?.sandbox_permissions);
 });
 
 test('Linux keeps Codemini tools and removes only Windows write workarounds', () => {
@@ -105,10 +125,10 @@ test('Linux keeps Codemini tools and removes only Windows write workarounds', ()
     platform: 'linux',
   }));
   assert.deepEqual(
-    [...windows].filter((name) => !linux.has(name)).sort(),
+    [...windows].filter((name) => name !== 'Powershell' && !linux.has(name)).sort(),
     ['abort_write', 'apply_patch', 'begin_write', 'commit_write', 'write_chunk'],
   );
-  assert.deepEqual([...linux].filter((name) => !windows.has(name)), []);
+  assert.deepEqual([...linux].filter((name) => name !== 'Bash' && !windows.has(name)), []);
 });
 
 test('Linux file_path aliases validate and sandbox escalation is approval-bound', async () => {

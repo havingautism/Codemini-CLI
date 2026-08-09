@@ -9,6 +9,8 @@ import { matcherAllows } from '../src/core/skill-hooks-session.js';
 
 test('canonicalToolName maps Claude Bash to run', () => {
   assert.equal(canonicalToolName('Bash'), 'run');
+  assert.equal(canonicalToolName('Powershell'), 'run');
+  assert.equal(canonicalToolName('PowerShell'), 'run');
   assert.equal(canonicalToolName('Read'), 'read');
   assert.equal(canonicalToolName('run'), 'run');
 });

@@ -699,7 +699,7 @@ export const en = {
   replyLanguageEn: "English",
   settingsUnsavedChanges: "Unsaved changes",
   approvalModeHelp:
-    "Review: confirm edits, deletes, and risky shell commands. Auto: auto-run in Git repos; non-Git file changes still need approval. Full access: skip approval prompts. Works alongside the OS sandbox; when sandbox is read-only, approval is hidden because writes are already blocked.",
+    "Review: confirm routine file changes and risky actions. Auto: run recoverable file changes inside the workspace automatically; risky commands, writes outside the workspace, and sandbox escalation still need confirmation. Full access: skip routine review, while hard safety boundaries still require confirmation. Git uses change history and non-Git uses session checkpoints; both can be undone from change cards. Works alongside the OS sandbox; when sandbox is read-only, approval is hidden because writes are already blocked.",
   sandboxModeHelp:
     "Linux/macOS only. Read-only: commands cannot write disk. Workspace-write: can write the current workspace. Danger full access: disable the OS sandbox fence. Ignored on Windows.",
 
@@ -874,11 +874,11 @@ export const en = {
   normalModeDesc: "Light chat and simple requests",
   approvalMode: "Approval Mode",
   reviewMode: "Review",
-  reviewModeDesc: "Confirm edits, deletes, and risky commands",
+  reviewModeDesc: "Confirm file changes and risky actions",
   autoMode: "Auto",
-  autoModeDesc: "Auto-run in Git projects; review non-Git file changes",
+  autoModeDesc: "Auto-run recoverable workspace changes; confirm high-risk actions",
   fullAccessMode: "Full Access",
-  fullAccessModeDesc: "Run tool calls without approval prompts",
+  fullAccessModeDesc: "Skip routine review; keep hard safety boundaries",
   sandboxMode: "Sandbox",
   sandboxReadOnlyMode: "Read-only",
   sandboxReadOnlyModeDesc: "Run commands in a sandbox with no disk writes",

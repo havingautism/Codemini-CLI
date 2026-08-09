@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Box, Text, useApp, useInput } from 'ink';
 import { shouldCaptureEscapeSequence } from './input-escape.js';
 import { classifyCommandIntent } from '../core/shell.js';
+import { isShellToolName } from '../core/shell-tool-name.js';
 import { formatSelectedSkillTurn } from '../core/chat-message.js';
 import { formatToolLabel } from '../core/tool-display.js';
 import {
@@ -1148,7 +1149,7 @@ export function normalizeDeleteApprovalRequest(request) {
 }
 
 export function normalizeRunApprovalRequest(request) {
-  if (!request || String(request?.name || '').trim() !== 'run') return null;
+  if (!request || !isShellToolName(request?.name)) return null;
   const details =
     request?.approvalDetails && typeof request.approvalDetails === 'object' && !Array.isArray(request.approvalDetails)
       ? request.approvalDetails
@@ -1157,7 +1158,7 @@ export function normalizeRunApprovalRequest(request) {
   if (!command) return null;
   return {
     id: String(request?.id || '').trim(),
-    toolName: 'run',
+    toolName: String(request?.name || '').trim(),
     command,
     risk: details.risk || 'high',
     description: details.evaluation?.description || '',
@@ -1247,7 +1248,7 @@ function getActivityDisplayParts(activity) {
   }
   const parsed = parseToolDisplayName(activity?.displayName || activity?.name);
   const base = String(activity?.name || parsed.base || '').trim().toLowerCase();
-  if (base === 'run') {
+  if (isShellToolName(base)) {
     const intent = classifyCommandIntent(parsed.target);
     return {
       primary: `${getIntentEmoji(intent.kind)} ${getIntentLabel(intent.kind)}`,
@@ -3269,7 +3270,7 @@ function DeleteApprovalPanel({ request, reviewState, copy }) {
 
 function RunApprovalPanel({ request, reviewState, copy, contentWidth = 72 }) {
   if (!request) return null;
-  const details = request?.toolName === 'run' ? request : normalizeRunApprovalRequest(request);
+  const details = isShellToolName(request?.toolName) ? request : normalizeRunApprovalRequest(request);
   if (!details) return null;
   const c = copy.runApproval || {};
   const riskColor = details.risk === 'low' ? 'green' : details.risk === 'medium' ? 'yellow' : 'redBright';

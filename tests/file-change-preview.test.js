@@ -1,9 +1,33 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
 import {
+  resolveFileChangeSequenceAction,
   resolveFileChangePreviewLines,
   unifiedPatchToPreviewLines,
 } from '../codemini-web/client/src/lib/file-change-preview.js';
+
+test('file change sequences collapse to their net action', () => {
+  assert.equal(resolveFileChangeSequenceAction(['create', 'delete']), null);
+  assert.equal(resolveFileChangeSequenceAction(['delete', 'create']), 'edit');
+  assert.equal(resolveFileChangeSequenceAction(['create', 'edit']), 'create');
+  assert.equal(resolveFileChangeSequenceAction(['create', 'delete', 'create']), 'create');
+  assert.equal(resolveFileChangeSequenceAction(['edit', 'delete']), 'delete');
+});
+
+test('non-git runtime state hides the chat file diff summary', async () => {
+  const [runtime, app, chatPanel, messageBubble] = await Promise.all([
+    fs.readFile('src/core/chat-runtime.js', 'utf8'),
+    fs.readFile('codemini-web/client/src/App.jsx', 'utf8'),
+    fs.readFile('codemini-web/client/src/components/ChatPanel.jsx', 'utf8'),
+    fs.readFile('codemini-web/client/src/components/MessageBubble.jsx', 'utf8'),
+  ]);
+
+  assert.match(runtime, /projectIsGit: Boolean\(config\?\.runtime\?\.project_is_git\)/);
+  assert.match(app, /projectIsGit=\{state\.runtimeState\?\.projectIsGit === true\}/);
+  assert.match(chatPanel, /projectIsGit=\{projectIsGit\}/);
+  assert.match(messageBubble, /if \(!projectIsGit\) return false;/);
+});
 
 test('unifiedPatchToPreviewLines keeps context around comment-only additions', () => {
   const patch = [

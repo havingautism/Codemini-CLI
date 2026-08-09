@@ -6,6 +6,7 @@ import { cn } from '@/lib/utils';
 import { ReviewCommandBlock, ReviewSection } from '@/components/WorkflowReviewDialog.jsx';
 import { t } from '../../i18n/index.js';
 import { CHAT_ACTION_NAMES } from '@/lib/chat-action-names.js';
+import { isShellToolName } from '@/lib/tool-names.js';
 
 function riskDotClass(risk) {
   const level = String(risk || '').trim().toLowerCase();
@@ -32,7 +33,7 @@ function localizeRecommendation(recommendation) {
 
 function detectVariant(toolName, details) {
   if (toolName === 'delete') return 'delete';
-  if (toolName === 'run') return 'run';
+  if (isShellToolName(toolName)) return 'run';
   if (toolName === 'edit') return 'edit';
   if (toolName === 'create') return 'create';
   if (toolName === 'write') return 'write';

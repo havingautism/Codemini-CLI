@@ -12,6 +12,7 @@ import { ToolCard } from "@/components/ToolCard.jsx";
 import { UsageBadge } from "@/components/UsageBadge.jsx";
 import { cn } from "@/lib/utils";
 import { planPhaseTitle, shouldExpandPlanStep } from "@/lib/plan-ui-state.js";
+import { isShellToolName } from "@/lib/tool-names.js";
 import { t } from "../../i18n/index.js";
 
 const ROW_CLASS =
@@ -79,7 +80,7 @@ function StepProcessFold({ segments }) {
       sum +
       (item.cards || []).filter((card) => {
         const name = String(card?.name || "").toLowerCase();
-        return name === "run" || name.startsWith("run(");
+        return isShellToolName(name);
       }).length
     );
   }, 0);
@@ -236,7 +237,7 @@ function StepBody({ step }) {
         <div className="flex items-center gap-2 py-1 text-[12px] text-(--text-muted)">
           {running ? (
             <>
-              <SessionOrb state="composing" />
+              <SessionOrb state="thinking" />
               <span>{t("thinking")}</span>
             </>
           ) : waiting ? (
@@ -366,7 +367,7 @@ function SubagentStepRow({ step, index }) {
           </span>
         </span>
         {status === "running" ? (
-          <SessionOrb state="working" />
+          <SessionOrb state="tool" />
         ) : (
           <span
             className={cn(
@@ -468,7 +469,7 @@ export function PlanToolCard({ card, grouped = false }) {
         </span>
         <span className="flex shrink-0 items-center gap-1.5 text-[12px] text-(--text-secondary)">
           {running && phase !== "waiting" ? (
-            <SessionOrb state="working" />
+            <SessionOrb state="tool" />
           ) : (
             <span
               aria-hidden="true"
@@ -509,7 +510,7 @@ export function PlanToolCard({ card, grouped = false }) {
             )
           ) : running ? (
             <div className="flex items-center gap-2 py-1 text-[12px] text-(--text-muted)">
-              <SessionOrb state="composing" />
+              <SessionOrb state="thinking" />
               <span>{t("thinking")}</span>
             </div>
           ) : (

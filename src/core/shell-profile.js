@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { getSearchToolHint, resolveSearchToolContext } from './provider/search-tool-registry.js';
 import { getReadOnlyCommandTokens } from './read-only-command-tokens.js';
+import { shellToolName } from './shell-tool-name.js';
 
 const DEFAULT_SHELL = process.platform === 'win32' ? 'powershell' : 'bash';
 
@@ -160,6 +161,10 @@ export function getEffectivePolicy(config) {
 
 export function getShellSystemPrompt(value) {
   const profile = getShellProfile(value);
+  const commandToolName = shellToolName({
+    platform: profile.shell === 'powershell' ? 'win32' : 'linux',
+    shell: profile.shell,
+  });
   const psGuide = profile.shell === 'powershell'
     ? `
 # PowerShell coding guidelines
@@ -182,11 +187,11 @@ When writing PowerShell commands or scripts, follow these rules:
 
 ALWAYS prefer dedicated tools over raw shell commands:
 - The visible default tool list is intentionally small. If a needed capability is not currently listed, do not assume it is unavailable — call tool_search to load additional tools first
-- Treat run as an execution tool, not a code-reading or code-search tool. Do not use run to inspect source files, list code directories, grep identifiers, or print file contents when read/search_code/list/glob can do it
+- Treat ${commandToolName} as an execution tool, not a code-reading or code-search tool. Do not use ${commandToolName} to inspect source files, list code directories, grep identifiers, or print file contents when read/search_code/list/glob can do it
 - Use search_code first for code discovery. It routes text, symbol, and structural searches internally so you can narrow candidates before reading source files
-- Use read to inspect files — NEVER use cat, head, or tail via run. Use canonical shapes like {path:"src/app.ts"}, {path:"src/app.ts:10-40"}, or {path:"src/app.ts", start_line:10, end_line:40}
-- Do not use grep, rg, find, ls, Get-ChildItem, Select-String, Get-Content, or type via run for normal code exploration. Use search_code/read first; load low-level grep/list/glob with tool_search only when that specific structured tool output is needed
-- If you need directory listing or pattern-based file lookup, load list or glob with tool_search instead of falling back to run
+- Use read to inspect files — NEVER use cat, head, or tail via ${commandToolName}. Use canonical shapes like {path:"src/app.ts"}, {path:"src/app.ts:10-40"}, or {path:"src/app.ts", start_line:10, end_line:40}
+- Do not use grep, rg, find, ls, Get-ChildItem, Select-String, Get-Content, or type via ${commandToolName} for normal code exploration. Use search_code/read first; load low-level grep/list/glob with tool_search only when that specific structured tool output is needed
+- If you need directory listing or pattern-based file lookup, load list or glob with tool_search instead of falling back to ${commandToolName}
 - Use edit to modify existing files — this is the DEFAULT path for code changes. Prefer {path:"src/app.ts", old_text:"foo", new_text:"bar"}
 - Use edit for existing files, including complete rewrites with {path:"src/app.ts", new_content:"..."} or {path:"src/app.ts", kind:"rewrite_file", new_content:"..."}
 - Use write for new files and whole-file output: new files use {path:"src/new.ts", content:"..."}; intentional overwrite uses {path:"src/app.ts", content:"...", overwrite:true}
@@ -194,7 +199,7 @@ ALWAYS prefer dedicated tools over raw shell commands:
 - Tool arguments must be valid JSON objects. Escape file-content newlines as \\n inside JSON strings; never emit raw line breaks inside quoted JSON strings
 - Use update_todos to manage the session todo checklist for complex work. Provide the full current list each time and usually keep exactly one item in_progress
 - Use read_plan and update_plan to recover or sync structured plan state when plan progress was interrupted (for example by transient gateway/model errors)
-- Use run for shell commands. For long-running processes (dev servers, watchers), set run_in_background=true when you know you do not need the final result immediately. Long-running commands may also be backgrounded automatically
+- Use ${commandToolName} for shell commands. For long-running processes (dev servers, watchers), set run_in_background=true when you know you do not need the final result immediately. Long-running commands may also be backgrounded automatically
 
 Use update_todos with these rules:
 - MUST use it before major tool work when the task has 3 or more meaningful steps, multiple files or phases, explicit verification work, debugging with multiple hypotheses, or any non-trivial implementation likely to span several tool calls
@@ -214,7 +219,7 @@ Some tools are loaded on demand through tool_search. Common examples:
 
 For structural code edits, narrow the target with search_code and read before editing; reuse a returned ast_target when available. Load lower-level AST tools only when ordinary search is insufficient.
 
-For background commands, use run with run_in_background=true and load management tools only when needed.
+For background commands, use ${commandToolName} with run_in_background=true and load management tools only when needed.
 
 Resolve relative paths from the current Working directory; prefer absolute paths when the environment provides it.
 
@@ -223,7 +228,7 @@ Resolve relative paths from the current Working directory; prefer absolute paths
 - The user shares your workspace with you; prefer inspecting the project yourself before asking them to paste files that should be discoverable
 - Before substantial tool work, send one short user-facing progress update
 - If a command or tool is blocked or fails, inspect the error and retry with allowed commands or tools
-- If the user rejects or declines a run command (especially tests, builds, installs, or dev servers), treat verification as intentionally skipped. Do not retry the same or similar command unless the user asks again. Summarize completed code changes and note that verification was deferred
+- If the user rejects or declines a ${commandToolName} command (especially tests, builds, installs, or dev servers), treat verification as intentionally skipped. Do not retry the same or similar command unless the user asks again. Summarize completed code changes and note that verification was deferred
 - For AST-scoped edits, if edit rejects due to missing or stale ast_target, fix arguments and retry
 - Do not claim filesystem access is impossible unless search/read tools also fail
 - Do not add comments, docstrings, or type annotations to code you did not change
@@ -266,17 +271,23 @@ const SUB_AGENT_TOOL_HINTS = {
 export function buildSubAgentShellRulesPrompt(allowedTools = [], { shell, workspaceRoot = process.cwd(), role = '', config = {} } = {}) {
   const profile = getShellProfile(shell);
   const allowed = uniqueStrings(Array.isArray(allowedTools) ? allowedTools : []);
+  const commandToolName = shellToolName({
+    platform: String(shell || '').toLowerCase() === 'powershell' ? 'win32' : 'linux',
+    shell,
+  });
   const searchCtx = resolveSearchToolContext(config);
-  const toolList = allowed.join(', ') || 'none';
+  const toolList = allowed.map((name) => name === 'run' ? commandToolName : name).join(', ') || 'none';
   const hintLines = allowed
     .map((name) => {
       if (name === 'run' && ['coder', 'refactorer', 'writer'].includes(role)) {
-        return '- run: only for commands required to complete the edit itself (for example code generation). Do not use run for tests, builds, installs, or dev servers unless the step task explicitly requires it';
+        return `- ${commandToolName}: only for commands required to complete the edit itself (for example code generation). Do not use ${commandToolName} for tests, builds, installs, or dev servers unless the step task explicitly requires it`;
       }
       if (searchCtx.toolId && name === searchCtx.toolId) {
         return getSearchToolHint(config);
       }
-      return SUB_AGENT_TOOL_HINTS[name];
+      return name === 'run'
+        ? SUB_AGENT_TOOL_HINTS.run.replaceAll('run', commandToolName)
+        : SUB_AGENT_TOOL_HINTS[name];
     })
     .filter(Boolean);
   const deferredTools = allowed.filter((name) => !['read', 'search_code', 'read_plan', 'update_plan', 'update_todos', 'edit', 'write', 'begin_write', 'write_chunk', 'commit_write', 'abort_write', 'apply_patch', 'delete', 'run', 'tool_search', 'skill'].includes(name));
@@ -286,9 +297,9 @@ export function buildSubAgentShellRulesPrompt(allowedTools = [], { shell, worksp
     '',
     '# Tool scope (strict)',
     `You may ONLY call these tools: ${toolList}`,
-    'Calling any other tool fails immediately. Parent-agent tools such as list, grep, run, or edit are NOT available unless they appear in the list above.',
-    'Do not use raw shell commands via run unless run is in your allowed tool list.',
-    'Even when run is allowed, do not use it to read source files, list code directories, or search identifiers. Use read/search_code/list/glob-style tools for code context; reserve run for execution such as tests, builds, scripts, package commands, and servers.',
+    `Calling any other tool fails immediately. Parent-agent tools such as list, grep, ${commandToolName}, or edit are NOT available unless they appear in the list above.`,
+    `Do not use raw shell commands via ${commandToolName} unless ${commandToolName} is in your allowed tool list.`,
+    `Even when ${commandToolName} is allowed, do not use it to read source files, list code directories, or search identifiers. Use read/search_code/list/glob-style tools for code context; reserve ${commandToolName} for execution such as tests, builds, scripts, package commands, and servers.`,
     '',
     '# Using your allowed tools',
     ...(hintLines.length > 0 ? hintLines : ['- No dedicated tools beyond the list above.']),
@@ -306,8 +317,8 @@ export function buildSubAgentShellRulesPrompt(allowedTools = [], { shell, worksp
   ];
   if (['coder', 'refactorer', 'writer'].includes(role)) {
     lines.push('- Your step owns implementation changes, not runtime verification. Leave tests/builds/dev servers to the tester step or the user unless this step task explicitly requires a command to finish the edit');
-    lines.push('- When edits are done, finish with the structured handoff. Set Verified to none or deferred instead of trying to prove behavior with run');
-    lines.push('- If a run command is blocked or declined by the user, do not retry it. Treat implementation as complete and note verification was deferred');
+    lines.push(`- When edits are done, finish with the structured handoff. Set Verified to none or deferred instead of trying to prove behavior with ${commandToolName}`);
+    lines.push(`- If a ${commandToolName} command is blocked or declined by the user, do not retry it. Treat implementation as complete and note verification was deferred`);
   } else if (role === 'tester') {
     lines.push('- You own verification. Run the narrowest relevant checks when the environment supports them, and say clearly when checks could not run');
   }

@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { isShellToolName } from './shell-tool-name.js';
 
 /**
  * Whether the workspace looks like a git repo (.git file or directory).
@@ -43,8 +44,8 @@ export function toolRequiresUserApproval({
   const normalizedApprovalMode = ['review', 'auto', 'full_access'].includes(String(approvalMode || '').toLowerCase())
     ? String(approvalMode || '').toLowerCase()
     : 'review';
-  const name = String(toolName || '').trim();
-  const isFileWriteTool = name === 'edit' || name === 'create' || name === 'write' || name === 'commit_write' || name === 'apply_patch' || name === 'delete' || name === 'add_code_comment' || name === 'update_code_comment';
+  const rawName = String(toolName || '').trim();
+  const name = isShellToolName(rawName) ? 'run' : rawName;
   const alwaysAllowSet = new Set(
     (Array.isArray(alwaysAllowTools) ? alwaysAllowTools : []).map((item) => String(item || '').trim()).filter(Boolean)
   );
@@ -55,7 +56,7 @@ export function toolRequiresUserApproval({
   if (isSandboxEscalation) return true;
   if (normalizedApprovalMode === 'full_access') return false;
   if (normalizedApprovalMode === 'auto') {
-    return (!projectIsGit && isFileWriteTool) || Boolean(isSafeModeRun);
+    return Boolean(isSafeModeRun);
   }
   return name === 'delete' || Boolean(isSafeModeRun) || !alwaysAllowSet.has(name);
 }

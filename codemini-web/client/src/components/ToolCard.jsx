@@ -19,6 +19,7 @@ import { LinearRing, SessionOrb } from "@/components/ui/spinner";
 import { FileTypeIcon } from "@/components/FileTypeIcon.jsx";
 import { openWorkspaceFile } from "@/hooks/use-api.js";
 import { cn } from "@/lib/utils";
+import { isShellToolName } from "@/lib/tool-names.js";
 import {
   extractToolName,
   getFileToolMeta,
@@ -38,6 +39,8 @@ const TOOL_ICONS = {
   create_spec: FileText,
   delete: Trash,
   run: Terminal,
+  Bash: Terminal,
+  Powershell: Terminal,
   grep: MagnifyingGlass,
   glob: Folder,
   list: Folder,
@@ -345,9 +348,9 @@ export function ToolCard({ card }) {
             <CaretRight size={14} className={TOOL_CHEVRON_CLASS} />
           )}
           <span
-            className={toolName === "run" ? RUN_TOOL_ICON_CLASS : TOOL_ICON_CLASS}
+            className={isShellToolName(toolName) ? RUN_TOOL_ICON_CLASS : TOOL_ICON_CLASS}
           >
-            <Icon size={toolName === "run" ? 13 : 14} />
+            <Icon size={isShellToolName(toolName) ? 13 : 14} />
           </span>
           <span className="flex min-w-0 flex-1 items-center overflow-hidden whitespace-nowrap leading-[18px]">
             <span className="shrink-0">{toolLabel}</span>
@@ -418,7 +421,7 @@ export function ToolCard({ card }) {
           </div>
         )}
         {card.status === "running" ? (
-          <SessionOrb state="working" className="mr-1.5" />
+          <SessionOrb state="tool" className="mr-1.5" />
         ) : (
           <span
             className={cn(

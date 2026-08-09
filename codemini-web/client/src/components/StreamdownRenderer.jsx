@@ -13,6 +13,7 @@ import {
 import { EmbedCard } from '@/components/EmbedCard.jsx';
 import { HorizontalScrollStrip } from '@/components/HorizontalScrollStrip.jsx';
 import { MarkdownLightboxImage } from '@/components/MarkdownLightboxImage.jsx';
+import { ResponseLoader } from '@/components/ui/spinner.jsx';
 import {
   MessageImageGalleryProvider,
 } from '@/components/MessageImageGallery.jsx';
@@ -243,12 +244,9 @@ export function StreamdownRenderer({ text, streaming, className, inlineEmbeds = 
 
   if (!content && streaming) {
     return (
-      <div
-        className={cn(
-          'msg-body streaming-cursor streaming-cursor--pending',
-          className,
-        )}
-        aria-hidden="true"
+      <ResponseLoader
+        className={cn('msg-body', className)}
+        label={t('waitingResponse')}
       />
     );
   }

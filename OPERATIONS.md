@@ -95,7 +95,7 @@ codemini config set ui.language zh
 
 ### Sandbox (Linux / macOS)
 
-Shell `run` is OS-confined when `sandbox.enabled` is `auto` (default on non-Windows) or `true`. Linux/WSL uses an npm-distributed Landlock launcher; macOS uses the built-in Seatbelt runner.
+The model-facing `Bash` or `Powershell` tool is OS-confined when `sandbox.enabled` is `auto` (default on non-Windows) or `true`. Linux/WSL uses an npm-distributed Landlock launcher; macOS uses the built-in Seatbelt runner.
 
 ```bash
 codemini config set sandbox.mode workspace-write   # default on Linux/mac

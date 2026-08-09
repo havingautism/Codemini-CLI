@@ -174,6 +174,7 @@ function ChatPanelContent({
   projectCwd,
   skills = [],
   gitInfo,
+  projectIsGit = true,
   messagesLoading,
   isGeneral = false,
   targetMessageId = "",
@@ -407,6 +408,7 @@ function ChatPanelContent({
                     <MessageBubble
                       message={msg}
                       onRetry={onRetryMessage}
+                      projectIsGit={projectIsGit}
                     />
                   </MessageScrollerItem>
                 ))}

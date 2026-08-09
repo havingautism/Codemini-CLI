@@ -203,7 +203,21 @@ export async function createGitOplogChangeTracker({ workspaceRoot = process.cwd(
   try {
     const inside = await runGit(['rev-parse', '--is-inside-work-tree'], { cwd: startRoot, allowFailure: true });
     if (inside.code !== 0 || inside.stdout.trim() !== 'true') {
-      return { enabled: false, reason: 'not-git-repo', workspaceRoot: startRoot };
+      const oplogDir = path.join(startRoot, '.codemini', 'backups', 'sessions', id, 'oplog');
+      const patchesDir = path.join(oplogDir, 'patches');
+      const opsDir = path.join(oplogDir, 'ops');
+      await fs.mkdir(patchesDir, { recursive: true });
+      await fs.mkdir(opsDir, { recursive: true });
+      return {
+        enabled: true,
+        mode: 'file-oplog',
+        workspaceRoot: startRoot,
+        sessionId: id,
+        baseCommit: '',
+        oplogDir,
+        patchesDir,
+        opsDir
+      };
     }
     const root = path.resolve((await runGit(['rev-parse', '--show-toplevel'], { cwd: startRoot })).stdout.trim());
     const head = await runGit(['rev-parse', '--verify', 'HEAD'], { cwd: root, allowFailure: true });
@@ -233,14 +247,25 @@ export async function createGitOplogChangeTracker({ workspaceRoot = process.cwd(
 }
 
 export function isGitOplogChangeTrackerAvailable(tracker) {
-  return Boolean(tracker?.enabled && tracker.mode === 'git-oplog');
+  return Boolean(tracker?.enabled && (tracker.mode === 'git-oplog' || tracker.mode === 'file-oplog'));
+}
+
+async function listDirtyPaths(tracker) {
+  if (tracker.mode !== 'git-oplog') return [];
+  const status = await runGit(['status', '--porcelain=v1', '-z'], { cwd: tracker.workspaceRoot, allowFailure: true });
+  return parseStatusPaths(status.stdout);
+}
+
+function gitApplyArgs(tracker, ...args) {
+  return tracker.mode === 'file-oplog'
+    ? ['-c', 'core.autocrlf=false', 'apply', ...args]
+    : ['apply', ...args];
 }
 
 export async function beginGitOplogCapture(tracker, { toolName = '', args = {} } = {}) {
   if (!isGitOplogChangeTrackerAvailable(tracker)) return null;
   const explicitPaths = FILE_TOOLS.has(String(toolName || '')) ? extractPathCandidates(args, [], { root: tracker.workspaceRoot }) : [];
-  const status = await runGit(['status', '--porcelain=v1', '-z'], { cwd: tracker.workspaceRoot, allowFailure: true });
-  const dirtyPaths = parseStatusPaths(status.stdout);
+  const dirtyPaths = await listDirtyPaths(tracker);
   const paths = explicitPaths.length ? explicitPaths : dirtyPaths;
   const snapshots = new Map();
   for (const filePath of paths) {
@@ -257,8 +282,7 @@ export async function beginGitOplogCapture(tracker, { toolName = '', args = {} }
 
 export async function captureGitOplogChanges(tracker, capture, { toolName = '', toolCallId = '', summary = '', args = {}, declaredFileChanges = [] } = {}) {
   if (!isGitOplogChangeTrackerAvailable(tracker) || !capture) return null;
-  const afterStatus = await runGit(['status', '--porcelain=v1', '-z'], { cwd: tracker.workspaceRoot, allowFailure: true });
-  const afterDirtyPaths = parseStatusPaths(afterStatus.stdout);
+  const afterDirtyPaths = await listDirtyPaths(tracker);
   const declaredPaths = extractPathCandidates(args, declaredFileChanges, { root: tracker.workspaceRoot });
   const candidates = new Set([
     ...capture.paths,
@@ -338,7 +362,7 @@ export async function listGitOplogChanges(tracker) {
 }
 
 export async function readGitOplogChange(tracker, opId) {
-  if (!isGitOplogChangeTrackerAvailable(tracker)) throw new Error('Git change oplog is not available for this session');
+  if (!isGitOplogChangeTrackerAvailable(tracker)) throw new Error('File change checkpoint is not available for this session');
   const id = String(opId || '').trim();
   if (!id) throw new Error('Missing change id');
   const stored = loadChangeOperationFromSqlite(tracker.workspaceRoot, id);
@@ -354,14 +378,14 @@ export async function readGitOplogPatch(tracker, opId) {
 }
 
 export async function undoGitOplogChange(tracker, opId) {
-  if (!isGitOplogChangeTrackerAvailable(tracker)) throw new Error('Git change oplog is not available for this session');
+  if (!isGitOplogChangeTrackerAvailable(tracker)) throw new Error('File change checkpoint is not available for this session');
   const op = await readGitOplogChange(tracker, opId);
   if (op.revertedAt) {
     return { ok: false, alreadyReverted: true, changeSetId: op.id, message: 'Change already reverted' };
   }
   const patch = await fs.readFile(op.patchPath, 'utf8');
   try {
-    await runGit(['apply', '-R', '--check', '--whitespace=nowarn'], {
+    await runGit(gitApplyArgs(tracker, '-R', '--check', '--whitespace=nowarn'), {
       cwd: tracker.workspaceRoot,
       input: patch,
       timeoutMs: 120_000
@@ -369,7 +393,7 @@ export async function undoGitOplogChange(tracker, opId) {
   } catch (error) {
     throw new Error(`Cannot undo this change cleanly because newer edits conflict with it. Undo newer changes first, or revert it manually. ${error?.message || ''}`.trim());
   }
-  await runGit(['apply', '-R', '--whitespace=nowarn'], {
+  await runGit(gitApplyArgs(tracker, '-R', '--whitespace=nowarn'), {
     cwd: tracker.workspaceRoot,
     input: patch,
     timeoutMs: 120_000
@@ -380,7 +404,7 @@ export async function undoGitOplogChange(tracker, opId) {
 }
 
 export async function undoGitOplogChanges(tracker, opIds = []) {
-  if (!isGitOplogChangeTrackerAvailable(tracker)) throw new Error('Git change oplog is not available for this session');
+  if (!isGitOplogChangeTrackerAvailable(tracker)) throw new Error('File change checkpoint is not available for this session');
   const ids = [];
   const seen = new Set();
   for (const rawId of Array.isArray(opIds) ? opIds : [opIds]) {
@@ -415,12 +439,12 @@ export async function undoGitOplogChanges(tracker, opIds = []) {
   try {
     for (const item of patches) {
       if (!String(item.patch || '').trim()) continue;
-      await runGit(['apply', '-R', '--check', '--whitespace=nowarn'], {
+      await runGit(gitApplyArgs(tracker, '-R', '--check', '--whitespace=nowarn'), {
         cwd: tracker.workspaceRoot,
         input: item.patch,
         timeoutMs: 120_000
       });
-      await runGit(['apply', '-R', '--whitespace=nowarn'], {
+      await runGit(gitApplyArgs(tracker, '-R', '--whitespace=nowarn'), {
         cwd: tracker.workspaceRoot,
         input: item.patch,
         timeoutMs: 120_000
@@ -429,7 +453,7 @@ export async function undoGitOplogChanges(tracker, opIds = []) {
     }
   } catch (error) {
     for (const item of applied.reverse()) {
-      await runGit(['apply', '--whitespace=nowarn'], {
+      await runGit(gitApplyArgs(tracker, '--whitespace=nowarn'), {
         cwd: tracker.workspaceRoot,
         input: item.patch,
         allowFailure: true,

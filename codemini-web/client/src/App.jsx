@@ -550,6 +550,7 @@ function Shell() {
               projectCwd={state.projectCwd}
               skills={state.skills}
               gitInfo={state.gitInfo}
+              projectIsGit={state.runtimeState?.projectIsGit === true}
               messagesLoading={state.messagesLoading}
               isGeneral={state.isGeneral}
               targetMessageId={state.targetMessageId}

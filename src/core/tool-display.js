@@ -1,4 +1,5 @@
 import { trimInline as trimInlineText } from './string-utils.js';
+import { isShellToolName } from './shell-tool-name.js';
 
 export const TOOL_DISPLAY_LABELS = {
   create_plan: 'Plan',
@@ -184,9 +185,9 @@ export function formatToolDisplayName(name, args = {}, options = {}) {
       ? formatToolWithArg(formatToolLabel(toolName), target)
       : formatToolLabel(toolName);
   }
-  if (toolName === 'run') {
+  if (isShellToolName(toolName)) {
     const command = trimInline(args?.command || '', 96);
-    return command ? formatToolWithArg(formatToolLabel('run'), command) : formatToolLabel('run');
+    return command ? formatToolWithArg(formatToolLabel(toolName), command) : formatToolLabel(toolName);
   }
   if (toolName === 'web_fetch') {
     const url = trimInline(args?.url || args?.href || '', 96);

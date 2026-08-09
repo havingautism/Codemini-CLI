@@ -29,6 +29,7 @@ import { fireSkillHookEvent, formatHookContextLines } from './skill-hooks-runtim
 import {
   isCompletionTruncated,
 } from './provider/completion-status.js';
+import { isShellToolName } from './shell-tool-name.js';
 
 export { buildInvalidToolArgumentsResult } from './tool-runtime.js';
 
@@ -75,7 +76,7 @@ function buildApprovalBlockedResult(toolName, args = {}, approvalReason = '') {
       ...(feedback ? { reason: feedback, user_feedback: feedback } : {})
     };
   }
-  if (toolName === 'run') {
+  if (isShellToolName(toolName)) {
     const command = String(args?.command || args?.cmd || '').trim();
     return {
       blocked: true,
@@ -261,7 +262,7 @@ function shouldAutoCaptureRunFailure(message) {
 }
 
 function resolveRunToolFailure(toolName, toolResult) {
-  if (toolName !== 'run' || !toolResult || typeof toolResult !== 'object' || toolResult.background) {
+  if (!isShellToolName(toolName) || !toolResult || typeof toolResult !== 'object' || toolResult.background) {
     return '';
   }
   if (typeof toolResult.error === 'string' && toolResult.error.trim()) {
@@ -928,14 +929,14 @@ export async function runAgentLoop({
         });
         continue;
       }
-      const runPolicyCheck = toolName === 'run'
+      const runPolicyCheck = isShellToolName(toolName)
         ? evaluateCommandPolicy(args?.command || '', config, config?.workspaceRoot || process.cwd())
         : { allowed: true };
-      const isSafeModePolicyBlocked = toolName === 'run'
+      const isSafeModePolicyBlocked = isShellToolName(toolName)
         && config?.policy?.safe_mode !== false
         && !runPolicyCheck.allowed
         && runPolicyCheck.reason !== 'blocked by dangerous command pattern';
-      const isSafeModeRun = toolName === 'run'
+      const isSafeModeRun = isShellToolName(toolName)
         && config?.policy?.safe_mode !== false
         && (isSafeModePolicyBlocked || requiresApprovalEvaluation(args?.command || '', config?.shell?.default));
       try {
@@ -977,7 +978,7 @@ export async function runAgentLoop({
           }
         }
         /* Run tool: safe mode LLM-based command evaluation */
-        if (toolName === 'run' && isSafeModeRun && !preflightErrorContent) {
+        if (isShellToolName(toolName) && isSafeModeRun && !preflightErrorContent) {
           try {
             const evaluateCommandFn = typeof evaluateCommand === 'function'
               ? evaluateCommand
@@ -1056,7 +1057,7 @@ export async function runAgentLoop({
         if (typeof requestToolApproval === 'function') {
           const normalApprovalDetails = toolName === 'delete'
             ? approvalArgs.approval
-            : (toolName === 'run' ? approvalArgs.approval : undefined);
+            : (isShellToolName(toolName) ? approvalArgs.approval : undefined);
           const decision = await requestToolApproval({
             id: call.id,
             name: toolName,
@@ -1079,7 +1080,7 @@ export async function runAgentLoop({
               outsideWorkspaceApproval
             );
           }
-          if (approved && toolName === 'run' && isSafeModePolicyBlocked) {
+          if (approved && isShellToolName(toolName) && isSafeModePolicyBlocked) {
             approvalArgs = markRunCommandSafeModeApproved(approvalArgs);
           }
           if (approved && isSandboxEscalation) {
@@ -1226,10 +1227,10 @@ export async function runAgentLoop({
         let hookRequiresApproval = preToolUse.decision === 'ask';
         if (preToolUse.updatedInput && typeof preToolUse.updatedInput === 'object') {
           effectiveArgs = preToolUse.updatedInput;
-          const updatedRunPolicy = toolName === 'run'
+          const updatedRunPolicy = isShellToolName(toolName)
             ? evaluateCommandPolicy(effectiveArgs?.command || '', config, config?.workspaceRoot || process.cwd())
             : { allowed: true };
-          if (toolName === 'run' && updatedRunPolicy.reason === 'blocked by dangerous command pattern') {
+          if (isShellToolName(toolName) && updatedRunPolicy.reason === 'blocked by dangerous command pattern') {
             const reason = updatedRunPolicy.reason;
             return {
               callId: call.id,
@@ -1244,7 +1245,7 @@ export async function runAgentLoop({
               approvalMode: normalizedApprovalMode,
               projectIsGit,
               toolName,
-              isSafeModeRun: toolName === 'run'
+              isSafeModeRun: isShellToolName(toolName)
                 && config?.policy?.safe_mode !== false
                 && (!updatedRunPolicy.allowed || requiresApprovalEvaluation(effectiveArgs?.command || '', config?.shell?.default)),
               alwaysAllowTools: [...alwaysAllowSet]

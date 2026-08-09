@@ -686,7 +686,7 @@ export const zh = {
   replyLanguageEn: "English",
   settingsUnsavedChanges: "有未保存的更改",
   approvalModeHelp:
-    "审阅：编辑、删除和风险命令需确认。自动：Git 项目自动执行，非 Git 文件变更仍需审阅。完全访问：工具调用不弹确认。可与 OS 沙箱同时使用；沙箱为只读时隐藏审阅（写操作已被围栏挡住）。",
+    "审阅：常规文件改动和风险操作先确认。自动：工作区内可恢复的文件增删改自动执行，风险命令、工作区外写入和沙箱提权仍需确认。完全访问：跳过常规审阅，但硬安全边界仍需确认。Git 使用变更记录，非 Git 使用会话 checkpoint，均可从变更卡撤销。可与 OS 沙箱同时使用；沙箱为只读时隐藏审阅（写操作已被围栏挡住）。",
   sandboxModeHelp:
     "仅 Linux/macOS 生效。只读：命令无法写盘。工作区可写：可写当前工作区。危险完全访问：关闭 OS 沙箱围栏。Windows 忽略此设置。",
 
@@ -850,11 +850,11 @@ export const zh = {
   normalModeDesc: "轻量对话与简单请求",
   approvalMode: "审阅权限",
   reviewMode: "审阅",
-  reviewModeDesc: "编辑、删除和风险命令需要确认",
+  reviewModeDesc: "文件改动与风险操作先确认",
   autoMode: "自动",
-  autoModeDesc: "Git 项目自动执行；非 Git 文件变更需审阅",
+  autoModeDesc: "可恢复的工作区改动自动执行；高风险操作仍确认",
   fullAccessMode: "完全访问",
-  fullAccessModeDesc: "工具调用不弹审阅确认",
+  fullAccessModeDesc: "跳过常规审阅；硬安全边界仍需确认",
   sandboxMode: "沙箱",
   sandboxReadOnlyMode: "只读",
   sandboxReadOnlyModeDesc: "命令在沙箱内运行，无法写入磁盘",

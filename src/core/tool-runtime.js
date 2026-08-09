@@ -2,9 +2,10 @@ import { normalizeToolArguments } from './tool-schemas.js';
 import { formatToolDisplayName } from './tool-display.js';
 import { looksLikeTruncatedJson } from './provider/completion-status.js';
 import { createToolRegistry, ToolArgumentsError } from './tool-registry.js';
+import { isShellToolName } from './shell-tool-name.js';
 
 const LARGE_PAYLOAD_TOOLS = new Set([
-  'create', 'write', 'write_chunk', 'edit', 'apply_patch', 'run',
+  'create', 'write', 'write_chunk', 'edit', 'apply_patch', 'run', 'Bash', 'Powershell',
   'create_plan', 'run_subagent', 'update_plan', 'create_spec',
   'update_todos', 'request_user_input', 'save_memory',
   'add_code_comment', 'update_code_comment',
@@ -39,14 +40,14 @@ function formatArgumentIssues(error) {
 function suggestionForInvalidToolArgs(toolName, { truncated = false } = {}) {
   const name = normalizeToolName(toolName) || 'tool';
   if (truncated) {
-    if (name === 'run') return 'write a script file in small chunks, then run a short command such as powershell -File path.ps1';
+    if (isShellToolName(name)) return 'write a script file in small chunks, then run a short command such as powershell -File path.ps1';
     if (name === 'apply_patch' || name === 'edit') return 'apply smaller hunks across multiple tool calls';
     if (name === 'create' || name === 'write') return 'use begin_write, smaller sequential write_chunk calls, then commit_write';
     if (name === 'write_chunk') return 'retry the same sequence with a smaller content chunk';
     if (LARGE_PAYLOAD_TOOLS.has(name)) return 'split the payload across multiple smaller tool calls';
     return 'retry with compact JSON arguments';
   }
-  if (name === 'run') return 'create/edit a script file, then run a short command';
+  if (isShellToolName(name)) return 'create/edit a script file, then run a short command';
   if (LARGE_PAYLOAD_TOOLS.has(name)) return 'keep arguments compact; move large text into files via smaller writes/edits';
   return 'fix JSON escaping and keep arguments compact';
 }
@@ -84,8 +85,8 @@ export function buildInvalidToolArgumentsResult(toolName, args = {}) {
     };
   }
 
-  const hint = name === 'run'
-    ? ' Do not embed large scripts or file contents in run arguments. Write a file first (create/edit), then run a short command such as `powershell -File path.ps1`.'
+  const hint = isShellToolName(name)
+    ? ` Do not embed large scripts or file contents in ${name} arguments. Write a file first (create/edit), then run a short command such as \`powershell -File path.ps1\`.`
     : LARGE_PAYLOAD_TOOLS.has(name)
       ? ' Keep this tool\'s arguments compact. Prefer multiple smaller calls over one huge JSON payload.'
       : ' Retry with valid, compact JSON arguments.';

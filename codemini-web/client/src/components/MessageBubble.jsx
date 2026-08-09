@@ -24,7 +24,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { LinearRing, SessionOrb } from "@/components/ui/spinner";
+import { LinearRing, ResponseLoader, SessionOrb } from "@/components/ui/spinner";
 import { Badge } from "@/components/ui/badge";
 import {
   Attachment,
@@ -36,6 +36,7 @@ import {
   AttachmentTrigger,
 } from "@/components/ui/attachment";
 import { cn } from "@/lib/utils";
+import { isShellToolName } from "@/lib/tool-names.js";
 import {
   isManualSkillCommand,
   parseUserSkillPrompt,
@@ -60,6 +61,7 @@ import {
 import { getMessageModelIdentity } from "@/lib/message-model-identity.js";
 import {
   collectFileChangePatch,
+  resolveFileChangeSequenceAction,
   resolveFileChangePreviewLines,
 } from "@/lib/file-change-preview.js";
 import { ROLE_BADGE_CLASS, ROLE_PILLS } from "./PlanProgress.jsx";
@@ -258,7 +260,7 @@ function ThoughtBlock({ segment }) {
         <span
           className={cn(COLLAPSE_ICON_CLASS, "text-(--text-process-detail)")}
         >
-          {streaming ? <SessionOrb state="composing" /> : <Brain size={15} />}
+          {streaming ? <SessionOrb state="thinking" /> : <Brain size={15} />}
         </span>
         {streaming ? (
           <RotatingStatusLabel phrases={thinkingPhrases} active />
@@ -541,7 +543,7 @@ function ToolGroup({ cards }) {
   const shouldUseSummaryHeader = total > TOOL_COLLAPSE_THRESHOLD;
   const runCount = otherCards.filter((card) => {
     const name = String(card.name || "").toLowerCase();
-    return name === "run" || name.startsWith("run(");
+    return isShellToolName(name);
   }).length;
   const summaryLabel =
     runCount === total
@@ -565,7 +567,7 @@ function ToolGroup({ cards }) {
           )}
           <span className={COLLAPSE_ICON_CLASS}>
             {hasRunningTool ? (
-              <SessionOrb state="working" />
+              <SessionOrb state="tool" />
             ) : (
               <span className="inline-block size-1.5 rounded-full bg-(--accent-green)" />
             )}
@@ -588,7 +590,7 @@ function ToolGroup({ cards }) {
       )}
       {hasRunningTool && (
         <div className="msg-process-meta__detail flex items-center gap-2 px-3 py-1.5 text-[11px] my-2">
-          <SessionOrb state="weaving" />
+          <SessionOrb state="tool" />
           <RotatingStatusLabel phrases={toolingPhrases} active />
         </div>
       )}
@@ -861,7 +863,7 @@ function ProcessGroup({ group }) {
       sum +
       (item.cards || []).filter((card) => {
         const name = String(card?.name || "").toLowerCase();
-        return name === "run" || name.startsWith("run(");
+        return isShellToolName(name);
       }).length
     );
   }, 0);
@@ -932,7 +934,6 @@ function mergeFileChanges(fileChanges = []) {
   const byPath = new Map();
   const order = [];
   const seen = new Set();
-  const actionRank = { delete: 3, create: 2, edit: 1 };
   for (const change of fileChanges) {
     const path = String(change?.path || "");
     if (!path) continue;
@@ -960,14 +961,11 @@ function mergeFileChanges(fileChanges = []) {
     const existing = byPath.get(path);
     existing.linesAdded += Number(change.linesAdded || 0);
     existing.linesRemoved += Number(change.linesRemoved || 0);
-    const currentRank = actionRank[existing.action] || 0;
-    const nextRank = actionRank[change.action] || 0;
-    if (nextRank > currentRank) existing.action = change.action;
     if (!existing.diffPreview && change.diffPreview) {
       existing.diffPreview = change.diffPreview;
       existing.changedLine = change.changedLine;
     }
-    if (change.diffPreview) existing.changes.push(change);
+    existing.changes.push(change);
     if (
       change.changeSetId &&
       !existing.changeSetIds.includes(change.changeSetId)
@@ -978,22 +976,11 @@ function mergeFileChanges(fileChanges = []) {
   return order
     .map((path) => {
       const change = byPath.get(path);
-      const firstChange = change.changes[0];
       const lastChange = change.changes[change.changes.length - 1];
-      if (firstChange?.action === "create" && lastChange?.action === "delete") {
-        return null;
-      }
-      const createIndex = change.changes.findIndex(
-        (item) => item.action === "create",
+      const action = resolveFileChangeSequenceAction(
+        change.changes.map((item) => item.action),
       );
-      const createdThenEdited =
-        createIndex >= 0 &&
-        !change.changes
-          .slice(createIndex + 1)
-          .some((item) => item.action === "delete") &&
-        change.changes
-          .slice(createIndex + 1)
-          .some((item) => item.action === "edit");
+      if (!action) return null;
       const trackedChanges = change.changes.filter((item) => item.changeSetId);
       const revertedAt =
         trackedChanges.length > 0 &&
@@ -1002,9 +989,9 @@ function mergeFileChanges(fileChanges = []) {
           : "";
       return {
         ...change,
-        ...(createdThenEdited
+        action,
+        ...(action === "create"
           ? {
-              action: "create",
               linesAdded: Math.max(
                 0,
                 Number(change.linesAdded || 0) -
@@ -1883,7 +1870,8 @@ export function shouldShowPostCompletionExtras(message, messageComplete, hasCont
   return String(planStep.role || "").toLowerCase() === "summarizer";
 }
 
-function shouldShowFileChanges(message, messageComplete, mergedFileChanges) {
+function shouldShowFileChanges(message, messageComplete, mergedFileChanges, projectIsGit) {
+  if (!projectIsGit) return false;
   return shouldShowPostCompletionExtras(
     message,
     messageComplete,
@@ -2111,6 +2099,7 @@ function AnswerProcessFold({ groups, durationMs }) {
 export const MessageBubble = memo(function MessageBubble({
   message,
   onRetry,
+  projectIsGit = true,
 }) {
   const actions = useAppActions();
   const {
@@ -2213,10 +2202,9 @@ export const MessageBubble = memo(function MessageBubble({
       return (
         <div data-message-id={message.id} className="py-2 my-[8px] px-6">
           <div className="max-w-[860px] mx-auto">
-            <div
-              className="msg-body streaming-cursor streaming-cursor--pending"
-              role="status"
-              aria-label={legacyText || t("waitingResponse")}
+            <ResponseLoader
+              className="msg-body"
+              label={legacyText || t("waitingResponse")}
             />
           </div>
         </div>
@@ -2347,6 +2335,7 @@ export const MessageBubble = memo(function MessageBubble({
     message,
     messageComplete,
     mergedFileChanges,
+    projectIsGit,
   );
   const showRelatedLinks = shouldShowPostCompletionExtras(
     message,
@@ -2465,10 +2454,9 @@ export const MessageBubble = memo(function MessageBubble({
               renderGroups.length === 0 &&
               planStep.status !== "done" &&
               planStep.status !== "failed" && (
-                <div
-                  className="msg-body streaming-cursor streaming-cursor--pending"
-                  role="status"
-                  aria-label="等待工具调用或模型输出"
+                <ResponseLoader
+                  className="msg-body"
+                  label="等待工具调用或模型输出"
                 />
               )}
 

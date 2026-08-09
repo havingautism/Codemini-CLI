@@ -46,6 +46,17 @@ test('subagent allow-list cannot grant tools outside role policy', () => {
   assert.deepEqual(tools, ['read']);
 });
 
+test('subagent allow-list accepts public shell tool names and keeps internal policy canonical', () => {
+  assert.deepEqual(
+    resolveSubAgentToolAllowList({ role: 'coder', tools: ['Bash'], platform: 'linux' }),
+    ['run'],
+  );
+  assert.deepEqual(
+    resolveSubAgentToolAllowList({ role: 'coder', tools: ['Powershell'], platform: 'win32' }),
+    ['run'],
+  );
+});
+
 test('freeform persona names use coder tool baseline', () => {
   const tools = resolveSubAgentToolAllowList({
     role: 'david',

@@ -19,6 +19,19 @@ export function collectFileChangePatch(change) {
   return String(change?.diffPreview || "").trim();
 }
 
+export function resolveFileChangeSequenceAction(actions = []) {
+  const sequence = actions
+    .map((action) => String(action || "").trim())
+    .filter(Boolean);
+  if (!sequence.length) return "edit";
+
+  const existedBefore = sequence[0] !== "create";
+  const existsAfter = sequence[sequence.length - 1] !== "delete";
+  if (!existedBefore && !existsAfter) return null;
+  if (!existedBefore) return "create";
+  return existsAfter ? "edit" : "delete";
+}
+
 export function buildFileChangePreviewLines(previewText, action = "edit") {
   return String(previewText || "")
     .split(/\r?\n/)

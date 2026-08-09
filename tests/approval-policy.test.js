@@ -44,7 +44,7 @@ test('detectWorkspaceIsGit finds .git directory', async () => {
   }
 });
 
-test('auto mode skips edit approval in git projects', () => {
+test('auto mode skips recoverable workspace edit approval in git and non-git projects', () => {
   assert.equal(
     toolRequiresUserApproval({
       approvalMode: 'auto',
@@ -61,7 +61,7 @@ test('auto mode skips edit approval in git projects', () => {
       toolName: 'edit',
       alwaysAllowTools: ['run', 'read']
     }),
-    true
+    false
   );
 });
 
@@ -73,7 +73,7 @@ test('auto mode treats commit_write as the mutating boundary', () => {
       toolName: 'commit_write',
       alwaysAllowTools: ['begin_write', 'write_chunk', 'abort_write']
     }),
-    true
+    false
   );
   assert.equal(
     toolRequiresUserApproval({
@@ -318,7 +318,7 @@ test('git auto mode executes low-risk allowed evaluations without manual review'
             text: '',
             toolCalls: [{
               id: 'low-risk-run',
-              name: 'run',
+              name: 'Bash',
               arguments: JSON.stringify({ command: 'custom-inspect' }),
               argumentsComplete: true,
             }],
@@ -333,7 +333,7 @@ test('git auto mode executes low-risk allowed evaluations without manual review'
       failed: false,
     }),
     toolHandlers: {
-      run: async (args) => {
+      Bash: async (args) => {
         handlerArgs = args;
         return { ok: true };
       },

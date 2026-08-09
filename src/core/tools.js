@@ -24,6 +24,7 @@ import {
   resolveSandboxPolicy,
   validateSandboxEscalationArgs,
 } from "./sandbox-policy.js";
+import { shellToolName } from "./shell-tool-name.js";
 import {
   findEnclosingSymbol,
   queryAst,
@@ -2065,7 +2066,7 @@ async function deletePath(root, args, config = {}) {
 async function runCommand(root, config, args, context = {}) {
   const command = args?.command || "";
   if (!command.trim()) {
-    throw new Error("run requires command");
+    throw new Error("shell command is required");
   }
   if (
     !config.policy.allow_dangerous_commands &&
@@ -2281,7 +2282,7 @@ function queueBackgroundTaskOutputWrite(task, chunk) {
 
 async function startBackgroundTask(root, config, args) {
   const command = String(args?.command || args?.cmd || "").trim();
-  if (!command) throw new Error("run requires command");
+  if (!command) throw new Error("shell command is required");
   if (
     !config.policy.allow_dangerous_commands &&
     isDangerousCommand(command, config.policy.blocked_command_patterns)
@@ -3975,6 +3976,7 @@ export function getBuiltinTools({
 }) {
   workspaceRoot = path.resolve(workspaceRoot);
   const isWin = platform === "win32";
+  const commandToolName = shellToolName({ platform, shell: config?.shell?.default });
   const sandboxPolicy = resolveSandboxPolicy({
     config,
     cwd: workspaceRoot,
@@ -4168,6 +4170,7 @@ export function getBuiltinTools({
       await assertObservedVersion(item.target, item.path);
     }
     const prepared = await prepare?.();
+    assertNonGitBackupReady(prepared, targets[0]?.path || "");
     await afterManagedFileBackup?.({
       operation,
       path: targets[0]?.path || "",
@@ -4890,7 +4893,7 @@ export function getBuiltinTools({
     {
       type: "function",
       function: {
-        name: "run",
+        name: commandToolName,
         description: isWin
           ? "Run a compact shell command. Use this for one-shot commands like install/build/test, and also for long-running commands by setting run_in_background=true. Long-running commands may also be backgrounded automatically. Put command last. Do not embed long scripts or generated file content; stage/write the file first, then run a short command that invokes it."
           : "Run a compact shell command under the OS file sandbox. Default mode is workspace-write. On denial, stderr includes [sandbox: ...]; widen via config sandbox.mode or sandbox_permissions on retry (workspace-write|danger-full-access). Use run_in_background=true for long-running commands. Put command last.",
@@ -5553,7 +5556,7 @@ export function getBuiltinTools({
       function: {
         name: "list_background_tasks",
         description:
-          "List background shell tasks started by run(..., run_in_background=true) or auto-backgrounded by run.",
+          `List background shell tasks started by ${commandToolName}(..., run_in_background=true) or auto-backgrounded by ${commandToolName}.`,
         parameters: {
           type: "object",
           properties: {},
@@ -5639,8 +5642,7 @@ export function getBuiltinTools({
     }).trim();
     if (!normalized) return null;
     try {
-      const backup = await backupManager.backupOnce(normalized);
-      return backup?.ok ? backup : null;
+      return await backupManager.backupOnce(normalized);
     } catch (error) {
       return {
         ok: false,
@@ -5648,6 +5650,11 @@ export function getBuiltinTools({
         error: error instanceof Error ? error.message : String(error),
       };
     }
+  }
+  function assertNonGitBackupReady(backup, filePath) {
+    if (!backupManager || (backup?.ok === true && backup.skipped !== true)) return;
+    const reason = backup?.error || backup?.reason || "backup unavailable";
+    throw new Error(`Cannot modify "${filePath}" because its non-Git checkpoint failed: ${reason}`);
   }
   function attachBackup(result, backup) {
     if (!backup || !result || typeof result !== "object") return result;
@@ -6564,7 +6571,9 @@ export function getBuiltinTools({
       }
       const backups = [];
       for (const pathValue of backupPaths) {
-        backups.push(await backupNonGitPathOnce(pathValue));
+        const backup = await backupNonGitPathOnce(pathValue);
+        assertNonGitBackupReady(backup, pathValue);
+        backups.push(backup);
       }
       const result = await applyPatchText(workspaceRoot, args, mutationConfig, {
         beforeMutation: async () => {
@@ -7662,6 +7671,11 @@ export function getBuiltinTools({
         ),
     ]),
   );
+
+  handlers[commandToolName] = handlers.run;
+  formatters[commandToolName] = formatters.run;
+  delete handlers.run;
+  delete formatters.run;
 
   const mcpTools = getMcpToolBundle(config);
   definitions.push(...mcpTools.definitions);
