@@ -12,6 +12,7 @@ import { normalizePlanState } from '../core/plan-state.js';
 import { composeSelectedSkills } from '../core/chat-message.js';
 import { loadCommandsAndSkills } from '../core/command-loader.js';
 import { skillIsEligible } from '../core/skill-contexts.js';
+import { parseModelJsonObject } from '../core/model-json.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
@@ -161,20 +162,6 @@ async function runHarness({ role, task, config, systemPrompt, model }) {
   }
 }
 
-function extractJsonBlock(text) {
-  const raw = String(text || '').trim();
-  if (!raw) return null;
-  try { return JSON.parse(raw); } catch {}
-  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  if (fenced?.[1]) { try { return JSON.parse(fenced[1]); } catch {} }
-  const first = raw.indexOf('{');
-  const last = raw.lastIndexOf('}');
-  if (first !== -1 && last !== -1 && last > first) {
-    try { return JSON.parse(raw.slice(first, last + 1)); } catch {}
-  }
-  return null;
-}
-
 function normalizePlan(parsed, goal) {
   const steps = Array.isArray(parsed?.steps) ? parsed.steps : [];
   const cleaned = steps
@@ -233,7 +220,7 @@ async function planPipeline({ goal, config, systemPrompt, model }) {
     maxRetries: config.gateway.max_retries ?? 2
   });
 
-  const parsed = extractJsonBlock(planning.text || '');
+  const parsed = parseModelJsonObject(planning.text || '');
   return normalizePlan(parsed, goal);
 }
 

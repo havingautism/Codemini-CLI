@@ -2,9 +2,9 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { Parser, Language, Query } from 'web-tree-sitter';
+import { LRUCache } from 'lru-cache';
 import { LANGUAGE_ALIASES, EXTENSION_LANGUAGE_MAP, TOOL_SKIP_DIRS as SKIP_DIRS } from './constants.js';
 import { sha256Prefixed as sha256 } from './crypto-utils.js';
-import { BoundedCache } from './bounded-cache.js';
 import { globFilesUnder } from './workspace-glob.js';
 
 const require = createRequire(import.meta.url);
@@ -84,7 +84,7 @@ const parserInitPromise = Parser.init({
     return scriptName === 'web-tree-sitter.wasm' ? TREE_SITTER_WASM_PATH : scriptName;
   }
 });
-const languageCache = new BoundedCache({ maxSize: 16, ttlMs: 60 * 60 * 1000 });
+const languageCache = new LRUCache({ max: 16, ttl: 60 * 60 * 1000 });
 
 function clipText(text, maxLen = 220) {
   const normalized = String(text || '').replace(/\s+/g, ' ').trim();

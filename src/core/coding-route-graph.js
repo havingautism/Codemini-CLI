@@ -1,3 +1,5 @@
+import { parseModelJsonObject } from './model-json.js';
+
 const GRAPH_VERSION = 'coding-turn-route-v3';
 const MAX_SELECTED_SKILLS = 3;
 const CONTEXT_ADVISORY_TOKENS = 12000;
@@ -47,18 +49,7 @@ function traverseGraph({ coding = false } = {}) {
 }
 
 function parseJudgeResult(value) {
-  if (value && typeof value === 'object') return value;
-  const text = String(value || '').trim();
-  if (!text) return null;
-  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i)?.[1] || text;
-  const start = fenced.indexOf('{');
-  const end = fenced.lastIndexOf('}');
-  if (start < 0 || end <= start) return null;
-  try {
-    return JSON.parse(fenced.slice(start, end + 1));
-  } catch {
-    return null;
-  }
+  return parseModelJsonObject(value);
 }
 
 function compactSkillIndex(value, maxChars = 5000) {

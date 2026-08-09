@@ -1,10 +1,12 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import ignore from 'ignore';
+import { LRUCache } from 'lru-cache';
+import pLimit from 'p-limit';
 import { getFileIndexPath, getProjectIndexDir, getProjectMapPath, getProjectWorkspaceDir } from './paths.js';
 import { INDEX_SKIP_DIRS as SKIP_DIRS, SOURCE_EXTENSIONS, EXTENSION_LANGUAGE_MAP } from './constants.js';
 import { sha256 } from './crypto-utils.js';
-import { BoundedCache } from './bounded-cache.js';
-import { trimInline, normalizeRelativePath, escapeRegex } from './string-utils.js';
+import { trimInline, normalizeRelativePath } from './string-utils.js';
 import { globFilesUnder } from './workspace-glob.js';
 import {
   loadProjectFileIndexFromSqlite,
@@ -32,8 +34,8 @@ const PROJECT_MARKER_FILES = new Set([
 
 const LANGUAGE_BY_EXT = EXTENSION_LANGUAGE_MAP;
 
-const initCache = new BoundedCache({ maxSize: 32, ttlMs: 10 * 60 * 1000 });
-const ignoreRulesCache = new BoundedCache({ maxSize: 128, ttlMs: 60 * 1000 });
+const initCache = new LRUCache({ max: 32, ttl: 10 * 60 * 1000 });
+const ignoreRulesCache = new LRUCache({ max: 128, ttl: 60 * 1000 });
 const PROJECT_CONTEXT_MAX_FILES = 6;
 
 function clipList(values, max = 32) {
@@ -53,23 +55,10 @@ async function safeStat(filePath) {
 }
 
 async function mapAsyncLimit(values, concurrency, mapper) {
-  const items = Array.isArray(values) ? values : [];
-  const results = new Array(items.length);
-  let cursor = 0;
-  const workers = Array.from(
-    { length: Math.min(Math.max(1, concurrency), items.length) },
-    async () => {
-      while (cursor < items.length) {
-        const index = cursor++;
-        results[index] = await mapper(items[index], index);
-      }
-    }
-  );
-  await Promise.all(workers);
-  return results;
+  return pLimit(Math.max(1, concurrency)).map(Array.isArray(values) ? values : [], mapper);
 }
 
-const jsonCache = new BoundedCache({ maxSize: 64, ttlMs: 30 * 1000 });
+const jsonCache = new LRUCache({ max: 64, ttl: 30 * 1000 });
 const indexUpdateLocks = new Map();
 
 async function safeReadJson(filePath, fallback) {
@@ -110,30 +99,6 @@ async function withProjectIndexLock(projectRoot, task) {
   }
 }
 
-function gitignorePatternToRegex(pattern) {
-  const normalized = normalizeRelativePath(pattern);
-  let regexBody = '';
-  for (let index = 0; index < normalized.length; index += 1) {
-    const ch = normalized[index];
-    const next = normalized[index + 1];
-    if (ch === '*') {
-      if (next === '*') {
-        regexBody += '.*';
-        index += 1;
-      } else {
-        regexBody += '[^/]*';
-      }
-      continue;
-    }
-    if (ch === '?') {
-      regexBody += '[^/]';
-      continue;
-    }
-    regexBody += escapeRegex(ch);
-  }
-  return new RegExp(`^${regexBody}$`);
-}
-
 async function readIgnoreFileRules(cwd, fileName) {
   const filePath = path.join(cwd, fileName);
   const stat = await safeStat(filePath);
@@ -148,35 +113,21 @@ async function readIgnoreFileRules(cwd, fileName) {
 
   try {
     if (!stat?.isFile()) {
-      ignoreRulesCache.set(cacheKey, []);
-      return [];
+      const empty = { content: '', matcher: ignore(), hasRules: false };
+      ignoreRulesCache.set(cacheKey, empty);
+      return empty;
     }
     const raw = await fs.readFile(filePath, 'utf8');
-    const rules = raw
+    const hasRules = raw
       .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter((line) => line && !line.startsWith('#'))
-      .map((line) => {
-        const negated = line.startsWith('!');
-        const source = negated ? line.slice(1) : line;
-        const dirOnly = source.endsWith('/');
-        const anchored = source.startsWith('/');
-        const normalized = normalizeRelativePath(dirOnly ? source.slice(0, -1) : source);
-        return {
-          negated,
-          dirOnly,
-          anchored,
-          normalized,
-          hasSlash: normalized.includes('/'),
-          regex: gitignorePatternToRegex(normalized)
-        };
-      })
-      .filter((rule) => rule.normalized);
+      .some((line) => line.trim() && !line.trimStart().startsWith('#'));
+    const rules = { content: raw, matcher: ignore().add(raw), hasRules };
     ignoreRulesCache.set(cacheKey, rules);
     return rules;
   } catch {
-    ignoreRulesCache.set(cacheKey, []);
-    return [];
+    const empty = { content: '', matcher: ignore(), hasRules: false };
+    ignoreRulesCache.set(cacheKey, empty);
+    return empty;
   }
 }
 
@@ -188,33 +139,26 @@ async function readProjectIgnoreRules(cwd) {
   return {
     gitignoreRules,
     llmignoreRules,
-    combinedRules: [...gitignoreRules, ...llmignoreRules]
+    combinedRules: {
+      matcher: ignore().add(gitignoreRules.content).add(llmignoreRules.content),
+      hasRules: gitignoreRules.hasRules || llmignoreRules.hasRules,
+    }
   };
 }
 
-function matchesGitignoreRule(rule, relativePath, isDirectory) {
-  if (!rule || !relativePath) return false;
-  if (rule.dirOnly && !isDirectory) return false;
-  const normalizedPath = normalizeRelativePath(relativePath);
-  if (!normalizedPath) return false;
-  if (rule.anchored || rule.hasSlash) {
-    return rule.regex.test(normalizedPath);
-  }
-  return normalizedPath.split('/').some((segment) => rule.regex.test(segment));
+function isIgnoredByRules(relativePath, isDirectory, rules) {
+  const normalized = normalizeRelativePath(relativePath);
+  if (!normalized || !rules?.matcher) return false;
+  return rules.matcher.ignores(isDirectory ? `${normalized}/` : normalized);
 }
 
-function shouldIgnorePath(relativePath, isDirectory, gitignoreRules = []) {
+function shouldIgnorePath(relativePath, isDirectory, gitignoreRules) {
   const normalizedPath = normalizeRelativePath(relativePath);
   if (!normalizedPath) return false;
   const segments = normalizedPath.split('/').filter(Boolean);
   if (segments.some((segment) => SKIP_DIRS.has(segment))) return true;
   if (segments.some((segment) => /^venv[-_]/i.test(segment) || /\.egg-info$/i.test(segment))) return true;
-  let ignored = false;
-  for (const rule of gitignoreRules) {
-    if (!matchesGitignoreRule(rule, normalizedPath, isDirectory)) continue;
-    ignored = !rule.negated;
-  }
-  return ignored;
+  return isIgnoredByRules(normalizedPath, isDirectory, gitignoreRules);
 }
 
 const CODEMINI_GITIGNORE_ENTRY = '.codemini/';
@@ -228,21 +172,9 @@ function invalidateIgnoreRulesCache(gitignorePath) {
   }
 }
 
-function isIgnoredByGitignore(relativePath, isDirectory, gitignoreRules = []) {
-  const normalizedPath = normalizeRelativePath(relativePath);
-  if (!normalizedPath) return false;
-  let ignored = false;
-  for (const rule of gitignoreRules) {
-    if (!matchesGitignoreRule(rule, normalizedPath, isDirectory)) continue;
-    ignored = !rule.negated;
-  }
-  return ignored;
-}
-
-function gitignoreAlreadyCoversCodemini(content, gitignoreRules = []) {
+function gitignoreAlreadyCoversCodemini(content, gitignoreRules) {
   if (/\b\.codemini\/?\b/m.test(String(content || ''))) return true;
-  return isIgnoredByGitignore('.codemini', true, gitignoreRules)
-    || isIgnoredByGitignore('.codemini/', true, gitignoreRules);
+  return isIgnoredByRules('.codemini', true, gitignoreRules);
 }
 
 async function isGitRepository(projectRoot) {
@@ -664,8 +596,8 @@ async function scanProject(cwd) {
       entryCandidates,
       frameworkHints,
       directories,
-      gitignoreEnabled: gitignoreRules.length > 0,
-      llmignoreEnabled: llmignoreRules.length > 0,
+      gitignoreEnabled: gitignoreRules.hasRules,
+      llmignoreEnabled: llmignoreRules.hasRules,
       updatedAt: new Date().toISOString()
     },
     fileIndex: {

@@ -93,6 +93,12 @@ export function getProjectPlansDir(cwd = process.cwd(), sessionId = '') {
     : path.join(getProjectWorkspaceDir(cwd), 'plans');
 }
 
+export function getProjectHandoffsDir(cwd = process.cwd(), sessionId = '') {
+  return sessionId
+    ? path.join(getProjectWorkspaceDir(cwd), 'handoffs', String(sessionId))
+    : path.join(getProjectWorkspaceDir(cwd), 'handoffs');
+}
+
 export function getProjectCheckpointsDir(cwd = process.cwd()) {
   return path.join(getProjectWorkspaceDir(cwd), 'checkpoints');
 }

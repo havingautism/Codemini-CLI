@@ -4,6 +4,7 @@ import { getSkillsDir } from './paths.js';
 import { computeFileSha256, upsertSkillRegistryEntry } from './skill-registry.js';
 import { createChatCompletion } from './provider/index.js';
 import { appendStructuredOutputLanguageRule } from './reply-language.js';
+import { parseModelJson } from './model-json.js';
 
 const REFLECT_TIMEOUT_MS = 45000;
 
@@ -137,23 +138,6 @@ export function parseReflectScope(args = []) {
   return { scope: 'global', request: requestParts.join(' ').trim() };
 }
 
-function parseJsonObject(rawValue) {
-  const raw = String(rawValue || '').trim();
-  if (!raw) return null;
-  const unfenced = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
-  try {
-    return JSON.parse(unfenced);
-  } catch {}
-  const first = unfenced.indexOf('{');
-  const last = unfenced.lastIndexOf('}');
-  if (first !== -1 && last > first) {
-    try {
-      return JSON.parse(unfenced.slice(first, last + 1));
-    } catch {}
-  }
-  return null;
-}
-
 function normalizeDraftList(parsed) {
   if (Array.isArray(parsed?.candidates)) {
     return parsed.candidates
@@ -170,12 +154,12 @@ function normalizeDraftList(parsed) {
 }
 
 export function parseReflectModelDrafts(text) {
-  return normalizeDraftList(parseJsonObject(text));
+  return normalizeDraftList(parseModelJson(text));
 }
 
 function parseToolDrafts(toolCalls = []) {
   const call = (Array.isArray(toolCalls) ? toolCalls : []).find((tc) => tc?.name === 'submit_reflect_candidates');
-  return call ? normalizeDraftList(parseJsonObject(call.arguments)) : null;
+  return call ? normalizeDraftList(parseModelJson(call.arguments)) : null;
 }
 
 function recentContext(session, limit = 10) {

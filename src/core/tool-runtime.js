@@ -1,3 +1,4 @@
+import pLimit from 'p-limit';
 import { normalizeToolArguments } from './tool-schemas.js';
 import { formatToolDisplayName } from './tool-display.js';
 import { looksLikeTruncatedJson } from './provider/completion-status.js';
@@ -106,20 +107,7 @@ function resolveMaxParallelCalls(value) {
 }
 
 async function mapWithConcurrencyLimit(items, limit, worker) {
-  const results = new Array(items.length);
-  let nextIndex = 0;
-  const runWorker = async () => {
-    while (nextIndex < items.length) {
-      const index = nextIndex;
-      nextIndex += 1;
-      results[index] = await worker(items[index], index);
-    }
-  };
-  await Promise.all(Array.from(
-    { length: Math.min(items.length, Math.max(1, limit)) },
-    () => runWorker(),
-  ));
-  return results;
+  return pLimit(Math.max(1, limit)).map(items, worker);
 }
 
 export class ToolRuntime {

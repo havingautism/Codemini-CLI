@@ -1,6 +1,7 @@
 import { fork } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import stripAnsiText from 'strip-ansi';
 import { resolveShell } from '../../src/core/shell.js';
 export {
   buildPowerShellColorBootstrap,
@@ -16,10 +17,7 @@ const sessions = new Map();
 let terminalHost = null;
 
 export function stripAnsi(text = '') {
-  return String(text || '')
-    .replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, '')
-    .replace(/\u001b\][^\u0007]*(?:\u0007|\u001b\\)/g, '')
-    .replace(/\u001b./g, '');
+  return stripAnsiText(String(text || ''));
 }
 
 export function shellPrompt(shell = 'pwsh', cwd = '') {

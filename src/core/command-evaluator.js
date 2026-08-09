@@ -1,6 +1,7 @@
 import { createChatCompletion } from './provider/index.js';
 import { getReadOnlyCommandTokens } from './command-risk.js';
 import { getReplyLanguageName } from './reply-language.js';
+import { parseModelJsonObject } from './model-json.js';
 
 const EVAL_TIMEOUT_MS = 15000;
 
@@ -33,21 +34,10 @@ function failedEvaluation(failureReason) {
   };
 }
 
-function extractJsonObjectText(text) {
-  const raw = String(text || '').trim();
-  if (!raw) return '';
-  if (raw.startsWith('{') && raw.endsWith('}')) return raw;
-  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  const candidate = fenced ? fenced[1].trim() : raw;
-  const start = candidate.indexOf('{');
-  const end = candidate.lastIndexOf('}');
-  if (start >= 0 && end > start) return candidate.slice(start, end + 1);
-  return candidate;
-}
-
 export function parseEvaluation(text) {
   try {
-    const json = JSON.parse(extractJsonObjectText(text));
+    const json = parseModelJsonObject(text);
+    if (!json) throw new Error('invalid response');
     const risk = String(json?.risk || '').toLowerCase();
     const recommendation = String(json?.recommendation || '').toLowerCase();
     return {

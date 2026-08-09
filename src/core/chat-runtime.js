@@ -36,6 +36,7 @@ import {
 } from './hook-profiles.js';
 import { runAgentLoop } from './agent-loop.js';
 import { createToolResultStore } from './tool-result-store.js';
+import { parseModelJsonObject } from './model-json.js';
 import { trimInline, normalizePath } from './string-utils.js';
 import { normalizeAssumptionItems } from './tool-args-helpers.js';
 import fs from 'node:fs/promises';
@@ -101,6 +102,11 @@ import {
   createSubAgentDependencyCoordinator,
   formatSubAgentUpstreamContext,
 } from './subagent-orchestrator.js';
+import {
+  buildSubAgentHandoffCatalog,
+  listSubAgentHandoffs,
+  saveSubAgentHandoff,
+} from './subagent-handoff-store.js';
 import { runDreamConsolidation } from './dream-consolidate.js';
 import {
   scheduleMemoryReviewBacklog,
@@ -2400,30 +2406,6 @@ export function shouldInjectAlwaysSkills(executionMode) {
   return ['normal', 'plan'].includes(normalizeExecutionMode(executionMode));
 }
 
-function extractJsonBlock(text) {
-  const raw = String(text || '').trim();
-  if (!raw) return null;
-  try {
-    return JSON.parse(raw);
-  } catch {}
-
-  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  if (fenced?.[1]) {
-    try {
-      return JSON.parse(fenced[1]);
-    } catch {}
-  }
-
-  const first = raw.indexOf('{');
-  const last = raw.lastIndexOf('}');
-  if (first !== -1 && last !== -1 && last > first) {
-    try {
-      return JSON.parse(raw.slice(first, last + 1));
-    } catch {}
-  }
-  return null;
-}
-
 function normalizePlanStepRoles(steps = []) {
   return (Array.isArray(steps) ? steps : []).map((step) => {
     const titleTask = `${step?.title || ''} ${step?.task || ''}`.toLowerCase();
@@ -3486,29 +3468,6 @@ export function normalizeGeneratedSpecText(specText = '', topic = 'spec') {
     : buildFallbackStructuredSpec(topic);
 }
 
-function parseJsonObject(raw) {
-  if (raw && typeof raw === 'object' && !Array.isArray(raw)) return raw;
-  const text = String(raw || '').trim();
-  if (!text) return null;
-  const unfenced = text
-    .replace(/^```(?:json)?\s*/i, '')
-    .replace(/\s*```$/i, '')
-    .trim();
-  try {
-    const parsed = JSON.parse(unfenced);
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
-  } catch {}
-  const start = unfenced.indexOf('{');
-  const end = unfenced.lastIndexOf('}');
-  if (start >= 0 && end > start) {
-    try {
-      const parsed = JSON.parse(unfenced.slice(start, end + 1));
-      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
-    } catch {}
-  }
-  return null;
-}
-
 function normalizeSpecList(value, fallback = '') {
   if (value && typeof value === 'object' && !Array.isArray(value)) {
     const out = [];
@@ -3586,7 +3545,7 @@ export function renderStructuredSpec(spec = {}, topic = 'spec') {
 
 function structuredSpecFromToolCalls(toolCalls = []) {
   const call = (Array.isArray(toolCalls) ? toolCalls : []).find((tc) => tc?.name === 'render_spec');
-  return call ? parseJsonObject(call.arguments) : null;
+  return call ? parseModelJsonObject(call.arguments) : null;
 }
 
 function hasStructuredSpecSections(sections = {}) {
@@ -3706,7 +3665,7 @@ async function buildSpecWithModel({
     timeoutMs: config.gateway.timeout_ms || 1800000,
     maxRetries: config.gateway.max_retries ?? 2
   });
-  const structured = structuredSpecFromToolCalls(result.toolCalls) || parseJsonObject(result.text);
+  const structured = structuredSpecFromToolCalls(result.toolCalls) || parseModelJsonObject(result.text);
   if (structured) {
     return renderStructuredSpec(structured, topic);
   }
@@ -3784,7 +3743,7 @@ async function buildPlanFromSpecWithModel({
     timeoutMs: config.gateway.timeout_ms || 1800000,
     maxRetries: config.gateway.max_retries ?? 2
   });
-  const parsed = extractJsonBlock(result.text || '');
+  const parsed = parseModelJsonObject(result.text || '');
   const goal = `approved spec ${specPath || '(inline)'}`;
   const autoPlan = normalizeAutoPlan(parsed, goal);
   return renderAutoPlanMarkdown({
@@ -4822,6 +4781,7 @@ async function askModel({
     onRunSubAgent: normalizedExecutionMode === 'plan'
       ? async ({
           prompt,
+          summary = '',
           name = '',
           role = '',
           context = '',
@@ -4970,6 +4930,18 @@ async function askModel({
               workspaceRoot
             });
             const failed = subAgentRunFailed(output, signal);
+            const savedHandoff = failed
+              ? null
+              : await saveSubAgentHandoff({
+                  workspaceRoot,
+                  sessionId: session.id,
+                  handoffId: callId,
+                  name: persona,
+                  task: taskPrompt,
+                  summary,
+                  text: output.text,
+                  artifactPaths: output.artifactPaths,
+                }).catch(() => null);
             emit({
               type: 'plan:step_done',
               toolCallId: callId,
@@ -4982,6 +4954,7 @@ async function askModel({
               dependsOn: dependencyRegistration.dependencies,
               summary: trimInline(output.text || '', 160),
               output: formatPlanStepOutputForDisplay(output.text || ''),
+              ...(savedHandoff ? { handoffPath: savedHandoff.path } : {}),
               ...(childUsage ? { usage: childUsage, usageScope: 'subagent' } : {})
             });
             const fileChanges = subAgentAllowListMayMutate(resolvedTools)
@@ -4998,6 +4971,7 @@ async function askModel({
               text: output.text || '',
               ...(childUsage ? { usage: childUsage } : {}),
               artifactPaths: output.artifactPaths || [],
+              ...(savedHandoff ? { handoffPath: savedHandoff.path } : {}),
               ...(fileChanges.length ? { fileChanges } : {}),
               message: [
                 'Subagent finished. Summarize for the user in plain language:',
@@ -5548,11 +5522,17 @@ export async function runSubAgentTask({
     role,
     config
   });
+  const handoffCatalogPrompt = buildSubAgentHandoffCatalog(
+    await listSubAgentHandoffs({
+      workspaceRoot,
+      sessionId: parentSession?.id,
+    }).catch(() => []),
+  );
   if (onSessionActive) onSessionActive(subSession);
   const subSystemPrompt = await composeSystemPrompt({
     shellRulesPrompt: subShellRulesPrompt,
     config,
-    skillsPrompt: [rolePrompt, extraRolePrompt].filter(Boolean).join('\n\n'),
+    skillsPrompt: [rolePrompt, extraRolePrompt, handoffCatalogPrompt].filter(Boolean).join('\n\n'),
     includeSoul: false,
     includeMemory: false
   });
@@ -6226,7 +6206,7 @@ async function buildAutoPlanArtifact({
       timeoutMs: config.gateway.timeout_ms || 1800000,
       maxRetries: config.gateway.max_retries ?? 2
     });
-    const parsed = extractJsonBlock(planning.text || '');
+    const parsed = parseModelJsonObject(planning.text || '');
     autoPlan = normalizeAutoPlan(parsed, goal);
   } catch (err) {
     planningError = String(err?.message || err || 'planning failed');
@@ -7352,7 +7332,7 @@ async function revisePendingPlanWithModel({
     timeoutMs: config.gateway.timeout_ms || 1800000,
     maxRetries: config.gateway.max_retries ?? 2
   });
-  const parsed = extractJsonBlock(result.text || '');
+  const parsed = parseModelJsonObject(result.text || '');
   const revised = normalizeAutoPlan(parsed, goal);
   const revisedFinalSummary = `Plan revised based on feedback: ${feedback}`;
   const planFilePath = String(planState?.filePath || '').trim();
@@ -8531,6 +8511,12 @@ export async function createChatRuntime({
     const alwaysSkillPrompt = injectAlwaysSkills
       ? buildAlwaysSkillPromptBlock(commands, config, dismissedAlwaysSkills, executionMode)
       : '';
+    const handoffCatalogPrompt = buildSubAgentHandoffCatalog(
+      await listSubAgentHandoffs({
+        workspaceRoot: root,
+        sessionId: currentSession.id,
+      }).catch(() => []),
+    );
     const appendPromptParts = (prompt, parts) => buildSystemPromptWithReplyLanguage(
       [stripReplyLanguageDirective(prompt || ''), ...parts.filter(Boolean)].join('\n\n'),
       config,
@@ -8548,6 +8534,7 @@ export async function createChatRuntime({
       routedSkillIndexPrompt,
       routedSelectedSkillPrompt,
       alwaysSkillPrompt,
+      handoffCatalogPrompt,
     ]);
     const memoryHint = isCodingMode ? '' : buildMemoryRouteHintBlock(memoryRoute);
     const routedSystemPrompt = appendPromptParts(skillPrompt, [

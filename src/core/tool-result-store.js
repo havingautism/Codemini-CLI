@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { BoundedCache } from './bounded-cache.js';
+import { LRUCache } from 'lru-cache';
 import { trimInline } from './string-utils.js';
 
 const TOOL_RESULT_DISK_THRESHOLD = 6000;
@@ -29,14 +29,14 @@ export function createToolResultStore({ resultDir } = {}) {
     ? path.join(resultDir, TOOL_RESULTS_SUBDIR)
     : path.join(os.tmpdir(), 'codemini-results', fallbackId);
   let resultDirReady = false;
-  const storedResults = new BoundedCache({
-    maxSize: 64,
-    ttlMs: 30 * 60 * 1000,
-    onEvict(_key, value) {
+  const storedResults = new LRUCache({
+    max: 64,
+    ttl: 30 * 60 * 1000,
+    dispose(value) {
       if (value?.filePath) fs.unlink(value.filePath).catch(() => {});
     }
   });
-  const readCache = new BoundedCache({ maxSize: 128, ttlMs: 10 * 60 * 1000 });
+  const readCache = new LRUCache({ max: 128, ttl: 10 * 60 * 1000 });
 
   async function ensureResultDir() {
     if (!resultDirReady) {

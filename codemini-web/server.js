@@ -31,6 +31,10 @@ import {
 } from "../src/core/session-store.js";
 import { buildDefaultSystemPrompt } from "../src/core/default-system-prompt.js";
 import {
+  parseFrontmatter,
+  serializeFrontmatter,
+} from "../src/core/frontmatter.js";
+import {
   loadPersistedUiMessages,
   RuntimeBridge,
   serializeSessionMessages,
@@ -305,45 +309,7 @@ function parseSkillFrontmatter(raw = "") {
     }
     return { metadata: {}, content: normalized };
   }
-  const end = normalized.indexOf("\n---\n", 4);
-  if (end === -1) {
-    return { metadata: {}, content: normalized };
-  }
-
-  const metadata = {};
-  const lines = normalized.slice(4, end).trim().split("\n");
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index];
-    const idx = line.indexOf(":");
-    if (idx <= 0) continue;
-    const key = line.slice(0, idx).trim();
-    const value = line.slice(idx + 1).trim();
-    if (value.startsWith("[") && value.endsWith("]")) {
-      const inner = value.slice(1, -1).trim();
-      metadata[key] = inner
-        ? inner
-            .split(",")
-            .map((item) => item.trim().replace(/^["']|["']$/g, ""))
-            .filter(Boolean)
-        : [];
-      continue;
-    }
-    metadata[key] = value.replace(/^["']|["']$/g, "");
-  }
-
-  return {
-    metadata,
-    content: normalized.slice(end + 5).trimStart(),
-  };
-}
-
-function formatFrontmatterValue(value) {
-  if (Array.isArray(value)) {
-    return `[${value.map((item) => JSON.stringify(String(item))).join(", ")}]`;
-  }
-  if (typeof value === "boolean" || typeof value === "number")
-    return String(value);
-  return JSON.stringify(String(value || ""));
+  return parseFrontmatter(normalized);
 }
 
 function serializeSkillMarkdown(metadata = {}, content = "") {
@@ -367,11 +333,10 @@ function serializeSkillMarkdown(metadata = {}, content = "") {
         metadata[key] !== "",
     ),
   ];
-  if (keys.length === 0) return String(content || "").trimStart();
-  const frontmatter = keys
-    .map((key) => `${key}: ${formatFrontmatterValue(metadata[key])}`)
-    .join("\n");
-  return `---\n${frontmatter}\n---\n\n${String(content || "").trimStart()}`;
+  return serializeFrontmatter(
+    Object.fromEntries(keys.map((key) => [key, metadata[key]])),
+    content,
+  );
 }
 
 function patchSkillMarkdownMetadata(raw = "", patch = {}, fallbackName = "") {

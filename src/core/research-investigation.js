@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { parseModelJsonObject } from './model-json.js';
 
 import { runResearchAgentLoop } from './research-agent-loop.js';
 import { createChatCompletionStream } from './provider/index.js';
@@ -119,24 +120,6 @@ function normalizeUrl(value) {
   } catch {
     return String(value || '').trim().replace(/\/$/, '');
   }
-}
-
-function parseJsonObject(raw) {
-  const source = String(raw || '').trim();
-  const candidates = [
-    source,
-    source.match(/```(?:json)?\s*([\s\S]*?)```/i)?.[1],
-    source.slice(source.indexOf('{'), source.lastIndexOf('}') + 1),
-  ].filter(Boolean);
-  for (const candidate of candidates) {
-    try {
-      const parsed = JSON.parse(candidate);
-      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
-    } catch {
-      // Try the next representation.
-    }
-  }
-  return null;
 }
 
 function artifactDirForScope({ sessionId, scoutRunId, criterionId, rootDir = '' }) {
@@ -657,7 +640,7 @@ async function callJsonModel({
         timeoutMs: config.gateway.timeout_ms || 1800000,
         maxRetries: config.gateway.max_retries ?? 2,
       });
-      const parsed = parseJsonObject(result?.text);
+      const parsed = parseModelJsonObject(result?.text);
       if (!parsed) {
         lastError = new Error(`Evaluator returned invalid JSON (${selectedModel})`);
         continue;
@@ -848,7 +831,7 @@ function normalizeSubmitNarrative(args = {}) {
 }
 
 function parseCandidatesFromText(raw, criterionId) {
-  const parsed = parseJsonObject(raw);
+  const parsed = parseModelJsonObject(raw);
   if (!parsed) {
     return { candidates: [], summary: '', gap: '', note: '' };
   }
@@ -1163,7 +1146,7 @@ async function verifyCandidateSupport({
   }
 
   if (!submittedReview) {
-    const parsed = parseJsonObject(loopResult?.text) || {};
+    const parsed = parseModelJsonObject(loopResult?.text) || {};
     submittedReview = {
       decision: normalizeEvaluatorDecision(parsed.decision, 'WARNING'),
       warnings: normalizeEvaluatorWarnings(parsed.warnings),

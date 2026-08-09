@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 
 import { execa } from 'execa';
+import pLimit from 'p-limit';
 
 async function runGit(cwd, args) {
   return execa('git', args, {
@@ -26,20 +27,7 @@ function parseGitNumstat(text) {
 }
 
 async function mapWithConcurrency(values, concurrency, mapper) {
-  const items = Array.isArray(values) ? values : [];
-  const results = new Array(items.length);
-  let cursor = 0;
-  const workers = Array.from(
-    { length: Math.min(Math.max(1, concurrency), items.length) },
-    async () => {
-      while (cursor < items.length) {
-        const index = cursor++;
-        results[index] = await mapper(items[index], index);
-      }
-    },
-  );
-  await Promise.all(workers);
-  return results;
+  return pLimit(Math.max(1, concurrency)).map(Array.isArray(values) ? values : [], mapper);
 }
 
 async function getGitBranch(cwd) {

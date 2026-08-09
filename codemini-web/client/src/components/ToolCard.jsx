@@ -15,7 +15,7 @@ import {
   Trash,
   Wrench,
 } from "@phosphor-icons/react";
-import { LinearRing, SessionOrb } from "@/components/ui/spinner";
+import { LinearRing } from "@/components/ui/spinner";
 import { FileTypeIcon } from "@/components/FileTypeIcon.jsx";
 import { openWorkspaceFile } from "@/hooks/use-api.js";
 import { cn } from "@/lib/utils";
@@ -233,6 +233,7 @@ function BackupNotice({ meta }) {
 }
 
 const STATUS_STYLES = {
+  running: "bg-[var(--accent-orange)]",
   done: "bg-[var(--accent-green)]",
   error: "bg-[var(--accent-red)]",
   blocked: "bg-[var(--accent-orange)]",
@@ -420,16 +421,13 @@ export function ToolCard({ card }) {
             </button>
           </div>
         )}
-        {card.status === "running" ? (
-          <SessionOrb state="tool" className="mr-1.5" />
-        ) : (
-          <span
-            className={cn(
-              "mr-1.5 h-1.5 w-1.5 shrink-0 rounded-full",
-              STATUS_STYLES[card.status] || "bg-[var(--muted)]",
-            )}
-          />
-        )}
+        <span
+          aria-hidden="true"
+          className={cn(
+            "mr-1.5 h-1.5 w-1.5 shrink-0 rounded-full",
+            STATUS_STYLES[card.status] || "bg-[var(--muted)]",
+          )}
+        />
       </div>
       {fileActionError && (
         <div

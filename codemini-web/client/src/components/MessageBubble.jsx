@@ -24,7 +24,11 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { LinearRing, ResponseLoader, SessionOrb } from "@/components/ui/spinner";
+import {
+  LinearRing,
+  ResponseLoader,
+  SessionOrb,
+} from "@/components/ui/spinner";
 import { Badge } from "@/components/ui/badge";
 import {
   Attachment,
@@ -170,9 +174,11 @@ const ROLE_STYLES = {
 };
 
 const SKILL_DOT_STYLES = {
+  running: "bg-(--accent-orange)",
   done: "bg-(--accent-green)",
   error: "bg-(--accent-red)",
-  always: "bg-(--accent-purple)",
+  blocked: "bg-(--accent-orange)",
+  always: "bg-(--accent-green)",
 };
 
 const TOOL_COLLAPSE_THRESHOLD = 1;
@@ -237,10 +243,7 @@ function ThoughtBlock({ segment }) {
   const [open, setOpen] = useState(false);
   const runtimeMode = useRuntimeMode();
   const streaming = Boolean(segment.isStreaming);
-  const thinkingPhrases = resolveModeHintPhrases(
-    "thinking",
-    runtimeMode,
-  );
+  const thinkingPhrases = resolveModeHintPhrases("thinking", runtimeMode);
 
   return (
     <div className={cn("my-2", PROCESS_META_CLASS)}>
@@ -537,10 +540,11 @@ function ToolGroup({ cards }) {
   const otherCards = cards.filter((card) => !isCreatePlanCard(card));
   const total = otherCards.length;
   const hasRunningTool = otherCards.some((card) => card.status === "running");
-  const toolingPhrases = resolveModeHintPhrases(
-    "tooling",
-    runtimeMode,
-  );
+  let groupStatus = "done";
+  if (otherCards.some((card) => card.status === "blocked")) groupStatus = "blocked";
+  if (hasRunningTool) groupStatus = "running";
+  if (otherCards.some((card) => card.status === "error")) groupStatus = "error";
+  const toolingPhrases = resolveModeHintPhrases("tooling", runtimeMode);
   const shouldUseSummaryHeader = total > TOOL_COLLAPSE_THRESHOLD;
   const runCount = otherCards.filter((card) => {
     const name = String(card.name || "").toLowerCase();
@@ -566,13 +570,7 @@ function ToolGroup({ cards }) {
           ) : (
             <CaretRight size={14} className={COLLAPSE_CHEVRON_CLASS} />
           )}
-          <span className={COLLAPSE_ICON_CLASS}>
-            {hasRunningTool ? (
-              <SessionOrb state="tool" />
-            ) : (
-              <span className="inline-block size-1.5 rounded-full bg-(--accent-green)" />
-            )}
-          </span>
+          <SkillStatusDot status={groupStatus} />
           <span>{summaryLabel}</span>
         </button>
       )}
@@ -581,7 +579,7 @@ function ToolGroup({ cards }) {
           className={cn(
             "flex flex-col gap-2",
             shouldUseSummaryHeader &&
-              "ml-4.5 mt-1 border-l border-(--border-default) pl-3",
+              "ml-4.5 mt-2 border-l border-(--border-default) pl-3",
           )}
         >
           {otherCards.map((card) => (
@@ -591,7 +589,7 @@ function ToolGroup({ cards }) {
       )}
       {hasRunningTool && (
         <div className="msg-process-meta__detail flex items-center gap-2 px-3 py-1.5 text-[11px] my-2">
-          <SessionOrb state="tool" />
+          <SkillStatusDot status="running" />
           <RotatingStatusLabel phrases={toolingPhrases} active />
         </div>
       )}
@@ -635,7 +633,8 @@ function resolveHookDisplayFields(badge = {}) {
 
 function formatHookActivityLabel(badge = {}) {
   const fields = resolveHookDisplayFields(badge);
-  const eventLabel = localizeHookEventName(fields.event) || fields.event || t("hookActivity");
+  const eventLabel =
+    localizeHookEventName(fields.event) || fields.event || t("hookActivity");
   const source = fields.sourceLabel || "hook";
   const detail = fields.toolName
     ? t("hookActivityDetailTool")
@@ -679,16 +678,13 @@ function activityKindLabel(badge) {
 function SkillStatusDot({ status }) {
   return (
     <span className={COLLAPSE_ICON_CLASS}>
-      {status === "running" ? (
-        <SessionOrb state="working" />
-      ) : (
-        <span
-          className={cn(
-            "size-1.5 rounded-full",
-            SKILL_DOT_STYLES[status] || SKILL_DOT_STYLES.done,
-          )}
-        />
-      )}
+      <span
+        aria-hidden="true"
+        className={cn(
+          "size-1.5 rounded-full",
+          SKILL_DOT_STYLES[status] || SKILL_DOT_STYLES.done,
+        )}
+      />
     </span>
   );
 }
@@ -730,18 +726,20 @@ function HookActivityDisclosure({ badge, className }) {
             !hasDetails && "invisible",
           )}
         />
-        <SkillStatusDot status={badge.status} />
         <span>{activityKindLabel(badge)}</span>
         <span className="msg-process-meta__detail min-w-0 flex-1 truncate font-mono text-xs">
           {skillActivityLabel(badge)}
         </span>
+        <SkillStatusDot status={badge.status} />
       </button>
       {open && hasDetails ? (
         <div className="relative ml-4.5 mt-1 border-l border-(--border-default) py-1.5 pl-7 text-[12px] text-(--text-secondary)">
           <dl className="grid gap-2">
             {badge.command ? (
               <div className="grid gap-1">
-                <dt className="text-(--text-muted)">{t("hookDetailsCommand")}</dt>
+                <dt className="text-(--text-muted)">
+                  {t("hookDetailsCommand")}
+                </dt>
                 <dd>
                   <code className="block whitespace-pre-wrap break-all rounded-md bg-(--bg-secondary) px-2.5 py-2 font-mono text-[11px] leading-4 text-(--text-primary)">
                     {badge.command}
@@ -751,19 +749,27 @@ function HookActivityDisclosure({ badge, className }) {
             ) : null}
             <div className="flex flex-wrap gap-x-5 gap-y-1">
               <div className="flex gap-2">
-                <dt className="text-(--text-muted)">{t("hookDetailsResult")}</dt>
+                <dt className="text-(--text-muted)">
+                  {t("hookDetailsResult")}
+                </dt>
                 <dd>{hookResultLabel(badge.status)}</dd>
               </div>
               {duration ? (
                 <div className="flex gap-2">
-                  <dt className="text-(--text-muted)">{t("hookDetailsDuration")}</dt>
+                  <dt className="text-(--text-muted)">
+                    {t("hookDetailsDuration")}
+                  </dt>
                   <dd className="font-mono">{duration}</dd>
                 </div>
               ) : null}
               {badge.matcher ? (
                 <div className="flex min-w-0 gap-2">
-                  <dt className="shrink-0 text-(--text-muted)">{t("hookDetailsMatcher")}</dt>
-                  <dd className="min-w-0 break-all font-mono">{badge.matcher}</dd>
+                  <dt className="shrink-0 text-(--text-muted)">
+                    {t("hookDetailsMatcher")}
+                  </dt>
+                  <dd className="min-w-0 break-all font-mono">
+                    {badge.matcher}
+                  </dd>
                 </div>
               ) : null}
             </div>
@@ -792,7 +798,7 @@ function SkillActivityList({ badges = [] }) {
   if (!visibleBadges.length) return null;
   return (
     <div className={cn("my-2 flex flex-col gap-2", PROCESS_META_CLASS)}>
-      {visibleBadges.map((badge, index) => (
+      {visibleBadges.map((badge, index) =>
         isHookSegment(badge) ? (
           <HookActivityDisclosure
             key={`${badge.name || "hook"}-${index}`}
@@ -804,14 +810,14 @@ function SkillActivityList({ badges = [] }) {
             key={`${badge.name || "skill"}-${badge.status || "done"}-${index}`}
             className={cn(COLLAPSE_ROW_CLASS, "text-[13px]")}
           >
-            <SkillStatusDot status={badge.status} />
             <span>{activityKindLabel(badge)}</span>
             <span className="msg-process-meta__detail min-w-0 flex-1 truncate font-mono text-xs">
               {skillActivityLabel(badge)}
             </span>
+            <SkillStatusDot status={badge.status} />
           </div>
-        )
-      ))}
+        ),
+      )}
     </div>
   );
 }
@@ -829,11 +835,11 @@ function SkillActivityRow({ badge }) {
   return (
     <div className={cn("my-2", PROCESS_META_CLASS)}>
       <div className={cn(COLLAPSE_ROW_CLASS, "text-[13px]")}>
-        <SkillStatusDot status={badge.status} />
         <span>{activityKindLabel(badge)}</span>
         <span className="msg-process-meta__detail min-w-0 flex-1 truncate font-mono text-xs">
           {skillActivityLabel(badge)}
         </span>
+        <SkillStatusDot status={badge.status} />
       </div>
     </div>
   );
@@ -1000,7 +1006,9 @@ function mergeFileChanges(fileChanges = []) {
               ),
               linesRemoved: 0,
               // Keep last preview so expand still has content after create→edit merge.
-              diffPreview: String(lastChange?.diffPreview || change.diffPreview || ""),
+              diffPreview: String(
+                lastChange?.diffPreview || change.diffPreview || "",
+              ),
               changes: lastChange?.diffPreview ? [lastChange] : [],
             }
           : {}),
@@ -1073,7 +1081,12 @@ function renderFileChangePreviewLines(lines) {
                     : "text-(--text-muted)",
               )}
             >
-              {line.marker ?? (line.type === "remove" ? "-" : line.type === "add" ? "+" : " ")}
+              {line.marker ??
+                (line.type === "remove"
+                  ? "-"
+                  : line.type === "add"
+                    ? "+"
+                    : " ")}
             </span>
             <span
               className={cn(
@@ -1113,7 +1126,10 @@ function FileChangePreview({ change }) {
       try {
         let patchText = "";
         for (const id of changeSetIds) {
-          const result = await api.fetchSessionChangePatch(currentSessionId, id);
+          const result = await api.fetchSessionChangePatch(
+            currentSessionId,
+            id,
+          );
           const next = String(result?.patch || "").trim();
           if (!next) continue;
           patchText = patchText ? `${patchText}\n${next}` : next;
@@ -1154,7 +1170,9 @@ function FileChangePreview({ change }) {
   const lines = resolveFileChangePreviewLines(patch, change.action);
   if (lines.length) return renderFileChangePreviewLines(lines);
   return (
-    <div className="px-3 py-3 text-xs text-(--text-muted)">{t("noPreview")}</div>
+    <div className="px-3 py-3 text-xs text-(--text-muted)">
+      {t("noPreview")}
+    </div>
   );
 }
 
@@ -1301,10 +1319,7 @@ function FileChangesSummary({ changes }) {
       const result =
         changeSetIds.length > 1
           ? await api.undoSessionChanges(currentSessionId, changeSetIds)
-          : await api.undoSessionChange(
-              currentSessionId,
-              changeSetIds[0],
-            );
+          : await api.undoSessionChange(currentSessionId, changeSetIds[0]);
       if (result?.error || result?.ok === false)
         throw new Error(result.message || t("undoChangeFailed"));
       setRevertedUndoKeys((prev) => new Set(prev).add(undoKey));
@@ -1408,7 +1423,9 @@ function FileChangesSummary({ changes }) {
                     <button
                       type="button"
                       className="flex size-6 items-center justify-center rounded-md text-(--text-muted) opacity-80 transition-[background-color,color,opacity,transform] duration-100 hover:bg-(--bg-hover) hover:text-(--accent-blue) hover:opacity-100 active:scale-[0.94] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-(--accent-blue) disabled:cursor-wait disabled:opacity-40 motion-reduce:transform-none motion-reduce:transition-none"
-                      onClick={(event) => handleFileAction(event, c.path, "open")}
+                      onClick={(event) =>
+                        handleFileAction(event, c.path, "open")
+                      }
                       aria-label={`${t("openFile")}: ${basename(c.path)}`}
                       title={`${t("openFile")}: ${c.path}`}
                       disabled={Boolean(fileAction)}
@@ -1416,13 +1433,19 @@ function FileChangesSummary({ changes }) {
                       {fileAction === `${c.path}:open` ? (
                         <LinearRing size="sm" />
                       ) : (
-                        <ArrowSquareOut size={13} weight="bold" aria-hidden="true" />
+                        <ArrowSquareOut
+                          size={13}
+                          weight="bold"
+                          aria-hidden="true"
+                        />
                       )}
                     </button>
                     <button
                       type="button"
                       className="flex size-6 items-center justify-center rounded-md text-(--text-muted) opacity-80 transition-[background-color,color,opacity,transform] duration-100 hover:bg-(--bg-hover) hover:text-(--accent-blue) hover:opacity-100 active:scale-[0.94] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-(--accent-blue) disabled:cursor-wait disabled:opacity-40 motion-reduce:transform-none motion-reduce:transition-none"
-                      onClick={(event) => handleFileAction(event, c.path, "reveal")}
+                      onClick={(event) =>
+                        handleFileAction(event, c.path, "reveal")
+                      }
                       aria-label={`${t("revealFile")}: ${basename(c.path)}`}
                       title={`${t("revealFile")}: ${c.path}`}
                       disabled={Boolean(fileAction)}
@@ -1430,7 +1453,11 @@ function FileChangesSummary({ changes }) {
                       {fileAction === `${c.path}:reveal` ? (
                         <LinearRing size="sm" />
                       ) : (
-                        <FolderOpen size={13} weight="bold" aria-hidden="true" />
+                        <FolderOpen
+                          size={13}
+                          weight="bold"
+                          aria-hidden="true"
+                        />
                       )}
                     </button>
                   </div>
@@ -1598,7 +1625,10 @@ function UserAttachments({ attachments = [], className }) {
         if (item?.kind === "image" && item.url) {
           return <UserImageAttachment key={item.id || item.url} item={item} />;
         }
-        if (item?.kind === "scrapbook" || String(item?.id || "").startsWith("scrapbook:")) {
+        if (
+          item?.kind === "scrapbook" ||
+          String(item?.id || "").startsWith("scrapbook:")
+        ) {
           return (
             <span
               key={item.id || item.name}
@@ -1864,14 +1894,23 @@ function shouldShowMessageActions(message, messageComplete) {
  * Do not gate on session-wide live/streaming — that hides finished bubbles' links
  * for the whole next turn and remounts them when streaming ends.
  */
-export function shouldShowPostCompletionExtras(message, messageComplete, hasContent) {
+export function shouldShowPostCompletionExtras(
+  message,
+  messageComplete,
+  hasContent,
+) {
   if (!messageComplete || !hasContent) return false;
   const planStep = message?.planStep;
   if (!planStep) return true;
   return String(planStep.role || "").toLowerCase() === "summarizer";
 }
 
-function shouldShowFileChanges(message, messageComplete, mergedFileChanges, projectIsGit) {
+function shouldShowFileChanges(
+  message,
+  messageComplete,
+  mergedFileChanges,
+  projectIsGit,
+) {
   if (!projectIsGit) return false;
   return shouldShowPostCompletionExtras(
     message,
@@ -1979,7 +2018,10 @@ function MessageActions({
           {actionButtons}
         </div>
       )}
-      <Dialog open={saveDialogOpen} onOpenChange={(open) => !saving && setSaveDialogOpen(open)}>
+      <Dialog
+        open={saveDialogOpen}
+        onOpenChange={(open) => !saving && setSaveDialogOpen(open)}
+      >
         <DialogContent className="sm:max-w-[420px] gap-5">
           <DialogHeader showCloseButton={!saving}>
             <DialogTitle>{t("scrapbookSaveAnswer")}</DialogTitle>
@@ -2188,7 +2230,9 @@ export const MessageBubble = memo(function MessageBubble({
 
     if (
       String(legacyText || "").startsWith("Reflect skill") ||
-      String(legacyText || "").startsWith("Reflect found no reusable skill candidate.")
+      String(legacyText || "").startsWith(
+        "Reflect found no reusable skill candidate.",
+      )
     ) {
       return null;
     }

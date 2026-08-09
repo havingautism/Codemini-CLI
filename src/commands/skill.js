@@ -6,6 +6,7 @@ import { loadConfig, saveConfig } from '../core/config-store.js';
 import { loadCommandsAndSkills } from '../core/command-loader.js';
 import { getSkillsDir } from '../core/paths.js';
 import { normalizeSkillContexts, skillAppliesToExecutionMode } from '../core/skill-contexts.js';
+import { parseFrontmatter } from '../core/frontmatter.js';
 import {
   computeFileSha256,
   readSkillRegistry,
@@ -358,58 +359,12 @@ function normalizeRelativePath(value = '') {
   return cleaned;
 }
 
-function parseArrayText(value) {
-  const inner = value.slice(1, -1).trim();
-  if (!inner) return [];
-  return inner.split(',').map((item) => item.trim().replace(/^["']|["']$/g, ''));
-}
-
 function normalizeSkillName(value) {
   return String(value || '')
     .trim()
     .toLowerCase()
     .replace(/[^a-z0-9_.-]+/g, '-')
     .replace(/^-+|-+$/g, '');
-}
-
-function parseSkillFrontmatter(raw) {
-  const normalized = String(raw || '').replace(/\r\n/g, '\n');
-  if (!normalized.startsWith('---\n')) {
-    return { metadata: {}, content: normalized };
-  }
-  const end = normalized.indexOf('\n---\n', 4);
-  if (end === -1) {
-    return { metadata: {}, content: normalized };
-  }
-
-  const metadata = {};
-  const lines = normalized.slice(4, end).trim().split('\n');
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index];
-    const idx = line.indexOf(':');
-    if (idx <= 0) continue;
-    const key = line.slice(0, idx).trim();
-    const value = line.slice(idx + 1).trim();
-    if (value === '|' || value === '>') {
-      const block = [];
-      for (let next = index + 1; next < lines.length; next += 1) {
-        const nextLine = lines[next];
-        if (!/^\s+/.test(nextLine)) break;
-        block.push(nextLine.trim());
-        index = next;
-      }
-      metadata[key] = block.join(value === '>' ? ' ' : '\n').trim();
-      continue;
-    }
-    metadata[key] = value.startsWith('[') && value.endsWith(']')
-      ? parseArrayText(value)
-      : value.replace(/^["']|["']$/g, '');
-  }
-
-  return {
-    metadata,
-    content: normalized.slice(end + 5).trim()
-  };
 }
 
 function cleanDescriptionText(value) {
@@ -549,7 +504,7 @@ async function readSkillDocumentMeta(skillRoot, entryFile = 'SKILL.md') {
   const entryPath = path.join(skillRoot, entryFile || 'SKILL.md');
   try {
     const raw = await fs.readFile(entryPath, 'utf8');
-    const parsed = parseSkillFrontmatter(raw);
+    const parsed = parseFrontmatter(raw);
     const modeRaw = String(parsed.metadata.mode || '').trim();
     const mode = modeRaw === 'auto_attach'
       ? 'agent_requested'

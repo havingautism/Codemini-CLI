@@ -1,26 +1,9 @@
-const MAX_CONCURRENT = 2;
-let active = 0;
-const pending = [];
+import pLimit from "p-limit";
 
-function pump() {
-  while (active < MAX_CONCURRENT && pending.length > 0) {
-    const job = pending.shift();
-    active += 1;
-    Promise.resolve()
-      .then(() => job.fn())
-      .then(job.resolve, job.reject)
-      .finally(() => {
-        active -= 1;
-        pump();
-      });
-  }
-}
+const limitEmbedFetch = pLimit(2);
 
 export function queueEmbedFetch(fn) {
-  return new Promise((resolve, reject) => {
-    pending.push({ fn, resolve, reject });
-    pump();
-  });
+  return limitEmbedFetch(fn);
 }
 
 export function deferUntilIdle(callback, { timeout = 1500 } = {}) {

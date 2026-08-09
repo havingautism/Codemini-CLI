@@ -1,13 +1,12 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import yaml from 'yaml';
+import { parseFrontmatter } from './frontmatter.js';
 import {
   normalizeHooksObject,
   resolveHooksByPriority,
   unwrapHooksContainer,
 } from './skill-hooks-normalize.js';
 
-const FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/;
 const HOOKS_DISABLED_MARKER = '.codemini-hooks-disabled';
 
 function parseDisableModelInvocation(parsed) {
@@ -53,18 +52,7 @@ export async function readFrontmatterHooks(skillMdPath) {
     throw err;
   }
 
-  const normalized = raw.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n');
-  const match = normalized.match(FRONTMATTER_RE);
-  if (!match) {
-    return { hooks: {}, disableModelInvocation: false };
-  }
-
-  let parsed;
-  try {
-    parsed = yaml.parse(match[1]);
-  } catch {
-    return { hooks: {}, disableModelInvocation: false };
-  }
+  const parsed = parseFrontmatter(raw).metadata;
 
   const hooks =
     parsed && typeof parsed === 'object' && parsed.hooks && typeof parsed.hooks === 'object'

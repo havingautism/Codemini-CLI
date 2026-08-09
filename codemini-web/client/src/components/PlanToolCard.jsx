@@ -140,7 +140,7 @@ function StepProcessFold({ segments }) {
         ) : null}
       </button>
       {expanded ? (
-        <div className="relative ml-3.5 mt-1 flex flex-col gap-1.5 border-l border-(--border-default) pl-3">
+        <div className="relative ml-3.5 mt-2 flex flex-col gap-1.5 border-l border-(--border-default) pl-3">
           {segments.map((item, index) => {
             if (item.type === "thinking") {
               return (
@@ -227,7 +227,7 @@ function StepAnswer({ segment }) {
       {open ? (
         <ScrollArea
           type="auto"
-          className="mt-1 h-64 rounded-md bg-(--bg-tertiary) dark:bg-(--bg-primary)"
+          className="mt-2 h-64 rounded-md bg-(--bg-tertiary) dark:bg-(--bg-primary)"
           viewportClassName="px-3 py-2 text-[12px] leading-relaxed text-(--text-secondary)"
         >
           <StreamdownRenderer
@@ -435,7 +435,9 @@ export function PlanToolCard({ card, grouped = false }) {
           "",
   ).trim();
   const taskSummary = String(
-    isSubagent ? card?.arguments?.summary || card?.arguments?.goal || goal : goal,
+    isSubagent
+      ? card?.arguments?.summary || card?.arguments?.goal || goal
+      : goal,
   ).trim();
   const title = isSubagent
     ? persona || t("subagentWorker")
@@ -452,7 +454,7 @@ export function PlanToolCard({ card, grouped = false }) {
         "msg-process-meta relative w-full overflow-hidden",
         grouped
           ? "bg-transparent"
-          : "codemini-message-surface max-w-4xl rounded-xl",
+          : "codemini-message-surface rounded-xl",
         card.status === "error" &&
           "after:pointer-events-none after:absolute after:inset-0 after:rounded-[inherit] after:border after:border-[color:color-mix(in_srgb,var(--accent-red)_32%,transparent)] after:content-['']",
       )}
@@ -485,7 +487,7 @@ export function PlanToolCard({ card, grouped = false }) {
           </span>
           {taskSummary && !expanded ? (
             <span
-              className="msg-process-meta__detail ml-1.5 line-clamp-2 min-w-0 whitespace-normal text-xs font-normal leading-[18px]"
+              className="msg-process-meta__detail ml-1.5 min-w-0 flex-1 truncate whitespace-nowrap text-xs font-normal leading-[18px]"
               title={taskSummary}
             >
               <span aria-hidden="true">· </span>
@@ -563,7 +565,7 @@ export function PlanToolCardGroup({ cards = [] }) {
 
   return (
     <section
-      className="codemini-message-surface msg-process-meta w-full max-w-4xl overflow-hidden rounded-xl"
+      className="codemini-message-surface msg-process-meta w-full overflow-hidden rounded-xl"
       aria-label={t("subagentGroupTitle")}
     >
       <div className="flex min-h-11 items-center gap-2.5 border-b border-(--border-default) px-3 py-2.5">

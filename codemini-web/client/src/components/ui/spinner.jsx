@@ -51,9 +51,7 @@ export function ResponseLoader({ label, className }) {
     <span
       role="status"
       aria-label={label}
-      className={cn("inline-flex min-h-6 items-center", className)}
-    >
-      <SessionOrb state="response" aria-hidden="true" />
-    </span>
+      className={cn("msg-body streaming-cursor inline-flex min-h-6 items-center", className)}
+    />
   );
 }

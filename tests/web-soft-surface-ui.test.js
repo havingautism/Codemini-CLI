@@ -213,7 +213,6 @@ test('expanded sub-agents keep a compact indent and reveal adaptive task details
   );
   assert.match(planToolCard, /card\?\.arguments\?\.summary \|\| card\?\.arguments\?\.goal \|\| goal/);
   assert.match(planToolCard, /taskSummary && !expanded/);
-  assert.match(planToolCard, /msg-process-meta__detail ml-1\.5 line-clamp-2[^\"]*whitespace-normal/);
   assert.doesNotMatch(planToolCard, /goal\.length > 96/);
   assert.match(
     planToolCard,
@@ -231,12 +230,31 @@ test('expanded sub-agents keep a compact indent and reveal adaptive task details
   assert.match(planToolCard, /card\?\.arguments\?\.depends_on/);
 });
 
+test('sub-agent cards fill the row and truncate collapsed task summaries', () => {
+  assert.doesNotMatch(planToolCard, /max-w-4xl/);
+  assert.match(
+    planToolCard,
+    /msg-process-meta__detail ml-1\.5 min-w-0 flex-1 truncate whitespace-nowrap/,
+  );
+});
+
 test('long tool call arguments end with an ellipsis before the status indicator', () => {
   assert.match(
     toolCard,
     /msg-process-meta__detail ml-1 block min-w-0 flex-1 truncate font-mono/,
   );
-  assert.match(toolCard, /SessionOrb state="tool" className="mr-1\.5"/);
+  assert.match(toolCard, /running: "bg-\[var\(--accent-orange\)\]"/);
+  assert.doesNotMatch(toolCard, /SessionOrb state="tool"/);
+});
+
+test('skill and tool summaries use static traffic-light status dots', () => {
+  assert.match(messageBubble, /running: "bg-\(--accent-orange\)"/);
+  assert.match(messageBubble, /error: "bg-\(--accent-red\)"/);
+  assert.match(
+    messageBubble,
+    /\{skillActivityLabel\(badge\)\}\s*<\/span>\s*<SkillStatusDot status=\{badge\.status\} \/>/,
+  );
+  assert.doesNotMatch(messageBubble, /SessionOrb state="tool"/);
 });
 
 test('memory management owns the Inbox experience instead of the action palette', () => {

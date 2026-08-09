@@ -15,6 +15,7 @@ import {
   failSessionMemoryReview
 } from './memory-review-store.js';
 import { appendStructuredOutputLanguageRule } from './reply-language.js';
+import { parseModelJsonObject } from './model-json.js';
 
 export const SESSION_MEMORY_REVIEWER_VERSION = 1;
 
@@ -98,13 +99,8 @@ function compactConversation(messages, maxChars) {
 }
 
 function parseCandidates(text) {
-  try {
-    const raw = String(text || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed?.candidates) ? parsed.candidates : null;
-  } catch {
-    return null;
-  }
+  const parsed = parseModelJsonObject(text);
+  return Array.isArray(parsed?.candidates) ? parsed.candidates : null;
 }
 
 export function normalizeSessionMemoryCandidate(candidate, sourceMessages = []) {

@@ -1,9 +1,12 @@
+import { load } from 'cheerio';
+import { LRUCache } from 'lru-cache';
+
 const CACHE_TTL_MS = 5 * 60 * 1000;
 const FAIL_CACHE_TTL_MS = 5 * 60 * 1000;
 const FETCH_TIMEOUT_MS = 12_000;
 const SHORT_FETCH_TIMEOUT_MS = 4_000;
-const cache = new Map();
-const failCache = new Map();
+const cache = new LRUCache({ max: 200, ttl: CACHE_TTL_MS });
+const failCache = new LRUCache({ max: 200, ttl: FAIL_CACHE_TTL_MS });
 
 const SHORT_LINK_HOST_RE =
   /^(t\.co|bit\.ly|goo\.gl|tinyurl\.com|ow\.ly|buff\.ly|is\.gd|j\.mp|aka\.ms|lnkd\.in|dl\.tiktok\.com)$/i;
@@ -48,40 +51,20 @@ function isSafePublicUrl(raw) {
 }
 
 function readCache(key) {
-  const entry = cache.get(key);
-  if (!entry) return null;
-  if (Date.now() - entry.at > CACHE_TTL_MS) {
-    cache.delete(key);
-    return null;
-  }
-  return entry.value;
+  return cache.get(key) || null;
 }
 
 function writeCache(key, value) {
-  cache.set(key, { at: Date.now(), value });
+  cache.set(key, value);
   failCache.delete(key);
-  if (cache.size > 200) {
-    const oldest = cache.keys().next().value;
-    if (oldest) cache.delete(oldest);
-  }
 }
 
 function readFailCache(key) {
-  const entry = failCache.get(key);
-  if (!entry) return false;
-  if (Date.now() - entry.at > FAIL_CACHE_TTL_MS) {
-    failCache.delete(key);
-    return false;
-  }
-  return true;
+  return failCache.has(key);
 }
 
 function writeFailCache(key) {
-  failCache.set(key, { at: Date.now() });
-  if (failCache.size > 200) {
-    const oldest = failCache.keys().next().value;
-    if (oldest) failCache.delete(oldest);
-  }
+  failCache.set(key, true);
 }
 
 export function isShortLinkUrl(rawUrl) {
@@ -114,57 +97,24 @@ async function fetchWithTimeout(url, options = {}) {
   }
 }
 
-function decodeHtmlEntities(value) {
-  return String(value || '')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/&#x([0-9a-f]+);/gi, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
-    .replace(/&#(\d+);/g, (_, num) => String.fromCharCode(Number(num)));
-}
-
-function extractHtmlMeta(html, key) {
-  const lower = String(key || '').toLowerCase();
-  const patterns = [
-    new RegExp(`<meta[^>]*(?:name|property)\\s*=\\s*["']${lower}["'][^>]*content\\s*=\\s*["']([^"']*)["']`, 'i'),
-    new RegExp(`<meta[^>]*content\\s*=\\s*["']([^"']*)["'][^>]*(?:name|property)\\s*=\\s*["']${lower}["']`, 'i'),
-  ];
-  for (const pattern of patterns) {
-    const match = String(html || '').match(pattern);
-    if (match?.[1]) return trimPreview(decodeHtmlEntities(match[1]), 320);
-  }
-  return '';
-}
-
-function extractHtmlTitle(html) {
-  const match = String(html || '').match(/<title[^>]*>([\s\S]*?)<\/title>/i);
-  if (!match) return '';
-  return trimPreview(decodeHtmlEntities(match[1].replace(/<[^>]+>/g, '')), 240);
-}
-
-function pickImage(html, pageUrl) {
-  const candidates = [
-    extractHtmlMeta(html, 'og:image'),
-    extractHtmlMeta(html, 'twitter:image'),
-  ];
-  const linkPatterns = [
-    /<link[^>]*rel\s*=\s*["']image_src["'][^>]*href\s*=\s*["']([^"']+)["']/i,
-    /<link[^>]*href\s*=\s*["']([^"']+)["'][^>]*rel\s*=\s*["']image_src["']/i,
-  ];
-  for (const pattern of linkPatterns) {
-    const match = String(html || '').match(pattern);
-    if (match?.[1]) candidates.push(match[1]);
-  }
-  for (const candidate of candidates) {
-    try {
-      return new URL(candidate, pageUrl).toString();
-    } catch {
-      continue;
-    }
-  }
-  return null;
+function extractHtmlMetadata(html, pageUrl) {
+  const $ = load(html);
+  const meta = (key) => trimPreview(
+    $(`meta[name="${key}"], meta[property="${key}"]`).first().attr('content') || '',
+    320,
+  );
+  const image = [meta('og:image'), meta('twitter:image'), $('link[rel="image_src"]').first().attr('href')]
+    .find(Boolean);
+  let imageUrl = null;
+  try {
+    if (image) imageUrl = new URL(image, pageUrl).toString();
+  } catch {}
+  return {
+    title: meta('og:title') || trimPreview($('title').first().text(), 240),
+    description: meta('og:description') || meta('description'),
+    siteName: meta('og:site_name'),
+    image: imageUrl,
+  };
 }
 
 function baseEmbed({ type, url, title = '', description = '', image = null, siteName = null, meta = {} }) {
@@ -350,19 +300,14 @@ async function resolveGenericLink(url, { timeoutMs = FETCH_TIMEOUT_MS } = {}) {
   }
   const html = await response.text();
   const finalUrl = response.url || url;
-  const title = extractHtmlMeta(html, 'og:title')
-    || extractHtmlTitle(html)
-    || hostnameFromUrl(finalUrl);
-  const description = extractHtmlMeta(html, 'og:description')
-    || extractHtmlMeta(html, 'description');
-  const siteName = extractHtmlMeta(html, 'og:site_name') || hostnameFromUrl(finalUrl);
+  const metadata = extractHtmlMetadata(html, finalUrl);
   return baseEmbed({
     type: 'link',
     url: finalUrl,
-    title,
-    description,
-    image: pickImage(html, finalUrl),
-    siteName,
+    title: metadata.title || hostnameFromUrl(finalUrl),
+    description: metadata.description,
+    image: metadata.image,
+    siteName: metadata.siteName || hostnameFromUrl(finalUrl),
     meta: {},
   });
 }
