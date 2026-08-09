@@ -153,3 +153,27 @@ test('Windows routine project commands are explicit and reject opaque or escapin
     'npm test > result.txt',
   ]) assert.equal(isRoutineProjectCommand(command), false, command);
 });
+
+test('bash policy ignores the null device and absolute-looking fragments inside globs', () => {
+  const config = {
+    shell: { default: 'bash' },
+    policy: {
+      safe_mode: true,
+      command_allowlist: [],
+      blocked_commands: [],
+      blocked_path_patterns: [],
+      blocked_command_patterns: [],
+    },
+  };
+  const workspaceRoot = '/home/user/projects/app';
+  for (const command of [
+    'cd /home/user/projects/app && ls src 2>/dev/null',
+    'find /home/user/projects/app -name package.json -not -path "*/node_modules/*" 2>/dev/null',
+  ]) {
+    assert.equal(evaluateCommandPolicy(command, config, workspaceRoot).allowed, true, command);
+  }
+  assert.match(
+    evaluateCommandPolicy('echo nope >/tmp/outside.txt', config, workspaceRoot).reason,
+    /absolute path outside workspace/,
+  );
+});

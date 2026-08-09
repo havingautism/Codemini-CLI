@@ -320,6 +320,41 @@ test('subagent child tools with parentToolCallId stay nested', () => {
   assert.equal(topLevelCards.some((card) => card.id === 'read-1'), false);
 });
 
+test('late subagent child events stay nested after the parent card completes', () => {
+  const message = runningSubagentMessage();
+  const subagent = message.segments[0].cards[0];
+  subagent.status = 'done';
+  subagent.planRun.phase = 'completed';
+  subagent.planRun.steps[0].status = 'done';
+
+  let state = {
+    sessionMessagesById: {
+      'session-subagent': [{ ...message, isComplete: true }],
+    },
+  };
+  for (const type of ['tool:start', 'tool:end']) {
+    state = reduceSessionTranscriptEvent(state, {
+      type,
+      sessionId: 'session-subagent',
+      messageId: 'msg-subagent',
+      id: 'late-read-1',
+      name: 'read',
+      parentToolCallId: 'subagent-1',
+    });
+  }
+
+  const nextMessage = state.sessionMessagesById['session-subagent'][0];
+  const nestedCards = nextMessage.segments[0].cards[0].planRun.steps[0].segments
+    .filter((segment) => segment.type === 'tools')
+    .flatMap((segment) => segment.cards);
+  const topLevelCards = nextMessage.segments
+    .filter((segment) => segment.type === 'tools')
+    .flatMap((segment) => segment.cards);
+
+  assert.equal(nestedCards.find((card) => card.id === 'late-read-1')?.status, 'done');
+  assert.equal(topLevelCards.some((card) => card.id === 'late-read-1'), false);
+});
+
 test('reduceSessionTranscriptEvent keeps SDK and model metadata on a new answer', () => {
   const next = reduceSessionTranscriptEvent(
     { sessionMessagesById: { 'session-a': [] } },

@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { getEffectivePolicy } from './shell-profile.js';
 import { getBaseConfigDir } from './paths.js';
+import { inspectShellCommandPaths } from './shell-path-policy.js';
 
 const SHELL_KEYWORDS = new Set([
   'if',
@@ -204,75 +205,10 @@ function allowedPathRoots(workspaceRoot, config = {}) {
     ...(Array.isArray(config?.policy?.allowed_paths) ? config.policy.allowed_paths : [])
   ]
     .map((item) => String(item || '').trim())
-    .filter(Boolean)
-    .map((item) => path.resolve(item));
+    .filter(Boolean);
 }
 
-function isWithinAnyRoot(candidatePath, roots = []) {
-  const resolvedCandidate = path.resolve(candidatePath);
-  return roots.some((root) => {
-    const relative = path.relative(root, resolvedCandidate);
-    return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
-  });
-}
-
-function normalizeWindowsPathForCompare(value) {
-  return String(value || '').trim().replace(/\//g, '\\').replace(/\\+$/g, '').toLowerCase();
-}
-
-function isWindowsPathWithinAnyRoot(candidatePath, roots = []) {
-  const candidate = normalizeWindowsPathForCompare(candidatePath);
-  if (!/^[a-z]:\\/i.test(candidate)) return false;
-  return roots.some((root) => {
-    const normalizedRoot = normalizeWindowsPathForCompare(root);
-    return candidate === normalizedRoot || candidate.startsWith(`${normalizedRoot}\\`);
-  });
-}
-
-function collectWindowsAbsolutePathCandidates(command) {
-  const text = String(command || '');
-  const candidates = [];
-  let current = '';
-  let quote = '';
-
-  const flush = () => {
-    const token = current.trim();
-    current = '';
-    if (/^[A-Za-z]:[\\/]/.test(token)) candidates.push(token);
-  };
-
-  for (let i = 0; i < text.length; i += 1) {
-    const ch = text[i];
-    if (quote) {
-      if (ch === quote) {
-        flush();
-        quote = '';
-      } else {
-        current += ch;
-      }
-      continue;
-    }
-    if (ch === '"' || ch === '\'') {
-      flush();
-      quote = ch;
-      continue;
-    }
-    if (/\s/.test(ch)) {
-      flush();
-      continue;
-    }
-    current += ch;
-  }
-  flush();
-  return candidates;
-}
-
-function collectRelativeEscapeCandidates(command) {
-  return [...String(command || '').matchAll(/(?:^|[\s"'=])((?:\.\.[\\/])+[^\s"'|;&]*)/g)]
-    .map((match) => match[1]);
-}
-
-function validateCdSegment(command, workspaceRoot, config = {}) {
+function validateCdSegment(command) {
   const tokens = tokenizeTopLevel(command);
   if (tokens.length === 1) {
     return { allowed: false, reason: 'cd requires a target path in safe mode' };
@@ -284,11 +220,6 @@ function validateCdSegment(command, workspaceRoot, config = {}) {
   const rawTarget = String(tokens[1] || '').trim();
   if (!rawTarget || rawTarget.startsWith('-')) {
     return { allowed: false, reason: 'cd target is not allowed in safe mode' };
-  }
-
-  const resolvedTarget = path.resolve(path.resolve(workspaceRoot), rawTarget);
-  if (!isWithinAnyRoot(resolvedTarget, allowedPathRoots(workspaceRoot, config))) {
-    return { allowed: false, reason: `cd escapes workspace or allowed paths: ${rawTarget}` };
   }
 
   return { allowed: true };
@@ -320,7 +251,7 @@ export function evaluateCommandPolicy(command, config, workspaceRoot = process.c
   for (const item of inspectedTokens) {
     if (SHELL_KEYWORDS.has(item.token)) continue;
     if (item.token === 'cd') {
-      const cdCheck = validateCdSegment(item.raw, workspaceRoot, config);
+      const cdCheck = validateCdSegment(item.raw);
       if (!cdCheck.allowed) {
         return { allowed: false, reason: cdCheck.reason, suggestion: suggestionForToken(item.token, config) };
       }
@@ -338,24 +269,18 @@ export function evaluateCommandPolicy(command, config, workspaceRoot = process.c
   }
 
   const allowedRoots = allowedPathRoots(workspaceRoot, config);
-  for (const candidate of collectRelativeEscapeCandidates(cmd)) {
-    const resolved = path.resolve(workspaceRoot, candidate);
-    if (!isWithinAnyRoot(resolved, allowedRoots)) {
-      return { allowed: false, reason: `relative path escapes workspace or allowed paths: ${candidate}`, suggestion: suggestionForToken(token, config) };
-    }
-  }
-  const windowsAbsPath = collectWindowsAbsolutePathCandidates(cmd);
-  for (const p of windowsAbsPath) {
-    if (!isWindowsPathWithinAnyRoot(p, allowedRoots)) {
-      return { allowed: false, reason: `absolute path outside workspace or allowed paths: ${p}`, suggestion: suggestionForToken(token, config) };
-    }
-  }
-
-  const posixAbsPath = cmd.match(/(?<![:/\w])\/(?!\/)[^\s'"]+/g) || [];
-  for (const p of posixAbsPath) {
-    if (!isWithinAnyRoot(p, allowedRoots)) {
-      return { allowed: false, reason: `absolute path outside workspace or allowed paths: ${p}`, suggestion: suggestionForToken(token, config) };
-    }
+  const pathInspection = inspectShellCommandPaths({
+    command: cmd,
+    shell: config?.shell?.default,
+    workspaceRoot,
+    allowedRoots,
+  });
+  const outside = pathInspection.outside[0];
+  if (outside) {
+    const reason = outside.kind === 'relative-escape'
+      ? `relative path escapes workspace or allowed paths: ${outside.value}`
+      : `absolute path outside workspace or allowed paths: ${outside.value}`;
+    return { allowed: false, reason, suggestion: suggestionForToken(token, config) };
   }
 
   return { allowed: true };

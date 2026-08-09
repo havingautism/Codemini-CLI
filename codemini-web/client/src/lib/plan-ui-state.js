@@ -202,7 +202,6 @@ export function findActivePlanParentMessage(messages = []) {
 }
 
 export function shouldNestStreamEventInPlan(message, event) {
-  if (!messageHasActivePlanRun(message)) return false;
   if (!PLAN_NESTED_STREAM_EVENTS.has(String(event?.type || ""))) return false;
   if (isCreatePlanToolEvent(event)) return false;
 
@@ -210,6 +209,8 @@ export function shouldNestStreamEventInPlan(message, event) {
   if (parentToolCallId) {
     return Boolean(findCreatePlanCard(message, parentToolCallId)?.planRun?.steps?.length);
   }
+
+  if (!messageHasActivePlanRun(message)) return false;
 
   const card = findCreatePlanCard(message);
   const cardName = String(card?.name || "").toLowerCase().replace(/\(.*$/, "");
@@ -334,9 +335,13 @@ export function applyStreamEventToPlanRun(message, event, options = {}) {
     );
   }
 
-  if (!messageHasActivePlanRun(message)) return message;
-
   const cardId = String(event.parentToolCallId || event.toolCallId || "").trim();
+  const hasExplicitPlanParent = Boolean(
+    event.parentToolCallId &&
+      findCreatePlanCard(message, event.parentToolCallId)?.planRun?.steps?.length,
+  );
+  if (!messageHasActivePlanRun(message) && !hasExplicitPlanParent) return message;
+
   let nestedFileChanges = [];
   const next = upsertCreatePlanCard(
     message,
