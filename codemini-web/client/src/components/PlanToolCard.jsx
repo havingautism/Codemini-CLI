@@ -442,7 +442,7 @@ export function PlanToolCard({ card, grouped = false }) {
     : card?.displayName || planPhaseTitle(phase);
   const singleTask = steps.length <= 1;
   const [open, setOpen] = useState(
-    !grouped && (running || phase === "executing"),
+    !isSubagent && !grouped && (running || phase === "executing"),
   );
   const expanded = open;
 
