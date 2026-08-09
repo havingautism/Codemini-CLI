@@ -451,6 +451,7 @@ export function resolveShellApprovalStrategy({
   osSandboxConfining = false,
   approvalMode = 'auto',
   platform = process.platform,
+  projectIsGit = false,
 } = {}) {
   const policyCheck = evaluateCommandPolicy(command, config, workspaceRoot);
   const policyHardGate = !policyCheck.allowed && /^(?:absolute path outside|relative path escapes|cd escapes|blocked protected system path|blocked command:)/i.test(policyCheck.reason || '');
@@ -458,6 +459,7 @@ export function resolveShellApprovalStrategy({
   const sandboxFirst = Boolean(osSandboxConfining && approvalMode !== 'review' && !deterministicGate);
   const windowsFastLane = Boolean(
     platform === 'win32'
+    && projectIsGit
     && approvalMode !== 'review'
     && !deterministicGate
     && policyCheck.allowed
@@ -976,6 +978,7 @@ export async function runAgentLoop({
             workspaceRoot: config?.workspaceRoot || process.cwd(),
             osSandboxConfining,
             approvalMode: normalizedApprovalMode,
+            projectIsGit,
           })
         : null;
       const runPolicyCheck = shellApproval?.policyCheck || { allowed: true };
@@ -1064,6 +1067,7 @@ export async function runAgentLoop({
               /* Auto mode: allow low/medium + allow without a panel; high still needs review. */
               if (
                 !isSandboxEscalation
+                && projectIsGit
                 && normalizedApprovalMode !== 'review'
                 && evaluation.recommendation === 'allow'
                 && evaluation.risk !== 'high'
@@ -1288,6 +1292,7 @@ export async function runAgentLoop({
                 workspaceRoot: config?.workspaceRoot || process.cwd(),
                 osSandboxConfining,
                 approvalMode: normalizedApprovalMode,
+                projectIsGit,
               })
             : null;
           const updatedRunPolicy = updatedShellApproval?.policyCheck || { allowed: true };

@@ -220,9 +220,20 @@ test('Windows auto mode skips LLM review only for explicit routine project comma
     config,
     approvalMode: 'auto',
     platform: 'win32',
+    projectIsGit: true,
   });
   assert.equal(routine.windowsFastLane, true);
   assert.equal(routine.needsLlmReview, false);
+
+  const nonGitRoutine = resolveShellApprovalStrategy({
+    command: 'npm run format',
+    config,
+    approvalMode: 'auto',
+    platform: 'win32',
+    projectIsGit: false,
+  });
+  assert.equal(nonGitRoutine.windowsFastLane, false);
+  assert.equal(nonGitRoutine.needsLlmReview, true);
 
   for (const command of ['node scripts/build.js', 'python cleanup.py']) {
     const opaque = resolveShellApprovalStrategy({ command, config, approvalMode: 'auto', platform: 'win32' });
@@ -436,6 +447,72 @@ test('git auto mode executes low-risk allowed evaluations without manual review'
   assert.equal(result.text, 'done');
   assert.equal(approvalRequests, 0);
   assert.equal(hasRunCommandSafeModeApproval(handlerArgs), true);
+});
+
+test('non-git auto mode keeps potentially mutating shell commands behind manual approval', async () => {
+  let completionIndex = 0;
+  let approvalRequests = 0;
+  let handlerCalled = false;
+  const config = {
+    memory: { enabled: false },
+    shell: { default: 'powershell' },
+    policy: {
+      safe_mode: true,
+      allow_dangerous_commands: false,
+      allowed_paths: [],
+      command_allowlist: [],
+      blocked_commands: [],
+      blocked_path_patterns: [],
+      blocked_command_patterns: [],
+    },
+    sandbox: { enabled: false },
+  };
+
+  await runAgentLoop({
+    systemPrompt: 'test',
+    userPrompt: 'format a non-git project',
+    model: 'test-model',
+    workspaceRoot: process.cwd(),
+    requestCompletion: async () => {
+      completionIndex += 1;
+      return completionIndex === 1
+        ? {
+            text: '',
+            toolCalls: [{
+              id: 'non-git-format',
+              name: 'Powershell',
+              arguments: JSON.stringify({ command: 'npm run format' }),
+              argumentsComplete: true,
+            }],
+          }
+        : { text: 'done', toolCalls: [] };
+    },
+    evaluateCommand: async () => ({
+      risk: 'low',
+      description: 'Formats project files.',
+      sideEffects: 'May modify files.',
+      recommendation: 'allow',
+      failed: false,
+    }),
+    toolHandlers: {
+      Powershell: async () => {
+        handlerCalled = true;
+        return { ok: true };
+      },
+    },
+    approvalMode: 'auto',
+    projectIsGit: false,
+    alwaysAllowTools: ['run'],
+    requestToolApproval: async () => {
+      approvalRequests += 1;
+      return { approved: false };
+    },
+    skipAnalysisNudge: true,
+    config,
+  });
+
+  assert.equal(approvalRequests, 1);
+  assert.equal(handlerCalled, false);
 });
 
 test('LLM evaluator failures reach manual approval with an explicit failure reason', async () => {

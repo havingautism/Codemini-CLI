@@ -148,8 +148,8 @@ test('scrapbook source rows use a menu for open-link, jump-to-message and delete
   assert.match(source, /scrapbookJumpToOriginalLink/);
   assert.match(source, /scrapbookJumpToMessage/);
   assert.match(source, /scrapbookSourceActions/);
-  assert.match(source, /window\.open\(source\.url,\s*"_blank"/);
-  assert.match(source, /openChatMessage\(jumpSessionId,\s*jumpMessageId\)/);
+  assert.match(source, /window\.open\([\s\S]*?source\.url,[\s\S]*?"_blank"/);
+  assert.match(source, /openChatMessage\([\s\S]*?jumpSessionId,[\s\S]*?jumpMessageId/);
   assert.match(source, /handleRemoveSource\(source\.id\)/);
   assert.doesNotMatch(source, /handleToggleSource/);
   assert.doesNotMatch(source, /setScrapbookSourceSelection/);
