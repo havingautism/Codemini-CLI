@@ -18,6 +18,7 @@ test('file change sequences collapse to their net action', () => {
 
 test('file change summary follows the final git worktree state', () => {
   const staleCreate = [{ path: 'workspace/tool-test.md', action: 'create', linesAdded: 5 }];
+  assert.deepEqual(reconcileFileChangesWithGit(staleCreate, undefined), []);
   assert.deepEqual(reconcileFileChangesWithGit(staleCreate, []), []);
 
   assert.deepEqual(

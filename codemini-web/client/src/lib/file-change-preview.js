@@ -39,7 +39,7 @@ function normalizeGitPath(value) {
 }
 
 export function reconcileFileChangesWithGit(fileChanges = [], gitFiles) {
-  if (!Array.isArray(gitFiles)) return fileChanges;
+  if (!Array.isArray(gitFiles)) return [];
   const statusByPath = new Map(
     gitFiles
       .map((file) => [normalizeGitPath(file?.path), file])
