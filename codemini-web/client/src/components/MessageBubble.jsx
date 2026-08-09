@@ -61,6 +61,7 @@ import {
 import { getMessageModelIdentity } from "@/lib/message-model-identity.js";
 import {
   collectFileChangePatch,
+  reconcileFileChangesWithGit,
   resolveFileChangeSequenceAction,
   resolveFileChangePreviewLines,
 } from "@/lib/file-change-preview.js";
@@ -2100,6 +2101,7 @@ export const MessageBubble = memo(function MessageBubble({
   message,
   onRetry,
   projectIsGit = true,
+  gitFiles,
 }) {
   const actions = useAppActions();
   const {
@@ -2143,10 +2145,10 @@ export const MessageBubble = memo(function MessageBubble({
   );
   const hasAnswerFold = answerLayout.hasFold;
   const preAnswerDuration = answerLayout.durationMs;
-  const mergedFileChanges = useMemo(
-    () => mergeFileChanges(fileChanges || []),
-    [fileChanges],
-  );
+  const mergedFileChanges = useMemo(() => {
+    const merged = mergeFileChanges(fileChanges || []);
+    return reconcileFileChangesWithGit(merged, gitFiles);
+  }, [fileChanges, gitFiles]);
   const messageEmbeds = useMemo(
     () => collectMessageEmbeds(segments || []),
     [segments],

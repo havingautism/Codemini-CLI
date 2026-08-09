@@ -188,3 +188,59 @@ export function classifyCommandRisk(command, shellName = 'bash', platform = proc
 export function requiresApprovalEvaluation(command, shellName = 'bash', platform = process.platform) {
   return classifyCommandRisk(command, shellName, platform) !== 'read-only';
 }
+
+const ROUTINE_PROJECT_SCRIPTS = /^(?:build|check|dev|fmt|format|lint|preview|start|test|type-?check)(?::[\w.-]+)?$/i;
+
+/** Commands whose purpose is clear enough to skip per-command LLM review on Windows. */
+export function isRoutineProjectCommand(command) {
+  const text = String(command || '').trim();
+  if (!text || /[<>]|(?:^|\s)(?:~[\\/]|\.\.[\\/]|%[^%]+%|\$env:|\$[A-Za-z_])/i.test(text)) return false;
+
+  const tokens = collectCommandTokens(text);
+  return tokens.length > 0 && tokens.every(({ token, raw }) => {
+    const tail = commandTail(raw);
+    if (['npm', 'pnpm', 'yarn', 'bun'].includes(token)) {
+      const direct = tail.match(/^(?:run\s+)?([^\s]+)/i)?.[1] || '';
+      return ROUTINE_PROJECT_SCRIPTS.test(direct);
+    }
+    if (token === 'node') return /^--(?:check|test)\b/i.test(tail);
+    if (['python', 'python3', 'py'].includes(token)) return /^-m\s+(?:pytest|unittest)\b/i.test(tail);
+    if (['pytest', 'vitest', 'jest', 'eslint', 'prettier', 'tsc'].includes(token)) return true;
+    if (token === 'cargo') return /^(?:build|check|clippy|fmt|test)\b/i.test(tail);
+    if (token === 'go') return /^(?:build|fmt|test|vet)\b/i.test(tail);
+    if (token === 'dotnet') return /^(?:build|format|test)\b/i.test(tail);
+    return false;
+  });
+}
+
+function commandTail(raw = '') {
+  const text = String(raw || '').trim();
+  const executable = text.match(/^(?:"[^"]+"|'[^']+'|\S+)/)?.[0] || '';
+  return text.slice(executable.length).trim();
+}
+
+/**
+ * Deterministic effects the file sandbox does not make routine or recoverable.
+ * These go straight to human approval; ordinary workspace writes rely on the sandbox.
+ */
+export function requiresDeterministicCommandApproval(command) {
+  return collectCommandTokens(command).some(({ token, raw }) => {
+    const tail = commandTail(raw);
+    if (['sudo', 'doas', 'su', 'systemctl', 'service', 'launchctl', 'shutdown', 'reboot', 'halt', 'poweroff', 'kill', 'pkill', 'killall', 'ssh', 'scp'].includes(token)) return true;
+    if (token === 'git') {
+      return /^(?:(?:-[cC])\s+\S+\s+)*(?:push\b|reset\s+--hard\b|clean\b.*(?:--force|-[^\s]*f)|branch\s+-D\b|checkout\s+--\b)/i.test(tail);
+    }
+    if (['npm', 'pnpm', 'yarn'].includes(token)) return /^(?:install|add|remove|uninstall|publish)\b/i.test(tail);
+    if (['pip', 'pip3'].includes(token)) return /^install\b/i.test(tail);
+    if (token === 'cargo') return /^(?:install|publish)\b/i.test(tail);
+    if (token === 'curl') return /(?:^|\s)(?:-X|--request)\s*(?:POST|PUT|PATCH|DELETE)\b|(?:^|\s)(?:-d|--data(?:-raw|-binary|-urlencode)?|-[Tt]|--upload-file)(?:\s|=)/i.test(tail);
+    if (token === 'wget') return /(?:^|\s)--(?:post-data|post-file|method)(?:\s|=)/i.test(tail);
+    if (token === 'rm') return /(?:^|\s)(?:--recursive|-[^-\s]*r[^\s]*)(?:\s|$)/i.test(tail);
+    if (token === 'find') return /(?:^|\s)-(?:delete|exec|execdir|ok|okdir)\b/i.test(tail);
+    if (token === 'xargs') return /^rm\b/i.test(tail);
+    if (['docker', 'podman'].includes(token)) return /^(?:rm|rmi|stop|kill|push|login|system\s+prune|volume\s+(?:rm|prune)|network\s+(?:rm|prune))\b/i.test(tail);
+    if (token === 'kubectl') return /^(?:apply|create|delete|edit|patch|replace|scale|exec|port-forward|rollout\s+(?:restart|undo))\b/i.test(tail);
+    if (token === 'gh') return /^(?:pr\s+(?:create|merge|close|reopen|review)|issue\s+(?:create|close|reopen|edit)|release\s+(?:create|delete|upload)|repo\s+(?:create|delete|archive))\b/i.test(tail);
+    return false;
+  });
+}

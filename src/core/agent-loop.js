@@ -1,7 +1,11 @@
 import path from 'node:path';
 import { trimInline as _trimInline, normalizePath } from './string-utils.js';
 import { captureToInbox, listInbox } from './memory-store.js';
-import { requiresApprovalEvaluation } from './command-risk.js';
+import {
+  isRoutineProjectCommand,
+  requiresApprovalEvaluation,
+  requiresDeterministicCommandApproval,
+} from './command-risk.js';
 import { evaluateCommandPolicy } from './command-policy.js';
 import { buildRunFailureMessage, getToolOutputSanitizeOptions, sanitizeTextForModel } from './tool-output.js';
 import { createToolRuntime, buildInvalidToolArgumentsResult } from './tool-runtime.js';
@@ -438,6 +442,42 @@ export function shouldDenyHighRiskRunEvaluation(config = {}, evaluation = {}) {
   return config?.policy?.allow_dangerous_commands !== true
     && evaluation?.failed !== true
     && String(evaluation?.risk || '').toLowerCase() === 'high';
+}
+
+export function resolveShellApprovalStrategy({
+  command = '',
+  config = {},
+  workspaceRoot = process.cwd(),
+  osSandboxConfining = false,
+  approvalMode = 'auto',
+  platform = process.platform,
+} = {}) {
+  const policyCheck = evaluateCommandPolicy(command, config, workspaceRoot);
+  const policyHardGate = !policyCheck.allowed && /^(?:absolute path outside|relative path escapes|cd escapes|blocked protected system path|blocked command:)/i.test(policyCheck.reason || '');
+  const deterministicGate = policyHardGate || requiresDeterministicCommandApproval(command);
+  const sandboxFirst = Boolean(osSandboxConfining && approvalMode !== 'review' && !deterministicGate);
+  const windowsFastLane = Boolean(
+    platform === 'win32'
+    && approvalMode !== 'review'
+    && !deterministicGate
+    && policyCheck.allowed
+    && isRoutineProjectCommand(command)
+  );
+  const policyBlocked = config?.policy?.safe_mode !== false
+    && !policyCheck.allowed
+    && policyCheck.reason !== 'blocked by dangerous command pattern';
+  return {
+    policyCheck,
+    deterministicGate,
+    sandboxFirst,
+    windowsFastLane,
+    policyBlocked,
+    needsLlmReview: config?.policy?.safe_mode !== false
+      && !deterministicGate
+      && !sandboxFirst
+      && !windowsFastLane
+      && (policyBlocked || requiresApprovalEvaluation(command, config?.shell?.default)),
+  };
 }
 
 function normalizeAssistantText(value) {
@@ -929,16 +969,22 @@ export async function runAgentLoop({
         });
         continue;
       }
-      const runPolicyCheck = isShellToolName(toolName)
-        ? evaluateCommandPolicy(args?.command || '', config, config?.workspaceRoot || process.cwd())
-        : { allowed: true };
-      const isSafeModePolicyBlocked = isShellToolName(toolName)
-        && config?.policy?.safe_mode !== false
-        && !runPolicyCheck.allowed
-        && runPolicyCheck.reason !== 'blocked by dangerous command pattern';
-      const isSafeModeRun = isShellToolName(toolName)
-        && config?.policy?.safe_mode !== false
-        && (isSafeModePolicyBlocked || requiresApprovalEvaluation(args?.command || '', config?.shell?.default));
+      const shellApproval = isShellToolName(toolName)
+        ? resolveShellApprovalStrategy({
+            command: args?.command || '',
+            config,
+            workspaceRoot: config?.workspaceRoot || process.cwd(),
+            osSandboxConfining,
+            approvalMode: normalizedApprovalMode,
+          })
+        : null;
+      const runPolicyCheck = shellApproval?.policyCheck || { allowed: true };
+      const isSafeModePolicyBlocked = shellApproval?.policyBlocked === true;
+      const isSafeModeRun = shellApproval?.needsLlmReview === true;
+      const isDeterministicCommandGate = shellApproval?.deterministicGate === true;
+      if (shellApproval?.sandboxFirst && isSafeModePolicyBlocked) {
+        approvalArgs = markRunCommandSafeModeApproved(approvalArgs);
+      }
       try {
         // OS sandbox already fences outside writes; skip the soft outside-dir review.
         if (!osSandboxConfining) {
@@ -958,6 +1004,7 @@ export async function runAgentLoop({
         projectIsGit,
         toolName,
         isSafeModeRun,
+        isDeterministicCommandGate,
         isSandboxEscalation,
         isOutsideWorkspaceMutation: Boolean(outsideWorkspaceApproval),
         osSandboxConfining,
@@ -977,67 +1024,69 @@ export async function runAgentLoop({
             preflightErrorContent = clipToolResult({ error: message }, toolResultMaxChars);
           }
         }
-        /* Run tool: safe mode LLM-based command evaluation */
-        if (isShellToolName(toolName) && isSafeModeRun && !preflightErrorContent) {
-          try {
-            const evaluateCommandFn = typeof evaluateCommand === 'function'
-              ? evaluateCommand
-              : (await import('./command-evaluator.js')).evaluateCommandWithLLM;
-            const evaluation = await evaluateCommandFn({
-              command: args?.command || '',
-              config,
-              workspaceRoot: config?.workspaceRoot || process.cwd()
-            });
-            approvalArgs = {
-              ...args,
-              _risk: evaluation.failed
-                ? ''
-                : (isSafeModePolicyBlocked && evaluation.risk === 'low' ? 'medium' : evaluation.risk),
-              _evaluation: evaluation,
-              _policyBlock: isSafeModePolicyBlocked
-                ? { reason: runPolicyCheck.reason, suggestion: runPolicyCheck.suggestion || '' }
-                : null
-            };
-            if (shouldDenyHighRiskRunEvaluation(config, evaluation)) {
-              preflightErrorContent = clipToolResult({
-                error: 'Command blocked by safe mode: high-risk command denied because dangerous commands are disabled',
-                evaluation
-              }, toolResultMaxChars);
-              approvalResults.set(call.id, {
-                approved: false,
-                args: approvalArgs,
-                errorContent: preflightErrorContent
+        /* Ambiguous commands use the legacy LLM reviewer only without a confining sandbox. */
+        if (isShellToolName(toolName) && (isSafeModeRun || isDeterministicCommandGate) && !preflightErrorContent) {
+          if (isSafeModeRun) {
+            try {
+              const evaluateCommandFn = typeof evaluateCommand === 'function'
+                ? evaluateCommand
+                : (await import('./command-evaluator.js')).evaluateCommandWithLLM;
+              const evaluation = await evaluateCommandFn({
+                command: args?.command || '',
+                config,
+                workspaceRoot: config?.workspaceRoot || process.cwd()
               });
-              continue;
-            }
-            /* Auto mode: allow low/medium + allow without a panel; high still needs review. */
-            if (
-              !isSandboxEscalation
-              && normalizedApprovalMode !== 'review'
-              && evaluation.recommendation === 'allow'
-              && evaluation.risk !== 'high'
-            ) {
-              if (isSafeModePolicyBlocked) {
-                approvalArgs = markRunCommandSafeModeApproved(approvalArgs);
+              approvalArgs = {
+                ...args,
+                _risk: evaluation.failed
+                  ? ''
+                  : (isSafeModePolicyBlocked && evaluation.risk === 'low' ? 'medium' : evaluation.risk),
+                _evaluation: evaluation,
+                _policyBlock: isSafeModePolicyBlocked
+                  ? { reason: runPolicyCheck.reason, suggestion: runPolicyCheck.suggestion || '' }
+                  : null
+              };
+              if (shouldDenyHighRiskRunEvaluation(config, evaluation)) {
+                preflightErrorContent = clipToolResult({
+                  error: 'Command blocked by safe mode: high-risk command denied because dangerous commands are disabled',
+                  evaluation
+                }, toolResultMaxChars);
+                approvalResults.set(call.id, {
+                  approved: false,
+                  args: approvalArgs,
+                  errorContent: preflightErrorContent
+                });
+                continue;
               }
-              approvalResults.set(call.id, { approved: true, args: approvalArgs });
-              continue;
+              /* Auto mode: allow low/medium + allow without a panel; high still needs review. */
+              if (
+                !isSandboxEscalation
+                && normalizedApprovalMode !== 'review'
+                && evaluation.recommendation === 'allow'
+                && evaluation.risk !== 'high'
+              ) {
+                if (isSafeModePolicyBlocked) {
+                  approvalArgs = markRunCommandSafeModeApproved(approvalArgs);
+                }
+                approvalResults.set(call.id, { approved: true, args: approvalArgs });
+                continue;
+              }
+            } catch (_) {
+              approvalArgs = {
+                ...args,
+                _risk: '',
+                _evaluation: {
+                  risk: 'high',
+                  description: '',
+                  sideEffects: '',
+                  recommendation: 'deny',
+                  failed: true
+                },
+                _policyBlock: isSafeModePolicyBlocked
+                  ? { reason: runPolicyCheck.reason, suggestion: runPolicyCheck.suggestion || '' }
+                  : null
+              };
             }
-          } catch (_) {
-            approvalArgs = {
-              ...args,
-              _risk: '',
-              _evaluation: {
-                risk: 'high',
-                description: '',
-                sideEffects: '',
-                recommendation: 'deny',
-                failed: true
-              },
-              _policyBlock: isSafeModePolicyBlocked
-                ? { reason: runPolicyCheck.reason, suggestion: runPolicyCheck.suggestion || '' }
-                : null
-            };
           }
           try {
             const approval = await toolRuntime.prepareApproval(toolName, approvalArgs);
@@ -1225,11 +1274,19 @@ export async function runAgentLoop({
           };
         }
         let hookRequiresApproval = preToolUse.decision === 'ask';
+        let updatedShellApproval = null;
         if (preToolUse.updatedInput && typeof preToolUse.updatedInput === 'object') {
           effectiveArgs = preToolUse.updatedInput;
-          const updatedRunPolicy = isShellToolName(toolName)
-            ? evaluateCommandPolicy(effectiveArgs?.command || '', config, config?.workspaceRoot || process.cwd())
-            : { allowed: true };
+          updatedShellApproval = isShellToolName(toolName)
+            ? resolveShellApprovalStrategy({
+                command: effectiveArgs?.command || '',
+                config,
+                workspaceRoot: config?.workspaceRoot || process.cwd(),
+                osSandboxConfining,
+                approvalMode: normalizedApprovalMode,
+              })
+            : null;
+          const updatedRunPolicy = updatedShellApproval?.policyCheck || { allowed: true };
           if (isShellToolName(toolName) && updatedRunPolicy.reason === 'blocked by dangerous command pattern') {
             const reason = updatedRunPolicy.reason;
             return {
@@ -1241,15 +1298,18 @@ export async function runAgentLoop({
               status: 'blocked'
             };
           }
+          if (updatedShellApproval?.sandboxFirst && updatedShellApproval.policyBlocked) {
+            effectiveArgs = markRunCommandSafeModeApproved(effectiveArgs);
+          }
           hookRequiresApproval = hookRequiresApproval || toolRequiresUserApproval({
-              approvalMode: normalizedApprovalMode,
-              projectIsGit,
-              toolName,
-              isSafeModeRun: isShellToolName(toolName)
-                && config?.policy?.safe_mode !== false
-                && (!updatedRunPolicy.allowed || requiresApprovalEvaluation(effectiveArgs?.command || '', config?.shell?.default)),
-              alwaysAllowTools: [...alwaysAllowSet]
-            });
+            approvalMode: normalizedApprovalMode,
+            projectIsGit,
+            toolName,
+            isSafeModeRun: updatedShellApproval?.needsLlmReview === true,
+            isDeterministicCommandGate: updatedShellApproval?.deterministicGate === true,
+            osSandboxConfining,
+            alwaysAllowTools: [...alwaysAllowSet]
+          });
         }
         if (hookRequiresApproval) {
           if (typeof requestToolApproval !== 'function') {
@@ -1283,6 +1343,9 @@ export async function runAgentLoop({
               summary: reason,
               status: 'blocked'
             };
+          }
+          if (updatedShellApproval?.policyBlocked) {
+            effectiveArgs = markRunCommandSafeModeApproved(effectiveArgs);
           }
         }
         if (preToolUse.decision === 'defer') {

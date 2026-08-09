@@ -267,6 +267,11 @@ function collectWindowsAbsolutePathCandidates(command) {
   return candidates;
 }
 
+function collectRelativeEscapeCandidates(command) {
+  return [...String(command || '').matchAll(/(?:^|[\s"'=])((?:\.\.[\\/])+[^\s"'|;&]*)/g)]
+    .map((match) => match[1]);
+}
+
 function validateCdSegment(command, workspaceRoot, config = {}) {
   const tokens = tokenizeTopLevel(command);
   if (tokens.length === 1) {
@@ -333,6 +338,12 @@ export function evaluateCommandPolicy(command, config, workspaceRoot = process.c
   }
 
   const allowedRoots = allowedPathRoots(workspaceRoot, config);
+  for (const candidate of collectRelativeEscapeCandidates(cmd)) {
+    const resolved = path.resolve(workspaceRoot, candidate);
+    if (!isWithinAnyRoot(resolved, allowedRoots)) {
+      return { allowed: false, reason: `relative path escapes workspace or allowed paths: ${candidate}`, suggestion: suggestionForToken(token, config) };
+    }
+  }
   const windowsAbsPath = collectWindowsAbsolutePathCandidates(cmd);
   for (const p of windowsAbsPath) {
     if (!isWindowsPathWithinAnyRoot(p, allowedRoots)) {

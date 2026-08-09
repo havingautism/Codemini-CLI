@@ -90,7 +90,12 @@ async function readGitLineStats(cwd) {
 }
 
 async function readGitStatusEntries(cwd) {
-  const result = await runGit(cwd, ['status', '--porcelain=v1', '-z']);
+  const result = await runGit(cwd, [
+    'status',
+    '--porcelain=v1',
+    '-z',
+    '--untracked-files=all',
+  ]);
   const records = String(result.stdout || '').split('\0').filter(Boolean);
   const statusByPath = new Map();
   for (let index = 0; index < records.length; index += 1) {
@@ -108,6 +113,7 @@ async function readGitStatusEntries(cwd) {
       path: filePath,
       status,
       staged: x !== ' ' && x !== '?',
+      modified: y === 'M' || y === 'D',
     });
     if (x === 'R' || y === 'R' || x === 'C' || y === 'C') index += 1;
   }
@@ -171,34 +177,31 @@ export async function readGitInfoUncached(cwd, { includeCounts = true } = {}) {
     return { isGit: true, branch: await getGitBranch(cwd) };
   }
 
-  const [branch, status, lineStats] = await Promise.all([
+  const [branch, statusByPath, lineStats] = await Promise.all([
     getGitBranch(cwd),
-    runGit(cwd, ['status', '--porcelain']),
+    readGitStatusEntries(cwd),
     readGitLineStats(cwd),
   ]);
-  const lines = String(status.stdout || '').trim()
-    ? String(status.stdout || '').trim().split('\n')
-    : [];
+  const files = [...statusByPath.values()];
   let staged = 0;
   let modified = 0;
   let untracked = 0;
-  for (const line of lines) {
-    const x = line[0];
-    const y = line[1];
-    if (x === '?' && y === '?') {
+  for (const file of files) {
+    if (file.status === '?') {
       untracked += 1;
       continue;
     }
-    if (x !== ' ' && x !== '?') staged += 1;
-    if (y === 'M' || y === 'D') modified += 1;
+    if (file.staged) staged += 1;
+    if (file.modified) modified += 1;
   }
   return {
     isGit: true,
     branch,
-    dirty: lines.length > 0,
+    dirty: files.length > 0,
     staged,
     modified,
     untracked,
+    files,
     ...lineStats,
   };
 }

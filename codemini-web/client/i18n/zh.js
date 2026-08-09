@@ -686,7 +686,7 @@ export const zh = {
   replyLanguageEn: "English",
   settingsUnsavedChanges: "有未保存的更改",
   approvalModeHelp:
-    "审阅：常规文件改动和风险操作先确认。自动：工作区内可恢复的文件增删改自动执行，风险命令、工作区外写入和沙箱提权仍需确认。完全访问：跳过常规审阅，但硬安全边界仍需确认。Git 使用变更记录，非 Git 使用会话 checkpoint，均可从变更卡撤销。可与 OS 沙箱同时使用；沙箱为只读时隐藏审阅（写操作已被围栏挡住）。",
+    "审阅：常规文件改动和非只读命令先确认。自动：可恢复文件改动、Windows 上明确的测试/构建/格式化命令，以及受 OS 沙箱约束的常规命令直接执行，不再逐条调用 LLM 审阅；安装/发布、推送、系统操作、递归删除、工作区外路径和沙箱提权仍需确认，作用域不透明的脚本命令仍会审阅。完全访问：跳过常规审阅，但确定性硬门禁仍需确认。Git 使用变更记录，非 Git 使用会话 checkpoint，均可从变更卡撤销。沙箱为只读时隐藏常规审阅（写操作已被围栏挡住）。",
   sandboxModeHelp:
     "仅 Linux/macOS 生效。只读：命令无法写盘。工作区可写：可写当前工作区。危险完全访问：关闭 OS 沙箱围栏。Windows 忽略此设置。",
 
@@ -850,11 +850,11 @@ export const zh = {
   normalModeDesc: "轻量对话与简单请求",
   approvalMode: "审阅权限",
   reviewMode: "审阅",
-  reviewModeDesc: "文件改动与风险操作先确认",
+  reviewModeDesc: "文件改动与非只读命令先确认",
   autoMode: "自动",
-  autoModeDesc: "可恢复的工作区改动自动执行；高风险操作仍确认",
+  autoModeDesc: "常规项目命令直接执行；不透明脚本和硬门禁仍确认",
   fullAccessMode: "完全访问",
-  fullAccessModeDesc: "跳过常规审阅；硬安全边界仍需确认",
+  fullAccessModeDesc: "跳过常规审阅；确定性硬门禁仍需确认",
   sandboxMode: "沙箱",
   sandboxReadOnlyMode: "只读",
   sandboxReadOnlyModeDesc: "命令在沙箱内运行，无法写入磁盘",

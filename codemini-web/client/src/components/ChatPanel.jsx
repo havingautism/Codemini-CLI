@@ -409,6 +409,7 @@ function ChatPanelContent({
                       message={msg}
                       onRetry={onRetryMessage}
                       projectIsGit={projectIsGit}
+                      gitFiles={gitInfo?.files}
                     />
                   </MessageScrollerItem>
                 ))}

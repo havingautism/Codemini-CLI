@@ -57,7 +57,7 @@ const DEFAULT_CONFIG = {
   },
   execution: {
     mode: 'normal',
-    // Auto: skip soft prompts in git workspaces; non-git file mutations still review.
+    // Auto: run recoverable workspace mutations and explicit routine commands; keep hard gates.
     approval_mode: 'auto',
     always_allow_tools: [
       'read',

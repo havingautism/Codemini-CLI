@@ -9,7 +9,7 @@ import {
   resolveApprovalProjectIsGit,
   toolRequiresUserApproval
 } from '../src/core/approval-policy.js';
-import { runAgentLoop } from '../src/core/agent-loop.js';
+import { resolveShellApprovalStrategy, runAgentLoop } from '../src/core/agent-loop.js';
 import { getBuiltinTools, hasRunCommandSafeModeApproval } from '../src/core/tools.js';
 import { closeSqliteDatabasesForTests } from '../src/core/sqlite-database.js';
 import { resolvePlanSubAgentApprovalOptions, ROLE_TOOL_POLICY } from '../src/core/chat-runtime.js';
@@ -150,6 +150,90 @@ test('sandbox escalation always requires explicit approval', () => {
       true,
       approvalMode,
     );
+  }
+});
+
+test('deterministic command gates survive every approval mode', () => {
+  for (const approvalMode of ['review', 'auto', 'full_access']) {
+    assert.equal(toolRequiresUserApproval({
+      approvalMode,
+      toolName: 'Bash',
+      isDeterministicCommandGate: true,
+      alwaysAllowTools: ['run'],
+    }), true, approvalMode);
+  }
+});
+
+test('confining sandbox replaces LLM review for routine Bash outside review mode', () => {
+  const config = {
+    shell: { default: 'bash' },
+    policy: {
+      safe_mode: true,
+      command_allowlist: [],
+      blocked_commands: [],
+      blocked_path_patterns: [],
+      blocked_command_patterns: [],
+    },
+  };
+  const sandboxed = resolveShellApprovalStrategy({
+    command: 'npm test',
+    config,
+    osSandboxConfining: true,
+    approvalMode: 'auto',
+  });
+  assert.equal(sandboxed.sandboxFirst, true);
+  assert.equal(sandboxed.needsLlmReview, false);
+  assert.equal(sandboxed.deterministicGate, false);
+
+  assert.equal(resolveShellApprovalStrategy({
+    command: 'npm test',
+    config,
+    osSandboxConfining: false,
+    approvalMode: 'auto',
+    platform: 'linux',
+  }).needsLlmReview, true);
+  assert.equal(resolveShellApprovalStrategy({
+    command: 'npm test',
+    config,
+    osSandboxConfining: true,
+    approvalMode: 'review',
+  }).needsLlmReview, true);
+
+  const install = resolveShellApprovalStrategy({
+    command: 'npm install',
+    config,
+    osSandboxConfining: true,
+    approvalMode: 'auto',
+  });
+  assert.equal(install.deterministicGate, true);
+  assert.equal(install.sandboxFirst, false);
+  assert.equal(install.needsLlmReview, false);
+});
+
+test('Windows auto mode skips LLM review only for explicit routine project commands', () => {
+  const config = {
+    shell: { default: 'powershell' },
+    policy: { safe_mode: true, blocked_command_patterns: [] },
+  };
+  const routine = resolveShellApprovalStrategy({
+    command: 'npm run build:web',
+    config,
+    approvalMode: 'auto',
+    platform: 'win32',
+  });
+  assert.equal(routine.windowsFastLane, true);
+  assert.equal(routine.needsLlmReview, false);
+
+  for (const command of ['node scripts/build.js', 'python cleanup.py']) {
+    const opaque = resolveShellApprovalStrategy({ command, config, approvalMode: 'auto', platform: 'win32' });
+    assert.equal(opaque.windowsFastLane, false, command);
+    assert.equal(opaque.needsLlmReview, true, command);
+  }
+
+  for (const command of ['npm test -- ..\\outside', 'Get-Content C:\\Windows\\win.ini']) {
+    const escaping = resolveShellApprovalStrategy({ command, config, approvalMode: 'auto', platform: 'win32' });
+    assert.equal(escaping.deterministicGate, true, command);
+    assert.equal(escaping.needsLlmReview, false, command);
   }
 });
 

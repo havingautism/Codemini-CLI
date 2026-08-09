@@ -228,7 +228,7 @@ test('long tool call arguments end with an ellipsis before the status indicator'
     toolCard,
     /msg-process-meta__detail ml-1 block min-w-0 flex-1 truncate font-mono/,
   );
-  assert.match(toolCard, /SessionOrb state="working" className="mr-1\.5"/);
+  assert.match(toolCard, /SessionOrb state="tool" className="mr-1\.5"/);
 });
 
 test('memory management owns the Inbox experience instead of the action palette', () => {

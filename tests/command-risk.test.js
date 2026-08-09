@@ -1,6 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { classifyCommandRisk, requiresApprovalEvaluation } from '../src/core/command-risk.js';
+import {
+  classifyCommandRisk,
+  isRoutineProjectCommand,
+  requiresApprovalEvaluation,
+  requiresDeterministicCommandApproval,
+} from '../src/core/command-risk.js';
 import { evaluateCommandPolicy } from '../src/core/command-policy.js';
 
 test('interpreter and package-script commands are never classified as read-only', () => {
@@ -102,4 +107,49 @@ test('Unix tightens dual-use commands without changing Windows classification', 
     assert.notEqual(classifyCommandRisk(command, 'bash', 'linux'), 'read-only', command);
     assert.equal(classifyCommandRisk(command, 'powershell', 'win32'), 'read-only', command);
   }
+});
+
+test('deterministic command gates cover external and destructive effects without catching routine workspace work', () => {
+  for (const command of [
+    'git push origin main',
+    'git reset --hard HEAD~1',
+    'npm install',
+    'curl -X POST https://example.com/items',
+    'sudo systemctl restart app',
+    'rm -rf dist',
+    'bash -lc "kubectl delete pod app"',
+  ]) {
+    assert.equal(requiresDeterministicCommandApproval(command), true, command);
+  }
+  for (const command of [
+    'npm test',
+    'npm run build',
+    'mkdir dist',
+    'touch output.txt',
+    'echo ok > output.txt',
+    'rm output.txt',
+    'rg "git push" src',
+  ]) {
+    assert.equal(requiresDeterministicCommandApproval(command), false, command);
+  }
+});
+
+test('Windows routine project commands are explicit and reject opaque or escaping inputs', () => {
+  for (const command of [
+    'npm test',
+    'npm run build:web',
+    'node --test tests/tools.test.js',
+    'python -m pytest',
+    'cargo clippy',
+    'dotnet test',
+  ]) assert.equal(isRoutineProjectCommand(command), true, command);
+
+  for (const command of [
+    'npm install',
+    'npm run deploy',
+    'node scripts/build.js',
+    'python cleanup.py',
+    'npm test -- ../outside',
+    'npm test > result.txt',
+  ]) assert.equal(isRoutineProjectCommand(command), false, command);
 });

@@ -699,7 +699,7 @@ export const en = {
   replyLanguageEn: "English",
   settingsUnsavedChanges: "Unsaved changes",
   approvalModeHelp:
-    "Review: confirm routine file changes and risky actions. Auto: run recoverable file changes inside the workspace automatically; risky commands, writes outside the workspace, and sandbox escalation still need confirmation. Full access: skip routine review, while hard safety boundaries still require confirmation. Git uses change history and non-Git uses session checkpoints; both can be undone from change cards. Works alongside the OS sandbox; when sandbox is read-only, approval is hidden because writes are already blocked.",
+    "Review: confirm routine file changes and non-read-only commands. Auto: run recoverable file changes, explicit test/build/format commands on Windows, and routine commands confined by the OS sandbox directly, without per-command LLM review; installs and publishing, pushes, system operations, recursive deletion, outside-workspace paths, and sandbox escalation still need confirmation, while opaque script commands remain reviewed. Full access: skip routine review while deterministic hard gates still require confirmation. Git uses change history and non-Git uses session checkpoints; both can be undone from change cards. Read-only sandbox mode hides routine review because writes are already blocked.",
   sandboxModeHelp:
     "Linux/macOS only. Read-only: commands cannot write disk. Workspace-write: can write the current workspace. Danger full access: disable the OS sandbox fence. Ignored on Windows.",
 
@@ -874,11 +874,11 @@ export const en = {
   normalModeDesc: "Light chat and simple requests",
   approvalMode: "Approval Mode",
   reviewMode: "Review",
-  reviewModeDesc: "Confirm file changes and risky actions",
+  reviewModeDesc: "Confirm file changes and non-read-only commands",
   autoMode: "Auto",
-  autoModeDesc: "Auto-run recoverable workspace changes; confirm high-risk actions",
+  autoModeDesc: "Run routine project commands; review opaque scripts and hard gates",
   fullAccessMode: "Full Access",
-  fullAccessModeDesc: "Skip routine review; keep hard safety boundaries",
+  fullAccessModeDesc: "Skip routine review; keep deterministic hard gates",
   sandboxMode: "Sandbox",
   sandboxReadOnlyMode: "Read-only",
   sandboxReadOnlyModeDesc: "Run commands in a sandbox with no disk writes",

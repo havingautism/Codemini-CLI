@@ -32,6 +32,32 @@ export function resolveFileChangeSequenceAction(actions = []) {
   return existsAfter ? "edit" : "delete";
 }
 
+function normalizeGitPath(value) {
+  return String(value || "")
+    .replace(/\\/g, "/")
+    .replace(/^\.\//, "");
+}
+
+export function reconcileFileChangesWithGit(fileChanges = [], gitFiles) {
+  if (!Array.isArray(gitFiles)) return fileChanges;
+  const statusByPath = new Map(
+    gitFiles
+      .map((file) => [normalizeGitPath(file?.path), file])
+      .filter(([filePath]) => filePath),
+  );
+  return fileChanges.flatMap((change) => {
+    const gitFile = statusByPath.get(normalizeGitPath(change?.path));
+    if (!gitFile) return [];
+    const action =
+      gitFile.status === "?" || gitFile.status === "A"
+        ? "create"
+        : gitFile.status === "D"
+          ? "delete"
+          : "edit";
+    return [{ ...change, action }];
+  });
+}
+
 export function buildFileChangePreviewLines(previewText, action = "edit") {
   return String(previewText || "")
     .split(/\r?\n/)

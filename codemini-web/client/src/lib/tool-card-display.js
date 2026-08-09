@@ -122,12 +122,17 @@ export function getFileToolMeta(toolName, args, result, summary, fileChange, res
   const structuredChanges = Array.isArray(fileChanges) && fileChanges.length
     ? fileChanges
     : (fileChange ? [fileChange] : []);
+  const requestedPath = String(parsedResult.path || parsedArgs.path || "")
+    .replace(/\\/g, "/")
+    .replace(/^\.\//, "");
   const structuredChange =
-    structuredChanges.find((change) => change && typeof change === "object") || {};
-  const capturedPatch = structuredChanges
-    .map((change) => String(change?.diffPreview || ""))
-    .filter(Boolean)
-    .join("\n");
+    structuredChanges.find(
+      (change) =>
+        String(change?.path || "")
+          .replace(/\\/g, "/")
+          .replace(/^\.\//, "") === requestedPath,
+    ) || structuredChanges.find((change) => change && typeof change === "object") || {};
+  const capturedPatch = String(structuredChange.diffPreview || "");
   const pathText =
     parsedResult.path ||
     structuredChange.path ||
