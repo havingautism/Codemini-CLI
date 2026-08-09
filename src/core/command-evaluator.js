@@ -22,13 +22,16 @@ Rules:
 - Be concise. Maximum 1 sentence per field.`;
 }
 
-const FAIL_CLOSED_RESULT = Object.freeze({
-  risk: 'high',
-  description: '',
-  sideEffects: '',
-  recommendation: 'deny',
-  failed: true
-});
+function failedEvaluation(failureReason) {
+  return {
+    risk: 'high',
+    description: '',
+    sideEffects: '',
+    recommendation: 'deny',
+    failed: true,
+    failureReason
+  };
+}
 
 function extractJsonObjectText(text) {
   const raw = String(text || '').trim();
@@ -55,7 +58,7 @@ export function parseEvaluation(text) {
       failed: false
     };
   } catch {
-    return { ...FAIL_CLOSED_RESULT };
+    return failedEvaluation('invalid_response');
   }
 }
 
@@ -66,7 +69,7 @@ export function parseEvaluation(text) {
  */
 export async function evaluateCommandWithLLM({ command, config, workspaceRoot }) {
   const cmd = String(command || '').trim();
-  if (!cmd) return { ...FAIL_CLOSED_RESULT };
+  if (!cmd) return failedEvaluation('empty_command');
 
   try {
     const result = await createChatCompletion({
@@ -84,7 +87,8 @@ export async function evaluateCommandWithLLM({ command, config, workspaceRoot })
 
     const text = result?.text || '';
     return parseEvaluation(text);
-  } catch {
-    return { ...FAIL_CLOSED_RESULT };
+  } catch (error) {
+    const message = String(error?.message || error || '');
+    return failedEvaluation(/abort|timed?\s*out|timeout/i.test(message) ? 'timeout' : 'provider_error');
   }
 }

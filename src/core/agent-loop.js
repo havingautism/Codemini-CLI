@@ -1031,11 +1031,14 @@ export async function runAgentLoop({
               const evaluateCommandFn = typeof evaluateCommand === 'function'
                 ? evaluateCommand
                 : (await import('./command-evaluator.js')).evaluateCommandWithLLM;
-              const evaluation = await evaluateCommandFn({
+              let evaluation = await evaluateCommandFn({
                 command: args?.command || '',
                 config,
                 workspaceRoot: config?.workspaceRoot || process.cwd()
               });
+              if (evaluation?.failed && !evaluation.failureReason) {
+                evaluation = { ...evaluation, failureReason: 'evaluator_error' };
+              }
               approvalArgs = {
                 ...args,
                 _risk: evaluation.failed
@@ -1080,7 +1083,8 @@ export async function runAgentLoop({
                   description: '',
                   sideEffects: '',
                   recommendation: 'deny',
-                  failed: true
+                  failed: true,
+                  failureReason: 'evaluator_error'
                 },
                 _policyBlock: isSafeModePolicyBlocked
                   ? { reason: runPolicyCheck.reason, suggestion: runPolicyCheck.suggestion || '' }

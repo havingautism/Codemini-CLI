@@ -438,6 +438,62 @@ test('git auto mode executes low-risk allowed evaluations without manual review'
   assert.equal(hasRunCommandSafeModeApproval(handlerArgs), true);
 });
 
+test('LLM evaluator failures reach manual approval with an explicit failure reason', async () => {
+  let completionIndex = 0;
+  let approvalRequest = null;
+  const config = {
+    memory: { enabled: false },
+    shell: { default: 'powershell' },
+    policy: {
+      safe_mode: true,
+      allow_dangerous_commands: false,
+      allowed_paths: [],
+      command_allowlist: [],
+      blocked_commands: [],
+      blocked_path_patterns: [],
+      blocked_command_patterns: [],
+    },
+    sandbox: { enabled: false },
+  };
+
+  await runAgentLoop({
+    systemPrompt: 'test',
+    userPrompt: 'inspect with PowerShell',
+    model: 'test-model',
+    workspaceRoot: process.cwd(),
+    requestCompletion: async () => {
+      completionIndex += 1;
+      return completionIndex === 1
+        ? {
+            text: '',
+            toolCalls: [{
+              id: 'failed-review-run',
+              name: 'Powershell',
+              arguments: JSON.stringify({ command: 'custom-inspect' }),
+              argumentsComplete: true,
+            }],
+          }
+        : { text: 'done', toolCalls: [] };
+    },
+    evaluateCommand: async () => {
+      throw new Error('gateway unavailable');
+    },
+    toolHandlers: { Powershell: async () => ({ ok: true }) },
+    approvalMode: 'auto',
+    projectIsGit: true,
+    alwaysAllowTools: ['run'],
+    requestToolApproval: async (request) => {
+      approvalRequest = request;
+      return { approved: false };
+    },
+    skipAnalysisNudge: true,
+    config,
+  });
+
+  assert.equal(approvalRequest.arguments._evaluation.failed, true);
+  assert.equal(approvalRequest.arguments._evaluation.failureReason, 'evaluator_error');
+});
+
 test('plan sub-agent approval options inherit role tools and workspace git', () => {
   const options = resolvePlanSubAgentApprovalOptions({
     role: 'coder',

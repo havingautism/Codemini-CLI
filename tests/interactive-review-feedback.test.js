@@ -83,6 +83,8 @@ test('review dialogs expose progressive custom-response controls', () => {
   assert.match(approvalDialog, /setFeedbackOpen\(true\)/);
   assert.match(approvalDialog, /reason: feedback\.trim\(\)/);
   assert.match(approvalDialog, /approvalFeedbackPlaceholder/);
+  assert.match(approvalDialog, /evaluation\?\.failed/);
+  assert.match(approvalDialog, /approvalEvaluationFailed/);
   assert.match(userInputDialog, /question\.allow_other/);
   assert.match(userInputDialog, /setCustomResponseOpen\(true\)/);
   assert.match(userInputDialog, /custom_response: customResponse\.trim\(\)/);

@@ -4001,16 +4001,35 @@ function estimateBaselinePromptOverhead(config, executionMode) {
   return overhead;
 }
 
-function buildRuntimeStateSnapshot({ currentSession, config, model, executionMode, extraSession, workspaceRoot, alwaysSkillNames = [] }) {
-  const activeParentMessages = Array.isArray(currentSession?.compact?.view) && currentSession.compact.view.length > 0
-    ? currentSession.compact.view
-    : currentSession?.messages || [];
-  const parentTokens = estimateMessagesTokens(modelVisibleMessages(activeParentMessages));
-  const subTokens = extraSession ? estimateMessagesTokens(modelVisibleMessages(extraSession.messages || [])) : 0;
-  const baselineOverhead = activeParentMessages.length > 0
+export function resolveLatestContextMeasurement(messages = [], fallbackOverhead = 0) {
+  const visibleMessages = modelVisibleMessages(Array.isArray(messages) ? messages : []);
+  for (let index = visibleMessages.length - 1; index >= 0; index -= 1) {
+    const message = visibleMessages[index];
+    if (message?.role !== 'assistant') continue;
+    const usage = normalizeModelUsage(message.usage);
+    if (usage?.inputTokens > 0) {
+      return { tokens: usage.inputTokens, source: 'actual' };
+    }
+    return {
+      tokens: estimateMessagesTokens(visibleMessages.slice(0, index)) + fallbackOverhead,
+      source: 'estimated'
+    };
+  }
+  return { tokens: 0, source: 'estimated' };
+}
+
+export function buildRuntimeStateSnapshot({ currentSession, config, model, executionMode, extraSession, workspaceRoot, alwaysSkillNames = [] }) {
+  const activeMessages = extraSession
+    ? extraSession.messages || []
+    : Array.isArray(currentSession?.compact?.view) && currentSession.compact.view.length > 0
+      ? currentSession.compact.view
+      : currentSession?.messages || [];
+  const baselineOverhead = activeMessages.length > 0
     ? estimateBaselinePromptOverhead(config, executionMode)
     : 0;
-  const currentContextTokens = parentTokens + subTokens + baselineOverhead;
+  const contextMeasurement = resolveLatestContextMeasurement(activeMessages, baselineOverhead);
+  const currentContextTokens = contextMeasurement.tokens;
+  const contextUsageSource = contextMeasurement.source;
   const maxContextTokens = effectiveMaxContextTokens(config);
   const contextUsagePct = maxContextTokens > 0 ? Math.min(100, Math.max(0, (currentContextTokens / maxContextTokens) * 100)) : 0;
   const planState = currentSession?.planState;
@@ -4063,6 +4082,11 @@ function buildRuntimeStateSnapshot({ currentSession, config, model, executionMod
       enumerable: false,
       writable: false
     },
+    contextUsageSource: {
+      value: contextUsageSource,
+      enumerable: false,
+      writable: false
+    },
     replyLanguage: {
       value: getReplyLanguage(config),
       enumerable: false,
@@ -4073,6 +4097,7 @@ function buildRuntimeStateSnapshot({ currentSession, config, model, executionMod
         ...snapshot,
         currentContextTokens,
         contextUsagePct,
+        contextUsageSource,
         replyLanguage: getReplyLanguage(config)
       }),
       enumerable: false,

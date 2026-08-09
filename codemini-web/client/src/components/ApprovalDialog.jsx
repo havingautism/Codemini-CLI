@@ -137,7 +137,9 @@ function ApprovalBody({ variant, args, details }) {
           />
         </ReviewSection>
         {details?.risk && <RiskDetailRow label={t('approvalFieldRisk')} risk={details.risk} />}
-        {details?.evaluation?.recommendation && (
+        {details?.evaluation?.failed ? (
+          <DetailRow label={t('approvalFieldReview')} value={t('approvalEvaluationFailed')} />
+        ) : details?.evaluation?.recommendation && (
           <DetailRow
             label={t('approvalFieldRecommend')}
             value={localizeRecommendation(details.evaluation.recommendation)}

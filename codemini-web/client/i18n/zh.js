@@ -37,6 +37,8 @@ export const zh = {
   approvalFieldCommand: "命令",
   approvalFieldRisk: "风险",
   approvalFieldRecommend: "建议",
+  approvalFieldReview: "审阅",
+  approvalEvaluationFailed: "LLM 审阅失败，已转为人工确认",
   approvalRiskLow: "低",
   approvalRiskMedium: "中",
   approvalRiskHigh: "高",

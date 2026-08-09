@@ -36,3 +36,16 @@ test('PowerShell path policy uses Windows drive and relative path semantics', ()
   );
   assert.ok(inspection.candidates.some((candidate) => candidate.kind === 'special' && candidate.value === 'NUL'));
 });
+
+test('PowerShell path policy does not treat regex operands as rooted paths', () => {
+  const root = 'E:\\Projects\\App';
+  const inspection = inspectShellCommandPaths({
+    command: "Get-ChildItem src -Recurse | Where-Object { $_.FullName -notmatch '\\.venv' }",
+    shell: 'powershell',
+    workspaceRoot: root,
+    allowedRoots: [root],
+  });
+
+  assert.deepEqual(inspection.outside, []);
+  assert.ok(inspection.candidates.some((candidate) => candidate.kind === 'literal' && candidate.value === '\\.venv'));
+});

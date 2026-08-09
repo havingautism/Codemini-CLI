@@ -41,6 +41,26 @@ test('ordinary inspection commands remain read-only', () => {
   }
 });
 
+test('PowerShell read-only pipelines accept Split-Path without LLM review', () => {
+  const workspaceRoot = 'E:\\Projects\\App';
+  const command = `cd "${workspaceRoot}"; Get-ChildItem backend-python -Recurse -File -Filter *.py | Where-Object { $_.FullName -notmatch '\\.venv' } | Select-String -Pattern 'academic' -List | ForEach-Object { $_.Path } | Split-Path -Leaf | Sort-Object -Unique; Write-Host "=== frontend academic ==="; cd src; Get-ChildItem -Recurse -Include *.jsx,*.js -File | Select-String -Pattern 'academic' -List | ForEach-Object { $_.Path } | Sort-Object -Unique`;
+  const config = {
+    shell: { default: 'powershell' },
+    policy: {
+      safe_mode: true,
+      allow_dangerous_commands: false,
+      allowed_paths: [],
+      command_allowlist: [],
+      blocked_commands: [],
+      blocked_path_patterns: [],
+      blocked_command_patterns: [],
+    },
+  };
+
+  assert.equal(classifyCommandRisk(command, 'powershell', 'win32'), 'read-only');
+  assert.deepEqual(evaluateCommandPolicy(command, config, workspaceRoot), { allowed: true });
+});
+
 test('bash safe-mode allowlist accepts the same ordinary read-only commands', () => {
   const command = 'echo "hello from shell" && date && pwd';
   const config = {

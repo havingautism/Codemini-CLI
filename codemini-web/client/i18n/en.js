@@ -35,6 +35,8 @@ export const en = {
   approvalFieldCommand: "Command",
   approvalFieldRisk: "Risk",
   approvalFieldRecommend: "Recommend",
+  approvalFieldReview: "Review",
+  approvalEvaluationFailed: "LLM review failed; manual confirmation is required",
   approvalRiskLow: "Low",
   approvalRiskMedium: "Medium",
   approvalRiskHigh: "High",

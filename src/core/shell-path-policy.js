@@ -3,6 +3,9 @@ import { parse as parseShell } from 'shell-quote';
 
 const POSIX_SPECIAL_PATHS = new Set(['/dev/null', '/dev/stdin', '/dev/stdout', '/dev/stderr']);
 const REDIRECT_OPERATORS = new Set(['>', '>>', '<', '>&', '<&']);
+const POWERSHELL_LITERAL_PREDECESSORS = new Set([
+  '-like', '-notlike', '-match', '-notmatch', '-replace', '-split', '-pattern'
+]);
 
 function pathApiForShell(shell = '') {
   return String(shell || '').toLowerCase() === 'powershell' ? path.win32 : path.posix;
@@ -53,7 +56,13 @@ function unwrapAssignedPath(value = '') {
 }
 
 function collectPowerShellCandidates(command) {
-  return splitPowerShellTokens(command).map((value) => ({ value: unwrapAssignedPath(value), role: 'argument' }));
+  const tokens = splitPowerShellTokens(command);
+  return tokens.map((value, index) => ({
+    value: unwrapAssignedPath(value),
+    role: POWERSHELL_LITERAL_PREDECESSORS.has(String(tokens[index - 1] || '').toLowerCase())
+      ? 'literal'
+      : 'argument'
+  }));
 }
 
 function collectBashCandidates(command) {
@@ -80,6 +89,7 @@ function classifyCandidate(candidate, { shell, workspaceRoot, allowedRoots }) {
   const api = pathApiForShell(shell);
   const value = String(candidate?.value || '').trim();
   if (!value) return { ...candidate, kind: 'other' };
+  if (candidate?.role === 'literal') return { ...candidate, kind: 'literal' };
   if (api === path.posix && POSIX_SPECIAL_PATHS.has(value)) return { ...candidate, kind: 'special' };
   if (api === path.win32 && /^nul:?$/i.test(value)) {
     return { ...candidate, kind: 'special' };
