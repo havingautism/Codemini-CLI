@@ -561,7 +561,10 @@ function ToolGroup({ cards }) {
       {total > 0 && shouldUseSummaryHeader && (
         <button
           type="button"
-          className={COLLAPSE_ROW_CLASS}
+          className={cn(
+            COLLAPSE_ROW_CLASS,
+            planCards.length > 0 && "mt-4",
+          )}
           onClick={() => setExpanded((value) => !value)}
           aria-expanded={expanded}
         >
@@ -578,6 +581,7 @@ function ToolGroup({ cards }) {
         <div
           className={cn(
             "flex flex-col gap-2",
+            planCards.length > 0 && !shouldUseSummaryHeader && "mt-4",
             shouldUseSummaryHeader &&
               "ml-4.5 mt-2 border-l border-(--border-default) pl-3",
           )}
@@ -900,7 +904,10 @@ function ProcessGroup({ group }) {
           <button
             type="button"
             onClick={() => setExpanded((value) => !value)}
-            className={COLLAPSE_ROW_CLASS}
+            className={cn(
+              COLLAPSE_ROW_CLASS,
+              planCards.length > 0 && "mt-4",
+            )}
             aria-expanded={expanded}
           >
             {expanded ? (
