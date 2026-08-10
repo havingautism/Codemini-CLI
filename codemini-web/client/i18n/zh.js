@@ -666,6 +666,7 @@ export const zh = {
   shell: "终端",
   defaultShell: "默认 Shell",
   defaultShellHelp: "run 工具使用的 Shell（bash、PowerShell、zsh 或 cmd）。",
+  shellSandboxLockedDesc: "沙箱命令在 Linux 微虚拟机中运行，因此只能使用 Bash。",
   shellBashDesc: "Linux 与 macOS 常用默认 Shell。",
   shellPowershellDesc: "Windows 推荐使用。",
   shellZshDesc: "macOS 与 Linux 上的增强 Bourne Shell。",

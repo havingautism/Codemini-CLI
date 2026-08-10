@@ -11,7 +11,7 @@ export const SANDBOX_MODES = Object.freeze([
 export function normalizeSandboxMode(value, { platform = process.platform } = {}) {
   const raw = String(value || '').trim().toLowerCase().replace(/_/g, '-');
   if (SANDBOX_MODES.includes(raw)) return raw;
-  return platform === 'win32' ? 'danger-full-access' : 'workspace-write';
+  return 'workspace-write';
 }
 
 export function isSandboxEnabled(config = {}, { platform = process.platform } = {}) {
@@ -19,12 +19,11 @@ export function isSandboxEnabled(config = {}, { platform = process.platform } = 
   if (raw === false || raw === 'false' || raw === 'off' || raw === 'never') return false;
   if (raw === true || raw === 'true' || raw === 'on' || raw === 'always') return true;
   // auto / unset
-  return platform !== 'win32';
+  return true;
 }
 
 /**
- * Resolve per-call sandbox policy. Windows defaults to danger-full-access
- * (no OS confine); Linux/mac default to workspace-write when enabled.
+ * Resolve per-call sandbox policy for the cross-platform microVM backend.
  */
 export function resolveSandboxPolicy({
   config = {},
@@ -36,7 +35,7 @@ export function resolveSandboxPolicy({
   const workspaceRoot = path.resolve(
     String(config?.sandbox?.workspace_root || cwd || process.cwd()),
   );
-  if (!enabled || platform === 'win32') {
+  if (!enabled) {
     return {
       enabled: false,
       mode: 'danger-full-access',
@@ -83,7 +82,7 @@ export function validateSandboxEscalationArgs(
     throw new Error(`invalid sandbox_permissions: ${args.sandbox_permissions}`);
   }
   const current = resolveSandboxPolicy({ config, cwd, platform });
-  if (!current.enabled || platform === 'win32') {
+  if (!current.enabled) {
     throw new Error('sandbox_permissions is not available without a confining sandbox');
   }
   if (SANDBOX_MODES.indexOf(rawMode) <= SANDBOX_MODES.indexOf(current.mode)) {
@@ -100,7 +99,7 @@ export function validateSandboxEscalationArgs(
 
 /**
  * Soft approval is redundant when OS sandbox is already read-only (no writes).
- * Windows always shows approval (no OS sandbox).
+ * Read-only confinement makes the soft approval surface redundant.
  */
 export function resolveApprovalUiEnabled({
   config = {},
@@ -108,7 +107,6 @@ export function resolveApprovalUiEnabled({
   platform = process.platform,
 } = {}) {
   const policy = resolveSandboxPolicy({ config, cwd, platform });
-  if (platform === 'win32') return true;
   return !(policy.enabled && policy.mode === 'read-only');
 }
 
@@ -122,7 +120,7 @@ export function writableRootsForMode(policy) {
   } catch {
     roots.push(path.resolve(os.tmpdir()));
   }
-  // Also grant unresolved tmpdir spelling (Seatbelt/Landlock often need both).
+  // Also grant the unresolved tmpdir spelling for in-process file tools.
   const tmp = path.resolve(os.tmpdir());
   if (!roots.includes(tmp)) roots.push(tmp);
   return roots;
@@ -138,7 +136,7 @@ function pathUnderRoot(targetAbs, rootAbs) {
  * or an error message string if denied.
  */
 export function assertSandboxWriteAllowed(targetPath, policy) {
-  if (!policy || policy.platform === 'win32' || !policy.enabled) return null;
+  if (!policy || !policy.enabled) return null;
   if (policy.mode === 'danger-full-access') return null;
 
   let resolved;

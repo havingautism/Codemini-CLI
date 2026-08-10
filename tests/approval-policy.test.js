@@ -213,6 +213,7 @@ test('confining sandbox replaces LLM review for routine Bash outside review mode
 test('Windows auto mode skips LLM review only for explicit routine project commands', () => {
   const config = {
     shell: { default: 'powershell' },
+    sandbox: { enabled: false },
     policy: { safe_mode: true, blocked_command_patterns: [] },
   };
   const routine = resolveShellApprovalStrategy({

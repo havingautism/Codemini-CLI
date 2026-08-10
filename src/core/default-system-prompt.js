@@ -1,7 +1,7 @@
 import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
-import { getShellSystemPrompt } from './shell-profile.js';
+import { getShellSystemPrompt, resolveShellContext } from './shell-profile.js';
 
 function resolvePromptCwd(options = {}) {
   const raw = options.workspaceRoot || options.cwd || process.cwd();
@@ -16,11 +16,18 @@ function formatToolPath(cwd, ...segments) {
   return JSON.stringify(path.join(cwd, ...segments));
 }
 
-function getToolFewShotBlock(config = {}, cwd = process.cwd()) {
-  const authServicePath = formatToolPath(cwd, 'src', 'auth', 'service.ts');
-  const reducerRangePath = JSON.stringify(`${path.join(cwd, 'src', 'store', 'reducer.ts')}:110-150`);
-  const notesPath = formatToolPath(cwd, 'notes.txt');
-  const isWin = process.platform === 'win32';
+function getToolFewShotBlock(config = {}, cwd = process.cwd(), platform = process.platform) {
+  const shellContext = resolveShellContext(config, { cwd, platform });
+  const toolPath = (...segments) => shellContext.sandbox.enabled
+    ? JSON.stringify(segments.join('/'))
+    : formatToolPath(cwd, ...segments);
+  const authServicePath = toolPath('src', 'auth', 'service.ts');
+  const reducerPath = shellContext.sandbox.enabled
+    ? 'src/store/reducer.ts'
+    : path.join(cwd, 'src', 'store', 'reducer.ts');
+  const reducerRangePath = JSON.stringify(`${reducerPath}:110-150`);
+  const notesPath = toolPath('notes.txt');
+  const isWin = platform === 'win32';
   const editExample = isWin
     ? `Tool: edit({"path":${authServicePath},"old_text":"loginUser","new_text":"signInUser"})`
     : `Tool: edit({"file_path":${authServicePath},"old_string":"loginUser","new_string":"signInUser"})`;
@@ -49,18 +56,23 @@ Tool: glob({"pattern":"src/**/*.ts"})`
 Tool: glob({"pattern":"src/**/*.ts"})
 Tool: grep({"pattern":"loginUser","path":"src"})
 Load other deferred tools with tool_search when needed.`;
-  const patchHint = isWin
+  const patchToolHint = isWin
     ? `For a large or multi-file code patch, use apply_patch with one escaped patch_text string:
 Tool: apply_patch({"patch_text":"*** Begin Patch\\n*** Update File: ${path.join('src', 'auth', 'service.ts').replace(/\\/g, '/')}\\n@@\\n-export const enabled = false;\\n+export const enabled = true;\\n*** End Patch"})`
-    : `On Linux/mac, prefer edit old_string/new_string for edits (multi-hunk via multiple edit calls). Shell commands run under the OS file sandbox (default workspace-write); denials include [sandbox: ...] markers.`;
+    : `Prefer edit old_string/new_string for edits (multi-hunk via multiple edit calls).`;
+  const sandboxHint = shellContext.sandbox.enabled
+    ? `Shell commands run inside a Linux microVM sandbox (${shellContext.sandbox.mode}); denials include [sandbox: ...] markers.`
+    : '';
+  const patchHint = [patchToolHint, sandboxHint].filter(Boolean).join('\n');
 
   return `# Tool Examples
 
 Use these as style examples for tool calls:
 
-Current working directory: ${cwd}
-When a tool takes path, build it from the current working directory and prefer absolute paths.
-If the user mentions a project-relative path like src/app.ts, resolve it from ${cwd} instead of guessing parent directories.
+Current working directory: ${shellContext.sandbox.enabled ? 'project root' : shellContext.commandCwd}
+${shellContext.sandbox.enabled
+  ? 'Use project-relative paths such as src/app.ts for both file tools and shell commands. Do not add the sandbox mount path.'
+  : `When a tool takes path, build it from the current working directory and prefer absolute paths.\nIf the user mentions a project-relative path like src/app.ts, resolve it from ${cwd} instead of guessing parent directories.`}
 Tool arguments must be valid JSON objects. When a string contains file content, encode newlines as \\n inside the JSON string; never put raw unescaped line breaks inside a JSON string.
 
 1. File discovery then read
@@ -102,25 +114,36 @@ Prefer these direct tool shapes over multi-step metadata reads or shell fallback
 Prefer explicit absolute path values when the current working directory is known.`;
 }
 
-function getEnvBlock(cwd = process.cwd(), config = {}) {
+function getEnvBlock(cwd = process.cwd(), config = {}, platform = process.platform) {
   let isGitRepo = false;
   try {
     fs.accessSync(path.join(cwd, '.git'));
     isGitRepo = true;
   } catch {}
 
-  const sandboxMode =
-    process.platform === 'win32'
-      ? 'off (Windows uses command policy)'
-      : String(config?.sandbox?.mode || 'workspace-write');
+  const context = resolveShellContext(config, { cwd, platform });
+  const commandPlatform = context.sandbox.enabled ? 'linux (Microsandbox guest)' : context.commandPlatform;
+
+  if (context.sandbox.enabled) {
+    return `<env>
+Working directory: project root
+Is directory a git repo: ${isGitRepo ? 'Yes' : 'No'}
+Platform: ${commandPlatform}
+Shell: bash
+Network: unrestricted outbound access
+Sandbox: ${context.sandbox.mode}
+</env>`;
+  }
 
   return `<env>
 Working directory: ${cwd}
 Is directory a git repo: ${isGitRepo ? 'Yes' : 'No'}
-Platform: ${process.platform}
-Shell: ${os.userInfo().shell || 'unknown'}
+Host platform: ${platform}
+Command platform: ${commandPlatform}
+Shell: ${context.shell || os.userInfo().shell || 'unknown'}
+Shell working directory: ${context.commandCwd}
 OS Version: ${os.version || os.release()}
-Sandbox: ${sandboxMode}
+Sandbox: ${context.sandbox.mode}
 </env>`;
 }
 
@@ -152,12 +175,14 @@ function normalizePromptBlocks(blocks) {
 
 export function buildDefaultSystemPrompt(config = {}, options = {}) {
   const cwd = resolvePromptCwd(options);
+  const platform = options.platform || process.platform;
+  const shellContext = resolveShellContext(config, { cwd, platform });
   return [
-    getShellSystemPrompt(config?.shell?.default),
-    getToolFewShotBlock(config, cwd),
+    getShellSystemPrompt(shellContext.shell),
+    getToolFewShotBlock(config, cwd, platform),
     getNaturalWritingBlock(),
     getMarkdownImageBlock(),
-    getEnvBlock(cwd, config),
+    getEnvBlock(cwd, config, platform),
     ...normalizePromptBlocks(options.extraPrompts)
   ].filter(Boolean).join('\n\n');
 }

@@ -2440,6 +2440,10 @@ export async function buildRuntimeForSession({ sessionId, model, projectDir }) {
     config,
     model: model || config.model?.name,
     systemPrompt,
+    systemPromptFactory: (nextConfig) => buildDefaultSystemPrompt(nextConfig, {
+      workspaceRoot: sessionProjectDir,
+      extraPrompts: isGeneral ? [getGeneralChatSystemPromptBlock()] : [],
+    }),
     workspaceRoot: sessionProjectDir,
   });
   return { runtime, config, session, cwd: sessionProjectDir, isGeneral };

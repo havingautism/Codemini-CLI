@@ -453,7 +453,7 @@ export function resolveShellApprovalStrategy({
   platform = process.platform,
   projectIsGit = false,
 } = {}) {
-  const policyCheck = evaluateCommandPolicy(command, config, workspaceRoot);
+  const policyCheck = evaluateCommandPolicy(command, config, workspaceRoot, platform);
   const policyHardGate = !policyCheck.allowed && /^(?:absolute path outside|relative path escapes|cd escapes|blocked protected system path|blocked command:)/i.test(policyCheck.reason || '');
   const deterministicGate = policyHardGate || requiresDeterministicCommandApproval(command);
   const sandboxFirst = Boolean(osSandboxConfining && approvalMode !== 'review' && !deterministicGate);
@@ -940,13 +940,11 @@ export async function runAgentLoop({
       }
       let sandboxEscalation = null;
       try {
-        if (process.platform !== 'win32') {
-          sandboxEscalation = validateSandboxEscalationArgs(args, {
-            config,
-            cwd: workspaceRoot,
-            platform: process.platform,
-          });
-        }
+        sandboxEscalation = validateSandboxEscalationArgs(args, {
+          config,
+          cwd: workspaceRoot,
+          platform: process.platform,
+        });
       } catch (error) {
         approvalResults.set(call.id, {
           approved: false,

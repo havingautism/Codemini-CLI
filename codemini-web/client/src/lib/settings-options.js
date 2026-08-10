@@ -117,7 +117,7 @@ export function getSearchProviderOptions() {
   ];
 }
 
-export function getShellOptions() {
+export function getShellOptions({ sandboxMode = "danger-full-access" } = {}) {
   return [
     {
       value: "bash",
@@ -143,7 +143,10 @@ export function getShellOptions() {
       description: t("shellCmdDesc"),
       icon: Command,
     },
-  ];
+  ].map((option) => ({
+    ...option,
+    disabled: sandboxMode !== "danger-full-access" && option.value !== "bash",
+  }));
 }
 
 export function getReplyLanguageOptions() {
@@ -163,9 +166,9 @@ const OPTION_GETTERS = {
   replyLanguage: getReplyLanguageOptions,
 };
 
-export function getSettingsOptions(key) {
+export function getSettingsOptions(key, context) {
   const getter = OPTION_GETTERS[key];
-  return typeof getter === "function" ? getter() : [];
+  return typeof getter === "function" ? getter(context) : [];
 }
 
 export const SETTINGS_TABS = [

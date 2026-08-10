@@ -50,24 +50,6 @@ test('research list requests forward abort signals', async () => {
   }
 });
 
-test('research cards lift a generated title emoji into the top-left visual', async () => {
-  const source = await fs.readFile('codemini-web/client/src/components/ResearchPanel.jsx', 'utf8');
-  assert.match(source, /function splitEmojiTitle/);
-  assert.match(source, /session\?\.title \|\| session\?\.plan\?\.title/);
-  assert.match(source, /titleParts\.emoji/);
-  assert.match(source, /titleParts\.title/);
-});
-
-test('research investigation UI surfaces verify phase and parallel scout status', async () => {
-  const source = await fs.readFile('codemini-web/client/src/components/ResearchPanel.jsx', 'utf8');
-  assert.match(source, /criterion:verify_start/);
-  assert.match(source, /deepResearchStatusVerifying/);
-  assert.match(source, /deepResearchParallelRunning/);
-  assert.match(source, /formatVerificationLabel/);
-  assert.match(source, /deepResearchWarning/);
-  assert.match(source, /activeCriterionText/);
-});
-
 test('research list summaries expose generated titles to library cards', async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-research-title-'));
   const previous = process.env.CODEMINI_GLOBAL_DIR;

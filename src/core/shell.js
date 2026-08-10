@@ -185,6 +185,10 @@ function collectDescendantPids(rootPid, seen = new Set()) {
 
 export function terminateChild(child, signal = 'SIGTERM') {
   if (!child) return;
+  if (child.sandboxProcess) {
+    child.kill(signal);
+    return;
+  }
   const pid = Number(child.pid);
   if (process.platform === 'win32' && Number.isInteger(pid) && pid > 0) {
     try {
@@ -227,7 +231,7 @@ export function resolveShell(defaultShell) {
 }
 
 export function resolveSandboxShell(defaultShell) {
-  return defaultShell === 'powershell' ? 'pwsh' : defaultShell || 'bash';
+  return 'bash';
 }
 
 export function isDangerousCommand(command, blockedPatterns = []) {
@@ -235,20 +239,7 @@ export function isDangerousCommand(command, blockedPatterns = []) {
   return blockedPatterns.some((pattern) => lowered.includes(String(pattern).toLowerCase()));
 }
 
-function spawnShellChild({ shellSpec, shellCommand, cwd, sandboxedCommand, sandboxSpawn }) {
-  if (sandboxSpawn?.executable) {
-    return spawn(sandboxSpawn.executable, sandboxSpawn.args || [], {
-      cwd,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-  }
-  if (sandboxedCommand) {
-    return spawn(sandboxedCommand, {
-      cwd,
-      shell: true,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-  }
+function spawnShellChild({ shellSpec, shellCommand, cwd }) {
   return spawn(shellSpec.command, [...shellSpec.args, shellCommand], {
     cwd,
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -258,7 +249,7 @@ function spawnShellChild({ shellSpec, shellCommand, cwd, sandboxedCommand, sandb
 export async function runShellCommand({
   command,
   cwd = process.cwd(),
-  shell = 'powershell',
+  shell = 'bash',
   timeoutMs = 1800000,
   signal,
   config,
@@ -273,33 +264,24 @@ export async function runShellCommand({
       ? `exec ${command}`
       : command;
 
-  let sandboxedCommand = '';
-  let sandboxSpawn = null;
+  let sandboxChild = null;
   let sandboxMeta = { wrapped: false, mode: '' };
-  let annotateStderr = null;
-  if (process.platform !== 'win32' && config) {
-    const { wrapShellCommandForSandbox, annotateSandboxStderrAsync } = await import('./sandbox-runtime.js');
-    annotateStderr = annotateSandboxStderrAsync;
-    const wrap = await wrapShellCommandForSandbox({
+  if (config) {
+    const { createSandboxProcess } = await import('./sandbox-runtime.js');
+    const wrapped = createSandboxProcess({
       command: String(command || ''),
       config,
       cwd,
-      binShell: resolveSandboxShell(shell),
-      abortSignal: signal,
       mode: sandboxMode,
     });
-    if (wrap.wrapped) {
-      sandboxedCommand = wrap.command;
-      if (wrap.executable) {
-        sandboxSpawn = { executable: wrap.executable, args: wrap.args };
-        sandboxedCommand = '';
-      }
-      sandboxMeta = { wrapped: true, mode: wrap.policy?.mode || '' };
+    if (wrapped) {
+      sandboxChild = wrapped.child;
+      sandboxMeta = { wrapped: true, mode: wrapped.policy?.mode || '' };
     }
   }
 
   return new Promise((resolve, reject) => {
-    const child = spawnShellChild({ shellSpec, shellCommand, cwd, sandboxedCommand, sandboxSpawn });
+    const child = sandboxChild || spawnShellChild({ shellSpec, shellCommand, cwd });
 
     let stdout = '';
     let stderr = '';
@@ -331,14 +313,6 @@ export async function runShellCommand({
       if (autoStopTimer) clearTimeout(autoStopTimer);
       signal?.removeEventListener('abort', abortCommand);
       let next = withSandboxFields(value);
-      if (sandboxMeta.wrapped && typeof annotateStderr === 'function') {
-        try {
-          next = {
-            ...next,
-            stderr: await annotateStderr(String(command || ''), next.stderr || ''),
-          };
-        } catch {}
-      }
       if (
         sandboxMeta.wrapped &&
         next.code &&

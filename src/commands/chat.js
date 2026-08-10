@@ -154,6 +154,11 @@ export async function handleChat(args) {
     config,
     model: selectedModel,
     systemPrompt,
+    systemPromptFactory: parsed.system
+      ? null
+      : (nextConfig) => buildDefaultSystemPrompt(nextConfig, {
+          workspaceRoot: session?.projectDir || process.cwd(),
+        }),
     workspaceRoot: session?.projectDir || process.cwd(),
   });
 

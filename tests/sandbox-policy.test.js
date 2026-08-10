@@ -12,8 +12,8 @@ import {
   writableRootsForMode,
 } from '../src/core/sandbox-policy.js';
 
-test('normalizeSandboxMode defaults by platform', () => {
-  assert.equal(normalizeSandboxMode('', { platform: 'win32' }), 'danger-full-access');
+test('normalizeSandboxMode defaults to workspace-write on every platform', () => {
+  assert.equal(normalizeSandboxMode('', { platform: 'win32' }), 'workspace-write');
   assert.equal(normalizeSandboxMode('', { platform: 'linux' }), 'workspace-write');
   assert.equal(normalizeSandboxMode('read_only'), 'read-only');
 });
@@ -45,20 +45,20 @@ test('sandbox escalation requires paired fields and a strictly wider mode', () =
   );
 });
 
-test('isSandboxEnabled auto is off on Windows and on elsewhere', () => {
-  assert.equal(isSandboxEnabled({ sandbox: { enabled: 'auto' } }, { platform: 'win32' }), false);
+test('isSandboxEnabled auto is on on every platform', () => {
+  assert.equal(isSandboxEnabled({ sandbox: { enabled: 'auto' } }, { platform: 'win32' }), true);
   assert.equal(isSandboxEnabled({ sandbox: { enabled: 'auto' } }, { platform: 'linux' }), true);
   assert.equal(isSandboxEnabled({ sandbox: { enabled: false } }, { platform: 'linux' }), false);
 });
 
-test('resolveSandboxPolicy disables on Windows', () => {
+test('resolveSandboxPolicy enables workspace-write on Windows', () => {
   const policy = resolveSandboxPolicy({
     config: { sandbox: { mode: 'workspace-write', enabled: 'auto' } },
     cwd: '/tmp/ws',
     platform: 'win32',
   });
-  assert.equal(policy.enabled, false);
-  assert.equal(policy.mode, 'danger-full-access');
+  assert.equal(policy.enabled, true);
+  assert.equal(policy.mode, 'workspace-write');
 });
 
 test('resolveSandboxPolicy enables workspace-write on linux', () => {
@@ -72,7 +72,7 @@ test('resolveSandboxPolicy enables workspace-write on linux', () => {
   assert.equal(policy.workspaceRoot, path.resolve('/tmp/ws'));
 });
 
-test('approval UI hidden only for non-Windows read-only sandbox', () => {
+test('approval UI is hidden for read-only sandbox on every platform', () => {
   assert.equal(
     resolveApprovalUiEnabled({
       config: { sandbox: { mode: 'read-only', enabled: 'auto' } },
@@ -95,7 +95,7 @@ test('approval UI hidden only for non-Windows read-only sandbox', () => {
       cwd: '/tmp/ws',
       platform: 'win32',
     }),
-    true,
+    false,
   );
 });
 

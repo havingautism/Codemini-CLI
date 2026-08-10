@@ -316,9 +316,10 @@ function ApprovalModeSelector({ sessionId, current, disabled = false }) {
   );
 }
 
-function SandboxModeSelector({ sessionId, current, disabled = false }) {
+function SandboxModeSelector({ sessionId, current, onChange, disabled = false }) {
   const [open, setOpen] = useState(false);
   const [switching, setSwitching] = useState(false);
+  const [error, setError] = useState("");
   const MODE_OPTIONS = getSandboxModeOptions();
   const active =
     MODE_OPTIONS.find((m) => m.value === current) || MODE_OPTIONS[0];
@@ -327,16 +328,15 @@ function SandboxModeSelector({ sessionId, current, disabled = false }) {
   const handleSelect = async (mode) => {
     if (!mode || mode === current || switching || disabled) return;
     setSwitching(true);
+    setError("");
     try {
-      const result = await api.setSandboxMode(sessionId, mode);
-      if (result?.error || result?.ok === false) {
-        throw new Error(result.message || "Failed to switch sandbox mode");
-      }
-    } catch {
+      await onChange(sessionId, mode);
+      setOpen(false);
+    } catch (err) {
+      setError(err?.message || t("actionFailed"));
     } finally {
       setSwitching(false);
     }
-    setOpen(false);
   };
 
   return (
@@ -398,6 +398,11 @@ function SandboxModeSelector({ sessionId, current, disabled = false }) {
             );
           })}
         </ToggleGroup>
+        {error ? (
+          <div role="alert" className="px-2 pt-1.5 text-[11px] text-(--accent-red)">
+            {error}
+          </div>
+        ) : null}
       </PopoverContent>
     </Popover>
   );
@@ -1443,6 +1448,7 @@ export function InputBar({
               <SandboxModeSelector
                 sessionId={rs.sessionId}
                 current={sandboxMode}
+                onChange={actions.setSandboxMode}
                 disabled={inputLocked}
               />
             ) : null}

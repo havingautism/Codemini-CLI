@@ -93,26 +93,27 @@ codemini config set shell.default bash
 codemini config set ui.language zh
 ```
 
-### Sandbox (Linux / macOS)
+### Sandbox (Windows / Linux / macOS)
 
-The model-facing `Bash` or `Powershell` tool is OS-confined when `sandbox.enabled` is `auto` (default on non-Windows) or `true`. Linux/WSL uses an npm-distributed Landlock launcher; macOS uses the built-in Seatbelt runner.
+The default model-facing command tool is `Bash` on every platform. When `sandbox.enabled` is `auto` or `true`, commands run inside a Microsandbox Linux microVM with the workspace bind-mounted at `/workspace`. On Windows, explicitly disabling the sandbox restores the native `Powershell` tool instead of requiring WSL or Git Bash.
 
 ```bash
-codemini config set sandbox.mode workspace-write   # default on Linux/mac
+codemini config set sandbox.mode workspace-write   # default on every platform
 codemini config set sandbox.mode read-only
 codemini config set sandbox.mode danger-full-access
-codemini config set sandbox.enabled false          # disable OS confine
+codemini config set sandbox.enabled false          # explicit host execution
+codemini config set sandbox.image node:22-bookworm
 ```
 
 | Mode | Effect |
 | --- | --- |
-| `workspace-write` | OS-limited writes to workspace (+ temp); network unrestricted |
-| `read-only` | No writes; network unrestricted |
-| `danger-full-access` | No OS wrap |
+| `workspace-write` | Linux microVM with a read/write workspace mount |
+| `read-only` | Linux microVM with a read-only workspace mount |
+| `danger-full-access` | Explicit host execution without the microVM |
 
-If the sandbox cannot start, Codemini **refuses** to run the command unconfined. On Linux/WSL, `npm install` automatically selects the matching `linux-x64` or `linux-arm64` Landlock launcher; no `bubblewrap` or `socat` installation is required. Run `npm install` separately inside Linux rather than sharing a Windows `node_modules` directory with WSL. macOS uses the system-provided `sandbox-exec`, with no extra package-manager step.
+If the sandbox is enabled but cannot start, Codemini **refuses** to run the command on the host. `npm install` selects the matching Microsandbox runtime package. Local execution requires KVM on Linux, Apple Silicon on macOS, or Windows Hypervisor Platform on Windows 11. Run `npx microsandbox doctor` to diagnose the host runtime. The first command pulls `sandbox.image`; later sandboxes reuse the image cache.
 
-**Windows:** the Unix sandbox is not used. Approval mode stays available, including the soft “outside current project” review for file mutations. Tools and command-policy stay as before (including staged writes and `apply_patch`). On Linux/mac, CRUD prefers DeepSeek-style `edit` (`old_string`/`new_string`) with always-on `glob`/`grep`; staged write tools and `apply_patch` are omitted. OS sandbox and soft approval work together: sandbox limits writes outside the workspace (so the outside-dir soft review is skipped while the sandbox is confining), while approval mode (default `auto`) skips prompts in Git repos and still reviews non-Git file mutations. When sandbox mode is `read-only`, soft approval is skipped and the approval selector is hidden. Unique tools (`search_code`, memory, plan, …) remain.
+Approval and sandboxing remain separate: the microVM enforces the filesystem boundary, while approval mode controls whether an operation may be attempted. Windows keeps its staged write and `apply_patch` tools; only its default command surface changes from PowerShell to sandboxed Bash. When sandbox mode is `read-only`, soft approval is skipped and the approval selector is hidden.
 
 ### Run diagnostics
 

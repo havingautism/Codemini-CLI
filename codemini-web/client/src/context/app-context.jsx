@@ -4142,6 +4142,25 @@ export function AppProvider({ children }) {
           },
         });
       },
+      setSandboxMode: async (sessionId, mode) => {
+        const previous = stateRef.current.runtimeState || {};
+        update({
+          runtimeState: {
+            ...previous,
+            sandboxMode: mode,
+          },
+        });
+        try {
+          const result = await api.setSandboxMode(sessionId, mode);
+          if (result?.error || result?.ok === false) {
+            throw new Error(result?.message || "Failed to switch sandbox mode");
+          }
+          return result;
+        } catch (error) {
+          update({ runtimeState: previous });
+          throw error;
+        }
+      },
       setProjectOpen: (open) => update({ projectOpen: open }),
       setSkillsOpen: (open) => update({ skillsOpen: open }),
       setMcpOpen: (open) => update({ mcpOpen: open }),

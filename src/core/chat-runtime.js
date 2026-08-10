@@ -4005,9 +4005,9 @@ export function buildRuntimeStateSnapshot({ currentSession, config, model, execu
     messageCount: Array.isArray(currentSession?.messages) ? currentSession.messages.length : 0,
     mode: resolvedMode,
     approvalMode: config.execution?.approval_mode || 'auto',
-    sandboxMode: config.sandbox?.mode
-      || (process.platform === 'win32' ? 'danger-full-access' : 'workspace-write'),
-    sandboxUiEnabled: process.platform !== 'win32',
+    sandboxMode: config.sandbox?.mode || 'workspace-write',
+    shell: config.shell?.default || 'bash',
+    sandboxUiEnabled: true,
     approvalUiEnabled: resolveApprovalUiEnabled({
       config,
       cwd: workspaceRoot,
@@ -7372,7 +7372,8 @@ async function handleShellInput(shellText, config, workspaceRoot = process.cwd()
   const result = await runShellCommand({
     command: shellText,
     shell: config.shell.default,
-    timeoutMs: config.shell.timeout_ms
+    timeoutMs: config.shell.timeout_ms,
+    config,
   });
   const chunks = [];
   if (result.stdout.trim()) chunks.push(result.stdout.trimEnd());
@@ -7425,6 +7426,7 @@ export async function createChatRuntime({
   config: initialConfig,
   model,
   systemPrompt,
+  systemPromptFactory,
   requestToolApproval,
   workspaceRoot
 }) {
@@ -7483,6 +7485,10 @@ export async function createChatRuntime({
     currentSession.model = model;
   }
   const baseSystemPrompt = systemPrompt;
+  const getBaseSystemPrompt = () =>
+    typeof systemPromptFactory === 'function'
+      ? systemPromptFactory(config)
+      : baseSystemPrompt;
   let executionMode = resolveRuntimeExecutionMode(config.execution?.mode || 'normal', config, currentSession);
   let compactState = null;
   const normalizeCompactThreshold = (value, fallback = 60) => {
@@ -7967,7 +7973,7 @@ export async function createChatRuntime({
       buildMemoryDecisionGraphBlock()
     ].join('\n\n');
     return composeSystemPrompt({
-      shellRulesPrompt: baseSystemPrompt,
+      shellRulesPrompt: getBaseSystemPrompt(),
       config,
       workspaceRoot: root,
       skillsPrompt: includeSkillIndex ? getSkillIndexPrompt() : '',
@@ -8166,7 +8172,7 @@ export async function createChatRuntime({
         parentSession: currentSession,
         config,
         model,
-        systemPrompt: baseSystemPrompt,
+        systemPrompt: getBaseSystemPrompt(),
         onAgentEvent,
         signal,
         onSubSessionActive: (sub) => { activeSubSession = sub; },
@@ -8335,7 +8341,7 @@ export async function createChatRuntime({
         }
       };
       const codeWikiBasePrompt = await composeSystemPrompt({
-        shellRulesPrompt: baseSystemPrompt,
+        shellRulesPrompt: getBaseSystemPrompt(),
         config: codeWikiConfig,
         workspaceRoot: root,
         includeMemory: false,
@@ -8776,7 +8782,6 @@ export async function createChatRuntime({
       return true;
     },
     setSandboxMode: async (next) => {
-      if (process.platform === 'win32') return false;
       const { normalizeSandboxMode } = await import('./sandbox-policy.js');
       const normalized = normalizeSandboxMode(next, { platform: process.platform });
       if (!['read-only', 'workspace-write', 'danger-full-access'].includes(normalized)) return false;

@@ -2,8 +2,9 @@ import path from 'node:path';
 import { getSearchToolHint, resolveSearchToolContext } from './provider/search-tool-registry.js';
 import { getReadOnlyCommandTokens } from './read-only-command-tokens.js';
 import { shellToolName } from './shell-tool-name.js';
+import { resolveSandboxPolicy } from './sandbox-policy.js';
 
-const DEFAULT_SHELL = process.platform === 'win32' ? 'powershell' : 'bash';
+const DEFAULT_SHELL = 'bash';
 
 function uniqueStrings(items = []) {
   const out = [];
@@ -140,8 +141,30 @@ export function getShellProfile(value) {
   return SHELL_PROFILES[normalizeShellName(value)];
 }
 
-export function getEffectivePolicy(config) {
-  const profile = getShellProfile(config?.shell?.default);
+export function resolveShellContext(
+  config = {},
+  { platform = process.platform, cwd = process.cwd() } = {},
+) {
+  const sandbox = resolveSandboxPolicy({ config, cwd, platform });
+  const shell = sandbox.enabled
+    ? 'bash'
+    : platform === 'win32'
+      ? 'powershell'
+      : normalizeShellName(config?.shell?.default);
+  return {
+    sandbox,
+    shell,
+    commandPlatform: sandbox.enabled ? 'linux' : platform,
+    commandCwd: sandbox.enabled ? '/workspace' : path.resolve(cwd),
+    commandToolName: shellToolName({
+      platform: sandbox.enabled ? 'linux' : platform,
+      shell,
+    }),
+  };
+}
+
+export function getEffectivePolicy(config, options = {}) {
+  const profile = getShellProfile(resolveShellContext(config, options).shell);
   const policy = config?.policy || {};
   return {
     ...policy,
@@ -191,7 +214,7 @@ ALWAYS prefer dedicated tools over raw shell commands:
 - The visible default tool list is intentionally small. If a needed capability is not currently listed, do not assume it is unavailable — call tool_search to load additional tools first
 - Treat ${commandToolName} as an execution tool, not a code-reading or code-search tool. Do not use ${commandToolName} to inspect source files, list code directories, grep identifiers, or print file contents when read/search_code/list/glob can do it
 - Use search_code first for code discovery. It routes text, symbol, and structural searches internally so you can narrow candidates before reading source files
-- Use read to inspect files — NEVER use cat, head, or tail via ${commandToolName}. Use canonical shapes like {path:"src/app.ts"}, {path:"src/app.ts:10-40"}, or {path:"src/app.ts", start_line:10, end_line:40}
+- Use read to inspect project source files. Shell utilities such as cat, head, and tail remain available when they are the natural way to inspect command-generated output or system state. Use canonical read shapes like {path:"src/app.ts"}, {path:"src/app.ts:10-40"}, or {path:"src/app.ts", start_line:10, end_line:40}
 - Do not use grep, rg, find, ls, Get-ChildItem, Select-String, Get-Content, or type via ${commandToolName} for normal code exploration. Use search_code/read first; load low-level grep/list/glob with tool_search only when that specific structured tool output is needed
 - If you need directory listing or pattern-based file lookup, load list or glob with tool_search instead of falling back to ${commandToolName}
 - Use edit to modify existing files — this is the DEFAULT path for code changes. Prefer {path:"src/app.ts", old_text:"foo", new_text:"bar"}
@@ -271,12 +294,14 @@ const SUB_AGENT_TOOL_HINTS = {
 };
 
 export function buildSubAgentShellRulesPrompt(allowedTools = [], { shell, workspaceRoot = process.cwd(), role = '', config = {} } = {}) {
-  const profile = getShellProfile(shell);
+  const shellContext = resolveShellContext({
+    ...config,
+    shell: { ...(config?.shell || {}), default: shell },
+  }, { cwd: workspaceRoot });
+  const effectiveShell = shellContext.shell;
+  const profile = getShellProfile(effectiveShell);
   const allowed = uniqueStrings(Array.isArray(allowedTools) ? allowedTools : []);
-  const commandToolName = shellToolName({
-    platform: String(shell || '').toLowerCase() === 'powershell' ? 'win32' : 'linux',
-    shell,
-  });
+  const commandToolName = shellContext.commandToolName;
   const searchCtx = resolveSearchToolContext(config);
   const toolList = allowed.map((name) => name === 'run' ? commandToolName : name).join(', ') || 'none';
   const hintLines = allowed

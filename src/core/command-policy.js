@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { getEffectivePolicy } from './shell-profile.js';
 import { getBaseConfigDir } from './paths.js';
+import { resolveSandboxPolicy } from './sandbox-policy.js';
 import { inspectShellCommandPaths } from './shell-path-policy.js';
 
 const SHELL_KEYWORDS = new Set([
@@ -225,8 +226,9 @@ function validateCdSegment(command) {
   return { allowed: true };
 }
 
-export function evaluateCommandPolicy(command, config, workspaceRoot = process.cwd()) {
-  const policy = getEffectivePolicy(config);
+export function evaluateCommandPolicy(command, config, workspaceRoot = process.cwd(), platform = process.platform) {
+  const policy = getEffectivePolicy(config, { cwd: workspaceRoot, platform });
+  const sandbox = resolveSandboxPolicy({ config, cwd: workspaceRoot, platform });
   const cmd = String(command || '').trim();
   const lower = cmd.toLowerCase();
   if (!cmd) {
@@ -238,6 +240,33 @@ export function evaluateCommandPolicy(command, config, workspaceRoot = process.c
   }
 
   if (!policy.safe_mode) {
+    return { allowed: true };
+  }
+
+  // The Linux microVM is the command boundary. Reapplying the host-oriented
+  // allowlist and path parser here rejects valid guest commands and paths such
+  // as curl and /workspace without adding host protection.
+  if (sandbox.enabled) {
+    const explicitBlockedPaths = Array.isArray(config?.policy?.blocked_path_patterns)
+      ? config.policy.blocked_path_patterns
+      : [];
+    if (includesAny(lower, explicitBlockedPaths)) {
+      return { allowed: false, reason: 'blocked protected system path' };
+    }
+    const explicitBlockedCommands = Array.isArray(config?.policy?.blocked_commands)
+      ? config.policy.blocked_commands
+      : [];
+    const explicitAllowlist = Array.isArray(config?.policy?.command_allowlist)
+      ? config.policy.command_allowlist
+      : [];
+    for (const item of collectCommandTokens(cmd)) {
+      if (includesAny(item.token, explicitBlockedCommands)) {
+        return { allowed: false, reason: `blocked command: ${item.token}`, suggestion: suggestionForToken(item.token, config) };
+      }
+      if (explicitAllowlist.length > 0 && !explicitAllowlist.includes(item.token)) {
+        return { allowed: false, reason: `command not in allowlist: ${item.token}`, suggestion: suggestionForToken(item.token, config) };
+      }
+    }
     return { allowed: true };
   }
 

@@ -293,7 +293,12 @@ export function ConfigDialog({
   };
 
   const renderControl = (field) => {
-    const value = getValue(field.path);
+    const sandboxMode = getValue("sandbox.mode");
+    const sandboxConfined = sandboxMode !== "danger-full-access";
+    const value =
+      field.path === "shell.default" && sandboxConfined
+        ? "bash"
+        : getValue(field.path);
     const idPrefix = field.path.replace(/\./g, "-");
 
     if (field.control === "switch") {
@@ -324,7 +329,7 @@ export function ConfigDialog({
         <SettingsChoiceList
           idPrefix={idPrefix}
           value={value}
-          options={getSettingsOptions(field.optionsKey)}
+          options={getSettingsOptions(field.optionsKey, { sandboxMode })}
           onValueChange={(next) => handleChange(field.path, next)}
         />
       );
@@ -394,6 +399,12 @@ export function ConfigDialog({
             id={field.path}
             label={field.label}
             help={field.help}
+            description={
+              field.path === "shell.default" &&
+              getValue("sandbox.mode") !== "danger-full-access"
+                ? t("shellSandboxLockedDesc")
+                : undefined
+            }
             inline={field.control === "switch"}
           >
             {renderControl(field)}

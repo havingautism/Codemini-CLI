@@ -65,6 +65,7 @@ test('bash safe-mode allowlist accepts the same ordinary read-only commands', ()
   const command = 'echo "hello from shell" && date && pwd';
   const config = {
     shell: { default: 'bash' },
+    sandbox: { enabled: false },
     policy: {
       safe_mode: true,
       allow_dangerous_commands: false,
@@ -77,7 +78,40 @@ test('bash safe-mode allowlist accepts the same ordinary read-only commands', ()
   };
 
   assert.equal(classifyCommandRisk(command, 'bash', 'linux'), 'read-only');
-  assert.deepEqual(evaluateCommandPolicy(command, config), { allowed: true });
+  assert.deepEqual(evaluateCommandPolicy(command, config, process.cwd(), 'linux'), { allowed: true });
+});
+
+test('Microsandbox relies on the microVM boundary instead of the host command allowlist', () => {
+  const config = {
+    shell: { default: 'powershell' },
+    sandbox: { enabled: true, mode: 'workspace-write' },
+    policy: {
+      safe_mode: true,
+      allow_dangerous_commands: false,
+      allowed_paths: [],
+      command_allowlist: [],
+      blocked_commands: [],
+      blocked_path_patterns: [],
+      blocked_command_patterns: [],
+    },
+  };
+
+  for (const command of [
+    'curl -I https://example.com',
+    'echo hello >/workspace/sandbox_test.txt && cat /workspace/sandbox_test.txt',
+    'pwd && whoami && uname -a || ver',
+  ]) {
+    assert.deepEqual(evaluateCommandPolicy(command, config), { allowed: true }, command);
+  }
+
+  const explicitlyBlocked = {
+    ...config,
+    policy: { ...config.policy, blocked_commands: ['curl'] },
+  };
+  assert.match(
+    evaluateCommandPolicy('curl -I https://example.com', explicitlyBlocked).reason,
+    /blocked command: curl/,
+  );
 });
 
 test('read-only scanners do not inherit high-risk keywords from arguments', () => {
@@ -177,6 +211,7 @@ test('Windows routine project commands are explicit and reject opaque or escapin
 test('bash policy ignores the null device and absolute-looking fragments inside globs', () => {
   const config = {
     shell: { default: 'bash' },
+    sandbox: { enabled: false },
     policy: {
       safe_mode: true,
       command_allowlist: [],
@@ -190,10 +225,10 @@ test('bash policy ignores the null device and absolute-looking fragments inside 
     'cd /home/user/projects/app && ls src 2>/dev/null',
     'find /home/user/projects/app -name package.json -not -path "*/node_modules/*" 2>/dev/null',
   ]) {
-    assert.equal(evaluateCommandPolicy(command, config, workspaceRoot).allowed, true, command);
+    assert.equal(evaluateCommandPolicy(command, config, workspaceRoot, 'linux').allowed, true, command);
   }
   assert.match(
-    evaluateCommandPolicy('echo nope >/tmp/outside.txt', config, workspaceRoot).reason,
+    evaluateCommandPolicy('echo nope >/tmp/outside.txt', config, workspaceRoot, 'linux').reason,
     /absolute path outside workspace/,
   );
 });

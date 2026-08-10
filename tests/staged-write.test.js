@@ -208,5 +208,5 @@ test('staged write schemas keep large content as the final property', async (t) 
   assert.equal(Object.keys(definitions.get('write_chunk').parameters.properties).at(-1), 'content');
   assert.equal(Object.keys(definitions.get('edit').parameters.properties).at(-1), 'new_content');
   assert.deepEqual(definitions.get('edit').parameters.required, ['path']);
-  assert.equal(Object.keys(definitions.get('Powershell').parameters.properties).at(-1), 'command');
+  assert.equal(Object.keys(definitions.get('Bash').parameters.properties).at(-1), 'command');
 });

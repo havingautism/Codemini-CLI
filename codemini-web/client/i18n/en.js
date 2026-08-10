@@ -678,6 +678,8 @@ export const en = {
   defaultShell: "Default Shell",
   defaultShellHelp:
     "Shell executable used by the run tool (bash, PowerShell, zsh, or cmd).",
+  shellSandboxLockedDesc:
+    "Sandboxed commands run in a Linux microVM, so only Bash is available.",
   shellBashDesc: "Default on Linux and macOS.",
   shellPowershellDesc: "Recommended on Windows.",
   shellZshDesc: "Extended Bourne shell on macOS and Linux.",

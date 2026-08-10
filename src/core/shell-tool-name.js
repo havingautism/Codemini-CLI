@@ -2,7 +2,7 @@ export function shellToolName({ platform = process.platform, shell = '' } = {}) 
   const normalized = String(shell || '').trim().toLowerCase();
   if (normalized === 'bash') return 'Bash';
   if (normalized === 'powershell' || normalized === 'pwsh') return 'Powershell';
-  return platform === 'win32' ? 'Powershell' : 'Bash';
+  return 'Bash';
 }
 
 export function isShellToolName(name = '') {

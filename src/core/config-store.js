@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { getConfigFilePath } from './paths.js';
 import { normalizeReplyLanguage } from './reply-language.js';
-import { normalizeShellName } from './shell-profile.js';
+import { normalizeShellName, resolveShellContext } from './shell-profile.js';
 import {
   MEMORY_ALWAYS_ALLOW_TOOLS,
   STAGED_WRITE_ALWAYS_ALLOW_TOOLS
@@ -78,7 +78,7 @@ const DEFAULT_CONFIG = {
     retention_days: 30
   },
   shell: {
-    default: normalizeShellName(process.platform === 'win32' ? 'powershell' : 'bash'),
+    default: 'bash',
     timeout_ms: 1800000
   },
   ui: {
@@ -134,11 +134,14 @@ const DEFAULT_CONFIG = {
     blocked_path_patterns: [],
     blocked_command_patterns: ['rm -rf /', 'format c:', 'del /f /s /q C:\\\\']
   },
-  // Linux: npm-shipped Landlock; macOS: Seatbelt. Windows stays off (command-policy only).
+  // Cross-platform Linux microVM. Windows uses native PowerShell only when explicitly disabled.
   sandbox: {
     enabled: 'auto',
-    mode: process.platform === 'win32' ? 'danger-full-access' : 'workspace-write',
-    workspace_root: ''
+    mode: 'workspace-write',
+    workspace_root: '',
+    image: 'node:22-bookworm',
+    cpus: 2,
+    memory_mb: 2048
   },
   skills: {
     enabled: {},
@@ -343,6 +346,10 @@ function normalizePolicyLists(config) {
   }
   next.sandbox.mode = normalizeSandboxMode(next.sandbox.mode);
   next.sandbox.workspace_root = String(next.sandbox.workspace_root || '').trim();
+  next.sandbox.image = String(next.sandbox.image || DEFAULT_CONFIG.sandbox.image).trim() || DEFAULT_CONFIG.sandbox.image;
+  next.sandbox.cpus = normalizedNumber(next.sandbox.cpus, DEFAULT_CONFIG.sandbox.cpus, 1, { integer: true });
+  next.sandbox.memory_mb = normalizedNumber(next.sandbox.memory_mb, DEFAULT_CONFIG.sandbox.memory_mb, 128, { integer: true });
+  next.shell.default = resolveShellContext(next, { platform: process.platform }).shell;
   return next;
 }
 

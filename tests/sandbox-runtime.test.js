@@ -1,180 +1,109 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { once } from 'node:events';
 import {
   __setSandboxRuntimeTestHooks,
+  createSandboxProcess,
   SandboxUnavailableError,
-  wrapShellCommandForSandbox,
 } from '../src/core/sandbox-runtime.js';
-import { resolveSandboxShell } from '../src/core/shell.js';
 
-test('Unix sandbox uses pwsh for a PowerShell-configured shell', () => {
-  assert.equal(resolveSandboxShell('powershell'), 'pwsh');
-  assert.equal(resolveSandboxShell('bash'), 'bash');
-});
+function fakeSandbox(events, captured = {}) {
+  return {
+    async execStreamWith(command, configure) {
+      captured.command = command;
+      const builder = {
+        args(value) { captured.args = value; return this; },
+        cwd(value) { captured.cwd = value; return this; },
+      };
+      configure(builder);
+      return {
+        async *[Symbol.asyncIterator]() {
+          for (const event of events) yield event;
+        },
+        async signal(value) { captured.signal = value; },
+        async kill() { captured.killed = true; },
+      };
+    },
+  };
+}
 
-test('wrapShellCommandForSandbox skips on win32', async () => {
+test('Microsandbox executes Bash in /workspace and streams output on every host', async () => {
+  const captured = {};
   __setSandboxRuntimeTestHooks({
-    SandboxManager: {
-      async initialize() {},
-      isSandboxingEnabled: () => true,
-      isSupportedPlatform: () => true,
-      async wrapWithSandbox() {
-        throw new Error('should not wrap on win32');
-      },
+    createSandbox: async (options) => {
+      captured.options = options;
+      return fakeSandbox([
+        { kind: 'started', pid: 42 },
+        { kind: 'exited', code: 0 },
+        { kind: 'stdout', data: Buffer.from('hello\n') },
+      ], captured);
     },
   });
   try {
-    const out = await wrapShellCommandForSandbox({
-      command: 'echo hi',
-      config: { sandbox: { enabled: 'auto', mode: 'workspace-write' } },
+    const wrapped = createSandboxProcess({
+      command: 'echo hello',
+      config: { sandbox: { enabled: 'auto', mode: 'workspace-write', image: 'node:22-bookworm' } },
       cwd: process.cwd(),
-      platform: 'win32',
     });
-    assert.equal(out.wrapped, false);
-    assert.equal(out.command, 'echo hi');
+    assert.equal(wrapped.policy.enabled, true);
+    let stdout = '';
+    wrapped.child.stdout.on('data', (chunk) => { stdout += chunk.toString(); });
+    const [code] = await once(wrapped.child, 'close');
+    assert.equal(code, 0);
+    assert.equal(stdout, 'hello\n');
+    assert.equal(captured.command, '/bin/bash');
+    assert.deepEqual(captured.args, ['-lc', 'echo hello']);
+    assert.equal(captured.cwd, '/workspace');
+    assert.equal(captured.options.policy.workspaceRoot, process.cwd());
   } finally {
     __setSandboxRuntimeTestHooks(null);
   }
 });
 
-test('workspace-write sandbox uses the npm Landlock launcher and leaves network unrestricted', async () => {
-  let grants = null;
+test('Microsandbox is reused for commands with the same workspace and mode', async () => {
+  let creates = 0;
   __setSandboxRuntimeTestHooks({
-    Landlock: {
-      launcherPath: () => '/npm/bin/landlock-run',
-      probe: () => 'full',
-      grantArgs(value) {
-        grants = value;
-        return ['--grant-test'];
-      },
+    createSandbox: async () => {
+      creates += 1;
+      return fakeSandbox([{ kind: 'exited', code: 0 }]);
     },
   });
   try {
-    const out = await wrapShellCommandForSandbox({
-      command: 'echo hi',
+    const config = { sandbox: { enabled: true, mode: 'read-only' } };
+    const first = createSandboxProcess({ command: 'true', config, cwd: process.cwd() });
+    await once(first.child, 'close');
+    const second = createSandboxProcess({ command: 'true', config, cwd: process.cwd() });
+    await once(second.child, 'close');
+    assert.equal(creates, 1);
+  } finally {
+    __setSandboxRuntimeTestHooks(null);
+  }
+});
+
+test('Microsandbox startup failure is fail-closed', async () => {
+  __setSandboxRuntimeTestHooks({
+    createSandbox: async () => { throw new Error('WHP is unavailable'); },
+  });
+  try {
+    const wrapped = createSandboxProcess({
+      command: 'echo unsafe',
       config: { sandbox: { enabled: true, mode: 'workspace-write' } },
-      cwd: '/tmp/project',
-      platform: 'linux',
-      binShell: 'bash',
+      cwd: process.cwd(),
     });
-    assert.equal(out.wrapped, true);
-    assert.equal(out.executable, '/npm/bin/landlock-run');
-    assert.deepEqual(out.args, ['--grant-test', '--', 'bash', '-lc', 'echo hi']);
-    assert.deepEqual(grants.readOnly, ['/']);
-    assert.ok(grants.readWrite.includes(out.policy.workspaceRoot));
-    assert.equal(out.enforcement, 'full');
+    const [error] = await once(wrapped.child, 'error');
+    assert.ok(error instanceof SandboxUnavailableError);
+    assert.match(error.message, /refusing to run on the host/i);
+    assert.match(error.message, /WHP is unavailable/);
   } finally {
     __setSandboxRuntimeTestHooks(null);
   }
 });
 
-test('read-only Landlock grants only /dev/null for writes', async () => {
-  let grants = null;
-  __setSandboxRuntimeTestHooks({
-    Landlock: {
-      launcherPath: () => '/npm/bin/landlock-run',
-      probe: () => 'partial',
-      grantArgs(value) {
-        grants = value;
-        return [];
-      },
-    },
+test('explicitly disabled sandbox returns native execution', () => {
+  const wrapped = createSandboxProcess({
+    command: 'echo host',
+    config: { sandbox: { enabled: false, mode: 'workspace-write' } },
+    cwd: process.cwd(),
   });
-  try {
-    const out = await wrapShellCommandForSandbox({
-      command: 'echo hi',
-      config: { sandbox: { enabled: true, mode: 'read-only' } },
-      cwd: '/tmp/project',
-      platform: 'linux',
-      binShell: 'bash',
-    });
-    assert.deepEqual(grants, { readOnly: ['/'], readWrite: ['/dev/null'] });
-    assert.equal(out.enforcement, 'partial');
-  } finally {
-    __setSandboxRuntimeTestHooks(null);
-  }
-});
-
-test('macOS keeps the built-in Seatbelt backend and allows network', async () => {
-  let networkCallback = null;
-  __setSandboxRuntimeTestHooks({
-    SandboxManager: {
-      async initialize(_config, callback) {
-        networkCallback = callback;
-      },
-      isSandboxingEnabled: () => true,
-      isSupportedPlatform: () => true,
-      async wrapWithSandbox(command) {
-        return `sandbox-exec -- ${command}`;
-      },
-    },
-  });
-  try {
-    const out = await wrapShellCommandForSandbox({
-      command: 'echo hi',
-      config: { sandbox: { enabled: true, mode: 'workspace-write' } },
-      cwd: '/tmp/project',
-      platform: 'darwin',
-      binShell: 'bash',
-    });
-    assert.equal(out.wrapped, true);
-    assert.equal(out.command, 'sandbox-exec -- echo hi');
-    assert.equal(await networkCallback({ host: 'example.com', port: 443 }), true);
-  } finally {
-    __setSandboxRuntimeTestHooks(null);
-  }
-});
-
-test('wrapShellCommandForSandbox fail-closed when Landlock is unavailable', async () => {
-  __setSandboxRuntimeTestHooks({
-    Landlock: {
-      launcherPath: () => '/missing/landlock-run',
-      probe: () => 'unusable',
-      grantArgs: () => [],
-    },
-  });
-  try {
-    await assert.rejects(
-      () =>
-        wrapShellCommandForSandbox({
-          command: 'echo hi',
-          config: { sandbox: { enabled: true, mode: 'read-only' } },
-          cwd: '/tmp/project',
-          platform: 'linux',
-        }),
-      (err) =>
-        err instanceof SandboxUnavailableError
-        && err.code === 'SANDBOX_UNAVAILABLE'
-        && /npm install in this Linux environment/i.test(err.message)
-        && !/apt-get|bubblewrap|socat/i.test(err.message),
-    );
-  } finally {
-    __setSandboxRuntimeTestHooks(null);
-  }
-});
-
-test('danger-full-access does not wrap', async () => {
-  __setSandboxRuntimeTestHooks({
-    SandboxManager: {
-      async initialize() {
-        throw new Error('should not init');
-      },
-      isSandboxingEnabled: () => true,
-      isSupportedPlatform: () => true,
-      async wrapWithSandbox() {
-        throw new Error('should not wrap');
-      },
-    },
-  });
-  try {
-    const out = await wrapShellCommandForSandbox({
-      command: 'echo hi',
-      config: { sandbox: { enabled: true, mode: 'danger-full-access' } },
-      cwd: '/tmp/project',
-      platform: 'linux',
-    });
-    assert.equal(out.wrapped, false);
-  } finally {
-    __setSandboxRuntimeTestHooks(null);
-  }
+  assert.equal(wrapped, null);
 });

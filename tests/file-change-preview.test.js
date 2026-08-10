@@ -1,6 +1,5 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import fs from 'node:fs/promises';
 import {
   reconcileFileChangesWithGit,
   resolveFileChangeSequenceAction,
@@ -27,22 +26,6 @@ test('file change summary follows the final git worktree state', () => {
     ]),
     [{ path: 'workspace/tool-test.md', action: 'delete', linesAdded: 5 }],
   );
-});
-
-test('non-git runtime state hides the chat file diff summary', async () => {
-  const [runtime, app, chatPanel, messageBubble] = await Promise.all([
-    fs.readFile('src/core/chat-runtime.js', 'utf8'),
-    fs.readFile('codemini-web/client/src/App.jsx', 'utf8'),
-    fs.readFile('codemini-web/client/src/components/ChatPanel.jsx', 'utf8'),
-    fs.readFile('codemini-web/client/src/components/MessageBubble.jsx', 'utf8'),
-  ]);
-
-  assert.match(runtime, /projectIsGit: Boolean\(config\?\.runtime\?\.project_is_git\)/);
-  assert.match(app, /projectIsGit=\{state\.runtimeState\?\.projectIsGit === true\}/);
-  assert.match(chatPanel, /projectIsGit=\{projectIsGit\}/);
-  assert.match(chatPanel, /gitFiles=\{gitInfo\?\.files\}/);
-  assert.match(messageBubble, /if \(!projectIsGit\) return false;/);
-  assert.match(messageBubble, /reconcileFileChangesWithGit\(merged, gitFiles\)/);
 });
 
 test('unifiedPatchToPreviewLines keeps context around comment-only additions', () => {

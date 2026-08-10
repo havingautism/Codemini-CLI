@@ -13,7 +13,6 @@ import {
   hasReadyOutput,
   isDangerousCommand,
   isLikelyLongRunningCommand,
-  resolveSandboxShell,
   resolveShell,
   runShellCommand,
   terminateChild,
@@ -24,7 +23,7 @@ import {
   resolveSandboxPolicy,
   validateSandboxEscalationArgs,
 } from "./sandbox-policy.js";
-import { shellToolName } from "./shell-tool-name.js";
+import { resolveShellContext } from "./shell-profile.js";
 import {
   findEnclosingSymbol,
   queryAst,
@@ -2088,9 +2087,7 @@ async function runCommand(root, config, args, context = {}) {
     args?.background === true ||
     isLikelyLongRunningCommand(command);
 
-  const escalation = process.platform === "win32"
-    ? null
-    : validateSandboxEscalationArgs(args, { config, cwd: root });
+  const escalation = validateSandboxEscalationArgs(args, { config, cwd: root });
   if (escalation && !hasSandboxEscalationApproval(args)) {
     throw new Error("sandbox escalation requires explicit user approval");
   }
@@ -2229,6 +2226,8 @@ function snapshotBackgroundTask(task, tail = 12) {
     exit_code: task.exitCode ?? undefined,
     signal: task.signal ?? undefined,
     duration_ms: Date.now() - task.startedAt,
+    shell: task.shell,
+    sandbox: task.sandbox,
   };
 }
 
@@ -2307,43 +2306,34 @@ async function startBackgroundTask(root, config, args) {
   );
   const portProbe = Number(args?.port_probe || args?.portProbe || 0) || 0;
   const httpProbe = normalizeHttpProbe(args?.http_probe || args?.httpProbe);
+  let publishedPort = portProbe;
+  if (!publishedPort && httpProbe?.url) {
+    try {
+      const parsed = new URL(httpProbe.url);
+      publishedPort = Number(parsed.port || (parsed.protocol === "https:" ? 443 : 80)) || 0;
+    } catch {}
+  }
   const outputDir = await getBackgroundTasksDir(root, config);
   await fs.mkdir(outputDir, { recursive: true });
   const outputFileAbs = path.join(outputDir, `${taskId}.log`);
   await fs.writeFile(outputFileAbs, "", "utf8");
 
-  let sandboxedCommand = "";
-  let sandboxSpawn = null;
-  if (process.platform !== "win32") {
-    const { wrapShellCommandForSandbox } = await import("./sandbox-runtime.js");
-    const wrap = await wrapShellCommandForSandbox({
+  let sandboxChild = null;
+  let activeSandboxPolicy = null;
+  {
+    const { createSandboxProcess } = await import("./sandbox-runtime.js");
+    const wrapped = createSandboxProcess({
       command,
       config,
       cwd: root,
-      binShell: resolveSandboxShell(config.shell.default),
       mode: args?.sandbox_permissions || args?.sandbox_mode || args?.sandboxMode,
+      port: publishedPort,
     });
-    if (wrap.wrapped) {
-      sandboxedCommand = wrap.command;
-      if (wrap.executable) {
-        sandboxSpawn = { executable: wrap.executable, args: wrap.args };
-        sandboxedCommand = "";
-      }
-    }
+    sandboxChild = wrapped?.child || null;
+    activeSandboxPolicy = wrapped?.policy || null;
   }
 
-  const child = sandboxSpawn
-    ? spawn(sandboxSpawn.executable, sandboxSpawn.args, {
-        cwd: root,
-        stdio: ["ignore", "pipe", "pipe"],
-      })
-    : sandboxedCommand
-    ? spawn(sandboxedCommand, {
-        cwd: root,
-        shell: true,
-        stdio: ["ignore", "pipe", "pipe"],
-      })
-    : spawn(
+  const child = sandboxChild || spawn(
         shellSpec.command,
         [...shellSpec.args, shellCommandForBackgroundTask(command, shellSpec)],
         {
@@ -2357,6 +2347,10 @@ async function startBackgroundTask(root, config, args) {
     command,
     cwd: root,
     child,
+    shell: activeSandboxPolicy ? "bash" : config.shell.default,
+    sandbox: activeSandboxPolicy
+      ? { wrapped: true, mode: activeSandboxPolicy.mode }
+      : { wrapped: false, mode: "danger-full-access" },
     startedAt: Date.now(),
     status: "starting",
     intentKind: classifyCommandIntent(command).kind,
@@ -3976,15 +3970,17 @@ export function getBuiltinTools({
 }) {
   workspaceRoot = path.resolve(workspaceRoot);
   const isWin = platform === "win32";
-  const commandToolName = shellToolName({ platform, shell: config?.shell?.default });
-  const sandboxPolicy = resolveSandboxPolicy({
-    config,
-    cwd: workspaceRoot,
-    platform,
-  });
-  const sandboxEscalationProperties = isWin
-    ? {}
-    : {
+  const shellContext = resolveShellContext(config, { platform, cwd: workspaceRoot });
+  const commandToolName = shellContext.commandToolName;
+  const sandboxPolicy = shellContext.sandbox;
+  config = {
+    ...(config || {}),
+    shell: {
+      ...(config?.shell || {}),
+      default: shellContext.shell,
+    },
+  };
+  const sandboxEscalationProperties = sandboxPolicy.enabled ? {
         sandbox_permissions: {
           type: "string",
           enum: ["workspace-write", "danger-full-access"],
@@ -3996,13 +3992,16 @@ export function getBuiltinTools({
           description:
             "Required with sandbox_permissions: why this exact operation needs wider access.",
         },
-      };
+      } : {};
+  const fileToolPathHint = sandboxPolicy.enabled
+    ? " Use a project-relative path such as src/app.ts; do not prefix it with the sandbox mount path."
+    : "";
   const unixReadParameters = {
     type: "object",
     properties: {
       file_path: {
         type: "string",
-        description: "Path to the UTF-8 text file to read.",
+        description: `Path to the UTF-8 text file to read.${fileToolPathHint}`,
       },
       offset: {
         type: "integer",
@@ -4021,7 +4020,7 @@ export function getBuiltinTools({
   const unixEditParameters = {
     type: "object",
     properties: {
-      file_path: { type: "string", description: "Path to the UTF-8 text file to edit." },
+      file_path: { type: "string", description: `Path to the UTF-8 text file to edit.${fileToolPathHint}` },
       old_string: { type: "string", description: "Literal text to replace. Must match exactly." },
       new_string: { type: "string", description: "Literal replacement text. Empty deletes the match." },
       replace_all: { type: "boolean", description: "Replace every match. Defaults to false." },
@@ -4032,7 +4031,7 @@ export function getBuiltinTools({
   const unixWriteParameters = {
     type: "object",
     properties: {
-      file_path: { type: "string", description: "Path to create or fully replace." },
+      file_path: { type: "string", description: `Path to create or fully replace.${fileToolPathHint}` },
       ...sandboxEscalationProperties,
       content: { type: "string", description: "Full UTF-8 text content to write." },
     },
@@ -4041,7 +4040,7 @@ export function getBuiltinTools({
   const unixDeleteParameters = {
     type: "object",
     properties: {
-      file_path: { type: "string", description: "File or directory path to delete." },
+      file_path: { type: "string", description: `File or directory path to delete.${fileToolPathHint}` },
       ...sandboxEscalationProperties,
     },
     required: ["file_path"],
@@ -4065,7 +4064,7 @@ export function getBuiltinTools({
   };
   const assertFsSandbox = (absolutePath, args = {}, allowEscalation = false) => {
     let policy = sandboxPolicy;
-    if (allowEscalation && !isWin) {
+    if (allowEscalation) {
       const escalation = validateSandboxEscalationArgs(args, {
         config,
         cwd: workspaceRoot,
@@ -4080,7 +4079,7 @@ export function getBuiltinTools({
     }
     const denied = assertSandboxWriteAllowed(absolutePath, policy);
     if (denied) {
-      const retryHint = !isWin
+      const retryHint = sandboxPolicy.enabled
         ? " Retry this exact operation once with sandbox_permissions and a justification for user approval."
         : "";
       const error = new Error(`${denied}${retryHint}`);
@@ -4393,9 +4392,9 @@ export function getBuiltinTools({
       type: "function",
       function: {
         name: "read",
-        description: isWin
+        description: `${isWin
           ? 'Inspect code or text files before generating or editing code. Use search_code first to locate the file/range or ast_target, then read that precise context. Use {path} for normal reads; file_path/file are accepted aliases. Use start_line/end_line or path:"src/app.ts:10-40" for ranges. If ast_target comes from search_code structure results, read returns the exact structural node. Normal code reads include enclosing symbol metadata when available; read with query is a Tree-sitter-query fallback that returns the matched AST node and ast_target.'
-          : 'Read a UTF-8 text file and return line-numbered content. Use offset and limit to continue reading large files.',
+          : 'Read a UTF-8 text file and return line-numbered content. Use offset and limit to continue reading large files.'}${fileToolPathHint}`,
         parameters: isWin ? {
           type: "object",
           properties: {
@@ -4496,9 +4495,9 @@ export function getBuiltinTools({
       type: "function",
       function: {
         name: "edit",
-        description: isWin
+        description: `${isWin
           ? 'Edit an existing file after reading enough surrounding code. Tool arguments must be valid JSON; escape file-content newlines as \\n in JSON strings. Use exactly one canonical shape: {path, old_text, new_text} for text replacement; {path, new_content} for a small full-file rewrite; {path, anchor_text, content, position:"before"|"after"} for inserts; or {path, kind:"replace_block", target|ast_target, new_content} for structural replacement. Keep generated content fields near the end of the object. For a long whole-file rewrite, use begin_write/write_chunk/commit_write instead. If old_text is repeated, use path:"file:10-30" or rely on the most recent read range. Set replace_all=true to replace every match.'
-          : 'Edit an existing file after reading it. Prefer {path|file_path, old_string, new_string, replace_all?} for unique literal replacement (DeepSeek/Claude-compatible). old_text/new_text remain accepted aliases. Tool arguments must be valid JSON; escape newlines as \\n. Also supports {path, new_content} full rewrite and insert/replace_block shapes. Set replace_all=true to replace every match.',
+          : 'Edit an existing file after reading it. Prefer {path|file_path, old_string, new_string, replace_all?} for unique literal replacement (DeepSeek/Claude-compatible). old_text/new_text remain accepted aliases. Tool arguments must be valid JSON; escape newlines as \\n. Also supports {path, new_content} full rewrite and insert/replace_block shapes. Set replace_all=true to replace every match.'}${fileToolPathHint}`,
         parameters: isWin ? {
           type: "object",
           properties: {
@@ -4566,9 +4565,9 @@ export function getBuiltinTools({
       type: "function",
       function: {
         name: "write",
-        description: isWin
+        description: `${isWin
           ? "Write an entire small file. Use for new files, or for an intentional full-file overwrite of an existing file with overwrite=true. Always include exactly {path, overwrite?, content}, with content last. Tool arguments must be valid JSON; escape file-content newlines as \\n in JSON strings. For long content that might approach the model output limit, use begin_write, sequential write_chunk calls, then commit_write. For small changes in existing files, prefer edit with {path, old_text, new_text}."
-          : "Create or overwrite a file with {path|file_path, content, overwrite?}. Prefer edit with old_string/new_string for small edits. Tool arguments must be valid JSON; escape newlines as \\n.",
+          : "Create or overwrite a file with {path|file_path, content, overwrite?}. Prefer edit with old_string/new_string for small edits. Tool arguments must be valid JSON; escape newlines as \\n."}${fileToolPathHint}`,
         parameters: isWin ? {
           type: "object",
           properties: {
@@ -4715,7 +4714,7 @@ export function getBuiltinTools({
       function: {
         name: "delete",
         description:
-          "Delete a file or directory inside the workspace. Missing targets fail. Workspace escape attempts are rejected.",
+          `Delete a file or directory inside the workspace. Missing targets fail. Workspace escape attempts are rejected.${fileToolPathHint}`,
         parameters: isWin ? {
           type: "object",
           properties: {
@@ -4894,9 +4893,9 @@ export function getBuiltinTools({
       type: "function",
       function: {
         name: commandToolName,
-        description: isWin
-          ? "Run a compact shell command. Use this for one-shot commands like install/build/test, and also for long-running commands by setting run_in_background=true. Long-running commands may also be backgrounded automatically. Put command last. Do not embed long scripts or generated file content; stage/write the file first, then run a short command that invokes it."
-          : "Run a compact shell command under the OS file sandbox. Default mode is workspace-write. On denial, stderr includes [sandbox: ...]; widen via config sandbox.mode or sandbox_permissions on retry (workspace-write|danger-full-access). Use run_in_background=true for long-running commands. Put command last.",
+        description: sandboxPolicy.enabled
+          ? `Run a compact Bash command inside the Linux microVM sandbox (${sandboxPolicy.mode}) from the project root with unrestricted outbound networking. Use project-relative paths. Ordinary Bash commands, including curl, are available; commands with destructive or external side effects may still require approval. On denial, stderr includes [sandbox: ...]; retry with a wider sandbox_permissions plus justification when needed. Use run_in_background=true for long-running commands. Put command last.`
+          : `Run a compact ${shellContext.shell === "powershell" ? "PowerShell" : "Bash"} command directly on the ${platform === "win32" ? "Windows" : "host"} system without microVM confinement. Use run_in_background=true for long-running commands. Put command last.`,
         parameters: {
           type: "object",
           properties: {
@@ -4929,21 +4928,7 @@ export function getBuiltinTools({
               description:
                 "Optional HTTP readiness probe for a background task",
             },
-            ...(isWin
-              ? {}
-              : {
-                  sandbox_permissions: {
-                    type: "string",
-                    enum: ["workspace-write", "danger-full-access"],
-                    description:
-                      "One-shot wider sandbox mode for this command after a denial",
-                  },
-                  justification: {
-                    type: "string",
-                    description:
-                      "Why wider sandbox_permissions are needed for this retry",
-                  },
-                }),
+            ...sandboxEscalationProperties,
             command: {
               type: "string",
               description: "Compact shell command to execute. Keep this field last.",
@@ -5281,7 +5266,7 @@ export function getBuiltinTools({
       function: {
         name: "list",
         description:
-          "Low-level directory listing. Prefer search_code for code discovery and load this only when you need to inspect directory contents.",
+          `Low-level directory listing. Prefer search_code for code discovery and load this only when you need to inspect directory contents.${fileToolPathHint}`,
         parameters: {
           type: "object",
           properties: {
@@ -7464,9 +7449,13 @@ export function getBuiltinTools({
 
     run(result) {
       if (!result || typeof result !== "object") return String(result);
+      const execution = result?.sandbox?.wrapped
+        ? `[shell: bash | sandbox: ${result.sandbox.mode || sandboxPolicy.mode} | cwd: project root]`
+        : `[shell: ${result.shell || shellContext.shell} | sandbox: off | cwd: ${workspaceRoot}]`;
       if (result.background) {
         const parts = [
           `[background task: ${result.task_id || "?"}]`,
+          execution,
           `status: ${result.status || "running"}`,
         ];
         if (result.command)
@@ -7484,12 +7473,12 @@ export function getBuiltinTools({
         return parts.join("\n");
       }
       const runSummary = summarizeRunOutput(result);
-      if (runSummary) return runSummary;
+      if (runSummary) return `${execution}\n${runSummary}`;
       const command = String(result.command || "").slice(0, 200);
       const stdout = String(result.stdout || "");
       const stderr = String(result.stderr || "");
       const code = result.code ?? 0;
-      const parts = [`[exit: ${code}]`];
+      const parts = [execution, `[exit: ${code}]`];
       if (command) parts.push(`command: ${command}`);
       if (stdout) parts.push(`stdout:\n${stdout}`);
       if (stderr) parts.push(`stderr:\n${stderr}`);

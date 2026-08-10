@@ -33,7 +33,10 @@ test('shell tool name follows the configured shell instead of the host platform'
 
   const powershell = getBuiltinTools({
     workspaceRoot: process.cwd(),
-    config: { shell: { default: 'powershell' } },
+    config: {
+      shell: { default: 'powershell' },
+      sandbox: { enabled: true, mode: 'danger-full-access' },
+    },
     platform: 'linux',
   });
   assert.ok(names(powershell.definitions).includes('Powershell'));
@@ -41,7 +44,70 @@ test('shell tool name follows the configured shell instead of the host platform'
   assert.equal(powershell.handlers.run, undefined);
 });
 
-test('Windows keeps staged write and apply_patch always-on; grep/glob deferred', () => {
+test('Windows command tool description and feedback follow sandbox state', () => {
+  const confined = getBuiltinTools({
+    workspaceRoot: process.cwd(),
+    config: {
+      shell: { default: 'bash' },
+      sandbox: { enabled: true, mode: 'workspace-write' },
+    },
+    platform: 'win32',
+  });
+  const bash = confined.definitions.find((d) => d?.function?.name === 'Bash');
+  assert.match(bash.function.description, /Linux microVM sandbox \(workspace-write\)/);
+  for (const name of ['read', 'edit', 'write', 'delete']) {
+    const tool = confined.definitions.find((d) => d?.function?.name === name);
+    assert.match(tool.function.description, /project-relative path/i, name);
+  }
+  assert.match(confined.deferredDefinitions.list.function.description, /project-relative path/i);
+  assert.ok(bash.function.parameters.properties.sandbox_permissions);
+  assert.match(
+    confined.formatters.Bash({ command: 'pwd', code: 0, stdout: '/workspace\n', sandbox: { wrapped: true, mode: 'workspace-write' } }),
+    /^\[shell: bash \| sandbox: workspace-write \| cwd: project root\]/,
+  );
+
+  const unrestricted = getBuiltinTools({
+    workspaceRoot: process.cwd(),
+    config: {
+      shell: { default: 'powershell' },
+      sandbox: { enabled: true, mode: 'danger-full-access' },
+    },
+    platform: 'win32',
+  });
+  const powershell = unrestricted.definitions.find((d) => d?.function?.name === 'Powershell');
+  assert.match(powershell.function.description, /directly on the Windows system without microVM confinement/);
+  assert.equal(powershell.function.parameters.properties.sandbox_permissions, undefined);
+  assert.match(
+    unrestricted.formatters.Powershell({ command: 'Get-Location', code: 0, stdout: 'C:\\repo\n' }),
+    /^\[shell: powershell \| sandbox: off \| cwd:/,
+  );
+
+  const disabled = getBuiltinTools({
+    workspaceRoot: process.cwd(),
+    config: {
+      shell: { default: 'bash' },
+      sandbox: { enabled: false, mode: 'workspace-write' },
+    },
+    platform: 'win32',
+  });
+  const nativeShell = disabled.definitions.find((d) => d?.function?.name === 'Powershell');
+  assert.match(nativeShell.function.description, /directly on the Windows system without microVM confinement/);
+  assert.equal(nativeShell.function.parameters.properties.sandbox_permissions, undefined);
+  const nativeEdit = disabled.definitions.find((d) => d?.function?.name === 'edit');
+  const nativeRead = disabled.definitions.find((d) => d?.function?.name === 'read');
+  assert.deepEqual(nativeEdit.function.parameters.required, ['path']);
+  assert.equal(nativeEdit.function.parameters.properties.sandbox_permissions, undefined);
+  assert.doesNotMatch(nativeRead.function.description, /project-relative path/i);
+  const active = new Set(names(disabled.definitions));
+  const deferred = new Set(Object.keys(disabled.deferredDefinitions || {}));
+  for (const name of ['begin_write', 'write_chunk', 'commit_write', 'abort_write', 'apply_patch']) {
+    assert.ok(active.has(name), `${name} should remain active when the Windows sandbox is disabled`);
+  }
+  assert.ok(deferred.has('grep'));
+  assert.ok(deferred.has('glob'));
+});
+
+test('Windows keeps staged writes while using Bash and sandbox escalation', () => {
   const bundle = getBuiltinTools({
     workspaceRoot: process.cwd(),
     config: {},
@@ -59,12 +125,39 @@ test('Windows keeps staged write and apply_patch always-on; grep/glob deferred',
   assert.ok(!active.has('glob'));
   const edit = bundle.definitions.find((d) => d?.function?.name === 'edit');
   assert.deepEqual(edit?.function?.parameters?.required, ['path']);
-  assert.equal(edit?.function?.parameters?.properties?.sandbox_permissions, undefined);
+  assert.ok(edit?.function?.parameters?.properties?.sandbox_permissions);
   const write = bundle.definitions.find((d) => d?.function?.name === 'write');
   assert.deepEqual(write?.function?.parameters?.required, ['path', 'content']);
-  assert.equal(write?.function?.parameters?.properties?.sandbox_permissions, undefined);
-  const shell = bundle.definitions.find((d) => d?.function?.name === 'Powershell');
-  assert.equal(shell?.function?.parameters?.properties?.sandbox_permissions, undefined);
+  assert.ok(write?.function?.parameters?.properties?.sandbox_permissions);
+  const shell = bundle.definitions.find((d) => d?.function?.name === 'Bash');
+  assert.ok(shell?.function?.parameters?.properties?.sandbox_permissions);
+});
+
+test('Windows file mutations can use an approved sandbox escalation', async () => {
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-win-sandbox-'));
+  const bundle = getBuiltinTools({
+    workspaceRoot,
+    config: {
+      policy: { allowed_paths: [] },
+      shell: { default: 'bash' },
+      sandbox: { enabled: true, mode: 'read-only' },
+    },
+    platform: 'win32',
+  });
+  try {
+    const args = markSandboxEscalationApproved({
+      path: 'note.txt',
+      content: 'ok',
+      sandbox_permissions: 'workspace-write',
+      justification: 'Create the requested workspace file.',
+    });
+    await bundle.handlers.write(args);
+    assert.equal(await fs.readFile(path.join(workspaceRoot, 'note.txt'), 'utf8'), 'ok');
+  } finally {
+    await bundle.dispose?.();
+    closeSqliteDatabasesForTests();
+    await fs.rm(workspaceRoot, { recursive: true, force: true });
+  }
 });
 
 test('Linux promotes grep/glob and drops staged write + apply_patch', () => {
@@ -125,10 +218,10 @@ test('Linux keeps Codemini tools and removes only Windows write workarounds', ()
     platform: 'linux',
   }));
   assert.deepEqual(
-    [...windows].filter((name) => name !== 'Powershell' && !linux.has(name)).sort(),
+    [...windows].filter((name) => !linux.has(name)).sort(),
     ['abort_write', 'apply_patch', 'begin_write', 'commit_write', 'write_chunk'],
   );
-  assert.deepEqual([...linux].filter((name) => name !== 'Bash' && !windows.has(name)), []);
+  assert.deepEqual([...linux].filter((name) => !windows.has(name)), []);
 });
 
 test('Linux file_path aliases validate and sandbox escalation is approval-bound', async () => {
