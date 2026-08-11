@@ -1,5 +1,9 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Box, Text, useApp, useInput } from 'ink';
+import { getBorderCharacters, table as renderTable } from 'table';
+import stringWidth from 'string-width';
+import stripAnsi from 'strip-ansi';
+import wrapAnsi from 'wrap-ansi';
 import { shouldCaptureEscapeSequence } from './input-escape.js';
 import { classifyCommandIntent } from '../core/shell.js';
 import { isShellToolName } from '../core/shell-tool-name.js';
@@ -660,85 +664,6 @@ function getMarkdownTableAlignments(separatorLine, columnCount) {
   });
 }
 
-function stringWidthLite(value) {
-  return Array.from(String(value || '')).reduce((sum, ch) => sum + charDisplayWidth(ch), 0);
-}
-
-function splitTableWrapUnits(text) {
-  return String(text || '')
-    .split(/([\s,.;:!?/\\|()[\]{}<>，。；：！？、（）【】《》]+)/)
-    .filter(Boolean);
-}
-
-function wrapPlainText(text, width, hard = false) {
-  const normalized = String(text || '').replace(/\s+/g, ' ').trim();
-  if (!normalized) return [''];
-  if (width <= 1) return [normalized];
-
-  const words = splitTableWrapUnits(normalized);
-  const lines = [];
-  let current = '';
-
-  const pushWord = (word) => {
-    if (stringWidthLite(word) <= width) {
-      if (!current) {
-        current = word;
-        return;
-      }
-      const needsSpacer =
-        !/\s$/.test(current) &&
-        !/^\s/.test(word) &&
-        !/^[,.;:!?/\\|)\]}，。；：！？、】【》]/.test(word);
-      const next = needsSpacer ? `${current} ${word}` : `${current}${word}`;
-      if (stringWidthLite(next) <= width) {
-        current = next;
-      } else {
-        lines.push(current);
-        current = word;
-      }
-      return;
-    }
-
-    if (!hard) {
-      if (current) {
-        lines.push(current);
-        current = '';
-      }
-      lines.push(word);
-      return;
-    }
-
-    if (current) {
-      lines.push(current);
-      current = '';
-    }
-    let rest = word;
-    while (stringWidthLite(rest) > width) {
-      lines.push(Array.from(rest).slice(0, width).join(''));
-      rest = Array.from(rest).slice(width).join('');
-    }
-    current = rest;
-  };
-
-  for (const word of words) pushWord(word);
-  if (current) lines.push(current);
-  return lines.length > 0 ? lines : [''];
-}
-
-function padAlignedText(text, width, align = 'left') {
-  const value = String(text || '');
-  const visible = stringWidthLite(value);
-  if (visible >= width) return value;
-  const gap = width - visible;
-  if (align === 'right') return `${' '.repeat(gap)}${value}`;
-  if (align === 'center') {
-    const left = Math.floor(gap / 2);
-    const right = gap - left;
-    return `${' '.repeat(left)}${value}${' '.repeat(right)}`;
-  }
-  return `${value}${' '.repeat(gap)}`;
-}
-
 function normalizeTableCellText(value) {
   return String(value || '')
     .replace(/`([^`]+)`/g, '$1')
@@ -762,64 +687,6 @@ export function formatMarkdownTableBlock(lines, contentWidth = 72) {
     Array.from({ length: columnCount }, (_, index) => normalizeTableCellText(cells[index] || ''))
   );
   const alignments = getMarkdownTableAlignments(separatorLine, columnCount);
-
-  const minColumnWidth = 3;
-  const maxRowLines = 6;
-  const safetyMargin = 4;
-  const borderOverhead = 1 + columnCount * 3;
-  const availableWidth = Math.max(contentWidth - borderOverhead - safetyMargin, columnCount * minColumnWidth);
-
-  const getMinWidth = (text) => {
-    const words = splitTableWrapUnits(String(text || '')).filter((word) => !/^\s+$/.test(word));
-    if (words.length === 0) return minColumnWidth;
-    return Math.max(...words.map((word) => stringWidthLite(word)), minColumnWidth);
-  };
-
-  const getIdealWidth = (text) => Math.max(stringWidthLite(String(text || '').trim()), minColumnWidth);
-
-  const minWidths = headers.map((header, index) =>
-    Math.max(getMinWidth(header), ...rows.map((row) => getMinWidth(row[index])))
-  );
-  const idealWidths = headers.map((header, index) =>
-    Math.max(getIdealWidth(header), ...rows.map((row) => getIdealWidth(row[index])))
-  );
-
-  const totalMin = minWidths.reduce((sum, width) => sum + width, 0);
-  const totalIdeal = idealWidths.reduce((sum, width) => sum + width, 0);
-  let needsHardWrap = false;
-  let columnWidths;
-
-  if (totalIdeal <= availableWidth) {
-    columnWidths = idealWidths.slice();
-  } else if (totalMin <= availableWidth) {
-    const extraSpace = availableWidth - totalMin;
-    const overflows = idealWidths.map((ideal, index) => ideal - minWidths[index]);
-    const totalOverflow = overflows.reduce((sum, width) => sum + width, 0);
-    columnWidths = minWidths.map((min, index) => {
-      if (totalOverflow === 0) return min;
-      return min + Math.floor((overflows[index] / totalOverflow) * extraSpace);
-    });
-  } else {
-    needsHardWrap = true;
-    const scale = availableWidth / Math.max(totalMin, 1);
-    columnWidths = minWidths.map((width) => Math.max(Math.floor(width * scale), minColumnWidth));
-  }
-
-  const wrapCell = (text, width) => wrapPlainText(text, width, needsHardWrap);
-
-  const computeMaxWrappedLines = () => {
-    let maxLines = 1;
-    for (let index = 0; index < headers.length; index += 1) {
-      maxLines = Math.max(maxLines, wrapCell(headers[index], columnWidths[index]).length);
-    }
-    for (const row of rows) {
-      for (let index = 0; index < columnCount; index += 1) {
-        maxLines = Math.max(maxLines, wrapCell(row[index], columnWidths[index]).length);
-      }
-    }
-    return maxLines;
-  };
-
   const renderVerticalRows = () => {
     const rendered = [];
     const separatorWidth = Math.min(Math.max(contentWidth - 2, 12), 40);
@@ -828,13 +695,8 @@ export function formatMarkdownTableBlock(lines, contentWidth = 72) {
       if (rowIndex > 0) rendered.push({ kind: 'table-vertical-separator', text: separator });
       row.forEach((cell, cellIndex) => {
         const label = headers[cellIndex] || `Column ${cellIndex + 1}`;
-        const firstWidth = Math.max(contentWidth - stringWidthLite(label) - 3, 10);
-        const nextWidth = Math.max(contentWidth - 3, 10);
-        const firstPass = wrapPlainText(cell, firstWidth, true);
-        const firstLine = firstPass[0] || '';
-        const remaining = firstPass.slice(1).join(' ');
-        const rest = remaining ? wrapPlainText(remaining, nextWidth, true) : [];
-        const wrapped = [firstLine, ...rest].filter((line, idx) => idx === 0 || line.trim());
+        const width = Math.max(contentWidth - stringWidth(label) - 3, 10);
+        const wrapped = wrapAnsi(cell, width, { hard: true, trim: false }).split('\n');
         rendered.push({
           kind: 'table-vertical',
           label,
@@ -851,68 +713,36 @@ export function formatMarkdownTableBlock(lines, contentWidth = 72) {
     return rendered;
   };
 
-  if (computeMaxWrappedLines() > maxRowLines && contentWidth < 80) {
-    return renderVerticalRows();
+  const available = contentWidth - (columnCount * 3) - 5;
+  if (available < columnCount * 4) return renderVerticalRows();
+  const ideal = headers.map((header, index) =>
+    Math.max(3, stringWidth(header), ...rows.map((row) => stringWidth(row[index] || '')))
+  );
+  const totalIdeal = ideal.reduce((sum, width) => sum + width, 0);
+  const widths = totalIdeal <= available
+    ? ideal
+    : ideal.map((width) => Math.max(3, Math.floor((width / totalIdeal) * available)));
+  while (widths.reduce((sum, width) => sum + width, 0) > available) {
+    const widest = widths.indexOf(Math.max(...widths));
+    widths[widest] -= 1;
   }
 
-  const renderBorder = (type) => {
-    const chars = {
-      top: ['┌', '─', '┬', '┐'],
-      middle: ['├', '─', '┼', '┤'],
-      bottom: ['└', '─', '┴', '┘']
-    }[type];
-    let line = chars[0];
-    columnWidths.forEach((width, index) => {
-      line += chars[1].repeat(width + 2);
-      line += index < columnWidths.length - 1 ? chars[2] : chars[3];
-    });
-    return line;
-  };
-
-  const renderRowLines = (cells, isHeader = false) => {
-    const wrappedColumns = cells.map((cell, index) => wrapCell(cell, columnWidths[index]));
-    const maxLines = Math.max(...wrappedColumns.map((entry) => entry.length), 1);
-    const verticalOffsets = wrappedColumns.map((entry) => Math.floor((maxLines - entry.length) / 2));
-    const rendered = [];
-    for (let lineIndex = 0; lineIndex < maxLines; lineIndex += 1) {
-      let line = '│';
-      for (let columnIndex = 0; columnIndex < columnCount; columnIndex += 1) {
-        const wrapped = wrappedColumns[columnIndex];
-        const offset = verticalOffsets[columnIndex];
-        const contentIndex = lineIndex - offset;
-        const text = contentIndex >= 0 && contentIndex < wrapped.length ? wrapped[contentIndex] : '';
-        const align = isHeader ? 'center' : alignments[columnIndex];
-        line += ` ${padAlignedText(text, columnWidths[columnIndex], align)} │`;
-      }
-      rendered.push({
-        kind: 'table',
-        text: line,
-        isHeader
-      });
-    }
-    return rendered;
-  };
-
-  const tableLines = [
-    { kind: 'table-separator', text: renderBorder('top') },
-    ...renderRowLines(headers, true),
-    { kind: 'table-separator', text: renderBorder('middle') }
-  ];
-
-  rows.forEach((row, index) => {
-    tableLines.push(...renderRowLines(row, false));
-    if (index < rows.length - 1) {
-      tableLines.push({ kind: 'table-separator', text: renderBorder('middle') });
-    }
-  });
-  tableLines.push({ kind: 'table-separator', text: renderBorder('bottom') });
-
-  const maxLineWidth = Math.max(...tableLines.map((entry) => stringWidthLite(entry.text)));
-  if (maxLineWidth > contentWidth - safetyMargin) {
-    return renderVerticalRows();
-  }
-
-  return tableLines;
+  const output = renderTable([headers, ...rows], {
+    border: getBorderCharacters('norc'),
+    columns: widths.map((width, index) => ({
+      width,
+      alignment: alignments[index],
+      verticalAlignment: 'middle',
+      wrapWord: false,
+    })),
+    drawHorizontalLine: (index, rowCount) => index === 0 || index === 1 || index === rowCount,
+  }).trimEnd().split('\n');
+  const headerEnd = output.findIndex((line) => line.startsWith('├'));
+  return output.map((text, index) => ({
+    kind: /^[┌├└]/.test(text) ? 'table-separator' : 'table',
+    text,
+    isHeader: index > 0 && index < headerEnd,
+  }));
 }
 
 function parseRichTextSegments(line, baseColor) {
@@ -936,11 +766,9 @@ export function sanitizeRenderableText(value) {
   const input = String(value ?? '');
   if (!input) return '';
 
-  return input
+  return stripAnsi(input)
     .replace(/\r\n/g, '\n')
     .replace(/\r/g, '\n')
-    .replace(/\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/g, '')
-    .replace(/[\u001b\u009b][[\]()#;?]*(?:(?:(?:[a-zA-Z\d]*(?:;[a-zA-Z\d]*)*)?\u0007)|(?:(?:\d{1,4}(?:;\d{0,4})*)?[\dA-PR-TZcf-nq-uy=><~]))/g, '')
     .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/g, '');
 }
 
@@ -2172,49 +2000,9 @@ function PlanSummaryBubble({ msg, copy }) {
 
 const BUBBLE_CHROME_ROWS = 4;
 
-function charDisplayWidth(ch) {
-  const code = ch.codePointAt(0) || 0;
-  if (code === 0) return 0;
-  if (
-    code >= 0x1100 &&
-    (
-      code <= 0x115f ||
-      code === 0x2329 ||
-      code === 0x232a ||
-      (code >= 0x2e80 && code <= 0xa4cf && code !== 0x303f) ||
-      (code >= 0xac00 && code <= 0xd7a3) ||
-      (code >= 0xf900 && code <= 0xfaff) ||
-      (code >= 0xfe10 && code <= 0xfe19) ||
-      (code >= 0xfe30 && code <= 0xfe6f) ||
-      (code >= 0xff00 && code <= 0xff60) ||
-      (code >= 0xffe0 && code <= 0xffe6)
-    )
-  ) {
-    return 2;
-  }
-  return 1;
-}
-
 function wrapTextChunks(text, width = 72) {
   const safeWidth = Math.max(8, width);
-  const chars = Array.from(String(text || ''));
-  if (chars.length === 0) return [''];
-  const lines = [];
-  let current = '';
-  let used = 0;
-  for (const ch of chars) {
-    const chWidth = charDisplayWidth(ch);
-    if (used > 0 && used + chWidth > safeWidth) {
-      lines.push(current);
-      current = ch;
-      used = chWidth;
-      continue;
-    }
-    current += ch;
-    used += chWidth;
-  }
-  if (current || lines.length === 0) lines.push(current);
-  return lines;
+  return wrapAnsi(String(text || ''), safeWidth, { hard: true, trim: false }).split('\n');
 }
 
 function pushWrappedRow(rows, baseRow, contentWidth) {

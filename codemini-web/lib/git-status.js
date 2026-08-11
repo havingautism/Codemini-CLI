@@ -3,6 +3,7 @@ import path from 'node:path';
 
 import { execa } from 'execa';
 import pLimit from 'p-limit';
+import { LRUCache } from 'lru-cache';
 
 async function runGit(cwd, args) {
   return execa('git', args, {
@@ -195,25 +196,16 @@ export async function readGitInfoUncached(cwd, { includeCounts = true } = {}) {
 }
 
 export function createGitInfoReader({ loader = readGitInfoUncached, ttlMs = 750, maxSize = 64 } = {}) {
-  const cache = new Map();
-  const pending = new Map();
+  const cache = new LRUCache({
+    max: maxSize,
+    ttl: ttlMs,
+    fetchMethod: (_key, _stale, { context }) =>
+      loader(context.resolved, { includeCounts: context.includeCounts }),
+  });
   return async (cwd, { includeCounts = true } = {}) => {
     const resolved = path.resolve(String(cwd || '.'));
     const key = `${process.platform === 'win32' ? resolved.toLowerCase() : resolved}:${includeCounts ? 'full' : 'branch'}`;
-    const now = Date.now();
-    const cached = cache.get(key);
-    if (cached && now - cached.at <= ttlMs) return cached.value;
-    if (pending.has(key)) return pending.get(key);
-
-    const request = Promise.resolve(loader(resolved, { includeCounts }))
-      .then((value) => {
-        cache.set(key, { at: Date.now(), value });
-        while (cache.size > maxSize) cache.delete(cache.keys().next().value);
-        return value;
-      })
-      .finally(() => pending.delete(key));
-    pending.set(key, request);
-    return request;
+    return cache.fetch(key, { context: { resolved, includeCounts } });
   };
 }
 

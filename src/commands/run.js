@@ -15,6 +15,7 @@ import { skillIsEligible } from '../core/skill-contexts.js';
 import { parseModelJsonObject } from '../core/model-json.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { parseArgs } from 'node:util';
 
 
 const CLI_ROLE_TOOL_POLICY = {
@@ -26,43 +27,27 @@ const CLI_ROLE_TOOL_POLICY = {
 };
 const HARNESS_ROLES = Object.keys(CLI_ROLE_TOOL_POLICY).filter((role) => !['planner', 'codewiki'].includes(role));
 
-function parseRunArgs(args) {
-  const parsed = {
-    task: '',
-    model: undefined,
-    fast: false,
-    harness: null,
-    pipeline: false,
-    skillNames: []
+export function parseRunArgs(args) {
+  const { values, positionals } = parseArgs({
+    args,
+    allowPositionals: true,
+    options: {
+      model: { type: 'string' },
+      fast: { type: 'boolean' },
+      lite: { type: 'boolean' },
+      harness: { type: 'string' },
+      pipeline: { type: 'boolean' },
+      skill: { type: 'string', multiple: true },
+    },
+  });
+  return {
+    task: positionals.join(' '),
+    model: values.model,
+    fast: values.fast === true || values.lite === true,
+    harness: values.harness?.toLowerCase() || null,
+    pipeline: values.pipeline === true,
+    skillNames: (values.skill || []).map((value) => value.trim()).filter(Boolean),
   };
-  for (let i = 0; i < args.length; i += 1) {
-    const arg = args[i];
-    if (arg === '--model') {
-      parsed.model = args[i + 1];
-      i += 1;
-      continue;
-    }
-    if (arg === '--fast' || arg === '--lite') {
-      parsed.fast = true;
-      continue;
-    }
-    if (arg === '--harness') {
-      parsed.harness = (args[i + 1] || '').toLowerCase();
-      i += 1;
-      continue;
-    }
-    if (arg === '--pipeline') {
-      parsed.pipeline = true;
-      continue;
-    }
-    if (arg === '--skill') {
-      parsed.skillNames.push(String(args[i + 1] || '').trim());
-      i += 1;
-      continue;
-    }
-    parsed.task += `${parsed.task ? ' ' : ''}${arg}`;
-  }
-  return parsed;
 }
 
 function filterToolsForRole(definitions, handlers, deferredDefinitions, role) {

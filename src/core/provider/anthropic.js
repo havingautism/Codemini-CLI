@@ -1,6 +1,7 @@
 import { resolveAnthropicReasoning } from './reasoning-effort.js';
 import { isCompletionTruncated } from './completion-status.js';
 import { stringifyGatewayJson } from './json-body.js';
+import { iterateSseJsonEvents } from '../sse.js';
 
 function extractTextContent(content) {
   if (typeof content === 'string') return content;
@@ -392,39 +393,6 @@ function buildFinalStreamResult(text, toolCallsByIndex, usage, messages, thinkin
   };
 }
 
-async function* iterateSseEvents(stream) {
-  const decoder = new TextDecoder();
-  let buffer = '';
-
-  for await (const chunk of stream) {
-    buffer += decoder.decode(chunk, { stream: true });
-    while (buffer.includes('\n\n') || buffer.includes('\r\n\r\n')) {
-      const crlfBoundary = buffer.indexOf('\r\n\r\n');
-      const lfBoundary = buffer.indexOf('\n\n');
-      const useCrlf = crlfBoundary !== -1 && (lfBoundary === -1 || crlfBoundary < lfBoundary);
-      const boundary = useCrlf ? crlfBoundary : lfBoundary;
-      const rawEvent = buffer.slice(0, boundary);
-      buffer = buffer.slice(boundary + (useCrlf ? 4 : 2));
-      const lines = rawEvent.split(/\r?\n/);
-      let event = 'message';
-      const dataLines = [];
-      for (const line of lines) {
-        if (line.startsWith('event:')) {
-          event = line.slice(6).trim();
-        } else if (line.startsWith('data:')) {
-          dataLines.push(line.slice(5).trimStart());
-        }
-      }
-      const dataText = dataLines.join('\n');
-      if (!dataText || dataText === '[DONE]') continue;
-      yield {
-        event,
-        data: JSON.parse(dataText)
-      };
-    }
-  }
-}
-
 export async function createChatCompletion({
   baseUrl,
   apiKey,
@@ -504,7 +472,8 @@ export async function createChatCompletionStream({
     const toolCallsByIndex = new Map();
     const thinkingBlocksByIndex = new Map();
 
-    for await (const chunk of iterateSseEvents(response.body)) {
+    for await (const chunk of iterateSseJsonEvents(response.body)) {
+      if (chunk.done) continue;
       usage = mergeUsage(usage, chunk?.data?.usage);
       usage = mergeUsage(usage, chunk?.data?.message?.usage);
 

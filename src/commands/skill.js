@@ -2,6 +2,8 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { spawn, execFile } from 'node:child_process';
+import { parseArgs } from 'node:util';
+import fg from 'fast-glob';
 import { loadConfig, saveConfig } from '../core/config-store.js';
 import { loadCommandsAndSkills } from '../core/command-loader.js';
 import { getSkillsDir } from '../core/paths.js';
@@ -24,33 +26,29 @@ import {
 const SKILL_CATALOG_FILE = 'codemini.skills.json';
 const HOOKS_DISABLED_MARKER = '.codemini-hooks-disabled';
 
-function parseScopeArgs(args = [], { defaultScope = 'global', allowAll = false } = {}) {
-  let scope = defaultScope;
-  const rest = [];
-  for (let index = 0; index < args.length; index += 1) {
-    const arg = String(args[index] || '');
-    if (arg === '--global') {
-      scope = 'global';
-      continue;
+export function parseScopeArgs(args = [], { defaultScope = 'global', allowAll = false } = {}) {
+  const { values, tokens } = parseArgs({
+    args,
+    allowPositionals: true,
+    strict: false,
+    tokens: true,
+    options: {
+      global: { type: 'boolean' },
+      scope: { type: 'string' },
+    },
+  });
+  const allowed = ['global', ...(allowAll ? ['all', 'builtin'] : [])];
+  const requested = String(values.scope || '').toLowerCase();
+  const scope = allowed.includes(requested) ? requested : values.global ? 'global' : defaultScope;
+  const consumed = new Set();
+  for (const token of tokens) {
+    if (token.kind !== 'option') continue;
+    if (token.name === 'global' || (token.name === 'scope' && allowed.includes(requested))) {
+      consumed.add(token.index);
+      if (token.name === 'scope' && token.inlineValue !== true) consumed.add(token.index + 1);
     }
-    if (arg === '--scope') {
-      const next = String(args[index + 1] || '').toLowerCase();
-      if (['global', ...(allowAll ? ['all', 'builtin'] : [])].includes(next)) {
-        scope = next;
-        index += 1;
-        continue;
-      }
-    }
-    if (arg.startsWith('--scope=')) {
-      const value = arg.slice('--scope='.length).toLowerCase();
-      if (['global', ...(allowAll ? ['all', 'builtin'] : [])].includes(value)) {
-        scope = value;
-        continue;
-      }
-    }
-    rest.push(arg);
   }
-  return { scope, rest };
+  return { scope, rest: args.filter((_, index) => !consumed.has(index)) };
 }
 
 function isGitLikeSource(value = '') {
@@ -667,27 +665,19 @@ async function resolveSkillSourceDir(sourcePath) {
 }
 
 async function findSkillDirs(rootDir) {
-  const found = [];
-  async function walk(dir, depth = 0) {
-    if (depth > 5) return;
-    let entries;
-    try {
-      entries = await fs.readdir(dir, { withFileTypes: true });
-    } catch {
-      return;
-    }
-    if (entries.some((entry) => entry.isFile() && entry.name === 'SKILL.md')) {
-      found.push(dir);
-      return;
-    }
-    for (const entry of entries) {
-      if (!entry.isDirectory()) continue;
-      if (['.git', 'node_modules', 'dist', 'build'].includes(entry.name)) continue;
-      await walk(path.join(dir, entry.name), depth + 1);
-    }
-  }
-  await walk(rootDir);
-  return found;
+  const manifests = await fg('**/SKILL.md', {
+    cwd: rootDir,
+    absolute: true,
+    onlyFiles: true,
+    deep: 6,
+    ignore: ['**/.git/**', '**/node_modules/**', '**/dist/**', '**/build/**'],
+    suppressErrors: true,
+    followSymbolicLinks: false,
+  });
+  const dirs = manifests.map(path.dirname).sort((a, b) => a.length - b.length);
+  return dirs.filter((dir, index) =>
+    !dirs.slice(0, index).some((parent) => dir.startsWith(`${parent}${path.sep}`))
+  );
 }
 
 export async function findSkillDirsForPackage(rootDir) {

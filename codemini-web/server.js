@@ -1,12 +1,15 @@
-import http from "node:http";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { execSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
+import { parseArgs as parseNodeArgs } from "node:util";
 import { Readable } from "node:stream";
 import sharp from "sharp";
+import fg from "fast-glob";
+import { Hono } from "hono";
+import { serve } from "@hono/node-server";
 
 import {
   loadConfig,
@@ -66,6 +69,7 @@ import {
   parseScrapbookAttachmentFromModelContent,
   pickScrapbookAttachments,
 } from "./lib/message-context-parsers.js";
+import { extractPdfText } from "./lib/pdf-text.js";
 import {
   addScrapbookSource,
   buildScrapbookAskPayload,
@@ -478,38 +482,21 @@ function isPathInside(parentDir, candidatePath) {
 async function listProjectSpecFiles(projectDir) {
   if (!projectDir || isGeneralProjectDir(projectDir)) return [];
   const specsDir = getProjectSpecsDir(projectDir);
-  const specs = [];
-  async function walk(dir) {
-    let entries = [];
-    try {
-      entries = await fs.readdir(dir, { withFileTypes: true });
-    } catch {
-      return;
-    }
-    for (const entry of entries) {
-      const fullPath = path.join(dir, entry.name);
-      if (entry.isDirectory()) {
-        await walk(fullPath);
-        continue;
-      }
-      if (!entry.isFile() || !entry.name.toLowerCase().endsWith(".md"))
-        continue;
-      let stat = null;
-      try {
-        stat = await fs.stat(fullPath);
-      } catch {}
-      const relativePath = path.relative(specsDir, fullPath);
-      specs.push({
-        name: entry.name.replace(/\.md$/i, ""),
-        file: entry.name,
-        path: fullPath,
-        relativePath,
-        updatedAt: stat?.mtime?.toISOString?.() || "",
-      });
-    }
-  }
-  await walk(specsDir);
-  return specs.sort((a, b) =>
+  const entries = await fg("**/*.md", {
+    cwd: specsDir,
+    absolute: true,
+    onlyFiles: true,
+    stats: true,
+    suppressErrors: true,
+    followSymbolicLinks: false,
+  });
+  return entries.map((entry) => ({
+    name: path.basename(entry.path, path.extname(entry.path)),
+    file: path.basename(entry.path),
+    path: entry.path,
+    relativePath: path.relative(specsDir, entry.path),
+    updatedAt: entry.stats?.mtime?.toISOString?.() || "",
+  })).sort((a, b) =>
     String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")),
   );
 }
@@ -605,38 +592,64 @@ function getConfigStatus(config) {
   };
 }
 
-function parseArgs(argv) {
-  const parsed = {
-    port: 3210,
-    session: undefined,
-    model: undefined,
-    project: undefined,
-    open: true,
+export function parseArgs(argv) {
+  const { values } = parseNodeArgs({
+    args: argv.slice(2),
+    allowNegative: true,
+    options: {
+      port: { type: "string", short: "p" },
+      session: { type: "string", short: "s" },
+      model: { type: "string", short: "m" },
+      project: { type: "string", short: "d" },
+      open: { type: "boolean", default: true },
+    },
+  });
+  return {
+    port: Number.parseInt(values.port, 10) || 3210,
+    session: values.session,
+    model: values.model,
+    project: values.project,
+    open: values.open,
   };
-  for (let i = 2; i < argv.length; i++) {
-    const arg = argv[i];
-    if (arg === "--port" || arg === "-p") {
-      parsed.port = parseInt(argv[++i], 10) || 3210;
-      continue;
+}
+
+function createNodeRouter() {
+  const router = new Hono();
+  router.onError((error, context) => {
+    const res = context.env.outgoing;
+    if (!res.headersSent) {
+      jsonResponse(
+        res,
+        { error: error?.message || "Internal server error" },
+        500,
+      );
+    } else if (!res.writableEnded) {
+      res.end();
     }
-    if (arg === "--session" || arg === "-s") {
-      parsed.session = argv[++i];
-      continue;
-    }
-    if (arg === "--model" || arg === "-m") {
-      parsed.model = argv[++i];
-      continue;
-    }
-    if (arg === "--project" || arg === "-d") {
-      parsed.project = argv[++i];
-      continue;
-    }
-    if (arg === "--no-open") {
-      parsed.open = false;
-      continue;
-    }
-  }
-  return parsed;
+    return context.body(null, 500);
+  });
+  return router;
+}
+
+function nodeRoute(handler) {
+  return async (context) => {
+    context.env.routeHandled.value = true;
+    await handler(
+      context.env.incoming,
+      context.env.outgoing,
+      new URL(context.req.url),
+    );
+    return context.body(null);
+  };
+}
+
+async function dispatchNodeRouter(router, req, res) {
+  const routeHandled = { value: false };
+  await router.fetch(
+    new Request(new URL(req.url, "http://localhost"), { method: req.method }),
+    { incoming: req, outgoing: res, routeHandled },
+  );
+  return routeHandled.value;
 }
 
 function readBody(req) {
@@ -934,14 +947,13 @@ export function createWebRuntimeApi({
         : start();
     });
 
-  return async function handleWebRuntimeApi(req, res) {
-    const url = new URL(req.url, "http://localhost");
-
-    if (req.method === "GET" && url.pathname === "/api/events") {
+  const runtimeRoutes = createNodeRouter();
+  runtimeRoutes.get("/api/events", nodeRoute(async (req, res, url) => {
       eventBroker.addClient(res);
       return true;
-    }
-    if (req.method === "GET" && url.pathname === "/api/runtime/sessions") {
+
+  }));
+  runtimeRoutes.get("/api/runtime/sessions", nodeRoute(async (req, res, url) => {
       const persisted = (await runtimeStatusStore?.read?.()) || {};
       const states = Object.fromEntries(
         pool.listStates().map((state) => [state.sessionId, state]),
@@ -953,8 +965,9 @@ export function createWebRuntimeApi({
         sessions: states,
       });
       return true;
-    }
-    if (req.method === "GET" && url.pathname === "/api/sessions") {
+
+  }));
+  runtimeRoutes.get("/api/sessions", nodeRoute(async (req, res, url) => {
       const requestedLimit = Number(url.searchParams.get("limit") || 200);
       const limit = Number.isFinite(requestedLimit)
         ? Math.max(1, Math.min(1000, Math.round(requestedLimit)))
@@ -978,8 +991,9 @@ export function createWebRuntimeApi({
           ),
       );
       return true;
-    }
-    if (req.method === "POST" && url.pathname === "/api/sessions/new") {
+
+  }));
+  runtimeRoutes.post("/api/sessions/new", nodeRoute(async (req, res, url) => {
       const body = await readBody(req);
       try {
         const projectDir =
@@ -1014,8 +1028,9 @@ export function createWebRuntimeApi({
         );
       }
       return true;
-    }
-    if (req.method === "POST" && url.pathname === "/api/attachments") {
+
+  }));
+  runtimeRoutes.post("/api/attachments", nodeRoute(async (req, res, url) => {
       const sessionId = url.searchParams.get("sessionId");
       const bridge = await loadBridge(res, sessionId);
       if (!bridge) return true;
@@ -1048,8 +1063,9 @@ export function createWebRuntimeApi({
         );
       }
       return true;
-    }
-    if (req.method === "POST" && url.pathname === "/api/pending-reflect") {
+
+  }));
+  runtimeRoutes.post("/api/pending-reflect", nodeRoute(async (req, res, url) => {
       const body = await readBody(req);
       const bridge = await loadBridge(res, body?.sessionId);
       if (!bridge) return true;
@@ -1075,8 +1091,9 @@ export function createWebRuntimeApi({
         );
       }
       return true;
-    }
-    if (req.method === "POST" && url.pathname === "/api/pending-spec") {
+
+  }));
+  runtimeRoutes.post("/api/pending-spec", nodeRoute(async (req, res, url) => {
       const body = await readBody(req);
       const bridge = await loadBridge(res, body?.sessionId);
       if (!bridge) return true;
@@ -1099,8 +1116,9 @@ export function createWebRuntimeApi({
         );
       }
       return true;
-    }
-    if (req.method === "DELETE" && url.pathname === "/api/pending-spec") {
+
+  }));
+  runtimeRoutes.delete("/api/pending-spec", nodeRoute(async (req, res, url) => {
       const bridge = await loadBridge(res, url.searchParams.get("sessionId"));
       if (!bridge) return true;
       const result = await bridge.deletePendingSpec();
@@ -1114,16 +1132,18 @@ export function createWebRuntimeApi({
       }
       jsonResponse(res, { ok: true, ...result });
       return true;
-    }
-    if (req.method === "GET" && url.pathname === "/api/specs") {
+
+  }));
+  runtimeRoutes.get("/api/specs", nodeRoute(async (req, res, url) => {
       const sessionId = url.searchParams.get("sessionId");
       const bridge = await loadBridge(res, sessionId);
       if (!bridge) return true;
       const projectDir = pool.getSessionState(sessionId)?.projectDir;
       jsonResponse(res, { specs: await listProjectSpecFiles(projectDir) });
       return true;
-    }
-    if (req.method === "POST" && url.pathname === "/api/specs/open") {
+
+  }));
+  runtimeRoutes.post("/api/specs/open", nodeRoute(async (req, res, url) => {
       const body = await readBody(req);
       const bridge = await loadBridge(res, body?.sessionId);
       if (!bridge) return true;
@@ -1144,8 +1164,9 @@ export function createWebRuntimeApi({
       }
       jsonResponse(res, { ok: true, spec });
       return true;
-    }
-    if (req.method === "POST" && url.pathname === "/api/chat/message") {
+
+  }));
+  runtimeRoutes.post("/api/chat/message", nodeRoute(async (req, res, url) => {
       const body = await readBody(req);
       const bridge = await loadBridge(res, body?.sessionId);
       if (!bridge) return true;
@@ -1187,8 +1208,9 @@ export function createWebRuntimeApi({
         chatErrorResponse(res, error, "INVALID_REQUEST");
       }
       return true;
-    }
-    if (req.method === "POST" && url.pathname === "/api/submit") {
+
+  }));
+  runtimeRoutes.post("/api/submit", nodeRoute(async (req, res, url) => {
       const body = await readBody(req);
       const bridge = await loadBridge(res, body?.sessionId);
       if (!bridge) return true;
@@ -1236,8 +1258,9 @@ export function createWebRuntimeApi({
       );
       jsonResponse(res, accepted, accepted.accepted ? 202 : 409);
       return true;
-    }
-    if (req.method === "POST" && url.pathname === "/api/chat/action") {
+
+  }));
+  runtimeRoutes.post("/api/chat/action", nodeRoute(async (req, res, url) => {
       const body = await readBody(req);
       const bridge = await loadBridge(res, body?.sessionId);
       if (!bridge) return true;
@@ -1299,15 +1322,86 @@ export function createWebRuntimeApi({
         chatErrorResponse(res, error, "ACTION_FAILED");
       }
       return true;
-    }
-    if (req.method === "POST" && url.pathname === "/api/abort") {
+
+  }));
+  runtimeRoutes.post("/api/abort", nodeRoute(async (req, res, url) => {
       const body = await readBody(req);
       const id = requireSessionId(res, body?.sessionId);
       if (!id) return true;
       const aborted = await pool.abort(id);
       jsonResponse(res, { ok: aborted }, aborted ? 200 : 404);
       return true;
-    }
+
+  }));
+  runtimeRoutes.post("/api/sessions/switch", nodeRoute(async (req, res, url) => {
+      const body = await readBody(req);
+      const sessionId = requireSessionId(res, body?.sessionId);
+      if (!sessionId) return true;
+      try {
+        const result = await loadSessionForSwitch({
+          sessionId,
+          pool,
+          ensureSession,
+          loadStoredSession: loadSession,
+          loadStoredUiMessages: loadPersistedUiMessages,
+          serializeMessages: serializeSessionMessages,
+          normalizeProjectPath,
+          isGeneralProjectDir,
+          setDefaultProjectDir,
+        });
+        jsonResponse(res, result);
+      } catch (error) {
+        const notFound =
+          error?.code === "ENOENT" || error?.code === "SESSION_NOT_FOUND";
+        jsonResponse(
+          res,
+          {
+            error: true,
+            code: notFound ? "SESSION_NOT_FOUND" : "SESSION_LOAD_FAILED",
+            message: notFound
+              ? "Session not found"
+              : error?.message || "Failed to load session",
+          },
+          notFound ? 404 : 400,
+        );
+      }
+      return true;
+
+  }));
+  runtimeRoutes.get("/api/session-changes", nodeRoute(async (req, res, url) => {
+      const bridge = await loadBridge(res, url.searchParams.get("sessionId"));
+      if (!bridge) return true;
+      jsonResponse(res, { changes: await bridge.getChangeSets() });
+      return true;
+
+  }));
+  runtimeRoutes.post("/api/session-changes/undo", nodeRoute(async (req, res, url) => {
+      const body = await readBody(req);
+      const bridge = await loadBridge(res, body?.sessionId);
+      if (!bridge) return true;
+      jsonResponse(res, await bridge.undoChangeSets(body.ids));
+      return true;
+
+  }));
+
+  return async function handleWebRuntimeApi(req, res) {
+    const url = new URL(req.url, "http://localhost");
+    if (await dispatchNodeRouter(runtimeRoutes, req, res)) return true;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
     const directOperations = new Map([
       [
@@ -1477,40 +1571,7 @@ export function createWebRuntimeApi({
       return true;
     }
 
-    if (req.method === "POST" && url.pathname === "/api/sessions/switch") {
-      const body = await readBody(req);
-      const sessionId = requireSessionId(res, body?.sessionId);
-      if (!sessionId) return true;
-      try {
-        const result = await loadSessionForSwitch({
-          sessionId,
-          pool,
-          ensureSession,
-          loadStoredSession: loadSession,
-          loadStoredUiMessages: loadPersistedUiMessages,
-          serializeMessages: serializeSessionMessages,
-          normalizeProjectPath,
-          isGeneralProjectDir,
-          setDefaultProjectDir,
-        });
-        jsonResponse(res, result);
-      } catch (error) {
-        const notFound =
-          error?.code === "ENOENT" || error?.code === "SESSION_NOT_FOUND";
-        jsonResponse(
-          res,
-          {
-            error: true,
-            code: notFound ? "SESSION_NOT_FOUND" : "SESSION_LOAD_FAILED",
-            message: notFound
-              ? "Session not found"
-              : error?.message || "Failed to load session",
-          },
-          notFound ? 404 : 400,
-        );
-      }
-      return true;
-    }
+
     if (req.method === "DELETE" && url.pathname.startsWith("/api/sessions/")) {
       const sessionId = requireSessionId(
         res,
@@ -1577,12 +1638,7 @@ export function createWebRuntimeApi({
       return true;
     }
 
-    if (url.pathname === "/api/session-changes" && req.method === "GET") {
-      const bridge = await loadBridge(res, url.searchParams.get("sessionId"));
-      if (!bridge) return true;
-      jsonResponse(res, { changes: await bridge.getChangeSets() });
-      return true;
-    }
+
     if (
       req.method === "GET" &&
       url.pathname.startsWith("/api/session-changes/") &&
@@ -1596,13 +1652,7 @@ export function createWebRuntimeApi({
       jsonResponse(res, { id, patch: await bridge.getChangeSetPatch(id) });
       return true;
     }
-    if (req.method === "POST" && url.pathname === "/api/session-changes/undo") {
-      const body = await readBody(req);
-      const bridge = await loadBridge(res, body?.sessionId);
-      if (!bridge) return true;
-      jsonResponse(res, await bridge.undoChangeSets(body.ids));
-      return true;
-    }
+
     if (
       req.method === "POST" &&
       url.pathname.startsWith("/api/session-changes/") &&
@@ -1726,9 +1776,7 @@ async function readMultipartForm(req) {
 
 async function extractAttachmentText(buffer, ext) {
   if (ext === ".pdf") {
-    const parsePdf = require("pdf-parse");
-    const parsed = await parsePdf(buffer);
-    return String(parsed?.text || "").trim();
+    return extractPdfText(buffer);
   }
   if (ext === ".docx") {
     const mammoth = await import("mammoth");
@@ -2642,85 +2690,8 @@ async function main() {
         : target.handleCodeWikiGenerate(line, { operationId }),
     );
 
-  const server = http.createServer(async (req, res) => {
-    const url = new URL(req.url, `http://localhost:${args.port}`);
-
-    res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-    if (req.method === "OPTIONS") {
-      res.writeHead(204);
-      res.end();
-      return;
-    }
-
-    if (await runtimeApi(req, res)) return;
-    // SSE
-    // Handled by the global runtime API broker above.
-
-    const attachmentFileMatch = url.pathname.match(
-      /^\/api\/attachments\/([^/]+)\/([^/]+)\/file$/,
-    );
-    if (req.method === "GET" && attachmentFileMatch) {
-      try {
-        const sessionId = decodeURIComponent(attachmentFileMatch[1]);
-        const id = decodeURIComponent(attachmentFileMatch[2]);
-        let meta = loadAttachmentMetadata(sessionId, id);
-        if (!meta) {
-          meta = JSON.parse(
-            await fs.readFile(attachmentMetaPath(sessionId, id), "utf8"),
-          );
-          if (meta?.path) saveAttachmentMetadata(sessionId, meta);
-        }
-        const filePath = path.resolve(meta.path || "");
-        const uploadRoot = path.resolve(ATTACHMENT_UPLOAD_DIR);
-        if (!isPathInside(uploadRoot, filePath)) {
-          res.writeHead(403);
-          res.end();
-          return;
-        }
-        const ext = path.extname(filePath).toLowerCase();
-        const contentType =
-          meta.mime || MIME_TYPES[ext] || "application/octet-stream";
-        const data = await fs.readFile(filePath);
-        res.writeHead(200, {
-          "Content-Type": contentType,
-          "Content-Length": data.length,
-          "Cache-Control": "private, max-age=86400",
-        });
-        res.end(data);
-      } catch {
-        jsonResponse(
-          res,
-          { error: true, message: "Attachment not found" },
-          404,
-        );
-      }
-      return;
-    }
-
-    // Static files
-    if (req.method === "GET" && !url.pathname.startsWith("/api/")) {
-      let filePath;
-      if (url.pathname === "/") {
-        filePath = path.join(CLIENT_DIR, "index.html");
-      } else {
-        const relative = url.pathname.replace(/^\//, "");
-        filePath = path.extname(relative)
-          ? path.join(CLIENT_DIR, relative)
-          : path.join(CLIENT_DIR, "index.html");
-      }
-      if (!filePath.startsWith(CLIENT_DIR)) {
-        res.writeHead(403);
-        res.end();
-        return;
-      }
-      await serveStatic(res, filePath);
-      return;
-    }
-
-    // ── Version ──
-    if (req.method === "GET" && url.pathname === "/api/embed") {
+  const routes = createNodeRouter();
+  routes.get("/api/embed", nodeRoute(async (req, res, url) => {
       const target = String(url.searchParams.get("url") || "").trim();
       if (!target) {
         jsonResponse(
@@ -2744,9 +2715,9 @@ async function main() {
         );
       }
       return;
-    }
 
-    if (req.method === "GET" && url.pathname === "/api/version") {
+  }));
+  routes.get("/api/version", nodeRoute(async (req, res, url) => {
       let latest = null;
       try {
         latest = execSync("npm view codemini-cli version", {
@@ -2756,8 +2727,9 @@ async function main() {
       } catch {}
       jsonResponse(res, { current: VERSION, latest });
       return;
-    }
-    if (req.method === "POST" && url.pathname === "/api/update") {
+
+  }));
+  routes.post("/api/update", nodeRoute(async (req, res, url) => {
       try {
         const output = execSync("npm update -g codemini-cli", {
           encoding: "utf-8",
@@ -2769,10 +2741,9 @@ async function main() {
         jsonResponse(res, { ok: false, error: err.message }, 500);
       }
       return;
-    }
 
-    // ── CodeWiki / project requirements reports ──
-    if (req.method === "GET" && url.pathname === "/api/codewiki/reports") {
+  }));
+  routes.get("/api/codewiki/reports", nodeRoute(async (req, res, url) => {
       const codeWikiProjectDir = await resolveCodeWikiProjectDir(
         url,
         currentProjectDir,
@@ -2849,9 +2820,9 @@ async function main() {
         else jsonResponse(res, { error: true, message: err.message }, 500);
       }
       return;
-    }
 
-    if (req.method === "GET" && url.pathname === "/api/codewiki/symbol-graph") {
+  }));
+  routes.get("/api/codewiki/symbol-graph", nodeRoute(async (req, res, url) => {
       try {
         const codeWikiProjectDir = await resolveCodeWikiProjectDir(
           url,
@@ -2894,90 +2865,9 @@ async function main() {
         });
       }
       return;
-    }
 
-    if (
-      req.method === "GET" &&
-      url.pathname.startsWith("/api/codewiki/report/")
-    ) {
-      const fileName = decodeURIComponent(
-        url.pathname.slice("/api/codewiki/report/".length),
-      );
-      if (!isCodeWikiReportFile(fileName)) {
-        jsonResponse(res, { error: true, message: "Invalid report file" }, 400);
-        return;
-      }
-      const codeWikiProjectDir = await resolveCodeWikiProjectDir(
-        url,
-        currentProjectDir,
-      );
-      const requirementsDir = path.resolve(
-        getRequirementsDir(codeWikiProjectDir),
-      );
-      const reportPath = path.resolve(requirementsDir, fileName);
-      if (!reportPath.startsWith(`${requirementsDir}${path.sep}`)) {
-        jsonResponse(res, { error: true, message: "Invalid report path" }, 403);
-        return;
-      }
-      if (codeWikiReportFormat(fileName) === "html") {
-        try {
-          const raw = await fs.readFile(reportPath, "utf8");
-          const html = injectCodeWikiReportTheme(raw);
-          res.writeHead(200, {
-            "Content-Type": "text/html; charset=utf-8",
-            "Cache-Control": "no-store",
-          });
-          res.end(html);
-        } catch (err) {
-          if (err?.code === "ENOENT")
-            jsonResponse(
-              res,
-              { error: true, message: "Report not found" },
-              404,
-            );
-          else jsonResponse(res, { error: true, message: err.message }, 500);
-        }
-        return;
-      }
-      await serveStatic(res, reportPath);
-      return;
-    }
-
-    if (
-      req.method === "DELETE" &&
-      url.pathname.startsWith("/api/codewiki/report/")
-    ) {
-      const fileName = decodeURIComponent(
-        url.pathname.slice("/api/codewiki/report/".length),
-      );
-      if (!isCodeWikiReportFile(fileName)) {
-        jsonResponse(res, { error: true, message: "Invalid report file" }, 400);
-        return;
-      }
-      const codeWikiProjectDir = await resolveCodeWikiProjectDir(
-        url,
-        currentProjectDir,
-      );
-      const requirementsDir = path.resolve(
-        getRequirementsDir(codeWikiProjectDir),
-      );
-      const reportPath = path.resolve(requirementsDir, fileName);
-      if (!reportPath.startsWith(`${requirementsDir}${path.sep}`)) {
-        jsonResponse(res, { error: true, message: "Invalid report path" }, 403);
-        return;
-      }
-      try {
-        await fs.unlink(reportPath);
-        jsonResponse(res, { ok: true, file: fileName });
-      } catch (err) {
-        if (err?.code === "ENOENT")
-          jsonResponse(res, { error: true, message: "Report not found" }, 404);
-        else jsonResponse(res, { error: true, message: err.message }, 500);
-      }
-      return;
-    }
-
-    if (req.method === "POST" && url.pathname === "/api/codewiki/generate") {
+  }));
+  routes.post("/api/codewiki/generate", nodeRoute(async (req, res, url) => {
       const { depth, format } = await readBody(req);
       const normalizedDepthRaw = String(depth || "").toLowerCase();
       const normalizedDepth =
@@ -3026,9 +2916,9 @@ async function main() {
         result.accepted ? 202 : 409,
       );
       return;
-    }
 
-    if (req.method === "POST" && url.pathname === "/api/codewiki/ask") {
+  }));
+  routes.post("/api/codewiki/ask", nodeRoute(async (req, res, url) => {
       const { question, reportFile, history } = await readBody(req);
       if (!question || typeof question !== "string") {
         jsonResponse(
@@ -3089,17 +2979,17 @@ async function main() {
       await codeWikiBridge.handleCodeWikiAsk(prompt, writeEvent);
       res.end();
       return;
-    }
 
-    // ── Project management ──
-    if (req.method === "GET" && url.pathname === "/api/project") {
+  }));
+  routes.get("/api/project", nodeRoute(async (req, res, url) => {
       jsonResponse(res, {
         cwd: currentProjectDir,
         isGeneral: isGeneralProjectDir(currentProjectDir),
       });
       return;
-    }
-    if (req.method === "GET" && url.pathname === "/api/git") {
+
+  }));
+  routes.get("/api/git", nodeRoute(async (req, res, url) => {
       try {
         const sessionId = String(
           url.searchParams.get("sessionId") || "",
@@ -3131,32 +3021,9 @@ async function main() {
         });
       }
       return;
-    }
 
-    // ── Project terminal (persistent PTY) ──
-    const resolveTerminalCwd = async (body = {}) => {
-      const sessionId = String(
-        body?.sessionId || url.searchParams.get("sessionId") || "",
-      ).trim();
-      if (sessionId) {
-        try {
-          await ensurePooledSession(sessionId);
-        } catch {}
-      }
-      const cwd =
-        resolveGitCwd({
-          sessionId,
-          getSessionProjectDir: (id) =>
-            pool.getSessionState(id)?.projectDir || "",
-          fallbackDir: currentProjectDir,
-        }) ||
-        currentProjectDir ||
-        process.cwd();
-      if (shouldAdoptGitCwd(cwd, currentProjectDir)) currentProjectDir = cwd;
-      return cwd;
-    };
-
-    if (req.method === "GET" && url.pathname === "/api/workspace/tree") {
+  }));
+  routes.get("/api/workspace/tree", nodeRoute(async (req, res, url) => {
       const cwd = await resolveTerminalCwd();
       try {
         const relativePath = String(url.searchParams.get("path") || "").trim();
@@ -3170,9 +3037,9 @@ async function main() {
         jsonResponse(res, { error: true, message }, status);
       }
       return;
-    }
 
-    if (req.method === "GET" && url.pathname === "/api/workspace/preview") {
+  }));
+  routes.get("/api/workspace/preview", nodeRoute(async (req, res, url) => {
       const cwd = await resolveTerminalCwd();
       try {
         const relativePath = String(url.searchParams.get("path") || "").trim();
@@ -3189,9 +3056,9 @@ async function main() {
         jsonResponse(res, { error: true, message }, status);
       }
       return;
-    }
 
-    if (req.method === "GET" && url.pathname === "/api/workspace/file") {
+  }));
+  routes.get("/api/workspace/file", nodeRoute(async (req, res, url) => {
       const cwd = await resolveTerminalCwd();
       try {
         const relativePath = String(url.searchParams.get("path") || "").trim();
@@ -3228,16 +3095,16 @@ async function main() {
         jsonResponse(res, { error: true, message }, status);
       }
       return;
-    }
 
-    if (req.method === "GET" && url.pathname === "/api/terminal") {
+  }));
+  routes.get("/api/terminal", nodeRoute(async (req, res, url) => {
       const config = await loadConfig();
       const cwd = await resolveTerminalCwd();
       jsonResponse(res, getTerminalSnapshot(cwd, config.shell?.default));
       return;
-    }
 
-    if (req.method === "GET" && url.pathname === "/api/terminal/stream") {
+  }));
+  routes.get("/api/terminal/stream", nodeRoute(async (req, res, url) => {
       const config = await loadConfig();
       const cwd = await resolveTerminalCwd();
       res.writeHead(200, {
@@ -3248,9 +3115,9 @@ async function main() {
       });
       subscribeTerminal(cwd, res, config.shell?.default);
       return;
-    }
 
-    if (req.method === "POST" && url.pathname === "/api/terminal/run") {
+  }));
+  routes.post("/api/terminal/run", nodeRoute(async (req, res, url) => {
       const body = await readBody(req);
       const config = await loadConfig();
       const cwd = await resolveTerminalCwd(body);
@@ -3261,9 +3128,9 @@ async function main() {
       });
       jsonResponse(res, result, result.ok ? 200 : 400);
       return;
-    }
 
-    if (req.method === "POST" && url.pathname === "/api/terminal/input") {
+  }));
+  routes.post("/api/terminal/input", nodeRoute(async (req, res, url) => {
       const body = await readBody(req);
       const config = await loadConfig();
       const cwd = await resolveTerminalCwd(body);
@@ -3272,9 +3139,9 @@ async function main() {
         writeTerminalInput(cwd, body?.data, config.shell?.default),
       );
       return;
-    }
 
-    if (req.method === "POST" && url.pathname === "/api/terminal/resize") {
+  }));
+  routes.post("/api/terminal/resize", nodeRoute(async (req, res, url) => {
       const body = await readBody(req);
       const config = await loadConfig();
       const cwd = await resolveTerminalCwd(body);
@@ -3283,17 +3150,17 @@ async function main() {
         resizeTerminal(cwd, body?.cols, body?.rows, config.shell?.default),
       );
       return;
-    }
 
-    if (req.method === "POST" && url.pathname === "/api/terminal/stop") {
+  }));
+  routes.post("/api/terminal/stop", nodeRoute(async (req, res, url) => {
       const body = await readBody(req);
       const config = await loadConfig();
       const cwd = await resolveTerminalCwd(body);
       jsonResponse(res, stopTerminal(cwd, config.shell?.default));
       return;
-    }
 
-    if (req.method === "POST" && url.pathname === "/api/terminal/clear") {
+  }));
+  routes.post("/api/terminal/clear", nodeRoute(async (req, res, url) => {
       const body = await readBody(req);
       const config = await loadConfig();
       const cwd = await resolveTerminalCwd(body);
@@ -3302,16 +3169,17 @@ async function main() {
         snapshot: clearTerminal(cwd, config.shell?.default),
       });
       return;
-    }
 
-    if (req.method === "POST" && url.pathname === "/api/terminal/restart") {
+  }));
+  routes.post("/api/terminal/restart", nodeRoute(async (req, res, url) => {
       const body = await readBody(req);
       const config = await loadConfig();
       const cwd = await resolveTerminalCwd(body);
       jsonResponse(res, restartTerminal(cwd, config.shell?.default));
       return;
-    }
-    if (req.method === "GET" && url.pathname === "/api/git-diff") {
+
+  }));
+  routes.get("/api/git-diff", nodeRoute(async (req, res, url) => {
       try {
         const sessionId = String(
           url.searchParams.get("sessionId") || "",
@@ -3339,8 +3207,9 @@ async function main() {
         });
       }
       return;
-    }
-    if (req.method === "POST" && url.pathname === "/api/git-batch") {
+
+  }));
+  routes.post("/api/git-batch", nodeRoute(async (req, res, url) => {
       const { dirs } = await readBody(req);
       const result = await readGitInfoBatch(dirs, {
         reader: readGitInfoAsync,
@@ -3349,8 +3218,9 @@ async function main() {
       });
       jsonResponse(res, result);
       return;
-    }
-    if (req.method === "POST" && url.pathname === "/api/project/open") {
+
+  }));
+  routes.post("/api/project/open", nodeRoute(async (req, res, url) => {
       const { path: projectPath, newSession: forceNewSession = false } =
         await readBody(req);
       if (!projectPath) {
@@ -3436,8 +3306,9 @@ async function main() {
         jsonResponse(res, { error: true, message: err.message }, 400);
       }
       return;
-    }
-    if (req.method === "POST" && url.pathname === "/api/project/browse") {
+
+  }));
+  routes.post("/api/project/browse", nodeRoute(async (req, res, url) => {
       const { dir } = await readBody(req);
       const roots = await listProjectRoots();
       if (!dir && roots.length) {
@@ -3469,31 +3340,33 @@ async function main() {
         jsonResponse(res, { path: base, roots, dirs: [], error: err.message });
       }
       return;
-    }
 
-    // ── Config management ──
-    if (req.method === "GET" && url.pathname === "/api/config/status") {
+  }));
+  routes.get("/api/config/status", nodeRoute(async (req, res, url) => {
       const config = await loadConfig();
       jsonResponse(res, getConfigStatus(config));
       return;
-    }
-    if (req.method === "GET" && url.pathname === "/api/playwright/status") {
+
+  }));
+  routes.get("/api/playwright/status", nodeRoute(async (req, res, url) => {
       try {
         jsonResponse(res, await detectPlaywrightStatus());
       } catch (err) {
         jsonResponse(res, { error: true, message: err.message }, 500);
       }
       return;
-    }
-    if (req.method === "GET" && url.pathname === "/api/storage") {
+
+  }));
+  routes.get("/api/storage", nodeRoute(async (req, res, url) => {
       try {
         jsonResponse(res, await getSqliteStorageInfo(currentProjectDir));
       } catch (err) {
         jsonResponse(res, { error: true, message: err.message }, 500);
       }
       return;
-    }
-    if (req.method === "POST" && url.pathname === "/api/storage/open") {
+
+  }));
+  routes.post("/api/storage/open", nodeRoute(async (req, res, url) => {
       const { target } = await readBody(req);
       try {
         jsonResponse(
@@ -3509,8 +3382,9 @@ async function main() {
         jsonResponse(res, { error: true, message: err.message }, status);
       }
       return;
-    }
-    if (req.method === "POST" && url.pathname === "/api/files/open") {
+
+  }));
+  routes.post("/api/files/open", nodeRoute(async (req, res, url) => {
       const { path: filePath, action = "open" } = await readBody(req);
       try {
         jsonResponse(
@@ -3526,13 +3400,15 @@ async function main() {
         jsonResponse(res, { error: true, message }, status);
       }
       return;
-    }
-    if (req.method === "GET" && url.pathname === "/api/config") {
+
+  }));
+  routes.get("/api/config", nodeRoute(async (req, res, url) => {
       const config = await loadConfig();
       jsonResponse(res, config);
       return;
-    }
-    if (req.method === "POST" && url.pathname === "/api/config/set") {
+
+  }));
+  routes.post("/api/config/set", nodeRoute(async (req, res, url) => {
       const { key, value } = await readBody(req);
       if (!key) {
         jsonResponse(res, { error: true, message: "Missing key" }, 400);
@@ -3549,24 +3425,18 @@ async function main() {
         jsonResponse(res, { error: true, message: err.message }, 500);
       }
       return;
-    }
-    if (req.method === "GET" && url.pathname.startsWith("/api/config/get/")) {
-      const key = url.pathname.slice("/api/config/get/".length);
-      const value = await getConfigValue(key);
-      jsonResponse(res, { key, value });
-      return;
-    }
 
-    // ── MCP server management ──
-    if (req.method === "GET" && url.pathname === "/api/mcp/servers") {
+  }));
+  routes.get("/api/mcp/servers", nodeRoute(async (req, res, url) => {
       const config = await loadConfig();
       const servers = Array.isArray(config.mcp?.servers)
         ? config.mcp.servers.map(normalizeMcpServer)
         : [];
       jsonResponse(res, { servers });
       return;
-    }
-    if (req.method === "POST" && url.pathname === "/api/mcp/servers/test") {
+
+  }));
+  routes.post("/api/mcp/servers/test", nodeRoute(async (req, res, url) => {
       try {
         const body = await readBody(req);
         const result = await inspectMcpServer(body?.server || body || {});
@@ -3575,8 +3445,9 @@ async function main() {
         jsonResponse(res, { error: true, message: err.message }, 400);
       }
       return;
-    }
-    if (req.method === "POST" && url.pathname === "/api/mcp/servers") {
+
+  }));
+  routes.post("/api/mcp/servers", nodeRoute(async (req, res, url) => {
       try {
         const body = await readBody(req);
         const server = validateMcpServer(body?.server || body || {});
@@ -3618,7 +3489,1007 @@ async function main() {
         jsonResponse(res, { error: true, message: err.message }, 400);
       }
       return;
+
+  }));
+  routes.get("/api/webui/active-projects", nodeRoute(async (req, res, url) => {
+      try {
+        const projects = await loadWebuiActiveProjects();
+        jsonResponse(res, projects);
+      } catch (err) {
+        jsonResponse(res, { error: true, message: err.message }, 500);
+      }
+      return;
+
+  }));
+  routes.patch("/api/webui/active-projects", nodeRoute(async (req, res, url) => {
+      try {
+        const body = await readBody(req);
+        const projects = await patchWebuiActiveProjects(body || {});
+        jsonResponse(res, { ok: true, ...projects });
+      } catch (err) {
+        jsonResponse(res, { error: true, message: err.message }, 500);
+      }
+      return;
+
+  }));
+  routes.get("/api/memory/inbox", nodeRoute(async (req, res, url) => {
+      const requestedScope = String(url.searchParams.get("scope") || "")
+        .trim()
+        .toLowerCase();
+      const scope = MEMORY_SCOPES.has(requestedScope) ? requestedScope : null;
+      const query = String(url.searchParams.get("q") || "").trim();
+      try {
+        const projectDirs = await parseProjectDirsParam(url, currentProjectDir);
+        const items = await listInboxForProjectDirs({
+          scope,
+          query,
+          projectDirs,
+          fallbackDir: currentProjectDir,
+        });
+        jsonResponse(res, { scope: scope || "all", query, items });
+      } catch (err) {
+        jsonResponse(res, { error: true, message: err.message }, 500);
+      }
+      return;
+
+  }));
+  routes.post("/api/memory/inbox/dream", nodeRoute(async (req, res, url) => {
+      try {
+        const body = await readBody(req);
+        const requestedScope = String(body?.scope || "")
+          .trim()
+          .toLowerCase();
+        const scope = MEMORY_SCOPES.has(requestedScope) ? requestedScope : null;
+        const config = await loadConfig();
+        const result = await runDreamConsolidation({
+          scope,
+          workspaceRoot: currentProjectDir,
+          config,
+        });
+        jsonResponse(res, result);
+      } catch (err) {
+        jsonResponse(res, { error: true, message: err.message }, 500);
+      }
+      return;
+
+  }));
+  routes.get("/api/memory", nodeRoute(async (req, res, url) => {
+      const scope = normalizeMemoryScope(url.searchParams.get("scope"));
+      const query = String(url.searchParams.get("q") || "").trim();
+      try {
+        const projectDirs = await parseProjectDirsParam(url, currentProjectDir);
+        const items = await listMemoriesForProjectDirs({
+          scope,
+          query,
+          projectDirs,
+          fallbackDir: currentProjectDir,
+        });
+        jsonResponse(res, { scope, query, items });
+      } catch (err) {
+        jsonResponse(res, { error: true, message: err.message }, 500);
+      }
+      return;
+
+  }));
+  routes.get("/api/research/sessions", nodeRoute(async (req, res, url) => {
+      const query = String(url.searchParams.get("q") || "").trim();
+      jsonResponse(res, listResearchSessionsForApi({ query }));
+      return;
+
+  }));
+  routes.post("/api/research/sessions", nodeRoute(async (req, res, url) => {
+      try {
+        const body = await readBody(req);
+        jsonResponse(res, createResearchSessionForApi(body || {}));
+      } catch (error) {
+        jsonResponse(
+          res,
+          {
+            error: true,
+            message: error?.message || "Failed to create research session",
+          },
+          400,
+        );
+      }
+      return;
+
+  }));
+  routes.get("/api/scrapbook/entries", nodeRoute(async (req, res, url) => {
+      const query = String(url.searchParams.get("q") || "").trim();
+      jsonResponse(res, listScrapbookEntriesForApi({ query }));
+      return;
+
+  }));
+  routes.post("/api/scrapbook/entries/manual", nodeRoute(async (req, res, url) => {
+      const body = await readBody(req);
+      try {
+        jsonResponse(res, {
+          ok: true,
+          entry: createManualScrapbookEntry(body || {}),
+        });
+      } catch (error) {
+        jsonResponse(
+          res,
+          {
+            error: true,
+            message: error?.message || "Failed to create scrapbook entry",
+          },
+          400,
+        );
+      }
+      return;
+
+  }));
+  routes.post("/api/scrapbook/entries/url", nodeRoute(async (req, res, url) => {
+      const body = await readBody(req);
+      try {
+        jsonResponse(res, {
+          ok: true,
+          entry: createUrlScrapbookEntry(body || {}),
+        });
+      } catch (error) {
+        jsonResponse(
+          res,
+          {
+            error: true,
+            message: error?.message || "Failed to import scrapbook URL",
+          },
+          400,
+        );
+      }
+      return;
+
+  }));
+  routes.post("/api/scrapbook/entries/notebook", nodeRoute(async (req, res, url) => {
+      try {
+        const form = await readMultipartForm(req);
+        const title = String(form.get("title") || "").trim();
+        const contentText = String(form.get("contentText") || "").trim();
+        const urls = form
+          .getAll("urls")
+          .map((value) => String(value || "").trim())
+          .filter(Boolean);
+        const files = form
+          .getAll("files")
+          .filter((item) => item && typeof item.arrayBuffer === "function");
+        const sources = urls.map((sourceUrl) => ({
+          type: "url",
+          name: sourceUrl,
+          url: sourceUrl,
+        }));
+        if (contentText) {
+          sources.push({
+            type: "manual",
+            name: title || "Manual note",
+            contentText,
+          });
+        }
+        for (const file of files) {
+          if (Number(file.size || 0) > 20 * 1024 * 1024) {
+            throw new Error(`${file.name || "File"} exceeds the 20 MB limit`);
+          }
+          const name = safeUploadFileName(file.name || "source");
+          const ext = path.extname(name).toLowerCase();
+          if (![".pdf", ".docx", ".txt", ".md", ".markdown"].includes(ext)) {
+            throw new Error(
+              "Unsupported source type. Use PDF, DOCX, TXT, or Markdown.",
+            );
+          }
+          const buffer = Buffer.from(await file.arrayBuffer());
+          const extractedText = [".txt", ".md", ".markdown"].includes(ext)
+            ? buffer.toString("utf8").trim()
+            : await extractAttachmentText(buffer, ext);
+          if (!extractedText)
+            throw new Error(`No readable text found in ${name}`);
+          sources.push({
+            type: "file",
+            name,
+            mime: String(file.type || "application/octet-stream"),
+            contentText: extractedText,
+          });
+        }
+        const entry = createMultiSourceScrapbookEntry({ title, sources });
+        const job = startScrapbookSummaryJob(entry.id);
+        jsonResponse(res, { ok: true, entry, job });
+      } catch (error) {
+        jsonResponse(
+          res,
+          {
+            error: true,
+            message: error?.message || "Failed to create notebook",
+          },
+          400,
+        );
+      }
+      return;
+
+  }));
+  routes.post("/api/scrapbook/entries/chat-answer", nodeRoute(async (req, res, url) => {
+      const body = await readBody(req);
+      try {
+        jsonResponse(res, {
+          ok: true,
+          ...createChatAnswerScrapbookEntryWithSummary(body || {}),
+        });
+      } catch (error) {
+        jsonResponse(
+          res,
+          {
+            error: true,
+            message: error?.message || "Failed to save scrapbook answer",
+          },
+          400,
+        );
+      }
+      return;
+
+  }));
+  routes.get("/api/skills", nodeRoute(async (req, res, url) => {
+      try {
+        const skills = await listSkillsForProjectDirs([], currentProjectDir);
+        jsonResponse(res, skills);
+      } catch (err) {
+        jsonResponse(res, { error: true, message: err.message }, 500);
+      }
+      return;
+
+  }));
+  routes.get("/api/skills/index", nodeRoute(async (req, res, url) => {
+      try {
+        const targetProjectDir = await resolveRequestProjectDir(
+          url.searchParams.get("projectDir"),
+          currentProjectDir,
+        );
+        const config = await loadConfig();
+        const preview = await buildSkillIndexPreview(targetProjectDir, config);
+        jsonResponse(res, {
+          ...preview,
+          projectDir: targetProjectDir,
+        });
+      } catch (err) {
+        jsonResponse(res, { error: true, message: err.message }, 500);
+      }
+      return;
+
+  }));
+  routes.post("/api/skills/create", nodeRoute(async (req, res, url) => {
+      const { name, description, content, contexts } = await readBody(req);
+      if (!name || !content) {
+        jsonResponse(
+          res,
+          { error: true, message: "Missing name or content" },
+          400,
+        );
+        return;
+      }
+      if (!isSafeSkillName(name)) {
+        jsonResponse(res, { error: true, message: "Invalid skill name" }, 400);
+        return;
+      }
+      try {
+        const skillBaseDir = getSkillsDir();
+        const skillDir = path.join(skillBaseDir, name);
+        await fs.mkdir(skillDir, { recursive: true });
+        const skillFile = path.join(skillDir, "SKILL.md");
+        await fs.writeFile(skillFile, content, "utf8");
+        const markdownMeta = metadataPatchFromSkillMarkdown(content);
+        const catalogSeed = {
+          description: description || markdownMeta.description || "",
+          mode: markdownMeta.mode || "agent_requested",
+          triggers: Array.isArray(markdownMeta.triggers)
+            ? markdownMeta.triggers
+            : [],
+          enabled: markdownMeta.enabled !== false,
+          ...(markdownMeta.priority !== undefined
+            ? { priority: markdownMeta.priority }
+            : { priority: 50 }),
+        };
+        await upsertSkillRegistryEntry(undefined, {
+          name,
+          version: "0.0.0",
+          description: catalogSeed.description,
+          enabled: catalogSeed.enabled,
+          source: "web-create",
+          entryFile: "SKILL.md",
+          sha256: await computeFileSha256(skillFile),
+          installedAt: new Date().toISOString(),
+        });
+        await upsertSkillCatalogMetadata(getSkillsDir(), name, catalogSeed);
+        const config = await loadConfig();
+        config.skills = config.skills || {};
+        config.skills.enabled = config.skills.enabled || {};
+        config.skills.contexts = config.skills.contexts || {};
+        config.skills.enabled[name] = true;
+        config.skills.contexts[name] =
+          contexts !== undefined
+            ? normalizeSkillContexts(contexts)
+            : ["coding", "daily"];
+        await saveConfig(config);
+        await bridge.reloadConfig();
+        await bridge.reloadCommandsAndSkills();
+        jsonResponse(res, { ok: true, name });
+      } catch (err) {
+        jsonResponse(res, { error: true, message: err.message }, 500);
+      }
+      return;
+
+  }));
+  routes.post("/api/skills/preview", nodeRoute(async (req, res, url) => {
+      const { source } = await readBody(req);
+      if (!source) {
+        jsonResponse(res, { error: true, message: "Missing source" }, 400);
+        return;
+      }
+      try {
+        const preview = await previewSkillSource(source, {
+          cwd: currentProjectDir || process.cwd(),
+        });
+        jsonResponse(res, { ok: true, ...preview });
+      } catch (err) {
+        jsonResponse(res, { error: true, message: err.message }, 500);
+      }
+      return;
+
+  }));
+  routes.post("/api/skills/install", nodeRoute(async (req, res, url) => {
+      const {
+        source,
+        contexts,
+        includeHooks = false,
+        skillNames = null,
+      } = await readBody(req);
+      if (!source) {
+        jsonResponse(res, { error: true, message: "Missing source" }, 400);
+        return;
+      }
+      try {
+        const installed = await installSkillSource(source, {
+          cwd: currentProjectDir,
+          includeHooks: includeHooks === true,
+          skillNames: Array.isArray(skillNames) ? skillNames : null,
+          contexts:
+            contexts !== undefined
+              ? normalizeSkillContexts(contexts)
+              : undefined,
+        });
+        if (contexts !== undefined) {
+          const config = await loadConfig();
+          config.skills = config.skills || {};
+          config.skills.contexts = config.skills.contexts || {};
+          const normalizedContexts = normalizeSkillContexts(contexts);
+          for (const name of installed)
+            config.skills.contexts[name] = normalizedContexts;
+          await saveConfig(config);
+        }
+        await bridge.reloadConfig();
+        await bridge.reloadCommandsAndSkills();
+        jsonResponse(res, { ok: true, installed });
+      } catch (err) {
+        jsonResponse(res, { error: true, message: err.message }, 500);
+      }
+      return;
+
+  }));
+  routes.post("/api/skills/update/preview", nodeRoute(async (req, res, url) => {
+      const { name, projectDir } = await readBody(req);
+      if (!name) {
+        jsonResponse(res, { error: true, message: "Missing skill name" }, 400);
+        return;
+      }
+      try {
+        const targetProjectDir = await resolveRequestProjectDir(
+          projectDir,
+          currentProjectDir,
+        );
+        const preview = await previewSkillPackageUpdate({
+          name,
+          cwd: targetProjectDir,
+        });
+        jsonResponse(res, { ok: true, ...preview });
+      } catch (err) {
+        jsonResponse(res, { error: true, message: err.message }, 500);
+      }
+      return;
+
+  }));
+  routes.post("/api/skills/update", nodeRoute(async (req, res, url) => {
+      const {
+        name,
+        projectDir,
+        skillNames = null,
+        includeHooks,
+        defaultContexts,
+      } = await readBody(req);
+      if (!name) {
+        jsonResponse(res, { error: true, message: "Missing skill name" }, 400);
+        return;
+      }
+      try {
+        const targetProjectDir = await resolveRequestProjectDir(
+          projectDir,
+          currentProjectDir,
+        );
+        const result = await updateSkillPackage({
+          name,
+          cwd: targetProjectDir,
+          skillNames: Array.isArray(skillNames) ? skillNames : null,
+          includeHooks,
+          defaultContexts,
+        });
+        await bridge.reloadConfig();
+        await bridge.reloadCommandsAndSkills();
+        jsonResponse(res, {
+          ok: true,
+          installed: result.installed,
+          previouslyInstalled: result.previouslyInstalled,
+          packageSource: result.packageSource,
+          packageName: result.packageName,
+        });
+      } catch (err) {
+        jsonResponse(res, { error: true, message: err.message }, 500);
+      }
+      return;
+
+  }));
+  routes.get("/api/hooks", nodeRoute(async (req, res, url) => {
+      try {
+        const requestedScope = url.searchParams.get("scope");
+        const scope =
+          requestedScope === "global"
+            ? "global"
+            : requestedScope === "daily"
+              ? "daily"
+              : "coding";
+        const loaded =
+          scope === "global"
+            ? await loadGlobalHooks({ rewriteMatchers: false })
+            : await loadProjectHooks(currentProjectDir || process.cwd(), {
+                rewriteMatchers: false,
+                context: scope,
+              });
+        const rawHooks = await readWorkspaceHooksFile(loaded.filePath);
+        jsonResponse(res, {
+          scope,
+          filePath: loaded.filePath,
+          hooks: rawHooks,
+        });
+      } catch (err) {
+        jsonResponse(res, { error: true, message: err.message }, 500);
+      }
+      return;
+
+  }));
+  routes.get("/api/hook-profiles", nodeRoute(async (req, res, url) => {
+      try {
+        const cwd = currentProjectDir || process.cwd();
+        const [globalLayer, codingLayer, dailyLayer, customProfiles, skills] =
+          await Promise.all([
+            loadGlobalHooks({ rewriteMatchers: false }),
+            loadProjectHooks(cwd, {
+              rewriteMatchers: false,
+              context: "coding",
+            }),
+            loadProjectHooks(cwd, { rewriteMatchers: false, context: "daily" }),
+            listCustomHookProfiles(cwd),
+            listSkillEntries({ scope: "all", cwd }),
+          ]);
+        const legacyProfiles = [];
+        for (const layer of [
+          {
+            id: "legacy-global",
+            activation: "always",
+            scope: "global",
+            filePath: globalLayer.filePath,
+          },
+          {
+            id: "legacy-coding",
+            activation: "coding",
+            scope: "project",
+            filePath: codingLayer.filePath,
+          },
+          {
+            id: "legacy-daily",
+            activation: "daily",
+            scope: "project",
+            filePath: dailyLayer.filePath,
+          },
+        ]) {
+          const hooks = await readWorkspaceHooksFile(layer.filePath);
+          // Old workspace hook files remain editable, but empty scope layers are
+          // headings rather than fake profiles in the new profile library.
+          if (Object.keys(hooks).length === 0) continue;
+          legacyProfiles.push({
+            ...layer,
+            name: "Legacy hooks",
+            nameKey: "hooksLegacyProfile",
+            kind: "workspace",
+            enabled: true,
+            editable: true,
+            hooks,
+          });
+        }
+        const profiles = [...legacyProfiles, ...customProfiles];
+        for (const skill of skills) {
+          const skillRoot = path.dirname(skill.path);
+          const discovered = await discoverSkillHooks({ skillRoot });
+          if (discovered.disabled) continue;
+          const raw = await readHooksJsonRaw(
+            path.join(skillRoot, "hooks", "hooks.json"),
+          );
+          const hooks = Object.keys(raw).length > 0 ? raw : discovered.hooks;
+          if (Object.keys(hooks).length === 0) continue;
+          const activation = hookActivationFromContexts(
+            Array.isArray(skill.contexts) ? skill.contexts : [],
+          );
+          profiles.push({
+            id: `skill:${skill.scope}:${skill.name}`,
+            name: skill.name,
+            kind: "skill",
+            scope: skill.scope,
+            activation,
+            enabled: skill.enabled !== false,
+            editable: skill.scope !== "builtin",
+            hooks,
+            skillName: skill.name,
+            provenance: discovered.provenance || {},
+          });
+        }
+        jsonResponse(res, { profiles });
+      } catch (err) {
+        jsonResponse(res, { error: true, message: err.message }, 500);
+      }
+      return;
+
+  }));
+  routes.post("/api/hook-profiles", nodeRoute(async (req, res, url) => {
+      try {
+        const body = await readBody(req);
+        const saved = await saveCustomHookProfile(
+          body,
+          currentProjectDir || process.cwd(),
+        );
+        await bridge.reloadCommandsAndSkills().catch(() => null);
+        jsonResponse(res, { ok: true, profile: saved });
+      } catch (err) {
+        jsonResponse(res, { error: true, message: err.message }, 400);
+      }
+      return;
+
+  }));
+  routes.put("/api/hook-profiles", nodeRoute(async (req, res, url) => {
+      try {
+        const profile = await readBody(req);
+        const cwd = currentProjectDir || process.cwd();
+        let saved = null;
+        if (profile?.kind === "workspace") {
+          if (profile.activation === "always")
+            await saveGlobalHooks(profile.hooks || {});
+          else
+            await saveProjectHooks(
+              cwd,
+              profile.hooks || {},
+              profile.activation,
+            );
+          saved = profile;
+        } else if (profile?.kind === "skill") {
+          const entries = await listSkillEntries({ scope: "all", cwd });
+          const skill = entries.find((item) => item.name === profile.skillName);
+          if (!skill || skill.scope === "builtin")
+            throw new Error("Skill hook profile is not editable");
+          await writeSkillHooksJson(
+            path.dirname(skill.path),
+            profile.hooks || {},
+          );
+          saved = profile;
+        } else if (profile?.kind === "package") {
+          const existing = (await listCustomHookProfiles(cwd)).find(
+            (item) => item.id === profile.id && item.kind === "package",
+          );
+          if (!existing) throw new Error("Package hook profile not found");
+          saved = await savePackageHookProfile(
+            {
+              ...existing,
+              enabled: profile.enabled !== false,
+              activation: profile.activation || existing.activation,
+            },
+            cwd,
+          );
+        } else {
+          if (
+            profile?.originalScope &&
+            profile.originalScope !== profile.scope
+          ) {
+            await deleteCustomHookProfile(
+              { id: profile.id, scope: profile.originalScope },
+              cwd,
+            );
+          }
+          saved = await saveCustomHookProfile(profile, cwd);
+        }
+        await bridge.reloadCommandsAndSkills().catch(() => null);
+        jsonResponse(res, { ok: true, profile: saved });
+      } catch (err) {
+        jsonResponse(res, { error: true, message: err.message }, 400);
+      }
+      return;
+
+  }));
+  routes.delete("/api/hook-profiles", nodeRoute(async (req, res, url) => {
+      try {
+        const body = await readBody(req);
+        const cwd = currentProjectDir || process.cwd();
+        if (body?.kind === "workspace") {
+          if (body.activation === "always") await saveGlobalHooks({});
+          else await saveProjectHooks(cwd, {}, body.activation);
+        } else if (body?.kind === "skill") {
+          const entries = await listSkillEntries({ scope: "all", cwd });
+          const skill = entries.find(
+            (item) =>
+              item.name === body.skillName &&
+              (!body.projectDir || item.projectDir === body.projectDir),
+          );
+          if (!skill || skill.scope === "builtin")
+            throw new Error("Skill hook profile is not deletable");
+          await disableSkillHooks(path.dirname(skill.path));
+        } else {
+          await deleteCustomHookProfile(body || {}, cwd);
+        }
+        await bridge.reloadCommandsAndSkills().catch(() => null);
+        jsonResponse(res, { ok: true });
+      } catch (err) {
+        jsonResponse(res, { error: true, message: err.message }, 400);
+      }
+      return;
+
+  }));
+  routes.put("/api/hooks", nodeRoute(async (req, res, url) => {
+      try {
+        const body = await readBody(req);
+        const scope =
+          body?.scope === "global"
+            ? "global"
+            : body?.scope === "daily"
+              ? "daily"
+              : "coding";
+        const hooks =
+          body?.hooks && typeof body.hooks === "object" ? body.hooks : {};
+        const saved =
+          scope === "global"
+            ? await saveGlobalHooks(hooks)
+            : await saveProjectHooks(
+                currentProjectDir || process.cwd(),
+                hooks,
+                scope,
+              );
+        if (typeof bridge?.reloadCommandsAndSkills === "function") {
+          await bridge.reloadCommandsAndSkills().catch(() => null);
+        }
+        jsonResponse(res, { ok: true, scope, hooks: saved });
+      } catch (err) {
+        jsonResponse(res, { error: true, message: err.message }, 500);
+      }
+      return;
+
+  }));
+  routes.get("/api/souls", nodeRoute(async (req, res, url) => {
+      try {
+        const config = await loadConfig();
+        jsonResponse(res, await listSouls(config));
+      } catch (err) {
+        jsonResponse(res, { error: true, message: err.message }, 500);
+      }
+      return;
+
+  }));
+  routes.post("/api/souls/create", nodeRoute(async (req, res, url) => {
+      const {
+        name: rawName,
+        content: soulContent,
+        category,
+      } = await readBody(req);
+      if (!rawName || !soulContent) {
+        jsonResponse(
+          res,
+          { error: true, message: "Missing name or content" },
+          400,
+        );
+        return;
+      }
+      try {
+        jsonResponse(
+          res,
+          await createSoul({ name: rawName, content: soulContent, category }),
+        );
+      } catch (err) {
+        const status = /conflict|already exists|Invalid/i.test(err.message)
+          ? 409
+          : 500;
+        jsonResponse(res, { error: true, message: err.message }, status);
+      }
+      return;
+
+  }));
+  routes.post("/api/souls/activate", nodeRoute(async (req, res, url) => {
+      if (bridge.isBusy()) {
+        jsonResponse(res, { error: true, message: "Runtime is busy" }, 409);
+        return;
+      }
+      const { name: sname, category } = await readBody(req);
+      if (!sname) {
+        jsonResponse(res, { error: true, message: "Missing name" }, 400);
+        return;
+      }
+      try {
+        const soul = await readSoulContent(sname, { preferCategory: category });
+        const resolvedCategory = normalizeSoulCategory(
+          category || soul.category,
+          soul.category,
+        );
+        const config = await loadConfig();
+        config.soul = config.soul || {};
+        config.soul[resolvedCategory] = soul.name;
+        config.soul.custom_path = "";
+        // Keep legacy preset in sync for older readers.
+        config.soul.preset = getActiveSoulName(config, resolvedCategory);
+        await saveConfig(config);
+        jsonResponse(res, {
+          ok: true,
+          category: resolvedCategory,
+          name: soul.name,
+        });
+      } catch (err) {
+        jsonResponse(res, { error: true, message: err.message }, 500);
+      }
+      return;
+
+  }));
+
+  const handleRequest = async (req, res) => {
+    const url = new URL(req.url, `http://localhost:${args.port}`);
+
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+    if (req.method === "OPTIONS") {
+      res.writeHead(204);
+      res.end();
+      return;
     }
+
+    if (await runtimeApi(req, res)) return;
+    if (await dispatchNodeRouter(routes, req, res)) return;
+    // SSE
+    // Handled by the global runtime API broker above.
+
+    const attachmentFileMatch = url.pathname.match(
+      /^\/api\/attachments\/([^/]+)\/([^/]+)\/file$/,
+    );
+    if (req.method === "GET" && attachmentFileMatch) {
+      try {
+        const sessionId = decodeURIComponent(attachmentFileMatch[1]);
+        const id = decodeURIComponent(attachmentFileMatch[2]);
+        let meta = loadAttachmentMetadata(sessionId, id);
+        if (!meta) {
+          meta = JSON.parse(
+            await fs.readFile(attachmentMetaPath(sessionId, id), "utf8"),
+          );
+          if (meta?.path) saveAttachmentMetadata(sessionId, meta);
+        }
+        const filePath = path.resolve(meta.path || "");
+        const uploadRoot = path.resolve(ATTACHMENT_UPLOAD_DIR);
+        if (!isPathInside(uploadRoot, filePath)) {
+          res.writeHead(403);
+          res.end();
+          return;
+        }
+        const ext = path.extname(filePath).toLowerCase();
+        const contentType =
+          meta.mime || MIME_TYPES[ext] || "application/octet-stream";
+        const data = await fs.readFile(filePath);
+        res.writeHead(200, {
+          "Content-Type": contentType,
+          "Content-Length": data.length,
+          "Cache-Control": "private, max-age=86400",
+        });
+        res.end(data);
+      } catch {
+        jsonResponse(
+          res,
+          { error: true, message: "Attachment not found" },
+          404,
+        );
+      }
+      return;
+    }
+
+    // Static files
+    if (req.method === "GET" && !url.pathname.startsWith("/api/")) {
+      let filePath;
+      if (url.pathname === "/") {
+        filePath = path.join(CLIENT_DIR, "index.html");
+      } else {
+        const relative = url.pathname.replace(/^\//, "");
+        filePath = path.extname(relative)
+          ? path.join(CLIENT_DIR, relative)
+          : path.join(CLIENT_DIR, "index.html");
+      }
+      if (!filePath.startsWith(CLIENT_DIR)) {
+        res.writeHead(403);
+        res.end();
+        return;
+      }
+      await serveStatic(res, filePath);
+      return;
+    }
+
+    // ── Version ──
+
+
+
+
+
+    // ── CodeWiki / project requirements reports ──
+
+
+
+
+    if (
+      req.method === "GET" &&
+      url.pathname.startsWith("/api/codewiki/report/")
+    ) {
+      const fileName = decodeURIComponent(
+        url.pathname.slice("/api/codewiki/report/".length),
+      );
+      if (!isCodeWikiReportFile(fileName)) {
+        jsonResponse(res, { error: true, message: "Invalid report file" }, 400);
+        return;
+      }
+      const codeWikiProjectDir = await resolveCodeWikiProjectDir(
+        url,
+        currentProjectDir,
+      );
+      const requirementsDir = path.resolve(
+        getRequirementsDir(codeWikiProjectDir),
+      );
+      const reportPath = path.resolve(requirementsDir, fileName);
+      if (!reportPath.startsWith(`${requirementsDir}${path.sep}`)) {
+        jsonResponse(res, { error: true, message: "Invalid report path" }, 403);
+        return;
+      }
+      if (codeWikiReportFormat(fileName) === "html") {
+        try {
+          const raw = await fs.readFile(reportPath, "utf8");
+          const html = injectCodeWikiReportTheme(raw);
+          res.writeHead(200, {
+            "Content-Type": "text/html; charset=utf-8",
+            "Cache-Control": "no-store",
+          });
+          res.end(html);
+        } catch (err) {
+          if (err?.code === "ENOENT")
+            jsonResponse(
+              res,
+              { error: true, message: "Report not found" },
+              404,
+            );
+          else jsonResponse(res, { error: true, message: err.message }, 500);
+        }
+        return;
+      }
+      await serveStatic(res, reportPath);
+      return;
+    }
+
+    if (
+      req.method === "DELETE" &&
+      url.pathname.startsWith("/api/codewiki/report/")
+    ) {
+      const fileName = decodeURIComponent(
+        url.pathname.slice("/api/codewiki/report/".length),
+      );
+      if (!isCodeWikiReportFile(fileName)) {
+        jsonResponse(res, { error: true, message: "Invalid report file" }, 400);
+        return;
+      }
+      const codeWikiProjectDir = await resolveCodeWikiProjectDir(
+        url,
+        currentProjectDir,
+      );
+      const requirementsDir = path.resolve(
+        getRequirementsDir(codeWikiProjectDir),
+      );
+      const reportPath = path.resolve(requirementsDir, fileName);
+      if (!reportPath.startsWith(`${requirementsDir}${path.sep}`)) {
+        jsonResponse(res, { error: true, message: "Invalid report path" }, 403);
+        return;
+      }
+      try {
+        await fs.unlink(reportPath);
+        jsonResponse(res, { ok: true, file: fileName });
+      } catch (err) {
+        if (err?.code === "ENOENT")
+          jsonResponse(res, { error: true, message: "Report not found" }, 404);
+        else jsonResponse(res, { error: true, message: err.message }, 500);
+      }
+      return;
+    }
+
+
+
+
+
+    // ── Project management ──
+
+
+
+    // ── Project terminal (persistent PTY) ──
+    const resolveTerminalCwd = async (body = {}) => {
+      const sessionId = String(
+        body?.sessionId || url.searchParams.get("sessionId") || "",
+      ).trim();
+      if (sessionId) {
+        try {
+          await ensurePooledSession(sessionId);
+        } catch {}
+      }
+      const cwd =
+        resolveGitCwd({
+          sessionId,
+          getSessionProjectDir: (id) =>
+            pool.getSessionState(id)?.projectDir || "",
+          fallbackDir: currentProjectDir,
+        }) ||
+        currentProjectDir ||
+        process.cwd();
+      if (shouldAdoptGitCwd(cwd, currentProjectDir)) currentProjectDir = cwd;
+      return cwd;
+    };
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    // ── Config management ──
+
+
+
+
+
+
+
+    if (req.method === "GET" && url.pathname.startsWith("/api/config/get/")) {
+      const key = url.pathname.slice("/api/config/get/".length);
+      const value = await getConfigValue(key);
+      jsonResponse(res, { key, value });
+      return;
+    }
+
+    // ── MCP server management ──
+
+
+
     if (
       req.method === "DELETE" &&
       url.pathname.startsWith("/api/mcp/servers/")
@@ -3654,69 +4525,12 @@ async function main() {
     }
 
     // ── Web UI active projects (stored in global config.json) ──
-    if (req.method === "GET" && url.pathname === "/api/webui/active-projects") {
-      try {
-        const projects = await loadWebuiActiveProjects();
-        jsonResponse(res, projects);
-      } catch (err) {
-        jsonResponse(res, { error: true, message: err.message }, 500);
-      }
-      return;
-    }
-    if (
-      req.method === "PATCH" &&
-      url.pathname === "/api/webui/active-projects"
-    ) {
-      try {
-        const body = await readBody(req);
-        const projects = await patchWebuiActiveProjects(body || {});
-        jsonResponse(res, { ok: true, ...projects });
-      } catch (err) {
-        jsonResponse(res, { error: true, message: err.message }, 500);
-      }
-      return;
-    }
+
+
 
     // ── Memory management ──
-    if (req.method === "GET" && url.pathname === "/api/memory/inbox") {
-      const requestedScope = String(url.searchParams.get("scope") || "")
-        .trim()
-        .toLowerCase();
-      const scope = MEMORY_SCOPES.has(requestedScope) ? requestedScope : null;
-      const query = String(url.searchParams.get("q") || "").trim();
-      try {
-        const projectDirs = await parseProjectDirsParam(url, currentProjectDir);
-        const items = await listInboxForProjectDirs({
-          scope,
-          query,
-          projectDirs,
-          fallbackDir: currentProjectDir,
-        });
-        jsonResponse(res, { scope: scope || "all", query, items });
-      } catch (err) {
-        jsonResponse(res, { error: true, message: err.message }, 500);
-      }
-      return;
-    }
-    if (req.method === "POST" && url.pathname === "/api/memory/inbox/dream") {
-      try {
-        const body = await readBody(req);
-        const requestedScope = String(body?.scope || "")
-          .trim()
-          .toLowerCase();
-        const scope = MEMORY_SCOPES.has(requestedScope) ? requestedScope : null;
-        const config = await loadConfig();
-        const result = await runDreamConsolidation({
-          scope,
-          workspaceRoot: currentProjectDir,
-          config,
-        });
-        jsonResponse(res, result);
-      } catch (err) {
-        jsonResponse(res, { error: true, message: err.message }, 500);
-      }
-      return;
-    }
+
+
     if (
       req.method === "DELETE" &&
       url.pathname.startsWith("/api/memory/inbox/")
@@ -3749,23 +4563,7 @@ async function main() {
       }
       return;
     }
-    if (req.method === "GET" && url.pathname === "/api/memory") {
-      const scope = normalizeMemoryScope(url.searchParams.get("scope"));
-      const query = String(url.searchParams.get("q") || "").trim();
-      try {
-        const projectDirs = await parseProjectDirsParam(url, currentProjectDir);
-        const items = await listMemoriesForProjectDirs({
-          scope,
-          query,
-          projectDirs,
-          fallbackDir: currentProjectDir,
-        });
-        jsonResponse(res, { scope, query, items });
-      } catch (err) {
-        jsonResponse(res, { error: true, message: err.message }, 500);
-      }
-      return;
-    }
+
     if (req.method === "DELETE" && url.pathname.startsWith("/api/memory/")) {
       const id = decodeURIComponent(url.pathname.slice("/api/memory/".length));
       const scope = normalizeMemoryScope(url.searchParams.get("scope"));
@@ -3790,27 +4588,8 @@ async function main() {
     }
 
     // ── Deep Research ──
-    if (req.method === "GET" && url.pathname === "/api/research/sessions") {
-      const query = String(url.searchParams.get("q") || "").trim();
-      jsonResponse(res, listResearchSessionsForApi({ query }));
-      return;
-    }
-    if (req.method === "POST" && url.pathname === "/api/research/sessions") {
-      try {
-        const body = await readBody(req);
-        jsonResponse(res, createResearchSessionForApi(body || {}));
-      } catch (error) {
-        jsonResponse(
-          res,
-          {
-            error: true,
-            message: error?.message || "Failed to create research session",
-          },
-          400,
-        );
-      }
-      return;
-    }
+
+
     if (
       req.method === "GET" &&
       url.pathname.startsWith("/api/research/sessions/") &&
@@ -3946,143 +4725,11 @@ async function main() {
     }
 
     // ── Scrapbook ──
-    if (req.method === "GET" && url.pathname === "/api/scrapbook/entries") {
-      const query = String(url.searchParams.get("q") || "").trim();
-      jsonResponse(res, listScrapbookEntriesForApi({ query }));
-      return;
-    }
-    if (
-      req.method === "POST" &&
-      url.pathname === "/api/scrapbook/entries/manual"
-    ) {
-      const body = await readBody(req);
-      try {
-        jsonResponse(res, {
-          ok: true,
-          entry: createManualScrapbookEntry(body || {}),
-        });
-      } catch (error) {
-        jsonResponse(
-          res,
-          {
-            error: true,
-            message: error?.message || "Failed to create scrapbook entry",
-          },
-          400,
-        );
-      }
-      return;
-    }
-    if (
-      req.method === "POST" &&
-      url.pathname === "/api/scrapbook/entries/url"
-    ) {
-      const body = await readBody(req);
-      try {
-        jsonResponse(res, {
-          ok: true,
-          entry: createUrlScrapbookEntry(body || {}),
-        });
-      } catch (error) {
-        jsonResponse(
-          res,
-          {
-            error: true,
-            message: error?.message || "Failed to import scrapbook URL",
-          },
-          400,
-        );
-      }
-      return;
-    }
-    if (
-      req.method === "POST" &&
-      url.pathname === "/api/scrapbook/entries/notebook"
-    ) {
-      try {
-        const form = await readMultipartForm(req);
-        const title = String(form.get("title") || "").trim();
-        const contentText = String(form.get("contentText") || "").trim();
-        const urls = form
-          .getAll("urls")
-          .map((value) => String(value || "").trim())
-          .filter(Boolean);
-        const files = form
-          .getAll("files")
-          .filter((item) => item && typeof item.arrayBuffer === "function");
-        const sources = urls.map((sourceUrl) => ({
-          type: "url",
-          name: sourceUrl,
-          url: sourceUrl,
-        }));
-        if (contentText) {
-          sources.push({
-            type: "manual",
-            name: title || "Manual note",
-            contentText,
-          });
-        }
-        for (const file of files) {
-          if (Number(file.size || 0) > 20 * 1024 * 1024) {
-            throw new Error(`${file.name || "File"} exceeds the 20 MB limit`);
-          }
-          const name = safeUploadFileName(file.name || "source");
-          const ext = path.extname(name).toLowerCase();
-          if (![".pdf", ".docx", ".txt", ".md", ".markdown"].includes(ext)) {
-            throw new Error(
-              "Unsupported source type. Use PDF, DOCX, TXT, or Markdown.",
-            );
-          }
-          const buffer = Buffer.from(await file.arrayBuffer());
-          const extractedText = [".txt", ".md", ".markdown"].includes(ext)
-            ? buffer.toString("utf8").trim()
-            : await extractAttachmentText(buffer, ext);
-          if (!extractedText)
-            throw new Error(`No readable text found in ${name}`);
-          sources.push({
-            type: "file",
-            name,
-            mime: String(file.type || "application/octet-stream"),
-            contentText: extractedText,
-          });
-        }
-        const entry = createMultiSourceScrapbookEntry({ title, sources });
-        const job = startScrapbookSummaryJob(entry.id);
-        jsonResponse(res, { ok: true, entry, job });
-      } catch (error) {
-        jsonResponse(
-          res,
-          {
-            error: true,
-            message: error?.message || "Failed to create notebook",
-          },
-          400,
-        );
-      }
-      return;
-    }
-    if (
-      req.method === "POST" &&
-      url.pathname === "/api/scrapbook/entries/chat-answer"
-    ) {
-      const body = await readBody(req);
-      try {
-        jsonResponse(res, {
-          ok: true,
-          ...createChatAnswerScrapbookEntryWithSummary(body || {}),
-        });
-      } catch (error) {
-        jsonResponse(
-          res,
-          {
-            error: true,
-            message: error?.message || "Failed to save scrapbook answer",
-          },
-          400,
-        );
-      }
-      return;
-    }
+
+
+
+
+
     if (
       req.method === "POST" &&
       /^\/api\/scrapbook\/entries\/[^/]+\/sources$/.test(url.pathname)
@@ -4384,32 +5031,8 @@ async function main() {
     }
 
     // ── Skills management ──
-    if (req.method === "GET" && url.pathname === "/api/skills") {
-      try {
-        const skills = await listSkillsForProjectDirs([], currentProjectDir);
-        jsonResponse(res, skills);
-      } catch (err) {
-        jsonResponse(res, { error: true, message: err.message }, 500);
-      }
-      return;
-    }
-    if (req.method === "GET" && url.pathname === "/api/skills/index") {
-      try {
-        const targetProjectDir = await resolveRequestProjectDir(
-          url.searchParams.get("projectDir"),
-          currentProjectDir,
-        );
-        const config = await loadConfig();
-        const preview = await buildSkillIndexPreview(targetProjectDir, config);
-        jsonResponse(res, {
-          ...preview,
-          projectDir: targetProjectDir,
-        });
-      } catch (err) {
-        jsonResponse(res, { error: true, message: err.message }, 500);
-      }
-      return;
-    }
+
+
     if (
       req.method === "GET" &&
       url.pathname.startsWith("/api/skills/") &&
@@ -4435,183 +5058,11 @@ async function main() {
       }
       return;
     }
-    if (req.method === "POST" && url.pathname === "/api/skills/create") {
-      const { name, description, content, contexts } = await readBody(req);
-      if (!name || !content) {
-        jsonResponse(
-          res,
-          { error: true, message: "Missing name or content" },
-          400,
-        );
-        return;
-      }
-      if (!isSafeSkillName(name)) {
-        jsonResponse(res, { error: true, message: "Invalid skill name" }, 400);
-        return;
-      }
-      try {
-        const skillBaseDir = getSkillsDir();
-        const skillDir = path.join(skillBaseDir, name);
-        await fs.mkdir(skillDir, { recursive: true });
-        const skillFile = path.join(skillDir, "SKILL.md");
-        await fs.writeFile(skillFile, content, "utf8");
-        const markdownMeta = metadataPatchFromSkillMarkdown(content);
-        const catalogSeed = {
-          description: description || markdownMeta.description || "",
-          mode: markdownMeta.mode || "agent_requested",
-          triggers: Array.isArray(markdownMeta.triggers)
-            ? markdownMeta.triggers
-            : [],
-          enabled: markdownMeta.enabled !== false,
-          ...(markdownMeta.priority !== undefined
-            ? { priority: markdownMeta.priority }
-            : { priority: 50 }),
-        };
-        await upsertSkillRegistryEntry(undefined, {
-          name,
-          version: "0.0.0",
-          description: catalogSeed.description,
-          enabled: catalogSeed.enabled,
-          source: "web-create",
-          entryFile: "SKILL.md",
-          sha256: await computeFileSha256(skillFile),
-          installedAt: new Date().toISOString(),
-        });
-        await upsertSkillCatalogMetadata(getSkillsDir(), name, catalogSeed);
-        const config = await loadConfig();
-        config.skills = config.skills || {};
-        config.skills.enabled = config.skills.enabled || {};
-        config.skills.contexts = config.skills.contexts || {};
-        config.skills.enabled[name] = true;
-        config.skills.contexts[name] =
-          contexts !== undefined
-            ? normalizeSkillContexts(contexts)
-            : ["coding", "daily"];
-        await saveConfig(config);
-        await bridge.reloadConfig();
-        await bridge.reloadCommandsAndSkills();
-        jsonResponse(res, { ok: true, name });
-      } catch (err) {
-        jsonResponse(res, { error: true, message: err.message }, 500);
-      }
-      return;
-    }
-    if (req.method === "POST" && url.pathname === "/api/skills/preview") {
-      const { source } = await readBody(req);
-      if (!source) {
-        jsonResponse(res, { error: true, message: "Missing source" }, 400);
-        return;
-      }
-      try {
-        const preview = await previewSkillSource(source, {
-          cwd: currentProjectDir || process.cwd(),
-        });
-        jsonResponse(res, { ok: true, ...preview });
-      } catch (err) {
-        jsonResponse(res, { error: true, message: err.message }, 500);
-      }
-      return;
-    }
-    if (req.method === "POST" && url.pathname === "/api/skills/install") {
-      const {
-        source,
-        contexts,
-        includeHooks = false,
-        skillNames = null,
-      } = await readBody(req);
-      if (!source) {
-        jsonResponse(res, { error: true, message: "Missing source" }, 400);
-        return;
-      }
-      try {
-        const installed = await installSkillSource(source, {
-          cwd: currentProjectDir,
-          includeHooks: includeHooks === true,
-          skillNames: Array.isArray(skillNames) ? skillNames : null,
-          contexts:
-            contexts !== undefined
-              ? normalizeSkillContexts(contexts)
-              : undefined,
-        });
-        if (contexts !== undefined) {
-          const config = await loadConfig();
-          config.skills = config.skills || {};
-          config.skills.contexts = config.skills.contexts || {};
-          const normalizedContexts = normalizeSkillContexts(contexts);
-          for (const name of installed)
-            config.skills.contexts[name] = normalizedContexts;
-          await saveConfig(config);
-        }
-        await bridge.reloadConfig();
-        await bridge.reloadCommandsAndSkills();
-        jsonResponse(res, { ok: true, installed });
-      } catch (err) {
-        jsonResponse(res, { error: true, message: err.message }, 500);
-      }
-      return;
-    }
-    if (
-      req.method === "POST" &&
-      url.pathname === "/api/skills/update/preview"
-    ) {
-      const { name, projectDir } = await readBody(req);
-      if (!name) {
-        jsonResponse(res, { error: true, message: "Missing skill name" }, 400);
-        return;
-      }
-      try {
-        const targetProjectDir = await resolveRequestProjectDir(
-          projectDir,
-          currentProjectDir,
-        );
-        const preview = await previewSkillPackageUpdate({
-          name,
-          cwd: targetProjectDir,
-        });
-        jsonResponse(res, { ok: true, ...preview });
-      } catch (err) {
-        jsonResponse(res, { error: true, message: err.message }, 500);
-      }
-      return;
-    }
-    if (req.method === "POST" && url.pathname === "/api/skills/update") {
-      const {
-        name,
-        projectDir,
-        skillNames = null,
-        includeHooks,
-        defaultContexts,
-      } = await readBody(req);
-      if (!name) {
-        jsonResponse(res, { error: true, message: "Missing skill name" }, 400);
-        return;
-      }
-      try {
-        const targetProjectDir = await resolveRequestProjectDir(
-          projectDir,
-          currentProjectDir,
-        );
-        const result = await updateSkillPackage({
-          name,
-          cwd: targetProjectDir,
-          skillNames: Array.isArray(skillNames) ? skillNames : null,
-          includeHooks,
-          defaultContexts,
-        });
-        await bridge.reloadConfig();
-        await bridge.reloadCommandsAndSkills();
-        jsonResponse(res, {
-          ok: true,
-          installed: result.installed,
-          previouslyInstalled: result.previouslyInstalled,
-          packageSource: result.packageSource,
-          packageName: result.packageName,
-        });
-      } catch (err) {
-        jsonResponse(res, { error: true, message: err.message }, 500);
-      }
-      return;
-    }
+
+
+
+
+
     if (
       req.method === "PUT" &&
       url.pathname.startsWith("/api/skills/") &&
@@ -4882,240 +5333,12 @@ async function main() {
       }
       return;
     }
-    if (req.method === "GET" && url.pathname === "/api/hooks") {
-      try {
-        const requestedScope = url.searchParams.get("scope");
-        const scope =
-          requestedScope === "global"
-            ? "global"
-            : requestedScope === "daily"
-              ? "daily"
-              : "coding";
-        const loaded =
-          scope === "global"
-            ? await loadGlobalHooks({ rewriteMatchers: false })
-            : await loadProjectHooks(currentProjectDir || process.cwd(), {
-                rewriteMatchers: false,
-                context: scope,
-              });
-        const rawHooks = await readWorkspaceHooksFile(loaded.filePath);
-        jsonResponse(res, {
-          scope,
-          filePath: loaded.filePath,
-          hooks: rawHooks,
-        });
-      } catch (err) {
-        jsonResponse(res, { error: true, message: err.message }, 500);
-      }
-      return;
-    }
-    if (req.method === "GET" && url.pathname === "/api/hook-profiles") {
-      try {
-        const cwd = currentProjectDir || process.cwd();
-        const [globalLayer, codingLayer, dailyLayer, customProfiles, skills] =
-          await Promise.all([
-            loadGlobalHooks({ rewriteMatchers: false }),
-            loadProjectHooks(cwd, {
-              rewriteMatchers: false,
-              context: "coding",
-            }),
-            loadProjectHooks(cwd, { rewriteMatchers: false, context: "daily" }),
-            listCustomHookProfiles(cwd),
-            listSkillEntries({ scope: "all", cwd }),
-          ]);
-        const legacyProfiles = [];
-        for (const layer of [
-          {
-            id: "legacy-global",
-            activation: "always",
-            scope: "global",
-            filePath: globalLayer.filePath,
-          },
-          {
-            id: "legacy-coding",
-            activation: "coding",
-            scope: "project",
-            filePath: codingLayer.filePath,
-          },
-          {
-            id: "legacy-daily",
-            activation: "daily",
-            scope: "project",
-            filePath: dailyLayer.filePath,
-          },
-        ]) {
-          const hooks = await readWorkspaceHooksFile(layer.filePath);
-          // Old workspace hook files remain editable, but empty scope layers are
-          // headings rather than fake profiles in the new profile library.
-          if (Object.keys(hooks).length === 0) continue;
-          legacyProfiles.push({
-            ...layer,
-            name: "Legacy hooks",
-            nameKey: "hooksLegacyProfile",
-            kind: "workspace",
-            enabled: true,
-            editable: true,
-            hooks,
-          });
-        }
-        const profiles = [...legacyProfiles, ...customProfiles];
-        for (const skill of skills) {
-          const skillRoot = path.dirname(skill.path);
-          const discovered = await discoverSkillHooks({ skillRoot });
-          if (discovered.disabled) continue;
-          const raw = await readHooksJsonRaw(
-            path.join(skillRoot, "hooks", "hooks.json"),
-          );
-          const hooks = Object.keys(raw).length > 0 ? raw : discovered.hooks;
-          if (Object.keys(hooks).length === 0) continue;
-          const activation = hookActivationFromContexts(
-            Array.isArray(skill.contexts) ? skill.contexts : [],
-          );
-          profiles.push({
-            id: `skill:${skill.scope}:${skill.name}`,
-            name: skill.name,
-            kind: "skill",
-            scope: skill.scope,
-            activation,
-            enabled: skill.enabled !== false,
-            editable: skill.scope !== "builtin",
-            hooks,
-            skillName: skill.name,
-            provenance: discovered.provenance || {},
-          });
-        }
-        jsonResponse(res, { profiles });
-      } catch (err) {
-        jsonResponse(res, { error: true, message: err.message }, 500);
-      }
-      return;
-    }
-    if (req.method === "POST" && url.pathname === "/api/hook-profiles") {
-      try {
-        const body = await readBody(req);
-        const saved = await saveCustomHookProfile(
-          body,
-          currentProjectDir || process.cwd(),
-        );
-        await bridge.reloadCommandsAndSkills().catch(() => null);
-        jsonResponse(res, { ok: true, profile: saved });
-      } catch (err) {
-        jsonResponse(res, { error: true, message: err.message }, 400);
-      }
-      return;
-    }
-    if (req.method === "PUT" && url.pathname === "/api/hook-profiles") {
-      try {
-        const profile = await readBody(req);
-        const cwd = currentProjectDir || process.cwd();
-        let saved = null;
-        if (profile?.kind === "workspace") {
-          if (profile.activation === "always")
-            await saveGlobalHooks(profile.hooks || {});
-          else
-            await saveProjectHooks(
-              cwd,
-              profile.hooks || {},
-              profile.activation,
-            );
-          saved = profile;
-        } else if (profile?.kind === "skill") {
-          const entries = await listSkillEntries({ scope: "all", cwd });
-          const skill = entries.find((item) => item.name === profile.skillName);
-          if (!skill || skill.scope === "builtin")
-            throw new Error("Skill hook profile is not editable");
-          await writeSkillHooksJson(
-            path.dirname(skill.path),
-            profile.hooks || {},
-          );
-          saved = profile;
-        } else if (profile?.kind === "package") {
-          const existing = (await listCustomHookProfiles(cwd)).find(
-            (item) => item.id === profile.id && item.kind === "package",
-          );
-          if (!existing) throw new Error("Package hook profile not found");
-          saved = await savePackageHookProfile(
-            {
-              ...existing,
-              enabled: profile.enabled !== false,
-              activation: profile.activation || existing.activation,
-            },
-            cwd,
-          );
-        } else {
-          if (
-            profile?.originalScope &&
-            profile.originalScope !== profile.scope
-          ) {
-            await deleteCustomHookProfile(
-              { id: profile.id, scope: profile.originalScope },
-              cwd,
-            );
-          }
-          saved = await saveCustomHookProfile(profile, cwd);
-        }
-        await bridge.reloadCommandsAndSkills().catch(() => null);
-        jsonResponse(res, { ok: true, profile: saved });
-      } catch (err) {
-        jsonResponse(res, { error: true, message: err.message }, 400);
-      }
-      return;
-    }
-    if (req.method === "DELETE" && url.pathname === "/api/hook-profiles") {
-      try {
-        const body = await readBody(req);
-        const cwd = currentProjectDir || process.cwd();
-        if (body?.kind === "workspace") {
-          if (body.activation === "always") await saveGlobalHooks({});
-          else await saveProjectHooks(cwd, {}, body.activation);
-        } else if (body?.kind === "skill") {
-          const entries = await listSkillEntries({ scope: "all", cwd });
-          const skill = entries.find(
-            (item) =>
-              item.name === body.skillName &&
-              (!body.projectDir || item.projectDir === body.projectDir),
-          );
-          if (!skill || skill.scope === "builtin")
-            throw new Error("Skill hook profile is not deletable");
-          await disableSkillHooks(path.dirname(skill.path));
-        } else {
-          await deleteCustomHookProfile(body || {}, cwd);
-        }
-        await bridge.reloadCommandsAndSkills().catch(() => null);
-        jsonResponse(res, { ok: true });
-      } catch (err) {
-        jsonResponse(res, { error: true, message: err.message }, 400);
-      }
-      return;
-    }
-    if (req.method === "PUT" && url.pathname === "/api/hooks") {
-      try {
-        const body = await readBody(req);
-        const scope =
-          body?.scope === "global"
-            ? "global"
-            : body?.scope === "daily"
-              ? "daily"
-              : "coding";
-        const hooks =
-          body?.hooks && typeof body.hooks === "object" ? body.hooks : {};
-        const saved =
-          scope === "global"
-            ? await saveGlobalHooks(hooks)
-            : await saveProjectHooks(
-                currentProjectDir || process.cwd(),
-                hooks,
-                scope,
-              );
-        if (typeof bridge?.reloadCommandsAndSkills === "function") {
-          await bridge.reloadCommandsAndSkills().catch(() => null);
-        }
-        jsonResponse(res, { ok: true, scope, hooks: saved });
-      } catch (err) {
-        jsonResponse(res, { error: true, message: err.message }, 500);
-      }
-      return;
-    }
+
+
+
+
+
+
     if (
       req.method === "GET" &&
       url.pathname.startsWith("/api/skills/") &&
@@ -5195,15 +5418,7 @@ async function main() {
     }
 
     // ── Souls management ──
-    if (req.method === "GET" && url.pathname === "/api/souls") {
-      try {
-        const config = await loadConfig();
-        jsonResponse(res, await listSouls(config));
-      } catch (err) {
-        jsonResponse(res, { error: true, message: err.message }, 500);
-      }
-      return;
-    }
+
     if (
       req.method === "GET" &&
       url.pathname.startsWith("/api/souls/") &&
@@ -5219,33 +5434,7 @@ async function main() {
       }
       return;
     }
-    if (req.method === "POST" && url.pathname === "/api/souls/create") {
-      const {
-        name: rawName,
-        content: soulContent,
-        category,
-      } = await readBody(req);
-      if (!rawName || !soulContent) {
-        jsonResponse(
-          res,
-          { error: true, message: "Missing name or content" },
-          400,
-        );
-        return;
-      }
-      try {
-        jsonResponse(
-          res,
-          await createSoul({ name: rawName, content: soulContent, category }),
-        );
-      } catch (err) {
-        const status = /conflict|already exists|Invalid/i.test(err.message)
-          ? 409
-          : 500;
-        jsonResponse(res, { error: true, message: err.message }, status);
-      }
-      return;
-    }
+
     if (
       req.method === "PUT" &&
       url.pathname.startsWith("/api/souls/") &&
@@ -5292,45 +5481,22 @@ async function main() {
       }
       return;
     }
-    if (req.method === "POST" && url.pathname === "/api/souls/activate") {
-      if (bridge.isBusy()) {
-        jsonResponse(res, { error: true, message: "Runtime is busy" }, 409);
-        return;
-      }
-      const { name: sname, category } = await readBody(req);
-      if (!sname) {
-        jsonResponse(res, { error: true, message: "Missing name" }, 400);
-        return;
-      }
-      try {
-        const soul = await readSoulContent(sname, { preferCategory: category });
-        const resolvedCategory = normalizeSoulCategory(
-          category || soul.category,
-          soul.category,
-        );
-        const config = await loadConfig();
-        config.soul = config.soul || {};
-        config.soul[resolvedCategory] = soul.name;
-        config.soul.custom_path = "";
-        // Keep legacy preset in sync for older readers.
-        config.soul.preset = getActiveSoulName(config, resolvedCategory);
-        await saveConfig(config);
-        jsonResponse(res, {
-          ok: true,
-          category: resolvedCategory,
-          name: soul.name,
-        });
-      } catch (err) {
-        jsonResponse(res, { error: true, message: err.message }, 500);
-      }
-      return;
-    }
+
 
     res.writeHead(404, { "Content-Type": "text/plain" });
     res.end("Not found");
-  });
+  };
 
-  server.listen(args.port, () => {
+  const app = new Hono();
+  app.all("*", async (context) => {
+    await handleRequest(context.env.incoming, context.env.outgoing);
+    return new Response(null, {
+      headers: { "x-hono-already-sent": "true" },
+    });
+  });
+  const server = serve(
+    { fetch: app.fetch, port: args.port, overrideGlobalObjects: false },
+    () => {
     console.log(
       `\n  Codemini Web UI\n  http://localhost:${args.port}\n  Project: ${currentProjectDir}\n`,
     );
@@ -5346,7 +5512,8 @@ async function main() {
         if (err) console.log("  Could not auto-open browser.");
       });
     });
-  });
+    },
+  );
 
   const cleanup = createServerCleanup({
     runtimeEvictionTimer,

@@ -1,50 +1,33 @@
 import readline from 'node:readline/promises';
 import { stdin as input, stdout as output } from 'node:process';
+import { parseArgs } from 'node:util';
 import { loadConfig } from '../core/config-store.js';
 import { createChatRuntime } from '../core/chat-runtime.js';
 import { buildDefaultSystemPrompt } from '../core/default-system-prompt.js';
 import { resolveSession } from '../core/session-store.js';
 import { VERSION } from '../core/version.js';
 
-function parseChatArgs(args) {
-  const parsed = {
-    prompt: '',
-    sessionId: undefined,
-    model: undefined,
-    fast: false,
-    system: undefined,
-    plain: false
+export function parseChatArgs(args) {
+  const { values, positionals } = parseArgs({
+    args,
+    allowPositionals: true,
+    options: {
+      session: { type: 'string' },
+      model: { type: 'string' },
+      fast: { type: 'boolean' },
+      lite: { type: 'boolean' },
+      system: { type: 'string' },
+      plain: { type: 'boolean' },
+    },
+  });
+  return {
+    prompt: positionals.join(' '),
+    sessionId: values.session,
+    model: values.model,
+    fast: values.fast === true || values.lite === true,
+    system: values.system,
+    plain: values.plain === true,
   };
-
-  for (let i = 0; i < args.length; i += 1) {
-    const arg = args[i];
-    if (arg === '--session') {
-      parsed.sessionId = args[i + 1];
-      i += 1;
-      continue;
-    }
-    if (arg === '--model') {
-      parsed.model = args[i + 1];
-      i += 1;
-      continue;
-    }
-    if (arg === '--fast' || arg === '--lite') {
-      parsed.fast = true;
-      continue;
-    }
-    if (arg === '--system') {
-      parsed.system = args[i + 1];
-      i += 1;
-      continue;
-    }
-    if (arg === '--plain') {
-      parsed.plain = true;
-      continue;
-    }
-    parsed.prompt += `${parsed.prompt ? ' ' : ''}${arg}`;
-  }
-
-  return parsed;
 }
 
 export async function submitAndPrint(runtime, line, { output: out = process.stdout, showSystemTools = false } = {}) {

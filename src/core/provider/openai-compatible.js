@@ -4,6 +4,7 @@ import {
 } from './reasoning-effort.js';
 import { isCompletionTruncated } from './completion-status.js';
 import { stringifyGatewayJson } from './json-body.js';
+import { iterateSseJsonEvents } from '../sse.js';
 
 function extractTextContent(content) {
   if (typeof content === 'string') return content;
@@ -89,43 +90,6 @@ async function fetchWithRetry(url, init, { maxRetries = 0 } = {}) {
     await new Promise((resolve) => setTimeout(resolve, 50 * (attempt + 1)));
   }
   throw lastError || new Error('Gateway request failed');
-}
-
-async function* iterateSseEvents(stream) {
-  const decoder = new TextDecoder();
-  let buffer = '';
-  const flushEvent = (rawEvent) => {
-    const dataLines = String(rawEvent || '')
-      .split(/\r?\n/)
-      .filter((line) => line.startsWith('data:'))
-      .map((line) => line.slice(5).trimStart());
-    const dataText = dataLines.join('\n');
-    if (!dataText) return null;
-    if (dataText === '[DONE]') return { __codemini_stream_done: true };
-    return JSON.parse(dataText);
-  };
-
-  for await (const chunk of stream) {
-    buffer += decoder.decode(chunk, { stream: true });
-    while (true) {
-      const lfBoundary = buffer.indexOf('\n\n');
-      const crlfBoundary = buffer.indexOf('\r\n\r\n');
-      if (lfBoundary === -1 && crlfBoundary === -1) break;
-      const useCrlf = crlfBoundary !== -1 && (lfBoundary === -1 || crlfBoundary < lfBoundary);
-      const boundary = useCrlf ? crlfBoundary : lfBoundary;
-      const separatorLength = useCrlf ? 4 : 2;
-      const rawEvent = buffer.slice(0, boundary);
-      buffer = buffer.slice(boundary + separatorLength);
-      const parsed = flushEvent(rawEvent);
-      if (parsed) yield parsed;
-    }
-  }
-
-  buffer += decoder.decode();
-  const trailingEvent = flushEvent(buffer.trim());
-  if (trailingEvent) {
-    yield trailingEvent;
-  }
 }
 
 function isMiniMaxModel(model) {
@@ -518,11 +482,12 @@ export async function createChatCompletionStream({
   let miniMaxStreamState = { rawContent: '', visibleText: '' };
 
   try {
-    for await (const chunk of iterateSseEvents(response.body)) {
-    if (chunk?.__codemini_stream_done) {
+    for await (const event of iterateSseJsonEvents(response.body)) {
+    if (event.done) {
       streamDone = true;
       continue;
     }
+    const chunk = event.data;
     usage = extractUsageObject(chunk) || usage;
     const choice0 = chunk?.choices?.[0] || {};
     const delta = choice0?.delta || {};
