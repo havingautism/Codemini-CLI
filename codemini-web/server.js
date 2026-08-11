@@ -1940,10 +1940,10 @@ async function encodeModelImage(meta) {
       })
       .webp({ quality: MODEL_IMAGE_WEBP_QUALITY, effort: 4 })
       .toBuffer();
-    return { mime: "image/webp", data: data.toString("base64") };
+    return { mime: "image/webp", data: data.toString("base64"), filename: meta.path, name: meta.name };
   } catch {
     const data = await fs.readFile(meta.path);
-    return { mime: meta.mime || "image/jpeg", data: data.toString("base64") };
+    return { mime: meta.mime || "image/jpeg", data: data.toString("base64"), filename: meta.path, name: meta.name };
   }
 }
 

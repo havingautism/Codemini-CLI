@@ -123,82 +123,47 @@ async function runPlainLoop(runtime) {
 
 export async function handleChat(args) {
   const parsed = parseChatArgs(args);
-  const config = await loadConfig();
-  const session = await resolveSession(parsed.sessionId);
-  const selectedModel = parsed.fast ? (config.model?.fast_name || config.model?.name) : parsed.model;
-  const systemPrompt =
-    parsed.system ||
-    buildDefaultSystemPrompt(config, {
-      workspaceRoot: session?.projectDir || process.cwd(),
+  let session = await resolveSession(parsed.sessionId);
+  while (session) {
+    const config = await loadConfig();
+    const selectedModel = parsed.fast ? (config.model?.fast_name || config.model?.name) : parsed.model;
+    const workspaceRoot = session?.projectDir || process.cwd();
+    const runtime = await createChatRuntime({
+      session,
+      config,
+      model: selectedModel,
+      systemPrompt: parsed.system || buildDefaultSystemPrompt(config, { workspaceRoot }),
+      systemPromptFactory: parsed.system
+        ? null
+        : (nextConfig) => buildDefaultSystemPrompt(nextConfig, { workspaceRoot }),
+      workspaceRoot,
     });
 
-  const runtime = await createChatRuntime({
-    session,
-    config,
-    model: selectedModel,
-    systemPrompt,
-    systemPromptFactory: parsed.system
-      ? null
-      : (nextConfig) => buildDefaultSystemPrompt(nextConfig, {
-          workspaceRoot: session?.projectDir || process.cwd(),
-        }),
-    workspaceRoot: session?.projectDir || process.cwd(),
-  });
+    try {
+      if (parsed.prompt) {
+        await submitAndPrint(runtime, parsed.prompt, { output: process.stdout });
+        return;
+      }
 
-  try {
-    if (parsed.prompt) {
-      await submitAndPrint(runtime, parsed.prompt, { output: process.stdout });
-      return;
-    }
+      if (parsed.plain || !process.stdout.isTTY) {
+        await runPlainLoop(runtime);
+        return;
+      }
 
-    if (parsed.plain || !process.stdout.isTTY) {
-      await runPlainLoop(runtime);
-      return;
-    }
-
-    const React = (await import('react')).default;
-    const { render } = await import('ink');
-    const { ChatApp } = await import('../tui/chat-app.js');
-
-    const instance = render(
-      React.createElement(ChatApp, {
+      const { runOpenCodeTui } = await import('../tui/opencode-chat-app.js');
+      const result = await runOpenCodeTui({
         runtime,
         sessionId: session.id,
         model: selectedModel || config.model.name,
-        sdkProvider: config.sdk?.provider || 'openai-compatible',
-        language: config.ui?.language || 'zh',
-        shellName: config.shell?.default || 'powershell',
         safeMode: config.policy?.safe_mode !== false,
+        language: config.ui?.language || 'zh',
         version: VERSION
-      })
-    );
-
-    // Patch Ink's renderInteractiveFrame to never use clearTerminal.
-    // Ink calls clearTerminal (ESC[2J + ESC[H]) when the output frame exceeds
-    // the terminal viewport height, which resets the scroll position to the top
-    // and prevents the user from scrolling freely during streaming.
-    // By always using incremental logUpdate updates instead, old content scrolls
-    // into the terminal's scrollback naturally and the user can scroll freely.
-    const origRenderFrame = instance.renderInteractiveFrame;
-    instance.renderInteractiveFrame = function (output, outputHeight, staticOutput) {
-      const hasStaticOutput = staticOutput !== '';
-      const outputToRender = output + '\n';
-
-      if (hasStaticOutput) {
-        this.fullStaticOutput += staticOutput;
-        this.log.clear();
-        this.options.stdout.write(staticOutput);
-        this.log(outputToRender);
-      } else if (output !== this.lastOutput || this.log.isCursorDirty()) {
-        this.throttledLog(outputToRender);
-      }
-      this.lastOutput = output;
-      this.lastOutputToRender = outputToRender;
-      this.lastOutputHeight = outputHeight;
-    };
-
-    await instance.waitUntilExit();
-  } finally {
-    await runtime.dispose?.();
+      });
+      if (result?.newSession) session = await resolveSession();
+      else if (result?.sessionId && result.sessionId !== session.id) session = await resolveSession(result.sessionId);
+      else return;
+    } finally {
+      await runtime.dispose?.();
+    }
   }
 }

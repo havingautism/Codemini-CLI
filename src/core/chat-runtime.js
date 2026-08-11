@@ -143,6 +143,7 @@ import {
   normalizeToolPolicy,
 } from './provider/search-tool-registry.js';
 import { normalizeReasoningEffort, resolveConfiguredReasoningEffort } from './provider/reasoning-effort.js';
+import { getActiveSoulName, listSouls, normalizeSoulCategory, soulContextFromExecutionMode, soulNameEquals } from './soul.js';
 import { appendAttachmentContext, composeSelectedSkills, normalizeChatSubmission } from './chat-message.js';
 import { CHAT_ACTIONS, validateChatAction } from './chat-action-dispatcher.js';
 
@@ -3994,6 +3995,7 @@ export function buildRuntimeStateSnapshot({ currentSession, config, model, execu
   const planState = currentSession?.planState;
   const specState = getPendingSpecState(currentSession);
   const resolvedMode = resolveRuntimeExecutionMode(executionMode, config, currentSession);
+  const soulCategory = soulContextFromExecutionMode(resolvedMode);
   const visibleAlwaysSkillNames = shouldInjectAlwaysSkills(resolvedMode)
     ? (Array.isArray(alwaysSkillNames) ? alwaysSkillNames : []).map((name) => String(name || '').trim()).filter(Boolean)
     : [];
@@ -4022,6 +4024,8 @@ export function buildRuntimeStateSnapshot({ currentSession, config, model, execu
     alwaysSkillNames: visibleAlwaysSkillNames,
     reasoningEnabled: config.model?.reasoning_enabled !== false,
     reasoningEffort: normalizeReasoningEffort(config.model?.reasoning_effort),
+    activeSoul: getActiveSoulName(config, soulCategory),
+    soulCategory,
     pendingPlanApproval: null,
     pendingSpecApproval: specState
       ? buildPendingSpecSnapshot(specState)
@@ -7756,44 +7760,6 @@ export async function createChatRuntime({
       setCompactedView(compactedForModel);
     }
   };
-  let historyIdCache = [currentSession.id];
-  let historySessionCache = [
-    {
-      id: currentSession.id,
-      title: currentSession.title || deriveSessionTitle(currentSession.messages || []),
-      messageCount: Array.isArray(currentSession.messages) ? currentSession.messages.length : 0
-    }
-  ];
-  try {
-    const initialSessions = await listSessions(100);
-    if (initialSessions.length > 0) {
-      const merged = [
-        {
-          id: currentSession.id,
-          title: currentSession.title || deriveSessionTitle(currentSession.messages || []),
-          messageCount: Array.isArray(currentSession.messages) ? currentSession.messages.length : 0
-        },
-        ...initialSessions.map((session) => ({
-          id: session.id,
-          title: session.title || '',
-          messageCount: Number(session.messageCount || 0)
-        }))
-      ];
-      const deduped = [];
-      const seen = new Set();
-      for (const session of merged) {
-        const id = String(session.id || '').trim();
-        if (!id || seen.has(id)) continue;
-        seen.add(id);
-        deduped.push(session);
-      }
-      historySessionCache = deduped;
-      historyIdCache = deduped.map((session) => session.id);
-    }
-  } catch {
-    // keep startup resilient even if historical sessions cannot be listed
-  }
-
   const persistLocalExchange = async (userText, systemText, { includeUser = true, modelVisible = false } = {}) => {
     const localMeta = modelVisible ? {} : { model_visible: false, local_only: true };
     if (includeUser && userText) {
@@ -8743,6 +8709,7 @@ export async function createChatRuntime({
     getInputHistory: () => loadInputHistory(),
     getCurrentSessionId: () => currentSession.id,
     getSessionMessages: () => currentSession.messages || [],
+    getSessionHistory: (limit = 30) => listSessions(limit),
     getSessionCompact: () => currentSession.compact || null,
     getAvailableSkills,
     persistRunStatus,
@@ -8781,6 +8748,14 @@ export async function createChatRuntime({
       config = attachRuntimeState(await loadConfig());
       return true;
     },
+    setReasoningEffort: async (next) => {
+      const normalized = String(next || '').trim().toLowerCase();
+      if (!['off', 'auto', 'low', 'medium', 'high'].includes(normalized)) return false;
+      await setConfigValue('model.reasoning_enabled', normalized !== 'off');
+      if (normalized !== 'off') await setConfigValue('model.reasoning_effort', normalized);
+      config = attachRuntimeState(await loadConfig());
+      return true;
+    },
     setSandboxMode: async (next) => {
       const { normalizeSandboxMode } = await import('./sandbox-policy.js');
       const normalized = normalizeSandboxMode(next, { platform: process.platform });
@@ -8793,6 +8768,16 @@ export async function createChatRuntime({
           await setConfigValue('sandbox.enabled', 'auto');
         }
       }
+      config = attachRuntimeState(await loadConfig());
+      return true;
+    },
+    getAvailableSouls: () => listSouls(config),
+    setSoul: async (next, category) => {
+      const resolvedCategory = normalizeSoulCategory(category, soulContextFromExecutionMode(executionMode));
+      const soul = (await listSouls(config)).find((item) => item.category === resolvedCategory && soulNameEquals(item.name, next));
+      if (!soul) return false;
+      config.soul = { ...config.soul, [resolvedCategory]: soul.name, preset: soul.name, custom_path: '' };
+      await saveConfig(config);
       config = attachRuntimeState(await loadConfig());
       return true;
     },
