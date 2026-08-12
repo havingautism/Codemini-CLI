@@ -12,6 +12,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { StreamdownRenderer } from "@/components/StreamdownRenderer.jsx";
 import { ToolCard } from "@/components/ToolCard.jsx";
 import { UsageBadge } from "@/components/UsageBadge.jsx";
+import { extractLatestTodoFromPlanSteps } from "@/lib/answer-process.js";
 import { cn } from "@/lib/utils";
 import { planPhaseTitle, shouldExpandPlanStep } from "@/lib/plan-ui-state.js";
 import { isShellToolName } from "@/lib/tool-names.js";
@@ -415,12 +416,15 @@ export function PlanToolCard({ card, grouped = false }) {
   const phase =
     planRun?.phase || (card?.status === "done" ? "completed" : "planning");
   const running = String(card?.status || "").toLowerCase() === "running";
-  const steps = Array.isArray(planRun?.steps) ? planRun.steps : [];
+  const isSubagent = isRunSubagentCard(card);
+  const rawSteps = Array.isArray(planRun?.steps) ? planRun.steps : [];
+  const { steps, todoCard } = isSubagent
+    ? extractLatestTodoFromPlanSteps(rawSteps)
+    : { steps: rawSteps, todoCard: null };
   const primary = steps[0] || null;
   const persona = String(
     primary?.role || card?.arguments?.name || card?.arguments?.role || "",
   ).trim();
-  const isSubagent = isRunSubagentCard(card);
   const goal = String(
     isSubagent
       ? card?.arguments?.prompt ||
@@ -511,9 +515,20 @@ export function PlanToolCard({ card, grouped = false }) {
         </span>
       </button>
 
+      {!expanded && todoCard ? (
+        <div className="mt-2 px-3 pb-3">
+          <ToolCard card={todoCard} />
+        </div>
+      ) : null}
+
       {expanded ? (
         <div className="px-3 pb-3 pt-2">
           {isSubagent ? <SubagentTaskDetails task={goal} /> : null}
+          {todoCard ? (
+            <div className="mb-2">
+              <ToolCard card={todoCard} />
+            </div>
+          ) : null}
           {isSubagent ? (
             <SubagentDependencyDetails
               step={primary}

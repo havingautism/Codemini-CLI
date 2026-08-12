@@ -5,7 +5,10 @@ import {
   appendThinkingSegment,
   applyStreamEventToMessage,
 } from '../codemini-web/shared/transcript-segments.js';
-import { layoutAnswerProcessWithPlans } from '../codemini-web/client/src/lib/answer-process.js';
+import {
+  extractLatestTodoFromPlanSteps,
+  layoutAnswerProcessWithPlans,
+} from '../codemini-web/client/src/lib/answer-process.js';
 
 test('appendTextSegment inserts before trailing create_plan card', () => {
   let segments = [
@@ -116,4 +119,21 @@ test('layout keeps only the latest todo card outside the process fold', () => {
   assert.equal(todos[0].id, 'todo-2');
   assert.equal(layout.items.at(-2).group.cards[0].name, 'update_todos');
   assert.equal(layout.items.at(-1).group.type, 'text');
+});
+
+test('subagent todo stays owned by its plan card and is removed from step details', () => {
+  const firstTodo = { id: 'todo-1', name: 'update_todos' };
+  const latestTodo = { id: 'todo-2', name: 'update_todos' };
+  const readCard = { id: 'read-1', name: 'read' };
+  const result = extractLatestTodoFromPlanSteps([
+    {
+      segments: [
+        { type: 'tools', cards: [firstTodo, readCard] },
+        { type: 'tools', cards: [latestTodo] },
+      ],
+    },
+  ]);
+
+  assert.equal(result.todoCard, latestTodo);
+  assert.deepEqual(result.steps[0].segments, [{ type: 'tools', cards: [readCard] }]);
 });

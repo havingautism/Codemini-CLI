@@ -28,6 +28,29 @@ function isTodoCard(card) {
   return String(card?.name || "").toLowerCase().replace(/\(.*$/, "") === "update_todos";
 }
 
+export function extractLatestTodoFromPlanSteps(steps = []) {
+  let todoCard = null;
+  const nextSteps = (Array.isArray(steps) ? steps : []).map((step) => {
+    let changed = false;
+    const segments = [];
+    for (const segment of Array.isArray(step?.segments) ? step.segments : []) {
+      if (segment?.type !== "tools" || !Array.isArray(segment.cards)) {
+        segments.push(segment);
+        continue;
+      }
+      const cards = segment.cards.filter((card) => {
+        if (!isTodoCard(card)) return true;
+        todoCard = card;
+        changed = true;
+        return false;
+      });
+      if (cards.length) segments.push(changed ? { ...segment, cards } : segment);
+    }
+    return changed ? { ...step, segments } : step;
+  });
+  return { steps: nextSteps, todoCard };
+}
+
 function extractTodoFromGroup(group) {
   if (!group || typeof group !== "object") return { todoCards: [], rest: null };
   if (group.type === "tools") {
