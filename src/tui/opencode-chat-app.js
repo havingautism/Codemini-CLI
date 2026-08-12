@@ -25,6 +25,7 @@ import {
   PlanProgress,
   ProcessedFold,
   ReasoningBlock,
+  TodoProgress,
   ToolCallGroup,
   appendHistory,
   createAssistantMessage,
@@ -99,6 +100,7 @@ export async function runOpenCodeTui({ runtime, sessionId, model, safeMode = tru
   let activeAssistantSpacer = null;
   let activeReasoning = null;
   let activeToolGroup = null;
+  let activeTodo = null;
   let activePlan = null;
   let activeProcessFold = null;
   let activeText = '';
@@ -212,6 +214,17 @@ export async function runOpenCodeTui({ runtime, sessionId, model, safeMode = tru
     return activeToolGroup;
   };
 
+  const updateTodo = (event) => {
+    finishReasoning();
+    if (!activeTodo) {
+      activeTodo = new TodoProgress(event.arguments || event.result || event.content, copy);
+      ensureProcessFold().addPinnedChild(activeTodo);
+    } else {
+      activeTodo.update(event);
+    }
+    return activeTodo;
+  };
+
   const handleEvent = (event) => {
     const type = String(event?.type || '');
     if (type === 'assistant:start') {
@@ -246,6 +259,14 @@ export async function runOpenCodeTui({ runtime, sessionId, model, safeMode = tru
       if (event.toolCalls?.length || event.assistantMessage?.tool_calls?.length) moveAssistantIntoProcess();
     } else if (type === 'tool:start' || type === 'system_tool:start' || type === 'skill:start') {
       const id = toolEventKey(event, type);
+      if (type === 'tool:start' && String(event.name || '').toLowerCase() === 'update_todos') {
+        const todo = updateTodo(event);
+        toolRows.set(id, todo);
+        editor.borderColor = color.warning;
+        setActivity('tool', `${event.displayName || event.name || 'tool'}…`);
+        requestRender();
+        return;
+      }
       const row = ensureToolGroup().add(event);
       toolRows.set(id, row);
       editor.borderColor = color.warning;
@@ -351,6 +372,7 @@ export async function runOpenCodeTui({ runtime, sessionId, model, safeMode = tru
     activeAssistantSpacer = null;
     activeReasoning = null;
     activeToolGroup = null;
+    activeTodo = null;
     activePlan = null;
     activeProcessFold = null;
     activeText = '';

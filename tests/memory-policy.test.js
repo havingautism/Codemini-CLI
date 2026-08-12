@@ -111,6 +111,8 @@ test('memory decision graph names save_memory and dream leaves', () => {
   assert.match(graph, /save_memory/);
   assert.match(graph, /Dream/);
   assert.match(graph, /never store/);
+  assert.match(graph, /verified reusable lesson discovered during coding/);
+  assert.match(graph, /semantic coding memory_gate may save/);
   assert.match(buildDreamPromotionGraphBlock(), /keep →/);
 });
 

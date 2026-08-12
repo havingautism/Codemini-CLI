@@ -1,6 +1,6 @@
 import { parseModelJsonObject } from './model-json.js';
 
-const GRAPH_VERSION = 'coding-turn-route-v3';
+const GRAPH_VERSION = 'coding-turn-route-v5';
 const MAX_SELECTED_SKILLS = 3;
 const CONTEXT_ADVISORY_TOKENS = 12000;
 const CONTEXT_ADVISORY_PCT = 25;
@@ -32,20 +32,49 @@ const GRAPH_NODES = Object.freeze({
     bypass: 'bypass_non_coding',
   }),
   bypass_non_coding: Object.freeze({ next: 'complete' }),
-  memory_gate: Object.freeze({ next: 'skill_selection_gate' }),
-  skill_selection_gate: Object.freeze({ next: 'subagent_gate' }),
-  subagent_gate: Object.freeze({ next: 'complete' }),
+  memory_gate: Object.freeze({
+    next: 'skill_selection_gate',
+    decision: 'memory',
+    enforcement: 'hard_gate',
+    evaluate: normalizeMemoryDecision,
+  }),
+  skill_selection_gate: Object.freeze({
+    next: 'subagent_gate',
+    decision: 'skills',
+    enforcement: 'injection',
+    evaluate: normalizeSkillDecision,
+  }),
+  subagent_gate: Object.freeze({
+    next: 'todo_gate',
+    decision: 'subagents',
+    enforcement: 'hard_gate',
+    evaluate: normalizeSubagentDecision,
+  }),
+  todo_gate: Object.freeze({
+    next: 'complete',
+    decision: 'todos',
+    enforcement: 'directive',
+    evaluate: normalizeTodoDecision,
+  }),
   complete: Object.freeze({ next: null }),
 });
 
-function traverseGraph({ coding = false } = {}) {
+function executeGraph({ coding = false, raw = {}, fallback = {}, context = {} } = {}) {
   const path = ['mode_gate'];
+  const decisions = {};
   let node = coding ? GRAPH_NODES.mode_gate.coding : GRAPH_NODES.mode_gate.bypass;
   while (node) {
     path.push(node);
-    node = GRAPH_NODES[node]?.next || null;
+    const definition = GRAPH_NODES[node];
+    if (definition?.decision && typeof definition.evaluate === 'function') {
+      decisions[definition.decision] = {
+        ...definition.evaluate(raw, fallback, context),
+        enforcement: definition.enforcement,
+      };
+    }
+    node = definition?.next || null;
   }
-  return path;
+  return { path, decisions: coding ? decisions : null };
 }
 
 function parseJudgeResult(value) {
@@ -74,13 +103,14 @@ function judgeRequest({
   return {
     systemPrompt: [
       'You are the semantic judge inside a coding-turn routing graph.',
-      'Decide only the three named graph nodes. Return strict JSON and no prose.',
+      'Decide only the four named graph nodes. Return strict JSON and no prose.',
       'Optimization objective: maximize useful, user-visible leverage from installed skills and subagents while avoiding obviously wasteful delegation.',
       '',
       'Node rules:',
       '- memory_gate: save_memory only for durable preferences, explicit remember requests, stable conventions, or reusable verified lessons. Use dream_inbox for a potentially reusable task signal that still needs later evidence. Otherwise ignore.',
       '- skill_selection_gate: positively prefer using installed expertise. Select 1 relevant listed skill for any non-trivial coding turn when plausible; select 2-3 when complementary workflows improve implementation, diagnosis, testing, review, or design. Return exact names without a leading slash. Select none only when the turn is purely mechanical or no candidate genuinely fits.',
       '- subagent_gate: positively prefer delegation when a clean-context worker can investigate, test, review, compare options, or implement an isolated chunk. Enable by default for medium/complex tasks and multi-file work. Also enable for a simple task when one independent verification or research pass would add useful evidence. Disable only when the task is atomic and delegation overhead clearly exceeds its value.',
+      '- todo_gate: require update_todos for work with 3 or more meaningful steps, multiple files or phases, explicit implementation plus verification, debugging with multiple hypotheses, or any non-trivial task likely to span several tool calls. Apply the same rule independently inside each enabled subagent. Do not require it for atomic edits or purely informational turns.',
       '- Project exploration rule: repository lookup, architecture discovery, broad code search, dependency tracing, and evidence gathering should normally use a subagent so raw inspection output stays outside the main context.',
       '- Testing rule: delegate test execution and failure triage by default. The main agent may keep only a tiny focused smoke check; broader or noisy verification belongs in a subagent.',
       '- Context-pressure rule: estimated_tokens >= 12000 or usage_pct >= 25 is an advisory signal to prefer delegation. estimated_tokens >= 24000 or usage_pct >= 40 is a hard isolation tier that requires at least 2 subagents.',
@@ -88,7 +118,7 @@ function judgeRequest({
       '- Never route secrets or credentials to save_memory.',
       '',
       'Return:',
-      '{"memory":{"leaf":"save_memory|dream_inbox|ignore","reason":"..."},"skills":{"selected_names":["exact-skill-name"],"reason":"..."},"subagents":{"enabled":true,"recommended_count":1,"focus":["independent task or verification focus"],"reason":"..."}}',
+      '{"memory":{"leaf":"save_memory|dream_inbox|ignore","reason":"..."},"skills":{"selected_names":["exact-skill-name"],"reason":"..."},"subagents":{"enabled":true,"recommended_count":1,"focus":["independent task or verification focus"],"reason":"..."},"todos":{"required":true,"reason":"..."}}',
     ].join('\n'),
     userPrompt: [
       `User turn:\n${String(text || '').trim()}`,
@@ -140,23 +170,32 @@ function fallbackDecision({
           ? 'project exploration or testing fallback'
           : 'task-complexity fallback',
     },
+    todos: {
+      required: complexity === 'medium' || complexity === 'complex',
+      reason: complexity === 'medium' || complexity === 'complex'
+        ? 'multi-step task-complexity fallback'
+        : 'atomic task fallback',
+    },
   };
 }
 
-function normalizeDecision(
-  raw,
-  fallback,
-  {
-    sensitive = false,
-    hasSkillIndex = false,
-    candidates = [],
-    contextUsage = {},
-    text = '',
-  } = {},
-) {
+function normalizeMemoryDecision(raw, fallback, { sensitive = false } = {}) {
   const leaf = VALID_MEMORY_LEAVES.has(raw?.memory?.leaf)
     ? raw.memory.leaf
     : fallback.memory.leaf;
+  return {
+    leaf: sensitive ? 'ignore' : leaf,
+    allow_save_memory: !sensitive && leaf === 'save_memory',
+    reason: sensitive
+      ? 'hard safety gate rejected secret-like content'
+      : String(raw?.memory?.reason || fallback.memory.reason || '').slice(0, 240),
+  };
+}
+
+function normalizeSkillDecision(raw, fallback, {
+  hasSkillIndex = false,
+  candidates = [],
+} = {}) {
   const eligible = new Set(candidates);
   const selectedNames = [...new Set(
     (Array.isArray(raw?.skills?.selected_names) ? raw.skills.selected_names : [])
@@ -164,6 +203,14 @@ function normalizeDecision(
       .filter((name) => eligible.has(name)),
   )].slice(0, MAX_SELECTED_SKILLS);
   const fallbackIndex = raw === fallback && fallback.skills.inject_index === true;
+  return {
+    selected_names: selectedNames,
+    inject_index: hasSkillIndex && fallbackIndex,
+    reason: String(raw?.skills?.reason || fallback.skills.reason || '').slice(0, 240),
+  };
+}
+
+function normalizeSubagentDecision(raw, fallback, { contextUsage = {}, text = '' } = {}) {
   const pressure = contextPressure(contextUsage);
   const delegationIntent = hasDefaultDelegationIntent(text);
   const subagentsEnabled =
@@ -184,30 +231,25 @@ function normalizeDecision(
         .slice(0, recommendedCount)
     : [];
   return {
-    memory: {
-      leaf: sensitive ? 'ignore' : leaf,
-      allow_save_memory: !sensitive && leaf === 'save_memory',
-      reason: sensitive
-        ? 'hard safety gate rejected secret-like content'
-        : String(raw?.memory?.reason || fallback.memory.reason || '').slice(0, 240),
-    },
-    skills: {
-      selected_names: selectedNames,
-      inject_index: hasSkillIndex && fallbackIndex,
-      reason: String(raw?.skills?.reason || fallback.skills.reason || '').slice(0, 240),
-    },
-    subagents: {
-      enabled: subagentsEnabled,
-      recommended_count: recommendedCount,
-      focus: subagentFocus,
-      reason: String(
-        pressure.hard
-          ? 'hard context-isolation policy'
-          : delegationIntent && raw?.subagents?.enabled !== true
-            ? 'project exploration or testing policy'
-            : raw?.subagents?.reason || fallback.subagents.reason || '',
-      ).slice(0, 240),
-    },
+    enabled: subagentsEnabled,
+    recommended_count: recommendedCount,
+    focus: subagentFocus,
+    reason: String(
+      pressure.hard
+        ? 'hard context-isolation policy'
+        : delegationIntent && raw?.subagents?.enabled !== true
+          ? 'project exploration or testing policy'
+          : raw?.subagents?.reason || fallback.subagents.reason || '',
+    ).slice(0, 240),
+  };
+}
+
+function normalizeTodoDecision(raw, fallback) {
+  return {
+    required: typeof raw?.todos?.required === 'boolean'
+      ? raw.todos.required
+      : fallback.todos.required,
+    reason: String(raw?.todos?.reason || fallback.todos.reason || '').slice(0, 240),
   };
 }
 
@@ -229,11 +271,11 @@ export async function evaluateCodingRouteGraph({
   judge = null,
 } = {}) {
   if (String(executionMode || '').toLowerCase() !== 'plan') {
+    const graph = executeGraph({ coding: false });
     return {
       active: false,
       graph_version: GRAPH_VERSION,
-      path: traverseGraph({ coding: false }),
-      decisions: null,
+      ...graph,
       source: 'bypass',
     };
   }
@@ -269,25 +311,29 @@ export async function evaluateCodingRouteGraph({
     }
   }
 
-  const decisions = normalizeDecision(raw, fallback, {
-    sensitive,
-    hasSkillIndex,
-    candidates,
-    contextUsage,
-    text,
+  const graph = executeGraph({
+    coding: true,
+    raw,
+    fallback,
+    context: {
+      sensitive,
+      hasSkillIndex,
+      candidates,
+      contextUsage,
+      text,
+    },
   });
   return {
     active: true,
     graph_version: GRAPH_VERSION,
-    path: traverseGraph({ coding: true }),
-    decisions,
+    ...graph,
     source,
   };
 }
 
 export function buildCodingRouteDecisionBlock(result) {
   if (!result?.active || !result.decisions) return '';
-  const { memory, skills, subagents } = result.decisions;
+  const { memory, skills, subagents, todos } = result.decisions;
   const skillSelection = skills.selected_names.length > 0
     ? skills.selected_names.join(', ')
     : skills.inject_index
@@ -298,16 +344,20 @@ export function buildCodingRouteDecisionBlock(result) {
     : '';
   return [
     `Coding Route Graph: ${result.graph_version} (${result.source})`,
-    `- memory_gate: ${memory.leaf}; save_memory=${memory.allow_save_memory ? 'enabled' : 'disabled'}`,
-    `- skill_selection_gate: ${skillSelection}`,
-    `- subagent_gate: run_subagent ${subagents.enabled ? `enabled; target=${subagents.recommended_count}${subagentFocus}` : 'disabled'}`,
+    `- memory_gate [${memory.enforcement}]: ${memory.leaf}; save_memory=${memory.allow_save_memory ? 'enabled' : 'disabled'}`,
+    `- skill_selection_gate [${skills.enforcement}]: ${skillSelection}`,
+    `- subagent_gate [${subagents.enforcement}]: run_subagent ${subagents.enabled ? `enabled; target=${subagents.recommended_count}${subagentFocus}` : 'disabled'}`,
+    `- todo_gate [${todos.enforcement}]: update_todos ${todos.required ? 'required' : 'optional'}`,
     skills.selected_names.length > 0
       ? '- Apply every selected skill as an active workflow for this turn; these are not merely reference material.'
       : '',
     subagents.enabled
       ? '- Delegation directive: call run_subagent for the recommended independent work before the final answer. Prefer subagents for repository exploration, broad code reading, broad tests, failure triage, and independent review so their raw output stays out of the main context. Do not skip delegation merely because you could do the work yourself. Put independent read-only workers in the same response so they run in parallel. After changes, the main agent must still run one authoritative focused verification against the final worktree.'
       : '',
-    '- These are enforced runtime decisions for this turn. Do not claim a disabled capability is available.',
+    todos.required
+      ? '- Todo directive: call update_todos before major tool work, keep exactly one item in_progress, update it as work advances, and settle it before the final answer. Every subagent with multi-step work must maintain its own todo checklist too.'
+      : '',
+    '- Follow each decision according to its enforcement mode; do not claim a hard-gated capability is available.',
   ].filter(Boolean).join('\n');
 }
 

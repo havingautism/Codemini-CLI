@@ -1,7 +1,24 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { getFileToolMeta } from '../codemini-web/client/src/lib/tool-card-display.js';
+import { getFileToolMeta, getTodoToolItems } from '../codemini-web/client/src/lib/tool-card-display.js';
+
+test('todo tool items accept streamed arguments and structured results', () => {
+  const fromArgs = getTodoToolItems(JSON.stringify({
+    todos: [
+      { content: 'Inspect', activeForm: 'Inspecting', status: 'in_progress' },
+      { content: 'Build', activeForm: 'Building', status: 'pending' },
+    ],
+  }));
+  assert.deepEqual(fromArgs, [
+    { content: 'Inspect', status: 'in_progress' },
+    { content: 'Build', status: 'pending' },
+  ]);
+
+  assert.deepEqual(getTodoToolItems({}, { newTodos: [
+    { content: 'Verify', activeForm: 'Verifying', status: 'completed' },
+  ] }), [{ content: 'Verify', status: 'completed' }]);
+});
 
 test('delete tool preview keeps only the patch for its displayed file', () => {
   const firstPatch = [

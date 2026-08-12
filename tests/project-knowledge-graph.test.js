@@ -87,6 +87,21 @@ test('project knowledge graph version changes after an indexed source edit', asy
   assert.ok(new Date(after.built_at) >= new Date(before.built_at));
 });
 
+test('project knowledge graph version ignores index refresh timestamps', async (t) => {
+  const root = await createProject();
+  t.after(async () => {
+    closeSqliteDatabasesForTests();
+    await fs.rm(root, { recursive: true, force: true });
+  });
+
+  await initializeProjectIndex(root);
+  const before = queryProjectKnowledgeGraph(root, { operation: 'overview', depth: 0 });
+  await refreshIndexedFile(root, 'src/helper.js');
+  const after = queryProjectKnowledgeGraph(root, { operation: 'overview', depth: 0 });
+  assert.equal(after.graph_version, before.graph_version);
+  assert.equal(after.built_at, before.built_at);
+});
+
 test('project indexing keeps same-name symbols from different scopes distinct', async (t) => {
   const root = await createProject();
   t.after(async () => {

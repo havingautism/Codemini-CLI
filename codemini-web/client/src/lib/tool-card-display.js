@@ -21,6 +21,21 @@ export function parseMaybeJson(value) {
   }
 }
 
+export function getTodoToolItems(args, result) {
+  const parsedArgs = parseMaybeJson(args) || {};
+  const parsedResult = parseMaybeJson(result) || {};
+  const todos = parsedResult.newTodos || parsedResult.todos || parsedArgs.todos;
+  if (!Array.isArray(todos)) return [];
+  return todos
+    .map((item) => ({
+      content: String(item?.content || item?.activeForm || "").trim(),
+      status: ["pending", "in_progress", "completed"].includes(item?.status)
+        ? item.status
+        : "pending",
+    }))
+    .filter((item) => item.content);
+}
+
 function decodeJsonStringFragment(raw) {
   try {
     return JSON.parse(`"${raw}"`);

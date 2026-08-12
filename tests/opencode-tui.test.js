@@ -5,7 +5,7 @@ import { Container, getCapabilities, setCapabilities } from '@earendil-works/pi-
 
 import { buildSlashCommands, runOpenCodeTui } from '../src/tui/opencode-chat-app.js';
 import { ActivityBar, ApprovalDialog, Footer, TopBar } from '../src/tui/components/chrome.js';
-import { PlanProgress, ProcessedFold, ReasoningBlock, ToolCall, ToolCallGroup, appendHistory, createAssistantMessage, createUserMessage, linkMarkdownImages } from '../src/tui/components/messages.js';
+import { PlanProgress, ProcessedFold, ReasoningBlock, TodoProgress, ToolCall, ToolCallGroup, appendHistory, createAssistantMessage, createUserMessage, linkMarkdownImages } from '../src/tui/components/messages.js';
 import { createTuiCopy } from '../src/tui/copy.js';
 
 class FakeTerminal {
@@ -266,6 +266,41 @@ test('tool calls collapse by default and expose details when toggled', () => {
   const rendered = stripAnsi(row.render(80).join('\n'));
   assert.match(rendered, /arguments:/);
   assert.match(rendered, /Read 42 lines/);
+});
+
+test('todo progress is a persistent card that updates in place', () => {
+  const todo = new TodoProgress({ todos: [
+    { content: 'Inspect', status: 'completed' },
+    { content: 'Build', status: 'in_progress' },
+    { content: 'Verify', status: 'pending' },
+  ] });
+
+  let rendered = stripAnsi(todo.render(80).join('\n'));
+  assert.match(rendered, /Todos  1\/3/);
+  assert.match(rendered, /✓ Inspect/);
+  assert.match(rendered, /● Build/);
+  assert.match(rendered, /○ Verify/);
+  todo.update({ arguments: { todos: [
+    { content: 'Inspect', status: 'completed' },
+    { content: 'Build', status: 'completed' },
+  ] } });
+  rendered = stripAnsi(todo.render(80).join('\n'));
+  assert.match(rendered, /Todos  2\/2/);
+  assert.doesNotMatch(rendered, /Verify/);
+  assert.match(stripAnsi(new TodoProgress({ todos: [] }).render(80).join('\n')), /Todos  0\/0[\s\S]*No active todos/);
+});
+
+test('processed folds keep pinned todo cards visible while body-only', () => {
+  const fold = new ProcessedFold(createTuiCopy('en'));
+  fold.addChild(new ReasoningBlock(createTuiCopy('en'), 'hidden details', { complete: true }));
+  fold.addPinnedChild(new TodoProgress({ todos: [{ content: 'Build', status: 'in_progress' }] }));
+  fold.finish();
+  fold.setBodyOnly(true);
+  const rendered = stripAnsi(fold.render(80).join('\n'));
+  assert.match(rendered, /Processed/);
+  assert.match(rendered, /Todos/);
+  assert.match(rendered, /Build/);
+  assert.doesNotMatch(rendered, /hidden details/);
 });
 
 test('chat chrome keeps only the logo on top and runtime details at the bottom', () => {

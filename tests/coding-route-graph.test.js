@@ -40,6 +40,7 @@ test('coding route graph uses semantic node decisions to gate capabilities', asy
           focus: ['inspect architecture', 'verify tests'],
           reason: 'independent verification is useful',
         },
+        todos: { required: true, reason: 'multi-file implementation and verification' },
       });
     },
   });
@@ -47,16 +48,31 @@ test('coding route graph uses semantic node decisions to gate capabilities', asy
   assert.equal(result.active, true);
   assert.equal(result.source, 'llm');
   assert.equal(result.decisions.memory.allow_save_memory, true);
+  assert.equal(result.decisions.memory.enforcement, 'hard_gate');
   assert.deepEqual(result.decisions.skills.selected_names, ['tdd']);
+  assert.equal(result.decisions.skills.enforcement, 'injection');
   assert.equal(result.decisions.skills.inject_index, false);
   assert.equal(result.decisions.subagents.enabled, true);
   assert.equal(result.decisions.subagents.recommended_count, 2);
+  assert.equal(result.decisions.subagents.enforcement, 'hard_gate');
   assert.deepEqual(result.decisions.subagents.focus, [
     'inspect architecture',
     'verify tests',
   ]);
+  assert.equal(result.decisions.todos.required, true);
+  assert.equal(result.decisions.todos.enforcement, 'directive');
+  assert.deepEqual(result.path, [
+    'mode_gate',
+    'memory_gate',
+    'skill_selection_gate',
+    'subagent_gate',
+    'todo_gate',
+    'complete',
+  ]);
   assert.match(buildCodingRouteDecisionBlock(result), /run_subagent enabled/);
   assert.match(buildCodingRouteDecisionBlock(result), /Delegation directive/);
+  assert.match(buildCodingRouteDecisionBlock(result), /update_todos required/);
+  assert.match(buildCodingRouteDecisionBlock(result), /Every subagent/);
 });
 
 test('coding route graph hard-blocks secret-like memory even when judge allows it', async () => {
@@ -91,6 +107,7 @@ test('coding route graph falls back when the semantic judge fails', async () => 
   assert.equal(result.decisions.memory.allow_save_memory, false);
   assert.equal(result.decisions.skills.inject_index, true);
   assert.equal(result.decisions.subagents.enabled, true);
+  assert.equal(result.decisions.todos.required, true);
 });
 
 test('advisory context pressure does not hard-force delegation', async () => {
@@ -205,6 +222,7 @@ test('coding route judge prompt is positively biased toward useful skills and de
       assert.match(systemPrompt, /Project exploration rule/);
       assert.match(systemPrompt, /Testing rule/);
       assert.match(systemPrompt, /Context-pressure rule/);
+      assert.match(systemPrompt, /todo_gate/);
       assert.match(systemPrompt, /estimated_tokens >= 24000/);
       assert.match(systemPrompt, /recommended_count/);
       return {
@@ -215,10 +233,30 @@ test('coding route judge prompt is positively biased toward useful skills and de
           recommended_count: 9,
           focus: ['inspect', 'test', 'review', 'ignored'],
         },
+        todos: { required: true, reason: 'several implementation steps' },
       };
     },
   }).then((result) => {
     assert.equal(result.decisions.subagents.recommended_count, 3);
     assert.deepEqual(result.decisions.subagents.focus, ['inspect', 'test', 'review']);
+    assert.equal(result.decisions.todos.required, true);
   });
+});
+
+test('todo gate keeps atomic coding work optional', async () => {
+  const result = await evaluateCodingRouteGraph({
+    executionMode: 'plan',
+    text: 'Fix one typo',
+    autoRoute: { complexity: 'simple' },
+    judge: async () => ({
+      memory: { leaf: 'ignore' },
+      skills: { selected_names: [] },
+      subagents: { enabled: false },
+      todos: { required: false, reason: 'atomic edit' },
+    }),
+  });
+
+  assert.equal(result.decisions.todos.required, false);
+  assert.match(buildCodingRouteDecisionBlock(result), /update_todos optional/);
+  assert.doesNotMatch(buildCodingRouteDecisionBlock(result), /Todo directive/);
 });

@@ -95,3 +95,25 @@ test('layoutAnswerProcessWithPlans hoists create_plan out of nested process fold
   assert.equal(layout.items[1].group.cards[0].name, 'create_plan');
   assert.equal(layout.items[2].group.type, 'text');
 });
+
+test('layout keeps only the latest todo card outside the process fold', () => {
+  const layout = layoutAnswerProcessWithPlans([
+    { type: 'tools', cards: [
+      { id: 'todo-1', name: 'update_todos', arguments: { todos: [{ content: 'Inspect', status: 'in_progress' }] } },
+      { id: 'read-1', name: 'read', status: 'done' },
+    ] },
+    { type: 'process', groups: [{ type: 'tools', cards: [
+      { id: 'todo-2', name: 'update_todos', arguments: { todos: [{ content: 'Inspect', status: 'completed' }] } },
+    ] }] },
+    { type: 'text', text: 'done' },
+  ]);
+
+  const todos = layout.items
+    .filter((item) => item.type === 'group' && item.group?.type === 'tools')
+    .flatMap((item) => item.group.cards || [])
+    .filter((card) => card.name === 'update_todos');
+  assert.equal(todos.length, 1);
+  assert.equal(todos[0].id, 'todo-2');
+  assert.equal(layout.items.at(-2).group.cards[0].name, 'update_todos');
+  assert.equal(layout.items.at(-1).group.type, 'text');
+});

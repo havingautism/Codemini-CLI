@@ -1,5 +1,6 @@
 import {
   updateToolInSegments,
+  upsertSingletonToolCardInSegments,
   upsertToolCardInSegments,
 } from "./tool-segments.js";
 import { buildHookSegmentEvent } from "./hook-ui.js";
@@ -482,7 +483,9 @@ export function applyStreamEventToMessage(message, event, options = {}) {
         : message.segments;
       return {
         ...message,
-        segments: upsertToolCardInSegments(baseSegments, toolCard),
+        segments: String(toolCard.name || "").toLowerCase() === "update_todos"
+          ? upsertSingletonToolCardInSegments(baseSegments, toolCard)
+          : upsertToolCardInSegments(baseSegments, toolCard),
       };
     }
     case "tool:result": {

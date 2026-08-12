@@ -1197,6 +1197,7 @@ export const en = {
   hookTool_web_fetch: "web_fetch",
   hookTool_web_search: "web_search",
   hookTool_update_todos: "update_todos",
+  todosEmpty: "No active todos",
   hookTool_update_plan: "update_plan",
   saving: "Saving…",
   skillPackageBatchHooksNote:

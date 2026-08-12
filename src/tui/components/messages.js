@@ -49,6 +49,21 @@ function formatDuration(durationMs) {
   return value < 1000 ? `${Math.round(value)}ms` : `${Math.round(value / 100) / 10}s`;
 }
 
+function todoItems(value) {
+  let parsed = value;
+  if (typeof value === 'string') {
+    try { parsed = JSON.parse(value); } catch { return []; }
+  }
+  const todos = parsed?.newTodos || parsed?.todos;
+  if (!Array.isArray(todos)) return [];
+  return todos
+    .map((item) => ({
+      content: String(item?.content || item?.activeForm || '').trim(),
+      status: ['pending', 'in_progress', 'completed'].includes(item?.status) ? item.status : 'pending'
+    }))
+    .filter((item) => item.content);
+}
+
 function surfaceLine(text, width, background = color.surfaceBg, indent = 1) {
   const safe = wrapTextWithAnsi(text, Math.max(1, width - indent - 1));
   return safe.map((line) => background(
@@ -155,6 +170,56 @@ export class ToolCallGroup {
   }
 }
 
+export class TodoProgress {
+  constructor(value, copy = null) {
+    this.items = todoItems(value);
+    this.copy = copy;
+  }
+
+  invalidate() {}
+
+  update(event = {}) {
+    const value = event.arguments || event.result || event.content;
+    let parsed = value;
+    if (typeof value === 'string') {
+      try { parsed = JSON.parse(value); } catch { return; }
+    }
+    if (Array.isArray(parsed?.todos) || Array.isArray(parsed?.newTodos)) {
+      this.items = todoItems(parsed);
+    }
+  }
+
+  render(width) {
+    const done = this.items.filter((item) => item.status === 'completed').length;
+    const header = surfaceLine(
+      `${bold(color.text(this.copy?.todos || 'Todos'))}  ${color.muted(`${done}/${this.items.length}`)}`,
+      width,
+      color.surfaceRaisedBg
+    );
+    if (!this.items.length) {
+      return [
+        ...header,
+        ...surfaceLine(color.dim(this.copy?.todosEmpty || 'No active todos'), width, color.surfaceBg, 2),
+        '',
+      ];
+    }
+    const rows = this.items.flatMap((item) => {
+      const icon = item.status === 'completed'
+        ? color.text('✓')
+        : item.status === 'in_progress'
+          ? color.text('●')
+          : color.dim('○');
+      const text = item.status === 'completed'
+        ? color.dim(item.content)
+        : item.status === 'in_progress'
+          ? color.accent(item.content)
+          : color.text(item.content);
+      return surfaceLine(`${icon} ${text}`, width, color.surfaceBg, 2);
+    });
+    return [...header, ...rows, ''];
+  }
+}
+
 export class ReasoningBlock {
   constructor(copy, text = '', { complete = false, durationMs = 0 } = {}) {
     this.copy = copy;
@@ -191,22 +256,27 @@ export class ProcessedFold {
   constructor(copy) {
     this.copy = copy;
     this.children = [];
+    this.pinnedChildren = [];
     this.complete = false;
     this.bodyOnly = true;
   }
 
   addChild(component) { this.children.push(component); }
+  addPinnedChild(component) { this.pinnedChildren.push(component); }
   finish() { this.complete = true; }
   setBodyOnly(bodyOnly) { this.bodyOnly = bodyOnly; }
-  invalidate() { for (const child of this.children) child.invalidate(); }
+  invalidate() {
+    for (const child of [...this.children, ...this.pinnedChildren]) child.invalidate();
+  }
 
   render(width) {
     const content = this.children.flatMap((child) => child.render(width));
-    if (!this.complete) return content;
+    const pinned = this.pinnedChildren.flatMap((child) => child.render(width));
+    if (!this.complete) return [...content, ...pinned];
     const marker = this.bodyOnly ? '▸' : '▾';
     const action = this.bodyOnly ? this.copy.showFull : this.copy.showBodyOnly;
     const header = surfaceLine(`${color.purple(marker)} ${color.muted(this.copy.processed)}  ${color.dim(action)}`, width);
-    const lines = this.bodyOnly ? header : [...header, ...content];
+    const lines = this.bodyOnly ? [...header, ...pinned] : [...header, ...content, ...pinned];
     return lines.at(-1) === '' ? lines : [...lines, ''];
   }
 }
@@ -325,6 +395,7 @@ export function appendHistory(transcript, history, copy, { bodyOnly = true, expa
     }
     const finalAssistant = messages.findLast((message) => message?.role === 'assistant' && messageText(message.content).trim());
     const fold = new ProcessedFold(copy);
+    let latestTodo = null;
     for (const message of messages) {
       if (message?.role === 'tool') continue;
       const text = messageText(message?.content).trim();
@@ -355,10 +426,16 @@ export function appendHistory(transcript, history, copy, { bodyOnly = true, expa
             summary: result.tool_summary || oneLine(result.content, 160),
             durationMs: result.tool_duration_ms
           };
+          if (String(event.name || '').toLowerCase() === 'update_todos') {
+            latestTodo = event;
+            continue;
+          }
           group.add(event).update(event, result.tool_status === 'error' ? 'error' : 'success');
         }
-        toolGroups.push(group);
-        fold.addChild(group);
+        if (group.rows.length) {
+          toolGroups.push(group);
+          fold.addChild(group);
+        }
       }
       if (text && message !== finalAssistant) {
         if (fold.children.length) fold.addChild(new Spacer(1));
@@ -366,7 +443,9 @@ export function appendHistory(transcript, history, copy, { bodyOnly = true, expa
       }
     }
 
-    if (fold.children.length) {
+    if (latestTodo) fold.addPinnedChild(new TodoProgress(latestTodo.arguments, copy));
+
+    if (fold.children.length || fold.pinnedChildren.length) {
       fold.finish();
       fold.setBodyOnly(bodyOnly);
       processFolds.push(fold);
@@ -375,7 +454,7 @@ export function appendHistory(transcript, history, copy, { bodyOnly = true, expa
     }
     const finalText = messageText(finalAssistant?.content).trim();
     if (finalText) {
-      if (!fold.children.length) transcript.addChild(new Spacer(1));
+      if (!fold.children.length && !fold.pinnedChildren.length) transcript.addChild(new Spacer(1));
       transcript.addChild(createAssistantMessage(finalText));
     }
   };

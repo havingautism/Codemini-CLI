@@ -16,7 +16,7 @@ function unique(values) {
 
 function graphVersion(fileIndex = {}) {
   const digest = createHash('sha256');
-  digest.update(String(fileIndex.updatedAt || ''));
+  digest.update(`schema:${GRAPH_SCHEMA_VERSION}\n`);
   for (const entry of fileIndex.files || []) {
     digest.update(`${entry.file}:${entry.hash || entry.mtimeMs || ''}\n`);
   }

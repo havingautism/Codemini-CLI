@@ -320,6 +320,36 @@ test('subagent child tools with parentToolCallId stay nested', () => {
   assert.equal(topLevelCards.some((card) => card.id === 'read-1'), false);
 });
 
+test('update_todos replaces one persistent tool card across calls', () => {
+  let message = { id: 'msg-todos', role: 'general', segments: [] };
+  message = applyStreamEventToMessage(message, {
+    type: 'tool:start',
+    id: 'todo-1',
+    name: 'update_todos',
+    arguments: { todos: [{ content: 'Inspect', status: 'in_progress' }] },
+  });
+  message = applyStreamEventToMessage(message, {
+    type: 'tool:end', id: 'todo-1', name: 'update_todos', summary: 'updated 1 todo',
+  });
+  message = applyStreamEventToMessage(message, {
+    type: 'tool:start',
+    id: 'todo-2',
+    name: 'update_todos',
+    arguments: { todos: [
+      { content: 'Inspect', status: 'completed' },
+      { content: 'Build', status: 'in_progress' },
+    ] },
+  });
+
+  const cards = message.segments
+    .filter((segment) => segment.type === 'tools')
+    .flatMap((segment) => segment.cards || [])
+    .filter((card) => card.name === 'update_todos');
+  assert.equal(cards.length, 1);
+  assert.equal(cards[0].id, 'todo-2');
+  assert.equal(cards[0].arguments.todos[1].status, 'in_progress');
+});
+
 test('late subagent child events stay nested after the parent card completes', () => {
   const message = runningSubagentMessage();
   const subagent = message.segments[0].cards[0];

@@ -24,6 +24,37 @@ function isCreatePlanCard(card) {
   return name === "create_plan" || name === "run_subagent" || Boolean(card?.planRun);
 }
 
+function isTodoCard(card) {
+  return String(card?.name || "").toLowerCase().replace(/\(.*$/, "") === "update_todos";
+}
+
+function extractTodoFromGroup(group) {
+  if (!group || typeof group !== "object") return { todoCards: [], rest: null };
+  if (group.type === "tools") {
+    const cards = Array.isArray(group.cards) ? group.cards : [];
+    const todoCards = cards.filter(isTodoCard);
+    const otherCards = cards.filter((card) => !isTodoCard(card));
+    return {
+      todoCards,
+      rest: otherCards.length ? { ...group, cards: otherCards } : null,
+    };
+  }
+  if (group.type === "process") {
+    const todoCards = [];
+    const restGroups = [];
+    for (const inner of Array.isArray(group.groups) ? group.groups : []) {
+      const extracted = extractTodoFromGroup(inner);
+      todoCards.push(...extracted.todoCards);
+      if (extracted.rest) restGroups.push(extracted.rest);
+    }
+    return {
+      todoCards,
+      rest: restGroups.length ? { ...group, groups: restGroups } : null,
+    };
+  }
+  return { todoCards: [], rest: group };
+}
+
 /**
  * Pull create_plan cards out of a tools/process group so they never stay inside a fold.
  * Returns { planCards, rest } where rest is null when the group is empty after extraction.
@@ -72,7 +103,14 @@ function isCreatePlanGroup(group) {
 
 /** Fold process groups; keep create_plan cards in chronological order before the final answer. */
 export function layoutAnswerProcessWithPlans(groups = [], fallbackStartedAt = null) {
-  const source = Array.isArray(groups) ? groups : [];
+  const todoCards = [];
+  const source = [];
+  for (const group of Array.isArray(groups) ? groups : []) {
+    const extracted = extractTodoFromGroup(group);
+    todoCards.push(...extracted.todoCards);
+    if (extracted.rest) source.push(extracted.rest);
+  }
+  const latestTodo = todoCards.at(-1);
   const finalAnswer = source.at(-1);
   const hasFinalAnswer =
     finalAnswer?.type === "text" && String(finalAnswer.text || "").trim();
@@ -81,7 +119,10 @@ export function layoutAnswerProcessWithPlans(groups = [], fallbackStartedAt = nu
   if (!hasFoldCandidate) {
     return {
       hasFold: false,
-      items: source.map((group) => ({ type: "group", group })),
+      items: [
+        ...source.map((group) => ({ type: "group", group })),
+        ...(latestTodo ? [{ type: "group", group: { type: "tools", cards: [latestTodo] } }] : []),
+      ],
       durationMs: 0,
     };
   }
@@ -112,6 +153,9 @@ export function layoutAnswerProcessWithPlans(groups = [], fallbackStartedAt = nu
     pendingProcess.push(group);
   }
   flushProcess();
+  if (latestTodo) {
+    items.push({ type: "group", group: { type: "tools", cards: [latestTodo] } });
+  }
   items.push({ type: "group", group: finalAnswer });
 
   const foldGroups = items
