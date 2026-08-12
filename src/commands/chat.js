@@ -4,7 +4,8 @@ import { parseArgs } from 'node:util';
 import { loadConfig } from '../core/config-store.js';
 import { createChatRuntime } from '../core/chat-runtime.js';
 import { buildDefaultSystemPrompt } from '../core/default-system-prompt.js';
-import { resolveSession } from '../core/session-store.js';
+import { createSession, resolveSession } from '../core/session-store.js';
+import { getGeneralWorkspaceDir } from '../core/webui-sidebar-config.js';
 import { VERSION } from '../core/version.js';
 
 export function parseChatArgs(args) {
@@ -123,6 +124,7 @@ async function runPlainLoop(runtime) {
 
 export async function handleChat(args) {
   const parsed = parseChatArgs(args);
+  const launchCwd = process.cwd();
   let session = await resolveSession(parsed.sessionId);
   while (session) {
     const config = await loadConfig();
@@ -157,9 +159,11 @@ export async function handleChat(args) {
         model: selectedModel || config.model.name,
         safeMode: config.policy?.safe_mode !== false,
         language: config.ui?.language || 'zh',
-        version: VERSION
+        version: VERSION,
+        workspaceDir: getGeneralWorkspaceDir(),
+        currentDirectory: launchCwd
       });
-      if (result?.newSession) session = await resolveSession();
+      if (result?.newSession) session = await createSession(result.projectDir || launchCwd);
       else if (result?.sessionId && result.sessionId !== session.id) session = await resolveSession(result.sessionId);
       else return;
     } finally {

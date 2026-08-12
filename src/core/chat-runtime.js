@@ -115,6 +115,7 @@ import {
 import { normalizePlanState } from './plan-state.js';
 import { normalizeSpecState } from './spec-state.js';
 import { normalizeTodos } from './todo-state.js';
+import { isGeneralWorkspaceProjectDir, normalizeProjectDirKey } from './webui-sidebar-config.js';
 import {
   attachReflectTargets,
   buildReflectSkillDraft,
@@ -8709,7 +8710,11 @@ export async function createChatRuntime({
     getInputHistory: () => loadInputHistory(),
     getCurrentSessionId: () => currentSession.id,
     getSessionMessages: () => currentSession.messages || [],
-    getSessionHistory: (limit = 30) => listSessions(limit),
+    getSessionHistory: async (limit = 30) => (await listSessions(limit)).map((entry) => ({
+      ...entry,
+      projectKey: normalizeProjectDirKey(entry.projectDir) || 'unknown',
+      isGeneral: isGeneralWorkspaceProjectDir(entry.projectDir)
+    })),
     getSessionCompact: () => currentSession.compact || null,
     getAvailableSkills,
     persistRunStatus,

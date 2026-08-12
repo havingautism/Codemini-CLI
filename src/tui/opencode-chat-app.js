@@ -65,9 +65,10 @@ export function buildSlashCommands(runtime, copy = createTuiCopy('en')) {
   ];
 }
 
-export async function runOpenCodeTui({ runtime, sessionId, model, safeMode = true, version = '', language = 'en', terminal: suppliedTerminal }) {
+export async function runOpenCodeTui({ runtime, sessionId, model, safeMode = true, version = '', language = 'en', terminal: suppliedTerminal, workspaceDir = '', currentDirectory = process.cwd() }) {
   const terminal = suppliedTerminal || new ProcessTerminal();
   const copy = createTuiCopy(language);
+  const defaultWorkspaceDir = workspaceDir || runtime.getRuntimeState?.().workspaceRoot || currentDirectory;
   const tui = new TuiAltScreen(terminal, true, undefined, { mouse: true, wheelScrollLines: 6 });
   const transcript = new Container();
   const scroll = new ScrollView(transcript, {
@@ -113,6 +114,7 @@ export async function runOpenCodeTui({ runtime, sessionId, model, safeMode = tru
   const processFolds = [];
   let helpHandle = null;
   let historyHandle = null;
+  let historyPicker = null;
   let settingsHandle = null;
   let approvalCancel = null;
   let resolveDone;
@@ -401,6 +403,7 @@ export async function runOpenCodeTui({ runtime, sessionId, model, safeMode = tru
   const closeSessionHistory = () => {
     historyHandle?.hide();
     historyHandle = null;
+    historyPicker = null;
     home.loading = false;
     tui.setFocus(phase === 'home' ? home : editor);
     requestRender();
@@ -419,6 +422,7 @@ export async function runOpenCodeTui({ runtime, sessionId, model, safeMode = tru
         else if (phase === 'home') enterMode(home.mode);
       }
     });
+    historyPicker = picker;
     historyHandle = tui.showOverlay(picker, { width: '72%', minWidth: 48, maxHeight: 14, anchor: 'center', margin: 2 });
     requestRender();
   };
@@ -538,13 +542,26 @@ export async function runOpenCodeTui({ runtime, sessionId, model, safeMode = tru
     model,
     version,
     safeMode,
+    location: 'workspace',
+    locationPath: defaultWorkspaceDir,
     copy,
     getHeight: () => terminal.rows,
     onAction: (action) => {
       if (action === 'sessions') return showSessionHistory();
       if (action === 'settings') return showSettingsDialog();
       if (action === 'help') return showHelp();
-      if (action === 'new' && Number(runtime.getRuntimeState?.().messageCount || 0) > 0) return stop({ newSession: true });
+      if (action === 'location') {
+        home.location = home.location === 'workspace' ? 'cwd' : 'workspace';
+        home.locationPath = home.location === 'cwd' ? currentDirectory : defaultWorkspaceDir;
+        return requestRender();
+      }
+      if (action === 'new') {
+        const projectDir = home.location === 'cwd' ? currentDirectory : defaultWorkspaceDir;
+        const runtimeState = runtime.getRuntimeState?.() || {};
+        if (Number(runtimeState.messageCount || 0) > 0 || String(runtimeState.workspaceRoot || '') !== String(projectDir || '')) {
+          return stop({ newSession: true, projectDir });
+        }
+      }
       return enterMode(home.mode);
     }
   });
@@ -560,6 +577,11 @@ export async function runOpenCodeTui({ runtime, sessionId, model, safeMode = tru
     if (phase !== 'chat') return undefined;
     if (approvalCancel && (matchesKey(data, 'escape') || matchesKey(data, 'ctrl+c'))) {
       approvalCancel();
+      return { consume: true };
+    }
+    if (historyHandle && matchesKey(data, 'escape')) {
+      if (historyPicker?.back()) requestRender();
+      else closeSessionHistory();
       return { consume: true };
     }
     if ((helpHandle || historyHandle || settingsHandle) && (matchesKey(data, 'escape') || matchesKey(data, 'ctrl+c'))) {

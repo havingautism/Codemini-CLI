@@ -35,13 +35,15 @@ function codingMode(mode) {
 }
 
 export class ModeHome {
-  constructor({ state = {}, model = '', version = '', safeMode = true, copy, getHeight, onAction }) {
+  constructor({ state = {}, model = '', version = '', safeMode = true, location = 'workspace', locationPath = '', copy, getHeight, onAction }) {
     this.index = 0;
     this.mode = codingMode(state.mode) ? 'coding' : 'daily';
     this.state = state;
     this.model = model;
     this.version = version;
     this.safeMode = safeMode;
+    this.location = location;
+    this.locationPath = locationPath;
     this.copy = copy;
     this.getHeight = getHeight;
     this.onAction = onAction;
@@ -55,6 +57,7 @@ export class ModeHome {
     return [
       { value: 'new', icon: color.accent('＋'), label: this.copy.newConversation, description: this.copy.newConversationDescription },
       ...current,
+      { value: 'location', icon: color.warning('📍'), label: this.copy.settingLocation, description: this.copy.settingValues[this.location] },
       { value: 'sessions', icon: color.purple('◷'), label: this.copy.sessionHistory, description: this.copy.historyDescription },
       { value: 'settings', icon: color.warning('⚙️'), label: this.copy.startupSettings, description: this.mode === 'coding' ? this.copy.modeCoding : this.copy.modeDaily },
       { value: 'help', icon: color.cyan('?'), label: this.copy.helpTitle, description: this.copy.shortcutsDescription }
@@ -75,6 +78,8 @@ export class ModeHome {
       this.index = (this.index + actions.length - 1) % actions.length;
     } else if (matchesKey(data, 'down') || matchesKey(data, 'tab')) {
       this.index = (this.index + 1) % actions.length;
+    } else if ((matchesKey(data, 'left') || matchesKey(data, 'right')) && actions[this.index]?.value === 'location') {
+      this.onAction('location');
     } else if (matchesKey(data, 'return') || matchesKey(data, 'space')) {
       const action = actions[this.index]?.value;
       if (action === 'new' || action === 'continue') this.loading = true;
@@ -94,7 +99,7 @@ export class ModeHome {
       badge(color.purple('◇'), this.state.sandboxMode || '-'),
       badge(color.cyan('›'), this.state.shell || '-')
     ].join('  ');
-    const workspace = String(this.state.workspaceRoot || process.cwd());
+    const workspace = String(this.locationPath || this.state.workspaceRoot || process.cwd());
     const lines = ['', ...logo.map((line, index) => center((index < 2 ? color.accent : color.purple)(line), width))];
     lines.push(center(color.dim(`v${this.version}`), width), '', center(color.muted(this.copy.startCenter), width), '');
     for (let index = 0; index < this.actions.length; index += 1) {

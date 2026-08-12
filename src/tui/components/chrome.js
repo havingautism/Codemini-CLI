@@ -197,17 +197,67 @@ export class ApprovalDialog {
 export class SessionPicker {
   constructor(sessions, { copy, currentSessionId, onSelect, onCancel }) {
     this.copy = copy;
-    const items = sessions.map((session) => ({
-      value: session.id,
-      label: `${session.id === currentSessionId ? '● ' : ''}${session.title || session.id}`,
-      description: `${session.messageCount || 0} ${copy.messages}${session.preview ? ` · ${oneLine(session.preview, 44)}` : ''}`
-    }));
+    this.sessions = sessions;
+    this.currentSessionId = currentSessionId;
+    this.onSelect = onSelect;
     this.onCancel = onCancel;
+    this.group = null;
+    this.groups = this.createGroups();
+    this.showGroups();
+  }
+
+  createGroups() {
+    const groups = [];
+    const general = this.sessions.filter((session) => session.isGeneral === true);
+    if (general.length) groups.push({ key: 'general', label: this.copy.generalChat, icon: '💬', sessions: general });
+    const projects = new Map();
+    for (const session of this.sessions.filter((entry) => entry.isGeneral !== true)) {
+      const key = String(session.projectKey || session.projectDir || 'unknown');
+      if (!projects.has(key)) projects.set(key, []);
+      projects.get(key).push(session);
+    }
+    for (const [key, sessions] of projects) {
+      const label = key === 'unknown'
+        ? this.copy.unknownProject
+        : key.split(/[\\/]/).filter(Boolean).at(-1) || key;
+      groups.push({ key: `project:${key}`, label, icon: '▣', path: key, sessions });
+    }
+    return groups;
+  }
+
+  showGroups() {
+    this.group = null;
+    const items = this.groups.map((group) => ({
+      value: group.key,
+      label: `${group.sessions.some((session) => session.id === this.currentSessionId) ? '● ' : ''}${group.icon} ${group.label}`,
+      description: group.path || this.copy.sessionCount(group.sessions.length)
+    }));
     this.list = items.length ? new SelectList(items, Math.min(10, items.length), selectTheme) : null;
     if (this.list) {
-      this.list.onSelect = (item) => onSelect(item.value);
-      this.list.onCancel = onCancel;
+      this.list.onSelect = (item) => this.showSessions(this.groups.find((group) => group.key === item.value));
+      this.list.onCancel = this.onCancel;
     }
+  }
+
+  showSessions(group) {
+    if (!group) return;
+    this.group = group;
+    const items = group.sessions.map((session) => ({
+      value: session.id,
+      label: `${session.id === this.currentSessionId ? '● ' : ''}${session.title || session.id}`,
+      description: `${session.messageCount || 0} ${this.copy.messages}${session.preview ? ` · ${oneLine(session.preview, 44)}` : ''}`
+    }));
+    this.list = items.length ? new SelectList(items, Math.min(10, items.length), selectTheme) : null;
+    if (this.list) {
+      this.list.onSelect = (item) => this.onSelect(item.value);
+      this.list.onCancel = () => this.back();
+    }
+  }
+
+  back() {
+    if (!this.group) return false;
+    this.showGroups();
+    return true;
   }
 
   invalidate() { this.list?.invalidate(); }
@@ -219,7 +269,8 @@ export class SessionPicker {
   render(width) {
     const innerWidth = Math.max(1, width - 2);
     return modalFrame([
-      fill(bold(color.accent(this.copy.sessionHistory)), innerWidth, color.overlayBg),
+      fill(bold(color.accent(this.group ? `${this.copy.sessionHistory}  ›  ${this.group.label}` : this.copy.sessionHistory)), innerWidth, color.overlayBg),
+      fill(color.dim(this.group ? this.copy.historyBack : this.copy.chooseSessionGroup), innerWidth, color.overlayBg),
       ...(this.list
         ? this.list.render(innerWidth).map((line) => fill(line, innerWidth, color.overlayBg, 0))
         : [fill(color.muted(this.copy.noSessions), innerWidth, color.overlayBg), fill(color.dim(this.copy.helpClose), innerWidth, color.overlayBg)])
@@ -246,7 +297,7 @@ export class SettingsDialog {
       { key: 'mode', label: `🧭 ${this.copy.settingMode}`, options: ['coding', 'daily'] },
       { key: 'reasoning', label: `🧠 ${this.copy.settingReasoning}`, options: ['off', 'auto', 'low', 'medium', 'high'] },
       { key: 'approval', label: `✅ ${this.copy.settingApproval}`, options: ['review', 'auto', 'full_access'] },
-      { key: 'sandbox', label: `🛡️ ${this.copy.settingSandbox}`, options: ['read-only', 'workspace-write', 'danger-full-access'] },
+      { key: 'sandbox', label: `🔒 ${this.copy.settingSandbox}`, options: ['read-only', 'workspace-write', 'danger-full-access'] },
       { key: 'soul', label: `🎭 ${this.copy.settingSoul}`, options: souls.length ? souls : [this.values.soul || '-'] }
     ];
   }

@@ -2690,6 +2690,28 @@ async function main() {
         : target.handleCodeWikiGenerate(line, { operationId }),
     );
 
+  const resolveTerminalCwd = async (url, body = {}) => {
+    const sessionId = String(
+      body?.sessionId || url.searchParams.get("sessionId") || "",
+    ).trim();
+    if (sessionId) {
+      try {
+        await ensurePooledSession(sessionId);
+      } catch {}
+    }
+    const cwd =
+      resolveGitCwd({
+        sessionId,
+        getSessionProjectDir: (id) =>
+          pool.getSessionState(id)?.projectDir || "",
+        fallbackDir: currentProjectDir,
+      }) ||
+      currentProjectDir ||
+      process.cwd();
+    if (shouldAdoptGitCwd(cwd, currentProjectDir)) currentProjectDir = cwd;
+    return cwd;
+  };
+
   const routes = createNodeRouter();
   routes.get("/api/embed", nodeRoute(async (req, res, url) => {
       const target = String(url.searchParams.get("url") || "").trim();
@@ -3024,7 +3046,7 @@ async function main() {
 
   }));
   routes.get("/api/workspace/tree", nodeRoute(async (req, res, url) => {
-      const cwd = await resolveTerminalCwd();
+      const cwd = await resolveTerminalCwd(url);
       try {
         const relativePath = String(url.searchParams.get("path") || "").trim();
         const result = await listWorkspaceChildren(cwd, relativePath);
@@ -3040,7 +3062,7 @@ async function main() {
 
   }));
   routes.get("/api/workspace/preview", nodeRoute(async (req, res, url) => {
-      const cwd = await resolveTerminalCwd();
+      const cwd = await resolveTerminalCwd(url);
       try {
         const relativePath = String(url.searchParams.get("path") || "").trim();
         const result = await previewWorkspaceFile(cwd, relativePath);
@@ -3059,7 +3081,7 @@ async function main() {
 
   }));
   routes.get("/api/workspace/file", nodeRoute(async (req, res, url) => {
-      const cwd = await resolveTerminalCwd();
+      const cwd = await resolveTerminalCwd(url);
       try {
         const relativePath = String(url.searchParams.get("path") || "").trim();
         if (!relativePath) {
@@ -3099,14 +3121,14 @@ async function main() {
   }));
   routes.get("/api/terminal", nodeRoute(async (req, res, url) => {
       const config = await loadConfig();
-      const cwd = await resolveTerminalCwd();
+      const cwd = await resolveTerminalCwd(url);
       jsonResponse(res, getTerminalSnapshot(cwd, config.shell?.default));
       return;
 
   }));
   routes.get("/api/terminal/stream", nodeRoute(async (req, res, url) => {
       const config = await loadConfig();
-      const cwd = await resolveTerminalCwd();
+      const cwd = await resolveTerminalCwd(url);
       res.writeHead(200, {
         "Content-Type": "text/event-stream",
         "Cache-Control": "no-cache",
@@ -3120,7 +3142,7 @@ async function main() {
   routes.post("/api/terminal/run", nodeRoute(async (req, res, url) => {
       const body = await readBody(req);
       const config = await loadConfig();
-      const cwd = await resolveTerminalCwd(body);
+      const cwd = await resolveTerminalCwd(url, body);
       const result = runTerminalCommand({
         cwd,
         command: body?.command,
@@ -3133,7 +3155,7 @@ async function main() {
   routes.post("/api/terminal/input", nodeRoute(async (req, res, url) => {
       const body = await readBody(req);
       const config = await loadConfig();
-      const cwd = await resolveTerminalCwd(body);
+      const cwd = await resolveTerminalCwd(url, body);
       jsonResponse(
         res,
         writeTerminalInput(cwd, body?.data, config.shell?.default),
@@ -3144,7 +3166,7 @@ async function main() {
   routes.post("/api/terminal/resize", nodeRoute(async (req, res, url) => {
       const body = await readBody(req);
       const config = await loadConfig();
-      const cwd = await resolveTerminalCwd(body);
+      const cwd = await resolveTerminalCwd(url, body);
       jsonResponse(
         res,
         resizeTerminal(cwd, body?.cols, body?.rows, config.shell?.default),
@@ -3155,7 +3177,7 @@ async function main() {
   routes.post("/api/terminal/stop", nodeRoute(async (req, res, url) => {
       const body = await readBody(req);
       const config = await loadConfig();
-      const cwd = await resolveTerminalCwd(body);
+      const cwd = await resolveTerminalCwd(url, body);
       jsonResponse(res, stopTerminal(cwd, config.shell?.default));
       return;
 
@@ -3163,7 +3185,7 @@ async function main() {
   routes.post("/api/terminal/clear", nodeRoute(async (req, res, url) => {
       const body = await readBody(req);
       const config = await loadConfig();
-      const cwd = await resolveTerminalCwd(body);
+      const cwd = await resolveTerminalCwd(url, body);
       jsonResponse(res, {
         ok: true,
         snapshot: clearTerminal(cwd, config.shell?.default),
@@ -3174,7 +3196,7 @@ async function main() {
   routes.post("/api/terminal/restart", nodeRoute(async (req, res, url) => {
       const body = await readBody(req);
       const config = await loadConfig();
-      const cwd = await resolveTerminalCwd(body);
+      const cwd = await resolveTerminalCwd(url, body);
       jsonResponse(res, restartTerminal(cwd, config.shell?.default));
       return;
 
@@ -4423,27 +4445,6 @@ async function main() {
 
 
     // ── Project terminal (persistent PTY) ──
-    const resolveTerminalCwd = async (body = {}) => {
-      const sessionId = String(
-        body?.sessionId || url.searchParams.get("sessionId") || "",
-      ).trim();
-      if (sessionId) {
-        try {
-          await ensurePooledSession(sessionId);
-        } catch {}
-      }
-      const cwd =
-        resolveGitCwd({
-          sessionId,
-          getSessionProjectDir: (id) =>
-            pool.getSessionState(id)?.projectDir || "",
-          fallbackDir: currentProjectDir,
-        }) ||
-        currentProjectDir ||
-        process.cwd();
-      if (shouldAdoptGitCwd(cwd, currentProjectDir)) currentProjectDir = cwd;
-      return cwd;
-    };
 
 
 

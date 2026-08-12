@@ -105,11 +105,51 @@ test('unchecked session starts a real new conversation from a populated session'
     submitMessage: async () => ({ type: 'noop' })
   };
 
-  const running = runOpenCodeTui({ runtime, sessionId: 'current-session', model: 'test-model', language: 'zh', terminal });
+  const running = runOpenCodeTui({
+    runtime,
+    sessionId: 'current-session',
+    model: 'test-model',
+    language: 'zh',
+    terminal,
+    workspaceDir: 'C:\\codemini-global\\workspace',
+    currentDirectory: 'E:\\repo'
+  });
   await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.match(stripAnsi(terminal.output), /⌂ C:\\codemini-global\\workspace/);
   assert.match(stripAnsi(terminal.output), /继续当前会话.*Existing work/s);
   terminal.send('\r');
-  assert.deepEqual(await running, { newSession: true });
+  assert.deepEqual(await running, { newSession: true, projectDir: 'C:\\codemini-global\\workspace' });
+});
+
+test('start location can launch a new conversation in the current directory', async () => {
+  const terminal = new DrainCheckingTerminal();
+  const runtime = {
+    getSessionMessages: () => [{ role: 'user', content: 'existing' }],
+    getInputHistory: async () => [],
+    getAvailableSkills: () => [],
+    getAvailableSouls: async () => [],
+    getRuntimeState: () => ({ mode: 'plan', messageCount: 1, model: 'test-model', workspaceRoot: 'D:\\old' }),
+    setRequestToolApproval() {},
+    setExecutionMode: async () => {}
+  };
+
+  const running = runOpenCodeTui({
+    runtime,
+    sessionId: 'location-test',
+    model: 'test-model',
+    terminal,
+    workspaceDir: 'C:\\codemini-global\\workspace',
+    currentDirectory: 'E:\\launch-project'
+  });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  terminal.send('\u001b[B');
+  terminal.send('\u001b[B');
+  terminal.send('\r');
+  await waitFor(() => stripAnsi(terminal.output).includes('Current directory'));
+  terminal.send('\u001b[A');
+  terminal.send('\u001b[A');
+  terminal.send('\r');
+  assert.deepEqual(await running, { newSession: true, projectDir: 'E:\\launch-project' });
 });
 
 test('start center exposes session history as a dedicated modal entry', async () => {
@@ -118,7 +158,10 @@ test('start center exposes session history as a dedicated modal entry', async ()
     getSessionMessages: () => [],
     getInputHistory: async () => [],
     getAvailableSkills: () => [],
-    getSessionHistory: async () => [{ id: 'older-session', title: 'Previous work', messageCount: 4 }],
+    getSessionHistory: async () => [
+      { id: 'older-session', title: 'Previous work', messageCount: 4, isGeneral: true },
+      { id: 'project-session', title: 'Project work', messageCount: 6, projectKey: 'E:/repo', projectDir: 'E:\\repo' }
+    ],
     getRuntimeState: () => ({ mode: 'plan', messageCount: 0, model: 'test-model', workspaceRoot: 'E:\\repo' }),
     setRequestToolApproval() {},
     setExecutionMode: async () => {},
@@ -129,8 +172,15 @@ test('start center exposes session history as a dedicated modal entry', async ()
   await new Promise((resolve) => setTimeout(resolve, 20));
   assert.match(stripAnsi(terminal.output), /Session history.*Browse and resume conversations/s);
   terminal.send('\u001b[B');
+  terminal.send('\u001b[B');
   terminal.send('\r');
-  await waitFor(() => stripAnsi(terminal.output).includes('Previous work'));
+  await waitFor(() => stripAnsi(terminal.output).includes('General Chat'));
+  assert.match(stripAnsi(terminal.output), /General Chat.*repo/s);
+  terminal.send('\u001b[B');
+  terminal.send('\r');
+  await waitFor(() => stripAnsi(terminal.output).includes('Project work'));
+  terminal.send('\u001b');
+  await waitFor(() => terminal.screenText().includes('General Chat'));
   terminal.send('\u001b');
   terminal.send('\u0003');
   await running;
@@ -288,9 +338,12 @@ test('settings modal updates reasoning, approval, sandbox and persona', async ()
   await new Promise((resolve) => setTimeout(resolve, 20));
   terminal.send('\u001b[B');
   terminal.send('\u001b[B');
+  terminal.send('\u001b[B');
   terminal.send('\r');
   await waitFor(() => stripAnsi(terminal.output).includes('Reasoning effort'));
-  assert.match(stripAnsi(terminal.output), /🧭 Work mode.*🧠 Reasoning effort.*✅ Approval mode.*🛡️ Sandbox access.*🎭 Persona/s);
+  assert.match(stripAnsi(terminal.output), /🧭 Work mode.*🧠 Reasoning effort.*✅ Approval mode.*🔒 Sandbox access.*🎭 Persona/s);
+  assert.doesNotMatch(stripAnsi(terminal.output), /📍 Location/);
+  assert.doesNotMatch(stripAnsi(terminal.output), /🛡️ Sandbox/, 'sandbox icon must not use ambiguous variation-selector width');
   terminal.send('\u001b[B');
   terminal.send('\u001b[C');
   terminal.send('\u001b[B');
@@ -333,14 +386,16 @@ test('settings modal enters daily mode and Ctrl+O expands then collapses streame
     }
   };
 
-  const running = runOpenCodeTui({ runtime, sessionId: 'tools-test', model: 'test-model', terminal });
+  const running = runOpenCodeTui({ runtime, sessionId: 'tools-test', model: 'test-model', terminal, workspaceDir: 'E:\\repo' });
   await new Promise((resolve) => setTimeout(resolve, 20));
+  terminal.send('\u001b[B');
   terminal.send('\u001b[B');
   terminal.send('\u001b[B');
   terminal.send('\r');
   await waitFor(() => stripAnsi(terminal.output).includes('Settings'));
   terminal.send('\u001b[C');
   terminal.send('\u001b');
+  terminal.send('\u001b[A');
   terminal.send('\u001b[A');
   terminal.send('\u001b[A');
   terminal.send('\r');
@@ -793,7 +848,8 @@ test('/history opens session history and returns the selected session', async ()
       id: 'older-session',
       title: 'Fix terminal scrolling',
       messageCount: 8,
-      preview: 'Continue polishing the TUI'
+      preview: 'Continue polishing the TUI',
+      isGeneral: true
     }],
     getRuntimeState: () => ({ mode: 'plan', model: 'test-model', workspaceRoot: 'E:\\repo' }),
     setRequestToolApproval() {},
@@ -807,6 +863,8 @@ test('/history opens session history and returns the selected session', async ()
   await waitFor(() => stripAnsi(terminal.output).includes('test-model'));
   for (const key of '/history') terminal.send(key);
   terminal.send('\r');
+  await waitFor(() => stripAnsi(terminal.output).includes('General Chat'));
+  terminal.send('\r');
   await waitFor(() => stripAnsi(terminal.output).includes('Fix terminal scrolling'));
   terminal.send('\r');
   assert.deepEqual(await running, { sessionId: 'older-session' });
@@ -818,7 +876,7 @@ test('Esc returns to home where session history is selectable', async () => {
     getSessionMessages: () => [],
     getInputHistory: async () => [],
     getAvailableSkills: () => [],
-    getSessionHistory: async () => [{ id: 'older-session', title: 'Previous work', messageCount: 4 }],
+    getSessionHistory: async () => [{ id: 'older-session', title: 'Previous work', messageCount: 4, isGeneral: true }],
     getRuntimeState: () => ({ mode: 'plan', model: 'test-model', workspaceRoot: 'E:\\repo' }),
     setRequestToolApproval() {},
     setExecutionMode: async () => {},
@@ -832,6 +890,9 @@ test('Esc returns to home where session history is selectable', async () => {
   terminal.send('\u001b');
   await waitFor(() => stripAnsi(terminal.output).includes('New conversation'));
   terminal.send('\u001b[B');
+  terminal.send('\u001b[B');
+  terminal.send('\r');
+  await waitFor(() => stripAnsi(terminal.output).includes('General Chat'));
   terminal.send('\r');
   await waitFor(() => stripAnsi(terminal.output).includes('Previous work'));
   terminal.send('\r');
