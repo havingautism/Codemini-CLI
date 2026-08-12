@@ -16,7 +16,6 @@ import {
   Wrench,
 } from "@phosphor-icons/react";
 import { LinearRing } from "@/components/ui/spinner";
-import { Badge } from "@/components/ui/badge.jsx";
 import { FileTypeIcon } from "@/components/FileTypeIcon.jsx";
 import { TodoList } from "@/components/TodoList.jsx";
 import { openWorkspaceFile } from "@/hooks/use-api.js";
@@ -236,26 +235,14 @@ function BackupNotice({ meta }) {
   );
 }
 
-function TodoToolCard({ card, todos }) {
-  const completedCount = todos.filter((todo) => todo.status === "completed").length;
+function TodoToolCard({ todos }) {
   return (
-    <div className="codemini-message-surface msg-process-meta overflow-hidden rounded-xl">
-      <div className="flex min-h-11 items-center gap-2.5 border-b border-(--border-default) px-3.5 text-[13px]">
-        <span className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-(--bg-secondary) text-(--text-secondary)">
-          <ListChecks size={14} />
-        </span>
-        <span className="min-w-0 flex-1 font-medium text-(--text-primary)">{card.displayName || "Todos"}</span>
-        <Badge variant="secondary" className="font-mono text-[11px] font-normal tabular-nums">
-          {completedCount}/{todos.length}
-        </Badge>
-      </div>
-      <div className="px-3 py-3">
-        {todos.length > 0 ? (
-          <TodoList todos={todos} />
-        ) : (
-          <div className="px-2 py-2 text-[13px] text-(--text-muted)">{t("todosEmpty")}</div>
-        )}
-      </div>
+    <div className="codemini-message-surface msg-process-meta overflow-hidden rounded-xl px-3 py-3">
+      {todos.length > 0 ? (
+        <TodoList todos={todos} />
+      ) : (
+        <div className="px-2 py-2 text-[13px] text-(--text-muted)">{t("todosEmpty")}</div>
+      )}
     </div>
   );
 }

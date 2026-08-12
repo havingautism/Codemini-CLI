@@ -191,32 +191,23 @@ export class TodoProgress {
 
   render(width) {
     const done = this.items.filter((item) => item.status === 'completed').length;
-    const header = surfaceLine(
-      `${bold(color.text(this.copy?.todos || 'Todos'))}  ${color.muted(`${done}/${this.items.length}`)}`,
-      width,
-      color.surfaceRaisedBg
-    );
+    const header = `${bold(color.text(this.copy?.todos || 'Todos'))}  ${color.muted(`${done}/${this.items.length}`)}`;
     if (!this.items.length) {
-      return [
-        ...header,
-        ...surfaceLine(color.dim(this.copy?.todosEmpty || 'No active todos'), width, color.surfaceBg, 2),
-        '',
-      ];
+      return [header, `└─ ${color.dim(this.copy?.todosEmpty || 'No active todos')}`, ''];
     }
-    const rows = this.items.flatMap((item) => {
+    const rows = this.items.map((item, index) => {
       const icon = item.status === 'completed'
         ? color.text('✓')
         : item.status === 'in_progress'
           ? color.text('●')
           : color.dim('○');
       const text = item.status === 'completed'
-        ? color.dim(item.content)
-        : item.status === 'in_progress'
-          ? color.accent(item.content)
-          : color.text(item.content);
-      return surfaceLine(`${icon} ${text}`, width, color.surfaceBg, 2);
+        ? color.dim(oneLine(item.content, Math.max(20, width - 8)))
+        : color.text(oneLine(item.content, Math.max(20, width - 8)));
+      const branch = index === this.items.length - 1 ? '└─' : '├─';
+      return `${color.dim(branch)} ${icon} ${text}`;
     });
-    return [...header, ...rows, ''];
+    return [header, ...rows, ''];
   }
 }
 
