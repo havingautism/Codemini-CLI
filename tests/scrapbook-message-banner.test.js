@@ -3,8 +3,16 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import {
   parseScrapbookAttachmentFromModelContent,
+  parseScrapbookEntryId,
   parseUserBannerAttachmentsFromModelContent,
 } from '../codemini-web/client/src/lib/message-context-parsers.js';
+
+test('parseScrapbookEntryId reads explicit entryId or scrapbook attachment id', () => {
+  assert.equal(parseScrapbookEntryId({ entryId: 'entry-1' }), 'entry-1');
+  assert.equal(parseScrapbookEntryId({ id: 'scrapbook:entry-2' }), 'entry-2');
+  assert.equal(parseScrapbookEntryId({ id: 'scrapbook:' }), '');
+  assert.equal(parseScrapbookEntryId({ id: 'file:abc' }), '');
+});
 
 test('parseScrapbookAttachmentFromModelContent restores scrapbook banner metadata', () => {
   const attachment = parseScrapbookAttachmentFromModelContent([
@@ -94,4 +102,13 @@ test('ui transcript enrich restores missing scrapbook banners from core model_co
   assert.equal(enriched[0].attachments[0]?.id, 'scrapbook:a1');
   assert.equal(enriched[1].attachments[0]?.id, 'scrapbook:keep');
   assert.equal(enriched[2].attachments[0]?.id, 'scrapbook:a3');
+});
+
+test('chat surfaces open scrapbook entry navigation from banners and picker', async () => {
+  const messageBubble = await fs.readFile('codemini-web/client/src/components/MessageBubble.jsx', 'utf8');
+  const inputBar = await fs.readFile('codemini-web/client/src/components/InputBar.jsx', 'utf8');
+  assert.match(messageBubble, /openScrapbookEntry\(entryId\)/);
+  assert.match(messageBubble, /parseScrapbookEntryId/);
+  assert.match(inputBar, /openScrapbookEntry\(entry\.id\)/);
+  assert.match(inputBar, /openScrapbookEntry\(scrapbookContext\.entryId\)/);
 });

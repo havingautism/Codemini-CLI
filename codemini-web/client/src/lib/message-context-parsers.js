@@ -1,3 +1,11 @@
+export function parseScrapbookEntryId(item = {}) {
+  const explicit = String(item?.entryId || "").trim();
+  if (explicit) return explicit;
+  const id = String(item?.id || "").trim();
+  if (!id.startsWith("scrapbook:")) return "";
+  return id.slice("scrapbook:".length).trim();
+}
+
 export function parseScrapbookAttachmentFromModelContent(modelContent = "") {
   const text = String(modelContent || "");
   if (!text.includes("<scrapbook_context>")) return null;

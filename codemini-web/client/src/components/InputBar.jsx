@@ -8,6 +8,7 @@ import React, {
 import { Separator } from "@/components/ui/separator";
 import {
   Archive,
+  ArrowSquareOut,
   ArrowUp,
   Camera,
   CaretDown,
@@ -1138,6 +1139,13 @@ export function InputBar({
     setScrapbookContext(null);
   }, []);
 
+  const openScrapbookEntry = useCallback((entryId) => {
+    const id = String(entryId || "").trim();
+    if (!id) return;
+    actions.openScrapbookEntry(id);
+    setScrapbookPickerOpen(false);
+  }, [actions]);
+
   return (
     <div className="w-full relative">
       <ActionSkillPalette
@@ -1234,14 +1242,20 @@ export function InputBar({
               );
             })}
             {scrapbookContext?.attachment ? (
-              <span
-                className="codemini-input-chip inline-flex max-w-full items-center gap-1.5 px-2 py-1 text-[12px] text-(--text-secondary)"
-                title={scrapbookContext.attachment.name}
-              >
-                <Notebook size={14} className="shrink-0" />
-                <span className="max-w-[180px] truncate">
-                  {scrapbookContext.attachment.name}
-                </span>
+              <span className="codemini-input-chip inline-flex max-w-full items-center gap-1.5 px-2 py-1 text-[12px] text-(--text-secondary)">
+                <button
+                  type="button"
+                  className="inline-flex min-w-0 items-center gap-1.5 text-left transition-colors hover:text-(--text-primary)"
+                  title={t("scrapbookOpenEntry")}
+                  aria-label={`${t("scrapbookOpenEntry")}: ${scrapbookContext.attachment.name}`}
+                  onClick={() => openScrapbookEntry(scrapbookContext.entryId)}
+                >
+                  <Notebook size={14} className="shrink-0" />
+                  <span className="max-w-[180px] truncate">
+                    {scrapbookContext.attachment.name}
+                  </span>
+                  <ArrowSquareOut size={11} className="shrink-0 opacity-70" />
+                </button>
                 <button
                   type="button"
                   className="ml-0.5 inline-flex size-4 items-center justify-center rounded hover:bg-(--bg-hover) hover:text-(--text-primary)"
@@ -1397,20 +1411,28 @@ export function InputBar({
                       {visibleScrapbookEntries.map((entry) => {
                         const askBlocked = isScrapbookAskBlocked(entry);
                         return (
-                        <button
+                        <div
                           key={entry.id}
-                          type="button"
-                          disabled={askBlocked}
                           className={cn(
-                            "group relative flex w-full min-w-0 shrink-0 flex-col items-stretch gap-1.5 overflow-hidden rounded-xl border px-3 py-3 text-left transition-[background-color,box-shadow,transform] duration-150",
+                            "group relative flex w-full min-w-0 shrink-0 items-stretch gap-1 overflow-hidden rounded-xl border px-1 py-1 transition-[background-color,box-shadow,transform] duration-150",
                             askBlocked
-                              ? "cursor-not-allowed opacity-60"
+                              ? "opacity-60"
                               : scrapbookContext?.entryId === entry.id
                               ? "border-(--border-strong) bg-(--bg-subtle)"
-                              : "border-transparent hover:-translate-y-px hover:bg-(--bg-subtle)/80 hover:shadow-[0_10px_24px_color-mix(in_srgb,var(--text-primary)_10%,transparent)]",
+                              : "border-transparent hover:bg-(--bg-subtle)/80",
                           )}
-                          onClick={() => selectScrapbookEntry(entry.id)}
                         >
+                          <button
+                            type="button"
+                            disabled={askBlocked}
+                            className={cn(
+                              "flex min-w-0 flex-1 flex-col items-stretch gap-1.5 rounded-lg px-2 py-2 text-left",
+                              askBlocked
+                                ? "cursor-not-allowed"
+                                : "hover:bg-(--bg-hover)/60",
+                            )}
+                            onClick={() => selectScrapbookEntry(entry.id)}
+                          >
                           <div className="flex w-full min-w-0 items-start justify-between gap-2">
                             <span className="min-w-0 flex-1 truncate text-[12px] font-medium leading-5 text-(--text-primary)">
                               {entry.title ||
@@ -1431,7 +1453,17 @@ export function InputBar({
                           <div className="min-w-0 w-full truncate text-[12px] leading-5 text-(--text-muted)">
                             {getScrapbookPreviewText(entry)}
                           </div>
-                        </button>
+                          </button>
+                          <button
+                            type="button"
+                            className="inline-flex size-8 shrink-0 items-center justify-center self-center rounded-lg text-(--text-muted) transition-colors hover:bg-(--bg-hover) hover:text-(--text-primary)"
+                            title={t("scrapbookOpenEntry")}
+                            aria-label={`${t("scrapbookOpenEntry")}: ${entry.title || entry.sourceUrl || t("scrapbookUntitled")}`}
+                            onClick={() => openScrapbookEntry(entry.id)}
+                          >
+                            <ArrowSquareOut size={15} />
+                          </button>
+                        </div>
                         );
                       })}
                       {hasMoreScrapbookEntries ? (

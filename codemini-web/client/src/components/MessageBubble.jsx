@@ -62,6 +62,7 @@ import {
   useCurrentSessionId,
   useRuntimeMode,
 } from "@/context/app-context.jsx";
+import { parseScrapbookEntryId } from "@/lib/message-context-parsers.js";
 import { getMessageModelIdentity } from "@/lib/message-model-identity.js";
 import {
   collectFileChangePatch,
@@ -1622,6 +1623,38 @@ function UserSkillChips({ badges = [], className }) {
   );
 }
 
+function ScrapbookUserAttachment({ item }) {
+  const actions = useAppActions();
+  const entryId = parseScrapbookEntryId(item);
+  const label = item.name || t("scrapbookUntitled");
+  const canOpen = Boolean(entryId);
+
+  if (!canOpen) {
+    return (
+      <span
+        className="codemini-status-chip inline-flex max-w-full items-center gap-1.5 border-(--border-default) bg-(--bg-secondary) px-2 py-1 text-[12px] text-(--text-secondary)"
+      >
+        <Notebook size={14} className="shrink-0" />
+        <span className="max-w-55 truncate">{label}</span>
+      </span>
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={() => actions.openScrapbookEntry(entryId)}
+      title={t("scrapbookOpenEntry")}
+      aria-label={`${t("scrapbookOpenEntry")}: ${label}`}
+      className="codemini-status-chip inline-flex max-w-full items-center gap-1.5 border-(--border-default) bg-(--bg-secondary) px-2 py-1 text-[12px] text-(--text-secondary) transition-colors hover:border-(--border-strong) hover:bg-(--bg-hover) hover:text-(--text-primary)"
+    >
+      <Notebook size={14} className="shrink-0" />
+      <span className="max-w-55 truncate">{label}</span>
+      <ArrowSquareOut size={12} className="shrink-0 opacity-70" />
+    </button>
+  );
+}
+
 function UserAttachments({ attachments = [], className }) {
   const items = Array.isArray(attachments) ? attachments : [];
   if (!items.length) return null;
@@ -1637,13 +1670,10 @@ function UserAttachments({ attachments = [], className }) {
           String(item?.id || "").startsWith("scrapbook:")
         ) {
           return (
-            <span
+            <ScrapbookUserAttachment
               key={item.id || item.name}
-              className="codemini-status-chip inline-flex max-w-full items-center gap-1.5 border-(--border-default) bg-(--bg-secondary) px-2 py-1 text-[12px] text-(--text-secondary)"
-            >
-              <Notebook size={14} className="shrink-0" />
-              <span className="max-w-55 truncate">{item.name}</span>
-            </span>
+              item={item}
+            />
           );
         }
         return (

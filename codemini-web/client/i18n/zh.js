@@ -1360,6 +1360,7 @@ export const zh = {
   scrapbookEmpty: "还没有笔记",
   scrapbookPickerHelp: "选择一条笔记，将其总结附加为对话上下文。",
   scrapbookPickerActive: "已选中",
+  scrapbookOpenEntry: "打开笔记",
   scrapbookPickerSummary: "总结",
   scrapbookPickerRaw: "原文",
   scrapbookShowMore: "显示更多",

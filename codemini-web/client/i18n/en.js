@@ -1409,6 +1409,7 @@ export const en = {
   scrapbookEmpty: "No notes yet",
   scrapbookPickerHelp: "Pick a note and attach its summary as chat context.",
   scrapbookPickerActive: "Active",
+  scrapbookOpenEntry: "Open note",
   scrapbookPickerSummary: "Summary",
   scrapbookPickerRaw: "Raw",
   scrapbookShowMore: "Show more",
