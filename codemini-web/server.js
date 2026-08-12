@@ -4980,13 +4980,15 @@ async function main() {
           payload: buildScrapbookAskPayload(entryId),
         });
       } catch (error) {
+        const status = error?.code === "SCRAPBOOK_SUMMARY_IN_PROGRESS" ? 409 : 400;
         jsonResponse(
           res,
           {
             error: true,
+            code: error?.code || "SCRAPBOOK_ASK_FAILED",
             message: error?.message || "Failed to prepare scrapbook payload",
           },
-          400,
+          status,
         );
       }
       return;

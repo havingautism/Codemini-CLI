@@ -1495,6 +1495,7 @@ export const en = {
   scrapbookAsk: "Ask",
   scrapbookAsking: "Asking…",
   scrapbookAskFailed: "Failed to start note chat",
+  scrapbookAskSummaryPending: "This note is still being summarized. Try again in a moment.",
   scrapbookSummarize: "Summarize",
   scrapbookResummarize: "Re-summarize",
   scrapbookDelete: "Delete",

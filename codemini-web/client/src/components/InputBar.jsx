@@ -127,6 +127,18 @@ function getScrapbookPreviewText(entry) {
     .trim();
 }
 
+function getScrapbookAskSummary(entry) {
+  const fromJob = String(entry?.latestJob?.resultSummary || "").trim();
+  const fromEntry = String(entry?.summary || "").trim();
+  return fromJob || fromEntry;
+}
+
+function isScrapbookAskBlocked(entry) {
+  if (getScrapbookAskSummary(entry)) return false;
+  const status = String(entry?.latestJob?.status || "");
+  return status === "pending" || status === "running";
+}
+
 async function compressImageFile(file) {
   if (!isImageFile(file)) return file;
   const bitmap = await createImageBitmap(file);
@@ -1094,8 +1106,18 @@ export function InputBar({
   }, []);
 
   const selectScrapbookEntry = useCallback(async (entryId) => {
+    const entry = scrapbookEntries.find((item) => item.id === entryId);
+    if (entry && isScrapbookAskBlocked(entry)) {
+      setAttachmentError(t("scrapbookAskSummaryPending"));
+      return;
+    }
     const result = await api.buildScrapbookAskPayload(entryId);
-    if (result?.error || !result?.payload) return;
+    if (result?.error || !result?.payload) {
+      setAttachmentError(
+        result?.message || t("scrapbookAskSummaryPending"),
+      );
+      return;
+    }
     const attachment = Array.isArray(result.payload.attachments)
       ? result.payload.attachments[0]
       : null;
@@ -1108,8 +1130,9 @@ export function InputBar({
           }
         : null,
     );
+    setAttachmentError("");
     setScrapbookPickerOpen(false);
-  }, []);
+  }, [scrapbookEntries]);
 
   const removeScrapbookContext = useCallback(() => {
     setScrapbookContext(null);
@@ -1371,13 +1394,18 @@ export function InputBar({
                     </div>
                   ) : (
                     <>
-                      {visibleScrapbookEntries.map((entry) => (
+                      {visibleScrapbookEntries.map((entry) => {
+                        const askBlocked = isScrapbookAskBlocked(entry);
+                        return (
                         <button
                           key={entry.id}
                           type="button"
+                          disabled={askBlocked}
                           className={cn(
                             "group relative flex w-full min-w-0 shrink-0 flex-col items-stretch gap-1.5 overflow-hidden rounded-xl border px-3 py-3 text-left transition-[background-color,box-shadow,transform] duration-150",
-                            scrapbookContext?.entryId === entry.id
+                            askBlocked
+                              ? "cursor-not-allowed opacity-60"
+                              : scrapbookContext?.entryId === entry.id
                               ? "border-(--border-strong) bg-(--bg-subtle)"
                               : "border-transparent hover:-translate-y-px hover:bg-(--bg-subtle)/80 hover:shadow-[0_10px_24px_color-mix(in_srgb,var(--text-primary)_10%,transparent)]",
                           )}
@@ -1393,13 +1421,19 @@ export function InputBar({
                               <span className="shrink-0 rounded-full bg-(--bg-hover) px-2 py-0.5 text-[10px] font-medium leading-5 text-(--text-secondary)">
                                 {t("scrapbookPickerActive")}
                               </span>
+                            ) : askBlocked ? (
+                              <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-(--bg-hover) px-2 py-0.5 text-[10px] font-medium leading-5 text-(--text-muted)">
+                                <CircleNotch size={10} className="animate-spin" />
+                                {t("scrapbookSummarizing")}
+                              </span>
                             ) : null}
                           </div>
                           <div className="min-w-0 w-full truncate text-[12px] leading-5 text-(--text-muted)">
                             {getScrapbookPreviewText(entry)}
                           </div>
                         </button>
-                      ))}
+                        );
+                      })}
                       {hasMoreScrapbookEntries ? (
                         <button
                           type="button"

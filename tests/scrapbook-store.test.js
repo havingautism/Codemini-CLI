@@ -8,16 +8,19 @@ import { DatabaseSync } from 'node:sqlite';
 import { closeSqliteDatabasesForTests } from '../src/core/sqlite-database.js';
 import {
   addScrapbookSource,
+  buildScrapbookAskPayload,
   buildScrapbookSummarySystemPrompt,
   createChatAnswerScrapbookEntry,
   createChatAnswerScrapbookEntryWithSummary,
   createManualScrapbookEntry,
   createUrlScrapbookEntry,
   getScrapbookEntryForApi,
+  isScrapbookAskBlocked,
   listScrapbookEntriesForApi,
   parseGeneratedScrapbookResult,
   parseJinaReaderResponse,
   removeScrapbookSource,
+  resolveScrapbookAskSummary,
   setScrapbookSourceSelection,
   startScrapbookSummaryJob,
 } from '../codemini-web/lib/scrapbook-service.js';
@@ -432,5 +435,46 @@ test('url scrapbook summary replaces the placeholder url title with fetched titl
     const refreshed = getScrapbookEntry(entry.id);
     assert.equal(refreshed?.title, '📝 Fetched article title');
     assert.equal(refreshed?.contentText, 'Fetched body content');
+  });
+});
+
+test('scrapbook ask payload blocks while summary job is active without a ready summary', async () => {
+  await withGlobalDir(async () => {
+    const entry = createManualScrapbookEntry({
+      title: 'Pending summary note',
+      contentText: 'Body long enough to summarize',
+    });
+    createScrapbookSummaryJob({ entryId: entry.id, status: 'running' });
+    assert.equal(isScrapbookAskBlocked(getScrapbookEntry(entry.id)), true);
+    assert.throws(
+      () => buildScrapbookAskPayload(entry.id),
+      (error) => error.code === 'SCRAPBOOK_SUMMARY_IN_PROGRESS',
+    );
+  });
+});
+
+test('scrapbook ask payload reuses stored summary while a resummary job is active', async () => {
+  await withGlobalDir(async () => {
+    const entry = createManualScrapbookEntry({
+      title: 'Resummary note',
+      contentText: 'Body',
+    });
+    updateScrapbookEntry(entry.id, { summary: 'Existing summary' });
+    createScrapbookSummaryJob({ entryId: entry.id, status: 'running' });
+    assert.equal(isScrapbookAskBlocked(getScrapbookEntry(entry.id)), false);
+    assert.equal(resolveScrapbookAskSummary(getScrapbookEntry(entry.id)), 'Existing summary');
+    const payload = buildScrapbookAskPayload(entry.id);
+    assert.match(payload.modelText, /Existing summary/);
+  });
+});
+
+test('scrapbook ask payload still falls back for legacy entries without summary jobs', async () => {
+  await withGlobalDir(async () => {
+    const entry = createManualScrapbookEntry({
+      title: 'Legacy note',
+      contentText: 'Legacy body content',
+    });
+    const payload = buildScrapbookAskPayload(entry.id);
+    assert.match(payload.modelText, /Legacy body content/);
   });
 });

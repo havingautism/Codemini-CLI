@@ -712,6 +712,25 @@ function summarizeEntry(entry) {
   return base.length > 280 ? `${base.slice(0, 277).trimEnd()}...` : base;
 }
 
+export function isScrapbookSummaryJobActive(job) {
+  return Boolean(job && ['pending', 'running'].includes(job.status));
+}
+
+export function resolveScrapbookAskSummary(entry, latestJob = null) {
+  if (!entry) return '';
+  const job = latestJob ?? getLatestScrapbookSummaryJob(entry.id);
+  const fromJob = String(job?.resultSummary || '').trim();
+  if (fromJob) return fromJob;
+  return String(entry.summary || '').trim();
+}
+
+export function isScrapbookAskBlocked(entry, latestJob = null) {
+  if (!entry) return true;
+  if (resolveScrapbookAskSummary(entry, latestJob)) return false;
+  const job = latestJob ?? getLatestScrapbookSummaryJob(entry.id);
+  return isScrapbookSummaryJobActive(job);
+}
+
 export function startScrapbookSummaryJob(entryId, options = {}) {
   const entry = getScrapbookEntry(entryId);
   if (!entry) throw new Error('Note not found');
@@ -728,7 +747,16 @@ export function startScrapbookSummaryJob(entryId, options = {}) {
 export function buildScrapbookAskPayload(entryId) {
   const entry = getScrapbookEntry(entryId);
   if (!entry) throw new Error('Note not found');
-  const summary = getLatestScrapbookSummaryJob(entry.id)?.resultSummary || entry.summary || summarizeEntry(entry);
+  const latestJob = getLatestScrapbookSummaryJob(entry.id);
+  let summary = resolveScrapbookAskSummary(entry, latestJob);
+  if (!summary) {
+    if (isScrapbookSummaryJobActive(latestJob)) {
+      const error = new Error('Note summary is still being generated');
+      error.code = 'SCRAPBOOK_SUMMARY_IN_PROGRESS';
+      throw error;
+    }
+    summary = summarizeEntry(entry);
+  }
   return {
     prompt: '请基于这条笔记回答我的后续问题。',
     summary,

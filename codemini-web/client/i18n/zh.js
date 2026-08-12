@@ -1446,6 +1446,7 @@ export const zh = {
   scrapbookAsk: "追问",
   scrapbookAsking: "发起中…",
   scrapbookAskFailed: "发起笔记追问失败",
+  scrapbookAskSummaryPending: "笔记还在总结中，请稍后再附加到对话。",
   scrapbookSummarize: "生成总结",
   scrapbookResummarize: "重新总结",
   scrapbookDelete: "删除",
