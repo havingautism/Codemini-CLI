@@ -94,6 +94,7 @@ import {
 import {
   buildCodingRouteDecisionBlock,
   evaluateCodingRouteGraph,
+  isCodingRouteToolAllowed,
 } from './coding-route-graph.js';
 import {
   buildCleanContextHandoff
@@ -693,7 +694,7 @@ export function buildExecutionModePromptBlock(executionMode, platform = process.
       '7. Respect task intent: explanation or review requests authorize inspection and reporting, diagnosis requests authorize finding the cause, and explicit build/fix/change requests authorize implementation. Do not turn read-only work into edits without user intent.',
       '',
       'Subagent tool (run_subagent):',
-      '- Default: do the work yourself. Call run_subagent only for a bounded, independently verifiable chunk where clean context materially helps, for parallel read-only investigation across unrelated areas, or for an independent review of high-risk work.',
+      '- Prefer delegation for non-trivial coding work when a bounded, independently verifiable chunk can benefit from clean context, parallel read-only investigation, focused implementation, test triage, or independent review.',
       '- Do not delegate the whole ambiguous request, use a subagent merely to make a plan, or use one to avoid inspecting the relevant code yourself. The parent agent owns decomposition, integration, and the final answer.',
       '- Always pass a one- or two-sentence summary for the collapsed UI card and a separate complete prompt (task + success criteria + out-of-scope) for the expanded details and worker. Put durable handoff notes in context.',
       '- Invent a short human name for each worker (e.g. David, Mira, Kai) via `name` — do not use preset role enums. Capability comes from `tools`, not the name.',
@@ -702,6 +703,13 @@ export function buildExecutionModePromptBlock(executionMode, platform = process.
       '- For parallel read-only work, emit multiple run_subagent calls in the same response and give each an explicit read-only tools list. Workers with default or mutating tools run sequentially because they share one worktree.',
       '- For dependent work in the same response, give upstream calls a task_id and later calls depends_on. Dependencies must reference earlier task_id values. The runtime waits and injects successful upstream handoffs automatically; do not duplicate them in context.',
       '- Subagents can never call run_subagent/create_plan/create_spec.',
+      '',
+      'User input workflow:',
+      '- Inspect first when repository evidence can resolve the uncertainty without asking the user.',
+      '- When request_user_input is available, use it when the user\'s preference, desired scope, target outcome, constraints, or choice among reasonable approaches would materially change the work.',
+      '- Prefer a short structured form over a plain-text clarification when 1-3 focused choices can capture the needed direction. Include a recommended or sensible default option when appropriate.',
+      '- Use request_user_input when an answer is required to continue, and also when structured choices would substantially improve the usefulness or fit of the result.',
+      '- Do not interrupt for low-impact details when a safe, reversible assumption is available. After the user responds or skips, incorporate the result and continue the original task.',
       '',
       'Design documents:',
       '- Create a design document only when implementation is blocked by a material product/architecture decision, multiple viable approaches have meaningfully different tradeoffs, or the change affects public contracts, data migration, security, cost, or broad scope.',
@@ -723,7 +731,6 @@ export function buildExecutionModePromptBlock(executionMode, platform = process.
       unixCrud
         ? `- Do not claim edit/write/delete/${commandToolName} are unavailable in coding mode; they are available for direct tasks.`
         : `- Do not claim edit/write/begin_write/write_chunk/commit_write/apply_patch/delete/${commandToolName} are unavailable in coding mode; they are available for direct tasks.`,
-      '- Do not call run_subagent for a simple localized edit you can finish yourself.',
       '- Preserve unrelated user changes in a dirty worktree. Never discard, overwrite, or reformat work outside the requested scope.',
       '- If the request is too unknown to act on safely, ask one focused question instead of guessing.'
     ].join('\n');
@@ -8519,15 +8526,9 @@ export async function createChatRuntime({
       ? appendPromptParts(routedSystemPrompt, hookContexts)
       : routedSystemPrompt;
     const codingRouteAllowedTools = isCodingMode
-      ? EXECUTION_MODE_TOOL_POLICY.plan.filter((toolName) => {
-          if (toolName === 'run_subagent') {
-            return codingRoute?.decisions?.subagents?.enabled === true;
-          }
-          if (toolName === 'save_memory') {
-            return codingRoute?.decisions?.memory?.allow_save_memory === true;
-          }
-          return true;
-        })
+      ? EXECUTION_MODE_TOOL_POLICY.plan.filter((toolName) => (
+          isCodingRouteToolAllowed(codingRoute, toolName)
+        ))
       : undefined;
     const result = await askModel({
       text: expandedText,

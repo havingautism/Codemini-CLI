@@ -214,13 +214,13 @@ Deep Research coordinates focused scouts, collects evidence, and produces review
 | Windows global state | `%APPDATA%\codemini-global\` |
 | macOS global state | `~/Library/Preferences/codemini-global/` |
 | Linux with XDG | `$XDG_CONFIG_HOME/codemini-global/` |
-| Linux fallback | `<current-directory>/.codemini-global/` |
+| Linux fallback | `~/.config/codemini-global/` |
 
 Set `CODEMINI_GLOBAL_DIR` to override the global base directory.
 
 ### Optional Accelerators
 
-`codemini doctor` detects optional local accelerators such as `fff-mcp` and falls back to built-in search when they are unavailable.
+`codemini doctor` detects optional local accelerators such as `fff-mcp` and falls back to built-in search when they are unavailable. `search.fff_command` may name a PATH program or an absolute executable outside the workspace; relative and workspace paths are rejected.
 
 For JavaScript-heavy web pages, install Playwright and Chromium:
 
@@ -442,13 +442,13 @@ Deep Research 会协调多个聚焦 scout、收集证据并生成可审阅 artif
 | Windows 全局状态 | `%APPDATA%\codemini-global\` |
 | macOS 全局状态 | `~/Library/Preferences/codemini-global/` |
 | 启用 XDG 的 Linux | `$XDG_CONFIG_HOME/codemini-global/` |
-| Linux 回退路径 | `<current-directory>/.codemini-global/` |
+| Linux 回退路径 | `~/.config/codemini-global/` |
 
 通过 `CODEMINI_GLOBAL_DIR` 可以覆盖全局基础目录。
 
 ### 可选增强
 
-`codemini doctor` 会检测 `fff-mcp` 等本地可选加速器；不可用时自动回退到内置搜索。
+`codemini doctor` 会检测 `fff-mcp` 等本地可选加速器；不可用时自动回退到内置搜索。`search.fff_command` 只能是 PATH 中的程序名，或工作区之外的绝对路径；相对路径和工作区内的文件会被拒绝。
 
 需要渲染 JavaScript 重度网页时，可以安装 Playwright 与 Chromium：
 

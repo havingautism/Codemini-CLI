@@ -452,7 +452,7 @@ function Shell() {
                 <span className="font-medium text-[14px] text-(--text-primary) truncate">
                   {state.isGeneral
                     ? t("generalChat")
-                    : state.projectCwd || "qurio-coder"}
+                    : state.projectCwd || t("currentProject")}
                 </span>
                 {state.gitInfo?.isGit && (
                   <span className="inline-flex items-center gap-1 text-[12px] text-(--text-muted) shrink-0">

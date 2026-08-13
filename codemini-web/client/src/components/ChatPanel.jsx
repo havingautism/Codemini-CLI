@@ -352,7 +352,7 @@ function ChatPanelContent({
             <HomeEmptyVisual mode="project">
               <HomeEmptyCaption
                 promptKey="buildInProjectPrompts"
-                vars={{ project: projectCwd || "qurio-coder" }}
+                vars={{ project: projectCwd || t("currentProject") }}
                 className="codemini-home-empty-title mx-auto max-w-[320px] sm:max-w-none text-[20px] sm:text-[26px] font-medium leading-tight tracking-normal text-(--text-primary) break-words"
               />
               {gitInfo?.isGit && (

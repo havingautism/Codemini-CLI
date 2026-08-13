@@ -1,31 +1,39 @@
 import { parseModelJsonObject } from './model-json.js';
 
-const GRAPH_VERSION = 'coding-turn-route-v5';
-const MAX_SELECTED_SKILLS = 3;
-const CONTEXT_ADVISORY_TOKENS = 12000;
-const CONTEXT_ADVISORY_PCT = 25;
-const CONTEXT_HARD_TOKENS = 24000;
-const CONTEXT_HARD_PCT = 40;
-const DELEGATION_INTENT_RE =
-  /\b(?:test|tests|testing|verify|verification|review|inspect|explore|search|trace|dependency|dependencies|architecture|codebase|repository|repo)\b|测试|验证|复核|审查|查阅|查看项目|项目结构|代码库|仓库|架构|依赖|检索|搜索|追踪|排查|定位/u;
+const GRAPH_VERSION = 'coding-turn-route-v8';
+const MAX_SELECTED_SKILLS = 2;
+const CONTEXT_ADVISORY_PCT = 60;
+const CONTEXT_HARD_PCT = 80;
+const EXPLICIT_DELEGATION_INTENT_RE =
+  /\b(?:use|run|spawn)\s+(?:an?\s+)?sub-?agents?\b|\bdelegate\b.{0,24}\bsub-?agents?\b|(?:使用|启用|调用|委派|让).{0,12}(?:子代理|子智能体)/iu;
+const DELEGATION_OPTOUT_RE =
+  /\b(?:do not|don't|never|without)\b.{0,24}\bsub-?agents?\b|(?:不要|别|无需).{0,12}(?:子代理|子智能体)/iu;
 
 function contextPressure(contextUsage = {}) {
   const estimatedTokens = Number(contextUsage?.estimated_tokens || 0);
-  const usagePct = Number(contextUsage?.usage_pct || 0);
+  const maxTokens = Number(contextUsage?.max_tokens || 0);
+  const reportedUsagePct = Number(contextUsage?.usage_pct || 0);
+  const usagePct = reportedUsagePct > 0
+    ? reportedUsagePct
+    : maxTokens > 0
+      ? (estimatedTokens / maxTokens) * 100
+      : 0;
   return {
-    advisory:
-      estimatedTokens >= CONTEXT_ADVISORY_TOKENS
-      || usagePct >= CONTEXT_ADVISORY_PCT,
-    hard:
-      estimatedTokens >= CONTEXT_HARD_TOKENS
-      || usagePct >= CONTEXT_HARD_PCT,
+    advisory: usagePct >= CONTEXT_ADVISORY_PCT,
+    hard: usagePct >= CONTEXT_HARD_PCT,
   };
 }
 
-function hasDefaultDelegationIntent(text = '') {
-  return DELEGATION_INTENT_RE.test(String(text || ''));
+function hasExplicitDelegationIntent(text = '') {
+  const input = String(text || '');
+  return !DELEGATION_OPTOUT_RE.test(input) && EXPLICIT_DELEGATION_INTENT_RE.test(input);
+}
+
+function hasDelegationOptOut(text = '') {
+  return DELEGATION_OPTOUT_RE.test(String(text || ''));
 }
 const VALID_MEMORY_LEAVES = new Set(['save_memory', 'dream_inbox', 'ignore']);
+const MEMORY_LEAF_RANK = Object.freeze({ ignore: 0, dream_inbox: 1, save_memory: 2 });
 const GRAPH_NODES = Object.freeze({
   mode_gate: Object.freeze({
     coding: 'memory_gate',
@@ -47,7 +55,7 @@ const GRAPH_NODES = Object.freeze({
   subagent_gate: Object.freeze({
     next: 'todo_gate',
     decision: 'subagents',
-    enforcement: 'hard_gate',
+    enforcement: 'advisory',
     evaluate: normalizeSubagentDecision,
   }),
   todo_gate: Object.freeze({
@@ -104,17 +112,15 @@ function judgeRequest({
     systemPrompt: [
       'You are the semantic judge inside a coding-turn routing graph.',
       'Decide only the four named graph nodes. Return strict JSON and no prose.',
-      'Optimization objective: maximize useful, user-visible leverage from installed skills and subagents while avoiding obviously wasteful delegation.',
+      'Optimization objective: maximize useful coding leverage while keeping delegation bounded and purposeful.',
       '',
       'Node rules:',
-      '- memory_gate: save_memory only for durable preferences, explicit remember requests, stable conventions, or reusable verified lessons. Use dream_inbox for a potentially reusable task signal that still needs later evidence. Otherwise ignore.',
-      '- skill_selection_gate: positively prefer using installed expertise. Select 1 relevant listed skill for any non-trivial coding turn when plausible; select 2-3 when complementary workflows improve implementation, diagnosis, testing, review, or design. Return exact names without a leading slash. Select none only when the turn is purely mechanical or no candidate genuinely fits.',
-      '- subagent_gate: positively prefer delegation when a clean-context worker can investigate, test, review, compare options, or implement an isolated chunk. Enable by default for medium/complex tasks and multi-file work. Also enable for a simple task when one independent verification or research pass would add useful evidence. Disable only when the task is atomic and delegation overhead clearly exceeds its value.',
+      '- memory_gate: you may downgrade the heuristic memory route, but cannot upgrade it. Keep save_memory only for durable preferences, explicit remember requests, stable conventions, or reusable verified lessons. Use dream_inbox for a potentially reusable task signal that still needs later evidence. Otherwise ignore.',
+      '- skill_selection_gate: Select none by default. Select 1 exact listed skill only for a high-confidence workflow match; select 2 only when both are clearly complementary and necessary. Return exact names without a leading slash.',
+      '- subagent_gate: decide autonomously whether subagents improve this turn. Prefer delegation for non-trivial coding work when a worker can independently inspect the repository, implement a bounded chunk, run or triage tests, compare options, or review the result. A simple task may still use one worker when it adds useful evidence. Disable only when the work is truly atomic or cannot be split coherently. Decide from the task structure, not from generic keywords.',
       '- todo_gate: require update_todos for work with 3 or more meaningful steps, multiple files or phases, explicit implementation plus verification, debugging with multiple hypotheses, or any non-trivial task likely to span several tool calls. Apply the same rule independently inside each enabled subagent. Do not require it for atomic edits or purely informational turns.',
-      '- Project exploration rule: repository lookup, architecture discovery, broad code search, dependency tracing, and evidence gathering should normally use a subagent so raw inspection output stays outside the main context.',
-      '- Testing rule: delegate test execution and failure triage by default. The main agent may keep only a tiny focused smoke check; broader or noisy verification belongs in a subagent.',
-      '- Context-pressure rule: estimated_tokens >= 12000 or usage_pct >= 25 is an advisory signal to prefer delegation. estimated_tokens >= 24000 or usage_pct >= 40 is a hard isolation tier that requires at least 2 subagents.',
-      '- When subagents are enabled, recommend 1 worker for one useful independent pass, 2 for complementary implementation/review or parallel investigation, and 3 only for clearly independent complex work. Provide short actionable focus strings.',
+      '- Context-pressure rule: usage_pct >= 60 is advisory. usage_pct >= 80 is a hard isolation tier that requires 2 subagents.',
+      '- When subagents are eligible, recommend 1 worker for one independent pass and 2 only for clearly complementary work. Provide short actionable focus strings.',
       '- Never route secrets or credentials to save_memory.',
       '',
       'Return:',
@@ -139,7 +145,7 @@ function fallbackDecision({
 }) {
   const complexity = String(autoRoute?.complexity || 'simple');
   const pressure = contextPressure(contextUsage);
-  const delegationIntent = hasDefaultDelegationIntent(text);
+  const delegationIntent = hasExplicitDelegationIntent(text);
   const enableSubagents =
     pressure.hard
     || delegationIntent
@@ -167,7 +173,7 @@ function fallbackDecision({
       reason: pressure.hard
         ? 'hard context-isolation fallback'
         : delegationIntent
-          ? 'project exploration or testing fallback'
+          ? 'explicit delegation request'
           : 'task-complexity fallback',
     },
     todos: {
@@ -180,8 +186,11 @@ function fallbackDecision({
 }
 
 function normalizeMemoryDecision(raw, fallback, { sensitive = false } = {}) {
-  const leaf = VALID_MEMORY_LEAVES.has(raw?.memory?.leaf)
+  const requestedLeaf = VALID_MEMORY_LEAVES.has(raw?.memory?.leaf)
     ? raw.memory.leaf
+    : fallback.memory.leaf;
+  const leaf = MEMORY_LEAF_RANK[requestedLeaf] <= MEMORY_LEAF_RANK[fallback.memory.leaf]
+    ? requestedLeaf
     : fallback.memory.leaf;
   return {
     leaf: sensitive ? 'ignore' : leaf,
@@ -212,17 +221,16 @@ function normalizeSkillDecision(raw, fallback, {
 
 function normalizeSubagentDecision(raw, fallback, { contextUsage = {}, text = '' } = {}) {
   const pressure = contextPressure(contextUsage);
-  const delegationIntent = hasDefaultDelegationIntent(text);
+  const delegationIntent = hasExplicitDelegationIntent(text);
+  const optedOut = hasDelegationOptOut(text);
   const subagentsEnabled =
-    raw?.subagents?.enabled === true || pressure.hard || delegationIntent;
+    !optedOut && (pressure.hard || delegationIntent || raw?.subagents?.enabled === true);
+  const fallbackCount = Math.min(2, Math.max(1, fallback.subagents.recommended_count || 1));
+  const requestedCount = Number.parseInt(raw?.subagents?.recommended_count, 10) || fallbackCount;
   const recommendedCount = subagentsEnabled
-    ? Math.min(
-        3,
-        Math.max(
-          pressure.hard ? 2 : 1,
-          Number.parseInt(raw?.subagents?.recommended_count, 10) || 1,
-        ),
-      )
+    ? pressure.hard
+      ? 2
+      : Math.min(2, Math.max(1, requestedCount))
     : 0;
   const subagentFocus = subagentsEnabled
     ? (Array.isArray(raw?.subagents?.focus) ? raw.subagents.focus : [])
@@ -232,13 +240,14 @@ function normalizeSubagentDecision(raw, fallback, { contextUsage = {}, text = ''
     : [];
   return {
     enabled: subagentsEnabled,
+    opted_out: optedOut,
     recommended_count: recommendedCount,
     focus: subagentFocus,
     reason: String(
       pressure.hard
         ? 'hard context-isolation policy'
-        : delegationIntent && raw?.subagents?.enabled !== true
-          ? 'project exploration or testing policy'
+        : delegationIntent
+          ? 'explicit delegation request'
           : raw?.subagents?.reason || fallback.subagents.reason || '',
     ).slice(0, 240),
   };
@@ -331,6 +340,16 @@ export async function evaluateCodingRouteGraph({
   };
 }
 
+export function isCodingRouteToolAllowed(result, toolName) {
+  if (toolName === 'run_subagent') {
+    return result?.decisions?.subagents?.opted_out !== true;
+  }
+  if (toolName === 'save_memory') {
+    return result?.decisions?.memory?.allow_save_memory === true;
+  }
+  return true;
+}
+
 export function buildCodingRouteDecisionBlock(result) {
   if (!result?.active || !result.decisions) return '';
   const { memory, skills, subagents, todos } = result.decisions;
@@ -346,7 +365,7 @@ export function buildCodingRouteDecisionBlock(result) {
     `Coding Route Graph: ${result.graph_version} (${result.source})`,
     `- memory_gate [${memory.enforcement}]: ${memory.leaf}; save_memory=${memory.allow_save_memory ? 'enabled' : 'disabled'}`,
     `- skill_selection_gate [${skills.enforcement}]: ${skillSelection}`,
-    `- subagent_gate [${subagents.enforcement}]: run_subagent ${subagents.enabled ? `enabled; target=${subagents.recommended_count}${subagentFocus}` : 'disabled'}`,
+    `- subagent_gate [${subagents.enforcement}]: run_subagent ${subagents.opted_out ? 'unavailable by explicit user request' : subagents.enabled ? `recommended; target=${subagents.recommended_count}${subagentFocus}` : 'available; no pre-routing recommendation'}`,
     `- todo_gate [${todos.enforcement}]: update_todos ${todos.required ? 'required' : 'optional'}`,
     skills.selected_names.length > 0
       ? '- Apply every selected skill as an active workflow for this turn; these are not merely reference material.'
@@ -357,7 +376,7 @@ export function buildCodingRouteDecisionBlock(result) {
     todos.required
       ? '- Todo directive: call update_todos before major tool work, keep exactly one item in_progress, update it as work advances, and settle it before the final answer. Every subagent with multi-step work must maintain its own todo checklist too.'
       : '',
-    '- Follow each decision according to its enforcement mode; do not claim a hard-gated capability is available.',
+    '- Follow each decision according to its enforcement mode. Advisory decisions guide tool use but do not remove model autonomy.',
   ].filter(Boolean).join('\n');
 }
 

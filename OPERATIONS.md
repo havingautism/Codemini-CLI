@@ -11,7 +11,7 @@ Use it for:
 - session recovery
 - troubleshooting combos
 
-Use [deployment.md](/mnt/e/Git%20Projects/qurio-coder/deployment.md) for packaging, installation, and deployment instead.
+Use [deployment.md](./deployment.md) for packaging, installation, and deployment instead.
 
 ## Core Commands
 

@@ -5,25 +5,28 @@ const GLOBAL_APP_DIR = 'codemini-global';
 const PROJECT_APP_DIR = '.codemini';
 const PROJECT_INDEX_DIR = '.codemini';
 
-export function getBaseConfigDir() {
-  if (process.env.CODEMINI_GLOBAL_DIR) {
-    return process.env.CODEMINI_GLOBAL_DIR;
-  }
+export function getBaseConfigDir({
+  env = process.env,
+  platform = process.platform,
+  homedir = os.homedir(),
+} = {}) {
+  const override = String(env.CODEMINI_GLOBAL_DIR || '').trim();
+  if (override) return path.resolve(override);
 
-  if (process.platform === 'win32') {
-    const appData = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
+  if (platform === 'win32') {
+    const appData = env.APPDATA || path.join(homedir, 'AppData', 'Roaming');
     return path.join(appData, GLOBAL_APP_DIR);
   }
 
-  if (process.platform === 'darwin') {
-    return path.join(os.homedir(), 'Library', 'Preferences', GLOBAL_APP_DIR);
+  if (platform === 'darwin') {
+    return path.join(homedir, 'Library', 'Preferences', GLOBAL_APP_DIR);
   }
 
-  if (process.env.XDG_CONFIG_HOME) {
-    return path.join(process.env.XDG_CONFIG_HOME, GLOBAL_APP_DIR);
-  }
-
-  return path.join(process.cwd(), '.codemini-global');
+  const xdgConfigHome = String(env.XDG_CONFIG_HOME || '').trim();
+  const configHome = path.posix.isAbsolute(xdgConfigHome)
+    ? xdgConfigHome
+    : path.join(homedir, '.config');
+  return path.join(configHome, GLOBAL_APP_DIR);
 }
 
 export function getConfigFilePath() {

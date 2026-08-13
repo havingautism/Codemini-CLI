@@ -1,9 +1,98 @@
-import { spawn } from 'node:child_process';
+import { constants as fsConstants } from 'node:fs';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { execa } from 'execa';
 import { LANGUAGE_FILE_TYPES } from './constants.js';
 import { getPackageInfo } from './version.js';
 
 const DEFAULT_COMMAND = 'fff-mcp';
 const DEFAULT_TIMEOUT_MS = 15_000;
+const PATH_SEPARATORS = /[\\/]/;
+
+function normalizeComparablePath(filePath) {
+  const resolved = path.resolve(filePath);
+  return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+}
+
+function isPathInside(target, root) {
+  const relative = path.relative(normalizeComparablePath(root), normalizeComparablePath(target));
+  return relative === '' || (Boolean(relative) && !relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+function isBareCommandName(command) {
+  const name = String(command || '').trim();
+  if (!name || name === '.' || name === '..') return false;
+  return !PATH_SEPARATORS.test(name);
+}
+
+async function assertExecutableFile(filePath) {
+  const stat = await fs.stat(filePath);
+  if (!stat.isFile()) throw new Error('FFF command must resolve to an executable file');
+  if (process.platform !== 'win32') {
+    await fs.access(filePath, fsConstants.X_OK).catch(() => {
+      throw new Error('FFF command must resolve to an executable file');
+    });
+  }
+}
+
+function pathLookupNames(name) {
+  if (process.platform !== 'win32') return [name];
+  const ext = path.extname(name);
+  const pathExt = String(process.env.PATHEXT || '.EXE;.CMD;.BAT;.COM');
+  const exts = pathExt.split(';').map((item) => item.trim()).filter(Boolean);
+  if (ext && exts.some((item) => item.toLowerCase() === ext.toLowerCase())) {
+    return [name];
+  }
+  return [name, ...exts.map((item) => `${name}${item}`)];
+}
+
+async function resolveBareCommandOnPath(name, workspace) {
+  const entries = String(process.env.PATH || '').split(path.delimiter);
+  const names = pathLookupNames(name);
+  for (const dir of entries) {
+    const trimmed = String(dir || '').trim();
+    if (!trimmed || trimmed === '.') continue;
+    const absDir = path.resolve(trimmed);
+    if (isPathInside(absDir, workspace)) continue;
+    for (const candidateName of names) {
+      const candidate = path.join(absDir, candidateName);
+      if (isPathInside(candidate, workspace)) continue;
+      try {
+        const real = await fs.realpath(candidate);
+        if (isPathInside(real, workspace)) continue;
+        await assertExecutableFile(real);
+        return real;
+      } catch {
+        // Keep scanning PATH.
+      }
+    }
+  }
+  throw new Error(`FFF command not found on PATH: ${name}`);
+}
+
+export async function resolveTrustedFffCommand(command, workspaceRoot) {
+  const raw = String(command || '').trim();
+  if (!raw) {
+    throw new Error('FFF command is empty');
+  }
+  const workspace = await fs.realpath(path.resolve(workspaceRoot));
+  if (isBareCommandName(raw)) return resolveBareCommandOnPath(raw, workspace);
+  if (!path.isAbsolute(raw)) {
+    throw new Error('FFF command must be a PATH program name or an absolute path outside the workspace');
+  }
+  const resolved = path.resolve(raw);
+  if (isPathInside(resolved, workspace)) {
+    throw new Error('FFF command cannot point at a workspace file');
+  }
+  const real = await fs.realpath(resolved).catch(() => {
+    throw new Error('FFF command must exist and resolve outside the workspace');
+  });
+  if (isPathInside(real, workspace)) {
+    throw new Error('FFF command cannot point at a workspace file');
+  }
+  await assertExecutableFile(real);
+  return real;
+}
 
 function clampNumber(value, min, max, fallback) {
   const num = Number(value);
@@ -89,17 +178,21 @@ class FffMcpClient {
     if (this.closed) {
       throw new Error('FFF MCP client already disposed');
     }
-    this.child = spawn(this.command, [], {
+    const command = await resolveTrustedFffCommand(this.command, this.workspaceRoot);
+    this.child = execa(command, [], {
       cwd: this.workspaceRoot,
-      stdio: ['pipe', 'pipe', 'pipe']
+      stdio: ['pipe', 'pipe', 'pipe'],
+      shell: false,
+      windowsHide: true,
+      reject: false
     });
 
     this.child.stdout.on('data', this.parser);
     this.child.stderr.on('data', () => {});
-    this.child.on('error', (error) => {
+    this.child.nodeChildProcess.on('error', (error) => {
       this.rejectAll(error);
     });
-    this.child.on('exit', (code) => {
+    this.child.nodeChildProcess.on('exit', (code) => {
       this.connected = false;
       this.child = null;
       if (!this.closed && code !== 0) {
