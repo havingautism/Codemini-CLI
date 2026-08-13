@@ -157,9 +157,9 @@ export function getReplyLanguageOptions() {
 }
 
 const OPTION_GETTERS = {
+  sandboxMode: getSandboxModeOptions,
   executionMode: getExecutionModeOptions,
   approvalMode: getApprovalModeOptions,
-  sandboxMode: getSandboxModeOptions,
   provider: getProviderOptions,
   searchProvider: getSearchProviderOptions,
   shell: getShellOptions,

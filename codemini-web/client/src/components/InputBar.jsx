@@ -329,7 +329,12 @@ function ApprovalModeSelector({ sessionId, current, disabled = false }) {
   );
 }
 
-function SandboxModeSelector({ sessionId, current, onChange, disabled = false }) {
+function SandboxModeSelector({
+  sessionId,
+  current,
+  onChange,
+  disabled = false,
+}) {
   const [open, setOpen] = useState(false);
   const [switching, setSwitching] = useState(false);
   const [error, setError] = useState("");
@@ -353,7 +358,10 @@ function SandboxModeSelector({ sessionId, current, onChange, disabled = false })
   };
 
   return (
-    <Popover open={open} onOpenChange={(next) => !disabled && !switching && setOpen(next)}>
+    <Popover
+      open={open}
+      onOpenChange={(next) => !disabled && !switching && setOpen(next)}
+    >
       <PopoverTrigger asChild>
         <button
           type="button"
@@ -412,7 +420,10 @@ function SandboxModeSelector({ sessionId, current, onChange, disabled = false })
           })}
         </ToggleGroup>
         {error ? (
-          <div role="alert" className="px-2 pt-1.5 text-[11px] text-(--accent-red)">
+          <div
+            role="alert"
+            className="px-2 pt-1.5 text-[11px] text-(--accent-red)"
+          >
             {error}
           </div>
         ) : null}
@@ -1106,45 +1117,49 @@ export function InputBar({
     }
   }, []);
 
-  const selectScrapbookEntry = useCallback(async (entryId) => {
-    const entry = scrapbookEntries.find((item) => item.id === entryId);
-    if (entry && isScrapbookAskBlocked(entry)) {
-      setAttachmentError(t("scrapbookAskSummaryPending"));
-      return;
-    }
-    const result = await api.buildScrapbookAskPayload(entryId);
-    if (result?.error || !result?.payload) {
-      setAttachmentError(
-        result?.message || t("scrapbookAskSummaryPending"),
+  const selectScrapbookEntry = useCallback(
+    async (entryId) => {
+      const entry = scrapbookEntries.find((item) => item.id === entryId);
+      if (entry && isScrapbookAskBlocked(entry)) {
+        setAttachmentError(t("scrapbookAskSummaryPending"));
+        return;
+      }
+      const result = await api.buildScrapbookAskPayload(entryId);
+      if (result?.error || !result?.payload) {
+        setAttachmentError(result?.message || t("scrapbookAskSummaryPending"));
+        return;
+      }
+      const attachment = Array.isArray(result.payload.attachments)
+        ? result.payload.attachments[0]
+        : null;
+      setScrapbookContext(
+        attachment
+          ? {
+              entryId,
+              attachment,
+              modelText: result.payload.modelText || "",
+            }
+          : null,
       );
-      return;
-    }
-    const attachment = Array.isArray(result.payload.attachments)
-      ? result.payload.attachments[0]
-      : null;
-    setScrapbookContext(
-      attachment
-        ? {
-            entryId,
-            attachment,
-            modelText: result.payload.modelText || "",
-          }
-        : null,
-    );
-    setAttachmentError("");
-    setScrapbookPickerOpen(false);
-  }, [scrapbookEntries]);
+      setAttachmentError("");
+      setScrapbookPickerOpen(false);
+    },
+    [scrapbookEntries],
+  );
 
   const removeScrapbookContext = useCallback(() => {
     setScrapbookContext(null);
   }, []);
 
-  const openScrapbookEntry = useCallback((entryId) => {
-    const id = String(entryId || "").trim();
-    if (!id) return;
-    actions.openScrapbookEntry(id);
-    setScrapbookPickerOpen(false);
-  }, [actions]);
+  const openScrapbookEntry = useCallback(
+    (entryId) => {
+      const id = String(entryId || "").trim();
+      if (!id) return;
+      actions.openScrapbookEntry(id);
+      setScrapbookPickerOpen(false);
+    },
+    [actions],
+  );
 
   return (
     <div className="w-full relative">
@@ -1411,59 +1426,62 @@ export function InputBar({
                       {visibleScrapbookEntries.map((entry) => {
                         const askBlocked = isScrapbookAskBlocked(entry);
                         return (
-                        <div
-                          key={entry.id}
-                          className={cn(
-                            "group relative flex w-full min-w-0 shrink-0 items-stretch gap-1 overflow-hidden rounded-xl border px-1 py-1 transition-[background-color,box-shadow,transform] duration-150",
-                            askBlocked
-                              ? "opacity-60"
-                              : scrapbookContext?.entryId === entry.id
-                              ? "border-(--border-strong) bg-(--bg-subtle)"
-                              : "border-transparent hover:bg-(--bg-subtle)/80",
-                          )}
-                        >
-                          <button
-                            type="button"
-                            disabled={askBlocked}
+                          <div
+                            key={entry.id}
                             className={cn(
-                              "flex min-w-0 flex-1 flex-col items-stretch gap-1.5 rounded-lg px-2 py-2 text-left",
+                              "group relative flex w-full min-w-0 shrink-0 items-stretch gap-1 overflow-hidden rounded-xl border px-1 py-1 transition-[background-color,box-shadow,transform] duration-150",
                               askBlocked
-                                ? "cursor-not-allowed"
-                                : "hover:bg-(--bg-hover)/60",
+                                ? "opacity-60"
+                                : scrapbookContext?.entryId === entry.id
+                                  ? "border-(--border-strong) bg-(--bg-subtle)"
+                                  : "border-transparent hover:bg-(--bg-subtle)/80",
                             )}
-                            onClick={() => selectScrapbookEntry(entry.id)}
                           >
-                          <div className="flex w-full min-w-0 items-start justify-between gap-2">
-                            <span className="min-w-0 flex-1 truncate text-[12px] font-medium leading-5 text-(--text-primary)">
-                              {entry.title ||
-                                entry.sourceUrl ||
-                                t("scrapbookUntitled")}
-                            </span>
-                            {scrapbookContext?.entryId === entry.id ? (
-                              <span className="shrink-0 rounded-full bg-(--bg-hover) px-2 py-0.5 text-[10px] font-medium leading-5 text-(--text-secondary)">
-                                {t("scrapbookPickerActive")}
-                              </span>
-                            ) : askBlocked ? (
-                              <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-(--bg-hover) px-2 py-0.5 text-[10px] font-medium leading-5 text-(--text-muted)">
-                                <CircleNotch size={10} className="animate-spin" />
-                                {t("scrapbookSummarizing")}
-                              </span>
-                            ) : null}
+                            <button
+                              type="button"
+                              disabled={askBlocked}
+                              className={cn(
+                                "flex min-w-0 flex-1 flex-col items-stretch gap-1.5 rounded-lg px-2 py-2 text-left",
+                                askBlocked
+                                  ? "cursor-not-allowed"
+                                  : "hover:bg-(--bg-hover)/60",
+                              )}
+                              onClick={() => selectScrapbookEntry(entry.id)}
+                            >
+                              <div className="flex w-full min-w-0 items-start justify-between gap-2">
+                                <span className="min-w-0 flex-1 truncate text-[12px] font-medium leading-5 text-(--text-primary)">
+                                  {entry.title ||
+                                    entry.sourceUrl ||
+                                    t("scrapbookUntitled")}
+                                </span>
+                                {scrapbookContext?.entryId === entry.id ? (
+                                  <span className="shrink-0 rounded-full bg-(--bg-hover) px-2 py-0.5 text-[10px] font-medium leading-5 text-(--text-secondary)">
+                                    {t("scrapbookPickerActive")}
+                                  </span>
+                                ) : askBlocked ? (
+                                  <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-(--bg-hover) px-2 py-0.5 text-[10px] font-medium leading-5 text-(--text-muted)">
+                                    <CircleNotch
+                                      size={10}
+                                      className="animate-spin"
+                                    />
+                                    {t("scrapbookSummarizing")}
+                                  </span>
+                                ) : null}
+                              </div>
+                              <div className="min-w-0 w-full truncate text-[12px] leading-5 text-(--text-muted)">
+                                {getScrapbookPreviewText(entry)}
+                              </div>
+                            </button>
+                            <button
+                              type="button"
+                              className="inline-flex size-8 shrink-0 items-center justify-center self-center rounded-lg text-(--text-muted) transition-colors hover:bg-(--bg-hover) hover:text-(--text-primary)"
+                              title={t("scrapbookOpenEntry")}
+                              aria-label={`${t("scrapbookOpenEntry")}: ${entry.title || entry.sourceUrl || t("scrapbookUntitled")}`}
+                              onClick={() => openScrapbookEntry(entry.id)}
+                            >
+                              <ArrowSquareOut size={15} />
+                            </button>
                           </div>
-                          <div className="min-w-0 w-full truncate text-[12px] leading-5 text-(--text-muted)">
-                            {getScrapbookPreviewText(entry)}
-                          </div>
-                          </button>
-                          <button
-                            type="button"
-                            className="inline-flex size-8 shrink-0 items-center justify-center self-center rounded-lg text-(--text-muted) transition-colors hover:bg-(--bg-hover) hover:text-(--text-primary)"
-                            title={t("scrapbookOpenEntry")}
-                            aria-label={`${t("scrapbookOpenEntry")}: ${entry.title || entry.sourceUrl || t("scrapbookUntitled")}`}
-                            onClick={() => openScrapbookEntry(entry.id)}
-                          >
-                            <ArrowSquareOut size={15} />
-                          </button>
-                        </div>
                         );
                       })}
                       {hasMoreScrapbookEntries ? (
@@ -1503,13 +1521,6 @@ export function InputBar({
               effort={reasoningEffort}
               disabled={inputLocked}
             />
-            {approvalUiEnabled ? (
-              <ApprovalModeSelector
-                sessionId={rs.sessionId}
-                current={approvalMode}
-                disabled={inputLocked}
-              />
-            ) : null}
             {sandboxUiEnabled ? (
               <SandboxModeSelector
                 sessionId={rs.sessionId}
@@ -1518,6 +1529,14 @@ export function InputBar({
                 disabled={inputLocked}
               />
             ) : null}
+            {approvalUiEnabled ? (
+              <ApprovalModeSelector
+                sessionId={rs.sessionId}
+                current={approvalMode}
+                disabled={inputLocked}
+              />
+            ) : null}
+
             <SoulQuickSwitch disabled={inputLocked} mode={mode} />
           </div>
           <div className="flex items-center gap-1.5 ml-auto shrink-0">
