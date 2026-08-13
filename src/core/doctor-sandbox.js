@@ -9,12 +9,13 @@ const require = createRequire(import.meta.url);
 const MICROSANDBOX_DOCTOR_TIMEOUT_MS = 90_000;
 const OPERATIONS_HINT = 'see OPERATIONS.md (Microsandbox troubleshooting)';
 
-export function shouldCheckMicrosandbox(config = {}, { cwd = process.cwd() } = {}) {
-  return resolveSandboxPolicy({ config, cwd }).enabled;
+export function shouldCheckMicrosandbox(config = {}, { cwd = process.cwd(), platform = process.platform } = {}) {
+  const policy = resolveSandboxPolicy({ config, cwd, platform });
+  return policy.enabled && policy.backend === 'vm';
 }
 
-export function describeSandboxDoctorSkip(config = {}, { cwd = process.cwd() } = {}) {
-  const policy = resolveSandboxPolicy({ config, cwd });
+export function describeSandboxDoctorSkip(config = {}, { cwd = process.cwd(), platform = process.platform } = {}) {
+  const policy = resolveSandboxPolicy({ config, cwd, platform });
   if (!policy.enabled) {
     const mode = String(config?.sandbox?.mode || policy.mode || '').trim();
     if (mode === 'danger-full-access') {
@@ -26,7 +27,19 @@ export function describeSandboxDoctorSkip(config = {}, { cwd = process.cwd() } =
     }
     return 'sandbox disabled';
   }
+  if (policy.backend === 'os') {
+    const kind = policy.platform === 'darwin' ? 'Seatbelt' : 'Landlock';
+    return `using OS confinement (${kind})`;
+  }
   return '';
+}
+
+export function describeSandboxDoctorUnavailable(config = {}, { cwd = process.cwd(), platform = process.platform } = {}) {
+  const policy = resolveSandboxPolicy({ config, cwd, platform });
+  if (policy.platform === 'win32') {
+    return 'msb binary not found and Windows has no Landlock/Seatbelt fallback; set sandbox.enabled false or install Microsandbox; see OPERATIONS.md';
+  }
+  return 'no usable sandbox backend; see OPERATIONS.md';
 }
 
 function commandExists(command) {

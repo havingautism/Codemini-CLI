@@ -117,7 +117,7 @@ codemini run --pipeline "Run tests, fix failures, and summarize the result"
 | --- | --- |
 | **Project Intelligence** | File and symbol indexing, Tree-sitter AST queries, dependency graphs, project knowledge graphs, and CodeWiki. |
 | **Structured Tool Runtime** | Validated tool schemas, deferred tools, parallel calls, plans, todos, subagents, and background tasks. |
-| **Microsandbox** | Linux microVM isolation on Windows, macOS, and Linux with consistent Bash behavior. |
+| **Microsandbox** | Linux microVM when `msb` is available; Linux/macOS fall back to Landlock/Seatbelt. |
 | **Approvals & Checkpoints** | Risk-aware approvals, file-change previews, Git-aware workflows, and checkpoints for non-Git projects. |
 | **Terminal TUI** | Interactive chat, streaming tool output, syntax highlighting, and command shortcuts. |
 | **Web UI** | Shared sessions, file browsing, diffs, real PTY terminals, research, CodeWiki, and configuration. |
@@ -130,13 +130,13 @@ codemini run --pipeline "Run tests, fix failures, and summarize the result"
 
 ### Sandbox & Shell Behavior
 
-When the sandbox is enabled, Codemini runs shell commands inside a [Microsandbox](https://github.com/superradcompany/microsandbox) Linux microVM on Windows, macOS, and Linux.
+When the sandbox is enabled, Codemini prefers a [Microsandbox](https://github.com/superradcompany/microsandbox) Linux microVM. If the platform `msb` binary is missing or the VM cannot start, Linux and macOS fall back to host OS confinement (Landlock / Seatbelt). Windows has no OS fallback.
 
-- Bash and file tools start at the project root.
-- Use project-relative paths such as `src/core/tools.js`.
+- With Microsandbox, Bash and file tools start at the project root; use project-relative paths such as `src/core/tools.js`.
+- OS fallback runs the host shell under Seatbelt or Landlock (not a Linux guest).
 - Network access is available inside the sandbox.
 - The host project is the writable workspace in `workspace-write` mode.
-- If an enabled sandbox cannot start, Codemini fails closed instead of silently running the command on the host.
+- If an enabled sandbox cannot start and no OS fallback exists, Codemini fails closed instead of silently running the command on the host.
 
 When the sandbox is explicitly disabled:
 
@@ -152,6 +152,7 @@ codemini config set sandbox.mode read-only
 codemini config set sandbox.mode workspace-write
 codemini config set sandbox.mode danger-full-access
 codemini config set sandbox.enabled false
+codemini config set sandbox.backend auto
 ```
 
 Sandbox policy and approval policy are separate: the sandbox limits where a command can operate, while approvals decide whether it may run.
@@ -344,7 +345,7 @@ codemini run --pipeline "运行测试、修复失败并总结结果"
 | --- | --- |
 | **项目智能** | 文件与符号索引、Tree-sitter AST 查询、依赖图、项目知识图与 CodeWiki。 |
 | **结构化工具运行时** | 工具 schema 校验、延迟工具、并行调用、计划、Todo、子 Agent 与后台任务。 |
-| **Microsandbox** | Windows、macOS、Linux 上统一使用 Linux microVM 隔离和 Bash。 |
+| **Microsandbox** | 有 `msb` 时使用 Linux microVM；Linux/macOS 可回退到 Landlock/Seatbelt。 |
 | **审批与 Checkpoint** | 风险审批、文件变更预览、Git 工作流与非 Git 项目的 checkpoint。 |
 | **终端 TUI** | 交互式聊天、流式工具输出、语法高亮与命令快捷方式。 |
 | **Web UI** | 共享会话、文件浏览、diff、真实 PTY 终端、研究、CodeWiki 与配置。 |
@@ -357,13 +358,13 @@ codemini run --pipeline "运行测试、修复失败并总结结果"
 
 ### 沙箱与 Shell 行为
 
-开启沙箱后，Codemini 在 Windows、macOS 和 Linux 上都会通过 [Microsandbox](https://github.com/superradcompany/microsandbox) 的 Linux microVM 执行命令。
+开启沙箱后，Codemini 优先通过 [Microsandbox](https://github.com/superradcompany/microsandbox) 的 Linux microVM 执行命令。若本机没有对应的 `msb` 二进制或虚拟机无法启动，Linux 与 macOS 会回退到宿主 OS 隔离（Landlock / Seatbelt）。Windows 没有这套 OS 回退。
 
-- Bash 和文件工具都从项目根目录开始。
-- 直接使用 `src/core/tools.js` 这类项目相对路径。
+- 使用 Microsandbox 时，Bash 和文件工具都从项目根目录开始，使用 `src/core/tools.js` 这类项目相对路径。
+- OS 回退在宿主 shell 上套 Seatbelt 或 Landlock，不是 Linux guest。
 - 沙箱内允许网络访问。
 - `workspace-write` 模式下，宿主项目是可写工作区。
-- 如果要求启用沙箱但沙箱无法启动，Codemini 会拒绝执行，而不会静默回退到宿主机。
+- 如果要求启用沙箱但无法启动且没有 OS 回退，Codemini 会拒绝执行，而不会静默回退到无隔离的宿主机。
 
 明确关闭沙箱后：
 
@@ -379,6 +380,7 @@ codemini config set sandbox.mode read-only
 codemini config set sandbox.mode workspace-write
 codemini config set sandbox.mode danger-full-access
 codemini config set sandbox.enabled false
+codemini config set sandbox.backend auto
 ```
 
 沙箱策略与审批策略彼此独立：沙箱限制命令能在哪里操作，审批决定命令能否执行。

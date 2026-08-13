@@ -11,6 +11,7 @@ import {
   validateSandboxEscalationArgs,
   writableRootsForMode,
 } from '../src/core/sandbox-policy.js';
+import { __setSandboxProbeTestHooks } from '../src/core/sandbox-probe.js';
 
 test('normalizeSandboxMode defaults to workspace-write on every platform', () => {
   assert.equal(normalizeSandboxMode('', { platform: 'win32' }), 'workspace-write');
@@ -59,6 +60,37 @@ test('resolveSandboxPolicy enables workspace-write on Windows', () => {
   });
   assert.equal(policy.enabled, true);
   assert.equal(policy.mode, 'workspace-write');
+});
+
+test('resolveSandboxPolicy records vm, os, and none backends', () => {
+  __setSandboxProbeTestHooks({ resolveMsbBinary: () => null });
+  try {
+    assert.equal(
+      resolveSandboxPolicy({
+        config: { sandbox: { enabled: 'auto', mode: 'workspace-write' } },
+        cwd: '/tmp/ws',
+        platform: 'darwin',
+      }).backend,
+      'os',
+    );
+    assert.equal(
+      resolveSandboxPolicy({
+        config: { sandbox: { enabled: 'auto', mode: 'workspace-write', backend: 'microsandbox' } },
+        cwd: '/tmp/ws',
+        platform: 'darwin',
+      }).backend,
+      'vm',
+    );
+    const win = resolveSandboxPolicy({
+      config: { sandbox: { enabled: 'auto', mode: 'workspace-write' } },
+      cwd: '/tmp/ws',
+      platform: 'win32',
+    });
+    assert.equal(win.enabled, true);
+    assert.equal(win.backend, 'none');
+  } finally {
+    __setSandboxProbeTestHooks(null);
+  }
 });
 
 test('resolveSandboxPolicy enables workspace-write on linux', () => {

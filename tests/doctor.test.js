@@ -7,6 +7,7 @@ import { handleDoctor } from '../src/commands/doctor.js';
 import {
   checkMicrosandboxDoctor,
   describeSandboxDoctorSkip,
+  describeSandboxDoctorUnavailable,
   resolveMicrosandboxDoctorCommand,
   shouldCheckMicrosandbox,
 } from '../src/core/doctor-sandbox.js';
@@ -23,12 +24,16 @@ test('shouldCheckMicrosandbox follows resolveSandboxPolicy', () => {
     false,
   );
   assert.equal(
-    shouldCheckMicrosandbox({ sandbox: { enabled: 'auto', mode: 'workspace-write' } }),
+    shouldCheckMicrosandbox({ sandbox: { enabled: 'auto', mode: 'workspace-write', backend: 'os' } }),
+    false,
+  );
+  assert.equal(
+    shouldCheckMicrosandbox({ sandbox: { enabled: 'auto', mode: 'workspace-write', backend: 'microsandbox' } }),
     true,
   );
 });
 
-test('describeSandboxDoctorSkip explains disabled sandbox modes', () => {
+test('describeSandboxDoctorSkip explains disabled sandbox and OS confinement', () => {
   assert.match(
     describeSandboxDoctorSkip({ sandbox: { enabled: false, mode: 'workspace-write' } }),
     /sandbox disabled/,
@@ -36,6 +41,30 @@ test('describeSandboxDoctorSkip explains disabled sandbox modes', () => {
   assert.match(
     describeSandboxDoctorSkip({ sandbox: { enabled: 'auto', mode: 'danger-full-access' } }),
     /danger-full-access/,
+  );
+  assert.match(
+    describeSandboxDoctorSkip(
+      { sandbox: { enabled: 'auto', mode: 'workspace-write', backend: 'os' } },
+      { platform: 'darwin' },
+    ),
+    /OS confinement \(Seatbelt\)/,
+  );
+  assert.match(
+    describeSandboxDoctorSkip(
+      { sandbox: { enabled: 'auto', mode: 'workspace-write', backend: 'os' } },
+      { platform: 'linux' },
+    ),
+    /OS confinement \(Landlock\)/,
+  );
+});
+
+test('describeSandboxDoctorUnavailable explains Windows fail-closed', () => {
+  assert.match(
+    describeSandboxDoctorUnavailable(
+      { sandbox: { enabled: 'auto', mode: 'workspace-write' } },
+      { platform: 'win32' },
+    ),
+    /Windows has no Landlock\/Seatbelt fallback/,
   );
 });
 
@@ -96,6 +125,30 @@ test('handleDoctor skips microsandbox when sandbox is disabled', async () => {
   }
 });
 
+test('handleDoctor skips microsandbox doctor when using OS confinement', async () => {
+  const lines = [];
+  process.exitCode = 0;
+  try {
+    await handleDoctor({
+      loadConfigFn: async () => ({
+        gateway: { base_url: 'https://example.com/v1', api_key: 'token' },
+        sandbox: { enabled: 'auto', mode: 'workspace-write', backend: 'os' },
+      }),
+      checkPathWritableFn: async () => true,
+      checkGatewayFn: async () => ({ ok: true, reason: 'reachable' }),
+      commandExistsFn: async () => true,
+      checkMicrosandboxDoctorFn: async () => {
+        throw new Error('should not run microsandbox doctor for OS confinement');
+      },
+      writeLine: (line) => lines.push(line),
+    });
+    assert.match(lines.join('\n'), /\[SKIP\] Microsandbox host runtime: using OS confinement/);
+    assert.doesNotMatch(lines.join('\n'), /\[FAIL\] Microsandbox host runtime/);
+  } finally {
+    process.exitCode = 0;
+  }
+});
+
 test('handleDoctor runs microsandbox doctor when sandbox is enabled', async () => {
   const lines = [];
   let ran = false;
@@ -104,7 +157,7 @@ test('handleDoctor runs microsandbox doctor when sandbox is enabled', async () =
     await handleDoctor({
       loadConfigFn: async () => ({
         gateway: { base_url: 'https://example.com/v1', api_key: 'token' },
-        sandbox: { enabled: 'auto', mode: 'workspace-write' },
+        sandbox: { enabled: 'auto', mode: 'workspace-write', backend: 'microsandbox' },
       }),
       checkPathWritableFn: async () => true,
       checkGatewayFn: async () => ({ ok: true, reason: 'reachable' }),

@@ -84,7 +84,7 @@ test('bash safe-mode allowlist accepts the same ordinary read-only commands', ()
 test('Microsandbox relies on the microVM boundary instead of the host command allowlist', () => {
   const config = {
     shell: { default: 'powershell' },
-    sandbox: { enabled: true, mode: 'workspace-write' },
+    sandbox: { enabled: true, mode: 'workspace-write', backend: 'microsandbox' },
     policy: {
       safe_mode: true,
       allow_dangerous_commands: false,
@@ -111,6 +111,27 @@ test('Microsandbox relies on the microVM boundary instead of the host command al
   assert.match(
     evaluateCommandPolicy('curl -I https://example.com', explicitlyBlocked).reason,
     /blocked command: curl/,
+  );
+});
+
+test('OS sandbox backend still applies the host command allowlist', () => {
+  const config = {
+    shell: { default: 'bash' },
+    sandbox: { enabled: true, mode: 'workspace-write', backend: 'os' },
+    policy: {
+      safe_mode: true,
+      allow_dangerous_commands: false,
+      allowed_paths: [],
+      command_allowlist: ['echo', 'ls'],
+      blocked_commands: [],
+      blocked_path_patterns: [],
+      blocked_command_patterns: [],
+    },
+  };
+  assert.deepEqual(evaluateCommandPolicy('echo hi', config, process.cwd(), 'darwin'), { allowed: true });
+  assert.match(
+    evaluateCommandPolicy('curl -I https://example.com', config, process.cwd(), 'darwin').reason,
+    /command not in allowlist: curl/,
   );
 });
 

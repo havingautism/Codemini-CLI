@@ -2,7 +2,7 @@ import path from 'node:path';
 import { getSearchToolHint, resolveSearchToolContext } from './provider/search-tool-registry.js';
 import { getReadOnlyCommandTokens } from './read-only-command-tokens.js';
 import { shellToolName } from './shell-tool-name.js';
-import { resolveSandboxPolicy } from './sandbox-policy.js';
+import { isVmSandbox, resolveSandboxPolicy } from './sandbox-policy.js';
 
 const DEFAULT_SHELL = 'bash';
 
@@ -146,7 +146,8 @@ export function resolveShellContext(
   { platform = process.platform, cwd = process.cwd() } = {},
 ) {
   const sandbox = resolveSandboxPolicy({ config, cwd, platform });
-  const shell = sandbox.enabled
+  const vm = isVmSandbox(sandbox);
+  const shell = vm
     ? 'bash'
     : platform === 'win32'
       ? 'powershell'
@@ -154,10 +155,10 @@ export function resolveShellContext(
   return {
     sandbox,
     shell,
-    commandPlatform: sandbox.enabled ? 'linux' : platform,
-    commandCwd: sandbox.enabled ? '/workspace' : path.resolve(cwd),
+    commandPlatform: vm ? 'linux' : platform,
+    commandCwd: vm ? '/workspace' : path.resolve(cwd),
     commandToolName: shellToolName({
-      platform: sandbox.enabled ? 'linux' : platform,
+      platform: vm ? 'linux' : platform,
       shell,
     }),
   };

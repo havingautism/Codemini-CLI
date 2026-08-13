@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { selectSandboxBackend } from './sandbox-probe.js';
 
 export const SANDBOX_MODES = Object.freeze([
   'read-only',
@@ -22,8 +23,16 @@ export function isSandboxEnabled(config = {}, { platform = process.platform } = 
   return true;
 }
 
+export function isVmSandbox(policy) {
+  return Boolean(policy?.enabled && policy.backend === 'vm');
+}
+
+export function isOsSandbox(policy) {
+  return Boolean(policy?.enabled && policy.backend === 'os');
+}
+
 /**
- * Resolve per-call sandbox policy for the cross-platform microVM backend.
+ * Resolve per-call sandbox policy. `backend` is vm | os | none.
  */
 export function resolveSandboxPolicy({
   config = {},
@@ -39,6 +48,7 @@ export function resolveSandboxPolicy({
     return {
       enabled: false,
       mode: 'danger-full-access',
+      backend: 'none',
       workspaceRoot,
       platform,
     };
@@ -47,9 +57,23 @@ export function resolveSandboxPolicy({
     modeOverride ?? config?.sandbox?.mode,
     { platform },
   );
+  if (mode === 'danger-full-access') {
+    return {
+      enabled: false,
+      mode,
+      backend: 'none',
+      workspaceRoot,
+      platform,
+    };
+  }
+  const backend = selectSandboxBackend({
+    preferred: config?.sandbox?.backend,
+    platform,
+  });
   return {
-    enabled: mode !== 'danger-full-access',
+    enabled: true,
     mode,
+    backend,
     workspaceRoot,
     platform,
   };

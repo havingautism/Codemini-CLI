@@ -231,6 +231,7 @@ export function resolveShell(defaultShell) {
 }
 
 export function resolveSandboxShell(defaultShell) {
+  if (String(defaultShell || '').toLowerCase() === 'powershell') return 'pwsh';
   return 'bash';
 }
 
@@ -265,18 +266,34 @@ export async function runShellCommand({
       : command;
 
   let sandboxChild = null;
-  let sandboxMeta = { wrapped: false, mode: '' };
+  let sandboxMeta = { wrapped: false, mode: '', backend: 'none' };
+  let annotateStderr = null;
   if (config) {
-    const { createSandboxProcess } = await import('./sandbox-runtime.js');
-    const wrapped = createSandboxProcess({
+    const { prepareSandboxExecution, spawnPreparedSandbox } = await import('./sandbox-backend.js');
+    const prepared = await prepareSandboxExecution({
       command: String(command || ''),
       config,
       cwd,
       mode: sandboxMode,
+      binShell: resolveSandboxShell(shell),
+      abortSignal: signal,
     });
-    if (wrapped) {
-      sandboxChild = wrapped.child;
-      sandboxMeta = { wrapped: true, mode: wrapped.policy?.mode || '' };
+    if (prepared.kind === 'os') {
+      const os = await import('./sandbox-os.js');
+      annotateStderr = os.annotateSandboxStderrAsync;
+    }
+    if (prepared.wrapped) {
+      sandboxChild = spawnPreparedSandbox({
+        prepared,
+        shellSpec,
+        shellCommand,
+        cwd,
+      });
+      sandboxMeta = {
+        wrapped: true,
+        mode: prepared.policy?.mode || '',
+        backend: prepared.policy?.backend || prepared.kind,
+      };
     }
   }
 
@@ -313,6 +330,14 @@ export async function runShellCommand({
       if (autoStopTimer) clearTimeout(autoStopTimer);
       signal?.removeEventListener('abort', abortCommand);
       let next = withSandboxFields(value);
+      if (sandboxMeta.backend === 'os' && typeof annotateStderr === 'function') {
+        try {
+          next = {
+            ...next,
+            stderr: await annotateStderr(String(command || ''), next.stderr || ''),
+          };
+        } catch {}
+      }
       if (
         sandboxMeta.wrapped &&
         next.code &&

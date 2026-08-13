@@ -95,23 +95,24 @@ codemini config set ui.language zh
 
 ### Sandbox (Windows / Linux / macOS)
 
-The default model-facing command tool is `Bash` on every platform. When `sandbox.enabled` is `auto` or `true`, commands run inside a Microsandbox Linux microVM with the workspace bind-mounted at `/workspace`. On Windows, explicitly disabling the sandbox restores the native `Powershell` tool instead of requiring WSL or Git Bash.
+The default model-facing command tool is `Bash` when Microsandbox is available. When `sandbox.enabled` is `auto` or `true`, Codemini prefers a Microsandbox Linux microVM with the workspace bind-mounted at `/workspace`. If the matching `msb` binary is missing or the VM cannot start, Linux and macOS fall back to OS confinement (Landlock / Seatbelt) on the host. Windows has no OS fallback: install Microsandbox, or set `sandbox.enabled false` for native PowerShell.
 
 ```bash
 codemini config set sandbox.mode workspace-write   # default on every platform
 codemini config set sandbox.mode read-only
 codemini config set sandbox.mode danger-full-access
 codemini config set sandbox.enabled false          # explicit host execution
+codemini config set sandbox.backend auto           # default: VM when msb exists, else OS confine on unix
 codemini config set sandbox.image node:22-bookworm
 ```
 
 | Mode | Effect |
 | --- | --- |
-| `workspace-write` | Linux microVM with a read/write workspace mount |
-| `read-only` | Linux microVM with a read-only workspace mount |
-| `danger-full-access` | Explicit host execution without the microVM |
+| `workspace-write` | VM or OS confine with a writable workspace |
+| `read-only` | VM or OS confine with a read-only workspace |
+| `danger-full-access` | Explicit host execution without confinement |
 
-If the sandbox is enabled but cannot start, Codemini **refuses** to run the command on the host. `npm install` selects the matching Microsandbox runtime package. Local execution requires KVM on Linux, Apple Silicon on macOS, or Windows Hypervisor Platform on Windows 11. Run `npx microsandbox doctor` to diagnose the host runtime. The first command pulls `sandbox.image`; later sandboxes reuse the image cache.
+If an enabled sandbox cannot start and no OS fallback exists (Windows without `msb`), Codemini **refuses** to run the command on the host. `npm install` tries to select the matching Microsandbox platform package. Local microVMs require KVM on Linux, Apple Silicon on macOS, or Windows Hypervisor Platform on Windows 11. Intel Macs typically use Seatbelt fallback. Run `npx microsandbox doctor` when the VM backend is selected. The first VM command pulls `sandbox.image`; later sandboxes reuse the image cache.
 
 Approval and sandboxing remain separate: the microVM enforces the filesystem boundary, while approval mode controls whether an operation may be attempted. Windows keeps its staged write and `apply_patch` tools; only its default command surface changes from PowerShell to sandboxed Bash. When sandbox mode is `read-only`, soft approval is skipped and the approval selector is hidden.
 

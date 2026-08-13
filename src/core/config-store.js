@@ -10,6 +10,7 @@ import {
 import { normalizeReasoningEffort } from './provider/reasoning-effort.js';
 import { normalizeSkillContexts } from './skill-contexts.js';
 import { normalizeSandboxMode } from './sandbox-policy.js';
+import { normalizeSandboxBackend } from './sandbox-probe.js';
 
 function normalizeUiLanguage(value) {
   const raw = String(value || '').trim().toLowerCase();
@@ -134,9 +135,10 @@ const DEFAULT_CONFIG = {
     blocked_path_patterns: [],
     blocked_command_patterns: ['rm -rf /', 'format c:', 'del /f /s /q C:\\\\']
   },
-  // Cross-platform Linux microVM. Windows uses native PowerShell only when explicitly disabled.
+  // Cross-platform Linux microVM when available; Linux/macOS fall back to OS confinement.
   sandbox: {
     enabled: 'auto',
+    backend: 'auto',
     mode: 'workspace-write',
     workspace_root: '',
     image: 'node:22-bookworm',
@@ -345,6 +347,7 @@ function normalizePolicyLists(config) {
       : 'auto';
   }
   next.sandbox.mode = normalizeSandboxMode(next.sandbox.mode);
+  next.sandbox.backend = normalizeSandboxBackend(next.sandbox.backend);
   next.sandbox.workspace_root = String(next.sandbox.workspace_root || '').trim();
   next.sandbox.image = String(next.sandbox.image || DEFAULT_CONFIG.sandbox.image).trim() || DEFAULT_CONFIG.sandbox.image;
   next.sandbox.cpus = normalizedNumber(next.sandbox.cpus, DEFAULT_CONFIG.sandbox.cpus, 1, { integer: true });

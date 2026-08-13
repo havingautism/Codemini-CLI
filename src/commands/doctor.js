@@ -3,9 +3,11 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { getConfigFilePath, getSessionsDir, getSkillsDir } from '../core/paths.js';
 import { loadConfig } from '../core/config-store.js';
+import { resolveSandboxPolicy } from '../core/sandbox-policy.js';
 import {
   checkMicrosandboxDoctor,
   describeSandboxDoctorSkip,
+  describeSandboxDoctorUnavailable,
   shouldCheckMicrosandbox,
 } from '../core/doctor-sandbox.js';
 
@@ -110,11 +112,20 @@ export async function handleDoctor({
       detail: sandbox.reason,
     });
   } else {
-    checks.push({
-      name: 'Microsandbox host runtime',
-      skip: true,
-      detail: describeSandboxDoctorSkip(config),
-    });
+    const policy = resolveSandboxPolicy({ config });
+    if (policy.enabled && policy.backend === 'none') {
+      checks.push({
+        name: 'Microsandbox host runtime',
+        ok: false,
+        detail: describeSandboxDoctorUnavailable(config),
+      });
+    } else {
+      checks.push({
+        name: 'Microsandbox host runtime',
+        skip: true,
+        detail: describeSandboxDoctorSkip(config),
+      });
+    }
   }
 
   for (const check of checks) {

@@ -1,12 +1,12 @@
 import { createHash } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
-import { NetworkPolicy, Sandbox } from 'microsandbox';
 import { resolveSandboxPolicy } from './sandbox-policy.js';
 
 const GUEST_WORKSPACE = '/workspace';
 const sandboxCache = new Map();
 let testHooks = null;
+let microsandboxApi = null;
 
 export class SandboxUnavailableError extends Error {
   constructor(message, { cause, mode } = {}) {
@@ -22,6 +22,7 @@ export class SandboxUnavailableError extends Error {
 export function __setSandboxRuntimeTestHooks(hooks = null) {
   testHooks = hooks;
   sandboxCache.clear();
+  microsandboxApi = null;
 }
 
 function sandboxName(key) {
@@ -33,11 +34,26 @@ function numericSetting(value, fallback, minimum = 1) {
   return Number.isFinite(parsed) ? Math.max(minimum, Math.floor(parsed)) : fallback;
 }
 
+async function loadMicrosandbox() {
+  if (!microsandboxApi) {
+    try {
+      microsandboxApi = await import('microsandbox');
+    } catch (error) {
+      throw new SandboxUnavailableError(
+        `Microsandbox is not available on this platform (${process.platform}-${process.arch}); refusing to run unconfined. ${error instanceof Error ? error.message : String(error)}`,
+        { cause: error },
+      );
+    }
+  }
+  return microsandboxApi;
+}
+
 async function createSandbox({ key, policy, config, port }) {
   if (testHooks?.createSandbox) {
     return testHooks.createSandbox({ key, policy, config, port, guestWorkspace: GUEST_WORKSPACE });
   }
 
+  const { NetworkPolicy, Sandbox } = await loadMicrosandbox();
   const image = String(config?.sandbox?.image || 'node:22-bookworm').trim() || 'node:22-bookworm';
   let builder = Sandbox.builder(sandboxName(key))
     .image(image)
@@ -73,6 +89,12 @@ function getSandbox({ policy, config, port = 0 }) {
     sandboxCache.set(key, pending);
   }
   return { key, sandbox: sandboxCache.get(key) };
+}
+
+export async function ensureVmSandbox({ policy, config, port = 0 } = {}) {
+  const cached = getSandbox({ policy, config, port });
+  await cached.sandbox;
+  return cached;
 }
 
 class MicrosandboxProcess extends EventEmitter {

@@ -18,11 +18,13 @@ function formatToolPath(cwd, ...segments) {
 
 function getToolFewShotBlock(config = {}, cwd = process.cwd(), platform = process.platform) {
   const shellContext = resolveShellContext(config, { cwd, platform });
-  const toolPath = (...segments) => shellContext.sandbox.enabled
+  const vm = shellContext.sandbox.backend === 'vm';
+  const osConfine = shellContext.sandbox.backend === 'os';
+  const toolPath = (...segments) => vm
     ? JSON.stringify(segments.join('/'))
     : formatToolPath(cwd, ...segments);
   const authServicePath = toolPath('src', 'auth', 'service.ts');
-  const reducerPath = shellContext.sandbox.enabled
+  const reducerPath = vm
     ? 'src/store/reducer.ts'
     : path.join(cwd, 'src', 'store', 'reducer.ts');
   const reducerRangePath = JSON.stringify(`${reducerPath}:110-150`);
@@ -60,17 +62,19 @@ Load other deferred tools with tool_search when needed.`;
     ? `For a large or multi-file code patch, use apply_patch with one escaped patch_text string:
 Tool: apply_patch({"patch_text":"*** Begin Patch\\n*** Update File: ${path.join('src', 'auth', 'service.ts').replace(/\\/g, '/')}\\n@@\\n-export const enabled = false;\\n+export const enabled = true;\\n*** End Patch"})`
     : `Prefer edit old_string/new_string for edits (multi-hunk via multiple edit calls).`;
-  const sandboxHint = shellContext.sandbox.enabled
+  const sandboxHint = vm
     ? `Shell commands run inside a Linux microVM sandbox (${shellContext.sandbox.mode}); denials include [sandbox: ...] markers.`
-    : '';
+    : osConfine
+      ? `Shell commands run on the host under OS confinement (${platform === 'darwin' ? 'Seatbelt' : 'Landlock'}, ${shellContext.sandbox.mode}); denials include [sandbox: ...] markers.`
+      : '';
   const patchHint = [patchToolHint, sandboxHint].filter(Boolean).join('\n');
 
   return `# Tool Examples
 
 Use these as style examples for tool calls:
 
-Current working directory: ${shellContext.sandbox.enabled ? 'project root' : shellContext.commandCwd}
-${shellContext.sandbox.enabled
+Current working directory: ${vm ? 'project root' : shellContext.commandCwd}
+${vm
   ? 'Use project-relative paths such as src/app.ts for both file tools and shell commands. Do not add the sandbox mount path.'
   : `When a tool takes path, build it from the current working directory and prefer absolute paths.\nIf the user mentions a project-relative path like src/app.ts, resolve it from ${cwd} instead of guessing parent directories.`}
 Tool arguments must be valid JSON objects. When a string contains file content, encode newlines as \\n inside the JSON string; never put raw unescaped line breaks inside a JSON string.
@@ -122,9 +126,14 @@ function getEnvBlock(cwd = process.cwd(), config = {}, platform = process.platfo
   } catch {}
 
   const context = resolveShellContext(config, { cwd, platform });
-  const commandPlatform = context.sandbox.enabled ? 'linux (Microsandbox guest)' : context.commandPlatform;
+  const vm = context.sandbox.backend === 'vm';
+  const osConfine = context.sandbox.backend === 'os';
+  const commandPlatform = vm ? 'linux (Microsandbox guest)' : context.commandPlatform;
+  const sandboxLabel = osConfine
+    ? `${context.sandbox.mode} (${platform === 'darwin' ? 'Seatbelt' : 'Landlock'})`
+    : context.sandbox.mode;
 
-  if (context.sandbox.enabled) {
+  if (vm) {
     return `<env>
 Working directory: project root
 Is directory a git repo: ${isGitRepo ? 'Yes' : 'No'}
@@ -143,7 +152,7 @@ Command platform: ${commandPlatform}
 Shell: ${context.shell || os.userInfo().shell || 'unknown'}
 Shell working directory: ${context.commandCwd}
 OS Version: ${os.version || os.release()}
-Sandbox: ${context.sandbox.mode}
+Sandbox: ${sandboxLabel}
 </env>`;
 }
 

@@ -1,12 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import path from 'node:path';
 import { buildDefaultSystemPrompt } from '../src/core/default-system-prompt.js';
 
 test('buildDefaultSystemPrompt uses workspaceRoot instead of process.cwd()', () => {
   const projectRoot = 'E:\\Git Projects\\demo-app';
+  const resolvedRoot = path.resolve(projectRoot);
+  const escapedRoot = resolvedRoot.replace(/[\\.^$*+?()[\]{}|]/g, '\\$&');
   const prompt = buildDefaultSystemPrompt({ sandbox: { enabled: false } }, { workspaceRoot: projectRoot });
-  assert.match(prompt, /Working directory: E:\\Git Projects\\demo-app/i);
-  assert.match(prompt, /Current working directory: E:\\Git Projects\\demo-app/i);
+  assert.match(prompt, new RegExp(`Working directory: ${escapedRoot}`, 'i'));
+  assert.match(prompt, new RegExp(`Current working directory: ${escapedRoot}`, 'i'));
   assert.doesNotMatch(
     prompt,
     /codemini-global[\\/]+workspace/i,
@@ -20,10 +23,22 @@ test('buildDefaultSystemPrompt tells the model to embed Markdown images', () => 
   assert.match(prompt, /Never claim you cannot display images/);
 });
 
+test('OS confinement prompt keeps the host cwd and Seatbelt or Landlock', () => {
+  const prompt = buildDefaultSystemPrompt({
+    shell: { default: 'bash' },
+    sandbox: { enabled: true, mode: 'workspace-write', backend: 'os' },
+  }, { workspaceRoot: process.cwd(), platform: 'darwin' });
+  assert.match(prompt, /OS confinement \(Seatbelt, workspace-write\)/);
+  assert.match(prompt, /Sandbox: workspace-write \(Seatbelt\)/);
+  assert.match(prompt, new RegExp(`Working directory: ${process.cwd().replace(/[\\.^$*+?()[\]{}|]/g, '\\$&')}`));
+  assert.doesNotMatch(prompt, /Microsandbox guest/);
+  assert.doesNotMatch(prompt, /Use project-relative paths/i);
+});
+
 test('sandboxed prompt presents only the Linux guest environment', () => {
   const prompt = buildDefaultSystemPrompt({
     shell: { default: 'bash' },
-    sandbox: { enabled: true, mode: 'workspace-write' },
+    sandbox: { enabled: true, mode: 'workspace-write', backend: 'microsandbox' },
   }, { workspaceRoot: process.cwd() });
   assert.match(prompt, /Platform: linux \(Microsandbox guest\)/);
   assert.match(prompt, /Working directory: project root/);
@@ -34,7 +49,7 @@ test('sandboxed prompt presents only the Linux guest environment', () => {
 test('Windows prompt follows sandbox state instead of the host platform alone', () => {
   const confined = buildDefaultSystemPrompt({
     shell: { default: 'powershell' },
-    sandbox: { enabled: true, mode: 'workspace-write' },
+    sandbox: { enabled: true, mode: 'workspace-write', backend: 'microsandbox' },
   }, { workspaceRoot: process.cwd(), platform: 'win32' });
   assert.match(confined, /Bash coding guidelines/);
   assert.match(confined, /Platform: linux \(Microsandbox guest\)/);

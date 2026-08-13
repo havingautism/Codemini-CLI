@@ -14,12 +14,15 @@ import {
   isDangerousCommand,
   isLikelyLongRunningCommand,
   resolveShell,
+  resolveSandboxShell,
   runShellCommand,
   terminateChild,
 } from "./shell.js";
 import { evaluateCommandPolicy } from "./command-policy.js";
 import {
   assertSandboxWriteAllowed,
+  isOsSandbox,
+  isVmSandbox,
   resolveSandboxPolicy,
   validateSandboxEscalationArgs,
 } from "./sandbox-policy.js";
@@ -2321,16 +2324,24 @@ async function startBackgroundTask(root, config, args) {
   let sandboxChild = null;
   let activeSandboxPolicy = null;
   {
-    const { createSandboxProcess } = await import("./sandbox-runtime.js");
-    const wrapped = createSandboxProcess({
+    const { prepareSandboxExecution, spawnPreparedSandbox } = await import("./sandbox-backend.js");
+    const prepared = await prepareSandboxExecution({
       command,
       config,
       cwd: root,
       mode: args?.sandbox_permissions || args?.sandbox_mode || args?.sandboxMode,
       port: publishedPort,
+      binShell: resolveSandboxShell(config.shell.default),
     });
-    sandboxChild = wrapped?.child || null;
-    activeSandboxPolicy = wrapped?.policy || null;
+    if (prepared.wrapped) {
+      sandboxChild = spawnPreparedSandbox({
+        prepared,
+        shellSpec,
+        shellCommand: shellCommandForBackgroundTask(command, shellSpec),
+        cwd: root,
+      });
+      activeSandboxPolicy = prepared.policy;
+    }
   }
 
   const child = sandboxChild || spawn(
@@ -2342,14 +2353,15 @@ async function startBackgroundTask(root, config, args) {
         },
       );
 
+  const vmSandbox = activeSandboxPolicy?.backend === "vm";
   const task = {
     taskId,
     command,
     cwd: root,
     child,
-    shell: activeSandboxPolicy ? "bash" : config.shell.default,
+    shell: vmSandbox ? "bash" : config.shell.default,
     sandbox: activeSandboxPolicy
-      ? { wrapped: true, mode: activeSandboxPolicy.mode }
+      ? { wrapped: true, mode: activeSandboxPolicy.mode, backend: activeSandboxPolicy.backend }
       : { wrapped: false, mode: "danger-full-access" },
     startedAt: Date.now(),
     status: "starting",
@@ -3973,6 +3985,9 @@ export function getBuiltinTools({
   const shellContext = resolveShellContext(config, { platform, cwd: workspaceRoot });
   const commandToolName = shellContext.commandToolName;
   const sandboxPolicy = shellContext.sandbox;
+  const vmSandbox = isVmSandbox(sandboxPolicy);
+  const osSandbox = isOsSandbox(sandboxPolicy);
+  const osKind = platform === "darwin" ? "Seatbelt" : "Landlock";
   config = {
     ...(config || {}),
     shell: {
@@ -3993,7 +4008,7 @@ export function getBuiltinTools({
             "Required with sandbox_permissions: why this exact operation needs wider access.",
         },
       } : {};
-  const fileToolPathHint = sandboxPolicy.enabled
+  const fileToolPathHint = vmSandbox
     ? " Use a project-relative path such as src/app.ts; do not prefix it with the sandbox mount path."
     : "";
   const unixReadParameters = {
@@ -4893,8 +4908,10 @@ export function getBuiltinTools({
       type: "function",
       function: {
         name: commandToolName,
-        description: sandboxPolicy.enabled
+        description: vmSandbox
           ? `Run a compact Bash command inside the Linux microVM sandbox (${sandboxPolicy.mode}) from the project root with unrestricted outbound networking. Use project-relative paths. Ordinary Bash commands, including curl, are available; commands with destructive or external side effects may still require approval. On denial, stderr includes [sandbox: ...]; retry with a wider sandbox_permissions plus justification when needed. Use run_in_background=true for long-running commands. Put command last.`
+          : osSandbox
+            ? `Run a compact ${shellContext.shell === "powershell" ? "PowerShell" : "Bash"} command on the host under OS confinement (${osKind}, ${sandboxPolicy.mode}) with unrestricted outbound networking. Use host paths from the current working directory. Commands with destructive or external side effects may still require approval. On denial, stderr includes [sandbox: ...]; retry with a wider sandbox_permissions plus justification when needed. Use run_in_background=true for long-running commands. Put command last.`
           : `Run a compact ${shellContext.shell === "powershell" ? "PowerShell" : "Bash"} command directly on the ${platform === "win32" ? "Windows" : "host"} system without microVM confinement. Use run_in_background=true for long-running commands. Put command last.`,
         parameters: {
           type: "object",
@@ -7449,8 +7466,11 @@ export function getBuiltinTools({
 
     run(result) {
       if (!result || typeof result !== "object") return String(result);
+      const sandboxBackend = result?.sandbox?.backend || sandboxPolicy.backend;
       const execution = result?.sandbox?.wrapped
-        ? `[shell: bash | sandbox: ${result.sandbox.mode || sandboxPolicy.mode} | cwd: project root]`
+        ? sandboxBackend === "vm"
+          ? `[shell: bash | sandbox: ${result.sandbox.mode || sandboxPolicy.mode} | cwd: project root]`
+          : `[shell: ${result.shell || shellContext.shell} | sandbox: ${result.sandbox.mode || sandboxPolicy.mode} | cwd: ${workspaceRoot}]`
         : `[shell: ${result.shell || shellContext.shell} | sandbox: off | cwd: ${workspaceRoot}]`;
       if (result.background) {
         const parts = [

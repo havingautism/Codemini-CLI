@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { getEffectivePolicy } from './shell-profile.js';
 import { getBaseConfigDir } from './paths.js';
-import { resolveSandboxPolicy } from './sandbox-policy.js';
+import { isVmSandbox, resolveSandboxPolicy } from './sandbox-policy.js';
 import { inspectShellCommandPaths } from './shell-path-policy.js';
 
 const SHELL_KEYWORDS = new Set([
@@ -246,7 +246,7 @@ export function evaluateCommandPolicy(command, config, workspaceRoot = process.c
   // The Linux microVM is the command boundary. Reapplying the host-oriented
   // allowlist and path parser here rejects valid guest commands and paths such
   // as curl and /workspace without adding host protection.
-  if (sandbox.enabled) {
+  if (isVmSandbox(sandbox)) {
     const explicitBlockedPaths = Array.isArray(config?.policy?.blocked_path_patterns)
       ? config.policy.blocked_path_patterns
       : [];

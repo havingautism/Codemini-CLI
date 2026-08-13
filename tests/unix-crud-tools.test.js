@@ -24,7 +24,10 @@ function exposedNames(bundle) {
 test('shell tool name follows the configured shell instead of the host platform', () => {
   const bash = getBuiltinTools({
     workspaceRoot: process.cwd(),
-    config: { shell: { default: 'bash' } },
+    config: {
+      shell: { default: 'bash' },
+      sandbox: { enabled: true, mode: 'workspace-write', backend: 'microsandbox' },
+    },
     platform: 'win32',
   });
   assert.ok(names(bash.definitions).includes('Bash'));
@@ -49,7 +52,7 @@ test('Windows command tool description and feedback follow sandbox state', () =>
     workspaceRoot: process.cwd(),
     config: {
       shell: { default: 'bash' },
-      sandbox: { enabled: true, mode: 'workspace-write' },
+      sandbox: { enabled: true, mode: 'workspace-write', backend: 'microsandbox' },
     },
     platform: 'win32',
   });
@@ -107,10 +110,44 @@ test('Windows command tool description and feedback follow sandbox state', () =>
   assert.ok(deferred.has('glob'));
 });
 
+test('OS confinement command tool keeps host paths', () => {
+  const bundle = getBuiltinTools({
+    workspaceRoot: process.cwd(),
+    config: {
+      shell: { default: 'bash' },
+      sandbox: { enabled: true, mode: 'workspace-write', backend: 'os' },
+    },
+    platform: 'darwin',
+  });
+  const bash = bundle.definitions.find((d) => d?.function?.name === 'Bash');
+  assert.match(bash.function.description, /OS confinement \(Seatbelt, workspace-write\)/);
+  assert.doesNotMatch(bash.function.description, /Linux microVM sandbox/);
+  const read = bundle.definitions.find((d) => d?.function?.name === 'read');
+  assert.doesNotMatch(read.function.description, /project-relative path/i);
+  assert.match(
+    bundle.formatters.Bash({
+      command: 'pwd',
+      code: 0,
+      stdout: '/tmp\n',
+      sandbox: { wrapped: true, mode: 'workspace-write', backend: 'os' },
+    }),
+    /\[shell: bash \| sandbox: workspace-write \| cwd: /,
+  );
+  assert.doesNotMatch(
+    bundle.formatters.Bash({
+      command: 'pwd',
+      code: 0,
+      stdout: '/tmp\n',
+      sandbox: { wrapped: true, mode: 'workspace-write', backend: 'os' },
+    }),
+    /cwd: project root/,
+  );
+});
+
 test('Windows keeps staged writes while using Bash and sandbox escalation', () => {
   const bundle = getBuiltinTools({
     workspaceRoot: process.cwd(),
-    config: {},
+    config: { sandbox: { enabled: true, mode: 'workspace-write', backend: 'microsandbox' } },
     platform: 'win32',
   });
   const active = new Set(names(bundle.definitions));
@@ -140,7 +177,7 @@ test('Windows file mutations can use an approved sandbox escalation', async () =
     config: {
       policy: { allowed_paths: [] },
       shell: { default: 'bash' },
-      sandbox: { enabled: true, mode: 'read-only' },
+      sandbox: { enabled: true, mode: 'read-only', backend: 'microsandbox' },
     },
     platform: 'win32',
   });
@@ -209,7 +246,7 @@ test('Linux promotes grep/glob and drops staged write + apply_patch', () => {
 test('Linux keeps Codemini tools and removes only Windows write workarounds', () => {
   const windows = exposedNames(getBuiltinTools({
     workspaceRoot: process.cwd(),
-    config: {},
+    config: { sandbox: { enabled: true, mode: 'workspace-write', backend: 'microsandbox' } },
     platform: 'win32',
   }));
   const linux = exposedNames(getBuiltinTools({
