@@ -30,6 +30,39 @@ test('request_user_input offers an other answer for choice questions by default'
   }
 });
 
+test('request_user_input accepts the compact DSH-style question shape', async () => {
+  let receivedRequest = null;
+  const tools = getBuiltinTools({
+    workspaceRoot: process.cwd(),
+    config: {},
+    requestUserInput: async (request) => {
+      receivedRequest = request;
+      return { status: 'submitted', answers: { direction: 'a' } };
+    },
+  });
+
+  try {
+    await tools.handlers.request_user_input({
+      questions: [{
+        id: 'direction',
+        question: 'Choose a direction',
+        options: [{ label: 'A', description: 'Use the smallest change.' }],
+      }],
+    });
+    assert.deepEqual(receivedRequest.questions[0], {
+      id: 'direction',
+      label: 'Choose a direction',
+      type: 'radio',
+      required: false,
+      multiline: false,
+      allow_other: true,
+      options: [{ label: 'A', value: 'A', description: 'Use the smallest change.' }],
+    });
+  } finally {
+    await tools.dispose();
+  }
+});
+
 test('tool approval rejection preserves custom feedback for the agent loop', () => {
   let resolution = null;
   const state = {

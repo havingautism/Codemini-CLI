@@ -4983,7 +4983,7 @@ export function getBuiltinTools({
           function: {
             name: "request_user_input",
             description:
-              "Pause and ask the user for structured input in the Web UI. Use when an answer is required to continue or when focused choices about preferences, scope, outcomes, or reasonable approaches would materially improve the result. Prefer 1-3 concise questions and include a recommended or sensible default when appropriate. Supports text fields, dropdowns, radio buttons, and checkboxes. The user may submit answers, choose an other value, or skip the request.",
+              "Ask the user concise structured questions when confirmation, a choice, or missing information would materially affect the work. The call pauses until the user answers or skips. Prefer 1-3 questions and put the recommended option first when appropriate.",
             parameters: {
               type: "object",
               properties: {
@@ -4998,7 +4998,7 @@ export function getBuiltinTools({
                 questions: {
                   type: "array",
                   minItems: 1,
-                  maxItems: 6,
+                  maxItems: 3,
                   items: {
                     type: "object",
                     properties: {
@@ -5006,13 +5006,18 @@ export function getBuiltinTools({
                         type: "string",
                         description: "Stable snake_case key used in the returned answers object.",
                       },
-                      label: { type: "string", description: "Visible field label or question." },
+                      question: { type: "string", description: "Concise question shown to the user." },
+                      label: { type: "string", description: "Legacy alias for question." },
                       type: {
                         type: "string",
                         enum: ["text", "select", "radio", "checkbox"],
                       },
                       placeholder: { type: "string" },
                       required: { type: "boolean" },
+                      multi_select: {
+                        type: "boolean",
+                        description: "Allow multiple option selections. Infers a checkbox field.",
+                      },
                       multiline: {
                         type: "boolean",
                         description: "For text fields, render a multi-line input.",
@@ -5030,11 +5035,11 @@ export function getBuiltinTools({
                             value: { type: "string" },
                             description: { type: "string" },
                           },
-                          required: ["label", "value"],
+                          required: ["label"],
                         },
                       },
                     },
-                    required: ["id", "label", "type"],
+                    required: ["id"],
                   },
                 },
                 submit_label: {
@@ -6972,11 +6977,8 @@ export function getBuiltinTools({
           request_user_input: async (args = {}) => {
             const seenQuestionIds = new Set();
             const questions = (Array.isArray(args.questions) ? args.questions : [])
-              .slice(0, 6)
+              .slice(0, 3)
               .map((question, index) => {
-                const type = ["text", "select", "radio", "checkbox"].includes(question?.type)
-                  ? question.type
-                  : "text";
                 const options = (Array.isArray(question?.options) ? question.options : [])
                   .slice(0, 20)
                   .map((option) => ({
@@ -6987,9 +6989,16 @@ export function getBuiltinTools({
                       : {}),
                   }))
                   .filter((option) => option.label && option.value);
+                const type = ["text", "select", "radio", "checkbox"].includes(question?.type)
+                  ? question.type
+                  : question?.multi_select === true
+                    ? "checkbox"
+                    : options.length > 0
+                      ? "radio"
+                      : "text";
                 return {
                   id: String(question?.id || `question_${index + 1}`).trim(),
-                  label: String(question?.label || `Question ${index + 1}`).trim(),
+                  label: String(question?.question || question?.label || `Question ${index + 1}`).trim(),
                   type,
                   ...(String(question?.placeholder || "").trim()
                     ? { placeholder: String(question.placeholder).trim() }

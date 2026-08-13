@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   buildCodingRouteDecisionBlock,
   evaluateCodingRouteGraph,
+  isCodingRouteToolAllowed,
 } from '../src/core/coding-route-graph.js';
 
 test('coding route graph bypasses non-coding turns without invoking the judge', async () => {
@@ -54,7 +55,7 @@ test('coding route graph uses semantic node decisions to gate capabilities', asy
   assert.equal(result.decisions.skills.inject_index, false);
   assert.equal(result.decisions.subagents.enabled, true);
   assert.equal(result.decisions.subagents.recommended_count, 2);
-  assert.equal(result.decisions.subagents.enforcement, 'hard_gate');
+  assert.equal(result.decisions.subagents.enforcement, 'advisory');
   assert.deepEqual(result.decisions.subagents.focus, [
     'inspect architecture',
     'verify tests',
@@ -69,10 +70,44 @@ test('coding route graph uses semantic node decisions to gate capabilities', asy
     'todo_gate',
     'complete',
   ]);
-  assert.match(buildCodingRouteDecisionBlock(result), /run_subagent enabled/);
+  assert.match(buildCodingRouteDecisionBlock(result), /run_subagent recommended/);
   assert.match(buildCodingRouteDecisionBlock(result), /Delegation directive/);
   assert.match(buildCodingRouteDecisionBlock(result), /update_todos required/);
   assert.match(buildCodingRouteDecisionBlock(result), /Every subagent/);
+});
+
+test('semantic judge cannot upgrade an ignored turn into durable memory', async () => {
+  const result = await evaluateCodingRouteGraph({
+    executionMode: 'plan',
+    text: 'Fix the typo',
+    memoryRoute: { leaf: 'ignore' },
+    judge: async () => ({
+      memory: { leaf: 'save_memory', reason: 'might be useful later' },
+      skills: { selected_names: [] },
+      subagents: { enabled: false },
+      todos: { required: false },
+    }),
+  });
+
+  assert.equal(result.decisions.memory.leaf, 'ignore');
+  assert.equal(result.decisions.memory.allow_save_memory, false);
+});
+
+test('semantic judge can enable delegation when it finds useful independent work', async () => {
+  const result = await evaluateCodingRouteGraph({
+    executionMode: 'plan',
+    text: 'Fix the typo in README.md',
+    autoRoute: { complexity: 'simple' },
+    judge: async () => ({
+      memory: { leaf: 'ignore' },
+      skills: { selected_names: [] },
+      subagents: { enabled: true, recommended_count: 3 },
+      todos: { required: false },
+    }),
+  });
+
+  assert.equal(result.decisions.subagents.enabled, true);
+  assert.equal(result.decisions.subagents.recommended_count, 2);
 });
 
 test('coding route graph hard-blocks secret-like memory even when judge allows it', async () => {
@@ -126,13 +161,13 @@ test('advisory context pressure does not hard-force delegation', async () => {
   assert.equal(result.decisions.subagents.recommended_count, 0);
 });
 
-test('hard context pressure overrides a conservative semantic judge', async () => {
+test('hard context pressure uses window percentage and overrides a conservative judge', async () => {
   const result = await evaluateCodingRouteGraph({
     executionMode: 'plan',
     contextUsage: {
-      estimated_tokens: 18000,
-      max_tokens: 32000,
-      usage_pct: 45,
+      estimated_tokens: 115000,
+      max_tokens: 128000,
+      usage_pct: 90,
     },
     judge: async () => ({
       memory: { leaf: 'ignore' },
@@ -154,7 +189,7 @@ test('hard context pressure overrides a conservative semantic judge', async () =
   );
 });
 
-test('project exploration and testing default to one subagent', async () => {
+test('generic exploration and testing words do not force delegation', async () => {
   for (const text of [
     'Inspect the repository architecture and dependencies',
     '运行测试并定位失败原因',
@@ -170,16 +205,63 @@ test('project exploration and testing default to one subagent', async () => {
       }),
     });
 
-    assert.equal(result.decisions.subagents.enabled, true);
-    assert.equal(result.decisions.subagents.recommended_count, 1);
-    assert.equal(
-      result.decisions.subagents.reason,
-      'project exploration or testing policy',
-    );
+    assert.equal(result.decisions.subagents.enabled, false);
+    assert.equal(result.decisions.subagents.recommended_count, 0);
+    assert.equal(isCodingRouteToolAllowed(result, 'run_subagent'), true);
   }
 });
 
-test('coding route graph rejects unlisted skill names and caps selection at three', async () => {
+test('explicit delegation intent enables one subagent case-insensitively', async () => {
+  for (const text of ['Use a subagent to review this', '使用子代理检查这个改动']) {
+    const result = await evaluateCodingRouteGraph({
+      executionMode: 'plan',
+      text,
+      autoRoute: { complexity: 'simple' },
+    });
+
+    assert.equal(result.decisions.subagents.enabled, true);
+    assert.equal(result.decisions.subagents.recommended_count, 1);
+  }
+});
+
+test('explicit delegation opt-out overrides the semantic judge', async () => {
+  for (const text of ['Do not use subagents', '不要使用子代理']) {
+    const result = await evaluateCodingRouteGraph({
+      executionMode: 'plan',
+      text,
+      autoRoute: { complexity: 'simple' },
+      judge: async () => ({
+        memory: { leaf: 'ignore' },
+        skills: { selected_names: [] },
+        subagents: { enabled: true, recommended_count: 2 },
+        todos: { required: false },
+      }),
+    });
+
+    assert.equal(result.decisions.subagents.enabled, false);
+    assert.equal(result.decisions.subagents.recommended_count, 0);
+    assert.equal(result.decisions.subagents.opted_out, true);
+    assert.equal(isCodingRouteToolAllowed(result, 'run_subagent'), false);
+  }
+});
+
+test('large model windows do not trigger isolation at low usage percentages', async () => {
+  const result = await evaluateCodingRouteGraph({
+    executionMode: 'plan',
+    text: 'Fix one typo',
+    autoRoute: { complexity: 'simple' },
+    contextUsage: {
+      estimated_tokens: 25000,
+      max_tokens: 128000,
+      usage_pct: 19.5,
+    },
+  });
+
+  assert.equal(result.decisions.subagents.enabled, false);
+  assert.equal(result.decisions.subagents.recommended_count, 0);
+});
+
+test('coding route graph rejects unlisted skill names and caps selection at two', async () => {
   const result = await evaluateCodingRouteGraph({
     executionMode: 'plan',
     skillIndexPrompt: [
@@ -207,23 +289,21 @@ test('coding route graph rejects unlisted skill names and caps selection at thre
   assert.deepEqual(result.decisions.skills.selected_names, [
     'tdd',
     'diagnosing-bugs',
-    'code-review',
   ]);
 });
 
-test('coding route judge prompt is positively biased toward useful skills and delegation', async () => {
+test('coding route judge prompt encourages useful autonomous delegation', async () => {
   await evaluateCodingRouteGraph({
     executionMode: 'plan',
     text: 'Improve the routing module',
     skillIndexPrompt: '- /codebase-design - Improve module interfaces',
     judge: async ({ systemPrompt }) => {
-      assert.match(systemPrompt, /positively prefer using installed expertise/);
-      assert.match(systemPrompt, /Enable by default for medium\/complex tasks/);
-      assert.match(systemPrompt, /Project exploration rule/);
-      assert.match(systemPrompt, /Testing rule/);
+      assert.match(systemPrompt, /Select none by default/);
+      assert.match(systemPrompt, /Prefer delegation for non-trivial coding work/);
+      assert.match(systemPrompt, /Decide from the task structure/);
       assert.match(systemPrompt, /Context-pressure rule/);
       assert.match(systemPrompt, /todo_gate/);
-      assert.match(systemPrompt, /estimated_tokens >= 24000/);
+      assert.match(systemPrompt, /usage_pct >= 80/);
       assert.match(systemPrompt, /recommended_count/);
       return {
         memory: { leaf: 'ignore' },
@@ -237,8 +317,8 @@ test('coding route judge prompt is positively biased toward useful skills and de
       };
     },
   }).then((result) => {
-    assert.equal(result.decisions.subagents.recommended_count, 3);
-    assert.deepEqual(result.decisions.subagents.focus, ['inspect', 'test', 'review']);
+    assert.equal(result.decisions.subagents.recommended_count, 2);
+    assert.deepEqual(result.decisions.subagents.focus, ['inspect', 'test']);
     assert.equal(result.decisions.todos.required, true);
   });
 });

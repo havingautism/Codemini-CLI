@@ -544,7 +544,6 @@ function ToolGroup({ cards }) {
   let groupStatus = "done";
   if (otherCards.some((card) => card.status === "blocked")) groupStatus = "blocked";
   if (hasRunningTool) groupStatus = "running";
-  if (otherCards.some((card) => card.status === "error")) groupStatus = "error";
   const toolingPhrases = resolveModeHintPhrases("tooling", runtimeMode);
   const shouldUseSummaryHeader = total > TOOL_COLLAPSE_THRESHOLD;
   const runCount = otherCards.filter((card) => {

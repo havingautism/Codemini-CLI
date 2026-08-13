@@ -35,6 +35,17 @@ test('coding prompt keeps subagent delegation bounded and parent-owned', () => {
   assert.match(prompt, /bounded, independently verifiable chunk/);
   assert.match(prompt, /parent agent owns decomposition, integration, and the final answer/);
   assert.match(prompt, /configured Lite\/Fast model/);
+  assert.match(prompt, /Prefer delegation for non-trivial coding work/);
+  assert.doesNotMatch(prompt, /Default: do the work yourself/);
+  assert.doesNotMatch(prompt, /Do not call run_subagent for a simple localized edit/);
+});
+
+test('coding prompt actively uses structured user input for material choices', () => {
+  const prompt = buildExecutionModePromptBlock('coding');
+  assert.match(prompt, /User input workflow:/);
+  assert.match(prompt, /structured form/);
+  assert.match(prompt, /substantially improve the usefulness or fit/);
+  assert.match(prompt, /inspect first/i);
 });
 
 test('run_subagent UI receives the complete task instead of a clipped label', () => {
