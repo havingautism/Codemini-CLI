@@ -83,6 +83,7 @@
     "sharp": "^0.35.3",
     "shell-quote": "^1.10.0",
     "strip-ansi": "^7.2.0",
+    "undici": "8.9.0",
     "web-tree-sitter": "^0.26.8",
     "yaml": "^2.9.0",
     "zod": "^4.4.3"
