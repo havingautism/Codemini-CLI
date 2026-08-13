@@ -259,7 +259,7 @@ export async function runOpenCodeTui({ runtime, sessionId, model, safeMode = tru
       if (event.toolCalls?.length || event.assistantMessage?.tool_calls?.length) moveAssistantIntoProcess();
     } else if (type === 'tool:start' || type === 'system_tool:start' || type === 'skill:start') {
       const id = toolEventKey(event, type);
-      if (type === 'tool:start' && String(event.name || '').toLowerCase() === 'update_todos') {
+      if (type === 'tool:start' && ['tasks', 'update_todos'].includes(String(event.name || '').toLowerCase())) {
         const todo = updateTodo(event);
         toolRows.set(id, todo);
         editor.borderColor = color.warning;

@@ -30,12 +30,21 @@ test('subagent allow-list always strips run_subagent even if parent asks for it'
   }
 });
 
-test('explicit empty or forbidden-only allow-lists grant no tools', () => {
-  assert.deepEqual(resolveSubAgentToolAllowList({ role: 'coder', tools: [] }), []);
+test('explicit empty or forbidden-only allow-lists still grant tasks', () => {
+  assert.deepEqual(resolveSubAgentToolAllowList({ role: 'coder', tools: [] }), ['tasks']);
   assert.deepEqual(
     resolveSubAgentToolAllowList({ role: 'coder', tools: ['run_subagent', 'create_plan'] }),
-    []
+    ['tasks']
   );
+});
+
+test('every subagent role keeps tasks even with an explicit read-only allow-list', () => {
+  for (const role of ['explorer', 'architect', 'reviewer', 'tester', 'debugger', 'writer', 'summarizer']) {
+    const defaults = resolveSubAgentToolAllowList({ role });
+    const explicit = resolveSubAgentToolAllowList({ role, tools: ['read'] });
+    assert.equal(defaults.includes('tasks'), true, `${role} defaults`);
+    assert.equal(explicit.includes('tasks'), true, `${role} explicit tools`);
+  }
 });
 
 test('subagent allow-list cannot grant tools outside role policy', () => {
@@ -43,17 +52,17 @@ test('subagent allow-list cannot grant tools outside role policy', () => {
     role: 'explorer',
     tools: ['read', 'edit', 'write'],
   });
-  assert.deepEqual(tools, ['read']);
+  assert.deepEqual(tools, ['read', 'tasks']);
 });
 
 test('subagent allow-list accepts public shell tool names and keeps internal policy canonical', () => {
   assert.deepEqual(
     resolveSubAgentToolAllowList({ role: 'coder', tools: ['Bash'], platform: 'linux' }),
-    ['run'],
+    ['run', 'tasks'],
   );
   assert.deepEqual(
     resolveSubAgentToolAllowList({ role: 'coder', tools: ['Powershell'], platform: 'win32' }),
-    ['run'],
+    ['run', 'tasks'],
   );
 });
 
@@ -101,7 +110,7 @@ test('Windows subagents keep explicitly requested inspection tools', () => {
       tools: ['list', 'glob'],
       platform: 'win32',
     }),
-    ['list', 'glob', 'tool_search'],
+    ['list', 'glob', 'tool_search', 'tasks'],
   );
 });
 

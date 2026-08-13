@@ -10,8 +10,8 @@ export function describeMiscToolActivity(copy, parsed, rawName, { done = false, 
     if (blocked) return `${copy.toolActivity.blocked}: code generation`;
     return done ? copy.toolActivity.doneCodeGeneration : copy.toolActivity.doingCodeGeneration;
   }
-  if (parsed.base === 'update_todos') {
-    return blocked ? makeBlocked(copy, formatToolLabel('update_todos')) : done ? copy.toolActivity.doneUpdateTodos : copy.toolActivity.doingUpdateTodos;
+  if (parsed.base === 'tasks' || parsed.base === 'update_todos') {
+    return blocked ? makeBlocked(copy, formatToolLabel('tasks')) : done ? copy.toolActivity.doneUpdateTodos : copy.toolActivity.doingUpdateTodos;
   }
   if (parsed.base === 'create_plan') {
     const label = formatToolLabel('create_plan');

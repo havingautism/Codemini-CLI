@@ -38,7 +38,7 @@ const TOOL_ICONS = {
   apply_patch: PencilLine,
   create_plan: ListChecks,
   run_subagent: ListChecks,
-  update_todos: ListChecks,
+  tasks: ListChecks,
   create_spec: FileText,
   delete: Trash,
   run: Terminal,
@@ -292,10 +292,11 @@ export function ToolCard({ card }) {
   const [fileActionError, setFileActionError] = useState("");
   const toolName = extractToolName(card.name);
   const Icon = TOOL_ICONS[toolName] || TOOL_ICONS.default;
-  const todoItems = toolName === "update_todos"
+  const isTasksTool = toolName === "tasks" || toolName === "update_todos";
+  const todoItems = isTasksTool
     ? getTodoToolItems(card.arguments, card.result)
     : [];
-  if (toolName === "update_todos") {
+  if (isTasksTool) {
     return <TodoToolCard card={card} todos={todoItems} />;
   }
   const fileMeta = getFileToolMeta(

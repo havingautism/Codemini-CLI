@@ -41,7 +41,7 @@ test('coding route graph uses semantic node decisions to gate capabilities', asy
           focus: ['inspect architecture', 'verify tests'],
           reason: 'independent verification is useful',
         },
-        todos: { required: true, reason: 'multi-file implementation and verification' },
+        tasks: { required: true, reason: 'multi-file implementation and verification' },
       });
     },
   });
@@ -60,19 +60,19 @@ test('coding route graph uses semantic node decisions to gate capabilities', asy
     'inspect architecture',
     'verify tests',
   ]);
-  assert.equal(result.decisions.todos.required, true);
-  assert.equal(result.decisions.todos.enforcement, 'directive');
+  assert.equal(result.decisions.tasks.required, true);
+  assert.equal(result.decisions.tasks.enforcement, 'directive');
   assert.deepEqual(result.path, [
     'mode_gate',
     'memory_gate',
     'skill_selection_gate',
+    'task_gate',
     'subagent_gate',
-    'todo_gate',
     'complete',
   ]);
   assert.match(buildCodingRouteDecisionBlock(result), /run_subagent recommended/);
   assert.match(buildCodingRouteDecisionBlock(result), /Delegation directive/);
-  assert.match(buildCodingRouteDecisionBlock(result), /update_todos required/);
+  assert.match(buildCodingRouteDecisionBlock(result), /tasks required/);
   assert.match(buildCodingRouteDecisionBlock(result), /Every subagent/);
 });
 
@@ -85,7 +85,7 @@ test('semantic judge cannot upgrade an ignored turn into durable memory', async 
       memory: { leaf: 'save_memory', reason: 'might be useful later' },
       skills: { selected_names: [] },
       subagents: { enabled: false },
-      todos: { required: false },
+      tasks: { required: false },
     }),
   });
 
@@ -102,7 +102,7 @@ test('semantic judge can enable delegation when it finds useful independent work
       memory: { leaf: 'ignore' },
       skills: { selected_names: [] },
       subagents: { enabled: true, recommended_count: 3 },
-      todos: { required: false },
+      tasks: { required: false },
     }),
   });
 
@@ -142,7 +142,7 @@ test('coding route graph falls back when the semantic judge fails', async () => 
   assert.equal(result.decisions.memory.allow_save_memory, false);
   assert.equal(result.decisions.skills.inject_index, true);
   assert.equal(result.decisions.subagents.enabled, true);
-  assert.equal(result.decisions.todos.required, true);
+  assert.equal(result.decisions.tasks.required, true);
 });
 
 test('advisory context pressure does not hard-force delegation', async () => {
@@ -234,7 +234,7 @@ test('explicit delegation opt-out overrides the semantic judge', async () => {
         memory: { leaf: 'ignore' },
         skills: { selected_names: [] },
         subagents: { enabled: true, recommended_count: 2 },
-        todos: { required: false },
+        tasks: { required: false },
       }),
     });
 
@@ -302,7 +302,7 @@ test('coding route judge prompt encourages useful autonomous delegation', async 
       assert.match(systemPrompt, /Prefer delegation for non-trivial coding work/);
       assert.match(systemPrompt, /Decide from the task structure/);
       assert.match(systemPrompt, /Context-pressure rule/);
-      assert.match(systemPrompt, /todo_gate/);
+      assert.match(systemPrompt, /task_gate/);
       assert.match(systemPrompt, /usage_pct >= 80/);
       assert.match(systemPrompt, /recommended_count/);
       return {
@@ -313,17 +313,29 @@ test('coding route judge prompt encourages useful autonomous delegation', async 
           recommended_count: 9,
           focus: ['inspect', 'test', 'review', 'ignored'],
         },
-        todos: { required: true, reason: 'several implementation steps' },
+        tasks: {
+          required: true,
+          items: [
+            { content: 'Inspect the implementation', activeForm: 'Inspecting the implementation' },
+            { content: 'Verify focused tests', activeForm: 'Verifying focused tests' },
+          ],
+          reason: 'several implementation steps',
+        },
       };
     },
   }).then((result) => {
     assert.equal(result.decisions.subagents.recommended_count, 2);
     assert.deepEqual(result.decisions.subagents.focus, ['inspect', 'test']);
-    assert.equal(result.decisions.todos.required, true);
+    assert.equal(result.decisions.tasks.required, true);
+    assert.deepEqual(result.decisions.tasks.items, [
+      { content: 'Inspect the implementation', activeForm: 'Inspecting the implementation', status: 'pending' },
+      { content: 'Verify focused tests', activeForm: 'Verifying focused tests', status: 'pending' },
+    ]);
+    assert.match(buildCodingRouteDecisionBlock(result), /suggested=Inspect the implementation/);
   });
 });
 
-test('todo gate keeps atomic coding work optional', async () => {
+test('task gate keeps atomic coding work optional', async () => {
   const result = await evaluateCodingRouteGraph({
     executionMode: 'plan',
     text: 'Fix one typo',
@@ -332,11 +344,28 @@ test('todo gate keeps atomic coding work optional', async () => {
       memory: { leaf: 'ignore' },
       skills: { selected_names: [] },
       subagents: { enabled: false },
-      todos: { required: false, reason: 'atomic edit' },
+      tasks: { required: false, reason: 'atomic edit' },
     }),
   });
 
-  assert.equal(result.decisions.todos.required, false);
-  assert.match(buildCodingRouteDecisionBlock(result), /update_todos optional/);
-  assert.doesNotMatch(buildCodingRouteDecisionBlock(result), /Todo directive/);
+  assert.equal(result.decisions.tasks.required, false);
+  assert.match(buildCodingRouteDecisionBlock(result), /tasks optional/);
+  assert.doesNotMatch(buildCodingRouteDecisionBlock(result), /Task directive/);
+});
+
+test('task gate cannot be downgraded for multi-step implementation and verification', async () => {
+  const result = await evaluateCodingRouteGraph({
+    executionMode: 'plan',
+    text: '1、实现来源原文展示\n2、运行测试验证',
+    autoRoute: { complexity: 'simple' },
+    judge: async () => ({
+      memory: { leaf: 'ignore' },
+      skills: { selected_names: [] },
+      subagents: { enabled: false },
+      tasks: { required: false, reason: 'judge underestimated it' },
+    }),
+  });
+
+  assert.equal(result.decisions.tasks.required, true);
+  assert.match(buildCodingRouteDecisionBlock(result), /priority=high/);
 });

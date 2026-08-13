@@ -269,36 +269,36 @@ test('tool calls collapse by default and expose details when toggled', () => {
 });
 
 test('todo progress is a persistent card that updates in place', () => {
-  const todo = new TodoProgress({ todos: [
+  const todo = new TodoProgress({ tasks: [
     { content: 'Inspect', status: 'completed' },
     { content: 'Build', status: 'in_progress' },
     { content: 'Verify', status: 'pending' },
   ] });
 
   let rendered = stripAnsi(todo.render(80).join('\n'));
-  assert.match(rendered, /Todos  1\/3/);
+  assert.match(rendered, /Tasks  1\/3/);
   assert.match(rendered, /✓ Inspect/);
   assert.match(rendered, /● Build/);
   assert.match(rendered, /○ Verify/);
-  todo.update({ arguments: { todos: [
+  todo.update({ arguments: { tasks: [
     { content: 'Inspect', status: 'completed' },
     { content: 'Build', status: 'completed' },
   ] } });
   rendered = stripAnsi(todo.render(80).join('\n'));
-  assert.match(rendered, /Todos  2\/2/);
+  assert.match(rendered, /Tasks  2\/2/);
   assert.doesNotMatch(rendered, /Verify/);
-  assert.match(stripAnsi(new TodoProgress({ todos: [] }).render(80).join('\n')), /Todos  0\/0[\s\S]*No active todos/);
+  assert.match(stripAnsi(new TodoProgress({ tasks: [] }).render(80).join('\n')), /Tasks  0\/0[\s\S]*No active tasks/);
 });
 
 test('processed folds keep pinned todo cards visible while body-only', () => {
   const fold = new ProcessedFold(createTuiCopy('en'));
   fold.addChild(new ReasoningBlock(createTuiCopy('en'), 'hidden details', { complete: true }));
-  fold.addPinnedChild(new TodoProgress({ todos: [{ content: 'Build', status: 'in_progress' }] }));
+  fold.addPinnedChild(new TodoProgress({ tasks: [{ content: 'Build', status: 'in_progress' }] }));
   fold.finish();
   fold.setBodyOnly(true);
   const rendered = stripAnsi(fold.render(80).join('\n'));
   assert.match(rendered, /Processed/);
-  assert.match(rendered, /Todos/);
+  assert.match(rendered, /Tasks/);
   assert.match(rendered, /Build/);
   assert.doesNotMatch(rendered, /hidden details/);
 });

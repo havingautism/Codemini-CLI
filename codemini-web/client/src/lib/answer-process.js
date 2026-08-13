@@ -25,11 +25,13 @@ function isCreatePlanCard(card) {
 }
 
 function isTodoCard(card) {
-  return String(card?.name || "").toLowerCase().replace(/\(.*$/, "") === "update_todos";
+  return ["tasks", "update_todos"].includes(
+    String(card?.name || "").toLowerCase().replace(/\(.*$/, ""),
+  );
 }
 
-export function extractLatestTodoFromPlanSteps(steps = []) {
-  let todoCard = null;
+export function extractLatestTodoFromPlanSteps(steps = [], fallbackCard = null) {
+  let todoCard = fallbackCard;
   const nextSteps = (Array.isArray(steps) ? steps : []).map((step) => {
     let changed = false;
     const segments = [];

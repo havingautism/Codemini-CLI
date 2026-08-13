@@ -5,7 +5,7 @@ import { getFileToolMeta, getTodoToolItems } from '../codemini-web/client/src/li
 
 test('todo tool items accept streamed arguments and structured results', () => {
   const fromArgs = getTodoToolItems(JSON.stringify({
-    todos: [
+    tasks: [
       { content: 'Inspect', activeForm: 'Inspecting', status: 'in_progress' },
       { content: 'Build', activeForm: 'Building', status: 'pending' },
     ],

@@ -418,8 +418,19 @@ export function PlanToolCard({ card, grouped = false }) {
   const running = String(card?.status || "").toLowerCase() === "running";
   const isSubagent = isRunSubagentCard(card);
   const rawSteps = Array.isArray(planRun?.steps) ? planRun.steps : [];
+  const assignedTasks = Array.isArray(card?.arguments?.tasks)
+    ? card.arguments.tasks
+    : [];
+  const assignedTasksCard = assignedTasks.length
+    ? {
+        id: `${card?.id || "subagent"}-assigned-tasks`,
+        name: "tasks",
+        status: "done",
+        arguments: { tasks: assignedTasks },
+      }
+    : null;
   const { steps, todoCard } = isSubagent
-    ? extractLatestTodoFromPlanSteps(rawSteps)
+    ? extractLatestTodoFromPlanSteps(rawSteps, assignedTasksCard)
     : { steps: rawSteps, todoCard: null };
   const primary = steps[0] || null;
   const persona = String(

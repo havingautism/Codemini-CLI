@@ -24,7 +24,7 @@ export function parseMaybeJson(value) {
 export function getTodoToolItems(args, result) {
   const parsedArgs = parseMaybeJson(args) || {};
   const parsedResult = parseMaybeJson(result) || {};
-  const todos = parsedResult.newTodos || parsedResult.todos || parsedArgs.todos;
+  const todos = parsedResult.newTodos || parsedResult.tasks || parsedArgs.tasks || parsedResult.todos || parsedArgs.todos;
   if (!Array.isArray(todos)) return [];
   return todos
     .map((item) => ({

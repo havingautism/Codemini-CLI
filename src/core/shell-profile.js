@@ -224,18 +224,18 @@ ALWAYS prefer dedicated tools over raw shell commands:
 - Use write for new files and whole-file output: new files use {path:"src/new.ts", content:"..."}; intentional overwrite uses {path:"src/app.ts", content:"...", overwrite:true}
 - Use apply_patch for large or multi-file changes using a single patch_text string in the *** Begin Patch / *** End Patch format
 - Tool arguments must be valid JSON objects. Escape file-content newlines as \\n inside JSON strings; never emit raw line breaks inside quoted JSON strings
-- Use update_todos to manage the session todo checklist for complex work. Provide the full current list each time and usually keep exactly one item in_progress
+- Use tasks to manage the session task checklist for complex work. Provide the full current list each time and usually keep exactly one item in_progress
 - Use read_plan and update_plan to recover or sync structured plan state when plan progress was interrupted (for example by transient gateway/model errors)
 - Use ${commandToolName} for shell commands. For long-running processes (dev servers, watchers), set run_in_background=true when you know you do not need the final result immediately. Long-running commands may also be backgrounded automatically
 
-Use update_todos with these rules:
+Use tasks with these rules:
 - MUST use it before major tool work when the task has 3 or more meaningful steps, multiple files or phases, explicit verification work, debugging with multiple hypotheses, or any non-trivial implementation likely to span several tool calls
 - Do NOT use it for single-step trivial edits, one-off command execution, or purely informational/chat responses
 - The input must be the full current checklist, not a partial patch
 - Keep exactly one item in_progress while work is actively underway unless the user explicitly asks for parallel execution
 - Mark items completed immediately after finishing them, and add newly discovered follow-up work as new checklist items
 - If tests fail, verification is incomplete, or a blocker remains, do not mark the affected item completed
-- Before giving a completion-style final answer for a complex task, update_todos so the checklist is either fully completed or clearly shows the remaining blocker
+- Before giving a completion-style final answer for complex work, call tasks so the checklist is either fully completed or clearly shows the remaining blocker
 
 Some tools are loaded on demand through tool_search. Common examples:
 - skill for activating an indexed skill by name
@@ -277,7 +277,7 @@ const SUB_AGENT_TOOL_HINTS = {
   update_plan: '- update_plan: sync structured plan state during execution',
   tool_search: '- tool_search: load a deferred tool that is in your allowed list. Example: {query:"glob"} or {query:"ast_query"}',
   skill: '- skill: search/load user-installed or project skills. Browse with {name:"list"} and search with {query:"ts generic"}. Do not grep/list skills directories.',
-  update_todos: '- update_todos: maintain the session todo checklist; send the full current list each time',
+  tasks: '- tasks: maintain the session task checklist; send the full current list each time',
   search_code: '- search_code: default code search. Routes text, symbol, and structure search; follow results with read on the returned file/range or ast_target. Example: {query:"loginUser", mode:"auto", path:"src"}',
   query_project_index: '- query_project_index: low-level indexed symbol search; prefer search_code({mode:"symbol"}) unless raw index details are needed',
   grep: '- grep: low-level plain text search; prefer search_code({mode:"text"}) unless raw grep output is needed',
@@ -319,7 +319,7 @@ export function buildSubAgentShellRulesPrompt(allowedTools = [], { shell, worksp
         : SUB_AGENT_TOOL_HINTS[name];
     })
     .filter(Boolean);
-  const deferredTools = allowed.filter((name) => !['read', 'search_code', 'read_plan', 'update_plan', 'update_todos', 'edit', 'write', 'begin_write', 'write_chunk', 'commit_write', 'abort_write', 'apply_patch', 'delete', 'run', 'tool_search', 'skill'].includes(name));
+  const deferredTools = allowed.filter((name) => !['read', 'search_code', 'read_plan', 'update_plan', 'tasks', 'edit', 'write', 'begin_write', 'write_chunk', 'commit_write', 'abort_write', 'apply_patch', 'delete', 'run', 'tool_search', 'skill'].includes(name));
   const lines = [
     `You are Codemini CLI, an AI assistant running as a pipeline sub-agent in a ${profile.label} shell environment.`,
     `Working directory: ${path.resolve(workspaceRoot || process.cwd())}`,

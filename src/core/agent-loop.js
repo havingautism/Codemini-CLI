@@ -191,7 +191,7 @@ function compactToolResult(result, toolName, args, maxChars = 12000) {
     return `${obj.tasks.length} task(s)`;
   }
   if ('newTodos' in obj && Array.isArray(obj.newTodos)) {
-    return obj.newTodos.length > 0 ? `updated ${obj.newTodos.length} todo item(s)` : 'cleared todo list';
+    return obj.newTodos.length > 0 ? `updated ${obj.newTodos.length} task item(s)` : 'cleared task list';
   }
   if ('newPlan' in obj) {
     return obj.newPlan ? `updated plan state (${String(obj.newPlan.status || 'draft')})` : 'cleared plan state';
@@ -638,7 +638,7 @@ function normalizeToolCallName(name) {
   return String(name || '').trim();
 }
 
-const FULL_CONTEXT_TOOL_RESULTS = new Set(['skill', 'update_todos', 'web_search']);
+const FULL_CONTEXT_TOOL_RESULTS = new Set(['skill', 'tasks', 'web_search']);
 
 function shouldPersistLargeToolResult(toolName) {
   return !FULL_CONTEXT_TOOL_RESULTS.has(normalizeToolCallName(toolName));

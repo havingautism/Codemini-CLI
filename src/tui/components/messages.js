@@ -54,7 +54,7 @@ function todoItems(value) {
   if (typeof value === 'string') {
     try { parsed = JSON.parse(value); } catch { return []; }
   }
-  const todos = parsed?.newTodos || parsed?.todos;
+  const todos = parsed?.newTodos || parsed?.tasks;
   if (!Array.isArray(todos)) return [];
   return todos
     .map((item) => ({
@@ -184,16 +184,16 @@ export class TodoProgress {
     if (typeof value === 'string') {
       try { parsed = JSON.parse(value); } catch { return; }
     }
-    if (Array.isArray(parsed?.todos) || Array.isArray(parsed?.newTodos)) {
+    if (Array.isArray(parsed?.tasks) || Array.isArray(parsed?.newTodos)) {
       this.items = todoItems(parsed);
     }
   }
 
   render(width) {
     const done = this.items.filter((item) => item.status === 'completed').length;
-    const header = `${bold(color.text(this.copy?.todos || 'Todos'))}  ${color.muted(`${done}/${this.items.length}`)}`;
+    const header = `${bold(color.text(this.copy?.todos || 'Tasks'))}  ${color.muted(`${done}/${this.items.length}`)}`;
     if (!this.items.length) {
-      return [header, `└─ ${color.dim(this.copy?.todosEmpty || 'No active todos')}`, ''];
+      return [header, `└─ ${color.dim(this.copy?.todosEmpty || 'No active tasks')}`, ''];
     }
     const rows = this.items.map((item, index) => {
       const icon = item.status === 'completed'
@@ -417,7 +417,7 @@ export function appendHistory(transcript, history, copy, { bodyOnly = true, expa
             summary: result.tool_summary || oneLine(result.content, 160),
             durationMs: result.tool_duration_ms
           };
-          if (String(event.name || '').toLowerCase() === 'update_todos') {
+          if (['tasks', 'update_todos'].includes(String(event.name || '').toLowerCase())) {
             latestTodo = event;
             continue;
           }

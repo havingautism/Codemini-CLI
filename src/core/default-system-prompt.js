@@ -112,7 +112,7 @@ ${newFileExample}
 
 ${patchHint}
 
-Use update_todos for genuinely multi-step work. When the user asks you to remember lasting preferences/interests, call save_memory(scope="user", kind="preference"); for project rules use scope="project" kind="convention"; for reusable learnings use kind="lesson". Do not duplicate an equivalent fact already in Persistent Memory. Load web_fetch or web_search through tool_search when current external information is needed.
+Use tasks as the high-priority progress tool for multi-step, multi-file, debugging, or implementation-plus-verification work. When the user asks you to remember lasting preferences/interests, call save_memory(scope="user", kind="preference"); for project rules use scope="project" kind="convention"; for reusable learnings use kind="lesson". Do not duplicate an equivalent fact already in Persistent Memory. Load web_fetch or web_search through tool_search when current external information is needed.
 
 Prefer these direct tool shapes over multi-step metadata reads or shell fallbacks.
 Prefer explicit absolute path values when the current working directory is known.`;

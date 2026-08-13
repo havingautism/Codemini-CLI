@@ -25,6 +25,14 @@ test('scrapbook client exposes URL, document upload, source selection and Studio
   assert.match(source, /export async function generateScrapbookArtifact/);
 });
 
+test('notebook detail exposes stored original content for manual, file, and URL sources', async () => {
+  const panel = await fs.readFile('codemini-web/client/src/components/ScrapbookPanel.jsx', 'utf8');
+  assert.match(panel, /setOpenSource\(source\)/);
+  assert.match(panel, /openSource\?\.contentText/);
+  assert.match(panel, /scrapbookOriginalContent/);
+  assert.match(panel, /scrapbookOpenOriginalSource/);
+});
+
 test('new notebooks accept multiple source types and start one summary job', async () => {
   const server = await fs.readFile('codemini-web/server.js', 'utf8');
   const service = await fs.readFile('codemini-web/lib/scrapbook-service.js', 'utf8');

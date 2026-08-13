@@ -102,11 +102,11 @@ test('layoutAnswerProcessWithPlans hoists create_plan out of nested process fold
 test('layout keeps only the latest todo card outside the process fold', () => {
   const layout = layoutAnswerProcessWithPlans([
     { type: 'tools', cards: [
-      { id: 'todo-1', name: 'update_todos', arguments: { todos: [{ content: 'Inspect', status: 'in_progress' }] } },
+      { id: 'todo-1', name: 'tasks', arguments: { tasks: [{ content: 'Inspect', status: 'in_progress' }] } },
       { id: 'read-1', name: 'read', status: 'done' },
     ] },
     { type: 'process', groups: [{ type: 'tools', cards: [
-      { id: 'todo-2', name: 'update_todos', arguments: { todos: [{ content: 'Inspect', status: 'completed' }] } },
+      { id: 'todo-2', name: 'tasks', arguments: { tasks: [{ content: 'Inspect', status: 'completed' }] } },
     ] }] },
     { type: 'text', text: 'done' },
   ]);
@@ -114,16 +114,16 @@ test('layout keeps only the latest todo card outside the process fold', () => {
   const todos = layout.items
     .filter((item) => item.type === 'group' && item.group?.type === 'tools')
     .flatMap((item) => item.group.cards || [])
-    .filter((card) => card.name === 'update_todos');
+    .filter((card) => card.name === 'tasks');
   assert.equal(todos.length, 1);
   assert.equal(todos[0].id, 'todo-2');
-  assert.equal(layout.items.at(-2).group.cards[0].name, 'update_todos');
+  assert.equal(layout.items.at(-2).group.cards[0].name, 'tasks');
   assert.equal(layout.items.at(-1).group.type, 'text');
 });
 
 test('subagent todo stays owned by its plan card and is removed from step details', () => {
-  const firstTodo = { id: 'todo-1', name: 'update_todos' };
-  const latestTodo = { id: 'todo-2', name: 'update_todos' };
+  const firstTodo = { id: 'todo-1', name: 'tasks' };
+  const latestTodo = { id: 'todo-2', name: 'tasks' };
   const readCard = { id: 'read-1', name: 'read' };
   const result = extractLatestTodoFromPlanSteps([
     {
@@ -136,4 +136,26 @@ test('subagent todo stays owned by its plan card and is removed from step detail
 
   assert.equal(result.todoCard, latestTodo);
   assert.deepEqual(result.steps[0].segments, [{ type: 'tools', cards: [readCard] }]);
+});
+
+test('subagent assigned tasks stay visible before the child sends its first tasks update', () => {
+  const assignedTasks = {
+    id: 'sub-1-assigned-tasks',
+    name: 'tasks',
+    arguments: {
+      tasks: [{ content: 'Inspect sources', status: 'pending' }],
+    },
+  };
+  const result = extractLatestTodoFromPlanSteps([], assignedTasks);
+  assert.equal(result.todoCard, assignedTasks);
+});
+
+test('subagent child tasks update replaces the initially assigned tasks card', () => {
+  const assignedTasks = { id: 'assigned', name: 'tasks' };
+  const childTasks = { id: 'child', name: 'tasks' };
+  const result = extractLatestTodoFromPlanSteps(
+    [{ segments: [{ type: 'tools', cards: [childTasks] }] }],
+    assignedTasks,
+  );
+  assert.equal(result.todoCard, childTasks);
 });

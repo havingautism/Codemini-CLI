@@ -483,7 +483,7 @@ export function applyStreamEventToMessage(message, event, options = {}) {
         : message.segments;
       return {
         ...message,
-        segments: String(toolCard.name || "").toLowerCase() === "update_todos"
+        segments: ["tasks", "update_todos"].includes(String(toolCard.name || "").toLowerCase())
           ? upsertSingletonToolCardInSegments(baseSegments, toolCard)
           : upsertToolCardInSegments(baseSegments, toolCard),
       };

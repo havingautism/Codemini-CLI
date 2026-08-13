@@ -4870,13 +4870,13 @@ export function getBuiltinTools({
     {
       type: "function",
       function: {
-        name: "update_todos",
+        name: "tasks",
         description:
-          "Create or replace the structured todo checklist for the current session. Use this proactively for complex single-task work to track progress. Provide the full current list each time, and keep exactly one item in_progress when work is actively underway.",
+          "High-priority progress tool for creating or replacing the current session's structured task checklist. Use it before multi-step, multi-file, debugging, implementation-plus-verification, or otherwise non-trivial work. Provide the full current list each time, keep exactly one task in_progress while working, and settle every task before the final answer.",
         parameters: {
           type: "object",
           properties: {
-            todos: {
+            tasks: {
               type: "array",
               items: {
                 type: "object",
@@ -4897,10 +4897,10 @@ export function getBuiltinTools({
                 },
                 required: ["content", "activeForm", "status"],
               },
-              description: "The full current todo checklist for this session",
+              description: "The full current task checklist for this session",
             },
           },
-          required: ["todos"],
+          required: ["tasks"],
         },
       },
     },
@@ -5061,14 +5061,31 @@ export function getBuiltinTools({
       function: {
         name: "run_subagent",
         description:
-          "Delegate work to a clean-context subagent so project inspection, test output, and independent reasoning do not bloat the main context. Prefer this for repository exploration, architecture/dependency lookup, broad code reading, test execution and failure triage, review, option comparison, and isolated implementation chunks. You write the full prompt and optional handoff context. Invent a short human name for the worker (e.g. David, Mira). For a dependency DAG, assign task_id and let later calls use depends_on; upstream handoffs are injected automatically. Dependencies must reference earlier calls in the same response. Capability is controlled by tools (default allows edits; pass a read-only list for explore/review/test-only work). Independent same-response calls run in parallel only when every call has an explicit read-only tools list; default or mutating workers run sequentially because they share one worktree. Subagents cannot call run_subagent/create_plan/create_spec. Avoid only truly atomic actions where delegation adds no useful evidence.",
+          "Delegate work to a clean-context subagent so project inspection, test output, and independent reasoning do not bloat the main context. Pass concrete task details in tasks; prompt may add scope, constraints, and handoff context. Prefer this for repository exploration, architecture/dependency lookup, broad code reading, test execution and failure triage, review, option comparison, and isolated implementation chunks. Invent a short human name for the worker (e.g. David, Mira). For a dependency DAG, assign task_id and let later calls use depends_on; upstream handoffs are injected automatically. Dependencies must reference earlier calls in the same response. Capability is controlled by tools (default allows edits; pass a read-only list for explore/review/test-only work). Independent same-response calls run in parallel only when every call has an explicit read-only tools list; default or mutating workers run sequentially because they share one worktree. Subagents cannot call run_subagent/create_plan/create_spec. Avoid only truly atomic actions where delegation adds no useful evidence.",
         parameters: {
           type: "object",
           properties: {
             prompt: {
               type: "string",
               description:
-                "Full task prompt for the subagent: goal, targets, success criteria, out-of-scope, and verification intent.",
+                "Optional scope, constraints, context, and handoff details. Use tasks for the concrete work items.",
+            },
+            tasks: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  content: { type: "string" },
+                  activeForm: { type: "string" },
+                  status: {
+                    type: "string",
+                    description: "pending, in_progress, or completed",
+                  },
+                },
+                required: ["content", "activeForm", "status"],
+              },
+              description:
+                "Concrete structured task checklist assigned to this subagent. Prefer this over burying work items in prompt prose.",
             },
             summary: {
               type: "string",
@@ -5112,7 +5129,7 @@ export function getBuiltinTools({
                 "Optional tool allow-list. Defaults to the coding edit baseline. Use a read-only subset for explore/review. On Linux/mac staged write and apply_patch are unavailable (prefer edit/write); glob/grep are part of the inspect baseline. run_subagent/create_plan/create_spec are always forbidden.",
             },
           },
-          required: ["prompt"],
+          required: [],
         },
       },
     });
@@ -6629,11 +6646,11 @@ export function getBuiltinTools({
         },
       },
     ),
-    update_todos: async (args = {}) => {
+    tasks: async (args = {}) => {
       const oldTodos = normalizeTodos(
         typeof getTodos === "function" ? getTodos() : [],
       );
-      const nextTodos = normalizeTodos(args?.todos);
+      const nextTodos = normalizeTodos(args?.tasks);
       if (typeof onTodosUpdate === "function") {
         onTodosUpdate(nextTodos);
       }
@@ -6755,12 +6772,14 @@ export function getBuiltinTools({
           error: "run_subagent is not available in the current mode.",
         };
       }
+      const assignedTasks = normalizeTodos(args?.tasks);
       const prompt = String(args?.prompt || "").trim();
-      if (!prompt) {
-        return { ok: false, error: "prompt is required" };
+      if (!prompt && assignedTasks.length === 0) {
+        return { ok: false, error: "prompt or tasks is required" };
       }
       return onRunSubAgent({
-        prompt,
+        prompt: prompt || "Complete the assigned tasks.",
+        tasks: assignedTasks,
         summary: String(args?.summary || "").trim(),
         name: String(args?.name || "").trim(),
         role: String(args?.role || "").trim(),
@@ -7229,10 +7248,10 @@ export function getBuiltinTools({
       return `${header}\n${dirs.join("\n")}${dirs.length && files.length ? "\n" : ""}${files.join("\n")}`;
     },
 
-    update_todos(result) {
+    tasks(result) {
       if (!result || typeof result !== "object") return String(result);
       const nextTodos = normalizeTodos(result.newTodos);
-      if (nextTodos.length === 0) return "Todo list cleared.";
+      if (nextTodos.length === 0) return "Task list cleared.";
       const lines = nextTodos.map((item) => {
         const box =
           item.status === "completed"
@@ -7242,7 +7261,7 @@ export function getBuiltinTools({
               : "[ ]";
         return `${box} ${item.content}`;
       });
-      return ["Updated todo list:", ...lines].join("\n");
+      return ["Updated task list:", ...lines].join("\n");
     },
 
     read_plan(result) {

@@ -8,7 +8,7 @@ import { isShellToolName } from './shell-tool-name.js';
 const LARGE_PAYLOAD_TOOLS = new Set([
   'create', 'write', 'write_chunk', 'edit', 'apply_patch', 'run', 'Bash', 'Powershell',
   'create_plan', 'run_subagent', 'update_plan', 'create_spec',
-  'update_todos', 'request_user_input', 'save_memory',
+  'tasks', 'request_user_input', 'save_memory',
   'add_code_comment', 'update_code_comment',
 ]);
 

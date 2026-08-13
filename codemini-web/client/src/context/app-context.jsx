@@ -2946,7 +2946,7 @@ export function AppProvider({ children }) {
                   role: "system",
                   text: summary ? `${ev.name}: ${summary}` : ev.name,
                   timestamp: new Date().toISOString(),
-                  startupTodos: ev.arguments?.todos,
+                  startupTodos: ev.arguments?.tasks,
                 });
               }
             }

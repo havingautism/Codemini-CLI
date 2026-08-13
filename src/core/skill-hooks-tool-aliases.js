@@ -21,7 +21,7 @@ export const CLAUDE_TO_CODEMINI = Object.freeze({
   Skill: 'skill',
   WebFetch: 'web_fetch',
   WebSearch: 'web_search',
-  TodoWrite: 'update_todos',
+  TodoWrite: 'tasks',
   Agent: 'tool_search',
 });
 
@@ -41,7 +41,7 @@ export const CODEMINI_HOOK_TOOLS = Object.freeze([
   { id: 'skill', labelKey: 'hookTool_skill' },
   { id: 'web_fetch', labelKey: 'hookTool_web_fetch' },
   { id: 'web_search', labelKey: 'hookTool_web_search' },
-  { id: 'update_todos', labelKey: 'hookTool_update_todos' },
+  { id: 'tasks', labelKey: 'hookTool_tasks' },
   { id: 'update_plan', labelKey: 'hookTool_update_plan' },
 ]);
 

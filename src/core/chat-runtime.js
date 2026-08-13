@@ -640,7 +640,7 @@ export const EXECUTION_MODE_TOOL_POLICY = {
     'read', 'search_code', 'grep', 'ast_grep', 'list', 'glob', 'ast_query', 'read_ast_node',
     'query_project_index', 'query_project_graph', 'tool_search', 'skill', 'web_fetch', 'web_search',
     'save_memory',
-    'update_todos',
+    'tasks',
     'edit', 'write', 'begin_write', 'write_chunk', 'commit_write', 'abort_write', 'apply_patch', 'delete', 'run',
     'run_subagent', 'request_user_input'
   ]
@@ -763,11 +763,11 @@ export function buildExecutionModePromptBlock(executionMode, platform = process.
 }
 
 export const ROLE_TOOL_POLICY = {
-  planner: ['read', 'read_plan', 'tool_search', 'skill', 'update_plan', 'update_todos'],
+  planner: ['read', 'read_plan', 'tool_search', 'skill', 'update_plan', 'tasks'],
   explorer: ['read', 'search_code', 'tool_search', 'skill', 'web_fetch', 'web_search'],
   architect: ['read', 'search_code', 'tool_search', 'skill', 'web_search'],
   advisor: ['read', 'search_code', 'tool_search', 'skill'],
-  coder: ['read', 'search_code', 'edit', 'write', 'begin_write', 'write_chunk', 'commit_write', 'abort_write', 'apply_patch', 'delete', 'run', 'tool_search', 'skill', 'web_fetch', 'web_search', 'update_todos'],
+  coder: ['read', 'search_code', 'edit', 'write', 'begin_write', 'write_chunk', 'commit_write', 'abort_write', 'apply_patch', 'delete', 'run', 'tool_search', 'skill', 'web_fetch', 'web_search', 'tasks'],
   refactorer: ['read', 'search_code', 'edit', 'write', 'begin_write', 'write_chunk', 'commit_write', 'abort_write', 'apply_patch', 'delete', 'run', 'tool_search', 'skill'],
   reviewer: ['read', 'search_code', 'tool_search', 'skill'],
   tester: ['read', 'search_code', 'run', 'tool_search', 'skill'],
@@ -866,6 +866,7 @@ export function resolveSubAgentToolAllowList({
     ),
     platform,
   );
+  if (!roleTools.includes('tasks')) roleTools.push('tasks');
   if (!Array.isArray(tools)) return roleTools;
   const requested = adaptToolNamesForPlatform(
     normalizeToolPolicy(tools, config).map(canonicalShellToolName).filter(
@@ -883,6 +884,7 @@ export function resolveSubAgentToolAllowList({
   ) {
     granted.push('tool_search');
   }
+  if (!granted.includes('tasks')) granted.push('tasks');
   return granted;
 }
 
@@ -4793,6 +4795,7 @@ async function askModel({
     onRunSubAgent: normalizedExecutionMode === 'plan'
       ? async ({
           prompt,
+          tasks = [],
           summary = '',
           name = '',
           role = '',
@@ -4811,10 +4814,14 @@ async function askModel({
           const policyKey = ROLE_TOOL_POLICY[identityKey] ? identityKey : 'coder';
           const taskRole = ROLE_TOOL_POLICY[identityKey] ? identityKey : persona;
           const taskPrompt = String(prompt || '').trim();
-          if (!taskPrompt) return { ok: false, error: 'prompt is required' };
+          const assignedTasks = normalizeTodos(tasks);
+          if (!taskPrompt && assignedTasks.length === 0) {
+            return { ok: false, error: 'prompt or tasks is required' };
+          }
+          const effectivePrompt = taskPrompt || 'Complete the assigned tasks.';
           const handoff = String(context || '').trim();
           const declaredGoal = String(goal || '').trim();
-          const title = trimInline(taskPrompt, 72) || persona;
+          const title = trimInline(assignedTasks[0]?.content || effectivePrompt, 72) || persona;
           const callId = String(toolCallId || `sub-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`).trim();
           const emit = (evt) => {
             if (onAgentEvent) onAgentEvent({ ...evt, toolCallId: callId });
@@ -4825,7 +4832,7 @@ async function askModel({
             taskId: dependencyTaskId,
             dependsOn,
             name: persona,
-            prompt: taskPrompt
+            prompt: effectivePrompt
           });
           if (!dependencyRegistration.ok) {
             emit({
@@ -4861,7 +4868,7 @@ async function askModel({
             total: 1,
             role: persona,
             title,
-            goal: taskPrompt,
+            goal: effectivePrompt,
             status: dependencyRegistration.dependencies.length ? 'waiting' : 'running',
             taskId: dependencyTaskId,
             dependsOn: dependencyRegistration.dependencies,
@@ -4911,13 +4918,14 @@ async function askModel({
             upstreamContext
           ].filter(Boolean);
           const scopedTask = contextSections.length
-            ? `${contextSections.join('\n\n')}\n\nTask:\n${taskPrompt}`
-            : taskPrompt;
+            ? `${contextSections.join('\n\n')}\n\nTask:\n${effectivePrompt}`
+            : effectivePrompt;
               let childUsage = null;
           try {
             const output = await runSubAgentTask({
               role: taskRole,
               task: scopedTask,
+              initialTasks: assignedTasks,
               goal: declaredGoal,
               priorSteps: [],
               parentSession: session,
@@ -5441,6 +5449,7 @@ async function askModel({
 export async function runSubAgentTask({
   role,
   task,
+  initialTasks = [],
   goal = '',
   priorSteps = [],
   parentSession,
@@ -5461,7 +5470,12 @@ export async function runSubAgentTask({
   projectIsGit = Boolean(config?.runtime?.project_is_git),
   workspaceRoot = process.cwd()
 }) {
-  const subSession = { id: `sub-${Date.now()}`, messages: [] };
+  const assignedTasks = normalizeTodos(initialTasks);
+  const subSession = {
+    id: `sub-${Date.now()}`,
+    messages: [],
+    todos: assignedTasks,
+  };
   const subAgentModel = resolveSubAgentModel(config, model);
   const rolePrompt = getSubAgentRolePrompt(role);
   const cleanContextRole = role === 'reviewer' || role === 'tester';
@@ -5487,6 +5501,12 @@ export async function runSubAgentTask({
     planFileSection,
     verificationPacket,
     focusedTaskNote,
+    assignedTasks.length
+      ? [
+          'Assigned tasks (use the tasks tool to keep this checklist current):',
+          ...assignedTasks.map((item) => `- [${item.status}] ${item.content}`),
+        ].join('\n')
+      : '',
     'Task:',
     task
   ]
@@ -7471,10 +7491,10 @@ export async function createChatRuntime({
     startupEvents.push({
       type: 'tool',
       id: `startup-todos-${String(session?.id || 'session')}`,
-      name: 'update_todos',
+      name: 'tasks',
       status: 'done',
-      arguments: { todos: initialTodos },
-      summary: `${initialTodos.length} todo item(s)`
+      arguments: { tasks: initialTodos },
+      summary: `${initialTodos.length} task item(s)`
     });
   }
   const initialPlanState = normalizePlanState(session?.planState);
