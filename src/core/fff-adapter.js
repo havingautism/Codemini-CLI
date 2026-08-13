@@ -1,9 +1,93 @@
 import { spawn } from 'node:child_process';
+import fs from 'node:fs/promises';
+import path from 'node:path';
 import { LANGUAGE_FILE_TYPES } from './constants.js';
 import { getPackageInfo } from './version.js';
 
 const DEFAULT_COMMAND = 'fff-mcp';
 const DEFAULT_TIMEOUT_MS = 15_000;
+const PATH_SEPARATORS = /[\\/]/;
+
+function normalizeComparablePath(filePath) {
+  const resolved = path.resolve(filePath);
+  return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+}
+
+function isPathInside(target, root) {
+  const relative = path.relative(normalizeComparablePath(root), normalizeComparablePath(target));
+  return relative === '' || (Boolean(relative) && !relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+function isBareCommandName(command) {
+  const name = String(command || '').trim();
+  if (!name || name === '.' || name === '..') return false;
+  return !PATH_SEPARATORS.test(name);
+}
+
+function pathLookupNames(name) {
+  if (process.platform !== 'win32') return [name];
+  const ext = path.extname(name);
+  const pathExt = String(process.env.PATHEXT || '.EXE;.CMD;.BAT;.COM');
+  const exts = pathExt.split(';').map((item) => item.trim()).filter(Boolean);
+  if (ext && exts.some((item) => item.toLowerCase() === ext.toLowerCase())) {
+    return [name];
+  }
+  return [name, ...exts.map((item) => `${name}${item}`)];
+}
+
+async function resolveBareCommandOnPath(name, workspaceRoot) {
+  const workspace = path.resolve(workspaceRoot);
+  const entries = String(process.env.PATH || '').split(path.delimiter);
+  const names = pathLookupNames(name);
+  for (const dir of entries) {
+    const trimmed = String(dir || '').trim();
+    if (!trimmed || trimmed === '.') continue;
+    const absDir = path.resolve(trimmed);
+    if (isPathInside(absDir, workspace)) continue;
+    for (const candidateName of names) {
+      const candidate = path.join(absDir, candidateName);
+      if (isPathInside(candidate, workspace)) continue;
+      try {
+        const stat = await fs.stat(candidate);
+        if (!stat.isFile()) continue;
+        const real = await fs.realpath(candidate);
+        if (isPathInside(real, workspace)) continue;
+        return real;
+      } catch {
+        // Keep scanning PATH.
+      }
+    }
+  }
+  throw new Error(`FFF command not found on PATH: ${name}`);
+}
+
+export async function resolveTrustedFffCommand(command, workspaceRoot) {
+  const raw = String(command || '').trim();
+  if (!raw) {
+    throw new Error('FFF command is empty');
+  }
+  if (isBareCommandName(raw)) {
+    return resolveBareCommandOnPath(raw, workspaceRoot);
+  }
+  if (!path.isAbsolute(raw)) {
+    throw new Error('FFF command must be a PATH program name or an absolute path outside the workspace');
+  }
+  const workspace = path.resolve(workspaceRoot);
+  const resolved = path.resolve(raw);
+  if (isPathInside(resolved, workspace)) {
+    throw new Error('FFF command cannot point at a workspace file');
+  }
+  try {
+    const real = await fs.realpath(resolved);
+    if (isPathInside(real, workspace)) {
+      throw new Error('FFF command cannot point at a workspace file');
+    }
+    return real;
+  } catch (error) {
+    if (error && error.message === 'FFF command cannot point at a workspace file') throw error;
+    throw new Error('FFF command must exist and resolve outside the workspace');
+  }
+}
 
 function clampNumber(value, min, max, fallback) {
   const num = Number(value);
@@ -89,9 +173,12 @@ class FffMcpClient {
     if (this.closed) {
       throw new Error('FFF MCP client already disposed');
     }
-    this.child = spawn(this.command, [], {
+    const command = await resolveTrustedFffCommand(this.command, this.workspaceRoot);
+    this.child = spawn(command, [], {
       cwd: this.workspaceRoot,
-      stdio: ['pipe', 'pipe', 'pipe']
+      stdio: ['pipe', 'pipe', 'pipe'],
+      shell: false,
+      windowsHide: true
     });
 
     this.child.stdout.on('data', this.parser);
