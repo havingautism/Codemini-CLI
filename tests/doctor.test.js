@@ -140,6 +140,7 @@ test('handleDoctor skips microsandbox doctor when using OS confinement', async (
       checkMicrosandboxDoctorFn: async () => {
         throw new Error('should not run microsandbox doctor for OS confinement');
       },
+      platform: 'darwin',
       writeLine: (line) => lines.push(line),
     });
     assert.match(lines.join('\n'), /\[SKIP\] Microsandbox host runtime: using OS confinement/);

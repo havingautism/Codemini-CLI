@@ -30,6 +30,7 @@ import {
   projectVisibleSessionState,
   reconcileSessionMessages,
   reduceSessionEvent,
+  rollbackOptimisticSandboxMode,
   runSessionOperation,
 } from "../lib/session-state.js";
 import { buildMcpToolDisplayLabels } from "../../../../src/core/mcp-tool-display.js";
@@ -4170,18 +4171,12 @@ export function AppProvider({ children }) {
           }
           return result;
         } catch (error) {
-          setState((prev) => {
-            const sessionRuntimeById = { ...prev.sessionRuntimeById };
-            if (sid) {
-              if (previousSessionRuntime) sessionRuntimeById[sid] = previousSessionRuntime;
-              else delete sessionRuntimeById[sid];
-            }
-            return {
-              ...prev,
-              runtimeState: previousRuntime,
-              sessionRuntimeById,
-            };
-          });
+          setState((prev) => rollbackOptimisticSandboxMode(prev, {
+            sessionId: sid,
+            optimisticMode: mode,
+            previousRuntime,
+            previousSessionRuntime,
+          }));
           throw error;
         }
       },

@@ -55,6 +55,7 @@ export async function handleDoctor({
   commandExistsFn = commandExists,
   checkMicrosandboxDoctorFn = checkMicrosandboxDoctor,
   shouldCheckMicrosandboxFn = shouldCheckMicrosandbox,
+  platform = process.platform,
   writeLine = (line) => console.log(line)
 } = {}) {
   const config = await loadConfigFn();
@@ -68,8 +69,8 @@ export async function handleDoctor({
 
   checks.push({
     name: 'Platform',
-    ok: process.platform === 'win32',
-    detail: process.platform === 'win32' ? 'win32' : `non-win32 (${process.platform})`
+    ok: platform === 'win32',
+    detail: platform === 'win32' ? 'win32' : `non-win32 (${platform})`
   });
 
   checks.push({
@@ -104,7 +105,7 @@ export async function handleDoctor({
     detail: hasFff ? 'found fff-mcp' : 'fff-mcp not found in PATH'
   });
 
-  if (shouldCheckMicrosandboxFn(config)) {
+  if (shouldCheckMicrosandboxFn(config, { platform })) {
     const sandbox = await checkMicrosandboxDoctorFn();
     checks.push({
       name: 'Microsandbox host runtime',
@@ -112,18 +113,18 @@ export async function handleDoctor({
       detail: sandbox.reason,
     });
   } else {
-    const policy = resolveSandboxPolicy({ config });
+    const policy = resolveSandboxPolicy({ config, platform });
     if (policy.enabled && policy.backend === 'none') {
       checks.push({
         name: 'Microsandbox host runtime',
         ok: false,
-        detail: describeSandboxDoctorUnavailable(config),
+        detail: describeSandboxDoctorUnavailable(config, { platform }),
       });
     } else {
       checks.push({
         name: 'Microsandbox host runtime',
         skip: true,
-        detail: describeSandboxDoctorSkip(config),
+        detail: describeSandboxDoctorSkip(config, { platform }),
       });
     }
   }

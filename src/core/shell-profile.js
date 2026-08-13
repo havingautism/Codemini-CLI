@@ -147,6 +147,7 @@ export function resolveShellContext(
 ) {
   const sandbox = resolveSandboxPolicy({ config, cwd, platform });
   const vm = isVmSandbox(sandbox);
+  const pathApi = platform === 'win32' ? path.win32 : path.posix;
   const shell = vm
     ? 'bash'
     : platform === 'win32'
@@ -156,7 +157,7 @@ export function resolveShellContext(
     sandbox,
     shell,
     commandPlatform: vm ? 'linux' : platform,
-    commandCwd: vm ? '/workspace' : path.resolve(cwd),
+    commandCwd: vm ? '/workspace' : pathApi.resolve(cwd),
     commandToolName: shellToolName({
       platform: vm ? 'linux' : platform,
       shell,
