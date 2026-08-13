@@ -8,6 +8,7 @@ import {
   mergeAlignedAssistantSkillContext,
   mergeAlignedUserContext,
   projectVisibleSessionState,
+  reduceSessionRuntimeEvent,
   reduceSessionTranscriptEvent,
 } from '../codemini-web/client/src/lib/session-state.js';
 
@@ -215,4 +216,37 @@ test('assistant:response replaces prior text even when a tool card follows it', 
   assert.equal(textSegments[0].text, '先加载技能指令');
   assert.equal(textSegments[0].isStreaming, false);
   assert.equal(segments[1].type, 'tools');
+});
+
+test('sandbox-mode:changed updates the projected session runtime immediately', () => {
+  const state = {
+    currentSessionId: 'session-a',
+    runtimeState: {
+      sessionId: 'session-a',
+      sandboxMode: 'read-only',
+      approvalUiEnabled: false,
+    },
+    sessionRuntimeById: {
+      'session-a': {
+        sessionId: 'session-a',
+        sandboxMode: 'read-only',
+        approvalUiEnabled: false,
+      },
+    },
+    sessionMessagesById: { 'session-a': [] },
+  };
+
+  const reduced = reduceSessionRuntimeEvent(state, {
+    type: 'sandbox-mode:changed',
+    sessionId: 'session-a',
+    sandboxMode: 'workspace-write',
+    approvalUiEnabled: true,
+    busy: false,
+  });
+  const visible = projectVisibleSessionState(reduced);
+
+  assert.equal(visible.runtimeState.sandboxMode, 'workspace-write');
+  assert.equal(visible.runtimeState.approvalUiEnabled, true);
+  assert.equal(visible.runtimeState.type, undefined);
+  assert.equal(visible.runtimeState.sessionId, 'session-a');
 });

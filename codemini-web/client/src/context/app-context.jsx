@@ -2660,7 +2660,9 @@ export function AppProvider({ children }) {
             runtimeState: {
               ...stateRef.current.runtimeState,
               sandboxMode: rs.sandboxMode,
-              ...rs,
+              ...(rs.approvalUiEnabled !== undefined
+                ? { approvalUiEnabled: rs.approvalUiEnabled }
+                : {}),
             },
           });
           break;
@@ -4143,13 +4145,24 @@ export function AppProvider({ children }) {
         });
       },
       setSandboxMode: async (sessionId, mode) => {
-        const previous = stateRef.current.runtimeState || {};
-        update({
-          runtimeState: {
-            ...previous,
-            sandboxMode: mode,
-          },
-        });
+        const sid = String(sessionId || stateRef.current.currentSessionId || "").trim();
+        const previousRuntime = stateRef.current.runtimeState || {};
+        const previousSessionRuntime = sid
+          ? stateRef.current.sessionRuntimeById?.[sid]
+          : undefined;
+        setState((prev) => ({
+          ...prev,
+          runtimeState: { ...(prev.runtimeState || {}), sandboxMode: mode },
+          sessionRuntimeById: sid
+            ? {
+                ...prev.sessionRuntimeById,
+                [sid]: {
+                  ...(prev.sessionRuntimeById[sid] || { sessionId: sid }),
+                  sandboxMode: mode,
+                },
+              }
+            : prev.sessionRuntimeById,
+        }));
         try {
           const result = await api.setSandboxMode(sessionId, mode);
           if (result?.error || result?.ok === false) {
@@ -4157,7 +4170,18 @@ export function AppProvider({ children }) {
           }
           return result;
         } catch (error) {
-          update({ runtimeState: previous });
+          setState((prev) => {
+            const sessionRuntimeById = { ...prev.sessionRuntimeById };
+            if (sid) {
+              if (previousSessionRuntime) sessionRuntimeById[sid] = previousSessionRuntime;
+              else delete sessionRuntimeById[sid];
+            }
+            return {
+              ...prev,
+              runtimeState: previousRuntime,
+              sessionRuntimeById,
+            };
+          });
           throw error;
         }
       },
@@ -4226,6 +4250,7 @@ export function AppProvider({ children }) {
       loadSessionMessages,
       loadSessions,
       loadState,
+      setState,
       update,
       upsertRuntimeActivity,
     ],

@@ -140,6 +140,9 @@ export function reduceSessionRuntimeEvent(state, event) {
     runtime = { ...previous, ...event, sessionId };
   } else if (event.type === "approval-mode:changed") {
     runtime = { ...previous, ...event, sessionId };
+  } else if (event.type === "sandbox-mode:changed") {
+    const { type: _type, ...rest } = event;
+    runtime = { ...previous, ...rest, sessionId };
   } else if (event.type === "submit:start") {
     runtime = { ...previous, status: "running", busy: true, sessionId };
   } else if (event.type === "submit:done") {
