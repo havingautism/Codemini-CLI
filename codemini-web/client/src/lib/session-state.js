@@ -100,6 +100,55 @@ export async function runSessionOperation(inFlight, sessionId, operation) {
   }
 }
 
+function restoreSandboxMode(current, previous, optimisticMode) {
+  if (!current || current.sandboxMode !== optimisticMode) return current;
+  const restored = { ...current };
+  if (Object.hasOwn(previous || {}, "sandboxMode")) {
+    restored.sandboxMode = previous.sandboxMode;
+  } else {
+    delete restored.sandboxMode;
+  }
+  return restored;
+}
+
+export function rollbackOptimisticSandboxMode(state, {
+  sessionId,
+  optimisticMode,
+  previousRuntime,
+  previousSessionRuntime,
+}) {
+  const runtimeState = restoreSandboxMode(
+    state.runtimeState,
+    previousRuntime,
+    optimisticMode,
+  );
+  let sessionRuntimeById = state.sessionRuntimeById;
+  const currentSessionRuntime = sessionRuntimeById?.[sessionId];
+  const restoredSessionRuntime = restoreSandboxMode(
+    currentSessionRuntime,
+    previousSessionRuntime,
+    optimisticMode,
+  );
+  if (restoredSessionRuntime !== currentSessionRuntime) {
+    sessionRuntimeById = { ...sessionRuntimeById };
+    if (
+      !previousSessionRuntime &&
+      Object.keys(restoredSessionRuntime).every((key) => key === "sessionId")
+    ) {
+      delete sessionRuntimeById[sessionId];
+    } else {
+      sessionRuntimeById[sessionId] = restoredSessionRuntime;
+    }
+  }
+  if (
+    runtimeState === state.runtimeState &&
+    sessionRuntimeById === state.sessionRuntimeById
+  ) {
+    return state;
+  }
+  return { ...state, runtimeState, sessionRuntimeById };
+}
+
 export function reduceSessionRuntimeEvent(state, event) {
   const sessionId = String(event?.sessionId || "").trim();
   if (!sessionId) return state;

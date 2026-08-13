@@ -10,6 +10,7 @@ import {
   projectVisibleSessionState,
   reduceSessionRuntimeEvent,
   reduceSessionTranscriptEvent,
+  rollbackOptimisticSandboxMode,
 } from '../codemini-web/client/src/lib/session-state.js';
 
 test('switching to a pool-only session does not retain the previous runtime state', () => {
@@ -249,4 +250,62 @@ test('sandbox-mode:changed updates the projected session runtime immediately', (
   assert.equal(visible.runtimeState.approvalUiEnabled, true);
   assert.equal(visible.runtimeState.type, undefined);
   assert.equal(visible.runtimeState.sessionId, 'session-a');
+});
+
+test('sandbox mode rollback preserves newer runtime events', () => {
+  const previousRuntime = { sandboxMode: 'read-only', status: 'idle' };
+  const previousSessionRuntime = {
+    sessionId: 'session-a',
+    sandboxMode: 'read-only',
+    status: 'idle',
+  };
+  const rolledBack = rollbackOptimisticSandboxMode({
+    runtimeState: {
+      sandboxMode: 'workspace-write',
+      status: 'running',
+      reasoningEffort: 'high',
+    },
+    sessionRuntimeById: {
+      'session-a': {
+        sessionId: 'session-a',
+        sandboxMode: 'workspace-write',
+        status: 'running',
+        busy: true,
+      },
+    },
+  }, {
+    sessionId: 'session-a',
+    optimisticMode: 'workspace-write',
+    previousRuntime,
+    previousSessionRuntime,
+  });
+
+  assert.deepEqual(rolledBack.runtimeState, {
+    sandboxMode: 'read-only',
+    status: 'running',
+    reasoningEffort: 'high',
+  });
+  assert.deepEqual(rolledBack.sessionRuntimeById['session-a'], {
+    sessionId: 'session-a',
+    sandboxMode: 'read-only',
+    status: 'running',
+    busy: true,
+  });
+
+  const superseded = rollbackOptimisticSandboxMode({
+    runtimeState: { sandboxMode: 'danger-full-access', status: 'idle' },
+    sessionRuntimeById: {
+      'session-a': { sessionId: 'session-a', sandboxMode: 'danger-full-access' },
+    },
+  }, {
+    sessionId: 'session-a',
+    optimisticMode: 'workspace-write',
+    previousRuntime,
+    previousSessionRuntime,
+  });
+  assert.equal(superseded.runtimeState.sandboxMode, 'danger-full-access');
+  assert.equal(
+    superseded.sessionRuntimeById['session-a'].sandboxMode,
+    'danger-full-access',
+  );
 });
