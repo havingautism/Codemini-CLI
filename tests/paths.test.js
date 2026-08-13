@@ -48,6 +48,18 @@ test('Linux with XDG_CONFIG_HOME uses that directory', () => {
   );
 });
 
+test('Linux ignores a relative XDG_CONFIG_HOME', () => {
+  const homedir = '/home/someone';
+  assert.equal(
+    getBaseConfigDir({
+      env: { XDG_CONFIG_HOME: 'workspace-controlled' },
+      platform: 'linux',
+      homedir,
+    }),
+    path.join(homedir, '.config', 'codemini-global'),
+  );
+});
+
 test('Windows and macOS keep user-profile global directories', () => {
   assert.equal(
     getBaseConfigDir({

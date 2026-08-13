@@ -23,7 +23,10 @@ export function getBaseConfigDir({
   }
 
   const xdgConfigHome = String(env.XDG_CONFIG_HOME || '').trim();
-  return path.join(xdgConfigHome || path.join(homedir, '.config'), GLOBAL_APP_DIR);
+  const configHome = path.posix.isAbsolute(xdgConfigHome)
+    ? xdgConfigHome
+    : path.join(homedir, '.config');
+  return path.join(configHome, GLOBAL_APP_DIR);
 }
 
 export function getConfigFilePath() {

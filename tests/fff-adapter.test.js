@@ -39,6 +39,26 @@ test('resolveTrustedFffCommand rejects relative and workspace paths', async () =
   });
 });
 
+test('resolveTrustedFffCommand rejects workspace files through a symlinked root', async () => {
+  await withTempDir('codemini-fff-symlink-', async (root) => {
+    const workspace = path.join(root, 'workspace');
+    const linkedWorkspace = path.join(root, 'workspace-link');
+    const helper = path.join(workspace, 'helper');
+    await fs.mkdir(workspace);
+    await fs.writeFile(helper, '#!/bin/sh\n', { mode: 0o755 });
+    await fs.symlink(
+      workspace,
+      linkedWorkspace,
+      process.platform === 'win32' ? 'junction' : 'dir',
+    );
+
+    await assert.rejects(
+      () => resolveTrustedFffCommand(helper, linkedWorkspace),
+      /workspace file/,
+    );
+  });
+});
+
 test('resolveTrustedFffCommand accepts a PATH program outside the workspace', async () => {
   await withTempDir('codemini-fff-path-', async (root) => {
     const workspace = path.join(root, 'workspace');
@@ -84,6 +104,78 @@ test('resolveTrustedFffCommand ignores a workspace binary that shadows PATH', as
         /not found on PATH/,
       );
     } finally {
+      process.env.PATH = previousPath;
+    }
+  });
+});
+
+test('resolveTrustedFffCommand rejects non-executable Unix files', {
+  skip: process.platform === 'win32',
+}, async () => {
+  await withTempDir('codemini-fff-non-executable-', async (root) => {
+    const workspace = path.join(root, 'workspace');
+    const helper = path.join(root, 'helper');
+    await fs.mkdir(workspace);
+    await fs.writeFile(helper, '#!/bin/sh\n', { mode: 0o644 });
+
+    await assert.rejects(
+      () => resolveTrustedFffCommand(helper, workspace),
+      /executable file/,
+    );
+  });
+});
+
+test('resolveTrustedFffCommand rejects directories', async () => {
+  await withTempDir('codemini-fff-directory-', async (root) => {
+    const workspace = path.join(root, 'workspace');
+    const commandDir = path.join(root, 'command-dir');
+    await fs.mkdir(workspace);
+    await fs.mkdir(commandDir);
+
+    await assert.rejects(
+      () => resolveTrustedFffCommand(commandDir, workspace),
+      /executable file/,
+    );
+  });
+});
+
+test('FFF connect starts a Windows PATH cmd shim', {
+  skip: process.platform !== 'win32',
+}, async () => {
+  await withTempDir('codemini-fff-cmd-', async (root) => {
+    const workspace = path.join(root, 'workspace');
+    const binDir = path.join(root, 'bin');
+    const server = path.join(binDir, 'mock-fff.mjs');
+    const commandName = `codemini-fff-cmd-${process.pid}`;
+    const shim = path.join(binDir, `${commandName}.cmd`);
+    await fs.mkdir(workspace);
+    await fs.mkdir(binDir);
+    await fs.writeFile(server, `
+let input = Buffer.alloc(0);
+process.stdin.on('data', (chunk) => {
+  input = Buffer.concat([input, chunk]);
+  const headerEnd = input.indexOf('\\r\\n\\r\\n');
+  if (headerEnd < 0) return;
+  const match = input.slice(0, headerEnd).toString().match(/Content-Length:\\s*(\\d+)/i);
+  if (!match || input.length < headerEnd + 4 + Number(match[1])) return;
+  const request = JSON.parse(input.slice(headerEnd + 4, headerEnd + 4 + Number(match[1])));
+  const body = Buffer.from(JSON.stringify({ jsonrpc: '2.0', id: request.id, result: {} }));
+  process.stdout.write(\`Content-Length: \${body.length}\\r\\n\\r\\n\`);
+  process.stdout.write(body);
+});
+`);
+    await fs.writeFile(shim, '@echo off\r\nnode "%~dp0mock-fff.mjs"\r\n');
+
+    const previousPath = process.env.PATH;
+    process.env.PATH = `${binDir}${path.delimiter}${previousPath || ''}`;
+    const adapter = createFffAdapter({
+      workspaceRoot: workspace,
+      config: { search: { fff_command: commandName } },
+    });
+    try {
+      await adapter.connect();
+    } finally {
+      await adapter.dispose();
       process.env.PATH = previousPath;
     }
   });

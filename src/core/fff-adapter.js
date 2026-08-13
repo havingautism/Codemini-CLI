@@ -1,6 +1,7 @@
-import { spawn } from 'node:child_process';
+import { constants as fsConstants } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { execa } from 'execa';
 import { LANGUAGE_FILE_TYPES } from './constants.js';
 import { getPackageInfo } from './version.js';
 
@@ -24,6 +25,16 @@ function isBareCommandName(command) {
   return !PATH_SEPARATORS.test(name);
 }
 
+async function assertExecutableFile(filePath) {
+  const stat = await fs.stat(filePath);
+  if (!stat.isFile()) throw new Error('FFF command must resolve to an executable file');
+  if (process.platform !== 'win32') {
+    await fs.access(filePath, fsConstants.X_OK).catch(() => {
+      throw new Error('FFF command must resolve to an executable file');
+    });
+  }
+}
+
 function pathLookupNames(name) {
   if (process.platform !== 'win32') return [name];
   const ext = path.extname(name);
@@ -35,8 +46,7 @@ function pathLookupNames(name) {
   return [name, ...exts.map((item) => `${name}${item}`)];
 }
 
-async function resolveBareCommandOnPath(name, workspaceRoot) {
-  const workspace = path.resolve(workspaceRoot);
+async function resolveBareCommandOnPath(name, workspace) {
   const entries = String(process.env.PATH || '').split(path.delimiter);
   const names = pathLookupNames(name);
   for (const dir of entries) {
@@ -48,10 +58,9 @@ async function resolveBareCommandOnPath(name, workspaceRoot) {
       const candidate = path.join(absDir, candidateName);
       if (isPathInside(candidate, workspace)) continue;
       try {
-        const stat = await fs.stat(candidate);
-        if (!stat.isFile()) continue;
         const real = await fs.realpath(candidate);
         if (isPathInside(real, workspace)) continue;
+        await assertExecutableFile(real);
         return real;
       } catch {
         // Keep scanning PATH.
@@ -66,27 +75,23 @@ export async function resolveTrustedFffCommand(command, workspaceRoot) {
   if (!raw) {
     throw new Error('FFF command is empty');
   }
-  if (isBareCommandName(raw)) {
-    return resolveBareCommandOnPath(raw, workspaceRoot);
-  }
+  const workspace = await fs.realpath(path.resolve(workspaceRoot));
+  if (isBareCommandName(raw)) return resolveBareCommandOnPath(raw, workspace);
   if (!path.isAbsolute(raw)) {
     throw new Error('FFF command must be a PATH program name or an absolute path outside the workspace');
   }
-  const workspace = path.resolve(workspaceRoot);
   const resolved = path.resolve(raw);
   if (isPathInside(resolved, workspace)) {
     throw new Error('FFF command cannot point at a workspace file');
   }
-  try {
-    const real = await fs.realpath(resolved);
-    if (isPathInside(real, workspace)) {
-      throw new Error('FFF command cannot point at a workspace file');
-    }
-    return real;
-  } catch (error) {
-    if (error && error.message === 'FFF command cannot point at a workspace file') throw error;
+  const real = await fs.realpath(resolved).catch(() => {
     throw new Error('FFF command must exist and resolve outside the workspace');
+  });
+  if (isPathInside(real, workspace)) {
+    throw new Error('FFF command cannot point at a workspace file');
   }
+  await assertExecutableFile(real);
+  return real;
 }
 
 function clampNumber(value, min, max, fallback) {
@@ -174,19 +179,20 @@ class FffMcpClient {
       throw new Error('FFF MCP client already disposed');
     }
     const command = await resolveTrustedFffCommand(this.command, this.workspaceRoot);
-    this.child = spawn(command, [], {
+    this.child = execa(command, [], {
       cwd: this.workspaceRoot,
       stdio: ['pipe', 'pipe', 'pipe'],
       shell: false,
-      windowsHide: true
+      windowsHide: true,
+      reject: false
     });
 
     this.child.stdout.on('data', this.parser);
     this.child.stderr.on('data', () => {});
-    this.child.on('error', (error) => {
+    this.child.nodeChildProcess.on('error', (error) => {
       this.rejectAll(error);
     });
-    this.child.on('exit', (code) => {
+    this.child.nodeChildProcess.on('exit', (code) => {
       this.connected = false;
       this.child = null;
       if (!this.closed && code !== 0) {
