@@ -8,9 +8,11 @@ import React, {
 import { Separator } from "@/components/ui/separator";
 import {
   Archive,
+  ArrowSquareOut,
   ArrowUp,
   Camera,
   CaretDown,
+  CircleNotch,
   FileText,
   Hammer,
   ImageSquare,
@@ -18,6 +20,7 @@ import {
   MagnifyingGlass,
   Minus,
   Moon,
+  Notebook,
   Paperclip,
   Plus,
   Sparkle,
@@ -36,6 +39,7 @@ import {
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { USER_ACTION_COMMAND_NAMES } from "@/lib/user-skill-prompt.js";
 import {
+  executionModeSkillContext,
   filterSkillsForExecutionMode,
   skillIsVisibleInExecutionMode,
 } from "@/lib/skill-visibility.js";
@@ -49,6 +53,7 @@ import {
 import {
   getExecutionModeOptions,
   getApprovalModeOptions,
+  getSandboxModeOptions,
 } from "@/lib/settings-options.js";
 
 const IMPLICIT_SKILLS = new Set();
@@ -92,6 +97,7 @@ const INPUT_PILL_CLASS =
 const ATTACHMENT_ACCEPT =
   "image/png,image/jpeg,image/webp,image/gif,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,.png,.jpg,.jpeg,.webp,.gif,.pdf,.docx";
 const IMAGE_MAX_EDGE = 1600;
+const SCRAPBOOK_PICKER_PAGE_SIZE = 8;
 const IMAGE_JPEG_QUALITY = 0.82;
 
 function isImageFile(file) {
@@ -109,6 +115,29 @@ function compactBytes(bytes = 0) {
   if (value < 1024) return `${Math.round(value)} B`;
   if (value < 1024 * 1024) return `${Math.round(value / 102.4) / 10} KB`;
   return `${Math.round(value / 1024 / 102.4) / 10} MB`;
+}
+
+function getScrapbookPreviewText(entry) {
+  return String(
+    entry?.summary ||
+      entry?.contentText ||
+      entry?.sourceUrl ||
+      t("scrapbookNoContent"),
+  )
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function getScrapbookAskSummary(entry) {
+  const fromJob = String(entry?.latestJob?.resultSummary || "").trim();
+  const fromEntry = String(entry?.summary || "").trim();
+  return fromJob || fromEntry;
+}
+
+function isScrapbookAskBlocked(entry) {
+  if (getScrapbookAskSummary(entry)) return false;
+  const status = String(entry?.latestJob?.status || "");
+  return status === "pending" || status === "running";
 }
 
 async function compressImageFile(file) {
@@ -300,21 +329,127 @@ function ApprovalModeSelector({ sessionId, current, disabled = false }) {
   );
 }
 
-function SoulQuickSwitch({ disabled = false }) {
+function SandboxModeSelector({
+  sessionId,
+  current,
+  onChange,
+  disabled = false,
+}) {
+  const [open, setOpen] = useState(false);
+  const [switching, setSwitching] = useState(false);
+  const [error, setError] = useState("");
+  const MODE_OPTIONS = getSandboxModeOptions();
+  const active =
+    MODE_OPTIONS.find((m) => m.value === current) || MODE_OPTIONS[0];
+  const ActiveIcon = active.icon;
+
+  const handleSelect = async (mode) => {
+    if (!mode || mode === current || switching || disabled) return;
+    setSwitching(true);
+    setError("");
+    try {
+      await onChange(sessionId, mode);
+      setOpen(false);
+    } catch (err) {
+      setError(err?.message || t("actionFailed"));
+    } finally {
+      setSwitching(false);
+    }
+  };
+
+  return (
+    <Popover
+      open={open}
+      onOpenChange={(next) => !disabled && !switching && setOpen(next)}
+    >
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          className={cn(
+            INPUT_PILL_CLASS,
+            "px-2.5",
+            (switching || disabled) && "opacity-50 pointer-events-none",
+          )}
+          disabled={disabled || switching}
+          aria-busy={switching}
+          title={disabled ? t("switchModeDisabled") : t("switchSandboxMode")}
+        >
+          {switching ? (
+            <CircleNotch size={13} className="animate-spin" />
+          ) : (
+            <ActiveIcon size={13} />
+          )}
+          <span className="truncate">{active.label}</span>
+          <CaretDown size={11} />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent
+        side="top"
+        align="start"
+        sideOffset={6}
+        className="w-72 max-w-[calc(100vw-32px)] p-2"
+      >
+        <div className="px-0.5 pb-1.5 text-[11px] font-medium text-muted-foreground">
+          {t("sandboxMode")}
+        </div>
+        <ToggleGroup
+          type="single"
+          value={current}
+          onValueChange={handleSelect}
+          disabled={disabled || switching}
+          size="auto"
+          className="flex w-full flex-col items-stretch gap-0.5"
+        >
+          {MODE_OPTIONS.map((opt) => {
+            const Icon = opt.icon;
+            return (
+              <ToggleGroupItem
+                key={opt.value}
+                value={opt.value}
+                className="gap-2 data-[state=on]:shadow-none"
+              >
+                <Icon data-icon="inline-start" className="mt-0.5" />
+                <span className="min-w-0 flex-1 overflow-hidden">
+                  <span className="block truncate">{opt.label}</span>
+                  <span className="block wrap-break-word text-[11px] font-normal leading-snug text-muted-foreground">
+                    {opt.description}
+                  </span>
+                </span>
+              </ToggleGroupItem>
+            );
+          })}
+        </ToggleGroup>
+        {error ? (
+          <div
+            role="alert"
+            className="px-2 pt-1.5 text-[11px] text-(--accent-red)"
+          >
+            {error}
+          </div>
+        ) : null}
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+function SoulQuickSwitch({ disabled = false, mode = "normal" }) {
   const { state, actions } = useApp();
   const [souls, setSouls] = useState([]);
   const [active, setActive] = useState("");
   const [open, setOpen] = useState(false);
+  const category = executionModeSkillContext(mode);
 
   const loadSouls = useCallback(async () => {
     try {
       const list = await api.fetchSouls();
-      const arr = Array.isArray(list) ? list : [];
+      const arr = (Array.isArray(list) ? list : []).filter(
+        (soul) => (soul.category || "coding") === category,
+      );
       setSouls(arr);
       const current = arr.find((s) => s.active);
       setActive(current ? current.name : "");
     } catch {}
-  }, []);
+  }, [category]);
 
   useEffect(() => {
     loadSouls();
@@ -326,10 +461,10 @@ function SoulQuickSwitch({ disabled = false }) {
     }
   }, [state.soulsRevision, loadSouls]);
 
-  const handleActivate = async (name) => {
-    if (disabled) return;
-    await api.activateSoul(name);
-    setActive(name);
+  const handleActivate = async (soul) => {
+    if (disabled || !soul?.name) return;
+    await api.activateSoul(soul.name, soul.category || category);
+    setActive(soul.name);
     setOpen(false);
     await loadSouls();
     actions.notifySoulsChanged();
@@ -360,12 +495,15 @@ function SoulQuickSwitch({ disabled = false }) {
         className="w-52 p-1"
       >
         <div className="text-[11px] text-(--text-muted) px-2 py-1.5 font-medium">
-          {t("switchSoul")}
+          {t("switchSoul")} ·{" "}
+          {category === "daily"
+            ? t("skillContextDaily")
+            : t("skillContextCoding")}
         </div>
         <div className="flex flex-col gap-0.5">
           {souls.map((soul) => (
             <button
-              key={`${soul.scope}-${soul.name}`}
+              key={`${soul.category}-${soul.scope}-${soul.name}`}
               disabled={disabled}
               className={cn(
                 "w-full border-0 rounded-md px-2 py-1.5 text-left text-[12px] cursor-pointer flex items-center gap-2",
@@ -374,7 +512,7 @@ function SoulQuickSwitch({ disabled = false }) {
                   ? "bg-(--bg-active) text-(--text-primary) font-medium"
                   : "bg-transparent text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary)",
               )}
-              onClick={() => handleActivate(soul.name)}
+              onClick={() => handleActivate(soul)}
             >
               <span className="truncate flex-1">{soul.name}</span>
               <span className="text-[10px] text-(--text-muted) shrink-0">
@@ -382,110 +520,6 @@ function SoulQuickSwitch({ disabled = false }) {
               </span>
             </button>
           ))}
-        </div>
-      </PopoverContent>
-    </Popover>
-  );
-}
-
-function SpecQuickSelect({ sessionId, visible, disabled = false, onSelect }) {
-  const [open, setOpen] = useState(false);
-  const [specs, setSpecs] = useState([]);
-  const [loading, setLoading] = useState(false);
-
-  const loadSpecs = useCallback(async () => {
-    if (!visible || disabled) return;
-    setLoading(true);
-    try {
-      const result = await api.fetchSpecs(sessionId);
-      setSpecs(Array.isArray(result?.specs) ? result.specs : []);
-    } catch {
-      setSpecs([]);
-    } finally {
-      setLoading(false);
-    }
-  }, [sessionId, visible, disabled]);
-
-  useEffect(() => {
-    if (open) loadSpecs();
-  }, [open, loadSpecs]);
-
-  if (!visible) return null;
-
-  const handleSelect = (spec) => {
-    if (!spec?.path) return;
-    onSelect?.(spec);
-    setOpen(false);
-  };
-
-  return (
-    <Popover open={open} onOpenChange={(next) => !disabled && setOpen(next)}>
-      <PopoverTrigger asChild>
-        <button
-          type="button"
-          className={cn(
-            INPUT_PILL_CLASS,
-            "px-2.5",
-            disabled && "opacity-50 pointer-events-none",
-          )}
-          disabled={disabled}
-          title={t("planFromSpec")}
-        >
-          <FileText size={13} />
-          <span className="truncate">{t("specFile")}</span>
-          <CaretDown size={11} />
-        </button>
-      </PopoverTrigger>
-      <PopoverContent
-        side="top"
-        align="start"
-        sideOffset={6}
-        className="w-[420px] max-w-[calc(100vw-32px)] p-1"
-      >
-        <div className="flex items-center justify-between gap-2 px-2 py-1.5">
-          <span className="text-[11px] text-(--text-muted) font-medium">
-            {t("planFromSpec")}
-          </span>
-          <button
-            type="button"
-            className="border-0 bg-transparent text-[11px] text-(--text-muted) hover:text-(--text-primary) cursor-pointer"
-            onClick={loadSpecs}
-          >
-            {t("refresh")}
-          </button>
-        </div>
-        <div className="max-h-72 overflow-y-auto flex flex-col gap-0.5">
-          {loading && (
-            <div className="px-2 py-4 text-center text-[12px] text-(--text-muted)">
-              {t("loading")}
-            </div>
-          )}
-          {!loading && specs.length === 0 && (
-            <div className="px-2 py-4 text-center text-[12px] text-(--text-muted)">
-              {t("noSpecFiles")}
-            </div>
-          )}
-          {!loading &&
-            specs.map((spec) => (
-              <button
-                key={spec.path}
-                type="button"
-                className="w-full border-0 rounded-md px-2 py-2 text-left cursor-pointer grid grid-cols-[22px_minmax(0,1fr)] gap-2 bg-transparent text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary)"
-                onClick={() => handleSelect(spec)}
-              >
-                <span className="mt-0.5 inline-flex size-5 items-center justify-center rounded-md bg-(--accent-purple-bg) text-(--accent-purple)">
-                  <FileText size={12} />
-                </span>
-                <span className="min-w-0">
-                  <span className="block truncate text-[12px] font-medium">
-                    {spec.name || spec.file}
-                  </span>
-                  <span className="block truncate text-[11px] text-(--text-muted) font-mono">
-                    {spec.relativePath || spec.file}
-                  </span>
-                </span>
-              </button>
-            ))}
         </div>
       </PopoverContent>
     </Popover>
@@ -524,7 +558,7 @@ function ActionSkillPalette({
     let cancelled = false;
     if (visible) {
       api
-        .fetchSkills(projectDirs)
+        .fetchSkills()
         .then((list) => {
           if (cancelled) return;
           setSkills(
@@ -604,14 +638,16 @@ function ActionSkillPalette({
                 key={item.key}
                 type="button"
                 disabled={item.disabled}
-                title={item.disabled ? t("actionRequiresConversation") : undefined}
+                title={
+                  item.disabled ? t("actionRequiresConversation") : undefined
+                }
                 className={cn(
                   "w-full border-0 rounded-md px-2.5 py-2 text-left cursor-pointer grid grid-cols-[22px_minmax(96px,180px)_minmax(0,1fr)_auto] items-start gap-2 text-[12px] transition-colors",
                   item.disabled
                     ? "cursor-not-allowed bg-transparent text-(--text-muted) opacity-45"
                     : isHovered
-                    ? "bg-(--bg-hover) text-(--text-primary)"
-                    : "bg-transparent text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary)",
+                      ? "bg-(--bg-hover) text-(--text-primary)"
+                      : "bg-transparent text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary)",
                 )}
                 onClick={() => onSelect(item)}
                 onMouseEnter={() => setHoveredItem(item.key)}
@@ -715,11 +751,11 @@ export function InputBar({
   disabledReason = "",
   runtimeState,
   history: externalHistory,
-  onOpenSpec,
   projectCwd,
   projectDirs = EMPTY_PROJECT_DIRS,
   hasConversation = false,
 }) {
+  const { state, actions } = useApp();
   const [value, setValue] = useState("");
   const [history, setHistory] = useState([]);
   const [historyIndex, setHistoryIndex] = useState(-1);
@@ -733,6 +769,14 @@ export function InputBar({
   );
   const [attachments, setAttachments] = useState([]);
   const [selectedSkills, setSelectedSkills] = useState([]);
+  const [scrapbookContext, setScrapbookContext] = useState(null);
+  const [scrapbookPickerOpen, setScrapbookPickerOpen] = useState(false);
+  const [scrapbookEntries, setScrapbookEntries] = useState([]);
+  const [scrapbookLoading, setScrapbookLoading] = useState(false);
+  const [scrapbookQuery, setScrapbookQuery] = useState("");
+  const [scrapbookVisibleCount, setScrapbookVisibleCount] = useState(
+    SCRAPBOOK_PICKER_PAGE_SIZE,
+  );
   const [dismissedDefaultSkills, setDismissedDefaultSkills] = useState(
     new Set(),
   );
@@ -744,7 +788,10 @@ export function InputBar({
 
   const rs = runtimeState || {};
   const mode = rs.mode || "normal";
-  const approvalMode = rs.approvalMode || "review";
+  const approvalMode = rs.approvalMode || "auto";
+  const approvalUiEnabled = rs.approvalUiEnabled !== false;
+  const sandboxMode = rs.sandboxMode || "workspace-write";
+  const sandboxUiEnabled = rs.sandboxUiEnabled === true;
   const reasoningEnabled = rs.reasoningEnabled !== false;
   const reasoningEffort = rs.reasoningEffort || "auto";
   const defaultSkillNames = useMemo(
@@ -758,6 +805,27 @@ export function InputBar({
     () => defaultSkillNames.filter((name) => !dismissedDefaultSkills.has(name)),
     [defaultSkillNames, dismissedDefaultSkills],
   );
+  const filteredScrapbookEntries = useMemo(() => {
+    const query = scrapbookQuery.trim().toLowerCase();
+    if (!query) return scrapbookEntries;
+    return scrapbookEntries.filter((entry) => {
+      const haystack = [
+        entry?.title,
+        entry?.summary,
+        entry?.contentText,
+        entry?.sourceUrl,
+      ]
+        .map((item) => String(item || "").toLowerCase())
+        .join("\n");
+      return haystack.includes(query);
+    });
+  }, [scrapbookEntries, scrapbookQuery]);
+  const visibleScrapbookEntries = useMemo(
+    () => filteredScrapbookEntries.slice(0, scrapbookVisibleCount),
+    [filteredScrapbookEntries, scrapbookVisibleCount],
+  );
+  const hasMoreScrapbookEntries =
+    filteredScrapbookEntries.length > visibleScrapbookEntries.length;
   const removeDefaultSkill = useCallback((name) => {
     setDismissedDefaultSkills((prev) => new Set([...prev, name]));
   }, []);
@@ -781,6 +849,17 @@ export function InputBar({
   }, [externalHistory]);
 
   useEffect(() => {
+    const pendingScrapbookContext = state?.pendingScrapbookContext || null;
+    if (!pendingScrapbookContext?.attachment) return;
+    setScrapbookContext({
+      entryId: pendingScrapbookContext.entryId,
+      attachment: pendingScrapbookContext.attachment,
+      modelText: pendingScrapbookContext.modelText || "",
+    });
+    actions.clearPendingScrapbookContext?.();
+  }, [actions, state?.pendingScrapbookContext]);
+
+  useEffect(() => {
     if (!inputLocked || actionSubmitting) return;
     setPaletteOpen(false);
   }, [inputLocked, actionSubmitting]);
@@ -789,11 +868,16 @@ export function InputBar({
     const val = value.trim();
     const hasText = val.length > 0;
     const hasAttachments = attachments.length > 0;
+    const hasScrapbookContext = Boolean(scrapbookContext);
     const hasSkills = selectedSkills.length > 0;
-    if ((!hasText && !hasAttachments && !hasSkills) || inputLocked) return;
+    if (
+      (!hasText && !hasAttachments && !hasScrapbookContext && !hasSkills) ||
+      inputLocked
+    )
+      return;
 
     let fallbackText = val;
-    if (!hasText && hasAttachments) {
+    if (!hasText && (hasAttachments || hasScrapbookContext)) {
       fallbackText = t("attachmentFallbackPrompt");
     }
 
@@ -803,14 +887,20 @@ export function InputBar({
         text: fallbackText,
         skillNames: selectedSkillNames,
         attachmentIds: attachments.map((item) => item.id).filter(Boolean),
-        attachments,
+        attachments: scrapbookContext
+          ? [...attachments, scrapbookContext.attachment]
+          : attachments,
         dismissedAlwaysSkills: dismissedSkills,
+        ...(scrapbookContext?.modelText
+          ? { modelText: scrapbookContext.modelText }
+          : {}),
       });
     } catch {
       return;
     }
     setValue("");
     setAttachments([]);
+    setScrapbookContext(null);
     setSelectedSkills([]);
     setDismissedDefaultSkills(new Set());
     setAttachmentError("");
@@ -820,6 +910,7 @@ export function InputBar({
   }, [
     value,
     attachments,
+    scrapbookContext,
     selectedSkills,
     selectedSkillNames,
     dismissedDefaultSkills,
@@ -1014,6 +1105,62 @@ export function InputBar({
     setAttachments((current) => current.filter((item) => item.id !== id));
   }, []);
 
+  const loadScrapbookEntries = useCallback(async () => {
+    setScrapbookLoading(true);
+    try {
+      const result = await api.fetchScrapbookEntries("");
+      setScrapbookEntries(Array.isArray(result?.entries) ? result.entries : []);
+    } catch {
+      setScrapbookEntries([]);
+    } finally {
+      setScrapbookLoading(false);
+    }
+  }, []);
+
+  const selectScrapbookEntry = useCallback(
+    async (entryId) => {
+      const entry = scrapbookEntries.find((item) => item.id === entryId);
+      if (entry && isScrapbookAskBlocked(entry)) {
+        setAttachmentError(t("scrapbookAskSummaryPending"));
+        return;
+      }
+      const result = await api.buildScrapbookAskPayload(entryId);
+      if (result?.error || !result?.payload) {
+        setAttachmentError(result?.message || t("scrapbookAskSummaryPending"));
+        return;
+      }
+      const attachment = Array.isArray(result.payload.attachments)
+        ? result.payload.attachments[0]
+        : null;
+      setScrapbookContext(
+        attachment
+          ? {
+              entryId,
+              attachment,
+              modelText: result.payload.modelText || "",
+            }
+          : null,
+      );
+      setAttachmentError("");
+      setScrapbookPickerOpen(false);
+    },
+    [scrapbookEntries],
+  );
+
+  const removeScrapbookContext = useCallback(() => {
+    setScrapbookContext(null);
+  }, []);
+
+  const openScrapbookEntry = useCallback(
+    (entryId) => {
+      const id = String(entryId || "").trim();
+      if (!id) return;
+      actions.openScrapbookEntry(id);
+      setScrapbookPickerOpen(false);
+    },
+    [actions],
+  );
+
   return (
     <div className="w-full relative">
       <ActionSkillPalette
@@ -1028,10 +1175,16 @@ export function InputBar({
         hasConversation={hasConversation}
         onClose={() => setPaletteOpen(false)}
       />
-      <div className="codemini-input-shell flex flex-col gap-2.5 px-2 py-2 sm:px-2.5">
+      <div
+        className={cn(
+          "codemini-input-shell flex flex-col gap-2.5 px-2 py-2 sm:px-2.5",
+          busy && "codemini-input-shell--busy",
+        )}
+      >
         {(selectedSkills.length > 0 ||
           visibleDefaultSkillNames.length > 0 ||
           attachments.length > 0 ||
+          scrapbookContext ||
           attachmentError ||
           uploadingAttachments) && (
           <div className="flex flex-wrap items-center gap-1.5">
@@ -1103,6 +1256,32 @@ export function InputBar({
                 </span>
               );
             })}
+            {scrapbookContext?.attachment ? (
+              <span className="codemini-input-chip inline-flex max-w-full items-center gap-1.5 px-2 py-1 text-[12px] text-(--text-secondary)">
+                <button
+                  type="button"
+                  className="inline-flex min-w-0 items-center gap-1.5 text-left transition-colors hover:text-(--text-primary)"
+                  title={t("scrapbookOpenEntry")}
+                  aria-label={`${t("scrapbookOpenEntry")}: ${scrapbookContext.attachment.name}`}
+                  onClick={() => openScrapbookEntry(scrapbookContext.entryId)}
+                >
+                  <Notebook size={14} className="shrink-0" />
+                  <span className="max-w-[180px] truncate">
+                    {scrapbookContext.attachment.name}
+                  </span>
+                  <ArrowSquareOut size={11} className="shrink-0 opacity-70" />
+                </button>
+                <button
+                  type="button"
+                  className="ml-0.5 inline-flex size-4 items-center justify-center rounded hover:bg-(--bg-hover) hover:text-(--text-primary)"
+                  onClick={removeScrapbookContext}
+                  title={t("removeAttachment")}
+                  disabled={inputLocked}
+                >
+                  <X size={11} />
+                </button>
+              </span>
+            ) : null}
             {uploadingAttachments && (
               <span className="text-[12px] text-(--text-muted)">
                 {t("attachmentUploading")}
@@ -1172,6 +1351,158 @@ export function InputBar({
             >
               <Paperclip size={18} />
             </button>
+            <Popover
+              open={scrapbookPickerOpen}
+              onOpenChange={(open) => {
+                if (inputLocked) return;
+                setScrapbookPickerOpen(open);
+                if (open) {
+                  setScrapbookQuery("");
+                  setScrapbookVisibleCount(SCRAPBOOK_PICKER_PAGE_SIZE);
+                  loadScrapbookEntries();
+                }
+              }}
+            >
+              <PopoverTrigger asChild>
+                <button
+                  type="button"
+                  className="border-0 bg-transparent text-(--text-secondary) min-w-8 h-8 rounded-md inline-flex items-center justify-center shrink-0 cursor-pointer transition-colors hover:bg-(--bg-hover) hover:text-(--text-primary)"
+                  title={t("scrapbook")}
+                  aria-label={t("scrapbook")}
+                  disabled={inputLocked}
+                >
+                  <Notebook size={18} />
+                </button>
+              </PopoverTrigger>
+              <PopoverContent
+                side="top"
+                align="start"
+                sideOffset={8}
+                className="w-96 overflow-hidden rounded-xl p-0"
+              >
+                <div className="border-b border-(--border-default) bg-(--bg-primary) px-3 py-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="text-[13px] font-medium text-(--text-primary)">
+                      {t("scrapbook")}
+                    </div>
+                    <div className="shrink-0 rounded-full border border-(--border-default) bg-(--bg-subtle) px-2 py-0.5 text-[10px] font-medium text-(--text-muted)">
+                      {filteredScrapbookEntries.length}
+                    </div>
+                  </div>
+                  <div className="mt-1 text-[11px] leading-5 text-(--text-muted)">
+                    {t("scrapbookPickerHelp")}
+                  </div>
+                  <label className="group scrapbook-picker-search-shell mt-3 flex items-center gap-2.5 rounded-xl border border-(--border-default) bg-(--bg-secondary) px-3 py-0.5 transition-[border-color,background-color,box-shadow] hover:border-(--border-strong) hover:bg-(--bg-primary) focus-within:border-(--border-strong) focus-within:bg-(--bg-primary) focus-within:shadow-[0_0_0_3px_color-mix(in_srgb,var(--text-primary)_7%,transparent)]">
+                    <MagnifyingGlass
+                      size={14}
+                      className="shrink-0 text-(--text-muted) transition-colors group-focus-within:text-(--text-secondary)"
+                    />
+                    <input
+                      type="text"
+                      inputMode="search"
+                      autoComplete="off"
+                      value={scrapbookQuery}
+                      onChange={(event) => {
+                        setScrapbookQuery(event.target.value);
+                        setScrapbookVisibleCount(SCRAPBOOK_PICKER_PAGE_SIZE);
+                      }}
+                      placeholder={t("scrapbookSearchPlaceholder")}
+                      aria-label={t("scrapbookSearchPlaceholder")}
+                      className="scrapbook-picker-search h-9 min-w-0 flex-1 appearance-none border-0 bg-transparent p-0 text-[12px] text-(--text-primary) shadow-none outline-none ring-0 placeholder:text-(--text-muted) focus:outline-none focus:ring-0 focus-visible:outline-none focus-visible:ring-0"
+                    />
+                  </label>
+                </div>
+                <div className="flex max-h-96 flex-col gap-2 overflow-y-auto p-2">
+                  {scrapbookLoading ? (
+                    <div className="rounded-lg border border-dashed border-(--border-default) px-3 py-6 text-center text-[12px] text-(--text-muted)">
+                      {t("scrapbookLoading")}
+                    </div>
+                  ) : filteredScrapbookEntries.length === 0 ? (
+                    <div className="rounded-lg border border-dashed border-(--border-default) px-3 py-6 text-center text-[12px] text-(--text-muted)">
+                      {t("scrapbookEmpty")}
+                    </div>
+                  ) : (
+                    <>
+                      {visibleScrapbookEntries.map((entry) => {
+                        const askBlocked = isScrapbookAskBlocked(entry);
+                        return (
+                          <div
+                            key={entry.id}
+                            className={cn(
+                              "group relative flex w-full min-w-0 shrink-0 items-stretch gap-1 overflow-hidden rounded-xl border px-1 py-1 transition-[background-color,box-shadow,transform] duration-150",
+                              askBlocked
+                                ? "opacity-60"
+                                : scrapbookContext?.entryId === entry.id
+                                  ? "border-(--border-strong) bg-(--bg-subtle)"
+                                  : "border-transparent hover:bg-(--bg-subtle)/80",
+                            )}
+                          >
+                            <button
+                              type="button"
+                              disabled={askBlocked}
+                              className={cn(
+                                "flex min-w-0 flex-1 flex-col items-stretch gap-1.5 rounded-lg px-2 py-2 text-left",
+                                askBlocked
+                                  ? "cursor-not-allowed"
+                                  : "hover:bg-(--bg-hover)/60",
+                              )}
+                              onClick={() => selectScrapbookEntry(entry.id)}
+                            >
+                              <div className="flex w-full min-w-0 items-start justify-between gap-2">
+                                <span className="min-w-0 flex-1 truncate text-[12px] font-medium leading-5 text-(--text-primary)">
+                                  {entry.title ||
+                                    entry.sourceUrl ||
+                                    t("scrapbookUntitled")}
+                                </span>
+                                {scrapbookContext?.entryId === entry.id ? (
+                                  <span className="shrink-0 rounded-full bg-(--bg-hover) px-2 py-0.5 text-[10px] font-medium leading-5 text-(--text-secondary)">
+                                    {t("scrapbookPickerActive")}
+                                  </span>
+                                ) : askBlocked ? (
+                                  <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-(--bg-hover) px-2 py-0.5 text-[10px] font-medium leading-5 text-(--text-muted)">
+                                    <CircleNotch
+                                      size={10}
+                                      className="animate-spin"
+                                    />
+                                    {t("scrapbookSummarizing")}
+                                  </span>
+                                ) : null}
+                              </div>
+                              <div className="min-w-0 w-full truncate text-[12px] leading-5 text-(--text-muted)">
+                                {getScrapbookPreviewText(entry)}
+                              </div>
+                            </button>
+                            <button
+                              type="button"
+                              className="inline-flex size-8 shrink-0 items-center justify-center self-center rounded-lg text-(--text-muted) transition-colors hover:bg-(--bg-hover) hover:text-(--text-primary)"
+                              title={t("scrapbookOpenEntry")}
+                              aria-label={`${t("scrapbookOpenEntry")}: ${entry.title || entry.sourceUrl || t("scrapbookUntitled")}`}
+                              onClick={() => openScrapbookEntry(entry.id)}
+                            >
+                              <ArrowSquareOut size={15} />
+                            </button>
+                          </div>
+                        );
+                      })}
+                      {hasMoreScrapbookEntries ? (
+                        <button
+                          type="button"
+                          className="shrink-0 rounded-xl px-3 py-2 text-[12px] text-(--text-secondary) transition-colors hover:bg-(--bg-subtle) hover:text-(--text-primary)"
+                          onClick={() =>
+                            setScrapbookVisibleCount(
+                              (current) => current + SCRAPBOOK_PICKER_PAGE_SIZE,
+                            )
+                          }
+                        >
+                          {t("scrapbookShowMore")}
+                          {` · ${filteredScrapbookEntries.length - visibleScrapbookEntries.length}`}
+                        </button>
+                      ) : null}
+                    </>
+                  )}
+                </div>
+              </PopoverContent>
+            </Popover>
             <input
               ref={fileInputRef}
               type="file"
@@ -1190,22 +1521,23 @@ export function InputBar({
               effort={reasoningEffort}
               disabled={inputLocked}
             />
-            <SpecQuickSelect
-              sessionId={rs.sessionId}
-              visible={!isGeneralChat}
-              disabled={inputLocked}
-              onSelect={(spec) => {
-                onOpenSpec?.(spec);
-                setPaletteOpen(false);
-                textareaRef.current?.focus();
-              }}
-            />
-            <ApprovalModeSelector
-              sessionId={rs.sessionId}
-              current={approvalMode}
-              disabled={inputLocked}
-            />
-            <SoulQuickSwitch disabled={inputLocked} />
+            {sandboxUiEnabled ? (
+              <SandboxModeSelector
+                sessionId={rs.sessionId}
+                current={sandboxMode}
+                onChange={actions.setSandboxMode}
+                disabled={inputLocked}
+              />
+            ) : null}
+            {approvalUiEnabled ? (
+              <ApprovalModeSelector
+                sessionId={rs.sessionId}
+                current={approvalMode}
+                disabled={inputLocked}
+              />
+            ) : null}
+
+            <SoulQuickSwitch disabled={inputLocked} mode={mode} />
           </div>
           <div className="flex items-center gap-1.5 ml-auto shrink-0">
             {/* <button type="button" className="border-0 bg-transparent text-(--text-muted) w-auto px-2 h-[30px] rounded-lg inline-flex items-center justify-center gap-1 shrink-0 cursor-pointer text-[12px] whitespace-nowrap hover:bg-(--bg-hover) hover:text-(--text-primary)" title="模型">

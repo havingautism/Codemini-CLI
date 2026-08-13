@@ -3,61 +3,14 @@ import path from 'node:path';
 import {
   getCommandsDir,
   getProjectCommandsDir,
-  getProjectSkillsDir,
   getSkillsDir
 } from './paths.js';
 import { readSkillRegistry } from './skill-registry.js';
-import { skillIsEligible } from './skill-contexts.js';
+import { normalizeSkillContexts, skillIsEligible } from './skill-contexts.js';
+import { parseFrontmatter } from './frontmatter.js';
 
 const SKILL_CATALOG_FILE = 'codemini.skills.json';
 const FRONTMATTER_READ_BYTES = 16 * 1024;
-
-function parseArrayText(value) {
-  const inner = value.slice(1, -1).trim();
-  if (!inner) return [];
-  return inner.split(',').map((item) => item.trim().replace(/^["']|["']$/g, ''));
-}
-
-function parseFrontmatter(raw) {
-  if (!raw.startsWith('---\n')) {
-    return { metadata: {}, content: raw };
-  }
-  const end = raw.indexOf('\n---\n', 4);
-  if (end === -1) {
-    return { metadata: {}, content: raw };
-  }
-
-  const metaRaw = raw.slice(4, end).trim();
-  const content = raw.slice(end + 5).trim();
-  const metadata = {};
-
-  const lines = metaRaw.split('\n');
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index];
-    const idx = line.indexOf(':');
-    if (idx <= 0) continue;
-    const key = line.slice(0, idx).trim();
-    const value = line.slice(idx + 1).trim();
-    if (value === '|' || value === '>') {
-      const block = [];
-      for (let next = index + 1; next < lines.length; next += 1) {
-        const nextLine = lines[next];
-        if (!/^\s+/.test(nextLine)) break;
-        block.push(nextLine.trim());
-        index = next;
-      }
-      metadata[key] = block.join(value === '>' ? ' ' : '\n').trim();
-      continue;
-    }
-    if (value.startsWith('[') && value.endsWith(']')) {
-      metadata[key] = parseArrayText(value);
-    } else {
-      metadata[key] = value.replace(/^["']|["']$/g, '');
-    }
-  }
-
-  return { metadata, content };
-}
 
 function readFrontmatterMetadata(filePath) {
   let fd;
@@ -108,7 +61,7 @@ function normalizeSkillMode(value) {
 function resolveSkillIndexMode(metadata = {}, source = '') {
   const mode = normalizeSkillMode(metadata.mode);
   if (mode === 'manual' || mode === 'always' || mode === 'agent_requested') return mode;
-  if (source === 'registry-skill' || source === 'global-skill' || source === 'project-skill') {
+  if (source === 'registry-skill' || source === 'global-skill') {
     return 'agent_requested';
   }
   return mode || 'agent_requested';
@@ -116,26 +69,62 @@ function resolveSkillIndexMode(metadata = {}, source = '') {
 
 export function isSkillIndexEligible(command) {
   if (command?.metadata?.type !== 'skill') return false;
-  return resolveSkillIndexMode(command.metadata, command.source) !== 'manual';
+  return resolveSkillIndexMode(command.metadata, command.source) === 'agent_requested';
 }
 
 export function isUserInvocableSkill(command) {
-  return command?.metadata?.type === 'skill';
+  if (command?.metadata?.type !== 'skill') return false;
+  const metadata = command.metadata || {};
+  if (Object.prototype.hasOwnProperty.call(metadata, 'userInvocable')) {
+    return metadata.userInvocable !== false && String(metadata.userInvocable).trim().toLowerCase() !== 'false';
+  }
+  if (Object.prototype.hasOwnProperty.call(metadata, 'user-invocable')) {
+    return metadata['user-invocable'] !== false
+      && String(metadata['user-invocable']).trim().toLowerCase() !== 'false';
+  }
+  return true;
+}
+
+function normalizeBooleanFlag(value) {
+  if (value === true) return true;
+  if (typeof value === 'string') return value.trim().toLowerCase() === 'true';
+  return false;
+}
+
+export function isSkillModelInvocationDisabled(command) {
+  const metadata = command?.metadata || {};
+  return (
+    normalizeBooleanFlag(metadata.disableModelInvocation) ||
+    normalizeBooleanFlag(metadata['disable-model-invocation'])
+  );
 }
 
 function catalogMetadata(catalog, name) {
   const entry = catalog?.[name];
   if (!entry || typeof entry !== 'object') return {};
+  const has = (key) => Object.prototype.hasOwnProperty.call(entry, key);
   return {
     ...(entry.description ? { description: String(entry.description) } : {}),
-    ...(entry.mode ? { mode: normalizeSkillMode(entry.mode) } : {}),
-    ...(entry.enabled !== undefined ? { enabled: entry.enabled !== false } : {}),
-    ...(entry.priority !== undefined ? { priority: Number(entry.priority) } : {}),
+    ...(has('mode') && entry.mode ? { mode: normalizeSkillMode(entry.mode) } : {}),
+    ...(has('enabled') ? { enabled: entry.enabled !== false } : {}),
+    ...(has('disableModelInvocation')
+      ? { disableModelInvocation: normalizeBooleanFlag(entry.disableModelInvocation) }
+      : {}),
+    ...(has('userInvocable')
+      ? { userInvocable: entry.userInvocable !== false }
+      : {}),
+    ...(has('routingAuthorLocked')
+      ? { routingAuthorLocked: entry.routingAuthorLocked === true }
+      : {}),
+    ...(has('hooksImported') ? { hooksImported: entry.hooksImported !== false } : {}),
+    ...(has('priority') && entry.priority !== undefined ? { priority: Number(entry.priority) } : {}),
     ...(entry.source ? { source: String(entry.source) } : {}),
     ...(entry.packageSource ? { packageSource: String(entry.packageSource) } : {}),
     ...(entry.packageName ? { packageName: String(entry.packageName) } : {}),
     ...(entry.installedAt ? { installedAt: String(entry.installedAt) } : {}),
-    triggers: normalizeStringArray(entry.triggers)
+    // Only overlay triggers when the catalog explicitly stores them, so a missing
+    // key does not wipe SKILL.md frontmatter triggers with [].
+    ...(has('triggers') ? { triggers: normalizeStringArray(entry.triggers) } : {}),
   };
 }
 
@@ -381,12 +370,9 @@ function substituteVariables(text, args = []) {
 export async function loadCommandsAndSkills(cwd = process.cwd()) {
   const commands = new Map();
 
-  applySkillCatalogPatches(getProjectSkillsDir(cwd), commands);
   loadMarkdownCommandsFromDir(getCommandsDir(), 'global', commands);
   loadMarkdownCommandsFromDir(getProjectCommandsDir(cwd), 'project', commands);
   loadLegacySkillsFromDir(getSkillsDir(), 'global', commands);
-  loadLegacySkillsFromDir(getProjectSkillsDir(cwd), 'project', commands);
-  applySkillCatalogPatches(getProjectSkillsDir(cwd), commands);
   const registry = await readSkillRegistry();
   loadInstalledSkillsFromRegistry(getSkillsDir(), registry, commands);
 
@@ -396,7 +382,6 @@ export async function loadCommandsAndSkills(cwd = process.cwd()) {
 export async function loadIndexedSkills(cwd = process.cwd()) {
   const commands = new Map();
 
-  loadIndexedSkillsFromCatalog(getProjectSkillsDir(cwd), 'project-skill', commands);
   loadIndexedSkillsFromCatalog(getSkillsDir(), 'global-skill', commands);
 
   const registry = await readSkillRegistry();
@@ -412,7 +397,6 @@ export async function loadIndexedSkills(cwd = process.cwd()) {
 
 function skillScopeLabel(source = '') {
   if (source === 'bundled-skill') return 'builtin';
-  if (source === 'project-skill') return 'project';
   if (source === 'global-skill' || source === 'registry-skill') return 'global';
   return source || 'unknown';
 }
@@ -421,25 +405,130 @@ function isIndexedSkillEnabledForPrompt(command, config = {}, executionMode = co
   return skillIsEligible(config?.skills, command?.name, executionMode, command);
 }
 
-export async function buildSkillIndexPromptBlock(cwd = process.cwd(), config = {}, executionMode = config?.execution?.mode) {
+function formatSkillIndexPromptLine(command) {
+  const desc = String(command.metadata?.description || '').trim().replace(/\s+/g, ' ');
+  const triggers = Array.isArray(command.metadata?.triggers)
+    ? command.metadata.triggers.map((item) => String(item || '').trim()).filter(Boolean)
+    : [];
+  let line = `- /${command.name}`;
+  if (desc) line += ` - ${desc}`;
+  if (triggers.length) line += ` (triggers: ${triggers.join(', ')})`;
+  return line;
+}
+
+function skillIndexConfiguredContexts(config = {}, command) {
+  const stored = config?.skills?.contexts?.[command?.name];
+  if (stored !== undefined) return normalizeSkillContexts(stored);
+  const source = String(command?.source || '');
+  if (source.startsWith('bundled')) return ['coding'];
+  return ['coding', 'daily'];
+}
+
+/** Debug-oriented index entries (frontmatter + runtime routing fields). */
+export async function buildSkillIndexDebugEntries(cwd = process.cwd(), config = {}, executionMode = config?.execution?.mode) {
   const indexed = await loadIndexedSkills(cwd);
-  const lines = Array.from(indexed.values())
+  return Array.from(indexed.values())
     .filter((command) => isSkillIndexEligible(command))
     .filter((command) => isIndexedSkillEnabledForPrompt(command, config, executionMode))
     .sort((a, b) => a.name.localeCompare(b.name))
     .map((command) => {
-      const scope = skillScopeLabel(command.source);
-      const mode = resolveSkillIndexMode(command.metadata, command.source);
-      const desc = String(command.metadata?.description || '').trim().replace(/\s+/g, ' ');
-      const label = mode === 'agent_requested' ? `${scope}|agent_requested` : scope;
-      return desc ? `- /${command.name} [${label}] - ${desc}` : `- /${command.name} [${label}]`;
+      const metadata = { ...(command.metadata || {}) };
+      const mode = resolveSkillIndexMode(metadata, command.source);
+      return {
+        name: command.name,
+        source: command.source,
+        path: command.path,
+        scope: skillScopeLabel(command.source),
+        mode,
+        contexts: skillIndexConfiguredContexts(config, command),
+        enabled: config?.skills?.enabled?.[command.name] !== false,
+        disableModelInvocation: isSkillModelInvocationDisabled(command),
+        description: metadata.description || '',
+        triggers: Array.isArray(metadata.triggers) ? metadata.triggers : [],
+        metadata,
+        promptLine: formatSkillIndexPromptLine(command),
+      };
     });
+}
+
+export async function buildSkillIndexPromptBlock(
+  cwd = process.cwd(),
+  config = {},
+  executionMode = config?.execution?.mode,
+  options = {},
+) {
+  const entries = (await buildSkillIndexDebugEntries(cwd, config, executionMode))
+    .filter((entry) => options.modelInvocableOnly !== true || !entry.disableModelInvocation);
+  return formatSkillIndexPromptBlock(entries);
+}
+
+function formatSkillIndexPromptBlock(entries = []) {
+  const lines = entries.map((entry) => entry.promptLine);
   if (!lines.length) return '';
   return [
     '# Indexed skills',
-    'Agent-requested and always skills installed by the user or project (manual slash-only skills are omitted). Load full instructions with skill({name:"<name>"}). Search with skill({query:"..."}).',
+    'Agent-requested skills installed by the user are listed here. Always skills are injected in full and manual skills require explicit invocation, so neither appears in this index. Load full instructions with skill({name:"<name>"}). Search with skill({query:"..."}).',
     ...lines
   ].join('\n');
+}
+
+/** Developer debug preview of the index for global / coding / daily panel tabs. */
+export async function buildSkillIndexPreview(cwd = process.cwd(), config = {}) {
+  const codingExecution = await buildSkillIndexDebugEntries(cwd, config, 'code');
+  const dailyExecution = await buildSkillIndexDebugEntries(cwd, config, 'normal');
+
+  const isGlobalBound = (entry) => {
+    const contexts = Array.isArray(entry.contexts) ? entry.contexts : [];
+    return contexts.includes('coding') && contexts.includes('daily');
+  };
+  const isCodingOnly = (entry) => {
+    const contexts = Array.isArray(entry.contexts) ? entry.contexts : [];
+    return contexts.includes('coding') && !contexts.includes('daily');
+  };
+  const isDailyOnly = (entry) => {
+    const contexts = Array.isArray(entry.contexts) ? entry.contexts : [];
+    return contexts.includes('daily') && !contexts.includes('coding');
+  };
+
+  // Panel tabs are mutually exclusive (same as SkillPanel).
+  const globalSkills = codingExecution.filter(isGlobalBound);
+  const codingOnly = codingExecution.filter(isCodingOnly);
+  const dailyOnly = dailyExecution.filter(isDailyOnly);
+
+  return {
+    global: {
+      context: 'global',
+      note: 'Panel global tab only. Runtime: still injected into both coding and daily execution indexes.',
+      count: globalSkills.length,
+      skills: globalSkills,
+      promptCoding: formatSkillIndexPromptBlock(
+        codingExecution.filter((entry) => globalSkills.some((item) => item.name === entry.name)),
+      ),
+      promptDaily: formatSkillIndexPromptBlock(
+        dailyExecution.filter((entry) => globalSkills.some((item) => item.name === entry.name)),
+      ),
+    },
+    coding: {
+      context: 'coding',
+      note: 'Panel coding tab (coding-only). Global-bound skills are excluded from this list.',
+      count: codingOnly.length,
+      skills: codingOnly,
+      prompt: formatSkillIndexPromptBlock(codingOnly),
+      executionPrompt: formatSkillIndexPromptBlock(codingExecution),
+    },
+    daily: {
+      context: 'daily',
+      note: 'Panel daily tab (daily-only). Global-bound skills are excluded from this list.',
+      count: dailyOnly.length,
+      skills: dailyOnly,
+      prompt: formatSkillIndexPromptBlock(dailyOnly),
+      executionPrompt: formatSkillIndexPromptBlock(dailyExecution),
+    },
+    empty:
+      globalSkills.length === 0 &&
+      codingOnly.length === 0 &&
+      dailyOnly.length === 0,
+  };
 }
 
 export function renderCommandPrompt(command, args) {

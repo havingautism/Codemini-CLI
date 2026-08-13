@@ -91,3 +91,26 @@ export function upsertToolCardInSegments(segments, toolCard) {
   });
   return found ? source : addToolToSegments(source, toolCard);
 }
+
+export function upsertSingletonToolCardInSegments(segments, toolCard) {
+  const singletonName = String(toolCard?.name || "").toLowerCase();
+  let found = false;
+  const source = (Array.isArray(segments) ? segments : [])
+    .map((segment) => {
+      if (segment?.type !== "tools" || !Array.isArray(segment.cards)) {
+        return segment;
+      }
+      const cards = [];
+      for (const card of segment.cards) {
+        if (String(card?.name || "").toLowerCase() !== singletonName) {
+          cards.push(card);
+        } else if (!found) {
+          cards.push({ ...card, ...toolCard });
+          found = true;
+        }
+      }
+      return cards.length ? { ...segment, cards } : null;
+    })
+    .filter(Boolean);
+  return found ? source : upsertToolCardInSegments(source, toolCard);
+}

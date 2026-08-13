@@ -1,4 +1,4 @@
-﻿import React, {
+import React, {
   Component,
   Suspense,
   lazy,
@@ -24,7 +24,7 @@ import { SpecApprovalDialog } from "@/components/SpecApprovalDialog.jsx";
 import { RuntimeActivityStrip } from "@/components/RuntimeActivityStrip.jsx";
 import { SessionPanel } from "@/components/SessionPanel.jsx";
 import { interactiveRequestForSession } from "@/lib/session-ui-state.js";
-import { DotsThree, GitDiff, List, Terminal } from "@phosphor-icons/react";
+import { DotsThree, FolderSimple, GitDiff, List, SidebarSimple, Terminal } from "@phosphor-icons/react";
 import "../style.css";
 import "./apple-design.css";
 
@@ -48,9 +48,29 @@ const SkillDialog = lazy(() =>
     default: module.SkillDialog,
   })),
 );
+const McpDialog = lazy(() =>
+  import("@/components/McpDialog.jsx").then((module) => ({
+    default: module.McpDialog,
+  })),
+);
+const HooksDialog = lazy(() =>
+  import("@/components/HooksDialog.jsx").then((module) => ({
+    default: module.HooksDialog,
+  })),
+);
 const MemoryDialog = lazy(() =>
   import("@/components/MemoryDialog.jsx").then((module) => ({
     default: module.MemoryDialog,
+  })),
+);
+const ScrapbookPanel = lazy(() =>
+  import("@/components/ScrapbookPanel.jsx").then((module) => ({
+    default: module.ScrapbookPanel,
+  })),
+);
+const ResearchPanel = lazy(() =>
+  import("@/components/ResearchPanel.jsx").then((module) => ({
+    default: module.ResearchPanel,
   })),
 );
 const SoulDialog = lazy(() =>
@@ -66,6 +86,11 @@ const AboutDialog = lazy(() =>
 const GitDiffDialog = lazy(() =>
   import("@/components/GitDiffDialog.jsx").then((module) => ({
     default: module.GitDiffDialog,
+  })),
+);
+const WorkspaceRail = lazy(() =>
+  import("@/components/WorkspaceRail.jsx").then((module) => ({
+    default: module.WorkspaceRail,
   })),
 );
 
@@ -168,6 +193,27 @@ function Shell() {
   const approvalRequest = interactiveRequestForSession(state, "approval");
   const userInputRequest = interactiveRequestForSession(state, "userInput");
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    if (typeof window === "undefined") return false;
+    try {
+      const raw = localStorage.getItem("codemini-sidebar-collapsed");
+      return raw === "1" || raw === "true";
+    } catch {
+      return false;
+    }
+  });
+  const [sideRailOpen, setSideRailOpen] = useState(false);
+  const [sideRailTab, setSideRailTab] = useState("files");
+
+  const setSidebarCollapsedAndPersist = useCallback((collapsed) => {
+    const value = !!collapsed;
+    setSidebarCollapsed(value);
+    try {
+      localStorage.setItem("codemini-sidebar-collapsed", value ? "1" : "0");
+    } catch {
+      // Ignore storage failures.
+    }
+  }, []);
   const rs = state.runtimeState || {};
   const currentId = state.currentSessionId || rs.sessionId;
   const reasoningSyncKey = useMemo(
@@ -180,8 +226,13 @@ function Shell() {
     [actions],
   );
   const openSkills = useCallback(() => actions.setSkillsOpen(true), [actions]);
+  const openMcp = useCallback(() => actions.setMcpOpen(true), [actions]);
+  const openHooks = useCallback(() => actions.setHooksOpen(true), [actions]);
   const openMemory = useCallback(() => actions.setMemoryOpen(true), [actions]);
+  const openScrapbook = useCallback(() => actions.switchView("scrapbook"), [actions]);
+  const openResearch = useCallback(() => actions.openResearchHome(), [actions]);
   const openSouls = useCallback(() => actions.setSoulsOpen(true), [actions]);
+  const retryMessage = useCallback((prompt) => actions.submit(prompt), [actions]);
   const openAbout = useCallback(() => actions.setAboutOpen(true), [actions]);
   const openProjectSelector = useCallback(
     () => actions.setProjectOpen(true),
@@ -230,7 +281,11 @@ function Shell() {
         onSetTheme={actions.setTheme}
         onOpenSettings={openSettings}
         onOpenSkills={openSkills}
+        onOpenMcp={openMcp}
+        onOpenHooks={openHooks}
         onOpenMemory={openMemory}
+        onOpenScrapbook={openScrapbook}
+        onOpenResearch={openResearch}
         onOpenSouls={openSouls}
         onOpenAbout={openAbout}
         gitBatch={state.gitBatch}
@@ -238,6 +293,7 @@ function Shell() {
         onUpdate={actions.runUpdate}
         updateStatus={state.updateStatus}
         currentView={state.currentView}
+        codewikiProjectPath={state.codewikiProjectPath}
         onSwitchView={actions.switchView}
         onOpenProject={async (...args) => {
           closeMobileSidebar();
@@ -245,15 +301,19 @@ function Shell() {
         }}
         onOpenProjectSelector={openProjectSelector}
         onRefreshSessions={actions.loadSessions}
+        onRegenerateSessionTitle={actions.regenerateSessionTitle}
         onDeleteSession={actions.deleteSession}
+        onCollapseSidebar={() => setSidebarCollapsedAndPersist(true)}
       />
   );
 
   return (
     <div className="codemini-app-shell flex h-screen overflow-hidden text-(--text-primary)">
-      <div className="hidden md:flex h-full shrink-0 py-2 pl-2 pr-0">
-        {sidebar}
-      </div>
+      {!sidebarCollapsed ? (
+        <div className="hidden md:flex h-full shrink-0 py-2 pl-2 pr-0">
+          {sidebar}
+        </div>
+      ) : null}
       <Sheet open={mobileSidebarOpen} onOpenChange={setMobileSidebarOpen}>
         <SheetContent
           side="left"
@@ -284,8 +344,68 @@ function Shell() {
               onAbortAll={actions.abortAllSessions}
             />
           </div>
-        ) : state.currentView === "codewiki" ? (
+        ) : state.currentView === "scrapbook" ? (
           <div className="codemini-workspace-panel flex flex-1 flex-col min-h-0 overflow-hidden">
+            <div className="flex h-12 shrink-0 items-center gap-2.5 border-b border-(--border-default) px-3 sm:px-5">
+              <button
+                type="button"
+                className="inline-flex size-8 shrink-0 items-center justify-center rounded-md border-0 bg-transparent text-(--text-muted) hover:bg-(--bg-hover) hover:text-(--text-primary) md:hidden"
+                aria-label="Open sidebar"
+                onClick={() => setMobileSidebarOpen(true)}
+              >
+                <List size={17} />
+              </button>
+              {sidebarCollapsed ? (
+                <button
+                  type="button"
+                  className="hidden size-8 shrink-0 items-center justify-center rounded-md border-0 bg-transparent text-(--text-muted) hover:bg-(--bg-hover) hover:text-(--text-primary) md:inline-flex"
+                  aria-label={t("expandSidebar")}
+                  title={t("expandSidebar")}
+                  onClick={() => setSidebarCollapsedAndPersist(false)}
+                >
+                  <SidebarSimple size={16} />
+                </button>
+              ) : null}
+              <span className="truncate text-[14px] font-medium text-(--text-primary)">
+                {t("scrapbook")}
+              </span>
+            </div>
+            <Suspense fallback={null}>
+              <ScrapbookPanel />
+            </Suspense>
+          </div>
+        ) : state.currentView === "research" ? (
+          <div className="codemini-workspace-panel flex flex-1 flex-col min-h-0 overflow-hidden">
+            <div className="flex h-12 shrink-0 items-center gap-2.5 border-b border-(--border-default) px-3 sm:px-5">
+              <button
+                type="button"
+                className="inline-flex size-8 shrink-0 items-center justify-center rounded-md border-0 bg-transparent text-(--text-muted) hover:bg-(--bg-hover) hover:text-(--text-primary) md:hidden"
+                aria-label="Open sidebar"
+                onClick={() => setMobileSidebarOpen(true)}
+              >
+                <List size={17} />
+              </button>
+              {sidebarCollapsed ? (
+                <button
+                  type="button"
+                  className="hidden size-8 shrink-0 items-center justify-center rounded-md border-0 bg-transparent text-(--text-muted) hover:bg-(--bg-hover) hover:text-(--text-primary) md:inline-flex"
+                  aria-label={t("expandSidebar")}
+                  title={t("expandSidebar")}
+                  onClick={() => setSidebarCollapsedAndPersist(false)}
+                >
+                  <SidebarSimple size={16} />
+                </button>
+              ) : null}
+              <span className="truncate text-[14px] font-medium text-(--text-primary)">
+                {t("deepResearch")}
+              </span>
+            </div>
+            <Suspense fallback={null}>
+              <ResearchPanel />
+            </Suspense>
+          </div>
+        ) : state.currentView === "codewiki" ? (
+          <div className="flex flex-1 flex-col min-h-0 overflow-hidden">
             <Suspense fallback={null}>
               <CodeWikiPanel
                 projectCwd={
@@ -318,6 +438,17 @@ function Shell() {
                 >
                   <List size={17} />
                 </button>
+                {sidebarCollapsed ? (
+                  <button
+                    type="button"
+                    className="hidden md:inline-flex size-8 shrink-0 items-center justify-center rounded-md border-0 bg-transparent text-(--text-muted) hover:bg-(--bg-hover) hover:text-(--text-primary)"
+                    aria-label={t("expandSidebar")}
+                    title={t("expandSidebar")}
+                    onClick={() => setSidebarCollapsedAndPersist(false)}
+                  >
+                    <SidebarSimple size={16} />
+                  </button>
+                ) : null}
                 <span className="font-medium text-[14px] text-(--text-primary) truncate">
                   {state.isGeneral
                     ? t("generalChat")
@@ -360,24 +491,71 @@ function Shell() {
                   </button>
                 )}
               </div>
-              {/* <button className="border-0 bg-transparent text-(--text-muted) rounded-md p-1.5 cursor-pointer hover:bg-(--bg-hover) hover:text-(--text-primary) shrink-0">
-                <DotsThree size={16} />
-              </button> */}
+              <div className="flex items-center gap-1 shrink-0">
+                <button
+                  type="button"
+                  className={
+                    "inline-flex size-8 items-center justify-center rounded-md border-0 cursor-pointer " +
+                    (sideRailOpen && sideRailTab === "files"
+                      ? "bg-(--bg-hover) text-(--text-primary)"
+                      : "bg-transparent text-(--text-muted) hover:bg-(--bg-hover) hover:text-(--text-primary)")
+                  }
+                  aria-label={t("workspaceFilesTab")}
+                  title={t("workspaceFilesTab")}
+                  aria-pressed={sideRailOpen && sideRailTab === "files"}
+                  onClick={() => {
+                    if (sideRailOpen && sideRailTab === "files") {
+                      setSideRailOpen(false);
+                      return;
+                    }
+                    setSideRailTab("files");
+                    setSideRailOpen(true);
+                  }}
+                >
+                  <FolderSimple size={16} />
+                </button>
+                <button
+                  type="button"
+                  className={
+                    "inline-flex size-8 items-center justify-center rounded-md border-0 cursor-pointer " +
+                    (sideRailOpen && sideRailTab === "terminal"
+                      ? "bg-(--bg-hover) text-(--text-primary)"
+                      : "bg-transparent text-(--text-muted) hover:bg-(--bg-hover) hover:text-(--text-primary)")
+                  }
+                  aria-label={t("terminalTitle")}
+                  title={t("terminalTitle")}
+                  aria-pressed={sideRailOpen && sideRailTab === "terminal"}
+                  onClick={() => {
+                    if (sideRailOpen && sideRailTab === "terminal") {
+                      setSideRailOpen(false);
+                      return;
+                    }
+                    setSideRailTab("terminal");
+                    setSideRailOpen(true);
+                  }}
+                >
+                  <Terminal size={16} />
+                </button>
+              </div>
             </div>
 
             {/* Plan Progress (during execution) — now rendered as a chat message via plan-overview */}
 
+            <div className="flex flex-1 min-h-0 min-w-0 overflow-hidden">
             <div className="codemini-chat-session flex flex-1 flex-col min-h-0 min-w-0 overflow-hidden">
             {/* Chat Panel */}
             <ChatPanel
+              key={state.currentSessionId || "new-chat"}
               messages={state.messages}
               projectCwd={state.projectCwd}
               skills={state.skills}
               gitInfo={state.gitInfo}
+              projectIsGit={state.runtimeState?.projectIsGit === true}
               messagesLoading={state.messagesLoading}
-              sessionLive={state.live}
               isGeneral={state.isGeneral}
-              onRetryMessage={(prompt) => actions.submit(prompt)}
+              targetMessageId={state.targetMessageId}
+              onTargetMessageHandled={actions.clearChatMessageTarget}
+              onRetryMessage={retryMessage}
             />
 
             {/* Plan Review / Input Area */}
@@ -423,7 +601,6 @@ function Shell() {
                 }
                 runtimeState={state.runtimeState}
                 history={state.history}
-                onOpenSpec={actions.openSpecReview}
                 projectCwd={state.projectCwd}
                 projectDirs={sidebarProjectDirs}
                 hasConversation={hasConversation}
@@ -447,6 +624,20 @@ function Shell() {
               </div>
             </div>
             </div>
+            {sideRailOpen ? (
+              <Suspense fallback={null}>
+                <WorkspaceRail
+                  tab={sideRailTab}
+                  onTabChange={setSideRailTab}
+                  sessionId={state.currentSessionId || ""}
+                  projectCwd={
+                    state.runtimeState?.cwd || state.projectCwd || ""
+                  }
+                  onClose={() => setSideRailOpen(false)}
+                />
+              </Suspense>
+            ) : null}
+            </div>
           </div>
         )}
       </div>
@@ -454,8 +645,8 @@ function Shell() {
       <ApprovalDialog
         request={approvalRequest}
         open={!!approvalRequest}
-        onDecision={(id, actionName) =>
-          actions.approve(id, actionName, approvalRequest?.sessionId)
+        onDecision={(id, actionName, payload) =>
+          actions.approve(id, actionName, approvalRequest?.sessionId, payload)
         }
       />
 
@@ -483,8 +674,10 @@ function Shell() {
             status={state.configStatus}
             reasoningSyncKey={reasoningSyncKey}
             onSaved={async () => {
-              await actions.refreshConfigStatus();
-              await actions.refreshRuntimeState();
+              await Promise.all([
+                actions.refreshConfigStatus(),
+                actions.refreshRuntimeState(),
+              ]);
             }}
           />
         )}
@@ -495,6 +688,21 @@ function Shell() {
             onOpenChange={actions.setSkillsOpen}
             projectDirs={sidebarProjectDirs}
             projectTargets={sidebarProjectTargets}
+          />
+        )}
+
+        {state.mcpOpen && (
+          <McpDialog
+            open={state.mcpOpen}
+            onOpenChange={actions.setMcpOpen}
+          />
+        )}
+
+        {state.hooksOpen && (
+          <HooksDialog
+            open={state.hooksOpen}
+            onOpenChange={actions.setHooksOpen}
+            projectDirs={sidebarProjectDirs}
           />
         )}
 

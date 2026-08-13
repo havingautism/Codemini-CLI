@@ -53,10 +53,6 @@ export function resolveSearchToolContext(config) {
   };
 }
 
-export function assertSearchConfig(config) {
-  resolveSearchToolContext(config);
-}
-
 export function buildSearchDeferredEntries(config) {
   const ctx = resolveSearchToolContext(config);
   if (ctx.mode === 'http' && ctx.toolId) {
@@ -119,17 +115,10 @@ export function formatWebSearchResult(result) {
   return `${header}\n${blocks.join('\n\n')}`;
 }
 
-export function buildSearchFormatters(config) {
-  resolveSearchToolContext(config);
+export function buildSearchFormatters() {
   return {
     web_search: formatWebSearchResult
   };
-}
-
-export function resolveGatewayPayloadExtras(config, { tools } = {}) {
-  resolveSearchToolContext(config);
-  void tools;
-  return {};
 }
 
 export function normalizeToolPolicy(toolNames, config) {

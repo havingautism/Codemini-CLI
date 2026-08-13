@@ -25,6 +25,14 @@ const PLATFORM_RULES = [
   { key: 'spotify', pattern: /spotify\.com|open\.spotify\.com/i },
   { key: 'stackoverflow', pattern: /stackoverflow\.com/i },
   { key: 'npm', pattern: /npmjs\.com/i },
+  { key: 'hackernews', pattern: /news\.ycombinator\.com|ycombinator\.com/i },
+  { key: 'producthunt', pattern: /producthunt\.com/i },
+  { key: 'vercel', pattern: /vercel\.com/i },
+  { key: 'openai', pattern: /openai\.com|chatgpt\.com/i },
+  { key: 'anthropic', pattern: /anthropic\.com|claude\.ai/i },
+  { key: 'arxiv', pattern: /arxiv\.org/i },
+  { key: 'notion', pattern: /notion\.(?:so|site)/i },
+  { key: 'figma', pattern: /figma\.com/i },
 ];
 
 export function inferEmbedType(url, type) {
@@ -219,6 +227,86 @@ export const EMBED_BRANDS = {
     badgeBg: 'color-mix(in srgb, #CB3837 14%, transparent)',
     badgeText: '#f87171',
   },
+  hackernews: {
+    label: 'Hacker News',
+    accent: '#FF6600',
+    headerBg: 'color-mix(in srgb, #FF6600 12%, var(--bg-secondary))',
+    headerText: '#FF8533',
+    iconBg: '#FF6600',
+    iconColor: '#ffffff',
+    badgeBg: 'color-mix(in srgb, #FF6600 14%, transparent)',
+    badgeText: '#FF8533',
+  },
+  producthunt: {
+    label: 'Product Hunt',
+    accent: '#DA552F',
+    headerBg: 'color-mix(in srgb, #DA552F 10%, var(--bg-secondary))',
+    headerText: '#F97316',
+    iconBg: '#DA552F',
+    iconColor: '#ffffff',
+    badgeBg: 'color-mix(in srgb, #DA552F 14%, transparent)',
+    badgeText: '#F97316',
+  },
+  vercel: {
+    label: 'Vercel',
+    accent: '#ffffff',
+    headerBg: 'color-mix(in srgb, #ffffff 6%, var(--bg-secondary))',
+    headerText: '#e5e7eb',
+    iconBg: '#000000',
+    iconColor: '#ffffff',
+    badgeBg: 'color-mix(in srgb, #ffffff 10%, transparent)',
+    badgeText: '#d1d5db',
+  },
+  openai: {
+    label: 'OpenAI',
+    accent: '#10A37F',
+    headerBg: 'color-mix(in srgb, #10A37F 10%, var(--bg-secondary))',
+    headerText: '#34D399',
+    iconBg: '#10A37F',
+    iconColor: '#ffffff',
+    badgeBg: 'color-mix(in srgb, #10A37F 14%, transparent)',
+    badgeText: '#34D399',
+  },
+  anthropic: {
+    label: 'Anthropic',
+    accent: '#D4A27F',
+    headerBg: 'color-mix(in srgb, #D4A27F 12%, var(--bg-secondary))',
+    headerText: '#E8C4A8',
+    iconBg: '#191919',
+    iconColor: '#D4A27F',
+    badgeBg: 'color-mix(in srgb, #D4A27F 14%, transparent)',
+    badgeText: '#E8C4A8',
+  },
+  arxiv: {
+    label: 'arXiv',
+    accent: '#B31B1B',
+    headerBg: 'color-mix(in srgb, #B31B1B 10%, var(--bg-secondary))',
+    headerText: '#F87171',
+    iconBg: '#B31B1B',
+    iconColor: '#ffffff',
+    badgeBg: 'color-mix(in srgb, #B31B1B 14%, transparent)',
+    badgeText: '#F87171',
+  },
+  notion: {
+    label: 'Notion',
+    accent: '#ffffff',
+    headerBg: 'color-mix(in srgb, #ffffff 5%, var(--bg-secondary))',
+    headerText: '#e5e7eb',
+    iconBg: '#000000',
+    iconColor: '#ffffff',
+    badgeBg: 'color-mix(in srgb, #ffffff 8%, transparent)',
+    badgeText: '#d1d5db',
+  },
+  figma: {
+    label: 'Figma',
+    accent: '#F24E1E',
+    headerBg: 'linear-gradient(135deg, color-mix(in srgb, #F24E1E 12%, var(--bg-secondary)), color-mix(in srgb, #A259FF 10%, var(--bg-secondary)), color-mix(in srgb, #0ACF83 8%, var(--bg-secondary)))',
+    headerText: '#F24E1E',
+    iconBg: 'linear-gradient(135deg, #F24E1E, #A259FF, #1ABCFE, #0ACF83)',
+    iconColor: '#ffffff',
+    badgeBg: 'color-mix(in srgb, #F24E1E 14%, transparent)',
+    badgeText: '#F24E1E',
+  },
   link: {
     label: 'Link',
     accent: 'var(--accent-blue)',
@@ -383,6 +471,62 @@ export function BrandLogo({ brandKey, size = 16, className }) {
     return (
       <svg viewBox="0 0 24 24" width={s} height={s} className={className} aria-hidden="true">
         <path fill="currentColor" d="M1.763 0C.786 0 0 .786 0 1.763v20.474C0 23.214.786 24 1.763 24h20.474c.977 0 1.763-.786 1.763-1.763V1.763C24 .786 23.214 0 22.237 0zM5.13 5.323l13.837.019-1.256 12.256H6.376zm1.951 1.954v7.617h1.969v-2.018h2.018v2.018h1.969V7.277z" />
+      </svg>
+    );
+  }
+  if (brandKey === 'hackernews') {
+    return (
+      <svg viewBox="0 0 24 24" width={s} height={s} className={className} aria-hidden="true">
+        <path fill="currentColor" d="M6.951 5.896l4.112 7.708v5.064h1.583v-4.972l4.148-7.799h-1.749l-2.457 4.958h-.057L8.73 5.896H6.951z" />
+      </svg>
+    );
+  }
+  if (brandKey === 'producthunt') {
+    return (
+      <svg viewBox="0 0 24 24" width={s} height={s} className={className} aria-hidden="true">
+        <path fill="currentColor" d="M13.604 8.4h-3.405V12h3.405a1.8 1.8 0 0 0 0-3.6zM12 0C5.372 0 0 5.372 0 12s5.372 12 12 12 12-5.372 12-12S18.628 0 12 0zm1.604 14.4h-3.405V18H7.801V6h5.803a4.2 4.2 0 0 1 0 8.4z" />
+      </svg>
+    );
+  }
+  if (brandKey === 'vercel') {
+    return (
+      <svg viewBox="0 0 24 24" width={s} height={s} className={className} aria-hidden="true">
+        <path fill="currentColor" d="M12 1.5 24 22.5H0L12 1.5z" />
+      </svg>
+    );
+  }
+  if (brandKey === 'openai') {
+    return (
+      <svg viewBox="0 0 24 24" width={s} height={s} className={className} aria-hidden="true">
+        <path fill="currentColor" d="M22.282 9.821a5.985 5.985 0 0 0-.516-4.91 6.046 6.046 0 0 0-6.51-2.9A6.065 6.065 0 0 0 4.981 4.18a5.985 5.985 0 0 0-3.998 2.9 6.046 6.046 0 0 0 .743 7.097 5.98 5.98 0 0 0 .51 4.911 6.051 6.051 0 0 0 6.515 2.9A5.985 5.985 0 0 0 13.26 24a6.056 6.056 0 0 0 5.772-4.206 5.99 5.99 0 0 0 3.997-2.9 6.056 6.056 0 0 0-.747-7.073zM13.26 22.3a4.476 4.476 0 0 1-2.876-1.04l.141-.081 4.779-2.76a.795.795 0 0 0 .392-.681v-6.737l2.02 1.168a.071.071 0 0 1 .038.052v5.583a4.504 4.504 0 0 1-4.494 4.494zM3.6 18.304a4.47 4.47 0 0 1-.535-3.014l.142.085 4.783 2.762a.771.771 0 0 0 .78 0l5.843-3.373v2.332a.08.08 0 0 1-.033.062L9.74 19.95a4.5 4.5 0 0 1-6.14-1.646zM2.34 7.896a4.485 4.485 0 0 1 2.366-1.973V11.6a.766.766 0 0 0 .388.676l5.815 3.355-2.02 1.168a.076.076 0 0 1-.071 0l-4.83-2.786A4.504 4.504 0 0 1 2.34 7.872zm16.597 3.855-5.844-3.375L15.119 7.2a.076.076 0 0 1 .071 0l4.83 2.791a4.494 4.494 0 0 1-.676 8.105v-5.592a.79.79 0 0 0-.407-.68zm2.01-3.023-.141-.085-4.784-2.747a.766.766 0 0 0-.78 0L9.409 9.27V6.938a.066.066 0 0 1 .028-.061l4.83-2.787a4.5 4.5 0 0 1 6.68 4.66zm-12.64 4.135-2.02-1.164a.08.08 0 0 1-.038-.057V6.075a4.5 4.5 0 0 1 7.375-3.453l-.146.087L8.962 5.47a.782.782 0 0 0-.393.681zm1.097-2.365 2.602-1.503 2.607 1.503v3.006l-2.597 1.498-2.607-1.498z" />
+      </svg>
+    );
+  }
+  if (brandKey === 'anthropic') {
+    return (
+      <svg viewBox="0 0 24 24" width={s} height={s} className={className} aria-hidden="true">
+        <path fill="currentColor" d="M13.827 3.52h3.603L22 20.48h-3.603l-1.247-4.013h-6.185L9.717 20.48H6.115L13.827 3.52zm.905 3.549-2.238 7.195h4.476l-2.238-7.195zM5.082 3.52h3.604l.8 2.82H5.882L5.082 3.52zM2 20.48l1.247-4.013h3.604L5.604 20.48H2z" />
+      </svg>
+    );
+  }
+  if (brandKey === 'arxiv') {
+    return (
+      <svg viewBox="0 0 24 24" width={s} height={s} className={className} aria-hidden="true">
+        <path fill="currentColor" d="M3.6 2.4 12 10.8 20.4 2.4H24L13.8 12.6 24 21.6h-3.6L12 13.2 3.6 21.6H0l10.2-9L0 2.4h3.6z" />
+      </svg>
+    );
+  }
+  if (brandKey === 'notion') {
+    return (
+      <svg viewBox="0 0 24 24" width={s} height={s} className={className} aria-hidden="true">
+        <path fill="currentColor" d="M4.459 4.208c.746.606 1.026.56 2.428.466l13.215-.793c.28 0 .047-.28-.046-.326L18.86 2.83c-.42-.326-.981-.7-2.055-.607L3.01 3.445c-.466.046-.56.28-.374.466zm.793 3.08v13.904c0 .747.373 1.027 1.214.98l14.523-.84c.841-.046.935-.56.935-1.167V6.354c0-.606-.233-.933-.746-.887l-15.177.887c-.56.047-.749.327-.749.933zm14.337.745c.093.42 0 .793-.42.84l-.7.14v10.264c-.608.327-1.168.514-1.635.514-.748 0-.935-.234-1.495-.933l-4.577-7.186v6.952l1.45.327s0 .793-1.121.793l-3.077.186c-.093-.186 0-.653.327-.746l.84-.233V9.854L7.822 9.62c-.094-.42.14-1.026.793-1.073l3.456-.233 4.763 7.279v-6.44l-1.215-.14c-.093-.514.28-.887.747-.933zM1.936 1.035l13.31-.98c1.634-.14 2.055-.047 3.079.7l4.249 2.986c.7.513.934.747.934 1.213v16.378c0 1.026-.373 1.634-1.68 1.726l-15.458.934c-.98.047-1.448-.093-1.962-.747l-3.129-4.06c-.56-.747-.793-1.306-.793-1.96V2.667c0-.839.374-1.54 1.45-1.632z" />
+      </svg>
+    );
+  }
+  if (brandKey === 'figma') {
+    return (
+      <svg viewBox="0 0 24 24" width={s} height={s} className={className} aria-hidden="true">
+        <path fill="currentColor" d="M15.852 8.981h-4.588V0h4.588a4.49 4.49 0 0 1 3.176 1.316A4.49 4.49 0 0 1 20.34 4.49a4.49 4.49 0 0 1-1.316 3.175 4.49 4.49 0 0 1-3.172 1.316zM5.588 24a4.49 4.49 0 0 1-3.176-1.316A4.49 4.49 0 0 1 1.096 19.51a4.49 4.49 0 0 1 1.316-3.176A4.49 4.49 0 0 1 5.588 15.02h4.588v4.49A4.49 4.49 0 0 1 5.588 24zm5.588-8.981H5.588a4.49 4.49 0 0 1-3.176-1.315A4.49 4.49 0 0 1 1.096 10.49a4.49 4.49 0 0 1 1.316-3.176A4.49 4.49 0 0 1 5.588 6h5.588v9.019zm0-9.019H5.588a4.49 4.49 0 0 1-3.176-1.315A4.49 4.49 0 0 1 1.096 1.316 4.49 4.49 0 0 1 5.588 0h5.588v6zM23 10.49a4.49 4.49 0 0 1-1.316 3.176 4.49 4.49 0 0 1-3.175 1.315 4.49 4.49 0 0 1-3.176-1.315A4.49 4.49 0 0 1 14.018 10.49a4.49 4.49 0 0 1 1.315-3.176A4.49 4.49 0 0 1 18.51 6a4.49 4.49 0 0 1 3.175 1.314A4.49 4.49 0 0 1 23 10.49z" />
       </svg>
     );
   }

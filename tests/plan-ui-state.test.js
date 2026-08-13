@@ -4,7 +4,6 @@ import assert from 'node:assert/strict';
 import {
   applyPlanEventToMessage,
   applyStreamEventToPlanRun,
-  extractPlanToolGroups,
   findPlanStepMessageId,
   planPhaseTitle,
   planRunFromTranscript,
@@ -14,11 +13,11 @@ import {
 } from '../codemini-web/client/src/lib/plan-ui-state.js';
 
 test('planPhaseTitle maps phases', () => {
-  assert.equal(planPhaseTitle('planning'), 'Plan · 规划');
-  assert.equal(planPhaseTitle('executing'), 'Plan · 执行');
-  assert.equal(planPhaseTitle('completed'), 'Plan · 完成');
-  assert.equal(planPhaseTitle('failed'), 'Plan · 失败');
-  assert.equal(planPhaseTitle('aborted'), 'Plan · 已中止');
+  assert.equal(planPhaseTitle('planning'), 'Subagent · 准备');
+  assert.equal(planPhaseTitle('executing'), 'Subagent · 运行中');
+  assert.equal(planPhaseTitle('completed'), 'Subagent · 完成');
+  assert.equal(planPhaseTitle('failed'), 'Subagent · 失败');
+  assert.equal(planPhaseTitle('aborted'), 'Subagent · 已中止');
 });
 
 test('applyPlanEventToMessage keeps plan progress on create_plan card', () => {
@@ -49,7 +48,7 @@ test('applyPlanEventToMessage keeps plan progress on create_plan card', () => {
     ],
   });
   assert.equal(message.segments[0].cards[0].planRun.phase, 'executing');
-  assert.equal(message.segments[0].cards[0].displayName, 'Plan · 执行');
+  assert.equal(message.segments[0].cards[0].displayName, 'Subagent · 运行中');
 
   message = applyPlanEventToMessage(message, {
     type: 'plan:step_start',
@@ -66,6 +65,8 @@ test('applyPlanEventToMessage keeps plan progress on create_plan card', () => {
     title: 'Inspect',
     status: 'done',
     output: 'Handoff done',
+    usage: { inputTokens: 80, outputTokens: 20, totalTokens: 100, requests: 1 },
+    usageScope: 'subagent',
   });
   message = applyPlanEventToMessage(message, {
     type: 'plan:step_done',
@@ -79,25 +80,11 @@ test('applyPlanEventToMessage keeps plan progress on create_plan card', () => {
   const card = message.segments[0].cards[0];
   assert.equal(card.status, 'done');
   assert.equal(card.planRun.phase, 'completed');
-  assert.equal(card.displayName, 'Plan · 完成');
+  assert.equal(card.displayName, 'Subagent · 完成');
+  assert.equal(card.planRun.steps[0].usage.totalTokens, 100);
   assert.equal(card.planRun.steps[1].segments[0].type, 'text');
-});
-
-test('extractPlanToolGroups keeps create_plan out of process fold groups', () => {
-  const { planGroups, rest } = extractPlanToolGroups([
-    {
-      type: 'tools',
-      cards: [
-        { id: '1', name: 'read', status: 'done' },
-        { id: '2', name: 'create_plan', status: 'running', planRun: { phase: 'executing', steps: [] } },
-      ],
-    },
-    { type: 'text', text: 'hello' },
-  ]);
-  assert.equal(planGroups.length, 1);
-  assert.equal(planGroups[0].cards[0].name, 'create_plan');
-  assert.equal(rest[0].cards.length, 1);
-  assert.equal(rest[0].cards[0].name, 'read');
+  // Parent message usage stays unset; subagent tokens live on the step only.
+  assert.equal(message.usage, undefined);
 });
 
 test('planRunFromTranscript builds completed card state', () => {
@@ -175,6 +162,49 @@ test('settleRunningCreatePlanCards stops running steps and nested tools', () => 
   assert.equal(card.planRun.steps[0].segments[0].cards[0].status, 'error');
 });
 
+test('settleCompletedPlanToolCards repairs a duplicated sibling tool from an old snapshot', () => {
+  const messages = [
+    {
+      id: 'parent',
+      role: 'general',
+      isComplete: true,
+      segments: [
+        {
+          type: 'tools',
+          cards: [
+            {
+              id: 'subagent',
+              name: 'run_subagent',
+              status: 'done',
+              planRun: {
+                phase: 'completed',
+                steps: [
+                  {
+                    status: 'done',
+                    segments: [
+                      {
+                        type: 'tools',
+                        cards: [{ id: 'list', name: 'list', status: 'done', result: 'files' }],
+                      },
+                    ],
+                  },
+                ],
+              },
+            },
+            { id: 'list', name: 'list', status: 'running' },
+          ],
+        },
+      ],
+    },
+  ];
+
+  const [message] = settleCompletedPlanToolCards(messages);
+  const [subagent, list] = message.segments[0].cards;
+  assert.equal(list.status, 'done');
+  assert.equal(list.result, 'files');
+  assert.deepEqual(subagent.planRun.steps[0].segments, []);
+});
+
 test('applyStreamEventToPlanRun nests thinking and tools into the running step', () => {
   let message = {
     id: 'parent',
@@ -229,7 +259,7 @@ test('applyStreamEventToPlanRun nests thinking and tools into the running step',
   );
 });
 
-test('upsert keeps a single create_plan card when stream and plan events race', () => {
+test('upsert keeps one card per tool call id', () => {
   let message = {
     id: 'parent',
     role: 'general',
@@ -238,7 +268,7 @@ test('upsert keeps a single create_plan card when stream and plan events race', 
         type: 'tools',
         cards: [
           {
-            id: 'synthetic',
+            id: 'real-call',
             name: 'create_plan',
             status: 'running',
             planRun: {
@@ -262,8 +292,28 @@ test('upsert keeps a single create_plan card when stream and plan events race', 
   const planCards = message.segments
     .filter((segment) => segment.type === 'tools')
     .flatMap((segment) => segment.cards)
-    .filter((card) => card.name === 'create_plan');
+    .filter((card) => card.name === 'create_plan' || card.name === 'run_subagent');
   assert.equal(planCards.length, 1);
   assert.equal(planCards[0].id, 'real-call');
   assert.equal(planCards[0].planRun.phase, 'executing');
+});
+
+test('different tool call ids create separate cards', () => {
+  let message = { id: 'parent', role: 'general', segments: [] };
+  message = applyStreamEventToPlanRun(message, {
+    type: 'tool:start',
+    id: 'call-1',
+    name: 'run_subagent',
+  });
+  message = applyStreamEventToPlanRun(message, {
+    type: 'tool:start',
+    id: 'call-2',
+    name: 'run_subagent',
+  });
+  const cards = message.segments
+    .filter((segment) => segment.type === 'tools')
+    .flatMap((segment) => segment.cards)
+    .filter((card) => card.name === 'run_subagent');
+  assert.equal(cards.length, 2);
+  assert.deepEqual(cards.map((card) => card.id).sort(), ['call-1', 'call-2']);
 });

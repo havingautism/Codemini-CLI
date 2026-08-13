@@ -2,11 +2,14 @@ import {
   Code,
   Coffee,
   Command,
+  HardDrives,
+  Lock,
   LockOpen,
   ShieldWarning,
   Sparkle,
   Terminal,
   TerminalWindow,
+  Warning,
   WindowsLogo,
 } from "@phosphor-icons/react";
 import { t } from "../../i18n/index.js";
@@ -24,29 +27,6 @@ export function getExecutionModeOptions() {
       label: t("planMode"),
       description: t("planModeDesc"),
       icon: Code,
-    },
-  ];
-}
-
-export function getPlanExecutionModelOptions() {
-  return [
-    {
-      value: "default",
-      label: t("planExecutionModelDefault"),
-      description: t("planExecutionModelDefaultDesc"),
-      icon: Code,
-    },
-    {
-      value: "fast",
-      label: t("planExecutionModelFast"),
-      description: t("planExecutionModelFastDesc"),
-      icon: Sparkle,
-    },
-    {
-      value: "role",
-      label: t("planExecutionModelRole"),
-      description: t("planExecutionModelRoleDesc"),
-      icon: TerminalWindow,
     },
   ];
 }
@@ -70,6 +50,29 @@ export function getApprovalModeOptions() {
       label: t("fullAccessMode"),
       description: t("fullAccessModeDesc"),
       icon: LockOpen,
+    },
+  ];
+}
+
+export function getSandboxModeOptions() {
+  return [
+    {
+      value: "read-only",
+      label: t("sandboxReadOnlyMode"),
+      description: t("sandboxReadOnlyModeDesc"),
+      icon: Lock,
+    },
+    {
+      value: "workspace-write",
+      label: t("sandboxWorkspaceWriteMode"),
+      description: t("sandboxWorkspaceWriteModeDesc"),
+      icon: HardDrives,
+    },
+    {
+      value: "danger-full-access",
+      label: t("sandboxDangerFullAccessMode"),
+      description: t("sandboxDangerFullAccessModeDesc"),
+      icon: Warning,
     },
   ];
 }
@@ -114,7 +117,7 @@ export function getSearchProviderOptions() {
   ];
 }
 
-export function getShellOptions() {
+export function getShellOptions({ sandboxMode = "danger-full-access" } = {}) {
   return [
     {
       value: "bash",
@@ -140,7 +143,10 @@ export function getShellOptions() {
       description: t("shellCmdDesc"),
       icon: Command,
     },
-  ];
+  ].map((option) => ({
+    ...option,
+    disabled: sandboxMode !== "danger-full-access" && option.value !== "bash",
+  }));
 }
 
 export function getReplyLanguageOptions() {
@@ -151,8 +157,8 @@ export function getReplyLanguageOptions() {
 }
 
 const OPTION_GETTERS = {
+  sandboxMode: getSandboxModeOptions,
   executionMode: getExecutionModeOptions,
-  planExecutionModel: getPlanExecutionModelOptions,
   approvalMode: getApprovalModeOptions,
   provider: getProviderOptions,
   searchProvider: getSearchProviderOptions,
@@ -160,9 +166,9 @@ const OPTION_GETTERS = {
   replyLanguage: getReplyLanguageOptions,
 };
 
-export function getSettingsOptions(key) {
+export function getSettingsOptions(key, context) {
   const getter = OPTION_GETTERS[key];
-  return typeof getter === "function" ? getter() : [];
+  return typeof getter === "function" ? getter(context) : [];
 }
 
 export const SETTINGS_TABS = [
@@ -172,5 +178,6 @@ export const SETTINGS_TABS = [
   { id: "web", labelKey: "webSearch" },
   { id: "context", labelKey: "context" },
   { id: "shell", labelKey: "shell" },
+  { id: "storage", labelKey: "storage" },
   { id: "policy", labelKey: "policy" },
 ];

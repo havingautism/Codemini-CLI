@@ -1,34 +1,41 @@
 import path from 'node:path';
 import { trimInline as _trimInline, normalizePath } from './string-utils.js';
 import { captureToInbox, listInbox } from './memory-store.js';
-import { requiresApprovalEvaluation } from './command-risk.js';
+import {
+  isRoutineProjectCommand,
+  requiresApprovalEvaluation,
+  requiresDeterministicCommandApproval,
+} from './command-risk.js';
 import { evaluateCommandPolicy } from './command-policy.js';
 import { buildRunFailureMessage, getToolOutputSanitizeOptions, sanitizeTextForModel } from './tool-output.js';
-import { normalizeToolArguments } from './tool-args.js';
-import { storeResultIfNeeded, summarizeToolResult } from './tool-result-store.js';
+import { createToolRuntime, buildInvalidToolArgumentsResult } from './tool-runtime.js';
+import { createToolResultStore, summarizeToolResult } from './tool-result-store.js';
 import { applyAggressiveToolPruneBeta } from './context-compact.js';
-import { markRunCommandSafeModeApproved } from './tools.js';
-import { formatToolDisplayName } from './tool-display.js';
-import { MEMORY_ALWAYS_ALLOW_TOOLS } from './constants.js';
-import { toolRequiresUserApproval } from './approval-policy.js';
+import {
+  markOutsideWorkspaceMutationApproved,
+  markRunCommandSafeModeApproved,
+  markSandboxEscalationApproved,
+} from './tools.js';
+import {
+  MEMORY_ALWAYS_ALLOW_TOOLS,
+  STAGED_WRITE_ALWAYS_ALLOW_TOOLS
+} from './constants.js';
+import {
+  inspectOutsideWorkspaceMutation,
+  toolRequiresUserApproval
+} from './approval-policy.js';
+import {
+  resolveSandboxPolicy,
+  validateSandboxEscalationArgs,
+} from './sandbox-policy.js';
+import { createMutationGraphPreflight } from './mutation-graph-preflight.js';
+import { fireSkillHookEvent, formatHookContextLines } from './skill-hooks-runtime.js';
+import {
+  isCompletionTruncated,
+} from './provider/completion-status.js';
+import { isShellToolName } from './shell-tool-name.js';
 
-/**
- * 安全解析 JSON 字符串。
- * 解析失败时返回带 _raw 和 _invalid_json 标记的对象，
- * 调用方可据此决定是回退到原始文本还是报告错误。
- */
-function safeJsonParse(raw) {
-  if (!raw || typeof raw !== 'string') return {};
-  try {
-    return JSON.parse(raw);
-  } catch (parseError) {
-    return {
-      _raw: String(raw),
-      _invalid_json: true,
-      _parseError: parseError.message
-    };
-  }
-}
+export { buildInvalidToolArgumentsResult } from './tool-runtime.js';
 
 function buildDeleteApprovalDetails(source, rawPath) {
   const existing =
@@ -65,35 +72,31 @@ function buildDeleteCancellationResult(args) {
   };
 }
 
-function buildApprovalBlockedResult(toolName, args = {}) {
+function buildApprovalBlockedResult(toolName, args = {}, approvalReason = '') {
+  const feedback = String(approvalReason || '').trim();
   if (toolName === 'delete') {
-    return buildDeleteCancellationResult(args);
+    return {
+      ...buildDeleteCancellationResult(args),
+      ...(feedback ? { reason: feedback, user_feedback: feedback } : {})
+    };
   }
-  if (toolName === 'run') {
+  if (isShellToolName(toolName)) {
     const command = String(args?.command || args?.cmd || '').trim();
     return {
       blocked: true,
       cancelled: true,
-      reason: 'User declined this run command.',
+      reason: feedback || 'User declined this run command.',
+      ...(feedback ? { user_feedback: feedback } : {}),
       ...(command ? { command } : {}),
-      guidance:
-        'Do not retry this command or similar test/build/dev-server verification commands unless the user explicitly asks. If code edits are already complete, treat the implementation task as done: summarize the changes, set Verified to none or deferred, and hand off verification to the user or a later tester step instead of looping on run.'
+      guidance: feedback
+        ? 'Follow the user feedback and do not retry the same command unchanged.'
+        : 'Do not retry this command or similar test/build/dev-server verification commands unless the user explicitly asks. If code edits are already complete, treat the implementation task as done: summarize the changes, set Verified to none or deferred, and hand off verification to the user or a later tester step instead of looping on run.'
     };
   }
   return {
     blocked: true,
-    reason: 'Tool call requires approval in daily mode'
-  };
-}
-
-function buildInvalidToolArgumentsResult(toolName, args = {}) {
-  const parseError = String(args?._parseError || '').trim();
-  return {
-    error: `Invalid JSON arguments for ${toolName}`,
-    reason: parseError
-      ? `Tool arguments could not be parsed as JSON: ${parseError}`
-      : 'Tool arguments could not be parsed as JSON',
-    raw: String(args?._raw || '')
+    reason: feedback || 'Tool call requires approval in daily mode',
+    ...(feedback ? { user_feedback: feedback } : {})
   };
 }
 
@@ -198,22 +201,10 @@ function compactToolResult(result, toolName, args, maxChars = 12000) {
   return clipToolResult(obj, Math.min(maxChars, 4000));
 }
 
-// ─── P1a: Parallel-safe tool classification ─────────────────────────
-
-const PARALLEL_SAFE_TOOLS = new Set([
-  'read', 'search_code', 'grep', 'ast_grep', 'glob', 'list',
-  'ast_query', 'read_ast_node',
-  'web_fetch', 'web_search',
-  'list_background_tasks', 'get_background_task',
-  'read_plan',
-  'query_project_index', 'tool_search',
-  'skill'
-]);
-
 // ─── Auto-capture tool errors to dream loop inbox ────────────────────
 
 const DREAM_AUTO_CAPTURE_TOOLS = new Set([
-  'edit', 'create', 'write', 'apply_patch', 'run', 'delete'
+  'edit', 'create', 'write', 'commit_write', 'apply_patch', 'run', 'delete'
 ]);
 
 const DREAM_AUTO_CAPTURE_COOLDOWN_MS = 60_000;
@@ -275,7 +266,7 @@ function shouldAutoCaptureRunFailure(message) {
 }
 
 function resolveRunToolFailure(toolName, toolResult) {
-  if (toolName !== 'run' || !toolResult || typeof toolResult !== 'object' || toolResult.background) {
+  if (!isShellToolName(toolName) || !toolResult || typeof toolResult !== 'object' || toolResult.background) {
     return '';
   }
   if (typeof toolResult.error === 'string' && toolResult.error.trim()) {
@@ -299,7 +290,7 @@ async function checkAutoDreamThreshold(config) {
 
 function extractFileChange(toolName, result) {
   if (!result || typeof result !== 'object') return null;
-  const FILE_TOOLS = new Set(['edit', 'create', 'write', 'apply_patch', 'delete']);
+  const FILE_TOOLS = new Set(['edit', 'create', 'write', 'commit_write', 'apply_patch', 'delete']);
   if (!FILE_TOOLS.has(toolName)) return null;
 
   /* delete */
@@ -423,7 +414,7 @@ function extractToolResultMeta(toolName, result) {
     };
   }
 
-  if (!['edit', 'create', 'write', 'apply_patch', 'delete'].includes(name)) return null;
+  if (!['edit', 'create', 'write', 'commit_write', 'apply_patch', 'delete'].includes(name)) return null;
   const meta = {};
   for (const key of [
     'path',
@@ -451,6 +442,44 @@ export function shouldDenyHighRiskRunEvaluation(config = {}, evaluation = {}) {
   return config?.policy?.allow_dangerous_commands !== true
     && evaluation?.failed !== true
     && String(evaluation?.risk || '').toLowerCase() === 'high';
+}
+
+export function resolveShellApprovalStrategy({
+  command = '',
+  config = {},
+  workspaceRoot = process.cwd(),
+  osSandboxConfining = false,
+  approvalMode = 'auto',
+  platform = process.platform,
+  projectIsGit = false,
+} = {}) {
+  const policyCheck = evaluateCommandPolicy(command, config, workspaceRoot, platform);
+  const policyHardGate = !policyCheck.allowed && /^(?:absolute path outside|relative path escapes|cd escapes|blocked protected system path|blocked command:)/i.test(policyCheck.reason || '');
+  const deterministicGate = policyHardGate || requiresDeterministicCommandApproval(command);
+  const sandboxFirst = Boolean(osSandboxConfining && approvalMode !== 'review' && !deterministicGate);
+  const windowsFastLane = Boolean(
+    platform === 'win32'
+    && projectIsGit
+    && approvalMode !== 'review'
+    && !deterministicGate
+    && policyCheck.allowed
+    && isRoutineProjectCommand(command)
+  );
+  const policyBlocked = config?.policy?.safe_mode !== false
+    && !policyCheck.allowed
+    && policyCheck.reason !== 'blocked by dangerous command pattern';
+  return {
+    policyCheck,
+    deterministicGate,
+    sandboxFirst,
+    windowsFastLane,
+    policyBlocked,
+    needsLlmReview: config?.policy?.safe_mode !== false
+      && !deterministicGate
+      && !sandboxFirst
+      && !windowsFastLane
+      && (policyBlocked || requiresApprovalEvaluation(command, config?.shell?.default)),
+  };
 }
 
 function normalizeAssistantText(value) {
@@ -617,14 +646,12 @@ function shouldPersistLargeToolResult(toolName) {
 
 // ─── Format a single tool result using per-tool formatter or fallback ──
 
-function formatToolResult(toolResult, toolName, args, toolFormatters, toolResultMaxChars) {
+function formatToolResult(toolResult, toolName, args, toolRuntime, toolResultMaxChars) {
   const sanitizeOptions = getToolOutputSanitizeOptions(toolName);
-  if (toolFormatters && typeof toolFormatters[toolName] === 'function') {
-    const formatted = toolFormatters[toolName](toolResult, args);
-    if (typeof formatted === 'string') {
-      const sanitized = sanitizeTextForModel(formatted, sanitizeOptions);
-      return sanitized.trim() ? sanitized : emptyToolResultMarker(toolName);
-    }
+  const formattedByRegistry = toolRuntime.format(toolName, toolResult, args);
+  if (typeof formattedByRegistry === 'string') {
+    const sanitized = sanitizeTextForModel(formattedByRegistry, sanitizeOptions);
+    return sanitized.trim() ? sanitized : emptyToolResultMarker(toolName);
   }
   const fallback = compactToolResult(toolResult, toolName, args, toolResultMaxChars);
   const sanitizedFallback = sanitizeTextForModel(fallback, sanitizeOptions);
@@ -638,23 +665,45 @@ export async function runAgentLoop({
   userPrompt,
   model,
   requestCompletion,
+  evaluateCommand = null,
+  toolRuntime: providedToolRuntime = null,
+  toolRegistry: providedToolRegistry = null,
   toolHandlers = {},
   toolDefinitions = [],
   initialMessages = [],
   onEvent,
   executionMode = 'normal',
-  approvalMode = 'review',
+  approvalMode = 'auto',
   projectIsGit = false,
   alwaysAllowTools = [],
   requestToolApproval,
   toolResultMaxChars = 12000,
   toolFormatters = {},
   deferredDefinitions = {},
+  toolResultStore = null,
   signal,
   skipAnalysisNudge = false,
   config = {},
-  changeTracker = null
+  changeTracker = null,
+  skillHooksSession = null,
+  onSkillLoaded = null,
+  toolDisplayLabels = {},
+  toolMetadata = {},
+  shouldCheckpoint = null,
+  workspaceRoot = config?.workspaceRoot || process.cwd()
 }) {
+  const toolRuntime = providedToolRuntime || createToolRuntime({
+    toolRegistry: providedToolRegistry,
+    definitions: toolDefinitions,
+    handlers: toolHandlers,
+    formatters: toolFormatters,
+    deferredDefinitions,
+    displayLabels: toolDisplayLabels,
+    metadata: toolMetadata,
+    maxParallelCalls: config?.tools?.max_parallel_calls,
+  });
+  const activeToolResultStore = toolResultStore || createToolResultStore();
+  const formatDisplayName = (toolName, args) => toolRuntime.displayName(toolName, args);
   const messages = [];
   if (systemPrompt) {
     messages.push({ role: 'system', content: systemPrompt });
@@ -672,12 +721,49 @@ export async function runAgentLoop({
   const analysisGuard = createAnalysisGuardState(userPrompt);
   const alwaysAllowSet = new Set([
     ...MEMORY_ALWAYS_ALLOW_TOOLS,
+    ...STAGED_WRITE_ALWAYS_ALLOW_TOOLS,
     ...(Array.isArray(alwaysAllowTools) ? alwaysAllowTools : []).map((t) => String(t))
   ]);
   let lastAutoDreamCheckStep = 0;
 
-  // Mutable tool list — grows as tool_search loads deferred tools
-  const activeTools = [...toolDefinitions];
+  const mutationGraphPreflight = createMutationGraphPreflight({
+    queryGraph: toolRuntime.has('query_project_graph')
+      ? (args) => toolRuntime.execute('query_project_graph', args, {
+          signal,
+          workspaceRoot,
+          orchestrationId: 'mutation-graph-preflight',
+        })
+      : null,
+    onError: (error, context) => {
+      if (!onEvent) return;
+      onEvent({
+        type: 'system_tool:error',
+        id: `project-graph-preflight:${Date.now()}`,
+        name: 'project_graph_preflight',
+        summary: `Graph preflight degraded for ${(context?.files || []).join(', ')}: ${error instanceof Error ? error.message : String(error)}`,
+      });
+    },
+  });
+
+  let stopHookBlockCount = 0;
+  async function fireStopHooks(lastAssistantMessage = '') {
+    if (!skillHooksSession) return { denied: false };
+    const result = await fireSkillHookEvent({
+      session: skillHooksSession,
+      eventName: 'Stop',
+      input: {
+        stop_hook_active: stopHookBlockCount > 0,
+        last_assistant_message: lastAssistantMessage,
+      },
+      workspaceRoot,
+      onAgentEvent: onEvent
+    }).catch(() => ({ denied: false }));
+    if (result?.denied && stopHookBlockCount < 8) {
+      stopHookBlockCount += 1;
+      return result;
+    }
+    return { ...result, denied: false };
+  }
 
   async function maybeRunAutoDream(stepNumber = 0, { force = false } = {}) {
     const interval = Math.max(1, Number(config?.memory?.auto_dream_check_interval_steps || 20));
@@ -687,11 +773,14 @@ export async function runAgentLoop({
     lastAutoDreamCheckStep = normalizedStep;
     const autoDreamResult = await checkAutoDreamThreshold(config);
     if (!autoDreamResult) return;
-    const dreamTool = toolHandlers['dream_consolidate'];
-    if (typeof dreamTool !== 'function') return;
+    if (!toolRuntime.has('dream_consolidate')) return;
     if (onEvent) onEvent({ type: 'dream:auto', message: 'inbox threshold reached' });
     try {
-      const report = await dreamTool({});
+      const report = await toolRuntime.execute('dream_consolidate', {}, {
+        signal,
+        workspaceRoot,
+        orchestrationId: `auto-dream:${normalizedStep}`,
+      });
       if (onEvent) {
         onEvent({ type: 'dream:complete', report });
       }
@@ -729,7 +818,7 @@ export async function runAgentLoop({
     const completion = await requestCompletion({
       model,
       messages,
-      tools: activeTools,
+      tools: toolRuntime.definitions(),
       signal
     });
 
@@ -793,6 +882,14 @@ export async function runAgentLoop({
         continue;
       }
       finalText = assistantText;
+      const stopResult = await fireStopHooks(assistantText);
+      if (stopResult?.denied) {
+        messages.push({
+          role: 'user',
+          content: stopResult.reason || 'A Stop hook requires more work before this turn can finish.'
+        });
+        continue;
+      }
       await maybeRunAutoDream(step, { force: true });
       return { text: finalText, messages, steps: step };
     }
@@ -802,24 +899,38 @@ export async function runAgentLoop({
     const normalizedApprovalMode = ['review', 'auto', 'full_access'].includes(String(approvalMode || '').toLowerCase())
       ? String(approvalMode || '').toLowerCase()
       : 'review';
+    const osSandboxConfining = resolveSandboxPolicy({
+      config,
+      cwd: workspaceRoot,
+      platform: process.platform,
+    }).enabled;
 
-    // ─── P1a: Partition into parallel-safe and serial tool calls ─────
-
-    const callsWithMeta = toolCalls.map((call) => {
-      const toolName = normalizeToolCallName(call.name);
-      const args = normalizeToolArguments(toolName, safeJsonParse(call.arguments), call.arguments);
-      const displayName = formatToolDisplayName(toolName, args);
-      const isParallelSafe = PARALLEL_SAFE_TOOLS.has(toolName);
-      return { call, args, toolName, displayName, isParallelSafe };
-    });
+    const completionTruncated = isCompletionTruncated(completion?.finishReason);
+    const {
+      calls: callsWithMeta,
+      visibleNames: visibleToolNames,
+    } = toolRuntime.beginModelResponse(toolCalls, { completionTruncated });
 
     // Approval checks first — must be done synchronously before any execution
     const approvalResults = new Map();
-    for (const { call, toolName, displayName, args } of callsWithMeta) {
+    for (const { call, toolName, displayName, args, isModelVisible } of callsWithMeta) {
       let approved = true;
+      let approvalReason = '';
       let approvalArgs = args;
       let preflightErrorContent = '';
-      if (args?._invalid_json && ['create', 'write', 'edit', 'apply_patch', 'delete'].includes(toolName)) {
+      let outsideWorkspaceApproval = null;
+      if (!isModelVisible) {
+        approvalResults.set(call.id, {
+          approved: false,
+          args: approvalArgs,
+          errorContent: clipToolResult({
+            error: `Tool "${toolName}" is not available in this model turn`,
+            available_tools: visibleToolNames,
+          }, toolResultMaxChars),
+        });
+        continue;
+      }
+      if (args?._invalid_json || args?._invalid_schema) {
         approvalResults.set(call.id, {
           approved: false,
           args: approvalArgs,
@@ -827,96 +938,168 @@ export async function runAgentLoop({
         });
         continue;
       }
-      const runPolicyCheck = toolName === 'run'
-        ? evaluateCommandPolicy(args?.command || '', config, config?.workspaceRoot || process.cwd())
-        : { allowed: true };
-      const isSafeModePolicyBlocked = toolName === 'run'
-        && config?.policy?.safe_mode !== false
-        && !runPolicyCheck.allowed
-        && runPolicyCheck.reason !== 'blocked by dangerous command pattern';
-      const isSafeModeRun = toolName === 'run'
-        && config?.policy?.safe_mode !== false
-        && (isSafeModePolicyBlocked || requiresApprovalEvaluation(args?.command || '', config?.shell?.default));
-      const needsApproval = toolRequiresUserApproval({
+      let sandboxEscalation = null;
+      try {
+        sandboxEscalation = validateSandboxEscalationArgs(args, {
+          config,
+          cwd: workspaceRoot,
+          platform: process.platform,
+        });
+      } catch (error) {
+        approvalResults.set(call.id, {
+          approved: false,
+          args: approvalArgs,
+          errorContent: clipToolResult({
+            error: error instanceof Error ? error.message : String(error),
+          }, toolResultMaxChars),
+        });
+        continue;
+      }
+      const isSandboxEscalation = Boolean(sandboxEscalation);
+      const graphPreflight = await mutationGraphPreflight.inspect({
+        toolName,
+        args,
+        step,
+      });
+      if (graphPreflight?.required) {
+        approvalResults.set(call.id, {
+          approved: false,
+          args: approvalArgs,
+          graphPreflightContent: clipToolResult(graphPreflight.content, toolResultMaxChars),
+        });
+        continue;
+      }
+      const shellApproval = isShellToolName(toolName)
+        ? resolveShellApprovalStrategy({
+            command: args?.command || '',
+            config,
+            workspaceRoot: config?.workspaceRoot || process.cwd(),
+            osSandboxConfining,
+            approvalMode: normalizedApprovalMode,
+            projectIsGit,
+          })
+        : null;
+      const runPolicyCheck = shellApproval?.policyCheck || { allowed: true };
+      const isSafeModePolicyBlocked = shellApproval?.policyBlocked === true;
+      const isSafeModeRun = shellApproval?.needsLlmReview === true;
+      const isDeterministicCommandGate = shellApproval?.deterministicGate === true;
+      if (shellApproval?.sandboxFirst && isSafeModePolicyBlocked) {
+        approvalArgs = markRunCommandSafeModeApproved(approvalArgs);
+      }
+      try {
+        // OS sandbox already fences outside writes; skip the soft outside-dir review.
+        if (!osSandboxConfining) {
+          outsideWorkspaceApproval = await inspectOutsideWorkspaceMutation({
+            workspaceRoot,
+            toolName,
+            arguments: args
+          });
+        }
+      } catch (error) {
+        preflightErrorContent = clipToolResult({
+          error: `Could not inspect file mutation target: ${error instanceof Error ? error.message : String(error)}`
+        }, toolResultMaxChars);
+      }
+      const needsApproval = Boolean(preflightErrorContent) || toolRequiresUserApproval({
         approvalMode: normalizedApprovalMode,
         projectIsGit,
         toolName,
         isSafeModeRun,
+        isDeterministicCommandGate,
+        isSandboxEscalation,
+        isOutsideWorkspaceMutation: Boolean(outsideWorkspaceApproval),
+        osSandboxConfining,
         alwaysAllowTools: [...alwaysAllowSet]
       });
       if (needsApproval) {
         approved = false;
-        const handler = toolHandlers[toolName];
-        if (toolName === 'delete' && typeof handler?.prepareApproval === 'function') {
+        if (toolName === 'delete') {
           try {
-            const approval = await handler.prepareApproval(args);
-            const normalizedApproval = buildDeleteApprovalDetails({ approval }, args?.path);
-            if (normalizedApproval) {
-              approvalArgs = { ...args, approval: normalizedApproval };
+            const approval = await toolRuntime.prepareApproval(toolName, args);
+            if (approval !== undefined) {
+              const normalizedApproval = buildDeleteApprovalDetails({ approval }, args?.path);
+              if (normalizedApproval) approvalArgs = { ...args, approval: normalizedApproval };
             }
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
             preflightErrorContent = clipToolResult({ error: message }, toolResultMaxChars);
           }
         }
-        /* Run tool: safe mode LLM-based command evaluation */
-        if (toolName === 'run' && isSafeModeRun && !preflightErrorContent) {
-          try {
-            const { evaluateCommandWithLLM } = await import('./command-evaluator.js');
-            const evaluation = await evaluateCommandWithLLM({
-              command: args?.command || '',
-              config,
-              workspaceRoot: config?.workspaceRoot || process.cwd()
-            });
-            approvalArgs = {
-              ...args,
-              _risk: evaluation.failed
-                ? ''
-                : (isSafeModePolicyBlocked && evaluation.risk === 'low' ? 'medium' : evaluation.risk),
-              _evaluation: evaluation,
-              _policyBlock: isSafeModePolicyBlocked
-                ? { reason: runPolicyCheck.reason, suggestion: runPolicyCheck.suggestion || '' }
-                : null
-            };
-            if (shouldDenyHighRiskRunEvaluation(config, evaluation)) {
-              preflightErrorContent = clipToolResult({
-                error: 'Command blocked by safe mode: high-risk command denied because dangerous commands are disabled',
-                evaluation
-              }, toolResultMaxChars);
-              approvalResults.set(call.id, {
-                approved: false,
-                args: approvalArgs,
-                errorContent: preflightErrorContent
-              });
-              continue;
-            }
-            /* LLM says low-risk + allow → auto-approve, skip confirmation panel */
-            if (!isSafeModePolicyBlocked && normalizedApprovalMode !== 'review' && evaluation.risk === 'low' && evaluation.recommendation === 'allow') {
-              approvalResults.set(call.id, { approved: true, args: approvalArgs });
-              continue;
-            }
-          } catch (_) {
-            approvalArgs = {
-              ...args,
-              _risk: '',
-              _evaluation: {
-                risk: 'high',
-                description: '',
-                sideEffects: '',
-                recommendation: 'deny',
-                failed: true
-              },
-              _policyBlock: isSafeModePolicyBlocked
-                ? { reason: runPolicyCheck.reason, suggestion: runPolicyCheck.suggestion || '' }
-                : null
-            };
-          }
-          if (typeof handler?.prepareApproval === 'function') {
+        /* Ambiguous commands use the legacy LLM reviewer only without a confining sandbox. */
+        if (isShellToolName(toolName) && (isSafeModeRun || isDeterministicCommandGate) && !preflightErrorContent) {
+          if (isSafeModeRun) {
             try {
-              const approval = await handler.prepareApproval(approvalArgs);
-              approvalArgs = { ...approvalArgs, approval };
-            } catch (_) { /* skip */ }
+              const evaluateCommandFn = typeof evaluateCommand === 'function'
+                ? evaluateCommand
+                : (await import('./command-evaluator.js')).evaluateCommandWithLLM;
+              let evaluation = await evaluateCommandFn({
+                command: args?.command || '',
+                config,
+                workspaceRoot: config?.workspaceRoot || process.cwd()
+              });
+              if (evaluation?.failed && !evaluation.failureReason) {
+                evaluation = { ...evaluation, failureReason: 'evaluator_error' };
+              }
+              approvalArgs = {
+                ...args,
+                _risk: evaluation.failed
+                  ? ''
+                  : (isSafeModePolicyBlocked && evaluation.risk === 'low' ? 'medium' : evaluation.risk),
+                _evaluation: evaluation,
+                _policyBlock: isSafeModePolicyBlocked
+                  ? { reason: runPolicyCheck.reason, suggestion: runPolicyCheck.suggestion || '' }
+                  : null
+              };
+              if (shouldDenyHighRiskRunEvaluation(config, evaluation)) {
+                preflightErrorContent = clipToolResult({
+                  error: 'Command blocked by safe mode: high-risk command denied because dangerous commands are disabled',
+                  evaluation
+                }, toolResultMaxChars);
+                approvalResults.set(call.id, {
+                  approved: false,
+                  args: approvalArgs,
+                  errorContent: preflightErrorContent
+                });
+                continue;
+              }
+              /* Auto mode: allow low/medium + allow without a panel; high still needs review. */
+              if (
+                !isSandboxEscalation
+                && projectIsGit
+                && normalizedApprovalMode !== 'review'
+                && evaluation.recommendation === 'allow'
+                && evaluation.risk !== 'high'
+              ) {
+                if (isSafeModePolicyBlocked) {
+                  approvalArgs = markRunCommandSafeModeApproved(approvalArgs);
+                }
+                approvalResults.set(call.id, { approved: true, args: approvalArgs });
+                continue;
+              }
+            } catch (_) {
+              approvalArgs = {
+                ...args,
+                _risk: '',
+                _evaluation: {
+                  risk: 'high',
+                  description: '',
+                  sideEffects: '',
+                  recommendation: 'deny',
+                  failed: true,
+                  failureReason: 'evaluator_error'
+                },
+                _policyBlock: isSafeModePolicyBlocked
+                  ? { reason: runPolicyCheck.reason, suggestion: runPolicyCheck.suggestion || '' }
+                  : null
+              };
+            }
           }
+          try {
+            const approval = await toolRuntime.prepareApproval(toolName, approvalArgs);
+            if (approval !== undefined) {
+              approvalArgs = { ...approvalArgs, approval };
+            }
+          } catch (_) { /* skip */ }
         }
         if (preflightErrorContent) {
           approvalResults.set(call.id, {
@@ -927,21 +1110,40 @@ export async function runAgentLoop({
           continue;
         }
         if (typeof requestToolApproval === 'function') {
+          const normalApprovalDetails = toolName === 'delete'
+            ? approvalArgs.approval
+            : (isShellToolName(toolName) ? approvalArgs.approval : undefined);
           const decision = await requestToolApproval({
             id: call.id,
             name: toolName,
             displayName,
             arguments: approvalArgs,
-            approvalDetails: toolName === 'delete' ? approvalArgs.approval
-              : (toolName === 'run' ? approvalArgs.approval : undefined)
+            approvalDetails: outsideWorkspaceApproval
+              ? {
+                  ...(normalApprovalDetails && typeof normalApprovalDetails === 'object'
+                    ? normalApprovalDetails
+                    : {}),
+                  outsideWorkspaceMutation: outsideWorkspaceApproval
+                }
+              : normalApprovalDetails
           });
           approved = Boolean(decision?.approved);
-          if (approved && toolName === 'run' && isSafeModePolicyBlocked) {
+          approvalReason = approved ? '' : String(decision?.reason || '').trim();
+          if (approved && outsideWorkspaceApproval) {
+            approvalArgs = markOutsideWorkspaceMutationApproved(
+              approvalArgs,
+              outsideWorkspaceApproval
+            );
+          }
+          if (approved && isShellToolName(toolName) && isSafeModePolicyBlocked) {
             approvalArgs = markRunCommandSafeModeApproved(approvalArgs);
+          }
+          if (approved && isSandboxEscalation) {
+            approvalArgs = markSandboxEscalationApproved(approvalArgs);
           }
         }
       }
-      approvalResults.set(call.id, { approved, args: approvalArgs });
+      approvalResults.set(call.id, { approved, args: approvalArgs, reason: approvalReason });
     }
 
     // Collect results keyed by call.id, then write to messages in original order
@@ -951,7 +1153,41 @@ export async function runAgentLoop({
     async function executeOne({ call, args, toolName, displayName, isParallelSafe }) {
       const startedAt = Date.now();
       const approvalState = approvalResults.get(call.id) || { approved: true, args };
-      const effectiveArgs = approvalState.args || args;
+      let effectiveArgs = approvalState.args || args;
+
+      if (signal?.aborted) {
+        const reason = 'Tool call aborted before dispatch';
+        return {
+          callId: call.id,
+          content: clipToolResult({ error: reason, code: 'ABORTED_BEFORE_DISPATCH' }, toolResultMaxChars),
+          error: true,
+          durationMs: 0,
+          summary: reason,
+          status: 'error',
+        };
+      }
+
+      if (approvalState.graphPreflightContent) {
+        const summary = 'Project graph impact review required before mutation';
+        if (onEvent) {
+          onEvent({
+            type: 'tool:blocked',
+            name: toolName,
+            displayName,
+            id: call.id,
+            arguments: effectiveArgs,
+            summary,
+          });
+        }
+        return {
+          callId: call.id,
+          content: approvalState.graphPreflightContent,
+          blocked: true,
+          durationMs: 0,
+          summary,
+          status: 'blocked',
+        };
+      }
 
       if (approvalState.errorContent) {
         const summary = trimInline(approvalState.errorContent, 120);
@@ -970,7 +1206,7 @@ export async function runAgentLoop({
 
       if (!approvalState.approved) {
         if (onEvent) onEvent({ type: 'tool:blocked', name: toolName, displayName, id: call.id, arguments: effectiveArgs });
-        const blockedPayload = buildApprovalBlockedResult(toolName, effectiveArgs);
+        const blockedPayload = buildApprovalBlockedResult(toolName, effectiveArgs, approvalState.reason);
         return {
           callId: call.id,
           content: JSON.stringify(blockedPayload),
@@ -980,10 +1216,8 @@ export async function runAgentLoop({
         };
       }
 
-      if (onEvent) onEvent({ type: 'tool:start', name: toolName, displayName, id: call.id, arguments: effectiveArgs });
-      const handler = toolHandlers[toolName];
-      if (!handler) {
-        const available = Object.keys(toolHandlers).join(', ');
+      if (!toolRuntime.has(toolName)) {
+        const available = visibleToolNames.join(', ');
         const msg = `Unknown tool: "${toolName}". Available tools: ${available || '(none)'}`;
         const summary = trimInline(msg, 200);
         if (onEvent) {
@@ -1017,6 +1251,142 @@ export async function runAgentLoop({
         };
       }
 
+      // PreToolUse must run (and appear in the UI) before tool:start.
+      let preToolContexts = [];
+      if (skillHooksSession) {
+        const preToolUse = await fireSkillHookEvent({
+          session: skillHooksSession,
+          eventName: 'PreToolUse',
+          toolName,
+          input: { tool_name: toolName, tool_input: effectiveArgs },
+          workspaceRoot,
+          onAgentEvent: onEvent
+        });
+        preToolContexts = formatHookContextLines(preToolUse, 'PreToolUse', toolName);
+        if (preToolUse.denied) {
+          const durationMs = Date.now() - startedAt;
+          const reason = preToolUse.reason || `Blocked by a "${toolName}" pre-tool-use hook.`;
+          const summary = trimInline(reason, 120);
+          if (onEvent) {
+            onEvent({ type: 'tool:error', name: toolName, displayName, id: call.id, arguments: effectiveArgs, durationMs, summary });
+          }
+          return {
+            callId: call.id,
+            content: clipToolResult({ error: reason }, toolResultMaxChars),
+            error: true,
+            durationMs,
+            summary,
+            status: 'error'
+          };
+        }
+        let hookRequiresApproval = preToolUse.decision === 'ask';
+        let updatedShellApproval = null;
+        if (preToolUse.updatedInput && typeof preToolUse.updatedInput === 'object') {
+          effectiveArgs = preToolUse.updatedInput;
+          updatedShellApproval = isShellToolName(toolName)
+            ? resolveShellApprovalStrategy({
+                command: effectiveArgs?.command || '',
+                config,
+                workspaceRoot: config?.workspaceRoot || process.cwd(),
+                osSandboxConfining,
+                approvalMode: normalizedApprovalMode,
+                projectIsGit,
+              })
+            : null;
+          const updatedRunPolicy = updatedShellApproval?.policyCheck || { allowed: true };
+          if (isShellToolName(toolName) && updatedRunPolicy.reason === 'blocked by dangerous command pattern') {
+            const reason = updatedRunPolicy.reason;
+            return {
+              callId: call.id,
+              content: clipToolResult({ error: reason }, toolResultMaxChars),
+              blocked: true,
+              durationMs: Date.now() - startedAt,
+              summary: reason,
+              status: 'blocked'
+            };
+          }
+          if (updatedShellApproval?.sandboxFirst && updatedShellApproval.policyBlocked) {
+            effectiveArgs = markRunCommandSafeModeApproved(effectiveArgs);
+          }
+          hookRequiresApproval = hookRequiresApproval || toolRequiresUserApproval({
+            approvalMode: normalizedApprovalMode,
+            projectIsGit,
+            toolName,
+            isSafeModeRun: updatedShellApproval?.needsLlmReview === true,
+            isDeterministicCommandGate: updatedShellApproval?.deterministicGate === true,
+            osSandboxConfining,
+            alwaysAllowTools: [...alwaysAllowSet]
+          });
+        }
+        if (hookRequiresApproval) {
+          if (typeof requestToolApproval !== 'function') {
+            const reason = preToolUse.decision === 'ask'
+              ? 'A PreToolUse hook requires approval.'
+              : 'Hook-modified tool input requires approval.';
+            return {
+              callId: call.id,
+              content: clipToolResult({ error: reason }, toolResultMaxChars),
+              blocked: true,
+              durationMs: Date.now() - startedAt,
+              summary: reason,
+              status: 'blocked'
+            };
+          }
+          const decision = await requestToolApproval({
+            id: call.id,
+            name: toolName,
+            displayName,
+            arguments: effectiveArgs,
+          });
+          if (!decision?.approved) {
+            const reason = preToolUse.decision === 'ask'
+              ? 'Tool use requested by a PreToolUse hook was not approved.'
+              : 'Hook-modified tool input was not approved.';
+            return {
+              callId: call.id,
+              content: clipToolResult({ error: reason }, toolResultMaxChars),
+              blocked: true,
+              durationMs: Date.now() - startedAt,
+              summary: reason,
+              status: 'blocked'
+            };
+          }
+          if (updatedShellApproval?.policyBlocked) {
+            effectiveArgs = markRunCommandSafeModeApproved(effectiveArgs);
+          }
+        }
+        if (preToolUse.decision === 'defer') {
+          const reason = 'Tool call deferred by a PreToolUse hook.';
+          return {
+            callId: call.id,
+            content: clipToolResult({ error: reason }, toolResultMaxChars),
+            blocked: true,
+            durationMs: Date.now() - startedAt,
+            summary: reason,
+            status: 'blocked'
+          };
+        }
+      }
+
+      const invalidArgs = toolRuntime.invalidArguments(toolName, effectiveArgs);
+      if (invalidArgs) {
+        const invalid = buildInvalidToolArgumentsResult(toolName, invalidArgs);
+        const summary = trimInline(invalid.reason, 120);
+        if (onEvent) {
+          onEvent({ type: 'tool:error', name: toolName, displayName, id: call.id, arguments: effectiveArgs, durationMs: Date.now() - startedAt, summary });
+        }
+        return {
+          callId: call.id,
+          content: clipToolResult(invalid, toolResultMaxChars),
+          error: true,
+          durationMs: Date.now() - startedAt,
+          summary,
+          status: 'error',
+        };
+      }
+
+      if (onEvent) onEvent({ type: 'tool:start', name: toolName, displayName, id: call.id, arguments: effectiveArgs });
+
       let captureScope = null;
       if (!isParallelSafe && changeTracker && typeof changeTracker.begin === 'function') {
         try {
@@ -1026,7 +1396,15 @@ export async function runAgentLoop({
 
       let toolResult;
       try {
-        toolResult = await handler(effectiveArgs, { rawArguments: call.arguments });
+        toolResult = await toolRuntime.execute(toolName, effectiveArgs, {
+          rawArguments: call.arguments,
+          toolCallId: call.id,
+          orchestrationId: step,
+          signal,
+          workspaceRoot,
+          executionMode,
+          approvalMode: normalizedApprovalMode,
+        });
       } catch (error) {
         const durationMs = Date.now() - startedAt;
         const message = error instanceof Error ? error.message : String(error);
@@ -1048,6 +1426,12 @@ export async function runAgentLoop({
       }
 
       const durationMs = Date.now() - startedAt;
+      mutationGraphPreflight.record({
+        toolName,
+        args: effectiveArgs,
+        result: toolResult,
+        step,
+      });
       const runFailureMessage = resolveRunToolFailure(toolName, toolResult);
       if (runFailureMessage) {
         const summary = trimInline(runFailureMessage, 120);
@@ -1064,14 +1448,14 @@ export async function runAgentLoop({
         if (isAutoCaptureEnabled(config) && shouldAutoCaptureRunFailure(runFailureMessage)) {
           await captureToolFailure(toolName, runFailureMessage, effectiveArgs, config).catch(() => {});
         }
-        let formatted = formatToolResult(toolResult, toolName, effectiveArgs, toolFormatters, toolResultMaxChars);
+        let formatted = formatToolResult(toolResult, toolName, effectiveArgs, toolRuntime, toolResultMaxChars);
         if (!String(formatted || '').trim() || formatted === emptyToolResultMarker(toolName)) {
           formatted = runFailureMessage;
         } else if (!/^error:/im.test(formatted)) {
           formatted = `error: ${runFailureMessage}\n\n${formatted}`;
         }
         if (shouldPersistLargeToolResult(toolName)) {
-          formatted = await storeResultIfNeeded(call.id, formatted, toolResult);
+          formatted = await activeToolResultStore.storeResultIfNeeded(call.id, formatted, toolResult);
         }
         return {
           callId: call.id,
@@ -1083,10 +1467,15 @@ export async function runAgentLoop({
         };
       }
 
+      if (toolName === 'skill' && effectiveArgs?.name && typeof onSkillLoaded === 'function') {
+        await onSkillLoaded(String(effectiveArgs.name)).catch(() => null);
+      }
+
       const summary = summarizeToolResult(toolResult);
       const resultMeta = extractToolResultMeta(toolName, toolResult);
       /* 提取文件改动统计 */
       const declaredFileChange = extractFileChange(toolName, toolResult);
+      const declaredChanges = normalizeFileChanges(declaredFileChange);
       let fileChanges = [];
       let fileChange = null;
       if (!isParallelSafe && changeTracker && typeof changeTracker.capture === 'function' && captureScope) {
@@ -1096,11 +1485,18 @@ export async function runAgentLoop({
             toolCallId: call.id,
             summary,
             args: effectiveArgs,
-            declaredFileChanges: normalizeFileChanges(declaredFileChange)
+            declaredFileChanges: declaredChanges
           });
           const capturedChanges = normalizeFileChanges(captured);
           if (capturedChanges.length) {
-            fileChanges = capturedChanges;
+            // Prefer oplog rows (undo ids), but keep tool diff_preview when capture omitted it.
+            fileChanges = capturedChanges.map((change) => {
+              if (String(change.diffPreview || '').trim()) return change;
+              const declared = declaredChanges.find((item) => item.path === change.path);
+              return declared?.diffPreview
+                ? { ...change, diffPreview: declared.diffPreview }
+                : change;
+            });
             fileChange = fileChanges[0] || null;
           }
         } catch (error) {
@@ -1115,8 +1511,25 @@ export async function runAgentLoop({
           }
         }
       }
+      if (!fileChanges.length && declaredChanges.length) {
+        fileChanges = declaredChanges;
+        fileChange = fileChanges[0] || null;
+      }
       if (onEvent) {
         onEvent({ type: 'tool:end', name: toolName, displayName, id: call.id, arguments: effectiveArgs, durationMs, summary, fileChange, fileChanges, resultMeta });
+      }
+
+      let postToolContexts = [];
+      if (skillHooksSession) {
+        const postToolUse = await fireSkillHookEvent({
+          session: skillHooksSession,
+          eventName: 'PostToolUse',
+          toolName,
+          input: { tool_name: toolName, tool_input: effectiveArgs, tool_response: toolResult },
+          workspaceRoot,
+          onAgentEvent: onEvent
+        }).catch(() => null);
+        postToolContexts = formatHookContextLines(postToolUse, 'PostToolUse', toolName);
       }
 
       if (toolResult && typeof toolResult === 'object' && toolResult.error) {
@@ -1127,22 +1540,21 @@ export async function runAgentLoop({
       }
 
       // P1b: Use per-tool formatter if available, else fallback
-      let formatted = formatToolResult(toolResult, toolName, effectiveArgs, toolFormatters, toolResultMaxChars);
+      let formatted = formatToolResult(toolResult, toolName, effectiveArgs, toolRuntime, toolResultMaxChars);
+      const hookContexts = [...preToolContexts, ...postToolContexts].filter(Boolean);
+      if (hookContexts.length > 0) {
+        formatted = `${formatted}\n\n[Hook context]\n${hookContexts.join('\n')}`;
+      }
       noteAnalysisEvidence(analysisGuard, toolName, effectiveArgs, toolResult);
 
-      // P2: If tool_search loaded deferred tools, inject their schemas into activeTools
+      // A loaded deferred schema becomes visible on the next model response.
       if (toolName === 'tool_search' && toolResult && Array.isArray(toolResult.schemas)) {
-        for (const schema of toolResult.schemas) {
-          const name = schema?.function?.name;
-          if (name && !activeTools.some((t) => t?.function?.name === name)) {
-            activeTools.push(schema);
-          }
-        }
+        toolRuntime.activateSchemas(toolResult.schemas);
       }
 
       // P0: Persist to disk if still large
       if (shouldPersistLargeToolResult(toolName)) {
-        formatted = await storeResultIfNeeded(call.id, formatted, toolResult);
+        formatted = await activeToolResultStore.storeResultIfNeeded(call.id, formatted, toolResult);
       }
 
       return {
@@ -1160,29 +1572,11 @@ export async function runAgentLoop({
       };
     }
 
-    // Execute consecutive read-only batches in parallel, but never move them
-    // across state-changing or approval-blocked calls.
-    let parallelBatch = [];
-    const flushParallelBatch = async () => {
-      if (parallelBatch.length === 0) return;
-      const results = await Promise.all(parallelBatch.map((c) => executeOne(c)));
-      for (const r of results) {
-        resultEntries.set(r.callId, r);
-      }
-      parallelBatch = [];
-    };
-
-    for (const c of callsWithMeta) {
-      const canRunInCurrentParallelBatch = c.isParallelSafe && approvalResults.get(c.call.id)?.approved;
-      if (canRunInCurrentParallelBatch) {
-        parallelBatch.push(c);
-        continue;
-      }
-      await flushParallelBatch();
-      const r = await executeOne(c);
-      resultEntries.set(r.callId, r);
-    }
-    await flushParallelBatch();
+    const orderedResults = await toolRuntime.executeOrdered(callsWithMeta, {
+      canRunConcurrently: (candidate) => approvalResults.get(candidate.call.id)?.approved === true,
+      execute: executeOne,
+    });
+    for (const result of orderedResults) resultEntries.set(result.callId, result);
 
     // Write results to messages in original tool call order
     for (const { call, toolName, displayName, args } of callsWithMeta) {
@@ -1235,7 +1629,25 @@ export async function runAgentLoop({
     }
     if (workflowCompleteText) {
       await maybeRunAutoDream(step, { force: true });
+      await fireStopHooks(workflowCompleteText);
       return { text: workflowCompleteText, messages, steps: step, workflowComplete: true };
+    }
+    if (typeof shouldCheckpoint === 'function') {
+      const checkpoint = await shouldCheckpoint({
+        step,
+        messages,
+        toolCalls,
+      });
+      if (checkpoint) {
+        const checkpointText = lastAssistantText || '';
+        if (onEvent) onEvent({ type: 'checkpoint', step });
+        return {
+          text: checkpointText,
+          messages,
+          steps: step,
+          checkpoint: true,
+        };
+      }
     }
   }
 
@@ -1252,20 +1664,12 @@ export async function runAgentLoop({
 
   const fallback = lastAssistantText || 'Stopped before final response.';
   await maybeRunAutoDream(step, { force: true });
+  await fireStopHooks(fallback);
   return {
     text: fallback,
     messages,
     steps: step
   };
-}
-
-function callsToPlanSummary(toolCalls = []) {
-  return toolCalls
-    .slice(0, 8)
-    .map((call) => {
-      const args = safeJsonParse(call?.arguments);
-      return `- ${formatToolDisplayName(normalizeToolCallName(call?.name), args)}`;
-    });
 }
 
 function attachToolCallSessionMeta(assistantMessage, callId, meta = {}) {

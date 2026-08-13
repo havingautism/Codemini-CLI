@@ -5,11 +5,15 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   classifyDirectMemoryPrompt,
+  classifyMemoryRoute,
   chooseMemoryLifecycle,
   inferMemoryScope,
   normalizeMemoryKind,
   normalizeMemoryScope,
-  shouldAutoCaptureUserPrompt
+  shouldAutoCaptureUserPrompt,
+  buildMemoryDecisionGraphBlock,
+  buildDreamPromotionGraphBlock,
+  buildMemoryRouteHintBlock
 } from '../src/core/memory-policy.js';
 import { rememberMemory, listMemories, captureToInbox, listInbox } from '../src/core/memory-store.js';
 import { buildMemorySnapshot } from '../src/core/memory-prompt.js';
@@ -21,6 +25,7 @@ import {
   claimSessionMemoryReview,
   completeSessionMemoryReview
 } from '../src/core/memory-review-store.js';
+import { closeSqliteDatabasesForTests } from '../src/core/sqlite-database.js';
 
 test('normalizeMemoryKind collapses legacy kinds into four buckets', () => {
   assert.equal(normalizeMemoryKind('interest'), 'preference');
@@ -99,6 +104,31 @@ test('classifyDirectMemoryPrompt recognizes global and project conventions indep
 test('shouldAutoCaptureUserPrompt skips direct preference utterances', () => {
   assert.equal(shouldAutoCaptureUserPrompt('我喜欢用中文交流'), false);
   assert.equal(shouldAutoCaptureUserPrompt('请帮我修复登录页的空指针问题'), true);
+});
+
+test('memory decision graph names save_memory and dream leaves', () => {
+  const graph = buildMemoryDecisionGraphBlock();
+  assert.match(graph, /save_memory/);
+  assert.match(graph, /Dream/);
+  assert.match(graph, /never store/);
+  assert.match(graph, /verified reusable lesson discovered during coding/);
+  assert.match(graph, /semantic coding memory_gate may save/);
+  assert.match(buildDreamPromotionGraphBlock(), /keep →/);
+});
+
+test('classifyMemoryRoute maps remember / task / chatter onto leaves', () => {
+  assert.equal(classifyMemoryRoute('请记住本项目测试用 npm test').leaf, 'save_memory');
+  assert.equal(classifyMemoryRoute('请帮我修复登录页的空指针问题').leaf, 'dream_inbox');
+  assert.equal(classifyMemoryRoute('今天天气怎么样').leaf, 'ignore');
+});
+
+test('memory route hint only fires for save_memory leaf', () => {
+  assert.match(
+    buildMemoryRouteHintBlock(classifyMemoryRoute('我喜欢深色主题')),
+    /save_memory\(scope="user", kind="preference"\)/
+  );
+  assert.equal(buildMemoryRouteHintBlock(classifyMemoryRoute('请帮我修复登录页')), '');
+  assert.equal(buildMemoryRouteHintBlock(classifyMemoryRoute('hello')), '');
 });
 
 test('rememberMemory keeps pinned items when trimming budget', async () => {
@@ -201,6 +231,7 @@ test('listInbox normalizes legacy repo scope to project', async () => {
     const byRepoAlias = await listInbox({ scope: 'repo' });
     assert.ok(byRepoAlias.some((item) => item.id === entry.id));
   } finally {
+    closeSqliteDatabasesForTests();
     if (prev === undefined) delete process.env.CODEMINI_GLOBAL_DIR;
     else process.env.CODEMINI_GLOBAL_DIR = prev;
     await fs.rm(tmp, { recursive: true, force: true });
@@ -294,6 +325,7 @@ test('captureToInbox is idempotent for session review keys', async () => {
     const items = await listInbox();
     assert.equal(items.length, 1);
   } finally {
+    closeSqliteDatabasesForTests();
     if (prev === undefined) delete process.env.CODEMINI_GLOBAL_DIR;
     else process.env.CODEMINI_GLOBAL_DIR = prev;
     await fs.rm(tmp, { recursive: true, force: true });
@@ -315,6 +347,7 @@ test('concurrent inbox captures do not overwrite each other', async () => {
     const items = await listInbox();
     assert.equal(items.length, 20);
   } finally {
+    closeSqliteDatabasesForTests();
     if (prev === undefined) delete process.env.CODEMINI_GLOBAL_DIR;
     else process.env.CODEMINI_GLOBAL_DIR = prev;
     await fs.rm(tmp, { recursive: true, force: true });
@@ -377,6 +410,7 @@ test('session review state uses content hashes instead of a permanent boolean', 
     });
     assert.equal(changed.claimed, true);
   } finally {
+    closeSqliteDatabasesForTests();
     if (prev === undefined) delete process.env.CODEMINI_GLOBAL_DIR;
     else process.env.CODEMINI_GLOBAL_DIR = prev;
     await fs.rm(tmp, { recursive: true, force: true });

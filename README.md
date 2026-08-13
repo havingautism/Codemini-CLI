@@ -1,293 +1,228 @@
 <p align="center">
-  <img src="./codemini-web/codemini_logo.png" alt="Codemini logo" width="132" height="132" />
+  <a href="https://github.com/havingautism/Codemini-CLI"><img src="./codemini-web/codemini_logo.png" alt="Codemini logo" width="160" /></a>
 </p>
 
 <h1 align="center">Codemini CLI</h1>
 
 <p align="center">
-  <b>An extremely restrained coding + tasks CLI.</b><br />
+  An extremely restrained coding + tasks CLI.<br />
   Every platform. Every terminal. Minimal by design.
 </p>
 
 <p align="center">
-  <a href="https://www.npmjs.com/package/codemini-cli"><img alt="npm version" height="24" src="https://img.shields.io/npm/v/codemini-cli?style=flat&logo=npm&logoColor=white&label=npm&labelColor=0f172a&color=cb3837"></a>
-  <a href="https://nodejs.org"><img alt="node version" height="24" src="https://img.shields.io/badge/node-%3E%3D22-339933?style=flat&logo=nodedotjs&logoColor=white&labelColor=0f172a"></a>
-  <a href="./LICENSE"><img alt="license" height="24" src="https://img.shields.io/badge/license-MIT-2563eb?style=flat&labelColor=0f172a"></a>
-  <a href="#web-ui"><img alt="web ui included" height="24" src="https://img.shields.io/badge/Web%20UI-included-7c3aed?style=flat&logo=googlechrome&logoColor=white&labelColor=0f172a"></a>
-  <a href="#quick-start"><img alt="quick start" height="24" src="https://img.shields.io/badge/quick%20start-3%20commands-f97316?style=flat&logo=rocket&logoColor=white&labelColor=0f172a"></a>
+  <a href="https://www.npmjs.com/package/codemini-cli"><img alt="npm version" src="https://img.shields.io/npm/v/codemini-cli?style=flat-square&logo=npm"></a>
+  <a href="https://nodejs.org"><img alt="node version" src="https://img.shields.io/badge/node-%3E%3D22.13-339933?style=flat-square&logo=nodedotjs&logoColor=white"></a>
+  <a href="./LICENSE"><img alt="license" src="https://img.shields.io/badge/license-MIT-blue?style=flat-square"></a>
+  <a href="#terminal-tui--web-ui"><img alt="web ui included" src="https://img.shields.io/badge/Web_UI-included-7c3aed?style=flat-square"></a>
+  <a href="#quick-start"><img alt="quick start" src="https://img.shields.io/badge/quick_start-4_commands-0ea5e9?style=flat-square"></a>
 </p>
 
 <p align="center">
-  <a href="#english">English</a>
-  ·
-  <a href="#简体中文">简体中文</a>
-  ·
-  <a href="#web-ui">Web UI</a>
-  ·
-  <a href="./OPERATIONS.md">Operator Guide</a>
-  ·
+  <a href="#english">English</a> ·
+  <a href="#简体中文">简体中文</a> ·
+  <a href="#terminal-tui--web-ui">Web UI</a> ·
+  <a href="./OPERATIONS.md">Operator Guide</a> ·
   <a href="./deployment.md">Deployment</a>
 </p>
 
 ---
 
-<a id="english"></a>
-
 ## English
 
 ### What is Codemini?
 
-Codemini is a **coding + tasks CLI** built for a simple premise: agentic help should work everywhere, scale from small models to frontier ones, and never waste your context budget.
+Codemini is a **coding + tasks CLI** built around a simple premise: agentic help should work everywhere without wasting your context budget.
 
-It is equally at home refactoring a TypeScript codebase, automating a Git workflow, running a multi-step DevOps pipeline, or bulk-processing data files. **It is not limited to writing code** — it is a general-purpose task agent that happens to be very good at code.
+It can refactor a codebase, automate a Git workflow, run a multi-step pipeline, research a technical question, or process local files. It works on Windows, macOS, and Linux with OpenAI-compatible and Anthropic APIs.
 
-It runs on Windows, macOS, or Linux — in any terminal (PowerShell, bash, zsh, and others). It works with any OpenAI-compatible or Anthropic API, so you are never locked into a single provider. And it gives you **two surfaces** — a rich terminal TUI and a browser-based Web UI — sharing the same sessions and engine.
+Codemini provides two interfaces powered by the same runtime:
 
-Codemini can use **two models in one session**: a lightweight model for routing and simple tasks, and a larger model for complex reasoning. Configure both, and the system dispatches work to the right one.
+- A terminal TUI for focused, keyboard-first work.
+- A browser Web UI for sessions, files, diffs, terminals, research, CodeWiki, skills, hooks, and settings.
 
-Other built-in capabilities include project indexing, persistent memory with self-evolution via the Reflect action, skill-based workflows, coding mode for implementation-heavy work, approvals, and soul presets that change its tone without changing its behavior.
-
-No SaaS. No telemetry. No mandatory registration.
+Sessions, project state, skills, memories, and runtime metadata remain local. Model requests are sent only to the provider you configure.
 
 ### Why "Restrained"?
 
-Many coding agents pursue an ever-expanding surface — more tools, more context, more automation. Codemini takes the opposite approach.
+Codemini avoids making every feature part of every prompt.
 
-- **Small dependency footprint.** A focused set of npm packages. No Electron, no Docker, no Python runtime.
-- **Managed context budgets.** Micro-compaction, tool-result spill-to-disk, prompt preflight triggers — designed to stay within your model's window.
-- **Dual-model dispatch.** Configure a lightweight model (for routing and simple tasks) alongside a frontier model (for complex reasoning). Work reaches the right model automatically.
-- **Proportional approvals.** Commands are classified by intent. Read-only operations pass through; destructive actions prompt for confirmation. You control the threshold.
-- **Lazy-loaded skills.** A catalog of 1,000 skills costs the same as 1. Only the invoked skill contributes to the prompt.
-- **Curated memory with self-evolution.** Inbox is temporary by design. The dream loop curates it, and the Reflect action converts successful patterns into reusable skills.
+- **Managed context.** Compaction, prompt preflight, and tool-result spill keep long sessions usable.
+- **Lazy-loaded skills.** Routing metadata stays small; the complete `SKILL.md` is loaded only when selected.
+- **Project-aware retrieval.** Symbols, AST structure, dependencies, and the project graph help locate evidence before reading large files.
+- **Proportional approvals.** Read-only work can proceed while risky actions remain visible and reviewable.
+- **Local persistence.** Sessions, memory, indexes, and checkpoints live on your machine.
+- **Provider choice.** Use an OpenAI-compatible or Anthropic endpoint and configure a separate fast model when useful.
 
-It is not about delivering less capability. It is about eliminating what you should not have to carry.
-
-#### By the Numbers: What "Restrained" Looks Like
-
-A typical first-turn system prompt in a real project — with AGENTS.md, an auto skill, memory snapshot, and project context — costs approximately **5,300 tokens**. The breakdown:
-
-```
-  base system prompt          2,703 tokens  ████████████████░░░░░░░░░  51%
-  AGENTS.md project rules       535 tokens  ███░░░░░░░░░░░░░░░░░░░░░  10%
-  auto skill (superpowers)    1,371 tokens  ████████░░░░░░░░░░░░░░░░  26%
-  memory snapshot               144 tokens  █░░░░░░░░░░░░░░░░░░░░░░░   3%
-  project index snippet         447 tokens  ██░░░░░░░░░░░░░░░░░░░░░░   8%
-  reply language wrapper         27 tokens  ░░░░░░░░░░░░░░░░░░░░░░░░   1%
-  ─────────────────────────────────────────────────────────────────
-  total first turn            ~5,300 tokens
-```
-
-By contrast, many alternatives ship **15K–25K tokens** of system prompt before a user's first message. Every installed skill, saved memory, and rule file is poured in unconditionally.
-
-Codemini's restraint is architectural:
-
-- **Skills lazy-load.** Ten skills installed = same system prompt cost as zero. Only the selected skill's body is loaded.
-- **Memory is curated.** Inbox is temporary noise; only promoted memories enter the prompt. You control the volume.
-- **Project index is compact.** Symbol maps replace raw file trees. An entire repository fits in a few hundred tokens.
-- **No hidden payloads.** No telemetry scripts, no usage trackers, no injected context you did not request.
-
-The principle is straightforward: **less prompt tax means more budget for actual work.**
+The goal is not fewer capabilities. It is less unnecessary context, guessing, and authority.
 
 ### Quick Start
 
+Requires Node.js 22.13 or newer.
+
 ```bash
-# Install globally
 npm install -g codemini-cli
 
-# Configure your gateway
 codemini config set gateway.base_url http://127.0.0.1:8000/v1
 codemini config set gateway.api_key your_api_key
 codemini config set model.name your_model_name
 
-# Start a session
+codemini doctor
 codemini
 ```
 
-Three commands, and you are in an interactive session.
-
-### Web Search Provider
-
-`web_search` defaults to `bing_rss`, which does not require an API key. To use an API-backed search provider:
+Start the Web UI instead:
 
 ```bash
-codemini config set web.search_provider tavily
-codemini config set web.tavily_api_key your_tavily_api_key
-
-# or
-codemini config set web.search_provider exa
-codemini config set web.exa_api_key your_exa_api_key
+codemini --web
 ```
 
-You can also use `TAVILY_API_KEY` or `EXA_API_KEY` environment variables instead of saving the key in config.
+Or choose a project and port explicitly:
+
+```bash
+codemini web --project . --port 3456
+```
 
 ### Beyond Code: Automated Tasks
 
-Codemini's `codemini run` command turns any natural-language task into an automated workflow — no coding required.
+`codemini run` turns a natural-language request into a one-off local workflow.
 
 ```bash
-# Interactive session (chat)
-codemini "Summarize the recent Git history and write a CHANGELOG.md"
+# Interactive session
+codemini "Summarize the recent Git history and update CHANGELOG.md"
 
 # One-off task
-codemini run "Find all .env files in this repo and check for hardcoded secrets"
+codemini run "Find stale dependencies and explain the upgrade risks"
 
-# Multi-role harness — planner + coder + reviewer in sequence
-codemini run --harness coder "Refactor the auth module to extract middleware"
+# Role-constrained harness
+codemini run --harness reviewer "Review the current changes"
 
-# Pipeline — sequential steps with artifact passing
-codemini run --pipeline "Bump version, update CHANGELOG, and create a GitHub release draft"
+# Sequential pipeline
+codemini run --pipeline "Run tests, fix failures, and summarize the result"
 ```
 
-Common non-coding task examples:
-
-| Task | Command |
+| Command | Purpose |
 | --- | --- |
-| **System diagnostics** | `codemini run "Check disk usage, top 5 memory processes, and recent error logs"` |
-| **Git batch operations** | `codemini run "Squash the last 3 commits with message 'fix: pagination edge cases'"` |
-| **Data migration** | `codemini run "Read users.csv, normalize emails, deduplicate by ID, write to users.json"` |
-| **Release prep** | `codemini run --pipeline "Bump patch version, update CHANGELOG, git tag, build"` |
-| **Dependency audit** | `codemini run "List all outdated npm packages and summarize breaking changes"` |
-| **Project cleanup** | `codemini run "Find orphaned test fixtures and temporary debug logs"` |
+| `codemini` / `codemini chat` | Start an interactive terminal session. |
+| `codemini run <task>` | Run a one-off task. |
+| `codemini run --harness <role> <task>` | Run with a specific harness role. |
+| `codemini run --pipeline <task>` | Run a staged workflow with artifact passing. |
+| `codemini --web` / `codemini web` | Start the local Web UI. |
+| `codemini skill ...` | List, install, inspect, enable, disable, or reindex skills. |
+| `codemini config ...` | Read or update configuration. |
+| `codemini doctor` | Check the local runtime and configured provider. |
 
-The `--harness` flag assigns a **role** (`planner`, `advisor`, `coder`, `reviewer`, `tester`) that constrains tool access. The `--pipeline` flag runs a multi-step plan where each step's output feeds the next. Both modes turn Codemini into a headless task agent — like Claude Code, but running entirely on your machine, with your model, under your approval policy.
+### Features
 
 | What | Why it matters |
 | --- | --- |
-| **🧠 Persistent Memory** | Capture action → inbox → dream consolidation → user, global, and project memory tiers. Your agent learns from your project. |
-| **📂 Project Index** | Automatic `.codemini/` index with languages, symbols, imports, and exports. Refreshed incrementally after every edit. |
-| **🛠 Skills System** | Decoupled routing metadata with lazy-loaded `SKILL.md` bodies. Bring your own workflow or choose from built-in presets. |
-| **🔄 Self-Evolution** | The Reflect action converts successful workflows into reusable, reviewable `SKILL.md` files. Your toolset grows with your project. |
-| **⚡ Dual-Model Dispatch** | Configure a fast, lightweight model alongside a capable frontier model. The system routes each task to the appropriate one. |
-| **🖥 Terminal TUI** | Rich, interactive terminal UI with spinner animations, syntax-highlighted code blocks, live command output, and real-time status. |
-| **🕸 Web UI** | Full browser interface — same engine, shared sessions. Switch between terminal and browser freely. |
-| **🎭 Souls** | Tone presets (`professional`, `playful`, `anime`, `caveman`…) that change expression without affecting execution policy. |
-| **📋 Planning Mode** | Multi-step plans with file paths, verification steps, and explicit approval before execution. |
-| **🔒 Approvals** | Commands classified by risk level. Read-only passes; destructive operations pause for confirmation. Configurable thresholds. |
-| **💾 Session Checkpoints** | Save, branch, or replay session state. Context is preserved across crashes and model errors. |
-| **🌍 Cross-Platform** | PowerShell on Windows, bash/zsh on macOS and Linux — same tool, same configuration format, same behavior. |
+| **Project Intelligence** | File and symbol indexing, Tree-sitter AST queries, dependency graphs, project knowledge graphs, and CodeWiki. |
+| **Structured Tool Runtime** | Validated tool schemas, deferred tools, parallel calls, plans, todos, subagents, and background tasks. |
+| **Microsandbox** | Linux microVM when `msb` is available; Linux/macOS fall back to Landlock/Seatbelt. |
+| **Approvals & Checkpoints** | Risk-aware approvals, file-change previews, Git-aware workflows, and checkpoints for non-Git projects. |
+| **Terminal TUI** | Interactive chat, streaming tool output, syntax highlighting, and command shortcuts. |
+| **Web UI** | Shared sessions, file browsing, diffs, real PTY terminals, research, CodeWiki, and configuration. |
+| **Deep Research** | Parallel scouts, evidence collection, artifacts, Research Board, Scrapbook, and resource library. |
+| **Skills, Hooks & MCP** | Reusable workflows, Claude-compatible hooks, hook profiles, and external MCP servers. |
+| **Memory & Self-Evolution** | Capture, Dream, and Reflect turn useful work into curated memory and reusable skills. |
+| **Souls** | Change expression and tone without changing execution policy. |
+| **Local Persistence** | Durable sessions, project state, indexes, usage data, and recovery metadata. |
+| **Provider Flexibility** | OpenAI-compatible and Anthropic providers, model-level reasoning controls, and an optional fast model. |
 
-### Skills
+### Sandbox & Shell Behavior
 
-Skills are reusable, reviewable workflow recipes installed by the user or checked into a project. Codemini does not bundle workflow skills; coding fundamentals and tool discipline live in the execution-mode prompt, while specialized workflows remain an explicit user choice.
+When the sandbox is enabled, Codemini prefers a [Microsandbox](https://github.com/superradcompany/microsandbox) Linux microVM. If the platform `msb` binary is missing or the VM cannot start, Linux and macOS fall back to host OS confinement (Landlock / Seatbelt). Windows has no OS fallback.
+
+- With Microsandbox, Bash and file tools start at the project root; use project-relative paths such as `src/core/tools.js`.
+- OS fallback runs the host shell under Seatbelt or Landlock (not a Linux guest).
+- Network access is available inside the sandbox.
+- The host project is the writable workspace in `workspace-write` mode.
+- If an enabled sandbox cannot start and no OS fallback exists, Codemini fails closed instead of silently running the command on the host.
+
+When the sandbox is explicitly disabled:
+
+| Host | Shell |
+| --- | --- |
+| Windows | Native PowerShell and the original host tools |
+| macOS / Linux | Native Bash and the original host tools |
+
+Available modes:
+
+```bash
+codemini config set sandbox.mode read-only
+codemini config set sandbox.mode workspace-write
+codemini config set sandbox.mode danger-full-access
+codemini config set sandbox.enabled false
+codemini config set sandbox.backend auto
+```
+
+Sandbox policy and approval policy are separate: the sandbox limits where a command can operate, while approvals decide whether it may run.
+
+### Skills, Hooks & MCP
+
+Skills are reusable, reviewable workflows. Codemini keeps lightweight routing metadata in global, coding, and daily indexes, then loads the complete skill only when needed.
 
 ```bash
 codemini skill list
-codemini skill install <path>
+codemini skill install <source>
 codemini skill inspect <name>
 codemini skill enable <name>
 codemini skill disable <name>
 codemini skill reindex
 ```
 
-Skills use a flat catalog (`codemini.skills.json`) with lightweight routing metadata — `description`, `mode`, `triggers`, `enabled`, `priority`. Codemini reads only this metadata at startup; the full `SKILL.md` is loaded only when a skill is selected or invoked. If the catalog is missing, the system falls back to `SKILL.md` frontmatter.
-
-Select enabled skills from the action palette inside a session, or pass an explicit skill prompt from your shell:
-
-```bash
-# Inside an interactive session, press Ctrl+K and choose a skill.
-
-# One-off invocation from your shell after installing a skill
-codemini 'skill:[my-review-skill] review the current changes'
-```
+Skills can be always active, selected by the agent, or invoked manually. Claude-compatible hooks and Hook Profiles can observe or gate lifecycle events, while MCP connects external tools without hard-coding them into the core runtime.
 
 ### Terminal TUI & Web UI
 
-Codemini gives you **two surfaces** powered by the same engine.
-
-**Terminal TUI** — rich interactive interface with spinner animations for long-running tasks, syntax-highlighted code blocks, live command output streaming, and a command palette with autocomplete. Runs in any terminal emulator; no separate process needed.
-
-**Web UI** — full browser interface sharing the same session state:
+The terminal and browser use the same session engine.
 
 ```bash
+codemini
 codemini --web
 ```
 
-Sessions are shared between terminal and browser — switch freely. From an active CLI session, type `web` to launch the browser UI.
+The Web UI includes concurrent sessions, file browsing and previews, Git changes, a real PTY terminal, CodeWiki, Deep Research, Scrapbook, resource management, skills, hooks, MCP, Souls, memories, and settings.
 
-Additional Web UI options (port, project directory, session, model) are available via flags like `--port`, `--project`, `--session`, `--model`, `--no-open`.
+Useful Web UI flags include `--port`, `--project`, `--session`, `--model`, and `--no-open`.
 
-### Concurrent Web sessions
+### Memory, Reflect & Dream
 
-The Web UI can run up to three sessions at once. Additional sessions queue automatically, and switching conversations does not stop background work. Approval and user-input requests pause only their owning session.
-
-Sessions may share a project directory. Codemini detects stale writes made through its managed file tools, but arbitrary shell commands can still conflict; the session list shows a warning while same-project tasks overlap. Interrupted work is not replayed after a server restart.
-
-**Souls** — change the agent's tone without changing behavior. Built-in presets: `default`, `professional`, `ceo`, `playful`, `anime`, `caveman`, `pirate`. Configure with `codemini config set soul.preset professional`.
-
-### Memory, Self-Evolution & Dream Loop
-
-Codemini's memory system is designed to **learn from your work**, not just store facts.
-
-| Action | Purpose |
+| Command | Purpose |
 | --- | --- |
-| Capture | Record a signal into the inbox. |
-| Inbox | Review pending memory evidence. |
-| Dream | Consolidate inbox entries into durable user/global/project memory. |
-| Reflect | Convert a successful workflow pattern into a reviewable `SKILL.md` — your toolset evolves as you work. |
+| `/capture <text>` | Save a useful signal to the memory inbox. |
+| `/inbox` | Review pending memory evidence. |
+| `/dream [--dry-run]` | Consolidate useful evidence into durable memory. |
+| `/reflect` | Convert a successful workflow into a reviewable skill. |
 
-The inbox is intentionally noisy. The dream loop determines what deserves promotion into longer-term storage. And the Reflect action closes the loop: a pattern you've repeated successfully becomes a reusable skill, reviewed and versioned alongside your project.
+The inbox is temporary by design. Dream promotes useful evidence; Reflect turns a repeatable workflow into an explicit tool that can be inspected and reused.
 
-Typical reflect loop:
+### Project Index, Graph & CodeWiki
 
-```bash
-# 1. Finish a workflow that worked well, then ask Codemini to extract the pattern.
-Choose Reflect and describe the provider tool-call recovery workflow.
+Codemini incrementally indexes project files and symbols. Tree-sitter-based parsing supports precise AST and symbol queries, while dependency and knowledge graphs connect callers, files, and architectural areas.
 
-# 2. Review the generated draft in the TUI/Web UI.
-Choose Write in the review controls.
+CodeWiki presents this information as a navigable project map. Mutation preflight uses the graph before edits to surface likely downstream impact.
 
-# 3. Codemini writes .codemini/skills/provider-tool-call-recovery/SKILL.md
-#    and makes it available in the action palette.
+### Deep Research
 
-# 4. The same skill can also be launched directly from the shell.
-codemini '/provider-tool-call-recovery audit provider message conversion'
-```
-
-Use `--scope=global` when the workflow should follow you across repositories:
-
-```bash
-codemini '/reflect --scope=global turn the release checklist I just used into a reusable skill'
-codemini '/release-checklist prepare a patch release'
-```
-
-### Project Index & Code Intelligence
-
-Codemini builds a lightweight but precise code index for every project you work in. It uses **Tree-sitter AST parsing** to extract symbols — not naive regex or line counting.
-
-| File | Content |
-| --- | --- |
-| `.codemini/project-map.json` | Languages, source roots, test directories, entry candidates, repository facts. |
-| `.codemini/file-index.json` | Per-file imports, exports, function and class declarations, interfaces, type aliases — extracted via language-aware AST queries. |
-
-The index powers every code-aware tool in the system:
-
-- **`grep` and `glob`** use the file map to skip irrelevant directories (node_modules, build artifacts, .git) before touching the filesystem.
-- **`ast_query` / `read_ast_node`** resolve symbol targets to precise line and column ranges, enabling surgical edits without manual offset math.
-- **`read` with AST context** can return enclosing function bodies or class definitions around a cursor position.
-
-Index freshness is maintained incrementally: after every `edit`, `write`, or `patch` call, only the affected file is re-parsed and its index entry replaced. No full rebuild on every change.
-
-Language support covers JavaScript, TypeScript, TSX, Python, Go, C, C++, Rust, Java, C#, PHP, Ruby, and Bash — each with a dedicated Tree-sitter grammar.
+Deep Research coordinates focused scouts, collects evidence, and produces reviewable artifacts. The Web UI adds a Research Board, Scrapbook, and resource library so sources and findings remain attached to the task instead of disappearing into chat history.
 
 ### Data Paths
 
 | Scope | Path |
 | --- | --- |
-| Global sessions | `<base-config-dir>/sessions/` |
-| Project state | `.codemini/` |
-| Project skills | `.codemini/skills/<name>/SKILL.md` |
-| Global skills | `<base-config-dir>/skills/<name>/SKILL.md` |
-| Windows | `%APPDATA%\codemini-global\` |
-| macOS | `~/Library/Preferences/codemini-global` |
-| Linux / XDG | `$XDG_CONFIG_HOME/codemini-global` |
+| Project state | `<project>/.codemini/` |
+| Windows global state | `%APPDATA%\codemini-global\` |
+| macOS global state | `~/Library/Preferences/codemini-global/` |
+| Linux with XDG | `$XDG_CONFIG_HOME/codemini-global/` |
+| Linux fallback | `<current-directory>/.codemini-global/` |
 
-The base config directory can be overridden via the `CODEMINI_GLOBAL_DIR` environment variable.
+Set `CODEMINI_GLOBAL_DIR` to override the global base directory.
 
 ### Optional Accelerators
 
-**FFF search acceleration:** `codemini doctor` checks for `fff-mcp` in the system PATH and uses it for faster `grep`, `glob`, and selected `list` operations. Falls back to built-in search if unavailable.
+`codemini doctor` detects optional local accelerators such as `fff-mcp` and falls back to built-in search when they are unavailable.
 
-**Playwright rendering** for JavaScript-heavy pages:
+For JavaScript-heavy web pages, install Playwright and Chromium:
 
 ```bash
 npm install -g playwright
@@ -302,7 +237,7 @@ npm test
 npm start
 ```
 
-Build the Web UI bundle for production:
+Build the bundled Web UI:
 
 ```bash
 npm run build:web
@@ -310,8 +245,8 @@ npm run build:web
 
 ### Documentation
 
-- [OPERATIONS.md](./OPERATIONS.md) — daily operations manual
-- [deployment.md](./deployment.md) — packaging, installation, deployment
+- [Operator Guide](./OPERATIONS.md)
+- [Deployment Guide](./deployment.md)
 - [Releases](https://github.com/havingautism/Codemini-CLI/releases)
 
 ### License
@@ -320,257 +255,202 @@ npm run build:web
 
 ---
 
-<a id="简体中文"></a>
-
 ## 简体中文
 
 ### Codemini 是什么？
 
-**一款刻意保持克制的 coding + tasks CLI。** 不仅能写代码——Git 工作流自动化、DevOps 流水线、数据批量处理、系统诊断，它都能干。
+Codemini 是一款**刻意保持克制的 coding + tasks CLI**：让 Agent 在各个平台都能工作，同时不过度占用上下文。
 
-兼容 Windows PowerShell、macOS zsh、Linux bash 等各种终端环境。兼容任何 OpenAI 兼容或 Anthropic 的 API，不绑定特定模型或提供商。提供**双界面**——基于 Ink + React 构建的终端 TUI 和浏览器 Web UI——共享同一引擎和会话。
+它可以重构代码、自动化 Git 工作流、运行多步骤流水线、研究技术问题，也可以处理本地文件。支持 Windows、macOS 和 Linux，并兼容 OpenAI-compatible 与 Anthropic API。
 
-支持**大小模型协同工作**：配置一个轻量模型处理路由和简单任务，一个大模型负责复杂推理，系统自动调度。
+Codemini 提供两个共享同一运行时的界面：
 
-其他内置能力包括项目索引、持久记忆与 Reflect 操作驱动的自我进化、技能工作流、计划模式、审批机制，以及仅改变语气不改变行为的人格预设（Souls）。
+- 适合专注操作和键盘工作流的终端 TUI。
+- 用于会话、文件、diff、终端、研究、CodeWiki、Skills、Hooks 和设置的浏览器 Web UI。
 
-无需 SaaS、无需遥测、无需注册。
+会话、项目状态、Skills、Memory 与运行时元数据保存在本机。只有模型请求会发送到你配置的服务商。
 
 ### 「克制」体现在哪里？
 
-当前多数 AI 编码工具的策略是做加法——不断堆叠工具、上下文、自动化能力。Codemini 选择了相反的方向。
+Codemini 不会让每项功能都进入每次提示词。
 
-- **依赖极简。** 仅依赖少量精选的 npm 包。没有 Electron、Docker 或 Python 运行时。
-- **上下文预算可控。** 微压缩、工具结果溢出到磁盘、提示预检触发——为控制模型窗口使用而设计。
-- **大小模型协同。** 配置一个轻量模型处理路由和简单任务，一个大模型负责复杂推理，系统自动分派。
-- **审批有度。** 命令按意图分级：只读操作直接放行，破坏性操作暂停确认。阈值由你设定。
-- **技能懒加载。** 注册 1,000 个技能与注册 1 个的开销相同。只有被实际调用的技能才会进入提示上下文。
-- **记忆择优而存，自我进化。** Inbox 本质上是临时草稿箱，Dream 循环决定晋升内容，Reflect 操作把成功工作流沉淀为可复用的 skill。
+- **上下文可控。** 压缩、prompt preflight 与工具结果落盘让长会话保持可用。
+- **Skills 懒加载。** 启动时只读取轻量路由信息，选中后才加载完整 `SKILL.md`。
+- **按证据理解项目。** 符号、AST、依赖关系与项目图帮助 Agent 先定位，再读取必要文件。
+- **审批与风险匹配。** 只读工作可以继续，危险操作保持可见、可审阅。
+- **本地持久化。** 会话、记忆、索引和 checkpoint 留在本机。
+- **模型自由。** 可使用 OpenAI-compatible 或 Anthropic 接口，也可以单独配置 fast model。
 
-并非功能更少，而是不背负不必要的负担。
-
-#### 数据视角：「克制」的实际效果
-
-一个真实项目的首轮 system prompt——包含 AGENTS.md、auto skill、记忆快照和项目上下文——大约消耗 **5,300 tokens**。具体构成如下：
-
-```
-  基础 system prompt           2,703 tokens  ████████████████░░░░░░░░░  51%
-  AGENTS.md 项目规则             535 tokens  ███░░░░░░░░░░░░░░░░░░░░░  10%
-  auto skill（superpowers）    1,371 tokens  ████████░░░░░░░░░░░░░░░░  26%
-  记忆快照                       144 tokens  █░░░░░░░░░░░░░░░░░░░░░░░   3%
-  项目索引片段                   447 tokens  ██░░░░░░░░░░░░░░░░░░░░░░   8%
-  回复语言包装                    27 tokens  ░░░░░░░░░░░░░░░░░░░░░░░░   1%
-  ─────────────────────────────────────────────────────────────────
-  首轮总计                     ~5,300 tokens
-```
-
-相比之下，许多同类工具在用户发出第一条消息之前，**system prompt 已占用 15K–25K tokens**。每安装一个 skill、每保存一条记忆、每编写一个规则文件，都会无条件注入。
-
-Codemini 的克制源自架构设计：
-
-- **Skill 懒加载。** 安装 10 个 skill 与安装 0 个，system prompt 开销相同。只有被命中的 skill 才会加载完整内容。
-- **记忆有筛选。** Inbox 是临时噪声层，只有经过晋升的记忆才会进入提示上下文。你控制水位。
-- **项目索引紧凑。** 符号映射替代原始文件树。整个仓库仅需数百 token。
-- **无隐藏负担。** 没有遥测脚本、用量追踪，或未经你要求注入的上下文。
-
-核心逻辑很简单：**prompt 税越少，留给实际工作的预算就越多。**
+目标不是少做，而是减少不必要的上下文、猜测和权限。
 
 ### 快速开始
 
+需要 Node.js 22.13 或更高版本。
+
 ```bash
-# 全局安装
 npm install -g codemini-cli
 
-# 配置网关
 codemini config set gateway.base_url http://127.0.0.1:8000/v1
-codemini config set gateway.api_key 你的 API Key
+codemini config set gateway.api_key 你的_API_Key
 codemini config set model.name 你的模型名称
 
-# 启动会话
+codemini doctor
 codemini
 ```
 
-三步完成配置，进入交互式会话。
-
-### 联网搜索提供方
-
-`web_search` 默认使用无需 API Key 的 `bing_rss`。如需切换到 API 搜索服务：
+启动 Web UI：
 
 ```bash
-codemini config set web.search_provider tavily
-codemini config set web.tavily_api_key 你的_tavily_api_key
-
-# 或
-codemini config set web.search_provider exa
-codemini config set web.exa_api_key 你的_exa_api_key
+codemini --web
 ```
 
-也可以使用 `TAVILY_API_KEY` 或 `EXA_API_KEY` 环境变量，避免把 key 写入配置文件。
+也可以明确指定项目和端口：
+
+```bash
+codemini web --project . --port 3456
+```
 
 ### 不止写代码：自动化任务
 
-`codemini run` 可以把任何自然语言任务变成自动化工作流——不需要写脚本。
+`codemini run` 可以把自然语言请求变成一次性本地工作流。
 
 ```bash
 # 交互式会话
-codemini "查看最近的 Git 提交历史，生成一份 CHANGELOG.md"
+codemini "总结最近的 Git 历史并更新 CHANGELOG.md"
 
 # 一次性任务
-codemini run "扫描项目中所有 .env 文件，检查是否有硬编码密钥"
+codemini run "查找过期依赖并说明升级风险"
 
-# 多角色组合 — planner + coder + reviewer 接力
-codemini run --harness coder "重构 auth 模块，抽离中间件"
+# 指定 Harness 角色
+codemini run --harness reviewer "审查当前改动"
 
-# 流水线 — 多步骤任务，步骤间传递产物
-codemini run --pipeline "升级版本号、更新 CHANGELOG、创建 GitHub release 草稿"
+# 分阶段流水线
+codemini run --pipeline "运行测试、修复失败并总结结果"
 ```
 
-非编码任务举例如下：
-
-| 任务 | 命令 |
+| 命令 | 用途 |
 | --- | --- |
-| **系统诊断** | `codemini run "检查磁盘使用率、Top 5 内存进程、最近错误日志"` |
-| **Git 批量操作** | `codemini run "把最近 3 个 commit 压缩成一个，提交信息为 fix: pagination edge cases"` |
-| **数据迁移** | `codemini run "读取 users.csv，标准化邮箱字段，按 ID 去重，写入 users.json"` |
-| **版本发布** | `codemini run --pipeline "升级 patch 版本、更新 CHANGELOG、git tag、构建"` |
-| **依赖审计** | `codemini run "列出所有过时的 npm 包，概述 breaking changes"` |
-| **项目清理** | `codemini run "查找孤立的测试 fixture 文件和临时调试日志"` |
-
-`--harness` 参数指定一个**角色**（`planner`、`advisor`、`coder`、`reviewer`、`tester`），每个角色有独立的工具访问权限。`--pipeline` 执行多步骤计划，每步输出自动传入下一步。两种模式让 Codemini 变成无头任务 agent——类似 Claude Code，但完全运行在你的机器上、使用你的模型、遵循你的审批策略。
+| `codemini` / `codemini chat` | 启动交互式终端会话。 |
+| `codemini run <task>` | 执行一次性任务。 |
+| `codemini run --harness <role> <task>` | 使用指定 Harness 角色执行任务。 |
+| `codemini run --pipeline <task>` | 执行带产物传递的分阶段工作流。 |
+| `codemini --web` / `codemini web` | 启动本地 Web UI。 |
+| `codemini skill ...` | 查看、安装、检查、启用、禁用或重建 Skills 索引。 |
+| `codemini config ...` | 读取或更新配置。 |
+| `codemini doctor` | 检查本地运行时与模型服务。 |
 
 ### 功能速览
 
 | 功能 | 说明 |
 | --- | --- |
-| **🧠 持久记忆** | Capture 操作 → inbox → dream 整理 → 用户/全局/项目三层记忆。让 agent 记住项目上下文。 |
-| **📂 项目索引** | 自动维护 `.codemini/` 索引，记录语言、符号、导入导出关系。编辑后增量刷新。 |
-| **🛠 技能系统** | 路由元数据与技能体分离。按需安装或在项目中编写 `SKILL.md`，不强制附带工作流。 |
-| **🔄 自我进化** | Reflect 操作把成功工作流转化为可复用的 `SKILL.md`。你的工具箱随项目成长。 |
-| **⚡ 大小模型协同** | 配置轻量模型做路由与简单任务，大模型做复杂推理，系统自动分派。 |
-| **🖥 终端 TUI** | 富交互终端界面——旋转动画、语法高亮代码块、实时命令输出流、自动补全命令面板。 |
-| **🕸 Web UI** | 浏览器界面，同一引擎。终端与浏览器共享会话，可随时切换。 |
-| **🎭 Souls 人格** | 预设语气（专业、活泼、动漫、原始人……），只改变表达方式，不改变执行策略。 |
-| **📋 计划模式** | 多步骤实施计划，包含文件路径与验证步骤，执行前需确认。 |
-| **🔒 命令审批** | 按风险分级：只读操作直接放行，破坏性操作暂停确认。阈值可配置。 |
-| **💾 会话检查点** | 随时保存、回退、分支会话状态。崩溃或模型异常不丢失上下文。 |
-| **🌍 全平台支持** | Windows PowerShell、macOS zsh、Linux bash——同一套配置，同一套行为。 |
+| **项目智能** | 文件与符号索引、Tree-sitter AST 查询、依赖图、项目知识图与 CodeWiki。 |
+| **结构化工具运行时** | 工具 schema 校验、延迟工具、并行调用、计划、Todo、子 Agent 与后台任务。 |
+| **Microsandbox** | 有 `msb` 时使用 Linux microVM；Linux/macOS 可回退到 Landlock/Seatbelt。 |
+| **审批与 Checkpoint** | 风险审批、文件变更预览、Git 工作流与非 Git 项目的 checkpoint。 |
+| **终端 TUI** | 交互式聊天、流式工具输出、语法高亮与命令快捷方式。 |
+| **Web UI** | 共享会话、文件浏览、diff、真实 PTY 终端、研究、CodeWiki 与配置。 |
+| **Deep Research** | 并行 scouts、证据收集、artifact、Research Board、Scrapbook 与资源库。 |
+| **Skills、Hooks 与 MCP** | 可复用工作流、Claude-compatible Hooks、Hook Profiles 与外部 MCP 服务。 |
+| **Memory 与自我进化** | Capture、Dream 和 Reflect 将工作沉淀为记忆与可复用 Skills。 |
+| **Souls** | 只改变表达风格，不改变执行策略。 |
+| **本地持久化** | 持久会话、项目状态、索引、用量与恢复元数据。 |
+| **模型接入** | OpenAI-compatible 与 Anthropic provider、reasoning 控制和可选 fast model。 |
 
-### Skills
+### 沙箱与 Shell 行为
 
-Skills 是由用户安装或随项目维护的可复用、可审阅工作流。Codemini 不再捆绑工作流 Skill：基础编码原则与工具纪律由执行模式 Prompt 提供，专项流程由用户自主选择。
+开启沙箱后，Codemini 优先通过 [Microsandbox](https://github.com/superradcompany/microsandbox) 的 Linux microVM 执行命令。若本机没有对应的 `msb` 二进制或虚拟机无法启动，Linux 与 macOS 会回退到宿主 OS 隔离（Landlock / Seatbelt）。Windows 没有这套 OS 回退。
+
+- 使用 Microsandbox 时，Bash 和文件工具都从项目根目录开始，使用 `src/core/tools.js` 这类项目相对路径。
+- OS 回退在宿主 shell 上套 Seatbelt 或 Landlock，不是 Linux guest。
+- 沙箱内允许网络访问。
+- `workspace-write` 模式下，宿主项目是可写工作区。
+- 如果要求启用沙箱但无法启动且没有 OS 回退，Codemini 会拒绝执行，而不会静默回退到无隔离的宿主机。
+
+明确关闭沙箱后：
+
+| 宿主系统 | Shell |
+| --- | --- |
+| Windows | 原生 PowerShell 与原版宿主工具 |
+| macOS / Linux | 原生 Bash 与原版宿主工具 |
+
+可用模式：
+
+```bash
+codemini config set sandbox.mode read-only
+codemini config set sandbox.mode workspace-write
+codemini config set sandbox.mode danger-full-access
+codemini config set sandbox.enabled false
+codemini config set sandbox.backend auto
+```
+
+沙箱策略与审批策略彼此独立：沙箱限制命令能在哪里操作，审批决定命令能否执行。
+
+### Skills、Hooks 与 MCP
+
+Skills 是可复用、可审阅的工作流。Codemini 将轻量路由元数据保存在 global、coding 和 daily 索引中，只在需要时加载完整 Skill。
 
 ```bash
 codemini skill list
-codemini skill install <path>
+codemini skill install <source>
 codemini skill inspect <name>
 codemini skill enable <name>
 codemini skill disable <name>
 codemini skill reindex
 ```
 
-路由元数据集中在顶层 catalog（`codemini.skills.json`），仅存储 `description`、`mode`、`triggers`、`enabled`、`priority` 等轻量字段。启动时不读取完整 `SKILL.md`，仅在被命中或显式调用时才加载。catalog 缺失时回退到目录和 frontmatter。
-
-任何启用的 skill 都可以在会话的操作面板中选择，也可以从 shell 通过显式 skill prompt 一次性启动：
-
-```bash
-# 在交互式会话中按 Ctrl+K，然后选择 skill。
-
-# 安装 skill 后，从 shell 一次性调用
-codemini 'skill:[my-review-skill] 审查当前改动'
-```
+Skills 可以始终启用、由 Agent 选择或手动调用。Claude-compatible Hooks 与 Hook Profiles 可以观察或拦截生命周期事件，MCP 则用于连接外部工具，而不需要把它们写死在核心运行时中。
 
 ### 终端 TUI 与 Web UI
 
-Codemini 提供**双界面**，由同一引擎驱动。
-
-**终端 TUI**——富交互界面，支持长时间任务的旋转动画、语法高亮的代码块、实时命令输出流、以及带自动补全的命令面板。在任何终端模拟器中运行，无需额外进程。
-
-**Web UI**——完整的浏览器界面，与会话状态实时同步：
+终端与浏览器使用同一套会话引擎。
 
 ```bash
+codemini
 codemini --web
 ```
 
-终端与浏览器共享会话，可自由切换。活动的 CLI 会话中输入 `web` 也可启动 Web UI。
+Web UI 包含并发会话、文件浏览与预览、Git 变更、真实 PTY 终端、CodeWiki、Deep Research、Scrapbook、资源管理、Skills、Hooks、MCP、Souls、Memory 与设置。
 
-更多 Web UI 选项（端口、项目目录、会话、模型等）通过 `--port`、`--project`、`--session`、`--model`、`--no-open` 等参数配置。
+常用 Web UI 参数包括 `--port`、`--project`、`--session`、`--model` 和 `--no-open`。
 
-**Souls**——改变 agent 语气的预设（`default`、`professional`、`ceo`、`playful`、`anime`、`caveman`、`pirate`），不影响执行策略。配置：`codemini config set soul.preset professional`。
+### Memory、Reflect 与 Dream
 
-### 记忆、自我进化与 Dream Loop
-
-Codemini 的记忆系统设计为**从你的工作中学习**，而不仅仅是存储事实。
-
-| 操作 | 作用 |
+| 命令 | 用途 |
 | --- | --- |
-| Capture | 将高信号观察记录到 inbox。 |
-| Inbox | 查看待整理的记忆素材。 |
-| Dream | 将 inbox 整理到用户/全局/项目三层长期记忆。 |
-| Reflect | 将成功的工作流模式沉淀为可审阅的 `SKILL.md`——你的工具箱随工作进化。 |
+| `/capture <text>` | 将有用信息保存到 Memory inbox。 |
+| `/inbox` | 查看待整理的记忆证据。 |
+| `/dream [--dry-run]` | 将有用证据整理成长期记忆。 |
+| `/reflect` | 将成功工作流转化为可审阅的 Skill。 |
 
-Inbox 本质上是临时噪声层。Dream 循环决定哪些内容值得晋升。而 Reflect 操作完成了闭环：一个被你反复验证成功的工作模式，变成可复用的 skill，跟项目一起版本化管理。
+Inbox 被设计为临时区域。Dream 负责晋升有价值的证据；Reflect 将可重复的工作流变成可检查、可复用的明确工具。
 
-典型的 reflect 闭环：
+### 项目索引、项目图与 CodeWiki
 
-```bash
-# 1. 完成一次效果很好的工作流后，让 Codemini 提炼可复用模式。
-选择 Reflect，并描述刚才 provider tool-call 修复成功的链路。
+Codemini 会增量索引项目文件与符号。基于 Tree-sitter 的解析提供精确 AST 和符号查询，依赖图与知识图则连接调用方、文件和架构区域。
 
-# 2. 在 TUI/Web UI 中审阅生成的草稿。
-在审阅控件中选择“写入”。
+CodeWiki 将这些信息展示为可导航的项目地图。Mutation preflight 会在修改前查询图谱，提示可能受到影响的下游范围。
 
-# 3. Codemini 写入 .codemini/skills/provider-tool-call-recovery/SKILL.md
-#    并立即在操作面板中提供。
+### Deep Research
 
-# 4. 也可以从 shell 直接一次性启动这个 skill。
-codemini '/provider-tool-call-recovery 审计 provider message conversion'
-```
-
-如果这个工作流应该跨项目复用，可以写成全局 skill：
-
-```bash
-codemini '/reflect --scope=global 把刚才的发布检查流程沉淀成可复用 skill'
-codemini '/release-checklist 准备一次 patch release'
-```
-
-### 项目索引与代码智能
-
-Codemini 为每个项目构建轻量但精确的代码索引，核心使用 **Tree-sitter AST 解析**提取符号——而不是简单的正则或行数统计。
-
-| 文件 | 内容 |
-| --- | --- |
-| `.codemini/project-map.json` | 语言、源码目录、测试目录、入口候选、仓库事实。 |
-| `.codemini/file-index.json` | 每个文件的 imports、exports、函数和类声明、接口、类型别名——基于语言感知的 AST 查询提取。 |
-
-索引为系统中的每个代码感知工具提供支持：
-
-- **`grep` 和 `glob`** 利用文件映射跳过无关目录（node_modules、构建产物、.git），操作前无需触碰文件系统。
-- **`ast_query` / `read_ast_node`** 将符号目标解析为精确的行列范围，实现手术刀式编辑，无需手动偏移计算。
-- **`read` 带 AST 上下文** 可在光标位置附近返回包裹的函数体或类定义。
-
-索引的 freshness 通过增量维护：每次 `edit`、`write` 或 `patch` 调用后，仅重新解析受影响的文件并替换其索引条目。无需每次变更都全量重建。
-
-语言支持覆盖 JavaScript、TypeScript、TSX、Python、Go、C、C++、Rust、Java、C#、PHP、Ruby 和 Bash——每种语言使用独立的 Tree-sitter 语法。
+Deep Research 会协调多个聚焦 scout、收集证据并生成可审阅 artifact。Web UI 提供 Research Board、Scrapbook 与资源库，让来源和结论继续附着在任务上，而不是消失在聊天记录里。
 
 ### 数据路径
 
 | 范围 | 路径 |
 | --- | --- |
-| 全局会话 | `<base-config-dir>/sessions/` |
-| 项目状态 | `.codemini/` |
-| 项目 Skills | `.codemini/skills/<name>/SKILL.md` |
-| 全局 Skills | `<base-config-dir>/skills/<name>/SKILL.md` |
-| Windows | `%APPDATA%\codemini-global\` |
-| macOS | `~/Library/Preferences/codemini-global` |
-| Linux / XDG | `$XDG_CONFIG_HOME/codemini-global` |
+| 项目状态 | `<project>/.codemini/` |
+| Windows 全局状态 | `%APPDATA%\codemini-global\` |
+| macOS 全局状态 | `~/Library/Preferences/codemini-global/` |
+| 启用 XDG 的 Linux | `$XDG_CONFIG_HOME/codemini-global/` |
+| Linux 回退路径 | `<current-directory>/.codemini-global/` |
 
-可通过 `CODEMINI_GLOBAL_DIR` 环境变量覆盖基础配置目录。
+通过 `CODEMINI_GLOBAL_DIR` 可以覆盖全局基础目录。
 
 ### 可选增强
 
-**FFF 搜索加速：** `codemini doctor` 会检测 `fff-mcp` 是否在系统 PATH 中，若存在则自动用于加速 `grep`、`glob` 和部分 `list` 操作。未安装时自动回退内置搜索。
+`codemini doctor` 会检测 `fff-mcp` 等本地可选加速器；不可用时自动回退到内置搜索。
 
-**Playwright 渲染** 用于 JavaScript 重载页面：
+需要渲染 JavaScript 重度网页时，可以安装 Playwright 与 Chromium：
 
 ```bash
 npm install -g playwright
@@ -585,7 +465,7 @@ npm test
 npm start
 ```
 
-构建 Web UI 生产包：
+构建 Web UI：
 
 ```bash
 npm run build:web
@@ -593,8 +473,8 @@ npm run build:web
 
 ### 文档
 
-- [OPERATIONS.md](./OPERATIONS.md) — 日常操作手册
-- [deployment.md](./deployment.md) — 打包、安装、部署
+- [使用手册](./OPERATIONS.md)
+- [部署指南](./deployment.md)
 - [Releases](https://github.com/havingautism/Codemini-CLI/releases)
 
 ### 许可证

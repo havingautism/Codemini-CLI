@@ -2,17 +2,20 @@ import { loadConfig } from '../core/config-store.js';
 import { buildDefaultSystemPrompt } from '../core/default-system-prompt.js';
 import { runAgentLoop } from '../core/agent-loop.js';
 import { createChatCompletion } from '../core/provider/index.js';
-import { resolveGatewayPayloadExtras } from '../core/provider/search-tool-registry.js';
 import { resolveConfiguredReasoningEffort } from '../core/provider/reasoning-effort.js';
 import { getBuiltinTools } from '../core/tools.js';
+import { toolNameAllowed } from '../core/shell-tool-name.js';
+import { createToolRuntime } from '../core/tool-runtime.js';
 import { getSubAgentRolePrompt, ROLE_TOOL_POLICY } from '../core/chat-runtime.js';
 import { composeSystemPrompt } from '../core/system-prompt-composer.js';
 import { normalizePlanState } from '../core/plan-state.js';
 import { composeSelectedSkills } from '../core/chat-message.js';
 import { loadCommandsAndSkills } from '../core/command-loader.js';
 import { skillIsEligible } from '../core/skill-contexts.js';
+import { parseModelJsonObject } from '../core/model-json.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { parseArgs } from 'node:util';
 
 
 const CLI_ROLE_TOOL_POLICY = {
@@ -24,51 +27,35 @@ const CLI_ROLE_TOOL_POLICY = {
 };
 const HARNESS_ROLES = Object.keys(CLI_ROLE_TOOL_POLICY).filter((role) => !['planner', 'codewiki'].includes(role));
 
-function parseRunArgs(args) {
-  const parsed = {
-    task: '',
-    model: undefined,
-    fast: false,
-    harness: null,
-    pipeline: false,
-    skillNames: []
+export function parseRunArgs(args) {
+  const { values, positionals } = parseArgs({
+    args,
+    allowPositionals: true,
+    options: {
+      model: { type: 'string' },
+      fast: { type: 'boolean' },
+      lite: { type: 'boolean' },
+      harness: { type: 'string' },
+      pipeline: { type: 'boolean' },
+      skill: { type: 'string', multiple: true },
+    },
+  });
+  return {
+    task: positionals.join(' '),
+    model: values.model,
+    fast: values.fast === true || values.lite === true,
+    harness: values.harness?.toLowerCase() || null,
+    pipeline: values.pipeline === true,
+    skillNames: (values.skill || []).map((value) => value.trim()).filter(Boolean),
   };
-  for (let i = 0; i < args.length; i += 1) {
-    const arg = args[i];
-    if (arg === '--model') {
-      parsed.model = args[i + 1];
-      i += 1;
-      continue;
-    }
-    if (arg === '--fast' || arg === '--lite') {
-      parsed.fast = true;
-      continue;
-    }
-    if (arg === '--harness') {
-      parsed.harness = (args[i + 1] || '').toLowerCase();
-      i += 1;
-      continue;
-    }
-    if (arg === '--pipeline') {
-      parsed.pipeline = true;
-      continue;
-    }
-    if (arg === '--skill') {
-      parsed.skillNames.push(String(args[i + 1] || '').trim());
-      i += 1;
-      continue;
-    }
-    parsed.task += `${parsed.task ? ' ' : ''}${arg}`;
-  }
-  return parsed;
 }
 
 function filterToolsForRole(definitions, handlers, deferredDefinitions, role) {
   const allowed = CLI_ROLE_TOOL_POLICY[role];
   if (!allowed) return { definitions, handlers, deferredDefinitions };
   return {
-    definitions: definitions.filter((t) => allowed.includes(t.function?.name || t.name)),
-    handlers: Object.fromEntries(Object.entries(handlers).filter(([name]) => allowed.includes(name))),
+    definitions: definitions.filter((t) => toolNameAllowed(allowed, t.function?.name || t.name)),
+    handlers: Object.fromEntries(Object.entries(handlers).filter(([name]) => toolNameAllowed(allowed, name))),
     deferredDefinitions: Object.fromEntries(Object.entries(deferredDefinitions || {}).filter(([name]) => allowed.includes(name)))
   };
 }
@@ -86,7 +73,6 @@ function makeCompletionFn(config) {
         enabled: config.model?.reasoning_enabled,
         effort: config.model?.reasoning_effort
       }),
-      payloadExtras: resolveGatewayPayloadExtras(config, { tools }),
       timeoutMs: config.gateway.timeout_ms || 1800000,
       maxRetries: config.gateway.max_retries ?? 2
     });
@@ -125,7 +111,7 @@ async function runHarness({ role, task, config, systemPrompt, model }) {
     throw new Error(`Unknown harness role: ${role}. Available: ${HARNESS_ROLES.join(', ')}`);
   }
   const workspaceRoot = process.cwd();
-  const { definitions, handlers, formatters, deferredDefinitions, dispose } = getBuiltinTools({
+  const { definitions, handlers, formatters, deferredDefinitions, displayLabels, dispose } = getBuiltinTools({
     workspaceRoot,
     config
   });
@@ -144,10 +130,14 @@ async function runHarness({ role, task, config, systemPrompt, model }) {
       systemPrompt: harnessSystemPrompt,
       userPrompt: task,
       model: model || config.model.name,
-      toolDefinitions: filtered.definitions,
-      toolHandlers: filtered.handlers,
-      toolFormatters: formatters,
-      deferredDefinitions: filtered.deferredDefinitions,
+      toolRuntime: createToolRuntime({
+        definitions: filtered.definitions,
+        handlers: filtered.handlers,
+        formatters,
+        deferredDefinitions: filtered.deferredDefinitions,
+        displayLabels: displayLabels || {},
+        maxParallelCalls: config.tools?.max_parallel_calls
+      }),
       ...(await buildAgentLoopRuntimeOptions(config, workspaceRoot)),
       requestCompletion: makeCompletionFn(config)
     });
@@ -155,20 +145,6 @@ async function runHarness({ role, task, config, systemPrompt, model }) {
   } finally {
     await dispose?.();
   }
-}
-
-function extractJsonBlock(text) {
-  const raw = String(text || '').trim();
-  if (!raw) return null;
-  try { return JSON.parse(raw); } catch {}
-  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  if (fenced?.[1]) { try { return JSON.parse(fenced[1]); } catch {} }
-  const first = raw.indexOf('{');
-  const last = raw.lastIndexOf('}');
-  if (first !== -1 && last !== -1 && last > first) {
-    try { return JSON.parse(raw.slice(first, last + 1)); } catch {}
-  }
-  return null;
 }
 
 function normalizePlan(parsed, goal) {
@@ -229,7 +205,7 @@ async function planPipeline({ goal, config, systemPrompt, model }) {
     maxRetries: config.gateway.max_retries ?? 2
   });
 
-  const parsed = extractJsonBlock(planning.text || '');
+  const parsed = parseModelJsonObject(planning.text || '');
   return normalizePlan(parsed, goal);
 }
 
@@ -400,7 +376,7 @@ export async function handleRun(args) {
     return;
   }
 
-  const { definitions, handlers, formatters, deferredDefinitions, dispose } = getBuiltinTools({
+  const { definitions, handlers, formatters, deferredDefinitions, displayLabels, dispose } = getBuiltinTools({
     workspaceRoot,
     config
   });
@@ -409,10 +385,14 @@ export async function handleRun(args) {
       systemPrompt,
       userPrompt: effectiveTask,
       model: selectedModel || config.model.name,
-      toolDefinitions: definitions,
-      toolHandlers: handlers,
-      toolFormatters: formatters,
-      deferredDefinitions,
+      toolRuntime: createToolRuntime({
+        definitions,
+        handlers,
+        formatters,
+        deferredDefinitions,
+        displayLabels: displayLabels || {},
+        maxParallelCalls: config.tools?.max_parallel_calls
+      }),
       ...(await buildAgentLoopRuntimeOptions(config, workspaceRoot)),
 
       requestCompletion: makeCompletionFn(config)

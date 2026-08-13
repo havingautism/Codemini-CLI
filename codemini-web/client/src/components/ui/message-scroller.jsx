@@ -3,32 +3,98 @@ import { ArrowDown } from "@phosphor-icons/react";
 
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import {
+  isViewportAtEnd,
+  resolveFollowEnd,
+  syncViewportAfterResize,
+} from "@/components/ui/message-scroller-follow";
 
 const MessageScrollerContext = React.createContext(null);
 
-function MessageScrollerProvider({ children }) {
+function MessageScrollerProvider({ children, initialFollowEnd = true }) {
   const [viewport, setViewport] = React.useState(null);
   const [atStart, setAtStart] = React.useState(true);
   const [atEnd, setAtEnd] = React.useState(true);
+  const followEndRef = React.useRef(initialFollowEnd);
+  const userScrollRef = React.useRef(false);
 
-  const measure = React.useCallback((node = viewport) => {
+  const measure = React.useCallback((node, { isUserDriven = false } = {}) => {
     if (!node) return;
     setAtStart(node.scrollTop <= 2);
-    setAtEnd(node.scrollHeight - node.clientHeight - node.scrollTop <= 4);
+    const nextAtEnd = isViewportAtEnd(node);
+    setAtEnd(nextAtEnd);
+    followEndRef.current = resolveFollowEnd(followEndRef.current, {
+      atEnd: nextAtEnd,
+      isUserDriven,
+    });
+  }, []);
+
+  const scrollTo = React.useCallback((direction = "end") => {
+    if (!viewport) return;
+    const toEnd = direction !== "start";
+    followEndRef.current = toEnd;
+    viewport.scrollTo({
+      top: toEnd ? viewport.scrollHeight : 0,
+      behavior: "smooth",
+    });
   }, [viewport]);
+
+  const pauseFollowEnd = React.useCallback(() => {
+    followEndRef.current = resolveFollowEnd(followEndRef.current, {
+      atEnd: false,
+      isUserDriven: false,
+      reason: "navigation",
+    });
+  }, []);
 
   React.useEffect(() => {
     if (!viewport) return;
     measure(viewport);
-    const observer = new ResizeObserver(() => measure(viewport));
+    let clearUserScrollTimer = 0;
+    const clearUserScroll = () => {
+      userScrollRef.current = false;
+      window.clearTimeout(clearUserScrollTimer);
+    };
+    const markUserScroll = () => {
+      userScrollRef.current = true;
+      // Keep the gesture open across wheel/touch momentum; scrollend clears it.
+      window.clearTimeout(clearUserScrollTimer);
+      clearUserScrollTimer = window.setTimeout(clearUserScroll, 120);
+    };
+    const onScroll = () => {
+      measure(viewport, { isUserDriven: userScrollRef.current });
+    };
+    const onScrollbarPointerDown = (event) => {
+      if (event.target !== viewport) return;
+      if (event.offsetX >= viewport.clientWidth) markUserScroll();
+    };
+    const observer = new ResizeObserver(() => {
+      syncViewportAfterResize(viewport, followEndRef.current);
+      measure(viewport, { isUserDriven: false });
+    });
     observer.observe(viewport);
     if (viewport.firstElementChild) observer.observe(viewport.firstElementChild);
-    return () => observer.disconnect();
+    viewport.addEventListener("scroll", onScroll, { passive: true });
+    viewport.addEventListener("scrollend", clearUserScroll);
+    viewport.addEventListener("wheel", markUserScroll, { passive: true });
+    viewport.addEventListener("touchmove", markUserScroll, { passive: true });
+    viewport.addEventListener("keydown", markUserScroll);
+    viewport.addEventListener("pointerdown", onScrollbarPointerDown);
+    return () => {
+      observer.disconnect();
+      window.clearTimeout(clearUserScrollTimer);
+      viewport.removeEventListener("scroll", onScroll);
+      viewport.removeEventListener("scrollend", clearUserScroll);
+      viewport.removeEventListener("wheel", markUserScroll);
+      viewport.removeEventListener("touchmove", markUserScroll);
+      viewport.removeEventListener("keydown", markUserScroll);
+      viewport.removeEventListener("pointerdown", onScrollbarPointerDown);
+    };
   }, [viewport, measure]);
 
   const value = React.useMemo(
-    () => ({ viewport, setViewport, atStart, atEnd, measure }),
-    [viewport, atStart, atEnd, measure],
+    () => ({ viewport, setViewport, atStart, atEnd, measure, scrollTo, pauseFollowEnd }),
+    [viewport, atStart, atEnd, measure, scrollTo, pauseFollowEnd],
   );
 
   return (
@@ -67,21 +133,19 @@ const MessageScrollerViewport = React.forwardRef(function MessageScrollerViewpor
   forwardedRef,
 ) {
   const context = useMessageScroller();
+  const setViewport = context?.setViewport;
   const setRef = React.useCallback((node) => {
-    context?.setViewport(node);
+    setViewport?.(node);
     if (typeof forwardedRef === "function") forwardedRef(node);
     else if (forwardedRef) forwardedRef.current = node;
-  }, [context, forwardedRef]);
+  }, [setViewport, forwardedRef]);
 
   return (
     <div
       ref={setRef}
       data-slot="message-scroller-viewport"
       className={cn("size-full min-h-0 min-w-0 scroll-fade-b scrollbar-thin scrollbar-gutter-stable overflow-y-auto overscroll-contain contain-content", className)}
-      onScroll={(event) => {
-        context?.measure(event.currentTarget);
-        onScroll?.(event);
-      }}
+      onScroll={onScroll}
       {...props}
     />
   );
@@ -91,12 +155,23 @@ function MessageScrollerContent({ className, ...props }) {
   return <div data-slot="message-scroller-content" className={cn("flex h-max min-h-full flex-col gap-8", className)} {...props} />;
 }
 
-function MessageScrollerItem({ className, scrollAnchor = false, ...props }) {
+function MessageScrollerItem({
+  className,
+  scrollAnchor = false,
+  disableVirtualization = false,
+  ...props
+}) {
   return (
     <div
       data-slot="message-scroller-item"
       data-scroll-anchor={scrollAnchor || undefined}
-      className={cn("min-w-0 shrink-0 [contain-intrinsic-size:auto_10rem] [content-visibility:auto]", className)}
+      className={cn(
+        "min-w-0 shrink-0",
+        disableVirtualization
+          ? "[contain-intrinsic-size:auto] [content-visibility:visible]"
+          : "[contain-intrinsic-size:auto_10rem] [content-visibility:auto]",
+        className
+      )}
       {...props}
     />
   );
@@ -113,7 +188,7 @@ function MessageScrollerButton({ direction = "end", className, children, variant
       variant={variant}
       size={size}
       className={cn("absolute inset-s-1/2 -translate-x-1/2 rounded-full border border-(--border-default) bg-(--material-elevated) text-(--text-primary) shadow-(--shadow-elevated) transition-[transform,opacity] duration-200 data-[active=false]:pointer-events-none data-[active=false]:translate-y-2 data-[active=false]:scale-95 data-[active=false]:opacity-0 data-[direction=end]:bottom-4 data-[direction=start]:top-4 data-[direction=start]:[&_svg]:rotate-180", className)}
-      onClick={() => context?.viewport?.scrollTo({ top: direction === "start" ? 0 : context.viewport.scrollHeight, behavior: "smooth" })}
+      onClick={() => context?.scrollTo(direction)}
       {...props}
     >
       {children ?? <><ArrowDown /><span className="sr-only">{direction === "end" ? "Scroll to end" : "Scroll to start"}</span></>}

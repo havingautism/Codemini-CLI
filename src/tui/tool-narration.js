@@ -8,6 +8,7 @@ import { listPresenter } from './tool-narration/presenters/list.js';
 import { readPresenter } from './tool-narration/presenters/read.js';
 import { runPresenter } from './tool-narration/presenters/run.js';
 import { createPresenter } from './tool-narration/presenters/create.js';
+import { isShellToolName } from '../core/shell-tool-name.js';
 
 const BASE_PRESENTERS = {
   read: readPresenter,
@@ -21,7 +22,7 @@ const BASE_PRESENTERS = {
 
 function resolveNarrationContext(name) {
   const { base, target } = parseToolDisplayName(name);
-  const presenter = BASE_PRESENTERS[base] || genericPresenter;
+  const presenter = isShellToolName(base) ? runPresenter : (BASE_PRESENTERS[base] || genericPresenter);
   const changeKind = inferChangeKind(target);
   return {
     base,

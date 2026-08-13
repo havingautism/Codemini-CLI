@@ -1,17 +1,13 @@
-const CODING_MODES = new Set(["plan", "code", "coding", "spec"]);
+import {
+  executionModeSkillContext,
+  skillAppliesToExecutionMode,
+} from "../../../../src/core/skill-contexts.js";
 
-export function executionModeSkillContext(mode = "normal") {
-  return CODING_MODES.has(String(mode || "").trim().toLowerCase())
-    ? "coding"
-    : "daily";
-}
+export { executionModeSkillContext };
 
 export function skillIsVisibleInExecutionMode(skill, mode = "normal") {
   if (!skill || skill.enabled === false) return false;
-  const contexts = Array.isArray(skill.contexts)
-    ? skill.contexts.map((context) => String(context || "").trim().toLowerCase())
-    : ["coding", "daily"];
-  return contexts.includes(executionModeSkillContext(mode));
+  return skillAppliesToExecutionMode(skill.contexts, mode);
 }
 
 export function filterSkillsForExecutionMode(skills, mode = "normal") {

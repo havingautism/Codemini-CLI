@@ -39,10 +39,14 @@ function ModelLogo({ src, size = 13 }) {
 export function StatusBar({ runtimeState, live, stageLabel }) {
   const rs = runtimeState || {};
   const mode = rs.mode || "normal";
-  const approvalMode = rs.approvalMode || "review";
+  const approvalMode = rs.approvalMode || "auto";
   const used = rs.currentContextTokens || 0;
   const max = rs.maxContextTokens || 0;
-  const pct = max ? Math.round((used / max) * 100) : 0;
+  const pct = Number.isFinite(rs.contextUsagePct)
+    ? Math.round(rs.contextUsagePct)
+    : max
+      ? Math.round((used / max) * 100)
+      : 0;
   const contextColor =
     pct < 40
       ? "bg-(--accent-green)"

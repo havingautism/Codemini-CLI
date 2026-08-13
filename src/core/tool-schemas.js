@@ -200,7 +200,7 @@ export function normalizeWebSearchArgs(rawArgs) {
 export function normalizeToolArguments(toolName, args, rawArguments) {
   const { source, stringValue } = prepareToolSource(args, rawArguments);
   const schema = TOOL_SCHEMAS[toolName];
-  if (source._invalid_json && ['create', 'write', 'edit', 'apply_patch', 'delete'].includes(toolName)) {
+  if (source._invalid_json) {
     return {
       _invalid_json: true,
       _raw: source._raw || stringValue,

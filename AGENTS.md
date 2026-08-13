@@ -16,6 +16,9 @@ This repo is Codemini CLI, a local-first coding agent with a CLI, Web UI, projec
 - System prompt composition: start in `src/core/system-prompt-composer.js` and `src/core/default-system-prompt.js`.
 - Project map and file index behavior: start in `src/core/project-index.js`.
 - Skill discovery, routing, and rendering: start in `src/core/command-loader.js`, then `src/core/skill-registry.js`.
+- Skill hooks (Claude-compatible discover/run/session): start in `src/core/skill-hooks-*.js`, wired from `src/core/chat-runtime.js` and `src/core/agent-loop.js`.
+- Hook Profiles (custom/global/project plus skill-backed profiles): `src/core/hook-profiles.js` and `src/core/project-hooks.js`; Web UI entry under Skills in the sidebar.
+- Tool matcher aliases (Claude Bash→run etc.): `src/core/skill-hooks-tool-aliases.js`.
 - Reflect-to-skill behavior: start in `src/core/reflect-skill.js`.
 - Built-in tool behavior: start in `src/core/tools.js`.
 - Web UI API routes: start in `codemini-web/server.js`.
@@ -24,7 +27,7 @@ This repo is Codemini CLI, a local-first coding agent with a CLI, Web UI, projec
 ## Verification
 
 - General runtime changes: run `npm test`.
-- Skill routing changes: run `node --test tests/skill-command.test.js tests/default-system-prompt.test.js`.
+- Skill routing / hooks changes: run `node --test tests/skill-hooks-*.test.js tests/web-skill-editor-layout.test.js`.
 - Project index changes: run `node --test tests/chat-runtime.test.js tests/tools.test.js`.
 - Web UI changes: run `npm run build:web`; add focused tests when behavior crosses the server/client boundary.
 

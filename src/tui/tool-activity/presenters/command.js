@@ -1,4 +1,5 @@
 import { classifyRunIntent, makeBlocked, trimText } from '../common.js';
+import { isShellToolName } from '../../../core/shell-tool-name.js';
 
 function phaseText(copy, blocked, done, target, doingLabel, doneLabel) {
   if (blocked) return makeBlocked(copy, target);
@@ -9,7 +10,7 @@ export function describeCommandToolActivity(copy, parsed, { done = false, blocke
   const target = parsed.target || 'command';
   const intent = classifyRunIntent(parsed.target);
 
-  if (parsed.base === 'run') {
+  if (isShellToolName(parsed.base)) {
     if (intent.kind === 'install') return phaseText(copy, blocked, done, target, copy.toolActivity.doingInstall, copy.toolActivity.doneInstall);
     if (intent.kind === 'build') return phaseText(copy, blocked, done, target, copy.toolActivity.doingBuild, copy.toolActivity.doneBuild);
     if (intent.kind === 'test') return phaseText(copy, blocked, done, target, copy.toolActivity.doingTest, copy.toolActivity.doneTest);

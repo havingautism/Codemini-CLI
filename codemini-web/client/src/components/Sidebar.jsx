@@ -1,18 +1,26 @@
-﻿import { useState, useEffect, useMemo, useRef } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import {
+  ArrowClockwise,
   BookOpenText,
   Brain,
+  CaretDown,
+  CaretRight,
   DotsThree,
   Folder,
   GearSix,
   Globe,
   Hammer,
   Info,
+  Lightning,
   MaskHappy,
   Monitor,
   Moon,
+  Notebook,
+  MagnifyingGlass,
   PencilLine,
+  PlugsConnected,
   Plus,
+  SidebarSimple,
   Sun,
   User,
   X,
@@ -26,9 +34,10 @@ import {
 import { ConfirmDialog } from "@/components/ConfirmDialog.jsx";
 import { Empty, EmptyDescription } from "@/components/ui/empty";
 import { Spinner } from "@/components/ui/spinner";
+import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { t, setLocale, getLocale } from "../../i18n/index.js";
-import { ACTIVE_SESSION_STATUSES } from "@/lib/session-ui-state.js";
+import { ACTIVE_SESSION_STATUSES, displaySessionTitle } from "@/lib/session-ui-state.js";
 import {
   fetchWebuiActiveProjects,
   patchWebuiActiveProject,
@@ -41,6 +50,28 @@ const PROJECT_SESSION_PREVIEW_LIMIT = 5;
 const GENERAL_SESSION_PREVIEW_LIMIT = 10;
 const LEGACY_PINNED_PROJECTS_KEY = "codemini-sidebar-pinned-projects";
 const LEGACY_HIDDEN_PROJECTS_KEY = "codemini-sidebar-hidden-projects";
+const PROJECTS_SECTION_OPEN_KEY = "codemini-sidebar-projects-open";
+const CONVERSATIONS_SECTION_OPEN_KEY = "codemini-sidebar-conversations-open";
+
+function readBooleanPreference(key, fallback = true) {
+  if (typeof window === "undefined") return fallback;
+  try {
+    const raw = localStorage.getItem(key);
+    if (raw === null) return fallback;
+    return raw === "1" || raw === "true";
+  } catch {
+    return fallback;
+  }
+}
+
+function writeBooleanPreference(key, value) {
+  if (typeof window === "undefined") return;
+  try {
+    localStorage.setItem(key, value ? "1" : "0");
+  } catch {
+    // Ignore quota / private-mode failures.
+  }
+}
 
 function readLegacySidebarKeys() {
   const pinned = readLegacyProjectKeys(LEGACY_PINNED_PROJECTS_KEY);
@@ -116,12 +147,67 @@ function GitHubIcon({ size = 14, className, ...props }) {
 }
 
 function getSessionLabel(session) {
-  return (
+  return displaySessionTitle(
     session?.title ||
     session?.preview ||
     (session?.messageCount > 0
       ? `${session.messageCount} ${t("messages")}`
       : t("emptyChat"))
+  );
+}
+
+function SessionTitle({ session, className }) {
+  if (session?.titleGenerating) {
+    return (
+      <span className="flex min-w-0 flex-1 items-center" role="status" aria-label={t("generatingSessionTitle")}>
+        <Skeleton className="h-3 w-[112px] max-w-[78%] rounded-full bg-(--bg-active)" />
+      </span>
+    );
+  }
+  return (
+    <span className={cn("truncate", className)} title={getSessionLabel(session)}>
+      {getSessionLabel(session)}
+    </span>
+  );
+}
+
+function SessionActions({ session, regenerating, onRegenerate, onDelete }) {
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          className="inline-flex size-6 shrink-0 items-center justify-center rounded-md text-(--text-muted) opacity-0 hover:bg-(--bg-active) hover:text-(--text-primary) group-hover:opacity-100 focus:opacity-100"
+          onClick={(event) => event.stopPropagation()}
+          aria-label={t("sessionActions")}
+        >
+          <DotsThree size={14} />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent
+        align="end"
+        className="w-40 p-1"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <button
+          type="button"
+          disabled={regenerating}
+          className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-[13px] text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary) disabled:cursor-wait disabled:opacity-60"
+          onClick={() => onRegenerate?.(session.id)}
+        >
+          {regenerating ? <Spinner className="size-3.5" /> : <ArrowClockwise size={14} />}
+          <span>{t("regenerateSessionTitle")}</span>
+        </button>
+        <button
+          type="button"
+          className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-[13px] text-(--accent-red) hover:bg-(--accent-red-bg)"
+          onClick={() => onDelete(session)}
+        >
+          <X size={14} />
+          <span>{t("deleteSession")}</span>
+        </button>
+      </PopoverContent>
+    </Popover>
   );
 }
 
@@ -152,7 +238,11 @@ export function Sidebar({
   onSetTheme,
   onOpenSettings,
   onOpenSkills,
+  onOpenMcp,
+  onOpenHooks,
   onOpenMemory,
+  onOpenScrapbook,
+  onOpenResearch,
   onOpenSouls,
   onOpenAbout,
   gitBatch,
@@ -160,11 +250,14 @@ export function Sidebar({
   onUpdate,
   updateStatus,
   currentView,
+  codewikiProjectPath = "",
   onSwitchView,
   onOpenProject,
   onOpenProjectSelector,
   onRefreshSessions,
+  onRegenerateSessionTitle,
   onDeleteSession,
+  onCollapseSidebar,
 }) {
   const [expandedProjects, setExpandedProjects] = useState(new Set());
   const [projectSessionLimits, setProjectSessionLimits] = useState({});
@@ -180,6 +273,12 @@ export function Sidebar({
   const [openProjectMenuKey, setOpenProjectMenuKey] = useState(null);
   const [pendingRemoveActive, setPendingRemoveActive] = useState(null);
   const [removingFromActive, setRemovingFromActive] = useState(false);
+  const [projectsSectionOpen, setProjectsSectionOpen] = useState(() =>
+    readBooleanPreference(PROJECTS_SECTION_OPEN_KEY, true),
+  );
+  const [conversationsSectionOpen, setConversationsSectionOpen] = useState(() =>
+    readBooleanPreference(CONVERSATIONS_SECTION_OPEN_KEY, true),
+  );
   const sawSessionsLoadingRef = useRef(false);
   const [resolvedTheme, setResolvedTheme] = useState(() => {
     if (typeof document === "undefined") return "light";
@@ -387,10 +486,16 @@ export function Sidebar({
   const openProjectCodeWiki = async (event, projectKey, projectSessions = []) => {
     event.stopPropagation();
     const openPath = getProjectOpenPath(projectKey, projectSessions);
+    const focusKey =
+      currentView === "codewiki" && codewikiProjectPath
+        ? normalizeProjectDirKey(codewikiProjectPath)
+        : activeProjectKey;
+    const targetKey = normalizeProjectDirKey(openPath || projectKey);
     if (
       openPath &&
       projectKey !== "unknown" &&
-      projectKey !== activeProjectKey &&
+      targetKey &&
+      targetKey !== focusKey &&
       onOpenProject
     ) {
       await onOpenProject(openPath, { view: "codewiki" });
@@ -439,12 +544,23 @@ export function Sidebar({
           <img
             src="/logos/codemini_logo.png"
             alt=""
-            className="size-5 shrink-0 rounded-[5px]"
+            className="size-7 shrink-0 rounded-[7px]"
             draggable={false}
           />
-          <div className="min-w-0 truncate text-[17px] font-semibold leading-5 text-(--text-primary)">
+          <div className="min-w-0 flex-1 truncate text-[17px] font-semibold leading-5 text-(--text-primary)">
             {t("brand")}
           </div>
+          {typeof onCollapseSidebar === "function" ? (
+            <button
+              type="button"
+              className="hidden md:inline-flex size-7 shrink-0 items-center justify-center rounded-md border-0 bg-transparent text-(--text-muted) cursor-pointer hover:bg-(--bg-hover) hover:text-(--text-primary)"
+              title={t("collapseSidebar")}
+              aria-label={t("collapseSidebar")}
+              onClick={onCollapseSidebar}
+            >
+              <SidebarSimple size={15} />
+            </button>
+          ) : null}
         </div>
         <button
           className="w-full border-0 bg-transparent flex items-center gap-2.5 h-[30px] px-2 rounded-md cursor-pointer text-left text-[13px] hover:bg-(--bg-hover) text-(--text-primary)"
@@ -458,17 +574,36 @@ export function Sidebar({
           <span className="truncate">{t("newChat")}</span>
         </button>
 
-        {/* <button
-          className="w-full border-0 bg-transparent flex items-center gap-2.5 h-[32px] px-2 rounded-lg cursor-pointer text-left text-[13px] hover:bg-(--bg-hover) text-(--text-primary)"
-          onClick={() => {}}
+        <button
+          className={cn(
+            "w-full border-0 bg-transparent flex items-center gap-2.5 h-[30px] px-2 rounded-md cursor-pointer text-left text-[13px] hover:bg-(--bg-hover)",
+            currentView === "scrapbook" ? "bg-(--bg-hover) text-(--text-primary)" : "text-(--text-primary)",
+          )}
+          onClick={onOpenScrapbook}
         >
-          <Search
+          <Notebook
             size={15}
             strokeWidth={2}
             className="text-(--text-secondary) shrink-0"
           />
-          <span className="truncate">搜索</span>
-        </button> */}
+          <span className="truncate">{t("scrapbook")}</span>
+        </button>
+        <button
+          className={cn(
+            "w-full border-0 bg-transparent flex items-center gap-2.5 h-[30px] px-2 rounded-md cursor-pointer text-left text-[13px] hover:bg-(--bg-hover)",
+            currentView === "research" ? "bg-(--bg-hover) text-(--text-primary)" : "text-(--text-primary)",
+          )}
+          onClick={onOpenResearch}
+        >
+          <MagnifyingGlass
+            size={15}
+            strokeWidth={2}
+            className="text-(--text-secondary) shrink-0"
+          />
+          <span className="truncate">{t("deepResearch")}</span>
+        </button>
+
+        <Separator className="mx-2 my-2 bg-(--border-default)/40" />
 
         <button
           className="w-full border-0 bg-transparent flex items-center gap-2.5 h-[30px] px-2 rounded-md cursor-pointer text-left text-[13px] hover:bg-(--bg-hover) text-(--text-primary)"
@@ -480,6 +615,30 @@ export function Sidebar({
             className="text-(--text-secondary) shrink-0"
           />
           <span className="truncate">{t("skills")}</span>
+        </button>
+
+        <button
+          className="w-full border-0 bg-transparent flex items-center gap-2.5 h-[30px] px-2 rounded-md cursor-pointer text-left text-[13px] hover:bg-(--bg-hover) text-(--text-primary)"
+          onClick={onOpenMcp}
+        >
+          <PlugsConnected
+            size={15}
+            strokeWidth={2}
+            className="text-(--text-secondary) shrink-0"
+          />
+          <span className="truncate">{t("mcp")}</span>
+        </button>
+
+        <button
+          className="w-full border-0 bg-transparent flex items-center gap-2.5 h-[30px] px-2 rounded-md cursor-pointer text-left text-[13px] hover:bg-(--bg-hover) text-(--text-primary)"
+          onClick={onOpenHooks}
+        >
+          <Lightning
+            size={15}
+            strokeWidth={2}
+            className="text-(--text-secondary) shrink-0"
+          />
+          <span className="truncate">{t("hooks")}</span>
         </button>
 
         <button
@@ -504,7 +663,7 @@ export function Sidebar({
           />
           <span className="truncate">{t("memory")}</span>
         </button>
-        <Separator className="my-1.5 bg-transparent" />
+        <Separator className="mx-2 my-2 bg-(--border-default)/40" />
       </div>
 
       <div
@@ -512,10 +671,35 @@ export function Sidebar({
         // style={{ scrollbarWidth: "thin" }}
       >
         {/* Scrollable project history */}
-        <div className="flex items-center gap-1 px-4 pb-1.5">
-          <span className="min-w-0 flex-1 text-[12px] font-medium text-(--text-muted)">
-            {t("projects")}
-          </span>
+        <div className="flex items-center gap-1 px-2.5 pb-1.5">
+          <button
+            type="button"
+            className="flex min-w-0 flex-1 items-center gap-1 rounded-md px-1.5 py-0.5 text-left hover:bg-(--bg-hover)"
+            aria-expanded={projectsSectionOpen}
+            title={
+              projectsSectionOpen
+                ? t("collapseProjectsSection")
+                : t("expandProjectsSection")
+            }
+            onClick={() => {
+              setProjectsSectionOpen((open) => {
+                const next = !open;
+                writeBooleanPreference(PROJECTS_SECTION_OPEN_KEY, next);
+                return next;
+              });
+            }}
+          >
+            <span className="inline-flex size-3.5 shrink-0 items-center justify-center text-(--text-muted)">
+              {projectsSectionOpen ? (
+                <CaretDown size={12} />
+              ) : (
+                <CaretRight size={12} />
+              )}
+            </span>
+            <span className="min-w-0 flex-1 text-[12px] font-medium text-(--text-muted)">
+              {t("projects")}
+            </span>
+          </button>
           <button
             type="button"
             className="inline-flex size-6 shrink-0 items-center justify-center rounded-md border-0 bg-transparent text-(--text-muted) cursor-pointer hover:bg-(--bg-hover) hover:text-(--text-primary)"
@@ -526,6 +710,7 @@ export function Sidebar({
             <Plus size={14} strokeWidth={2.1} />
           </button>
         </div>
+        {projectsSectionOpen ? (
         <nav className="flex flex-col px-2.5 pb-1 gap-0.5">
           {showActiveProjectsEmpty && (
             <SidebarEmptyPlaceholder className="mb-1">
@@ -551,7 +736,16 @@ export function Sidebar({
               (sampleSession?.projectKey
                 ? gitBatch?.[sampleSession.projectKey]
                 : null);
-            const isActive = projectKey === activeProjectKey;
+            const isActive =
+              currentView === "codewiki" && codewikiProjectPath
+                ? projectKey === normalizeProjectDirKey(codewikiProjectPath) ||
+                  projectSessions.some(
+                    (session) =>
+                      normalizeProjectDirKey(
+                        session?.projectDir || session?.projectKey || "",
+                      ) === normalizeProjectDirKey(codewikiProjectPath),
+                  )
+                : projectKey === activeProjectKey;
             const canOpenCodeWiki = projectKey !== "unknown";
             return (
               <div key={projectKey}>
@@ -677,43 +871,19 @@ export function Sidebar({
                           {ACTIVE_SESSION_STATUSES.has(
                             session.runtimeStatus,
                           ) && <Spinner className="size-3 shrink-0" />}
-                          <span
-                            className="truncate"
-                            title={getSessionLabel(session)}
-                          >
-                            {getSessionLabel(session)}
-                          </span>
+                          <SessionTitle session={session} />
                         </span>
                         {session.updatedAt && (
                           <span className="text-[11px] text-(--text-muted) shrink-0 tabular-nums">
                             {formatRelativeTime(session.updatedAt)}
                           </span>
                         )}
-                        <Popover>
-                          <PopoverTrigger asChild>
-                            <button
-                              type="button"
-                              className="inline-flex size-6 shrink-0 items-center justify-center rounded-md text-(--text-muted) opacity-0 hover:bg-(--bg-active) hover:text-(--text-primary) group-hover:opacity-100 focus:opacity-100"
-                              onClick={(event) => event.stopPropagation()}
-                              aria-label={t("sessionActions")}
-                            >
-                              <DotsThree size={14} />
-                            </button>
-                          </PopoverTrigger>
-                          <PopoverContent
-                            align="end"
-                            className="w-36 p-1"
-                            onClick={(event) => event.stopPropagation()}
-                          >
-                            <button
-                              type="button"
-                              className="w-full rounded-md px-2.5 py-2 text-left text-[13px] text-(--accent-red) hover:bg-(--accent-red-bg)"
-                              onClick={() => setPendingDelete(session)}
-                            >
-                              {t("deleteSession")}
-                            </button>
-                          </PopoverContent>
-                        </Popover>
+                        <SessionActions
+                          session={session}
+                          regenerating={Boolean(session.titleGenerating)}
+                          onRegenerate={onRegenerateSessionTitle}
+                          onDelete={setPendingDelete}
+                        />
                       </div>
                     ))}
                     {projectSessionLimit < projectSessions.length && (
@@ -750,13 +920,39 @@ export function Sidebar({
               </SidebarEmptyPlaceholder>
             )}
         </nav>
+        ) : null}
 
         <section className="px-2.5 pb-2">
           <Separator className="my-2 bg-transparent" />
-          <div className="flex items-center gap-2 px-1.5 pb-1.5">
-            <span className="min-w-0 flex-1 text-[12px] font-medium text-(--text-muted)">
-              {t("conversations")}
-            </span>
+          <div className="flex items-center gap-1 px-0.5 pb-1.5">
+            <button
+              type="button"
+              className="flex min-w-0 flex-1 items-center gap-1 rounded-md px-1.5 py-0.5 text-left hover:bg-(--bg-hover)"
+              aria-expanded={conversationsSectionOpen}
+              title={
+                conversationsSectionOpen
+                  ? t("collapseConversationsSection")
+                  : t("expandConversationsSection")
+              }
+              onClick={() => {
+                setConversationsSectionOpen((open) => {
+                  const next = !open;
+                  writeBooleanPreference(CONVERSATIONS_SECTION_OPEN_KEY, next);
+                  return next;
+                });
+              }}
+            >
+              <span className="inline-flex size-3.5 shrink-0 items-center justify-center text-(--text-muted)">
+                {conversationsSectionOpen ? (
+                  <CaretDown size={12} />
+                ) : (
+                  <CaretRight size={12} />
+                )}
+              </span>
+              <span className="min-w-0 flex-1 text-[12px] font-medium text-(--text-muted)">
+                {t("conversations")}
+              </span>
+            </button>
             <button
               type="button"
               className="inline-flex size-7 shrink-0 items-center justify-center rounded-md border-0 bg-transparent text-(--text-muted) cursor-pointer hover:bg-(--bg-hover) hover:text-(--text-primary)"
@@ -768,6 +964,7 @@ export function Sidebar({
             </button>
           </div>
 
+          {conversationsSectionOpen ? (
           <div className="flex flex-col gap-1">
             {sessionsLoading && generalSessions.length === 0 && (
               <div className="flex h-[34px] items-center justify-center px-3 text-(--text-muted)">
@@ -798,43 +995,19 @@ export function Sidebar({
                     {ACTIVE_SESSION_STATUSES.has(
                       session.runtimeStatus,
                     ) && <Spinner className="size-3 shrink-0" />}
-                    <span
-                      className="truncate font-medium"
-                      title={getSessionLabel(session)}
-                    >
-                      {getSessionLabel(session)}
-                    </span>
+                    <SessionTitle session={session} className="font-medium" />
                   </span>
                   {session.updatedAt && (
                     <span className="shrink-0 text-[11px] tabular-nums text-(--text-muted)">
                       {formatRelativeTime(session.updatedAt)}
                     </span>
                   )}
-                  <Popover>
-                    <PopoverTrigger asChild>
-                      <button
-                        type="button"
-                        className="inline-flex size-6 shrink-0 items-center justify-center rounded-md text-(--text-muted) opacity-0 hover:bg-(--bg-active) hover:text-(--text-primary) group-hover:opacity-100 focus:opacity-100"
-                        onClick={(event) => event.stopPropagation()}
-                        aria-label={t("sessionActions")}
-                      >
-                        <DotsThree size={14} />
-                      </button>
-                    </PopoverTrigger>
-                    <PopoverContent
-                      align="end"
-                      className="w-36 p-1"
-                      onClick={(event) => event.stopPropagation()}
-                    >
-                      <button
-                        type="button"
-                        className="w-full rounded-md px-2.5 py-2 text-left text-[13px] text-(--accent-red) hover:bg-(--accent-red-bg)"
-                        onClick={() => setPendingDelete(session)}
-                      >
-                        {t("deleteSession")}
-                      </button>
-                    </PopoverContent>
-                  </Popover>
+                  <SessionActions
+                    session={session}
+                    regenerating={Boolean(session.titleGenerating)}
+                    onRegenerate={onRegenerateSessionTitle}
+                    onDelete={setPendingDelete}
+                  />
                 </div>
               );
             })}
@@ -857,6 +1030,7 @@ export function Sidebar({
               </button>
             )}
           </div>
+          ) : null}
         </section>
       </div>
 

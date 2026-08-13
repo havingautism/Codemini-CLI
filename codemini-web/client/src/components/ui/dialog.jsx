@@ -49,6 +49,7 @@ function DialogOverlay({
 function DialogContent({
   className,
   children,
+  closeOnOutsideClick = false,
   ...props
 }) {
   return (
@@ -57,8 +58,12 @@ function DialogContent({
       <DialogPrimitive.Content
         data-slot="dialog-content"
         aria-describedby={undefined}
-        onInteractOutside={(e) => e.preventDefault()}
-        onPointerDownOutside={(e) => e.preventDefault()}
+        onInteractOutside={(e) => {
+          if (!closeOnOutsideClick) e.preventDefault();
+        }}
+        onPointerDownOutside={(e) => {
+          if (!closeOnOutsideClick) e.preventDefault();
+        }}
         className={cn(
           "fixed top-[50%] left-[50%] z-50 grid w-full max-w-[calc(100vw-1.5rem)] translate-x-[-50%] translate-y-[-50%] gap-4 rounded-xl rounded-[20px] border border-(--surface-edge) bg-(--material-elevated) text-(--text-primary) p-5 shadow-[var(--surface-shadow)] duration-200 outline-none data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 sm:max-w-lg",
           className

@@ -1,4 +1,5 @@
 import { formatToolLabel, parseToolDisplayName } from "../../../../src/core/tool-display.js";
+import { isMcpToolName } from "../../../../src/core/mcp-tool-display.js";
 
 const FILE_ARG_TOOLS = new Set(["read", "edit", "create", "write", "delete"]);
 const FILE_PATH_KEYS = new Set(["path", "file", "file_path", "target"]);
@@ -18,6 +19,21 @@ export function parseMaybeJson(value) {
   } catch {
     return null;
   }
+}
+
+export function getTodoToolItems(args, result) {
+  const parsedArgs = parseMaybeJson(args) || {};
+  const parsedResult = parseMaybeJson(result) || {};
+  const todos = parsedResult.newTodos || parsedResult.todos || parsedArgs.todos;
+  if (!Array.isArray(todos)) return [];
+  return todos
+    .map((item) => ({
+      content: String(item?.content || item?.activeForm || "").trim(),
+      status: ["pending", "in_progress", "completed"].includes(item?.status)
+        ? item.status
+        : "pending",
+    }))
+    .filter((item) => item.content);
 }
 
 function decodeJsonStringFragment(raw) {
@@ -121,12 +137,17 @@ export function getFileToolMeta(toolName, args, result, summary, fileChange, res
   const structuredChanges = Array.isArray(fileChanges) && fileChanges.length
     ? fileChanges
     : (fileChange ? [fileChange] : []);
+  const requestedPath = String(parsedResult.path || parsedArgs.path || "")
+    .replace(/\\/g, "/")
+    .replace(/^\.\//, "");
   const structuredChange =
-    structuredChanges.find((change) => change && typeof change === "object") || {};
-  const capturedPatch = structuredChanges
-    .map((change) => String(change?.diffPreview || ""))
-    .filter(Boolean)
-    .join("\n");
+    structuredChanges.find(
+      (change) =>
+        String(change?.path || "")
+          .replace(/\\/g, "/")
+          .replace(/^\.\//, "") === requestedPath,
+    ) || structuredChanges.find((change) => change && typeof change === "object") || {};
+  const capturedPatch = String(structuredChange.diffPreview || "");
   const pathText =
     parsedResult.path ||
     structuredChange.path ||
@@ -187,22 +208,32 @@ export function getFileToolMeta(toolName, args, result, summary, fileChange, res
 }
 
 export function resolveToolHeaderParts(card, toolName, fileMeta) {
-  const fallbackLabel = formatToolLabel(toolName);
+  const rawName = String(card?.name || toolName || "").trim();
+  const parsed = parseToolDisplayName(card.displayName || "");
+  // MCP cards must always recompute from the tool id + registered server name.
+  // Stale stream displayNames like "Mcp Fetchmcp Fetch" must not win.
+  const preferredLabel = isMcpToolName(rawName)
+    ? formatToolLabel(rawName)
+    : (
+      String(parsed.label || "").trim()
+      && String(parsed.label || "").trim() !== rawName
+        ? String(parsed.label || "").trim()
+        : formatToolLabel(rawName || toolName)
+    );
+
   if (fileMeta?.path) {
-    const parsed = parseToolDisplayName(card.displayName || "");
     return {
-      label: parsed.label || fallbackLabel,
+      label: preferredLabel,
       arg: fileMeta.path,
       wrapArg: false,
     };
   }
-  const parsed = parseToolDisplayName(card.displayName || "");
   if (parsed.arg) {
-    return { label: parsed.label, arg: parsed.arg, wrapArg: true };
+    return { label: preferredLabel, arg: parsed.arg, wrapArg: true };
   }
   const keyArg = extractKeyArg(card.arguments, toolName);
   if (keyArg) {
-    return { label: fallbackLabel, arg: keyArg, wrapArg: true };
+    return { label: preferredLabel, arg: keyArg, wrapArg: true };
   }
-  return { label: parsed.label || fallbackLabel, arg: "", wrapArg: false };
+  return { label: preferredLabel, arg: "", wrapArg: false };
 }

@@ -1,9 +1,15 @@
 import { spawn } from 'node:child_process';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import net from 'node:net';
 
 const isWindows = process.platform === 'win32';
-const bunBin = isWindows ? 'bun.exe' : 'bun';
-const nodeBin = isWindows ? 'node.exe' : 'node';
+// Always reuse the node that launched this script (avoids WSL picking Windows bun → node.exe).
+const nodeBin = process.execPath;
+const viteCli = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  '../node_modules/vite/bin/vite.js',
+);
 
 let shuttingDown = false;
 const children = new Set();
@@ -36,7 +42,7 @@ function stopAll(code = 0) {
 }
 
 function startProcess(proc, env = {}) {
-  const child = spawn(proc.command || bunBin, proc.args, {
+  const child = spawn(proc.command || nodeBin, proc.args, {
     cwd: process.cwd(),
     env: { ...process.env, ...env, FORCE_COLOR: '1' },
     stdio: ['inherit', 'pipe', 'pipe']
@@ -81,10 +87,16 @@ function canConnect(port) {
   });
 }
 
-async function waitForPort(port, { timeoutMs = 10000, intervalMs = 100 } = {}) {
-  const deadline = Date.now() + timeoutMs;
+async function waitForPort(port, { timeoutMs = 60000, intervalMs = 200, label = 'service' } = {}) {
+  const started = Date.now();
+  const deadline = started + timeoutMs;
+  let lastLog = 0;
   while (Date.now() < deadline) {
     if (await canConnect(port)) return true;
+    if (Date.now() - lastLog > 5000) {
+      lastLog = Date.now();
+      console.log(`[${label}] waiting for http://127.0.0.1:${port} (${Math.round((Date.now() - started) / 1000)}s)...`);
+    }
     await new Promise((resolve) => setTimeout(resolve, intervalMs));
   }
   return false;
@@ -96,6 +108,7 @@ const webPort = await findFreePort(Number(process.env.CODEMINI_WEB_PORT || 5178)
 console.log(`Codemini dev server`);
 console.log(`  Web: http://127.0.0.1:${webPort}`);
 console.log(`  API: http://127.0.0.1:${apiPort}`);
+console.log(`  Node: ${process.platform} ${process.version} (${nodeBin})`);
 
 startProcess({
   name: 'api',
@@ -103,14 +116,26 @@ startProcess({
   args: ['server.js', '--port', String(apiPort), '--no-open']
 });
 
-if (!await waitForPort(apiPort)) {
+if (!await waitForPort(apiPort, { label: 'api' })) {
   console.error(`[api] did not start on http://127.0.0.1:${apiPort}`);
   stopAll(1);
 }
 
 startProcess({
   name: 'vite',
-  args: ['x', 'vite', '--config', 'vite.config.js', '--host', '127.0.0.1', '--port', String(webPort), '--strictPort', '--open', '/']
+  command: nodeBin,
+  args: [
+    viteCli,
+    '--config',
+    'vite.config.js',
+    '--host',
+    '127.0.0.1',
+    '--port',
+    String(webPort),
+    '--strictPort',
+    '--open',
+    '/',
+  ]
 }, {
   CODEMINI_API_PORT: String(apiPort)
 });

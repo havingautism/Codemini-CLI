@@ -1,8 +1,10 @@
 import { trimInline as trimInlineText } from './string-utils.js';
+import { isShellToolName } from './shell-tool-name.js';
 
 export const TOOL_DISPLAY_LABELS = {
   create_plan: 'Plan',
   create_spec: 'Create Spec',
+  run_subagent: 'Subagent',
   update_todos: 'Update Todos',
   read_plan: 'Read Plan',
   update_plan: 'Update Plan',
@@ -23,6 +25,10 @@ export const TOOL_DISPLAY_LABELS = {
   edit: 'Edit',
   create: 'Create',
   write: 'Write',
+  begin_write: 'Begin Write',
+  write_chunk: 'Write Chunk',
+  commit_write: 'Commit Write',
+  abort_write: 'Abort Write',
   apply_patch: 'Apply Patch',
   delete: 'Delete',
   run: 'Run',
@@ -32,14 +38,52 @@ export const TOOL_DISPLAY_LABELS = {
   skill: 'Skill'
 };
 
+/** @type {Map<string, string>} MCP tool function name → UI label (browser-safe registry) */
+const mcpToolDisplayLabels = new Map();
+
+export function setMcpToolDisplayLabels(entries = {}) {
+  mcpToolDisplayLabels.clear();
+  for (const [name, label] of Object.entries(entries || {})) {
+    const key = String(name || '').trim();
+    const value = String(label || '').trim();
+    if (key && value) mcpToolDisplayLabels.set(key, value);
+  }
+}
+
+export function resolveMcpToolDisplayLabel(toolName) {
+  const raw = String(toolName || '').trim();
+  if (!raw) return '';
+  if (mcpToolDisplayLabels.has(raw)) return mcpToolDisplayLabels.get(raw);
+  const normalized = raw.toLowerCase();
+  if (mcpToolDisplayLabels.has(normalized)) return mcpToolDisplayLabels.get(normalized);
+  return '';
+}
+
 export function normalizeToolId(name) {
   return String(name || '').trim().toLowerCase().replace(/[^a-z0-9_]/g, '');
 }
 
-export function formatToolLabel(name) {
+function fallbackMcpToolLabel(name) {
+  const raw = String(name || '').trim();
+  const registered = resolveMcpToolDisplayLabel(raw);
+  if (registered) return registered;
+  const match = raw.match(/^mcp__([a-z0-9_-]+?)__([a-z0-9_-]+?)(?:_\d+)?$/i);
+  if (!match) return '';
+  return `MCP/${match[1]} · ${match[2]}`;
+}
+
+export function formatToolLabel(name, options = {}) {
+  const raw = String(name || '').trim();
+  const overrides = options.displayLabels && typeof options.displayLabels === 'object'
+    ? options.displayLabels
+    : null;
+  if (overrides?.[raw]) return String(overrides[raw]);
   const normalized = normalizeToolId(name);
+  if (overrides?.[normalized]) return String(overrides[normalized]);
   if (!normalized) return 'Tool';
   if (TOOL_DISPLAY_LABELS[normalized]) return TOOL_DISPLAY_LABELS[normalized];
+  const mcpLabel = fallbackMcpToolLabel(raw) || fallbackMcpToolLabel(normalized);
+  if (mcpLabel) return mcpLabel;
   return normalized
     .split('_')
     .filter(Boolean)
@@ -63,9 +107,36 @@ function formatToolWithArg(label, arg, { quoted = false } = {}) {
   return `${label} (${quoted ? `"${payload}"` : payload})`;
 }
 
-export function formatToolDisplayName(name, args = {}) {
+function appendPrimaryToolArg(label, args = {}) {
+  if (!args || typeof args !== 'object' || Array.isArray(args)) return label;
+  const trimInline = (value, max) => trimInlineText(value, max);
+  for (const key of ['url', 'query', 'path', 'command', 'pattern', 'name']) {
+    const value = trimInline(args[key], 96);
+    if (!value) continue;
+    const quoted = key === 'query' || key === 'pattern';
+    return formatToolWithArg(label, value, { quoted });
+  }
+  for (const value of Object.values(args)) {
+    if (typeof value !== 'string') continue;
+    const trimmed = trimInline(value, 96);
+    if (trimmed) return formatToolWithArg(label, trimmed);
+  }
+  return label;
+}
+
+export function formatToolDisplayName(name, args = {}, options = {}) {
+  const rawName = String(name || '').trim();
   const toolName = normalizeToolId(name);
   const trimInline = (value, max) => trimInlineText(value, max);
+  const overrideLabel = options?.displayLabels?.[rawName]
+    || options?.displayLabels?.[toolName]
+    || '';
+  if (overrideLabel || fallbackMcpToolLabel(rawName) || fallbackMcpToolLabel(toolName)) {
+    return appendPrimaryToolArg(
+      overrideLabel || formatToolLabel(rawName, options),
+      args,
+    );
+  }
 
   if (toolName === 'grep') {
     const query = trimInline(args?.pattern || args?.query || args?.symbol || '', 96);
@@ -87,7 +158,7 @@ export function formatToolDisplayName(name, args = {}) {
     const target = trimInline(args?.path || '.', 96) || '.';
     return formatToolWithArg(formatToolLabel('list'), target);
   }
-  if (toolName === 'read' || toolName === 'create' || toolName === 'write') {
+  if (toolName === 'read' || toolName === 'create' || toolName === 'write' || toolName === 'begin_write') {
     const target = trimInline(args?.path || '.', 96) || '.';
     if (toolName === 'read') {
       const start = Number(args?.start_line);
@@ -98,9 +169,25 @@ export function formatToolDisplayName(name, args = {}) {
     }
     return formatToolWithArg(formatToolLabel(toolName), target);
   }
-  if (toolName === 'run') {
+  if (toolName === 'write_chunk') {
+    const writeId = trimInline(args?.write_id || '', 48);
+    const sequence = Number(args?.sequence);
+    const suffix = Number.isSafeInteger(sequence) ? ` #${sequence}` : '';
+    return writeId
+      ? formatToolWithArg(formatToolLabel('write_chunk'), `${writeId}${suffix}`)
+      : formatToolLabel('write_chunk');
+  }
+  if (toolName === 'commit_write' || toolName === 'abort_write') {
+    const target = toolName === 'commit_write'
+      ? trimInline(args?.path || args?.write_id || '', 96)
+      : trimInline(args?.write_id || '', 64);
+    return target
+      ? formatToolWithArg(formatToolLabel(toolName), target)
+      : formatToolLabel(toolName);
+  }
+  if (isShellToolName(toolName)) {
     const command = trimInline(args?.command || '', 96);
-    return command ? formatToolWithArg(formatToolLabel('run'), command) : formatToolLabel('run');
+    return command ? formatToolWithArg(formatToolLabel(toolName), command) : formatToolLabel(toolName);
   }
   if (toolName === 'web_fetch') {
     const url = trimInline(args?.url || args?.href || '', 96);
@@ -142,6 +229,12 @@ export function formatToolDisplayName(name, args = {}) {
     const label = 'Plan · 规划/执行';
     return goal ? formatToolWithArg(label, goal) : label;
   }
+  if (toolName === 'run_subagent') {
+    const goal = trimInline(args?.goal || args?.prompt || '', 96);
+    const persona = trimInline(args?.name || args?.role || 'Alex', 24);
+    const label = `Subagent · ${persona || 'Alex'}`;
+    return goal ? formatToolWithArg(label, goal) : label;
+  }
   if (toolName === 'create_spec') {
     const topic = trimInline(args?.topic || '', 96);
     return topic ? formatToolWithArg(formatToolLabel('create_spec'), topic) : formatToolLabel('create_spec');
@@ -165,5 +258,5 @@ export function formatToolDisplayName(name, args = {}) {
     const query = trimInline(args?.query || args?.name || '', 96);
     return query ? formatToolWithArg(formatToolLabel('tool_search'), query) : formatToolLabel('tool_search');
   }
-  return formatToolLabel(toolName);
+  return formatToolLabel(toolName, options);
 }

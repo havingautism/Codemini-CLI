@@ -1,5 +1,5 @@
 import { CheckCircle, XCircle } from "@phosphor-icons/react";
-import { LinearRing } from "@/components/ui/spinner";
+import { SessionOrb } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 
 const STATUS_STYLES = {
@@ -46,7 +46,7 @@ export function RuntimeActivityStrip({ activities = [] }) {
               {activity.emoji}
             </span>
             {isRunning ? (
-              <LinearRing size="sm" />
+              <SessionOrb state="working" />
             ) : (
               <Icon size={13} className={cn("shrink-0", style.iconClassName)} />
             )}

@@ -1,5 +1,6 @@
 import { Component, useMemo, useRef } from 'react';
 import { Streamdown } from 'streamdown';
+import { mermaid } from '@streamdown/mermaid';
 import { cn } from '@/lib/utils';
 import { createCodePlugin } from '@/lib/shiki-plugin';
 import {
@@ -12,6 +13,7 @@ import {
 import { EmbedCard } from '@/components/EmbedCard.jsx';
 import { HorizontalScrollStrip } from '@/components/HorizontalScrollStrip.jsx';
 import { MarkdownLightboxImage } from '@/components/MarkdownLightboxImage.jsx';
+import { ResponseLoader } from '@/components/ui/spinner.jsx';
 import {
   MessageImageGalleryProvider,
 } from '@/components/MessageImageGallery.jsx';
@@ -64,6 +66,27 @@ class StreamdownErrorBoundary extends Component {
   }
 }
 
+function PersistentMarkdownTable({
+  children,
+  className,
+  node: _node,
+  ...props
+}) {
+  return (
+    <div className="codemini-markdown-table-strip my-4 max-w-full">
+      <HorizontalScrollStrip contentClassName="block min-w-full gap-0 px-0">
+        <table
+          {...props}
+          className={cn('w-max min-w-full border-collapse', className)}
+          data-streamdown="table"
+        >
+          {children}
+        </table>
+      </HorizontalScrollStrip>
+    </div>
+  );
+}
+
 function MarkdownStreamdown({
   content,
   mode,
@@ -86,6 +109,7 @@ function MarkdownStreamdown({
           />
         );
       },
+      table: PersistentMarkdownTable,
     }),
     [inlineImageStartIndex, useGallery],
   );
@@ -96,7 +120,7 @@ function MarkdownStreamdown({
       isAnimating={streaming}
       parseIncompleteMarkdown
       showLineNumbers={false}
-      plugins={{ code: codePlugin }}
+      plugins={{ code: codePlugin, mermaid }}
       controls={streamdownControls}
       components={components}
     >
@@ -220,12 +244,9 @@ export function StreamdownRenderer({ text, streaming, className, inlineEmbeds = 
 
   if (!content && streaming) {
     return (
-      <div
-        className={cn(
-          'msg-body streaming-cursor streaming-cursor--pending',
-          className,
-        )}
-        aria-hidden="true"
+      <ResponseLoader
+        className={cn('msg-body', className)}
+        label={t('waitingResponse')}
       />
     );
   }

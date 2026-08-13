@@ -185,7 +185,20 @@ function collectDescendantPids(rootPid, seen = new Set()) {
 
 export function terminateChild(child, signal = 'SIGTERM') {
   if (!child) return;
+  if (child.sandboxProcess) {
+    child.kill(signal);
+    return;
+  }
   const pid = Number(child.pid);
+  if (process.platform === 'win32' && Number.isInteger(pid) && pid > 0) {
+    try {
+      spawn('taskkill', ['/pid', String(pid), '/T', '/F'], {
+        stdio: 'ignore',
+        windowsHide: true,
+      }).unref();
+    } catch {}
+    return;
+  }
   if (process.platform !== 'win32' && Number.isInteger(pid) && pid > 0) {
     const descendants = collectDescendantPids(pid);
     for (const targetPid of descendants.reverse()) {
@@ -217,33 +230,81 @@ export function resolveShell(defaultShell) {
   return { command: '/bin/bash', args: ['-lc'] };
 }
 
+export function resolveSandboxShell(defaultShell) {
+  if (String(defaultShell || '').toLowerCase() === 'powershell') return 'pwsh';
+  return 'bash';
+}
+
 export function isDangerousCommand(command, blockedPatterns = []) {
   const lowered = command.toLowerCase();
   return blockedPatterns.some((pattern) => lowered.includes(String(pattern).toLowerCase()));
 }
 
-export function runShellCommand({
+function spawnShellChild({ shellSpec, shellCommand, cwd }) {
+  return spawn(shellSpec.command, [...shellSpec.args, shellCommand], {
+    cwd,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+}
+
+export async function runShellCommand({
   command,
   cwd = process.cwd(),
-  shell = 'powershell',
-  timeoutMs = 1800000
+  shell = 'bash',
+  timeoutMs = 1800000,
+  signal,
+  config,
+  sandboxMode,
 }) {
+  if (signal?.aborted) {
+    return Promise.reject(Object.assign(new Error('Command aborted before dispatch'), { code: 'ABORT_ERR' }));
+  }
   const shellSpec = resolveShell(shell);
   const shellCommand =
     process.platform !== 'win32' && /(?:^|\/)bash(?:\.exe)?$/i.test(shellSpec.command)
       ? `exec ${command}`
       : command;
 
-  return new Promise((resolve, reject) => {
-    const child = spawn(shellSpec.command, [...shellSpec.args, shellCommand], {
+  let sandboxChild = null;
+  let sandboxMeta = { wrapped: false, mode: '', backend: 'none' };
+  let annotateStderr = null;
+  if (config) {
+    const { prepareSandboxExecution, spawnPreparedSandbox } = await import('./sandbox-backend.js');
+    const prepared = await prepareSandboxExecution({
+      command: String(command || ''),
+      config,
       cwd,
-      stdio: ['ignore', 'pipe', 'pipe']
+      mode: sandboxMode,
+      binShell: resolveSandboxShell(shell),
+      abortSignal: signal,
     });
+    if (prepared.kind === 'os') {
+      const os = await import('./sandbox-os.js');
+      annotateStderr = os.annotateSandboxStderrAsync;
+    }
+    if (prepared.wrapped) {
+      sandboxChild = spawnPreparedSandbox({
+        prepared,
+        shellSpec,
+        shellCommand,
+        cwd,
+      });
+      sandboxMeta = {
+        wrapped: true,
+        mode: prepared.policy?.mode || '',
+        backend: prepared.policy?.backend || prepared.kind,
+      };
+    }
+  }
+
+  return new Promise((resolve, reject) => {
+    const child = sandboxChild || spawnShellChild({ shellSpec, shellCommand, cwd });
 
     let stdout = '';
     let stderr = '';
     let timedOut = false;
     let autoStopped = false;
+    let aborted = false;
     let stopReason = '';
     let finalized = false;
     const longRunningCommand = isLikelyLongRunningCommand(command);
@@ -251,12 +312,50 @@ export function runShellCommand({
       ? Math.min(LONG_RUNNING_STARTUP_WINDOW_MS, Math.max(350, Math.floor(timeoutMs * 0.6)))
       : 0;
 
-    const finalizeResolve = (value) => {
+    const withSandboxFields = (value) => {
+      if (!sandboxMeta.wrapped) return value;
+      return {
+        ...value,
+        sandbox: {
+          mode: sandboxMeta.mode,
+          wrapped: true,
+        },
+      };
+    };
+
+    const finalizeResolve = async (value) => {
       if (finalized) return;
       finalized = true;
       clearTimeout(timer);
       if (autoStopTimer) clearTimeout(autoStopTimer);
-      resolve(value);
+      signal?.removeEventListener('abort', abortCommand);
+      let next = withSandboxFields(value);
+      if (sandboxMeta.backend === 'os' && typeof annotateStderr === 'function') {
+        try {
+          next = {
+            ...next,
+            stderr: await annotateStderr(String(command || ''), next.stderr || ''),
+          };
+        } catch {}
+      }
+      if (
+        sandboxMeta.wrapped &&
+        next.code &&
+        next.code !== 0 &&
+        /operation not permitted|read-only file system|permission denied|sandbox/i.test(
+          String(next.stderr || ''),
+        )
+      ) {
+        next.sandbox = {
+          ...(next.sandbox || {}),
+          denied: true,
+        };
+        const marker = `[sandbox: file access denied under ${sandboxMeta.mode || 'unknown'} mode]`;
+        if (!String(next.stderr || '').includes('[sandbox:')) {
+          next.stderr = `${next.stderr || ''}${next.stderr ? '\n' : ''}${marker}`;
+        }
+      }
+      resolve(next);
     };
 
     const finalizeReject = (error) => {
@@ -264,6 +363,7 @@ export function runShellCommand({
       finalized = true;
       clearTimeout(timer);
       if (autoStopTimer) clearTimeout(autoStopTimer);
+      signal?.removeEventListener('abort', abortCommand);
       reject(error);
     };
 
@@ -278,6 +378,14 @@ export function runShellCommand({
           }, autoStopWindowMs)
         : null;
 
+    const abortCommand = () => {
+      if (finalized || aborted) return;
+      aborted = true;
+      terminateChild(child, 'SIGTERM');
+    };
+    signal?.addEventListener('abort', abortCommand, { once: true });
+    if (signal?.aborted) abortCommand();
+
     const finalizeAutoStop = (reason) => {
       if (timedOut || autoStopped || finalized) return;
       autoStopped = true;
@@ -286,7 +394,7 @@ export function runShellCommand({
       setTimeout(() => {
         terminateChild(child, 'SIGKILL');
       }, AUTO_STOP_GRACE_MS);
-      finalizeResolve({ code: 0, stdout, stderr, auto_stopped: true, stop_reason: stopReason });
+      void finalizeResolve({ code: 0, stdout, stderr, auto_stopped: true, stop_reason: stopReason });
     };
 
     child.stdout.on('data', (chunk) => {
@@ -309,15 +417,19 @@ export function runShellCommand({
 
     child.on('close', (code) => {
       if (finalized) return;
+      if (aborted) {
+        finalizeReject(Object.assign(new Error('Command aborted'), { code: 'ABORT_ERR' }));
+        return;
+      }
       if (timedOut) {
         finalizeReject(new Error(`Command timed out after ${timeoutMs}ms`));
         return;
       }
       if (autoStopped) {
-        finalizeResolve({ code: 0, stdout, stderr, auto_stopped: true, stop_reason: stopReason });
+        void finalizeResolve({ code: 0, stdout, stderr, auto_stopped: true, stop_reason: stopReason });
         return;
       }
-      finalizeResolve({ code, stdout, stderr });
+      void finalizeResolve({ code, stdout, stderr });
     });
   });
 }

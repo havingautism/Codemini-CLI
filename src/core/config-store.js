@@ -1,11 +1,16 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { getConfigFilePath, getLegacyConfigDir } from './paths.js';
+import { getConfigFilePath } from './paths.js';
 import { normalizeReplyLanguage } from './reply-language.js';
-import { normalizeShellName } from './shell-profile.js';
-import { MEMORY_ALWAYS_ALLOW_TOOLS } from './constants.js';
+import { normalizeShellName, resolveShellContext } from './shell-profile.js';
+import {
+  MEMORY_ALWAYS_ALLOW_TOOLS,
+  STAGED_WRITE_ALWAYS_ALLOW_TOOLS
+} from './constants.js';
 import { normalizeReasoningEffort } from './provider/reasoning-effort.js';
 import { normalizeSkillContexts } from './skill-contexts.js';
+import { normalizeSandboxMode } from './sandbox-policy.js';
+import { normalizeSandboxBackend } from './sandbox-probe.js';
 
 function normalizeUiLanguage(value) {
   const raw = String(value || '').trim().toLowerCase();
@@ -53,22 +58,28 @@ const DEFAULT_CONFIG = {
   },
   execution: {
     mode: 'normal',
-    approval_mode: 'review',
-    plan_execution_model: 'default',
+    // Auto: run recoverable workspace mutations and explicit routine commands; keep hard gates.
+    approval_mode: 'auto',
     always_allow_tools: [
       'read',
       'search_code',
       'list_background_tasks',
       'get_background_task',
+      ...STAGED_WRITE_ALWAYS_ALLOW_TOOLS,
       ...MEMORY_ALWAYS_ALLOW_TOOLS
     ]
+  },
+  tools: {
+    max_parallel_calls: 10,
+    write_chunk_max_chars: 12000,
+    staged_write_max_chars: 4194304
   },
   sessions: {
     max_sessions: 100,
     retention_days: 30
   },
   shell: {
-    default: normalizeShellName(process.platform === 'win32' ? 'powershell' : 'bash'),
+    default: 'bash',
     timeout_ms: 1800000
   },
   ui: {
@@ -99,7 +110,8 @@ const DEFAULT_CONFIG = {
     }
   },
   soul: {
-    preset: 'default',
+    coding: 'Default',
+    daily: 'Playful',
     custom_path: ''
   },
   web: {
@@ -123,9 +135,22 @@ const DEFAULT_CONFIG = {
     blocked_path_patterns: [],
     blocked_command_patterns: ['rm -rf /', 'format c:', 'del /f /s /q C:\\\\']
   },
+  // Cross-platform Linux microVM when available; Linux/macOS fall back to OS confinement.
+  sandbox: {
+    enabled: 'auto',
+    backend: 'auto',
+    mode: 'workspace-write',
+    workspace_root: '',
+    image: 'node:22-bookworm',
+    cpus: 2,
+    memory_mb: 2048
+  },
   skills: {
     enabled: {},
     contexts: {}
+  },
+  mcp: {
+    servers: []
   }
 };
 
@@ -198,11 +223,8 @@ function normalizePolicyLists(config) {
     : (['normal', 'plan'].includes(rawExecutionMode) ? rawExecutionMode : 'normal');
   next.execution.approval_mode = ['review', 'auto', 'full_access'].includes(rawApprovalMode)
     ? rawApprovalMode
-    : 'review';
-  const rawPlanExecutionModel = String(next.execution.plan_execution_model || '').toLowerCase();
-  next.execution.plan_execution_model = ['default', 'fast', 'role'].includes(rawPlanExecutionModel)
-    ? rawPlanExecutionModel
-    : 'default';
+    : 'auto';
+  delete next.execution.plan_execution_model;
   const rawTools = Array.isArray(next.execution.always_allow_tools)
     ? next.execution.always_allow_tools
     : [];
@@ -213,9 +235,10 @@ function normalizePolicyLists(config) {
       'list_background_tasks',
       'get_background_task',
       ...MEMORY_ALWAYS_ALLOW_TOOLS,
+      ...STAGED_WRITE_ALWAYS_ALLOW_TOOLS,
       ...rawTools
     ].filter((name) => String(name) !== 'list_files')
-      .filter((name) => !['edit', 'create', 'write', 'apply_patch', 'delete', 'run', 'stop_background_task'].includes(String(name)))
+      .filter((name) => !['edit', 'create', 'write', 'commit_write', 'apply_patch', 'delete', 'run', 'stop_background_task'].includes(String(name)))
   );
   next.ui = next.ui || {};
   next.ui.language = normalizeUiLanguage(next.ui.language);
@@ -227,6 +250,10 @@ function normalizePolicyLists(config) {
     Object.entries(rawContexts).map(([name, value]) => [name, normalizeSkillContexts(value)])
   );
   delete next.skills.applicability;
+  next.mcp = next.mcp || {};
+  next.mcp.servers = Array.isArray(next.mcp.servers)
+    ? next.mcp.servers.filter((server) => isObject(server))
+    : [];
   next.memory = next.memory || {};
   next.memory.enabled = next.memory.enabled !== false;
   next.memory.auto_write = next.memory.auto_write !== false;
@@ -305,6 +332,27 @@ function normalizePolicyLists(config) {
   next.policy.blocked_path_patterns = uniqueStrings(
     Array.isArray(next.policy.blocked_path_patterns) ? next.policy.blocked_path_patterns : []
   );
+  next.sandbox = next.sandbox || {};
+  const enabledRaw = next.sandbox.enabled;
+  if (enabledRaw === true || enabledRaw === false) {
+    next.sandbox.enabled = enabledRaw;
+  } else {
+    const enabledStr = String(enabledRaw ?? 'auto').trim().toLowerCase();
+    next.sandbox.enabled = ['true', 'on', 'always', 'false', 'off', 'never', 'auto'].includes(enabledStr)
+      ? (enabledStr === 'true' || enabledStr === 'on' || enabledStr === 'always'
+        ? true
+        : enabledStr === 'false' || enabledStr === 'off' || enabledStr === 'never'
+          ? false
+          : 'auto')
+      : 'auto';
+  }
+  next.sandbox.mode = normalizeSandboxMode(next.sandbox.mode);
+  next.sandbox.backend = normalizeSandboxBackend(next.sandbox.backend);
+  next.sandbox.workspace_root = String(next.sandbox.workspace_root || '').trim();
+  next.sandbox.image = String(next.sandbox.image || DEFAULT_CONFIG.sandbox.image).trim() || DEFAULT_CONFIG.sandbox.image;
+  next.sandbox.cpus = normalizedNumber(next.sandbox.cpus, DEFAULT_CONFIG.sandbox.cpus, 1, { integer: true });
+  next.sandbox.memory_mb = normalizedNumber(next.sandbox.memory_mb, DEFAULT_CONFIG.sandbox.memory_mb, 128, { integer: true });
+  next.shell.default = resolveShellContext(next, { platform: process.platform }).shell;
   return next;
 }
 
@@ -345,6 +393,18 @@ function setNested(obj, keyPath, rawValue) {
 let cachedConfig = null;
 let cachedConfigStat = null;
 
+function migrateSoulConfig(parsed = {}) {
+  const soul = parsed?.soul;
+  if (!soul || typeof soul !== 'object') return parsed;
+  const legacy = String(soul.preset || '').trim();
+  if (!legacy) return parsed;
+  const hasCoding = Object.prototype.hasOwnProperty.call(soul, 'coding');
+  const hasDaily = Object.prototype.hasOwnProperty.call(soul, 'daily');
+  if (!hasCoding) soul.coding = legacy;
+  if (!hasDaily) soul.daily = legacy;
+  return parsed;
+}
+
 export async function loadConfig() {
   const configPath = getConfigFilePath();
   try {
@@ -355,31 +415,15 @@ export async function loadConfig() {
       return structuredClone(cachedConfig);
     }
     const raw = await fs.readFile(configPath, 'utf8');
-    const parsed = JSON.parse(raw);
+    const parsed = migrateSoulConfig(JSON.parse(raw));
     const config = normalizePolicyLists(deepMerge(DEFAULT_CONFIG, parsed));
     cachedConfig = config;
     cachedConfigStat = { mtime, size };
     return structuredClone(config);
   } catch {
     const defaultConfig = normalizePolicyLists(structuredClone(DEFAULT_CONFIG));
-    if (process.env.CODEMINI_GLOBAL_DIR) {
-      await saveConfig(defaultConfig);
-      return defaultConfig;
-    }
-    try {
-      const legacyPath = path.join(getLegacyConfigDir(), 'config.json');
-      const raw = await fs.readFile(legacyPath, 'utf8');
-      const parsed = JSON.parse(raw);
-      const config = normalizePolicyLists(deepMerge(DEFAULT_CONFIG, parsed));
-      cachedConfig = config;
-      // Get the stat of legacy or standard config path to store in cache stats
-      const finalStat = await fs.stat(configPath).catch(() => null);
-      cachedConfigStat = finalStat ? { mtime: finalStat.mtimeMs, size: finalStat.size } : null;
-      return structuredClone(config);
-    } catch {
-      await saveConfig(defaultConfig);
-      return defaultConfig;
-    }
+    await saveConfig(defaultConfig);
+    return defaultConfig;
   }
 }
 

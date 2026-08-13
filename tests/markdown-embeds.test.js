@@ -1,12 +1,39 @@
-import assert from 'node:assert/strict';
-import { describe, it } from 'node:test';
 import {
+  extractLinksFromMarkdownText,
   isImageUrl,
+  isPublicHttpUrl,
   normalizeMarkdownForDisplay,
   promoteBareImageUrls,
   promoteTableCellImageUrls,
   splitMarkdownForEmbeds,
 } from '../codemini-web/client/src/lib/markdown-embeds.js';
+import assert from 'node:assert/strict';
+import { describe, it } from 'node:test';
+
+describe('isPublicHttpUrl', () => {
+  it('rejects loopback and private hosts', () => {
+    assert.equal(isPublicHttpUrl('http://127.0.0.1:3002'), false);
+    assert.equal(isPublicHttpUrl('http://localhost:5173'), false);
+    assert.equal(isPublicHttpUrl('http://192.168.1.1/x'), false);
+    assert.equal(isPublicHttpUrl('https://example.com/a'), true);
+  });
+});
+
+describe('extractLinksFromMarkdownText', () => {
+  it('does not promote local urls into related links', () => {
+    const text =
+      '前端连后端：getBackendUrl()（默认 `http://127.0.0.1:3002`）+ backendClient.js\n'
+      + '参考 https://example.com/docs';
+    assert.deepEqual(extractLinksFromMarkdownText(text), [
+      { type: 'link', url: 'https://example.com/docs' },
+    ]);
+  });
+
+  it('does not swallow fullwidth closers after a backticked local url', () => {
+    const text = '默认 `http://127.0.0.1:3002`）+ backendClient.js';
+    assert.deepEqual(extractLinksFromMarkdownText(text), []);
+  });
+});
 
 describe('isImageUrl', () => {
   it('matches common image extensions and ignores query/hash', () => {
@@ -197,6 +224,16 @@ describe('promoteTableCellImageUrls', () => {
     assert.match(
       normalized,
       /\*\*MOMO D2\*\* 👉 !\[图片\]\(https:\/\/cdn\.kpopping\.com\/kpics\/2026\/07\/photo\.jpg\)/,
+    );
+  });
+
+  it('softens HN-style list meta after the title', () => {
+    const normalized = normalizeMarkdownForDisplay(
+      "19. France's Anssi Will Block PQC — 40 points · 7 comments postquantum.com · 1h ago",
+    );
+    assert.equal(
+      normalized,
+      "19. France's Anssi Will Block PQC *— 40 points · 7 comments postquantum.com · 1h ago*",
     );
   });
 });

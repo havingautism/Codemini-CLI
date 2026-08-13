@@ -1,6 +1,7 @@
 import { createChatCompletion } from './provider/index.js';
 import { getReadOnlyCommandTokens } from './command-risk.js';
 import { getReplyLanguageName } from './reply-language.js';
+import { parseModelJsonObject } from './model-json.js';
 
 const EVAL_TIMEOUT_MS = 15000;
 
@@ -16,34 +17,27 @@ Rules:
 - Consider the active shell and OS context, including Windows PowerShell command names and aliases.
 - Commands that install/uninstall packages, modify files, push code, start servers, or have network side effects are medium or high.
 - Destructive commands (rm -rf, format, sudo, dd) are high risk and deny.
+- Do not mark pure inspection as medium: searching for words like install/rm/commit inside rg/grep/find/git log arguments is still low risk.
 - Consider the workspace context: the command runs in the project directory.
 - Write description and sideEffects in ${replyLanguage}. Keep risk and recommendation enum values in English exactly as specified.
 - Be concise. Maximum 1 sentence per field.`;
 }
 
-const FAIL_CLOSED_RESULT = Object.freeze({
-  risk: 'high',
-  description: '',
-  sideEffects: '',
-  recommendation: 'deny',
-  failed: true
-});
-
-function extractJsonObjectText(text) {
-  const raw = String(text || '').trim();
-  if (!raw) return '';
-  if (raw.startsWith('{') && raw.endsWith('}')) return raw;
-  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  const candidate = fenced ? fenced[1].trim() : raw;
-  const start = candidate.indexOf('{');
-  const end = candidate.lastIndexOf('}');
-  if (start >= 0 && end > start) return candidate.slice(start, end + 1);
-  return candidate;
+function failedEvaluation(failureReason) {
+  return {
+    risk: 'high',
+    description: '',
+    sideEffects: '',
+    recommendation: 'deny',
+    failed: true,
+    failureReason
+  };
 }
 
 export function parseEvaluation(text) {
   try {
-    const json = JSON.parse(extractJsonObjectText(text));
+    const json = parseModelJsonObject(text);
+    if (!json) throw new Error('invalid response');
     const risk = String(json?.risk || '').toLowerCase();
     const recommendation = String(json?.recommendation || '').toLowerCase();
     return {
@@ -54,7 +48,7 @@ export function parseEvaluation(text) {
       failed: false
     };
   } catch {
-    return { ...FAIL_CLOSED_RESULT };
+    return failedEvaluation('invalid_response');
   }
 }
 
@@ -65,7 +59,7 @@ export function parseEvaluation(text) {
  */
 export async function evaluateCommandWithLLM({ command, config, workspaceRoot }) {
   const cmd = String(command || '').trim();
-  if (!cmd) return { ...FAIL_CLOSED_RESULT };
+  if (!cmd) return failedEvaluation('empty_command');
 
   try {
     const result = await createChatCompletion({
@@ -83,7 +77,8 @@ export async function evaluateCommandWithLLM({ command, config, workspaceRoot })
 
     const text = result?.text || '';
     return parseEvaluation(text);
-  } catch {
-    return { ...FAIL_CLOSED_RESULT };
+  } catch (error) {
+    const message = String(error?.message || error || '');
+    return failedEvaluation(/abort|timed?\s*out|timeout/i.test(message) ? 'timeout' : 'provider_error');
   }
 }

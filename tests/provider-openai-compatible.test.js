@@ -36,3 +36,55 @@ test('Kimi streaming completion returns usage nested on the final choice', async
     cached_tokens: 10
   });
 });
+
+test('OpenAI-compatible stream treats EOF without finish_reason as incomplete tool arguments', async (t) => {
+  const originalFetch = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+  globalThis.fetch = async () => new Response([
+    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","function":{"name":"write","arguments":"{\\"path\\":\\"a.txt\\",\\"content\\":\\"complete-looking\\"}"}}]},"finish_reason":null}]}',
+    '',
+  ].join('\n'), {
+    status: 200,
+    headers: { 'content-type': 'text/event-stream' },
+  });
+
+  const result = await createChatCompletionStream({
+    baseUrl: 'https://example.invalid/v1',
+    apiKey: 'test-key',
+    model: 'test-model',
+    messages: [{ role: 'user', content: 'write it' }],
+    maxRetries: 0,
+  });
+
+  assert.equal(result.toolCalls.length, 1);
+  assert.equal(result.toolCalls[0].argumentsComplete, false);
+  assert.doesNotThrow(() => JSON.parse(result.toolCalls[0].arguments));
+});
+
+test('OpenAI-compatible stream accepts [DONE] as a terminal marker for compatible gateways', async (t) => {
+  const originalFetch = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+  globalThis.fetch = async () => new Response([
+    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","function":{"name":"write","arguments":"{\\"path\\":\\"a.txt\\",\\"content\\":\\"ok\\"}"}}]},"finish_reason":null}]}',
+    '',
+    'data: [DONE]',
+    '',
+  ].join('\n'), {
+    status: 200,
+    headers: { 'content-type': 'text/event-stream' },
+  });
+
+  const result = await createChatCompletionStream({
+    baseUrl: 'https://example.invalid/v1',
+    apiKey: 'test-key',
+    model: 'test-model',
+    messages: [{ role: 'user', content: 'write it' }],
+    maxRetries: 0,
+  });
+
+  assert.equal(result.toolCalls[0].argumentsComplete, true);
+});

@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { sha256 } from './crypto-utils.js';
-import { getMemoryDir, getProjectMemoryDir, getInboxDir, getArchiveDir } from './paths.js';
+import { getMemoryDir, getProjectMemoryDir } from './paths.js';
 import {
   assertSafeMemoryContent,
   normalizeMemoryKind,
@@ -9,6 +9,15 @@ import {
   normalizeMemoryText,
   summarizeMemoryContent
 } from './memory-policy.js';
+import {
+  archiveMemoryQueueEntry,
+  ensureMemoryQueueImported,
+  findInboxByIdempotencyKey,
+  listMemoryQueueEntries,
+  removeInboxEntryFromSqlite,
+  saveMemoryQueueEntry,
+  updateInboxEntryInSqlite
+} from './memory-queue-sqlite-store.js';
 
 const ALLOWED_SCOPES = new Set(['user', 'global', 'project']);
 const mutationLocks = new Map();
@@ -406,26 +415,6 @@ function normalizeInboxScope(value) {
   return normalizeMemoryScope(raw || 'project', { fallback: 'project' });
 }
 
-function todayDir(baseDir) {
-  const date = new Date().toISOString().slice(0, 10);
-  return path.join(baseDir, date);
-}
-
-async function readJsonArray(filePath) {
-  try {
-    const raw = await fs.readFile(filePath, 'utf8');
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
-}
-
-async function writeJsonArray(filePath, items) {
-  await ensureParent(filePath);
-  await fs.writeFile(filePath, `${JSON.stringify(items, null, 2)}\n`, 'utf8');
-}
-
 async function captureToInboxUnlocked({
   scope = 'global',
   type = 'observation',
@@ -447,8 +436,7 @@ async function captureToInboxUnlocked({
   if (normalizedDetails) assertSafeMemoryContent(normalizedDetails);
   if (normalizedSuggestedAction) assertSafeMemoryContent(normalizedSuggestedAction);
 
-  const dir = todayDir(getInboxDir());
-  await fs.mkdir(dir, { recursive: true });
+  await ensureMemoryQueueImported();
   const now = nowIso();
   const id = `inbox_${sha256(`${normalizedSummary}:${now}:${Math.random()}`).slice(0, 12)}`;
   const normalizedSemanticKey = normalizeMemoryText(semanticKey).slice(0, 160);
@@ -491,15 +479,11 @@ async function captureToInboxUnlocked({
       : {})
   };
 
-  const indexPath = path.join(dir, 'index.json');
-  const entries = await readJsonArray(indexPath);
   if (normalizedIdempotencyKey) {
-    const existing = entries.find((item) => item?.idempotencyKey === normalizedIdempotencyKey);
+    const existing = findInboxByIdempotencyKey(normalizedIdempotencyKey);
     if (existing) return { ...existing, duplicate: true };
   }
-  entries.push(entry);
-  await writeJsonArray(indexPath, entries);
-  return entry;
+  return saveMemoryQueueEntry('inbox', entry);
 }
 
 export function forgetMemory(args = {}) {
@@ -513,53 +497,19 @@ export function captureToInbox(args = {}) {
 }
 
 export async function listInbox({ since, scope } = {}) {
-  const inboxBase = getInboxDir();
-  let dayDirs;
-  try {
-    const entries = await fs.readdir(inboxBase);
-    dayDirs = entries.filter((e) => /^\d{4}-\d{2}-\d{2}$/.test(e)).sort();
-  } catch {
-    return [];
-  }
-  if (since) {
-    const sinceStr = String(since).slice(0, 10);
-    dayDirs = dayDirs.filter((d) => d >= sinceStr);
-  }
-  const all = [];
-  for (const day of dayDirs) {
-    const indexPath = path.join(inboxBase, day, 'index.json');
-    const entries = await readJsonArray(indexPath);
-    all.push(...entries.map((entry) => ({
-      ...entry,
-      scope: normalizeMemoryScope(entry?.scope, { fallback: 'project' })
-    })));
-  }
-  if (scope) {
-    const sc = normalizeMemoryScope(scope, { fallback: 'project' });
-    return all.filter((e) => e.scope === sc);
-  }
-  return all;
+  await ensureMemoryQueueImported();
+  const normalizedScope = scope ? normalizeMemoryScope(scope, { fallback: 'project' }) : '';
+  return listMemoryQueueEntries('inbox', { since, scope: normalizedScope }).map((entry) => ({
+    ...entry,
+    scope: normalizeMemoryScope(entry?.scope, { fallback: 'project' })
+  }));
 }
 
 async function updateInboxEntryUnlocked(id, updates = {}) {
-  const inboxBase = getInboxDir();
-  let dayDirs;
-  try {
-    dayDirs = (await fs.readdir(inboxBase)).filter((e) => /^\d{4}-\d{2}-\d{2}$/.test(e)).sort();
-  } catch {
-    return null;
-  }
-  for (const day of dayDirs) {
-    const indexPath = path.join(inboxBase, day, 'index.json');
-    const entries = await readJsonArray(indexPath);
-    const idx = entries.findIndex((e) => e.id === id);
-    if (idx === -1) continue;
-    if (updates.lifecycle) updates.lifecycle = validateLifecycle(updates.lifecycle);
-    entries[idx] = { ...entries[idx], ...updates };
-    await writeJsonArray(indexPath, entries);
-    return entries[idx];
-  }
-  return null;
+  await ensureMemoryQueueImported();
+  const normalized = { ...updates };
+  if (normalized.lifecycle) normalized.lifecycle = validateLifecycle(normalized.lifecycle);
+  return updateInboxEntryInSqlite(id, normalized);
 }
 
 export function updateInboxEntry(id, updates = {}) {
@@ -567,23 +517,8 @@ export function updateInboxEntry(id, updates = {}) {
 }
 
 async function removeInboxEntryUnlocked(id) {
-  const inboxBase = getInboxDir();
-  let dayDirs;
-  try {
-    dayDirs = (await fs.readdir(inboxBase)).filter((e) => /^\d{4}-\d{2}-\d{2}$/.test(e)).sort();
-  } catch {
-    return false;
-  }
-  for (const day of dayDirs) {
-    const indexPath = path.join(inboxBase, day, 'index.json');
-    const entries = await readJsonArray(indexPath);
-    const idx = entries.findIndex((e) => e.id === id);
-    if (idx === -1) continue;
-    entries.splice(idx, 1);
-    await writeJsonArray(indexPath, entries);
-    return true;
-  }
-  return false;
+  await ensureMemoryQueueImported();
+  return removeInboxEntryFromSqlite(id);
 }
 
 export function removeInboxEntry(id) {
@@ -591,10 +526,7 @@ export function removeInboxEntry(id) {
 }
 
 async function archiveEntryUnlocked(entry, reason = '', auditNote = '') {
-  const archiveDir = getArchiveDir();
-  const date = new Date().toISOString().slice(0, 10);
-  const dir = path.join(archiveDir, date);
-  await fs.mkdir(dir, { recursive: true });
+  await ensureMemoryQueueImported();
   const archived = {
     ...entry,
     lifecycle: 'archived',
@@ -602,12 +534,7 @@ async function archiveEntryUnlocked(entry, reason = '', auditNote = '') {
     archiveReason: normalizeMemoryText(reason),
     auditNote: normalizeMemoryText(auditNote)
   };
-  const indexPath = path.join(dir, 'index.json');
-  const entries = await readJsonArray(indexPath);
-  entries.push(archived);
-  await writeJsonArray(indexPath, entries);
-  await removeInboxEntryUnlocked(entry.id);
-  return archived;
+  return archiveMemoryQueueEntry(entry, archived);
 }
 
 export function archiveEntry(entry, reason = '', auditNote = '') {
@@ -615,29 +542,9 @@ export function archiveEntry(entry, reason = '', auditNote = '') {
 }
 
 export async function listArchive({ since, scope } = {}) {
-  const archiveBase = getArchiveDir();
-  let dayDirs;
-  try {
-    const entries = await fs.readdir(archiveBase);
-    dayDirs = entries.filter((e) => /^\d{4}-\d{2}-\d{2}$/.test(e)).sort();
-  } catch {
-    return [];
-  }
-  if (since) {
-    const sinceStr = String(since).slice(0, 10);
-    dayDirs = dayDirs.filter((d) => d >= sinceStr);
-  }
-  const all = [];
-  for (const day of dayDirs) {
-    const indexPath = path.join(archiveBase, day, 'index.json');
-    const entries = await readJsonArray(indexPath);
-    all.push(...entries);
-  }
-  if (scope) {
-    const sc = normalizeMemoryScope(scope, { fallback: 'project' });
-    return all.filter((e) => normalizeMemoryScope(e.scope, { fallback: 'project' }) === sc);
-  }
-  return all;
+  await ensureMemoryQueueImported();
+  const normalizedScope = scope ? normalizeMemoryScope(scope, { fallback: 'project' }) : '';
+  return listMemoryQueueEntries('archive', { since, scope: normalizedScope });
 }
 
 export async function promoteMemory({

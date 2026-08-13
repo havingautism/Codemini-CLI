@@ -20,6 +20,16 @@ async function readJsonResponse(res) {
   }
 }
 
+async function readJsonOrThrow(res) {
+  const data = await readJsonResponse(res);
+  if (!res.ok || data?.error === true) {
+    throw new Error(
+      String(data?.message || data?.error || `Request failed (${res.status})`),
+    );
+  }
+  return data;
+}
+
 export async function fetchEmbed(url) {
   const target = String(url || '').trim();
   if (!target) return { error: true, message: 'Missing url' };
@@ -177,6 +187,15 @@ export async function setApprovalMode(sessionId, mode) {
   return res.json();
 }
 
+export async function setSandboxMode(sessionId, mode) {
+  const res = await api('/api/sandbox-mode', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ sessionId, mode })
+  });
+  return res.json();
+}
+
 export async function updatePendingReflect(sessionId, draft) {
   const res = await api('/api/pending-reflect', {
     method: 'POST',
@@ -231,6 +250,13 @@ export async function deleteSession(sessionId) {
   return res.json();
 }
 
+export async function regenerateSessionTitle(sessionId) {
+  const res = await api(`/api/sessions/${encodeURIComponent(sessionId)}/title/regenerate`, {
+    method: 'POST'
+  });
+  return res.json();
+}
+
 export async function newSession(projectDir) {
   const res = await api('/api/sessions/new', {
     method: 'POST',
@@ -253,6 +279,20 @@ export async function fetchConfigStatus() {
 export async function fetchPlaywrightStatus() {
   const res = await api('/api/playwright/status');
   return res.json();
+}
+
+export async function fetchStorageInfo() {
+  const res = await api('/api/storage');
+  return readJsonResponse(res);
+}
+
+export async function openStorageFolder(target) {
+  const res = await api('/api/storage/open', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ target }),
+  });
+  return readJsonResponse(res);
 }
 
 export async function setConfig(key, value) {
@@ -291,6 +331,35 @@ export async function replaceWebuiActiveProjects(active) {
   return res.json();
 }
 
+// ── MCP ──
+export async function fetchMcpServers() {
+  const res = await api('/api/mcp/servers');
+  return readJsonResponse(res);
+}
+
+export async function testMcpServer(server) {
+  const res = await api('/api/mcp/servers/test', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ server })
+  });
+  return readJsonResponse(res);
+}
+
+export async function saveMcpServer(server, originalId = '') {
+  const res = await api('/api/mcp/servers', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ server, originalId })
+  });
+  return readJsonResponse(res);
+}
+
+export async function deleteMcpServer(id) {
+  const res = await api(`/api/mcp/servers/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  return readJsonResponse(res);
+}
+
 export async function fetchProject() {
   const res = await api('/api/project');
   return res.json();
@@ -315,6 +384,13 @@ export async function undoSessionChange(sessionId, id) {
 
 export async function fetchSessionChanges(sessionId) {
   const res = await api(withSessionQuery('/api/session-changes', sessionId));
+  return res.json();
+}
+
+export async function fetchSessionChangePatch(sessionId, id) {
+  const res = await api(
+    withSessionQuery(`/api/session-changes/${encodeURIComponent(id)}/patch`, sessionId),
+  );
   return res.json();
 }
 
@@ -369,82 +445,171 @@ function withProjectDirQuery(path, projectDir) {
   return `${path}?${params.toString()}`;
 }
 
-export async function fetchSkills(projectDirs = []) {
-  const params = new URLSearchParams();
-  appendProjectDirs(params, projectDirs);
-  const query = params.toString();
-  const res = await api(query ? `/api/skills?${query}` : '/api/skills');
+export async function fetchSkills() {
+  const res = await api('/api/skills');
   return res.json();
 }
 
-export async function fetchSkillContent(name, projectDir) {
-  const res = await api(withProjectDirQuery(`/api/skills/${encodeURIComponent(name)}/content`, projectDir));
+export async function fetchSkillIndex(projectDir) {
+  const res = await api(withProjectDirQuery('/api/skills/index', projectDir));
   return readJsonResponse(res);
 }
 
-export async function createSkill({ name, description, content, scope, projectDir, contexts }) {
+export async function fetchSkillContent(name) {
+  const res = await api(`/api/skills/${encodeURIComponent(name)}/content`);
+  return readJsonResponse(res);
+}
+
+export async function createSkill({ name, description, content, contexts }) {
   const res = await api('/api/skills/create', {
     method: 'POST',
     headers: JSON_HEADERS,
-    body: JSON.stringify({ name, description, content, scope, projectDir, contexts })
+    body: JSON.stringify({ name, description, content, contexts })
   });
   return readJsonResponse(res);
 }
 
-export async function installSkill({ source, scope, projectDir, contexts }) {
+export async function previewSkillSource(source) {
+  const res = await api('/api/skills/preview', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ source })
+  });
+  return readJsonResponse(res);
+}
+
+export async function installSkill({ source, contexts, includeHooks = false, skillNames = null }) {
   const res = await api('/api/skills/install', {
     method: 'POST',
     headers: JSON_HEADERS,
-    body: JSON.stringify({ source, scope, projectDir, contexts })
+    body: JSON.stringify({ source, contexts, includeHooks, skillNames })
   });
   return readJsonResponse(res);
 }
 
-export async function updateSkillPackage({ name, projectDir }) {
+export async function previewSkillPackageUpdate({ name }) {
+  const res = await api('/api/skills/update/preview', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ name })
+  });
+  return readJsonResponse(res);
+}
+
+export async function updateSkillPackage({
+  name,
+  skillNames = null,
+  includeHooks,
+  defaultContexts,
+}) {
   const res = await api('/api/skills/update', {
     method: 'POST',
     headers: JSON_HEADERS,
-    body: JSON.stringify({ name, projectDir })
+    body: JSON.stringify({ name, skillNames, includeHooks, defaultContexts })
   });
   return readJsonResponse(res);
 }
 
-export async function updateSkillContent(name, content, projectDir) {
+export async function updateSkillContent(name, content) {
   const res = await api(`/api/skills/${encodeURIComponent(name)}/content`, {
     method: 'PUT',
     headers: JSON_HEADERS,
-    body: JSON.stringify({ content, projectDir })
+    body: JSON.stringify({ content })
   });
   return res.json();
 }
 
-export async function updateSkillMetadata(name, metadata, projectDir) {
+export async function updateSkillMetadata(name, metadata) {
   const res = await api(`/api/skills/${encodeURIComponent(name)}/metadata`, {
     method: 'PUT',
     headers: JSON_HEADERS,
-    body: JSON.stringify({ ...(metadata || {}), projectDir })
+    body: JSON.stringify(metadata || {})
   });
   return res.json();
 }
 
-export async function deleteSkill(name, projectDir, projectDirs = []) {
-  const params = new URLSearchParams();
-  if (projectDir) params.set('projectDir', projectDir);
-  if (projectDirs.length > 0) params.set('projects', JSON.stringify(projectDirs));
-  const query = params.toString();
-  const res = await api(`/api/skills/${encodeURIComponent(name)}${query ? `?${query}` : ''}`, {
+export async function deleteSkill(name) {
+  const res = await api(`/api/skills/${encodeURIComponent(name)}`, {
     method: 'DELETE'
   });
   return res.json();
 }
 
-export async function toggleSkill(name, enabled, projectDir) {
+export async function toggleSkill(name, enabled) {
   const res = await api(`/api/skills/${encodeURIComponent(name)}/toggle`, {
     method: 'POST',
     headers: JSON_HEADERS,
-    body: JSON.stringify({ enabled, projectDir })
+    body: JSON.stringify({ enabled })
   });
   return res.json();
+}
+
+export async function fetchSkillHooks(name) {
+  const res = await api(`/api/skills/${encodeURIComponent(name)}/hooks`);
+  return readJsonResponse(res);
+}
+
+export async function updateSkillHooks(name, hooks) {
+  const res = await api(`/api/skills/${encodeURIComponent(name)}/hooks`, {
+    method: 'PUT',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ hooks })
+  });
+  return readJsonResponse(res);
+}
+
+export async function fetchWorkspaceHooks(scope = 'global') {
+  const params = new URLSearchParams({ scope });
+  const res = await api(`/api/hooks?${params.toString()}`);
+  return readJsonResponse(res);
+}
+
+export async function updateWorkspaceHooks(scope = 'global', hooks = {}) {
+  const res = await api('/api/hooks', {
+    method: 'PUT',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ scope, hooks })
+  });
+  return readJsonResponse(res);
+}
+
+export async function fetchHookProfiles() {
+  const res = await api('/api/hook-profiles');
+  return readJsonResponse(res);
+}
+
+export async function createHookProfile(profile) {
+  const res = await api('/api/hook-profiles', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify(profile || {}),
+  });
+  return readJsonResponse(res);
+}
+
+export async function updateHookProfile(profile) {
+  const res = await api('/api/hook-profiles', {
+    method: 'PUT',
+    headers: JSON_HEADERS,
+    body: JSON.stringify(profile || {}),
+  });
+  return readJsonResponse(res);
+}
+
+export async function deleteHookProfile(profile) {
+  const res = await api('/api/hook-profiles', {
+    method: 'DELETE',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({
+      id: profile?.id,
+      scope: profile?.scope,
+      kind: profile?.kind,
+      activation: profile?.activation,
+      skillName: profile?.skillName,
+      projectDir: profile?.projectDir,
+    }),
+  });
+  return readJsonResponse(res);
 }
 
 // ── Memory ──
@@ -491,6 +656,206 @@ export async function runInboxDream(scope = 'all') {
   return res.json();
 }
 
+// ── Scrapbook ──
+export async function fetchScrapbookEntries(query = '') {
+  const params = new URLSearchParams();
+  if (String(query || '').trim()) params.set('q', String(query).trim());
+  const queryString = params.toString();
+  const res = await api(`/api/scrapbook/entries${queryString ? `?${queryString}` : ''}`);
+  return res.json();
+}
+
+export async function createManualScrapbookEntry(payload) {
+  const res = await api('/api/scrapbook/entries/manual', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify(payload || {}),
+  });
+  return res.json();
+}
+
+export async function createUrlScrapbookEntry(payload) {
+  const res = await api('/api/scrapbook/entries/url', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify(payload || {}),
+  });
+  return res.json();
+}
+
+export async function createMultiSourceScrapbookEntry({
+  title = '',
+  urls = [],
+  contentText = '',
+  files = [],
+} = {}) {
+  const form = new FormData();
+  form.set('title', title);
+  form.set('contentText', contentText);
+  for (const url of urls) form.append('urls', url);
+  for (const file of files) form.append('files', file);
+  const res = await api('/api/scrapbook/entries/notebook', {
+    method: 'POST',
+    body: form,
+  });
+  return res.json();
+}
+
+export async function createChatAnswerScrapbookEntry(payload) {
+  const res = await api('/api/scrapbook/entries/chat-answer', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify(payload || {}),
+  });
+  return res.json();
+}
+
+export async function addScrapbookSource(entryId, payload) {
+  const res = await api(`/api/scrapbook/entries/${encodeURIComponent(entryId)}/sources`, {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify(payload || {}),
+  });
+  return res.json();
+}
+
+export async function uploadScrapbookSources(entryId, files = []) {
+  const form = new FormData();
+  for (const file of files) form.append('files', file);
+  const res = await api(`/api/scrapbook/entries/${encodeURIComponent(entryId)}/sources/upload`, {
+    method: 'POST',
+    body: form,
+  });
+  return res.json();
+}
+
+export async function setScrapbookSourceSelection(entryId, selectedSourceIds) {
+  const res = await api(`/api/scrapbook/entries/${encodeURIComponent(entryId)}/sources/selection`, {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ selectedSourceIds }),
+  });
+  return res.json();
+}
+
+export async function removeScrapbookSource(entryId, sourceId) {
+  const res = await api(
+    `/api/scrapbook/entries/${encodeURIComponent(entryId)}/sources/${encodeURIComponent(sourceId)}`,
+    { method: 'DELETE' },
+  );
+  return res.json();
+}
+
+export async function generateScrapbookArtifact(entryId, kind) {
+  const res = await api(
+    `/api/scrapbook/entries/${encodeURIComponent(entryId)}/artifacts/${encodeURIComponent(kind)}`,
+    { method: 'POST' },
+  );
+  return res.json();
+}
+
+export async function fetchScrapbookEntry(entryId) {
+  const res = await api(`/api/scrapbook/entries/${encodeURIComponent(entryId)}`);
+  return res.json();
+}
+
+export async function deleteScrapbookEntry(entryId) {
+  const res = await api(`/api/scrapbook/entries/${encodeURIComponent(entryId)}`, {
+    method: 'DELETE',
+  });
+  return res.json();
+}
+
+export async function summarizeScrapbookEntry(entryId) {
+  const res = await api(`/api/scrapbook/entries/${encodeURIComponent(entryId)}/summarize`, {
+    method: 'POST',
+  });
+  return res.json();
+}
+
+export async function fetchScrapbookSummaryJob(jobId) {
+  const res = await api(`/api/scrapbook/summary-jobs/${encodeURIComponent(jobId)}`);
+  return res.json();
+}
+
+export function openScrapbookSummaryJobStream(jobId) {
+  return new EventSource(`/api/scrapbook/summary-jobs/${encodeURIComponent(jobId)}/stream`);
+}
+
+export async function buildScrapbookAskPayload(entryId) {
+  const res = await api(`/api/scrapbook/entries/${encodeURIComponent(entryId)}/ask-payload`, {
+    method: 'POST',
+  });
+  return res.json();
+}
+
+// ── Deep Research ──
+export async function fetchResearchSessions(query = '', { signal } = {}) {
+  const q = String(query || '').trim();
+  const queryString = q ? `q=${encodeURIComponent(q)}` : '';
+  const res = await api(`/api/research/sessions${queryString ? `?${queryString}` : ''}`, { signal });
+  return readJsonOrThrow(res);
+}
+
+export async function fetchResearchSession(sessionId, { signal } = {}) {
+  const res = await api(`/api/research/sessions/${encodeURIComponent(sessionId)}`, { signal });
+  return readJsonOrThrow(res);
+}
+
+export async function createResearchSession(payload = {}) {
+  const res = await api('/api/research/sessions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  return readJsonOrThrow(res);
+}
+
+export async function updateResearchPlan(sessionId, plan) {
+  const res = await api(`/api/research/sessions/${encodeURIComponent(sessionId)}/plan`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ plan }),
+  });
+  return readJsonOrThrow(res);
+}
+
+export async function confirmResearchPlan(sessionId, plan) {
+  const res = await api(`/api/research/sessions/${encodeURIComponent(sessionId)}/confirm-plan`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(plan ? { plan } : {}),
+  });
+  return readJsonOrThrow(res);
+}
+
+export async function startResearchRun(sessionId, payload = {}) {
+  const res = await api(`/api/research/sessions/${encodeURIComponent(sessionId)}/run`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  return readJsonOrThrow(res);
+}
+
+export async function abortResearchRun(sessionId) {
+  const res = await api(`/api/research/sessions/${encodeURIComponent(sessionId)}/abort`, {
+    method: 'POST',
+  });
+  return readJsonOrThrow(res);
+}
+
+export async function deleteResearchSession(sessionId) {
+  const res = await api(`/api/research/sessions/${encodeURIComponent(sessionId)}`, {
+    method: 'DELETE',
+  });
+  return readJsonOrThrow(res);
+}
+
+export function openResearchRunStream(sessionId) {
+  return new EventSource(`/api/research/sessions/${encodeURIComponent(sessionId)}/stream`);
+}
+
 // ── Souls ──
 export async function fetchSouls() {
   const res = await api('/api/souls');
@@ -502,11 +867,11 @@ export async function fetchSoulContent(name) {
   return res.json();
 }
 
-export async function createSoul({ name, content }) {
+export async function createSoul({ name, content, category = "daily" }) {
   const res = await api('/api/souls/create', {
     method: 'POST',
     headers: JSON_HEADERS,
-    body: JSON.stringify({ name, content })
+    body: JSON.stringify({ name, content, category })
   });
   return res.json();
 }
@@ -527,11 +892,11 @@ export async function deleteSoul(name) {
   return res.json();
 }
 
-export async function activateSoul(name) {
+export async function activateSoul(name, category) {
   const res = await api('/api/souls/activate', {
     method: 'POST',
     headers: JSON_HEADERS,
-    body: JSON.stringify({ name })
+    body: JSON.stringify({ name, category })
   });
   return res.json();
 }
@@ -546,9 +911,25 @@ export async function fetchCodeWikiReports(project = '') {
   return res.json();
 }
 
-export async function fetchCodeWikiSymbolGraph(project = '') {
-  const res = await api(`/api/codewiki/symbol-graph${codeWikiProjectQuery(project)}`);
+export async function fetchCodeWikiSymbolGraph(project = '', options = {}) {
+  const params = new URLSearchParams(project ? { project } : {});
+  for (const [key, value] of Object.entries(options || {})) {
+    if (value === undefined || value === null || value === '') continue;
+    if (Array.isArray(value)) value.forEach((item) => params.append(key, item));
+    else params.set(key, String(value));
+  }
+  const query = params.toString();
+  const res = await api(`/api/codewiki/symbol-graph${query ? `?${query}` : ''}`);
   return res.json();
+}
+
+export async function openWorkspaceFile(path, action = 'open') {
+  const res = await api('/api/files/open', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ path, action }),
+  });
+  return readJsonResponse(res);
 }
 
 export async function fetchCodeWikiReportText(file, project = '') {
@@ -606,4 +987,85 @@ export async function streamCodeWikiAsk({ question, reportFile = '', project = '
 export async function deleteCodeWikiReport(file, project = '') {
   const res = await api(`/api/codewiki/report/${encodeURIComponent(file)}${codeWikiProjectQuery(project)}`, { method: 'DELETE' });
   return res.json();
+}
+
+export function openTerminalStream(sessionId) {
+  return new EventSource(withSessionQuery('/api/terminal/stream', sessionId));
+}
+
+export async function fetchTerminalSnapshot(sessionId) {
+  const res = await api(withSessionQuery('/api/terminal', sessionId));
+  return readJsonResponse(res);
+}
+
+export async function runTerminalCommand(sessionId, command) {
+  const res = await api('/api/terminal/run', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ sessionId, command }),
+  });
+  return readJsonResponse(res);
+}
+
+export async function stopTerminalCommand(sessionId) {
+  const res = await api('/api/terminal/stop', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ sessionId }),
+  });
+  return readJsonResponse(res);
+}
+
+export async function writeTerminalInput(sessionId, data) {
+  const res = await api('/api/terminal/input', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ sessionId, data }),
+  });
+  return readJsonResponse(res);
+}
+
+export async function resizeTerminalSession(sessionId, cols, rows) {
+  const res = await api('/api/terminal/resize', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ sessionId, cols, rows }),
+  });
+  return readJsonResponse(res);
+}
+
+export async function clearTerminalSession(sessionId) {
+  const res = await api('/api/terminal/clear', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ sessionId }),
+  });
+  return readJsonResponse(res);
+}
+
+export async function restartTerminalSession(sessionId) {
+  const res = await api('/api/terminal/restart', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ sessionId }),
+  });
+  return readJsonResponse(res);
+}
+
+export async function fetchWorkspaceTree(sessionId, relativePath = '') {
+  const params = new URLSearchParams();
+  if (sessionId) params.set('sessionId', sessionId);
+  const normalized = String(relativePath || '').trim();
+  if (normalized) params.set('path', normalized);
+  const query = params.toString();
+  const res = await api(query ? `/api/workspace/tree?${query}` : '/api/workspace/tree');
+  return readJsonResponse(res);
+}
+
+export async function fetchWorkspacePreview(sessionId, relativePath = '') {
+  const params = new URLSearchParams();
+  if (sessionId) params.set('sessionId', sessionId);
+  params.set('path', String(relativePath || '').trim());
+  const res = await api(`/api/workspace/preview?${params.toString()}`);
+  return readJsonResponse(res);
 }

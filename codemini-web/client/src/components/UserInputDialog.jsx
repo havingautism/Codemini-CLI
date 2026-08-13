@@ -140,6 +140,8 @@ export function UserInputDialog({ request, open, onRespond }) {
   const questions = useMemo(() => request?.questions || [], [request]);
   const [answers, setAnswers] = useState(() => initialAnswers(questions));
   const [otherAnswers, setOtherAnswers] = useState({});
+  const [customResponseOpen, setCustomResponseOpen] = useState(false);
+  const [customResponse, setCustomResponse] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const submittingRef = useRef(false);
 
@@ -147,6 +149,8 @@ export function UserInputDialog({ request, open, onRespond }) {
     if (!request?.id) return;
     setAnswers(initialAnswers(questions));
     setOtherAnswers({});
+    setCustomResponseOpen(false);
+    setCustomResponse('');
     submittingRef.current = false;
     setSubmitting(false);
   }, [request?.id, questions]);
@@ -171,13 +175,14 @@ export function UserInputDialog({ request, open, onRespond }) {
     return Array.isArray(value) ? value.length === 0 : !value;
   });
 
-  const respond = (status) => {
+  const respond = (status, response = {}) => {
     if (submittingRef.current) return;
     submittingRef.current = true;
     setSubmitting(true);
     onRespond(request.id, {
       status,
       answers: status === 'skipped' ? {} : normalizedAnswers(),
+      ...response,
     });
   };
 
@@ -189,7 +194,14 @@ export function UserInputDialog({ request, open, onRespond }) {
         if (!next && request?.id && !submittingRef.current) respond('skipped');
       }}
     >
-      <DialogContent className="max-h-[86vh] grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden sm:max-w-xl">
+      <DialogContent
+        onEscapeKeyDown={(event) => {
+          if (!customResponseOpen) return;
+          event.preventDefault();
+          setCustomResponseOpen(false);
+        }}
+        className="max-h-[86vh] grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden sm:max-w-xl"
+      >
         <DialogHeader>
           <DialogTitle>{request.title || t('userInputTitle')}</DialogTitle>
           {request.description && <p className="pt-1 text-[13px] leading-5 text-(--text-secondary)">{request.description}</p>}
@@ -206,14 +218,50 @@ export function UserInputDialog({ request, open, onRespond }) {
             />
           ))}
         </FieldGroup>
-        <DialogFooter className="gap-2">
-          <Button variant="outline" disabled={submitting} onClick={() => respond('skipped')}>
-            {t('userInputSkip')}
-          </Button>
-          <Button disabled={missingRequired || submitting} onClick={() => respond('submitted')}>
-            {request.submit_label || t('userInputSubmit')}
-          </Button>
-        </DialogFooter>
+        <div className="flex flex-col gap-3">
+          {customResponseOpen && (
+            <div className="rounded-lg border border-(--border-default) bg-(--bg-secondary) p-3">
+              <label htmlFor="user-input-custom-response" className="mb-2 block text-[12px] font-medium text-(--text-secondary)">
+                {t('userInputCustomPrompt')}
+              </label>
+              <Textarea
+                id="user-input-custom-response"
+                autoFocus
+                value={customResponse}
+                placeholder={t('userInputCustomPlaceholder')}
+                onChange={(event) => setCustomResponse(event.target.value)}
+                className="min-h-20 bg-(--bg-primary)"
+              />
+            </div>
+          )}
+          <DialogFooter className="gap-2">
+            {customResponseOpen ? (
+              <>
+                <Button variant="ghost" disabled={submitting} onClick={() => setCustomResponseOpen(false)}>
+                  {t('cancel')}
+                </Button>
+                <Button
+                  disabled={submitting || !customResponse.trim()}
+                  onClick={() => respond('submitted', { custom_response: customResponse.trim(), answers: {} })}
+                >
+                  {t('userInputCustomSubmit')}
+                </Button>
+              </>
+            ) : (
+              <>
+                <Button variant="outline" disabled={submitting} onClick={() => respond('skipped')}>
+                  {t('userInputSkip')}
+                </Button>
+                <Button variant="ghost" disabled={submitting} onClick={() => setCustomResponseOpen(true)}>
+                  {t('userInputCustom')}
+                </Button>
+                <Button disabled={missingRequired || submitting} onClick={() => respond('submitted')}>
+                  {request.submit_label || t('userInputSubmit')}
+                </Button>
+              </>
+            )}
+          </DialogFooter>
+        </div>
       </DialogContent>
     </Dialog>
   );

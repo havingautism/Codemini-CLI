@@ -2,9 +2,9 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { Parser, Language, Query } from 'web-tree-sitter';
+import { LRUCache } from 'lru-cache';
 import { LANGUAGE_ALIASES, EXTENSION_LANGUAGE_MAP, TOOL_SKIP_DIRS as SKIP_DIRS } from './constants.js';
 import { sha256Prefixed as sha256 } from './crypto-utils.js';
-import { BoundedCache } from './bounded-cache.js';
 import { globFilesUnder } from './workspace-glob.js';
 
 const require = createRequire(import.meta.url);
@@ -84,7 +84,7 @@ const parserInitPromise = Parser.init({
     return scriptName === 'web-tree-sitter.wasm' ? TREE_SITTER_WASM_PATH : scriptName;
   }
 });
-const languageCache = new BoundedCache({ maxSize: 16, ttlMs: 60 * 60 * 1000 });
+const languageCache = new LRUCache({ max: 16, ttl: 60 * 60 * 1000 });
 
 function clipText(text, maxLen = 220) {
   const normalized = String(text || '').replace(/\s+/g, ' ').trim();
@@ -341,6 +341,118 @@ export async function findEnclosingSymbol(content, filePath, line) {
   } finally {
     deleteParsed({ tree, parser });
   }
+}
+
+function normalizeIndexPath(value = '') {
+  return String(value || '').replace(/\\/g, '/').replace(/^\.\/+/, '');
+}
+
+const INDEX_DEFINITION_TYPES = new Map([
+  ['class_declaration', 'class'],
+  ['class_definition', 'class'],
+  ['function_declaration', 'function'],
+  ['function_definition', 'function'],
+  ['method_definition', 'method'],
+  ['method_declaration', 'method'],
+  ['function_item', 'function'],
+  ['function_definition_item', 'function'],
+]);
+const INDEX_CALL_TYPES = new Set([
+  'call_expression',
+  'call',
+  'function_call_expression',
+  'invocation_expression',
+]);
+const INDEX_FUNCTION_VALUE_TYPES = new Set([
+  'arrow_function',
+  'function_expression',
+  'function',
+  'lambda',
+]);
+
+function astCallName(node) {
+  const target =
+    node.childForFieldName?.('function') ||
+    node.childForFieldName?.('name') ||
+    node.namedChildren?.[0];
+  return clipText(target?.text || '', 120);
+}
+
+/**
+ * Extract deterministic symbol and call facts for the project knowledge graph.
+ * Returns null for unsupported or unparsable files so callers can keep a
+ * conservative fallback extractor.
+ */
+export async function extractAstIndexFacts(content, filePath) {
+  const ext = path.extname(String(filePath || '')).toLowerCase();
+  const language = EXTENSION_LANGUAGE_MAP[ext];
+  if (!language || !LANGUAGE_WASM_PATHS[language]) return null;
+  let parsed = null;
+  try {
+    parsed = await parseContent(content, language);
+    const definitions = [];
+    const visit = (node, owner = '') => {
+      const valueNode = node.childForFieldName?.('value');
+      const symbolType =
+        INDEX_DEFINITION_TYPES.get(node.type) ||
+        (node.type === 'variable_declarator' && INDEX_FUNCTION_VALUE_TYPES.has(valueNode?.type)
+          ? 'function'
+          : null);
+      let nextOwner = owner;
+      if (symbolType) {
+        const nameNode = node.childForFieldName?.('name');
+        const rawName = String(nameNode?.text || '').trim();
+        if (rawName) {
+          const name = owner && symbolType !== 'class' ? `${owner}.${rawName}` : rawName;
+          const calls = [];
+          const collectCalls = (candidate) => {
+            if (candidate !== node && INDEX_DEFINITION_TYPES.has(candidate.type)) return;
+            if (INDEX_CALL_TYPES.has(candidate.type)) {
+              const call = astCallName(candidate);
+              if (call) calls.push(call);
+            }
+            for (const child of candidate.namedChildren || []) collectCalls(child);
+          };
+          collectCalls(node);
+          const firstBody =
+            node.childForFieldName?.('body') ||
+            valueNode?.childForFieldName?.('body');
+          const signatureEnd = firstBody?.startIndex ?? Math.min(node.endIndex, node.startIndex + 300);
+          const sourceLocation = `${node.startPosition.row + 1}:${node.startPosition.column + 1}`;
+          definitions.push({
+            symbol_id: `${normalizeIndexPath(filePath)}#${name}@${sourceLocation}`,
+            name,
+            type: symbolType,
+            file: normalizeIndexPath(filePath),
+            range: {
+              start_line: node.startPosition.row + 1,
+              end_line: node.endPosition.row + 1,
+            },
+            signature: clipText(content.slice(node.startIndex, signatureEnd), 220),
+            calls: uniqueStrings(calls, 64),
+            called_by: [],
+            imports: [],
+            writes: [],
+            emits: [],
+            used_by: [],
+            extracted_by: 'tree-sitter',
+          });
+          if (symbolType === 'class') nextOwner = rawName;
+        }
+      }
+      for (const child of node.namedChildren || []) visit(child, nextOwner);
+    };
+    visit(parsed.tree.rootNode);
+    return { language, symbols: definitions.slice(0, 400) };
+  } catch {
+    return null;
+  } finally {
+    deleteParsed(parsed);
+  }
+}
+
+function uniqueStrings(values, max) {
+  return [...new Set(values.filter(Boolean))].slice(0, max);
 }
 
 export async function queryAst(root, args) {

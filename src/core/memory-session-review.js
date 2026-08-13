@@ -6,7 +6,8 @@ import {
   assertSafeMemoryContent,
   normalizeMemoryKind,
   normalizeMemoryScope,
-  normalizeMemoryText
+  normalizeMemoryText,
+  buildDreamPromotionGraphBlock
 } from './memory-policy.js';
 import {
   claimSessionMemoryReview,
@@ -14,6 +15,7 @@ import {
   failSessionMemoryReview
 } from './memory-review-store.js';
 import { appendStructuredOutputLanguageRule } from './reply-language.js';
+import { parseModelJsonObject } from './model-json.js';
 
 export const SESSION_MEMORY_REVIEWER_VERSION = 1;
 
@@ -36,7 +38,10 @@ Discard:
 Respond with JSON only:
 {"candidates":[{"scope":"user|project|global","kind":"preference|convention|lesson|note","content":"durable statement","summary":"under 80 chars","semantic_key":"stable namespace key","decision_state":"explicit|accepted|implemented|verified|repeated|proposed|brainstormed","durable_score":0,"confidence":0.0,"evidence_indices":[0],"reason":"short rationale"}]}
 
-Use durable_score 0-10. A candidate needs at least 5. Project ideas must be accepted, implemented, verified, or repeated. Global knowledge needs explicit cross-project/environment evidence. If uncertain, return an empty candidates array.`;
+Use durable_score 0-10. A candidate needs at least 5. Project ideas must be accepted, implemented, verified, or repeated. Global knowledge needs explicit cross-project/environment evidence. If uncertain, return an empty candidates array.
+
+${buildDreamPromotionGraphBlock()}
+This reviewer only nominates into the Dream inbox leaf — never promote to durable memory here.`;
 
 const TEMPORARY_PATTERN =
   /(?:这次|本次|当前任务|这个任务|这一轮|暂时|先不要|先试|目前|今天|稍后|当前分支|当前\s*pr|for this task|this time|for now|temporarily|current branch|current pr)/i;
@@ -94,13 +99,8 @@ function compactConversation(messages, maxChars) {
 }
 
 function parseCandidates(text) {
-  try {
-    const raw = String(text || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed?.candidates) ? parsed.candidates : null;
-  } catch {
-    return null;
-  }
+  const parsed = parseModelJsonObject(text);
+  return Array.isArray(parsed?.candidates) ? parsed.candidates : null;
 }
 
 export function normalizeSessionMemoryCandidate(candidate, sourceMessages = []) {

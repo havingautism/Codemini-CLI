@@ -1,6 +1,8 @@
 import fs from "node:fs/promises";
-import { realpathSync } from "node:fs";
+import { createReadStream, realpathSync } from "node:fs";
+import { createInterface } from "node:readline";
 import path from "node:path";
+import os from "node:os";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { rgPath } from "@vscode/ripgrep";
@@ -12,10 +14,19 @@ import {
   isDangerousCommand,
   isLikelyLongRunningCommand,
   resolveShell,
+  resolveSandboxShell,
   runShellCommand,
   terminateChild,
 } from "./shell.js";
 import { evaluateCommandPolicy } from "./command-policy.js";
+import {
+  assertSandboxWriteAllowed,
+  isOsSandbox,
+  isVmSandbox,
+  resolveSandboxPolicy,
+  validateSandboxEscalationArgs,
+} from "./sandbox-policy.js";
+import { resolveShellContext } from "./shell-profile.js";
 import {
   findEnclosingSymbol,
   queryAst,
@@ -27,8 +38,10 @@ import {
   initializeProjectIndex,
   queryProjectIndex,
   refreshIndexedFile,
+  refreshIndexedFiles,
 } from "./project-index.js";
-import { checkReadDedup } from "./tool-result-store.js";
+import { queryProjectKnowledgeGraph } from "./project-knowledge-graph.js";
+import { createToolResultStore } from "./tool-result-store.js";
 import {
   TOOL_SKIP_DIRS as SKIP_DIRS,
   TEXT_EXTENSIONS,
@@ -55,15 +68,21 @@ import { inferMemoryScope, normalizeMemoryKind } from "./memory-policy.js";
 import { getReplyLanguageName } from "./reply-language.js";
 import { normalizePlanState } from "./plan-state.js";
 import { normalizeTodos } from "./todo-state.js";
-import { normalizeAssumptionItems } from "./tool-args-helpers.js";
+import {
+  normalizeAssumptionItems,
+  normalizeFilePathValue,
+  parseInlineRangePath,
+} from "./tool-args-helpers.js";
 import { createFffAdapter } from "./fff-adapter.js";
 import {
   buildSearchDeferredEntries,
   buildSearchFormatters,
   buildSearchHandlers
 } from "./provider/search-tool-registry.js";
+import { getMcpToolBundle } from "./mcp-client.js";
 import {
   isSkillIndexEligible,
+  isSkillModelInvocationDisabled,
   loadIndexedSkills,
   renderCommandPrompt,
 } from "./command-loader.js";
@@ -76,21 +95,25 @@ import {
   summarizeRunOutput,
 } from "./tool-output.js";
 import {
-  normalizeFilePathValue,
   normalizePathArgs,
-  parseInlineRangePath,
   normalizePatternArgs,
   normalizeReadArgs,
   normalizeWebFetchArgs,
   normalizeWebSearchArgs,
   normalizeWriteArgs,
-} from "./tool-args.js";
+} from "./tool-schemas.js";
+import {
+  atomicWriteUtf8,
+  createStagedWriteStore,
+} from "./staged-write.js";
 const BACKGROUND_TASK_RECENT_OUTPUT_LIMIT = 80;
 const BACKGROUND_TASK_POLL_MS = 150;
 const MAX_AST_ENCLOSING_BYTES = 300_000;
 const MAX_AST_ENCLOSING_LINES = 5_000;
 const SKILL_ALIASES = new Map();
 const RUN_COMMAND_SAFE_MODE_APPROVED = Symbol("runCommandSafeModeApproved");
+const OUTSIDE_WORKSPACE_MUTATION_APPROVED = Symbol("outsideWorkspaceMutationApproved");
+const SANDBOX_ESCALATION_APPROVED = Symbol("sandboxEscalationApproved");
 const backgroundTaskRegistry = new Map();
 let backgroundTaskCounter = 0;
 let backgroundTaskLogCursorCounter = 0;
@@ -106,6 +129,46 @@ export function markRunCommandSafeModeApproved(args = {}) {
 
 export function hasRunCommandSafeModeApproval(args = {}) {
   return Boolean(args?.[RUN_COMMAND_SAFE_MODE_APPROVED]);
+}
+
+export function markSandboxEscalationApproved(args = {}) {
+  const next = { ...(args && typeof args === "object" ? args : {}) };
+  Object.defineProperty(next, SANDBOX_ESCALATION_APPROVED, {
+    value: true,
+    enumerable: false,
+  });
+  return next;
+}
+
+export function hasSandboxEscalationApproval(args = {}) {
+  return Boolean(args?.[SANDBOX_ESCALATION_APPROVED]);
+}
+
+export function markOutsideWorkspaceMutationApproved(args = {}, approval = {}) {
+  const next = { ...(args && typeof args === "object" ? args : {}) };
+  const paths = Array.isArray(approval?.paths)
+    ? approval.paths.map((item) => String(item || "").trim()).filter(Boolean).map((item) => path.resolve(item))
+    : [];
+  Object.defineProperty(next, OUTSIDE_WORKSPACE_MUTATION_APPROVED, {
+    value: { paths: [...new Set(paths)] },
+    enumerable: false,
+  });
+  return next;
+}
+
+function configWithApprovedMutationPaths(config = {}, args = {}) {
+  const approved = args?.[OUTSIDE_WORKSPACE_MUTATION_APPROVED];
+  if (!Array.isArray(approved?.paths) || approved.paths.length === 0) return config;
+  return {
+    ...config,
+    policy: {
+      ...(config?.policy || {}),
+      allowed_paths: [
+        ...(Array.isArray(config?.policy?.allowed_paths) ? config.policy.allowed_paths : []),
+        ...approved.paths,
+      ],
+    },
+  };
 }
 
 async function realpathIfExists(targetPath) {
@@ -136,10 +199,21 @@ async function getAllowedRealRoots(root, config = {}) {
     .filter(Boolean);
   const out = [];
   for (const item of roots) {
-    try {
-      out.push(await fs.realpath(path.resolve(item)));
-    } catch {
+    const absolute = path.resolve(item);
+    const existing = await realpathIfExists(absolute);
+    if (existing) {
+      out.push(existing);
       continue;
+    }
+    let probe = path.dirname(absolute);
+    while (!(await realpathIfExists(probe))) {
+      const parent = path.dirname(probe);
+      if (parent === probe) break;
+      probe = parent;
+    }
+    const resolvedProbe = await realpathIfExists(probe);
+    if (resolvedProbe) {
+      out.push(path.resolve(resolvedProbe, path.relative(probe, absolute)));
     }
   }
   return out;
@@ -195,7 +269,12 @@ async function resolveInWorkspace(root, targetPath = ".", config = {}) {
   return absTarget;
 }
 
-async function getBackgroundTasksDir(root) {
+async function getBackgroundTasksDir(root, config = {}) {
+  const sandbox = resolveSandboxPolicy({ config, cwd: root });
+  if (sandbox.enabled && sandbox.mode === "read-only") {
+    const workspaceKey = createHash("sha256").update(path.resolve(root)).digest("hex").slice(0, 12);
+    return path.join(os.tmpdir(), "codemini-background-tasks", workspaceKey);
+  }
   return path.join(await resolveInWorkspace(root, ".codemini"), "tasks");
 }
 
@@ -322,7 +401,6 @@ function normalizeSkillToolName(value) {
 
 function skillScopeFromSource(source = "") {
   if (source === "bundled-skill") return "builtin";
-  if (source === "project-skill") return "project";
   if (source === "global-skill" || source === "registry-skill") return "global";
   return source || "unknown";
 }
@@ -342,6 +420,7 @@ function summarizeIndexedSkill(command) {
     packageSource:
       command.metadata?.packageSource || command.metadata?.source || "",
     enabled: command.metadata?.enabled !== false,
+    disableModelInvocation: isSkillModelInvocationDisabled(command),
   };
 }
 
@@ -575,7 +654,7 @@ async function buildPlaywrightLaunchEnv() {
   };
 }
 
-async function webFetchPage(args = {}) {
+export async function webFetchPage(args = {}) {
   const normalizedArgs = normalizeWebFetchArgs(args);
   const url = normalizeWebUrl(normalizedArgs.url);
   const timeoutMs = clampNumber(
@@ -677,7 +756,8 @@ async function webFetchPage(args = {}) {
   }
 }
 
-async function webSearchQuery(config, args = {}) {
+/** Shared HTTP search primitive (chat + research). Product tool names stay separate. */
+export async function webSearchQuery(config, args = {}) {
   if (config?.web?.search_enabled === false) {
     throw new Error(
       "web_search is disabled by config. Set web.search_enabled=true to enable network search.",
@@ -1416,7 +1496,7 @@ async function getFileState(root, relativePath, config = {}) {
   };
 }
 
-async function readFile(root, args, config = {}) {
+async function readFile(root, args, config = {}, toolResultStore = null) {
   const normalizedArgs = normalizeReadArgs(args);
   const target = await resolveInWorkspace(root, normalizedArgs?.path, config);
   const stat = await fs.stat(target);
@@ -1477,7 +1557,7 @@ async function readFile(root, args, config = {}) {
   }
 
   // Read deduplication: if same path+range+mtime was read before, return a short stub
-  const isDuplicate = checkReadDedup(
+  const isDuplicate = toolResultStore?.checkReadDedup(
     target,
     startLine,
     endLine,
@@ -1520,6 +1600,78 @@ async function readFile(root, args, config = {}) {
           enclosing_line: enclosing.start_line,
         }
       : {}),
+  };
+}
+
+async function writeTextFile(target, content, config = {}) {
+  if (config?.runtime?.atomic_file_mutations === true) {
+    return atomicWriteUtf8(target, content);
+  }
+  return fs.writeFile(target, content, "utf8");
+}
+
+async function readDshFile(root, args, config = {}) {
+  const normalizedArgs = normalizeReadArgs(args);
+  const relativePath = String(normalizedArgs?.path || "").trim();
+  if (!relativePath) throw new Error("file_path must be a non-empty string");
+  const offset = args?.offset === undefined ? 1 : Number(args.offset);
+  const limit = args?.limit === undefined ? 2000 : Number(args.limit);
+  if (!Number.isSafeInteger(offset) || offset < 1) {
+    throw new Error("offset must be a positive integer");
+  }
+  if (!Number.isSafeInteger(limit) || limit < 1) {
+    throw new Error("limit must be a positive integer");
+  }
+  if (limit > 2000) throw new Error("limit must be less than or equal to 2000");
+
+  const target = await resolveInWorkspace(root, relativePath, config);
+  let stat;
+  try {
+    stat = await fs.stat(target);
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      const notFound = new Error(`cannot read "${relativePath}": not found`);
+      notFound.code = "FS_NOT_FOUND";
+      throw notFound;
+    }
+    throw error;
+  }
+  if (!stat.isFile()) {
+    const notFile = new Error(`cannot read "${relativePath}": not a regular file`);
+    notFile.code = "FS_NOT_REGULAR_FILE";
+    throw notFile;
+  }
+
+  const lines = [];
+  let totalLines = 0;
+  let outputBytes = 0;
+  let capped = false;
+  const input = createReadStream(target, { encoding: "utf8" });
+  const reader = createInterface({ input, crlfDelay: Infinity });
+  for await (const rawLine of reader) {
+    totalLines += 1;
+    if (totalLines < offset || lines.length >= limit || capped) continue;
+    const text = rawLine.length > 2000
+      ? `${rawLine.slice(0, 2000)}... (line truncated to 2000 chars)`
+      : rawLine;
+    const nextBytes = Buffer.byteLength(`${totalLines}: ${text}\n`, "utf8");
+    if (outputBytes + nextBytes > 51200) {
+      capped = true;
+      continue;
+    }
+    outputBytes += nextBytes;
+    lines.push({ number: totalLines, text });
+  }
+  if (offset > Math.max(1, totalLines)) {
+    throw new Error(`offset ${offset} is out of range for "${relativePath}" (${totalLines} lines)`);
+  }
+  return {
+    path: relativePath,
+    phase: "dsh_content",
+    offset,
+    lines,
+    total_lines: totalLines,
+    capped,
   };
 }
 
@@ -1617,7 +1769,7 @@ async function writeAnyFile(root, args, config = {}) {
   }
   const nextContent = String(normalizedArgs.content ?? "");
   await fs.mkdir(path.dirname(target), { recursive: true });
-  await fs.writeFile(target, nextContent, "utf8");
+  await writeTextFile(target, nextContent, config);
   const beforeLines = splitLines(beforeContent);
   const afterLines = splitLines(nextContent);
   return {
@@ -1913,10 +2065,10 @@ async function deletePath(root, args, config = {}) {
   };
 }
 
-async function runCommand(root, config, args) {
+async function runCommand(root, config, args, context = {}) {
   const command = args?.command || "";
   if (!command.trim()) {
-    throw new Error("run requires command");
+    throw new Error("shell command is required");
   }
   if (
     !config.policy.allow_dangerous_commands &&
@@ -1938,8 +2090,17 @@ async function runCommand(root, config, args) {
     args?.background === true ||
     isLikelyLongRunningCommand(command);
 
+  const escalation = validateSandboxEscalationArgs(args, { config, cwd: root });
+  if (escalation && !hasSandboxEscalationApproval(args)) {
+    throw new Error("sandbox escalation requires explicit user approval");
+  }
+  const sandboxMode = escalation?.mode;
+
   if (shouldBackground) {
-    return startBackgroundTask(root, config, args);
+    return startBackgroundTask(root, config, {
+      ...args,
+      sandbox_mode: sandboxMode,
+    });
   }
 
   const result = await runShellCommand({
@@ -1952,12 +2113,23 @@ async function runCommand(root, config, args) {
         args?.timeoutMs ||
         config.shell.timeout_ms,
     ),
+    signal: context.signal,
+    config,
+    sandboxMode,
   });
   const payload = { ...result, command };
   const failureMessage = buildRunFailureMessage(payload);
   if (failureMessage) {
     payload.failed = true;
     payload.error = failureMessage;
+  }
+  if (payload?.sandbox?.denied) {
+    payload.error = [
+      payload.error,
+      `[sandbox: escalation available — retry with sandbox_permissions (workspace-write|danger-full-access) + justification, or set sandbox.mode in config]`,
+    ]
+      .filter(Boolean)
+      .join("\n");
   }
   return payload;
 }
@@ -2057,6 +2229,8 @@ function snapshotBackgroundTask(task, tail = 12) {
     exit_code: task.exitCode ?? undefined,
     signal: task.signal ?? undefined,
     duration_ms: Date.now() - task.startedAt,
+    shell: task.shell,
+    sandbox: task.sandbox,
   };
 }
 
@@ -2110,7 +2284,7 @@ function queueBackgroundTaskOutputWrite(task, chunk) {
 
 async function startBackgroundTask(root, config, args) {
   const command = String(args?.command || args?.cmd || "").trim();
-  if (!command) throw new Error("run requires command");
+  if (!command) throw new Error("shell command is required");
   if (
     !config.policy.allow_dangerous_commands &&
     isDangerousCommand(command, config.policy.blocked_command_patterns)
@@ -2135,23 +2309,60 @@ async function startBackgroundTask(root, config, args) {
   );
   const portProbe = Number(args?.port_probe || args?.portProbe || 0) || 0;
   const httpProbe = normalizeHttpProbe(args?.http_probe || args?.httpProbe);
-  const outputDir = await getBackgroundTasksDir(root);
+  let publishedPort = portProbe;
+  if (!publishedPort && httpProbe?.url) {
+    try {
+      const parsed = new URL(httpProbe.url);
+      publishedPort = Number(parsed.port || (parsed.protocol === "https:" ? 443 : 80)) || 0;
+    } catch {}
+  }
+  const outputDir = await getBackgroundTasksDir(root, config);
   await fs.mkdir(outputDir, { recursive: true });
   const outputFileAbs = path.join(outputDir, `${taskId}.log`);
   await fs.writeFile(outputFileAbs, "", "utf8");
 
+  let sandboxChild = null;
+  let activeSandboxPolicy = null;
+  {
+    const { prepareSandboxExecution, spawnPreparedSandbox } = await import("./sandbox-backend.js");
+    const prepared = await prepareSandboxExecution({
+      command,
+      config,
+      cwd: root,
+      mode: args?.sandbox_permissions || args?.sandbox_mode || args?.sandboxMode,
+      port: publishedPort,
+      binShell: resolveSandboxShell(config.shell.default),
+    });
+    if (prepared.wrapped) {
+      sandboxChild = spawnPreparedSandbox({
+        prepared,
+        shellSpec,
+        shellCommand: shellCommandForBackgroundTask(command, shellSpec),
+        cwd: root,
+      });
+      activeSandboxPolicy = prepared.policy;
+    }
+  }
+
+  const child = sandboxChild || spawn(
+        shellSpec.command,
+        [...shellSpec.args, shellCommandForBackgroundTask(command, shellSpec)],
+        {
+          cwd: root,
+          stdio: ["ignore", "pipe", "pipe"],
+        },
+      );
+
+  const vmSandbox = activeSandboxPolicy?.backend === "vm";
   const task = {
     taskId,
     command,
     cwd: root,
-    child: spawn(
-      shellSpec.command,
-      [...shellSpec.args, shellCommandForBackgroundTask(command, shellSpec)],
-      {
-        cwd: root,
-        stdio: ["ignore", "pipe", "pipe"],
-      },
-    ),
+    child,
+    shell: vmSandbox ? "bash" : config.shell.default,
+    sandbox: activeSandboxPolicy
+      ? { wrapped: true, mode: activeSandboxPolicy.mode, backend: activeSandboxPolicy.backend }
+      : { wrapped: false, mode: "danger-full-access" },
     startedAt: Date.now(),
     status: "starting",
     intentKind: classifyCommandIntent(command).kind,
@@ -2161,7 +2372,10 @@ async function startBackgroundTask(root, config, args) {
     portProbe,
     httpProbe,
     outputFileAbs,
-    outputFile: toWorkspaceRelative(root, outputFileAbs),
+    outputFile:
+      resolveSandboxPolicy({ config, cwd: root }).mode === "read-only"
+        ? normalizePath(outputFileAbs)
+        : toWorkspaceRelative(root, outputFileAbs),
     recentLogs: [],
     exitCode: null,
     signal: null,
@@ -2280,8 +2494,9 @@ function toRipgrepGlob(value) {
   return `**/*.${text.replace(/^\./, "")}`;
 }
 
-function buildRipgrepArgs(pattern, normalizedArgs, targetPath, maxResults) {
+function buildRipgrepArgs(pattern, normalizedArgs, targetPath, dshMode = false) {
   const args = [
+    ...(dshMode ? ["--no-config"] : []),
     "--json",
     "--line-number",
     "--column",
@@ -2292,9 +2507,13 @@ function buildRipgrepArgs(pattern, normalizedArgs, targetPath, maxResults) {
     "500",
     "--max-columns-preview",
   ];
-  if (!normalizedArgs?.regex) args.push("--fixed-strings");
-  if (!normalizedArgs?.case_sensitive) args.push("--ignore-case");
-  for (const dirName of SKIP_DIRS) {
+  if (dshMode) args.push("--hidden", "--no-ignore");
+  if (!dshMode && !normalizedArgs?.regex) args.push("--fixed-strings");
+  if (!dshMode && !normalizedArgs?.case_sensitive) args.push("--ignore-case");
+  const skipDirs = dshMode
+    ? [".git", ".svn", ".hg", ".bzr", ".jj", ".sl"]
+    : SKIP_DIRS;
+  for (const dirName of skipDirs) {
     args.push("--glob", `!**/${dirName}/**`);
   }
   const fileTypes = normalizeFileTypes(normalizedArgs);
@@ -2306,19 +2525,22 @@ function buildRipgrepArgs(pattern, normalizedArgs, targetPath, maxResults) {
   return args;
 }
 
-async function runRipgrepSearch(root, normalizedArgs, config = {}) {
+async function runRipgrepSearch(root, normalizedArgs, config = {}, dshMode = false) {
   if (!rgPath) return null;
   const pattern = String(normalizedArgs?.pattern || "").trim();
   const maxResults = Math.max(
     1,
-    Math.min(200, Number(normalizedArgs?.max_results || 50)),
+    Math.min(
+      dshMode ? 250 : 200,
+      Number(normalizedArgs?.max_results || (dshMode ? 250 : 50)),
+    ),
   );
   const target = await resolveInWorkspace(
     root,
     normalizedArgs?.path || ".",
     config,
   );
-  const args = buildRipgrepArgs(pattern, normalizedArgs, target, maxResults);
+  const args = buildRipgrepArgs(pattern, normalizedArgs, target, dshMode);
   const child = spawn(rgPath, args, {
     cwd: root,
     windowsHide: true,
@@ -2326,19 +2548,55 @@ async function runRipgrepSearch(root, normalizedArgs, config = {}) {
   });
   let stdout = "";
   let stderr = "";
+  let timedOut = false;
+  let overflow = false;
+  const timer = dshMode
+    ? setTimeout(() => {
+        timedOut = true;
+        terminateChild(child, "SIGKILL");
+      }, 30000)
+    : null;
   child.stdout.on("data", (chunk) => {
     stdout += chunk.toString("utf8");
+    if (dshMode && Buffer.byteLength(stdout, "utf8") > 20_000_000) {
+      overflow = true;
+      terminateChild(child, "SIGKILL");
+    }
   });
   child.stderr.on("data", (chunk) => {
     stderr += chunk.toString("utf8");
+    if (dshMode && Buffer.byteLength(stderr, "utf8") > 65_536) {
+      stderr = stderr.slice(-65_536);
+    }
   });
   const exitCode = await new Promise((resolve) => {
     child.on("error", () => resolve(null));
     child.on("close", (code) => resolve(code));
   });
-  if (exitCode == null) return null;
+  if (timer) clearTimeout(timer);
+  if (timedOut) {
+    const error = new Error("grep aborted after 30000ms");
+    error.code = "SEARCH_ABORTED";
+    throw error;
+  }
+  if (overflow) {
+    const error = new Error("grep raw output exceeded 20000000 bytes; narrow the query");
+    error.code = "SEARCH_RAW_OUTPUT_OVERFLOW";
+    throw error;
+  }
+  if (exitCode == null) {
+    if (!dshMode) return null;
+    const error = new Error("failed to start packaged ripgrep");
+    error.code = "SEARCH_FAILED";
+    throw error;
+  }
   if (exitCode !== 0 && exitCode !== 1) {
-    throw new Error(`ripgrep failed: ${stderr.trim() || `exit ${exitCode}`}`);
+    const detail = stderr.trim() || `exit ${exitCode}`;
+    const error = new Error(`ripgrep failed: ${detail}`);
+    error.code = /regex parse error|invalid regex/i.test(detail)
+      ? "SEARCH_INVALID_PATTERN"
+      : "SEARCH_FAILED";
+    throw error;
   }
   const matches = [];
   for (const line of stdout.split(/\r?\n/)) {
@@ -2385,7 +2643,7 @@ async function stopBackgroundTask(_root, args) {
   return { ...snapshotBackgroundTask(task), stopped: true };
 }
 
-async function builtinGrep(root, args, config = {}) {
+async function builtinGrep(root, args, config = {}, dshMode = false) {
   const normalizedArgs = normalizePatternArgs(
     args,
     ["query", "symbol", "q"],
@@ -2395,11 +2653,11 @@ async function builtinGrep(root, args, config = {}) {
   if (!pattern) throw new Error("grep requires pattern");
   const maxResults = Math.max(
     1,
-    Math.min(200, Number(normalizedArgs?.max_results || 50)),
+    Math.min(dshMode ? 250 : 200, Number(normalizedArgs?.max_results || (dshMode ? 250 : 50))),
   );
-  const rgResult = await runRipgrepSearch(root, normalizedArgs, config).catch(
+  const rgResult = await runRipgrepSearch(root, normalizedArgs, config, dshMode).catch(
     (error) => {
-      if (config?.tools?.ripgrep_strict === true) throw error;
+      if (dshMode || config?.tools?.ripgrep_strict === true) throw error;
       return null;
     },
   );
@@ -2441,7 +2699,82 @@ async function builtinGrep(root, args, config = {}) {
   return { pattern, matches, truncated: false, engine: "js" };
 }
 
-async function builtinGlob(root, args, config = {}) {
+async function runRipgrepGlob(root, args, config = {}) {
+  if (!rgPath) {
+    const error = new Error("packaged ripgrep is unavailable");
+    error.code = "SEARCH_FAILED";
+    throw error;
+  }
+  const pattern = String(args?.pattern || "").trim();
+  if (!pattern) throw new Error("glob requires pattern");
+  const target = await resolveInWorkspace(root, args?.path || ".", config);
+  const rgArgs = [
+    "--no-config", "--files", "--hidden", "--no-ignore", "--sort=modified",
+    "--glob", pattern,
+  ];
+  for (const dirName of [".git", ".svn", ".hg", ".bzr", ".jj", ".sl"]) {
+    rgArgs.push("--glob", `!**/${dirName}/**`);
+  }
+  rgArgs.push("--", target);
+  const child = spawn(rgPath, rgArgs, {
+    cwd: root,
+    windowsHide: true,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let stdout = "";
+  let stderr = "";
+  let timedOut = false;
+  let overflow = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    terminateChild(child, "SIGKILL");
+  }, 30000);
+  child.stdout.on("data", (chunk) => {
+    stdout += chunk.toString("utf8");
+    if (Buffer.byteLength(stdout, "utf8") > 20_000_000) {
+      overflow = true;
+      terminateChild(child, "SIGKILL");
+    }
+  });
+  child.stderr.on("data", (chunk) => {
+    stderr += chunk.toString("utf8");
+    if (Buffer.byteLength(stderr, "utf8") > 65_536) stderr = stderr.slice(-65_536);
+  });
+  const exitCode = await new Promise((resolve) => {
+    child.on("error", () => resolve(null));
+    child.on("close", (code) => resolve(code));
+  });
+  clearTimeout(timer);
+  if (timedOut) {
+    const error = new Error("glob aborted after 30000ms");
+    error.code = "SEARCH_ABORTED";
+    throw error;
+  }
+  if (overflow) {
+    const error = new Error("glob raw output exceeded 20000000 bytes; narrow the path or pattern");
+    error.code = "SEARCH_RAW_OUTPUT_OVERFLOW";
+    throw error;
+  }
+  if (exitCode == null || (exitCode !== 0 && exitCode !== 1)) {
+    const error = new Error(`ripgrep failed: ${stderr.trim() || `exit ${exitCode}`}`);
+    error.code = "SEARCH_FAILED";
+    throw error;
+  }
+  const allMatches = stdout
+    .split(/\r?\n/)
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .map((value) => toWorkspaceRelative(root, path.resolve(root, value)));
+  return {
+    pattern,
+    matches: allMatches.slice(0, 100),
+    truncated: allMatches.length > 100,
+    total: allMatches.length,
+    engine: "ripgrep",
+  };
+}
+
+async function builtinGlob(root, args, config = {}, dshMode = false) {
   const normalizedArgs = normalizePatternArgs(
     args,
     ["glob", "query"],
@@ -2449,6 +2782,7 @@ async function builtinGlob(root, args, config = {}) {
   );
   const pattern = String(normalizedArgs?.pattern || "").trim();
   if (!pattern) throw new Error("glob requires pattern");
+  if (dshMode) return runRipgrepGlob(root, normalizedArgs, config);
   const maxResults = Math.max(
     1,
     Math.min(500, Number(normalizedArgs?.max_results || 200)),
@@ -3004,7 +3338,7 @@ async function replaceBlock(root, args, config = {}) {
     ...state.lines.slice(resolved.end_line),
   ];
   const afterContent = joinFileLines(nextLines, fileEol);
-  await fs.writeFile(state.target, afterContent, "utf8");
+  await writeTextFile(state.target, afterContent, config);
   return editResult(
     relativePath,
     "replace_block",
@@ -3016,12 +3350,12 @@ async function replaceBlock(root, args, config = {}) {
 
 async function replaceText(root, args, config = {}) {
   const relativePath = String(args?.path || "").trim();
-  const oldText = String(args?.old_text || "");
-  const newText = String(args?.new_text || "");
+  const oldText = String(args?.old_text ?? args?.old_string ?? "");
+  const newText = String(args?.new_text ?? args?.new_string ?? "");
   const replaceAll = semanticBoolean(args?.replace_all);
   const state = await getFileState(root, relativePath, config);
   if (!oldText) {
-    throw new Error("replace_text requires old_text");
+    throw new Error("replace_text requires old_text or old_string");
   }
   const rangeStart = Number(args?.start_line || args?.line);
   const rangeEnd = Number(args?.end_line || args?.line);
@@ -3066,7 +3400,7 @@ async function replaceText(root, args, config = {}) {
       const afterContent = effectiveRange
         ? `${state.content.slice(0, effectiveRange.startOffset)}${applied.replaced}${state.content.slice(effectiveRange.endOffset)}`
         : applied.replaced;
-      await fs.writeFile(state.target, afterContent, "utf8");
+      await writeTextFile(state.target, afterContent, config);
       const changedLine = changedLineForMatch(
         state.content,
         effectiveSearchContent,
@@ -3135,7 +3469,7 @@ async function insertRelative(root, args, mode, config = {}) {
       ? `${insertContent}${originalAnchor}`
       : `${originalAnchor}${insertContent}`;
   afterContent = `${state.content.slice(0, match.start)}${replacement}${state.content.slice(match.end)}`;
-  await fs.writeFile(state.target, afterContent, "utf8");
+  await writeTextFile(state.target, afterContent, config);
   const changedLine = splitLines(state.content.slice(0, anchorStart)).length;
   return editResult(
     relativePath,
@@ -3427,7 +3761,9 @@ async function openTarget(root, args, config = {}) {
 }
 
 function normalizeEditTargetArgs(args = {}) {
-  const rawFile = String(args?.path || args?.ast_target?.path || "").trim();
+  const rawFile = String(
+    args?.path || args?.file_path || args?.ast_target?.path || "",
+  ).trim();
   const inlineRange = parseInlineRangePath(rawFile);
   const file = normalizeFilePathValue(rawFile, {
     stripInlineRange: true,
@@ -3444,8 +3780,8 @@ function normalizeEditTargetArgs(args = {}) {
       kind: args?.kind,
       target: args?.target,
       new_content: args?.new_content,
-      old_text: args?.old_text,
-      new_text: args?.new_text,
+      old_text: args?.old_text ?? args?.old_string,
+      new_text: args?.new_text ?? args?.new_string,
       anchor_text: args?.anchor_text,
       content: args?.content,
       replace_all: args?.replace_all,
@@ -3523,7 +3859,7 @@ async function editTarget(root, args, config = {}) {
     const beforeContent = resolved.content;
     const node = resolved.node;
     const afterContent = `${beforeContent.slice(0, node.startIndex)}${edit.new_content || ""}${beforeContent.slice(node.endIndex)}`;
-    await fs.writeFile(resolved.absolutePath, afterContent, "utf8");
+    await writeTextFile(resolved.absolutePath, afterContent, config);
     resolved.tree.delete();
     resolved.parser.delete();
     return editResult(
@@ -3617,7 +3953,7 @@ async function editTarget(root, args, config = {}) {
     }
     const state = await getFileState(root, file, config);
     const afterContent = String(edit.new_content ?? "");
-    await fs.writeFile(state.target, afterContent, "utf8");
+    await writeTextFile(state.target, afterContent, config);
     return editResult(file, "rewrite_file", state.content, afterContent, 1);
   }
   throw new Error(`edit does not support kind: ${kind}`);
@@ -3635,19 +3971,148 @@ export function getBuiltinTools({
   onPlanStateUpdate,
   onCreatePlan,
   onCreateSpec,
+  onRunSubAgent,
   requestUserInput,
   afterManagedFileBackup,
   beforeApplyPatchMutation,
   fffAdapter,
   backupManager,
+  toolResultStore,
+  platform = process.platform,
 }) {
   workspaceRoot = path.resolve(workspaceRoot);
+  const isWin = platform === "win32";
+  const shellContext = resolveShellContext(config, { platform, cwd: workspaceRoot });
+  const commandToolName = shellContext.commandToolName;
+  const sandboxPolicy = shellContext.sandbox;
+  const vmSandbox = isVmSandbox(sandboxPolicy);
+  const osSandbox = isOsSandbox(sandboxPolicy);
+  const osKind = platform === "darwin" ? "Seatbelt" : "Landlock";
+  config = {
+    ...(config || {}),
+    shell: {
+      ...(config?.shell || {}),
+      default: shellContext.shell,
+    },
+  };
+  const sandboxEscalationProperties = sandboxPolicy.enabled ? {
+        sandbox_permissions: {
+          type: "string",
+          enum: ["workspace-write", "danger-full-access"],
+          description:
+            "The wider sandbox mode this file operation needs. Requires justification and explicit user approval.",
+        },
+        justification: {
+          type: "string",
+          description:
+            "Required with sandbox_permissions: why this exact operation needs wider access.",
+        },
+      } : {};
+  const fileToolPathHint = vmSandbox
+    ? " Use a project-relative path such as src/app.ts; do not prefix it with the sandbox mount path."
+    : "";
+  const unixReadParameters = {
+    type: "object",
+    properties: {
+      file_path: {
+        type: "string",
+        description: `Path to the UTF-8 text file to read.${fileToolPathHint}`,
+      },
+      offset: {
+        type: "integer",
+        minimum: 1,
+        description: "1-based first line to return. Defaults to 1.",
+      },
+      limit: {
+        type: "integer",
+        minimum: 1,
+        maximum: 2000,
+        description: "Maximum lines to return. Defaults to 2000.",
+      },
+    },
+    required: ["file_path"],
+  };
+  const unixEditParameters = {
+    type: "object",
+    properties: {
+      file_path: { type: "string", description: `Path to the UTF-8 text file to edit.${fileToolPathHint}` },
+      old_string: { type: "string", description: "Literal text to replace. Must match exactly." },
+      new_string: { type: "string", description: "Literal replacement text. Empty deletes the match." },
+      replace_all: { type: "boolean", description: "Replace every match. Defaults to false." },
+      ...sandboxEscalationProperties,
+    },
+    required: ["file_path", "old_string", "new_string"],
+  };
+  const unixWriteParameters = {
+    type: "object",
+    properties: {
+      file_path: { type: "string", description: `Path to create or fully replace.${fileToolPathHint}` },
+      ...sandboxEscalationProperties,
+      content: { type: "string", description: "Full UTF-8 text content to write." },
+    },
+    required: ["file_path", "content"],
+  };
+  const unixDeleteParameters = {
+    type: "object",
+    properties: {
+      file_path: { type: "string", description: `File or directory path to delete.${fileToolPathHint}` },
+      ...sandboxEscalationProperties,
+    },
+    required: ["file_path"],
+  };
+  const unixGrepParameters = {
+    type: "object",
+    properties: {
+      pattern: { type: "string", description: "Ripgrep regular expression." },
+      path: { type: "string", description: "Optional file or directory target." },
+      include: { type: "string", description: "Optional single positive glob filter." },
+    },
+    required: ["pattern"],
+  };
+  const unixGlobParameters = {
+    type: "object",
+    properties: {
+      pattern: { type: "string", description: "Ripgrep file glob pattern." },
+      path: { type: "string", description: "Optional directory search root." },
+    },
+    required: ["pattern"],
+  };
+  const assertFsSandbox = (absolutePath, args = {}, allowEscalation = false) => {
+    let policy = sandboxPolicy;
+    if (allowEscalation) {
+      const escalation = validateSandboxEscalationArgs(args, {
+        config,
+        cwd: workspaceRoot,
+        platform,
+      });
+      if (escalation) {
+        if (!hasSandboxEscalationApproval(args)) {
+          throw new Error("sandbox escalation requires explicit user approval");
+        }
+        policy = escalation.policy;
+      }
+    }
+    const denied = assertSandboxWriteAllowed(absolutePath, policy);
+    if (denied) {
+      const retryHint = sandboxPolicy.enabled
+        ? " Retry this exact operation once with sandbox_permissions and a justification for user approval."
+        : "";
+      const error = new Error(`${denied}${retryHint}`);
+      error.code = "FS_SANDBOX_DENIED";
+      throw error;
+    }
+  };
+  const activeToolResultStore = toolResultStore || createToolResultStore();
   const replyLanguageName = getReplyLanguageName(config);
   const fileObservations = providedFileObservations instanceof Map
     ? providedFileObservations
     : config?.runtime?.fileObservations instanceof Map
       ? config.runtime.fileObservations
       : new Map();
+  const stagedWrites = createStagedWriteStore({
+    maxChunkChars: Number(config?.tools?.write_chunk_max_chars) || undefined,
+    maxTotalChars: Number(config?.tools?.staged_write_max_chars) || undefined,
+  });
   const hashFileOrNull = async (target) => {
     try {
       return createHash("sha256").update(await fs.readFile(target)).digest("hex");
@@ -3663,7 +4128,15 @@ export function getBuiltinTools({
     const error = new Error(
       `File changed since this session observed it: ${relativePath}. Reread the file and retry.`,
     );
-    error.code = "FILE_CONFLICT";
+    error.code = isWin ? "FILE_CONFLICT" : "FS_STALE_VERSION";
+    error.path = relativePath;
+    return error;
+  };
+  const createNotObservedError = (operation, relativePath) => {
+    const error = new Error(
+      `${operation} requires reading "${relativePath}" first — read the file, then retry`,
+    );
+    error.code = "FS_NOT_OBSERVED";
     error.path = relativePath;
     return error;
   };
@@ -3684,8 +4157,23 @@ export function getBuiltinTools({
     operation,
     prepare,
     mutate,
+    observationPolicy = "auto",
   }) => {
-    if (operation !== "create") {
+    if (observationPolicy === "required") {
+      for (const item of targets) {
+        if (!fileObservations.has(item.target)) {
+          throw createNotObservedError(operation, item.path);
+        }
+      }
+    } else if (observationPolicy === "create-if-unobserved") {
+      for (const item of targets) {
+        if (fileObservations.has(item.target)) continue;
+        if ((await hashFileOrNull(item.target)) !== null) {
+          throw createNotObservedError(operation, item.path);
+        }
+        fileObservations.set(item.target, null);
+      }
+    } else if (operation !== "create") {
       for (const item of targets) {
         if (!fileObservations.has(item.target)) {
           await observeFile(item.target);
@@ -3696,6 +4184,7 @@ export function getBuiltinTools({
       await assertObservedVersion(item.target, item.path);
     }
     const prepared = await prepare?.();
+    assertNonGitBackupReady(prepared, targets[0]?.path || "");
     await afterManagedFileBackup?.({
       operation,
       path: targets[0]?.path || "",
@@ -3749,7 +4238,7 @@ export function getBuiltinTools({
   const ensureProjectIndex = async () => {
     const eventId = `project-index:${Date.now()}`;
     const name =
-      "project_index(.codemini/project-map.json,.codemini/file-index.json)";
+      "project_index(.codemini/index.sqlite)";
     try {
       projectIndexPromise ||= initializeProjectIndex(workspaceRoot);
       const result = await projectIndexPromise;
@@ -3800,6 +4289,34 @@ export function getBuiltinTools({
         type: "system_tool:error",
         id: eventId,
         name,
+        summary: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    }
+  };
+  const refreshProjectFiles = async (filePaths = []) => {
+    const paths = [...new Set(
+      (Array.isArray(filePaths) ? filePaths : [filePaths])
+        .map((value) => String(value || "").trim())
+        .filter(Boolean),
+    )];
+    if (paths.length === 0) return null;
+    try {
+      const result = await refreshIndexedFiles(workspaceRoot, paths);
+      for (const entry of result.files || []) {
+        emitSystemTool({
+          type: "system_tool:end",
+          id: `file-index:${entry.path}:${Date.now()}`,
+          name: `file_index(${entry.path})`,
+          summary: entry.summary,
+        });
+      }
+      return result;
+    } catch (error) {
+      emitSystemTool({
+        type: "system_tool:error",
+        id: `file-index:batch:${Date.now()}`,
+        name: `file_index_batch(${paths.length})`,
         summary: error instanceof Error ? error.message : String(error),
       });
       return null;
@@ -3890,9 +4407,10 @@ export function getBuiltinTools({
       type: "function",
       function: {
         name: "read",
-        description:
-          'Inspect code or text files before generating or editing code. Use search_code first to locate the file/range or ast_target, then read that precise context. Use {path} for normal reads; file_path/file are accepted aliases. Use start_line/end_line or path:"src/app.ts:10-40" for ranges. If ast_target comes from search_code structure results, read returns the exact structural node. Normal code reads include enclosing symbol metadata when available; read with query is a Tree-sitter-query fallback that returns the matched AST node and ast_target.',
-        parameters: {
+        description: `${isWin
+          ? 'Inspect code or text files before generating or editing code. Use search_code first to locate the file/range or ast_target, then read that precise context. Use {path} for normal reads; file_path/file are accepted aliases. Use start_line/end_line or path:"src/app.ts:10-40" for ranges. If ast_target comes from search_code structure results, read returns the exact structural node. Normal code reads include enclosing symbol metadata when available; read with query is a Tree-sitter-query fallback that returns the matched AST node and ast_target.'
+          : 'Read a UTF-8 text file and return line-numbered content. Use offset and limit to continue reading large files.'}${fileToolPathHint}`,
+        parameters: isWin ? {
           type: "object",
           properties: {
             path: {
@@ -3932,7 +4450,7 @@ export function getBuiltinTools({
             },
           },
           required: [],
-        },
+        } : unixReadParameters,
       },
     },
     {
@@ -3992,9 +4510,10 @@ export function getBuiltinTools({
       type: "function",
       function: {
         name: "edit",
-        description:
-          'Edit an existing file after reading enough surrounding code. Tool arguments must be valid JSON; escape file-content newlines as \\n in JSON strings. Use exactly one canonical shape: {path, old_text, new_text} for text replacement; {path, new_content} for full-file rewrite; {path, anchor_text, content, position:"before"|"after"} for inserts; or {path, kind:"replace_block", target|ast_target, new_content} for structural replacement. If old_text is repeated, use path:"file:10-30" or rely on the most recent read range. Set replace_all=true to replace every match.',
-        parameters: {
+        description: `${isWin
+          ? 'Edit an existing file after reading enough surrounding code. Tool arguments must be valid JSON; escape file-content newlines as \\n in JSON strings. Use exactly one canonical shape: {path, old_text, new_text} for text replacement; {path, new_content} for a small full-file rewrite; {path, anchor_text, content, position:"before"|"after"} for inserts; or {path, kind:"replace_block", target|ast_target, new_content} for structural replacement. Keep generated content fields near the end of the object. For a long whole-file rewrite, use begin_write/write_chunk/commit_write instead. If old_text is repeated, use path:"file:10-30" or rely on the most recent read range. Set replace_all=true to replace every match.'
+          : 'Edit an existing file after reading it. Prefer {path|file_path, old_string, new_string, replace_all?} for unique literal replacement (DeepSeek/Claude-compatible). old_text/new_text remain accepted aliases. Tool arguments must be valid JSON; escape newlines as \\n. Also supports {path, new_content} full rewrite and insert/replace_block shapes. Set replace_all=true to replace every match.'}${fileToolPathHint}`,
+        parameters: isWin ? {
           type: "object",
           properties: {
             path: {
@@ -4002,12 +4521,20 @@ export function getBuiltinTools({
               description:
                 "File path to edit. Inline ranges like src/app.js:10-30 are accepted.",
             },
-            new_content: { type: "string", description: "Full-file replacement content for existing files. In JSON text, encode newlines as \\n." },
-            old_text: { type: "string", description: "Exact text to replace" },
-            new_text: { type: "string", description: "Replacement text for old_text" },
+            file_path: { type: "string", description: "Alias for path" },
+            old_string: {
+              type: "string",
+              description: "Exact text to replace (preferred on Linux/mac)",
+            },
+            new_string: {
+              type: "string",
+              description: "Replacement text for old_string",
+            },
+            old_text: { type: "string", description: "Alias for old_string" },
+            new_text: { type: "string", description: "Alias for new_string" },
             replace_all: {
               type: "boolean",
-              description: "Replace all matching old_text occurrences",
+              description: "Replace all matching old_string/old_text occurrences",
             },
             start_line: {
               type: "number",
@@ -4020,10 +4547,6 @@ export function getBuiltinTools({
             anchor_text: {
               type: "string",
               description: "Anchor text for inserts",
-            },
-            content: {
-              type: "string",
-              description: "Content to insert with anchor_text/position, or block content for kind:\"replace_block\". Use new_text with old_text replacements, and new_content for full-file rewrites.",
             },
             position: { type: "string", description: "before or after" },
             kind: {
@@ -4042,18 +4565,25 @@ export function getBuiltinTools({
             },
             symbol: { type: "string", description: "Symbol to target" },
             line: { type: "number", description: "Line to target" },
+            content: {
+              type: "string",
+              description: "Content to insert with anchor_text/position, placed near the end. Use new_text with old_text replacements, and new_content for full-file rewrites.",
+            },
+            ...sandboxEscalationProperties,
+            new_content: { type: "string", description: "Small full-file or structural-block replacement content. Keep this field last. For long whole-file output, use the staged write tools. In JSON text, encode newlines as \\n." },
           },
-          required: [],
-        },
+          required: ["path"],
+        } : unixEditParameters,
       },
     },
     {
       type: "function",
       function: {
         name: "write",
-        description:
-          "Write an entire file. Use for new files, or for an intentional full-file overwrite of an existing file with overwrite=true. Always include exactly {path, content}. Tool arguments must be valid JSON; escape file-content newlines as \\n in JSON strings. For small changes in existing files, prefer edit with {path, old_text, new_text}.",
-        parameters: {
+        description: `${isWin
+          ? "Write an entire small file. Use for new files, or for an intentional full-file overwrite of an existing file with overwrite=true. Always include exactly {path, overwrite?, content}, with content last. Tool arguments must be valid JSON; escape file-content newlines as \\n in JSON strings. For long content that might approach the model output limit, use begin_write, sequential write_chunk calls, then commit_write. For small changes in existing files, prefer edit with {path, old_text, new_text}."
+          : "Create or overwrite a file with {path|file_path, content, overwrite?}. Prefer edit with old_string/new_string for small edits. Tool arguments must be valid JSON; escape newlines as \\n."}${fileToolPathHint}`,
+        parameters: isWin ? {
           type: "object",
           properties: {
             path: {
@@ -4061,17 +4591,117 @@ export function getBuiltinTools({
               description:
                 "Required file path like src/app.js or pages/index.html.",
             },
-            content: {
-              type: "string",
-              description: "Complete file content. In JSON text, encode newlines as \\n.",
-            },
+            file_path: { type: "string", description: "Alias for path" },
             overwrite: {
               type: "boolean",
               description:
                 "Set true to intentionally replace an existing file. Defaults to false.",
             },
+            ...sandboxEscalationProperties,
+            content: {
+              type: "string",
+              description: "Complete file content. Keep this field last. In JSON text, encode newlines as \\n.",
+            },
           },
           required: ["path", "content"],
+        } : unixWriteParameters,
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "begin_write",
+        description:
+          "Begin a transactional whole-file write for long content. This validates and snapshots the target but does not modify it. Follow with sequential write_chunk calls and exactly one commit_write. Use abort_write to discard the staging state.",
+        parameters: {
+          type: "object",
+          properties: {
+            path: {
+              type: "string",
+              description: "Target file path inside the workspace.",
+            },
+            overwrite: {
+              type: "boolean",
+              description: "Set true to intentionally replace an existing file. Defaults to false.",
+            },
+          },
+          required: ["path"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "write_chunk",
+        description:
+          "Stage one bounded content chunk without modifying the target file. Send sequence values contiguously from 0. Repeating the same sequence with identical content is idempotent. Keep content as the final JSON field. If a call is truncated or invalid, retry that sequence with a smaller chunk.",
+        parameters: {
+          type: "object",
+          properties: {
+            write_id: {
+              type: "string",
+              description: "Transaction id returned by begin_write.",
+            },
+            sequence: {
+              type: "integer",
+              minimum: 0,
+              description: "Zero-based contiguous chunk sequence.",
+            },
+            content: {
+              type: "string",
+              description: "Chunk content, placed last. Keep each chunk below the max_chunk_chars returned by begin_write.",
+            },
+          },
+          required: ["write_id", "sequence", "content"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "commit_write",
+        description:
+          "Atomically commit a staged whole-file write. The target remains unchanged unless every chunk is present, the optional sha256 matches, the target has not changed since begin_write, and the final rename succeeds.",
+        parameters: {
+          type: "object",
+          properties: {
+            write_id: {
+              type: "string",
+              description: "Transaction id returned by begin_write.",
+            },
+            path: {
+              type: "string",
+              description: "Target path originally passed to begin_write. Repeated here for approval and audit visibility.",
+            },
+            total_chunks: {
+              type: "integer",
+              minimum: 0,
+              description: "Exact number of chunks staged for this transaction.",
+            },
+            expected_sha256: {
+              type: "string",
+              description: "Optional SHA-256 hex digest of the assembled UTF-8 content.",
+            },
+          },
+          required: ["write_id", "path", "total_chunks"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "abort_write",
+        description:
+          "Discard an unfinished staged write. This never modifies the target file.",
+        parameters: {
+          type: "object",
+          properties: {
+            write_id: {
+              type: "string",
+              description: "Transaction id returned by begin_write.",
+            },
+          },
+          required: ["write_id"],
         },
       },
     },
@@ -4099,8 +4729,8 @@ export function getBuiltinTools({
       function: {
         name: "delete",
         description:
-          "Delete a file or directory inside the workspace. Missing targets fail. Workspace escape attempts are rejected.",
-        parameters: {
+          `Delete a file or directory inside the workspace. Missing targets fail. Workspace escape attempts are rejected.${fileToolPathHint}`,
+        parameters: isWin ? {
           type: "object",
           properties: {
             path: {
@@ -4113,7 +4743,7 @@ export function getBuiltinTools({
             target: { type: "string", description: "Alias for path" },
           },
           required: ["path"],
-        },
+        } : unixDeleteParameters,
       },
     },
     {
@@ -4277,16 +4907,15 @@ export function getBuiltinTools({
     {
       type: "function",
       function: {
-        name: "run",
-        description:
-          "Run a shell command. Use this for one-shot commands like install/build/test, and also for long-running commands by setting run_in_background=true. Long-running commands may also be backgrounded automatically.",
+        name: commandToolName,
+        description: vmSandbox
+          ? `Run a compact Bash command inside the Linux microVM sandbox (${sandboxPolicy.mode}) from the project root with unrestricted outbound networking. Use project-relative paths. Ordinary Bash commands, including curl, are available; commands with destructive or external side effects may still require approval. On denial, stderr includes [sandbox: ...]; retry with a wider sandbox_permissions plus justification when needed. Use run_in_background=true for long-running commands. Put command last.`
+          : osSandbox
+            ? `Run a compact ${shellContext.shell === "powershell" ? "PowerShell" : "Bash"} command on the host under OS confinement (${osKind}, ${sandboxPolicy.mode}) with unrestricted outbound networking. Use host paths from the current working directory. Commands with destructive or external side effects may still require approval. On denial, stderr includes [sandbox: ...]; retry with a wider sandbox_permissions plus justification when needed. Use run_in_background=true for long-running commands. Put command last.`
+          : `Run a compact ${shellContext.shell === "powershell" ? "PowerShell" : "Bash"} command directly on the ${platform === "win32" ? "Windows" : "host"} system without microVM confinement. Use run_in_background=true for long-running commands. Put command last.`,
         parameters: {
           type: "object",
           properties: {
-            command: {
-              type: "string",
-              description: "Shell command to execute",
-            },
             timeout: { type: "number", description: "Timeout in milliseconds" },
             run_in_background: {
               type: "boolean",
@@ -4315,6 +4944,11 @@ export function getBuiltinTools({
               },
               description:
                 "Optional HTTP readiness probe for a background task",
+            },
+            ...sandboxEscalationProperties,
+            command: {
+              type: "string",
+              description: "Compact shell command to execute. Keep this field last.",
             },
           },
           required: ["command"],
@@ -4385,7 +5019,7 @@ export function getBuiltinTools({
                       },
                       allow_other: {
                         type: "boolean",
-                        description: "Allow the user to provide a value not listed in options.",
+                        description: "Allow the user to provide a value not listed in options. Defaults to true for choice questions.",
                       },
                       options: {
                         type: "array",
@@ -4416,89 +5050,85 @@ export function getBuiltinTools({
     : [];
 
   const workflowToolDefinitions = [];
+  if (typeof onRunSubAgent === "function") {
+    workflowToolDefinitions.push({
+      type: "function",
+      function: {
+        name: "run_subagent",
+        description:
+          "Delegate work to a clean-context subagent so project inspection, test output, and independent reasoning do not bloat the main context. Prefer this for repository exploration, architecture/dependency lookup, broad code reading, test execution and failure triage, review, option comparison, and isolated implementation chunks. You write the full prompt and optional handoff context. Invent a short human name for the worker (e.g. David, Mira). For a dependency DAG, assign task_id and let later calls use depends_on; upstream handoffs are injected automatically. Dependencies must reference earlier calls in the same response. Capability is controlled by tools (default allows edits; pass a read-only list for explore/review/test-only work). Independent same-response calls run in parallel only when every call has an explicit read-only tools list; default or mutating workers run sequentially because they share one worktree. Subagents cannot call run_subagent/create_plan/create_spec. Avoid only truly atomic actions where delegation adds no useful evidence.",
+        parameters: {
+          type: "object",
+          properties: {
+            prompt: {
+              type: "string",
+              description:
+                "Full task prompt for the subagent: goal, targets, success criteria, out-of-scope, and verification intent.",
+            },
+            summary: {
+              type: "string",
+              description:
+                "One or two concise sentences describing the task for the collapsed Subagent card. Always provide this separately from prompt.",
+            },
+            name: {
+              type: "string",
+              description:
+                "Short invented persona name for this worker (e.g. David, Mira, Kai). Shown on the Subagent card. Do not use preset role enums.",
+            },
+            role: {
+              type: "string",
+              description:
+                "Deprecated alias of name. Prefer name. Known legacy role strings still map to their tool policies if used alone.",
+            },
+            context: {
+              type: "string",
+              description:
+                "Optional durable handoff packet (prior findings, paths, decisions). Keep it short and actionable.",
+            },
+            goal: {
+              type: "string",
+              description: "Optional short label for UI / logging.",
+            },
+            task_id: {
+              type: "string",
+              description:
+                "Optional stable ID for this task within the current response. Required when a later subagent should depend on this result. Use letters, numbers, underscores, or hyphens.",
+            },
+            depends_on: {
+              type: "array",
+              items: { type: "string" },
+              description:
+                "Optional task_id list from earlier run_subagent calls in the same response. This worker waits for all of them and automatically receives their successful handoffs.",
+            },
+            tools: {
+              type: "array",
+              items: { type: "string" },
+              description:
+                "Optional tool allow-list. Defaults to the coding edit baseline. Use a read-only subset for explore/review. On Linux/mac staged write and apply_patch are unavailable (prefer edit/write); glob/grep are part of the inspect baseline. run_subagent/create_plan/create_spec are always forbidden.",
+            },
+          },
+          required: ["prompt"],
+        },
+      },
+    });
+  }
+  // Legacy create_plan / create_spec remain available only when callers still pass handlers
+  // (e.g. older approval flows). Coding mode prefers onRunSubAgent instead.
   if (typeof onCreatePlan === "function") {
     workflowToolDefinitions.push({
       type: "function",
       function: {
         name: "create_plan",
         description:
-          "Create and execute a structured implementation plan in coding mode. Use when the goal, scope, and constraints are already clear enough to break work into sub-agent execution steps. Do not call for simple localized changes; implement those directly with edit/write/apply_patch/delete instead. Do not call if important details are still unknown or if a design spec is still needed. Plan tasks should be independently testable units with clear consumes/produces handoffs, concrete target files/modules, success criteria, and verification. Fold setup, fixtures, and docs into the task whose deliverable needs them instead of creating template-only steps. Assign roles correctly: explorer/architect/advisor are read-only; coder/refactorer/writer implement changes; never assign explorer to implement or edit code.",
+          "Deprecated. Prefer run_subagent (or implement directly). Kept only for legacy callers.",
         parameters: {
           type: "object",
           properties: {
-            goal: {
-              type: "string",
-              description: "Clear, scoped goal for the plan",
-            },
-            readiness: {
-              type: "string",
-              enum: ["ready"],
-              description:
-                'Must be "ready" when requirements are sufficiently clear',
-            },
-            assumptions: {
-              type: "array",
-              items: { type: "string" },
-              description:
-                "Explicit assumptions made because details were inferred",
-            },
-            context_summary: {
-              type: "string",
-              description: "Brief summary of what was learned from exploration",
-            },
-            steps: {
-              type: "array",
-              description:
-                "Optional explicit sub-agent execution steps. Provide this when you can assign concrete roles and tasks directly.",
-              items: {
-                type: "object",
-                properties: {
-                  title: {
-                    type: "string",
-                    description: "Concrete step title tied to the goal",
-                  },
-                  role: {
-                    type: "string",
-                    description:
-                      "explorer, architect, advisor, coder, refactorer, reviewer, tester, debugger, writer, or summarizer",
-                  },
-                  task: {
-                    type: "string",
-                    description:
-                      "Executable handoff task with target files/modules, expected result, and scope boundaries",
-                  },
-                  consumes: {
-                    type: "string",
-                    description:
-                      "Inputs from earlier steps or existing code this step relies on, such as APIs, files, decisions, or verification evidence",
-                  },
-                  produces: {
-                    type: "string",
-                    description:
-                      "Outputs later steps depend on, such as changed files, APIs, behavior, documentation, or verification evidence",
-                  },
-                  target_files: {
-                    type: "array",
-                    items: { type: "string" },
-                    description: "Known target files/modules for this step",
-                  },
-                  success_criteria: {
-                    type: "string",
-                    description: "Observable completion criteria for this step",
-                  },
-                  verification: {
-                    type: "string",
-                    description:
-                      "How this step or a later tester should verify the outcome",
-                  },
-                  handoff: {
-                    type: "string",
-                    description: "What this step must hand to the next step",
-                  },
-                },
-                required: ["title", "role", "task"],
-              },
-            },
+            goal: { type: "string" },
+            readiness: { type: "string", enum: ["ready"] },
+            assumptions: { type: "array", items: { type: "string" } },
+            context_summary: { type: "string" },
+            steps: { type: "array", items: { type: "object" } },
           },
           required: ["goal", "readiness"],
         },
@@ -4554,30 +5184,14 @@ export function getBuiltinTools({
       function: {
         name: "create_spec",
         description:
-          "Create an engineering spec document for user approval. Use when scope, architecture, UX, or constraints still need alignment before implementation. Prefer this over create_plan for large, novel, or cross-cutting work. If details are too unknown to write a reviewable spec, ask one focused clarifying question instead. If trade-offs, constraints, or open risks can be stated clearly, include them in the spec for approval. Populate the structured section fields directly from explored evidence; do not put section content into assumptions.",
+          "Deprecated. Prefer writing markdown under .codemini/workspace/specs/ yourself, then implement. Kept only for legacy callers.",
         parameters: {
           type: "object",
           properties: {
-            topic: {
-              type: "string",
-              description: "Clear, scoped feature or change to specify",
-            },
-            readiness: {
-              type: "string",
-              enum: ["ready"],
-              description:
-                'Must be "ready" when requirements are sufficiently clear',
-            },
-            assumptions: {
-              type: "array",
-              items: { type: "string" },
-              description:
-                "Only explicit assumptions or inferred unknowns. Do not place explored requirements, architecture, or validation details here.",
-            },
-            context_summary: {
-              type: "string",
-              description: "Brief summary of what was learned from exploration",
-            },
+            topic: { type: "string" },
+            readiness: { type: "string", enum: ["ready"] },
+            assumptions: { type: "array", items: { type: "string" } },
+            context_summary: { type: "string" },
             ...specSectionProperties,
           },
           required: ["topic", "readiness"],
@@ -4593,7 +5207,7 @@ export function getBuiltinTools({
         name: "grep",
         description:
           "Low-level plain text search. Prefer search_code unless you specifically need raw grep/ripgrep-style output.",
-        parameters: {
+        parameters: isWin ? {
           type: "object",
           properties: {
             pattern: {
@@ -4623,7 +5237,7 @@ export function getBuiltinTools({
             },
           },
           required: ["pattern"],
-        },
+        } : unixGrepParameters,
       },
     },
     ast_grep: {
@@ -4669,7 +5283,7 @@ export function getBuiltinTools({
       function: {
         name: "list",
         description:
-          "Low-level directory listing. Prefer search_code for code discovery and load this only when you need to inspect directory contents.",
+          `Low-level directory listing. Prefer search_code for code discovery and load this only when you need to inspect directory contents.${fileToolPathHint}`,
         parameters: {
           type: "object",
           properties: {
@@ -4719,13 +5333,41 @@ export function getBuiltinTools({
         },
       },
     },
+    query_project_graph: {
+      type: "function",
+      function: {
+        name: "query_project_graph",
+        description:
+          "Query the project knowledge graph before reading many files. Supports relevant subgraphs, neighbors, shortest paths, and change impact with source evidence and confidence labels.",
+        parameters: {
+          type: "object",
+          properties: {
+            operation: {
+              type: "string",
+              enum: ["query", "neighbors", "path", "impact", "overview"],
+            },
+            query: { type: "string", description: "Task, concept, symbol, or flow to locate" },
+            node_id: { type: "string", description: "Exact node ID for neighbors" },
+            from: { type: "string", description: "Node ID or label for path start" },
+            to: { type: "string", description: "Node ID or label for path end" },
+            files: { type: "array", items: { type: "string" }, description: "Changed files for impact analysis" },
+            direction: { type: "string", enum: ["in", "out", "both"] },
+            relations: { type: "array", items: { type: "string" } },
+            depth: { type: "number", minimum: 0, maximum: 6 },
+            max_hops: { type: "number", minimum: 1, maximum: 12 },
+            token_budget: { type: "number", minimum: 250, maximum: 16000 },
+            include_ambiguous: { type: "boolean" },
+          },
+        },
+      },
+    },
     glob: {
       type: "function",
       function: {
         name: "glob",
         description:
           "Find files by glob pattern. Use this when you already know a filename pattern such as src/**/*.ts.",
-        parameters: {
+        parameters: isWin ? {
           type: "object",
           properties: {
             pattern: { type: "string", description: "Glob pattern" },
@@ -4737,7 +5379,7 @@ export function getBuiltinTools({
             max_results: { type: "number", description: "Max results" },
           },
           required: ["pattern"],
-        },
+        } : unixGlobParameters,
       },
     },
     ast_query: {
@@ -4812,7 +5454,7 @@ export function getBuiltinTools({
       function: {
         name: "save_memory",
         description:
-          `Save a durable fact for future sessions. Use for lasting user preferences/interests, project conventions, or reusable lessons. Do NOT store chatter, one-offs, or secrets. Available immediately after save. Write content and summary in ${replyLanguageName}; keep paths, commands, and identifiers exact.`,
+          `Save a durable fact for future sessions. Route leaf: save_memory — lasting preferences, conventions, or reusable lessons only. Do NOT store chatter, one-offs, this-task constraints, brainstorms, or secrets; leave soft task signals for Dream inbox/session-review. Available immediately after save. Write content and summary in ${replyLanguageName}; keep paths, commands, and identifiers exact.`,
         parameters: {
           type: "object",
           properties: {
@@ -4894,7 +5536,7 @@ export function getBuiltinTools({
       function: {
         name: "dream_consolidate",
         description:
-          "Run a dream loop over inbox entries and memory buckets. Deduplicates inbox items, promotes durable insights into user/global/project memory (preference|convention|lesson|note), then LLM-maintains changed buckets. Writes an audit report. Use during off-hours or explicit maintenance.",
+          "Run Dream consolidation over inbox entries and memory buckets. Route leaf: dream promotion — evaluate inbox (keep/discard), promote durable insights into user/global/project memory (preference|convention|lesson|note), then LLM-maintain changed buckets. Writes an audit report. Use during off-hours or when the user asks for memory maintenance; do not call mid-task to replace save_memory.",
         parameters: {
           type: "object",
           properties: {
@@ -4916,7 +5558,7 @@ export function getBuiltinTools({
       function: {
         name: "list_background_tasks",
         description:
-          "List background shell tasks started by run(..., run_in_background=true) or auto-backgrounded by run.",
+          `List background shell tasks started by ${commandToolName}(..., run_in_background=true) or auto-backgrounded by ${commandToolName}.`,
         parameters: {
           type: "object",
           properties: {},
@@ -4961,7 +5603,7 @@ export function getBuiltinTools({
 
   const enableCodeWikiCommentTools =
     config?.runtime?.codewiki_comment_tools === true;
-  const definitions = enableCodeWikiCommentTools
+  let definitions = enableCodeWikiCommentTools
     ? [
         ...primaryDefinitions,
         ...workflowToolDefinitions,
@@ -4969,6 +5611,29 @@ export function getBuiltinTools({
         ...codeWikiCommentToolDefinitions,
       ]
     : [...primaryDefinitions, ...workflowToolDefinitions, ...userInputToolDefinitions];
+
+  // Linux/mac: DSH-aligned CRUD — promote glob/grep; drop staged write + apply_patch entirely.
+  // Windows keeps the current always-on write toolkit (encoding-safe staged writes).
+  if (!isWin) {
+    const drop = new Set([
+      "begin_write",
+      "write_chunk",
+      "commit_write",
+      "abort_write",
+      "apply_patch",
+    ]);
+    const promote = ["grep", "glob"];
+    for (const name of promote) {
+      const def = deferredToolCatalog[name];
+      if (def && !definitions.some((d) => d?.function?.name === name)) {
+        definitions.push(def);
+      }
+      delete deferredToolCatalog[name];
+    }
+    definitions = definitions.filter((d) => !drop.has(d?.function?.name));
+    for (const name of drop) delete deferredToolCatalog[name];
+  }
+
   const activeFffAdapter =
     fffAdapter || createFffAdapter({ workspaceRoot, config });
   async function backupNonGitPathOnce(rawPath) {
@@ -4979,8 +5644,7 @@ export function getBuiltinTools({
     }).trim();
     if (!normalized) return null;
     try {
-      const backup = await backupManager.backupOnce(normalized);
-      return backup?.ok ? backup : null;
+      return await backupManager.backupOnce(normalized);
     } catch (error) {
       return {
         ok: false,
@@ -4988,6 +5652,11 @@ export function getBuiltinTools({
         error: error instanceof Error ? error.message : String(error),
       };
     }
+  }
+  function assertNonGitBackupReady(backup, filePath) {
+    if (!backupManager || (backup?.ok === true && backup.skipped !== true)) return;
+    const reason = backup?.error || backup?.reason || "backup unavailable";
+    throw new Error(`Cannot modify "${filePath}" because its non-Git checkpoint failed: ${reason}`);
   }
   function attachBackup(result, backup) {
     if (!backup || !result || typeof result !== "object") return result;
@@ -5038,6 +5707,7 @@ export function getBuiltinTools({
       ["directory", "dir", "cwd"],
     );
     if (
+      isWin &&
       !resolvesOutsideRoot(workspaceRoot, normalizedArgs?.path || ".") &&
       activeFffAdapter?.grep
     ) {
@@ -5046,6 +5716,25 @@ export function getBuiltinTools({
         const result = await activeFffAdapter.grep(args);
         if (result && Array.isArray(result.matches)) return result;
       } catch {}
+    }
+    if (!isWin) {
+      const include = String(args?.include || "").trim();
+      if (include.startsWith("!") || include.replace(/\{[^}]*\}/g, "").includes(",")) {
+        throw new Error("grep include must be one positive glob pattern");
+      }
+      return builtinGrep(
+        workspaceRoot,
+        {
+          pattern: args?.pattern,
+          path: args?.path,
+          regex: true,
+          case_sensitive: true,
+          max_results: 250,
+          file_types: include ? [include] : [],
+        },
+        config,
+        true,
+      );
     }
     return builtinGrep(workspaceRoot, args, config);
   }
@@ -5389,6 +6078,7 @@ export function getBuiltinTools({
       ["directory", "dir", "cwd"],
     );
     if (
+      isWin &&
       !resolvesOutsideRoot(workspaceRoot, normalizedArgs?.path || ".") &&
       activeFffAdapter?.glob
     ) {
@@ -5398,7 +6088,7 @@ export function getBuiltinTools({
         if (result && Array.isArray(result.matches)) return result;
       } catch {}
     }
-    return builtinGlob(workspaceRoot, args, config);
+    return builtinGlob(workspaceRoot, args, config, !isWin);
   }
 
   async function list(args) {
@@ -5502,18 +6192,21 @@ export function getBuiltinTools({
         };
       }
 
-      const result = await readFile(
-        workspaceRoot,
-        {
-          ...args,
-          default_lines: config.context?.read_file_default_lines ?? 120,
-          max_chars:
-            typeof args?.max_chars === "number"
-              ? args.max_chars
-              : (config.context?.read_file_max_chars ?? 12000),
-        },
-        config,
-      );
+      const result = isWin
+        ? await readFile(
+            workspaceRoot,
+            {
+              ...args,
+              default_lines: config.context?.read_file_default_lines ?? 120,
+              max_chars:
+                typeof args?.max_chars === "number"
+                  ? args.max_chars
+                  : (config.context?.read_file_max_chars ?? 12000),
+            },
+            config,
+            activeToolResultStore,
+          )
+        : await readDshFile(workspaceRoot, args, config);
       const readPath = normalizePath(result?.path || args?.path || "").trim();
       if (readPath && result?.phase !== "directory_listing") {
         const readTarget = await resolveInWorkspace(workspaceRoot, readPath, config);
@@ -5536,6 +6229,10 @@ export function getBuiltinTools({
     query_project_index: async (args) => {
       await ensureProjectIndex();
       return queryProjectIndex(workspaceRoot, args);
+    },
+    query_project_graph: async (args) => {
+      const initialized = await ensureProjectIndex();
+      return queryProjectKnowledgeGraph(initialized?.projectRoot || workspaceRoot, args);
     },
     grep,
     ast_grep: astGrep,
@@ -5565,6 +6262,7 @@ export function getBuiltinTools({
         { stripInlineRange: true },
       ).trim();
       const commentTarget = await resolveInWorkspace(workspaceRoot, commentPath, config);
+      assertFsSandbox(commentTarget);
       const result = await commitManagedMutation({
         targets: [{ target: commentTarget, path: commentPath }],
         operation: "add_code_comment",
@@ -5584,6 +6282,7 @@ export function getBuiltinTools({
         { stripInlineRange: true },
       ).trim();
       const commentTarget = await resolveInWorkspace(workspaceRoot, commentPath, config);
+      assertFsSandbox(commentTarget);
       const result = await commitManagedMutation({
         targets: [{ target: commentTarget, path: commentPath }],
         operation: "update_code_comment",
@@ -5598,9 +6297,27 @@ export function getBuiltinTools({
     },
     edit: async (args) => {
       await ensureProjectIndex();
+      if (!isWin) {
+        if (!String(args?.file_path || "").trim()) {
+          throw new Error("file_path must be a non-empty string");
+        }
+        if (String(args?.old_string ?? "").length === 0) {
+          throw new Error("old_string must be a non-empty string");
+        }
+        if (String(args.old_string) === String(args?.new_string ?? "")) {
+          throw new Error("old_string and new_string must differ");
+        }
+      }
+      const baseMutationConfig = configWithApprovedMutationPaths(config, args);
+      const mutationConfig = isWin
+        ? baseMutationConfig
+        : {
+            ...baseMutationConfig,
+            runtime: { ...baseMutationConfig?.runtime, atomic_file_mutations: true },
+          };
       const normalizedKind = String(args?.kind || "").trim();
       const hasReplaceTextArgs =
-        args?.old_text != null;
+        args?.old_text != null || args?.old_string != null;
       const astTarget =
         hasReplaceTextArgs ||
         (normalizedKind && normalizedKind !== "replace_block")
@@ -5610,6 +6327,7 @@ export function getBuiltinTools({
             });
       const editPath = normalizeFilePathValue(
         args?.path ||
+          args?.file_path ||
           args?.ast_target?.path ||
           "",
         { stripInlineRange: true },
@@ -5629,10 +6347,15 @@ export function getBuiltinTools({
           }
         : {};
       const observedPath = editPath || astTarget?.path || lastReadPath;
-      const editTargetPath = await resolveInWorkspace(workspaceRoot, observedPath, config);
+      if (!editPath && !astTarget?.path) {
+        throw new Error("edit requires an explicit path so the mutation target can be reviewed");
+      }
+      const editTargetPath = await resolveInWorkspace(workspaceRoot, observedPath, mutationConfig);
+      assertFsSandbox(editTargetPath, args, true);
       const result = await commitManagedMutation({
         targets: [{ target: editTargetPath, path: observedPath }],
         operation: "edit",
+        observationPolicy: isWin ? "auto" : "required",
         prepare: () => backupNonGitPathOnce(observedPath),
         mutate: async (backup) => attachBackup(
           await editTarget(
@@ -5645,7 +6368,7 @@ export function getBuiltinTools({
                   recent_file: lastReadPath,
                 }
               : { ...args, ...rangeArgs, recent_file: lastReadPath },
-            config,
+            mutationConfig,
           ),
           backup,
         ),
@@ -5655,17 +6378,19 @@ export function getBuiltinTools({
     },
     create: async (args) => {
       await ensureProjectIndex();
+      const mutationConfig = configWithApprovedMutationPaths(config, args);
       const createPath = normalizeFilePathValue(
         args?.path || "",
         { stripInlineRange: true },
       ).trim();
-      const createTarget = await resolveInWorkspace(workspaceRoot, createPath, config);
+      const createTarget = await resolveInWorkspace(workspaceRoot, createPath, mutationConfig);
+      assertFsSandbox(createTarget);
       const result = await commitManagedMutation({
         targets: [{ target: createTarget, path: createPath }],
         operation: "create",
         prepare: () => backupNonGitPathOnce(createPath),
         mutate: async (backup) => attachBackup(
-          await writeFile(workspaceRoot, args, config),
+          await writeFile(workspaceRoot, args, mutationConfig),
           backup,
         ),
       });
@@ -5674,36 +6399,159 @@ export function getBuiltinTools({
     },
     write: async (args) => {
       await ensureProjectIndex();
+      if (!isWin && !String(args?.file_path || "").trim()) {
+        throw new Error("file_path must be a non-empty string");
+      }
+      const baseMutationConfig = configWithApprovedMutationPaths(config, args);
+      const mutationConfig = isWin
+        ? baseMutationConfig
+        : {
+            ...baseMutationConfig,
+            runtime: { ...baseMutationConfig?.runtime, atomic_file_mutations: true },
+          };
       const writePath = normalizeFilePathValue(
-        args?.path || "",
+        args?.path || args?.file_path || "",
         { stripInlineRange: true },
       ).trim();
-      const writeTarget = await resolveInWorkspace(workspaceRoot, writePath, config);
+      const writeTarget = await resolveInWorkspace(workspaceRoot, writePath, mutationConfig);
+      assertFsSandbox(writeTarget, args, true);
       const result = await commitManagedMutation({
         targets: [{ target: writeTarget, path: writePath }],
         operation: "write",
+        observationPolicy: isWin ? "auto" : "create-if-unobserved",
         prepare: () => backupNonGitPathOnce(writePath),
         mutate: async (backup) => attachBackup(
-          await writeAnyFile(workspaceRoot, args, config),
+          await writeAnyFile(
+            workspaceRoot,
+            isWin
+              ? args
+              : { ...args, path: args?.file_path, overwrite: true },
+            mutationConfig,
+          ),
           backup,
         ),
       });
       if (result?.path) await refreshProjectFile(result.path);
       return result;
     },
+    begin_write: async (args) => {
+      const rawPath = normalizeFilePathValue(args?.path || "", {
+        stripInlineRange: true,
+      }).trim();
+      if (!rawPath || rawPath === "." || rawPath === "./") {
+        throw new Error("begin_write requires a file path, not the workspace root");
+      }
+      const overwrite = semanticBoolean(args?.overwrite, false);
+      let target;
+      try {
+        target = await resolveInWorkspace(workspaceRoot, rawPath, config);
+      } catch (error) {
+        if (!/^Path escapes workspace:/i.test(String(error?.message || ""))) throw error;
+        // Staging does not mutate the target. The exact resolved path is
+        // reviewed and one-shot authorized by commit_write before atomic I/O.
+        target = path.resolve(workspaceRoot, rawPath);
+      }
+      assertFsSandbox(target);
+      let existed = false;
+      try {
+        const stat = await fs.stat(target);
+        if (stat.isDirectory()) {
+          throw new Error(`begin_write target is a directory: ${rawPath}`);
+        }
+        existed = true;
+      } catch (error) {
+        if (error?.code && error.code !== "ENOENT") throw error;
+      }
+      if (existed && !overwrite) {
+        throw new Error(
+          `begin_write target already exists: ${rawPath}. Set overwrite=true for an intentional full-file replacement, or use edit for a small change.`,
+        );
+      }
+      if (fileObservations.has(target)) {
+        await assertObservedVersion(target, rawPath);
+      } else {
+        await observeFile(target);
+      }
+      return stagedWrites.begin({
+        path: rawPath,
+        target,
+        overwrite,
+        existed,
+      });
+    },
+    write_chunk: async (args) => stagedWrites.append({
+      writeId: args?.write_id,
+      sequence: args?.sequence,
+      content: args?.content,
+    }),
+    commit_write: async (args) => {
+      await ensureProjectIndex();
+      const prepared = stagedWrites.prepareCommit({
+        writeId: args?.write_id,
+        totalChunks: args?.total_chunks,
+        expectedSha256: args?.expected_sha256,
+      });
+      const { transaction, content, sha256: contentHash } = prepared;
+      const commitPath = normalizeFilePathValue(args?.path || "", {
+        stripInlineRange: true,
+      }).trim();
+      if (commitPath !== transaction.path) {
+        throw new Error(
+          `commit_write path mismatch: transaction targets ${transaction.path}, received ${commitPath || "(missing path)"}`,
+        );
+      }
+      assertFsSandbox(transaction.target);
+      const result = await commitManagedMutation({
+        targets: [{ target: transaction.target, path: transaction.path }],
+        operation: transaction.existed ? "write" : "create",
+        prepare: () => backupNonGitPathOnce(transaction.path),
+        mutate: async (backup) => {
+          let beforeContent = "";
+          if (transaction.existed) {
+            beforeContent = await fs.readFile(transaction.target, "utf8");
+          }
+          await atomicWriteUtf8(
+            transaction.target,
+            content,
+            transaction.writeId,
+          );
+          const beforeLines = splitLines(beforeContent);
+          const afterLines = splitLines(content);
+          return attachBackup({
+            ok: true,
+            path: transaction.path,
+            action: transaction.existed ? "rewrite_file" : "create",
+            changed_line: 1,
+            diff_preview: buildDiffPreview(beforeContent, content),
+            lines_added: afterLines.length,
+            lines_removed: transaction.existed ? beforeLines.length : 0,
+            overwritten: transaction.existed,
+            chunks_committed: transaction.chunks.length,
+            content_chars: content.length,
+            sha256: contentHash,
+            atomic: true,
+          }, backup);
+        },
+      });
+      stagedWrites.finish(transaction.writeId);
+      if (result?.path) await refreshProjectFile(result.path);
+      return result;
+    },
+    abort_write: async (args) => stagedWrites.abort(args?.write_id),
     apply_patch: async (args) => {
       await ensureProjectIndex();
+      const mutationConfig = configWithApprovedMutationPaths(config, args);
       const patchText = String(
         args?.patch_text ?? "",
       );
       const parsedHunks = parsePatchText(patchText);
       const observedTargets = [];
       for (const hunk of parsedHunks) {
-        const target = await resolveInWorkspace(workspaceRoot, hunk.path, config);
+        const target = await resolveInWorkspace(workspaceRoot, hunk.path, mutationConfig);
         observedTargets.push({ target, path: hunk.path });
         if (hunk.movePath) {
           observedTargets.push({
-            target: await resolveInWorkspace(workspaceRoot, hunk.movePath, config),
+            target: await resolveInWorkspace(workspaceRoot, hunk.movePath, mutationConfig),
             path: hunk.movePath,
           });
         }
@@ -5725,9 +6573,11 @@ export function getBuiltinTools({
       }
       const backups = [];
       for (const pathValue of backupPaths) {
-        backups.push(await backupNonGitPathOnce(pathValue));
+        const backup = await backupNonGitPathOnce(pathValue);
+        assertNonGitBackupReady(backup, pathValue);
+        backups.push(backup);
       }
-      const result = await applyPatchText(workspaceRoot, args, config, {
+      const result = await applyPatchText(workspaceRoot, args, mutationConfig, {
         beforeMutation: async () => {
           await beforeApplyPatchMutation?.();
           for (const target of observedTargets) {
@@ -5738,25 +6588,25 @@ export function getBuiltinTools({
       for (const target of observedTargets) {
         await observeFile(target.target);
       }
-      for (const changedPath of result?.files || []) {
-        await refreshProjectFile(changedPath);
-      }
+      await refreshProjectFiles(result?.files || []);
       return attachBackups(result, backups);
     },
     delete: Object.assign(
       async (args) => {
         await ensureProjectIndex();
+        const mutationConfig = configWithApprovedMutationPaths(config, args);
         const deletePathValue = normalizeFilePathValue(
           args?.path || args?.file || args?.file_path || args?.target || "",
           { stripInlineRange: true },
         ).trim();
-        const deleteTarget = await resolveInWorkspace(workspaceRoot, deletePathValue, config);
+        const deleteTarget = await resolveInWorkspace(workspaceRoot, deletePathValue, mutationConfig);
+        assertFsSandbox(deleteTarget, args, !isWin);
         const result = await commitManagedMutation({
           targets: [{ target: deleteTarget, path: deletePathValue }],
           operation: "delete",
           prepare: () => backupNonGitPathOnce(deletePathValue),
           mutate: async (backup) => attachBackup(
-            await deletePath(workspaceRoot, args, config),
+            await deletePath(workspaceRoot, args, mutationConfig),
             backup,
           ),
         });
@@ -5869,7 +6719,8 @@ export function getBuiltinTools({
       if (typeof onCreatePlan !== "function") {
         return {
           ok: false,
-          error: "create_plan is not available in the current mode.",
+          error:
+            "create_plan is retired. Use run_subagent for isolated chunks, or implement directly. For durable specs, write markdown under .codemini/workspace/specs/.",
         };
       }
       const readiness = String(args?.readiness || "").toLowerCase();
@@ -5890,6 +6741,31 @@ export function getBuiltinTools({
         assumptions,
         contextSummary: String(args?.context_summary || "").trim(),
         steps: Array.isArray(args?.steps) ? args.steps : [],
+      });
+    },
+    run_subagent: async (args = {}, ctx = {}) => {
+      if (typeof onRunSubAgent !== "function") {
+        return {
+          ok: false,
+          error: "run_subagent is not available in the current mode.",
+        };
+      }
+      const prompt = String(args?.prompt || "").trim();
+      if (!prompt) {
+        return { ok: false, error: "prompt is required" };
+      }
+      return onRunSubAgent({
+        prompt,
+        summary: String(args?.summary || "").trim(),
+        name: String(args?.name || "").trim(),
+        role: String(args?.role || "").trim(),
+        context: String(args?.context || "").trim(),
+        goal: String(args?.goal || "").trim(),
+        toolCallId: String(ctx?.toolCallId || args?.tool_call_id || "").trim(),
+        orchestrationId: String(ctx?.orchestrationId || "").trim(),
+        taskId: String(args?.task_id || "").trim(),
+        dependsOn: Array.isArray(args?.depends_on) ? args.depends_on : [],
+        tools: Array.isArray(args?.tools) ? args.tools : null,
       });
     },
     create_spec: async (args = {}) => {
@@ -5934,7 +6810,7 @@ export function getBuiltinTools({
         sections,
       });
     },
-    run: Object.assign((args) => runCommand(workspaceRoot, config, args), {
+    run: Object.assign((args, context) => runCommand(workspaceRoot, config, args, context), {
       prepareApproval: async (args) => {
         const evaluation = args?._evaluation || null;
         const risk = String(args?._risk || "").trim() ||
@@ -6048,6 +6924,11 @@ export function getBuiltinTools({
           hint: 'Use skill({name:"list"}) to browse indexed skills, or skill({query:"keywords"}) to search by name/description. Do not grep or list skills directories.',
         };
       }
+      if (isSkillModelInvocationDisabled(command)) {
+        return {
+          error: `Skill "${command.name}" disables model invocation. Ask the user to select it manually.`,
+        };
+      }
       if (!isIndexedSkillEnabled(command, config)) {
         return {
           error: `Skill "${command.name}" is disabled in the skill index.`,
@@ -6115,7 +6996,9 @@ export function getBuiltinTools({
                     : {}),
                   required: question?.required === true,
                   multiline: type === "text" && question?.multiline === true,
-                  allow_other: question?.allow_other === true,
+                  allow_other:
+                    ["select", "radio", "checkbox"].includes(type) &&
+                    question?.allow_other !== false,
                   ...(options.length ? { options } : {}),
                 };
               })
@@ -6177,6 +7060,21 @@ export function getBuiltinTools({
     read(result) {
       if (typeof result === "string") return result;
       if (!result || typeof result !== "object") return String(result);
+      if (!isWin && result.phase === "dsh_content") {
+        const lines = Array.isArray(result.lines) ? result.lines : [];
+        const first = lines[0]?.number ?? result.offset ?? 1;
+        const last = lines.at(-1)?.number ?? Math.max(0, first - 1);
+        let footer;
+        if (result.capped) {
+          footer = `(Output capped. Showing lines ${first}-${last}. Use offset=${last + 1} to continue.)`;
+        } else if (last < Number(result.total_lines || 0)) {
+          footer = `(Showing lines ${first}-${last} of ${result.total_lines}. Use offset=${last + 1} to continue.)`;
+        } else {
+          footer = `(End of file - total ${Number(result.total_lines || 0)} lines)`;
+        }
+        const body = lines.map((line) => `${line.number}: ${line.text}`).join("\n");
+        return `<path>${result.path}</path>\n<type>file</type>\n<content>\n${body}${body ? "\n\n" : ""}${footer}\n</content>`;
+      }
       if (result.node && typeof result.content === "string") {
         const header = `[AST: ${result.path || "?"} ${result.node.node_type || "node"} ${result.node.start_line || "?"}-${result.node.end_line || "?"}${result.matches ? `, matches ${result.matches}` : ""}]`;
         const contextLines = [];
@@ -6403,6 +7301,14 @@ export function getBuiltinTools({
       return JSON.stringify(result);
     },
 
+    run_subagent(result) {
+      if (!result || typeof result !== "object") return String(result);
+      if (result.error) return String(result.error);
+      if (result.message) return String(result.message);
+      if (result.text) return String(result.text);
+      return JSON.stringify(result);
+    },
+
     create_spec(result) {
       if (!result || typeof result !== "object") return String(result);
       if (result.error) return String(result.error);
@@ -6449,6 +7355,23 @@ export function getBuiltinTools({
       return lines.join("\n");
     },
 
+    query_project_graph(result) {
+      if (!result || typeof result !== "object") return String(result);
+      const lines = [
+        `[project_graph: ${result.operation || "query"} version=${result.graph_version || "unknown"}]`,
+        `nodes=${result.stats?.displayed_nodes || 0}/${result.stats?.total_nodes || 0} edges=${result.stats?.displayed_edges || 0}/${result.stats?.total_edges || 0}`,
+      ];
+      for (const node of (result.nodes || []).slice(0, 30)) {
+        const range = node.range?.start_line ? `:${node.range.start_line}` : "";
+        lines.push(`- ${node.id} [${node.type}] ${node.file || ""}${range} — ${node.summary || node.label || ""}`);
+      }
+      for (const edge of (result.edges || []).slice(0, 40)) {
+        lines.push(`  ${edge.source} -[${edge.relation}/${edge.confidence}]-> ${edge.target}`);
+      }
+      if (result.truncated) lines.push("... result clipped to token budget");
+      return lines.join("\n");
+    },
+
     edit(result) {
       if (!result || typeof result !== "object") return String(result);
       const p = result.path || "";
@@ -6492,6 +7415,44 @@ export function getBuiltinTools({
       return summary;
     },
 
+    write(result) {
+      if (!result || typeof result !== "object") return String(result);
+      const p = result.path || "";
+      const action = result.action || "write";
+      const backup = result.backupPath
+        ? `\nbackup: ${result.backupPath}${result.backupReused ? " (reused)" : ""}`
+        : "";
+      const summary = `${action} ${p}${backup}`;
+      const diffPreview = result.diff_preview || "";
+      return diffPreview
+        ? `${summary}\n${diffPreview.length > 600 ? `${diffPreview.slice(0, 597)}...` : diffPreview}`
+        : summary;
+    },
+
+    begin_write(result) {
+      if (!result || typeof result !== "object") return String(result);
+      return `Staged write ${result.write_id || "?"} opened for ${result.path || "?"}; next sequence ${result.next_sequence ?? 0}, max ${result.max_chunk_chars || "?"} chars/chunk.`;
+    },
+
+    write_chunk(result) {
+      if (!result || typeof result !== "object") return String(result);
+      return `Staged ${result.write_id || "?"} chunk ${result.sequence ?? "?"}${result.duplicate ? " (idempotent duplicate)" : ""}; ${result.total_chars || 0} chars total; next sequence ${result.next_sequence ?? "?"}.`;
+    },
+
+    commit_write(result) {
+      if (!result || typeof result !== "object") return String(result);
+      const summary = `${result.action || "write"} ${result.path || "?"} atomically from ${result.chunks_committed ?? 0} chunk(s); sha256 ${result.sha256 || "?"}`;
+      const diffPreview = result.diff_preview || "";
+      return diffPreview
+        ? `${summary}\n${diffPreview.length > 600 ? `${diffPreview.slice(0, 597)}...` : diffPreview}`
+        : summary;
+    },
+
+    abort_write(result) {
+      if (!result || typeof result !== "object") return String(result);
+      return `Aborted staged write ${result.write_id || "?"} for ${result.path || "?"}; discarded ${result.discarded_chunks || 0} chunk(s).`;
+    },
+
     delete(result) {
       if (!result || typeof result !== "object") return String(result);
       if (result.ok === false) return JSON.stringify(result);
@@ -6505,9 +7466,16 @@ export function getBuiltinTools({
 
     run(result) {
       if (!result || typeof result !== "object") return String(result);
+      const sandboxBackend = result?.sandbox?.backend || sandboxPolicy.backend;
+      const execution = result?.sandbox?.wrapped
+        ? sandboxBackend === "vm"
+          ? `[shell: bash | sandbox: ${result.sandbox.mode || sandboxPolicy.mode} | cwd: project root]`
+          : `[shell: ${result.shell || shellContext.shell} | sandbox: ${result.sandbox.mode || sandboxPolicy.mode} | cwd: ${workspaceRoot}]`
+        : `[shell: ${result.shell || shellContext.shell} | sandbox: off | cwd: ${workspaceRoot}]`;
       if (result.background) {
         const parts = [
           `[background task: ${result.task_id || "?"}]`,
+          execution,
           `status: ${result.status || "running"}`,
         ];
         if (result.command)
@@ -6525,12 +7493,12 @@ export function getBuiltinTools({
         return parts.join("\n");
       }
       const runSummary = summarizeRunOutput(result);
-      if (runSummary) return runSummary;
+      if (runSummary) return `${execution}\n${runSummary}`;
       const command = String(result.command || "").slice(0, 200);
       const stdout = String(result.stdout || "");
       const stderr = String(result.stderr || "");
       const code = result.code ?? 0;
-      const parts = [`[exit: ${code}]`];
+      const parts = [execution, `[exit: ${code}]`];
       if (command) parts.push(`command: ${command}`);
       if (stdout) parts.push(`stdout:\n${stdout}`);
       if (stderr) parts.push(`stderr:\n${stderr}`);
@@ -6599,8 +7567,9 @@ export function getBuiltinTools({
                 "Possible matches:",
                 ...result.matches.map((item) => {
                   const disabled = item.enabled === false ? " disabled" : "";
+                  const manualOnly = item.disableModelInvocation ? " manual-only" : "";
                   const desc = item.description ? ` - ${item.description}` : "";
-                  return `/${item.name} [${item.scope}${disabled}]${desc}`;
+                  return `/${item.name} [${item.scope}${disabled}${manualOnly}]${desc}`;
                 }),
               ]
             : [];
@@ -6614,8 +7583,9 @@ export function getBuiltinTools({
         }
         const lines = result.matches.map((item) => {
           const disabled = item.enabled === false ? " disabled" : "";
+          const manualOnly = item.disableModelInvocation ? " manual-only" : "";
           const desc = item.description ? ` - ${item.description}` : "";
-          return `/${item.name} [${item.scope}${disabled}]${desc}`;
+          return `/${item.name} [${item.scope}${disabled}${manualOnly}]${desc}`;
         });
         return [result.message || "Skill search results:", ...lines].join("\n");
       }
@@ -6623,8 +7593,9 @@ export function getBuiltinTools({
         if (result.skills.length === 0) return "No indexed skills found.";
         const lines = result.skills.map((item) => {
           const disabled = item.enabled === false ? " disabled" : "";
+          const manualOnly = item.disableModelInvocation ? " manual-only" : "";
           const desc = item.description ? ` - ${item.description}` : "";
-          return `/${item.name} [${item.scope}${disabled}]${desc}`;
+          return `/${item.name} [${item.scope}${disabled}${manualOnly}]${desc}`;
         });
         return [result.message || "Indexed skills:", ...lines].join("\n");
       }
@@ -6699,7 +7670,7 @@ export function getBuiltinTools({
   const formatters = Object.fromEntries(
     Object.entries({
       ...rawFormatters,
-      ...buildSearchFormatters(config)
+      ...buildSearchFormatters()
     }).map(([name, formatter]) => [
       name,
       (result, args) =>
@@ -6710,7 +7681,18 @@ export function getBuiltinTools({
     ]),
   );
 
+  handlers[commandToolName] = handlers.run;
+  formatters[commandToolName] = formatters.run;
+  delete handlers.run;
+  delete formatters.run;
+
+  const mcpTools = getMcpToolBundle(config);
+  definitions.push(...mcpTools.definitions);
+  Object.assign(handlers, mcpTools.handlers);
+  Object.assign(formatters, mcpTools.formatters);
+
   async function dispose() {
+    stagedWrites.clear();
     if (activeFffAdapter?.dispose) {
       try {
         await activeFffAdapter.dispose();
@@ -6718,5 +7700,12 @@ export function getBuiltinTools({
     }
   }
 
-  return { definitions, handlers, formatters, deferredDefinitions: deferredToolCatalog, dispose };
+  return {
+    definitions,
+    handlers,
+    formatters,
+    deferredDefinitions: deferredToolCatalog,
+    displayLabels: mcpTools.displayLabels || {},
+    dispose,
+  };
 }

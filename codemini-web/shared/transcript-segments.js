@@ -1,7 +1,10 @@
 import {
   updateToolInSegments,
+  upsertSingletonToolCardInSegments,
   upsertToolCardInSegments,
 } from "./tool-segments.js";
+import { buildHookSegmentEvent } from "./hook-ui.js";
+import { formatToolLabel as coreFormatToolLabel } from "../../src/core/tool-display.js";
 
 const USAGE_KEYS = [
   "inputTokens",
@@ -41,7 +44,7 @@ export function mergeUsage(current, incoming) {
 
 export function createSkillSegment(event, status = "running") {
   const now = new Date().toISOString();
-  return {
+  const segment = {
     type: "skill",
     name: event.name,
     status,
@@ -51,6 +54,31 @@ export function createSkillSegment(event, status = "running") {
       : {}),
     ...(status === "error" && event.summary ? { summary: event.summary } : {}),
   };
+  if (event.kind) segment.kind = event.kind;
+  if (event.event) segment.event = event.event;
+  if (event.source) segment.source = event.source;
+  if (event.sourceLabel) segment.sourceLabel = event.sourceLabel;
+  if (event.toolName) segment.toolName = event.toolName;
+  if (event.matcher) segment.matcher = event.matcher;
+  if (event.command) segment.command = event.command;
+  if (event.summary && status !== "error") segment.summary = event.summary;
+  if (event.reason) segment.reason = event.reason;
+  return segment;
+}
+
+/** Insert PreToolUse before the tools segment that already shows that tool. */
+function findPreToolUseInsertIndex(segments, toolName) {
+  const name = String(toolName || "").trim();
+  const list = Array.isArray(segments) ? segments : [];
+  for (let index = list.length - 1; index >= 0; index -= 1) {
+    const segment = list[index];
+    if (segment?.type !== "tools" || !Array.isArray(segment.cards)) continue;
+    if (!name) return index;
+    if (segment.cards.some((card) => String(card?.name || "").trim() === name)) {
+      return index;
+    }
+  }
+  return -1;
 }
 
 export function addSkillToSegments(segments, event) {
@@ -58,10 +86,26 @@ export function addSkillToSegments(segments, event) {
   const existingIndex = source.findIndex(
     (segment) => segment?.type === "skill" && segment.name === event.name,
   );
-  if (existingIndex === -1) return [...source, createSkillSegment(event)];
-  return source.map((segment, index) =>
-    index === existingIndex ? createSkillSegment(event) : segment,
-  );
+  if (existingIndex !== -1) {
+    return source.map((segment, index) =>
+      index === existingIndex ? createSkillSegment(event) : segment,
+    );
+  }
+
+  const nextSegment = createSkillSegment(event);
+  // Tool cards appear during assistant:tool_call_delta, before PreToolUse runs.
+  // Place PreToolUse above the matching tools group so the UI order matches lifecycle.
+  if (event?.kind === "hook" && event?.event === "PreToolUse") {
+    const insertAt = findPreToolUseInsertIndex(source, event.toolName);
+    if (insertAt >= 0) {
+      return [
+        ...source.slice(0, insertAt),
+        nextSegment,
+        ...source.slice(insertAt),
+      ];
+    }
+  }
+  return [...source, nextSegment];
 }
 
 export function updateSkillInSegments(segments, name, updater) {
@@ -267,14 +311,14 @@ function defaultStripText(text) {
 }
 
 function defaultFormatToolLabel(name) {
-  return String(name || "tool");
+  return coreFormatToolLabel(name);
 }
 
 function isCreatePlanToolCard(card) {
   const name = String(card?.name || "")
     .toLowerCase()
     .replace(/\(.*$/, "");
-  return name === "create_plan" || Boolean(card?.planRun);
+  return name === "create_plan" || name === "run_subagent" || Boolean(card?.planRun);
 }
 
 /**
@@ -422,6 +466,14 @@ export function applyStreamEventToMessage(message, event, options = {}) {
         segments,
       };
     }
+    case "assistant:usage": {
+      const incomingUsage = normalizeUsage(event.usage);
+      if (!incomingUsage) return message;
+      return {
+        ...message,
+        usage: mergeUsage(message.usage, incomingUsage),
+      };
+    }
     case "assistant:tool_call_delta":
     case "tool:start": {
       const toolCard = buildToolCardFromEvent(event, options);
@@ -431,7 +483,9 @@ export function applyStreamEventToMessage(message, event, options = {}) {
         : message.segments;
       return {
         ...message,
-        segments: upsertToolCardInSegments(baseSegments, toolCard),
+        segments: String(toolCard.name || "").toLowerCase() === "update_todos"
+          ? upsertSingletonToolCardInSegments(baseSegments, toolCard)
+          : upsertToolCardInSegments(baseSegments, toolCard),
       };
     }
     case "tool:result": {
@@ -541,6 +595,56 @@ export function applyStreamEventToMessage(message, event, options = {}) {
         ),
       };
     }
+    case "hook:start": {
+      const hookEvent = buildHookSegmentEvent(event);
+      const baseSegments = finishThinkingBeforeText
+        ? finishThinkingSegments(message.segments)
+        : message.segments;
+      return {
+        ...message,
+        segments: addSkillToSegments(baseSegments, {
+          ...hookEvent,
+          startedAt: event.startedAt || hookEvent.startedAt,
+        }),
+      };
+    }
+    case "hook:end":
+    case "hook:error": {
+      const hookEvent = buildHookSegmentEvent(event);
+      const endedAt = event.endedAt || new Date().toISOString();
+      const status =
+        event.type === "hook:error" ||
+        event.decision === "deny" ||
+        event.ok === false
+          ? "error"
+          : "done";
+      return {
+        ...message,
+        segments: updateSkillInSegments(
+          message.segments,
+          hookEvent.name,
+          (segment) => ({
+            ...segment,
+            kind: "hook",
+            event: hookEvent.event || segment.event,
+            source: hookEvent.source || segment.source,
+            sourceLabel: hookEvent.sourceLabel || segment.sourceLabel,
+            toolName: hookEvent.toolName || segment.toolName,
+            matcher: hookEvent.matcher || segment.matcher,
+            command: hookEvent.command || segment.command,
+            status,
+            summary:
+              event.error ||
+              event.reason ||
+              event.summary ||
+              event.command ||
+              segment.summary,
+            reason: event.reason || event.error || segment.reason,
+            endedAt,
+          }),
+        ),
+      };
+    }
     default:
       return message;
   }
@@ -552,6 +656,7 @@ export function isTranscriptStreamEvent(type) {
     value === "assistant:delta" ||
     value === "assistant:reasoning_delta" ||
     value === "assistant:response" ||
+    value === "assistant:usage" ||
     value === "assistant:tool_call_delta" ||
     value === "tool:start" ||
     value === "tool:end" ||
@@ -560,6 +665,9 @@ export function isTranscriptStreamEvent(type) {
     value === "tool:blocked" ||
     value === "skill:start" ||
     value === "skill:end" ||
-    value === "skill:error"
+    value === "skill:error" ||
+    value === "hook:start" ||
+    value === "hook:end" ||
+    value === "hook:error"
   );
 }

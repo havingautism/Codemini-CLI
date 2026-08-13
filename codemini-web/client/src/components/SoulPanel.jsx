@@ -17,6 +17,13 @@ import {
 import { SettingsField } from "@/components/settings/SettingsField.jsx";
 import { SettingsSection } from "@/components/settings/SettingsSection.jsx";
 import { SettingsSegmentedControl } from "@/components/settings/SettingsSegmentedControl.jsx";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import {
   Dialog,
@@ -31,19 +38,28 @@ import { useApp } from "@/context/app-context.jsx";
 import { t } from "../../i18n/index.js";
 
 const FILTERS = ["all", "builtin", "custom"];
+const SOUL_TABS = ["coding", "daily"];
 
 function scopeLabel(scope) {
   return scope === "builtin" ? t("builtin") : t("custom");
 }
 
-function SoulEditor({ soul, onSave, onCancel }) {
+function categoryLabel(category) {
+  return category === "daily"
+    ? t("skillContextDaily")
+    : t("skillContextCoding");
+}
+
+function SoulEditor({ soul, onSave, onCancel, defaultCategory = "daily" }) {
   const [name, setName] = useState(soul?.name || "");
+  const [category, setCategory] = useState(soul?.category || defaultCategory);
   const [content, setContent] = useState("");
   const [loading, setLoading] = useState(false);
   const isNew = !soul;
 
   useEffect(() => {
     setName(soul?.name || "");
+    setCategory(soul?.category || defaultCategory);
     if (!soul) {
       setContent("");
       return;
@@ -54,11 +70,11 @@ function SoulEditor({ soul, onSave, onCancel }) {
       .then((data) => setContent(data.content || ""))
       .catch(() => {})
       .finally(() => setLoading(false));
-  }, [soul]);
+  }, [soul, defaultCategory]);
 
   const handleSave = async () => {
     if (isNew) {
-      await api.createSoul({ name, content });
+      await api.createSoul({ name, content, category });
     } else {
       await api.updateSoulContent(soul.name, content);
     }
@@ -77,6 +93,23 @@ function SoulEditor({ soul, onSave, onCancel }) {
               placeholder="my-soul"
             />
           </SettingsField>
+          {isNew ? (
+            <SettingsField id="soul-editor-category" label={t("soulCategory")}>
+              <Select value={category} onValueChange={setCategory}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="coding">
+                    {t("skillContextCoding")}
+                  </SelectItem>
+                  <SelectItem value="daily">
+                    {t("skillContextDaily")}
+                  </SelectItem>
+                </SelectContent>
+              </Select>
+            </SettingsField>
+          ) : null}
           <SettingsField id="soul-editor-content" label={t("soulContent")}>
             {loading ? (
               <Empty className="rounded-lg border border-(--border-default) py-8">
@@ -111,7 +144,7 @@ function SoulEditor({ soul, onSave, onCancel }) {
   );
 }
 
-function SoulEditorDialog({ soul, open, onSave, onOpenChange }) {
+function SoulEditorDialog({ soul, open, onSave, onOpenChange, defaultCategory = "daily" }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="flex max-h-[85vh] flex-col gap-4 overflow-hidden p-0 sm:max-w-[720px]">
@@ -121,6 +154,7 @@ function SoulEditorDialog({ soul, open, onSave, onOpenChange }) {
         <div className="flex min-h-0 flex-col px-4 pb-4 sm:px-6">
           <SoulEditor
             soul={soul}
+            defaultCategory={defaultCategory}
             onSave={onSave}
             onCancel={() => onOpenChange(false)}
           />
@@ -136,28 +170,38 @@ function SoulDetailPane({ soul, disabled = false, onSave }) {
   const [loading, setLoading] = useState(false);
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
+  const soulName = soul?.name || "";
+  const soulScope = soul?.scope || "";
 
   useEffect(() => {
     setEditing(false);
-    if (!soul) {
+    if (!soulName) {
       setContent("");
       setDraftContent("");
       return;
     }
+    let cancelled = false;
     setLoading(true);
     api
-      .fetchSoulContent(soul.name)
+      .fetchSoulContent(soulName)
       .then((data) => {
+        if (cancelled) return;
         const next = data.content || "";
         setContent(next);
         setDraftContent(next);
       })
       .catch(() => {
+        if (cancelled) return;
         setContent("");
         setDraftContent("");
       })
-      .finally(() => setLoading(false));
-  }, [soul]);
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [soulName, soulScope]);
 
   if (!soul) {
     return (
@@ -200,6 +244,12 @@ function SoulDetailPane({ soul, disabled = false, onSave }) {
               <h3 className="min-w-0 truncate text-[17px] font-semibold leading-6 text-(--text-primary)">
                 {soul.name}
               </h3>
+              <Badge
+                variant="outline"
+                className="h-6 rounded-md px-2 text-[11px]"
+              >
+                {categoryLabel(soul.category)}
+              </Badge>
               <Badge
                 variant="outline"
                 className="h-6 rounded-md px-2 text-[11px]"
@@ -256,7 +306,7 @@ function SoulDetailPane({ soul, disabled = false, onSave }) {
         </div>
       </div>
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden p-5">
-        {loading ? (
+        {loading && !content ? (
           <div className="py-8 text-center text-[12px] text-(--text-muted)">
             {t("loading")}...
           </div>
@@ -276,7 +326,7 @@ function SoulDetailPane({ soul, disabled = false, onSave }) {
 }
 
 function soulItemKey(soul) {
-  return `${soul?.scope || "unknown"}:${soul?.name || ""}`;
+  return `${soul?.category || "coding"}:${soul?.scope || "unknown"}:${soul?.name || ""}`;
 }
 
 function groupFilteredSouls(items, filter) {
@@ -309,7 +359,7 @@ function SoulChoiceCard({
   const handleToggle = (checked) => {
     if (disabled) return;
     if (checked && !active) {
-      onActivate(soul.name);
+      onActivate(soul);
     }
   };
 
@@ -403,18 +453,19 @@ export function SoulPanel({ disabled = false }) {
   const [editing, setEditing] = useState(null);
   const [selectedSoul, setSelectedSoul] = useState(null);
   const [query, setQuery] = useState("");
+  const [categoryTab, setCategoryTab] = useState("coding");
   const [filter, setFilter] = useState("all");
   const [pendingDelete, setPendingDelete] = useState(null);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState("");
 
-  const loadSouls = useCallback(async () => {
-    setLoading(true);
+  const loadSouls = useCallback(async ({ silent = false } = {}) => {
+    if (!silent) setLoading(true);
     try {
       const list = await api.fetchSouls();
       setSouls(Array.isArray(list) ? list : []);
     } catch {}
-    setLoading(false);
+    if (!silent) setLoading(false);
   }, []);
 
   useEffect(() => {
@@ -423,20 +474,24 @@ export function SoulPanel({ disabled = false }) {
 
   useEffect(() => {
     if (state.soulsRevision > 0) {
-      loadSouls();
+      loadSouls({ silent: true });
     }
   }, [state.soulsRevision, loadSouls]);
 
-  const activeSoul = souls.find((soul) => soul.active);
-  const customCount = souls.filter((soul) => soul.scope !== "builtin").length;
+  const categorySouls = useMemo(
+    () => souls.filter((soul) => (soul.category || "coding") === categoryTab),
+    [souls, categoryTab],
+  );
+  const activeSoul = categorySouls.find((soul) => soul.active);
+  const customCount = categorySouls.filter((soul) => soul.scope !== "builtin").length;
   const filteredSouls = useMemo(() => {
     const needle = query.trim().toLowerCase();
-    return souls.filter((soul) => {
+    return categorySouls.filter((soul) => {
       if (filter !== "all" && soul.scope !== filter) return false;
       if (!needle) return true;
       return soul.name.toLowerCase().includes(needle);
     });
-  }, [souls, query, filter]);
+  }, [categorySouls, query, filter]);
 
   const groupedSouls = useMemo(
     () => groupFilteredSouls(filteredSouls, filter),
@@ -455,14 +510,38 @@ export function SoulPanel({ disabled = false }) {
       )
     ) {
       setSelectedSoul(filteredSouls[0]);
+      return;
     }
+    // Keep selection object in sync when only `active` / preview changes.
+    const next = filteredSouls.find(
+      (soul) => soulItemKey(soul) === soulItemKey(selectedSoul),
+    );
+    if (next && next !== selectedSoul) setSelectedSoul(next);
   }, [filteredSouls, selectedSoul]);
 
-  const handleActivate = async (name) => {
-    if (disabled) return;
-    await api.activateSoul(name);
-    await loadSouls();
-    actions.notifySoulsChanged();
+  const handleActivate = async (soul) => {
+    if (disabled || !soul?.name || soul.active) return;
+    const category = soul.category || categoryTab;
+    setSouls((prev) =>
+      prev.map((item) => ({
+        ...item,
+        active:
+          (item.category || "coding") === category
+            ? item.name === soul.name
+            : item.active,
+      })),
+    );
+    setSelectedSoul((prev) =>
+      prev && soulItemKey(prev) === soulItemKey(soul)
+        ? { ...prev, active: true }
+        : prev,
+    );
+    try {
+      await api.activateSoul(soul.name, category);
+      actions.notifySoulsChanged();
+    } catch {
+      await loadSouls({ silent: true });
+    }
   };
 
   const handleDelete = (soul) => {
@@ -478,7 +557,7 @@ export function SoulPanel({ disabled = false }) {
     try {
       await api.deleteSoul(pendingDelete.name);
       setPendingDelete(null);
-      await loadSouls();
+      await loadSouls({ silent: true });
       actions.notifySoulsChanged();
     } catch (err) {
       setDeleteError(err.message || t("deleteSoulFailed"));
@@ -489,10 +568,10 @@ export function SoulPanel({ disabled = false }) {
 
   const handleSave = () => {
     setEditing(null);
-    loadSouls().then(() => actions.notifySoulsChanged());
+    loadSouls({ silent: true }).then(() => actions.notifySoulsChanged());
   };
 
-  if (loading) {
+  if (loading && souls.length === 0) {
     return (
       <div className="py-8 text-center text-[12px] text-(--text-muted)">
         {t("loading")}...
@@ -518,9 +597,10 @@ export function SoulPanel({ disabled = false }) {
                   {t("current")}
                 </Badge>
               )}
-              {souls.length > 0 && (
+              {categorySouls.length > 0 && (
                 <span className="text-[12px] text-(--text-muted)">
-                  · {souls.length} {t("items")} · {customCount} {t("custom")}
+                  · {categorySouls.length} {t("items")} · {customCount}{" "}
+                  {t("custom")}
                 </span>
               )}
             </div>
@@ -535,6 +615,16 @@ export function SoulPanel({ disabled = false }) {
           </div>
 
           <div className="flex shrink-0 flex-col gap-2">
+            <SettingsSegmentedControl
+              idPrefix="soul-category"
+              value={categoryTab}
+              onValueChange={setCategoryTab}
+              options={SOUL_TABS.map((item) => ({
+                value: item,
+                label: categoryLabel(item),
+              }))}
+              className="w-full shrink-0 [&_button]:truncate [&_button]:text-[11px] sm:[&_button]:text-[12px]"
+            />
             <div className="relative min-w-0 flex-1">
               <MagnifyingGlass
                 size={13}
@@ -566,7 +656,7 @@ export function SoulPanel({ disabled = false }) {
           )}
 
           <div className="min-h-[220px] flex-1 overflow-y-auto scroll-smooth pr-2 [scrollbar-gutter:stable]">
-            {souls.length === 0 && !editing && (
+            {categorySouls.length === 0 && !editing && (
               <Empty className="rounded-lg py-8">
                 <EmptyDescription className="text-[13px] text-(--text-primary)">
                   {t("noSouls")}
@@ -577,7 +667,7 @@ export function SoulPanel({ disabled = false }) {
               </Empty>
             )}
 
-            {souls.length > 0 && filteredSouls.length === 0 && (
+            {categorySouls.length > 0 && filteredSouls.length === 0 && (
               <div className="py-8 text-center text-[12px] text-(--text-muted)">
                 {t("noMatches")}
               </div>
@@ -623,6 +713,7 @@ export function SoulPanel({ disabled = false }) {
       <SoulEditorDialog
         soul={editing === "new" ? null : editing}
         open={!!editing}
+        defaultCategory={categoryTab}
         onSave={handleSave}
         onOpenChange={(open) => {
           if (!open) setEditing(null);

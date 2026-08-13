@@ -26,10 +26,6 @@ export function getBaseConfigDir() {
   return path.join(process.cwd(), '.codemini-global');
 }
 
-export function getLegacyConfigDir() {
-  return getBaseConfigDir();
-}
-
 export function getConfigFilePath() {
   return path.join(getBaseConfigDir(), 'config.json');
 }
@@ -66,8 +62,23 @@ export function getProjectCommandsDir(cwd = process.cwd()) {
   return path.join(getProjectWorkspaceDir(cwd), 'commands');
 }
 
-export function getProjectSkillsDir(cwd = process.cwd()) {
-  return path.join(getProjectWorkspaceDir(cwd), 'skills');
+export function getProjectHooksDir(cwd = process.cwd()) {
+  return path.join(getProjectWorkspaceDir(cwd), 'hooks');
+}
+
+export function getProjectHooksFilePath(cwd = process.cwd(), context = 'coding') {
+  return path.join(
+    getProjectHooksDir(cwd),
+    context === 'daily' ? 'hooks.daily.json' : 'hooks.json',
+  );
+}
+
+export function getGlobalHooksDir() {
+  return path.join(getBaseConfigDir(), 'hooks');
+}
+
+export function getGlobalHooksFilePath() {
+  return path.join(getGlobalHooksDir(), 'hooks.json');
 }
 
 export function getProjectSpecsDir(cwd = process.cwd(), sessionId = '') {
@@ -80,6 +91,12 @@ export function getProjectPlansDir(cwd = process.cwd(), sessionId = '') {
   return sessionId
     ? path.join(getProjectWorkspaceDir(cwd), 'plans', String(sessionId))
     : path.join(getProjectWorkspaceDir(cwd), 'plans');
+}
+
+export function getProjectHandoffsDir(cwd = process.cwd(), sessionId = '') {
+  return sessionId
+    ? path.join(getProjectWorkspaceDir(cwd), 'handoffs', String(sessionId))
+    : path.join(getProjectWorkspaceDir(cwd), 'handoffs');
 }
 
 export function getProjectCheckpointsDir(cwd = process.cwd()) {

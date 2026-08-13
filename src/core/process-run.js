@@ -31,6 +31,10 @@ export async function runProcess(command, args = [], {
     throw error;
   }
 
+  if (result.timedOut) {
+    throw new Error(`${command} timed out after ${timeoutMs}ms`);
+  }
+
   const stdout = String(result.stdout ?? '');
   const stderr = String(result.stderr ?? '');
   const code = result.exitCode ?? (result.failed ? 1 : 0);

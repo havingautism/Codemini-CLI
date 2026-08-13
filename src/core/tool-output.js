@@ -1,6 +1,8 @@
 import cliTruncate from 'cli-truncate';
 import stripAnsi from 'strip-ansi';
 import { classifyCommandIntent } from './shell.js';
+import { sanitizeUnicodeText } from './provider/json-body.js';
+import { isShellToolName } from './shell-tool-name.js';
 
 const CONTROL_CHARS_RE = /[\u0000-\u0008\u000B-\u001F\u007F]/g;
 
@@ -41,7 +43,8 @@ export function sanitizeTextForModel(
   if (maxChars > 0 && sanitized.length > maxChars) {
     sanitized = `${sanitized.slice(0, maxChars)}\n... [sanitized output truncated ${sanitized.length - maxChars} chars]`;
   }
-  return sanitized;
+  // Truncation / binary reads can leave lone UTF-16 surrogates; gateways reject them.
+  return sanitizeUnicodeText(sanitized);
 }
 
 export function getToolOutputSanitizeOptions(toolName) {
@@ -49,7 +52,7 @@ export function getToolOutputSanitizeOptions(toolName) {
   if (
     name === 'read'
     || name === 'read_ast_node'
-    || name === 'run'
+    || isShellToolName(name)
     || name === 'web_fetch'
     || name === 'web_search'
   ) {

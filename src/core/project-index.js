@@ -1,11 +1,20 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import ignore from 'ignore';
+import { LRUCache } from 'lru-cache';
+import pLimit from 'p-limit';
 import { getFileIndexPath, getProjectIndexDir, getProjectMapPath, getProjectWorkspaceDir } from './paths.js';
 import { INDEX_SKIP_DIRS as SKIP_DIRS, SOURCE_EXTENSIONS, EXTENSION_LANGUAGE_MAP } from './constants.js';
 import { sha256 } from './crypto-utils.js';
-import { BoundedCache } from './bounded-cache.js';
-import { trimInline, normalizeRelativePath, escapeRegex } from './string-utils.js';
+import { trimInline, normalizeRelativePath } from './string-utils.js';
 import { globFilesUnder } from './workspace-glob.js';
+import {
+  loadProjectFileIndexFromSqlite,
+  loadProjectIndexFromSqlite,
+  saveProjectIndexToSqlite
+} from './project-index-sqlite-store.js';
+import { refreshProjectKnowledgeGraph } from './project-knowledge-graph.js';
+import { extractAstIndexFacts } from './ast.js';
 
 const PROJECT_MARKER_FILES = new Set([
   'package.json',
@@ -25,8 +34,8 @@ const PROJECT_MARKER_FILES = new Set([
 
 const LANGUAGE_BY_EXT = EXTENSION_LANGUAGE_MAP;
 
-const initCache = new BoundedCache({ maxSize: 32, ttlMs: 10 * 60 * 1000 });
-const ignoreRulesCache = new BoundedCache({ maxSize: 128, ttlMs: 60 * 1000 });
+const initCache = new LRUCache({ max: 32, ttl: 10 * 60 * 1000 });
+const ignoreRulesCache = new LRUCache({ max: 128, ttl: 60 * 1000 });
 const PROJECT_CONTEXT_MAX_FILES = 6;
 
 function clipList(values, max = 32) {
@@ -45,7 +54,12 @@ async function safeStat(filePath) {
   }
 }
 
-const jsonCache = new BoundedCache({ maxSize: 64, ttlMs: 30 * 1000 });
+async function mapAsyncLimit(values, concurrency, mapper) {
+  return pLimit(Math.max(1, concurrency)).map(Array.isArray(values) ? values : [], mapper);
+}
+
+const jsonCache = new LRUCache({ max: 64, ttl: 30 * 1000 });
+const indexUpdateLocks = new Map();
 
 async function safeReadJson(filePath, fallback) {
   try {
@@ -74,33 +88,15 @@ function trimMultiline(value, max = 1800) {
   return `${text.slice(0, max - 3).trimEnd()}...`;
 }
 
-async function writeJson(filePath, value) {
-  await fs.mkdir(path.dirname(filePath), { recursive: true });
-  await fs.writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
-}
-
-function gitignorePatternToRegex(pattern) {
-  const normalized = normalizeRelativePath(pattern);
-  let regexBody = '';
-  for (let index = 0; index < normalized.length; index += 1) {
-    const ch = normalized[index];
-    const next = normalized[index + 1];
-    if (ch === '*') {
-      if (next === '*') {
-        regexBody += '.*';
-        index += 1;
-      } else {
-        regexBody += '[^/]*';
-      }
-      continue;
-    }
-    if (ch === '?') {
-      regexBody += '[^/]';
-      continue;
-    }
-    regexBody += escapeRegex(ch);
+async function withProjectIndexLock(projectRoot, task) {
+  const previous = indexUpdateLocks.get(projectRoot) || Promise.resolve();
+  const current = previous.catch(() => {}).then(task);
+  indexUpdateLocks.set(projectRoot, current);
+  try {
+    return await current;
+  } finally {
+    if (indexUpdateLocks.get(projectRoot) === current) indexUpdateLocks.delete(projectRoot);
   }
-  return new RegExp(`^${regexBody}$`);
 }
 
 async function readIgnoreFileRules(cwd, fileName) {
@@ -117,35 +113,21 @@ async function readIgnoreFileRules(cwd, fileName) {
 
   try {
     if (!stat?.isFile()) {
-      ignoreRulesCache.set(cacheKey, []);
-      return [];
+      const empty = { content: '', matcher: ignore(), hasRules: false };
+      ignoreRulesCache.set(cacheKey, empty);
+      return empty;
     }
     const raw = await fs.readFile(filePath, 'utf8');
-    const rules = raw
+    const hasRules = raw
       .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter((line) => line && !line.startsWith('#'))
-      .map((line) => {
-        const negated = line.startsWith('!');
-        const source = negated ? line.slice(1) : line;
-        const dirOnly = source.endsWith('/');
-        const anchored = source.startsWith('/');
-        const normalized = normalizeRelativePath(dirOnly ? source.slice(0, -1) : source);
-        return {
-          negated,
-          dirOnly,
-          anchored,
-          normalized,
-          hasSlash: normalized.includes('/'),
-          regex: gitignorePatternToRegex(normalized)
-        };
-      })
-      .filter((rule) => rule.normalized);
+      .some((line) => line.trim() && !line.trimStart().startsWith('#'));
+    const rules = { content: raw, matcher: ignore().add(raw), hasRules };
     ignoreRulesCache.set(cacheKey, rules);
     return rules;
   } catch {
-    ignoreRulesCache.set(cacheKey, []);
-    return [];
+    const empty = { content: '', matcher: ignore(), hasRules: false };
+    ignoreRulesCache.set(cacheKey, empty);
+    return empty;
   }
 }
 
@@ -157,33 +139,26 @@ async function readProjectIgnoreRules(cwd) {
   return {
     gitignoreRules,
     llmignoreRules,
-    combinedRules: [...gitignoreRules, ...llmignoreRules]
+    combinedRules: {
+      matcher: ignore().add(gitignoreRules.content).add(llmignoreRules.content),
+      hasRules: gitignoreRules.hasRules || llmignoreRules.hasRules,
+    }
   };
 }
 
-function matchesGitignoreRule(rule, relativePath, isDirectory) {
-  if (!rule || !relativePath) return false;
-  if (rule.dirOnly && !isDirectory) return false;
-  const normalizedPath = normalizeRelativePath(relativePath);
-  if (!normalizedPath) return false;
-  if (rule.anchored || rule.hasSlash) {
-    return rule.regex.test(normalizedPath);
-  }
-  return normalizedPath.split('/').some((segment) => rule.regex.test(segment));
+function isIgnoredByRules(relativePath, isDirectory, rules) {
+  const normalized = normalizeRelativePath(relativePath);
+  if (!normalized || !rules?.matcher) return false;
+  return rules.matcher.ignores(isDirectory ? `${normalized}/` : normalized);
 }
 
-function shouldIgnorePath(relativePath, isDirectory, gitignoreRules = []) {
+function shouldIgnorePath(relativePath, isDirectory, gitignoreRules) {
   const normalizedPath = normalizeRelativePath(relativePath);
   if (!normalizedPath) return false;
   const segments = normalizedPath.split('/').filter(Boolean);
   if (segments.some((segment) => SKIP_DIRS.has(segment))) return true;
   if (segments.some((segment) => /^venv[-_]/i.test(segment) || /\.egg-info$/i.test(segment))) return true;
-  let ignored = false;
-  for (const rule of gitignoreRules) {
-    if (!matchesGitignoreRule(rule, normalizedPath, isDirectory)) continue;
-    ignored = !rule.negated;
-  }
-  return ignored;
+  return isIgnoredByRules(normalizedPath, isDirectory, gitignoreRules);
 }
 
 const CODEMINI_GITIGNORE_ENTRY = '.codemini/';
@@ -197,21 +172,9 @@ function invalidateIgnoreRulesCache(gitignorePath) {
   }
 }
 
-function isIgnoredByGitignore(relativePath, isDirectory, gitignoreRules = []) {
-  const normalizedPath = normalizeRelativePath(relativePath);
-  if (!normalizedPath) return false;
-  let ignored = false;
-  for (const rule of gitignoreRules) {
-    if (!matchesGitignoreRule(rule, normalizedPath, isDirectory)) continue;
-    ignored = !rule.negated;
-  }
-  return ignored;
-}
-
-function gitignoreAlreadyCoversCodemini(content, gitignoreRules = []) {
+function gitignoreAlreadyCoversCodemini(content, gitignoreRules) {
   if (/\b\.codemini\/?\b/m.test(String(content || ''))) return true;
-  return isIgnoredByGitignore('.codemini', true, gitignoreRules)
-    || isIgnoredByGitignore('.codemini/', true, gitignoreRules);
+  return isIgnoredByRules('.codemini', true, gitignoreRules);
 }
 
 async function isGitRepository(projectRoot) {
@@ -255,10 +218,10 @@ export async function ensureCodeminiGitignore(projectRoot) {
 async function detectWorkspaceKind(cwd) {
   const gitDir = await safeStat(path.join(cwd, '.git'));
   if (gitDir?.isDirectory()) return 'project';
-  for (const marker of PROJECT_MARKER_FILES) {
-    const stat = await safeStat(path.join(cwd, marker));
-    if (stat?.isFile()) return 'project';
-  }
+  const markerStats = await Promise.all(
+    [...PROJECT_MARKER_FILES].map((marker) => safeStat(path.join(cwd, marker)))
+  );
+  if (markerStats.some((stat) => stat?.isFile())) return 'project';
   return 'directory';
 }
 
@@ -286,9 +249,11 @@ async function findNearestIndexedProjectRoot(startDir, workspaceRoot) {
   let current = path.resolve(startDir);
   const root = path.resolve(workspaceRoot);
   while (current.startsWith(root)) {
-    const projectMapStat = await safeStat(getProjectMapPath(current));
-    const fileIndexStat = await safeStat(getFileIndexPath(current));
-    if (projectMapStat?.isFile() && fileIndexStat?.isFile()) return current;
+    const [sqliteStat, legacyFileIndexStat] = await Promise.all([
+      safeStat(path.join(getProjectIndexDir(current), 'index.sqlite')),
+      safeStat(getFileIndexPath(current))
+    ]);
+    if (sqliteStat?.isFile() || legacyFileIndexStat?.isFile()) return current;
     if (current === root) break;
     const parent = path.dirname(current);
     if (parent === current) break;
@@ -367,6 +332,33 @@ function extractSemanticEmits(calls, content) {
     ...eventNames,
     ...(calls || []).filter((name) => /\.(emit|publish|dispatch)$/i.test(String(name)) || /^(emit|publish|dispatch)$/i.test(String(name)))
   ], 16);
+}
+
+function extractInterfaces(relativePath, content) {
+  const interfaces = [];
+  const seen = new Set();
+  const add = (kind, name, method = '') => {
+    const key = `${kind}:${method}:${name}`;
+    if (!name || seen.has(key)) return;
+    seen.add(key);
+    interfaces.push({ kind, name, method });
+  };
+  const routePatterns = [
+    /req\.method\s*===\s*['"]([A-Z]+)['"][\s\S]{0,240}?url\.pathname\s*===\s*['"]([^'"]+)['"]/g,
+    /req\.method\s*===\s*['"]([A-Z]+)['"][\s\S]{0,240}?url\.pathname\.startsWith\(\s*['"]([^'"]+)['"]/g
+  ];
+  for (const pattern of routePatterns) {
+    for (const match of String(content || '').matchAll(pattern)) add('http', match[2], match[1]);
+  }
+  if (/^src\/commands\/[^/]+\.js$/i.test(normalizeRelativePath(relativePath))) {
+    add('cli', path.posix.basename(relativePath, path.posix.extname(relativePath)));
+  }
+  if (normalizeRelativePath(relativePath) === 'src/core/tools.js') {
+    for (const match of String(content || '').matchAll(/\bname:\s*["']([a-z][a-z0-9_]{2,})["']/g)) {
+      add('tool', match[1]);
+    }
+  }
+  return interfaces.slice(0, 200);
 }
 
 function extractSymbolDefinitions(relativePath, content, imports = []) {
@@ -476,7 +468,7 @@ function enrichSymbolGraph(files) {
   return nextFiles;
 }
 
-function buildFileEntry(relativePath, content, stat) {
+async function buildFileEntry(relativePath, content, stat) {
   const ext = path.extname(relativePath).toLowerCase();
   const imports = clipList([
     ...extractMatches(/import\s+(?:[^'"]*from\s+)?['"]([^'"]+)['"]/g, content),
@@ -503,7 +495,15 @@ function buildFileEntry(relativePath, content, stat) {
     ...extractMatches(/\bclass\s+([A-Za-z0-9_$]+)/g, content)
   ]);
   const calls = extractCallNames(content);
-  const symbols = extractSymbolDefinitions(relativePath, content, imports);
+  const interfaces = extractInterfaces(relativePath, content);
+  const astFacts = await extractAstIndexFacts(content, relativePath);
+  const symbols = (astFacts?.symbols?.length ? astFacts.symbols : extractSymbolDefinitions(relativePath, content, imports))
+    .map((symbol) => ({
+      ...symbol,
+      imports: clipList(symbol.imports?.length ? symbol.imports : imports, 12),
+      writes: symbol.writes?.length ? symbol.writes : extractSemanticWrites(symbol.calls || []),
+      emits: symbol.emits?.length ? symbol.emits : extractSemanticEmits(symbol.calls || [], content)
+    }));
 
   return {
     file: relativePath,
@@ -516,7 +516,8 @@ function buildFileEntry(relativePath, content, stat) {
     functions,
     classes,
     calls,
-    symbols
+    symbols,
+    interfaces
   };
 }
 
@@ -536,8 +537,11 @@ async function scanProject(cwd) {
   const relativeFiles = allFiles.map((filePath) => rel(cwd, filePath));
   const sourceFiles = allFiles.filter((filePath) => SOURCE_EXTENSIONS.has(path.extname(filePath).toLowerCase()));
 
-  const packageJson = await safeReadJson(path.join(cwd, 'package.json'), null);
-  const tsconfigExists = Boolean(await safeStat(path.join(cwd, 'tsconfig.json')));
+  const [packageJson, tsconfigStat] = await Promise.all([
+    safeReadJson(path.join(cwd, 'package.json'), null),
+    safeStat(path.join(cwd, 'tsconfig.json'))
+  ]);
+  const tsconfigExists = Boolean(tsconfigStat);
   const sourceRoots = clipList(relativeFiles.filter((value) => /^(src|app|apps)\b/.test(value)).map((value) => value.split('/')[0]), 12);
   const testRoots = clipList(relativeFiles.filter((value) => /^(tests|test|__tests__)\b/.test(value)).map((value) => value.split('/')[0]), 12);
   const entryCandidates = clipList(
@@ -570,12 +574,13 @@ async function scanProject(cwd) {
     if (!(dir in directories)) directories[dir] = categorizeDirectory(dir);
   }
 
-  let files = [];
-  for (const filePath of sourceFiles) {
-    const content = await fs.readFile(filePath, 'utf8');
-    const stat = await fs.stat(filePath);
-    files.push(buildFileEntry(rel(cwd, filePath), content, stat));
-  }
+  let files = await mapAsyncLimit(sourceFiles, 32, async (filePath) => {
+    const [content, stat] = await Promise.all([
+      fs.readFile(filePath, 'utf8'),
+      fs.stat(filePath)
+    ]);
+    return buildFileEntry(rel(cwd, filePath), content, stat);
+  });
   files = enrichSymbolGraph(files);
 
   return {
@@ -591,8 +596,8 @@ async function scanProject(cwd) {
       entryCandidates,
       frameworkHints,
       directories,
-      gitignoreEnabled: gitignoreRules.length > 0,
-      llmignoreEnabled: llmignoreRules.length > 0,
+      gitignoreEnabled: gitignoreRules.hasRules,
+      llmignoreEnabled: llmignoreRules.hasRules,
       updatedAt: new Date().toISOString()
     },
     fileIndex: {
@@ -605,6 +610,20 @@ async function scanProject(cwd) {
 
 async function loadExistingProjectIndex(targetRoot) {
   try {
+    const sqlite = loadProjectIndexFromSqlite(targetRoot);
+    if (sqlite?.projectMap && Array.isArray(sqlite?.fileIndex?.files) && sqlite.fileIndex.files.length > 0) {
+      refreshProjectKnowledgeGraph(targetRoot, {
+        projectMap: sqlite.projectMap,
+        fileIndex: sqlite.fileIndex
+      });
+      return {
+        workspaceKind: 'project',
+        projectRoot: targetRoot,
+        projectMap: sqlite.projectMap,
+        fileIndex: sqlite.fileIndex,
+        summary: `loaded ${path.basename(targetRoot) || '.'}/.codemini (${sqlite.fileIndex.files.length} files)`
+      };
+    }
     const [projectMap, fileIndex] = await Promise.all([
       safeReadJson(getProjectMapPath(targetRoot), null),
       safeReadJson(getFileIndexPath(targetRoot), null)
@@ -612,6 +631,8 @@ async function loadExistingProjectIndex(targetRoot) {
     if (!projectMap || !fileIndex || !Array.isArray(fileIndex.files) || fileIndex.files.length === 0) {
       return null;
     }
+    saveProjectIndexToSqlite(targetRoot, { projectMap, fileIndex });
+    refreshProjectKnowledgeGraph(targetRoot, { projectMap, fileIndex });
     return {
       workspaceKind: 'project',
       projectRoot: targetRoot,
@@ -646,8 +667,8 @@ export async function initializeProjectIndex(cwd = process.cwd()) {
       };
     }
     await fs.mkdir(getProjectIndexDir(targetRoot), { recursive: true });
-    await writeJson(getProjectMapPath(targetRoot), projectMap);
-    await writeJson(getFileIndexPath(targetRoot), fileIndex);
+    saveProjectIndexToSqlite(targetRoot, { projectMap, fileIndex });
+    refreshProjectKnowledgeGraph(targetRoot, { projectMap, fileIndex });
     return {
       workspaceKind,
       projectRoot: targetRoot,
@@ -665,66 +686,103 @@ export async function initializeProjectIndex(cwd = process.cwd()) {
   }
 }
 
-export async function refreshIndexedFile(cwd = process.cwd(), relativePath = '') {
-  if (!relativePath) return null;
-  const workspaceDir = getProjectWorkspaceDir(cwd);
-  await fs.mkdir(workspaceDir, { recursive: true });
-  const projectRoot = await findProjectRootFromFile(cwd, relativePath);
-  if (projectRoot) await ensureCodeminiGitignore(projectRoot);
-  if (!projectRoot) return null;
-  const fileIndexPath = getFileIndexPath(projectRoot);
-  const { combinedRules } = await readProjectIgnoreRules(projectRoot);
-  const absolutePath = path.join(cwd, relativePath);
-  const stat = await safeStat(absolutePath);
-  let action = 'updated';
-  const projectRelativePath = path.relative(projectRoot, absolutePath).replace(/\\/g, '/');
-  const current = await safeReadJson(fileIndexPath, { updatedAt: '', files: [] });
-  const files = Array.isArray(current.files) ? [...current.files] : [];
-  const index = files.findIndex((entry) => entry.file === projectRelativePath);
-
-  if (shouldIgnorePath(projectRelativePath, Boolean(stat?.isDirectory?.()), combinedRules)) {
-    if (index >= 0) files.splice(index, 1);
-    action = 'removed';
-  } else if (!stat || !stat.isFile()) {
-    if (index >= 0) files.splice(index, 1);
-    action = 'removed';
-  } else {
-    const ext = path.extname(relativePath).toLowerCase();
-    if (!SOURCE_EXTENSIONS.has(ext)) {
-      if (index >= 0) files.splice(index, 1);
-      action = 'removed';
-    } else {
-      const content = await fs.readFile(absolutePath, 'utf8');
-      const nextEntry = buildFileEntry(projectRelativePath, content, stat);
-      if (index >= 0) {
-        files[index] = nextEntry;
-      } else {
-        files.push(nextEntry);
-        action = 'added';
-      }
-    }
+export async function refreshIndexedFiles(cwd = process.cwd(), relativePaths = []) {
+  const requestedPaths = [...new Set(
+    (Array.isArray(relativePaths) ? relativePaths : [relativePaths])
+      .map((value) => String(value || '').trim())
+      .filter(Boolean)
+  )];
+  if (requestedPaths.length === 0) {
+    return { updatedProjects: 0, indexWrites: 0, files: [] };
   }
 
-  const enrichedFiles = enrichSymbolGraph(files);
-  await writeJson(fileIndexPath, {
-    updatedAt: new Date().toISOString(),
-    files: enrichedFiles.sort((left, right) => left.file.localeCompare(right.file))
-  });
+  await fs.mkdir(getProjectWorkspaceDir(cwd), { recursive: true });
+  const resolved = await Promise.all(requestedPaths.map(async (relativePath) => ({
+    relativePath,
+    absolutePath: path.resolve(cwd, relativePath),
+    projectRoot: await findProjectRootFromFile(cwd, relativePath)
+  })));
+  const grouped = new Map();
+  for (const target of resolved) {
+    if (!target.projectRoot) continue;
+    if (!grouped.has(target.projectRoot)) grouped.set(target.projectRoot, []);
+    grouped.get(target.projectRoot).push(target);
+  }
+
+  const projectResults = await Promise.all([...grouped.entries()].map(([projectRoot, targets]) => withProjectIndexLock(projectRoot, async () => {
+    await ensureCodeminiGitignore(projectRoot);
+    const { combinedRules } = await readProjectIgnoreRules(projectRoot);
+    const current = loadProjectFileIndexFromSqlite(projectRoot);
+    const filesByPath = new Map(
+      (Array.isArray(current.files) ? current.files : []).map((entry) => [entry.file, entry])
+    );
+
+    const updates = await Promise.all(targets.map(async ({ absolutePath }) => {
+      const stat = await safeStat(absolutePath);
+      const projectRelativePath = path.relative(projectRoot, absolutePath).replace(/\\/g, '/');
+      const ignored = shouldIgnorePath(
+        projectRelativePath,
+        Boolean(stat?.isDirectory?.()),
+        combinedRules
+      );
+      const supported = SOURCE_EXTENSIONS.has(path.extname(projectRelativePath).toLowerCase());
+      if (ignored || !stat?.isFile() || !supported) {
+        return { path: projectRelativePath, action: 'removed', entry: null };
+      }
+      const content = await fs.readFile(absolutePath, 'utf8');
+      return {
+        path: projectRelativePath,
+        action: filesByPath.has(projectRelativePath) ? 'updated' : 'added',
+        entry: await buildFileEntry(projectRelativePath, content, stat)
+      };
+    }));
+
+    for (const update of updates) {
+      if (update.entry) filesByPath.set(update.path, update.entry);
+      else filesByPath.delete(update.path);
+    }
+    const enrichedFiles = enrichSymbolGraph([...filesByPath.values()]);
+    const nextFileIndex = {
+      updatedAt: new Date().toISOString(),
+      files: enrichedFiles.sort((left, right) => left.file.localeCompare(right.file))
+    };
+    saveProjectIndexToSqlite(projectRoot, { fileIndex: nextFileIndex });
+    refreshProjectKnowledgeGraph(projectRoot, {
+      projectMap: loadProjectIndexFromSqlite(projectRoot)?.projectMap || {},
+      fileIndex: nextFileIndex
+    });
+
+    return {
+      projectRoot,
+      files: updates.map(({ path: filePath, action }) => ({
+        path: filePath,
+        projectRoot,
+        action,
+        summary: `${action} ${path.basename(projectRoot) || '.'}/.codemini for ${filePath}`
+      }))
+    };
+  })));
 
   return {
-    path: projectRelativePath,
-    projectRoot,
-    action,
-    summary: `${action} ${path.basename(projectRoot) || '.'}/.codemini for ${projectRelativePath}`
+    updatedProjects: projectResults.length,
+    indexWrites: projectResults.length,
+    files: projectResults.flatMap((result) => result.files)
   };
+}
+
+export async function refreshIndexedFile(cwd = process.cwd(), relativePath = '') {
+  if (!relativePath) return null;
+  const result = await refreshIndexedFiles(cwd, [relativePath]);
+  return result.files[0] || null;
 }
 
 export async function buildProjectContextSnippet(cwd = process.cwd(), userText = '') {
   const indexedRoot = await findNearestIndexedProjectRoot(cwd, cwd);
   if (!indexedRoot) return '';
 
-  const projectMap = await safeReadJson(getProjectMapPath(indexedRoot), null);
-  const fileIndex = await safeReadJson(getFileIndexPath(indexedRoot), null);
+  const storedIndex = loadProjectIndexFromSqlite(indexedRoot);
+  const projectMap = storedIndex?.projectMap;
+  const fileIndex = storedIndex?.fileIndex;
   if (!projectMap || !Array.isArray(fileIndex?.files)) return '';
 
   const lines = [
@@ -781,8 +839,9 @@ export async function queryProjectIndex(cwd = process.cwd(), args = {}) {
     };
   }
 
-  const projectMap = await safeReadJson(getProjectMapPath(indexedRoot), null);
-  const fileIndex = await safeReadJson(getFileIndexPath(indexedRoot), null);
+  const storedIndex = loadProjectIndexFromSqlite(indexedRoot);
+  const projectMap = storedIndex?.projectMap;
+  const fileIndex = storedIndex?.fileIndex;
   const query = String(args?.query || '').trim();
   const pathPrefix = normalizeRelativePath(args?.path || args?.path_prefix || '');
   const languageFilter = String(args?.language || '').trim().toLowerCase();

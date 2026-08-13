@@ -1,4 +1,4 @@
-﻿import { Suspense, lazy, useRef, useEffect, useState, useMemo, useCallback } from "react";
+import { Suspense, lazy, useRef, useEffect, useState, useMemo, useCallback } from "react";
 import { GitBranch } from "@phosphor-icons/react";
 import { Spinner } from "@/components/ui/spinner";
 import {
@@ -8,8 +8,11 @@ import {
   MessageScrollerItem,
   MessageScrollerProvider,
   MessageScrollerViewport,
+  useMessageScroller,
 } from "@/components/ui/message-scroller";
 import { cn } from "@/lib/utils";
+import { hasConversationContent } from "@/lib/chat-empty-state.js";
+import { getActiveMessageIndex } from "@/lib/chat-navigation.js";
 import { t } from "../../i18n/index.js";
 import { HomeEmptyVisual } from "./HomeEmptyVisual.jsx";
 import { HomeEmptyCaption } from "./HomeEmptyCaption.jsx";
@@ -27,10 +30,31 @@ function truncate(text, max = 36) {
   return s.length > max ? s.slice(0, max) + "..." : s;
 }
 
+function resolveUserAnchorId(messages, messageId) {
+  const targetIndex = messages.findIndex((message) => message?.id === messageId);
+  if (targetIndex < 0) return messageId;
+  if (messages[targetIndex]?.role === "you") return messageId;
+  const userMessage = [...messages.slice(0, targetIndex)]
+    .reverse()
+    .find((message) => message?.role === "you");
+  return userMessage?.id || messageId;
+}
+
+function isAnchorReady(viewport, anchorId) {
+  const anchorEl = viewport?.querySelector(`[data-message-id="${anchorId}"]`);
+  if (!anchorEl) return false;
+  const itemEl = anchorEl.closest('[data-slot="message-scroller-item"]');
+  return (itemEl?.getBoundingClientRect().height || anchorEl.getBoundingClientRect().height) > 48;
+}
+
 function UserMessageNav({ userMessages, activeNavIndex, scrollToMessage }) {
   const [expanded, setExpanded] = useState(false);
   const [hoveredIndex, setHoveredIndex] = useState(-1);
   const hideTimerRef = useRef(null);
+  const currentPosition = activeNavIndex >= 0 ? activeNavIndex + 1 : 1;
+  const positionLabel = t("quickJumpPosition")
+    .replace("{current}", currentPosition)
+    .replace("{total}", userMessages.length);
 
   const handleMouseEnter = useCallback(() => {
     clearTimeout(hideTimerRef.current);
@@ -44,6 +68,17 @@ function UserMessageNav({ userMessages, activeNavIndex, scrollToMessage }) {
     }, 150);
   }, []);
 
+  const handleFocusCapture = useCallback(() => {
+    clearTimeout(hideTimerRef.current);
+    setExpanded(true);
+  }, []);
+
+  const handleBlurCapture = useCallback((event) => {
+    if (event.currentTarget.contains(event.relatedTarget)) return;
+    setExpanded(false);
+    setHoveredIndex(-1);
+  }, []);
+
   useEffect(() => {
     return () => clearTimeout(hideTimerRef.current);
   }, []);
@@ -51,65 +86,112 @@ function UserMessageNav({ userMessages, activeNavIndex, scrollToMessage }) {
   if (userMessages.length <= 1) return null;
 
   return (
-    <div
-      className="fixed right-5 top-1/2 -translate-y-1/2 pointer-events-auto z-30 flex items-center gap-1"
+    <nav
+      aria-label={t("quickJump")}
+      className="pointer-events-auto absolute right-2 top-1/2 z-30 flex -translate-y-1/2 items-center gap-1.5"
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
+      onFocusCapture={handleFocusCapture}
+      onBlurCapture={handleBlurCapture}
     >
-      {/* Expanded card */}
       {expanded && (
-        <div className="flex flex-col gap-px rounded-lg bg-(--bg-primary) border border-(--border-default) p-1.5 max-w-[180px] max-h-[60vh] overflow-y-auto shadow-[var(--shadow-default)]">
-          {userMessages.map((um, i) => (
-            <button
-              key={um.id}
-              onClick={() => scrollToMessage(um.id)}
-              onMouseEnter={() => setHoveredIndex(i)}
-              onMouseLeave={() => setHoveredIndex(-1)}
-              className={cn(
-                "text-left text-[11px] leading-tight px-2 py-1 rounded-md truncate transition-colors cursor-pointer max-w-full",
-                i === activeNavIndex ? "text-primary" : "text-(--text-muted)",
-                hoveredIndex === i && "bg-primary/10 text-primary",
-              )}
-            >
-              {um.text || "..."}
-            </button>
-          ))}
+        <div className="max-h-[60vh] w-48 overflow-hidden rounded-xl bg-(--material-elevated) p-1.5 shadow-[var(--shadow-elevated)] backdrop-blur-xl">
+          <div className="flex h-7 items-center gap-2 px-2 text-[10px] text-(--text-muted)">
+            <span className="min-w-0 flex-1 truncate font-medium">{t("quickJump")}</span>
+            <span className="shrink-0 tabular-nums">{positionLabel}</span>
+          </div>
+          <div className="flex max-h-[calc(60vh-2.25rem)] flex-col gap-1 overflow-y-auto">
+            {userMessages.map((um, i) => {
+              const isActive = i === activeNavIndex;
+              const messageText = um.text || "...";
+              return (
+                <button
+                  key={um.id}
+                  type="button"
+                  data-quick-jump-id={um.id}
+                  aria-current={isActive ? "location" : undefined}
+                  aria-label={`${i + 1}. ${messageText}`}
+                  title={messageText}
+                  onClick={() => scrollToMessage(um.id)}
+                  onMouseEnter={() => setHoveredIndex(i)}
+                  onMouseLeave={() => setHoveredIndex(-1)}
+                  className={cn(
+                    "flex w-full cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[11px] leading-4 transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary/50",
+                    isActive
+                      ? "bg-primary/10 text-(--text-primary)"
+                      : "text-(--text-muted) hover:bg-(--bg-hover) hover:text-(--text-primary)",
+                  )}
+                >
+                  <span
+                    className={cn(
+                      "size-1.5 shrink-0 rounded-full transition-colors",
+                      isActive ? "bg-primary" : "bg-(--text-muted) opacity-45",
+                    )}
+                    aria-hidden="true"
+                  />
+                  <span className="min-w-0 flex-1 truncate">{messageText}</span>
+                </button>
+              );
+            })}
+          </div>
         </div>
       )}
 
-      {/* Tick-mark indicators */}
-      <div className="flex flex-col items-end gap-6 py-1">
+      <div className="flex flex-col items-end gap-1 rounded-full px-1 py-2 transition-[background-color,box-shadow] hover:bg-(--bg-primary)/85 hover:shadow-[var(--shadow-default)] focus-within:bg-(--bg-primary)/85 focus-within:shadow-[var(--shadow-default)]">
         {userMessages.map((um, i) => (
           <button
             key={um.id}
+            type="button"
+            data-quick-jump-id={um.id}
+            aria-current={i === activeNavIndex ? "location" : undefined}
+            aria-label={`${t("quickJump")} ${i + 1}: ${um.text || "..."}`}
+            title={um.text || "..."}
             onClick={() => scrollToMessage(um.id)}
-            className={cn(
-              "h-0.5 rounded-sm transition-all duration-150 cursor-pointer",
-              i === activeNavIndex
-                ? "w-5 bg-primary"
-                : hoveredIndex === i
-                  ? "w-4 bg-primary/50"
-                  : "w-3 bg-(--text-muted)",
-            )}
-          />
+            onMouseEnter={() => setHoveredIndex(i)}
+            onMouseLeave={() => setHoveredIndex(-1)}
+            className="group flex h-4 w-7 cursor-pointer items-center justify-end rounded-full focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary/50"
+          >
+            <span
+              aria-hidden="true"
+              className={cn(
+                "h-0.5 rounded-full transition-[width,background-color] duration-150",
+                i === activeNavIndex
+                  ? "w-5 bg-primary"
+                  : hoveredIndex === i
+                    ? "w-4 bg-primary/60"
+                    : "w-2 bg-(--text-muted) opacity-70 group-hover:w-3 group-hover:opacity-100",
+              )}
+            />
+          </button>
         ))}
       </div>
-    </div>
+    </nav>
   );
 }
 
-export function ChatPanel({
+function ChatPanelContent({
   messages,
   projectCwd,
   skills = [],
   gitInfo,
+  projectIsGit = true,
   messagesLoading,
-  sessionLive = false,
   isGeneral = false,
+  targetMessageId = "",
+  onTargetMessageHandled,
   onRetryMessage,
 }) {
   const scrollRef = useRef(null);
+  const settleTimerRef = useRef(0);
+  const jumpFinishTimerRef = useRef(0);
   const [activeNavIndex, setActiveNavIndex] = useState(-1);
+  const [pendingScrollTargetId, setPendingScrollTargetId] = useState("");
+  const [layoutSettled, setLayoutSettled] = useState(false);
+  const { pauseFollowEnd } = useMessageScroller();
+  const hasConversation = useMemo(
+    () => hasConversationContent(messages),
+    [messages],
+  );
 
   const userMessages = useMemo(
     () =>
@@ -129,12 +211,14 @@ export function ChatPanel({
     [messages],
   );
 
-  const scrollToMessage = useCallback((msgId) => {
+  const scrollToMessage = useCallback((msgId, { behavior = "smooth" } = {}) => {
     const el = scrollRef.current?.querySelector(`[data-message-id="${msgId}"]`);
-    if (el) {
-      el.scrollIntoView({ behavior: "smooth", block: "center" });
-    }
-  }, []);
+    if (!el) return;
+    pauseFollowEnd();
+    const targetIndex = userMessages.findIndex((message) => message.id === msgId);
+    if (targetIndex >= 0) setActiveNavIndex(targetIndex);
+    el.scrollIntoView({ behavior, block: "center" });
+  }, [pauseFollowEnd, userMessages]);
 
   const updateScrollState = useCallback(() => {
     const el = scrollRef.current;
@@ -142,21 +226,25 @@ export function ChatPanel({
     const userEls = el.querySelectorAll(
       '[data-message-id][class*="justify-end"]',
     );
-    if (userEls.length === 0) {
-      setActiveNavIndex(-1);
-      return;
-    }
+    const isAtTop = el.scrollTop <= 2;
+    const isAtBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 2;
     // Use getBoundingClientRect instead of offsetTop because
     // MessageScrollerItem has content-visibility:auto which skips
     // layout for off-screen items, causing offsetTop to return 0
     // for elements inside skipped containers.
     const viewportRect = el.getBoundingClientRect();
-    const midLine = viewportRect.top + viewportRect.height * 0.4;
-    let last = -1;
-    userEls.forEach((uel, i) => {
-      if (uel.getBoundingClientRect().top <= midLine) last = i;
-    });
-    setActiveNavIndex(last);
+    const messageRects = Array.from(userEls, (userEl) =>
+      userEl.getBoundingClientRect(),
+    );
+    setActiveNavIndex(
+      getActiveMessageIndex({
+        viewportTop: viewportRect.top,
+        viewportHeight: viewportRect.height,
+        isAtTop,
+        isAtBottom,
+        messageRects,
+      }),
+    );
   }, []);
 
   useEffect(() => {
@@ -174,14 +262,84 @@ export function ChatPanel({
     });
   }, [messages, messagesLoading, updateScrollState]);
 
+  useEffect(() => {
+    const viewport = scrollRef.current;
+    if (!viewport || messagesLoading) {
+      setLayoutSettled(false);
+      return;
+    }
+    setLayoutSettled(false);
+    const markSettledSoon = () => {
+      window.clearTimeout(settleTimerRef.current);
+      settleTimerRef.current = window.setTimeout(() => {
+        setLayoutSettled(true);
+      }, 80);
+    };
+    const observer = new ResizeObserver(() => {
+      setLayoutSettled(false);
+      markSettledSoon();
+    });
+    observer.observe(viewport);
+    if (viewport.firstElementChild) observer.observe(viewport.firstElementChild);
+    requestAnimationFrame(() => {
+      requestAnimationFrame(markSettledSoon);
+    });
+    return () => {
+      observer.disconnect();
+      window.clearTimeout(settleTimerRef.current);
+    };
+  }, [messages, messagesLoading]);
+
+  useEffect(() => {
+    const nextTargetId = String(targetMessageId || "").trim();
+    if (!nextTargetId) return;
+    setPendingScrollTargetId(nextTargetId);
+  }, [targetMessageId]);
+
+  useEffect(() => {
+    const messageId = String(pendingScrollTargetId || "").trim();
+    if (!messageId || messagesLoading || !layoutSettled) return;
+    const anchorId = resolveUserAnchorId(messages, messageId);
+    const viewport = scrollRef.current;
+    if (!isAnchorReady(viewport, anchorId)) return;
+
+    let cancelled = false;
+    const finishJump = () => {
+      if (cancelled) return;
+      setPendingScrollTargetId("");
+      onTargetMessageHandled?.();
+    };
+    const handleScrollEnd = () => {
+      window.clearTimeout(jumpFinishTimerRef.current);
+      finishJump();
+    };
+
+    scrollToMessage(anchorId);
+    viewport.addEventListener("scrollend", handleScrollEnd);
+    jumpFinishTimerRef.current = window.setTimeout(handleScrollEnd, 1500);
+
+    return () => {
+      cancelled = true;
+      viewport.removeEventListener("scrollend", handleScrollEnd);
+      window.clearTimeout(jumpFinishTimerRef.current);
+    };
+  }, [
+    layoutSettled,
+    messages,
+    messagesLoading,
+    onTargetMessageHandled,
+    pendingScrollTargetId,
+    scrollToMessage,
+  ]);
+
   return (
     <div className="flex-1 relative overflow-hidden">
-      {messagesLoading && messages.length === 0 && (
+      {messagesLoading && !hasConversation && (
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
           <Spinner />
         </div>
       )}
-      {!messagesLoading && messages.length === 0 && (
+      {!messagesLoading && !hasConversation && (
         <div className="absolute inset-0 pointer-events-none overflow-hidden">
           {isGeneral ? (
             <HomeEmptyVisual mode="general">
@@ -236,34 +394,45 @@ export function ChatPanel({
           )}
         </div>
       )}
-      <MessageScrollerProvider>
-        <MessageScroller>
-          <MessageScrollerViewport ref={scrollRef} className="scroll-smooth">
-            <MessageScrollerContent className="gap-0 py-[32px_0_24px]">
-              <div className="w-[calc(100%_-_32px)] max-w-[920px] sm:w-[calc(100%_-_64px)] mx-auto">
-            <Suspense fallback={null}>
-              {messages.map((msg) => (
-                <MessageScrollerItem key={msg.id}>
-                  <MessageBubble
-                    message={msg}
-                    skills={skills}
-                    sessionLive={sessionLive}
-                    onRetry={onRetryMessage}
-                  />
-                </MessageScrollerItem>
-              ))}
-            </Suspense>
-              </div>
-            </MessageScrollerContent>
-          </MessageScrollerViewport>
-          <MessageScrollerButton className="bottom-2" />
-        </MessageScroller>
-      </MessageScrollerProvider>
+      <MessageScroller>
+        <MessageScrollerViewport ref={scrollRef}>
+          <MessageScrollerContent className="gap-0 py-[32px_0_24px]">
+            <div className="w-[calc(100%_-_32px)] max-w-[920px] sm:w-[calc(100%_-_64px)] mx-auto">
+              <Suspense fallback={null}>
+                {messages.map((msg) => (
+                  <MessageScrollerItem
+                    key={msg.id}
+                    data-msg-scroll-id={msg.id}
+                    data-scroll-anchor-id={msg.id}
+                  >
+                    <MessageBubble
+                      message={msg}
+                      onRetry={onRetryMessage}
+                      projectIsGit={projectIsGit}
+                      gitFiles={gitInfo?.files}
+                    />
+                  </MessageScrollerItem>
+                ))}
+              </Suspense>
+            </div>
+          </MessageScrollerContent>
+        </MessageScrollerViewport>
+        <MessageScrollerButton className="bottom-2" />
+      </MessageScroller>
       <UserMessageNav
         userMessages={userMessages}
         activeNavIndex={activeNavIndex}
         scrollToMessage={scrollToMessage}
       />
     </div>
+  );
+}
+
+export function ChatPanel(props) {
+  const hasScrollTarget = Boolean(String(props.targetMessageId || "").trim());
+  return (
+    <MessageScrollerProvider initialFollowEnd={!hasScrollTarget}>
+      <ChatPanelContent {...props} />
+    </MessageScrollerProvider>
   );
 }

@@ -3,6 +3,13 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { getConfigFilePath, getSessionsDir, getSkillsDir } from '../core/paths.js';
 import { loadConfig } from '../core/config-store.js';
+import { resolveSandboxPolicy } from '../core/sandbox-policy.js';
+import {
+  checkMicrosandboxDoctor,
+  describeSandboxDoctorSkip,
+  describeSandboxDoctorUnavailable,
+  shouldCheckMicrosandbox,
+} from '../core/doctor-sandbox.js';
 
 async function checkPathWritable(targetPath) {
   try {
@@ -46,6 +53,8 @@ export async function handleDoctor({
   checkPathWritableFn = checkPathWritable,
   checkGatewayFn = checkGateway,
   commandExistsFn = commandExists,
+  checkMicrosandboxDoctorFn = checkMicrosandboxDoctor,
+  shouldCheckMicrosandboxFn = shouldCheckMicrosandbox,
   writeLine = (line) => console.log(line)
 } = {}) {
   const config = await loadConfigFn();
@@ -95,12 +104,40 @@ export async function handleDoctor({
     detail: hasFff ? 'found fff-mcp' : 'fff-mcp not found in PATH'
   });
 
+  if (shouldCheckMicrosandboxFn(config)) {
+    const sandbox = await checkMicrosandboxDoctorFn();
+    checks.push({
+      name: 'Microsandbox host runtime',
+      ok: sandbox.ok,
+      detail: sandbox.reason,
+    });
+  } else {
+    const policy = resolveSandboxPolicy({ config });
+    if (policy.enabled && policy.backend === 'none') {
+      checks.push({
+        name: 'Microsandbox host runtime',
+        ok: false,
+        detail: describeSandboxDoctorUnavailable(config),
+      });
+    } else {
+      checks.push({
+        name: 'Microsandbox host runtime',
+        skip: true,
+        detail: describeSandboxDoctorSkip(config),
+      });
+    }
+  }
+
   for (const check of checks) {
+    if (check.skip) {
+      writeLine(`[SKIP] ${check.name}: ${check.detail}`);
+      continue;
+    }
     const mark = check.ok ? 'OK' : 'FAIL';
     writeLine(`[${mark}] ${check.name}: ${check.detail}`);
   }
 
-  const failed = checks.filter((c) => !c.ok).length;
+  const failed = checks.filter((check) => !check.skip && !check.ok).length;
   if (failed > 0) {
     process.exitCode = 1;
   }

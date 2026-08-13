@@ -10,7 +10,7 @@ import React, {
 import { t } from "../../i18n/index.js";
 import * as api from "../hooks/use-api.js";
 import { extractReasoningRuntimePatch } from "../lib/reasoning-controls.js";
-import { parseAttachmentsFromModelContent } from "../lib/message-attachments.js";
+import { parseUserBannerAttachmentsFromModelContent, enrichUiMessagesWithScrapbookAttachments, pickScrapbookAttachments } from "../lib/message-attachments.js";
 import { CHAT_ACTION_NAMES, LOCAL_SPEC_REVIEW_ACTIONS } from "../lib/chat-action-names.js";
 import {
   operationKey,
@@ -18,8 +18,8 @@ import {
 } from "../lib/chat-operation-waiter.js";
 import {
   finishInitialization,
-  hydrateBeforeConnect,
 } from "../lib/async-lifecycle.js";
+import { createStreamEventBatcher } from "../lib/stream-event-batcher.js";
 import {
   activateSession,
   alignSessionAssistantMessages,
@@ -32,11 +32,15 @@ import {
   reduceSessionEvent,
   runSessionOperation,
 } from "../lib/session-state.js";
+import { buildMcpToolDisplayLabels } from "../../../../src/core/mcp-tool-display.js";
+import { setMcpToolDisplayLabels } from "../../../../src/core/tool-display.js";
 import {
   ACTIVE_SESSION_STATUSES,
   activeSessionIds,
   abortSessionIds,
   buildConversationStartSidebarEntry,
+  mergeFetchedSessions,
+  patchSidebarSession,
   projectSessionRuntime,
   upsertSidebarSession,
 } from "../lib/session-ui-state.js";
@@ -58,9 +62,13 @@ import {
   normalizeUsage,
   updateSkillInSegments,
 } from "../../../shared/transcript-segments.js";
+import { buildHookSegmentEvent } from "../../../shared/hook-ui.js";
 import { skillBadgesFromSessionMessage } from "../lib/user-skill-prompt.js";
 
 const AppContext = createContext(null);
+const AppActionsContext = createContext(null);
+const RuntimeModeContext = createContext("normal");
+const CurrentSessionIdContext = createContext(null);
 
 function isAbortRelatedText(text = "") {
   const trimmed = String(text || "").trim();
@@ -169,9 +177,29 @@ function parseRoute() {
   const path = window.location.pathname.replace(/\/+$/, "") || "/";
   const params = new URLSearchParams(window.location.search);
   const chatMatch = path.match(/^\/chat\/([^/]+)$/);
+  const scrapbookMatch = path.match(/^\/scrapbook\/([^/]+)$/);
+  const researchMatch = path.match(/^\/research\/([^/]+)$/);
   if (chatMatch)
-    return { view: "chat", sessionId: decodeURIComponent(chatMatch[1]) };
+    return {
+      view: "chat",
+      sessionId: decodeURIComponent(chatMatch[1]),
+      targetMessageId: params.get("message") || "",
+    };
   if (path === "/sessions") return { view: "sessions" };
+  if (scrapbookMatch) {
+    return {
+      view: "scrapbook",
+      scrapbookEntryId: decodeURIComponent(scrapbookMatch[1]),
+    };
+  }
+  if (path === "/scrapbook") return { view: "scrapbook" };
+  if (researchMatch) {
+    return {
+      view: "research",
+      researchSessionId: decodeURIComponent(researchMatch[1]),
+    };
+  }
+  if (path === "/research") return { view: "research" };
   if (path === "/codewiki")
     return { view: "codewiki", projectPath: params.get("project") || "" };
   return { view: "chat" };
@@ -179,26 +207,44 @@ function parseRoute() {
 
 function routeFor(view, sessionId, options = {}) {
   if (view === "sessions") return "/sessions";
+  if (view === "scrapbook") {
+    const scrapbookEntryId = String(options.scrapbookEntryId || "").trim();
+    return scrapbookEntryId
+      ? `/scrapbook/${encodeURIComponent(scrapbookEntryId)}`
+      : "/scrapbook";
+  }
+  if (view === "research") {
+    const researchSessionId = String(options.researchSessionId || "").trim();
+    return researchSessionId
+      ? `/research/${encodeURIComponent(researchSessionId)}`
+      : "/research";
+  }
   if (view === "codewiki") {
     const projectPath = String(options.projectPath || "").trim();
     return projectPath
       ? `/codewiki?project=${encodeURIComponent(projectPath)}`
       : "/codewiki";
   }
-  return sessionId ? `/chat/${encodeURIComponent(sessionId)}` : "/";
+  const messageId = String(options.messageId || "").trim();
+  return sessionId
+    ? `/chat/${encodeURIComponent(sessionId)}${messageId ? `?message=${encodeURIComponent(messageId)}` : ""}`
+    : "/";
 }
 
 function updateRoute(
   view,
   sessionId,
-  { replace = false, projectPath = "" } = {},
+  { replace = false, projectPath = "", scrapbookEntryId = "", researchSessionId = "", messageId = "" } = {},
 ) {
-  const next = routeFor(view, sessionId, { projectPath });
+  const next = routeFor(view, sessionId, { projectPath, scrapbookEntryId, researchSessionId, messageId });
   if (`${window.location.pathname}${window.location.search}` === next) return;
   const st = {
     view,
     sessionId: sessionId || null,
     projectPath: projectPath || null,
+    scrapbookEntryId: scrapbookEntryId || null,
+    researchSessionId: researchSessionId || null,
+    targetMessageId: messageId || null,
   };
   if (replace) window.history.replaceState(st, "", next);
   else window.history.pushState(st, "", next);
@@ -214,6 +260,10 @@ const initialState = {
   stage: "idle",
   busy: false,
   currentView: "chat",
+  scrapbookEntryId: null,
+  researchSessionId: null,
+  targetMessageId: null,
+  pendingScrapbookContext: null,
   runtimeState: null,
   currentSessionId: null,
   sessionRuntimeById: {},
@@ -241,6 +291,8 @@ const initialState = {
   configOpen: false,
   projectOpen: false,
   skillsOpen: false,
+  mcpOpen: false,
+  hooksOpen: false,
   memoryOpen: false,
   soulsOpen: false,
   soulsRevision: 0,
@@ -1064,6 +1116,7 @@ export function AppProvider({ children }) {
   const planParentMsgRef = useRef(null);
   const activityTimersRef = useRef(new Map());
   const sseRef = useRef(null);
+  const sseBatcherRef = useRef(null);
   const reconnectRef = useRef(null);
   const operationWaitersRef = useRef(new Map());
   const earlyOperationResultsRef = useRef(new Map());
@@ -1319,17 +1372,28 @@ export function AppProvider({ children }) {
       const isAlive = options?.isAlive || (() => true);
       if (force) sessionsLoadPromiseRef.current = null;
       if (sessionsLoadPromiseRef.current) return sessionsLoadPromiseRef.current;
+      const requestStartedAt = Date.now();
+      const sessionIdsAtRequestStart = new Set(
+        (stateRef.current.sessions || []).map((session) => session?.id).filter(Boolean),
+      );
       if (isAlive()) update({ sessionsLoading: true });
       const promise = (async () => {
         try {
           const sessions = await api.fetchSessions(200);
           if (!isAlive()) return;
           const list = Array.isArray(sessions) ? sessions : [];
-          update({ sessions: list });
+          setState((prev) => ({
+            ...prev,
+            sessions: mergeFetchedSessions(prev.sessions, list, {
+              sessionIdsAtRequestStart,
+              requestStartedAt,
+            }),
+            sessionsLoading: false,
+          }));
           loadGitBatch(list, { isAlive });
         } catch {
-        } finally {
           if (isAlive()) update({ sessionsLoading: false });
+        } finally {
           sessionsLoadPromiseRef.current = null;
         }
       })();
@@ -1346,11 +1410,27 @@ export function AppProvider({ children }) {
       if (currentState?.cwd === projectPath) return currentState;
       const result = await api.openProject(projectPath);
       if (result?.error) return null;
+      if (result?.sessionId) activateSessionView(result.sessionId);
+      if (result?.state) {
+        setState((prev) => ({
+          ...prev,
+          runtimeState: result.state,
+          sessionRuntimeById: {
+            ...prev.sessionRuntimeById,
+            [result.sessionId]: {
+              ...prev.sessionRuntimeById[result.sessionId],
+              ...result.state,
+            },
+          },
+          projectCwd: projectNameFromRuntimeState(result.state),
+          isGeneral: !!result.state.isGeneral,
+        }));
+      }
       return result;
     } catch {
       return null;
     }
-  }, []);
+  }, [activateSessionView]);
 
   const loadSkills = useCallback(async ({ isAlive = () => true } = {}) => {
     try {
@@ -1486,7 +1566,10 @@ export function AppProvider({ children }) {
                 ?.changes || [];
           if (!isAlive()) return;
           const restored = sanitizeManualAbortMessages(
-            settleCompletedPlanToolCards(uiMessages),
+            enrichUiMessagesWithScrapbookAttachments(
+              settleCompletedPlanToolCards(uiMessages),
+              messages,
+            ),
           );
           const overview = [...restored]
             .reverse()
@@ -1540,7 +1623,7 @@ export function AppProvider({ children }) {
               segments: [
                 { type: "text", text: visibleContent, isStreaming: false },
               ],
-              attachments: parseAttachmentsFromModelContent(msg.model_content),
+              attachments: parseUserBannerAttachmentsFromModelContent(msg.model_content),
               skillBadges: skillBadgesFromSessionMessage(msg),
               fileChanges: [],
             });
@@ -1904,7 +1987,10 @@ export function AppProvider({ children }) {
           }
           return reduced;
         });
-        if (event.sessionId !== s.currentSessionId) return;
+        // CodeWiki generate may run on a dedicated idle session while chat is
+        // busy — still apply its progress/done events in the UI.
+        const isCodeWikiEvent = String(event.type || "").startsWith("codewiki:");
+        if (event.sessionId !== s.currentSessionId && !isCodeWikiEvent) return;
       }
       const activeId = activeMsgRef.current;
 
@@ -2011,6 +2097,10 @@ export function AppProvider({ children }) {
         }
 
         case "assistant:response": {
+          break;
+        }
+
+        case "assistant:usage": {
           break;
         }
 
@@ -2195,11 +2285,12 @@ export function AppProvider({ children }) {
           }
           break;
         }
+        case "skill:auto-selected":
         case "skill:always": {
           const names = (event.names || []).join(", ");
           const badge = {
             name: names,
-            status: "always",
+            status: event.type === "skill:always" ? "always" : "selected",
             startedAt: event.startedAt || new Date().toISOString(),
           };
           if (!names) break;
@@ -2247,6 +2338,84 @@ export function AppProvider({ children }) {
               ),
             };
           });
+          break;
+        }
+
+        case "hook:start": {
+          const hookEvent = {
+            ...buildHookSegmentEvent(event),
+            startedAt: event.startedAt || new Date().toISOString(),
+          };
+          if (!activeId) {
+            pendingSkillSegmentsRef.current = addSkillToSegments(
+              pendingSkillSegmentsRef.current,
+              hookEvent,
+            );
+          } else {
+            setState((prev) => ({
+              ...prev,
+              messages: prev.messages.map((m) =>
+                m.id === activeId
+                  ? {
+                      ...m,
+                      segments: addSkillToSegments(m.segments || [], hookEvent),
+                    }
+                  : m,
+              ),
+            }));
+          }
+          break;
+        }
+        case "hook:end":
+        case "hook:error": {
+          const hookEvent = buildHookSegmentEvent(event);
+          const status =
+            event.type === "hook:error" ||
+            event.decision === "deny" ||
+            event.ok === false
+              ? "error"
+              : "done";
+          const updater = (segment) => ({
+            ...segment,
+            kind: "hook",
+            event: hookEvent.event || segment.event,
+            source: hookEvent.source || segment.source,
+            sourceLabel: hookEvent.sourceLabel || segment.sourceLabel,
+            toolName: hookEvent.toolName || segment.toolName,
+            matcher: hookEvent.matcher || segment.matcher,
+            command: hookEvent.command || segment.command,
+            status,
+            summary:
+              event.reason ||
+              event.summary ||
+              event.command ||
+              segment.summary,
+            reason: event.reason || segment.reason,
+            endedAt: event.endedAt || new Date().toISOString(),
+          });
+          if (!activeId) {
+            pendingSkillSegmentsRef.current = updateSkillInSegments(
+              pendingSkillSegmentsRef.current,
+              hookEvent.name,
+              updater,
+            );
+          } else {
+            setState((prev) => ({
+              ...prev,
+              messages: prev.messages.map((m) =>
+                m.id === activeId
+                  ? {
+                      ...m,
+                      segments: updateSkillInSegments(
+                        m.segments || [],
+                        hookEvent.name,
+                        updater,
+                      ),
+                    }
+                  : m,
+              ),
+            }));
+          }
           break;
         }
 
@@ -2485,6 +2654,20 @@ export function AppProvider({ children }) {
           break;
         }
 
+        case "sandbox-mode:changed": {
+          const rs = event;
+          update({
+            runtimeState: {
+              ...stateRef.current.runtimeState,
+              sandboxMode: rs.sandboxMode,
+              ...(rs.approvalUiEnabled !== undefined
+                ? { approvalUiEnabled: rs.approvalUiEnabled }
+                : {}),
+            },
+          });
+          break;
+        }
+
         case "runtime:state": {
           const rs = event.state || {};
           const runtimeState = { ...stateRef.current.runtimeState, ...rs };
@@ -2578,30 +2761,59 @@ export function AppProvider({ children }) {
           break;
         }
 
+        case "session:title_status": {
+          if (event.sessionId) {
+            setState((prev) => ({
+              ...prev,
+              sessions: prev.sessions.map((session) =>
+                session.id === event.sessionId
+                  ? { ...session, titleGenerating: Boolean(event.generating) }
+                  : session,
+              ),
+            }));
+          }
+          break;
+        }
+
         case "session:title": {
           if (event.sessionId && event.title) {
             setState((prev) => {
               const rs = prev.runtimeState || {};
-              const isGeneral = Boolean(rs.isGeneral);
-              const projectDir = isGeneral ? null : rs.cwd || rs.projectDir || null;
+              const existing = prev.sessions.find((session) => session.id === event.sessionId);
+              const eventIsCurrentSession = rs.sessionId === event.sessionId;
+              const isGeneral =
+                typeof existing?.isGeneral === "boolean"
+                  ? existing.isGeneral
+                  : eventIsCurrentSession
+                    ? Boolean(rs.isGeneral)
+                    : undefined;
+              const projectDir = isGeneral
+                ? null
+                : existing?.projectDir ||
+                  (eventIsCurrentSession ? rs.cwd || rs.projectDir : null) ||
+                  null;
               const projectKey = projectDir
-                ? normalizeProjectDirKey(projectDir) || projectDir
+                ? existing?.projectKey || normalizeProjectDirKey(projectDir) || projectDir
                 : null;
+              const entry = {
+                id: event.sessionId,
+                title: event.title,
+                titleGenerating: false,
+                ...(!event.preserveUpdatedAt
+                  ? { updatedAt: new Date().toISOString() }
+                  : {}),
+                messageCount: Math.max(
+                  1,
+                  Number(existing?.messageCount || 0),
+                ),
+                ...(typeof isGeneral === "boolean" ? { isGeneral } : {}),
+                ...(projectDir ? { projectDir, projectKey } : {}),
+              };
               return {
                 ...prev,
-                sessions: upsertSidebarSession(prev.sessions, {
-                  id: event.sessionId,
-                  title: event.title,
-                  messageCount: Math.max(
-                    1,
-                    Number(
-                      prev.sessions.find((s) => s.id === event.sessionId)
-                        ?.messageCount || 0,
-                    ),
-                  ),
-                  isGeneral,
-                  ...(projectDir ? { projectDir, projectKey } : {}),
-                }),
+                sessions: event.preserveUpdatedAt
+                  ? patchSidebarSession(prev.sessions, entry)
+                  : upsertSidebarSession(prev.sessions, entry),
               };
             });
           }
@@ -2623,22 +2835,25 @@ export function AppProvider({ children }) {
 
   const connectSSE = useCallback(() => {
     if (sseRef.current) sseRef.current.close();
+    sseBatcherRef.current?.dispose();
+    const batcher = createStreamEventBatcher({ handleEvent });
+    sseBatcherRef.current = batcher;
     const es = new EventSource("/api/events");
     es.onmessage = (e) => {
       try {
-        handleEvent(JSON.parse(e.data));
+        batcher.push(JSON.parse(e.data));
       } catch (err) {
         console.error("SSE:", err);
       }
     };
     es.onerror = () => {
       es.close();
+      batcher.flush();
       clearTimeout(reconnectRef.current);
       reconnectRef.current = setTimeout(() => {
-        hydrateBeforeConnect({
-          hydrate: loadRuntimeSessions,
-          connect: connectSSE,
-        }).catch(() => {});
+        loadRuntimeSessions()
+          .then(() => connectSSE())
+          .catch(() => {});
       }, 3000);
     };
     sseRef.current = es;
@@ -2653,9 +2868,23 @@ export function AppProvider({ children }) {
         openIfRequired: true,
         isAlive,
       });
+      const runtimeSessionsPromise = loadRuntimeSessions({ isAlive });
+      const routedStatePromise =
+        route.view === "chat" && route.sessionId
+          ? loadState(route.sessionId, { isAlive })
+          : null;
       if (!alive) return;
       update({
         currentView: route.view,
+        targetMessageId: route.view === "chat" ? route.targetMessageId || null : null,
+        scrapbookEntryId:
+          route.view === "scrapbook"
+            ? route.scrapbookEntryId || null
+            : stateRef.current.scrapbookEntryId,
+        researchSessionId:
+          route.view === "research"
+            ? route.researchSessionId || null
+            : stateRef.current.researchSessionId,
         codewikiProjectPath:
           route.view === "codewiki"
             ? route.projectPath || ""
@@ -2666,17 +2895,26 @@ export function AppProvider({ children }) {
         if (!alive) return;
       }
 
-      await configStatusPromise;
+      const [, runtimeSessions] = await Promise.all([
+        configStatusPromise,
+        runtimeSessionsPromise,
+      ]);
       if (!alive) return;
-
-      const runtimeSessions = await loadRuntimeSessions({ isAlive });
-      if (!alive) return;
+      void api.fetchMcpServers()
+        .then((result) => {
+          setMcpToolDisplayLabels(buildMcpToolDisplayLabels(result?.servers || []));
+        })
+        .catch(() => {
+          setMcpToolDisplayLabels(buildMcpToolDisplayLabels([]));
+        });
       let preferredSessionId = route.sessionId || stateRef.current.currentSessionId;
       if (!preferredSessionId) {
         preferredSessionId = Object.keys(runtimeSessions || {})[0] || null;
       }
       let rs = preferredSessionId
-        ? await loadState(preferredSessionId, { isAlive })
+        ? routedStatePromise && preferredSessionId === route.sessionId
+          ? await routedStatePromise
+          : await loadState(preferredSessionId, { isAlive })
         : null;
       if (!alive) return;
       if (!rs) {
@@ -2692,28 +2930,33 @@ export function AppProvider({ children }) {
           : null;
       }
       if (!alive) return;
-      try {
-        const startupEvents = rs?.sessionId
-          ? await api.fetchStartupEvents(rs.sessionId)
-          : [];
-        if (!alive) return;
-        for (const ev of startupEvents) {
-          if (!ev || isProjectIndexEvent(ev)) continue;
-          if (ev.type === "system_tool" || ev.type === "tool") {
-            const summary = ev.summary || "";
-            if (summary || ev.name) {
-              addMessage({
-                role: "system",
-                text: summary ? `${ev.name}: ${summary}` : ev.name,
-                timestamp: new Date().toISOString(),
-                startupTodos: ev.arguments?.todos,
-              });
+      const startupEventsTask = (async () => {
+        try {
+          const startupEvents = rs?.sessionId
+            ? await api.fetchStartupEvents(rs.sessionId)
+            : [];
+          if (!alive) return;
+          for (const ev of startupEvents) {
+            if (!ev || isProjectIndexEvent(ev)) continue;
+            if (ev.type === "system_tool" || ev.type === "tool") {
+              const summary = ev.summary || "";
+              if (summary || ev.name) {
+                addMessage({
+                  role: "system",
+                  text: summary ? `${ev.name}: ${summary}` : ev.name,
+                  timestamp: new Date().toISOString(),
+                  startupTodos: ev.arguments?.todos,
+                });
+              }
             }
           }
-        }
-      } catch {}
+        } catch {}
+      })();
       if (route.view === "chat" && rs?.sessionId) {
-        updateRoute("chat", rs.sessionId, { replace: true });
+        updateRoute("chat", rs.sessionId, {
+          replace: true,
+          messageId: route.targetMessageId || "",
+        });
       } else if (route.view === "codewiki") {
         const projectPath = route.projectPath || rs?.cwd || "";
         update({ currentView: "codewiki", codewikiProjectPath: projectPath });
@@ -2722,6 +2965,7 @@ export function AppProvider({ children }) {
       }
       await finishInitialization({
         tasks: [
+        startupEventsTask,
         loadSessionMessages(null, { isAlive, sessionId: rs?.sessionId }),
         loadHistory({ isAlive, sessionId: rs?.sessionId }),
         loadSessions({ isAlive }),
@@ -2744,6 +2988,15 @@ export function AppProvider({ children }) {
       const route = parseRoute();
       update({
         currentView: route.view,
+        targetMessageId: route.view === "chat" ? route.targetMessageId || null : null,
+        scrapbookEntryId:
+          route.view === "scrapbook"
+            ? route.scrapbookEntryId || null
+            : stateRef.current.scrapbookEntryId,
+        researchSessionId:
+          route.view === "research"
+            ? route.researchSessionId || null
+            : stateRef.current.researchSessionId,
         codewikiProjectPath:
           route.view === "codewiki"
             ? route.projectPath || ""
@@ -2754,10 +3007,14 @@ export function AppProvider({ children }) {
           if (stateRef.current.currentSessionId !== route.sessionId) {
             update({ messagesLoading: true });
             activateSessionView(route.sessionId);
-            await loadState(route.sessionId);
-            await loadSessionMessages(null, { sessionId: route.sessionId });
+            await Promise.all([
+              loadState(route.sessionId),
+              loadSessionMessages(null, { sessionId: route.sessionId }),
+            ]);
             loadSessions();
             loadGitInfo({ sessionId: route.sessionId });
+          } else {
+            update({ targetMessageId: route.targetMessageId || null });
           }
         } catch {
           update({ messagesLoading: false });
@@ -2777,6 +3034,7 @@ export function AppProvider({ children }) {
     return () => {
       alive = false;
       if (sseRef.current) sseRef.current.close();
+      sseBatcherRef.current?.dispose({ flush: false });
       clearTimeout(reconnectRef.current);
       for (const timer of activityTimersRef.current.values())
         clearTimeout(timer);
@@ -2815,7 +3073,7 @@ export function AppProvider({ children }) {
   const actions = useMemo(
     () => ({
       submit: async (input, options = {}) => {
-        const sessionId = stateRef.current.currentSessionId;
+        const sessionId = options.sessionId || stateRef.current.currentSessionId;
         return runSessionOperation(sessionOperationsRef.current, sessionId, async () => {
         const message = typeof input === "string"
           ? { text: input, skillNames: [], attachmentIds: [], dismissedAlwaysSkills: [] }
@@ -2897,6 +3155,14 @@ export function AppProvider({ children }) {
             dismissedAlwaysSkills: Array.isArray(message.dismissedAlwaysSkills)
               ? message.dismissedAlwaysSkills
               : [],
+            attachments: pickScrapbookAttachments(
+              Array.isArray(options.attachments)
+                ? options.attachments
+                : Array.isArray(message.attachments)
+                  ? message.attachments
+                  : [],
+            ),
+            ...(message.modelText ? { modelText: message.modelText } : {}),
           });
           const result = await res.json().catch(() => ({}));
           if (result?.code === "CONFIG_REQUIRED") {
@@ -3150,13 +3416,13 @@ export function AppProvider({ children }) {
         }
       },
 
-      approve: async (id, actionName, ownerSessionId) => {
+      approve: async (id, actionName, ownerSessionId, payload = {}) => {
         const sessionId = ownerSessionId || stateRef.current.currentSessionId;
         try {
           const result = await api.submitChatAction(
             sessionId,
             actionName,
-            { requestId: id },
+            { requestId: id, ...payload },
           );
           if (result?.error) {
             if (result.code === "STALE_INTERACTION") return;
@@ -3380,16 +3646,17 @@ export function AppProvider({ children }) {
 
       dismissPlanProgress: () => update({ planSteps: [] }),
 
-      switchSession: async (sessionId) => {
+      switchSession: async (sessionId, options = {}) => {
         const currentSessionId = stateRef.current.currentSessionId;
         if (!sessionId || sessionId === currentSessionId) return;
+        const targetMessageId = String(options.targetMessageId || "").trim();
         update({ currentView: "chat", messagesLoading: true, gitInfo: null });
         try {
           const result = await api.switchSession(sessionId);
           if (result.ok) {
             const cachedTargetMessages =
               stateRef.current.sessionMessagesById?.[sessionId] || [];
-            updateRoute("chat", sessionId);
+            updateRoute("chat", sessionId, { messageId: targetMessageId });
             activateSessionView(sessionId);
             restoreActiveMsgRef(
               cachedTargetMessages,
@@ -3402,6 +3669,7 @@ export function AppProvider({ children }) {
             if (result.state)
               setState((prev) => ({
                 ...prev,
+                targetMessageId,
                 runtimeState: result.state,
                 sessionRuntimeById: {
                   ...prev.sessionRuntimeById,
@@ -3424,6 +3692,7 @@ export function AppProvider({ children }) {
               update({
                 live: !!rs?.busy,
                 stageLabel: rs?.busy ? t("waitingResponse") : "",
+                targetMessageId,
               });
             }
 
@@ -3433,6 +3702,12 @@ export function AppProvider({ children }) {
             );
             loadSessions();
             loadGitInfo({ sessionId });
+            if (result.state?.runtimePending) {
+              void loadState(sessionId, {
+                isAlive: () =>
+                  stateRef.current.currentSessionId === sessionId,
+              });
+            }
             await msgPromise;
           } else {
             update({ messagesLoading: false });
@@ -3493,6 +3768,40 @@ export function AppProvider({ children }) {
         }
       },
 
+      regenerateSessionTitle: async (sessionId) => {
+        setState((prev) => ({
+          ...prev,
+          sessions: prev.sessions.map((session) =>
+            session.id === sessionId
+              ? { ...session, titleGenerating: true }
+              : session,
+          ),
+        }));
+        try {
+          const result = await api.regenerateSessionTitle(sessionId);
+          if (result?.error || !result?.title) return result;
+          setState((prev) => ({
+            ...prev,
+            sessions: patchSidebarSession(prev.sessions, {
+              id: sessionId,
+              title: result.title,
+            }),
+          }));
+          return result;
+        } catch (err) {
+          return { error: true, message: err.message };
+        } finally {
+          setState((prev) => ({
+            ...prev,
+            sessions: prev.sessions.map((session) =>
+              session.id === sessionId
+                ? { ...session, titleGenerating: false }
+                : session,
+            ),
+          }));
+        }
+      },
+
       newSession: async () => {
         update({ currentView: "chat", messagesLoading: true });
         try {
@@ -3520,6 +3829,161 @@ export function AppProvider({ children }) {
         }
       },
 
+      askScrapbookEntry: async (entryId) => {
+        update({ currentView: "chat", messagesLoading: true, gitInfo: null });
+        try {
+          const payloadResult = await api.buildScrapbookAskPayload(entryId);
+          if (payloadResult?.error || !payloadResult?.payload) {
+            throw new Error(payloadResult?.message || "Could not prepare note context");
+          }
+          const result = await api.openProject("__codemini_general__", { newSession: true });
+          if (!result?.ok || !result?.sessionId) {
+            throw new Error(result?.message || "Could not create a new session");
+          }
+          updateRoute("chat", result.sessionId);
+          activateSessionView(result.sessionId);
+          if (result.state) {
+            setState((prev) => ({
+              ...prev,
+              runtimeState: result.state,
+              sessionRuntimeById: {
+                ...prev.sessionRuntimeById,
+                [result.sessionId]: {
+                  ...prev.sessionRuntimeById[result.sessionId],
+                  ...result.state,
+                },
+              },
+              projectCwd: projectNameFromRuntimeState(result.state),
+              isGeneral: !!result.state.isGeneral,
+              live: !!result.state.busy,
+              stageLabel: result.state.busy ? t("waitingResponse") : "",
+            }));
+          } else {
+            await loadState(result.sessionId);
+            update({ live: false, stageLabel: "" });
+          }
+          if (result.sessionData) {
+            await loadSessionMessages(result.sessionData, { sessionId: result.sessionId });
+          }
+          await loadSessions({ force: true });
+          update({
+            messagesLoading: false,
+            pendingScrapbookContext: Array.isArray(payloadResult.payload.attachments)
+              && payloadResult.payload.attachments[0]
+              ? {
+                  entryId,
+                  attachment: payloadResult.payload.attachments[0],
+                  modelText: payloadResult.payload.modelText || "",
+                }
+              : null,
+          });
+          return { ok: true, sessionId: result.sessionId };
+        } catch (err) {
+          update({ messagesLoading: false });
+          return { error: true, message: String(err?.message || "Could not ask about note") };
+        }
+      },
+
+      saveAssistantReplyToScrapbook: async ({ messageId, answerText } = {}) => {
+        const sessionId = String(stateRef.current.currentSessionId || "").trim();
+        const targetMessageId = String(messageId || "").trim();
+        const contentText = String(answerText || "").trim();
+        if (!sessionId || !targetMessageId || !contentText) {
+          return { error: true, message: "Missing note source message" };
+        }
+        const messages = Array.isArray(stateRef.current.messages)
+          ? stateRef.current.messages
+          : [];
+        const answerIndex = messages.findIndex((message) => message?.id === targetMessageId);
+        const sourceQuestionText =
+          answerIndex > 0
+            ? [...messages.slice(0, answerIndex)]
+                .reverse()
+                .find((message) => message?.role === "you")
+                ?.text || ""
+            : "";
+        try {
+          return await api.createChatAnswerScrapbookEntry({
+            sessionId,
+            messageId: targetMessageId,
+            questionText: sourceQuestionText,
+            answerText: contentText,
+          });
+        } catch (err) {
+          return { error: true, message: String(err?.message || "Failed to save note") };
+        }
+      },
+
+      openChatMessage: async (sessionId, messageId) => {
+        const targetSessionId = String(sessionId || "").trim();
+        const targetMessageId = String(messageId || "").trim();
+        if (!targetSessionId || !targetMessageId) {
+          return { error: true, message: "Missing chat message target" };
+        }
+        if (stateRef.current.currentSessionId === targetSessionId) {
+          update({
+            currentView: "chat",
+            targetMessageId: targetMessageId,
+            scrapbookEntryId: null,
+          });
+          updateRoute("chat", targetSessionId, { messageId: targetMessageId });
+          return { ok: true };
+        }
+        await api.switchSession(targetSessionId)
+          .then(async (result) => {
+            if (!result?.ok) {
+              throw new Error(result?.message || "Could not open the source chat");
+            }
+            const cachedTargetMessages =
+              stateRef.current.sessionMessagesById?.[targetSessionId] || [];
+            update({ currentView: "chat", messagesLoading: true, gitInfo: null });
+            updateRoute("chat", targetSessionId, { messageId: targetMessageId });
+            activateSessionView(targetSessionId);
+            restoreActiveMsgRef(
+              cachedTargetMessages,
+              result.state?.busy === true ||
+                ACTIVE_SESSION_STATUSES.has(
+                  stateRef.current.sessionRuntimeById?.[targetSessionId]?.status,
+                ),
+            );
+            if (result.state) {
+              setState((prev) => ({
+                ...prev,
+                targetMessageId,
+                runtimeState: result.state,
+                sessionRuntimeById: {
+                  ...prev.sessionRuntimeById,
+                  [targetSessionId]: {
+                    ...prev.sessionRuntimeById[targetSessionId],
+                    ...result.state,
+                  },
+                },
+                projectCwd: projectNameFromRuntimeState(result.state),
+                isGeneral: !!result.state.isGeneral,
+                live: !!result.state.busy,
+                stageLabel: result.state.busy ? t("waitingResponse") : "",
+              }));
+            } else {
+              await loadState(targetSessionId);
+              const rs = stateRef.current.runtimeState;
+              update({
+                live: !!rs?.busy,
+                stageLabel: rs?.busy ? t("waitingResponse") : "",
+                targetMessageId,
+              });
+            }
+            const msgPromise = loadSessionMessages(
+              result.sessionData,
+              { sessionId: targetSessionId, reconcileCached: true },
+            );
+            loadSessions();
+            loadGitInfo({ sessionId: targetSessionId });
+            await msgPromise;
+            update({ messagesLoading: false });
+          });
+        return { ok: true };
+      },
+
       openProject: async (projectPath, options = {}) => {
         const nextView = options.view || "chat";
         const openingGeneral =
@@ -3535,6 +3999,7 @@ export function AppProvider({ children }) {
           messagesLoading: nextView === "chat",
           codewikiProjectPath: pendingCodeWikiProjectPath,
           isGeneral: openingGeneral,
+          targetMessageId: null,
           gitInfo: null,
         });
         try {
@@ -3551,12 +4016,13 @@ export function AppProvider({ children }) {
               projectOpen: false,
               codewikiProjectPath: nextCodeWikiProjectPath,
             });
-            if (nextView === "codewiki")
+            if (nextView === "codewiki") {
               updateRoute("codewiki", null, {
                 projectPath: nextCodeWikiProjectPath,
               });
-            else if (result.sessionId) {
-              updateRoute("chat", result.sessionId);
+              if (result.sessionId) activateSessionView(result.sessionId);
+            } else if (result.sessionId) {
+              updateRoute("chat", result.sessionId, { messageId: "" });
               activateSessionView(result.sessionId);
             }
             if (result.state) {
@@ -3591,12 +4057,13 @@ export function AppProvider({ children }) {
                     sessionId: result.sessionId,
                   })
                 : Promise.resolve();
-            await Promise.all([
+            const backgroundTasks = [
               loadSessions({ force: true }),
               loadGitInfo({ sessionId: result.sessionId }),
-              msgPromise,
-            ]);
+            ];
+            await msgPromise;
             if (nextView === "chat") update({ messagesLoading: false });
+            await Promise.all(backgroundTasks);
           } else if (nextView === "chat") {
             update({ messagesLoading: false });
           }
@@ -3613,15 +4080,47 @@ export function AppProvider({ children }) {
               stateRef.current.runtimeState?.cwd ||
               ""
             : stateRef.current.codewikiProjectPath;
-        update({ currentView: view, codewikiProjectPath });
+        const scrapbookEntryId =
+          view === "scrapbook" ? options.scrapbookEntryId || null : null;
+        const researchSessionId =
+          view === "research" ? options.researchSessionId || null : null;
+        update({ currentView: view, codewikiProjectPath, scrapbookEntryId, researchSessionId, targetMessageId: null });
         if (view === "codewiki") {
           updateRoute(view, null, { projectPath: codewikiProjectPath });
         }
         if (view === "sessions") updateRoute(view, null);
+        if (view === "scrapbook") {
+          updateRoute(view, null, { scrapbookEntryId });
+        }
+        if (view === "research") {
+          updateRoute(view, null, { researchSessionId });
+        }
         if (view === "chat") {
           const rs = stateRef.current.runtimeState;
-          updateRoute("chat", rs?.sessionId);
+          updateRoute("chat", rs?.sessionId, { messageId: "" });
         }
+      },
+
+      openScrapbookHome: () => {
+        update({ currentView: "scrapbook", scrapbookEntryId: null, researchSessionId: null, targetMessageId: null });
+        updateRoute("scrapbook", null, { scrapbookEntryId: "" });
+      },
+
+      openScrapbookEntry: (entryId) => {
+        const scrapbookEntryId = String(entryId || "").trim();
+        update({ currentView: "scrapbook", scrapbookEntryId, researchSessionId: null, targetMessageId: null });
+        updateRoute("scrapbook", null, { scrapbookEntryId });
+      },
+
+      openResearchHome: () => {
+        update({ currentView: "research", researchSessionId: null, scrapbookEntryId: null, targetMessageId: null });
+        updateRoute("research", null, { researchSessionId: "" });
+      },
+
+      openResearchSession: (sessionId) => {
+        const researchSessionId = String(sessionId || "").trim();
+        update({ currentView: "research", researchSessionId, scrapbookEntryId: null, targetMessageId: null });
+        updateRoute("research", null, { researchSessionId });
       },
 
       toggleTheme: () => {
@@ -3645,9 +4144,54 @@ export function AppProvider({ children }) {
           },
         });
       },
+      setSandboxMode: async (sessionId, mode) => {
+        const sid = String(sessionId || stateRef.current.currentSessionId || "").trim();
+        const previousRuntime = stateRef.current.runtimeState || {};
+        const previousSessionRuntime = sid
+          ? stateRef.current.sessionRuntimeById?.[sid]
+          : undefined;
+        setState((prev) => ({
+          ...prev,
+          runtimeState: { ...(prev.runtimeState || {}), sandboxMode: mode },
+          sessionRuntimeById: sid
+            ? {
+                ...prev.sessionRuntimeById,
+                [sid]: {
+                  ...(prev.sessionRuntimeById[sid] || { sessionId: sid }),
+                  sandboxMode: mode,
+                },
+              }
+            : prev.sessionRuntimeById,
+        }));
+        try {
+          const result = await api.setSandboxMode(sessionId, mode);
+          if (result?.error || result?.ok === false) {
+            throw new Error(result?.message || "Failed to switch sandbox mode");
+          }
+          return result;
+        } catch (error) {
+          setState((prev) => {
+            const sessionRuntimeById = { ...prev.sessionRuntimeById };
+            if (sid) {
+              if (previousSessionRuntime) sessionRuntimeById[sid] = previousSessionRuntime;
+              else delete sessionRuntimeById[sid];
+            }
+            return {
+              ...prev,
+              runtimeState: previousRuntime,
+              sessionRuntimeById,
+            };
+          });
+          throw error;
+        }
+      },
       setProjectOpen: (open) => update({ projectOpen: open }),
       setSkillsOpen: (open) => update({ skillsOpen: open }),
+      setMcpOpen: (open) => update({ mcpOpen: open }),
+      setHooksOpen: (open) => update({ hooksOpen: open }),
       setMemoryOpen: (open) => update({ memoryOpen: open }),
+      clearPendingScrapbookContext: () => update({ pendingScrapbookContext: null }),
+      clearChatMessageTarget: () => update({ targetMessageId: null }),
       prepareChatAction: (actionName) => {
         if (actionName === CHAT_ACTION_NAMES.REFLECT) {
           update({
@@ -3706,6 +4250,7 @@ export function AppProvider({ children }) {
       loadSessionMessages,
       loadSessions,
       loadState,
+      setState,
       update,
       upsertRuntimeActivity,
     ],
@@ -3728,11 +4273,37 @@ export function AppProvider({ children }) {
     () => ({ state: projectedState, actions }),
     [projectedState, actions],
   );
-  return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
+  return (
+    <AppContext.Provider value={value}>
+      <AppActionsContext.Provider value={actions}>
+        <RuntimeModeContext.Provider
+          value={projectedState.runtimeState?.mode || "normal"}
+        >
+          <CurrentSessionIdContext.Provider value={projectedState.currentSessionId}>
+            {children}
+          </CurrentSessionIdContext.Provider>
+        </RuntimeModeContext.Provider>
+      </AppActionsContext.Provider>
+    </AppContext.Provider>
+  );
 }
 
 export function useApp() {
   const ctx = useContext(AppContext);
   if (!ctx) throw new Error("useApp must be used within AppProvider");
   return ctx;
+}
+
+export function useAppActions() {
+  const actions = useContext(AppActionsContext);
+  if (!actions) throw new Error("useAppActions must be used within AppProvider");
+  return actions;
+}
+
+export function useRuntimeMode() {
+  return useContext(RuntimeModeContext);
+}
+
+export function useCurrentSessionId() {
+  return useContext(CurrentSessionIdContext);
 }

@@ -1,4 +1,7 @@
 import { t } from "../../i18n/index.js";
+import { normalizeReasoningEffort } from "../../../../src/core/provider/reasoning-effort.js";
+
+export { normalizeReasoningEffort };
 
 export const REASONING_EFFORT_LEVELS = ["auto", "low", "medium", "high"];
 
@@ -29,11 +32,6 @@ export const REASONING_EFFORT_FLOW_DURATION = {
   medium: "1.45s",
   high: "0.95s",
 };
-
-export function normalizeReasoningEffort(value) {
-  const normalized = String(value || "auto").trim().toLowerCase();
-  return REASONING_EFFORT_LEVELS.includes(normalized) ? normalized : "auto";
-}
 
 export function getReasoningEffortIndex(value) {
   const normalized = normalizeReasoningEffort(value);

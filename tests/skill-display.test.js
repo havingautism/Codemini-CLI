@@ -54,7 +54,7 @@ test("groupSkillsByPackage groups remote skills and leaves local ungrouped", () 
   );
 });
 
-test("skillPackageGroupKey separates same source across scopes", () => {
+test("skillPackageGroupKey groups a remote package in the single installation domain", () => {
   const globalSkill = {
     name: "alpha",
     scope: "global",
@@ -68,7 +68,7 @@ test("skillPackageGroupKey separates same source across scopes", () => {
     packageSource: "owner/repo",
     source: "owner/repo",
   };
-  assert.notEqual(
+  assert.equal(
     skillPackageGroupKey(globalSkill),
     skillPackageGroupKey(projectSkill),
   );

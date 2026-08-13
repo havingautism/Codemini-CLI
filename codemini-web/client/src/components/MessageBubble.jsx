@@ -1,6 +1,7 @@
-import { useEffect, useState, useMemo } from "react";
+import { memo, useEffect, useState, useMemo } from "react";
 import { ToolCard } from "./ToolCard";
-import { PlanToolCard } from "./PlanToolCard.jsx";
+import { PlanToolCardGroup } from "./PlanToolCard.jsx";
+import { UsageBadge } from "./UsageBadge.jsx";
 import { isCreatePlanCard } from "@/lib/plan-ui-state.js";
 import { StreamdownRenderer } from "./StreamdownRenderer";
 import { EmbedBanner } from "./EmbedBanner.jsx";
@@ -14,7 +15,20 @@ import { layoutAnswerProcessWithPlans } from "@/lib/answer-process.js";
 import { TodoList } from "./TodoList";
 import { ConfirmDialog } from "@/components/ConfirmDialog.jsx";
 import { FileTypeIcon } from "@/components/FileTypeIcon.jsx";
-import { LinearRing, LinearStatusDot, Spinner } from "@/components/ui/spinner";
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  LinearRing,
+  ResponseLoader,
+  SessionOrb,
+} from "@/components/ui/spinner";
 import { Badge } from "@/components/ui/badge";
 import {
   Attachment,
@@ -26,6 +40,7 @@ import {
   AttachmentTrigger,
 } from "@/components/ui/attachment";
 import { cn } from "@/lib/utils";
+import { isShellToolName } from "@/lib/tool-names.js";
 import {
   isManualSkillCommand,
   parseUserSkillPrompt,
@@ -33,14 +48,30 @@ import {
 } from "@/lib/user-skill-prompt.js";
 import { formatTimestamp } from "../../utils/time.js";
 import { t } from "../../i18n/index.js";
+import {
+  hookEventI18nKey,
+  isHookSegment,
+  parseLegacyHookSegmentName,
+} from "../../../shared/hook-ui.js";
+
 import * as api from "@/hooks/use-api.js";
 import { useRotatingLabel } from "@/hooks/use-rotating-label.js";
 import { executionModeSkillContext } from "@/lib/skill-visibility.js";
-import { useApp } from "@/context/app-context.jsx";
+import {
+  useAppActions,
+  useCurrentSessionId,
+  useRuntimeMode,
+} from "@/context/app-context.jsx";
+import { parseScrapbookEntryId } from "@/lib/message-context-parsers.js";
 import { getMessageModelIdentity } from "@/lib/message-model-identity.js";
+import {
+  collectFileChangePatch,
+  reconcileFileChangesWithGit,
+  resolveFileChangeSequenceAction,
+  resolveFileChangePreviewLines,
+} from "@/lib/file-change-preview.js";
 import { ROLE_BADGE_CLASS, ROLE_PILLS } from "./PlanProgress.jsx";
 import { PlanStepStatusGlyph } from "@/components/plan-step-icons.jsx";
-import { PatchDiff } from "@pierre/diffs/react";
 import {
   Tooltip,
   TooltipContent,
@@ -48,6 +79,7 @@ import {
 } from "@/components/ui/tooltip";
 import {
   ArrowCounterClockwise,
+  ArrowSquareOut,
   Brain,
   CaretDown,
   CaretRight,
@@ -55,10 +87,11 @@ import {
   CheckCircle,
   Copy,
   FileText,
+  FolderOpen,
   Hammer,
   Moon,
+  Notebook,
   Play,
-  Wrench,
   XCircle,
 } from "@phosphor-icons/react";
 
@@ -142,9 +175,11 @@ const ROLE_STYLES = {
 };
 
 const SKILL_DOT_STYLES = {
+  running: "bg-(--accent-orange)",
   done: "bg-(--accent-green)",
   error: "bg-(--accent-red)",
-  always: "bg-(--accent-purple)",
+  blocked: "bg-(--accent-orange)",
+  always: "bg-(--accent-green)",
 };
 
 const TOOL_COLLAPSE_THRESHOLD = 1;
@@ -207,12 +242,9 @@ function RotatingStatusLabel({ phrases, active }) {
 
 function ThoughtBlock({ segment }) {
   const [open, setOpen] = useState(false);
-  const { state } = useApp();
+  const runtimeMode = useRuntimeMode();
   const streaming = Boolean(segment.isStreaming);
-  const thinkingPhrases = resolveModeHintPhrases(
-    "thinking",
-    state.runtimeState?.mode,
-  );
+  const thinkingPhrases = resolveModeHintPhrases("thinking", runtimeMode);
 
   return (
     <div className={cn("my-2", PROCESS_META_CLASS)}>
@@ -233,7 +265,7 @@ function ThoughtBlock({ segment }) {
         <span
           className={cn(COLLAPSE_ICON_CLASS, "text-(--text-process-detail)")}
         >
-          {streaming ? <LinearRing size="md" /> : <Brain size={15} />}
+          {streaming ? <SessionOrb state="thinking" /> : <Brain size={15} />}
         </span>
         {streaming ? (
           <RotatingStatusLabel phrases={thinkingPhrases} active />
@@ -247,6 +279,7 @@ function ThoughtBlock({ segment }) {
             text={segment.text}
             streaming={segment.isStreaming}
             className="msg-process-thought-body pl-5 text-[13px] italic leading-5"
+            inlineEmbeds={false}
           />
         </div>
       )}
@@ -475,7 +508,7 @@ function DreamNotice({ notice }) {
           )}
         >
           {showRing ? (
-            <LinearRing size="md" />
+            <SessionOrb state="breathing" />
           ) : (
             <Icon
               size={14}
@@ -503,19 +536,20 @@ function DreamNotice({ notice }) {
 
 function ToolGroup({ cards }) {
   const [expanded, setExpanded] = useState(false);
-  const { state } = useApp();
+  const runtimeMode = useRuntimeMode();
   const planCards = cards.filter(isCreatePlanCard);
   const otherCards = cards.filter((card) => !isCreatePlanCard(card));
   const total = otherCards.length;
   const hasRunningTool = otherCards.some((card) => card.status === "running");
-  const toolingPhrases = resolveModeHintPhrases(
-    "tooling",
-    state.runtimeState?.mode,
-  );
+  let groupStatus = "done";
+  if (otherCards.some((card) => card.status === "blocked")) groupStatus = "blocked";
+  if (hasRunningTool) groupStatus = "running";
+  if (otherCards.some((card) => card.status === "error")) groupStatus = "error";
+  const toolingPhrases = resolveModeHintPhrases("tooling", runtimeMode);
   const shouldUseSummaryHeader = total > TOOL_COLLAPSE_THRESHOLD;
   const runCount = otherCards.filter((card) => {
     const name = String(card.name || "").toLowerCase();
-    return name === "run" || name.startsWith("run(");
+    return isShellToolName(name);
   }).length;
   const summaryLabel =
     runCount === total
@@ -524,13 +558,14 @@ function ToolGroup({ cards }) {
 
   return (
     <div className={cn("my-2", PROCESS_META_CLASS)}>
-      {planCards.map((card) => (
-        <PlanToolCard key={card.id || "create_plan"} card={card} />
-      ))}
+      <PlanToolCardGroup cards={planCards} />
       {total > 0 && shouldUseSummaryHeader && (
         <button
           type="button"
-          className={COLLAPSE_ROW_CLASS}
+          className={cn(
+            COLLAPSE_ROW_CLASS,
+            planCards.length > 0 && "mt-4",
+          )}
           onClick={() => setExpanded((value) => !value)}
           aria-expanded={expanded}
         >
@@ -539,13 +574,7 @@ function ToolGroup({ cards }) {
           ) : (
             <CaretRight size={14} className={COLLAPSE_CHEVRON_CLASS} />
           )}
-          <span className={COLLAPSE_ICON_CLASS}>
-            {hasRunningTool ? (
-              <LinearStatusDot />
-            ) : (
-              <span className="inline-block size-1.5 rounded-full bg-(--accent-green)" />
-            )}
-          </span>
+          <SkillStatusDot status={groupStatus} />
           <span>{summaryLabel}</span>
         </button>
       )}
@@ -553,8 +582,9 @@ function ToolGroup({ cards }) {
         <div
           className={cn(
             "flex flex-col gap-2",
+            planCards.length > 0 && !shouldUseSummaryHeader && "mt-4",
             shouldUseSummaryHeader &&
-              "ml-4.5 mt-1 border-l border-(--border-default) pl-3",
+              "ml-4.5 mt-2 border-l border-(--border-default) pl-3",
           )}
         >
           {otherCards.map((card) => (
@@ -564,7 +594,7 @@ function ToolGroup({ cards }) {
       )}
       {hasRunningTool && (
         <div className="msg-process-meta__detail flex items-center gap-2 px-3 py-1.5 text-[11px] my-2">
-          <Spinner />
+          <SkillStatusDot status="running" />
           <RotatingStatusLabel phrases={toolingPhrases} active />
         </div>
       )}
@@ -581,7 +611,58 @@ function formatSkillNames(name = "") {
     .join(", ");
 }
 
+function localizeHookEventName(eventName = "") {
+  const raw = String(eventName || "").trim();
+  if (!raw) return "";
+  const key = hookEventI18nKey(raw);
+  const translated = t(key);
+  return translated === key ? raw : translated;
+}
+
+function resolveHookDisplayFields(badge = {}) {
+  if (badge?.event || badge?.sourceLabel) {
+    return {
+      event: String(badge.event || "").trim(),
+      sourceLabel: String(badge.sourceLabel || badge.name || "").trim(),
+      toolName: String(badge.toolName || "").trim(),
+    };
+  }
+  const legacy = parseLegacyHookSegmentName(badge?.name);
+  if (legacy) return legacy;
+  return {
+    event: "",
+    sourceLabel: String(badge?.name || "").trim(),
+    toolName: "",
+  };
+}
+
+function formatHookActivityLabel(badge = {}) {
+  const fields = resolveHookDisplayFields(badge);
+  const eventLabel =
+    localizeHookEventName(fields.event) || fields.event || t("hookActivity");
+  const source = fields.sourceLabel || "hook";
+  const detail = fields.toolName
+    ? t("hookActivityDetailTool")
+        .replace("{{event}}", eventLabel)
+        .replace("{{tool}}", fields.toolName)
+        .replace("{{source}}", source)
+    : t("hookActivityDetail")
+        .replace("{{event}}", eventLabel)
+        .replace("{{source}}", source);
+
+  if (badge?.status === "running") {
+    return t("hookActivityRunning").replace("{{detail}}", detail);
+  }
+  if (badge?.status === "error") {
+    return t("hookActivityFailed").replace("{{detail}}", detail);
+  }
+  return t("hookActivityDone").replace("{{detail}}", detail);
+}
+
 function skillActivityLabel(badge) {
+  if (isHookSegment(badge)) {
+    return formatHookActivityLabel(badge);
+  }
   const names = formatSkillNames(badge?.name);
   if (badge?.status === "running") {
     return t("skillUsing").replace("{{name}}", names);
@@ -593,6 +674,121 @@ function skillActivityLabel(badge) {
     return t("skillAlwaysLoaded").replace("{{names}}", names);
   }
   return t("skillUsed").replace("{{name}}", names);
+}
+
+function activityKindLabel(badge) {
+  return isHookSegment(badge) ? t("hookActivity") : t("skillActivity");
+}
+
+function SkillStatusDot({ status }) {
+  return (
+    <span className={COLLAPSE_ICON_CLASS}>
+      <span
+        aria-hidden="true"
+        className={cn(
+          "size-1.5 rounded-full",
+          SKILL_DOT_STYLES[status] || SKILL_DOT_STYLES.done,
+        )}
+      />
+    </span>
+  );
+}
+
+function hookDurationLabel(badge = {}) {
+  const startedAt = Date.parse(badge.startedAt || "");
+  const endedAt = Date.parse(badge.endedAt || "");
+  if (!Number.isFinite(startedAt) || !Number.isFinite(endedAt)) return "";
+  return formatProcessDuration(endedAt - startedAt);
+}
+
+function hookResultLabel(status = "done") {
+  if (status === "running") return t("hookDetailsRunning");
+  if (status === "error") return t("hookDetailsFailed");
+  return t("hookDetailsDone");
+}
+
+function HookActivityDisclosure({ badge, className }) {
+  const [open, setOpen] = useState(false);
+  const duration = hookDurationLabel(badge);
+  const hasDetails = Boolean(
+    badge.command || badge.matcher || duration || badge.reason || badge.summary,
+  );
+
+  return (
+    <div className={className}>
+      <button
+        type="button"
+        className={COLLAPSE_ROW_CLASS}
+        onClick={() => hasDetails && setOpen((value) => !value)}
+        aria-expanded={hasDetails ? open : undefined}
+      >
+        <CaretRight
+          size={14}
+          className={cn(
+            COLLAPSE_CHEVRON_CLASS,
+            "transition-transform",
+            open && "rotate-90",
+            !hasDetails && "invisible",
+          )}
+        />
+        <span>{activityKindLabel(badge)}</span>
+        <span className="msg-process-meta__detail min-w-0 flex-1 truncate font-mono text-xs">
+          {skillActivityLabel(badge)}
+        </span>
+        <SkillStatusDot status={badge.status} />
+      </button>
+      {open && hasDetails ? (
+        <div className="relative ml-4.5 mt-1 border-l border-(--border-default) py-1.5 pl-7 text-[12px] text-(--text-secondary)">
+          <dl className="grid gap-2">
+            {badge.command ? (
+              <div className="grid gap-1">
+                <dt className="text-(--text-muted)">
+                  {t("hookDetailsCommand")}
+                </dt>
+                <dd>
+                  <code className="block whitespace-pre-wrap break-all rounded-md bg-(--bg-secondary) px-2.5 py-2 font-mono text-[11px] leading-4 text-(--text-primary)">
+                    {badge.command}
+                  </code>
+                </dd>
+              </div>
+            ) : null}
+            <div className="flex flex-wrap gap-x-5 gap-y-1">
+              <div className="flex gap-2">
+                <dt className="text-(--text-muted)">
+                  {t("hookDetailsResult")}
+                </dt>
+                <dd>{hookResultLabel(badge.status)}</dd>
+              </div>
+              {duration ? (
+                <div className="flex gap-2">
+                  <dt className="text-(--text-muted)">
+                    {t("hookDetailsDuration")}
+                  </dt>
+                  <dd className="font-mono">{duration}</dd>
+                </div>
+              ) : null}
+              {badge.matcher ? (
+                <div className="flex min-w-0 gap-2">
+                  <dt className="shrink-0 text-(--text-muted)">
+                    {t("hookDetailsMatcher")}
+                  </dt>
+                  <dd className="min-w-0 break-all font-mono">
+                    {badge.matcher}
+                  </dd>
+                </div>
+              ) : null}
+            </div>
+            {badge.reason ? (
+              <div className="flex gap-2 text-(--accent-red)">
+                <dt className="shrink-0">{t("hookDetailsReason")}</dt>
+                <dd className="break-words">{badge.reason}</dd>
+              </div>
+            ) : null}
+          </dl>
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 function SkillActivityList({ badges = [] }) {
@@ -607,60 +803,48 @@ function SkillActivityList({ badges = [] }) {
   if (!visibleBadges.length) return null;
   return (
     <div className={cn("my-2 flex flex-col gap-2", PROCESS_META_CLASS)}>
-      {visibleBadges.map((badge, index) => (
-        <div
-          key={`${badge.name || "skill"}-${badge.status || "done"}-${index}`}
-          className={cn(COLLAPSE_ROW_CLASS, "text-[13px]")}
-        >
-          <span
-            className={cn(COLLAPSE_ICON_CLASS, "text-(--text-process-detail)")}
+      {visibleBadges.map((badge, index) =>
+        isHookSegment(badge) ? (
+          <HookActivityDisclosure
+            key={`${badge.name || "hook"}-${index}`}
+            badge={badge}
+            className="text-[13px]"
+          />
+        ) : (
+          <div
+            key={`${badge.name || "skill"}-${badge.status || "done"}-${index}`}
+            className={cn(COLLAPSE_ROW_CLASS, "text-[13px]")}
           >
-            <Wrench size={14} />
-          </span>
-          <span>{t("skillActivity")}</span>
-          <span className="msg-process-meta__detail min-w-0 flex-1 truncate font-mono text-xs">
-            {skillActivityLabel(badge)}
-          </span>
-          {badge.status === "running" ? (
-            <LinearStatusDot className="shrink-0" />
-          ) : (
-            <span
-              className={cn(
-                "size-1.5 shrink-0 rounded-full",
-                SKILL_DOT_STYLES[badge.status] || SKILL_DOT_STYLES.done,
-              )}
-            />
-          )}
-        </div>
-      ))}
+            <span>{activityKindLabel(badge)}</span>
+            <span className="msg-process-meta__detail min-w-0 flex-1 truncate font-mono text-xs">
+              {skillActivityLabel(badge)}
+            </span>
+            <SkillStatusDot status={badge.status} />
+          </div>
+        ),
+      )}
     </div>
   );
 }
 
 function SkillActivityRow({ badge }) {
   if (!badge?.name) return null;
+  if (isHookSegment(badge)) {
+    return (
+      <HookActivityDisclosure
+        badge={badge}
+        className={cn("my-2", PROCESS_META_CLASS, "text-[13px]")}
+      />
+    );
+  }
   return (
     <div className={cn("my-2", PROCESS_META_CLASS)}>
       <div className={cn(COLLAPSE_ROW_CLASS, "text-[13px]")}>
-        <span
-          className={cn(COLLAPSE_ICON_CLASS, "text-(--text-process-detail)")}
-        >
-          <Wrench size={14} />
-        </span>
-        <span>{t("skillActivity")}</span>
+        <span>{activityKindLabel(badge)}</span>
         <span className="msg-process-meta__detail min-w-0 flex-1 truncate font-mono text-xs">
           {skillActivityLabel(badge)}
         </span>
-        {badge.status === "running" ? (
-          <LinearStatusDot className="shrink-0" />
-        ) : (
-          <span
-            className={cn(
-              "size-1.5 shrink-0 rounded-full",
-              SKILL_DOT_STYLES[badge.status] || SKILL_DOT_STYLES.done,
-            )}
-          />
-        )}
+        <SkillStatusDot status={badge.status} />
       </div>
     </div>
   );
@@ -668,22 +852,34 @@ function SkillActivityRow({ badge }) {
 
 function ProcessGroup({ group }) {
   const [expanded, setExpanded] = useState(false);
-  const toolCount = group.groups.reduce(
+  const planCards = [];
+  const nestedGroups = (group.groups || [])
+    .map((item) => {
+      if (item?.type !== "tools" || !Array.isArray(item.cards)) return item;
+      const kept = [];
+      for (const card of item.cards) {
+        if (isCreatePlanCard(card)) planCards.push(card);
+        else kept.push(card);
+      }
+      return kept.length ? { ...item, cards: kept } : null;
+    })
+    .filter(Boolean);
+  const toolCount = nestedGroups.reduce(
     (sum, item) =>
       item.type === "tools" ? sum + Math.max(1, item.cards?.length || 0) : sum,
     0,
   );
-  const commandCount = group.groups.reduce((sum, item) => {
+  const commandCount = nestedGroups.reduce((sum, item) => {
     if (item.type !== "tools") return sum;
     return (
       sum +
       (item.cards || []).filter((card) => {
         const name = String(card?.name || "").toLowerCase();
-        return name === "run" || name.startsWith("run(");
+        return isShellToolName(name);
       }).length
     );
   }, 0);
-  const thoughtCount = group.groups.filter(
+  const thoughtCount = nestedGroups.filter(
     (item) => item.type === "thinking",
   ).length;
   const label =
@@ -699,41 +895,51 @@ function ProcessGroup({ group }) {
           .replace("{{thoughts}}", thoughtCount)
           .replace("{{tools}}", toolCount);
 
+  if (!planCards.length && !nestedGroups.length) return null;
+
   return (
     <div className={cn("my-2", PROCESS_META_CLASS)}>
-      <button
-        type="button"
-        onClick={() => setExpanded((value) => !value)}
-        className={COLLAPSE_ROW_CLASS}
-        aria-expanded={expanded}
-      >
-        {expanded ? (
-          <CaretDown size={14} className={COLLAPSE_CHEVRON_CLASS} />
-        ) : (
-          <CaretRight size={14} className={COLLAPSE_CHEVRON_CLASS} />
-        )}
-        <span className={COLLAPSE_ICON_CLASS}>
-          <span className="inline-block size-1.5 rounded-full bg-(--accent-green)" />
-        </span>
-        <span>{label}</span>
-        {details && (
-          <span className="msg-process-meta__detail min-w-0 truncate">
-            {details}
-          </span>
-        )}
-      </button>
-      {expanded && (
-        <div className="relative ml-4.5 mt-2 flex flex-col pl-6 before:absolute before:left-0 before:top-0 before:bottom-1 before:w-px before:bg-(--border-default)">
-          {group.groups.map((item, index) => {
-            if (item.type === "thinking") {
-              return <ThoughtBlock key={`p-th-${index}`} segment={item} />;
-            }
-            if (item.type === "tools") {
-              return <ToolGroup key={`p-tg-${index}`} cards={item.cards} />;
-            }
-            return null;
-          })}
-        </div>
+      <PlanToolCardGroup cards={planCards} />
+      {nestedGroups.length > 0 && (
+        <>
+          <button
+            type="button"
+            onClick={() => setExpanded((value) => !value)}
+            className={cn(
+              COLLAPSE_ROW_CLASS,
+              planCards.length > 0 && "mt-4",
+            )}
+            aria-expanded={expanded}
+          >
+            {expanded ? (
+              <CaretDown size={14} className={COLLAPSE_CHEVRON_CLASS} />
+            ) : (
+              <CaretRight size={14} className={COLLAPSE_CHEVRON_CLASS} />
+            )}
+            <span className={COLLAPSE_ICON_CLASS}>
+              <span className="inline-block size-1.5 rounded-full bg-(--accent-green)" />
+            </span>
+            <span>{label}</span>
+            {details && (
+              <span className="msg-process-meta__detail min-w-0 truncate">
+                {details}
+              </span>
+            )}
+          </button>
+          {expanded && (
+            <div className="relative ml-4.5 mt-2 flex flex-col pl-6 before:absolute before:left-0 before:top-0 before:bottom-1 before:w-px before:bg-(--border-default)">
+              {nestedGroups.map((item, index) => {
+                if (item.type === "thinking") {
+                  return <ThoughtBlock key={`p-th-${index}`} segment={item} />;
+                }
+                if (item.type === "tools") {
+                  return <ToolGroup key={`p-tg-${index}`} cards={item.cards} />;
+                }
+                return null;
+              })}
+            </div>
+          )}
+        </>
       )}
     </div>
   );
@@ -743,7 +949,6 @@ function mergeFileChanges(fileChanges = []) {
   const byPath = new Map();
   const order = [];
   const seen = new Set();
-  const actionRank = { delete: 3, create: 2, edit: 1 };
   for (const change of fileChanges) {
     const path = String(change?.path || "");
     if (!path) continue;
@@ -771,14 +976,11 @@ function mergeFileChanges(fileChanges = []) {
     const existing = byPath.get(path);
     existing.linesAdded += Number(change.linesAdded || 0);
     existing.linesRemoved += Number(change.linesRemoved || 0);
-    const currentRank = actionRank[existing.action] || 0;
-    const nextRank = actionRank[change.action] || 0;
-    if (nextRank > currentRank) existing.action = change.action;
     if (!existing.diffPreview && change.diffPreview) {
       existing.diffPreview = change.diffPreview;
       existing.changedLine = change.changedLine;
     }
-    if (change.diffPreview) existing.changes.push(change);
+    existing.changes.push(change);
     if (
       change.changeSetId &&
       !existing.changeSetIds.includes(change.changeSetId)
@@ -789,22 +991,11 @@ function mergeFileChanges(fileChanges = []) {
   return order
     .map((path) => {
       const change = byPath.get(path);
-      const firstChange = change.changes[0];
       const lastChange = change.changes[change.changes.length - 1];
-      if (firstChange?.action === "create" && lastChange?.action === "delete") {
-        return null;
-      }
-      const createIndex = change.changes.findIndex(
-        (item) => item.action === "create",
+      const action = resolveFileChangeSequenceAction(
+        change.changes.map((item) => item.action),
       );
-      const createdThenEdited =
-        createIndex >= 0 &&
-        !change.changes
-          .slice(createIndex + 1)
-          .some((item) => item.action === "delete") &&
-        change.changes
-          .slice(createIndex + 1)
-          .some((item) => item.action === "edit");
+      if (!action) return null;
       const trackedChanges = change.changes.filter((item) => item.changeSetId);
       const revertedAt =
         trackedChanges.length > 0 &&
@@ -813,17 +1004,20 @@ function mergeFileChanges(fileChanges = []) {
           : "";
       return {
         ...change,
-        ...(createdThenEdited
+        action,
+        ...(action === "create"
           ? {
-              action: "create",
               linesAdded: Math.max(
                 0,
                 Number(change.linesAdded || 0) -
                   Number(change.linesRemoved || 0),
               ),
               linesRemoved: 0,
-              diffPreview: "",
-              changes: [],
+              // Keep last preview so expand still has content after create→edit merge.
+              diffPreview: String(
+                lastChange?.diffPreview || change.diffPreview || "",
+              ),
+              changes: lastChange?.diffPreview ? [lastChange] : [],
             }
           : {}),
         changeSetId:
@@ -858,100 +1052,12 @@ function basename(pathText) {
   return value.split("/").filter(Boolean).pop() || value || "file";
 }
 
-function isUnifiedPatch(text) {
-  const value = String(text || "");
-  return (
-    value.startsWith("diff --git ") ||
-    value.includes("\ndiff --git ") ||
-    value.includes("\n@@ ")
-  );
+function changeHasExpandablePreview(change) {
+  if (collectFileChangePatch(change)) return true;
+  return getFileChangeSetIds(change).length > 0;
 }
 
-function splitUnifiedPatches(patch) {
-  const text = String(patch || "").trim();
-  if (!text) return [];
-  const matches = [...text.matchAll(/^diff --git /gm)];
-  if (matches.length <= 1) return [text];
-  return matches
-    .map((match, index) => {
-      const start = match.index || 0;
-      const end =
-        index + 1 < matches.length ? matches[index + 1].index : text.length;
-      return text.slice(start, end).trim();
-    })
-    .filter(Boolean);
-}
-
-function usePatchThemeType() {
-  const getIsDark = () =>
-    document.documentElement.classList.contains("dark") ||
-    document.documentElement.dataset.theme === "dark";
-  const [isDark, setIsDark] = useState(() =>
-    typeof document === "undefined" ? true : getIsDark(),
-  );
-  useEffect(() => {
-    if (typeof document === "undefined") return undefined;
-    const ob = new MutationObserver(() => setIsDark(getIsDark()));
-    ob.observe(document.documentElement, {
-      attributes: true,
-      attributeFilter: ["class", "data-theme"],
-    });
-    return () => ob.disconnect();
-  }, []);
-  return isDark ? "dark" : "light";
-}
-
-function buildFileChangePreviewLines(change) {
-  return String(change?.diffPreview || "")
-    .split(/\r?\n/)
-    .filter(Boolean)
-    .map((line) => {
-      const signedMatch = line.match(/^([+-])(\d+)?\|\s?(.*)$/);
-      if (signedMatch) {
-        return {
-          number: signedMatch[2] || "",
-          text: signedMatch[3] || "",
-          type: signedMatch[1] === "-" ? "remove" : "add",
-        };
-      }
-      const match = line.match(/^(\d+)\|\s?(.*)$/);
-      return {
-        number: match ? match[1] : "",
-        text: match ? match[2] : line,
-        type: change.action === "delete" ? "remove" : "add",
-      };
-    });
-}
-
-function FileChangePreview({ change }) {
-  const patch =
-    Array.isArray(change?.changes) && change.changes.length
-      ? change.changes
-          .map((item) => item.diffPreview || "")
-          .filter(Boolean)
-          .join("\n")
-      : String(change?.diffPreview || "");
-  const themeType = usePatchThemeType();
-  if (isUnifiedPatch(patch)) {
-    const patches = splitUnifiedPatches(patch);
-    return (
-      <div className="max-h-[520px] overflow-auto bg-(--bg-primary) text-xs">
-        {patches.map((singlePatch, index) => (
-          <PatchDiff
-            key={index}
-            patch={singlePatch}
-            options={{
-              theme: { dark: "pierre-dark", light: "pierre-light" },
-              themeType,
-              diffStyle: "unified",
-            }}
-          />
-        ))}
-      </div>
-    );
-  }
-  const lines = buildFileChangePreviewLines(change);
-  if (!lines.length) return null;
+function renderFileChangePreviewLines(lines) {
   return (
     <div className="overflow-hidden bg-(--bg-primary)">
       <div className="max-h-[420px] overflow-auto font-mono text-xs leading-6">
@@ -959,21 +1065,121 @@ function FileChangePreview({ change }) {
           <div
             key={idx}
             className={cn(
-              "grid min-w-full grid-cols-[52px_max-content] border-l-3",
+              "grid min-w-full grid-cols-[44px_44px_24px_max-content] border-l-3",
               line.type === "remove"
                 ? "border-(--accent-red) bg-(--accent-red-bg)"
-                : "border-(--accent-green) bg-(--accent-green-bg)",
+                : line.type === "add"
+                  ? "border-(--accent-green) bg-(--accent-green-bg)"
+                  : "border-transparent bg-transparent",
             )}
           >
-            <span className="select-none pr-3 text-right text-(--text-muted)">
-              {line.number}
+            <span className="select-none border-r border-(--border-default) pr-2 text-right text-(--text-muted)">
+              {line.oldNumber ?? (line.type === "remove" ? line.number : "")}
             </span>
-            <span className="whitespace-pre pr-4 text-(--text-primary)">
+            <span className="select-none border-r border-(--border-default) pr-2 text-right text-(--text-muted)">
+              {line.newNumber ?? (line.type === "add" ? line.number : "")}
+            </span>
+            <span
+              className={cn(
+                "select-none text-center font-semibold",
+                line.type === "remove"
+                  ? "text-(--accent-red)"
+                  : line.type === "add"
+                    ? "text-(--accent-green)"
+                    : "text-(--text-muted)",
+              )}
+            >
+              {line.marker ??
+                (line.type === "remove"
+                  ? "-"
+                  : line.type === "add"
+                    ? "+"
+                    : " ")}
+            </span>
+            <span
+              className={cn(
+                "whitespace-pre pr-4",
+                line.type === "context"
+                  ? "text-(--text-muted)"
+                  : "text-(--text-primary)",
+              )}
+            >
               {line.text || " "}
             </span>
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+function FileChangePreview({ change }) {
+  const currentSessionId = useCurrentSessionId();
+  const localPatch = collectFileChangePatch(change);
+  const [loadedPatch, setLoadedPatch] = useState("");
+  const [loadingPatch, setLoadingPatch] = useState(false);
+  const [loadError, setLoadError] = useState("");
+  const changeSetIds = getFileChangeSetIds(change);
+
+  useEffect(() => {
+    setLoadedPatch("");
+    setLoadError("");
+    if (localPatch || !changeSetIds.length || !currentSessionId) {
+      setLoadingPatch(false);
+      return undefined;
+    }
+    let cancelled = false;
+    setLoadingPatch(true);
+    (async () => {
+      try {
+        let patchText = "";
+        for (const id of changeSetIds) {
+          const result = await api.fetchSessionChangePatch(
+            currentSessionId,
+            id,
+          );
+          const next = String(result?.patch || "").trim();
+          if (!next) continue;
+          patchText = patchText ? `${patchText}\n${next}` : next;
+        }
+        if (cancelled) return;
+        if (!patchText) throw new Error(t("noPreview"));
+        setLoadedPatch(patchText);
+      } catch (error) {
+        if (!cancelled) {
+          setLoadError(String(error?.message || t("noPreview")));
+        }
+      } finally {
+        if (!cancelled) setLoadingPatch(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [localPatch, currentSessionId, changeSetIds.join("|")]);
+
+  const patch = localPatch || loadedPatch;
+  if (loadingPatch && !patch) {
+    return (
+      <div className="flex items-center gap-2 px-3 py-3 text-xs text-(--text-muted)">
+        <LinearRing size="sm" />
+        <span>{t("loading")}</span>
+      </div>
+    );
+  }
+  if (!patch) {
+    return (
+      <div className="px-3 py-3 text-xs text-(--text-muted)">
+        {loadError || t("noPreview")}
+      </div>
+    );
+  }
+
+  const lines = resolveFileChangePreviewLines(patch, change.action);
+  if (lines.length) return renderFileChangePreviewLines(lines);
+  return (
+    <div className="px-3 py-3 text-xs text-(--text-muted)">
+      {t("noPreview")}
     </div>
   );
 }
@@ -1076,16 +1282,37 @@ function FileChangesOverviewBar({ changes }) {
 }
 
 function FileChangesSummary({ changes }) {
-  const { state } = useApp();
+  const currentSessionId = useCurrentSessionId();
   const [openFiles, setOpenFiles] = useState(() => new Set());
   const [undoing, setUndoing] = useState(() => new Set());
   const [revertedUndoKeys, setRevertedUndoKeys] = useState(() => new Set());
   const [undoErrors, setUndoErrors] = useState(() => new Map());
   const [pendingUndo, setPendingUndo] = useState(null);
+  const [fileAction, setFileAction] = useState("");
+  const [fileActionError, setFileActionError] = useState(null);
   const actionColors = {
     edit: "bg-(--accent-blue-bg) text-(--accent-blue)",
     create: "bg-(--accent-green-bg) text-(--accent-green)",
     delete: "bg-(--accent-red-bg) text-(--accent-red)",
+  };
+  const handleFileAction = async (event, filePath, action) => {
+    event.stopPropagation();
+    if (!filePath || fileAction) return;
+    setFileActionError(null);
+    setFileAction(`${filePath}:${action}`);
+    try {
+      const result = await api.openWorkspaceFile(filePath, action);
+      if (result?.error || result?.ok === false) {
+        throw new Error(result?.message || t("openFileFailed"));
+      }
+    } catch (error) {
+      setFileActionError({
+        path: filePath,
+        message: String(error?.message || t("openFileFailed")),
+      });
+    } finally {
+      setFileAction("");
+    }
   };
   const confirmUndoChange = async () => {
     if (!pendingUndo || undoing.has(pendingUndo.undoKey)) return;
@@ -1099,11 +1326,8 @@ function FileChangesSummary({ changes }) {
     try {
       const result =
         changeSetIds.length > 1
-          ? await api.undoSessionChanges(state.currentSessionId, changeSetIds)
-          : await api.undoSessionChange(
-              state.currentSessionId,
-              changeSetIds[0],
-            );
+          ? await api.undoSessionChanges(currentSessionId, changeSetIds)
+          : await api.undoSessionChange(currentSessionId, changeSetIds[0]);
       if (result?.error || result?.ok === false)
         throw new Error(result.message || t("undoChangeFailed"));
       setRevertedUndoKeys((prev) => new Set(prev).add(undoKey));
@@ -1130,13 +1354,12 @@ function FileChangesSummary({ changes }) {
         {changes.map((c, i) => {
           const key = `${c.path}-${i}`;
           const fileOpen = openFiles.has(key);
-          const hasPreview = Boolean(
-            c.diffPreview || (Array.isArray(c.changes) && c.changes.length),
-          );
+          const hasPreview = changeHasExpandablePreview(c);
           const changeSetIds = getFileChangeSetIds(c);
           const undoKey = changeSetIds.join("|");
           const isReverted =
             undoKey && (revertedUndoKeys.has(undoKey) || Boolean(c.revertedAt));
+          const canOpenFile = Boolean(c.path) && c.action !== "delete";
           return (
             <div
               key={key}
@@ -1199,6 +1422,54 @@ function FileChangesSummary({ changes }) {
                     -{c.linesRemoved}
                   </span>
                 )}
+                {canOpenFile && (
+                  <div
+                    className="flex h-6 shrink-0 items-center gap-0.5"
+                    role="group"
+                    aria-label={`${t("openFile")} / ${t("revealFile")}: ${basename(c.path)}`}
+                  >
+                    <button
+                      type="button"
+                      className="flex size-6 items-center justify-center rounded-md text-(--text-muted) opacity-80 transition-[background-color,color,opacity,transform] duration-100 hover:bg-(--bg-hover) hover:text-(--accent-blue) hover:opacity-100 active:scale-[0.94] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-(--accent-blue) disabled:cursor-wait disabled:opacity-40 motion-reduce:transform-none motion-reduce:transition-none"
+                      onClick={(event) =>
+                        handleFileAction(event, c.path, "open")
+                      }
+                      aria-label={`${t("openFile")}: ${basename(c.path)}`}
+                      title={`${t("openFile")}: ${c.path}`}
+                      disabled={Boolean(fileAction)}
+                    >
+                      {fileAction === `${c.path}:open` ? (
+                        <LinearRing size="sm" />
+                      ) : (
+                        <ArrowSquareOut
+                          size={13}
+                          weight="bold"
+                          aria-hidden="true"
+                        />
+                      )}
+                    </button>
+                    <button
+                      type="button"
+                      className="flex size-6 items-center justify-center rounded-md text-(--text-muted) opacity-80 transition-[background-color,color,opacity,transform] duration-100 hover:bg-(--bg-hover) hover:text-(--accent-blue) hover:opacity-100 active:scale-[0.94] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-(--accent-blue) disabled:cursor-wait disabled:opacity-40 motion-reduce:transform-none motion-reduce:transition-none"
+                      onClick={(event) =>
+                        handleFileAction(event, c.path, "reveal")
+                      }
+                      aria-label={`${t("revealFile")}: ${basename(c.path)}`}
+                      title={`${t("revealFile")}: ${c.path}`}
+                      disabled={Boolean(fileAction)}
+                    >
+                      {fileAction === `${c.path}:reveal` ? (
+                        <LinearRing size="sm" />
+                      ) : (
+                        <FolderOpen
+                          size={13}
+                          weight="bold"
+                          aria-hidden="true"
+                        />
+                      )}
+                    </button>
+                  </div>
+                )}
                 {changeSetIds.length > 0 && (
                   <span
                     role="button"
@@ -1220,7 +1491,7 @@ function FileChangesSummary({ changes }) {
                       });
                     }}
                     className={cn(
-                      "ml-1 inline-flex h-6 shrink-0 items-center justify-center rounded-md text-(--text-muted) hover:bg-(--bg-hover) hover:text-(--text-primary)",
+                      "inline-flex h-6 shrink-0 items-center justify-center rounded-md text-(--text-muted) hover:bg-(--bg-hover) hover:text-(--text-primary)",
                       isReverted
                         ? "pointer-events-none gap-1 px-2 text-[11px] text-(--accent-green)"
                         : "w-6",
@@ -1243,6 +1514,14 @@ function FileChangesSummary({ changes }) {
               {undoKey && undoErrors.has(undoKey) && (
                 <div className="border-t border-(--border-default) px-3 py-2 text-xs text-(--accent-red)">
                   {undoErrors.get(undoKey)}
+                </div>
+              )}
+              {fileActionError?.path === c.path && (
+                <div
+                  role="alert"
+                  className="border-t border-(--border-default) px-3 py-2 text-xs text-(--accent-red)"
+                >
+                  {fileActionError.message}
                 </div>
               )}
               {fileOpen && (
@@ -1315,46 +1594,64 @@ function UserText({ text }) {
   return <StreamdownRenderer text={text} streaming={false} />;
 }
 
-function UserSkillChips({ badges = [], skills = [], className }) {
+function UserSkillChips({ badges = [], className }) {
   const items = userSkillChipBadges(badges);
   if (!items.length) return null;
   return (
     <div className={cn("flex max-w-full flex-wrap gap-1.5", className)}>
       {items.map(({ name, status }) => {
-        const description =
-          skills.find((item) => item.name === name)?.description || "";
         const always = status === "always";
         return (
-          <Tooltip key={name}>
-            <TooltipTrigger asChild>
-              <span
-                className={cn(
-                  "codemini-status-chip inline-flex max-w-full items-center gap-1.5 px-2 py-1 text-[12px]",
-                  always
-                    ? "border-(--border-default) bg-(--bg-secondary) text-(--text-secondary)"
-                    : "border-(--accent-purple)/25 bg-(--accent-purple-bg) text-accent-purple",
-                )}
-              >
-                <Hammer
-                  size={14}
-                  className={cn("shrink-0", always && "opacity-70")}
-                />
-                <span className="max-w-[220px] truncate">{name}</span>
-              </span>
-            </TooltipTrigger>
-            {description ? (
-              <TooltipContent
-                side="top"
-                sideOffset={8}
-                className="max-w-75 px-4 py-3 leading-relaxed whitespace-normal"
-              >
-                {description}
-              </TooltipContent>
-            ) : null}
-          </Tooltip>
+          <span
+            key={name}
+            className={cn(
+              "codemini-status-chip inline-flex max-w-full items-center gap-1.5 px-2 py-1 text-[12px]",
+              always
+                ? "border-(--border-default) bg-(--bg-secondary) text-(--text-secondary)"
+                : "border-(--accent-purple)/25 bg-(--accent-purple-bg) text-accent-purple",
+            )}
+          >
+            <Hammer
+              size={14}
+              className={cn("shrink-0", always && "opacity-70")}
+            />
+            <span className="max-w-[220px] truncate">{name}</span>
+          </span>
         );
       })}
     </div>
+  );
+}
+
+function ScrapbookUserAttachment({ item }) {
+  const actions = useAppActions();
+  const entryId = parseScrapbookEntryId(item);
+  const label = item.name || t("scrapbookUntitled");
+  const canOpen = Boolean(entryId);
+
+  if (!canOpen) {
+    return (
+      <span
+        className="codemini-status-chip inline-flex max-w-full items-center gap-1.5 border-(--border-default) bg-(--bg-secondary) px-2 py-1 text-[12px] text-(--text-secondary)"
+      >
+        <Notebook size={14} className="shrink-0" />
+        <span className="max-w-55 truncate">{label}</span>
+      </span>
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={() => actions.openScrapbookEntry(entryId)}
+      title={t("scrapbookOpenEntry")}
+      aria-label={`${t("scrapbookOpenEntry")}: ${label}`}
+      className="codemini-status-chip inline-flex max-w-full items-center gap-1.5 border-(--border-default) bg-(--bg-secondary) px-2 py-1 text-[12px] text-(--text-secondary) transition-colors hover:border-(--border-strong) hover:bg-(--bg-hover) hover:text-(--text-primary)"
+    >
+      <Notebook size={14} className="shrink-0" />
+      <span className="max-w-55 truncate">{label}</span>
+      <ArrowSquareOut size={12} className="shrink-0 opacity-70" />
+    </button>
   );
 }
 
@@ -1364,10 +1661,22 @@ function UserAttachments({ attachments = [], className }) {
 
   return (
     <AttachmentGroup className={cn("max-w-full", className)}>
-      {items.map((item) =>
-        item?.kind === "image" && item.url ? (
-          <UserImageAttachment key={item.id || item.url} item={item} />
-        ) : (
+      {items.map((item) => {
+        if (item?.kind === "image" && item.url) {
+          return <UserImageAttachment key={item.id || item.url} item={item} />;
+        }
+        if (
+          item?.kind === "scrapbook" ||
+          String(item?.id || "").startsWith("scrapbook:")
+        ) {
+          return (
+            <ScrapbookUserAttachment
+              key={item.id || item.name}
+              item={item}
+            />
+          );
+        }
+        return (
           <Attachment key={item.id || item.name} size="sm">
             <AttachmentMedia>
               <FileText />
@@ -1379,8 +1688,8 @@ function UserAttachments({ attachments = [], className }) {
               </AttachmentDescription>
             </AttachmentContent>
           </Attachment>
-        ),
-      )}
+        );
+      })}
     </AttachmentGroup>
   );
 }
@@ -1545,85 +1854,6 @@ function MessageActionButton({
   );
 }
 
-function formatUsageNumber(value) {
-  const number = Number(value);
-  if (!Number.isFinite(number)) return "0";
-  if (number >= 1_000_000)
-    return `${(number / 1_000_000).toFixed(number >= 10_000_000 ? 0 : 1)}M`;
-  if (number >= 1000)
-    return `${(number / 1000).toFixed(number >= 10_000 ? 0 : 1)}k`;
-  return String(Math.round(number));
-}
-
-function getUsageSummary(usage) {
-  if (!usage || typeof usage !== "object") return null;
-  const total = Number(usage.totalTokens || 0);
-  const input = Number(usage.inputTokens || 0);
-  const output = Number(usage.outputTokens || 0);
-  const cached = Number(usage.cachedInputTokens || 0);
-  const cacheMiss = Number(usage.cacheMissInputTokens || 0);
-  const cacheWrite = Number(usage.cacheWriteInputTokens || 0);
-  const reasoning = Number(usage.reasoningOutputTokens || 0);
-  const requests = Number(usage.requests || 0);
-  if (
-    ![total, input, output, cached, cacheWrite, reasoning].some(
-      (value) => Number.isFinite(value) && value > 0,
-    )
-  )
-    return null;
-  const cacheBase =
-    cacheMiss > 0 || cacheWrite > 0 ? cached + cacheMiss + cacheWrite : input;
-  const cachePct = cacheBase > 0 ? (cached / cacheBase) * 100 : 0;
-  const labelParts = [
-    `${formatUsageNumber(total || input + output)} ${t("usageTokens")}`,
-  ];
-  if (cached > 0 || input > 0) {
-    labelParts.push(
-      `${t("usageCache")} ${formatUsageNumber(cached)} (${cachePct.toFixed(1)}%)`,
-    );
-  }
-  const detailParts = [
-    `${t("usageInput")} ${formatUsageNumber(input)}`,
-    `${t("usageOutput")} ${formatUsageNumber(output)}`,
-    `${t("usageTotal")} ${formatUsageNumber(total || input + output)}`,
-  ];
-  if (cached > 0 || input > 0)
-    detailParts.push(
-      `${t("usageCacheHit")} ${formatUsageNumber(cached)} (${cachePct.toFixed(1)}%)`,
-    );
-  if (cacheMiss > 0)
-    detailParts.push(`${t("usageCacheMiss")} ${formatUsageNumber(cacheMiss)}`);
-  if (cacheWrite > 0)
-    detailParts.push(
-      `${t("usageCacheWrite")} ${formatUsageNumber(cacheWrite)}`,
-    );
-  if (reasoning > 0)
-    detailParts.push(`${t("usageReasoning")} ${formatUsageNumber(reasoning)}`);
-  if (requests > 1)
-    detailParts.push(t("usageRequests").replace("{{count}}", requests));
-  return {
-    label: labelParts.join(" · "),
-    details: detailParts.join(" · "),
-  };
-}
-
-function UsageBadge({ usage }) {
-  const summary = getUsageSummary(usage);
-  if (!summary) return null;
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <span className="inline-flex h-8 max-w-full items-center truncate rounded-md px-1.5 text-[11px] text-(--text-muted)">
-          {summary.label}
-        </span>
-      </TooltipTrigger>
-      <TooltipContent side="bottom" sideOffset={6}>
-        {summary.details}
-      </TooltipContent>
-    </Tooltip>
-  );
-}
-
 function ModelIdentityBadge({ sdkProvider, model }) {
   const identity = getMessageModelIdentity({ sdkProvider, model });
   if (!identity) return null;
@@ -1696,14 +1926,29 @@ function shouldShowMessageActions(message, messageComplete) {
   );
 }
 
-function shouldShowPostCompletionExtras(message, messageComplete, hasContent) {
+/**
+ * Post-completion extras (related links, file diffs) follow this message only.
+ * Do not gate on session-wide live/streaming — that hides finished bubbles' links
+ * for the whole next turn and remounts them when streaming ends.
+ */
+export function shouldShowPostCompletionExtras(
+  message,
+  messageComplete,
+  hasContent,
+) {
   if (!messageComplete || !hasContent) return false;
   const planStep = message?.planStep;
   if (!planStep) return true;
   return String(planStep.role || "").toLowerCase() === "summarizer";
 }
 
-function shouldShowFileChanges(message, messageComplete, mergedFileChanges) {
+function shouldShowFileChanges(
+  message,
+  messageComplete,
+  mergedFileChanges,
+  projectIsGit,
+) {
+  if (!projectIsGit) return false;
   return shouldShowPostCompletionExtras(
     message,
     messageComplete,
@@ -1719,17 +1964,40 @@ function MessageActions({
   showUsage = true,
   retryPrompt = "",
   canRetry = false,
+  canSaveToScrapbook = false,
+  onSaveToScrapbook,
   onRetry,
   align = "left",
   className,
 }) {
+  const actions = useAppActions();
   const [copied, setCopied] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [saveDialogOpen, setSaveDialogOpen] = useState(false);
 
   async function handleCopy() {
     const ok = await writeClipboard(text);
     if (!ok) return;
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1200);
+  }
+
+  async function handleSaveToScrapbook(navigateAfterSave = false) {
+    if (!canSaveToScrapbook || saving) return;
+    setSaveDialogOpen(false);
+    setSaving(true);
+    const result = await onSaveToScrapbook?.();
+    setSaving(false);
+    if (result?.error) return;
+    setSaved(true);
+    if (navigateAfterSave) {
+      const entryId = result?.entry?.id;
+      setSaved(false);
+      if (entryId) actions.openScrapbookEntry(entryId);
+      return;
+    }
+    window.setTimeout(() => setSaved(false), 1400);
   }
 
   const actionButtons = (
@@ -1743,6 +2011,17 @@ function MessageActions({
       >
         <Copy size={17} />
       </MessageActionButton>
+      {canSaveToScrapbook && (
+        <MessageActionButton
+          label={saving ? t("scrapbookSavingAnswer") : t("scrapbookSaveAnswer")}
+          copiedLabel={t("scrapbookSavedAnswer")}
+          copied={saved}
+          disabled={!text || saving}
+          onClick={() => setSaveDialogOpen(true)}
+        >
+          <Notebook size={17} />
+        </MessageActionButton>
+      )}
       {canRetry && (
         <MessageActionButton
           label={t("retry")}
@@ -1776,6 +2055,48 @@ function MessageActions({
           {actionButtons}
         </div>
       )}
+      <Dialog
+        open={saveDialogOpen}
+        onOpenChange={(open) => !saving && setSaveDialogOpen(open)}
+      >
+        <DialogContent className="sm:max-w-[420px] gap-5">
+          <DialogHeader showCloseButton={!saving}>
+            <DialogTitle>{t("scrapbookSaveAnswer")}</DialogTitle>
+            <DialogDescription className="text-[13px] leading-6">
+              {t("scrapbookSaveAnswerDescription")}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="sm:justify-stretch sm:flex-col-reverse">
+            <Button
+              type="button"
+              variant="outline"
+              disabled={saving}
+              onClick={() => setSaveDialogOpen(false)}
+              className="sm:w-full"
+            >
+              {t("cancel")}
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={saving}
+              onClick={() => handleSaveToScrapbook(false)}
+              className="sm:w-full"
+            >
+              {saving ? t("scrapbookSavingAnswer") : t("scrapbookSaveAndStay")}
+            </Button>
+            <Button
+              type="button"
+              variant="default"
+              disabled={saving}
+              onClick={() => handleSaveToScrapbook(true)}
+              className="sm:w-full"
+            >
+              {saving ? t("scrapbookSavingAnswer") : t("scrapbookSaveAndOpen")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -1787,6 +2108,7 @@ function renderGroupItem(group, i) {
         <StreamdownRenderer
           text={group.text}
           streaming={group.isStreaming}
+          className="codemini-assistant-markdown"
           inlineEmbeds={false}
         />
       </div>
@@ -1854,12 +2176,13 @@ function AnswerProcessFold({ groups, durationMs }) {
   );
 }
 
-export function MessageBubble({
+export const MessageBubble = memo(function MessageBubble({
   message,
-  skills = [],
-  sessionLive = false,
   onRetry,
+  projectIsGit = true,
+  gitFiles,
 }) {
+  const actions = useAppActions();
   const {
     role,
     segments,
@@ -1882,13 +2205,14 @@ export function MessageBubble({
       (group) => group.type === "text" && group.isStreaming,
     );
     const messageInProgress =
+      Boolean(message?.loading) ||
       message?.isComplete === false ||
       (message?.planStep &&
         !["done", "failed"].includes(String(message.planStep.status || "")));
     return collapseProcessGroups(groups, {
       disabled: hasStreamingText || messageInProgress,
     });
-  }, [message?.isComplete, message?.planStep, segments]);
+  }, [message?.isComplete, message?.loading, message?.planStep, segments]);
 
   const answerLayout = useMemo(
     () =>
@@ -1900,10 +2224,10 @@ export function MessageBubble({
   );
   const hasAnswerFold = answerLayout.hasFold;
   const preAnswerDuration = answerLayout.durationMs;
-  const mergedFileChanges = useMemo(
-    () => mergeFileChanges(fileChanges || []),
-    [fileChanges],
-  );
+  const mergedFileChanges = useMemo(() => {
+    const merged = mergeFileChanges(fileChanges || []);
+    return reconcileFileChangesWithGit(merged, gitFiles);
+  }, [fileChanges, gitFiles]);
   const messageEmbeds = useMemo(
     () => collectMessageEmbeds(segments || []),
     [segments],
@@ -1943,7 +2267,9 @@ export function MessageBubble({
 
     if (
       String(legacyText || "").startsWith("Reflect skill") ||
-      String(legacyText || "").startsWith("Reflect found no reusable skill candidate.")
+      String(legacyText || "").startsWith(
+        "Reflect found no reusable skill candidate.",
+      )
     ) {
       return null;
     }
@@ -1959,10 +2285,9 @@ export function MessageBubble({
       return (
         <div data-message-id={message.id} className="py-2 my-[8px] px-6">
           <div className="max-w-[860px] mx-auto">
-            <div
-              className="msg-body streaming-cursor streaming-cursor--pending"
-              role="status"
-              aria-label={legacyText || t("waitingResponse")}
+            <ResponseLoader
+              className="msg-body"
+              label={legacyText || t("waitingResponse")}
             />
           </div>
         </div>
@@ -2080,16 +2405,24 @@ export function MessageBubble({
     responseStatus === "error" &&
     Boolean(retryPrompt) &&
     message.retryable !== false;
+  const canSaveToScrapbook =
+    role !== "you" &&
+    role !== "system" &&
+    role !== "divider" &&
+    displayRole !== "error" &&
+    messageComplete &&
+    Boolean(String(messageText || "").trim()) &&
+    Boolean(message?.id);
   const showActions = shouldShowMessageActions(message, messageComplete);
-  const postCompletionReady = !sessionLive && messageComplete;
   const showFileChanges = shouldShowFileChanges(
     message,
-    postCompletionReady,
+    messageComplete,
     mergedFileChanges,
+    projectIsGit,
   );
   const showRelatedLinks = shouldShowPostCompletionExtras(
     message,
-    postCompletionReady,
+    messageComplete,
     messageEmbeds.length > 0,
   );
   const isPlanFlowMessage = !!planStep && role !== "you";
@@ -2110,11 +2443,11 @@ export function MessageBubble({
       )}
     >
       {role === "you" ? (
-        <div className="flex w-fit max-w-full flex-col items-end">
+        <div className="flex w-fit max-w-[85%] flex-col items-end">
           {specExecutionDetails ? (
             <SpecExecutionCard details={specExecutionDetails} />
           ) : (
-            <div className="codemini-message-surface codemini-user-bubble w-fit max-w-full rounded-2xl px-4 py-3">
+            <div className="codemini-message-surface codemini-user-bubble w-fit max-w-full rounded-2xl px-4 py-2">
               {(userSkillChips.length > 0 || attachments.length > 0) && (
                 <div
                   className={cn(
@@ -2123,7 +2456,7 @@ export function MessageBubble({
                   )}
                 >
                   {userSkillChips.length > 0 && (
-                    <UserSkillChips badges={userSkillChips} skills={skills} />
+                    <UserSkillChips badges={userSkillChips} />
                   )}
                   <UserAttachments attachments={attachments} />
                 </div>
@@ -2140,6 +2473,7 @@ export function MessageBubble({
             showUsage={messageComplete}
             retryPrompt={retryPrompt}
             canRetry={canRetry}
+            canSaveToScrapbook={false}
             onRetry={onRetry}
             align="right"
             className={cn(
@@ -2203,10 +2537,9 @@ export function MessageBubble({
               renderGroups.length === 0 &&
               planStep.status !== "done" &&
               planStep.status !== "failed" && (
-                <div
-                  className="msg-body streaming-cursor streaming-cursor--pending"
-                  role="status"
-                  aria-label="等待工具调用或模型输出"
+                <ResponseLoader
+                  className="msg-body"
+                  label="等待工具调用或模型输出"
                 />
               )}
 
@@ -2233,6 +2566,13 @@ export function MessageBubble({
               showUsage={showActions}
               retryPrompt={retryPrompt}
               canRetry={canRetry}
+              canSaveToScrapbook={canSaveToScrapbook}
+              onSaveToScrapbook={() =>
+                actions.saveAssistantReplyToScrapbook({
+                  messageId: message.id,
+                  answerText: messageText,
+                })
+              }
               onRetry={onRetry}
               className={cn("mt-2 min-h-8", !showActions && "hidden")}
             />
@@ -2241,4 +2581,4 @@ export function MessageBubble({
       )}
     </div>
   );
-}
+});

@@ -1,5 +1,10 @@
-import { isKimiModelName } from './kimi-gateway.js';
-import { resolveOpenAICompatibleReasoning } from './reasoning-effort.js';
+import {
+  modelUsesFixedKimiSampling,
+  resolveOpenAICompatibleReasoning
+} from './reasoning-effort.js';
+import { isCompletionTruncated } from './completion-status.js';
+import { stringifyGatewayJson } from './json-body.js';
+import { iterateSseJsonEvents } from '../sse.js';
 
 function extractTextContent(content) {
   if (typeof content === 'string') return content;
@@ -87,48 +92,12 @@ async function fetchWithRetry(url, init, { maxRetries = 0 } = {}) {
   throw lastError || new Error('Gateway request failed');
 }
 
-async function* iterateSseEvents(stream) {
-  const decoder = new TextDecoder();
-  let buffer = '';
-  const flushEvent = (rawEvent) => {
-    const dataLines = String(rawEvent || '')
-      .split(/\r?\n/)
-      .filter((line) => line.startsWith('data:'))
-      .map((line) => line.slice(5).trimStart());
-    const dataText = dataLines.join('\n');
-    if (!dataText || dataText === '[DONE]') return null;
-    return JSON.parse(dataText);
-  };
-
-  for await (const chunk of stream) {
-    buffer += decoder.decode(chunk, { stream: true });
-    while (true) {
-      const lfBoundary = buffer.indexOf('\n\n');
-      const crlfBoundary = buffer.indexOf('\r\n\r\n');
-      if (lfBoundary === -1 && crlfBoundary === -1) break;
-      const useCrlf = crlfBoundary !== -1 && (lfBoundary === -1 || crlfBoundary < lfBoundary);
-      const boundary = useCrlf ? crlfBoundary : lfBoundary;
-      const separatorLength = useCrlf ? 4 : 2;
-      const rawEvent = buffer.slice(0, boundary);
-      buffer = buffer.slice(boundary + separatorLength);
-      const parsed = flushEvent(rawEvent);
-      if (parsed) yield parsed;
-    }
-  }
-
-  buffer += decoder.decode();
-  const trailingEvent = flushEvent(buffer.trim());
-  if (trailingEvent) {
-    yield trailingEvent;
-  }
-}
-
 function isMiniMaxModel(model) {
   return String(model || '').toLowerCase().includes('minimax');
 }
 
 function isKimiModel(model) {
-  return isKimiModelName(model);
+  return modelUsesFixedKimiSampling(model);
 }
 
 function normalizeToolCallArguments(argumentsText) {
@@ -173,6 +142,13 @@ function sanitizeGatewayMessages(messages) {
   return source
     .filter((message) => message && typeof message === 'object')
     .map((message) => {
+      if (message.role === 'tool') {
+        return {
+          role: 'tool',
+          content: message.content,
+          tool_call_id: message.tool_call_id
+        };
+      }
       if (!Array.isArray(message.tool_calls) || message.tool_calls.length === 0) {
         return message;
       }
@@ -287,13 +263,15 @@ function hasTrailingToolContext(messages) {
   return false;
 }
 
-function buildFinalStreamResult(text, toolCallsByIndex, usage, messages) {
+function buildFinalStreamResult(text, toolCallsByIndex, usage, messages, finishReason = '', streamDone = false) {
+  const argumentsComplete = (Boolean(finishReason) || streamDone) && !isCompletionTruncated(finishReason);
   const toolCalls = Array.from(toolCallsByIndex.entries())
     .sort((a, b) => a[0] - b[0])
     .map(([, tc], i) => ({
       id: tc.id || `tc-${i + 1}`,
       name: tc.name,
-      arguments: tc.arguments || '{}'
+      arguments: tc.arguments || '{}',
+      argumentsComplete
     }))
     .filter((tc) => tc.name);
   const normalizedText = String(text || '').trim();
@@ -304,7 +282,8 @@ function buildFinalStreamResult(text, toolCallsByIndex, usage, messages) {
         text: '',
         toolCalls: [],
         usage,
-        incomplete: true
+        incomplete: true,
+        finishReason: finishReason || ''
       };
     }
     throw new Error('Gateway stream returned empty assistant response');
@@ -314,7 +293,8 @@ function buildFinalStreamResult(text, toolCallsByIndex, usage, messages) {
     text,
     toolCalls,
     usage,
-    incomplete: false
+    incomplete: false,
+    finishReason: finishReason || ''
   };
 }
 
@@ -396,17 +376,19 @@ export async function createChatCompletion({
   const response = await fetchWithRetry(buildChatCompletionsUrl(baseUrl), {
     method: 'POST',
     headers: createHeaders(apiKey),
-    body: JSON.stringify(payload),
+    body: stringifyGatewayJson(payload),
     signal: AbortSignal.timeout(timeoutMs)
   }, { maxRetries });
   const data = await parseJsonResponse(response);
   const message = data?.choices?.[0]?.message || {};
+  const finishReason = String(data?.choices?.[0]?.finish_reason || '');
   const text = sanitizeMiniMaxText(model, extractTextContent(message.content));
   const reasoningContent = extractReasoningContent(message.reasoning_content);
   const toolCalls = (message.tool_calls || []).map((tc) => ({
     id: tc.id,
     name: tc.function?.name,
-    arguments: normalizeIncomingToolCallArguments(tc.function?.arguments)
+    arguments: normalizeIncomingToolCallArguments(tc.function?.arguments),
+    argumentsComplete: !isCompletionTruncated(finishReason)
   }));
   const normalizedText = String(text || '').trim();
 
@@ -426,6 +408,7 @@ export async function createChatCompletion({
     text,
     toolCalls,
     usage: extractUsageObject(data),
+    finishReason,
     assistantMessage: buildAssistantMessage({
       text,
       toolCalls,
@@ -472,7 +455,7 @@ export async function createChatCompletionStream({
   const buildRequest = (bodyPayload) => ({
     method: 'POST',
     headers: createHeaders(apiKey),
-    body: JSON.stringify(bodyPayload),
+    body: stringifyGatewayJson(bodyPayload),
     signal: controller.signal
   });
   let response = await fetchWithRetry(url, buildRequest(payload), { maxRetries });
@@ -494,10 +477,17 @@ export async function createChatCompletionStream({
   let reasoningContent = '';
   const toolCallsByIndex = new Map();
   let usage = null;
+  let finishReason = '';
+  let streamDone = false;
   let miniMaxStreamState = { rawContent: '', visibleText: '' };
 
   try {
-    for await (const chunk of iterateSseEvents(response.body)) {
+    for await (const event of iterateSseJsonEvents(response.body)) {
+    if (event.done) {
+      streamDone = true;
+      continue;
+    }
+    const chunk = event.data;
     usage = extractUsageObject(chunk) || usage;
     const choice0 = chunk?.choices?.[0] || {};
     const delta = choice0?.delta || {};
@@ -546,6 +536,7 @@ export async function createChatCompletionStream({
     }
 
     if (choice0?.finish_reason) {
+      finishReason = String(choice0.finish_reason || '');
       break;
     }
     }
@@ -554,7 +545,7 @@ export async function createChatCompletionStream({
     if (externalSignal) externalSignal.removeEventListener('abort', onExternalAbort);
   }
 
-  const result = buildFinalStreamResult(text, toolCallsByIndex, usage, messages);
+  const result = buildFinalStreamResult(text, toolCallsByIndex, usage, messages, finishReason, streamDone);
   return {
     ...result,
     assistantMessage: buildAssistantMessage({

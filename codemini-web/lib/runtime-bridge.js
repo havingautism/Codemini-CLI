@@ -10,18 +10,24 @@ import {
   normalizeUsage,
   updateSkillInSegments,
 } from '../shared/transcript-segments.js';
+import { buildHookSegmentEvent } from '../shared/hook-ui.js';
+import { stripPlanProgressText } from '../shared/plan-progress-text.js';
 import {
   applyPlanEventToMessage,
   applyStreamEventToPlanRun,
-  findCreatePlanCard,
   isCreatePlanToolEvent,
   messageHasActivePlanRun,
+  shouldNestStreamEventInPlan,
   settleRunningCreatePlanCards,
 } from '../client/src/lib/plan-ui-state.js';
 import fs from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { getSessionsDir } from '../../src/core/paths.js';
+import {
+  loadUiTranscriptFromSqlite,
+  saveUiTranscriptToSqlite
+} from '../../src/core/session-sqlite-store.js';
 import { CHAT_ACTIONS } from '../../src/core/chat-action-dispatcher.js';
 
 const CODEWIKI_GENERATE_TIMEOUT_MS = 35 * 60 * 1000;
@@ -45,10 +51,6 @@ function summarizeHistoricalToolMessage(message) {
   const explicit = String(message?.tool_summary || '').trim();
   if (explicit) return explicit;
   return summarizeToolResult(parseToolContent(message?.content || ''));
-}
-
-function stripPlanProgressText(text) {
-  return String(text || '').replace(/(?:^|\n)\[plan\]\s+Step\s+\d+\/\d+\s+->[^\n]*\n?/g, '');
 }
 
 function isAbortLikeError(err) {
@@ -112,9 +114,106 @@ function skillBadgesFromSessionMessage(message = {}) {
   return selectedSkillBadgesFromNames(names);
 }
 
+export function serializeSessionMessages(messages) {
+  if (!Array.isArray(messages)) return [];
+  return messages
+    .filter((message) => message.role !== 'system')
+    .map((message) => {
+      const selectedSkillNames = Array.isArray(message.selectedSkillNames)
+        ? message.selectedSkillNames
+        : Array.isArray(message.selected_skill_names)
+          ? message.selected_skill_names
+          : [];
+      return {
+        role: message.role,
+        content: typeof message.content === 'string'
+          ? message.content
+          : (Array.isArray(message.content) ? message.content.map((part) => part.text || '').join('') : ''),
+        reasoningContent: typeof message.reasoning_content === 'string' ? message.reasoning_content : '',
+        reasoningDetails: Array.isArray(message.reasoning_details) ? message.reasoning_details : [],
+        reasoningStartedAt: message.reasoning_started_at || null,
+        reasoningEndedAt: message.reasoning_ended_at || null,
+        reasoningDurationMs: Number.isFinite(Number(message.reasoning_duration_ms)) ? Number(message.reasoning_duration_ms) : null,
+        sdkProvider: typeof message.sdk_provider === 'string' ? message.sdk_provider : '',
+        model: typeof message.model === 'string' ? message.model : '',
+        toolCalls: message.tool_calls || [],
+        fileChanges: Array.isArray(message.file_changes) ? message.file_changes : [],
+        toolCallId: message.tool_call_id || null,
+        toolSummary: message.role === 'tool' ? summarizeHistoricalToolMessage(message) : null,
+        toolDurationMs: Number.isFinite(Number(message.tool_duration_ms)) ? Number(message.tool_duration_ms) : null,
+        toolStatus: message.tool_status || null,
+        toolResultMeta: message.tool_result_meta || null,
+        toolFileChange: message.tool_file_change || null,
+        toolFileChanges: Array.isArray(message.tool_file_changes) ? message.tool_file_changes : [],
+        planTranscript: Array.isArray(message.plan_transcript) ? message.plan_transcript : null,
+        planGoal: typeof message.plan_goal === 'string' ? message.plan_goal : '',
+        planFile: typeof message.plan_file === 'string' ? message.plan_file : '',
+        usage: normalizeUsage(message.usage),
+        responseStatus: typeof message.response_status === 'string' ? message.response_status : '',
+        retryPrompt: typeof message.retry_prompt === 'string' ? message.retry_prompt : '',
+        selectedSkillNames,
+        skillBadges: skillBadgesFromSessionMessage(message),
+        ...(message.role === 'user' && typeof message.model_content === 'string' && message.model_content
+          ? { model_content: message.model_content }
+          : {}),
+        at: message.at || null,
+      };
+    });
+}
+
+export function loadPersistedUiMessages(sessionId) {
+  try {
+    const messages = loadUiTranscriptFromSqlite(sessionId);
+    if (Array.isArray(messages) && messages.length > 0) return messages;
+  } catch {}
+  try {
+    const raw = readFileSync(webTranscriptPath(sessionId), 'utf8');
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed?.messages) ? parsed.messages : [];
+  } catch {
+    return [];
+  }
+}
+
 function toCodeWikiGenerateProgress(event) {
   if (!event?.type) return null;
   const now = new Date().toISOString();
+  if (event.type === 'step:start') {
+    return {
+      type: 'codewiki:generate_progress',
+      phase: 'agent_step',
+      timestamp: now,
+      step: 1,
+      total: 1,
+      status: 'running',
+      summary: `Analyzing project (round ${Number(event.step || 1)})`
+    };
+  }
+  if (event.type === 'assistant:start') {
+    return {
+      type: 'codewiki:generate_progress',
+      phase: 'model_start',
+      timestamp: now,
+      step: 1,
+      total: 1,
+      status: 'running',
+      summary: event.model ? `Waiting for ${event.model}` : 'Waiting for model response'
+    };
+  }
+  if (event.type === 'tool:start' || event.type === 'tool:end' || event.type === 'tool:error' || event.type === 'tool:blocked') {
+    const label = event.displayName || event.name || 'tool';
+    return {
+      type: 'codewiki:generate_progress',
+      phase: event.type.replace(':', '_'),
+      timestamp: now,
+      step: 1,
+      total: 1,
+      status: 'running',
+      summary: event.type === 'tool:start'
+        ? `Running ${label}`
+        : (event.summary || `${label} finished`)
+    };
+  }
   if (event.type === 'plan:steps') {
     return {
       type: 'codewiki:generate_progress',
@@ -228,6 +327,7 @@ export class RuntimeBridge {
   #uiTranscriptSessionId = '';
   #uiPersisting = false;
   #uiPersistQueued = false;
+  #uiPersistTimer = null;
   #activeSubmitLine = '';
   #runStatusRecorded = false;
   #submitToken = 0;
@@ -257,8 +357,16 @@ export class RuntimeBridge {
     this.#onLifecycle = onLifecycle;
     this.#installApprovalHandler();
     this.#uiTranscriptSessionId = this.getSessionId();
-    runtime.setOnTitleUpdate?.((sessionId, title) => {
-      this.#publish({ type: 'session:title', sessionId, title });
+    runtime.setOnTitleUpdate?.((sessionId, title, metadata = {}) => {
+      this.#publish({
+        type: 'session:title',
+        sessionId,
+        title,
+        preserveUpdatedAt: Boolean(metadata.preserveUpdatedAt)
+      });
+    });
+    runtime.setOnTitleStatus?.((sessionId, generating) => {
+      this.#publish({ type: 'session:title_status', sessionId, generating });
     });
   }
 
@@ -280,7 +388,13 @@ export class RuntimeBridge {
   }
 
   #publish(event) {
-    const tagged = { ...event, sessionId: this.#sessionId };
+    const incomingSessionId = String(event?.sessionId || '').trim();
+    const tagged = {
+      ...event,
+      // Keep explicit session ids (e.g. async session:title) so pooled
+      // runtimes cannot rewrite another session's event onto this bridge.
+      sessionId: incomingSessionId || this.#sessionId
+    };
     this.#onEvent?.(tagged);
     this.#broadcast(tagged);
     if (event?.type === 'approval:request') {
@@ -336,53 +450,47 @@ export class RuntimeBridge {
       if (this.#uiMessages.length === 0) return;
     }
     try {
-      const filePath = webTranscriptPath(sessionId);
-      await fs.mkdir(path.dirname(filePath), { recursive: true });
       let messages = this.#uiMessages;
-      try {
-        const raw = await fs.readFile(filePath, 'utf8');
-        const existing = JSON.parse(raw)?.messages;
-        if (Array.isArray(existing) && existing.length > messages.length) {
-          const memIds = new Set(messages.map((message) => message?.id).filter(Boolean));
-          if (existing[0]?.id && !memIds.has(existing[0].id)) {
-            const prefix = existing.filter((message) => message?.id && !memIds.has(message.id));
-            messages = [...prefix, ...messages];
-            this.#uiMessages = messages;
-          }
+      const existing = loadUiTranscriptFromSqlite(sessionId);
+      if (Array.isArray(existing) && existing.length > messages.length) {
+        const memIds = new Set(messages.map((message) => message?.id).filter(Boolean));
+        if (existing[0]?.id && !memIds.has(existing[0].id)) {
+          const prefix = existing.filter((message) => message?.id && !memIds.has(message.id));
+          messages = [...prefix, ...messages];
+          this.#uiMessages = messages;
         }
-      } catch {}
-      await fs.writeFile(filePath, JSON.stringify({
-        sessionId,
-        updatedAt: new Date().toISOString(),
-        messages
-      }), 'utf8');
+      }
+      saveUiTranscriptToSqlite(sessionId, messages);
     } catch {}
   }
 
   #persistUiTranscriptSoon() {
     this.#uiPersistQueued = true;
+    if (this.#uiPersisting || this.#uiPersistTimer) return;
+    this.#uiPersistTimer = setTimeout(() => {
+      this.#uiPersistTimer = null;
+      void this.#drainUiTranscriptPersistence();
+    }, 120);
+  }
+
+  async #drainUiTranscriptPersistence() {
     if (this.#uiPersisting) return;
     this.#uiPersisting = true;
-    (async () => {
+    try {
       while (this.#uiPersistQueued) {
         this.#uiPersistQueued = false;
         await this.#writeUiTranscriptSnapshot();
       }
+    } finally {
       this.#uiPersisting = false;
-    })();
+    }
   }
 
   #hydrateUiTranscriptFromDiskSync() {
     if (this.#uiMessages.length > 0) return;
     const sessionId = this.getSessionId();
     if (!sessionId) return;
-    try {
-      const raw = readFileSync(webTranscriptPath(sessionId), 'utf8');
-      const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed?.messages) && parsed.messages.length > 0) {
-        this.#uiMessages = parsed.messages;
-      }
-    } catch {}
+    this.#uiMessages = loadPersistedUiMessages(sessionId);
   }
 
   #resetUiTranscriptIfSessionChanged() {
@@ -405,7 +513,10 @@ export class RuntimeBridge {
     this.#hydrateUiTranscriptFromDiskSync();
   }
 
-  #settleCreatePlanToolCard(messageId = this.#uiPlanParentMsgId) {
+  #settleCreatePlanToolCard(
+    messageId = this.#uiPlanParentMsgId,
+    reason = 'aborted'
+  ) {
     const targetId =
       messageId ||
       [...this.#uiMessages]
@@ -415,13 +526,15 @@ export class RuntimeBridge {
             (segment) =>
               segment?.type === 'tools' &&
               (Array.isArray(segment.cards) ? segment.cards : []).some(
-                (card) => card?.name === 'create_plan' && card.status === 'running',
+                (card) =>
+                  (card?.name === 'create_plan' || card?.name === 'run_subagent') &&
+                  card.status === 'running',
               ),
           ),
         )?.id;
     if (!targetId) return;
     this.#updateUiMessage(targetId, (message) =>
-      settleRunningCreatePlanCards(message, { reason: 'aborted' })
+      settleRunningCreatePlanCards(message, { reason })
     );
     this.#uiPlanParentMsgId = null;
   }
@@ -435,7 +548,9 @@ export class RuntimeBridge {
           (segment) =>
             segment?.type === 'tools' &&
             (Array.isArray(segment.cards) ? segment.cards : []).some(
-              (card) => card?.name === 'create_plan' && card.status === 'running',
+              (card) =>
+                (card?.name === 'create_plan' || card?.name === 'run_subagent') &&
+                card.status === 'running',
             ),
         ),
       )?.id || null;
@@ -572,6 +687,7 @@ export class RuntimeBridge {
       case 'assistant:delta':
       case 'assistant:reasoning_delta':
       case 'assistant:response':
+      case 'assistant:usage':
       case 'assistant:tool_call_delta':
       case 'tool:start':
       case 'tool:end':
@@ -579,39 +695,35 @@ export class RuntimeBridge {
       case 'tool:error':
       case 'tool:blocked': {
         const toolName = String(event.name || event.toolName || '').trim();
-        if (event.type === 'tool:start' && toolName === 'create_plan' && this.#uiActiveMsgId) {
+        if (event.type === 'tool:start' && (toolName === 'create_plan' || toolName === 'run_subagent') && this.#uiActiveMsgId) {
           this.#uiPlanParentMsgId = this.#uiActiveMsgId;
         }
         const createPlanTargetId =
           ['tool:end', 'tool:result', 'tool:error', 'tool:blocked'].includes(event.type) &&
-          toolName === 'create_plan'
+          (toolName === 'create_plan' || toolName === 'run_subagent')
             ? this.#resolveCreatePlanToolTargetId()
             : null;
         const targetId = createPlanTargetId || this.#uiActiveMsgId;
         if (!targetId) break;
 
+        if (event.type === 'assistant:usage') {
+          this.#updateUiMessage(targetId, (message) =>
+            applyStreamEventToMessage(message, event, streamOptions)
+          );
+          publishedMessageId = targetId;
+          break;
+        }
+
         // Nest plan-owned streams into the create_plan card / running step.
         if (
-          toolName === 'create_plan' ||
+          (toolName === 'create_plan' || toolName === 'run_subagent') ||
           (this.#uiPlanParentMsgId && targetId === this.#uiPlanParentMsgId)
         ) {
           this.#updateUiMessage(targetId, (message) => {
             if (isCreatePlanToolEvent(event)) {
               return applyStreamEventToPlanRun(message, event, streamOptions);
             }
-            const card = findCreatePlanCard(message);
-            const hasRunningStep = (card?.planRun?.steps || []).some(
-              (step) => String(step?.status || '').toLowerCase() === 'running'
-            );
-            const isAssistantEvent =
-              event.type === 'assistant:delta' ||
-              event.type === 'assistant:reasoning_delta' ||
-              event.type === 'assistant:response';
-            // Keep parent preamble before the plan card until a step is running.
-            if (isAssistantEvent && !hasRunningStep) {
-              return applyStreamEventToMessage(message, event, streamOptions);
-            }
-            if (messageHasActivePlanRun(message) && (hasRunningStep || card?.planRun?.steps?.length)) {
+            if (shouldNestStreamEventInPlan(message, event)) {
               return applyStreamEventToPlanRun(message, event, streamOptions);
             }
             return applyStreamEventToMessage(message, event, streamOptions);
@@ -619,10 +731,15 @@ export class RuntimeBridge {
           publishedMessageId = targetId;
           if (
             ['tool:end', 'tool:error', 'tool:blocked'].includes(event.type) &&
-            toolName === 'create_plan'
+            (toolName === 'create_plan' || toolName === 'run_subagent')
           ) {
-            this.#settleCreatePlanToolCard(createPlanTargetId || targetId);
-            this.#uiPlanParentMsgId = null;
+            // One card per tool call — do not abort sibling parallel subagents.
+            const parent = this.#uiMessages.find(
+              (message) => message.id === (createPlanTargetId || targetId)
+            );
+            if (!messageHasActivePlanRun(parent)) {
+              this.#uiPlanParentMsgId = null;
+            }
           }
           break;
         }
@@ -663,10 +780,15 @@ export class RuntimeBridge {
           this.#uiActiveMsgId = parentId;
         }
         if (event.type === 'plan:step_done') {
-          const isFinalPlanStep =
+          // Legacy multi-step plan pipeline: settle when the final/summarizer step ends.
+          // run_subagent is one-step (total=1); settling here would abort sibling parallel cards.
+          // Those cards are completed by their own tool:end instead.
+          const isLegacyFinalPlanStep =
             String(event.role || '').toLowerCase() === 'summarizer' ||
-            (Number(event.total) > 0 && Number(event.step) === Number(event.total));
-          if (isFinalPlanStep) this.#settleCreatePlanToolCard();
+            (Number(event.total) > 1 && Number(event.step) === Number(event.total));
+          if (isLegacyFinalPlanStep) {
+            this.#settleCreatePlanToolCard(undefined, 'completed');
+          }
         }
         break;
       }
@@ -748,12 +870,75 @@ export class RuntimeBridge {
         }
         break;
       }
+      case 'hook:start': {
+        const hookEvent = {
+          ...buildHookSegmentEvent(event),
+          startedAt: event.startedAt || new Date().toISOString(),
+        };
+        if (this.#uiActiveMsgId) {
+          this.#updateUiMessage(this.#uiActiveMsgId, (message) => ({
+            ...message,
+            segments: addSkillToSegments(
+              finishThinkingSegments(message.segments),
+              hookEvent,
+            ),
+          }));
+          publishedMessageId = this.#uiActiveMsgId;
+        } else {
+          this.#uiPendingSkillSegments = addSkillToSegments(
+            this.#uiPendingSkillSegments,
+            hookEvent,
+          );
+        }
+        break;
+      }
+      case 'hook:end':
+      case 'hook:error': {
+        const hookEvent = buildHookSegmentEvent(event);
+        const endedAt = event.endedAt || new Date().toISOString();
+        const status =
+          event.type === 'hook:error' ||
+          event.decision === 'deny' ||
+          event.ok === false
+            ? 'error'
+            : 'done';
+        const updater = (segment) => ({
+          ...segment,
+          kind: 'hook',
+          event: hookEvent.event || segment.event,
+          source: hookEvent.source || segment.source,
+          sourceLabel: hookEvent.sourceLabel || segment.sourceLabel,
+          toolName: hookEvent.toolName || segment.toolName,
+          matcher: hookEvent.matcher || segment.matcher,
+          command: hookEvent.command || segment.command,
+          status,
+          summary:
+            event.error || event.reason || event.summary || event.command || segment.summary,
+          reason: event.reason || event.error || segment.reason,
+          endedAt,
+        });
+        if (this.#uiActiveMsgId) {
+          this.#updateUiMessage(this.#uiActiveMsgId, (message) => ({
+            ...message,
+            segments: updateSkillInSegments(message.segments, hookEvent.name, updater),
+          }));
+          publishedMessageId = this.#uiActiveMsgId;
+        } else {
+          this.#uiPendingSkillSegments = updateSkillInSegments(
+            this.#uiPendingSkillSegments,
+            hookEvent.name,
+            updater,
+          );
+        }
+        break;
+      }
+      case 'skill:auto-selected':
       case 'skill:always': {
         const names = (event.names || []).join(', ');
         if (!names) break;
         const badge = {
           name: names,
-          status: 'always',
+          status: event.type === 'skill:always' ? 'always' : 'selected',
           startedAt: event.startedAt || new Date().toISOString()
         };
         if (this.#uiActiveMsgId) {
@@ -847,7 +1032,14 @@ export class RuntimeBridge {
       }
       this.#uiActiveMsgId = null;
       this.#uiPlanStepIds = new Map();
-      this.#settleCreatePlanToolCard();
+      this.#settleCreatePlanToolCard(
+        undefined,
+        result?.aborted
+          ? 'aborted'
+          : result?.type === 'error'
+            ? 'failed'
+            : 'completed'
+      );
       this.#uiPlanParentMsgId = null;
       let suppressDone = false;
       if (result?.aborted) {
@@ -933,7 +1125,14 @@ export class RuntimeBridge {
       }
       this.#uiActiveMsgId = null;
       this.#uiPlanStepIds = new Map();
-      this.#settleCreatePlanToolCard();
+      this.#settleCreatePlanToolCard(
+        undefined,
+        result?.aborted || result?.type === 'aborted'
+          ? 'aborted'
+          : result?.type === 'error'
+            ? 'failed'
+            : 'completed'
+      );
       this.#uiPlanParentMsgId = null;
       this.#publish({ type: 'submit:done', operationId, result });
       this.#publishLifecycle(result?.aborted || result?.type === 'aborted' ? 'aborted' : 'completed');
@@ -1009,13 +1208,24 @@ export class RuntimeBridge {
     );
   }
 
-  handleCodeWikiGenerate(line) {
+  handleCodeWikiGenerate(line, { operationId = '' } = {}) {
     if (this.#busy) return { error: true, message: 'A request is already in progress' };
+    const operationMeta = operationId ? { operationId } : {};
     this.#busy = true;
     this.#publishLifecycle('running');
     const submitToken = this.#invalidateSubmit();
     const requestRuntime = this.#runtime;
     this.#codeWikiGenerating = true;
+    this.#publish({
+      type: 'codewiki:generate_progress',
+      ...operationMeta,
+      phase: 'preparing',
+      timestamp: new Date().toISOString(),
+      step: 1,
+      total: 1,
+      status: 'running',
+      title: 'Generate project requirements report'
+    });
     let terminalPublished = false;
     const publishTerminal = (status) => {
       if (terminalPublished) return;
@@ -1027,7 +1237,7 @@ export class RuntimeBridge {
       if (timedOut || !this.#isSubmitActive(submitToken)) return;
       try {
         const progress = toCodeWikiGenerateProgress(event);
-        if (progress) this.#publish(progress);
+        if (progress) this.#publish({ ...progress, ...operationMeta });
       } catch {}
     };
     // Keep this above the model gateway timeout used by the runtime. Large CodeWiki
@@ -1041,7 +1251,11 @@ export class RuntimeBridge {
       try { requestRuntime.abort?.(); } catch {}
       this.#busy = false;
       this.#codeWikiGenerating = false;
-      this.#publish({ type: 'codewiki:generate_error', message: 'CodeWiki generation timed out' });
+      this.#publish({
+        type: 'codewiki:generate_error',
+        ...operationMeta,
+        message: 'CodeWiki generation timed out'
+      });
       this.#broadcastRuntimeState();
     }, CODEWIKI_GENERATE_TIMEOUT_MS);
     const clearSafetyTimer = () => clearTimeout(safetyTimer);
@@ -1051,6 +1265,7 @@ export class RuntimeBridge {
       if (result?.aborted) {
         this.#broadcast({
           type: 'codewiki:generate_error',
+          ...operationMeta,
           message: result?.text || 'CodeWiki generation failed'
         });
         publishTerminal('aborted');
@@ -1058,6 +1273,7 @@ export class RuntimeBridge {
       }
       this.#broadcast({
         type: 'codewiki:generate_done',
+        ...operationMeta,
         result: {
           type: result?.type || 'assistant',
           aborted: !!result?.aborted,
@@ -1070,6 +1286,7 @@ export class RuntimeBridge {
       if (timedOut || !this.#isSubmitActive(submitToken)) return;
       this.#broadcast({
         type: 'codewiki:generate_error',
+        ...operationMeta,
         message: err?.message || 'CodeWiki generation failed'
       });
       publishTerminal(isAbortLikeError(err) ? 'aborted' : 'failed');
@@ -1171,7 +1388,26 @@ export class RuntimeBridge {
   async setApprovalMode(mode) {
     if (this.#busy) return false;
     const ok = await this.#runtime.setApprovalMode?.(mode);
-    if (ok) this.#publish({ type: 'approval-mode:changed', approvalMode: mode, ...this.getState() });
+    if (ok) {
+      this.#publish({
+        ...this.getState(),
+        type: 'approval-mode:changed',
+        approvalMode: mode,
+      });
+    }
+    return ok;
+  }
+
+  async setSandboxMode(mode) {
+    if (this.#busy) return false;
+    const ok = await this.#runtime.setSandboxMode?.(mode);
+    if (ok) {
+      this.#publish({
+        ...this.getState(),
+        type: 'sandbox-mode:changed',
+        sandboxMode: mode,
+      });
+    }
     return ok;
   }
 
@@ -1279,46 +1515,15 @@ export class RuntimeBridge {
   }
 
   getSessionMessages() {
-    const messages = this.#runtime.getSessionMessages();
-    if (!Array.isArray(messages)) return [];
-    return messages
-      .filter(m => m.role !== 'system')
-      .map(m => {
-        const selectedSkillNames = Array.isArray(m.selectedSkillNames)
-          ? m.selectedSkillNames
-          : Array.isArray(m.selected_skill_names)
-            ? m.selected_skill_names
-            : [];
-        return {
-          role: m.role,
-          content: typeof m.content === 'string' ? m.content : (Array.isArray(m.content) ? m.content.map(c => c.text || '').join('') : ''),
-          reasoningContent: typeof m.reasoning_content === 'string' ? m.reasoning_content : '',
-          reasoningDetails: Array.isArray(m.reasoning_details) ? m.reasoning_details : [],
-          reasoningStartedAt: m.reasoning_started_at || null,
-          reasoningEndedAt: m.reasoning_ended_at || null,
-          reasoningDurationMs: Number.isFinite(Number(m.reasoning_duration_ms)) ? Number(m.reasoning_duration_ms) : null,
-          sdkProvider: typeof m.sdk_provider === 'string' ? m.sdk_provider : '',
-          model: typeof m.model === 'string' ? m.model : '',
-          toolCalls: m.tool_calls || [],
-          fileChanges: Array.isArray(m.file_changes) ? m.file_changes : [],
-          toolCallId: m.tool_call_id || null,
-          toolSummary: m.role === 'tool' ? summarizeHistoricalToolMessage(m) : null,
-          toolDurationMs: Number.isFinite(Number(m.tool_duration_ms)) ? Number(m.tool_duration_ms) : null,
-          toolStatus: m.tool_status || null,
-          toolResultMeta: m.tool_result_meta || null,
-          toolFileChange: m.tool_file_change || null,
-          toolFileChanges: Array.isArray(m.tool_file_changes) ? m.tool_file_changes : [],
-          planTranscript: Array.isArray(m.plan_transcript) ? m.plan_transcript : null,
-          planGoal: typeof m.plan_goal === 'string' ? m.plan_goal : '',
-          planFile: typeof m.plan_file === 'string' ? m.plan_file : '',
-          usage: normalizeUsage(m.usage),
-          responseStatus: typeof m.response_status === 'string' ? m.response_status : '',
-          retryPrompt: typeof m.retry_prompt === 'string' ? m.retry_prompt : '',
-          selectedSkillNames,
-          skillBadges: skillBadgesFromSessionMessage(m),
-          at: m.at || null
-        };
-      });
+    return serializeSessionMessages(this.#runtime.getSessionMessages());
+  }
+
+  async regenerateSessionTitle() {
+    if (this.#busy) return { error: true, message: 'Session is active' };
+    return this.#runtime.regenerateSessionTitle?.() || {
+      error: true,
+      message: 'Title regeneration is unavailable'
+    };
   }
 
   getSessionCompactMeta() {
@@ -1339,14 +1544,14 @@ export class RuntimeBridge {
     if (this.#busy) return { error: true, message: 'A request is already in progress' };
     const result = await this.#runtime.undoChangeSet?.(id);
     this.#publish({ type: 'change:undone', result });
-    return result || { error: true, message: 'Git change oplog is not available' };
+    return result || { error: true, message: 'File change checkpoint is not available' };
   }
 
   async undoChangeSets(ids) {
     if (this.#busy) return { error: true, message: 'A request is already in progress' };
     const result = await this.#runtime.undoChangeSets?.(ids);
     this.#publish({ type: 'change:undone', result });
-    return result || { error: true, message: 'Git change oplog is not available' };
+    return result || { error: true, message: 'File change checkpoint is not available' };
   }
 
   async getUiMessages(sessionId = '') {
@@ -1396,6 +1601,9 @@ export class RuntimeBridge {
       try { res.end(); } catch {}
     }
     this.#clients.clear();
+    if (this.#uiPersistTimer) clearTimeout(this.#uiPersistTimer);
+    this.#uiPersistTimer = null;
+    if (this.#uiPersistQueued) await this.#drainUiTranscriptPersistence();
     await this.#runtime.dispose?.();
   }
 }

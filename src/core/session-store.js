@@ -4,6 +4,14 @@ import { getSessionsDir } from './paths.js';
 import { normalizePlanState } from './plan-state.js';
 import { normalizeSpecState } from './spec-state.js';
 import { normalizeTodos } from './todo-state.js';
+import { ensureSessionTitleEmoji } from './session-title.js';
+import {
+  deleteSessionFromSqlite,
+  listSessionsFromSqlite,
+  loadSessionFromSqlite,
+  pruneSessionsFromSqlite,
+  saveSessionToSqlite
+} from './session-sqlite-store.js';
 
 const ALLOWED_ROLES = new Set(['system', 'user', 'assistant', 'tool']);
 const SESSION_LEGACY_EXT = '.json';
@@ -111,6 +119,16 @@ function stripMarkdown(value) {
     .trim();
 }
 
+function formatSkillOnlyTitle(skillTitles = [], skillNames = []) {
+  const labels = (skillTitles.length ? skillTitles : skillNames)
+    .map((value) => normalizeWhitespace(value))
+    .filter(Boolean);
+  if (!labels.length) return '';
+  const hasCjk = labels.some((label) => /[\u3400-\u9fff]/u.test(label));
+  if (hasCjk) return `使用「${labels.join('、')}」技能`;
+  return `Use ${labels.join(' + ')} ${labels.length > 1 ? 'skills' : 'skill'}`;
+}
+
 export function resolveTitleUserText(source = {}) {
   const message = source?.role ? source : null;
   const content = String(message?.content ?? source?.content ?? source?.text ?? '').trim();
@@ -122,6 +140,11 @@ export function resolveTitleUserText(source = {}) {
     ?.split(',')
     .map((name) => name.trim())
     .filter(Boolean) || [];
+  const skillPromptTitles = modelContent
+    ? [...modelContent.matchAll(/^#\s+(.+)$/gm)]
+        .map((match) => normalizeWhitespace(match[1]))
+        .filter(Boolean)
+    : [];
 
   if (modelContent) {
     if (/^\[Explicit skill composition\]\n\n/.test(modelContent)) {
@@ -134,7 +157,8 @@ export function resolveTitleUserText(source = {}) {
         .map((match) => match[1])
         .filter(Boolean);
       const names = composedSkillNames.length ? composedSkillNames : transportSkillNames;
-      if (names.length) return names.join(' + ');
+      const skillOnlyTitle = formatSkillOnlyTitle([...new Set(skillPromptTitles)], names);
+      if (skillOnlyTitle) return skillOnlyTitle;
     }
 
     const isSkillPrompt = /^\[Executing skill: \/[^\]\s]+\]\n\n/.test(modelContent);
@@ -143,12 +167,14 @@ export function resolveTitleUserText(source = {}) {
       if (currentQuestion?.[1]?.trim()) return currentQuestion[1].trim();
       const userTask = modelContent.match(/(?:^|\n)\[User task\]\n([\s\S]+?)(?:\n\n\[|$)/);
       if (userTask?.[1]?.trim()) return userTask[1].trim();
+      const skillOnlyTitle = formatSkillOnlyTitle([...new Set(skillPromptTitles)], transportSkillNames);
+      if (skillOnlyTitle) return skillOnlyTitle;
     }
   }
 
   const slashMatch = content.match(/^\/([A-Za-z0-9][A-Za-z0-9_.-]*)(?:\s+([\s\S]+))?$/);
   if (slashMatch?.[2]?.trim()) return slashMatch[2].trim();
-  if (transportSkillNames.length) return transportSkillNames.join(' + ');
+  if (transportSkillNames.length) return formatSkillOnlyTitle([], transportSkillNames);
 
   return content;
 }
@@ -158,8 +184,28 @@ export function deriveSessionTitle(messages = []) {
     ? messages.find((msg) => msg?.role === 'user' && normalizeWhitespace(msg?.content))
     : null;
   const text = stripMarkdown(resolveTitleUserText(firstUser || {}));
-  if (!text) return DEFAULT_SESSION_TITLE;
-  return text.length > 48 ? `${text.slice(0, 45).trimEnd()}...` : text;
+  if (!text) return `💬 ${DEFAULT_SESSION_TITLE}`;
+  const title = text.length > 48 ? `${text.slice(0, 45).trimEnd()}...` : text;
+  return ensureSessionTitleEmoji(title);
+}
+
+export function resolveLatestTitleExchange(messages = []) {
+  const list = Array.isArray(messages) ? messages : [];
+  for (let assistantIndex = list.length - 1; assistantIndex >= 0; assistantIndex--) {
+    const assistant = list[assistantIndex];
+    if (assistant?.role !== 'assistant') continue;
+    const assistantText = Array.isArray(assistant.content)
+      ? assistant.content.map((part) => part?.text || '').join('')
+      : String(assistant.content || '');
+    if (!assistantText.trim()) continue;
+    for (let userIndex = assistantIndex - 1; userIndex >= 0; userIndex--) {
+      const user = list[userIndex];
+      if (user?.role !== 'user') continue;
+      const userText = resolveTitleUserText(user);
+      if (userText) return { userText, assistantText: assistantText.trim() };
+    }
+  }
+  return null;
 }
 
 function sanitizeMessage(msg) {
@@ -567,11 +613,39 @@ async function loadSessionPayload(sessionId) {
   }
 }
 
+async function archiveMigratedSessionFiles(sessionId) {
+  const backupDir = path.join(getSessionsDir(), 'legacy-backup');
+  await fs.mkdir(backupDir, { recursive: true });
+  for (const ext of [SESSION_JSONL_EXT, SESSION_LEGACY_EXT]) {
+    const source = sessionPathById(sessionId, ext);
+    const target = path.join(backupDir, `${sessionId}${ext}`);
+    try {
+      await fs.rename(source, target);
+    } catch (error) {
+      if (error?.code !== 'ENOENT' && error?.code !== 'EEXIST') throw error;
+    }
+  }
+}
+
+async function importLegacySessions() {
+  const files = await listSessionFiles();
+  const imported = new Set();
+  for (const file of files) {
+    const id = sessionIdFromFileName(path.basename(file));
+    if (!id || imported.has(id) || loadSessionFromSqlite(id)) continue;
+    try {
+      const parsed = await loadSessionPayload(id);
+      saveSessionToSqlite(sanitizeSession(parsed, id));
+      imported.add(id);
+      await archiveMigratedSessionFiles(id);
+    } catch {
+      // Leave unreadable legacy files untouched for manual recovery.
+    }
+  }
+}
+
 export async function createSession(projectDir = process.cwd()) {
   const sessionId = createSessionId();
-  const dir = getSessionsDir();
-  await fs.mkdir(dir, { recursive: true });
-  const filePath = sessionPathById(sessionId, SESSION_JSONL_EXT);
   let resolvedProjectDir = String(projectDir || process.cwd()).trim() || process.cwd();
   try {
     resolvedProjectDir = path.resolve(resolvedProjectDir);
@@ -586,36 +660,23 @@ export async function createSession(projectDir = process.cwd()) {
     projectDir: resolvedProjectDir,
     messages: []
   };
-  await fs.writeFile(filePath, `${JSON.stringify(payload)}\n`, 'utf8');
-  await upsertSessionIndexEntry(payload, filePath);
+  saveSessionToSqlite(payload);
   return payload;
 }
 
 export async function loadSession(sessionId) {
-  const parsed = await loadSessionPayload(sessionId);
-  return sanitizeSession(parsed, sessionId);
+  const stored = loadSessionFromSqlite(sessionId);
+  if (stored) return sanitizeSession(stored, sessionId);
+  const parsed = sanitizeSession(await loadSessionPayload(sessionId), sessionId);
+  saveSessionToSqlite(parsed);
+  await archiveMigratedSessionFiles(sessionId);
+  return parsed;
 }
 
-const JSONL_COMPACT_THRESHOLD = 5 * 1024 * 1024; // 5 MB
-
-export async function saveSession(session) {
-  const dir = getSessionsDir();
-  await fs.mkdir(dir, { recursive: true });
+export async function saveSession(session, { preserveUpdatedAt = '' } = {}) {
   const normalized = sanitizeSession(session);
-  normalized.updatedAt = new Date().toISOString();
-  const filePath = sessionPathById(normalized.id, SESSION_JSONL_EXT);
-  await fs.appendFile(filePath, `${JSON.stringify(normalized)}\n`, 'utf8');
-  await upsertSessionIndexEntry(normalized, filePath);
-
-  // Compact JSONL file when it grows too large — rewrite with only the latest record
-  try {
-    const st = await fs.stat(filePath);
-    if (st.size > JSONL_COMPACT_THRESHOLD) {
-      await fs.writeFile(filePath, `${JSON.stringify(normalized)}\n`, 'utf8');
-    }
-  } catch {
-    // Best-effort compaction; session data is already saved
-  }
+  normalized.updatedAt = String(preserveUpdatedAt || '').trim() || new Date().toISOString();
+  saveSessionToSqlite(normalized);
 }
 
 export async function resolveSession(sessionId) {
@@ -626,10 +687,8 @@ export async function resolveSession(sessionId) {
 }
 
 export async function listSessions(limit = 30, { includeEmpty = false } = {}) {
-  const index = await getSessionIndex();
-  return [...index.sessions]
-    .filter((s) => includeEmpty || Number(s.messageCount || 0) > 0)
-    .slice(0, limit);
+  await importLegacySessions();
+  return listSessionsFromSqlite(limit, { includeEmpty });
 }
 
 export async function deleteSession(sessionId) {
@@ -645,7 +704,7 @@ export async function deleteSession(sessionId) {
   ];
   for (const file of fallbackTargets) targets.add(file);
 
-  let removed = 0;
+  let removed = deleteSessionFromSqlite(id) ? 1 : 0;
   const removedFileNames = [];
   for (const file of targets) {
     try {
@@ -676,53 +735,14 @@ export async function deleteSession(sessionId) {
     }
   }
 
-  if (removed > 0) {
-    const updated = await removeSessionIndexEntry(id, removedFileNames);
-    if (!updated) {
-      try {
-        await rebuildSessionIndex();
-      } catch {}
-    }
-  }
   return { removed };
 }
 
 export async function pruneSessions(policy = {}) {
-  const maxSessions = Number(policy.max_sessions || 100);
-  const retentionDays = Number(policy.retention_days || 30);
-  const all = await listSessions(10000);
-  const now = Date.now();
-  const expireMs = retentionDays > 0 ? retentionDays * 24 * 60 * 60 * 1000 : 0;
-  const keepIds = new Set();
-
-  const sorted = [...all].sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
-  for (let i = 0; i < sorted.length; i += 1) {
-    const s = sorted[i];
-    if (i >= maxSessions) continue;
-    if (expireMs > 0 && s.updatedAt) {
-      const t = Date.parse(s.updatedAt);
-      if (!Number.isNaN(t) && now - t > expireMs) continue;
-    }
-    keepIds.add(s.id);
-  }
-
-  const dir = getSessionsDir();
-  const entries = await fs.readdir(dir, { withFileTypes: true });
-  let removed = 0;
-  for (const e of entries) {
-    if (!e.isFile()) continue;
-    const id = sessionIdFromFileName(e.name);
-    if (!id) continue;
-    if (keepIds.has(id)) continue;
-    try {
-      await fs.unlink(path.join(dir, e.name));
-      removed += 1;
-    } catch {
-      continue;
-    }
-  }
-  try {
-    await rebuildSessionIndex();
-  } catch {}
-  return { removed, kept: keepIds.size };
+  await importLegacySessions();
+  const removed = pruneSessionsFromSqlite({
+    maxSessions: Number(policy.max_sessions || 100),
+    retentionDays: Number(policy.retention_days || 30)
+  });
+  return { removed, kept: listSessionsFromSqlite(10000, { includeEmpty: true }).length };
 }

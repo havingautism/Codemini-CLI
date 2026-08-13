@@ -37,6 +37,7 @@ import { SettingsSegmentedControl } from "@/components/settings/SettingsSegmente
 import { SettingsChoiceList } from "@/components/settings/SettingsChoiceList.jsx";
 import { SettingsProviderCards } from "@/components/settings/SettingsProviderCards.jsx";
 import { SettingsPercentField } from "@/components/settings/SettingsPercentField.jsx";
+import { SettingsStorage } from "@/components/settings/SettingsStorage.jsx";
 
 function getNestedValue(obj, path) {
   return path.split(".").reduce((o, k) => o?.[k], obj);
@@ -292,7 +293,12 @@ export function ConfigDialog({
   };
 
   const renderControl = (field) => {
-    const value = getValue(field.path);
+    const sandboxMode = getValue("sandbox.mode");
+    const sandboxConfined = sandboxMode !== "danger-full-access";
+    const value =
+      field.path === "shell.default" && sandboxConfined
+        ? "bash"
+        : getValue(field.path);
     const idPrefix = field.path.replace(/\./g, "-");
 
     if (field.control === "switch") {
@@ -323,7 +329,7 @@ export function ConfigDialog({
         <SettingsChoiceList
           idPrefix={idPrefix}
           value={value}
-          options={getSettingsOptions(field.optionsKey)}
+          options={getSettingsOptions(field.optionsKey, { sandboxMode })}
           onValueChange={(next) => handleChange(field.path, next)}
         />
       );
@@ -378,6 +384,9 @@ export function ConfigDialog({
   };
 
   const renderTabContent = (tabId) => {
+    if (tabId === "storage") {
+      return <SettingsStorage active={activeTab === "storage"} />;
+    }
     const fields = SETTINGS_FIELDS.filter(
       (field) => field.tab === tabId && shouldShowField(field),
     );
@@ -390,6 +399,12 @@ export function ConfigDialog({
             id={field.path}
             label={field.label}
             help={field.help}
+            description={
+              field.path === "shell.default" &&
+              getValue("sandbox.mode") !== "danger-full-access"
+                ? t("shellSandboxLockedDesc")
+                : undefined
+            }
             inline={field.control === "switch"}
           >
             {renderControl(field)}

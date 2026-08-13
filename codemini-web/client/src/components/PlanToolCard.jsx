@@ -1,20 +1,75 @@
-import { useState } from "react";
-import { CaretDown, CaretRight, ListChecks } from "@phosphor-icons/react";
-import { Badge } from "@/components/ui/badge";
-import { LinearRing, LinearStatusDot } from "@/components/ui/spinner";
-import { PlanStepStatusGlyph } from "@/components/plan-step-icons.jsx";
-import { ROLE_BADGE_CLASS, ROLE_PILLS } from "@/components/PlanProgress.jsx";
+import { useMemo, useState } from "react";
+import { Avatar, Style } from "@dicebear/core";
+import bottts from "@dicebear/styles/bottts.json" with { type: "json" };
+import {
+  CaretDown,
+  CaretRight,
+  UserCircle,
+  UsersThree,
+} from "@phosphor-icons/react";
+import { SessionOrb } from "@/components/ui/spinner";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import { StreamdownRenderer } from "@/components/StreamdownRenderer.jsx";
 import { ToolCard } from "@/components/ToolCard.jsx";
+import { UsageBadge } from "@/components/UsageBadge.jsx";
+import { extractLatestTodoFromPlanSteps } from "@/lib/answer-process.js";
 import { cn } from "@/lib/utils";
 import { planPhaseTitle, shouldExpandPlanStep } from "@/lib/plan-ui-state.js";
+import { isShellToolName } from "@/lib/tool-names.js";
 import { t } from "../../i18n/index.js";
 
-const COLLAPSE_ROW_CLASS =
-  "flex w-full items-center gap-2 rounded-md px-1 py-1 text-left text-[12px] text-(--text-muted) hover:bg-(--bg-tertiary)/50";
+const ROW_CLASS =
+  "msg-process-row flex min-h-11 cursor-pointer select-none items-center gap-2.5 px-3 py-2.5 text-[13px] transition-colors duration-150 hover:bg-[var(--bg-hover)] focus-visible:relative focus-visible:z-10";
+const CHEVRON_CLASS = "size-[14px] shrink-0 text-(--text-process-detail)";
+const ICON_CLASS =
+  "flex size-6 shrink-0 items-center justify-center rounded-full bg-(--bg-tertiary) text-(--text-secondary)";
+const FOLD_ROW_CLASS =
+  "flex w-full items-center gap-2 rounded-md px-1.5 py-1 text-left text-[12px] text-(--text-muted) transition-colors hover:bg-(--bg-hover) hover:text-(--text-secondary)";
+const SUBAGENT_AVATAR_STYLE = new Style(bottts);
+
+const STATUS_DOT = {
+  completed: "bg-[var(--accent-green)]",
+  failed: "bg-[var(--accent-red)]",
+  aborted: "bg-[var(--accent-orange)]",
+  waiting: "bg-[var(--accent-orange)]",
+  blocked: "bg-[var(--accent-orange)]",
+};
+
+const STATUS_LABEL_KEY = {
+  planning: "subagentStatusReady",
+  executing: "subagentStatusRunning",
+  waiting: "subagentStatusWaiting",
+  completed: "subagentStatusDone",
+  blocked: "subagentStatusBlocked",
+  failed: "subagentStatusFailed",
+  aborted: "subagentStatusAborted",
+};
+
+function statusLabel(phase) {
+  return t(STATUS_LABEL_KEY[phase] || "subagentStatusReady");
+}
+
+function isRunSubagentCard(card) {
+  return String(card?.name || "").toLowerCase() === "run_subagent";
+}
 
 function isProcessSegment(segment) {
   return segment?.type === "thinking" || segment?.type === "tools";
+}
+
+function SubagentAvatar({ seed }) {
+  const src = useMemo(
+    () =>
+      new Avatar(SUBAGENT_AVATAR_STYLE, {
+        seed,
+        size: 48,
+        borderRadius: 50,
+        backgroundColor: ["b6e3f4", "c0aede", "d1d4f9", "ffd5dc", "ffdfbf"],
+      }).toDataUri(),
+    [seed],
+  );
+
+  return <img src={src} alt="" className="size-6 rounded-full" />;
 }
 
 function splitStepSegments(segments = []) {
@@ -34,9 +89,6 @@ function splitStepSegments(segments = []) {
 
 function StepProcessFold({ segments }) {
   const [expanded, setExpanded] = useState(false);
-  // Stay collapsed by default — even while tools run or wait for approval —
-  // so review prompts do not flash the fold open.
-  const open = expanded;
   const toolCount = segments.reduce((sum, item) => {
     if (item.type !== "tools") return sum;
     return sum + Math.max(1, item.cards?.length || 0);
@@ -47,7 +99,7 @@ function StepProcessFold({ segments }) {
       sum +
       (item.cards || []).filter((card) => {
         const name = String(card?.name || "").toLowerCase();
-        return name === "run" || name.startsWith("run(");
+        return isShellToolName(name);
       }).length
     );
   }, 0);
@@ -74,20 +126,22 @@ function StepProcessFold({ segments }) {
       <button
         type="button"
         onClick={() => setExpanded((value) => !value)}
-        className={COLLAPSE_ROW_CLASS}
-        aria-expanded={open}
+        className={FOLD_ROW_CLASS}
+        aria-expanded={expanded}
       >
-        {open ? <CaretDown size={13} /> : <CaretRight size={13} />}
-        <span className="inline-flex h-4 w-4 items-center justify-center">
-          <span className="inline-block size-1.5 rounded-full bg-(--accent-green)" />
-        </span>
+        {expanded ? (
+          <CaretDown size={13} className="shrink-0" />
+        ) : (
+          <CaretRight size={13} className="shrink-0" />
+        )}
+        <span className="inline-block size-1.5 rounded-full bg-(--accent-green)" />
         <span>{label}</span>
         {details ? (
           <span className="min-w-0 truncate opacity-70">{details}</span>
         ) : null}
       </button>
-      {open && (
-        <div className="relative ml-3.5 mt-1.5 flex flex-col gap-1.5 border-l border-(--border-default) pl-3">
+      {expanded ? (
+        <div className="relative ml-3.5 mt-2 flex flex-col gap-1.5 border-l border-(--border-default) pl-3">
           {segments.map((item, index) => {
             if (item.type === "thinking") {
               return (
@@ -118,7 +172,7 @@ function StepProcessFold({ segments }) {
             return null;
           })}
         </div>
-      )}
+      ) : null}
     </div>
   );
 }
@@ -156,28 +210,34 @@ function StepAnswer({ segment }) {
       <button
         type="button"
         onClick={() => setOpen((value) => !value)}
-        className={COLLAPSE_ROW_CLASS}
+        className={FOLD_ROW_CLASS}
         aria-expanded={open}
       >
-        <CaretRight
-          size={13}
-          className={cn("transition-transform", open && "rotate-90")}
-        />
-        <span className="inline-flex h-4 w-4 items-center justify-center">
-          <span className="inline-block size-1.5 rounded-full bg-(--accent-blue)" />
+        {open ? (
+          <CaretDown size={13} className="shrink-0" />
+        ) : (
+          <CaretRight size={13} className="shrink-0" />
+        )}
+        <span className="inline-block size-1.5 rounded-full bg-(--accent-blue)" />
+        <span className="font-medium text-(--text-secondary)">
+          {t("subagentHandoff")}
         </span>
-        <span className="font-medium text-(--text-secondary)">Handoff</span>
-        <span className="min-w-0 flex-1 truncate">{preview}</span>
+
+        <span className="flex-1" />
       </button>
-      {open && (
-        <div className="relative ml-3.5 mt-1.5 border-l border-(--border-default) pl-3 text-[13px] leading-relaxed text-(--text-secondary)">
+      {open ? (
+        <ScrollArea
+          type="auto"
+          className="mt-2 h-64 rounded-md bg-(--bg-tertiary) dark:bg-(--bg-primary)"
+          viewportClassName="px-3 py-2 text-[12px] leading-relaxed text-(--text-secondary)"
+        >
           <StreamdownRenderer
             text={text}
             streaming={false}
             inlineEmbeds={false}
           />
-        </div>
-      )}
+        </ScrollArea>
+      ) : null}
     </div>
   );
 }
@@ -187,141 +247,358 @@ function StepBody({ step }) {
   const { process, answers } = splitStepSegments(segments);
   const hasContent =
     process.length > 0 || answers.length > 0 || Boolean(step?.summary);
+  const running = String(step?.status || "").toLowerCase() === "running";
+  const waiting = String(step?.status || "").toLowerCase() === "waiting";
 
   if (!hasContent) {
     return (
-      <div className="flex items-center gap-2 px-2 py-1.5 text-[12px] text-(--text-muted)">
-        {step?.status === "running" ? (
-          <>
-            <LinearRing size="sm" />
-            <span>{t("thinking")}</span>
-          </>
-        ) : (
-          "—"
-        )}
+      <div className="flex flex-col gap-1.5">
+        <div className="flex items-center gap-2 py-1 text-[12px] text-(--text-muted)">
+          {running ? (
+            <>
+              <SessionOrb state="thinking" />
+              <span>{t("thinking")}</span>
+            </>
+          ) : waiting ? (
+            <>
+              <span className="size-1.5 rounded-full bg-(--accent-orange)" />
+              <span>{t("subagentStatusWaiting")}</span>
+            </>
+          ) : (
+            "—"
+          )}
+        </div>
+        {step?.usage ? (
+          <div className="flex justify-end">
+            <UsageBadge usage={step.usage} />
+          </div>
+        ) : null}
       </div>
     );
   }
 
   return (
-    <div className="flex flex-col gap-2 border-t border-(--border-default)/50 px-2.5 py-2">
+    <div className="flex flex-col gap-1.5">
       {process.length > 0 && <StepProcessFold segments={process} />}
       {answers.map((segment, index) => (
         <StepAnswer key={`ans-${index}`} segment={segment} />
       ))}
       {step?.summary && answers.length === 0 && (
-        <div className="text-[12px] whitespace-pre-wrap text-(--text-secondary)">
+        <div className="whitespace-pre-wrap text-[12px] text-(--text-secondary)">
           {step.summary}
         </div>
       )}
+      {step?.usage ? (
+        <div className="flex justify-end">
+          <UsageBadge usage={step.usage} />
+        </div>
+      ) : null}
     </div>
   );
 }
 
-function PlanStepRow({ step, index }) {
-  const status = String(step?.status || "pending").toLowerCase();
-  const defaultExpanded = shouldExpandPlanStep(step);
-  const [expanded, setExpanded] = useState(defaultExpanded);
-  const open = status === "running" ? true : expanded;
+function SubagentTaskDetails({ task }) {
+  const text = String(task || "").trim();
+  if (!text) return null;
 
   return (
-    <div className="overflow-hidden rounded-lg border border-(--border-default)/80 bg-(--bg-primary)/35">
+    <div className="mb-2 flex items-start gap-2.5 rounded-md bg-(--bg-tertiary) px-2.5 py-2 text-[11px] leading-relaxed dark:bg-(--bg-primary)">
+      <span className="shrink-0 pt-px font-medium text-(--text-muted)">
+        {t("planStepTask")}
+      </span>
+      <ScrollArea
+        type="auto"
+        className="max-h-48 min-w-0 flex-1"
+        viewportClassName="max-h-48 pr-2 text-(--text-secondary)"
+      >
+        <StreamdownRenderer
+          text={text}
+          streaming={false}
+          inlineEmbeds={false}
+        />
+      </ScrollArea>
+    </div>
+  );
+}
+
+function SubagentDependencyDetails({ step, dependsOn = [] }) {
+  const dependencies =
+    Array.isArray(step?.dependsOn) && step.dependsOn.length
+      ? step.dependsOn
+      : Array.isArray(dependsOn)
+        ? dependsOn
+        : [];
+  if (!dependencies.length) return null;
+  const status = String(step?.status || "").toLowerCase();
+  const label =
+    status === "waiting"
+      ? t("subagentDependencyWaiting")
+      : status === "blocked"
+        ? t("subagentDependencyBlocked")
+        : t("subagentDependencyReceived");
+
+  return (
+    <div className="mb-2 flex min-h-8 items-center gap-2 rounded-md bg-(--bg-tertiary) px-2.5 py-1.5 text-[12px] dark:bg-(--bg-primary)">
+      <span
+        className={cn(
+          "size-1.5 shrink-0 rounded-full",
+          status === "blocked" || status === "waiting"
+            ? "bg-(--accent-orange)"
+            : "bg-(--accent-green)",
+        )}
+      />
+      <span className="shrink-0 text-(--text-muted)">{label}</span>
+      <span className="min-w-0 truncate font-mono text-(--text-secondary)">
+        {dependencies.join(", ")}
+      </span>
+    </div>
+  );
+}
+
+function SubagentStepRow({ step, index }) {
+  const status = String(step?.status || "pending").toLowerCase();
+  const [expanded, setExpanded] = useState(shouldExpandPlanStep(step));
+  const open = status === "running" ? true : expanded;
+  const persona = String(step?.role || "").trim();
+
+  return (
+    <div className="overflow-hidden">
       <button
         type="button"
-        className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-[13px]"
+        className={ROW_CLASS}
         onClick={() => setExpanded((value) => !value)}
         aria-expanded={open}
       >
         {open ? (
-          <CaretDown size={14} className="shrink-0 text-(--text-muted)" />
+          <CaretDown size={14} className={CHEVRON_CLASS} />
         ) : (
-          <CaretRight size={14} className="shrink-0 text-(--text-muted)" />
+          <CaretRight size={14} className={CHEVRON_CLASS} />
         )}
-        <span
-          className={cn(
-            "flex h-6 w-6 shrink-0 items-center justify-center rounded-full border text-[11px]",
-            "codemini-linear-step",
-            status === "done" && "codemini-linear-step--done",
-            status === "failed" && "codemini-linear-step--failed",
-            status === "running" && "codemini-linear-step--running",
-          )}
-        >
-          <PlanStepStatusGlyph step={step} index={index} />
+        <span className="min-w-0 flex-1 truncate leading-[18px]">
+          {persona ? (
+            <span className="shrink-0 text-(--text-secondary)">{persona}</span>
+          ) : null}
+          {persona ? (
+            <span className="msg-process-meta__detail mx-1">·</span>
+          ) : null}
+          <span className="msg-process-meta__detail">
+            {step.title || `Task ${index + 1}`}
+          </span>
         </span>
-        <Badge
-          variant="outline"
-          className={cn(
-            ROLE_BADGE_CLASS,
-            ROLE_PILLS[step.role] ||
-              "border-(--border-default) bg-(--bg-primary) text-(--text-muted)",
-          )}
-        >
-          {String(step.role || "step").toUpperCase()}
-        </Badge>
-        <span className="min-w-0 flex-1 truncate text-[13px] text-(--text-secondary)">
-          {step.title || `Step ${index + 1}`}
-        </span>
+        {status === "running" ? (
+          <SessionOrb state="tool" />
+        ) : (
+          <span
+            className={cn(
+              "h-1.5 w-1.5 shrink-0 rounded-full",
+              status === "done"
+                ? STATUS_DOT.completed
+                : status === "failed"
+                  ? STATUS_DOT.failed
+                  : status === "waiting" || status === "blocked"
+                    ? STATUS_DOT[status]
+                    : "bg-[var(--muted)]",
+            )}
+          />
+        )}
       </button>
-      {open && <StepBody step={step} />}
+      {open ? (
+        <div className="pb-2 pl-6 pr-3">
+          <StepBody step={step} />
+        </div>
+      ) : null}
     </div>
   );
 }
 
-export function PlanToolCard({ card }) {
+export function PlanToolCard({ card, grouped = false }) {
   const planRun = card?.planRun || null;
   const phase =
     planRun?.phase || (card?.status === "done" ? "completed" : "planning");
-  const title = card?.displayName || planPhaseTitle(phase);
-  const goal =
-    planRun?.goal ||
-    String(card?.arguments?.goal || "").trim() ||
-    String(card?.summary || "").trim();
-  const steps = Array.isArray(planRun?.steps) ? planRun.steps : [];
-  const running =
-    card?.status === "running" || phase === "executing" || phase === "planning";
-  const current = steps.find(
-    (step) => String(step.status).toLowerCase() === "running",
+  const running = String(card?.status || "").toLowerCase() === "running";
+  const isSubagent = isRunSubagentCard(card);
+  const rawSteps = Array.isArray(planRun?.steps) ? planRun.steps : [];
+  const { steps, todoCard } = isSubagent
+    ? extractLatestTodoFromPlanSteps(rawSteps)
+    : { steps: rawSteps, todoCard: null };
+  const primary = steps[0] || null;
+  const persona = String(
+    primary?.role || card?.arguments?.name || card?.arguments?.role || "",
+  ).trim();
+  const goal = String(
+    isSubagent
+      ? card?.arguments?.prompt ||
+          planRun?.goal ||
+          card?.arguments?.goal ||
+          card?.summary ||
+          ""
+      : planRun?.goal ||
+          card?.arguments?.goal ||
+          card?.arguments?.prompt ||
+          card?.summary ||
+          "",
+  ).trim();
+  const taskSummary = String(
+    isSubagent
+      ? card?.arguments?.summary || card?.arguments?.goal || goal
+      : goal,
+  ).trim();
+  const title = isSubagent
+    ? persona || t("subagentWorker")
+    : card?.displayName || planPhaseTitle(phase);
+  const singleTask = steps.length <= 1;
+  const [open, setOpen] = useState(
+    !isSubagent && !grouped && (running || phase === "executing"),
   );
+  const expanded = open;
 
   return (
-    <div className="codemini-message-surface codemini-plan-tool-card my-0 w-full max-w-4xl overflow-hidden rounded-xl border border-(--border-default)">
-      <div className="flex items-start gap-3 border-b border-(--border-default)/80 px-4 py-3.5">
-        <span className="mt-0.5 inline-flex h-6 w-6 items-center justify-center text-(--text-secondary)">
-          {running ? <LinearStatusDot /> : <ListChecks size={17} />}
-        </span>
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="text-[15px] font-medium text-(--text-primary)">
-              {title}
-            </span>
-            {current?.title ? (
-              <span className="truncate text-[12px] text-(--text-muted)">
-                {String(current.role || "").toUpperCase()} · {current.title}
-              </span>
-            ) : null}
-          </div>
-          {goal ? (
-            <p className="mt-1.5 text-[13px] leading-relaxed text-(--text-secondary)">
-              {goal}
-            </p>
-          ) : null}
-        </div>
-      </div>
-      {steps.length > 0 ? (
-        <div className="flex flex-col gap-2 p-3.5">
-          {steps.map((step, index) => (
-            <PlanStepRow
-              key={`${step.index || index}-${step.role || "step"}`}
-              step={step}
-              index={index}
-            />
-          ))}
-        </div>
-      ) : (
-        <div className="px-4 py-3 text-[13px] text-(--text-muted)">
-          {running ? t("thinking") : null}
-        </div>
+    <div
+      className={cn(
+        "msg-process-meta relative w-full overflow-hidden",
+        grouped
+          ? "bg-transparent"
+          : "codemini-message-surface rounded-xl",
+        card.status === "error" &&
+          "after:pointer-events-none after:absolute after:inset-0 after:rounded-[inherit] after:border after:border-[color:color-mix(in_srgb,var(--accent-red)_32%,transparent)] after:content-['']",
       )}
+    >
+      <button
+        type="button"
+        className={cn(ROW_CLASS, "w-full rounded-none text-left")}
+        onClick={() => setOpen((value) => !value)}
+        aria-expanded={expanded}
+      >
+        {expanded ? (
+          <CaretDown size={14} className={CHEVRON_CLASS} />
+        ) : (
+          <CaretRight size={14} className={CHEVRON_CLASS} />
+        )}
+        {isSubagent ? (
+          persona ? (
+            <SubagentAvatar seed={persona} />
+          ) : (
+            <span className="size-6 shrink-0" aria-hidden="true" />
+          )
+        ) : (
+          <span className={ICON_CLASS}>
+            <UserCircle size={15} aria-hidden="true" />
+          </span>
+        )}
+        <span className="flex min-w-0 flex-1 items-start overflow-hidden leading-[18px]">
+          <span className="shrink-0 font-medium text-(--text-primary)">
+            {title}
+          </span>
+          {taskSummary && !expanded ? (
+            <span
+              className="msg-process-meta__detail ml-1.5 min-w-0 flex-1 truncate whitespace-nowrap text-xs font-normal leading-[18px]"
+              title={taskSummary}
+            >
+              <span aria-hidden="true">· </span>
+              {taskSummary}
+            </span>
+          ) : null}
+        </span>
+        <span className="flex shrink-0 items-center gap-1.5 text-[12px] text-(--text-secondary)">
+          {running && phase !== "waiting" ? (
+            <SessionOrb state="tool" />
+          ) : (
+            <span
+              aria-hidden="true"
+              className={cn(
+                "h-1.5 w-1.5 shrink-0 rounded-full",
+                STATUS_DOT[phase] || "bg-[var(--text-muted)]",
+              )}
+            />
+          )}
+          <span>{isSubagent ? statusLabel(phase) : planPhaseTitle(phase)}</span>
+        </span>
+      </button>
+
+      {!expanded && todoCard ? (
+        <div className="mt-2 px-3 pb-3">
+          <ToolCard card={todoCard} />
+        </div>
+      ) : null}
+
+      {expanded ? (
+        <div className="px-3 pb-3 pt-2">
+          {isSubagent ? <SubagentTaskDetails task={goal} /> : null}
+          {todoCard ? (
+            <div className="mb-2">
+              <ToolCard card={todoCard} />
+            </div>
+          ) : null}
+          {isSubagent ? (
+            <SubagentDependencyDetails
+              step={primary}
+              dependsOn={
+                card?.arguments?.depends_on || card?.arguments?.dependsOn || []
+              }
+            />
+          ) : null}
+          {steps.length > 0 ? (
+            singleTask ? (
+              <StepBody step={primary} />
+            ) : (
+              <div className="flex flex-col">
+                {steps.map((step, index) => (
+                  <SubagentStepRow
+                    key={`${step.toolCallId || step.index || index}-${step.role || "step"}`}
+                    step={step}
+                    index={index}
+                  />
+                ))}
+              </div>
+            )
+          ) : running ? (
+            <div className="flex items-center gap-2 py-1 text-[12px] text-(--text-muted)">
+              <SessionOrb state="thinking" />
+              <span>{t("thinking")}</span>
+            </div>
+          ) : (
+            <div className="py-1 text-xs text-(--text-muted)">
+              {t("subagentNoDetails")}
+            </div>
+          )}
+        </div>
+      ) : null}
     </div>
+  );
+}
+
+export function PlanToolCardGroup({ cards = [] }) {
+  const items = Array.isArray(cards) ? cards.filter(Boolean) : [];
+  const canGroup =
+    items.length > 1 && items.every((card) => isRunSubagentCard(card));
+
+  if (!canGroup) {
+    return items.map((card) => (
+      <PlanToolCard key={card.id || card.name} card={card} />
+    ));
+  }
+
+  return (
+    <section
+      className="codemini-message-surface msg-process-meta w-full overflow-hidden rounded-xl"
+      aria-label={t("subagentGroupTitle")}
+    >
+      <div className="flex min-h-11 items-center gap-2.5 border-b border-(--border-default) px-3 py-2.5">
+        <span className={ICON_CLASS}>
+          <UsersThree size={15} aria-hidden="true" />
+        </span>
+        <span className="font-medium text-(--text-primary)">
+          {t("subagentGroupTitle")}
+        </span>
+        <span className="text-xs text-(--text-muted)">
+          {t("subagentGroupCount").replace("{{count}}", items.length)}
+        </span>
+      </div>
+      <div className="divide-y divide-(--border-default)">
+        {items.map((card) => (
+          <PlanToolCard key={card.id || card.name} card={card} grouped />
+        ))}
+      </div>
+    </section>
   );
 }

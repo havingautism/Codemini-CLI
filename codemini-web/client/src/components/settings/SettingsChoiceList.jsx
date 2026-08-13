@@ -29,6 +29,7 @@ export function SettingsChoiceList({
             key={opt.value}
             id={`${idPrefix}-${opt.value}`}
             value={opt.value}
+            disabled={opt.disabled}
             className={cn(
               "settings-choice-item min-h-[52px] gap-2 rounded-lg border px-3 py-2.5 transition-colors",
               selected

@@ -23,26 +23,30 @@ export async function composeSystemPrompt({
   projectContextSnippet = '',
   projectContextGuidance = '',
   extraPrompts = [],
-  includeSoul = true
+  includeSoul = true,
+  soulContext,
 } = {}) {
-  const shellAndSoul = includeSoul
-    ? await buildSystemPromptWithSoul(shellRulesPrompt, config)
-    : shellRulesPrompt;
-  const memoryPrompt = memorySnapshot !== undefined
-    ? memorySnapshot
-    : includeMemory
-      ? await buildMemorySnapshot({ config, workspaceRoot }).catch(() => '')
-      : '';
-  const projectInstructionsPrompt = projectInstructionsSnippet !== undefined
-    ? projectInstructionsSnippet
-    : includeProjectInstructions
-      ? await loadProjectInstructions({ cwd: workspaceRoot, config }).catch(() => '')
-      : '';
+  const [shellAndSoul, memoryPrompt, projectInstructionsPrompt, resolvedSkillsPrompt] = await Promise.all([
+    includeSoul
+      ? buildSystemPromptWithSoul(shellRulesPrompt, config, { context: soulContext })
+      : shellRulesPrompt,
+    memorySnapshot !== undefined
+      ? memorySnapshot
+      : includeMemory
+        ? buildMemorySnapshot({ config, workspaceRoot }).catch(() => '')
+        : '',
+    projectInstructionsSnippet !== undefined
+      ? projectInstructionsSnippet
+      : includeProjectInstructions
+        ? loadProjectInstructions({ cwd: workspaceRoot, config }).catch(() => '')
+        : '',
+    Promise.resolve(skillsPrompt),
+  ]);
   const hasProjectInstructions = /\bProject Instructions:\s*\n/i.test(shellAndSoul);
   const body = joinPromptParts([
     shellAndSoul,
     hasProjectInstructions ? '' : projectInstructionsPrompt,
-    skillsPrompt,
+    resolvedSkillsPrompt,
     memoryPrompt,
     projectContextSnippet,
     projectContextSnippet ? projectContextGuidance : '',
