@@ -1154,6 +1154,7 @@ export const zh = {
   hookTool_web_search: "web_search",
   hookTool_tasks: "tasks（任务）",
   todosEmpty: "暂无任务",
+  tasksTitle: "任务",
   hookTool_update_plan: "update_plan",
   saving: "保存中…",
   skillPackageBatchHooksNote: "钩子请在 Hooks 对话框的「技能」页配置。这里的批量操作仅作用于场景与启用状态。",

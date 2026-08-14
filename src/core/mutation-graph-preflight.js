@@ -170,7 +170,6 @@ export function createMutationGraphPreflight({
         impact: { nodes: [], edges: [], truncated: false },
         error: String(error?.message || error || 'graph query failed'),
       };
-      attempts.set(signature, { step, payload });
       return {
         required: true,
         files,

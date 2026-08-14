@@ -79,7 +79,7 @@ import {
 import { getReplyLanguage, getReplyLanguageName, stripReplyLanguageDirective, buildSystemPromptWithReplyLanguage, appendStructuredOutputLanguageRule } from './reply-language.js';
 import { composeSystemPrompt } from './system-prompt-composer.js';
 import { buildTurnContextPrefix, buildTurnUserPrompt } from './turn-context.js';
-import { buildSubAgentShellRulesPrompt } from './shell-profile.js';
+import { buildSubAgentShellRulesPrompt, resolveShellContext } from './shell-profile.js';
 import { getProjectPlansDir, getProjectSpecsDir, getProjectWorkspaceDir, getSessionsDir, getSkillsDir } from './paths.js';
 import { buildProjectContextSnippet, initializeProjectIndex } from './project-index.js';
 import { queryProjectKnowledgeGraph } from './project-knowledge-graph.js';
@@ -88,7 +88,6 @@ import {
   classifyMemoryRoute,
   isSensitiveMemoryContent,
   shouldAutoCaptureUserPrompt as shouldAutoCaptureUserPromptShared,
-  buildMemoryDecisionGraphBlock,
   buildMemoryRouteHintBlock
 } from './memory-policy.js';
 import {
@@ -662,15 +661,17 @@ function displayExecutionMode(mode) {
   return normalizeExecutionMode(mode) === 'plan' ? 'code' : 'normal';
 }
 
-function resolveExecutionModeAllowedTools(executionMode, callerAllowedTools, config) {
+function resolveExecutionModeAllowedTools(executionMode, callerAllowedTools, config, commandPlatform = process.platform) {
   const mode = normalizeExecutionMode(executionMode);
   const modePolicy = adaptToolNamesForPlatform(
     normalizeToolPolicy(EXECUTION_MODE_TOOL_POLICY[mode] || [], config).map(canonicalShellToolName),
+    commandPlatform,
   );
   if (!modePolicy.length) return callerAllowedTools;
   if (Array.isArray(callerAllowedTools)) {
     return adaptToolNamesForPlatform(
       normalizeToolPolicy(callerAllowedTools, config).map(canonicalShellToolName).filter((name) => modePolicy.includes(name)),
+      commandPlatform,
     );
   }
   return modePolicy;
@@ -682,83 +683,43 @@ export function buildExecutionModePromptBlock(executionMode, platform = process.
     const unixCrud = platform !== 'win32';
     return [
       'Execution Mode: coding',
-      'You are in coding mode. Treat implementation requests as authorization to inspect the repository, make focused changes, and verify them. Prefer the smallest complete solution that follows the project\'s existing architecture and conventions.',
+      'Implement only when requested. Preserve public contracts, project conventions, unrelated user changes, and platform compatibility.',
       '',
-      'Coding workflow:',
-      '1. Read project instructions, then use project-index/search/read tools to inspect only the relevant code, tests, configuration, and callers before editing.',
-      '2. If requirements have materially different interpretations, use request_user_input when available. Do not interrupt for low-impact details with a safe default.',
-      '3. Choose the workflow yourself: implement directly, write a normal Markdown design document for user confirmation, or delegate a bounded task with run_subagent. There is no create_plan/create_spec orchestration tool.',
-      '4. Preserve public contracts, local naming, error handling, platform compatibility, and dependency choices unless the request explicitly changes them. Avoid unrelated refactors and speculative abstractions.',
-      '5. For bugs, first reproduce or establish a concrete failing signal, inspect evidence, test a falsifiable cause, apply the smallest root-cause fix, and add a regression check when the repository has an appropriate test seam.',
-      '6. Verify with the narrowest project-native checks that cover the changed behavior, then inspect the diff. Never claim fixed, passing, or complete without fresh evidence; state what was not verified.',
-      '7. Respect task intent: explanation or review requests authorize inspection and reporting, diagnosis requests authorize finding the cause, and explicit build/fix/change requests authorize implementation. Do not turn read-only work into edits without user intent.',
+      'Workflow: inspect relevant source and callers → clarify only material choices → make the smallest complete change → run focused verification → inspect the diff.',
+      'The injected <coding_harness> route is authoritative for memory capability and mutation preflight, and directive for tasks, skills, clarification, and bounded delegation.',
+      'For bugs, establish a failing signal and fix the shared root cause. Never claim completion without fresh evidence.',
       '',
       'Subagent tool (run_subagent):',
-      '- Prefer delegation for non-trivial coding work when a bounded, independently verifiable chunk can benefit from clean context, parallel read-only investigation, focused implementation, test triage, or independent review.',
-      '- Do not delegate the whole ambiguous request, use a subagent merely to make a plan, or use one to avoid inspecting the relevant code yourself. The parent agent owns decomposition, integration, and the final answer.',
-      '- Always pass a one- or two-sentence summary for the collapsed UI card and a separate complete prompt (task + success criteria + out-of-scope) for the expanded details and worker. Put durable handoff notes in context.',
-      '- Invent a short human name for each worker (e.g. David, Mira, Kai) via `name` — do not use preset role enums. Capability comes from `tools`, not the name.',
-      `- Default tools allow edits. For read-only explore/review, pass a read-only tools list (e.g. read, search_code, web_search). For verify/test, include ${commandToolName} when needed.`,
-      '- Subagents run on the configured Lite/Fast model. Keep assignments narrow and provide enough evidence and acceptance criteria for that model to finish without rediscovering the parent task.',
-      '- For parallel read-only work, emit multiple run_subagent calls in the same response and give each an explicit read-only tools list. Workers with default or mutating tools run sequentially because they share one worktree.',
-      '- For dependent work in the same response, give upstream calls a task_id and later calls depends_on. Dependencies must reference earlier task_id values. The runtime waits and injects successful upstream handoffs automatically; do not duplicate them in context.',
-      '- Subagents can never call run_subagent/create_plan/create_spec.',
+      '- Prefer delegation for non-trivial coding work only when a bounded, independently verifiable chunk benefits from clean context or parallel read-only evidence.',
+      '- The parent agent owns decomposition, integration, and the final answer. Workers use the configured Lite/Fast model.',
+      `- Pass a one- or two-sentence summary plus concrete task, success criteria, and scope. Give read-only workers explicit tools; include ${commandToolName} only for execution they own.`,
       '',
       'User input workflow:',
-      '- Inspect first when repository evidence can resolve the uncertainty without asking the user.',
-      '- When request_user_input is available, use it when the user\'s preference, desired scope, target outcome, constraints, or choice among reasonable approaches would materially change the work.',
-      '- Prefer a short structured form over a plain-text clarification when 1-3 focused choices can capture the needed direction. Include a recommended or sensible default option when appropriate.',
-      '- Use request_user_input when an answer is required to continue, and also when structured choices would substantially improve the usefulness or fit of the result.',
-      '- Do not interrupt for low-impact details when a safe, reversible assumption is available. After the user responds or skips, incorporate the result and continue the original task.',
+      '- Inspect first. Use request_user_input when preference, scope, target, or constraints materially change the work.',
+      '- Prefer a structured form for 1-3 choices when it would substantially improve the usefulness or fit; continue with safe reversible defaults for incidental details.',
       '',
       'Design documents:',
       '- Create a design document only when implementation is blocked by a material product/architecture decision, multiple viable approaches have meaningfully different tradeoffs, or the change affects public contracts, data migration, security, cost, or broad scope.',
-      '- Do not create a design document for routine fixes, localized reversible changes, or decisions the user has already made. Inspect enough evidence first, then write the shortest useful Markdown under .codemini/workspace/specs/ (session subdirectory is fine). This is a file, not workflow state or a special tool.',
-      '- Record only the decisions and tradeoffs that need agreement, tell the user the path, and wait for confirmation before implementing those material choices.',
-      '- After confirmation, revise the document if needed and implement directly or with run_subagent.',
+      '- Do not create a design document for routine fixes. Record only material decisions and wait for confirmation before implementing those material choices.',
       '',
       'Tool discipline:',
       unixCrud
-        ? '- Prefer dedicated project-index, search, read, edit, and write tools over raw shell equivalents. Load deferred tools with tool_search only when needed.'
-        : '- Prefer dedicated project-index, search, read, edit, and patch tools over raw shell equivalents. Load deferred tools with tool_search only when needed.',
-      `- Choose the narrowest relevant project-native verification, and use ${commandToolName} for tests, builds, type checks, linters, generators, and version-control inspection—not as the default way to read or search source code.`,
-      unixCrud
-        ? '- Use read with file_path/offset/limit. Read an existing file before edit or overwrite; use edit with file_path/old_string/new_string and write with file_path/content.'
-        : '- Use edit for precise existing-file changes, apply_patch for coherent multi-file changes, and write only for small new files or intentional whole-file output. For long whole-file content, use begin_write, bounded sequential write_chunk calls, then commit_write; abort unfinished transactions.',
-      '- Search the web for current external documentation, versions, compatibility, or unfamiliar APIs when that information affects correctness; prefer primary sources and link the sources that support material claims.',
-      '',
-      'Workflow boundaries:',
-      unixCrud
-        ? `- Do not claim edit/write/delete/${commandToolName} are unavailable in coding mode; they are available for direct tasks.`
-        : `- Do not claim edit/write/begin_write/write_chunk/commit_write/apply_patch/delete/${commandToolName} are unavailable in coding mode; they are available for direct tasks.`,
-      '- Preserve unrelated user changes in a dirty worktree. Never discard, overwrite, or reformat work outside the requested scope.',
-      '- If the request is too unknown to act on safely, ask one focused question instead of guessing.'
+        ? '- Read before editing; use edit old_string/new_string for existing files and write for new files.'
+        : '- Use edit for precise changes, apply_patch for coherent multi-file work, and begin_write/write_chunk/commit_write only for long whole-file output.',
+      `- Use ${commandToolName} for focused tests, builds, generators, and git inspection—not ordinary source reading.`
     ].join('\n');
   }
   return [
     'Execution Mode: normal',
-    'You are in normal mode. Help with everyday questions and lightweight tasks conversationally. Be proactive about clarifying underspecified requests and verifying external facts instead of guessing.',
-    '',
-    'Task boundaries:',
-    `- Match the action to the request: answer and explain without changing state; review or diagnose by inspecting and reporting; create, edit, ${commandToolName}, or send only when the user asks for that outcome.`,
-    '- Use the shared workspace for relevant read-only context when helpful, but do not turn an ordinary question into a repository task without a clear connection.',
-    '- Make safe, reversible assumptions for low-impact details and state them briefly. Stop for user direction when different choices would materially change the result or require broader authority.',
-    '- Preserve user data and existing work. Do not overwrite files, broaden scope, or perform external side effects merely because a tool is available.',
-    '',
+    'Handle everyday questions and lightweight tasks conversationally. Answer without changing state unless the user asks for an action.',
+      '',
     'User input workflow:',
-    '- Treat a request as underspecified when multiple plausible interpretations would lead to meaningfully different answers, recommendations, formats, scopes, or outcomes.',
-    '- When request_user_input is available, use it for underspecified requests and whenever the user\'s preference, desired scope, target outcome, constraints, or choice among multiple reasonable approaches would materially change the response.',
-    '- Prefer a short structured form over a plain-text clarification when 1-3 focused choices can capture the needed direction. Include a recommended or sensible default option when appropriate.',
-    '- Use request_user_input when an answer is required to continue, and also when structured choices would substantially improve the usefulness or fit of the result.',
-    '- Do not interrupt for low-impact details. If a safe, reversible assumption is obvious, state it briefly and continue.',
-    '- After the user responds or skips, incorporate the result and continue the original task.',
-    '',
+    '- Keep request_user_input available. Use a short structured form when 1-3 preference, scope, format, or outcome choices would materially improve the answer.',
+    '- Make safe reversible assumptions for incidental details. Preserve user data and avoid external side effects without clear authorization.',
+      '',
     'Web research workflow:',
-    '- Use web_search when the answer depends on current or changeable information, the user asks for the latest or for verification, the topic is unfamiliar or niche, recommendations could cost meaningful time or money, or useful source links would improve the answer.',
-    '- For a broad or vague request that would benefit from current context, search first when research can narrow the space, then use request_user_input with informed options if the user\'s intent still matters.',
-    '- Prefer a small number of targeted searches, synthesize the findings, distinguish sourced facts from your own inference, and link sources near the material claims they support.',
-    '- Do not search for timeless casual questions when it would add no value, and respect an explicit request not to browse.',
-    '- If web_search is unavailable or disabled, say so briefly when current information is necessary rather than presenting stale knowledge as verified.'
+    '- Search for current, changeable, unfamiliar, high-stakes, recommendation, or explicitly verified information. Use targeted queries, cite material claims, and distinguish inference from sourced facts.',
+    `- Use ${commandToolName} or workspace tools only when they directly support the request.`
   ].join('\n');
 }
 
@@ -2367,14 +2328,6 @@ export function classifyAutoRoute(text = '') {
     selectedSkills,
     complexity
   };
-}
-
-function buildMediumTaskPromptBlock() {
-  return [
-    'Task Mode: medium',
-    '- Give a brief execution outline focused on the affected files and behavior, then choose whether to work directly or delegate a bounded chunk.',
-    '- If material ambiguity appears during implementation, pause for one focused clarification instead of guessing.'
-  ].join('\n');
 }
 
 function getAlwaysSkillCommands(commands, config, dismissedSkills = null, activeMode = config?.execution?.mode) {
@@ -4121,6 +4074,31 @@ async function judgeCodingRouteNodes({ request, config, model, signal }) {
   return result?.text || '';
 }
 
+const ROUTE_TRACE_EDIT_TOOLS = new Set(['edit', 'write', 'begin_write', 'write_chunk', 'commit_write', 'apply_patch', 'delete']);
+
+/**
+ * Extract only the previous completed user turn. Older work must not make an
+ * unrelated request look like a continuation.
+ */
+export function buildPreviousTurnToolTrace(session, { maxTools = 8 } = {}) {
+  const recentTools = [];
+  let editCount = 0;
+  const messages = Array.isArray(session?.messages) ? session.messages : [];
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const msg = messages[i];
+    if (msg?.role === 'user') break;
+    if (msg?.role !== 'assistant' || !Array.isArray(msg.tool_calls)) continue;
+    for (const call of msg.tool_calls) {
+      if (recentTools.length >= maxTools) break;
+      const name = String(call?.function?.name || call?.name || '').trim();
+      if (!name) continue;
+      recentTools.push(name);
+      if (ROUTE_TRACE_EDIT_TOOLS.has(name)) editCount += 1;
+    }
+  }
+  return { recentTools: recentTools.reverse(), editCount };
+}
+
 export function resolveSubAgentModel(config, fallbackModel = '') {
   return String(
     config?.model?.fast_name
@@ -4730,10 +4708,14 @@ async function askModel({
   const projectContextGuidance =
     'Use this project context as lightweight guidance and verify important details with fresh reads when needed.';
   const normalizedExecutionMode = normalizeExecutionMode(executionMode || config.execution?.mode || 'normal');
+  const executionShellContext = resolveShellContext(config, {
+    cwd: workspaceRoot,
+    platform: process.platform,
+  });
   const executionModePrompt = buildExecutionModePromptBlock(
     normalizedExecutionMode,
-    process.platform,
-    config?.shell?.default,
+    executionShellContext.commandPlatform,
+    executionShellContext.shell,
   );
   const projectContextSnippet = await projectContextPromise;
   // Compose effectiveSystemPrompt without redundant composeSystemPrompt wrapping:
@@ -5043,7 +5025,12 @@ async function askModel({
   const baseDeferredDefinitions = exposeUpdatePlan
     ? deferredDefinitions
     : Object.fromEntries(Object.entries(deferredDefinitions).filter(([name]) => name !== 'update_plan'));
-  const modeAllowedTools = resolveExecutionModeAllowedTools(normalizedExecutionMode, allowedTools, config);
+  const modeAllowedTools = resolveExecutionModeAllowedTools(
+    normalizedExecutionMode,
+    allowedTools,
+    config,
+    executionShellContext.commandPlatform,
+  );
   const filteredDefinitions = Array.isArray(modeAllowedTools)
     ? baseDefinitions.filter((t) => toolNameAllowed(modeAllowedTools, t.function?.name || t.name))
     : baseDefinitions;
@@ -5342,6 +5329,7 @@ async function askModel({
     alwaysAllowTools: effectiveAlwaysAllowTools,
     toolResultMaxChars: config.context?.tool_result_max_chars || 12000,
     toolResultStore,
+    getTasks: () => normalizeTodos(session.todos),
     requestToolApproval,
     signal,
     skipAnalysisNudge,
@@ -6204,32 +6192,9 @@ async function buildAutoPlanArtifact({
           role: 'user',
           content: [
             'Create an execution plan and assign best sub-agent role for each step.',
-            `Return strict JSON only with shape {"summary":"...","task_size":"trivial|small|medium|large","task_type":"advisory|implementation|debugging|verification|refactor|documentation|hybrid","target_confidence":"known|likely|unknown","rationale":"...","steps":[{"title":"...","role":"${EXECUTOR_AGENT_ROLES.join('|')}","task":"...","consumes":"...","produces":"...","target_files":["..."],"success_criteria":"...","verification":"...","handoff":"..."}]}. No markdown.`,
-            `The available roles are ${EXECUTOR_AGENT_ROLES.join(', ')}. Use only the roles the task actually needs.`,
-            'Always include a summarizer as the final step. The summarizer synthesizes prior step results without re-analyzing.',
-            'All executor steps (explorer, architect, advisor, coder, refactorer, reviewer, tester, debugger, writer) should write detailed step results, not final summaries.',
             `Task class: ${normalizedTaskClass}`,
-            'Before choosing roles, decide whether the request is advisory, implementation, verification-heavy, debugging, or a hybrid.',
-            'Set task_size, task_type, target_confidence, and rationale before listing steps. Use these fields to justify why each role is necessary.',
             requirementPacket,
-            'The first step should usually be an explorer to inspect the target area before implementation.',
-            'For debugging goals: explorer -> debugger (trace cause) -> coder (fix) -> tester (verify).',
-            'For implementation-advisory goals: explorer -> advisor -> coder.',
-            'If the user explicitly asks to fix/repair/update/implement/change files, include a coder/refactorer/writer step. Do not return advisor-only plans for repair requests.',
-            'For refactoring goals: explorer -> refactorer -> tester.',
-            'For documentation goals: explorer -> writer.',
-            'For analysis, recommendation, optimization, audit, or project-review goals, keep the plan lean and usually limit it to explorer/advisor.',
-            'Do not include reviewer/tester for advisory goals unless the user explicitly asks to validate, verify, or independently review the findings.',
-            'Avoid template-only titles like "Initial analysis", "Review recommendations", or "Test and verify" for advisory goals.',
-            'For implementation-heavy changes, prefer review and/or testing steps near the end only when they materially improve confidence.',
-            'If target_confidence is known, skip explorer unless the implementation still needs fresh code context.',
-            'If task_size is small or trivial, keep the plan to the minimum useful executor steps plus summarizer.',
-            'Do not add reviewer or tester unless their specific success evidence is clear.',
-            'Never assign every step to coder. Use explorer for inspection, coder for implementation, tester for verification, and summarizer as the final synthesis step.',
-            'Never assign explorer, architect, or advisor to implementation, coding, editing, or feature-delivery tasks. Those roles are read-only.',
-            'Each step task must include enough handoff detail to execute without guessing: targets, consumed inputs, produced outputs, expected outcome, out-of-scope boundaries, success criteria, verification intent, and handoff artifact.',
-            'Fold setup, fixtures, tests, and docs into the task whose deliverable needs them unless they are independently reviewable deliverables.',
-            'Prefer 3-5 steps total.'
+            'Follow the planning policy and JSON schema in the system prompt; do not repeat or explain them.'
           ]
             .filter(Boolean)
             .join('\n')
@@ -7962,10 +7927,7 @@ export async function createChatRuntime({
     includeSkillIndex = true,
     includeMemoryGuide = true,
   } = {}) => {
-    const memoryGuide = [
-      `Persistent memory is for self-evolution: when the user asks you to remember something lasting, call save_memory. Use scope="user" kind="preference" for tastes/interests, scope="project" kind="convention" for project rules, and kind="lesson" for reusable learnings. Write memory content and summary in ${getReplyLanguageName(config)}. Verify changeable details from files; never store secrets. Do not duplicate an equivalent fact already present in Persistent Memory.`,
-      buildMemoryDecisionGraphBlock()
-    ].join('\n\n');
+    const memoryGuide = `Use save_memory only for explicit lasting preferences or stable project conventions; never store secrets or duplicates. Write it in ${getReplyLanguageName(config)}. Coding discoveries go through later Dream/session review.`;
     return composeSystemPrompt({
       shellRulesPrompt: getBaseSystemPrompt(),
       config,
@@ -8466,6 +8428,7 @@ export async function createChatRuntime({
       judge: isCodingMode
         ? (request) => judgeCodingRouteNodes({ request, config, model, signal })
         : null,
+      toolTrace: isCodingMode ? buildPreviousTurnToolTrace(currentSession) : {},
     });
     if (codingRoute.active) {
       onAgentEvent?.({
@@ -8538,7 +8501,6 @@ export async function createChatRuntime({
     ]);
     const memoryHint = isCodingMode ? '' : buildMemoryRouteHintBlock(memoryRoute);
     const routedSystemPrompt = appendPromptParts(skillPrompt, [
-      isCodingMode && autoRoute.mode === 'direct_medium' ? buildMediumTaskPromptBlock() : '',
       memoryHint,
       buildCodingRouteDecisionBlock(codingRoute),
     ]);

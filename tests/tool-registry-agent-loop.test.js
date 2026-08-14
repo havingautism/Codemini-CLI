@@ -136,6 +136,35 @@ test('agent loop bounds parallel tool bodies, preserves result order, and passes
   );
 });
 
+test('agent loop nudges a live task checklist after two tool batches without progress', async () => {
+  let requests = 0;
+  const result = await runAgentLoop({
+    systemPrompt: 'test',
+    userPrompt: 'inspect and fix',
+    model: 'test-model',
+    toolDefinitions: [definition('read')],
+    toolHandlers: { read: async () => ({ ok: true }) },
+    getTasks: () => [{ content: 'Inspect', status: 'in_progress' }],
+    approvalMode: 'full_access',
+    skipAnalysisNudge: true,
+    config: { memory: { enabled: false } },
+    requestCompletion: async ({ messages }) => {
+      requests += 1;
+      if (requests <= 2) {
+        return {
+          text: '',
+          toolCalls: [{ id: `read-${requests}`, name: 'read', arguments: '{}' }],
+        };
+      }
+      assert.match(messages.at(-1)?.content || '', /update the tasks checklist now/i);
+      return { text: 'done', toolCalls: [] };
+    },
+  });
+
+  assert.equal(result.text, 'done');
+  assert.equal(requests, 3);
+});
+
 test('model calls cannot bypass active tool visibility by guessing deferred or host-only names', async () => {
   let requests = 0;
   let deferredCalls = 0;

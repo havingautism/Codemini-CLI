@@ -24,28 +24,14 @@ function getToolFewShotBlock(config = {}, cwd = process.cwd(), platform = proces
     ? JSON.stringify(segments.join('/'))
     : formatToolPath(cwd, ...segments);
   const authServicePath = toolPath('src', 'auth', 'service.ts');
-  const reducerPath = vm
-    ? 'src/store/reducer.ts'
-    : path.join(cwd, 'src', 'store', 'reducer.ts');
-  const reducerRangePath = JSON.stringify(`${reducerPath}:110-150`);
   const notesPath = toolPath('notes.txt');
-  const isWin = platform === 'win32';
+  const isWin = shellContext.commandPlatform === 'win32';
   const editExample = isWin
     ? `Tool: edit({"path":${authServicePath},"old_text":"loginUser","new_text":"signInUser"})`
     : `Tool: edit({"file_path":${authServicePath},"old_string":"loginUser","new_string":"signInUser"})`;
   const readExample = isWin
     ? `Tool: read({"path":${authServicePath}})`
     : `Tool: read({"file_path":${authServicePath}})`;
-  const rangeReadExample = isWin
-    ? `Tool: read({"path":${reducerRangePath}})`
-    : `Tool: read({"file_path":${JSON.stringify(path.join(cwd, 'src', 'store', 'reducer.ts'))},"offset":110,"limit":41})`;
-  const rewriteExample = isWin
-    ? `For an existing file full rewrite, use edit with new_content:
-Tool: edit({"path":${authServicePath},"new_content":"export function signInUser() {\\n  return true;\\n}\\n"})
-If the intent is explicitly whole-file output or overwrite, write is also available:
-Tool: write({"path":${authServicePath},"content":"export function signInUser() {\\n  return true;\\n}\\n","overwrite":true})`
-    : `Before editing or overwriting an existing file, read it first. Use write for an intentional whole-file replacement:
-Tool: write({"file_path":${authServicePath},"content":"export function signInUser() {\\n  return true;\\n}\\n"})`;
   const newFileExample = isWin
     ? `Tool: write({"path":${notesPath},"content":"todo\\n"})`
     : `Tool: write({"file_path":${notesPath},"content":"todo\\n"})`;
@@ -62,60 +48,35 @@ Load other deferred tools with tool_search when needed.`;
     ? `For a large or multi-file code patch, use apply_patch with one escaped patch_text string:
 Tool: apply_patch({"patch_text":"*** Begin Patch\\n*** Update File: ${path.join('src', 'auth', 'service.ts').replace(/\\/g, '/')}\\n@@\\n-export const enabled = false;\\n+export const enabled = true;\\n*** End Patch"})`
     : `Prefer edit old_string/new_string for edits (multi-hunk via multiple edit calls).`;
+  const accessRule = shellContext.sandbox.mode === 'read-only'
+    ? 'The sandbox is read-only: inspect and verify only. Request wider sandbox permissions with a justification only when the user explicitly authorized a mutation.'
+    : shellContext.sandbox.mode === 'workspace-write'
+      ? 'Writes are confined to the project workspace and temporary directory. Request wider sandbox permissions with a justification only when the task explicitly requires access outside them.'
+      : 'No filesystem sandbox is active. Keep writes and destructive commands narrowly scoped to the user request.';
   const sandboxHint = vm
-    ? `Shell commands run inside a Linux microVM sandbox (${shellContext.sandbox.mode}); denials include [sandbox: ...] markers.`
+    ? `Shell commands run inside a Linux microVM sandbox (${shellContext.sandbox.mode}); use project-relative paths and treat [sandbox: ...] errors as confinement failures. ${accessRule}`
     : osConfine
-      ? `Shell commands run on the host under OS confinement (${platform === 'darwin' ? 'Seatbelt' : 'Landlock'}, ${shellContext.sandbox.mode}); denials include [sandbox: ...] markers.`
-      : '';
+      ? `Shell commands run on the host under OS confinement (${platform === 'darwin' ? 'Seatbelt' : 'Landlock'}, ${shellContext.sandbox.mode}); use host paths and treat [sandbox: ...] errors as confinement failures. ${accessRule}`
+      : `Shell commands run directly on the host. ${accessRule}`;
   const patchHint = [patchToolHint, sandboxHint].filter(Boolean).join('\n');
 
-  return `# Tool Examples
-
-Use these as style examples for tool calls:
-
+  return `# Tool call examples
 Current working directory: ${vm ? 'project root' : shellContext.commandCwd}
 ${vm
-  ? 'Use project-relative paths such as src/app.ts for both file tools and shell commands. Do not add the sandbox mount path.'
-  : `When a tool takes path, build it from the current working directory and prefer absolute paths.\nIf the user mentions a project-relative path like src/app.ts, resolve it from ${cwd} instead of guessing parent directories.`}
-Tool arguments must be valid JSON objects. When a string contains file content, encode newlines as \\n inside the JSON string; never put raw unescaped line breaks inside a JSON string.
+  ? 'Use project-relative paths such as src/app.ts; never add a sandbox mount path.'
+  : `Resolve project-relative paths from ${cwd}; prefer absolute paths when available.`}
+Tool arguments must be valid JSON; escape newlines inside string values.
 
-1. File discovery then read
-User: compare the auth flow
-Assistant: first narrow the search with the project index
 Tool: search_code({"query":"auth flow","path":"src","max_results":3})
 ${readExample}
-
-${discoveryHint}
-To discover or load Codemini skills, use the skill tool directly against the indexed registry:
-Tool: skill({"query":"fix ts generic error"})
-Tool: skill({"name":"list"})
-Tool: skill({"query":"debugging workflow"})
-Do not grep or list skills directories to discover skills.
-
-2. Targeted search then exact text edit
-User: rename loginUser to signInUser
-Assistant: first find the exact occurrences
-Tool: grep({"pattern":"loginUser","path":"src"})
 ${editExample}
-
-${rewriteExample}
-
-3. Read a specific range
-User: inspect the reducer around line 120
-Assistant: read only the needed range
-${rangeReadExample}
-
-4. Write a new file
-User: add a notes file
-Assistant: write the file directly
 ${newFileExample}
 
-${patchHint}
-
-Use tasks as the high-priority progress tool for multi-step, multi-file, debugging, or implementation-plus-verification work. When the user asks you to remember lasting preferences/interests, call save_memory(scope="user", kind="preference"); for project rules use scope="project" kind="convention"; for reusable learnings use kind="lesson". Do not duplicate an equivalent fact already in Persistent Memory. Load web_fetch or web_search through tool_search when current external information is needed.
-
-Prefer these direct tool shapes over multi-step metadata reads or shell fallbacks.
-Prefer explicit absolute path values when the current working directory is known.`;
+${discoveryHint}
+Use skill({"query":"workflow"}) for skill discovery instead of scanning skill directories.
+For non-trivial work, send the full checklist each time:
+Tool: tasks({"tasks":[{"content":"Inspect relevant code","activeForm":"Inspecting relevant code","status":"in_progress"},{"content":"Run focused verification","activeForm":"Running focused verification","status":"pending"}]})
+${patchHint}`;
 }
 
 function getEnvBlock(cwd = process.cwd(), config = {}, platform = process.platform) {
@@ -162,18 +123,10 @@ function getMarkdownImageBlock() {
 
 function getNaturalWritingBlock() {
   return `# Natural writing
-
-Write plainly, concretely, and in the user's language.
-
-- Lead with the answer, result, or decision. Skip ceremonial openings, generic praise, filler, and restating the request.
-- Preserve facts, uncertainty, citations, technical terms, code, numbers, and constraints. Never invent details to make prose feel more vivid or complete.
-- Prefer direct sentences, concrete evidence, and simple verbs. Avoid promotional claims, vague authority, inflated significance, forced contrasts, formulaic three-part lists, repetitive section shapes, and generic upbeat conclusions.
-- Use only as much structure as the material needs. Avoid excessive headings, bold text, rhetorical questions, and decorative emoji.
-- Vary sentence and paragraph rhythm naturally without forcing quirks. Do not add opinions, humor, first-person reactions, anecdotes, or deliberate messiness unless the task or requested voice calls for them.
-- Match the genre. Technical, legal, research, and reference writing should remain precise and neutral; conversational and creative writing may carry more personality.
-- Explicit user instructions about tone, formatting, terminology, emoji, or voice override these defaults.
-
-Apply these principles silently. Do not announce that text was humanized or describe these rules unless asked.`;
+Write plainly in the user's language. Lead with the result; avoid filler and unnecessary structure.
+Preserve facts, uncertainty, citations, code, numbers, and constraints. Never invent details.
+Technical, legal, research, and reference writing should remain precise and neutral.
+Explicit user instructions about tone, formatting, terminology, emoji, or voice override these defaults.`;
 }
 
 function normalizePromptBlocks(blocks) {

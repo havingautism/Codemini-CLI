@@ -58,7 +58,9 @@ test('Windows prompt follows sandbox state instead of the host platform alone', 
   assert.doesNotMatch(confined, /PowerShell coding guidelines/);
   assert.doesNotMatch(confined, /Host platform:|OS Version:|E:\\\\/i);
   assert.match(confined, /Current working directory: project root/);
-  assert.match(confined, /"path":"src\/auth\/service\.ts"/);
+  assert.match(confined, /"file_path":"src\/auth\/service\.ts"/);
+  assert.match(confined, /old_string/);
+  assert.doesNotMatch(confined, /apply_patch|begin_write/);
   assert.match(confined, /Use project-relative paths/i);
   assert.doesNotMatch(confined, /\/workspace/);
 
@@ -82,6 +84,36 @@ test('Windows prompt follows sandbox state instead of the host platform alone', 
   assert.match(disabled, /Shell: powershell/);
   assert.match(disabled, /Sandbox: danger-full-access/);
   assert.doesNotMatch(disabled, /Linux microVM sandbox|Working directory: \/workspace|Bash coding guidelines/);
+  assert.match(disabled, /"path":/);
+  assert.match(disabled, /apply_patch/);
+});
+
+test('tool guidance follows command platform and sandbox backend across host types', () => {
+  const linuxDirect = buildDefaultSystemPrompt({
+    shell: { default: 'bash' },
+    sandbox: { enabled: false },
+  }, { workspaceRoot: process.cwd(), platform: 'linux' });
+  assert.match(linuxDirect, /Bash coding guidelines/);
+  assert.match(linuxDirect, /"file_path":/);
+  assert.match(linuxDirect, /No filesystem sandbox is active/);
+  assert.doesNotMatch(linuxDirect, /apply_patch|staged writes only/);
+
+  const linuxConfined = buildDefaultSystemPrompt({
+    shell: { default: 'bash' },
+    sandbox: { enabled: true, mode: 'read-only', backend: 'os' },
+  }, { workspaceRoot: process.cwd(), platform: 'linux' });
+  assert.match(linuxConfined, /OS confinement \(Landlock, read-only\)/);
+  assert.match(linuxConfined, /sandbox is read-only/i);
+  assert.match(linuxConfined, /use host paths/i);
+
+  const windowsDirect = buildDefaultSystemPrompt({
+    shell: { default: 'bash' },
+    sandbox: { enabled: false },
+  }, { workspaceRoot: process.cwd(), platform: 'win32' });
+  assert.match(windowsDirect, /PowerShell coding guidelines/);
+  assert.match(windowsDirect, /"path":/);
+  assert.match(windowsDirect, /apply_patch/);
+  assert.doesNotMatch(windowsDirect, /"file_path":/);
 });
 
 test('buildDefaultSystemPrompt includes compact natural-writing defaults', () => {
@@ -92,4 +124,9 @@ test('buildDefaultSystemPrompt includes compact natural-writing defaults', () =>
   assert.match(prompt, /Technical, legal, research, and reference writing should remain precise and neutral/);
   assert.match(prompt, /Explicit user instructions about tone, formatting, terminology, emoji, or voice override these defaults/);
   assert.doesNotMatch(prompt, /quality score|\/50|rewrite every problematic passage/i);
+});
+
+test('buildDefaultSystemPrompt stays compact enough for layered turn context', () => {
+  const prompt = buildDefaultSystemPrompt({}, { workspaceRoot: process.cwd() });
+  assert.ok(prompt.length < 5000, `default prompt grew to ${prompt.length} characters`);
 });

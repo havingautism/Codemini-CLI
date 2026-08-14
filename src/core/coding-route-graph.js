@@ -1,6 +1,6 @@
 import { parseModelJsonObject } from './model-json.js';
 
-const GRAPH_VERSION = 'coding-turn-route-v9';
+const GRAPH_VERSION = 'coding-turn-route-v11';
 const MAX_SELECTED_SKILLS = 2;
 const CONTEXT_ADVISORY_PCT = 60;
 const CONTEXT_HARD_PCT = 80;
@@ -40,16 +40,28 @@ function hasMultiStepTaskIntent(text = '') {
     || /\b(?:implement|fix|refactor|debug)\b[\s\S]{0,100}\b(?:test|verify|build)\b/iu.test(input)
     || /(?:实现|修改|修复|重构|排查)[\s\S]{0,50}(?:测试|验证|构建)/u.test(input);
 }
+
+const TASK_CONTINUATION_RE = /(?:继续|接着|然后|顺便|还有|另外|再(?:改|加|补|跑|测|调)|也(?:要|需要|想|把))/u;
+
+/**
+ * Detect carry-on intent from the immediately previous turn. This is a
+ * deterministic floor so judge failures or underestimates cannot drop tasks.
+ */
+function hasEditContinuationIntent(text = '', toolTrace = {}) {
+  const editCount = Number(toolTrace?.editCount || 0);
+  if (editCount <= 0) return false;
+  return editCount >= 2 || TASK_CONTINUATION_RE.test(String(text || ''));
+}
 const VALID_MEMORY_LEAVES = new Set(['save_memory', 'dream_inbox', 'ignore']);
 const MEMORY_LEAF_RANK = Object.freeze({ ignore: 0, dream_inbox: 1, save_memory: 2 });
 const GRAPH_NODES = Object.freeze({
   mode_gate: Object.freeze({
-    coding: 'memory_gate',
+    coding: 'clarification_gate',
     bypass: 'bypass_non_coding',
   }),
   bypass_non_coding: Object.freeze({ next: 'complete' }),
   memory_gate: Object.freeze({
-    next: 'skill_selection_gate',
+    next: 'complete',
     decision: 'memory',
     enforcement: 'hard_gate',
     evaluate: normalizeMemoryDecision,
@@ -61,7 +73,7 @@ const GRAPH_NODES = Object.freeze({
     evaluate: normalizeSkillDecision,
   }),
   subagent_gate: Object.freeze({
-    next: 'complete',
+    next: 'memory_gate',
     decision: 'subagents',
     enforcement: 'advisory',
     evaluate: normalizeSubagentDecision,
@@ -71,6 +83,12 @@ const GRAPH_NODES = Object.freeze({
     decision: 'tasks',
     enforcement: 'directive',
     evaluate: normalizeTaskDecision,
+  }),
+  clarification_gate: Object.freeze({
+    next: 'skill_selection_gate',
+    decision: 'clarification',
+    enforcement: 'directive',
+    evaluate: normalizeClarificationDecision,
   }),
   complete: Object.freeze({ next: null }),
 });
@@ -115,30 +133,26 @@ function judgeRequest({
   memoryRoute,
   skillIndexPrompt,
   contextUsage,
+  toolTrace,
 }) {
   return {
     systemPrompt: [
       'You are the semantic judge inside a coding-turn routing graph.',
-      'Decide only the four named graph nodes. Return strict JSON and no prose.',
-      'Optimization objective: maximize useful coding leverage while keeping delegation bounded and purposeful.',
+      'Route one coding turn through five nodes. Return strict JSON and no prose.',
+      '- clarification: "ask" only when a material choice remains after repository inspection; otherwise "auto". request_user_input always remains available.',
+      '- skills: none by default; select at most two exact indexed names only for strong workflow matches.',
+      '- tasks: required for 2+ meaningful steps, multiple files/phases, implementation plus verification, or multi-hypothesis debugging. A required heuristic route cannot be downgraded.',
+      '- subagents: enable only for bounded independent work, parallel read-only investigation, or independent verification. At >=80% context usage require two.',
+      '- memory: may downgrade but never upgrade the heuristic. Save only explicit durable preferences, remember requests, or stable project conventions; never secrets. Coding discoveries go to later Dream/session review.',
       '',
-      'Node rules:',
-      '- memory_gate: you may downgrade the heuristic memory route, but cannot upgrade it. Keep save_memory only for durable preferences, explicit remember requests, stable conventions, or reusable verified lessons. Use dream_inbox for a potentially reusable task signal that still needs later evidence. Otherwise ignore.',
-      '- skill_selection_gate: Select none by default. Select 1 exact listed skill only for a high-confidence workflow match; select 2 only when both are clearly complementary and necessary. Return exact names without a leading slash.',
-      '- subagent_gate: decide autonomously whether subagents improve this turn. Prefer delegation for non-trivial coding work when a worker can independently inspect the repository, implement a bounded chunk, run or triage tests, compare options, or review the result. A simple task may still use one worker when it adds useful evidence. Disable only when the work is truly atomic or cannot be split coherently. Decide from the task structure, not from generic keywords.',
-      '- task_gate (high priority): require tasks for 2 or more meaningful steps, multiple requested changes, multiple files or phases, implementation plus verification, debugging, or any non-trivial task likely to span several tool calls. A required heuristic decision cannot be downgraded. When required, return 2-8 concrete task items with imperative content and present-continuous activeForm. Apply the same rule independently inside each enabled subagent. Keep it optional only for a genuinely atomic edit or purely informational turn.',
-      '- Context-pressure rule: usage_pct >= 60 is advisory. usage_pct >= 80 is a hard isolation tier that requires 2 subagents.',
-      '- When subagents are eligible, recommend 1 worker for one independent pass and 2 only for clearly complementary work. Provide short actionable focus strings.',
-      '- Never route secrets or credentials to save_memory.',
-      '',
-      'Return:',
-      '{"memory":{"leaf":"save_memory|dream_inbox|ignore","reason":"..."},"skills":{"selected_names":["exact-skill-name"],"reason":"..."},"subagents":{"enabled":true,"recommended_count":1,"focus":["independent task or verification focus"],"reason":"..."},"tasks":{"required":true,"items":[{"content":"Inspect the implementation","activeForm":"Inspecting the implementation"}],"reason":"..."}}',
+      'Return {"clarification":{"mode":"ask|auto","suggested_questions":["focused question"],"reason":"..."},"skills":{"selected_names":["exact-name"],"reason":"..."},"tasks":{"required":true,"items":[{"content":"Inspect implementation","activeForm":"Inspecting implementation"}],"reason":"..."},"subagents":{"enabled":true,"recommended_count":1,"focus":["bounded focus"],"reason":"..."},"memory":{"leaf":"save_memory|dream_inbox|ignore","reason":"..."}}',
     ].join('\n'),
     userPrompt: [
       `User turn:\n${String(text || '').trim()}`,
       `Heuristic task route:\n${JSON.stringify(autoRoute || {})}`,
       `Heuristic memory route:\n${JSON.stringify(memoryRoute || {})}`,
       `Main-session context usage:\n${JSON.stringify(contextUsage || {})}`,
+      `Previous-turn tool trace:\n${JSON.stringify(toolTrace || {})}`,
       `Eligible indexed skills:\n${compactSkillIndex(skillIndexPrompt) || '(none)'}`,
     ].join('\n\n'),
   };
@@ -150,13 +164,15 @@ function fallbackDecision({
   hasSkillIndex,
   contextUsage,
   text,
+  toolTrace = {},
 }) {
   const complexity = String(autoRoute?.complexity || 'simple');
   const pressure = contextPressure(contextUsage);
   const delegationIntent = hasExplicitDelegationIntent(text);
   const taskRequired = complexity === 'medium'
     || complexity === 'complex'
-    || hasMultiStepTaskIntent(text);
+    || hasMultiStepTaskIntent(text)
+    || hasEditContinuationIntent(text, toolTrace);
   const enableSubagents =
     pressure.hard
     || delegationIntent
@@ -193,6 +209,11 @@ function fallbackDecision({
       reason: taskRequired
         ? 'multi-step task-complexity fallback'
         : 'atomic task fallback',
+    },
+    clarification: {
+      mode: 'auto',
+      suggested_questions: [],
+      reason: 'no material ambiguity signal',
     },
   };
 }
@@ -281,6 +302,25 @@ function normalizeTaskDecision(raw, fallback) {
   };
 }
 
+const VALID_CLARIFICATION_MODES = new Set(['auto', 'ask']);
+const MAX_SUGGESTED_QUESTIONS = 3;
+
+function normalizeClarificationDecision(raw, fallback) {
+  const rawMode = raw?.clarification?.mode;
+  const mode = VALID_CLARIFICATION_MODES.has(rawMode) ? rawMode : fallback.clarification.mode;
+  const suggestedQuestions = mode === 'ask'
+    ? (Array.isArray(raw?.clarification?.suggested_questions) ? raw.clarification.suggested_questions : [])
+        .map((q) => String(q || '').trim().slice(0, 200))
+        .filter(Boolean)
+        .slice(0, MAX_SUGGESTED_QUESTIONS)
+    : [];
+  return {
+    mode,
+    suggested_questions: suggestedQuestions,
+    reason: String(raw?.clarification?.reason || fallback.clarification.reason || '').slice(0, 240),
+  };
+}
+
 /**
  * Execute the coding-only routing graph.
  *
@@ -297,6 +337,7 @@ export async function evaluateCodingRouteGraph({
   contextUsage = {},
   sensitive = false,
   judge = null,
+  toolTrace = {},
 } = {}) {
   if (String(executionMode || '').toLowerCase() !== 'plan') {
     const graph = executeGraph({ coding: false });
@@ -316,6 +357,7 @@ export async function evaluateCodingRouteGraph({
     hasSkillIndex,
     contextUsage,
     text,
+    toolTrace,
   });
   let raw = fallback;
   let source = 'fallback';
@@ -327,6 +369,7 @@ export async function evaluateCodingRouteGraph({
         memoryRoute,
         skillIndexPrompt,
         contextUsage,
+        toolTrace,
       });
       const judged = parseJudgeResult(await judge(request));
       if (judged) {
@@ -371,7 +414,7 @@ export function isCodingRouteToolAllowed(result, toolName) {
 
 export function buildCodingRouteDecisionBlock(result) {
   if (!result?.active || !result.decisions) return '';
-  const { memory, skills, subagents, tasks } = result.decisions;
+  const { clarification, memory, skills, subagents, tasks } = result.decisions;
   const skillSelection = skills.selected_names.length > 0
     ? skills.selected_names.join(', ')
     : skills.inject_index
@@ -383,22 +426,29 @@ export function buildCodingRouteDecisionBlock(result) {
   const suggestedTasks = tasks.items.length > 0
     ? `; suggested=${tasks.items.map((item) => item.content).join(' | ')}`
     : '';
+  const questionHint = clarification.suggested_questions.length > 0
+    ? `; suggested=${clarification.suggested_questions.join(' | ')}`
+    : '';
   return [
-    `Coding Route Graph: ${result.graph_version} (${result.source})`,
-    `- memory_gate [${memory.enforcement}]: ${memory.leaf}; save_memory=${memory.allow_save_memory ? 'enabled' : 'disabled'}`,
-    `- skill_selection_gate [${skills.enforcement}]: ${skillSelection}`,
-    `- subagent_gate [${subagents.enforcement}]: run_subagent ${subagents.opted_out ? 'unavailable by explicit user request' : subagents.enabled ? `recommended; target=${subagents.recommended_count}${subagentFocus}` : 'available; no pre-routing recommendation'}`,
-    `- task_gate [${tasks.enforcement}; priority=high]: tasks ${tasks.required ? 'required' : 'optional'}${suggestedTasks}`,
+    `<coding_harness version="${result.graph_version}" source="${result.source}">`,
+    `clarification=${clarification.mode}${questionHint}`,
+    `skills=${skillSelection}`,
+    `tasks=${tasks.required ? `required${suggestedTasks}` : 'optional'}`,
+    `subagents=${subagents.opted_out ? 'disabled' : subagents.enabled ? `recommended:${subagents.recommended_count}${subagentFocus}` : 'optional'}`,
+    `memory=${memory.leaf}; save_memory=${memory.allow_save_memory ? 'enabled' : 'disabled'}`,
     skills.selected_names.length > 0
-      ? '- Apply every selected skill as an active workflow for this turn; these are not merely reference material.'
+      ? 'Apply selected skills as active workflows.'
       : '',
     subagents.enabled
-      ? '- Delegation directive: call run_subagent for the recommended independent work before the final answer. Pass each worker concrete task details through run_subagent.tasks, using task_gate suggested items when they match that worker; use prompt only for scope, constraints, and handoff context. Prefer subagents for repository exploration, broad code reading, broad tests, failure triage, and independent review so their raw output stays out of the main context. Put independent read-only workers in the same response so they run in parallel. After changes, the main agent must still run one authoritative focused verification against the final worktree.'
+      ? 'Delegate only the routed bounded work; the parent owns integration and final verification.'
       : '',
     tasks.required
-      ? '- Task directive: call tasks before major tool work, keep exactly one item in_progress, update it as work advances, and settle it before the final answer. Every subagent with multi-step work must maintain its own task checklist too.'
+      ? 'Call tasks before major tool work; keep one item in_progress and settle the list before final.'
       : '',
-    '- Follow each decision according to its enforcement mode. Advisory decisions guide tool use but do not remove model autonomy.',
+    clarification.mode === 'ask'
+      ? 'Inspect first; if the material choice remains unresolved, ask before mutation.'
+      : '',
+    '</coding_harness>',
   ].filter(Boolean).join('\n');
 }
 

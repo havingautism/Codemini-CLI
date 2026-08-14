@@ -350,6 +350,30 @@ test('tasks replaces one persistent tool card across calls', () => {
   assert.equal(cards[0].arguments.tasks[1].status, 'in_progress');
 });
 
+test('tasks replaces a restored legacy update_todos card', () => {
+  let message = { id: 'm1', segments: [] };
+  message = applyStreamEventToMessage(message, {
+    type: 'tool:start',
+    id: 'legacy-todo',
+    name: 'update_todos',
+    arguments: { todos: [{ content: 'Inspect', status: 'in_progress' }] },
+  });
+  message = applyStreamEventToMessage(message, {
+    type: 'tool:start',
+    id: 'current-tasks',
+    name: 'tasks',
+    arguments: { tasks: [{ content: 'Inspect', status: 'completed' }] },
+  });
+
+  const cards = message.segments
+    .filter((segment) => segment.type === 'tools')
+    .flatMap((segment) => segment.cards || [])
+    .filter((card) => ['tasks', 'update_todos'].includes(card.name));
+  assert.equal(cards.length, 1);
+  assert.equal(cards[0].name, 'tasks');
+  assert.equal(cards[0].arguments.tasks[0].status, 'completed');
+});
+
 test('late subagent child events stay nested after the parent card completes', () => {
   const message = runningSubagentMessage();
   const subagent = message.segments[0].cards[0];

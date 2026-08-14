@@ -121,6 +121,19 @@ test('layout keeps only the latest todo card outside the process fold', () => {
   assert.equal(layout.items.at(-1).group.type, 'text');
 });
 
+test('live layout reports a persistent task card even before a final answer exists', () => {
+  const layout = layoutAnswerProcessWithPlans([
+    { type: 'process', groups: [{ type: 'tools', cards: [
+      { id: 'todo-1', name: 'tasks', arguments: { tasks: [{ content: 'Inspect', status: 'in_progress' }] } },
+      { id: 'read-1', name: 'read', status: 'done' },
+    ] }] },
+  ]);
+
+  assert.equal(layout.hasTodo, true);
+  assert.equal(layout.items[0].group.type, 'process');
+  assert.equal(layout.items[1].group.cards[0].name, 'tasks');
+});
+
 test('subagent todo stays owned by its plan card and is removed from step details', () => {
   const firstTodo = { id: 'todo-1', name: 'tasks' };
   const latestTodo = { id: 'todo-2', name: 'tasks' };

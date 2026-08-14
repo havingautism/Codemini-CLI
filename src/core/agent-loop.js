@@ -690,6 +690,7 @@ export async function runAgentLoop({
   toolDisplayLabels = {},
   toolMetadata = {},
   shouldCheckpoint = null,
+  getTasks = null,
   workspaceRoot = config?.workspaceRoot || process.cwd()
 }) {
   const toolRuntime = providedToolRuntime || createToolRuntime({
@@ -718,6 +719,7 @@ export async function runAgentLoop({
   let finalText = '';
   let lastAssistantText = '';
   let pendingSummaryNudges = 0;
+  let toolBatchesSinceTaskUpdate = 0;
   const analysisGuard = createAnalysisGuardState(userPrompt);
   const alwaysAllowSet = new Set([
     ...MEMORY_ALWAYS_ALLOW_TOOLS,
@@ -956,11 +958,7 @@ export async function runAgentLoop({
         continue;
       }
       const isSandboxEscalation = Boolean(sandboxEscalation);
-      const graphPreflight = await mutationGraphPreflight.inspect({
-        toolName,
-        args,
-        step,
-      });
+      const graphPreflight = await mutationGraphPreflight.inspect({ toolName, args, step });
       if (graphPreflight?.required) {
         approvalResults.set(call.id, {
           approved: false,
@@ -1171,12 +1169,8 @@ export async function runAgentLoop({
         const summary = 'Project graph impact review required before mutation';
         if (onEvent) {
           onEvent({
-            type: 'tool:blocked',
-            name: toolName,
-            displayName,
-            id: call.id,
-            arguments: effectiveArgs,
-            summary,
+            type: 'tool:blocked', name: toolName, displayName, id: call.id,
+            arguments: effectiveArgs, summary,
           });
         }
         return {
@@ -1616,6 +1610,31 @@ export async function runAgentLoop({
       });
       if (onEvent) {
         onEvent({ type: 'tool:result', name: toolName, displayName, id: call.id, arguments: args, content: entry.content });
+      }
+    }
+
+    const calledTasks = callsWithMeta.some(({ toolName }) =>
+      ["tasks", "update_todos"].includes(String(toolName || "").toLowerCase()),
+    );
+    if (calledTasks) {
+      toolBatchesSinceTaskUpdate = 0;
+    } else {
+      const completedWork = callsWithMeta.some(({ call }) => {
+        const entry = resultEntries.get(call.id);
+        return entry && !entry.blocked && !entry.error;
+      });
+      const currentTasks = typeof getTasks === "function" ? getTasks() : [];
+      const hasActiveTask = Array.isArray(currentTasks)
+        && currentTasks.some((task) => task?.status === "in_progress");
+      toolBatchesSinceTaskUpdate = completedWork && hasActiveTask
+        ? toolBatchesSinceTaskUpdate + 1
+        : 0;
+      if (toolBatchesSinceTaskUpdate >= 2) {
+        messages.push({
+          role: "user",
+          content: "Progress checkpoint: update the tasks checklist now to reflect completed work and the next active item, then continue.",
+        });
+        toolBatchesSinceTaskUpdate = 0;
       }
     }
 

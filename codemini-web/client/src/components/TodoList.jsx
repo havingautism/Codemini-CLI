@@ -13,28 +13,28 @@ export function TodoList({ todos }) {
           <div
             key={i}
             className={cn(
-              'flex min-w-0 items-start gap-3 rounded-lg px-2.5 py-2 text-[13px] leading-5',
-              inProgress && 'bg-(--bg-secondary)',
+              'relative flex min-h-11 min-w-0 items-center gap-3 px-1 py-2.5 text-[13px] leading-5',
+              i < todos.length - 1 && "after:absolute after:right-1 after:bottom-0 after:left-9 after:h-px after:bg-[color:color-mix(in_srgb,var(--text-primary)_6%,transparent)] after:content-['']",
             )}
             role="listitem"
           >
             <span
               aria-hidden="true"
               className={cn(
-                'mt-px flex size-[18px] shrink-0 items-center justify-center rounded-[5px] border transition-colors',
-                completed && 'border-primary bg-primary text-primary-foreground',
-                inProgress && 'border-(--text-muted) bg-(--bg-primary)',
-                !completed && !inProgress && 'border-(--border-default) bg-(--bg-primary)',
+                'relative flex size-5 shrink-0 items-center justify-center rounded-full border transition-[background-color,border-color,color,opacity] duration-150',
+                completed && 'border-(--text-primary) bg-(--text-primary) text-(--bg-primary)',
+                inProgress && 'border-[color:color-mix(in_srgb,var(--text-primary)_38%,transparent)] bg-transparent text-(--text-secondary)',
+                !completed && !inProgress && 'border-[color:color-mix(in_srgb,var(--text-primary)_20%,transparent)] bg-transparent',
               )}
             >
               {completed ? <Check size={12} weight="bold" /> : null}
-              {inProgress ? <span className="size-1.5 rounded-full bg-(--text-secondary)" /> : null}
+              {inProgress ? <span className="codemini-task-pulse size-1.5 rounded-full bg-current" /> : null}
             </span>
             <span
               className={cn(
-                'min-w-0 break-words text-(--text-primary)',
-                completed && 'text-(--text-muted) line-through decoration-[color:color-mix(in_srgb,var(--text-muted)_60%,transparent)]',
-                inProgress && 'font-medium',
+                'min-w-0 flex-1 break-words font-normal tracking-[-0.006em] text-(--text-primary)',
+                completed && 'text-(--text-muted) line-through decoration-[color:color-mix(in_srgb,var(--text-muted)_45%,transparent)]',
+                inProgress && 'font-medium text-(--text-primary)',
               )}
             >
               {todo.content || todo.activeForm}

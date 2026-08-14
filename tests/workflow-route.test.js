@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
+  buildPreviousTurnToolTrace,
   buildExecutionModePromptBlock,
   classifyAutoRoute,
 } from '../src/core/chat-runtime.js';
@@ -40,6 +41,16 @@ test('coding prompt keeps subagent delegation bounded and parent-owned', () => {
   assert.doesNotMatch(prompt, /Do not call run_subagent for a simple localized edit/);
 });
 
+test('previous-turn trace stops at the latest user boundary', () => {
+  const trace = buildPreviousTurnToolTrace({ messages: [
+    { role: 'user', content: 'old task' },
+    { role: 'assistant', tool_calls: [{ function: { name: 'edit' } }, { function: { name: 'write' } }] },
+    { role: 'user', content: 'new unrelated task' },
+    { role: 'assistant', tool_calls: [{ function: { name: 'read' } }] },
+  ] });
+  assert.deepEqual(trace, { recentTools: ['read'], editCount: 0 });
+});
+
 test('coding prompt actively uses structured user input for material choices', () => {
   const prompt = buildExecutionModePromptBlock('coding');
   assert.match(prompt, /User input workflow:/);
@@ -69,4 +80,19 @@ test('coding prompt describes the platform-specific write tools', () => {
   const windowsPrompt = buildExecutionModePromptBlock('coding', 'win32');
   assert.match(windowsPrompt, /apply_patch/);
   assert.match(windowsPrompt, /begin_write/);
+});
+
+test('coding prompt can follow the effective sandbox command platform', () => {
+  const vmPrompt = buildExecutionModePromptBlock('coding', 'linux', 'bash');
+  assert.match(vmPrompt, /old_string\/new_string/);
+  assert.doesNotMatch(vmPrompt, /apply_patch|begin_write/);
+  assert.match(
+    chatRuntimeSource,
+    /resolveExecutionModeAllowedTools\([\s\S]*?executionShellContext\.commandPlatform/,
+  );
+});
+
+test('execution-mode injections stay compact', () => {
+  assert.ok(buildExecutionModePromptBlock('coding', 'win32').length < 3000);
+  assert.ok(buildExecutionModePromptBlock('normal', 'win32').length < 1500);
 });

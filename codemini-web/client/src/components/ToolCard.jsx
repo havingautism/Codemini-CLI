@@ -236,14 +236,31 @@ function BackupNotice({ meta }) {
 }
 
 function TodoToolCard({ todos }) {
+  const completedCount = todos.filter((todo) => todo.status === "completed").length;
+  const progress = todos.length > 0 ? (completedCount / todos.length) * 100 : 0;
   return (
-    <div className="codemini-message-surface msg-process-meta overflow-hidden rounded-xl px-3 py-3">
+    <section className="codemini-tasks-card overflow-hidden rounded-[20px] px-4 py-3.5" aria-label={t("tasksTitle")}>
+      <div className="flex items-center justify-between gap-4 px-1 pb-2.5">
+        <div className="flex min-w-0 items-center gap-2 text-[12px] font-semibold tracking-[-0.01em] text-(--text-secondary)">
+          <ListChecks size={15} weight="regular" aria-hidden="true" />
+          <span>{t("tasksTitle")}</span>
+        </div>
+        <span className="shrink-0 text-[11px] font-medium tabular-nums text-(--text-muted)">
+          {completedCount}/{todos.length}
+        </span>
+      </div>
+      <div className="mx-1 mb-1 h-1 overflow-hidden rounded-full bg-[color:color-mix(in_srgb,var(--text-primary)_7%,transparent)]" aria-hidden="true">
+        <div
+          className="h-full rounded-full bg-(--text-primary) transition-[width] duration-300 ease-out"
+          style={{ width: `${progress}%` }}
+        />
+      </div>
       {todos.length > 0 ? (
         <TodoList todos={todos} />
       ) : (
-        <div className="px-2 py-2 text-[13px] text-(--text-muted)">{t("todosEmpty")}</div>
+        <div className="px-1 py-3 text-[13px] text-(--text-muted)">{t("todosEmpty")}</div>
       )}
-    </div>
+    </section>
   );
 }
 

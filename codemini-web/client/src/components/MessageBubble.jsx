@@ -2513,7 +2513,7 @@ export const MessageBubble = memo(function MessageBubble({
           <div className="flex flex-col">
             <SkillActivityList badges={skillBadges || []} />
 
-            {messageComplete && hasAnswerFold ? (
+            {(answerLayout.hasTodo || (messageComplete && hasAnswerFold)) ? (
               <>
                 {answerLayout.items.map((item, i) => {
                   if (item.type === "fold") {

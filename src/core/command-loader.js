@@ -467,7 +467,7 @@ function formatSkillIndexPromptBlock(entries = []) {
   if (!lines.length) return '';
   return [
     '# Indexed skills',
-    'Agent-requested skills installed by the user are listed here. Always skills are injected in full and manual skills require explicit invocation, so neither appears in this index. Load full instructions with skill({name:"<name>"}). Search with skill({query:"..."}).',
+    'Select only a strong match; load it with skill({name:"<name>"}).',
     ...lines
   ].join('\n');
 }

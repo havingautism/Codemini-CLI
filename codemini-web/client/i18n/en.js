@@ -1198,6 +1198,7 @@ export const en = {
   hookTool_web_search: "web_search",
   hookTool_tasks: "tasks",
   todosEmpty: "No active tasks",
+  tasksTitle: "Tasks",
   hookTool_update_plan: "update_plan",
   saving: "Saving…",
   skillPackageBatchHooksNote:

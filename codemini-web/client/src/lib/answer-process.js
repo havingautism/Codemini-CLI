@@ -144,6 +144,7 @@ export function layoutAnswerProcessWithPlans(groups = [], fallbackStartedAt = nu
   if (!hasFoldCandidate) {
     return {
       hasFold: false,
+      hasTodo: Boolean(latestTodo),
       items: [
         ...source.map((group) => ({ type: "group", group })),
         ...(latestTodo ? [{ type: "group", group: { type: "tools", cards: [latestTodo] } }] : []),
@@ -197,6 +198,7 @@ export function layoutAnswerProcessWithPlans(groups = [], fallbackStartedAt = nu
 
   return {
     hasFold: items.some((item) => item.type === "fold" && item.groups?.length),
+    hasTodo: Boolean(latestTodo),
     items,
     durationMs,
   };

@@ -146,9 +146,7 @@ export function buildSubAgentHandoffCatalog(handoffs = []) {
   if (!items.length) return '';
   return [
     '<session_handoffs>',
-    'Reusable handoffs from this same chat session are available below.',
-    'Decide whether one is relevant. If so, read its exact handoff path before broad exploration and use it as the baseline; verify only relevant changes, gaps, and stale claims.',
-    'Do not read unrelated handoffs.',
+    'Decide whether one is relevant; if so, read its exact handoff path before broad exploration and verify stale claims.',
     ...items.map((item) => `- ${item.name}: ${item.summary || '(no summary)'} | ${item.path}`),
     '</session_handoffs>',
   ].join('\n');
