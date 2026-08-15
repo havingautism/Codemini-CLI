@@ -793,7 +793,7 @@ export async function runAgentLoop({
           report: { ok: false, error: String(error?.message || error || 'unknown dream error') }
         });
       }
-      // Auto-dream is best-effort; don't block the loop
+      // Auto-dream is best-effort; callers must not await this on the turn path.
     }
   }
 
@@ -806,7 +806,6 @@ export async function runAgentLoop({
       break;
     }
     if (onEvent) onEvent({ type: 'step:start', step });
-    await maybeRunAutoDream(step);
     const pruneResult = applyAggressiveToolPruneBeta(messages, config);
     if (pruneResult.changed) {
       messages.splice(0, messages.length, ...pruneResult.messages);
@@ -892,7 +891,7 @@ export async function runAgentLoop({
         });
         continue;
       }
-      await maybeRunAutoDream(step, { force: true });
+      void maybeRunAutoDream(step, { force: true });
       return { text: finalText, messages, steps: step };
     }
 
@@ -1647,7 +1646,7 @@ export async function runAgentLoop({
       }
     }
     if (workflowCompleteText) {
-      await maybeRunAutoDream(step, { force: true });
+      void maybeRunAutoDream(step, { force: true });
       await fireStopHooks(workflowCompleteText);
       return { text: workflowCompleteText, messages, steps: step, workflowComplete: true };
     }
@@ -1682,7 +1681,7 @@ export async function runAgentLoop({
   }
 
   const fallback = lastAssistantText || 'Stopped before final response.';
-  await maybeRunAutoDream(step, { force: true });
+  void maybeRunAutoDream(step, { force: true });
   await fireStopHooks(fallback);
   return {
     text: fallback,

@@ -94,6 +94,7 @@ import {
   buildCodingRouteDecisionBlock,
   evaluateCodingRouteGraph,
   isCodingRouteToolAllowed,
+  shouldInvokeSemanticJudge,
 } from './coding-route-graph.js';
 import {
   buildCleanContextHandoff
@@ -4085,6 +4086,8 @@ function resolveFastModel(config) {
   return String(config?.model?.fast_name || config?.model?.lite_name || config?.model?.name || '').trim();
 }
 
+const CODING_ROUTE_JUDGE_TIMEOUT_MS = 3000;
+
 async function judgeCodingRouteNodes({ request, config, model, signal }) {
   const routeModel = resolveFastModel(config) || model || config?.model?.name;
   if (!routeModel) return null;
@@ -4102,7 +4105,7 @@ async function judgeCodingRouteNodes({ request, config, model, signal }) {
     reasoningEffort: 'off',
     maxTokens: 480,
     payloadExtras: { max_tokens: 480 },
-    timeoutMs: Math.min(Number(config?.gateway?.timeout_ms || 30000), 30000),
+    timeoutMs: Math.min(Number(config?.gateway?.timeout_ms || CODING_ROUTE_JUDGE_TIMEOUT_MS), CODING_ROUTE_JUDGE_TIMEOUT_MS),
     maxRetries: 0,
     signal,
   });
@@ -8380,6 +8383,45 @@ export async function createChatRuntime({
       return { type: 'assistant', text: result.text, aborted: !!result.aborted };
     }
     const expandedText = await expandFileMentions(inputText, root);
+    const autoRoute = classifyAutoRoute(expandedText);
+    const isCodingMode = normalizeExecutionMode(executionMode) === 'plan';
+    const memoryRoute = classifyMemoryRoute(expandedText);
+    const useSemanticJudge = isCodingMode && shouldInvokeSemanticJudge({ autoRoute });
+    const routingRuntimeState = isCodingMode
+      ? buildRuntimeStateSnapshot({
+          currentSession,
+          config,
+          model,
+          executionMode,
+          extraSession: null,
+          workspaceRoot: root,
+        })
+      : null;
+    const codingRoutePromise = (async () => {
+      const codingSkillIndexPrompt = useSemanticJudge ? await getSkillIndexPrompt() : '';
+      return {
+        codingSkillIndexPrompt,
+        codingRoute: await evaluateCodingRouteGraph({
+          executionMode: normalizeExecutionMode(executionMode),
+          text: expandedText,
+          autoRoute,
+          memoryRoute,
+          skillIndexPrompt: codingSkillIndexPrompt,
+          contextUsage: routingRuntimeState
+            ? {
+                estimated_tokens: routingRuntimeState.currentContextTokens,
+                max_tokens: routingRuntimeState.maxContextTokens,
+                usage_pct: routingRuntimeState.contextUsagePct,
+              }
+            : {},
+          sensitive: isSensitiveMemoryContent(expandedText),
+          judge: useSemanticJudge
+            ? (request) => judgeCodingRouteNodes({ request, config, model, signal })
+            : null,
+          toolTrace: isCodingMode ? buildPreviousTurnToolTrace(currentSession) : {},
+        }),
+      };
+    })();
 
     // Refresh workspace + package profiles every turn so installs/toggles take
     // effect without restarting the runtime. SessionStart only re-fires for
@@ -8441,40 +8483,7 @@ export async function createChatRuntime({
       ...(Array.isArray(skillHooksSession.sessionStartContexts) ? skillHooksSession.sessionStartContexts : []),
       ...formatHookContextLines(userPromptHookResult, 'UserPromptSubmit'),
     ];
-
-    const autoRoute = classifyAutoRoute(expandedText);
-    const isCodingMode = normalizeExecutionMode(executionMode) === 'plan';
-    const memoryRoute = classifyMemoryRoute(expandedText);
-    const codingSkillIndexPrompt = isCodingMode ? await getSkillIndexPrompt() : '';
-    const routingRuntimeState = isCodingMode
-      ? buildRuntimeStateSnapshot({
-          currentSession,
-          config,
-          model,
-          executionMode,
-          extraSession: null,
-          workspaceRoot: root,
-        })
-      : null;
-    const codingRoute = await evaluateCodingRouteGraph({
-      executionMode: normalizeExecutionMode(executionMode),
-      text: expandedText,
-      autoRoute,
-      memoryRoute,
-      skillIndexPrompt: codingSkillIndexPrompt,
-      contextUsage: routingRuntimeState
-        ? {
-            estimated_tokens: routingRuntimeState.currentContextTokens,
-            max_tokens: routingRuntimeState.maxContextTokens,
-            usage_pct: routingRuntimeState.contextUsagePct,
-          }
-        : {},
-      sensitive: isSensitiveMemoryContent(expandedText),
-      judge: isCodingMode
-        ? (request) => judgeCodingRouteNodes({ request, config, model, signal })
-        : null,
-      toolTrace: isCodingMode ? buildPreviousTurnToolTrace(currentSession) : {},
-    });
+    const { codingSkillIndexPrompt, codingRoute } = await codingRoutePromise;
     if (codingRoute.active) {
       onAgentEvent?.({
         type: 'routing:graph',

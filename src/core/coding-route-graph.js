@@ -158,6 +158,11 @@ function judgeRequest({
   };
 }
 
+export function shouldInvokeSemanticJudge({ autoRoute } = {}) {
+  const complexity = String(autoRoute?.complexity || 'simple');
+  return complexity === 'medium' || complexity === 'complex';
+}
+
 function fallbackDecision({
   autoRoute,
   memoryRoute,
@@ -165,6 +170,7 @@ function fallbackDecision({
   contextUsage,
   text,
   toolTrace = {},
+  injectSkillIndex = false,
 }) {
   const complexity = String(autoRoute?.complexity || 'simple');
   const pressure = contextPressure(contextUsage);
@@ -185,8 +191,10 @@ function fallbackDecision({
     },
     skills: {
       selected_names: [],
-      inject_index: Boolean(hasSkillIndex),
-      reason: 'preserve the candidate index when semantic selection is unavailable',
+      inject_index: Boolean(hasSkillIndex && injectSkillIndex),
+      reason: injectSkillIndex
+        ? 'preserve the candidate index when semantic selection is unavailable'
+        : 'skip the candidate index when the semantic judge is not invoked',
     },
     subagents: {
       enabled: enableSubagents,
@@ -358,6 +366,7 @@ export async function evaluateCodingRouteGraph({
     contextUsage,
     text,
     toolTrace,
+    injectSkillIndex: typeof judge === 'function',
   });
   let raw = fallback;
   let source = 'fallback';

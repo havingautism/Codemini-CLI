@@ -1,4 +1,4 @@
-import { memo, useEffect, useState, useMemo } from "react";
+import { memo, startTransition, useEffect, useState, useMemo } from "react";
 import { ToolCard } from "./ToolCard";
 import { PlanToolCardGroup } from "./PlanToolCard.jsx";
 import { UsageBadge } from "./UsageBadge.jsx";
@@ -593,7 +593,9 @@ function ToolGroup({ cards }) {
       )}
       {hasRunningTool && (
         <div className="msg-process-meta__detail flex items-center gap-2 px-3 py-1.5 text-[11px] my-2">
-          <SkillStatusDot status="running" />
+          <span className={COLLAPSE_ICON_CLASS}>
+            <SessionOrb state="shaping" />
+          </span>
           <RotatingStatusLabel phrases={toolingPhrases} active />
         </div>
       )}
@@ -2217,6 +2219,19 @@ export const MessageBubble = memo(function MessageBubble({
     });
   }, [message?.isComplete, message?.loading, message?.planStep, segments]);
 
+  const messageComplete =
+    role === "you" || isMessageComplete(message, renderGroups);
+  const [messageEmbeds, setMessageEmbeds] = useState([]);
+  useEffect(() => {
+    if (role === "you" || !messageComplete) {
+      setMessageEmbeds((prev) => (prev.length === 0 ? prev : []));
+      return undefined;
+    }
+    startTransition(() => {
+      setMessageEmbeds(collectMessageEmbeds(segments || []));
+    });
+  }, [messageComplete, role, segments]);
+
   const answerLayout = useMemo(
     () =>
       layoutAnswerProcessWithPlans(
@@ -2231,10 +2246,6 @@ export const MessageBubble = memo(function MessageBubble({
     const merged = mergeFileChanges(fileChanges || []);
     return reconcileFileChangesWithGit(merged, gitFiles);
   }, [fileChanges, gitFiles]);
-  const messageEmbeds = useMemo(
-    () => collectMessageEmbeds(segments || []),
-    [segments],
-  );
 
   const rawMessageText = getMessageText(message) || legacyText || "";
   const rawResponseStatus = String(
@@ -2391,8 +2402,6 @@ export const MessageBubble = memo(function MessageBubble({
   );
   const userDisplayText = userSkillPrompt ? userSkillPrompt.prompt : youText;
   const messageText = role === "you" ? youText : rawMessageText;
-  const messageComplete =
-    role === "you" || isMessageComplete(message, renderGroups);
   const responseStatus = rawResponseStatus;
   const statusLooksLikeError =
     !message.manualAborted &&

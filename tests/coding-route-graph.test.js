@@ -4,6 +4,7 @@ import {
   buildCodingRouteDecisionBlock,
   evaluateCodingRouteGraph,
   isCodingRouteToolAllowed,
+  shouldInvokeSemanticJudge,
 } from '../src/core/coding-route-graph.js';
 
 test('coding route graph bypasses non-coding turns without invoking the judge', async () => {
@@ -20,6 +21,26 @@ test('coding route graph bypasses non-coding turns without invoking the judge', 
   assert.equal(result.active, false);
   assert.equal(calls, 0);
   assert.deepEqual(result.path, ['mode_gate', 'bypass_non_coding', 'complete']);
+});
+
+test('semantic judge is reserved for medium and complex coding turns', () => {
+  assert.equal(shouldInvokeSemanticJudge({ autoRoute: { complexity: 'simple' } }), false);
+  assert.equal(shouldInvokeSemanticJudge({}), false);
+  assert.equal(shouldInvokeSemanticJudge({ autoRoute: { complexity: 'medium' } }), true);
+  assert.equal(shouldInvokeSemanticJudge({ autoRoute: { complexity: 'complex' } }), true);
+});
+
+test('coding route graph does not dump the skill index when the judge is skipped', async () => {
+  const result = await evaluateCodingRouteGraph({
+    executionMode: 'plan',
+    text: 'Fix one typo',
+    autoRoute: { complexity: 'simple' },
+    skillIndexPrompt: '# Indexed skills\n- /tdd - Test driven development',
+  });
+
+  assert.equal(result.source, 'fallback');
+  assert.equal(result.decisions.skills.inject_index, false);
+  assert.deepEqual(result.decisions.skills.selected_names, []);
 });
 
 test('coding route graph uses semantic node decisions to gate capabilities', async () => {
