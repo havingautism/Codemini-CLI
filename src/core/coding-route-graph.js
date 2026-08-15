@@ -1,6 +1,6 @@
 import { parseModelJsonObject } from './model-json.js';
 
-const GRAPH_VERSION = 'coding-turn-route-v11';
+const GRAPH_VERSION = 'coding-turn-route-v13';
 const MAX_SELECTED_SKILLS = 2;
 const CONTEXT_ADVISORY_PCT = 60;
 const CONTEXT_HARD_PCT = 80;
@@ -61,43 +61,77 @@ const GRAPH_NODES = Object.freeze({
   }),
   bypass_non_coding: Object.freeze({ next: 'complete' }),
   memory_gate: Object.freeze({
-    next: 'complete',
     decision: 'memory',
     enforcement: 'hard_gate',
     evaluate: normalizeMemoryDecision,
   }),
   skill_selection_gate: Object.freeze({
-    next: 'task_gate',
     decision: 'skills',
     enforcement: 'injection',
     evaluate: normalizeSkillDecision,
   }),
   subagent_gate: Object.freeze({
-    next: 'memory_gate',
     decision: 'subagents',
     enforcement: 'advisory',
     evaluate: normalizeSubagentDecision,
   }),
   task_gate: Object.freeze({
-    next: 'subagent_gate',
     decision: 'tasks',
     enforcement: 'directive',
     evaluate: normalizeTaskDecision,
   }),
   clarification_gate: Object.freeze({
-    next: 'skill_selection_gate',
     decision: 'clarification',
     enforcement: 'directive',
     evaluate: normalizeClarificationDecision,
   }),
-  complete: Object.freeze({ next: null }),
+  complete: Object.freeze({}),
 });
+const CODING_GATE_ORDER = Object.freeze([
+  ['clarification', 'clarification_gate'],
+  ['skills', 'skill_selection_gate'],
+  ['tasks', 'task_gate'],
+  ['subagents', 'subagent_gate'],
+  ['memory', 'memory_gate'],
+]);
 
-function executeGraph({ coding = false, raw = {}, fallback = {}, context = {} } = {}) {
+export function selectCodingRouteGates({
+  text = '',
+  toolTrace = {},
+  contextUsage = {},
+  raw = {},
+} = {}) {
+  const selectedSkills = Array.isArray(raw?.skills?.selected_names)
+    ? raw.skills.selected_names.filter(Boolean)
+    : [];
+  return {
+    clarification: raw?.clarification?.mode === 'ask',
+    skills: selectedSkills.length > 0 || raw?.skills?.inject_index === true,
+    tasks: hasMultiStepTaskIntent(text)
+      || hasEditContinuationIntent(text, toolTrace)
+      || raw?.tasks?.required === true,
+    subagents: hasDelegationOptOut(text)
+      || contextPressure(contextUsage).hard
+      || hasExplicitDelegationIntent(text)
+      || raw?.subagents?.enabled === true,
+    memory: true,
+  };
+}
+
+function enabledCodingGates(gates = {}) {
+  return CODING_GATE_ORDER
+    .filter(([key]) => gates[key] === true)
+    .map(([, node]) => node);
+}
+
+function executeGraph({ coding = false, raw = {}, fallback = {}, context = {}, gates = {} } = {}) {
   const path = ['mode_gate'];
   const decisions = {};
-  let node = coding ? GRAPH_NODES.mode_gate.coding : GRAPH_NODES.mode_gate.bypass;
-  while (node) {
+  if (!coding) {
+    path.push('bypass_non_coding', 'complete');
+    return { path, decisions: null };
+  }
+  for (const node of enabledCodingGates(gates)) {
     path.push(node);
     const definition = GRAPH_NODES[node];
     if (definition?.decision && typeof definition.evaluate === 'function') {
@@ -106,9 +140,9 @@ function executeGraph({ coding = false, raw = {}, fallback = {}, context = {} } 
         enforcement: definition.enforcement,
       };
     }
-    node = definition?.next || null;
   }
-  return { path, decisions: coding ? decisions : null };
+  path.push('complete');
+  return { path, decisions };
 }
 
 function parseJudgeResult(value) {
@@ -138,6 +172,7 @@ function judgeRequest({
   return {
     systemPrompt: [
       'You are the semantic judge inside a coding-turn routing graph.',
+      'Judge difficulty from meaning, not keywords. A short request can still need tasks, skills, or subagents; a long or jargon-heavy request can still be atomic.',
       'Route one coding turn through five nodes. Return strict JSON and no prose.',
       '- clarification: "ask" only when a material choice remains after repository inspection; otherwise "auto". request_user_input always remains available.',
       '- skills: none by default; select at most two exact indexed names only for strong workflow matches.',
@@ -149,7 +184,6 @@ function judgeRequest({
     ].join('\n'),
     userPrompt: [
       `User turn:\n${String(text || '').trim()}`,
-      `Heuristic task route:\n${JSON.stringify(autoRoute || {})}`,
       `Heuristic memory route:\n${JSON.stringify(memoryRoute || {})}`,
       `Main-session context usage:\n${JSON.stringify(contextUsage || {})}`,
       `Previous-turn tool trace:\n${JSON.stringify(toolTrace || {})}`,
@@ -158,13 +192,7 @@ function judgeRequest({
   };
 }
 
-export function shouldInvokeSemanticJudge({ autoRoute } = {}) {
-  const complexity = String(autoRoute?.complexity || 'simple');
-  return complexity === 'medium' || complexity === 'complex';
-}
-
 function fallbackDecision({
-  autoRoute,
   memoryRoute,
   hasSkillIndex,
   contextUsage,
@@ -172,18 +200,11 @@ function fallbackDecision({
   toolTrace = {},
   injectSkillIndex = false,
 }) {
-  const complexity = String(autoRoute?.complexity || 'simple');
   const pressure = contextPressure(contextUsage);
   const delegationIntent = hasExplicitDelegationIntent(text);
-  const taskRequired = complexity === 'medium'
-    || complexity === 'complex'
-    || hasMultiStepTaskIntent(text)
+  const taskRequired = hasMultiStepTaskIntent(text)
     || hasEditContinuationIntent(text, toolTrace);
-  const enableSubagents =
-    pressure.hard
-    || delegationIntent
-    || complexity === 'medium'
-    || complexity === 'complex';
+  const enableSubagents = pressure.hard || delegationIntent;
   return {
     memory: {
       leaf: VALID_MEMORY_LEAVES.has(memoryRoute?.leaf) ? memoryRoute.leaf : 'ignore',
@@ -198,18 +219,13 @@ function fallbackDecision({
     },
     subagents: {
       enabled: enableSubagents,
-      recommended_count:
-        complexity === 'complex' || pressure.hard
-          ? 2
-          : complexity === 'medium' || delegationIntent
-            ? 1
-            : 0,
+      recommended_count: pressure.hard ? 2 : delegationIntent ? 1 : 0,
       focus: [],
       reason: pressure.hard
         ? 'hard context-isolation fallback'
         : delegationIntent
           ? 'explicit delegation request'
-          : 'task-complexity fallback',
+          : 'semantic-difficulty fallback',
     },
     tasks: {
       required: taskRequired,
@@ -359,18 +375,18 @@ export async function evaluateCodingRouteGraph({
 
   const hasSkillIndex = Boolean(String(skillIndexPrompt || '').trim());
   const candidates = skillCandidateNames(skillIndexPrompt);
+  const invokeJudge = typeof judge === 'function';
   const fallback = fallbackDecision({
-    autoRoute,
     memoryRoute,
     hasSkillIndex,
     contextUsage,
     text,
     toolTrace,
-    injectSkillIndex: typeof judge === 'function',
+    injectSkillIndex: invokeJudge,
   });
   let raw = fallback;
   let source = 'fallback';
-  if (typeof judge === 'function') {
+  if (invokeJudge) {
     try {
       const request = judgeRequest({
         text,
@@ -390,11 +406,18 @@ export async function evaluateCodingRouteGraph({
       // through the normalized fallback decision.
     }
   }
+  const gates = selectCodingRouteGates({
+    text,
+    toolTrace,
+    contextUsage,
+    raw,
+  });
 
   const graph = executeGraph({
     coding: true,
     raw,
     fallback,
+    gates,
     context: {
       sensitive,
       hasSkillIndex,
@@ -424,37 +447,45 @@ export function isCodingRouteToolAllowed(result, toolName) {
 export function buildCodingRouteDecisionBlock(result) {
   if (!result?.active || !result.decisions) return '';
   const { clarification, memory, skills, subagents, tasks } = result.decisions;
-  const skillSelection = skills.selected_names.length > 0
-    ? skills.selected_names.join(', ')
-    : skills.inject_index
-      ? 'candidate index fallback'
-      : 'none';
-  const subagentFocus = subagents.focus.length > 0
+  const skillSelection = !skills
+    ? ''
+    : skills.selected_names.length > 0
+      ? skills.selected_names.join(', ')
+      : skills.inject_index
+        ? 'candidate index fallback'
+        : 'none';
+  const subagentFocus = subagents?.focus?.length > 0
     ? `; focus=${subagents.focus.join(' | ')}`
     : '';
-  const suggestedTasks = tasks.items.length > 0
+  const suggestedTasks = tasks?.items?.length > 0
     ? `; suggested=${tasks.items.map((item) => item.content).join(' | ')}`
     : '';
-  const questionHint = clarification.suggested_questions.length > 0
+  const questionHint = clarification?.suggested_questions?.length > 0
     ? `; suggested=${clarification.suggested_questions.join(' | ')}`
     : '';
   return [
     `<coding_harness version="${result.graph_version}" source="${result.source}">`,
-    `clarification=${clarification.mode}${questionHint}`,
-    `skills=${skillSelection}`,
-    `tasks=${tasks.required ? `required${suggestedTasks}` : 'optional'}`,
-    `subagents=${subagents.opted_out ? 'disabled' : subagents.enabled ? `recommended:${subagents.recommended_count}${subagentFocus}` : 'optional'}`,
-    `memory=${memory.leaf}; save_memory=${memory.allow_save_memory ? 'enabled' : 'disabled'}`,
-    skills.selected_names.length > 0
+    clarification
+      ? `clarification=${clarification.mode}${questionHint}`
+      : '',
+    skills ? `skills=${skillSelection}` : '',
+    tasks ? `tasks=${tasks.required ? `required${suggestedTasks}` : 'optional'}` : '',
+    subagents
+      ? `subagents=${subagents.opted_out ? 'disabled' : subagents.enabled ? `recommended:${subagents.recommended_count}${subagentFocus}` : 'optional'}`
+      : '',
+    memory
+      ? `memory=${memory.leaf}; save_memory=${memory.allow_save_memory ? 'enabled' : 'disabled'}`
+      : '',
+    skills?.selected_names?.length > 0
       ? 'Apply selected skills as active workflows.'
       : '',
-    subagents.enabled
+    subagents?.enabled
       ? 'Delegate only the routed bounded work; the parent owns integration and final verification.'
       : '',
-    tasks.required
+    tasks?.required
       ? 'Call tasks before major tool work; keep one item in_progress and settle the list before final.'
       : '',
-    clarification.mode === 'ask'
+    clarification?.mode === 'ask'
       ? 'Inspect first; if the material choice remains unresolved, ask before mutation.'
       : '',
     '</coding_harness>',

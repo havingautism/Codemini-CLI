@@ -4,7 +4,7 @@ import {
   buildCodingRouteDecisionBlock,
   evaluateCodingRouteGraph,
   isCodingRouteToolAllowed,
-  shouldInvokeSemanticJudge,
+  selectCodingRouteGates,
 } from '../src/core/coding-route-graph.js';
 
 test('coding route graph bypasses non-coding turns without invoking the judge', async () => {
@@ -23,11 +23,17 @@ test('coding route graph bypasses non-coding turns without invoking the judge', 
   assert.deepEqual(result.path, ['mode_gate', 'bypass_non_coding', 'complete']);
 });
 
-test('semantic judge is reserved for medium and complex coding turns', () => {
-  assert.equal(shouldInvokeSemanticJudge({ autoRoute: { complexity: 'simple' } }), false);
-  assert.equal(shouldInvokeSemanticJudge({}), false);
-  assert.equal(shouldInvokeSemanticJudge({ autoRoute: { complexity: 'medium' } }), true);
-  assert.equal(shouldInvokeSemanticJudge({ autoRoute: { complexity: 'complex' } }), true);
+test('coding turns use a semantic judge even when the request looks simple', async () => {
+  let calls = 0;
+  await evaluateCodingRouteGraph({
+    executionMode: 'plan',
+    text: 'Fix one typo',
+    judge: async () => {
+      calls += 1;
+      return { clarification: { mode: 'auto' }, skills: { selected_names: [] }, tasks: { required: false }, subagents: { enabled: false } };
+    },
+  });
+  assert.equal(calls, 1);
 });
 
 test('coding route graph does not dump the skill index when the judge is skipped', async () => {
@@ -39,8 +45,8 @@ test('coding route graph does not dump the skill index when the judge is skipped
   });
 
   assert.equal(result.source, 'fallback');
-  assert.equal(result.decisions.skills.inject_index, false);
-  assert.deepEqual(result.decisions.skills.selected_names, []);
+  assert.equal(result.decisions.skills, undefined);
+  assert.deepEqual(result.path, ['mode_gate', 'memory_gate', 'complete']);
 });
 
 test('coding route graph uses semantic node decisions to gate capabilities', async () => {
@@ -52,6 +58,7 @@ test('coding route graph uses semantic node decisions to gate capabilities', asy
     skillIndexPrompt: '# Indexed skills\n- /tdd - Test driven development',
     judge: async ({ systemPrompt, userPrompt }) => {
       assert.match(systemPrompt, /five nodes/);
+      assert.match(systemPrompt, /Judge difficulty from meaning/);
       assert.match(userPrompt, /\/tdd/);
       return JSON.stringify({
         memory: { leaf: 'save_memory', reason: 'explicit durable project rule' },
@@ -85,7 +92,6 @@ test('coding route graph uses semantic node decisions to gate capabilities', asy
   assert.equal(result.decisions.tasks.enforcement, 'directive');
   assert.deepEqual(result.path, [
     'mode_gate',
-    'clarification_gate',
     'skill_selection_gate',
     'task_gate',
     'subagent_gate',
@@ -113,11 +119,10 @@ test('semantic judge cannot upgrade an ignored turn into durable memory', async 
   assert.equal(result.decisions.memory.allow_save_memory, false);
 });
 
-test('semantic judge can enable delegation when it finds useful independent work', async () => {
+test('semantic judge can enable delegation on a short request', async () => {
   const result = await evaluateCodingRouteGraph({
     executionMode: 'plan',
     text: 'Fix the typo in README.md',
-    autoRoute: { complexity: 'simple' },
     judge: async () => ({
       memory: { leaf: 'ignore' },
       skills: { selected_names: [] },
@@ -128,6 +133,7 @@ test('semantic judge can enable delegation when it finds useful independent work
 
   assert.equal(result.decisions.subagents.enabled, true);
   assert.equal(result.decisions.subagents.recommended_count, 2);
+  assert.ok(result.path.includes('subagent_gate'));
 });
 
 test('coding route graph hard-blocks secret-like memory even when judge allows it', async () => {
@@ -161,8 +167,8 @@ test('coding route graph falls back when the semantic judge fails', async () => 
   assert.equal(result.source, 'fallback');
   assert.equal(result.decisions.memory.allow_save_memory, false);
   assert.equal(result.decisions.skills.inject_index, true);
-  assert.equal(result.decisions.subagents.enabled, true);
-  assert.equal(result.decisions.tasks.required, true);
+  assert.equal(result.decisions.subagents, undefined);
+  assert.equal(result.decisions.tasks, undefined);
 });
 
 test('advisory context pressure does not hard-force delegation', async () => {
@@ -177,8 +183,7 @@ test('advisory context pressure does not hard-force delegation', async () => {
   });
 
   assert.equal(result.source, 'fallback');
-  assert.equal(result.decisions.subagents.enabled, false);
-  assert.equal(result.decisions.subagents.recommended_count, 0);
+  assert.equal(result.decisions.subagents, undefined);
 });
 
 test('hard context pressure uses window percentage and overrides a conservative judge', async () => {
@@ -225,8 +230,7 @@ test('generic exploration and testing words do not force delegation', async () =
       }),
     });
 
-    assert.equal(result.decisions.subagents.enabled, false);
-    assert.equal(result.decisions.subagents.recommended_count, 0);
+    assert.equal(result.decisions.subagents, undefined);
     assert.equal(isCodingRouteToolAllowed(result, 'run_subagent'), true);
   }
 });
@@ -277,13 +281,13 @@ test('large model windows do not trigger isolation at low usage percentages', as
     },
   });
 
-  assert.equal(result.decisions.subagents.enabled, false);
-  assert.equal(result.decisions.subagents.recommended_count, 0);
+  assert.equal(result.decisions.subagents, undefined);
 });
 
 test('coding route graph rejects unlisted skill names and caps selection at two', async () => {
   const result = await evaluateCodingRouteGraph({
     executionMode: 'plan',
+    autoRoute: { complexity: 'medium' },
     skillIndexPrompt: [
       '# Indexed skills',
       '- /tdd - Test driven development',
@@ -316,6 +320,7 @@ test('coding route judge prompt encourages useful autonomous delegation', async 
   await evaluateCodingRouteGraph({
     executionMode: 'plan',
     text: 'Improve the routing module',
+    autoRoute: { complexity: 'medium' },
     skillIndexPrompt: '- /codebase-design - Improve module interfaces',
     judge: async ({ systemPrompt }) => {
       assert.match(systemPrompt, /none by default/);
@@ -358,16 +363,9 @@ test('task gate keeps atomic coding work optional', async () => {
     executionMode: 'plan',
     text: 'Fix one typo',
     autoRoute: { complexity: 'simple' },
-    judge: async () => ({
-      memory: { leaf: 'ignore' },
-      skills: { selected_names: [] },
-      subagents: { enabled: false },
-      tasks: { required: false, reason: 'atomic edit' },
-    }),
   });
 
-  assert.equal(result.decisions.tasks.required, false);
-  assert.match(buildCodingRouteDecisionBlock(result), /tasks=optional/);
+  assert.equal(result.decisions.tasks, undefined);
   assert.doesNotMatch(buildCodingRouteDecisionBlock(result), /Call tasks/);
 });
 
@@ -385,7 +383,6 @@ test('semantic judge cannot downgrade the deterministic task floor', async () =>
   });
 
   assert.equal(result.decisions.tasks.required, true);
-  assert.equal(result.decisions.tasks.reason, 'judge underestimated it');
   assert.match(buildCodingRouteDecisionBlock(result), /tasks=required/);
 });
 
@@ -419,7 +416,7 @@ test('recent edits alone do not force tasks without continuation intent', async 
     toolTrace: { recentTools: ['edit'], editCount: 1 },
   });
 
-  assert.equal(result.decisions.tasks.required, false);
+  assert.equal(result.decisions.tasks, undefined);
 });
 
 test('semantic judge cannot discard the previous-turn continuation floor', async () => {
@@ -444,16 +441,9 @@ test('clarification route never removes request_user_input', async () => {
     executionMode: 'plan',
     text: 'Fix the typo in README.md',
     autoRoute: { complexity: 'simple' },
-    judge: async () => ({
-      memory: { leaf: 'ignore' },
-      skills: { selected_names: [] },
-      subagents: { enabled: false },
-      tasks: { required: false },
-      clarification: { mode: 'auto', reason: 'unambiguous' },
-    }),
   });
 
-  assert.equal(result.decisions.clarification.mode, 'auto');
+  assert.equal(result.decisions.clarification, undefined);
   assert.equal(isCodingRouteToolAllowed(result, 'request_user_input'), true);
 });
 
@@ -481,7 +471,7 @@ test('clarification route recommends asking after inspection for material choice
 test('clarification route renders concise suggested questions', async () => {
   const result = await evaluateCodingRouteGraph({
     executionMode: 'plan',
-    text: '接下来怎么安排',
+    text: '接下来怎么安排，不确定先重构还是新增',
     autoRoute: { complexity: 'medium' },
     judge: async () => ({
       memory: { leaf: 'ignore' },
@@ -501,14 +491,46 @@ test('clarification route renders concise suggested questions', async () => {
   assert.match(buildCodingRouteDecisionBlock(result), /suggested=目标是重构还是新增\?/);
 });
 
-test('clarification route defaults to auto without a judge', async () => {
+test('clarification route defaults to auto when the judge does not ask', async () => {
   const result = await evaluateCodingRouteGraph({
     executionMode: 'plan',
-    text: '改一下文案',
-    autoRoute: { complexity: 'simple' },
+    text: '不确定该不该动公共接口',
+    judge: async () => ({
+      clarification: { mode: 'auto' },
+      skills: { selected_names: [] },
+      tasks: { required: false },
+      subagents: { enabled: false },
+    }),
   });
 
-  assert.equal(result.decisions.clarification.mode, 'auto');
+  assert.equal(result.decisions.clarification, undefined);
   assert.equal(isCodingRouteToolAllowed(result, 'request_user_input'), true);
-  assert.match(buildCodingRouteDecisionBlock(result), /clarification=auto/);
+  assert.doesNotMatch(buildCodingRouteDecisionBlock(result), /clarification=ask/);
+});
+
+test('keyword-looking complexity does not open coding gates without a semantic decision', () => {
+  const gates = selectCodingRouteGates({
+    text: 'Add authentication workflow with session state across multiple files',
+  });
+  assert.equal(gates.clarification, false);
+  assert.equal(gates.skills, false);
+  assert.equal(gates.tasks, false);
+  assert.equal(gates.subagents, false);
+  assert.equal(gates.memory, true);
+});
+
+test('semantic judge opens clarification before skills when it asks', async () => {
+  const result = await evaluateCodingRouteGraph({
+    executionMode: 'plan',
+    text: '帮我重构这个模块，但不确定该不该动公共接口',
+    judge: async () => ({
+      clarification: { mode: 'ask', reason: 'public API change is a material choice' },
+      skills: { selected_names: ['tdd'] },
+      tasks: { required: false },
+      subagents: { enabled: false },
+    }),
+  });
+  assert.ok(result.path.includes('clarification_gate'));
+  assert.ok(result.path.includes('skill_selection_gate'));
+  assert.ok(result.path.indexOf('clarification_gate') < result.path.indexOf('skill_selection_gate'));
 });

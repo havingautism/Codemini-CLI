@@ -94,7 +94,6 @@ import {
   buildCodingRouteDecisionBlock,
   evaluateCodingRouteGraph,
   isCodingRouteToolAllowed,
-  shouldInvokeSemanticJudge,
 } from './coding-route-graph.js';
 import {
   buildCleanContextHandoff
@@ -2284,77 +2283,106 @@ function selectAutoSkillNames(text = '') {
   return selected;
 }
 
-function classifyTaskComplexity(text = '') {
+const EMPTY_TASK_DIMENSIONS = Object.freeze({
+  complexity: 'simple',
+  discussion: false,
+  ambiguous: false,
+  implementation: false,
+  localized: false,
+  multiFile: false,
+  verification: false,
+  architecture: false,
+  explicitPlan: false,
+  multiAction: false,
+});
+
+export function classifyTaskDimensions(text = '') {
   const input = String(text || '').trim();
-  if (!input) return 'simple';
+  if (!input) return { ...EMPTY_TASK_DIMENSIONS };
 
   const lower = input.toLowerCase();
-  const explicitPlanning =
+  const explicitPlan =
     /(plan first|make a plan|implementation plan|先做计划|先出方案|先规划|先计划)/i.test(lower);
-  if (explicitPlanning) return 'complex';
-
-  const simpleSkip =
+  const trivial =
     /(typo|readme|console\.log|log this|rename\s+\w+|one line|small tweak|tiny fix|格式化|拼写|注释|文案|小改|微调)/i.test(
       lower
     );
-  if (simpleSkip) return 'simple';
-
-  const discussionFirst =
-    /(brainstorm|头脑风暴|方案|思路|怎么做|如何做|which (?:approach|option|way)|best way|trade-?off|not sure|unsure|unclear|whether it should|要不要|不确定|先别写|先不要写|先讨论|先想一下)/i.test(
+  const discussion =
+    /(brainstorm|头脑风暴|方案|思路|怎么做|如何做|先别写|先不要写|先讨论|先想一下)/i.test(lower);
+  const ambiguous =
+    /(not sure|unsure|unclear|help me think|let'?s think|should we|which (?:approach|option|way)|best way|trade-?off|whether it should|要不要|不确定|不明确|哪个方案|怎么设计|如何设计|取舍)/i.test(
       lower
     );
-  if (discussionFirst) return 'simple';
-
-  const implementationRequest =
+  const implementation =
     /\b(add|build|create|implement|support|introduce|design|refactor|rework|migrate|change|update|rewrite|restructure)\b/i.test(
       lower
     ) ||
     /(新增|增加|实现|支持|设计|重构|改造|迁移|调整|重写|重做)/i.test(lower);
-  if (!implementationRequest) return 'simple';
-
-  const broadSignalPattern =
-    /\b(auth|authentication|workflow|flow|system|architecture|api|endpoint|state management|session state|cache|caching|database|migration|service|integration|error handling|error recovery|shared helper|helper module)\b/gi;
-  const broadSignals = lower.match(broadSignalPattern) || [];
-  const multipleActions = /\b(and|plus|also|while|along with)\b/i.test(lower) || /[，、；;].+/.test(input);
+  const broadSignals = lower.match(
+    /\b(auth|authentication|workflow|flow|system|architecture|api|endpoint|state management|session state|cache|caching|database|migration|service|integration|error handling|error recovery|shared helper|helper module)\b/gi
+  ) || [];
+  const multiAction = /\b(and|plus|also|while|along with)\b/i.test(lower) || /[，、；;].+/.test(input);
   const singleFileScoped =
     /\b(?:in|inside|within|only in)\s+[-_/.\w]+\.(?:[cm]?[jt]sx?|py|go|rb|java|rs|php|md)\b/i.test(lower) ||
     /\b(?:src|app|lib|tests?)\/[-_/.\w]+\.(?:[cm]?[jt]sx?|py|go|rb|java|rs|php|md)\b/i.test(lower);
   const fileMentions = (lower.match(/[-_/.\w]+\.(?:[cm]?[jt]sx?|py|go|rb|java|rs|php|md)\b/g) || []).length;
-  const multiFileScope =
+  const multiFile =
     fileMentions >= 2 ||
     /\b(across|multiple files?|cross-file|cross file)\b/i.test(lower) ||
     /跨文件|多文件/.test(input);
-  const verificationHeavy = /\b(with tests?|and tests?|verify|validation|error handling|error recovery)\b/i.test(lower) || /测试|验证|校验|错误处理|错误恢复/.test(input);
-  const architectureHeavy =
+  const verification =
+    /\b(with tests?|and tests?|verify|validation|error handling|error recovery)\b/i.test(lower)
+    || /测试|验证|校验|错误处理|错误恢复/.test(input);
+  const architecture =
     broadSignals.length >= 3 ||
     /\b(architecture|workflow|migration|state management|session state|integration)\b/i.test(lower) ||
     /架构|流程|迁移|状态/.test(input);
+  const localized = singleFileScoped && !multiAction && !verification;
 
-  if (singleFileScoped && !multipleActions && !verificationHeavy) return 'simple';
-  if (architectureHeavy && (multiFileScope || multipleActions || verificationHeavy)) return 'complex';
-  if (multiFileScope || verificationHeavy || multipleActions) return 'medium';
-  return 'simple';
+  let complexity = 'simple';
+  if (explicitPlan) complexity = 'complex';
+  else if (trivial) complexity = 'simple';
+  else if (!implementation) complexity = 'simple';
+  else if (localized) complexity = 'simple';
+  else if (architecture && (multiFile || multiAction || verification)) complexity = 'complex';
+  else if (multiFile || verification || multiAction) complexity = 'medium';
+
+  return {
+    complexity,
+    discussion,
+    ambiguous,
+    implementation,
+    localized,
+    multiFile,
+    verification,
+    architecture,
+    explicitPlan,
+    multiAction,
+  };
 }
 
 export function classifyAutoRoute(text = '') {
   const selectedSkills = selectAutoSkillNames(text);
+  const dimensions = classifyTaskDimensions(text);
   const hasBrainstorm = selectedSkills.includes('discussion');
   if (hasBrainstorm) {
     return {
       mode: 'brainstorm',
       autoPlan: false,
       selectedSkills,
-      complexity: 'discussion'
+      complexity: 'discussion',
+      dimensions: { ...dimensions, discussion: true },
     };
   }
 
-  const complexity = classifyTaskComplexity(text);
+  const complexity = dimensions.complexity;
   if (complexity === 'complex') {
     return {
       mode: 'direct_complex',
       autoPlan: false,
       selectedSkills: [],
-      complexity
+      complexity,
+      dimensions,
     };
   }
 
@@ -2362,7 +2390,8 @@ export function classifyAutoRoute(text = '') {
     mode: complexity === 'medium' ? 'direct_medium' : 'direct',
     autoPlan: false,
     selectedSkills,
-    complexity
+    complexity,
+    dimensions,
   };
 }
 
@@ -8386,7 +8415,6 @@ export async function createChatRuntime({
     const autoRoute = classifyAutoRoute(expandedText);
     const isCodingMode = normalizeExecutionMode(executionMode) === 'plan';
     const memoryRoute = classifyMemoryRoute(expandedText);
-    const useSemanticJudge = isCodingMode && shouldInvokeSemanticJudge({ autoRoute });
     const routingRuntimeState = isCodingMode
       ? buildRuntimeStateSnapshot({
           currentSession,
@@ -8397,6 +8425,15 @@ export async function createChatRuntime({
           workspaceRoot: root,
         })
       : null;
+    const contextUsage = routingRuntimeState
+      ? {
+          estimated_tokens: routingRuntimeState.currentContextTokens,
+          max_tokens: routingRuntimeState.maxContextTokens,
+          usage_pct: routingRuntimeState.contextUsagePct,
+        }
+      : {};
+    const toolTrace = isCodingMode ? buildPreviousTurnToolTrace(currentSession) : {};
+    const useSemanticJudge = isCodingMode;
     const codingRoutePromise = (async () => {
       const codingSkillIndexPrompt = useSemanticJudge ? await getSkillIndexPrompt() : '';
       return {
@@ -8407,18 +8444,12 @@ export async function createChatRuntime({
           autoRoute,
           memoryRoute,
           skillIndexPrompt: codingSkillIndexPrompt,
-          contextUsage: routingRuntimeState
-            ? {
-                estimated_tokens: routingRuntimeState.currentContextTokens,
-                max_tokens: routingRuntimeState.maxContextTokens,
-                usage_pct: routingRuntimeState.contextUsagePct,
-              }
-            : {},
+          contextUsage,
           sensitive: isSensitiveMemoryContent(expandedText),
           judge: useSemanticJudge
             ? (request) => judgeCodingRouteNodes({ request, config, model, signal })
             : null,
-          toolTrace: isCodingMode ? buildPreviousTurnToolTrace(currentSession) : {},
+          toolTrace,
         }),
       };
     })();

@@ -5,6 +5,7 @@ import {
   buildPreviousTurnToolTrace,
   buildExecutionModePromptBlock,
   classifyAutoRoute,
+  classifyTaskDimensions,
 } from '../src/core/chat-runtime.js';
 
 const chatRuntimeSource = readFileSync(
@@ -29,6 +30,25 @@ test('classifyAutoRoute suggests direct for localized edits', () => {
   const route = classifyAutoRoute('Fix the typo in README.md');
   assert.equal(route.mode, 'direct');
   assert.equal('suggested' in route, false);
+});
+
+test('classifyTaskDimensions exposes routing axes instead of a single score', () => {
+  const discussion = classifyTaskDimensions('先讨论一下登录鉴权要怎么设计');
+  assert.equal(discussion.discussion, true);
+  assert.equal(discussion.implementation, true);
+
+  const typo = classifyTaskDimensions('Fix the typo in README.md');
+  assert.equal(typo.complexity, 'simple');
+  assert.equal(typo.localized, true);
+  assert.equal(typo.implementation, false);
+
+  const complex = classifyTaskDimensions(
+    'Add authentication workflow with session state, database migration, and API endpoint integration across multiple files'
+  );
+  assert.equal(complex.complexity, 'complex');
+  assert.equal(complex.multiFile, true);
+  assert.equal(complex.architecture, true);
+  assert.equal(complex.implementation, true);
 });
 
 test('coding prompt keeps subagent delegation bounded and parent-owned', () => {
