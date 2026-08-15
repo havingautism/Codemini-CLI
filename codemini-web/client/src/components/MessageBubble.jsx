@@ -2114,7 +2114,11 @@ function renderGroupItem(group, i) {
     );
   }
   if (group.type === "tools") {
-    return <ToolGroup key={`tg-${i}`} cards={group.cards} />;
+    const planId = (group.cards || []).find((card) => isCreatePlanCard(card))?.id;
+    const firstId = group.cards?.[0]?.id;
+    return (
+      <ToolGroup key={planId || firstId || `tg-${i}`} cards={group.cards} />
+    );
   }
   if (group.type === "thinking") {
     return <ThoughtBlock key={`th-${i}`} segment={group} />;

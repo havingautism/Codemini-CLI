@@ -16,6 +16,7 @@ import {
   applyPlanEventToMessage,
   applyStreamEventToPlanRun,
   isCreatePlanToolEvent,
+  isLegacyFinalPlanStep,
   messageHasActivePlanRun,
   shouldNestStreamEventInPlan,
   settleRunningCreatePlanCards,
@@ -783,10 +784,7 @@ export class RuntimeBridge {
           // Legacy multi-step plan pipeline: settle when the final/summarizer step ends.
           // run_subagent is one-step (total=1); settling here would abort sibling parallel cards.
           // Those cards are completed by their own tool:end instead.
-          const isLegacyFinalPlanStep =
-            String(event.role || '').toLowerCase() === 'summarizer' ||
-            (Number(event.total) > 1 && Number(event.step) === Number(event.total));
-          if (isLegacyFinalPlanStep) {
+          if (isLegacyFinalPlanStep(event)) {
             this.#settleCreatePlanToolCard(undefined, 'completed');
           }
         }

@@ -5,7 +5,7 @@ const DEFAULT_CONCURRENT_TOOLS = new Set([
   'ast_query', 'read_ast_node',
   'web_fetch', 'web_search',
   'list_background_tasks', 'get_background_task',
-  'read_plan',
+  'read_plan', 'tasks', 'tasks',
   'query_project_index', 'tool_search',
   'skill',
 ]);

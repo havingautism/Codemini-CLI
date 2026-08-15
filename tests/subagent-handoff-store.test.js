@@ -89,20 +89,20 @@ test('handoff filenames keep Chinese summaries safe on Windows and fall back whe
   }
 });
 
-test('chat runtime exposes same-session handoffs to both main and subagent prompts', async () => {
+test('chat runtime keeps growing handoff catalogs out of system prompts', async () => {
   const runtime = await fs.readFile(
     new URL('../src/core/chat-runtime.js', import.meta.url),
     'utf8',
   );
 
-  assert.match(
+  assert.match(runtime, /skillsPrompt:\s*SUBAGENT_STABLE_SKILLS_PROMPT/);
+  assert.doesNotMatch(
     runtime,
     /skillsPrompt:\s*\[rolePrompt, extraRolePrompt, handoffCatalogPrompt\]/,
   );
-  assert.match(
-    runtime,
-    /alwaysSkillPrompt,\s*handoffCatalogPrompt,/,
-  );
+  assert.doesNotMatch(runtime, /alwaysSkillPrompt,\s*handoffCatalogPrompt,/);
+  assert.match(runtime, /handoffCatalogPrompt,/);
   assert.match(runtime, /saveSubAgentHandoff\(\{/);
   assert.match(runtime, /handoffPath: savedHandoff\.path/);
+  assert.match(runtime, /inheritParentContext = false/);
 });

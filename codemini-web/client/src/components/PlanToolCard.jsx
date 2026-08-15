@@ -5,7 +5,6 @@ import {
   CaretDown,
   CaretRight,
   UserCircle,
-  UsersThree,
 } from "@phosphor-icons/react";
 import { SessionOrb } from "@/components/ui/spinner";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -13,6 +12,7 @@ import { StreamdownRenderer } from "@/components/StreamdownRenderer.jsx";
 import { ToolCard } from "@/components/ToolCard.jsx";
 import { UsageBadge } from "@/components/UsageBadge.jsx";
 import { extractLatestTodoFromPlanSteps } from "@/lib/answer-process.js";
+import { getTodoToolItems } from "@/lib/tool-card-display.js";
 import { cn } from "@/lib/utils";
 import { planPhaseTitle, shouldExpandPlanStep } from "@/lib/plan-ui-state.js";
 import { isShellToolName } from "@/lib/tool-names.js";
@@ -411,7 +411,7 @@ function SubagentStepRow({ step, index }) {
   );
 }
 
-export function PlanToolCard({ card, grouped = false }) {
+export function PlanToolCard({ card }) {
   const planRun = card?.planRun || null;
   const phase =
     planRun?.phase || (card?.status === "done" ? "completed" : "planning");
@@ -432,6 +432,12 @@ export function PlanToolCard({ card, grouped = false }) {
   const { steps, todoCard } = isSubagent
     ? extractLatestTodoFromPlanSteps(rawSteps, assignedTasksCard)
     : { steps: rawSteps, todoCard: null };
+  const todoItems = todoCard
+    ? getTodoToolItems(todoCard.arguments, todoCard.result)
+    : [];
+  const todoCompleted = todoItems.filter(
+    (item) => item.status === "completed",
+  ).length;
   const primary = steps[0] || null;
   const persona = String(
     primary?.role || card?.arguments?.name || card?.arguments?.role || "",
@@ -459,7 +465,7 @@ export function PlanToolCard({ card, grouped = false }) {
     : card?.displayName || planPhaseTitle(phase);
   const singleTask = steps.length <= 1;
   const [open, setOpen] = useState(
-    !isSubagent && !grouped && (running || phase === "executing"),
+    !isSubagent && (running || phase === "executing"),
   );
   const expanded = open;
 
@@ -467,9 +473,7 @@ export function PlanToolCard({ card, grouped = false }) {
     <div
       className={cn(
         "msg-process-meta relative w-full overflow-hidden",
-        grouped
-          ? "bg-transparent"
-          : "codemini-message-surface rounded-xl",
+        "codemini-message-surface rounded-xl",
         card.status === "error" &&
           "after:pointer-events-none after:absolute after:inset-0 after:rounded-[inherit] after:border after:border-[color:color-mix(in_srgb,var(--accent-red)_32%,transparent)] after:content-['']",
       )}
@@ -523,14 +527,13 @@ export function PlanToolCard({ card, grouped = false }) {
             />
           )}
           <span>{isSubagent ? statusLabel(phase) : planPhaseTitle(phase)}</span>
+          {isSubagent && todoItems.length ? (
+            <span className="tabular-nums text-(--text-muted)">
+              {todoCompleted}/{todoItems.length}
+            </span>
+          ) : null}
         </span>
       </button>
-
-      {!expanded && todoCard ? (
-        <div className="mt-2 px-3 pb-3">
-          <ToolCard card={todoCard} />
-        </div>
-      ) : null}
 
       {expanded ? (
         <div className="px-3 pb-3 pt-2">
@@ -580,36 +583,12 @@ export function PlanToolCard({ card, grouped = false }) {
 
 export function PlanToolCardGroup({ cards = [] }) {
   const items = Array.isArray(cards) ? cards.filter(Boolean) : [];
-  const canGroup =
-    items.length > 1 && items.every((card) => isRunSubagentCard(card));
-
-  if (!canGroup) {
-    return items.map((card) => (
-      <PlanToolCard key={card.id || card.name} card={card} />
-    ));
-  }
-
+  if (!items.length) return null;
   return (
-    <section
-      className="codemini-message-surface msg-process-meta w-full overflow-hidden rounded-xl"
-      aria-label={t("subagentGroupTitle")}
-    >
-      <div className="flex min-h-11 items-center gap-2.5 border-b border-(--border-default) px-3 py-2.5">
-        <span className={ICON_CLASS}>
-          <UsersThree size={15} aria-hidden="true" />
-        </span>
-        <span className="font-medium text-(--text-primary)">
-          {t("subagentGroupTitle")}
-        </span>
-        <span className="text-xs text-(--text-muted)">
-          {t("subagentGroupCount").replace("{{count}}", items.length)}
-        </span>
-      </div>
-      <div className="divide-y divide-(--border-default)">
-        {items.map((card) => (
-          <PlanToolCard key={card.id || card.name} card={card} grouped />
-        ))}
-      </div>
-    </section>
+    <div className="flex flex-col gap-2">
+      {items.map((card) => (
+        <PlanToolCard key={card.id || card.name} card={card} />
+      ))}
+    </div>
   );
 }

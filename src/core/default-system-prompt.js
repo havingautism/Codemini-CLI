@@ -74,8 +74,8 @@ ${newFileExample}
 
 ${discoveryHint}
 Use skill({"query":"workflow"}) for skill discovery instead of scanning skill directories.
-For non-trivial work, send the full checklist each time:
-Tool: tasks({"tasks":[{"content":"Inspect relevant code","activeForm":"Inspecting relevant code","status":"in_progress"},{"content":"Run focused verification","activeForm":"Running focused verification","status":"pending"}]})
+For non-trivial work, send the full checklist each time (whole list replaces the previous one):
+Tool: tasks({"tasks":[{"content":"Inspect relevant code","status":"in_progress"},{"content":"Run focused verification","status":"pending"}]})
 ${patchHint}`;
 }
 

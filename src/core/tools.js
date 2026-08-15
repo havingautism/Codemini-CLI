@@ -67,7 +67,11 @@ import { runDreamConsolidation } from "./dream-consolidate.js";
 import { inferMemoryScope, normalizeMemoryKind } from "./memory-policy.js";
 import { getReplyLanguageName } from "./reply-language.js";
 import { normalizePlanState } from "./plan-state.js";
-import { normalizeTodos } from "./todo-state.js";
+import {
+  canonicalizeTodos,
+  countTodosByStatus,
+  normalizeTodos,
+} from "./todo-state.js";
 import {
   normalizeAssumptionItems,
   normalizeFilePathValue,
@@ -4872,7 +4876,7 @@ export function getBuiltinTools({
       function: {
         name: "tasks",
         description:
-          "High-priority progress tool for creating or replacing the current session's structured task checklist. Use it before multi-step, multi-file, debugging, implementation-plus-verification, or otherwise non-trivial work. Provide the full current list each time, keep exactly one task in_progress while working, and settle every task before the final answer.",
+          "Record and update a structured task list for the current work. Send the ENTIRE list every call — it REPLACES the previous list (there are no partial updates, no per-item edits, no read-back). Use it to plan multi-step work and show progress: add one item per concrete step before you start. Mark every task being actively worked as in_progress — several at once when work genuinely runs in parallel, one for sequential work; while work remains, at least one task should be in_progress. Mark a task completed the moment it is done (do not batch completions), and leave no in_progress item only once all work is complete. Skip the list for trivial single-step tasks. Statuses: pending, in_progress, completed.",
         parameters: {
           type: "object",
           properties: {
@@ -4883,21 +4887,23 @@ export function getBuiltinTools({
                 properties: {
                   content: {
                     type: "string",
-                    description: 'Imperative task text such as "Run tests"',
-                  },
-                  activeForm: {
-                    type: "string",
-                    description:
-                      'Present continuous form such as "Running tests"',
+                    description: "What the task is — a short imperative line.",
                   },
                   status: {
                     type: "string",
-                    description: "pending, in_progress, or completed",
+                    enum: ["pending", "in_progress", "completed"],
+                    description:
+                      "pending (not started) | in_progress (now) | completed (done).",
+                  },
+                  activeForm: {
+                    type: "string",
+                    description: "Optional. Ignored for display; content is shown.",
                   },
                 },
-                required: ["content", "activeForm", "status"],
+                required: ["content", "status"],
               },
-              description: "The full current task checklist for this session",
+              description:
+                "The COMPLETE task list, replacing any previous list.",
             },
           },
           required: ["tasks"],
@@ -5061,7 +5067,7 @@ export function getBuiltinTools({
       function: {
         name: "run_subagent",
         description:
-          "Delegate work to a clean-context subagent so project inspection, test output, and independent reasoning do not bloat the main context. Pass concrete task details in tasks; prompt may add scope, constraints, and handoff context. Prefer this for repository exploration, architecture/dependency lookup, broad code reading, test execution and failure triage, review, option comparison, and isolated implementation chunks. Invent a short human name for the worker (e.g. David, Mira). For a dependency DAG, assign task_id and let later calls use depends_on; upstream handoffs are injected automatically. Dependencies must reference earlier calls in the same response. Capability is controlled by tools (default allows edits; pass a read-only list for explore/review/test-only work). Independent same-response calls run in parallel only when every call has an explicit read-only tools list; default or mutating workers run sequentially because they share one worktree. Subagents cannot call run_subagent/create_plan/create_spec. Avoid only truly atomic actions where delegation adds no useful evidence.",
+          "Delegate work to a clean-context subagent so project inspection, test output, and independent reasoning do not bloat the main context. Pass a compact task envelope (goal, files, constraints, known facts) in tasks/prompt; do not copy the parent transcript. Prefer this for repository exploration, architecture/dependency lookup, broad code reading, test execution and failure triage, review, option comparison, and isolated implementation chunks. Invent a short human name for the worker (e.g. David, Mira). For a dependency DAG, assign task_id and let later calls use depends_on; upstream handoffs are injected automatically. Dependencies must reference earlier calls in the same response. Capability is controlled by tools (default allows edits; pass a read-only list for explore/review/test-only work). Independent same-response calls run in parallel only when every call has an explicit read-only tools list; default or mutating workers run sequentially because they share one worktree. Subagents cannot call run_subagent/create_plan/create_spec. Avoid only truly atomic actions where delegation adds no useful evidence.",
         parameters: {
           type: "object",
           properties: {
@@ -5076,13 +5082,14 @@ export function getBuiltinTools({
                 type: "object",
                 properties: {
                   content: { type: "string" },
-                  activeForm: { type: "string" },
                   status: {
                     type: "string",
+                    enum: ["pending", "in_progress", "completed"],
                     description: "pending, in_progress, or completed",
                   },
+                  activeForm: { type: "string" },
                 },
-                required: ["content", "activeForm", "status"],
+                required: ["content"],
               },
               description:
                 "Concrete structured task checklist assigned to this subagent. Prefer this over burying work items in prompt prose.",
@@ -6650,7 +6657,11 @@ export function getBuiltinTools({
       const oldTodos = normalizeTodos(
         typeof getTodos === "function" ? getTodos() : [],
       );
-      const nextTodos = normalizeTodos(args?.tasks);
+      const parsed = canonicalizeTodos(args?.tasks);
+      if (parsed.error) {
+        return { ok: false, error: parsed.error };
+      }
+      const nextTodos = parsed.todos;
       if (typeof onTodosUpdate === "function") {
         onTodosUpdate(nextTodos);
       }
@@ -6658,6 +6669,7 @@ export function getBuiltinTools({
         ok: true,
         oldTodos,
         newTodos: nextTodos,
+        counts: countTodosByStatus(nextTodos),
       };
     },
     read_plan: async (args = {}) => {
@@ -7250,18 +7262,9 @@ export function getBuiltinTools({
 
     tasks(result) {
       if (!result || typeof result !== "object") return String(result);
-      const nextTodos = normalizeTodos(result.newTodos);
-      if (nextTodos.length === 0) return "Task list cleared.";
-      const lines = nextTodos.map((item) => {
-        const box =
-          item.status === "completed"
-            ? "[x]"
-            : item.status === "in_progress"
-              ? "[~]"
-              : "[ ]";
-        return `${box} ${item.content}`;
-      });
-      return ["Updated task list:", ...lines].join("\n");
+      if (result.ok === false && result.error) return String(result.error);
+      const counts = result.counts || countTodosByStatus(result.newTodos);
+      return `Updated todo list: ${counts.pending} pending, ${counts.inProgress} in progress, ${counts.completed} completed.`;
     },
 
     read_plan(result) {

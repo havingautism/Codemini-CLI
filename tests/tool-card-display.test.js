@@ -16,8 +16,13 @@ test('todo tool items accept streamed arguments and structured results', () => {
   ]);
 
   assert.deepEqual(getTodoToolItems({}, { newTodos: [
-    { content: 'Verify', activeForm: 'Verifying', status: 'completed' },
+    { content: 'Verify', status: 'completed' },
   ] }), [{ content: 'Verify', status: 'completed' }]);
+
+  assert.deepEqual(
+    getTodoToolItems({ tasks: [{ content: 'Summarize', status: 'pending' }] }),
+    [{ content: 'Summarize', status: 'pending' }],
+  );
 });
 
 test('delete tool preview keeps only the patch for its displayed file', () => {

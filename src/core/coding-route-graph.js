@@ -145,7 +145,7 @@ function judgeRequest({
       '- subagents: enable only for bounded independent work, parallel read-only investigation, or independent verification. At >=80% context usage require two.',
       '- memory: may downgrade but never upgrade the heuristic. Save only explicit durable preferences, remember requests, or stable project conventions; never secrets. Coding discoveries go to later Dream/session review.',
       '',
-      'Return {"clarification":{"mode":"ask|auto","suggested_questions":["focused question"],"reason":"..."},"skills":{"selected_names":["exact-name"],"reason":"..."},"tasks":{"required":true,"items":[{"content":"Inspect implementation","activeForm":"Inspecting implementation"}],"reason":"..."},"subagents":{"enabled":true,"recommended_count":1,"focus":["bounded focus"],"reason":"..."},"memory":{"leaf":"save_memory|dream_inbox|ignore","reason":"..."}}',
+      'Return {"clarification":{"mode":"ask|auto","suggested_questions":["focused question"],"reason":"..."},"skills":{"selected_names":["exact-name"],"reason":"..."},"tasks":{"required":true,"items":[{"content":"Inspect implementation"}],"reason":"..."},"subagents":{"enabled":true,"recommended_count":1,"focus":["bounded focus"],"reason":"..."},"memory":{"leaf":"save_memory|dream_inbox|ignore","reason":"..."}}',
     ].join('\n'),
     userPrompt: [
       `User turn:\n${String(text || '').trim()}`,
@@ -293,7 +293,7 @@ function normalizeTaskDecision(raw, fallback) {
       activeForm: String(item?.activeForm || '').trim().slice(0, 160),
       status: 'pending',
     }))
-    .filter((item) => item.content && item.activeForm)
+    .filter((item) => item.content)
     .slice(0, 8);
   return {
     required: fallback.tasks.required || raw?.tasks?.required === true,

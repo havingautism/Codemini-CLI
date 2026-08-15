@@ -9,6 +9,7 @@ import {
   subAgentAllowListMayMutate,
   subAgentRunFailed,
   resolveSubAgentModel,
+  compactSubAgentResultForParent,
   createTurnUsageAccumulator,
 } from '../src/core/chat-runtime.js';
 import {
@@ -17,6 +18,10 @@ import {
   listCreatePlanCards,
   settleRunningCreatePlanCards,
 } from '../codemini-web/client/src/lib/plan-ui-state.js';
+import {
+  buildSubAgentRuntimeNote,
+  buildSubAgentShellRulesPrompt,
+} from '../src/core/shell-profile.js';
 
 test('subagent allow-list always strips run_subagent even if parent asks for it', () => {
   const tools = resolveSubAgentToolAllowList({
@@ -210,6 +215,22 @@ test('parent turn usage accumulator merges parallel subagents exactly once', () 
   );
   assert.equal(usage.peekPending(), null);
   assert.equal(usage.consumeInto(null), null);
+});
+
+test('parent-facing subagent results stay compact and point at the handoff file', () => {
+  const longText = `${'finding\n'.repeat(400)}root cause is missing single-flight`;
+  const compact = compactSubAgentResultForParent({
+    text: longText,
+    summary: 'Duplicate refresh lacks single-flight',
+    handoffPath: '.codemini/handoffs/s/call-1/handoff.md',
+    artifactPaths: ['src/auth/token.ts'],
+  });
+  assert.match(compact, /Duplicate refresh lacks single-flight/);
+  assert.match(compact, /Handoff: \.codemini\/handoffs\/s\/call-1\/handoff\.md/);
+  assert.match(compact, /src\/auth\/token\.ts/);
+  assert.match(compact, /\[truncated\]/);
+  assert.ok(compact.length < 2000);
+  assert.equal(compact.includes(longText), false);
 });
 
 test('parallel run_subagent handlers actually overlap in wall time', async () => {
@@ -463,4 +484,34 @@ test('successful completion reconciles a done card whose plan phase is still exe
   assert.equal(card.status, 'done');
   assert.equal(card.planRun.phase, 'completed');
   assert.equal(card.planRun.steps[0].status, 'done');
+});
+
+test('subagent system shell rules stay isomorphic across roles and allow-lists', () => {
+  const workspaceRoot = 'E:/Git Projects/Codemini-CLI';
+  const explorer = buildSubAgentShellRulesPrompt(['read', 'search_code'], {
+    role: 'explorer',
+    workspaceRoot,
+  });
+  const coder = buildSubAgentShellRulesPrompt(['read', 'edit', 'write', 'run'], {
+    role: 'coder',
+    workspaceRoot,
+  });
+  assert.equal(explorer, coder);
+  assert.doesNotMatch(explorer, /You may ONLY call these tools:/);
+  assert.match(explorer, /You may ONLY call tools present in this request/);
+  assert.doesNotMatch(explorer, /Own implementation/);
+
+  const coderNote = buildSubAgentRuntimeNote(['read', 'edit', 'run'], {
+    role: 'coder',
+    workspaceRoot,
+    shell: 'powershell',
+  });
+  const explorerNote = buildSubAgentRuntimeNote(['read'], {
+    role: 'explorer',
+    workspaceRoot,
+  });
+  assert.match(coderNote, /Allowed tools:/);
+  assert.match(coderNote, /Own implementation/);
+  assert.doesNotMatch(explorerNote, /Own implementation/);
+  assert.notEqual(coderNote, explorerNote);
 });

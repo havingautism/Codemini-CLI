@@ -1,5 +1,7 @@
 import { getGlobalDatabase, transaction } from './sqlite-database.js';
 
+const lastSavedOriginals = new Map();
+
 function messageText(content) {
   if (typeof content === 'string') return content;
   if (!Array.isArray(content)) return String(content || '');
@@ -10,10 +12,40 @@ function parseJson(value, fallback) {
   try { return JSON.parse(value); } catch { return fallback; }
 }
 
-export function saveSessionToSqlite(session) {
+function forgetSessionMessageRefs(sessionId) {
+  lastSavedOriginals.delete(sessionId);
+}
+
+export function sessionMessageWriteStart(sessionId, messages = []) {
+  const prev = lastSavedOriginals.get(sessionId) || [];
+  let start = messages.length;
+  for (let index = 0; index < messages.length; index += 1) {
+    if (prev[index] !== messages[index]) {
+      start = index;
+      break;
+    }
+  }
+  // ponytail: in-place tool meta can land on the last assistant after a later tool result was pushed.
+  // Late tool:end after the next assistant:start would miss; rewrite that assistant too if it starts happening.
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index]?.role === 'assistant') {
+      start = Math.min(start, index);
+      break;
+    }
+  }
+  if (messages.length > 0) start = Math.min(start, messages.length - 1);
+  return start;
+}
+
+export function rememberSessionMessageRefs(sessionId, messages = []) {
+  lastSavedOriginals.set(sessionId, Array.isArray(messages) ? messages.slice() : []);
+}
+
+export function saveSessionToSqlite(session, { writeFrom = 0 } = {}) {
   const db = getGlobalDatabase();
   const { id, createdAt, updatedAt, title, projectDir = '', model = '', mode = '', messages = [], ...state } = session;
   const stateJson = JSON.stringify(state);
+  const from = Math.max(0, Math.min(Number(writeFrom) || 0, messages.length));
   transaction(db, () => {
     db.prepare(`
       INSERT INTO sessions(id, created_at, updated_at, title, project_dir, model, mode, state_json, message_count)
@@ -38,7 +70,7 @@ export function saveSessionToSqlite(session) {
         payload_json = excluded.payload_json
       WHERE session_messages.payload_json <> excluded.payload_json
     `);
-    for (let ordinal = 0; ordinal < messages.length; ordinal += 1) {
+    for (let ordinal = from; ordinal < messages.length; ordinal += 1) {
       const message = messages[ordinal];
       upsert.run(id, ordinal, String(message?.role || ''), messageText(message?.content), JSON.stringify(message));
     }
@@ -96,6 +128,7 @@ export function listSessionsFromSqlite(limit = 30, { includeEmpty = false } = {}
 }
 
 export function deleteSessionFromSqlite(sessionId) {
+  forgetSessionMessageRefs(sessionId);
   const result = getGlobalDatabase().prepare('DELETE FROM sessions WHERE id = ?').run(sessionId);
   getGlobalDatabase().prepare('DELETE FROM runtime_status WHERE session_id = ?').run(sessionId);
   return Number(result.changes || 0) > 0;
@@ -111,7 +144,10 @@ export function pruneSessionsFromSqlite({ maxSessions = 100, retentionDays = 30 
   );
   transaction(db, () => {
     const statement = db.prepare('DELETE FROM sessions WHERE id = ?');
-    for (const row of remove) statement.run(row.id);
+    for (const row of remove) {
+      forgetSessionMessageRefs(row.id);
+      statement.run(row.id);
+    }
   });
   return remove.length;
 }

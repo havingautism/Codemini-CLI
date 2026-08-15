@@ -215,33 +215,45 @@ export function getShellSystemPrompt(value) {
 - Verify with the narrowest relevant check and state anything not verified. Do not broaden the requested scope.`;
 }
 
-export function buildSubAgentShellRulesPrompt(allowedTools = [], { shell, workspaceRoot = process.cwd(), role = '', config = {} } = {}) {
-  const shellContext = resolveShellContext({
+function resolveSubAgentShellContext({ shell, workspaceRoot = process.cwd(), config = {} } = {}) {
+  return resolveShellContext({
     ...config,
     shell: { ...(config?.shell || {}), default: shell },
   }, { cwd: workspaceRoot });
-  const effectiveShell = shellContext.shell;
-  const profile = getShellProfile(effectiveShell);
-  const allowed = uniqueStrings(Array.isArray(allowedTools) ? allowedTools : []);
+}
+
+/**
+ * Stable across roles/allow-lists so sequential subagents share a prompt prefix.
+ * Role and tool-scope notes belong in the user task message.
+ */
+export function buildSubAgentShellRulesPrompt(_allowedTools = [], { shell, workspaceRoot = process.cwd(), config = {} } = {}) {
+  const shellContext = resolveSubAgentShellContext({ shell, workspaceRoot, config });
   const commandToolName = shellContext.commandToolName;
-  const toolList = allowed.map((name) => name === 'run' ? commandToolName : name).join(', ') || 'none';
-  const lines = [
-    `You are Codemini CLI, an AI assistant running as a pipeline sub-agent in a ${profile.label} shell environment.`,
+  return [
+    `You are Codemini CLI, an AI assistant running as a pipeline sub-agent in a ${getShellProfile(shellContext.shell).label} shell environment.`,
     `Working directory: ${path.resolve(workspaceRoot || process.cwd())}`,
     '',
     '# Tool scope (strict)',
-    `You may ONLY call these tools: ${toolList}`,
-    `Other tools fail. Use source tools for code context and ${commandToolName} only for execution when it appears above.`,
+    'You may ONLY call tools present in this request. Other tools fail.',
+    `Use source tools for code context and ${commandToolName} only for execution when it is present.`,
     'Load an allowed deferred tool with tool_search when needed.',
     '',
     '# Doing tasks',
     '- Use the supplied handoff and plan context before exploring.',
-    '- Stop retrying unavailable tools. Finish with the role prompt headings and a concrete Handoff.'
-  ];
+    '- Stop retrying unavailable tools. Finish with a concrete Handoff.'
+  ].join('\n');
+}
+
+export function buildSubAgentRuntimeNote(allowedTools = [], { shell, workspaceRoot = process.cwd(), role = '', config = {} } = {}) {
+  const shellContext = resolveSubAgentShellContext({ shell, workspaceRoot, config });
+  const commandToolName = shellContext.commandToolName;
+  const allowed = uniqueStrings(Array.isArray(allowedTools) ? allowedTools : []);
+  const toolList = allowed.map((name) => name === 'run' ? commandToolName : name).join(', ') || 'none';
+  const lines = [`Allowed tools: ${toolList}`];
   if (['coder', 'refactorer', 'writer'].includes(role)) {
-    lines.push(`- Own implementation, not verification, unless the task explicitly requires ${commandToolName}; otherwise hand off with Verified: deferred.`);
+    lines.push(`Own implementation, not verification, unless the task explicitly requires ${commandToolName}; otherwise hand off with Verified: deferred.`);
   } else if (role === 'tester') {
-    lines.push('- You own verification. Run the narrowest relevant checks when the environment supports them, and say clearly when checks could not run');
+    lines.push('You own verification. Run the narrowest relevant checks when the environment supports them, and say clearly when checks could not run.');
   }
   return lines.join('\n');
 }

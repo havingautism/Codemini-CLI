@@ -5,6 +5,8 @@ import { execSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 import { parseArgs as parseNodeArgs } from "node:util";
+import { promisify } from "node:util";
+import zlib from "node:zlib";
 import { Readable } from "node:stream";
 import sharp from "sharp";
 import fg from "fast-glob";
@@ -534,6 +536,11 @@ try {
   const stat = await fs.stat(distDir);
   if (stat.isDirectory()) CLIENT_DIR = distDir;
 } catch {}
+
+const gzipAsync = promisify(zlib.gzip);
+const FINGERPRINTED_ASSET = /-[A-Za-z0-9]{8,}\.[A-Za-z0-9]+$/;
+const COMPRESSIBLE_EXT = new Set([".html", ".css", ".js", ".mjs", ".json", ".svg", ".md", ".txt"]);
+const staticFileCache = new Map();
 
 const MIME_TYPES = {
   ".html": "text/html; charset=utf-8",
@@ -2030,14 +2037,35 @@ function buildCodeWikiHistoryContext(history = [], replyLanguage) {
   return lines.length > 1 ? lines.join("\n") : "";
 }
 
-async function serveStatic(res, filePath) {
-  const ext = path.extname(filePath);
+export async function serveStatic(res, filePath, req) {
+  const ext = path.extname(filePath).toLowerCase();
   const mime = MIME_TYPES[ext] || "application/octet-stream";
   try {
-    const data = await fs.readFile(filePath);
-    res.writeHead(200, { "Content-Type": mime, "Content-Length": data.length });
-    res.end(data);
+    const stat = await fs.stat(filePath);
+    let entry = staticFileCache.get(filePath);
+    if (!entry || entry.mtimeMs !== stat.mtimeMs) {
+      entry = { mtimeMs: stat.mtimeMs, raw: await fs.readFile(filePath), gzip: null };
+      staticFileCache.set(filePath, entry);
+    }
+    const headers = { "Content-Type": mime };
+    if (ext === ".html") headers["Cache-Control"] = "no-cache";
+    else if (FINGERPRINTED_ASSET.test(path.basename(filePath))) {
+      headers["Cache-Control"] = "public, max-age=31536000, immutable";
+    }
+    const accept = String(req?.headers?.["accept-encoding"] || "");
+    const useGzip = COMPRESSIBLE_EXT.has(ext) && accept.includes("gzip");
+    let body = entry.raw;
+    if (useGzip) {
+      if (!entry.gzip) entry.gzip = await gzipAsync(entry.raw);
+      body = entry.gzip;
+      headers["Content-Encoding"] = "gzip";
+      headers["Vary"] = "Accept-Encoding";
+    }
+    headers["Content-Length"] = body.length;
+    res.writeHead(200, headers);
+    res.end(body);
   } catch {
+    staticFileCache.delete(filePath);
     res.writeHead(404, { "Content-Type": "text/plain" });
     res.end("Not found");
   }
@@ -4340,7 +4368,7 @@ async function main() {
         res.end();
         return;
       }
-      await serveStatic(res, filePath);
+      await serveStatic(res, filePath, req);
       return;
     }
 
@@ -4398,7 +4426,7 @@ async function main() {
         }
         return;
       }
-      await serveStatic(res, reportPath);
+      await serveStatic(res, reportPath, req);
       return;
     }
 

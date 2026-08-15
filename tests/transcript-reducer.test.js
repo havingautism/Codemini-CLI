@@ -374,6 +374,175 @@ test('tasks replaces a restored legacy update_todos card', () => {
   assert.equal(cards[0].arguments.tasks[0].status, 'completed');
 });
 
+function planningSubagentMessage() {
+  return {
+    id: 'msg-subagent',
+    role: 'general',
+    isComplete: false,
+    segments: [
+      {
+        type: 'tools',
+        cards: [
+          {
+            id: 'subagent-1',
+            name: 'run_subagent',
+            status: 'running',
+            arguments: {
+              name: 'Kai',
+              prompt: 'Review backend performance',
+              tasks: [{ content: 'Inspect src/core', status: 'pending' }],
+            },
+            planRun: { phase: 'planning', goal: '', steps: [] },
+          },
+        ],
+      },
+    ],
+  };
+}
+
+function topLevelToolCards(message) {
+  return (message?.segments || [])
+    .filter((segment) => segment.type === 'tools')
+    .flatMap((segment) => segment.cards || []);
+}
+
+function nestedToolCards(message, cardId = 'subagent-1') {
+  const card = topLevelToolCards(message).find((item) => item.id === cardId);
+  return (card?.planRun?.steps || [])
+    .flatMap((step) => step.segments || [])
+    .filter((segment) => segment.type === 'tools')
+    .flatMap((segment) => segment.cards || []);
+}
+
+test('plan:step_start is reduced into session state so later child tools nest', () => {
+  let state = {
+    sessionMessagesById: {
+      'session-subagent': [planningSubagentMessage()],
+    },
+  };
+
+  state = reduceSessionTranscriptEvent(state, {
+    type: 'plan:step_start',
+    sessionId: 'session-subagent',
+    messageId: 'msg-subagent',
+    toolCallId: 'subagent-1',
+    step: 1,
+    total: 1,
+    role: 'Kai',
+    title: 'Review backend performance',
+  });
+  state = reduceSessionTranscriptEvent(state, {
+    type: 'tool:start',
+    sessionId: 'session-subagent',
+    messageId: 'msg-subagent',
+    id: 'todo-1',
+    name: 'tasks',
+    parentToolCallId: 'subagent-1',
+    arguments: { tasks: [{ content: 'Inspect src/core', status: 'in_progress' }] },
+  });
+
+  const message = state.sessionMessagesById['session-subagent'][0];
+  assert.equal(nestedToolCards(message).some((card) => card.id === 'todo-1'), true);
+  assert.equal(topLevelToolCards(message).some((card) => card.id === 'todo-1'), false);
+  assert.equal(topLevelToolCards(message).filter((card) => card.name === 'run_subagent').length, 1);
+});
+
+test('subagent child tools nest before plan:step_start arrives', () => {
+  let state = {
+    sessionMessagesById: {
+      'session-subagent': [planningSubagentMessage()],
+    },
+  };
+
+  state = reduceSessionTranscriptEvent(state, {
+    type: 'tool:start',
+    sessionId: 'session-subagent',
+    messageId: 'msg-subagent',
+    id: 'read-1',
+    name: 'read',
+    parentToolCallId: 'subagent-1',
+  });
+
+  const message = state.sessionMessagesById['session-subagent'][0];
+  assert.equal(nestedToolCards(message).find((card) => card.id === 'read-1')?.name, 'read');
+  assert.equal(topLevelToolCards(message).some((card) => card.id === 'read-1'), false);
+});
+
+test('main-agent sibling tools stay top-level while a subagent is running', () => {
+  let state = {
+    sessionMessagesById: {
+      'session-subagent': [runningSubagentMessage()],
+    },
+  };
+
+  state = reduceSessionTranscriptEvent(state, {
+    type: 'tool:start',
+    sessionId: 'session-subagent',
+    messageId: 'msg-subagent',
+    id: 'list-1',
+    name: 'list',
+  });
+
+  const message = state.sessionMessagesById['session-subagent'][0];
+  assert.equal(topLevelToolCards(message).find((card) => card.id === 'list-1')?.status, 'running');
+  assert.equal(nestedToolCards(message).some((card) => card.id === 'list-1'), false);
+});
+
+test('finishing one run_subagent via plan:step_done does not settle a sibling card', () => {
+  let state = {
+    sessionMessagesById: {
+      'session-subagent': [
+        {
+          id: 'msg-subagent',
+          role: 'general',
+          isComplete: false,
+          segments: [
+            {
+              type: 'tools',
+              cards: [
+                {
+                  id: 'subagent-1',
+                  name: 'run_subagent',
+                  status: 'running',
+                  planRun: {
+                    phase: 'executing',
+                    steps: [{ index: 1, role: 'Kai', status: 'running', toolCallId: 'subagent-1', segments: [] }],
+                  },
+                },
+                {
+                  id: 'subagent-2',
+                  name: 'run_subagent',
+                  status: 'running',
+                  planRun: {
+                    phase: 'executing',
+                    steps: [{ index: 1, role: 'Mira', status: 'running', toolCallId: 'subagent-2', segments: [] }],
+                  },
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    },
+  };
+
+  state = reduceSessionTranscriptEvent(state, {
+    type: 'plan:step_done',
+    sessionId: 'session-subagent',
+    messageId: 'msg-subagent',
+    toolCallId: 'subagent-1',
+    step: 1,
+    total: 1,
+    role: 'Kai',
+    status: 'done',
+  });
+
+  const cards = topLevelToolCards(state.sessionMessagesById['session-subagent'][0]);
+  assert.equal(cards.find((card) => card.id === 'subagent-1')?.status, 'done');
+  assert.equal(cards.find((card) => card.id === 'subagent-2')?.status, 'running');
+  assert.equal(cards.find((card) => card.id === 'subagent-2')?.planRun?.phase, 'executing');
+});
+
 test('late subagent child events stay nested after the parent card completes', () => {
   const message = runningSubagentMessage();
   const subagent = message.segments[0].cards[0];

@@ -1,24 +1,37 @@
+import path from 'node:path';
 import { getProjectDatabase, transaction } from './sqlite-database.js';
+
+const indexCache = new Map();
+
+function cacheKey(projectRoot) {
+  return path.resolve(String(projectRoot || ''));
+}
 
 function parseJson(value, fallback) {
   try { return JSON.parse(value); } catch { return fallback; }
 }
 
 export function loadProjectIndexFromSqlite(projectRoot) {
+  const key = cacheKey(projectRoot);
   const db = getProjectDatabase(projectRoot);
+  const updatedAt = parseJson(
+    db.prepare("SELECT payload_json FROM project_metadata WHERE key = 'updated_at'").get()?.payload_json,
+    ''
+  );
+  const cached = indexCache.get(key);
+  if (cached && cached.updatedAt === updatedAt && updatedAt) return cached.value;
+
   const projectMapRow = db.prepare("SELECT payload_json FROM project_metadata WHERE key = 'project_map'").get();
   if (!projectMapRow) return null;
   const files = db.prepare('SELECT payload_json FROM indexed_files ORDER BY file').all()
     .map((row) => parseJson(row.payload_json, null)).filter(Boolean);
   if (!files.length) return null;
-  const updatedAt = parseJson(
-    db.prepare("SELECT payload_json FROM project_metadata WHERE key = 'updated_at'").get()?.payload_json,
-    ''
-  );
-  return {
+  const value = {
     projectMap: parseJson(projectMapRow.payload_json, null),
     fileIndex: { updatedAt, files }
   };
+  if (updatedAt) indexCache.set(key, { updatedAt, value });
+  return value;
 }
 
 export function saveProjectIndexToSqlite(projectRoot, { projectMap = null, fileIndex }) {
@@ -91,6 +104,7 @@ export function saveProjectIndexToSqlite(projectRoot, { projectMap = null, fileI
     db.exec('DELETE FROM indexed_files WHERE NOT EXISTS (SELECT 1 FROM current_index_files current WHERE current.file = indexed_files.file)');
     db.exec('DELETE FROM current_index_files');
   });
+  indexCache.delete(cacheKey(projectRoot));
 }
 
 export function loadProjectFileIndexFromSqlite(projectRoot) {

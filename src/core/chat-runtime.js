@@ -79,7 +79,7 @@ import {
 import { getReplyLanguage, getReplyLanguageName, stripReplyLanguageDirective, buildSystemPromptWithReplyLanguage, appendStructuredOutputLanguageRule } from './reply-language.js';
 import { composeSystemPrompt } from './system-prompt-composer.js';
 import { buildTurnContextPrefix, buildTurnUserPrompt } from './turn-context.js';
-import { buildSubAgentShellRulesPrompt, resolveShellContext } from './shell-profile.js';
+import { buildSubAgentShellRulesPrompt, buildSubAgentRuntimeNote, resolveShellContext } from './shell-profile.js';
 import { getProjectPlansDir, getProjectSpecsDir, getProjectWorkspaceDir, getSessionsDir, getSkillsDir } from './paths.js';
 import { buildProjectContextSnippet, initializeProjectIndex } from './project-index.js';
 import { queryProjectKnowledgeGraph } from './project-knowledge-graph.js';
@@ -693,6 +693,8 @@ export function buildExecutionModePromptBlock(executionMode, platform = process.
       '- Prefer delegation for non-trivial coding work only when a bounded, independently verifiable chunk benefits from clean context or parallel read-only evidence.',
       '- The parent agent owns decomposition, integration, and the final answer. Workers use the configured Lite/Fast model.',
       `- Pass a one- or two-sentence summary plus concrete task, success criteria, and scope. Give read-only workers explicit tools; include ${commandToolName} only for execution they own.`,
+      '- Do not copy the parent transcript into the worker. Pass a task envelope: goal, file paths, constraints, and known facts.',
+      '- Workers return a short conclusion and a handoff path under .codemini/handoffs/. Read that file only when details are required; do not copy the raw dump forward.',
       '',
       'User input workflow:',
       '- Inspect first. Use request_user_input when preference, scope, target, or constraints materially change the work.',
@@ -808,6 +810,33 @@ export function getSubAgentPersonaPrompt(name = 'Alex') {
   ].join('\n');
 }
 
+export function compactSubAgentResultForParent({
+  text = '',
+  summary = '',
+  handoffPath = '',
+  artifactPaths = [],
+  maxChars = SUB_AGENT_PARENT_RESULT_MAX_CHARS,
+} = {}) {
+  const artifacts = [...new Set(
+    (Array.isArray(artifactPaths) ? artifactPaths : [])
+      .map((item) => String(item || '').trim())
+      .filter(Boolean)
+  )];
+  const body = String(text || '').trim();
+  const pathLine = String(handoffPath || '').trim();
+  const previewBudget = pathLine ? Math.min(maxChars, 1500) : maxChars;
+  const clipped = body.length <= previewBudget
+    ? body
+    : `${body.slice(0, previewBudget).trimEnd()}\n\n[truncated]`;
+  return [
+    'Subagent finished. Use this conclusion; read the handoff file only if you need details.',
+    String(summary || '').trim() ? `Summary: ${String(summary).trim()}` : '',
+    clipped || '(empty)',
+    pathLine ? `Handoff: ${pathLine}` : '',
+    artifacts.length ? `Artifacts:\n${artifacts.map((item) => `- ${item}`).join('\n')}` : '',
+  ].filter(Boolean).join('\n');
+}
+
 /**
  * Role/persona policy ∩ optional parent allow-list, minus forbidden spawn tools.
  * Unknown persona names (e.g. "David") use the coder tool baseline; parent restricts via `tools`.
@@ -888,6 +917,12 @@ const SUB_AGENT_CONTEXT_MAX_MESSAGES = 4;
 const SUB_AGENT_CONTEXT_MAX_CHARS = 1200;
 const SUB_AGENT_EVIDENCE_MAX_ITEMS = 3;
 const SUB_AGENT_HANDOFF_MAX_ITEMS = 6;
+const SUB_AGENT_PARENT_RESULT_MAX_CHARS = 4000;
+const SUBAGENT_STABLE_SKILLS_PROMPT = [
+  'You are a Codemini subagent.',
+  'Do only the assigned task. Do not invent extra scope. Do not spawn other agents.',
+  'Use tools as needed, then return a concise handoff to the parent agent and stop.'
+].join('\n');
 const PROJECT_REQUIREMENTS_SECTION_MARKERS = [
   { key: 'summary', marker: 'REQUIREMENTS_SUMMARY', labels: ['1', 'summary', 'overview', 'project overview', 'executive summary', '项目概述', '项目总览', '概述'] },
   { key: 'architecture', marker: 'REQUIREMENTS_ARCHITECTURE', labels: ['2', 'architecture', 'system architecture', 'system map', '架构', '系统架构图', '系统架构', '架构图'] },
@@ -4975,14 +5010,12 @@ async function askModel({
               artifactPaths: output.artifactPaths || [],
               ...(savedHandoff ? { handoffPath: savedHandoff.path } : {}),
               ...(fileChanges.length ? { fileChanges } : {}),
-              message: [
-                'Subagent finished. Summarize for the user in plain language:',
-                '- what the subagent did',
-                '- what remains or was left unverified',
-                'Do not paste the raw subagent dump unless asked.',
-                '',
-                output.text || '(empty)'
-              ].join('\n')
+              message: compactSubAgentResultForParent({
+                text: output.text,
+                summary,
+                handoffPath: savedHandoff?.path,
+                artifactPaths: output.artifactPaths,
+              }),
             };
             dependencyRegistration.settle(result);
             return result;
@@ -5456,7 +5489,8 @@ export async function runSubAgentTask({
   tools = null,
   onUsage = null,
   projectIsGit = Boolean(config?.runtime?.project_is_git),
-  workspaceRoot = process.cwd()
+  workspaceRoot = process.cwd(),
+  inheritParentContext = false,
 }) {
   const assignedTasks = normalizeTodos(initialTasks);
   const subSession = {
@@ -5467,8 +5501,9 @@ export async function runSubAgentTask({
   const subAgentModel = resolveSubAgentModel(config, model);
   const rolePrompt = getSubAgentRolePrompt(role);
   const cleanContextRole = role === 'reviewer' || role === 'tester';
-  const contextPacket = cleanContextRole ? '' : buildSubAgentContextPacket(parentSession, task || goal);
-  const evidencePacket = cleanContextRole ? '' : buildSubAgentEvidencePacket(parentSession);
+  const copyParent = inheritParentContext === true && !cleanContextRole;
+  const contextPacket = copyParent ? buildSubAgentContextPacket(parentSession, task || goal) : '';
+  const evidencePacket = copyParent ? buildSubAgentEvidencePacket(parentSession) : '';
   const handoffPacket = buildStepArtifactPacket(priorSteps, role);
   const handoffFocusPaths = collectStepArtifacts(priorSteps, role)?.focusPaths || [];
   const focusedTaskNote = buildFocusedTaskNote(role, handoffFocusPaths);
@@ -5481,7 +5516,25 @@ export async function runSubAgentTask({
       ? `Accumulated plan ledger (clean-context; no executor transcripts):\n${planFileContext}`
       : `Accumulated plan file context (results from prior steps):\n${planFileContext}`
     : '';
+  const roleAllowedTools = resolveSubAgentToolAllowList({ role, tools, config });
+  const runtimeNote = buildSubAgentRuntimeNote(roleAllowedTools, {
+    shell: config?.shell?.default,
+    workspaceRoot,
+    role,
+    config,
+  });
+  const handoffCatalogPrompt = buildSubAgentHandoffCatalog(
+    await listSubAgentHandoffs({
+      workspaceRoot,
+      sessionId: parentSession?.id,
+    }).catch(() => []),
+  );
   const scopedTask = [
+    'Role:',
+    rolePrompt,
+    extraRolePrompt,
+    runtimeNote,
+    handoffCatalogPrompt,
     contextPacket,
     goalRequirementPacket,
     evidencePacket,
@@ -5526,7 +5579,6 @@ export async function runSubAgentTask({
       );
     }
   };
-  const roleAllowedTools = resolveSubAgentToolAllowList({ role, tools, config });
   const workspaceHasGit = Boolean(config?.runtime?.project_is_git) || changeTracker?.mode === 'git-oplog';
   const approvalOptions = resolvePlanSubAgentApprovalOptions({
     role,
@@ -5539,20 +5591,13 @@ export async function runSubAgentTask({
   const subShellRulesPrompt = buildSubAgentShellRulesPrompt(roleAllowedTools, {
     shell: config?.shell?.default,
     workspaceRoot,
-    role,
     config
   });
-  const handoffCatalogPrompt = buildSubAgentHandoffCatalog(
-    await listSubAgentHandoffs({
-      workspaceRoot,
-      sessionId: parentSession?.id,
-    }).catch(() => []),
-  );
   if (onSessionActive) onSessionActive(subSession);
   const subSystemPrompt = await composeSystemPrompt({
     shellRulesPrompt: subShellRulesPrompt,
     config,
-    skillsPrompt: [rolePrompt, extraRolePrompt, handoffCatalogPrompt].filter(Boolean).join('\n\n'),
+    skillsPrompt: SUBAGENT_STABLE_SKILLS_PROMPT,
     includeSoul: false,
     includeMemory: false
   });
@@ -8474,12 +8519,6 @@ export async function createChatRuntime({
     const alwaysSkillPrompt = injectAlwaysSkills
       ? buildAlwaysSkillPromptBlock(commands, config, dismissedAlwaysSkills, executionMode)
       : '';
-    const handoffCatalogPrompt = buildSubAgentHandoffCatalog(
-      await listSubAgentHandoffs({
-        workspaceRoot: root,
-        sessionId: currentSession.id,
-      }).catch(() => []),
-    );
     const appendPromptParts = (prompt, parts) => buildSystemPromptWithReplyLanguage(
       [stripReplyLanguageDirective(prompt || ''), ...parts.filter(Boolean)].join('\n\n'),
       config,
@@ -8497,7 +8536,6 @@ export async function createChatRuntime({
       routedSkillIndexPrompt,
       routedSelectedSkillPrompt,
       alwaysSkillPrompt,
-      handoffCatalogPrompt,
     ]);
     const memoryHint = isCodingMode ? '' : buildMemoryRouteHintBlock(memoryRoute);
     const routedSystemPrompt = appendPromptParts(skillPrompt, [

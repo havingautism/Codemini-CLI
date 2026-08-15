@@ -4,11 +4,14 @@ import {
 } from "../../../shared/transcript-segments.js";
 import { stripPlanProgressText } from "../../../shared/plan-progress-text.js";
 import {
+  applyPlanEventToMessage,
   applyStreamEventToPlanRun,
   findActivePlanParentMessage,
   isCreatePlanToolEvent,
-  messageHasActivePlanRun,
+  isLegacyFinalPlanStep,
+  isPlanTranscriptEvent,
   shouldNestStreamEventInPlan,
+  settleCompletedPlanToolCards,
 } from "./plan-ui-state.js";
 
 function planStepNumberFromMessageId(messageId) {
@@ -327,6 +330,17 @@ export function reduceSessionTranscriptEvent(state, event) {
         };
       }
     }
+  } else if (isPlanTranscriptEvent(event.type)) {
+    const nextMessages = messages.map((message) => {
+      if (message.id !== messageId) return message;
+      return applyPlanEventToMessage(message, event);
+    });
+    sessionMessagesById = {
+      ...sessionMessagesById,
+      [sessionId]: isLegacyFinalPlanStep(event)
+        ? settleCompletedPlanToolCards(nextMessages)
+        : nextMessages,
+    };
   } else if (isTranscriptStreamEvent(event.type)) {
     sessionMessagesById = {
       ...sessionMessagesById,

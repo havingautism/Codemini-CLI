@@ -10,7 +10,9 @@ import {
   listSessionsFromSqlite,
   loadSessionFromSqlite,
   pruneSessionsFromSqlite,
-  saveSessionToSqlite
+  rememberSessionMessageRefs,
+  saveSessionToSqlite,
+  sessionMessageWriteStart
 } from './session-sqlite-store.js';
 
 const ALLOWED_ROLES = new Set(['system', 'user', 'assistant', 'tool']);
@@ -674,9 +676,12 @@ export async function loadSession(sessionId) {
 }
 
 export async function saveSession(session, { preserveUpdatedAt = '' } = {}) {
+  const originals = Array.isArray(session?.messages) ? session.messages : [];
+  const writeFrom = sessionMessageWriteStart(session?.id, originals);
   const normalized = sanitizeSession(session);
   normalized.updatedAt = String(preserveUpdatedAt || '').trim() || new Date().toISOString();
-  saveSessionToSqlite(normalized);
+  saveSessionToSqlite(normalized, { writeFrom });
+  rememberSessionMessageRefs(session.id, originals);
 }
 
 export async function resolveSession(sessionId) {

@@ -52,7 +52,6 @@ import {
   settleCompletedPlanToolCards,
   settleRunningCreatePlanCards,
   updatePlanOverviewStepStatus,
-  applyPlanEventToMessage,
   planRunFromTranscript,
 } from "../lib/plan-ui-state.js";
 import {
@@ -2155,10 +2154,6 @@ export function AppProvider({ children }) {
             messages: withoutEmptyPlanRunPlaceholder(
               removeTransientMessages(prev.messages, "waiting-response"),
               activeId,
-            ).map((message) =>
-              parentId && message.id === parentId
-                ? applyPlanEventToMessage(message, event)
-                : message,
             ),
           }));
           break;
@@ -2176,37 +2171,22 @@ export function AppProvider({ children }) {
             planParentMsgRef.current = parentId;
             setActiveMsg(parentId);
           }
-          const isFinalPlanStep =
-            event.type === "plan:step_done" &&
-            (String(event.role || "").toLowerCase() === "summarizer" ||
-              (Number(event.total) > 0 &&
-                Number(event.step) === Number(event.total)));
-          setState((prev) => {
-            const nextMessages = prev.messages.map((message) =>
-              parentId && message.id === parentId
-                ? applyPlanEventToMessage(message, event)
-                : message,
-            );
-            return {
-              ...prev,
-              planSteps: prev.planSteps.map((step, index) =>
-                index === event.step - 1
-                  ? {
-                      ...step,
-                      status:
-                        event.status ||
-                        (event.type === "plan:step_start"
-                          ? "running"
-                          : step.status),
-                      ...(event.model ? { model: event.model } : {}),
-                    }
-                  : step,
-              ),
-              messages: isFinalPlanStep
-                ? settleCompletedPlanToolCards(nextMessages)
-                : nextMessages,
-            };
-          });
+          setState((prev) => ({
+            ...prev,
+            planSteps: prev.planSteps.map((step, index) =>
+              index === event.step - 1
+                ? {
+                    ...step,
+                    status:
+                      event.status ||
+                      (event.type === "plan:step_start"
+                        ? "running"
+                        : step.status),
+                    ...(event.model ? { model: event.model } : {}),
+                  }
+                : step,
+            ),
+          }));
           if (event.type === "plan:step_start") {
             update({
               stage: "tooling",
