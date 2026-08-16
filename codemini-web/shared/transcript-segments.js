@@ -133,7 +133,9 @@ export function appendTextSegment(segments, delta, isStreaming = true) {
   if (!value) return Array.isArray(segments) ? segments : [];
   const current = Array.isArray(segments) ? segments : [];
   const now = new Date().toISOString();
-  const insertAt = indexBeforeTrailingCreatePlan(current);
+  const insertAtPlan = indexBeforeTrailingCreatePlan(current);
+  const insertAt =
+    insertAtPlan >= 0 ? insertAtPlan : indexBeforeTrailingUserInput(current);
   const before = insertAt >= 0 ? current.slice(0, insertAt) : current;
   const after = insertAt >= 0 ? current.slice(insertAt) : [];
   const last = before[before.length - 1];
@@ -339,8 +341,21 @@ function shouldParkPreambleBeforeCreatePlan(card) {
   return true;
 }
 
-/** Keep preamble text/thinking before a trailing create_plan tool card. */
-function indexBeforeTrailingCreatePlan(segments = []) {
+function isRequestUserInputToolCard(card) {
+  const name = String(card?.name || "")
+    .toLowerCase()
+    .replace(/\(.*$/, "");
+  return name === "request_user_input";
+}
+
+function shouldParkPreambleBeforeUserInput(card) {
+  if (!isRequestUserInputToolCard(card)) return false;
+  const status = String(card?.status || "").toLowerCase();
+  return status === "running" || status === "blocked";
+}
+
+/** Keep preamble text/thinking before a trailing pinned tool card. */
+function indexBeforeTrailingPinnedTool(segments = [], matchCard) {
   const current = Array.isArray(segments) ? segments : [];
   for (let index = current.length - 1; index >= 0; index -= 1) {
     const segment = current[index];
@@ -352,11 +367,18 @@ function indexBeforeTrailingCreatePlan(segments = []) {
       continue;
     }
     if (segment?.type !== "tools" || !Array.isArray(segment.cards)) break;
-    const planCard = segment.cards.find(isCreatePlanToolCard);
-    if (!planCard || !shouldParkPreambleBeforeCreatePlan(planCard)) break;
+    if (!segment.cards.some(matchCard)) break;
     return index;
   }
   return -1;
+}
+
+function indexBeforeTrailingCreatePlan(segments = []) {
+  return indexBeforeTrailingPinnedTool(segments, shouldParkPreambleBeforeCreatePlan);
+}
+
+function indexBeforeTrailingUserInput(segments = []) {
+  return indexBeforeTrailingPinnedTool(segments, shouldParkPreambleBeforeUserInput);
 }
 
 function buildToolCardFromEvent(event, options = {}) {

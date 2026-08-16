@@ -70,6 +70,7 @@ export const en = {
   userInputCustomPlaceholder: "Type any response or instruction for Codemini",
   userInputCustomSubmit: "Send response",
   userInputSubmit: "Continue",
+  userInputSkipped: "Skipped",
 
   toolRunning: "Running",
   toolDone: "Done",

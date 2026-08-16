@@ -28,7 +28,6 @@ import {
   resolveSandboxPolicy,
   validateSandboxEscalationArgs,
 } from './sandbox-policy.js';
-import { createMutationGraphPreflight } from './mutation-graph-preflight.js';
 import { fireSkillHookEvent, formatHookContextLines } from './skill-hooks-runtime.js';
 import {
   isCompletionTruncated,
@@ -728,25 +727,6 @@ export async function runAgentLoop({
   ]);
   let lastAutoDreamCheckStep = 0;
 
-  const mutationGraphPreflight = createMutationGraphPreflight({
-    queryGraph: toolRuntime.has('query_project_graph')
-      ? (args) => toolRuntime.execute('query_project_graph', args, {
-          signal,
-          workspaceRoot,
-          orchestrationId: 'mutation-graph-preflight',
-        })
-      : null,
-    onError: (error, context) => {
-      if (!onEvent) return;
-      onEvent({
-        type: 'system_tool:error',
-        id: `project-graph-preflight:${Date.now()}`,
-        name: 'project_graph_preflight',
-        summary: `Graph preflight degraded for ${(context?.files || []).join(', ')}: ${error instanceof Error ? error.message : String(error)}`,
-      });
-    },
-  });
-
   let stopHookBlockCount = 0;
   async function fireStopHooks(lastAssistantMessage = '') {
     if (!skillHooksSession) return { denied: false };
@@ -957,15 +937,6 @@ export async function runAgentLoop({
         continue;
       }
       const isSandboxEscalation = Boolean(sandboxEscalation);
-      const graphPreflight = await mutationGraphPreflight.inspect({ toolName, args, step });
-      if (graphPreflight?.required) {
-        approvalResults.set(call.id, {
-          approved: false,
-          args: approvalArgs,
-          graphPreflightContent: clipToolResult(graphPreflight.content, toolResultMaxChars),
-        });
-        continue;
-      }
       const shellApproval = isShellToolName(toolName)
         ? resolveShellApprovalStrategy({
             command: args?.command || '',
@@ -1161,24 +1132,6 @@ export async function runAgentLoop({
           durationMs: 0,
           summary: reason,
           status: 'error',
-        };
-      }
-
-      if (approvalState.graphPreflightContent) {
-        const summary = 'Project graph impact review required before mutation';
-        if (onEvent) {
-          onEvent({
-            type: 'tool:blocked', name: toolName, displayName, id: call.id,
-            arguments: effectiveArgs, summary,
-          });
-        }
-        return {
-          callId: call.id,
-          content: approvalState.graphPreflightContent,
-          blocked: true,
-          durationMs: 0,
-          summary,
-          status: 'blocked',
         };
       }
 
@@ -1419,12 +1372,6 @@ export async function runAgentLoop({
       }
 
       const durationMs = Date.now() - startedAt;
-      mutationGraphPreflight.record({
-        toolName,
-        args: effectiveArgs,
-        result: toolResult,
-        step,
-      });
       const runFailureMessage = resolveRunToolFailure(toolName, toolResult);
       if (runFailureMessage) {
         const summary = trimInline(runFailureMessage, 120);

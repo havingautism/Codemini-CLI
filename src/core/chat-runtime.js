@@ -686,7 +686,7 @@ export function buildExecutionModePromptBlock(executionMode, platform = process.
       'Implement only when requested. Preserve public contracts, project conventions, unrelated user changes, and platform compatibility.',
       '',
       'Workflow: inspect relevant source and callers → clarify only material choices → make the smallest complete change → run focused verification → inspect the diff.',
-      'The injected <coding_harness> route is authoritative for memory capability and mutation preflight, and directive for tasks, skills, clarification, and bounded delegation.',
+      'The injected <coding_harness> route is authoritative for memory capability, and directive for tasks, skills, clarification, and bounded delegation.',
       'For bugs, establish a failing signal and fix the shared root cause. Never claim completion without fresh evidence.',
       '',
       'Subagent tool (run_subagent):',

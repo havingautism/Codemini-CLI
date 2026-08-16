@@ -30,6 +30,12 @@ function isTodoCard(card) {
   );
 }
 
+function isUserInputCard(card) {
+  return String(card?.name || "")
+    .toLowerCase()
+    .replace(/\(.*$/, "") === "request_user_input";
+}
+
 export function extractLatestTodoFromPlanSteps(steps = [], fallbackCard = null) {
   let todoCard = fallbackCard;
   const nextSteps = (Array.isArray(steps) ? steps : []).map((step) => {
@@ -126,6 +132,56 @@ function isCreatePlanGroup(group) {
   return false;
 }
 
+function extractUserInputFromGroup(group) {
+  if (!group || typeof group !== "object") {
+    return { userInputCards: [], rest: null };
+  }
+
+  if (group.type === "tools") {
+    const cards = Array.isArray(group.cards) ? group.cards : [];
+    const userInputCards = cards.filter(isUserInputCard);
+    const otherCards = cards.filter((card) => !isUserInputCard(card));
+    return {
+      userInputCards,
+      rest: otherCards.length ? { ...group, cards: otherCards } : null,
+    };
+  }
+
+  if (group.type === "process") {
+    const userInputCards = [];
+    const restGroups = [];
+    for (const inner of Array.isArray(group.groups) ? group.groups : []) {
+      const extracted = extractUserInputFromGroup(inner);
+      userInputCards.push(...extracted.userInputCards);
+      if (extracted.rest) restGroups.push(extracted.rest);
+    }
+    return {
+      userInputCards,
+      rest: restGroups.length ? { ...group, groups: restGroups } : null,
+    };
+  }
+
+  return { userInputCards: [], rest: group };
+}
+
+function isUserInputGroup(group) {
+  if (group?.type === "tools") {
+    return (group.cards || []).some(isUserInputCard);
+  }
+  if (group?.type === "process") {
+    return extractUserInputFromGroup(group).userInputCards.length > 0;
+  }
+  return false;
+}
+
+function peelTrailingTextGroups(pending) {
+  const textGroups = [];
+  while (pending.at(-1)?.type === "text") {
+    textGroups.unshift(pending.pop());
+  }
+  return textGroups;
+}
+
 /** Fold process groups; keep create_plan cards in chronological order before the final answer. */
 export function layoutAnswerProcessWithPlans(groups = [], fallbackStartedAt = null) {
   const todoCards = [];
@@ -174,6 +230,19 @@ export function layoutAnswerProcessWithPlans(groups = [], fallbackStartedAt = nu
       const { planCards, rest } = extractCreatePlanFromGroup(group);
       if (rest) pendingProcess.push(rest);
       pushPlanCards(planCards);
+      continue;
+    }
+    if (isUserInputGroup(group)) {
+      const { userInputCards, rest } = extractUserInputFromGroup(group);
+      const precedingText = peelTrailingTextGroups(pendingProcess);
+      if (rest) pendingProcess.push(rest);
+      flushProcess();
+      for (const textGroup of precedingText) {
+        items.push({ type: "group", group: textGroup });
+      }
+      if (userInputCards.length) {
+        items.push({ type: "group", group: { type: "tools", cards: userInputCards } });
+      }
       continue;
     }
     pendingProcess.push(group);

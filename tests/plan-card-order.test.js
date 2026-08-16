@@ -25,6 +25,81 @@ test('appendTextSegment inserts before trailing create_plan card', () => {
   assert.equal(segments[2].cards[0].name, 'create_plan');
 });
 
+test('appendTextSegment parks preamble before trailing request_user_input', () => {
+  let segments = [
+    {
+      type: 'tools',
+      cards: [{ id: 'q1', name: 'request_user_input', status: 'running' }],
+    },
+  ];
+  segments = appendThinkingSegment(segments, 'thinking first');
+  segments = appendTextSegment(segments, '两个方案：最小改动 / 嵌套树');
+  assert.equal(segments[0].type, 'text');
+  assert.match(segments[0].text, /两个方案/);
+  assert.equal(segments[1].type, 'tools');
+  assert.equal(segments[1].cards[0].name, 'request_user_input');
+  assert.equal(segments[2].type, 'thinking');
+});
+
+test('layout keeps request_user_input and the text above it outside the fold', () => {
+  const layout = layoutAnswerProcessWithPlans([
+    { type: 'thinking', text: 'hmm' },
+    { type: 'text', text: '两个方案：最小改动 / 嵌套树' },
+    {
+      type: 'tools',
+      cards: [{ id: 'q1', name: 'request_user_input', status: 'done' }],
+    },
+    { type: 'text', text: '好的，按最小改动做' },
+  ]);
+  assert.equal(layout.hasFold, true);
+  assert.equal(layout.items[0].type, 'fold');
+  assert.equal(layout.items[0].groups[0].type, 'thinking');
+  assert.equal(layout.items[1].type, 'group');
+  assert.equal(layout.items[1].group.type, 'text');
+  assert.match(layout.items[1].group.text, /两个方案/);
+  assert.equal(layout.items[2].type, 'group');
+  assert.equal(layout.items[2].group.cards[0].name, 'request_user_input');
+  assert.equal(layout.items[3].group.type, 'text');
+  assert.match(layout.items[3].group.text, /最小改动做/);
+});
+
+test('layout hoists request_user_input out of a nested process fold', () => {
+  const layout = layoutAnswerProcessWithPlans([
+    { type: 'text', text: '请确认分类方案' },
+    {
+      type: 'process',
+      groups: [
+        { type: 'thinking', text: 'asking' },
+        {
+          type: 'tools',
+          cards: [
+            { id: 'r1', name: 'read', status: 'done' },
+            { id: 'q1', name: 'request_user_input', status: 'done' },
+          ],
+        },
+      ],
+    },
+    { type: 'text', text: 'done' },
+  ]);
+
+  assert.equal(layout.hasFold, true);
+  const foldTools = layout.items
+    .filter((item) => item.type === 'fold')
+    .flatMap((item) => item.groups || [])
+    .flatMap((group) => (group.type === 'process' ? group.groups : [group]))
+    .filter((group) => group.type === 'tools')
+    .flatMap((group) => group.cards || []);
+  assert.equal(foldTools.some((card) => card.name === 'request_user_input'), false);
+  assert.equal(foldTools.some((card) => card.name === 'read'), true);
+
+  const visible = layout.items.filter((item) => item.type === 'group');
+  assert.equal(visible[0].group.type, 'text');
+  assert.match(visible[0].group.text, /分类方案/);
+  assert.equal(visible[1].group.cards[0].name, 'request_user_input');
+  assert.equal(visible[2].group.type, 'text');
+});
+
+
 test('tool_call_delta then text keeps preamble before create_plan', () => {
   let message = { id: 'm1', segments: [] };
   message = applyStreamEventToMessage(message, {

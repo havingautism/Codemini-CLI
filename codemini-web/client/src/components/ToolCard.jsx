@@ -18,13 +18,21 @@ import {
 import { LinearRing } from "@/components/ui/spinner";
 import { FileTypeIcon } from "@/components/FileTypeIcon.jsx";
 import { TodoList } from "@/components/TodoList.jsx";
+import {
+  requestFromToolCard,
+  resultFromToolCard,
+  UserInputCard,
+} from "@/components/UserInputDialog.jsx";
+import { useApp } from "@/context/app-context.jsx";
 import { openWorkspaceFile } from "@/hooks/use-api.js";
 import { cn } from "@/lib/utils";
+import { interactiveRequestForSession } from "@/lib/session-ui-state.js";
 import { isShellToolName } from "@/lib/tool-names.js";
 import {
   extractToolName,
   getFileToolMeta,
   getTodoToolItems,
+  isRequestUserInputCard,
   resolveToolHeaderParts,
 } from "@/lib/tool-card-display.js";
 import { t } from "../../i18n/index.js";
@@ -235,6 +243,26 @@ function BackupNotice({ meta }) {
   );
 }
 
+function UserInputToolCard({ card }) {
+  const { state, actions } = useApp();
+  const pending = interactiveRequestForSession(state, "userInput");
+  const result = resultFromToolCard(card);
+  const live = Boolean(pending) && !result;
+  const request = live ? pending : requestFromToolCard(card);
+  return (
+    <UserInputCard
+      request={request}
+      result={live ? null : result}
+      onRespond={
+        live
+          ? (id, response) =>
+              actions.respondToUserInput(id, response, pending?.sessionId)
+          : undefined
+      }
+    />
+  );
+}
+
 function TodoToolCard({ todos }) {
   const completedCount = todos.filter((todo) => todo.status === "completed").length;
   const progress = todos.length > 0 ? (completedCount / todos.length) * 100 : 0;
@@ -315,6 +343,9 @@ export function ToolCard({ card }) {
     : [];
   if (isTasksTool) {
     return <TodoToolCard card={card} todos={todoItems} />;
+  }
+  if (isRequestUserInputCard(card)) {
+    return <UserInputToolCard card={card} />;
   }
   const fileMeta = getFileToolMeta(
     toolName,

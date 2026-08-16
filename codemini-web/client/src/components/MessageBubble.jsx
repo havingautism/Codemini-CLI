@@ -3,6 +3,7 @@ import { ToolCard } from "./ToolCard";
 import { PlanToolCardGroup } from "./PlanToolCard.jsx";
 import { UsageBadge } from "./UsageBadge.jsx";
 import { isCreatePlanCard } from "@/lib/plan-ui-state.js";
+import { isRequestUserInputCard } from "@/lib/tool-card-display.js";
 import { StreamdownRenderer } from "./StreamdownRenderer";
 import { EmbedBanner } from "./EmbedBanner.jsx";
 import {
@@ -538,7 +539,10 @@ function ToolGroup({ cards }) {
   const [expanded, setExpanded] = useState(false);
   const runtimeMode = useRuntimeMode();
   const planCards = cards.filter(isCreatePlanCard);
-  const otherCards = cards.filter((card) => !isCreatePlanCard(card));
+  const userInputCards = cards.filter(isRequestUserInputCard);
+  const otherCards = cards.filter(
+    (card) => !isCreatePlanCard(card) && !isRequestUserInputCard(card),
+  );
   const total = otherCards.length;
   const hasRunningTool = otherCards.some((card) => card.status === "running");
   let groupStatus = "done";
@@ -558,12 +562,19 @@ function ToolGroup({ cards }) {
   return (
     <div className={cn("my-2", PROCESS_META_CLASS)}>
       <PlanToolCardGroup cards={planCards} />
+      {userInputCards.length > 0 && (
+        <div className={cn("flex flex-col gap-2", planCards.length > 0 && "mt-4")}>
+          {userInputCards.map((card) => (
+            <ToolCard key={card.id} card={card} />
+          ))}
+        </div>
+      )}
       {total > 0 && shouldUseSummaryHeader && (
         <button
           type="button"
           className={cn(
             COLLAPSE_ROW_CLASS,
-            planCards.length > 0 && "mt-4",
+            (planCards.length > 0 || userInputCards.length > 0) && "mt-4",
           )}
           onClick={() => setExpanded((value) => !value)}
           aria-expanded={expanded}
@@ -582,6 +593,7 @@ function ToolGroup({ cards }) {
           className={cn(
             "flex flex-col gap-2",
             planCards.length > 0 && !shouldUseSummaryHeader && "mt-4",
+            userInputCards.length > 0 && !shouldUseSummaryHeader && "mt-2",
             shouldUseSummaryHeader &&
               "ml-4.5 mt-2 border-l border-(--border-default) pl-3",
           )}
@@ -854,12 +866,14 @@ function SkillActivityRow({ badge }) {
 function ProcessGroup({ group }) {
   const [expanded, setExpanded] = useState(false);
   const planCards = [];
+  const userInputCards = [];
   const nestedGroups = (group.groups || [])
     .map((item) => {
       if (item?.type !== "tools" || !Array.isArray(item.cards)) return item;
       const kept = [];
       for (const card of item.cards) {
         if (isCreatePlanCard(card)) planCards.push(card);
+        else if (isRequestUserInputCard(card)) userInputCards.push(card);
         else kept.push(card);
       }
       return kept.length ? { ...item, cards: kept } : null;
@@ -896,11 +910,18 @@ function ProcessGroup({ group }) {
           .replace("{{thoughts}}", thoughtCount)
           .replace("{{tools}}", toolCount);
 
-  if (!planCards.length && !nestedGroups.length) return null;
+  if (!planCards.length && !userInputCards.length && !nestedGroups.length) return null;
 
   return (
     <div className={cn("my-2", PROCESS_META_CLASS)}>
       <PlanToolCardGroup cards={planCards} />
+      {userInputCards.length > 0 && (
+        <div className={cn("flex flex-col gap-2", planCards.length > 0 && "mt-4")}>
+          {userInputCards.map((card) => (
+            <ToolCard key={card.id} card={card} />
+          ))}
+        </div>
+      )}
       {nestedGroups.length > 0 && (
         <>
           <button
@@ -908,7 +929,7 @@ function ProcessGroup({ group }) {
             onClick={() => setExpanded((value) => !value)}
             className={cn(
               COLLAPSE_ROW_CLASS,
-              planCards.length > 0 && "mt-4",
+              (planCards.length > 0 || userInputCards.length > 0) && "mt-4",
             )}
             aria-expanded={expanded}
           >

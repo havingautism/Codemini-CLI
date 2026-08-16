@@ -17,7 +17,6 @@ import { ChatPanel } from "@/components/ChatPanel.jsx";
 import { InputBar } from "@/components/InputBar.jsx";
 import { StatusBar } from "@/components/StatusBar.jsx";
 import { ApprovalDialog } from "@/components/ApprovalDialog.jsx";
-import { UserInputDialog } from "@/components/UserInputDialog.jsx";
 import { ReflectApprovalDialog } from "@/components/ReflectApprovalDialog.jsx";
 import { DreamDialog } from "@/components/DreamDialog.jsx";
 import { SpecApprovalDialog } from "@/components/SpecApprovalDialog.jsx";
@@ -191,7 +190,6 @@ class ErrorBoundary extends Component {
 function Shell() {
   const { state, actions } = useApp();
   const approvalRequest = interactiveRequestForSession(state, "approval");
-  const userInputRequest = interactiveRequestForSession(state, "userInput");
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
     if (typeof window === "undefined") return false;
@@ -647,14 +645,6 @@ function Shell() {
         open={!!approvalRequest}
         onDecision={(id, actionName, payload) =>
           actions.approve(id, actionName, approvalRequest?.sessionId, payload)
-        }
-      />
-
-      <UserInputDialog
-        request={userInputRequest}
-        open={!!userInputRequest}
-        onRespond={(id, response) =>
-          actions.respondToUserInput(id, response, userInputRequest?.sessionId)
         }
       />
 

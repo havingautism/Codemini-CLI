@@ -10,6 +10,10 @@ export function extractToolName(name) {
   return match ? match[1] : name;
 }
 
+export function isRequestUserInputCard(card) {
+  return extractToolName(card?.name) === "request_user_input";
+}
+
 export function parseMaybeJson(value) {
   if (!value) return null;
   if (typeof value === "object") return value;

@@ -72,6 +72,7 @@ export const zh = {
   userInputCustomPlaceholder: "输入任意回答或给 Codemini 的补充指令",
   userInputCustomSubmit: "发送回答",
   userInputSubmit: "继续",
+  userInputSkipped: "已跳过",
 
   // Tool
   toolRunning: "运行中",
