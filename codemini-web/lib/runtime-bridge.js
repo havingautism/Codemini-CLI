@@ -8,6 +8,7 @@ import {
   finishThinkingSegments,
   finishStreamingTextSegments,
   normalizeUsage,
+  settleIncompleteTranscriptMessage,
   updateSkillInSegments,
 } from '../shared/transcript-segments.js';
 import { buildHookSegmentEvent } from '../shared/hook-ui.js';
@@ -403,6 +404,7 @@ export class RuntimeBridge {
     if (!nextSessionId || nextSessionId === previousSessionId) return;
     if (this.#forkHandledFor === nextSessionId) return;
     this.#forkHandledFor = nextSessionId;
+    this.#settleIncompleteUiMessages('aborted');
     this.#flushUiTranscriptTo(previousSessionId);
     this.#uiMessages = [];
     this.#uiActiveMsgId = null;
@@ -634,26 +636,35 @@ export class RuntimeBridge {
     this.#uiMessages = this.#uiMessages.filter((message) => message.transientKey !== 'waiting-response');
   }
 
+  #resetActiveAssistantTarget() {
+    this.#uiActiveMsgId = null;
+    this.#uiPlanParentMsgId = null;
+    this.#uiPlanStepIds = new Map();
+  }
+
+  #activeAssistantReusable() {
+    const active = this.#uiMessages.find((message) => message.id === this.#uiActiveMsgId);
+    return Boolean(active) && active.manualAborted !== true;
+  }
+
+  #settleIncompleteUiMessages(reason = 'aborted') {
+    this.#uiMessages = this.#uiMessages.map((message) =>
+      settleRunningCreatePlanCards(
+        settleIncompleteTranscriptMessage(message, { reason }),
+        { reason },
+      ),
+    );
+    this.#flushUiTranscriptTo(this.#uiTranscriptSessionId || this.#sessionId);
+  }
+
   #markUiMessageManualAborted() {
-    const mark = (id) => {
-      if (!id) return false;
-      return this.#updateUiMessage(id, (message) => ({
-        ...message,
-        manualAborted: true,
-        isComplete: true
-      }));
-    };
-    if (mark(this.#uiActiveMsgId)) return this.#uiActiveMsgId;
-    const lastAssistant = [...this.#uiMessages]
-      .reverse()
-      .find((message) =>
-        message?.role !== 'you' &&
-        message?.role !== 'divider' &&
-        message?.role !== 'system' &&
-        !message?.transientKey
-      );
-    if (lastAssistant?.id) mark(lastAssistant.id);
-    return lastAssistant?.id || '';
+    this.#settleIncompleteUiMessages('aborted');
+    return this.#uiActiveMsgId || [...this.#uiMessages].reverse().find((message) =>
+      message?.role !== 'you' &&
+      message?.role !== 'divider' &&
+      message?.role !== 'system' &&
+      !message?.transientKey
+    )?.id || '';
   }
 
   #addUiRunStatusMessage(text, { status = 'error', retryPrompt = '' } = {}) {
@@ -711,7 +722,7 @@ export class RuntimeBridge {
         const pendingSkillSegments = this.#uiPendingSkillSegments;
         this.#uiPendingSkillBadges = [];
         this.#uiPendingSkillSegments = [];
-        if (!activeId) {
+        if (!this.#activeAssistantReusable()) {
           this.#uiActiveMsgId = this.#addUiMessage({
             role: 'general',
             text: '',
@@ -723,7 +734,7 @@ export class RuntimeBridge {
             isComplete: false
           });
         } else {
-          this.#updateUiMessage(activeId, (message) => ({
+          this.#updateUiMessage(this.#uiActiveMsgId, (message) => ({
             ...message,
             isComplete: false,
             ...(event.sdkProvider ? { sdkProvider: event.sdkProvider } : {}),
@@ -1045,6 +1056,7 @@ export class RuntimeBridge {
   handleSubmit(line, options = {}) {
     if (this.#busy) return { error: true, message: 'A request is already in progress' };
     this.#ensureUiTranscriptLoaded();
+    this.#resetActiveAssistantTarget();
     const trimmed = String(line || '').trim();
     if (!options?.readOnlyCodeWiki && trimmed && !isWorkflowControlLine(trimmed, this.getState())) {
       this.#addUiMessage({
@@ -1066,13 +1078,17 @@ export class RuntimeBridge {
     }, options).then(async (result) => {
       if (!this.#isSubmitActive(submitToken)) return;
       if (this.#uiActiveMsgId) {
-        this.#updateUiMessage(this.#uiActiveMsgId, (message) => ({
-          ...message,
-          isComplete: true,
-          segments: finishStreamingTextSegments(
-            finishThinkingSegments(message.segments)
-          )
-        }));
+        this.#updateUiMessage(this.#uiActiveMsgId, (message) =>
+          settleIncompleteTranscriptMessage(
+            {
+              ...message,
+              segments: finishStreamingTextSegments(
+                finishThinkingSegments(message.segments)
+              )
+            },
+            { reason: result?.aborted ? 'aborted' : 'completed' },
+          ),
+        );
       }
       this.#uiActiveMsgId = null;
       this.#uiPlanStepIds = new Map();
@@ -1125,6 +1141,7 @@ export class RuntimeBridge {
       return { accepted: false, error: true, code: 'BUSY', message: 'A request is already in progress' };
     }
     this.#ensureUiTranscriptLoaded();
+    this.#resetActiveAssistantTarget();
     const selectedSkills = [...new Set(
       (Array.isArray(selectedSkillNames) ? selectedSkillNames : [])
         .map((name) => String(name || '').trim())
@@ -1157,13 +1174,17 @@ export class RuntimeBridge {
     Promise.resolve().then(() => run(onAgentEvent)).then((result) => {
       if (!this.#isSubmitActive(submitToken)) return;
       if (this.#uiActiveMsgId) {
-        this.#updateUiMessage(this.#uiActiveMsgId, (message) => ({
-          ...message,
-          isComplete: true,
-          segments: finishStreamingTextSegments(
-            finishThinkingSegments(message.segments)
-          )
-        }));
+        this.#updateUiMessage(this.#uiActiveMsgId, (message) =>
+          settleIncompleteTranscriptMessage(
+            {
+              ...message,
+              segments: finishStreamingTextSegments(
+                finishThinkingSegments(message.segments)
+              )
+            },
+            { reason: result?.aborted || result?.type === 'aborted' ? 'aborted' : 'completed' },
+          ),
+        );
       }
       this.#uiActiveMsgId = null;
       this.#uiPlanStepIds = new Map();
@@ -1375,7 +1396,7 @@ export class RuntimeBridge {
     return this.#busy;
   }
 
-  async handleAbort() {
+  async handleAbort(options = {}) {
     const wasBusy = this.#busy;
     const originSessionId = this.#sessionId;
     const operationId = this.#activeStructuredOperationId;
@@ -1383,8 +1404,10 @@ export class RuntimeBridge {
     this.#userInput.resolveAll({ status: 'skipped', answers: {} });
     this.#approval.resolveAll({ approved: false, reason: 'aborted' });
     if (wasBusy) this.#invalidateSubmit();
-    const aborted = this.#runtime.abort();
+    const aborted = this.#runtime.abort(options);
     if (wasBusy) {
+      this.#settleIncompleteUiMessages('aborted');
+      this.#resetActiveAssistantTarget();
       if (!this.#runStatusRecorded) {
         this.#publish({
           type: 'submit:done',

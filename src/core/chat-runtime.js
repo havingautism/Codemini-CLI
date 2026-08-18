@@ -4355,6 +4355,11 @@ function stampedMessage(role, content, extra = {}) {
   };
 }
 
+function abortContinuesInPlace(signal) {
+  const reason = signal?.reason;
+  return Boolean(reason) && typeof reason === 'object' && reason.continueInPlace === true;
+}
+
 function getPendingSpecState(session) {
   const specState = normalizeSpecState(session?.specState);
   if (specState?.status === 'pending_approval') return specState;
@@ -5365,8 +5370,8 @@ async function askModel({
   };
 
   // Freeze the aborted turn on the current session, then fork a continuation
-  // session that only keeps completed history. The next prompt continues there
-  // instead of appending under the stopped turn.
+  // session that only keeps completed history. Send-now / continue-in-place
+  // skips the fork so the next prompt appends below the stopped turn.
   const discardAbortedTurnMessages = async () => {
     const addedCount = session.messages.length - turnStartMessageCount;
     if (addedCount <= 0) return false;
@@ -5422,6 +5427,38 @@ async function askModel({
       });
     }
     return continuation;
+  };
+
+  const settleAbortedTurnInPlace = async () => {
+    const turnMessages = session.messages.slice(turnStartMessageCount);
+    const resultIds = new Set(
+      turnMessages
+        .filter((message) => message?.role === 'tool' && message.tool_call_id)
+        .map((message) => String(message.tool_call_id)),
+    );
+    for (const message of turnMessages) {
+      if (message?.role !== 'assistant' || !Array.isArray(message.tool_calls)) continue;
+      for (const call of message.tool_calls) {
+        const id = String(call?.id || '');
+        if (!id || resultIds.has(id)) continue;
+        session.messages.push(stampedMessage('tool', 'Aborted by user.', {
+          tool_call_id: id,
+          tool_status: 'aborted'
+        }));
+        resultIds.add(id);
+        if (call && typeof call === 'object') call.status = 'aborted';
+      }
+    }
+    if (persistSession) {
+      session.model = model || config.model.name;
+      session.mode = executionMode || config.execution?.mode || 'normal';
+      await saveSession(session).catch(() => {});
+    }
+  };
+
+  const handleAbortAftermath = async () => {
+    if (abortContinuesInPlace(signal)) await settleAbortedTurnInPlace();
+    else await forkContinuationAfterAbort();
   };
 
   const sessionLenBeforeLoop = session.messages.length;
@@ -5532,12 +5569,12 @@ async function askModel({
     });
   } catch (error) {
     if (signal?.aborted || error?.name === 'AbortError') {
-      await forkContinuationAfterAbort();
+      await handleAbortAftermath();
     }
     throw error;
   }
   if (signal?.aborted || loopResult?.aborted) {
-    await forkContinuationAfterAbort();
+    await handleAbortAftermath();
     return { text: '', aborted: true };
   }
 
@@ -8844,9 +8881,13 @@ export async function createChatRuntime({
     submitCodeWiki: (line, onAgentEvent, options = {}) => executeSubmission(line, onAgentEvent, options),
     dispatchAction,
     getSession: () => currentSession,
-    abort: () => {
+    abort: (options = {}) => {
       if (activeAbortController && !activeAbortController.signal.aborted) {
-        activeAbortController.abort();
+        if (options?.continueInPlace === true) {
+          activeAbortController.abort({ continueInPlace: true });
+        } else {
+          activeAbortController.abort();
+        }
         return true;
       }
       return false;

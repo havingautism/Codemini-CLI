@@ -237,21 +237,33 @@ export function reduceSessionTranscriptEvent(state, event) {
   const activePlanParent = findActivePlanParentMessage(messages);
   const messageId = (() => {
     // While a plan card is running, keep nested agent streams on that parent.
-    if (activePlanParent?.id && !isCreatePlanToolEvent(event)) {
+    if (
+      activePlanParent?.id &&
+      activePlanParent.manualAborted !== true &&
+      !isCreatePlanToolEvent(event)
+    ) {
       return activePlanParent.id;
     }
-    if (event.messageId || event.operationId) {
-      return event.messageId || event.operationId;
+    const requested = String(event.messageId || event.operationId || "").trim();
+    const requestedMessage = requested
+      ? messages.find((message) => message?.id === requested)
+      : null;
+    if (requested && requestedMessage?.manualAborted !== true) {
+      return requested;
     }
     if (event.type !== "assistant:start") {
       const liveMessage = [...messages]
         .reverse()
-        .find((message) => message && message.isComplete !== true);
+        .find(
+          (message) =>
+            message &&
+            message.isComplete !== true &&
+            message.manualAborted !== true &&
+            !message.transientKey,
+        );
       if (liveMessage?.id) return liveMessage.id;
-      const latestMessage = messages.at(-1);
-      if (latestMessage?.id) return latestMessage.id;
     }
-    return `session-stream-${sessionId}`;
+    return `session-stream-${sessionId}-${Date.now()}`;
   })();
   if (event.type === "assistant:start") {
     // Plan-internal assistant turns must not spawn sibling bubbles.

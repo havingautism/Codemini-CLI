@@ -306,3 +306,46 @@ test('manual stop after a completed turn copies prior history into the new sessi
     await runtime.dispose?.();
   });
 });
+
+test('continue-in-place abort keeps the stopped turn and appends the next prompt below it', async (t) => {
+  await withGlobalDir(async (dir) => {
+    const { server, bodies, port } = await startGateway();
+    t.after(() => {
+      server.closeAllConnections?.();
+      server.close();
+    });
+
+    const session = await createSession(dir);
+    const runtime = await createChatRuntime({
+      session,
+      config: baseConfig(port),
+      model: 'test-model',
+      systemPrompt: 'You are a test.',
+      workspaceRoot: dir
+    });
+
+    const turnA = runtime.submitMessage({ text: 'first question' });
+    await delay(150);
+    assert.equal(runtime.abort({ continueInPlace: true }), true);
+    await assert.rejects(turnA, (error) => error?.name === 'AbortError');
+    await delay(50);
+
+    assert.equal(runtime.getCurrentSessionId(), session.id);
+    assert.equal(session.messages[0]?.role, 'user');
+    assert.equal(session.messages[0]?.content, 'first question');
+    assert.notEqual(session.messages[0]?.local_only, true);
+
+    const turnB = await runtime.submitMessage({ text: 'jumped question' });
+    assert.equal(turnB.type, 'assistant');
+    assert.equal(runtime.getCurrentSessionId(), session.id);
+    assert.ok(session.messages.some((message) => message?.role === 'user' && message.content === 'first question'));
+    assert.ok(session.messages.some((message) => message?.role === 'user' && message.content === 'jumped question'));
+
+    const jumpedBody = bodies.find((body) => Array.isArray(body?.messages)
+      && body.messages.some((message) => message?.role === 'user'
+        && String(message.content || '').includes('jumped question')));
+    assert.ok(jumpedBody, 'gateway received the jumped prompt on the same session');
+
+    await runtime.dispose?.();
+  });
+});

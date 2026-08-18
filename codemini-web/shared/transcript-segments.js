@@ -265,6 +265,133 @@ export function finishStreamingTextSegments(segments) {
   );
 }
 
+const TERMINAL_TOOL_STATUSES = new Set([
+  "done",
+  "failed",
+  "error",
+  "blocked",
+  "aborted",
+  "completed",
+  "skipped",
+]);
+
+function isOpenWorkStatus(status) {
+  const value = String(status || "").toLowerCase();
+  return !value || !TERMINAL_TOOL_STATUSES.has(value);
+}
+
+function isPlanLikeToolCard(card) {
+  const name = String(card?.name || "").toLowerCase();
+  return name === "create_plan" || name === "run_subagent";
+}
+
+function settleOpenToolCard(card, { status, summary }) {
+  if (!card || typeof card !== "object") return card;
+  if (isPlanLikeToolCard(card) || !isOpenWorkStatus(card.status)) return card;
+  const endedAt = new Date().toISOString();
+  const durationMs = resolveThinkingDurationMs(
+    {
+      startedAt: card.startedAt,
+      endedAt,
+      durationMs: Number.isFinite(Number(card.durationMs))
+        ? Number(card.durationMs)
+        : undefined,
+    },
+    endedAt,
+  );
+  return {
+    ...card,
+    status,
+    summary: card.summary || summary,
+    isStreaming: false,
+    ...(Number.isFinite(durationMs) ? { durationMs } : {}),
+  };
+}
+
+function settleOpenWorkInSegments(segments, { status, summary } = {}) {
+  const endedAt = new Date().toISOString();
+  return (Array.isArray(segments) ? segments : []).map((seg) => {
+    if (!seg || typeof seg !== "object") return seg;
+    if (seg.type === "thinking") {
+      return {
+        ...seg,
+        isStreaming: false,
+        endedAt: seg.endedAt || endedAt,
+        durationMs: resolveThinkingDurationMs(seg, endedAt),
+      };
+    }
+    if (seg.type === "text") return { ...seg, isStreaming: false };
+    if (seg.type === "skill" || seg.type === "hook") {
+      if (!isOpenWorkStatus(seg.status)) return seg;
+      return { ...seg, status: status === "done" ? "done" : "error", isStreaming: false };
+    }
+    if (seg.type === "tools" && Array.isArray(seg.cards)) {
+      return {
+        ...seg,
+        cards: seg.cards.map((card) => settleOpenToolCard(card, { status, summary })),
+      };
+    }
+    if (seg.type === "process" && Array.isArray(seg.groups)) {
+      return {
+        ...seg,
+        groups: settleOpenWorkInSegments(seg.groups, { status, summary }),
+      };
+    }
+    return seg;
+  });
+}
+
+export function settleIncompleteTranscriptMessage(message, { reason = "aborted" } = {}) {
+  if (!message || typeof message !== "object") return message;
+  const status = reason === "completed" ? "done" : "error";
+  const summary =
+    reason === "aborted" ? "Aborted" : reason === "failed" ? "Failed" : "";
+  const skillBadges = Array.isArray(message.skillBadges)
+    ? message.skillBadges.map((badge) =>
+        isOpenWorkStatus(badge?.status)
+          ? { ...badge, status: status === "done" ? "done" : "error" }
+          : badge,
+      )
+    : message.skillBadges;
+  const planStep = message.planStep
+    ? {
+        ...message.planStep,
+        status: TERMINAL_TOOL_STATUSES.has(
+          String(message.planStep.status || "").toLowerCase(),
+        )
+          ? message.planStep.status
+          : reason === "completed"
+            ? "done"
+            : "failed",
+      }
+    : message.planStep;
+  return {
+    ...message,
+    isComplete: true,
+    loading: false,
+    ...(reason === "aborted" ? { manualAborted: true } : {}),
+    segments: settleOpenWorkInSegments(message.segments, { status, summary }),
+    skillBadges,
+    planStep,
+  };
+}
+
+export function repairSettledTranscriptMessages(messages = []) {
+  return (Array.isArray(messages) ? messages : []).map((message) => {
+    if (!message || typeof message !== "object") return message;
+    const settled =
+      message.manualAborted === true ||
+      message.isComplete === true ||
+      message.responseStatus === "aborted";
+    if (!settled) return message;
+    return settleIncompleteTranscriptMessage(message, {
+      reason: message.manualAborted || message.responseStatus === "aborted"
+        ? "aborted"
+        : "completed",
+    });
+  });
+}
+
 export function hasThinkingSegment(segments) {
   return (Array.isArray(segments) ? segments : []).some(
     (seg) => seg.type === "thinking" && String(seg.text || "").trim(),

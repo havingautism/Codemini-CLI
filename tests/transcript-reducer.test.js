@@ -5,6 +5,8 @@ import {
   applyStreamEventToMessage,
   isTranscriptStreamEvent,
   replaceLastTextSegment,
+  settleIncompleteTranscriptMessage,
+  repairSettledTranscriptMessages,
 } from '../codemini-web/shared/transcript-segments.js';
 import { reduceSessionTranscriptEvent } from '../codemini-web/client/src/lib/session-state.js';
 
@@ -744,4 +746,88 @@ test('reduceSessionTranscriptEvent reuses matching plan step messageId', () => {
   assert.equal(messages.length, 1);
   assert.equal(messages[0].role, 'summarizer');
   assert.equal(messages[0].isComplete, false);
+});
+
+test('abort settles running tools, thinking, and hooks so loaders do not stay open', () => {
+  const settled = settleIncompleteTranscriptMessage(
+    {
+      id: 'msg-abort',
+      role: 'general',
+      isComplete: false,
+      segments: [
+        { type: 'thinking', text: 'hmm', isStreaming: true, startedAt: '2026-01-01T00:00:00.000Z' },
+        { type: 'text', text: 'partial', isStreaming: true },
+        {
+          type: 'tools',
+          cards: [{ id: 'tool-1', name: 'run', status: 'running', startedAt: '2026-01-01T00:00:00.000Z' }],
+        },
+        { type: 'skill', event: 'PreToolUse', name: 'quality', status: 'running' },
+      ],
+    },
+    { reason: 'aborted' },
+  );
+
+  assert.equal(settled.isComplete, true);
+  assert.equal(settled.manualAborted, true);
+  assert.equal(settled.segments[0].isStreaming, false);
+  assert.equal(settled.segments[1].isStreaming, false);
+  assert.equal(settled.segments[2].cards[0].status, 'error');
+  assert.equal(settled.segments[2].cards[0].summary, 'Aborted');
+  assert.equal(settled.segments[3].status, 'error');
+});
+
+test('repairSettledTranscriptMessages closes stale running tools after refresh', () => {
+  const [repaired] = repairSettledTranscriptMessages([
+    {
+      id: 'msg-stale',
+      role: 'general',
+      isComplete: true,
+      manualAborted: true,
+      segments: [
+        {
+          type: 'tools',
+          cards: [{ id: 'tool-1', name: 'read', status: 'running' }],
+        },
+      ],
+    },
+  ]);
+  assert.equal(repaired.segments[0].cards[0].status, 'error');
+});
+
+test('assistant:start after a manual abort opens a new bubble instead of appending', () => {
+  const state = {
+    sessionMessagesById: {
+      'session-a': [
+        {
+          id: 'msg-old',
+          role: 'general',
+          isComplete: true,
+          manualAborted: true,
+          segments: [{ type: 'text', text: 'stopped mid-way', isStreaming: false }],
+        },
+      ],
+    },
+  };
+
+  const started = reduceSessionTranscriptEvent(state, {
+    type: 'assistant:start',
+    sessionId: 'session-a',
+    messageId: 'msg-old',
+  });
+  const afterStart = started.sessionMessagesById['session-a'];
+  assert.equal(afterStart.length, 2);
+  assert.equal(afterStart[0].manualAborted, true);
+  assert.equal(afterStart[0].segments[0].text, 'stopped mid-way');
+  assert.equal(afterStart[1].isComplete, false);
+  assert.notEqual(afterStart[1].id, 'msg-old');
+
+  const streamed = reduceSessionTranscriptEvent(started, {
+    type: 'assistant:delta',
+    sessionId: 'session-a',
+    messageId: 'msg-old',
+    text: 'jumped answer',
+  });
+  const afterDelta = streamed.sessionMessagesById['session-a'];
+  assert.equal(afterDelta[0].segments[0].text, 'stopped mid-way');
+  assert.match(String(afterDelta[1].segments?.[0]?.text || ''), /jumped answer/);
 });

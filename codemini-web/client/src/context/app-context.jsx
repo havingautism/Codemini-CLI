@@ -60,6 +60,8 @@ import {
   finishThinkingSegments,
   mergeUsage,
   normalizeUsage,
+  settleIncompleteTranscriptMessage,
+  repairSettledTranscriptMessages,
   updateSkillInSegments,
 } from "../../../shared/transcript-segments.js";
 import { buildHookSegmentEvent } from "../../../shared/hook-ui.js";
@@ -107,7 +109,10 @@ function markPreviousAssistantManualAborted(messages = [], fromIndex = -1) {
     ) {
       continue;
     }
-    list[i] = { ...prev, manualAborted: true, isComplete: true };
+    list[i] = settleIncompleteTranscriptMessage(
+      { ...prev, isComplete: true },
+      { reason: "aborted" },
+    );
     break;
   }
   return list;
@@ -1128,6 +1133,7 @@ export function AppProvider({ children }) {
   const pendingQueueRef = useRef(new Map());
   const switchSessionRef = useRef(null);
   const drainQueueRef = useRef(null);
+  const abortContinueInPlaceRef = useRef(false);
   const abortFnRef = useRef(null);
 
   const activateSessionView = useCallback((sessionId) => {
@@ -1467,6 +1473,7 @@ export function AppProvider({ children }) {
         m.transientKey
       )
         continue;
+      if (m.manualAborted) continue;
       if (m.isComplete === false) {
         activeMsgRef.current = m.id;
         return;
@@ -1574,9 +1581,11 @@ export function AppProvider({ children }) {
                 ?.changes || [];
           if (!isAlive()) return;
           const restored = sanitizeManualAbortMessages(
-            enrichUiMessagesWithScrapbookAttachments(
-              settleCompletedPlanToolCards(uiMessages),
-              messages,
+            repairSettledTranscriptMessages(
+              enrichUiMessagesWithScrapbookAttachments(
+                settleCompletedPlanToolCards(uiMessages),
+                messages,
+              ),
             ),
           );
           const overview = [...restored]
@@ -1920,19 +1929,21 @@ export function AppProvider({ children }) {
         }
 
         const restored = sanitizeManualAbortMessages(
-          settleCompletedPlanToolCards(
-            mergeAlignedAssistantSkillContext(
-              alignSessionAssistantMessages(
-                mergeAlignedUserContext(
-                  alignSessionUserMessages(
-                    mergeStructuredUiPlans(processed, uiMessages),
+          repairSettledTranscriptMessages(
+            settleCompletedPlanToolCards(
+              mergeAlignedAssistantSkillContext(
+                alignSessionAssistantMessages(
+                  mergeAlignedUserContext(
+                    alignSessionUserMessages(
+                      mergeStructuredUiPlans(processed, uiMessages),
+                      uiMessages,
+                    ),
                     uiMessages,
                   ),
                   uiMessages,
                 ),
                 uiMessages,
               ),
-              uiMessages,
             ),
           ),
         );
@@ -2079,14 +2090,20 @@ export function AppProvider({ children }) {
             });
             break;
           }
-          const msgId = event.messageId || activeId;
-          if (msgId) setActiveMsg(msgId);
+          const requestedId = event.messageId || activeId;
+          const requested = (s.messages || []).find(
+            (message) => message.id === requestedId,
+          );
+          const msgId =
+            requested?.manualAborted === true ? event.messageId : requestedId;
+          if (msgId && requested?.manualAborted !== true) setActiveMsg(msgId);
           const pendingSkillBadges = pendingSkillBadgesRef.current;
           pendingSkillBadgesRef.current = [];
           const pendingSkillSegments = pendingSkillSegmentsRef.current;
           pendingSkillSegmentsRef.current = [];
           if (
             msgId &&
+            requested?.manualAborted !== true &&
             (pendingSkillBadges.length || pendingSkillSegments.length)
           ) {
             setState((prev) => ({
@@ -3297,18 +3314,25 @@ export function AppProvider({ children }) {
             sessionId,
             () => runSubmitPrompt(input, options),
           );
-          if (isAbortRelatedResult(result)) skipDrain = true;
+          if (
+            isAbortRelatedResult(result) &&
+            abortContinueInPlaceRef.current !== true
+          ) {
+            skipDrain = true;
+          }
           return result;
         } catch (err) {
           if (
-            isAbortRelatedText(err?.message) ||
-            err?.name === "AbortError"
+            (isAbortRelatedText(err?.message) ||
+              err?.name === "AbortError") &&
+            abortContinueInPlaceRef.current !== true
           ) {
             skipDrain = true;
           }
           throw err;
         } finally {
           if (!skipDrain) drainQueue(sessionId);
+          abortContinueInPlaceRef.current = false;
         }
     };
     submitRef.current = submit;
@@ -3363,7 +3387,8 @@ export function AppProvider({ children }) {
           stateRef.current.sessionRuntimeById?.[sessionId]?.status,
         );
       if (sessionBusy) {
-        void abortFnRef.current?.();
+        abortContinueInPlaceRef.current = true;
+        void abortFnRef.current?.({ continueInPlace: true });
         return;
       }
       drainQueue(sessionId);
@@ -3462,16 +3487,23 @@ export function AppProvider({ children }) {
         });
       },
 
-      abort: async () => {
+      abort: async (options = {}) => {
+        const continueInPlace =
+          options.continueInPlace === true ||
+          abortContinueInPlaceRef.current === true;
         try {
-          await api.abortRequest(stateRef.current.currentSessionId);
+          await api.abortRequest(stateRef.current.currentSessionId, {
+            continueInPlace,
+          });
         } catch {}
         planRunPendingRef.current = false;
+        activeMsgRef.current = null;
         update({
           busy: false,
           live: false,
           stage: "idle",
           stageLabel: "",
+          activeMsgId: null,
         });
         setState((prev) => {
           const abortedSteps = getAbortedPlanStepIndexes(prev.messages);
@@ -3504,36 +3536,10 @@ export function AppProvider({ children }) {
                   },
                 };
               }
-              if (message.isComplete === false) {
-                const settled = settleRunningCreatePlanCards(
-                  {
-                    ...message,
-                    isComplete: true,
-                    manualAborted: true,
-                    segments: finishThinkingSegments(message.segments || []).map(
-                      (seg) =>
-                        seg.type === "text"
-                          ? { ...seg, isStreaming: false }
-                          : seg,
-                    ),
-                    planStep: message.planStep
-                      ? {
-                          ...message.planStep,
-                          status: ["done", "failed"].includes(
-                            String(message.planStep.status || ""),
-                          )
-                            ? message.planStep.status
-                            : "failed",
-                          summary: message.planStep.summary || "Aborted",
-                        }
-                      : message.planStep,
-                  },
-                  { reason: "aborted" },
-                );
-                return settled;
-              }
-              // Completed messages can still own a running create_plan card.
-              return settleRunningCreatePlanCards(message, { reason: "aborted" });
+              return settleRunningCreatePlanCards(
+                settleIncompleteTranscriptMessage(message, { reason: "aborted" }),
+                { reason: "aborted" },
+              );
             }),
           };
         });

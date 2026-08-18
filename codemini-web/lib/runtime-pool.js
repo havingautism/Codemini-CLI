@@ -196,7 +196,7 @@ export class RuntimePool {
     return true;
   }
 
-  async abort(sessionId) {
+  async abort(sessionId, options = {}) {
     const entry = this.entries.get(sessionId);
     if (!entry) return false;
 
@@ -205,7 +205,7 @@ export class RuntimePool {
     entry.runId += 1;
     entry.operation = null;
     try {
-      await entry.bridge?.abort?.();
+      await entry.bridge?.abort?.(options);
     } finally {
       this.#setStatus(entry, 'aborted');
       this.#emitQueuedStates();

@@ -1335,7 +1335,9 @@ export function createWebRuntimeApi({
       const body = await readBody(req);
       const id = requireSessionId(res, body?.sessionId);
       if (!id) return true;
-      const aborted = await pool.abort(id);
+      const aborted = await pool.abort(id, {
+        continueInPlace: body?.continueInPlace === true,
+      });
       jsonResponse(res, { ok: aborted }, aborted ? 200 : 404);
       return true;
 
@@ -2631,7 +2633,7 @@ async function main() {
           resolve({ status });
         },
       });
-      sessionBridge.abort = () => sessionBridge.handleAbort();
+      sessionBridge.abort = (options) => sessionBridge.handleAbort(options);
       sessionBridge.runPooled = (start) =>
         new Promise((resolve, reject) => {
           lifecycleWaiters.set(sessionId, resolve);
