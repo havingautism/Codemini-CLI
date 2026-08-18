@@ -18,6 +18,7 @@ import {
   QueuePanel,
   SessionPicker,
   SettingsDialog,
+  StatusDialog,
   TopBar
 } from './components/chrome.js';
 import {
@@ -127,6 +128,7 @@ export async function runOpenCodeTui({ runtime, sessionId, model, safeMode = tru
   let historyHandle = null;
   let historyPicker = null;
   let settingsHandle = null;
+  let statusHandle = null;
   let approvalCancel = null;
   let resolveDone;
   const done = new Promise((resolve) => { resolveDone = resolve; });
@@ -533,6 +535,23 @@ export async function runOpenCodeTui({ runtime, sessionId, model, safeMode = tru
     requestRender();
   };
 
+  const closeStatusDialog = () => {
+    statusHandle?.hide();
+    statusHandle = null;
+    tui.setFocus(editor);
+    requestRender();
+  };
+
+  const showStatusDialog = () => {
+    const dialog = new StatusDialog({
+      getState: () => runtime.getRuntimeState?.(),
+      copy,
+      onClose: closeStatusDialog
+    });
+    statusHandle = tui.showOverlay(dialog, { width: '72%', minWidth: 48, maxHeight: 22, anchor: 'center', margin: 2 });
+    requestRender();
+  };
+
   const revealLatestProcess = () => {
     const target = processFolds.at(-1);
     if (!target) return;
@@ -655,10 +674,15 @@ export async function runOpenCodeTui({ runtime, sessionId, model, safeMode = tru
       else closeSessionHistory();
       return { consume: true };
     }
-    if ((helpHandle || historyHandle || settingsHandle) && (matchesKey(data, 'escape') || matchesKey(data, 'ctrl+c'))) {
+    if ((helpHandle || historyHandle || settingsHandle || statusHandle) && (matchesKey(data, 'escape') || matchesKey(data, 'ctrl+c'))) {
       if (helpHandle) closeHelp();
       if (historyHandle) closeSessionHistory();
       if (settingsHandle) closeSettingsDialog();
+      if (statusHandle) closeStatusDialog();
+      return { consume: true };
+    }
+    if (matchesKey(data, 'ctrl+s')) {
+      showStatusDialog();
       return { consume: true };
     }
     if (matchesKey(data, 'ctrl+enter')) {

@@ -37,6 +37,36 @@ function contextMeter(pct, size = 8) {
   return `${style('━'.repeat(used))}${color.dim('─'.repeat(size - used))}`;
 }
 
+// 紧凑相对时间（语言中立，用于状态栏摘要）
+function relativeTimeShort(iso) {
+  if (!iso) return 'now';
+  const then = Date.parse(iso);
+  if (!Number.isFinite(then)) return 'now';
+  const delta = Date.now() - then;
+  if (delta < 0) return 'now';
+  const sec = Math.floor(delta / 1000);
+  if (sec < 60) return `${sec}s`;
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min}m`;
+  const hour = Math.floor(min / 60);
+  if (hour < 24) return `${hour}h`;
+  return `${Math.floor(hour / 24)}d`;
+}
+
+function absoluteTime(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? '' : d.toLocaleString();
+}
+
+function shortPlatform(platform) {
+  const p = String(platform || '');
+  if (p === 'win32') return 'win';
+  if (p === 'darwin') return 'mac';
+  if (p === 'linux') return 'linux';
+  return p;
+}
+
 export class TopBar {
   constructor({ version }) { this.version = version; }
 
@@ -151,7 +181,19 @@ export class Footer {
     const tokenText = state.currentContextTokens && state.maxContextTokens
       ? `${Math.round(state.currentContextTokens / 1000)}k/${Math.round(state.maxContextTokens / 1000)}k`
       : `${pct}%`;
-    const right = `${color.dim('CTX')} ${contextMeter(pct)} ${color.muted(tokenText)}`;
+    const toolsTotal = Object.values(state.toolCallCounts || {}).reduce((sum, n) => sum + (Number(n) || 0), 0);
+    const todoCount = Number(state.activeTodoCount || 0);
+    const errorCount = Number(state.errorCount || 0);
+    const stamp = relativeTimeShort(state.lastActivityAt);
+    const platform = shortPlatform(state.systemEnv?.platform);
+    const indicators = [
+      `${color.dim('⏱')}${color.muted(stamp)}`,
+      `${color.dim('⚒')}${color.muted(String(toolsTotal))}`,
+      `${color.dim('☐')}${color.muted(String(todoCount))}`,
+      errorCount > 0 ? `${color.error('✖')}${color.error(String(errorCount))}` : `${color.dim('✖')}${color.muted('0')}`,
+      `${color.dim('◇')}${color.muted(platform)}`
+    ].join(' ');
+    const right = `${indicators}   ${color.dim('CTX')} ${contextMeter(pct)} ${color.muted(tokenText)}`;
     const environment = [modeTag, accessTag, ...(width >= 72 ? [sandboxTag] : []), ...(width >= 96 ? [`${color.dim('›')} ${color.muted(shell)}`] : [])].join(divider);
     const identity = `${color.purple('◆')} ${color.text(modelName)}${width >= 68 && session ? `${divider}${color.dim('#')} ${color.muted(session)}` : ''}`;
     const location = `${color.dim('⌂')} ${color.muted(cwd)}`;
@@ -359,6 +401,71 @@ export class HelpDialog {
       lines.push(fill(joinSides(color.text(key), color.muted(description), innerWidth - 2), innerWidth, color.overlayBg));
     }
     lines.push(fill(color.dim(this.copy.helpClose), innerWidth, color.overlayBg));
+    return modalFrame(lines, width);
+  }
+}
+
+export class StatusDialog {
+  constructor({ getState, copy, onClose }) {
+    this.getState = getState;
+    this.copy = copy;
+    this.onClose = onClose;
+  }
+
+  invalidate() {}
+
+  handleInput(data) {
+    if (matchesKey(data, 'escape') || matchesKey(data, 'return') || matchesKey(data, 'ctrl+g')) this.onClose();
+  }
+
+  render(width) {
+    const c = this.copy;
+    const state = this.getState?.() || {};
+    const inner = Math.max(1, width - 2);
+    const pad = (text) => fill(text, inner, color.overlayBg);
+    const row = (label, value) => pad(joinSides(color.text(label), color.muted(String(value ?? '-')), inner - 2));
+
+    const tools = Object.entries(state.toolCallCounts || {}).sort((a, b) => Number(b[1]) - Number(a[1]));
+    const toolsTotal = tools.reduce((sum, [, n]) => sum + (Number(n) || 0), 0);
+    const todos = Array.isArray(state.activeTodos) ? state.activeTodos : [];
+    const errors = Array.isArray(state.errorSummary) ? state.errorSummary : [];
+    const env = state.systemEnv || {};
+    const git = env.git || {};
+
+    const lines = [];
+    lines.push(pad(bold(color.accent(c.statusTitle))));
+    lines.push(pad(''));
+    lines.push(row(c.statusTimestamp, `${relativeTimeShort(state.lastActivityAt) || '—'} · ${absoluteTime(state.lastActivityAt) || '—'}`));
+
+    lines.push(pad(`${color.text(c.statusToolCalls)}  ${color.dim(c.statusToolTotal(toolsTotal))}`));
+    if (!tools.length) lines.push(pad(color.muted('  —')));
+    else for (const [name, count] of tools.slice(0, 4)) lines.push(row(`  ${name}`, `×${count}`));
+
+    lines.push(pad(`${color.text(c.statusTodos)}  ${color.dim(`(${todos.length})`)}`));
+    if (!todos.length) lines.push(pad(color.muted(`  ${c.todosEmpty}`)));
+    else for (const todo of todos.slice(0, 3)) lines.push(pad(color.muted(`  · ${oneLine(todo.content || todo.activeForm, inner - 8)}`)));
+
+    lines.push(pad(`${color.text(c.statusErrors)}  ${color.dim(`(${Number(state.errorCount || 0)})`)}`));
+    if (!errors.length) lines.push(pad(color.muted(`  ${c.statusErrorsNone}`)));
+    else for (const err of errors) {
+      const tag = err.category === 'blocked' ? color.warning('BLOCKED') : color.error('ERROR');
+      lines.push(pad(`${tag} ${color.muted(err.tool || '')} ${oneLine(err.message, inner - 26)}`));
+    }
+
+    lines.push(pad(color.text(c.statusSystem)));
+    const gitValue = !git.isGit ? c.statusNotGit : `${git.branch || '—'}${git.dirty != null ? ` · ${git.dirty ? c.statusDirty : c.statusClean}` : ''}`;
+    lines.push(row(`  ${c.statusEnvPlatform}`, env.platform));
+    lines.push(row(`  ${c.statusEnvNode}`, env.nodeVersion));
+    lines.push(row(`  ${c.statusEnvShell}`, env.shell));
+    lines.push(row(`  ${c.statusEnvSandbox}`, env.sandboxMode));
+    lines.push(row(`  ${c.statusEnvWorkspace}`, env.workspaceRoot));
+    lines.push(row(`  ${c.statusEnvGit}`, gitValue));
+    lines.push(row(`  ${c.statusEnvModel}`, env.model));
+    lines.push(row(`  ${c.statusEnvProvider}`, env.provider));
+    lines.push(row(`  ${c.statusEnvMode}`, env.executionMode));
+    lines.push(pad(''));
+    lines.push(pad(color.dim(c.helpClose)));
+
     return modalFrame(lines, width);
   }
 }

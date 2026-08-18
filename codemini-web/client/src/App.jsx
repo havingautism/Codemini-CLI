@@ -618,6 +618,7 @@ function Shell() {
                   runtimeState={state.runtimeState}
                   live={state.live}
                   stageLabel={state.stageLabel}
+                  onClearErrors={actions.clearSessionErrors}
                 />
               </div>
             </div>

@@ -4419,6 +4419,25 @@ export function AppProvider({ children }) {
           throw error;
         }
       },
+      clearSessionErrors: async () => {
+        const sessionId = stateRef.current.currentSessionId;
+        await api.clearSessionErrors(sessionId).catch(() => {});
+        setState((prev) => {
+          const sid = prev.currentSessionId || sessionId;
+          const runtime = prev.sessionRuntimeById?.[sid];
+          return {
+            ...prev,
+            runtimeState: { ...(prev.runtimeState || {}), errorCount: 0, errorSummary: [] },
+            sessionRuntimeById: runtime
+              ? {
+                  ...prev.sessionRuntimeById,
+                  [sid]: { ...runtime, errorCount: 0, errorSummary: [] },
+                }
+              : prev.sessionRuntimeById,
+          };
+        });
+        return { ok: true };
+      },
       setProjectOpen: (open) => update({ projectOpen: open }),
       setSkillsOpen: (open) => update({ skillsOpen: open }),
       setMcpOpen: (open) => update({ mcpOpen: open }),

@@ -115,7 +115,9 @@ import {
 } from './memory-session-review.js';
 import { normalizePlanState } from './plan-state.js';
 import { normalizeSpecState } from './spec-state.js';
-import { normalizeTodos } from './todo-state.js';
+import { normalizeTodos, countActiveTodos } from './todo-state.js';
+import { recordToolEvent, getSessionStats, getSessionErrorDetails, clearSessionErrors } from './session-stats.js';
+import { runGit } from './process-run.js';
 import { isGeneralWorkspaceProjectDir, normalizeProjectDirKey } from './webui-sidebar-config.js';
 import {
   attachReflectTargets,
@@ -4007,7 +4009,26 @@ export function resolveLatestContextMeasurement(messages = [], fallbackOverhead 
   return { tokens: 0, source: 'estimated' };
 }
 
-export function buildRuntimeStateSnapshot({ currentSession, config, model, executionMode, extraSession, workspaceRoot, alwaysSkillNames = [] }) {
+// 异步采集 Git 分支与工作区状态（失败时静默返回空，不阻塞快照构建）。
+async function readGitBranchStatus(cwd) {
+  try {
+    const inside = await runGit(['rev-parse', '--is-inside-work-tree'], { cwd, allowFailure: true });
+    if (inside.code !== 0 || inside.stdout.trim() !== 'true') return { branch: null, dirty: null };
+    const symbolic = await runGit(['symbolic-ref', '--quiet', '--short', 'HEAD'], { cwd, allowFailure: true });
+    let branch = symbolic.code === 0 ? symbolic.stdout.trim() : null;
+    if (!branch) {
+      const abbrev = await runGit(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd, allowFailure: true });
+      if (abbrev.code === 0 && abbrev.stdout.trim() && abbrev.stdout.trim() !== 'HEAD') branch = abbrev.stdout.trim();
+    }
+    const status = await runGit(['status', '--porcelain'], { cwd, allowFailure: true });
+    const dirty = status.code === 0 ? status.stdout.trim().length > 0 : null;
+    return { branch, dirty };
+  } catch {
+    return { branch: null, dirty: null };
+  }
+}
+
+export function buildRuntimeStateSnapshot({ currentSession, config, model, executionMode, extraSession, workspaceRoot, alwaysSkillNames = [], gitInfo = null }) {
   const activeMessages = extraSession
     ? extraSession.messages || []
     : Array.isArray(currentSession?.compact?.view) && currentSession.compact.view.length > 0
@@ -4028,6 +4049,22 @@ export function buildRuntimeStateSnapshot({ currentSession, config, model, execu
   const visibleAlwaysSkillNames = shouldInjectAlwaysSkills(resolvedMode)
     ? (Array.isArray(alwaysSkillNames) ? alwaysSkillNames : []).map((name) => String(name || '').trim()).filter(Boolean)
     : [];
+  const sessionStats = getSessionStats(currentSession);
+  const systemEnv = {
+    platform: process.platform,
+    nodeVersion: process.version,
+    shell: config.shell?.default || 'bash',
+    sandboxMode: config.sandbox?.mode || 'workspace-write',
+    workspaceRoot,
+    git: {
+      isGit: Boolean(config?.runtime?.project_is_git),
+      branch: gitInfo?.branch ?? null,
+      dirty: gitInfo?.dirty ?? null,
+    },
+    model: model || config.model?.name || '',
+    provider: config.sdk?.provider || 'openai-compatible',
+    executionMode: resolvedMode,
+  };
   const snapshot = {
     workspaceRoot,
     projectIsGit: Boolean(config?.runtime?.project_is_git),
@@ -4055,6 +4092,13 @@ export function buildRuntimeStateSnapshot({ currentSession, config, model, execu
     reasoningEffort: normalizeReasoningEffort(config.model?.reasoning_effort),
     activeSoul: getActiveSoulName(config, soulCategory),
     soulCategory,
+    lastActivityAt: currentSession?.updatedAt || sessionStats.updatedAt || null,
+    toolCallCounts: sessionStats.toolCalls || {},
+    activeTodoCount: countActiveTodos(currentSession?.todos),
+    activeTodos: normalizeTodos(currentSession?.todos).filter((todo) => todo.status !== 'completed'),
+    errorSummary: sessionStats.errors || [],
+    errorCount: Number(sessionStats.errorCount || 0),
+    systemEnv,
     pendingPlanApproval: null,
     pendingSpecApproval: specState
       ? buildPendingSpecSnapshot(specState)
@@ -5330,6 +5374,7 @@ async function askModel({
         }
       }
     } else if (event?.type === 'tool:end' || event?.type === 'tool:error' || event?.type === 'tool:blocked') {
+      session.stats = recordToolEvent(session.stats, event);
       const toolId = String(event.id || '');
       if (toolId) {
         const meta = {
@@ -7620,6 +7665,11 @@ export async function createChatRuntime({
 }) {
   const root = path.resolve(workspaceRoot || session?.projectDir || process.cwd());
   if (session && typeof session === 'object') session.projectDir = root;
+  let gitInfo = { branch: null, dirty: null };
+  const refreshGitInfo = async () => {
+    gitInfo = await readGitBranchStatus(root);
+  };
+  void refreshGitInfo();
   let requestToolApprovalObserver = typeof requestToolApproval === 'function' ? requestToolApproval : null;
   const approvalRequestState = { current: null };
   const activeRequestToolApproval = async (request) => {
@@ -9091,7 +9141,14 @@ export async function createChatRuntime({
         executionMode,
         extraSession: activeSubSession,
         workspaceRoot: root,
-        alwaysSkillNames: getAlwaysSkillCommands(commands, config, null, executionMode).map((skill) => skill.name)
-      })
+        alwaysSkillNames: getAlwaysSkillCommands(commands, config, null, executionMode).map((skill) => skill.name),
+        gitInfo
+      }),
+    getSessionErrorDetails: () => getSessionErrorDetails(currentSession),
+    clearSessionErrors: async () => {
+      currentSession.stats = clearSessionErrors(currentSession.stats);
+      await saveSession(currentSession);
+      return getSessionErrorDetails(currentSession);
+    }
   };
 }

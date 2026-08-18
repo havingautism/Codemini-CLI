@@ -1569,6 +1569,15 @@ export class RuntimeBridge {
     return serializeSessionMessages(this.#runtime.getSessionMessages());
   }
 
+  getSessionErrorDetails() {
+    return this.#runtime.getSessionErrorDetails?.() || [];
+  }
+
+  async clearSessionErrors() {
+    const details = await this.#runtime.clearSessionErrors?.();
+    return { ok: true, details: Array.isArray(details) ? details : [] };
+  }
+
   async regenerateSessionTitle() {
     if (this.#busy) return { error: true, message: 'Session is active' };
     return this.#runtime.regenerateSessionTitle?.() || {

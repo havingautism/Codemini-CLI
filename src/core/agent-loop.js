@@ -1138,7 +1138,7 @@ export async function runAgentLoop({
       if (approvalState.errorContent) {
         const summary = trimInline(approvalState.errorContent, 120);
         if (onEvent) {
-          onEvent({ type: 'tool:error', name: toolName, displayName, id: call.id, arguments: effectiveArgs, durationMs: 0, summary });
+          onEvent({ type: 'tool:error', name: toolName, displayName, id: call.id, arguments: effectiveArgs, durationMs: 0, summary, detail: approvalState.errorContent });
         }
         return {
           callId: call.id,
@@ -1151,7 +1151,8 @@ export async function runAgentLoop({
       }
 
       if (!approvalState.approved) {
-        if (onEvent) onEvent({ type: 'tool:blocked', name: toolName, displayName, id: call.id, arguments: effectiveArgs });
+        const blockedReason = approvalState.reason || 'Tool call requires approval';
+        if (onEvent) onEvent({ type: 'tool:blocked', name: toolName, displayName, id: call.id, arguments: effectiveArgs, summary: trimInline(blockedReason, 120), detail: blockedReason });
         const blockedPayload = buildApprovalBlockedResult(toolName, effectiveArgs, approvalState.reason);
         return {
           callId: call.id,
@@ -1167,7 +1168,7 @@ export async function runAgentLoop({
         const msg = `Unknown tool: "${toolName}". Available tools: ${available || '(none)'}`;
         const summary = trimInline(msg, 200);
         if (onEvent) {
-          onEvent({ type: 'tool:error', name: toolName, displayName, id: call.id, arguments: effectiveArgs, durationMs: 0, summary });
+          onEvent({ type: 'tool:error', name: toolName, displayName, id: call.id, arguments: effectiveArgs, durationMs: 0, summary, detail: msg });
         }
         return {
           callId: call.id,
@@ -1185,7 +1186,7 @@ export async function runAgentLoop({
         const content = clipToolResult({ error: blockedReason }, toolResultMaxChars);
         const summary = trimInline(blockedReason, 120);
         if (onEvent) {
-          onEvent({ type: 'tool:error', name: toolName, displayName, id: call.id, arguments: effectiveArgs, durationMs: 0, summary });
+          onEvent({ type: 'tool:error', name: toolName, displayName, id: call.id, arguments: effectiveArgs, durationMs: 0, summary, detail: blockedReason });
         }
         return {
           callId: call.id,
@@ -1214,7 +1215,7 @@ export async function runAgentLoop({
           const reason = preToolUse.reason || `Blocked by a "${toolName}" pre-tool-use hook.`;
           const summary = trimInline(reason, 120);
           if (onEvent) {
-            onEvent({ type: 'tool:error', name: toolName, displayName, id: call.id, arguments: effectiveArgs, durationMs, summary });
+            onEvent({ type: 'tool:error', name: toolName, displayName, id: call.id, arguments: effectiveArgs, durationMs, summary, detail: reason });
           }
           return {
             callId: call.id,
@@ -1319,7 +1320,7 @@ export async function runAgentLoop({
         const invalid = buildInvalidToolArgumentsResult(toolName, invalidArgs);
         const summary = trimInline(invalid.reason, 120);
         if (onEvent) {
-          onEvent({ type: 'tool:error', name: toolName, displayName, id: call.id, arguments: effectiveArgs, durationMs: Date.now() - startedAt, summary });
+          onEvent({ type: 'tool:error', name: toolName, displayName, id: call.id, arguments: effectiveArgs, durationMs: Date.now() - startedAt, summary, detail: invalid.reason });
         }
         return {
           callId: call.id,
@@ -1356,7 +1357,7 @@ export async function runAgentLoop({
         const message = error instanceof Error ? error.message : String(error);
         const summary = trimInline(message, 120);
         if (onEvent) {
-          onEvent({ type: 'tool:error', name: toolName, displayName, id: call.id, arguments: effectiveArgs, durationMs, summary });
+          onEvent({ type: 'tool:error', name: toolName, displayName, id: call.id, arguments: effectiveArgs, durationMs, summary, detail: message });
         }
         if (isAutoCaptureEnabled(config) && shouldAutoCaptureError(toolName, message)) {
           await captureToolFailure(toolName, message, effectiveArgs, config).catch(() => {});
@@ -1382,7 +1383,8 @@ export async function runAgentLoop({
             id: call.id,
             arguments: effectiveArgs,
             durationMs,
-            summary
+            summary,
+            detail: runFailureMessage
           });
         }
         if (isAutoCaptureEnabled(config) && shouldAutoCaptureRunFailure(runFailureMessage)) {

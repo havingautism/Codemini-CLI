@@ -70,7 +70,7 @@ const EN = {
     ['Enter', 'send'], ['Ctrl+Enter', 'send / jump queue'], ['Shift+Enter / Ctrl+J', 'new line'], ['↑ / ↓', 'input history'],
     ['Wheel / Shift+↑ / ↓', 'scroll conversation'], ['PageUp / PageDown', 'scroll one page'],
     ['Ctrl+Shift+↑ / ↓', 'jump prompts'],
-    ['/', 'commands'], ['Ctrl+O / /tools', 'process details'], ['Ctrl+T', 'body only / full'], ['Esc', 'stop / home'],
+    ['/', 'commands'], ['Ctrl+O / /tools', 'process details'], ['Ctrl+T', 'body only / full'], ['Ctrl+S', 'session status'], ['Esc', 'stop / home'],
     ['Ctrl+C', 'clear / exit']
   ],
   emptyHint: 'Type / for commands, @ for files and ! for shell.',
@@ -100,7 +100,27 @@ const EN = {
   help: 'Show keyboard shortcuts',
   tools: 'Toggle process details',
   codingMode: 'Switch to coding mode',
-  dailyMode: 'Switch to daily mode'
+  dailyMode: 'Switch to daily mode',
+  statusTitle: 'Session status',
+  statusTimestamp: 'Updated',
+  statusToolCalls: 'Tool calls',
+  statusToolTotal: (n) => `${n} calls`,
+  statusTodos: 'Tasks',
+  statusErrors: 'Errors',
+  statusErrorsNone: 'No errors this session',
+  statusSystem: 'System',
+  statusEnvPlatform: 'Platform',
+  statusEnvNode: 'Node',
+  statusEnvShell: 'Shell',
+  statusEnvSandbox: 'Sandbox',
+  statusEnvWorkspace: 'Workspace',
+  statusEnvGit: 'Git',
+  statusEnvModel: 'Model',
+  statusEnvProvider: 'Provider',
+  statusEnvMode: 'Mode',
+  statusNotGit: 'Not a git repo',
+  statusClean: 'clean',
+  statusDirty: 'dirty'
 };
 
 const ZH = {
@@ -176,7 +196,7 @@ const ZH = {
     ['Enter', '发送'], ['Ctrl+Enter', '发送 / 插队'], ['Shift+Enter / Ctrl+J', '换行'], ['↑ / ↓', '输入历史'],
     ['滚轮 / Shift+↑ / ↓', '滚动会话'], ['PageUp / PageDown', '整页滚动'],
     ['Ctrl+Shift+↑ / ↓', '跳转提问'],
-    ['/', '命令'], ['Ctrl+O / /tools', '过程详情'], ['Ctrl+T', '只保留正文 / 完全'], ['Esc', '停止 / 返回首页'],
+    ['/', '命令'], ['Ctrl+O / /tools', '过程详情'], ['Ctrl+T', '只保留正文 / 完全'], ['Ctrl+S', '会话状态'], ['Esc', '停止 / 返回首页'],
     ['Ctrl+C', '清空 / 退出']
   ],
   emptyHint: '输入 / 查看命令，@ 引用文件，! 执行 Shell。',
@@ -206,7 +226,27 @@ const ZH = {
   help: '查看键盘快捷键',
   tools: '展开或折叠过程详情',
   codingMode: '切换到编码模式',
-  dailyMode: '切换到日常模式'
+  dailyMode: '切换到日常模式',
+  statusTitle: '会话状态',
+  statusTimestamp: '更新时间',
+  statusToolCalls: '工具调用',
+  statusToolTotal: (n) => `${n} 次`,
+  statusTodos: '任务',
+  statusErrors: '错误',
+  statusErrorsNone: '本会话无错误',
+  statusSystem: '系统',
+  statusEnvPlatform: '平台',
+  statusEnvNode: 'Node 版本',
+  statusEnvShell: 'Shell',
+  statusEnvSandbox: '沙箱',
+  statusEnvWorkspace: '工作区',
+  statusEnvGit: 'Git',
+  statusEnvModel: '模型',
+  statusEnvProvider: 'Provider',
+  statusEnvMode: '执行模式',
+  statusNotGit: '非 Git 项目',
+  statusClean: '干净',
+  statusDirty: '有未提交改动'
 };
 
 export function createTuiCopy(language = 'en') {

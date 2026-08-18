@@ -90,6 +90,20 @@ export async function fetchSessionUiMessages(sessionId) {
   return res.json();
 }
 
+export async function fetchSessionErrors(sessionId) {
+  const res = await api(withSessionQuery('/api/session/errors', sessionId));
+  return res.json();
+}
+
+export async function clearSessionErrors(sessionId) {
+  const res = await api('/api/session/errors/clear', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ sessionId }),
+  });
+  return res.json();
+}
+
 export async function fetchSpecs(sessionId) {
   const res = await api(withSessionQuery('/api/specs', sessionId));
   return res.json();

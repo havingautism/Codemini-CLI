@@ -1452,6 +1452,10 @@ export function createWebRuntimeApi({
           ok: await bridge.setSandboxMode(body.mode),
         }),
       ],
+      [
+        "/api/session/errors/clear",
+        async ({ bridge }) => bridge.clearSessionErrors(),
+      ],
     ]);
     if (req.method === "POST" && directOperations.has(url.pathname)) {
       const body = await readBody(req);
@@ -1639,6 +1643,7 @@ export function createWebRuntimeApi({
         }),
       ],
       ["/api/session/ui-messages", (bridge) => bridge.getUiMessages()],
+      ["/api/session/errors", (bridge) => bridge.getSessionErrorDetails()],
     ]);
     if (req.method === "GET" && sessionReads.has(url.pathname)) {
       const bridge = await loadBridge(res, url.searchParams.get("sessionId"));
