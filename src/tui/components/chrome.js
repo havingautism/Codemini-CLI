@@ -111,7 +111,8 @@ export class QueuePanel {
     if (!this.items.length) return [];
     const previews = this.items.slice(0, 2).map((item) => oneLine(item, 36)).join('  ·  ');
     const more = this.items.length > 2 ? `  +${this.items.length - 2}` : '';
-    return [fill(`${color.warning(this.copy.queueTitle)}  ${color.muted(previews)}${color.dim(more)}`, width, color.surfaceBg)];
+    const hint = this.copy.queueJump ? `  ${color.dim(this.copy.queueJump)}` : '';
+    return [fill(`${color.dim(this.copy.queueTitle)}  ${color.muted(previews)}${color.dim(more)}${hint}`, width, color.surfaceBg)];
   }
 }
 

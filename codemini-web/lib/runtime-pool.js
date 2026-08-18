@@ -174,6 +174,28 @@ export class RuntimePool {
     return this.#snapshot(entry);
   }
 
+  rekeySession(fromId, toId) {
+    const previousId = String(fromId || '').trim();
+    const nextId = String(toId || '').trim();
+    if (!previousId || !nextId || previousId === nextId) return false;
+    const entry = this.entries.get(previousId);
+    if (!entry) return false;
+    if (this.entries.has(nextId) && this.entries.get(nextId) !== entry) return false;
+
+    this.entries.delete(previousId);
+    this.creating.delete(previousId);
+    if (this.running.has(previousId)) {
+      this.running.delete(previousId);
+      this.running.add(nextId);
+    }
+    const queuedAt = this.queue.indexOf(previousId);
+    if (queuedAt !== -1) this.queue[queuedAt] = nextId;
+    entry.sessionId = nextId;
+    this.entries.set(nextId, entry);
+    this.#emitState(entry);
+    return true;
+  }
+
   async abort(sessionId) {
     const entry = this.entries.get(sessionId);
     if (!entry) return false;

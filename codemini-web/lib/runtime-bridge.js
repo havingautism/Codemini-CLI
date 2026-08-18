@@ -335,6 +335,7 @@ export class RuntimeBridge {
   #operationSequence = 0;
   #activeStructuredOperationId = null;
   #sessionId = '';
+  #forkHandledFor = '';
   #onEvent = null;
   #onLifecycle = null;
 
@@ -388,6 +389,54 @@ export class RuntimeBridge {
     });
   }
 
+  #flushUiTranscriptTo(sessionId) {
+    const id = String(sessionId || '').trim();
+    if (!id || this.#uiMessages.length === 0) return;
+    try {
+      saveUiTranscriptToSqlite(id, this.#uiMessages);
+    } catch {}
+  }
+
+  #handleSessionForked(event) {
+    const previousSessionId = String(event?.previousSessionId || this.#sessionId || '').trim();
+    const nextSessionId = String(event?.nextSessionId || event?.sessionId || '').trim();
+    if (!nextSessionId || nextSessionId === previousSessionId) return;
+    if (this.#forkHandledFor === nextSessionId) return;
+    this.#forkHandledFor = nextSessionId;
+    this.#flushUiTranscriptTo(previousSessionId);
+    this.#uiMessages = [];
+    this.#uiActiveMsgId = null;
+    this.#uiPlanStepIds = new Map();
+    this.#uiPlanOverviewId = null;
+    this.#uiPlanParentMsgId = null;
+    this.#uiPendingSkillBadges = [];
+    this.#uiPendingSkillSegments = [];
+    this.#uiTranscriptSessionId = nextSessionId;
+    const payload = {
+      type: 'session:forked',
+      sessionId: previousSessionId,
+      previousSessionId,
+      nextSessionId
+    };
+    this.#onEvent?.(payload);
+    this.#broadcast(payload);
+    this.#sessionId = nextSessionId;
+  }
+
+  #forwardRuntimeEvent(event, submitToken) {
+    if (event?.type === 'session:forked') {
+      this.#handleSessionForked(event);
+      return;
+    }
+    if (!this.#isSubmitActive(submitToken)) return;
+    const messageId = this.#recordUiEvent(event);
+    this.#publish(messageId ? { ...event, messageId } : event);
+    if (['spec:pending_approval', 'reflect:pending_approval'].includes(event?.type)) {
+      this.#busy = false;
+      this.#broadcastRuntimeState();
+    }
+  }
+
   #publish(event) {
     const incomingSessionId = String(event?.sessionId || '').trim();
     const tagged = {
@@ -423,10 +472,12 @@ export class RuntimeBridge {
   }
 
   #broadcast(event) {
-    const tagged = event?.sessionId === this.#sessionId
-      ? event
-      : { ...event, sessionId: this.#sessionId };
-    if (tagged !== event) this.#onEvent?.(tagged);
+    const incomingSessionId = String(event?.sessionId || '').trim();
+    const tagged = {
+      ...event,
+      sessionId: incomingSessionId || this.#sessionId
+    };
+    if (tagged.sessionId !== event?.sessionId) this.#onEvent?.(tagged);
     const data = `data: ${JSON.stringify(tagged)}\n\n`;
     for (const res of this.#clients) {
       try { res.write(data); } catch {}
@@ -442,7 +493,7 @@ export class RuntimeBridge {
   }
 
   async #writeUiTranscriptSnapshot() {
-    const sessionId = this.getSessionId();
+    const sessionId = this.#uiTranscriptSessionId || this.#sessionId;
     if (!sessionId) return;
     // Guard against wiping a persisted transcript with an unhydrated in-memory
     // buffer (e.g. bridge recreate / HMR / page refresh then first new turn).
@@ -497,6 +548,7 @@ export class RuntimeBridge {
   #resetUiTranscriptIfSessionChanged() {
     const sessionId = this.getSessionId();
     if (sessionId === this.#uiTranscriptSessionId) return;
+    this.#flushUiTranscriptTo(this.#uiTranscriptSessionId);
     this.#uiTranscriptSessionId = sessionId;
     this.#uiMessages = [];
     this.#uiActiveMsgId = null;
@@ -1010,13 +1062,7 @@ export class RuntimeBridge {
     this.#activeSubmitLine = line;
     this.#runStatusRecorded = false;
     this.#runtime.submit(line, (event) => {
-      if (!this.#isSubmitActive(submitToken)) return;
-      const messageId = this.#recordUiEvent(event);
-      this.#publish(messageId ? { ...event, messageId } : event);
-      if (['spec:pending_approval', 'reflect:pending_approval'].includes(event?.type)) {
-        this.#busy = false;
-        this.#broadcastRuntimeState();
-      }
+      this.#forwardRuntimeEvent(event, submitToken);
     }, options).then(async (result) => {
       if (!this.#isSubmitActive(submitToken)) return;
       if (this.#uiActiveMsgId) {
@@ -1106,9 +1152,7 @@ export class RuntimeBridge {
     const operationId = `chat-${Date.now()}-${++this.#operationSequence}`;
     this.#activeStructuredOperationId = operationId;
     const onAgentEvent = (event) => {
-      if (!this.#isSubmitActive(submitToken)) return;
-      const messageId = this.#recordUiEvent(event);
-      this.#publish(messageId ? { ...event, messageId } : event);
+      this.#forwardRuntimeEvent(event, submitToken);
     };
     Promise.resolve().then(() => run(onAgentEvent)).then((result) => {
       if (!this.#isSubmitActive(submitToken)) return;
@@ -1332,23 +1376,25 @@ export class RuntimeBridge {
   }
 
   async handleAbort() {
-    const retryPrompt = this.#activeSubmitLine;
     const wasBusy = this.#busy;
+    const originSessionId = this.#sessionId;
     const operationId = this.#activeStructuredOperationId;
     this.#activeStructuredOperationId = null;
     this.#userInput.resolveAll({ status: 'skipped', answers: {} });
     this.#approval.resolveAll({ approved: false, reason: 'aborted' });
     if (wasBusy) this.#invalidateSubmit();
-    const abortToken = this.#submitToken;
     const aborted = this.#runtime.abort();
-    if (wasBusy && !aborted) {
+    if (wasBusy) {
       if (!this.#runStatusRecorded) {
-        const text = 'Aborted: Request released.';
-        await this.#recordRunStatus(text, { status: 'aborted', retryPrompt });
-        this.#broadcast({
+        this.#publish({
           type: 'submit:done',
+          sessionId: originSessionId,
           ...(operationId ? { operationId } : {}),
-          result: { type: 'aborted', aborted: true, text: 'Request released.' }
+          result: {
+            type: 'aborted',
+            aborted: true,
+            text: aborted ? 'Request aborted.' : 'Request released.'
+          }
         });
       }
       this.#busy = false;
@@ -1356,22 +1402,6 @@ export class RuntimeBridge {
       this.#activeSubmitLine = '';
       this.#publishLifecycle('aborted');
       this.#broadcastRuntimeState();
-    } else if (wasBusy && aborted) {
-      if (!this.#runStatusRecorded) {
-        const text = 'Aborted: Request aborted.';
-        await this.#recordRunStatus(text, { status: 'aborted', retryPrompt });
-        this.#broadcast({
-          type: 'submit:done',
-          ...(operationId ? { operationId } : {}),
-          result: { type: 'aborted', aborted: true, text: 'Request aborted.' }
-        });
-      }
-      this.#publishLifecycle('aborted');
-      setTimeout(async () => {
-        if (!this.#busy || !this.#isSubmitActive(abortToken)) return;
-        this.#busy = false;
-        this.#broadcastRuntimeState();
-      }, 5000);
     }
     return aborted;
   }

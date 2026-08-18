@@ -666,6 +666,31 @@ export async function createSession(projectDir = process.cwd()) {
   return payload;
 }
 
+function cloneSessionMessages(messages = []) {
+  return (Array.isArray(messages) ? messages : []).map((message) => ({ ...message }));
+}
+
+/** Copy completed history into a new session so a manual stop can continue without appending under the aborted turn. */
+export async function createContinuationSession(source, { messages = [], compactView = null } = {}) {
+  const created = await createSession(source?.projectDir);
+  created.messages = cloneSessionMessages(messages);
+  if (typeof source?.title === 'string' && source.title.trim()) created.title = source.title;
+  if (source?.model) created.model = source.model;
+  if (source?.mode) created.mode = source.mode;
+  if (Array.isArray(source?.todos) && source.todos.length) created.todos = source.todos;
+  if (source?.planState) created.planState = source.planState;
+  if (source?.specState) created.specState = source.specState;
+  if (Array.isArray(compactView) && compactView.length) {
+    created.compact = {
+      ...(source?.compact && typeof source.compact === 'object' ? source.compact : {}),
+      view: cloneSessionMessages(compactView),
+      timestamp: new Date().toISOString()
+    };
+  }
+  await saveSession(created);
+  return created;
+}
+
 export async function loadSession(sessionId) {
   const stored = loadSessionFromSqlite(sessionId);
   if (stored) return sanitizeSession(stored, sessionId);

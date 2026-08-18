@@ -259,6 +259,9 @@ function projectNameFromRuntimeState(rs = {}) {
 const initialState = {
   stage: "idle",
   busy: false,
+  // Per-session prompt queue: { [sessionId]: [text, ...] } — prompts typed while
+  // a turn is running wait here instead of failing the in-flight guard.
+  pendingQueues: {},
   currentView: "chat",
   scrapbookEntryId: null,
   researchSessionId: null,
@@ -1121,6 +1124,11 @@ export function AppProvider({ children }) {
   const operationWaitersRef = useRef(new Map());
   const earlyOperationResultsRef = useRef(new Map());
   const sessionOperationsRef = useRef(new Set());
+  // Per-session prompt queue: Map<sessionId, Array<{ message, options }>>
+  const pendingQueueRef = useRef(new Map());
+  const switchSessionRef = useRef(null);
+  const drainQueueRef = useRef(null);
+  const abortFnRef = useRef(null);
 
   const activateSessionView = useCallback((sessionId) => {
     activeMsgRef.current = null;
@@ -1997,6 +2005,42 @@ export function AppProvider({ children }) {
       switch (event.type) {
         case "connected":
           break;
+
+        case "session:forked": {
+          const previousId = String(
+            event.previousSessionId || event.sessionId || "",
+          ).trim();
+          const nextId = String(event.nextSessionId || "").trim();
+          const currentId = stateRef.current.currentSessionId;
+          if (!nextId || nextId === previousId) break;
+          const queued =
+            pendingQueueRef.current.get(previousId) ||
+            pendingQueueRef.current.get(currentId) ||
+            [];
+          if (queued.length) {
+            pendingQueueRef.current.delete(previousId);
+            pendingQueueRef.current.delete(currentId);
+            pendingQueueRef.current.set(nextId, queued);
+          }
+          setState((prev) => {
+            const pendingQueues = { ...prev.pendingQueues };
+            delete pendingQueues[previousId];
+            if (queued.length) {
+              pendingQueues[nextId] = queued.map((item) =>
+                String(item.message?.text || ""),
+              );
+            } else {
+              delete pendingQueues[nextId];
+            }
+            return { ...prev, pendingQueues };
+          });
+          if (previousId && previousId !== currentId) break;
+          void (async () => {
+            await switchSessionRef.current?.(nextId, { fromAbortFork: true });
+            drainQueueRef.current?.(nextId);
+          })();
+          break;
+        }
 
         case "assistant:start": {
           if (
@@ -3051,16 +3095,22 @@ export function AppProvider({ children }) {
     document.documentElement.dataset.theme = resolved;
   }, []);
 
-  const actions = useMemo(
-    () => ({
-      submit: async (input, options = {}) => {
-        const sessionId = options.sessionId || stateRef.current.currentSessionId;
-        return runSessionOperation(sessionOperationsRef.current, sessionId, async () => {
-        const message = typeof input === "string"
-          ? { text: input, skillNames: [], attachmentIds: [], dismissedAlwaysSkills: [] }
-          : input || {};
-        const line = String(message.text || "");
-        if (!line.trim() && !(message.attachmentIds || []).length && !(message.skillNames || []).length) return;
+  const actions = useMemo(() => {
+    const snapshotPendingQueues = () => {
+      const out = {};
+      for (const [sid, queue] of pendingQueueRef.current) {
+        out[sid] = queue.map((item) => String(item.message.text || ""));
+      }
+      return out;
+    };
+
+    const runSubmitPrompt = async (input, options = {}) => {
+      const sessionId = options.sessionId || stateRef.current.currentSessionId;
+      const message = typeof input === "string"
+        ? { text: input, skillNames: [], attachmentIds: [], dismissedAlwaysSkills: [] }
+        : input || {};
+      const line = String(message.text || "");
+      if (!line.trim() && !(message.attachmentIds || []).length && !(message.skillNames || []).length) return;
         const selectedSkillBadges = [
           ...new Set(
             (Array.isArray(message.skillNames) ? message.skillNames : [])
@@ -3071,16 +3121,16 @@ export function AppProvider({ children }) {
         if (stateRef.current.currentView !== "chat" && !options.stayInView)
           update({ currentView: "chat" });
         const userMessageId = addMessage({
-          role: "you",
-          text: line,
-          skillBadges: selectedSkillBadges,
-          attachments: Array.isArray(options.attachments)
-            ? options.attachments
-            : Array.isArray(message.attachments)
-              ? message.attachments
-              : [],
-          timestamp: new Date().toISOString(),
-        });
+              role: "you",
+              text: line,
+              skillBadges: selectedSkillBadges,
+              attachments: Array.isArray(options.attachments)
+                ? options.attachments
+                : Array.isArray(message.attachments)
+                  ? message.attachments
+                  : [],
+              timestamp: new Date().toISOString(),
+            });
         // Sidebar bubbles appear when the conversation starts, not when the
         // empty draft is created/reused.
         setState((prev) => {
@@ -3156,7 +3206,7 @@ export function AppProvider({ children }) {
           }
           if (result?.error)
             throw new Error(result.message || "Request failed");
-          await waitForAcceptedOperation(result, {
+          return await waitForAcceptedOperation(result, {
             sessionId,
             waiters: operationWaitersRef.current,
             earlyResults: earlyOperationResultsRef.current,
@@ -3168,19 +3218,162 @@ export function AppProvider({ children }) {
               ...prev,
               messages: prev.messages.filter((m) => m.id !== waitingId),
             }));
-          addMessage({
-            role: "error",
-            text: `Failed: ${err.message}`,
-            timestamp: new Date().toISOString(),
-            responseStatus: "error",
-            retryPrompt: line,
-            retryable: Boolean(line.trim()),
-          });
+          if (
+            !isAbortRelatedText(err.message) &&
+            err?.name !== "AbortError"
+          ) {
+            addMessage({
+              role: "error",
+              text: `Failed: ${err.message}`,
+              timestamp: new Date().toISOString(),
+              responseStatus: "error",
+              retryPrompt: line,
+              retryable: Boolean(line.trim()),
+            });
+          }
           update({ busy: false, live: false });
           throw err;
         }
-        });
-      },
+    };
+
+    const submitRef = { current: null };
+    const drainQueue = (sessionId) => {
+      const queueRef_ = pendingQueueRef.current;
+      const queue = (queueRef_.get(sessionId) || []).slice();
+      const next = queue.shift();
+      if (!next) {
+        queueRef_.delete(sessionId);
+        update({ pendingQueues: snapshotPendingQueues() });
+        return;
+      }
+      queueRef_.set(sessionId, queue);
+      update({ pendingQueues: snapshotPendingQueues() });
+      void submitRef.current?.(next.message, {
+        ...next.options,
+        sessionId,
+        __queued: true,
+      }).catch(() => {});
+    };
+    drainQueueRef.current = drainQueue;
+
+    const submit = async (input, options = {}) => {
+        const sessionId = options.sessionId || stateRef.current.currentSessionId;
+        const message = typeof input === "string"
+          ? { text: input, skillNames: [], attachmentIds: [], dismissedAlwaysSkills: [] }
+          : input || {};
+        const line = String(message.text || "");
+        if (!line.trim() && !(message.attachmentIds || []).length && !(message.skillNames || []).length) return;
+        const queued = options.__queued === true;
+        const priority = options.priority === true || message.priority === true;
+        const sessionBusy =
+          sessionOperationsRef.current.has(sessionId) ||
+          (stateRef.current.currentSessionId === sessionId &&
+            (stateRef.current.busy || stateRef.current.live)) ||
+          ACTIVE_SESSION_STATUSES.has(
+            stateRef.current.sessionRuntimeById?.[sessionId]?.status,
+          );
+        // While a turn is already running for this session, keep the prompt in
+        // the composer queue (Cursor-style) instead of sending it into the
+        // transcript. Enter appends; jump aborts the current turn and drains.
+        if (!queued && sessionBusy) {
+          if (stateRef.current.currentView !== "chat" && !options.stayInView) {
+            update({ currentView: "chat" });
+          }
+          const queue = pendingQueueRef.current.get(sessionId) || [];
+          const queuedItem = {
+            message,
+            options: { ...options, __queued: true, priority: false },
+          };
+          if (priority) queue.unshift(queuedItem);
+          else queue.push(queuedItem);
+          pendingQueueRef.current.set(sessionId, queue);
+          update({ pendingQueues: snapshotPendingQueues() });
+          return;
+        }
+        let skipDrain = false;
+        try {
+          const result = await runSessionOperation(
+            sessionOperationsRef.current,
+            sessionId,
+            () => runSubmitPrompt(input, options),
+          );
+          if (isAbortRelatedResult(result)) skipDrain = true;
+          return result;
+        } catch (err) {
+          if (
+            isAbortRelatedText(err?.message) ||
+            err?.name === "AbortError"
+          ) {
+            skipDrain = true;
+          }
+          throw err;
+        } finally {
+          if (!skipDrain) drainQueue(sessionId);
+        }
+    };
+    submitRef.current = submit;
+
+    const removeQueuedPrompt = (index, sessionId = stateRef.current.currentSessionId) => {
+      const queue = (pendingQueueRef.current.get(sessionId) || []).slice();
+      const at = Number(index);
+      if (!Number.isInteger(at) || at < 0 || at >= queue.length) return;
+      queue.splice(at, 1);
+      if (queue.length) pendingQueueRef.current.set(sessionId, queue);
+      else pendingQueueRef.current.delete(sessionId);
+      update({ pendingQueues: snapshotPendingQueues() });
+    };
+
+    const moveQueuedPrompt = (index, delta, sessionId = stateRef.current.currentSessionId) => {
+      const queue = (pendingQueueRef.current.get(sessionId) || []).slice();
+      const at = Number(index);
+      const step = Number(delta);
+      const next = at + step;
+      if (
+        !Number.isInteger(at) ||
+        !Number.isInteger(step) ||
+        step === 0 ||
+        at < 0 ||
+        at >= queue.length ||
+        next < 0 ||
+        next >= queue.length
+      ) {
+        return;
+      }
+      const [item] = queue.splice(at, 1);
+      queue.splice(next, 0, item);
+      pendingQueueRef.current.set(sessionId, queue);
+      update({ pendingQueues: snapshotPendingQueues() });
+    };
+
+    const jumpQueuedPrompt = (index, sessionId = stateRef.current.currentSessionId) => {
+      const queue = (pendingQueueRef.current.get(sessionId) || []).slice();
+      const at = Number(index);
+      if (!Number.isInteger(at) || at < 0 || at >= queue.length) return;
+      if (at > 0) {
+        const [item] = queue.splice(at, 1);
+        queue.unshift(item);
+        pendingQueueRef.current.set(sessionId, queue);
+        update({ pendingQueues: snapshotPendingQueues() });
+      }
+      const sessionBusy =
+        sessionOperationsRef.current.has(sessionId) ||
+        (stateRef.current.currentSessionId === sessionId &&
+          (stateRef.current.busy || stateRef.current.live)) ||
+        ACTIVE_SESSION_STATUSES.has(
+          stateRef.current.sessionRuntimeById?.[sessionId]?.status,
+        );
+      if (sessionBusy) {
+        void abortFnRef.current?.();
+        return;
+      }
+      drainQueue(sessionId);
+    };
+
+    return {
+      submit,
+      removeQueuedPrompt,
+      moveQueuedPrompt,
+      jumpQueuedPrompt,
 
       runChatAction: async (actionName, payload = {}) => {
         const sessionId = stateRef.current.currentSessionId;
@@ -3690,6 +3883,14 @@ export function AppProvider({ children }) {
               });
             }
             await msgPromise;
+            if (options.fromAbortFork) {
+              addMessage({
+                role: "divider",
+                dividerType: "continuation",
+                text: t("continuedInNewSession"),
+                timestamp: new Date().toISOString(),
+              });
+            }
           } else {
             update({ messagesLoading: false });
           }
@@ -4214,8 +4415,8 @@ export function AppProvider({ children }) {
           update({ updateStatus: "error" });
         }
       },
-    }),
-    [
+    };
+  }, [
       activateSessionView,
       addMessage,
       applyTheme,
@@ -4230,6 +4431,9 @@ export function AppProvider({ children }) {
       upsertRuntimeActivity,
     ],
   );
+
+  switchSessionRef.current = actions.switchSession;
+  abortFnRef.current = actions.abort;
 
   const projectedSessions = useMemo(
     () => projectSessionRuntime(state.sessions, state.sessionRuntimeById),

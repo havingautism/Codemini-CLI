@@ -1,6 +1,7 @@
 import { matchesKey, truncateToWidth, visibleWidth } from '@earendil-works/pi-tui';
 
 import { bold, color } from '../theme.js';
+import { paintBackground } from './messages.js';
 
 const LOGO = [
   ' ██████╗ ██████╗ ██████╗ ███████╗███╗   ███╗██╗███╗   ██╗██╗',
@@ -108,6 +109,7 @@ export class ModeHome {
     lines.push('', center(truncateToWidth(meta, panelWidth, '…'), width));
     if (height >= 18) lines.push(center(`${color.dim('⌂')} ${color.muted(truncateToWidth(workspace, panelWidth - 2, '…'))}`, width));
     lines.push('', center(color.dim(this.loading ? this.copy.entering : this.copy.homeKeys), width));
-    return [...Array(Math.max(0, Math.floor((height - lines.length) / 2))).fill(''), ...lines];
+    const padding = [...Array(Math.max(0, Math.floor((height - lines.length) / 2))).fill(''), ...lines];
+    return padding.map((line) => paintBackground(line, width));
   }
 }

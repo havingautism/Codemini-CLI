@@ -51,6 +51,7 @@ import { getBuiltinTools } from './tools.js';
 import { canonicalShellToolName, shellToolName, toolNameAllowed } from './shell-tool-name.js';
 import { createToolRuntime } from './tool-runtime.js';
 import {
+  createContinuationSession,
   deriveSessionTitle,
   loadSession,
   listSessions,
@@ -4614,6 +4615,7 @@ async function askModel({
   titleCoordinator = null,
   projectIsGit = Boolean(config?.runtime?.project_is_git),
   onExecutionModeSync = null,
+  onContinuationSession = null,
   workspaceRoot = process.cwd(),
   selectedSkillNames = [],
   skillHooksSession = null,
@@ -4739,6 +4741,11 @@ async function askModel({
   const projectContextPromise = (config.context?.project_context_enabled !== false)
     ? buildProjectContextSnippet(workspaceRoot, modelInputText).catch(() => '')
     : Promise.resolve('');
+  // Snapshot lengths before this turn appends anything. Compacted is often
+  // shorter than session.messages, so abort cleanup must not reuse the session
+  // index as a compacted index.
+  const turnStartMessageCount = session.messages.length;
+  const turnStartCompactedCount = compacted ? compacted.length : 0;
   if (text) {
     const modelExtra =
       typeof modelText === 'string' && modelText && modelText !== text
@@ -5357,6 +5364,66 @@ async function askModel({
     if (onAgentEvent) onAgentEvent(event);
   };
 
+  // Freeze the aborted turn on the current session, then fork a continuation
+  // session that only keeps completed history. The next prompt continues there
+  // instead of appending under the stopped turn.
+  const discardAbortedTurnMessages = async () => {
+    const addedCount = session.messages.length - turnStartMessageCount;
+    if (addedCount <= 0) return false;
+    if (session.messages[turnStartMessageCount]?.role === 'user') {
+      session.messages[turnStartMessageCount] = {
+        ...session.messages[turnStartMessageCount],
+        local_only: true,
+        model_visible: false
+      };
+      session.messages.splice(turnStartMessageCount + 1);
+    } else {
+      session.messages.splice(turnStartMessageCount);
+    }
+    if (compacted) {
+      const compactedAdded = compacted.length - turnStartCompactedCount;
+      if (compactedAdded > 0) {
+        if (compacted[turnStartCompactedCount]?.role === 'user') {
+          compacted[turnStartCompactedCount] = {
+            ...compacted[turnStartCompactedCount],
+            local_only: true,
+            model_visible: false
+          };
+          compacted.splice(turnStartCompactedCount + 1);
+        } else {
+          compacted.splice(turnStartCompactedCount);
+        }
+        if (onCompactedUpdate) onCompactedUpdate(compacted);
+      }
+    }
+    if (persistSession) {
+      session.model = model || config.model.name;
+      session.mode = executionMode || config.execution?.mode || 'normal';
+      await saveSession(session).catch(() => {});
+    }
+    return true;
+  };
+
+  const forkContinuationAfterAbort = async () => {
+    const discarded = await discardAbortedTurnMessages();
+    if (!persistSession || !discarded) return null;
+    const continuation = await createContinuationSession(session, {
+      messages: (session.messages || []).slice(0, turnStartMessageCount),
+      compactView: compacted ? compacted.slice(0, turnStartCompactedCount) : null
+    });
+    if (typeof onContinuationSession === 'function') {
+      await onContinuationSession(continuation);
+    }
+    if (onAgentEvent) {
+      onAgentEvent({
+        type: 'session:forked',
+        sessionId: continuation.id,
+        previousSessionId: session.id
+      });
+    }
+    return continuation;
+  };
+
   const sessionLenBeforeLoop = session.messages.length;
   const toolRuntime = createToolRuntime({
     definitions: filteredDefinitions,
@@ -5366,103 +5433,113 @@ async function askModel({
     displayLabels: displayLabels || {},
     maxParallelCalls: toolConfig.tools?.max_parallel_calls
   });
-  const loopResult = await runAgentLoop({
-    systemPrompt: effectiveSystemPrompt,
-    userPrompt: loopUserPrompt,
-    model: model || config.model.name,
+  let loopResult;
+  try {
+    loopResult = await runAgentLoop({
+      systemPrompt: effectiveSystemPrompt,
+      userPrompt: loopUserPrompt,
+      model: model || config.model.name,
+      toolRuntime,
+      initialMessages: initialMessagesForModel,
+      onEvent: wrappedAgentEvent,
+      executionMode: normalizedExecutionMode,
+      approvalMode: (() => {
+        const sandbox = resolveSandboxPolicy({
+          config,
+          cwd: workspaceRoot,
+          platform: process.platform,
+        });
+        // Read-only OS sandbox already blocks writes — skip soft approval prompts.
+        if (sandbox.enabled && sandbox.mode === 'read-only') return 'full_access';
+        return config.execution?.approval_mode || 'auto';
+      })(),
+      projectIsGit: resolveApprovalProjectIsGit({
+        projectIsGit,
+        changeTrackerEnabled: changeTracker?.mode === 'git-oplog',
+        workspaceHasGit: Boolean(config?.runtime?.project_is_git)
+      }),
+      alwaysAllowTools: effectiveAlwaysAllowTools,
+      toolResultMaxChars: config.context?.tool_result_max_chars || 12000,
+      toolResultStore,
+      getTasks: () => normalizeTodos(session.todos),
+      requestToolApproval,
+      signal,
+      skipAnalysisNudge,
+      config: toolConfig,
+      skillHooksSession,
+      onSkillLoaded,
+      workspaceRoot,
+      changeTracker: changeTracker?.enabled
+        ? {
+            begin: (meta) => beginGitOplogCapture(changeTracker, meta),
+            capture: (scope, meta) => captureGitOplogChanges(changeTracker, scope, meta)
+          }
+        : null,
+      requestCompletion: async ({ messages, tools, model: selectedModel }) => {
+        let started = false;
+        const startAssistantStream = () => {
+          if (!started) {
+            started = true;
+            wrappedAgentEvent({
+              type: 'assistant:start',
+              sdkProvider: config.sdk?.provider === 'anthropic'
+                ? 'anthropic'
+                : 'openai-compatible',
+              model: selectedModel
+            });
+          }
+        };
 
+        const result = await createChatCompletionStream({
+          sdkProvider: config.sdk?.provider,
+          baseUrl: config.gateway.base_url,
+          apiKey: config.gateway.api_key,
+          model: selectedModel,
+          messages,
+          tools,
+          reasoningEffort: resolveConfiguredReasoningEffort({
+            enabled: config.model?.reasoning_enabled,
+            effort: config.model?.reasoning_effort
+          }),
+          timeoutMs: config.gateway.timeout_ms || 1800000,
+          maxRetries: config.gateway.max_retries ?? 2,
+          maxTokens: (() => {
+            const configured = Number(config.model?.max_output_tokens);
+            if (Number.isFinite(configured) && configured > 0) return Math.floor(configured);
+            return config.sdk?.provider === 'anthropic' ? 16384 : undefined;
+          })(),
+          signal,
+          onTextDelta: (delta) => {
+            startAssistantStream();
+            wrappedAgentEvent({ type: 'assistant:delta', text: delta });
+          },
+          onReasoningDelta: (delta) => {
+            startAssistantStream();
+            wrappedAgentEvent({ type: 'assistant:reasoning_delta', text: delta });
+          },
+          onToolCallDelta: (toolCall) => {
+            startAssistantStream();
+            wrappedAgentEvent({ type: 'assistant:tool_call_delta', toolCall });
+          }
+        });
 
-    toolRuntime,
-    initialMessages: initialMessagesForModel,
-    onEvent: wrappedAgentEvent,
-    executionMode: normalizedExecutionMode,
-    approvalMode: (() => {
-      const sandbox = resolveSandboxPolicy({
-        config,
-        cwd: workspaceRoot,
-        platform: process.platform,
-      });
-      // Read-only OS sandbox already blocks writes — skip soft approval prompts.
-      if (sandbox.enabled && sandbox.mode === 'read-only') return 'full_access';
-      return config.execution?.approval_mode || 'auto';
-    })(),
-    projectIsGit: resolveApprovalProjectIsGit({
-      projectIsGit,
-      changeTrackerEnabled: changeTracker?.mode === 'git-oplog',
-      workspaceHasGit: Boolean(config?.runtime?.project_is_git)
-    }),
-    alwaysAllowTools: effectiveAlwaysAllowTools,
-    toolResultMaxChars: config.context?.tool_result_max_chars || 12000,
-    toolResultStore,
-    getTasks: () => normalizeTodos(session.todos),
-    requestToolApproval,
-    signal,
-    skipAnalysisNudge,
-    config: toolConfig,
-    skillHooksSession,
-    onSkillLoaded,
-    workspaceRoot,
-    changeTracker: changeTracker?.enabled
-      ? {
-          begin: (meta) => beginGitOplogCapture(changeTracker, meta),
-          capture: (scope, meta) => captureGitOplogChanges(changeTracker, scope, meta)
-        }
-      : null,
-    requestCompletion: async ({ messages, tools, model: selectedModel }) => {
-      let started = false;
-      const startAssistantStream = () => {
-        if (!started) {
-          started = true;
-          wrappedAgentEvent({
-            type: 'assistant:start',
-            sdkProvider: config.sdk?.provider === 'anthropic'
-              ? 'anthropic'
-              : 'openai-compatible',
-            model: selectedModel
-          });
-        }
-      };
-
-      const result = await createChatCompletionStream({
-        sdkProvider: config.sdk?.provider,
-        baseUrl: config.gateway.base_url,
-        apiKey: config.gateway.api_key,
-        model: selectedModel,
-        messages,
-        tools,
-        reasoningEffort: resolveConfiguredReasoningEffort({
-          enabled: config.model?.reasoning_enabled,
-          effort: config.model?.reasoning_effort
-        }),
-        timeoutMs: config.gateway.timeout_ms || 1800000,
-        maxRetries: config.gateway.max_retries ?? 2,
-        maxTokens: (() => {
-          const configured = Number(config.model?.max_output_tokens);
-          if (Number.isFinite(configured) && configured > 0) return Math.floor(configured);
-          return config.sdk?.provider === 'anthropic' ? 16384 : undefined;
-        })(),
-        signal,
-        onTextDelta: (delta) => {
+        if (!started && !result?.incomplete && (result?.text || result?.toolCalls?.length)) {
           startAssistantStream();
-          wrappedAgentEvent({ type: 'assistant:delta', text: delta });
-        },
-        onReasoningDelta: (delta) => {
-          startAssistantStream();
-          wrappedAgentEvent({ type: 'assistant:reasoning_delta', text: delta });
-        },
-        onToolCallDelta: (toolCall) => {
-          startAssistantStream();
-          wrappedAgentEvent({ type: 'assistant:tool_call_delta', toolCall });
         }
-      });
 
-      if (!started && !result?.incomplete && (result?.text || result?.toolCalls?.length)) {
-        startAssistantStream();
+        return result;
       }
-
-      return result;
+    });
+  } catch (error) {
+    if (signal?.aborted || error?.name === 'AbortError') {
+      await forkContinuationAfterAbort();
     }
-  });
+    throw error;
+  }
+  if (signal?.aborted || loopResult?.aborted) {
+    await forkContinuationAfterAbort();
+    return { text: '', aborted: true };
+  }
 
   if (persistSession) {
     // Sync new messages to compacted view
@@ -7823,6 +7900,11 @@ export async function createChatRuntime({
       ? { ...(currentSession.compact || {}), view, timestamp: new Date().toISOString(), ...meta }
       : null;
   };
+  const adoptContinuationSession = (next) => {
+    if (!next?.id || next.id === currentSession?.id) return;
+    currentSession = next;
+    compactedForModel = Array.isArray(next.compact?.view) ? next.compact.view : null;
+  };
   const appendSessionMessage = (message) => {
     currentSession.messages.push(message);
     if (compactedForModel) {
@@ -8167,6 +8249,7 @@ export async function createChatRuntime({
           backupManager,
           titleCoordinator,
           onExecutionModeSync: syncExecutionModeWithSession,
+          onContinuationSession: adoptContinuationSession,
           workspaceRoot: root,
           skillHooksSession
         });
@@ -8610,6 +8693,7 @@ export async function createChatRuntime({
       backupManager,
       titleCoordinator,
       onExecutionModeSync: syncExecutionModeWithSession,
+      onContinuationSession: adoptContinuationSession,
       workspaceRoot: root,
       selectedSkillNames: [
         ...(Array.isArray(options?.selectedSkillNames) ? options.selectedSkillNames : []),

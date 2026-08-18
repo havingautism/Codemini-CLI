@@ -196,6 +196,43 @@ test('layout keeps only the latest todo card outside the process fold', () => {
   assert.equal(layout.items.at(-1).group.type, 'text');
 });
 
+test('layout does not fold while the turn is still in progress', () => {
+  const layout = layoutAnswerProcessWithPlans(
+    [
+      { type: 'thinking', text: 'hmm' },
+      { type: 'tools', cards: [{ id: 'r1', name: 'read', status: 'done' }] },
+      { type: 'text', text: 'partial body' },
+    ],
+    null,
+    { fold: false },
+  );
+  assert.equal(layout.hasFold, false);
+  assert.equal(layout.items.every((item) => item.type === 'group'), true);
+  assert.equal(layout.items[0].group.type, 'thinking');
+  assert.equal(layout.items.at(-1).group.type, 'text');
+});
+
+test('layout keeps trailing tools after the last body instead of unfolding', () => {
+  const layout = layoutAnswerProcessWithPlans([
+    { type: 'thinking', text: 'hmm' },
+    { type: 'tools', cards: [{ id: 'r1', name: 'read', status: 'done' }] },
+    { type: 'text', text: 'here is the answer' },
+    { type: 'thinking', text: 'more thought' },
+    { type: 'tools', cards: [{ id: 'r2', name: 'read', status: 'running' }] },
+  ]);
+  assert.equal(layout.hasFold, true);
+  assert.equal(layout.items[0].type, 'fold');
+  assert.equal(
+    layout.items[0].groups.some((group) => group.type === 'thinking'),
+    true,
+  );
+  const visible = layout.items.filter((item) => item.type === 'group');
+  assert.equal(visible[0].group.type, 'text');
+  assert.match(visible[0].group.text, /answer/);
+  assert.equal(visible[1].group.type, 'thinking');
+  assert.equal(visible[2].group.cards[0].id, 'r2');
+});
+
 test('live layout reports a persistent task card even before a final answer exists', () => {
   const layout = layoutAnswerProcessWithPlans([
     { type: 'process', groups: [{ type: 'tools', cards: [

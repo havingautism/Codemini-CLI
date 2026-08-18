@@ -182,8 +182,20 @@ function peelTrailingTextGroups(pending) {
   return textGroups;
 }
 
+function findFinalAnswerIndex(groups = []) {
+  for (let index = groups.length - 1; index >= 0; index -= 1) {
+    const group = groups[index];
+    if (group?.type === "text" && String(group.text || "").trim()) return index;
+  }
+  return -1;
+}
+
 /** Fold process groups; keep create_plan cards in chronological order before the final answer. */
-export function layoutAnswerProcessWithPlans(groups = [], fallbackStartedAt = null) {
+export function layoutAnswerProcessWithPlans(
+  groups = [],
+  fallbackStartedAt = null,
+  { fold = true } = {},
+) {
   const todoCards = [];
   const source = [];
   for (const group of Array.isArray(groups) ? groups : []) {
@@ -192,10 +204,9 @@ export function layoutAnswerProcessWithPlans(groups = [], fallbackStartedAt = nu
     if (extracted.rest) source.push(extracted.rest);
   }
   const latestTodo = todoCards.at(-1);
-  const finalAnswer = source.at(-1);
-  const hasFinalAnswer =
-    finalAnswer?.type === "text" && String(finalAnswer.text || "").trim();
-  const hasFoldCandidate = Boolean(hasFinalAnswer && source.length > 1);
+  const answerIndex = findFinalAnswerIndex(source);
+  const finalAnswer = answerIndex >= 0 ? source[answerIndex] : null;
+  const hasFoldCandidate = Boolean(fold && finalAnswer && answerIndex > 0);
 
   if (!hasFoldCandidate) {
     return {
@@ -209,7 +220,8 @@ export function layoutAnswerProcessWithPlans(groups = [], fallbackStartedAt = nu
     };
   }
 
-  const beforeAnswer = source.slice(0, -1);
+  const beforeAnswer = source.slice(0, answerIndex);
+  const trailing = source.slice(answerIndex + 1);
   const items = [];
   let pendingProcess = [];
 
@@ -252,6 +264,9 @@ export function layoutAnswerProcessWithPlans(groups = [], fallbackStartedAt = nu
     items.push({ type: "group", group: { type: "tools", cards: [latestTodo] } });
   }
   items.push({ type: "group", group: finalAnswer });
+  for (const group of trailing) {
+    items.push({ type: "group", group });
+  }
 
   const foldGroups = items
     .filter((item) => item.type === "fold")

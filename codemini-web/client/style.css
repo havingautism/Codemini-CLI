@@ -1977,6 +1977,100 @@ body {
   }
 }
 
+.codemini-input-queue {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid color-mix(in srgb, var(--surface-edge) 85%, transparent);
+}
+
+.codemini-input-queue-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 2px;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.3;
+}
+
+.codemini-input-queue-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 7.5rem;
+  overflow-y: auto;
+}
+
+.codemini-input-queue-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 6px 8px;
+  border-radius: var(--radius-lg);
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.codemini-input-queue-item--next {
+  color: var(--text-primary);
+  background: color-mix(in srgb, var(--interactive-hover) 88%, transparent);
+  box-shadow: inset 0 0 0 1px var(--surface-edge);
+}
+
+.codemini-input-queue-dot {
+  width: 6px;
+  height: 6px;
+  flex-shrink: 0;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text-muted) 55%, transparent);
+}
+
+.codemini-input-queue-item--next .codemini-input-queue-dot {
+  background: var(--accent-purple);
+}
+
+.codemini-input-queue-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  flex-shrink: 0;
+}
+
+.codemini-input-queue-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.codemini-input-queue-action:hover,
+.codemini-input-queue-action:focus-visible {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.codemini-input-queue-action:disabled {
+  opacity: 0.32;
+  cursor: default;
+}
+
+.codemini-input-queue-action:disabled:hover {
+  background: transparent;
+  color: var(--text-muted);
+}
+
 .codemini-input-chip {
   border: 0;
   border-radius: var(--radius-lg);

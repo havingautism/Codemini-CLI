@@ -2579,7 +2579,16 @@ async function main() {
       }
       const sessionBridge = new RuntimeBridge(runtime, {
         sessionId,
-        onEvent: eventBroker.publish,
+        onEvent: (event) => {
+          if (event?.type === "session:forked") {
+            const previousId = String(event.previousSessionId || "").trim();
+            const nextId = String(event.nextSessionId || "").trim();
+            if (previousId && nextId && previousId !== nextId) {
+              pool.rekeySession(previousId, nextId);
+            }
+          }
+          eventBroker.publish(event);
+        },
         onLifecycle: (lifecycle) => {
           const status = lifecycle?.status;
           if (status === "running") return;

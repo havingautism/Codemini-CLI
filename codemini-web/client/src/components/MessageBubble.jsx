@@ -2258,8 +2258,9 @@ export const MessageBubble = memo(function MessageBubble({
       layoutAnswerProcessWithPlans(
         renderGroups,
         message?.timestamp || message?.createdAt,
+        { fold: messageComplete },
       ),
-    [message?.createdAt, message?.timestamp, renderGroups],
+    [message?.createdAt, message?.timestamp, messageComplete, renderGroups],
   );
   const hasAnswerFold = answerLayout.hasFold;
   const preAnswerDuration = answerLayout.durationMs;
@@ -2547,7 +2548,7 @@ export const MessageBubble = memo(function MessageBubble({
           <div className="flex flex-col">
             <SkillActivityList badges={skillBadges || []} />
 
-            {(answerLayout.hasTodo || (messageComplete && hasAnswerFold)) ? (
+            {(answerLayout.hasTodo || hasAnswerFold) ? (
               <>
                 {answerLayout.items.map((item, i) => {
                   if (item.type === "fold") {
