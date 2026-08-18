@@ -1135,6 +1135,7 @@ export function AppProvider({ children }) {
   const drainQueueRef = useRef(null);
   const abortContinueInPlaceRef = useRef(false);
   const abortFnRef = useRef(null);
+  const jumpQueuedPromptInFlightRef = useRef(false);
 
   const activateSessionView = useCallback((sessionId) => {
     activeMsgRef.current = null;
@@ -2669,6 +2670,21 @@ export function AppProvider({ children }) {
           if (rs?.sessionId && stateRef.current.currentView === "chat") {
             updateRoute("chat", rs.sessionId, { replace: true });
           }
+          // HTTP 202 returns before the turn finishes, so queued prompts wait
+          // here. Skip aborted turns: stop/fork drains after session:forked,
+          // and jump drains itself after continue-in-place abort.
+          if (!isAbortRelatedResult(result)) {
+            stateRef.current = {
+              ...stateRef.current,
+              busy: false,
+              live: false,
+              stage: "idle",
+              stageLabel: "",
+            };
+            drainQueueRef.current?.(
+              event.sessionId || s.currentSessionId,
+            );
+          }
           break;
         }
 
@@ -3331,7 +3347,17 @@ export function AppProvider({ children }) {
           }
           throw err;
         } finally {
-          if (!skipDrain) drainQueue(sessionId);
+          // Chat submit resolves on HTTP 202 while the turn is still running.
+          // Drain only when this session is actually free; otherwise the next
+          // queued prompt would overlap the live turn (or get dropped on busy).
+          const stillBusy =
+            sessionOperationsRef.current.has(sessionId) ||
+            (stateRef.current.currentSessionId === sessionId &&
+              (stateRef.current.busy || stateRef.current.live)) ||
+            ACTIVE_SESSION_STATUSES.has(
+              stateRef.current.sessionRuntimeById?.[sessionId]?.status,
+            );
+          if (!skipDrain && !stillBusy) drainQueue(sessionId);
           abortContinueInPlaceRef.current = false;
         }
     };
@@ -3369,7 +3395,8 @@ export function AppProvider({ children }) {
       update({ pendingQueues: snapshotPendingQueues() });
     };
 
-    const jumpQueuedPrompt = (index, sessionId = stateRef.current.currentSessionId) => {
+    const jumpQueuedPrompt = async (index, sessionId = stateRef.current.currentSessionId) => {
+      if (jumpQueuedPromptInFlightRef.current) return;
       const queue = (pendingQueueRef.current.get(sessionId) || []).slice();
       const at = Number(index);
       if (!Number.isInteger(at) || at < 0 || at >= queue.length) return;
@@ -3379,19 +3406,27 @@ export function AppProvider({ children }) {
         pendingQueueRef.current.set(sessionId, queue);
         update({ pendingQueues: snapshotPendingQueues() });
       }
-      const sessionBusy =
-        sessionOperationsRef.current.has(sessionId) ||
-        (stateRef.current.currentSessionId === sessionId &&
-          (stateRef.current.busy || stateRef.current.live)) ||
-        ACTIVE_SESSION_STATUSES.has(
-          stateRef.current.sessionRuntimeById?.[sessionId]?.status,
-        );
-      if (sessionBusy) {
-        abortContinueInPlaceRef.current = true;
-        void abortFnRef.current?.({ continueInPlace: true });
-        return;
+      // Chat submit resolves on HTTP 202, before the turn finishes, so the
+      // in-flight submit's `finally` will not drain after this abort. Wait for
+      // the pause to land, then send the jumped prompt in the same click.
+      jumpQueuedPromptInFlightRef.current = true;
+      abortContinueInPlaceRef.current = true;
+      try {
+        const sessionBusy =
+          sessionOperationsRef.current.has(sessionId) ||
+          (stateRef.current.currentSessionId === sessionId &&
+            (stateRef.current.busy || stateRef.current.live)) ||
+          ACTIVE_SESSION_STATUSES.has(
+            stateRef.current.sessionRuntimeById?.[sessionId]?.status,
+          );
+        if (sessionBusy) {
+          await abortFnRef.current?.({ continueInPlace: true });
+        }
+        drainQueue(sessionId);
+      } finally {
+        jumpQueuedPromptInFlightRef.current = false;
+        abortContinueInPlaceRef.current = false;
       }
-      drainQueue(sessionId);
     };
 
     return {
@@ -3498,13 +3533,30 @@ export function AppProvider({ children }) {
         } catch {}
         planRunPendingRef.current = false;
         activeMsgRef.current = null;
-        update({
+        const sessionId = stateRef.current.currentSessionId;
+        const previousRuntime = stateRef.current.sessionRuntimeById || {};
+        const abortUi = {
           busy: false,
           live: false,
           stage: "idle",
           stageLabel: "",
           activeMsgId: null,
-        });
+          ...(sessionId
+            ? {
+                sessionRuntimeById: {
+                  ...previousRuntime,
+                  [sessionId]: {
+                    ...previousRuntime[sessionId],
+                    sessionId,
+                    status: "aborted",
+                    busy: false,
+                  },
+                },
+              }
+            : {}),
+        };
+        stateRef.current = { ...stateRef.current, ...abortUi };
+        update(abortUi);
         setState((prev) => {
           const abortedSteps = getAbortedPlanStepIndexes(prev.messages);
           return {
