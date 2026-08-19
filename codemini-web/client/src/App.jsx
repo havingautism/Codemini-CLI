@@ -4,6 +4,7 @@ import React, {
   lazy,
   memo,
   useCallback,
+  useEffect,
   useMemo,
   useState,
 } from "react";
@@ -24,6 +25,8 @@ import { RuntimeActivityStrip } from "@/components/RuntimeActivityStrip.jsx";
 import { SessionPanel } from "@/components/SessionPanel.jsx";
 import { interactiveRequestForSession } from "@/lib/session-ui-state.js";
 import { DotsThree, FolderSimple, GitDiff, List, SidebarSimple, Terminal } from "@phosphor-icons/react";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { TrajectoryPanel } from "@/components/TrajectoryPanel.jsx";
 import "../style.css";
 import "./apple-design.css";
 
@@ -202,6 +205,7 @@ function Shell() {
   });
   const [sideRailOpen, setSideRailOpen] = useState(false);
   const [sideRailTab, setSideRailTab] = useState("files");
+  const [chatPageTab, setChatPageTab] = useState("conversation");
 
   const setSidebarCollapsedAndPersist = useCallback((collapsed) => {
     const value = !!collapsed;
@@ -214,6 +218,9 @@ function Shell() {
   }, []);
   const rs = state.runtimeState || {};
   const currentId = state.currentSessionId || rs.sessionId;
+  useEffect(() => {
+    setChatPageTab("conversation");
+  }, [currentId]);
   const reasoningSyncKey = useMemo(
     () =>
       `${rs.reasoningEnabled !== false ? "1" : "0"}:${rs.reasoningEffort || "auto"}`,
@@ -488,6 +495,20 @@ function Shell() {
                     )}
                   </button>
                 )}
+                <Tabs
+                  value={chatPageTab}
+                  onValueChange={setChatPageTab}
+                  className="min-w-0 shrink-0 gap-0"
+                >
+                  <TabsList variant="line" className="h-8 p-0">
+                    <TabsTrigger value="conversation" className="px-2 text-[13px]">
+                      {t("chatTabConversation")}
+                    </TabsTrigger>
+                    <TabsTrigger value="trajectory" className="px-2 text-[13px]">
+                      {t("trajectory")}
+                    </TabsTrigger>
+                  </TabsList>
+                </Tabs>
               </div>
               <div className="flex items-center gap-1 shrink-0">
                 <button
@@ -542,19 +563,29 @@ function Shell() {
             <div className="flex flex-1 min-h-0 min-w-0 overflow-hidden">
             <div className="codemini-chat-session flex flex-1 flex-col min-h-0 min-w-0 overflow-hidden">
             {/* Chat Panel */}
-            <ChatPanel
-              key={state.currentSessionId || "new-chat"}
-              messages={state.messages}
-              projectCwd={state.projectCwd}
-              skills={state.skills}
-              gitInfo={state.gitInfo}
-              projectIsGit={state.runtimeState?.projectIsGit === true}
-              messagesLoading={state.messagesLoading}
-              isGeneral={state.isGeneral}
-              targetMessageId={state.targetMessageId}
-              onTargetMessageHandled={actions.clearChatMessageTarget}
-              onRetryMessage={retryMessage}
-            />
+            {chatPageTab === "trajectory" ? (
+              <TrajectoryPanel
+                messages={state.messages}
+                runtimeState={state.runtimeState}
+                projectCwd={state.projectCwd}
+                isGeneral={state.isGeneral}
+                sessionId={currentId}
+              />
+            ) : (
+              <ChatPanel
+                key={state.currentSessionId || "new-chat"}
+                messages={state.messages}
+                projectCwd={state.projectCwd}
+                skills={state.skills}
+                gitInfo={state.gitInfo}
+                projectIsGit={state.runtimeState?.projectIsGit === true}
+                messagesLoading={state.messagesLoading}
+                isGeneral={state.isGeneral}
+                targetMessageId={state.targetMessageId}
+                onTargetMessageHandled={actions.clearChatMessageTarget}
+                onRetryMessage={retryMessage}
+              />
+            )}
 
             {/* Plan Review / Input Area */}
             <div className="w-[calc(100%_-_32px)] max-w-[940px] sm:w-[calc(100%_-_48px)] mx-auto mb-2 sm:mb-3 shrink-0 z-30 bg-transparent relative">
