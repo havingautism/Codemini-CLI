@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { getSkillsDir } from './paths.js';
 import { selectSandboxBackend } from './sandbox-probe.js';
 
 export const SANDBOX_MODES = Object.freeze([
@@ -148,6 +149,30 @@ export function writableRootsForMode(policy) {
   const tmp = path.resolve(os.tmpdir());
   if (!roots.includes(tmp)) roots.push(tmp);
   return roots;
+}
+
+/**
+ * Host paths the sandbox may read in addition to the workspace.
+ * Global skills stay available for SKILL.md scripts/references; sessions,
+ * memory, and config stay out.
+ */
+export function readonlySandboxRoots(policy = {}) {
+  const workspace = path.resolve(policy.workspaceRoot || process.cwd());
+  const skillsDir = path.resolve(getSkillsDir());
+  if (pathUnderRoot(skillsDir, workspace)) return [];
+  return [skillsDir];
+}
+
+/**
+ * VM bind mounts for {@link readonlySandboxRoots}. POSIX keeps the host path
+ * so skill package context stays valid; Windows guests use `/codemini-skills`.
+ */
+export function readonlySandboxVolumes(policy = {}) {
+  return readonlySandboxRoots(policy).map((hostPath) => ({
+    hostPath,
+    guestPath: policy.platform === 'win32' ? '/codemini-skills' : hostPath,
+    readonly: true,
+  }));
 }
 
 function pathUnderRoot(targetAbs, rootAbs) {

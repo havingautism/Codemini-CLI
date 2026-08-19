@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto';
 import { EventEmitter } from 'node:events';
+import fs from 'node:fs/promises';
 import { PassThrough } from 'node:stream';
-import { resolveSandboxPolicy } from './sandbox-policy.js';
+import { resolveSandboxPolicy, readonlySandboxVolumes } from './sandbox-policy.js';
 
 const GUEST_WORKSPACE = '/workspace';
 const sandboxCache = new Map();
@@ -49,8 +50,16 @@ async function loadMicrosandbox() {
 }
 
 async function createSandbox({ key, policy, config, port }) {
+  const readonlyVolumes = readonlySandboxVolumes(policy);
   if (testHooks?.createSandbox) {
-    return testHooks.createSandbox({ key, policy, config, port, guestWorkspace: GUEST_WORKSPACE });
+    return testHooks.createSandbox({
+      key,
+      policy,
+      config,
+      port,
+      guestWorkspace: GUEST_WORKSPACE,
+      readonlyVolumes,
+    });
   }
 
   const { NetworkPolicy, Sandbox } = await loadMicrosandbox();
@@ -68,16 +77,26 @@ async function createSandbox({ key, policy, config, port }) {
     .volume(GUEST_WORKSPACE, (mount) => {
       const bound = mount.bind(policy.workspaceRoot).nosuid().nodev();
       return policy.mode === 'read-only' ? bound.readonly() : bound;
-    })
-    .replace();
+    });
 
+  for (const volume of readonlyVolumes) {
+    await fs.mkdir(volume.hostPath, { recursive: true });
+    builder = builder.volume(volume.guestPath, (mount) => (
+      mount.bind(volume.hostPath).nosuid().nodev().readonly()
+    ));
+  }
+
+  builder = builder.replace();
   if (port > 0) builder = builder.portBind('127.0.0.1', port, port);
   return builder.create();
 }
 
 function getSandbox({ policy, config, port = 0 }) {
   const image = String(config?.sandbox?.image || 'node:22-bookworm').trim();
-  const key = [policy.workspaceRoot, policy.mode, image, port || 0].join('|');
+  const readonlyKey = readonlySandboxVolumes(policy)
+    .map((volume) => `${volume.hostPath}>${volume.guestPath}`)
+    .join(',');
+  const key = [policy.workspaceRoot, policy.mode, image, port || 0, readonlyKey].join('|');
   if (!sandboxCache.has(key)) {
     const pending = createSandbox({ key, policy, config, port }).catch((error) => {
       sandboxCache.delete(key);
