@@ -1582,7 +1582,11 @@ function FileChangesSummary({ changes }) {
 
 function UserText({ text }) {
   const match = String(text || "").match(/^(\/([A-Za-z0-9_-]+))(\s+[\s\S]*)?$/);
-  if (!match) return <StreamdownRenderer text={text} streaming={false} />;
+  if (!match) {
+    return (
+      <StreamdownRenderer text={text} streaming={false} inlineEmbeds={false} />
+    );
+  }
 
   const [, token, skillName, rest = ""] = match;
   if (skillName === "dream") {
@@ -1613,7 +1617,9 @@ function UserText({ text }) {
     );
   }
 
-  return <StreamdownRenderer text={text} streaming={false} />;
+  return (
+    <StreamdownRenderer text={text} streaming={false} inlineEmbeds={false} />
+  );
 }
 
 function UserSkillChips({ badges = [], className }) {
