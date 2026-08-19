@@ -120,7 +120,8 @@ export function buildUsagePanelModel(usage) {
   const reasoning = Math.max(0, Math.round(Number(usage.reasoningOutputTokens || 0)));
   const requests = Math.max(0, Math.round(Number(usage.requests || 0)));
   const total = Math.max(0, Math.round(Number(usage.totalTokens || 0))) || input + output;
-  const tokens = { input, output, cached, cacheMiss, cacheWrite, reasoning, requests, total };
+  const barInput = cacheMiss > 0 ? cacheMiss : Math.max(0, input - cached);
+  const tokens = { input, output, cached, cacheMiss, cacheWrite, reasoning, requests, total, barInput };
 
   const timing = sanitizeTiming(usage.timing);
   if (!timing?.requestSentAt || !timing.firstTokenAt || !timing.completedAt) {

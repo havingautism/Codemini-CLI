@@ -191,3 +191,35 @@ test('buildUsagePanelModel omits timing when usage has no timestamps', () => {
   assert.equal(model.tokens.reasoning, 3);
   assert.equal(model.tokens.requests, 2);
 });
+
+test('buildUsagePanelModel barInput excludes cached tokens already counted in input', () => {
+  const cachedExceedsInput = buildUsagePanelModel({
+    inputTokens: 8884,
+    outputTokens: 490,
+    totalTokens: 57246,
+    cachedInputTokens: 47872,
+  });
+  assert.equal(cachedExceedsInput.tokens.input, 8884);
+  assert.equal(cachedExceedsInput.tokens.cached, 47872);
+  assert.equal(cachedExceedsInput.tokens.barInput, 0);
+
+  const partialCache = buildUsagePanelModel({
+    inputTokens: 100,
+    outputTokens: 10,
+    totalTokens: 110,
+    cachedInputTokens: 40,
+  });
+  assert.equal(partialCache.tokens.input, 100);
+  assert.equal(partialCache.tokens.cached, 40);
+  assert.equal(partialCache.tokens.barInput, 60);
+
+  const withCacheMiss = buildUsagePanelModel({
+    inputTokens: 100,
+    outputTokens: 10,
+    totalTokens: 110,
+    cachedInputTokens: 40,
+    cacheMissInputTokens: 55,
+  });
+  assert.equal(withCacheMiss.tokens.cacheMiss, 55);
+  assert.equal(withCacheMiss.tokens.barInput, 55);
+});

@@ -119,8 +119,7 @@ import { normalizeTodos } from './todo-state.js';
 import {
   attachTimingToUsage,
   createStreamTimingTracker,
-  mergeTiming,
-  sanitizeTiming
+  mergeTiming
 } from './usage-timing.js';
 import { isGeneralWorkspaceProjectDir, normalizeProjectDirKey } from './webui-sidebar-config.js';
 import {

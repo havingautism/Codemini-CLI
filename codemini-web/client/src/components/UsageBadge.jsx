@@ -78,7 +78,7 @@ function MetricRow({ label, value }) {
 function UsagePanel({ model }) {
   const { tokens, timing } = model;
   const tokenSegments = [
-    { key: "input", value: tokens.input, className: "bg-(--accent-orange)" },
+    { key: "input", value: tokens.barInput, className: "bg-(--accent-orange)" },
     { key: "output", value: tokens.output, className: "bg-(--accent-blue)" },
     { key: "cached", value: tokens.cached, className: "bg-(--accent-green)" },
   ];
@@ -95,6 +95,8 @@ function UsagePanel({ model }) {
   ].filter(Boolean);
 
   const waitingPct = timing ? Math.min(100, Math.max(0, timing.waitingRatio * 100)) : 0;
+  const generatingPct = Math.max(0, 100 - waitingPct);
+  const showGeneratingSegment = timing && timing.generatingMs > 0 && generatingPct > 0;
 
   return (
     <div className="flex w-[280px] flex-col gap-3 text-left text-[11px] leading-5">
@@ -125,8 +127,12 @@ function UsagePanel({ model }) {
           <div className="flex flex-col gap-1">
             <div className="relative h-6">
               <div className="absolute inset-x-0 top-2 flex h-2 overflow-hidden rounded-full">
-                <span className="bg-(--text-muted)" style={{ width: `${waitingPct}%` }} />
-                <span className="flex-1 bg-(--accent-blue)" />
+                {waitingPct > 0 ? (
+                  <span className="bg-(--text-muted)" style={{ width: `${waitingPct}%` }} />
+                ) : null}
+                {showGeneratingSegment ? (
+                  <span className="bg-(--accent-blue)" style={{ width: `${generatingPct}%` }} />
+                ) : null}
               </div>
               <span className="absolute left-0 top-0 text-[10px] text-(--text-muted)">
                 {t("usageRequestSent")}
