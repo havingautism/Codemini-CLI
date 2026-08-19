@@ -71,8 +71,10 @@ export function createStreamTimingTracker(now = () => new Date()) {
       if (!toolCallAt) toolCallAt = now().toISOString();
     },
     finish() {
-      if (!timing.firstTokenAt && toolCallAt) timing.firstTokenAt = toolCallAt;
-      timing.completedAt = now().toISOString();
+      if (!timing.completedAt) {
+        if (!timing.firstTokenAt && toolCallAt) timing.firstTokenAt = toolCallAt;
+        timing.completedAt = now().toISOString();
+      }
       return sanitizeTiming(timing);
     },
     snapshot() {

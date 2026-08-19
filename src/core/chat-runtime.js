@@ -116,7 +116,12 @@ import {
 import { normalizePlanState } from './plan-state.js';
 import { normalizeSpecState } from './spec-state.js';
 import { normalizeTodos } from './todo-state.js';
-import { mergeTiming } from './usage-timing.js';
+import {
+  attachTimingToUsage,
+  createStreamTimingTracker,
+  mergeTiming,
+  sanitizeTiming
+} from './usage-timing.js';
 import { isGeneralWorkspaceProjectDir, normalizeProjectDirKey } from './webui-sidebar-config.js';
 import {
   attachReflectTargets,
@@ -5533,45 +5538,69 @@ async function askModel({
             });
           }
         };
-
-        const result = await createChatCompletionStream({
-          sdkProvider: config.sdk?.provider,
-          baseUrl: config.gateway.base_url,
-          apiKey: config.gateway.api_key,
-          model: selectedModel,
-          messages,
-          tools,
-          reasoningEffort: resolveConfiguredReasoningEffort({
-            enabled: config.model?.reasoning_enabled,
-            effort: config.model?.reasoning_effort
-          }),
-          timeoutMs: config.gateway.timeout_ms || 1800000,
-          maxRetries: config.gateway.max_retries ?? 2,
-          maxTokens: (() => {
-            const configured = Number(config.model?.max_output_tokens);
-            if (Number.isFinite(configured) && configured > 0) return Math.floor(configured);
-            return config.sdk?.provider === 'anthropic' ? 16384 : undefined;
-          })(),
-          signal,
-          onTextDelta: (delta) => {
-            startAssistantStream();
-            wrappedAgentEvent({ type: 'assistant:delta', text: delta });
-          },
-          onReasoningDelta: (delta) => {
-            startAssistantStream();
-            wrappedAgentEvent({ type: 'assistant:reasoning_delta', text: delta });
-          },
-          onToolCallDelta: (toolCall) => {
-            startAssistantStream();
-            wrappedAgentEvent({ type: 'assistant:tool_call_delta', toolCall });
+        const tracker = createStreamTimingTracker();
+        const applyTiming = (result) => {
+          const timing = tracker.finish();
+          if (!timing) return result;
+          if (result && typeof result === 'object') {
+            return {
+              ...result,
+              usage: attachTimingToUsage(result.usage, timing)
+            };
           }
-        });
+          if (activeAssistantIndex >= 0 && session.messages[activeAssistantIndex]) {
+            const current = session.messages[activeAssistantIndex];
+            current.usage = attachTimingToUsage(current.usage, timing);
+          }
+          return result;
+        };
 
-        if (!started && !result?.incomplete && (result?.text || result?.toolCalls?.length)) {
-          startAssistantStream();
+        try {
+          const result = await createChatCompletionStream({
+            sdkProvider: config.sdk?.provider,
+            baseUrl: config.gateway.base_url,
+            apiKey: config.gateway.api_key,
+            model: selectedModel,
+            messages,
+            tools,
+            reasoningEffort: resolveConfiguredReasoningEffort({
+              enabled: config.model?.reasoning_enabled,
+              effort: config.model?.reasoning_effort
+            }),
+            timeoutMs: config.gateway.timeout_ms || 1800000,
+            maxRetries: config.gateway.max_retries ?? 2,
+            maxTokens: (() => {
+              const configured = Number(config.model?.max_output_tokens);
+              if (Number.isFinite(configured) && configured > 0) return Math.floor(configured);
+              return config.sdk?.provider === 'anthropic' ? 16384 : undefined;
+            })(),
+            signal,
+            onTextDelta: (delta) => {
+              tracker.noteTextDelta(delta);
+              startAssistantStream();
+              wrappedAgentEvent({ type: 'assistant:delta', text: delta });
+            },
+            onReasoningDelta: (delta) => {
+              tracker.noteReasoningDelta(delta);
+              startAssistantStream();
+              wrappedAgentEvent({ type: 'assistant:reasoning_delta', text: delta });
+            },
+            onToolCallDelta: (toolCall) => {
+              tracker.noteToolCallDelta();
+              startAssistantStream();
+              wrappedAgentEvent({ type: 'assistant:tool_call_delta', toolCall });
+            }
+          });
+
+          if (!started && !result?.incomplete && (result?.text || result?.toolCalls?.length)) {
+            startAssistantStream();
+          }
+
+          return applyTiming(result);
+        } catch (error) {
+          applyTiming(null);
+          throw error;
         }
-
-        return result;
       }
     });
   } catch (error) {

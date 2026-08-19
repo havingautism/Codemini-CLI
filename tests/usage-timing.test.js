@@ -105,6 +105,20 @@ test('createStreamTimingTracker falls back to first tool-call delta when there i
   assert.equal(timing.completedAt, '2026-08-19T00:00:03.500Z');
 });
 
+test('createStreamTimingTracker finish() does not move completedAt on a second call', () => {
+  let t = Date.parse('2026-08-19T00:00:00.000Z');
+  const now = () => new Date(t);
+  const tracker = createStreamTimingTracker(now);
+  t += 1000;
+  tracker.noteTextDelta('Hi');
+  t += 1000;
+  const first = tracker.finish();
+  t += 5000;
+  const second = tracker.finish();
+  assert.equal(first.completedAt, '2026-08-19T00:00:02.000Z');
+  assert.equal(second.completedAt, first.completedAt);
+});
+
 test('formatDurationMs follows the spec buckets', () => {
   assert.equal(formatDurationMs(320), '320 ms');
   assert.equal(formatDurationMs(2330), '2.33 s');
