@@ -297,6 +297,18 @@ export const en = {
   usageCacheWrite: "cache write",
   usageReasoning: "reasoning",
   usageRequests: "{{count}} requests",
+  usagePanelTitle: "Token usage",
+  usageTimingTitle: "Timing",
+  usageCacheRead: "Cache Read",
+  usageWaiting: "Waiting",
+  usageGenerating: "Generating",
+  usageRequestSent: "Request sent",
+  usageFirstToken: "First token",
+  usageComplete: "Complete",
+  usageTotalResponse: "Total response time",
+  usageTtft: "Time to first token (TTFT)",
+  usageTps: "Tokens per second (TPS)",
+  usageTpsFootnote: "TPS counts output tokens only during the generating segment.",
 
   // Sidebar
   newChat: "New Chat",

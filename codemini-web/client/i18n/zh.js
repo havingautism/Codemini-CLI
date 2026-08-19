@@ -293,6 +293,18 @@ export const zh = {
   usageCacheWrite: "缓存写入",
   usageReasoning: "推理",
   usageRequests: "{{count}} 次请求",
+  usagePanelTitle: "Token usage",
+  usageTimingTitle: "Timing",
+  usageCacheRead: "缓存读取",
+  usageWaiting: "等待",
+  usageGenerating: "生成",
+  usageRequestSent: "请求发出",
+  usageFirstToken: "首 token",
+  usageComplete: "完成",
+  usageTotalResponse: "总响应时间",
+  usageTtft: "首 token 时间 (TTFT)",
+  usageTps: "每秒 token 数 (TPS)",
+  usageTpsFootnote: "TPS 只统计生成阶段的 output tokens。",
 
   // Sidebar
   newChat: "新对话",

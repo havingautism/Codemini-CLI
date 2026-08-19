@@ -176,3 +176,18 @@ test('buildUsagePanelModel computes TTFT, generating, TPS and hides TPS when gen
   assert.equal(zeroGen.timing.showTps, false);
   assert.equal(zeroGen.timing.waitingMs, 2000);
 });
+
+test('buildUsagePanelModel omits timing when usage has no timestamps', () => {
+  const model = buildUsagePanelModel({
+    inputTokens: 10,
+    outputTokens: 2,
+    totalTokens: 12,
+    cacheWriteInputTokens: 4,
+    reasoningOutputTokens: 3,
+    requests: 2,
+  });
+  assert.equal(model.timing, null);
+  assert.equal(model.tokens.cacheWrite, 4);
+  assert.equal(model.tokens.reasoning, 3);
+  assert.equal(model.tokens.requests, 2);
+});
