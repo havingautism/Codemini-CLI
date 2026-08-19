@@ -354,9 +354,28 @@ export function reduceSessionTranscriptEvent(state, event) {
         : nextMessages,
     };
   } else if (isTranscriptStreamEvent(event.type)) {
+    let nextMessages = messages;
+    if (
+      (event.type === "step:start" || event.type === "step:end") &&
+      messageId &&
+      !messages.some((message) => message.id === messageId)
+    ) {
+      nextMessages = [
+        ...messages,
+        {
+          id: messageId,
+          role: "general",
+          segments: [],
+          skillBadges: [],
+          fileChanges: [],
+          isComplete: false,
+          timestamp: event.startedAt || new Date().toISOString(),
+        },
+      ];
+    }
     sessionMessagesById = {
       ...sessionMessagesById,
-      [sessionId]: messages.map((message) => {
+      [sessionId]: nextMessages.map((message) => {
         if (message.id !== messageId) return message;
         if (isCreatePlanToolEvent(event) || shouldNestStreamEventInPlan(message, event)) {
           return applyStreamEventToPlanRun(message, event, {

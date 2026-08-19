@@ -1,6 +1,4 @@
 const USER_ROLES = new Set(["you", "user"]);
-const ASSISTANT_ROLES = new Set(["agent", "assistant", "general"]);
-const SKIP_ROLES = new Set(["divider", "system", "plan-overview"]);
 const ERROR_STATUSES = new Set(["failed", "error", "blocked", "aborted"]);
 
 function normalizeRole(message) {
@@ -9,10 +7,6 @@ function normalizeRole(message) {
 
 function isUserMessage(message) {
   return USER_ROLES.has(normalizeRole(message));
-}
-
-function isAssistantMessage(message) {
-  return ASSISTANT_ROLES.has(normalizeRole(message));
 }
 
 function isAbortDivider(message) {
@@ -167,6 +161,7 @@ function makeEvent(partial) {
       ? partial.status
       : null,
     sourceCard: partial.sourceCard || null,
+    loop: Number(partial.loop) > 0 ? Number(partial.loop) : 0,
     startedAt,
     endedAt,
     durationMs: resolveDurationMs({
@@ -177,13 +172,192 @@ function makeEvent(partial) {
   };
 }
 
+function hasTimelineContent(message) {
+  if (!message) return false;
+  if (isUserMessage(message)) return true;
+  const role = normalizeRole(message);
+  if (role === "error" || role === "plan-overview" || isAbortDivider(message)) return true;
+  if (Array.isArray(message.segments) && message.segments.length > 0) return true;
+  if (message.planOverview) return true;
+  return Boolean(messageText(message));
+}
+
 function hasConversationMessages(messages) {
-  return (Array.isArray(messages) ? messages : []).some(
-    (message) =>
-      isUserMessage(message) ||
-      isAssistantMessage(message) ||
-      normalizeRole(message) === "error",
-  );
+  return (Array.isArray(messages) ? messages : []).some(hasTimelineContent);
+}
+
+function orderMessagesByTime(messages) {
+  return messages
+    .map((message, index) => ({ message, index }))
+    .sort((a, b) => {
+      const ta = toMs(messageTime(a.message));
+      const tb = toMs(messageTime(b.message));
+      if (ta != null && tb != null && ta !== tb) return ta - tb;
+      return a.index - b.index;
+    });
+}
+
+function buildPlanBody(message) {
+  const overview = message?.planOverview || {};
+  const goal = String(overview.goal || messageText(message) || "").trim();
+  const steps = Array.isArray(overview.steps) ? overview.steps : [];
+  const stepLines = steps.map((step) => {
+    const index = step?.index != null ? `${step.index}. ` : "";
+    const title = String(step?.title || "").trim();
+    const status = String(step?.status || "").trim();
+    const role = String(step?.role || "").trim();
+    return `${index}${title}${status ? ` [${status}]` : ""}${role ? ` (${role})` : ""}`.trim();
+  });
+  return {
+    goal,
+    input: [goal, ...stepLines].filter(Boolean).join("\n"),
+  };
+}
+
+function emitModelSegments(events, message, index, turn) {
+  const segments = Array.isArray(message.segments) ? message.segments : [];
+  let emittedBody = false;
+  let currentLoop = 0;
+  const pushEvent = (partial) => {
+    events.push(makeEvent({ ...partial, loop: partial.loop || currentLoop }));
+  };
+  segments.forEach((segment, segmentIndex) => {
+    if (segment?.type === "loop") {
+      const step = Math.max(1, Number(segment.step) || 1);
+      if (segment.phase === "end") {
+        const open = [...events]
+          .reverse()
+          .find((event) => event.kind === "loop" && event.loop === step && event.turn === turn);
+        if (open) {
+          open.endedAt = segment.endedAt || open.endedAt;
+          open.durationMs = resolveDurationMs({
+            startedAt: open.startedAt,
+            endedAt: open.endedAt,
+            durationMs: segment.durationMs,
+          });
+          const reason = String(segment.reason || "").toLowerCase();
+          open.status =
+            reason === "abort" || reason === "aborted" ? "error" : "done";
+        }
+        return;
+      }
+      currentLoop = step;
+      pushEvent({
+        id: `trajectory-loop-${message.id || index}-${segmentIndex}`,
+        kind: "loop",
+        turn,
+        loop: step,
+        title: `agent loop ${step}`,
+        body: `agent loop ${step}`,
+        startedAt: segment.startedAt || messageTime(message),
+        status: segment.isStreaming ? "running" : null,
+      });
+      return;
+    }
+    if (segment?.type === "thinking") {
+      if (!segment.text && !segment.isStreaming) return;
+      pushEvent({
+        id: `trajectory-thinking-${message.id || index}-${segmentIndex}`,
+        kind: "thinking",
+        turn,
+        title: "thinking",
+        body: segment.text || "",
+        input: segment.text || "",
+        status: segment.isStreaming ? "running" : "done",
+        startedAt: segment.startedAt || messageTime(message),
+        endedAt: segment.endedAt || null,
+        durationMs: segment.durationMs,
+      });
+      return;
+    }
+    if (segment?.type === "text") {
+      if (!segment.text && !segment.isStreaming) return;
+      emittedBody = true;
+      pushEvent({
+        id: `trajectory-body-${message.id || index}-${segmentIndex}`,
+        kind: "assistant",
+        turn,
+        title: "body",
+        body: segment.text || "",
+        input: segment.text || "",
+        status: segment.isStreaming ? "running" : "done",
+        startedAt: segment.startedAt || messageTime(message),
+        endedAt: segment.endedAt || null,
+        durationMs: segment.durationMs,
+      });
+      return;
+    }
+    if (segment?.type === "handoff") {
+      if (!segment.text && !segment.isStreaming) return;
+      pushEvent({
+        id: `trajectory-handoff-${message.id || index}-${segmentIndex}`,
+        kind: "assistant",
+        turn,
+        title: "handoff",
+        body: segment.text || "",
+        input: segment.text || "",
+        status: segment.isStreaming ? "running" : "done",
+        startedAt: segment.startedAt || messageTime(message),
+        endedAt: segment.endedAt || null,
+      });
+      return;
+    }
+    if (segment?.type === "skill") {
+      const detail = buildSkillDetail(segment);
+      pushEvent({
+        id: `trajectory-skill-${message.id || index}-${segmentIndex}`,
+        kind: "skill",
+        turn,
+        title: segment.name || "skill",
+        body: segment.summary || detail,
+        input: detail,
+        output: segment.summary || "",
+        status: normalizeStatus(segment.status, segment.isStreaming),
+        startedAt: segment.startedAt || null,
+        endedAt: segment.endedAt || null,
+      });
+      return;
+    }
+    if (segment?.type !== "tools" || !Array.isArray(segment.cards)) return;
+    segment.cards.forEach((card, cardIndex) => {
+      const input = stringifyTrajectoryValue(card?.arguments);
+      const output =
+        stringifyTrajectoryValue(card?.result) ||
+        (typeof card?.summary === "string" ? card.summary : "");
+      pushEvent({
+        id: `trajectory-tool-${card?.id || `${message.id || index}-${cardIndex}`}`,
+        kind: "tool",
+        turn,
+        title: card?.name || "tool",
+        body: input,
+        preview:
+          typeof card?.summary === "string" && card.summary
+            ? card.summary
+            : output,
+        input,
+        output,
+        status: normalizeStatus(card?.status, card?.isStreaming),
+        startedAt: card?.startedAt || null,
+        endedAt: card?.endedAt || null,
+        durationMs: card?.durationMs,
+        sourceCard: card,
+      });
+    });
+  });
+  if (!emittedBody) {
+    const fallback = messageText(message);
+    if (fallback) {
+      pushEvent({
+        id: `trajectory-body-${message.id || index}`,
+        kind: "assistant",
+        turn,
+        title: "body",
+        body: fallback,
+        input: fallback,
+        startedAt: messageTime(message),
+      });
+    }
+  }
 }
 
 function buildSkillDetail(segment = {}) {
@@ -273,10 +447,8 @@ export function buildTrajectory({
   let turn = 0;
   let emittedContext = false;
 
-  list.forEach((message, index) => {
-    if (isAbortDivider(message)) return;
+  orderMessagesByTime(list).forEach(({ message, index }) => {
     const role = normalizeRole(message);
-    if (SKIP_ROLES.has(role)) return;
 
     if (isUserMessage(message)) {
       turn += 1;
@@ -292,14 +464,15 @@ export function buildTrajectory({
       );
       if (!emittedContext) {
         emittedContext = true;
+        const context = buildContextBody({ runtimeState, projectCwd, isGeneral });
         events.push(
           makeEvent({
             id: "trajectory-context",
             kind: "context",
             turn,
             title: "CONTEXT",
-            body: buildContextBody({ runtimeState, projectCwd, isGeneral }),
-            input: buildContextBody({ runtimeState, projectCwd, isGeneral }),
+            body: context,
+            input: context,
           }),
         );
       }
@@ -308,6 +481,54 @@ export function buildTrajectory({
     }
 
     const activeTurn = Math.max(turn, 1);
+
+    if (isAbortDivider(message)) {
+      events.push(
+        makeEvent({
+          id: `trajectory-abort-${message.id || index}`,
+          kind: "assistant",
+          turn: activeTurn,
+          title: "abort",
+          body: messageText(message),
+          status: "error",
+          startedAt: messageTime(message),
+        }),
+      );
+      return;
+    }
+
+    if (role === "divider") {
+      const text = messageText(message);
+      if (!text) return;
+      events.push(
+        makeEvent({
+          id: `trajectory-divider-${message.id || index}`,
+          kind: "assistant",
+          turn: activeTurn,
+          title: "divider",
+          body: text,
+          startedAt: messageTime(message),
+        }),
+      );
+      return;
+    }
+
+    if (role === "system") {
+      const text = messageText(message);
+      if (!text) return;
+      events.push(
+        makeEvent({
+          id: `trajectory-notice-${message.id || index}`,
+          kind: "system",
+          turn: activeTurn,
+          title: "system",
+          body: text,
+          input: text,
+          startedAt: messageTime(message),
+        }),
+      );
+      return;
+    }
 
     if (role === "error") {
       events.push(
@@ -324,127 +545,24 @@ export function buildTrajectory({
       return;
     }
 
-    if (!isAssistantMessage(message)) return;
-
-    const segments = Array.isArray(message.segments) ? message.segments : [];
-    let emittedBody = false;
-    segments.forEach((segment, segmentIndex) => {
-      if (segment?.type === "thinking") {
-        if (!segment.text && !segment.isStreaming) return;
-        events.push(
-          makeEvent({
-            id: `trajectory-thinking-${message.id || index}-${segmentIndex}`,
-            kind: "thinking",
-            turn: activeTurn,
-            title: "thinking",
-            body: segment.text || "",
-            input: segment.text || "",
-            status: segment.isStreaming ? "running" : "done",
-            startedAt: segment.startedAt || messageTime(message),
-            endedAt: segment.endedAt || null,
-            durationMs: segment.durationMs,
-          }),
-        );
-        return;
-      }
-      if (segment?.type === "text") {
-        if (!segment.text && !segment.isStreaming) return;
-        emittedBody = true;
-        events.push(
-          makeEvent({
-            id: `trajectory-body-${message.id || index}-${segmentIndex}`,
-            kind: "assistant",
-            turn: activeTurn,
-            title: "body",
-            body: segment.text || "",
-            input: segment.text || "",
-            status: segment.isStreaming ? "running" : "done",
-            startedAt: segment.startedAt || messageTime(message),
-            endedAt: segment.endedAt || null,
-            durationMs: segment.durationMs,
-          }),
-        );
-        return;
-      }
-      if (segment?.type === "handoff") {
-        if (!segment.text && !segment.isStreaming) return;
-        events.push(
-          makeEvent({
-            id: `trajectory-handoff-${message.id || index}-${segmentIndex}`,
-            kind: "assistant",
-            turn: activeTurn,
-            title: "handoff",
-            body: segment.text || "",
-            input: segment.text || "",
-            status: segment.isStreaming ? "running" : "done",
-            startedAt: segment.startedAt || messageTime(message),
-            endedAt: segment.endedAt || null,
-          }),
-        );
-        return;
-      }
-      if (segment?.type === "skill") {
-        const detail = buildSkillDetail(segment);
-        events.push(
-          makeEvent({
-            id: `trajectory-skill-${message.id || index}-${segmentIndex}`,
-            kind: "skill",
-            turn: activeTurn,
-            title: segment.name || "skill",
-            body: segment.summary || detail,
-            input: detail,
-            output: segment.summary || "",
-            status: normalizeStatus(segment.status, segment.isStreaming),
-            startedAt: segment.startedAt || null,
-            endedAt: segment.endedAt || null,
-          }),
-        );
-        return;
-      }
-      if (segment?.type !== "tools" || !Array.isArray(segment.cards)) return;
-      segment.cards.forEach((card, cardIndex) => {
-        const input = stringifyTrajectoryValue(card?.arguments);
-        const output =
-          stringifyTrajectoryValue(card?.result) ||
-          (typeof card?.summary === "string" ? card.summary : "");
-        events.push(
-          makeEvent({
-            id: `trajectory-tool-${card?.id || `${message.id || index}-${cardIndex}`}`,
-            kind: "tool",
-            turn: activeTurn,
-            title: card?.name || "tool",
-            body: input,
-            preview:
-              typeof card?.summary === "string" && card.summary
-                ? card.summary
-                : output,
-            input,
-            output,
-            status: normalizeStatus(card?.status, card?.isStreaming),
-            startedAt: card?.startedAt || null,
-            endedAt: card?.endedAt || null,
-            durationMs: card?.durationMs,
-            sourceCard: card,
-          }),
-        );
-      });
-    });
-    if (!emittedBody) {
-      const fallback = messageText(message);
-      if (fallback) {
-        events.push(
-          makeEvent({
-            id: `trajectory-body-${message.id || index}`,
-            kind: "assistant",
-            turn: activeTurn,
-            title: "body",
-            body: fallback,
-            input: fallback,
-            startedAt: messageTime(message),
-          }),
-        );
-      }
+    if (role === "plan-overview" || message.planOverview) {
+      const plan = buildPlanBody(message);
+      if (!plan.goal && !plan.input) return;
+      events.push(
+        makeEvent({
+          id: `trajectory-plan-${message.id || index}`,
+          kind: "assistant",
+          turn: activeTurn,
+          title: "plan",
+          body: plan.goal,
+          input: plan.input || plan.goal,
+          startedAt: messageTime(message),
+        }),
+      );
+      return;
     }
+
+    emitModelSegments(events, message, index, activeTurn);
   });
 
   const times = [];

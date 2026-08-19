@@ -11,6 +11,7 @@ import {
   trajectoryExportFilename,
   truncateTrajectoryText,
 } from "../codemini-web/client/src/lib/session-trajectory.js";
+import { buildRenderGroups } from "../codemini-web/client/src/lib/message-render-groups.js";
 
 test("empty messages yield empty events and zero metrics", () => {
   const result = buildTrajectory({
@@ -222,20 +223,169 @@ test("streaming thinking and tools are marked running", () => {
   assert.equal(tool.status, "running");
 });
 
-test("skips abort dividers and maps error messages", () => {
+test("includes coder-role model turns without assistant-role inference", () => {
   const result = buildTrajectory({
     messages: [
-      { id: "u1", role: "you", text: "go" },
-      { id: "d1", role: "divider", dividerType: "manual-abort", text: "aborted" },
-      { id: "e1", role: "error", text: "boom" },
+      { id: "u1", role: "you", text: "fix it" },
+      {
+        id: "a1",
+        role: "coder",
+        segments: [{ type: "text", text: "patched" }],
+      },
+    ],
+  });
+  const timeline = result.events.filter(
+    (event) => event.kind !== "system" && event.kind !== "context",
+  );
+  assert.deepEqual(
+    timeline.map((event) => event.kind),
+    ["user", "assistant"],
+  );
+  assert.equal(timeline[1].body, "patched");
+});
+
+test("orders messages by timestamps instead of array position", () => {
+  const result = buildTrajectory({
+    messages: [
+      {
+        id: "a1",
+        role: "coder",
+        text: "later answer",
+        timestamp: "2026-08-19T01:00:02.000Z",
+      },
+      {
+        id: "u1",
+        role: "you",
+        text: "first question",
+        timestamp: "2026-08-19T01:00:00.000Z",
+      },
+    ],
+  });
+  const timeline = result.events.filter(
+    (event) => event.kind !== "system" && event.kind !== "context",
+  );
+  assert.deepEqual(
+    timeline.map((event) => event.body),
+    ["first question", "later answer"],
+  );
+});
+
+test("wraps assistant work in agent-loop round headers inside a turn", () => {
+  const result = buildTrajectory({
+    messages: [
+      { id: "u1", role: "you", text: "fix it" },
+      {
+        id: "a1",
+        role: "general",
+        segments: [
+          { type: "loop", phase: "start", step: 1, startedAt: "2026-08-19T01:00:01.000Z" },
+          { type: "thinking", text: "look around" },
+          {
+            type: "tools",
+            cards: [{ id: "t1", name: "glob", arguments: { pattern: "*" }, status: "done" }],
+          },
+          {
+            type: "loop",
+            phase: "end",
+            step: 1,
+            endedAt: "2026-08-19T01:00:02.000Z",
+            durationMs: 1000,
+            reason: "tools",
+          },
+          { type: "loop", phase: "start", step: 2, startedAt: "2026-08-19T01:00:02.000Z" },
+          { type: "text", text: "patched" },
+          {
+            type: "loop",
+            phase: "end",
+            step: 2,
+            endedAt: "2026-08-19T01:00:03.000Z",
+            durationMs: 1000,
+            reason: "final",
+          },
+        ],
+      },
+    ],
+  });
+  const timeline = result.events.filter(
+    (event) => event.kind !== "system" && event.kind !== "context",
+  );
+  assert.deepEqual(
+    timeline.map((event) => [event.kind, event.loop || 0, event.title]),
+    [
+      ["user", 0, "USER"],
+      ["loop", 1, "agent loop 1"],
+      ["thinking", 1, "thinking"],
+      ["tool", 1, "glob"],
+      ["loop", 2, "agent loop 2"],
+      ["assistant", 2, "body"],
+    ],
+  );
+  assert.equal(timeline[1].durationMs, 1000);
+  assert.equal(timeline[1].status, "done");
+  assert.equal(timeline.find((event) => event.title === "body").body, "patched");
+});
+
+test("chat render groups skip loop markers so they stay trajectory-only", () => {
+  const groups = buildRenderGroups([
+    { type: "loop", phase: "start", step: 1 },
+    { type: "thinking", text: "look around" },
+    { type: "text", text: "patched" },
+    { type: "loop", phase: "end", step: 1, reason: "final" },
+  ]);
+  assert.deepEqual(
+    groups.map((group) => group.type),
+    ["thinking", "text"],
+  );
+});
+
+test("keeps plan-overview, system notices, abort, and errors in time order", () => {
+  const result = buildTrajectory({
+    messages: [
+      { id: "u1", role: "you", text: "go", at: "2026-08-19T01:00:00.000Z" },
+      {
+        id: "p1",
+        role: "plan-overview",
+        text: "Ship the feature",
+        timestamp: "2026-08-19T01:00:01.000Z",
+        planOverview: {
+          goal: "Ship the feature",
+          steps: [{ index: 1, title: "Edit", role: "coder", status: "done" }],
+        },
+      },
+      {
+        id: "s1",
+        role: "system",
+        text: "Plan revised.",
+        timestamp: "2026-08-19T01:00:02.000Z",
+      },
+      {
+        id: "d1",
+        role: "divider",
+        dividerType: "manual-abort",
+        text: "aborted",
+        timestamp: "2026-08-19T01:00:03.000Z",
+      },
+      { id: "e1", role: "error", text: "boom", timestamp: "2026-08-19T01:00:04.000Z" },
     ],
     runtimeState: { model: "m" },
   });
-  const kinds = result.events.map((event) => event.kind);
-  assert.deepEqual(kinds, ["system", "user", "context", "assistant"]);
-  const errorEvent = result.events.at(-1);
-  assert.equal(errorEvent.status, "error");
-  assert.equal(errorEvent.body, "boom");
+  const timeline = result.events.filter(
+    (event) => event.kind !== "context",
+  );
+  assert.equal(timeline[0].kind, "system");
+  assert.match(timeline[0].input, /model: m/);
+  assert.equal(timeline[1].kind, "user");
+  assert.equal(timeline[2].kind, "assistant");
+  assert.equal(timeline[2].title, "plan");
+  assert.match(timeline[2].body, /Ship the feature/);
+  assert.match(timeline[2].input, /Edit/);
+  assert.equal(timeline[3].kind, "system");
+  assert.equal(timeline[3].body, "Plan revised.");
+  assert.equal(timeline[4].title, "abort");
+  assert.equal(timeline[4].status, "error");
+  assert.equal(timeline[4].body, "aborted");
+  assert.equal(timeline[5].status, "error");
+  assert.equal(timeline[5].body, "boom");
 });
 
 test("USER and error events omit endedAt so duration stays unknown", () => {

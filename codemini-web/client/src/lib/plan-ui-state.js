@@ -15,6 +15,8 @@ const PLAN_NESTED_STREAM_EVENTS = new Set([
   "tool:result",
   "tool:error",
   "tool:blocked",
+  "step:start",
+  "step:end",
 ]);
 
 export function isCompletedStatus(status) {
@@ -238,7 +240,9 @@ export function shouldNestStreamEventInPlan(message, event) {
   if (
     event.type === "assistant:delta" ||
     event.type === "assistant:reasoning_delta" ||
-    event.type === "assistant:response"
+    event.type === "assistant:response" ||
+    event.type === "step:start" ||
+    event.type === "step:end"
   ) {
     return (card?.planRun?.steps || []).some(
       (step) => String(step?.status || "").toLowerCase() === "running",

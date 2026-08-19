@@ -89,6 +89,19 @@ export async function runResearchAgentLoop({
   const activeTools = Array.isArray(toolDefinitions) ? toolDefinitions : [];
   let lastAssistantText = '';
   let step = 0;
+  let stepStartedAt = 0;
+  let stepOpen = false;
+  const emitStepEnd = (reason) => {
+    if (!stepOpen) return;
+    stepOpen = false;
+    onEvent?.({
+      type: 'step:end',
+      step,
+      reason,
+      durationMs: Math.max(0, Date.now() - stepStartedAt),
+      endedAt: new Date().toISOString(),
+    });
+  };
   const stepCap = Math.max(1, Math.floor(Number(maxSteps) || DEFAULT_MAX_STEPS));
 
   while (step < stepCap) {
@@ -97,7 +110,9 @@ export async function runResearchAgentLoop({
       onEvent?.({ type: 'aborted', step });
       break;
     }
-    onEvent?.({ type: 'step:start', step });
+    stepStartedAt = Date.now();
+    stepOpen = true;
+    onEvent?.({ type: 'step:start', step, startedAt: new Date(stepStartedAt).toISOString() });
 
     const completion = await requestCompletion({
       model,
@@ -107,10 +122,14 @@ export async function runResearchAgentLoop({
     });
 
     if (signal?.aborted) {
+      emitStepEnd('abort');
       onEvent?.({ type: 'aborted', step });
       break;
     }
-    if (completion?.incomplete) continue;
+    if (completion?.incomplete) {
+      emitStepEnd('incomplete');
+      continue;
+    }
 
     const toolCalls = Array.isArray(completion?.toolCalls) ? completion.toolCalls : [];
     const assistantText = completion?.text || '';
@@ -142,6 +161,7 @@ export async function runResearchAgentLoop({
     });
 
     if (!toolCalls.length) {
+      emitStepEnd('final');
       return { text: assistantText, messages, steps: step };
     }
 
@@ -298,6 +318,7 @@ export async function runResearchAgentLoop({
       });
       if (checkpoint) {
         onEvent?.({ type: 'checkpoint', step });
+        emitStepEnd('checkpoint');
         return {
           text: lastAssistantText || '',
           messages,
@@ -306,8 +327,10 @@ export async function runResearchAgentLoop({
         };
       }
     }
+    emitStepEnd('tools');
   }
 
+  emitStepEnd('abort');
   if (signal?.aborted) {
     return {
       text: lastAssistantText || '',

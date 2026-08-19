@@ -781,7 +781,9 @@ export class RuntimeBridge {
       case 'tool:end':
       case 'tool:result':
       case 'tool:error':
-      case 'tool:blocked': {
+      case 'tool:blocked':
+      case 'step:start':
+      case 'step:end': {
         const toolName = String(event.name || event.toolName || '').trim();
         if (event.type === 'tool:start' && (toolName === 'create_plan' || toolName === 'run_subagent') && this.#uiActiveMsgId) {
           this.#uiPlanParentMsgId = this.#uiActiveMsgId;
@@ -792,7 +794,34 @@ export class RuntimeBridge {
             ? this.#resolveCreatePlanToolTargetId()
             : null;
         const targetId = createPlanTargetId || this.#uiActiveMsgId;
-        if (!targetId) break;
+        if (!targetId) {
+          if (event.type === 'step:start') {
+            this.#removeUiTransientWaiting();
+            const pendingSegments = applyStreamEventToMessage(
+              { segments: this.#uiPendingSkillSegments },
+              event,
+              streamOptions
+            ).segments;
+            this.#uiActiveMsgId = this.#addUiMessage({
+              role: 'general',
+              text: '',
+              timestamp: event.startedAt || new Date().toISOString(),
+              skillBadges: this.#uiPendingSkillBadges,
+              segments: pendingSegments,
+              isComplete: false
+            });
+            this.#uiPendingSkillSegments = [];
+            this.#uiPendingSkillBadges = [];
+            publishedMessageId = this.#uiActiveMsgId;
+          } else if (event.type === 'step:end') {
+            this.#uiPendingSkillSegments = applyStreamEventToMessage(
+              { segments: this.#uiPendingSkillSegments },
+              event,
+              streamOptions
+            ).segments;
+          }
+          break;
+        }
 
         if (event.type === 'assistant:usage') {
           this.#updateUiMessage(targetId, (message) =>

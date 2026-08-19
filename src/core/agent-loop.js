@@ -778,6 +778,33 @@ export async function runAgentLoop({
   }
 
   let step = 0;
+  let stepStartedAt = 0;
+  let stepOpen = false;
+  const emitStepEnd = (reason) => {
+    if (!stepOpen) return;
+    stepOpen = false;
+    if (!onEvent) return;
+    const endedAt = new Date().toISOString();
+    onEvent({
+      type: 'step:end',
+      step,
+      reason,
+      durationMs: Math.max(0, Date.now() - stepStartedAt),
+      endedAt,
+    });
+  };
+  const emitStepStart = () => {
+    stepStartedAt = Date.now();
+    stepOpen = true;
+    if (onEvent) {
+      onEvent({
+        type: 'step:start',
+        step,
+        startedAt: new Date(stepStartedAt).toISOString(),
+      });
+    }
+  };
+
   while (true) {
     step += 1;
     // 检查是否已被用户中止
@@ -785,7 +812,7 @@ export async function runAgentLoop({
       if (onEvent) onEvent({ type: 'aborted', step });
       break;
     }
-    if (onEvent) onEvent({ type: 'step:start', step });
+    emitStepStart();
     const pruneResult = applyAggressiveToolPruneBeta(messages, config);
     if (pruneResult.changed) {
       messages.splice(0, messages.length, ...pruneResult.messages);
@@ -805,11 +832,13 @@ export async function runAgentLoop({
 
     // 流式请求完成后再次检查中止状态
     if (signal?.aborted) {
+      emitStepEnd('abort');
       if (onEvent) onEvent({ type: 'aborted', step });
       break;
     }
 
     if (completion?.incomplete) {
+      emitStepEnd('incomplete');
       continue;
     }
 
@@ -851,6 +880,7 @@ export async function runAgentLoop({
           content:
             'You have not inspected enough relevant source files yet. Query the project index if needed, then inspect the next relevant source files before concluding. Do not stop after unrelated directories, tests, skills, souls, or templates.'
         });
+        emitStepEnd('nudge');
         continue;
       }
       if (!skipAnalysisNudge && shouldAskForConcreteFinalAnswer(assistantText, messages.slice(0, -1)) && pendingSummaryNudges < 2) {
@@ -860,6 +890,7 @@ export async function runAgentLoop({
           content:
             'You have already inspected tool results. Before stopping, check whether the task is actually complete. If it is, provide a concise final answer with specific findings or concrete next steps. If it is not, continue with the next tool call.'
         });
+        emitStepEnd('nudge');
         continue;
       }
       finalText = assistantText;
@@ -869,9 +900,11 @@ export async function runAgentLoop({
           role: 'user',
           content: stopResult.reason || 'A Stop hook requires more work before this turn can finish.'
         });
+        emitStepEnd('stop_hook');
         continue;
       }
       void maybeRunAutoDream(step, { force: true });
+      emitStepEnd('final');
       return { text: finalText, messages, steps: step };
     }
 
@@ -1595,6 +1628,7 @@ export async function runAgentLoop({
     if (workflowCompleteText) {
       void maybeRunAutoDream(step, { force: true });
       await fireStopHooks(workflowCompleteText);
+      emitStepEnd('workflow');
       return { text: workflowCompleteText, messages, steps: step, workflowComplete: true };
     }
     if (typeof shouldCheckpoint === 'function') {
@@ -1606,6 +1640,7 @@ export async function runAgentLoop({
       if (checkpoint) {
         const checkpointText = lastAssistantText || '';
         if (onEvent) onEvent({ type: 'checkpoint', step });
+        emitStepEnd('checkpoint');
         return {
           text: checkpointText,
           messages,
@@ -1614,8 +1649,10 @@ export async function runAgentLoop({
         };
       }
     }
+    emitStepEnd('tools');
   }
 
+  emitStepEnd('abort');
   // 如果被用户中止，返回已有内容并标记
   if (signal?.aborted) {
     const fallback = lastAssistantText || '';

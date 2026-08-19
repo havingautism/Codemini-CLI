@@ -831,3 +831,41 @@ test('assistant:start after a manual abort opens a new bubble instead of appendi
   assert.equal(afterDelta[0].segments[0].text, 'stopped mid-way');
   assert.match(String(afterDelta[1].segments?.[0]?.text || ''), /jumped answer/);
 });
+
+test('step start and end become hidden loop segments on the live message', () => {
+  assert.equal(isTranscriptStreamEvent('step:start'), true);
+  assert.equal(isTranscriptStreamEvent('step:end'), true);
+
+  let message = applyStreamEventToMessage(
+    { id: 'msg-loop', role: 'general', segments: [] },
+    { type: 'step:start', step: 1, startedAt: '2026-08-19T01:00:01.000Z' },
+  );
+  message = applyStreamEventToMessage(message, {
+    type: 'assistant:reasoning_delta',
+    text: 'think',
+  });
+  message = applyStreamEventToMessage(message, {
+    type: 'step:end',
+    step: 1,
+    reason: 'tools',
+    durationMs: 800,
+    endedAt: '2026-08-19T01:00:02.000Z',
+  });
+  message = applyStreamEventToMessage(message, {
+    type: 'step:start',
+    step: 2,
+    startedAt: '2026-08-19T01:00:02.000Z',
+  });
+
+  assert.deepEqual(
+    message.segments.map((segment) => [segment.type, segment.step || null, segment.phase || null]),
+    [
+      ['loop', 1, 'start'],
+      ['thinking', null, null],
+      ['loop', 1, 'end'],
+      ['loop', 2, 'start'],
+    ],
+  );
+  assert.equal(message.segments[2].durationMs, 800);
+  assert.equal(message.segments[2].reason, 'tools');
+});

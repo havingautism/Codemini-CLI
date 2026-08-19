@@ -302,6 +302,33 @@ export function TrajectoryPanel({
               const showTurnHeader =
                 showTurns && event.turn > 0 && event.turn !== lastTurn;
               lastTurn = event.turn;
+              if (event.kind === "loop") {
+                return (
+                  <li key={event.id} className="min-w-0">
+                    {showTurnHeader ? (
+                      <div className="mt-3 mb-1 text-[11px] font-medium tracking-wide text-(--text-muted)">
+                        {t("trajectoryTurnLabel").replace(
+                          "{{count}}",
+                          String(event.turn),
+                        )}
+                      </div>
+                    ) : null}
+                    <div className="mt-2 mb-1 flex h-6 min-w-0 items-center gap-2 pl-4 text-[11px] font-medium tracking-wide text-(--text-muted)">
+                      <span>
+                        {t("trajectoryLoopLabel").replace(
+                          "{{count}}",
+                          String(event.loop || 1),
+                        )}
+                      </span>
+                      {showDuration ? (
+                        <span className="font-mono text-[11px] font-normal">
+                          {formatTrajectoryDuration(event.durationMs)}
+                        </span>
+                      ) : null}
+                    </div>
+                  </li>
+                );
+              }
               return (
                 <li key={event.id} className="min-w-0">
                   {showTurnHeader ? (
@@ -312,7 +339,12 @@ export function TrajectoryPanel({
                       )}
                     </div>
                   ) : null}
-                  <div className="flex h-7 min-w-0 items-center gap-3 overflow-hidden">
+                  <div
+                    className={cn(
+                      "flex h-7 min-w-0 items-center gap-3 overflow-hidden",
+                      event.loop > 0 && "pl-4",
+                    )}
+                  >
                     <span
                       className="size-1.5 shrink-0 rounded-full bg-(--text-muted)"
                       aria-hidden="true"

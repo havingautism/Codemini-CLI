@@ -579,6 +579,36 @@ export function applyStreamEventToMessage(message, event, options = {}) {
         segments: appendThinkingSegment(message.segments, event.text, true),
       };
     }
+    case "step:start": {
+      const step = Math.max(1, Number(event.step) || 1);
+      const now = event.startedAt || new Date().toISOString();
+      return {
+        ...message,
+        isComplete: false,
+        segments: [
+          ...(Array.isArray(message.segments) ? message.segments : []),
+          { type: "loop", phase: "start", step, startedAt: now },
+        ],
+      };
+    }
+    case "step:end": {
+      const step = Math.max(1, Number(event.step) || 1);
+      const now = event.endedAt || new Date().toISOString();
+      return {
+        ...message,
+        segments: [
+          ...(Array.isArray(message.segments) ? message.segments : []),
+          {
+            type: "loop",
+            phase: "end",
+            step,
+            reason: event.reason || "",
+            durationMs: event.durationMs,
+            endedAt: now,
+          },
+        ],
+      };
+    }
     case "assistant:response": {
       const reasoningText = getReasoningTextFromAssistantMessage(
         event.assistantMessage,
@@ -817,6 +847,8 @@ export function isTranscriptStreamEvent(type) {
     value === "skill:error" ||
     value === "hook:start" ||
     value === "hook:end" ||
-    value === "hook:error"
+    value === "hook:error" ||
+    value === "step:start" ||
+    value === "step:end"
   );
 }

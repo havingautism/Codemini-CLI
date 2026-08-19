@@ -786,6 +786,7 @@ export const en = {
   trajectoryKindTool: "TOOL",
   trajectoryKindSkill: "SKILL",
   trajectoryTurnLabel: "Turn {{count}}",
+  trajectoryLoopLabel: "Agent loop {{count}}",
   trajectoryExportFailed: "Failed to export session log",
   trajectoryInspect: "Inspect",
   trajectoryInspectTitle: "Trajectory detail",

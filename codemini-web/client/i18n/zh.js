@@ -771,6 +771,7 @@ export const zh = {
   trajectoryKindTool: "TOOL",
   trajectoryKindSkill: "SKILL",
   trajectoryTurnLabel: "Turn {{count}}",
+  trajectoryLoopLabel: "Agent loop 第 {{count}} 轮",
   trajectoryExportFailed: "导出会话日志失败",
   trajectoryInspect: "查看详情",
   trajectoryInspectTitle: "轨迹详情",
