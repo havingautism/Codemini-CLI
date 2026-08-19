@@ -8,6 +8,24 @@ export const ACTIVE_SESSION_STATUSES = new Set([
   "waiting_input",
 ]);
 
+export function sessionRuntimeIsBusy(runtime) {
+  if (!runtime) return false;
+  if (runtime.busy === true) return true;
+  return ACTIVE_SESSION_STATUSES.has(runtime.status);
+}
+
+export function rekeyPendingQueue(queueMap, fromId, toId) {
+  const previousId = String(fromId || "").trim();
+  const nextId = String(toId || "").trim();
+  const next = queueMap instanceof Map ? new Map(queueMap) : new Map();
+  if (!previousId || !nextId || previousId === nextId) return next;
+  const queued = next.get(previousId) || [];
+  next.delete(previousId);
+  if (queued.length) next.set(nextId, queued);
+  else next.delete(nextId);
+  return next;
+}
+
 export function activeSessionIds(runtimeById = {}) {
   return Object.entries(runtimeById)
     .filter(([, runtime]) => ACTIVE_SESSION_STATUSES.has(runtime?.status))

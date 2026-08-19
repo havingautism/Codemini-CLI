@@ -13,6 +13,39 @@ import {
   shouldNestStreamEventInPlan,
   settleCompletedPlanToolCards,
 } from "./plan-ui-state.js";
+import { sessionRuntimeIsBusy } from "./session-ui-state.js";
+
+const SESSION_SCOPED_RUNTIME_KEYS = new Set([
+  "sessionId",
+  "busy",
+  "status",
+  "queuePosition",
+  "pendingApproval",
+  "pendingUserInput",
+  "pendingSpecApproval",
+  "pendingReflectSkill",
+  "requestInFlight",
+  "needsAttention",
+  "parallelWriteRisk",
+]);
+
+function projectIdleRuntimeState(previous, sessionId) {
+  const next = {
+    sessionId,
+    busy: false,
+    status: "idle",
+  };
+  if (!previous || typeof previous !== "object") return next;
+  for (const [key, value] of Object.entries(previous)) {
+    if (SESSION_SCOPED_RUNTIME_KEYS.has(key)) continue;
+    next[key] = value;
+  }
+  return next;
+}
+
+export function isSessionBusyInState(state, sessionId) {
+  return sessionRuntimeIsBusy(state?.sessionRuntimeById?.[sessionId]);
+}
 
 function planStepNumberFromMessageId(messageId) {
   const match = String(messageId || "").match(/^plan-step-(\d+)(?:-|$)/);
@@ -45,15 +78,30 @@ export function hydrateSessionRuntimes(state, runtimes = {}) {
 export function activateSession(state, sessionId) {
   if (!sessionId || sessionId === state.currentSessionId) return state;
   const runtime = state.sessionRuntimeById?.[sessionId];
+  const busy = sessionRuntimeIsBusy(runtime);
   return {
     ...state,
     currentSessionId: sessionId,
     messages: state.sessionMessagesById?.[sessionId] || [],
-    ...(runtime
+    busy,
+    live: busy,
+    stage: busy ? state.stage : "idle",
+    stageLabel: busy ? state.stageLabel : "",
+    runtimeState: runtime
+      ? { ...runtime, sessionId }
+      : projectIdleRuntimeState(state.runtimeState, sessionId),
+    approvalRequest: runtime?.pendingApproval || null,
+    userInputRequest: runtime?.pendingUserInput || null,
+    ...(!runtime
       ? {
-          runtimeState: runtime,
-          approvalRequest: runtime.pendingApproval || null,
-          userInputRequest: runtime.pendingUserInput || null,
+          sessionRuntimeById: {
+            ...state.sessionRuntimeById,
+            [sessionId]: {
+              sessionId,
+              status: "idle",
+              busy: false,
+            },
+          },
         }
       : {}),
   };
@@ -65,14 +113,22 @@ export function projectVisibleSessionState(state) {
     state.sessionMessagesById || {},
     state.currentSessionId,
   );
-  if (!runtime && !hasSessionMessages) return state;
-  const busy = runtime
-    ? typeof runtime.busy === "boolean"
-      ? runtime.busy
-      : ["queued", "running", "waiting", "waiting_approval", "waiting_input"].includes(
-          runtime.status,
-        )
-    : false;
+  if (!runtime && !hasSessionMessages) {
+    return {
+      ...state,
+      busy: false,
+      live: false,
+      stage: "idle",
+      stageLabel: "",
+      approvalRequest: null,
+      userInputRequest: null,
+      runtimeState: projectIdleRuntimeState(
+        state.runtimeState,
+        state.currentSessionId,
+      ),
+    };
+  }
+  const busy = sessionRuntimeIsBusy(runtime);
   return {
     ...state,
     busy,
@@ -86,7 +142,14 @@ export function projectVisibleSessionState(state) {
           approvalRequest: runtime.pendingApproval || null,
           userInputRequest: runtime.pendingUserInput || null,
         }
-      : {}),
+      : {
+          runtimeState: projectIdleRuntimeState(
+            state.runtimeState,
+            state.currentSessionId,
+          ),
+          approvalRequest: null,
+          userInputRequest: null,
+        }),
     ...(!busy ? { stage: "idle", stageLabel: "" } : {}),
   };
 }

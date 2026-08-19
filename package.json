@@ -75,7 +75,7 @@
     "jsonrepair": "^3.15.0",
     "lru-cache": "^11.5.2",
     "mammoth": "^1.12.0",
-    "microsandbox": "^0.6.9",
+    "microsandbox": "^0.6.10",
     "node-addon-landlock-run": "^0.0.1",
     "node-pty": "^1.1.0",
     "p-limit": "^7.3.1",

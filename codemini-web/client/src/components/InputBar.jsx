@@ -790,7 +790,7 @@ export function InputBar({
 
   const rs = runtimeState || {};
   const pendingQueueItems =
-    state?.pendingQueues?.[rs.sessionId || state?.currentSessionId] || [];
+    state?.pendingQueues?.[state?.currentSessionId] || [];
   const mode = rs.mode || "normal";
   const approvalMode = rs.approvalMode || "auto";
   const approvalUiEnabled = rs.approvalUiEnabled !== false;

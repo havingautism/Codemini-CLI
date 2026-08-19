@@ -45,6 +45,7 @@ import {
   serializeSessionMessages,
 } from "./lib/runtime-bridge.js";
 import { RuntimePool, startRuntimeEvictionTimer } from "./lib/runtime-pool.js";
+import { createEmptySessionAllocator } from "./lib/empty-session-allocator.js";
 import { resolveGitCwd, shouldAdoptGitCwd } from "./lib/git-project.js";
 import {
   createGitInfoReader,
@@ -772,6 +773,39 @@ const TERMINAL_RUNTIME_STATUSES = new Set([
 ]);
 const APPROVAL_ACTION_NAMES = new Set(["approval.approve", "approval.reject"]);
 
+function matchesEmptySessionProject(session, projectDir) {
+  if (isGeneralProjectDir(projectDir)) {
+    return isGeneralProjectDir(session.projectDir);
+  }
+  if (isGeneralProjectDir(session.projectDir)) return false;
+  return (
+    normalizeProjectDirKey(session.projectDir) ===
+    normalizeProjectDirKey(projectDir)
+  );
+}
+
+function createPooledEmptySessionAllocator(
+  pool,
+  {
+    listSessions: listFn = listSessions,
+    loadSession: loadFn = loadSession,
+    createSession: createFn = createSession,
+  } = {},
+) {
+  return createEmptySessionAllocator({
+    listSessions: () => listFn(1000, { includeEmpty: true }),
+    loadSession: loadFn,
+    createSession: createFn,
+    projectKeyOf: (projectDir) =>
+      isGeneralProjectDir(projectDir)
+        ? "__codemini_general__"
+        : normalizeProjectDirKey(projectDir) || String(projectDir || ""),
+    matchesProject: matchesEmptySessionProject,
+    isBusy: (sessionId) =>
+      ACTIVE_RUNTIME_STATUSES.has(pool.getSessionState(sessionId)?.status),
+  });
+}
+
 function interactionConflict(res, status) {
   const alreadyResuming = status === "queued" || status === "running";
   jsonResponse(
@@ -910,12 +944,14 @@ export function createWebRuntimeApi({
   listSessions: listStoredSessions = listSessions,
   deleteSession: deleteStoredSession = deleteSession,
   createSession: createStoredSession = createSession,
+  loadSession: loadStoredSession = loadSession,
   loadActiveProjects = loadWebuiActiveProjects,
   runtimeStatusStore = null,
   getDefaultProjectDir = () => process.cwd(),
   setDefaultProjectDir = null,
   loadConfig: loadRuntimeConfig = loadConfig,
   getConfigStatus: getRuntimeConfigStatus = getConfigStatus,
+  allocateEmptySession = null,
 }) {
   const loadBridge = async (res, sessionId) => {
     const id = requireSessionId(res, sessionId);
@@ -940,6 +976,13 @@ export function createWebRuntimeApi({
     }
     return poolBridge(pool, id);
   };
+  const allocateSession =
+    allocateEmptySession ||
+    createPooledEmptySessionAllocator(pool, {
+      listSessions: listStoredSessions,
+      loadSession: loadStoredSession,
+      createSession: createStoredSession,
+    });
   const submitOperation = (sessionId, invoke) =>
     pool.submit(sessionId, (bridge) =>
       typeof bridge.runPooled === "function"
@@ -1006,15 +1049,8 @@ export function createWebRuntimeApi({
         const projectDir =
           normalizeProjectPath(body?.projectDir || getDefaultProjectDir()) ||
           getDefaultProjectDir();
-        const projectKey = normalizeProjectDirKey(projectDir);
-        const all = await listSessions(1000, { includeEmpty: true });
-        const reusable = all.find((session) => {
-          if (Number(session.messageCount || 0) > 0) return false;
-          return normalizeProjectDirKey(session.projectDir) === projectKey;
-        });
-        const session = reusable
-          ? await loadSession(reusable.id)
-          : await createStoredSession(projectDir);
+        const allocated = await allocateSession(projectDir);
+        const session = allocated.session;
         await ensureSession(session.id);
         const isGeneral = isGeneralProjectDir(session.projectDir);
         jsonResponse(res, {
@@ -1022,7 +1058,7 @@ export function createWebRuntimeApi({
           sessionId: session.id,
           cwd: session.projectDir,
           isGeneral,
-          reusedSession: Boolean(reusable?.id),
+          reusedSession: allocated.reused,
         });
       } catch (error) {
         jsonResponse(
@@ -2694,11 +2730,13 @@ async function main() {
       else await runtimeStatusStore.set(session.id, "idle");
     },
   });
+  const allocateEmptySession = createPooledEmptySessionAllocator(pool);
   const runtimeApi = createWebRuntimeApi({
     pool,
     eventBroker,
     ensureSession: ensurePooledSession,
     runtimeStatusStore,
+    allocateEmptySession,
     getDefaultProjectDir: () => currentProjectDir,
     setDefaultProjectDir: (dir) => {
       const next = String(dir || "").trim();
@@ -3298,38 +3336,22 @@ async function main() {
         if (!stat.isDirectory()) throw new Error("Not a directory");
         let reusedSessionId = null;
         let session;
-        if (openingGeneral) {
-          const all = await listSessions(1000, { includeEmpty: true });
-          const reusable = all.find(
-            (entry) =>
-              isGeneralProjectDir(entry.projectDir) &&
-              Number(entry.messageCount || 0) === 0,
-          );
-          // Always reuse one empty general draft instead of stacking placeholders.
-          reusedSessionId = reusable?.id || null;
-          session = reusedSessionId
-            ? await loadSession(reusedSessionId)
-            : await createSession(GENERAL_PROJECT_DIR);
-        } else {
+        if (!openingGeneral) {
           await patchWebuiActiveProjects({
             action: "activate",
             projectDir: resolved,
           });
           currentProjectDir = resolved;
-          if (forceNewSession) {
-            const all = await listSessions(1000, { includeEmpty: true });
-            const targetKey = normalizeProjectDirKey(currentProjectDir);
-            const reusable = all.find(
-              (entry) =>
-                !isGeneralProjectDir(entry.projectDir) &&
-                normalizeProjectDirKey(entry.projectDir) === targetKey &&
-                Number(entry.messageCount || 0) === 0,
-            );
-            reusedSessionId = reusable?.id || null;
-          } else {
-            reusedSessionId =
-              await findPreferredSessionForProject(currentProjectDir);
-          }
+        }
+        if (openingGeneral || forceNewSession) {
+          const allocated = await allocateEmptySession(
+            openingGeneral ? GENERAL_PROJECT_DIR : currentProjectDir,
+          );
+          reusedSessionId = allocated.reused ? allocated.session.id : null;
+          session = allocated.session;
+        } else {
+          reusedSessionId =
+            await findPreferredSessionForProject(currentProjectDir);
           session = reusedSessionId
             ? await loadSession(reusedSessionId)
             : await createSession(currentProjectDir);

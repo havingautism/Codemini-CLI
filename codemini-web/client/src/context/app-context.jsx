@@ -25,6 +25,7 @@ import {
   alignSessionAssistantMessages,
   alignSessionUserMessages,
   hydrateSessionRuntimes,
+  isSessionBusyInState,
   mergeAlignedAssistantSkillContext,
   mergeAlignedUserContext,
   projectVisibleSessionState,
@@ -43,6 +44,7 @@ import {
   mergeFetchedSessions,
   patchSidebarSession,
   projectSessionRuntime,
+  rekeyPendingQueue,
   upsertSidebarSession,
 } from "../lib/session-ui-state.js";
 import { normalizeProjectDirKey } from "../../../shared/project-key.js";
@@ -1275,9 +1277,9 @@ export function AppProvider({ children }) {
         dreamDialogError: "",
         userInputRequest: rs?.pendingUserInput || null,
         busy,
-        live: busy || prev.live,
-        stage: busy ? "thinking" : prev.stage,
-        stageLabel: busy ? t("waitingResponse") : prev.stageLabel,
+        live: busy,
+        stage: busy ? "thinking" : "idle",
+        stageLabel: busy ? t("waitingResponse") : "",
         codewikiGeneration: codeWikiGenerating
           ? {
               status: "running",
@@ -2010,7 +2012,17 @@ export function AppProvider({ children }) {
         // CodeWiki generate may run on a dedicated idle session while chat is
         // busy — still apply its progress/done events in the UI.
         const isCodeWikiEvent = String(event.type || "").startsWith("codewiki:");
-        if (event.sessionId !== s.currentSessionId && !isCodeWikiEvent) return;
+        const isCrossSessionUiEvent =
+          event.type === "session:forked" ||
+          event.type === "session:title" ||
+          event.type === "session:title_status";
+        if (
+          event.sessionId !== stateRef.current.currentSessionId &&
+          !isCodeWikiEvent &&
+          !isCrossSessionUiEvent
+        ) {
+          return;
+        }
       }
       const activeId = activeMsgRef.current;
 
@@ -2025,15 +2037,13 @@ export function AppProvider({ children }) {
           const nextId = String(event.nextSessionId || "").trim();
           const currentId = stateRef.current.currentSessionId;
           if (!nextId || nextId === previousId) break;
-          const queued =
-            pendingQueueRef.current.get(previousId) ||
-            pendingQueueRef.current.get(currentId) ||
-            [];
-          if (queued.length) {
-            pendingQueueRef.current.delete(previousId);
-            pendingQueueRef.current.delete(currentId);
-            pendingQueueRef.current.set(nextId, queued);
-          }
+          const nextQueues = rekeyPendingQueue(
+            pendingQueueRef.current,
+            previousId,
+            nextId,
+          );
+          pendingQueueRef.current = nextQueues;
+          const queued = nextQueues.get(nextId) || [];
           setState((prev) => {
             const pendingQueues = { ...prev.pendingQueues };
             delete pendingQueues[previousId];
@@ -3202,12 +3212,22 @@ export function AppProvider({ children }) {
           timestamp: new Date().toISOString(),
           transientKey: "waiting-response",
         });
-        update({
+        setState((prev) => ({
+          ...prev,
           busy: true,
           live: true,
           stage: "thinking",
           stageLabel: t("waitingResponse"),
-        });
+          sessionRuntimeById: {
+            ...prev.sessionRuntimeById,
+            [sessionId]: {
+              ...prev.sessionRuntimeById[sessionId],
+              sessionId,
+              busy: true,
+              status: "running",
+            },
+          },
+        }));
         try {
           const res = await api.submitMessage(sessionId, {
             text: line,
@@ -3300,11 +3320,7 @@ export function AppProvider({ children }) {
         const priority = options.priority === true || message.priority === true;
         const sessionBusy =
           sessionOperationsRef.current.has(sessionId) ||
-          (stateRef.current.currentSessionId === sessionId &&
-            (stateRef.current.busy || stateRef.current.live)) ||
-          ACTIVE_SESSION_STATUSES.has(
-            stateRef.current.sessionRuntimeById?.[sessionId]?.status,
-          );
+          isSessionBusyInState(stateRef.current, sessionId);
         // While a turn is already running for this session, keep the prompt in
         // the composer queue (Cursor-style) instead of sending it into the
         // transcript. Enter appends; jump aborts the current turn and drains.
@@ -3352,11 +3368,7 @@ export function AppProvider({ children }) {
           // queued prompt would overlap the live turn (or get dropped on busy).
           const stillBusy =
             sessionOperationsRef.current.has(sessionId) ||
-            (stateRef.current.currentSessionId === sessionId &&
-              (stateRef.current.busy || stateRef.current.live)) ||
-            ACTIVE_SESSION_STATUSES.has(
-              stateRef.current.sessionRuntimeById?.[sessionId]?.status,
-            );
+            isSessionBusyInState(stateRef.current, sessionId);
           if (!skipDrain && !stillBusy) drainQueue(sessionId);
           abortContinueInPlaceRef.current = false;
         }
@@ -3414,11 +3426,7 @@ export function AppProvider({ children }) {
       try {
         const sessionBusy =
           sessionOperationsRef.current.has(sessionId) ||
-          (stateRef.current.currentSessionId === sessionId &&
-            (stateRef.current.busy || stateRef.current.live)) ||
-          ACTIVE_SESSION_STATUSES.has(
-            stateRef.current.sessionRuntimeById?.[sessionId]?.status,
-          );
+          isSessionBusyInState(stateRef.current, sessionId);
         if (sessionBusy) {
           await abortFnRef.current?.({ continueInPlace: true });
         }
@@ -3912,16 +3920,15 @@ export function AppProvider({ children }) {
                 },
                 projectCwd: projectNameFromRuntimeState(result.state),
                 isGeneral: !!result.state.isGeneral,
+                busy: !!result.state.busy,
                 live: !!result.state.busy,
                 stageLabel: result.state.busy ? t("waitingResponse") : "",
               }));
             else {
               await loadState(sessionId);
-              // loadState uses prev.live as fallback for idle sessions;
-              // after a session switch, prev.live belongs to the old session,
-              // so correct live/stageLabel from the new runtimeState.
               const rs = stateRef.current.runtimeState;
               update({
+                busy: !!rs?.busy,
                 live: !!rs?.busy,
                 stageLabel: rs?.busy ? t("waitingResponse") : "",
                 targetMessageId,
@@ -3997,9 +4004,7 @@ export function AppProvider({ children }) {
               loadSessionMessages(null, { sessionId: replacement.sessionId }),
               loadGitInfo({ sessionId: replacement.sessionId }),
             ]);
-            // Replacement session is always idle; reset live/stageLabel
-            // since loadState may have kept prev.live from the deleted session.
-            update({ live: false, stageLabel: "" });
+            update({ busy: false, live: false, stage: "idle", stageLabel: "" });
           }
           loadSessions();
           return result;
@@ -4054,9 +4059,7 @@ export function AppProvider({ children }) {
               updateRoute("chat", result.sessionId);
               activateSessionView(result.sessionId);
               await loadState(result.sessionId);
-              // A new session is always idle; reset live/stageLabel
-              // since loadState falls back to prev.live from the old session.
-              update({ live: false, stageLabel: "" });
+              update({ busy: false, live: false, stage: "idle", stageLabel: "" });
             }
             // Empty drafts stay out of the sidebar until the first message.
             loadSessions({ force: true });
@@ -4096,11 +4099,12 @@ export function AppProvider({ children }) {
               projectCwd: projectNameFromRuntimeState(result.state),
               isGeneral: !!result.state.isGeneral,
               live: !!result.state.busy,
+              busy: !!result.state.busy,
               stageLabel: result.state.busy ? t("waitingResponse") : "",
             }));
           } else {
             await loadState(result.sessionId);
-            update({ live: false, stageLabel: "" });
+            update({ live: false, busy: false, stage: "idle", stageLabel: "" });
           }
           if (result.sessionData) {
             await loadSessionMessages(result.sessionData, { sessionId: result.sessionId });
@@ -4200,6 +4204,7 @@ export function AppProvider({ children }) {
                 },
                 projectCwd: projectNameFromRuntimeState(result.state),
                 isGeneral: !!result.state.isGeneral,
+                busy: !!result.state.busy,
                 live: !!result.state.busy,
                 stageLabel: result.state.busy ? t("waitingResponse") : "",
               }));
@@ -4207,6 +4212,7 @@ export function AppProvider({ children }) {
               await loadState(targetSessionId);
               const rs = stateRef.current.runtimeState;
               update({
+                busy: !!rs?.busy,
                 live: !!rs?.busy,
                 stageLabel: rs?.busy ? t("waitingResponse") : "",
                 targetMessageId,
@@ -4278,15 +4284,15 @@ export function AppProvider({ children }) {
                 },
                 projectCwd: projectNameFromRuntimeState(result.state),
                 isGeneral: !!result.state.isGeneral,
+                busy: !!result.state.busy,
                 live: !!result.state.busy,
                 stageLabel: result.state.busy ? t("waitingResponse") : "",
               }));
             } else {
               await loadState(result.sessionId);
-              // loadState falls back to prev.live for idle sessions;
-              // after switching, prev.live belongs to the old session.
               const rs = stateRef.current.runtimeState;
               update({
+                busy: !!rs?.busy,
                 live: !!rs?.busy,
                 stageLabel: rs?.busy ? t("waitingResponse") : "",
               });
