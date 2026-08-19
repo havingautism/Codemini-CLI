@@ -6,7 +6,8 @@ import {
   isSkillIndexEligible,
   isSkillModelInvocationDisabled,
   isUserInvocableSkill,
-  renderCommandPrompt
+  renderCommandPrompt,
+  appendSkillSandboxMountHint,
 } from './command-loader.js';
 import { skillIsEligible } from './skill-contexts.js';
 import {
@@ -2422,13 +2423,15 @@ function getAlwaysSkillCommands(commands, config, dismissedSkills = null, active
     });
 }
 
-export function buildAlwaysSkillPromptBlock(commands, config, dismissedSkills = null, activeMode = config?.execution?.mode) {
+export function buildAlwaysSkillPromptBlock(commands, config, dismissedSkills = null, activeMode = config?.execution?.mode, cwd = process.cwd()) {
   const selected = getAlwaysSkillCommands(commands, config, dismissedSkills, activeMode);
   if (selected.length === 0) return '';
-  return selected.map((skill) => `[Always skill: ${skill.name}]\n${skill.content}`).join('\n\n');
+  return selected.map((skill) => (
+    `[Always skill: ${skill.name}]\n${appendSkillSandboxMountHint(skill, skill.content, { config, cwd })}`
+  )).join('\n\n');
 }
 
-function buildSelectedSkillPromptBlock(commands, names = [], config = {}, executionMode = 'code') {
+function buildSelectedSkillPromptBlock(commands, names = [], config = {}, executionMode = 'code', cwd = process.cwd()) {
   const selected = [];
   for (const name of names) {
     const skill = commands?.get?.(name);
@@ -2438,7 +2441,9 @@ function buildSelectedSkillPromptBlock(commands, names = [], config = {}, execut
       || isSkillModelInvocationDisabled(skill)
       || !isSkillEnabled(config, name, skill, executionMode)
     ) continue;
-    selected.push(`[Lite-selected skill: ${skill.name}]\n${skill.content}`);
+    selected.push(
+      `[Lite-selected skill: ${skill.name}]\n${appendSkillSandboxMountHint(skill, skill.content, { config, cwd })}`,
+    );
   }
   return selected.join('\n\n');
 }
@@ -6706,12 +6711,12 @@ async function renderProjectRequirementsSkillPrompt(custom, options, workspaceRo
       metadata: { type: 'skill' },
       content: stripFrontmatter(raw)
     };
-    return expandFileMentions(renderCommandPrompt(mdSkill, options.focusArgs), workspaceRoot);
+    return expandFileMentions(renderCommandPrompt(mdSkill, options.focusArgs, { cwd: workspaceRoot }), workspaceRoot);
   }
   const skill = custom?.content
     ? custom
     : await loadBundledProjectRequirementsSkill('project-requirements');
-  return expandFileMentions(renderCommandPrompt(skill, options.focusArgs), workspaceRoot);
+  return expandFileMentions(renderCommandPrompt(skill, options.focusArgs, { cwd: workspaceRoot }), workspaceRoot);
 }
 
 function getProjectRequirementsDefaultOutputFormat(custom) {
@@ -8721,7 +8726,7 @@ export async function createChatRuntime({
       );
     }
     const alwaysSkillPrompt = injectAlwaysSkills
-      ? buildAlwaysSkillPromptBlock(commands, config, dismissedAlwaysSkills, executionMode)
+      ? buildAlwaysSkillPromptBlock(commands, config, dismissedAlwaysSkills, executionMode, root)
       : '';
     const appendPromptParts = (prompt, parts) => buildSystemPromptWithReplyLanguage(
       [stripReplyLanguageDirective(prompt || ''), ...parts.filter(Boolean)].join('\n\n'),
@@ -8735,6 +8740,7 @@ export async function createChatRuntime({
       graphSelectedSkillNames,
       config,
       executionMode,
+      root,
     );
     const skillPrompt = appendPromptParts(activeReplySystemPrompt, [
       routedSkillIndexPrompt,
@@ -8813,7 +8819,9 @@ export async function createChatRuntime({
     const normalized = normalizeChatSubmission(submission);
     await reloadCommandsAndSkills();
     const composed = composeSelectedSkills(commands, normalized, {
-      isEnabled: (command) => isSkillEnabled(config, command.name, command, executionMode)
+      isEnabled: (command) => isSkillEnabled(config, command.name, command, executionMode),
+      config,
+      cwd: root,
     });
     if (composed.error) throw new Error(composed.error);
     if (typeof onAgentEvent === 'function') {

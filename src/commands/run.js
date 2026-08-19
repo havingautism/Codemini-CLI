@@ -342,7 +342,9 @@ export async function handleRun(args) {
       text: parsed.task,
       skillNames: parsed.skillNames
     }, {
-      isEnabled: (command) => skillIsEligible(config.skills, command.name, config.execution?.mode, command)
+      isEnabled: (command) => skillIsEligible(config.skills, command.name, config.execution?.mode, command),
+      config,
+      cwd: workspaceRoot,
     });
     if (composed.error) throw new Error(composed.error);
     effectiveTask = composed.modelText;

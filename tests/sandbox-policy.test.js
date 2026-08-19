@@ -8,6 +8,7 @@ import {
   normalizeSandboxMode,
   readonlySandboxRoots,
   readonlySandboxVolumes,
+  toSandboxSkillPath,
   resolveApprovalUiEnabled,
   resolveSandboxPolicy,
   validateSandboxEscalationArgs,
@@ -210,6 +211,17 @@ test('readonly sandbox roots expose global skills but not sessions or writes', (
       guestPath: '/codemini-skills',
       readonly: true,
     }]);
+    assert.equal(
+      toSandboxSkillPath(path.join(getSkillsDir(), 'demo', 'scripts', 'score.py'), {
+        ...policy,
+        platform: 'win32',
+      }),
+      '/codemini-skills/demo/scripts/score.py',
+    );
+    assert.equal(
+      toSandboxSkillPath(path.join(getSkillsDir(), 'demo', 'scripts', 'score.py'), policy),
+      path.join(getSkillsDir(), 'demo', 'scripts', 'score.py'),
+    );
   } finally {
     if (previous === undefined) delete process.env.CODEMINI_GLOBAL_DIR;
     else process.env.CODEMINI_GLOBAL_DIR = previous;

@@ -7114,7 +7114,11 @@ export function getBuiltinTools({
           : [];
       emitSystemTool({ type: "skill:start", name: command.name });
       try {
-        const content = renderCommandPrompt(command, skillArgs);
+        const content = renderCommandPrompt(command, skillArgs, {
+          config,
+          cwd: workspaceRoot,
+          platform,
+        });
         emitSystemTool({ type: "skill:end", name: command.name });
         return {
           name: command.name,

@@ -175,6 +175,20 @@ export function readonlySandboxVolumes(policy = {}) {
   }));
 }
 
+/** Map a host skill path to the microVM path used by `run`. Identity on POSIX. */
+export function toSandboxSkillPath(hostPath, policy = {}) {
+  const abs = path.resolve(String(hostPath || ''));
+  const volumes = readonlySandboxVolumes(policy);
+  for (const volume of volumes) {
+    if (!pathUnderRoot(abs, volume.hostPath)) continue;
+    const rel = path.relative(volume.hostPath, abs);
+    const guestRel = rel.split(/[\\/]/).filter(Boolean).join('/');
+    const guestRoot = String(volume.guestPath || '').replace(/\\/g, '/').replace(/\/+$/, '');
+    return guestRel ? `${guestRoot}/${guestRel}` : guestRoot;
+  }
+  return abs;
+}
+
 function pathUnderRoot(targetAbs, rootAbs) {
   const rel = path.relative(rootAbs, targetAbs);
   return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
