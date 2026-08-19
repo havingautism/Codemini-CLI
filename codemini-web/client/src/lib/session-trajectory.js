@@ -82,16 +82,36 @@ function compactOneLine(value) {
   }
 }
 
+function oneLinePreview(text, max = 160) {
+  const raw = String(text || "").replace(/\r\n/g, "\n").replace(/^\n+|\n+$/g, "");
+  if (!raw) return "";
+  const lines = raw.split("\n");
+  const first = truncateTrajectoryText(lines[0].trimEnd(), max);
+  if (lines.length <= 1) return first;
+  return /(?:…|\.\.\.)$/.test(first) ? first : `${first}...`;
+}
+
+function pickToolOutput(event) {
+  const output = String(event?.output || "");
+  const preview = String(event?.preview || "");
+  if (output.includes("\n")) return output;
+  if (output.trim().length >= preview.trim().length) return output || preview;
+  return preview || output;
+}
+
 export function formatTrajectoryRowPreview(event) {
   if (!event) return "";
+  if (event.kind === "system" || event.kind === "context") {
+    return oneLinePreview(event.input || event.body, 160);
+  }
   if (event.kind === "tool" || event.kind === "skill") {
     const name = String(event.title || "").trim();
     const input = compactOneLine(event.input || event.body);
-    const output = compactOneLine(event.preview || event.output);
-    const left = [name, input].filter(Boolean).join(" ");
-    return output ? `${left} -> ${output}` : left;
+    const header = [name, input].filter(Boolean).join(" ");
+    const output = oneLinePreview(pickToolOutput(event));
+    return output ? `${header} -> ${output}` : header;
   }
-  return firstLinePreview(event.body || event.input || "", 160);
+  return oneLinePreview(event.body || event.input || "", 160);
 }
 
 export function formatTrajectoryDuration(ms) {
@@ -115,13 +135,6 @@ export function formatTrajectoryExportStamp(date) {
 export function trajectoryExportFilename(sessionId, date = new Date()) {
   const id = String(sessionId || "session").replace(/[^A-Za-z0-9._-]/g, "_");
   return `codemini-trajectory-${id}-${formatTrajectoryExportStamp(date)}.json`;
-}
-
-function firstLinePreview(text, max = 80) {
-  const value = String(text || "").trim();
-  if (!value) return "";
-  const line = value.split(/\r?\n/).find((part) => part.trim()) || value;
-  return truncateTrajectoryText(line.trim(), max);
 }
 
 function buildSystemBody(runtimeState) {
@@ -438,7 +451,7 @@ export function buildTrajectory({
         kind: "system",
         turn: 0,
         title: "SYSTEM",
-        body: firstLinePreview(full),
+        body: oneLinePreview(full),
         input: full,
       }),
     );

@@ -135,7 +135,7 @@ function formatEntryDate(entry) {
 function ScrapbookSummaryLoading() {
   return (
     <div
-      className="relative overflow-hidden rounded-2xl border border-primary/15 bg-primary/[0.045] px-5 py-6"
+      className="relative overflow-hidden rounded-2xl border border-(--message-edge) bg-(--bg-primary) px-5 py-6 shadow-[var(--shadow-sm)]"
       role="status"
       aria-live="polite"
     >
@@ -1087,7 +1087,7 @@ export function ScrapbookPanel() {
             </button>
 
             <main
-              className={`${detailPane === "summary" ? "flex" : "hidden"} min-h-0 flex-col bg-(--bg-primary) lg:flex`}
+              className={`${detailPane === "summary" ? "flex" : "hidden"} min-h-0 flex-col bg-(--bg-secondary) lg:flex`}
             >
               <div className="flex shrink-0 items-center gap-3 px-5 py-4 sm:px-7">
                 <div>
@@ -1112,21 +1112,25 @@ export function ScrapbookPanel() {
                 </button>
               </div>
               <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 pb-8 sm:px-7">
-                {!selectedEntry ? (
-                  <div className="flex min-h-56 items-center justify-center text-[12px] text-(--text-muted)">
-                    <CircleNotch size={18} className="mr-2 animate-spin" />
-                    {t("scrapbookLoading")}
-                  </div>
-                ) : summaryBusy && !summaryPartialText ? (
-                  <ScrapbookSummaryLoading />
-                ) : (
-                  <StreamdownRenderer
-                    text={summaryText}
-                    streaming={summaryBusy}
-                    inlineEmbeds={false}
-                    className="mx-auto max-w-3xl text-[14px] leading-7 text-(--text-secondary)"
-                  />
-                )}
+                <div className="codemini-chat-session mx-auto max-w-3xl">
+                  {!selectedEntry ? (
+                    <div className="flex min-h-56 items-center justify-center text-[12px] text-(--text-muted)">
+                      <CircleNotch size={18} className="mr-2 animate-spin" />
+                      {t("scrapbookLoading")}
+                    </div>
+                  ) : summaryBusy && !summaryPartialText ? (
+                    <ScrapbookSummaryLoading />
+                  ) : (
+                    <article className="rounded-2xl border border-(--message-edge) bg-(--bg-primary) px-5 py-5 shadow-[var(--shadow-sm)] sm:px-6 sm:py-6">
+                      <StreamdownRenderer
+                        text={summaryText}
+                        streaming={summaryBusy}
+                        inlineEmbeds={false}
+                        className="codemini-assistant-markdown text-(--text-primary)"
+                      />
+                    </article>
+                  )}
+                </div>
               </div>
             </main>
 

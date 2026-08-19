@@ -91,7 +91,7 @@ test("splits turns and maps thinking, tool calls, and assistant body text", () =
   assert.match(result.events[0].input, /model: gpt-test/);
   assert.match(result.events[0].input, /provider: openai/);
   assert.match(result.events[0].input, /mode: coding/);
-  assert.equal(result.events[0].body, "model: gpt-test");
+  assert.equal(result.events[0].body, "model: gpt-test...");
   assert.equal(result.events[1].body, "梳理一下整体链路");
   assert.equal(result.events[1].turn, 1);
   assert.match(result.events[2].body, /cwd: \/tmp\/app/);
@@ -504,7 +504,8 @@ test("uses the composed system prompt and keeps tool result as inspectable outpu
   const system = result.events.find((event) => event.kind === "system");
   const tool = result.events.find((event) => event.kind === "tool");
   const skills = result.events.filter((event) => event.kind === "skill");
-  assert.match(system.body, /You are Codemini/);
+  assert.equal(system.body, "You are Codemini....");
+  assert.match(system.input, /Follow AGENTS.md/);
   assert.match(tool.input, /AGENTS.md/);
   assert.match(tool.output, /project index/);
   assert.equal(skills.length, 2);
@@ -569,22 +570,35 @@ test("duration, export stamp, stringify, and truncate helpers", () => {
   assert.equal(truncateTrajectoryText("short"), "short");
 });
 
-test("row preview keeps events on one line and tools show args then output", () => {
+test("row preview stays one line and adds ... when source had more lines", () => {
   const tool = formatTrajectoryRowPreview({
     kind: "tool",
-    title: "bash",
-    input: '{\n  "command": "ls src"\n}',
-    preview: "/Users/havingautism/Git_Projects/Codemini-CLI",
-    output: "src/\nREADME.md",
+    title: "Bash",
+    input: '{\n  "command": "ls -la"\n}',
+    preview: "ls -la -> exit 0 stdout: total 208 -rw-r--r-- 1 root root 8196 .DS_Store",
+    output: "total 208\n-rw-r--r-- 1 root root 8196 Jun 19 13:40 .DS_Store\ndrwxr-xr-x 1 root root 4096 src\nREADME.md",
   });
   assert.equal(tool.includes("\n"), false);
-  assert.match(tool, /^bash \{/);
-  assert.match(tool, /"command":"ls src"/);
-  assert.match(tool, /-> \/Users\/havingautism\/Git_Projects\/Codemini-CLI$/);
+  assert.match(tool, /^Bash \{/);
+  assert.match(tool, /"command":"ls -la"/);
+  assert.match(tool, /total 208\.\.\.$/);
+  assert.equal(tool.includes("-rw-r--r--"), false);
 
   const body = formatTrajectoryRowPreview({
     kind: "assistant",
-    body: "第一行说明\n第二行不该出现在列表里",
+    body: "第一行说明\n第二行补充",
   });
-  assert.equal(body, "第一行说明");
+  assert.equal(body, "第一行说明...");
+  assert.equal(
+    formatTrajectoryRowPreview({ kind: "assistant", body: "只有一行" }),
+    "只有一行",
+  );
+  assert.equal(
+    formatTrajectoryRowPreview({
+      kind: "system",
+      body: "You are Codemini.",
+      input: "You are Codemini.\nFollow AGENTS.md.",
+    }),
+    "You are Codemini....",
+  );
 });
