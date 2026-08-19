@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   sanitizeTiming,
   mergeTiming,
+  attachTimingToUsage,
   createStreamTimingTracker,
   buildUsagePanelModel,
   formatDurationMs,
@@ -44,6 +45,19 @@ test('mergeTiming uses earliest sent, earliest first token, latest complete', ()
     firstTokenAt: '2026-08-19T00:00:03.000Z',
     completedAt: '2026-08-19T00:00:20.000Z',
   });
+});
+
+test('attachTimingToUsage writes nested timing without summing timestamps', () => {
+  const usage = attachTimingToUsage(
+    { inputTokens: 10, timing: { requestSentAt: '2026-08-19T00:00:05.000Z' } },
+    {
+      requestSentAt: '2026-08-19T00:00:01.000Z',
+      firstTokenAt: '2026-08-19T00:00:02.000Z',
+      completedAt: '2026-08-19T00:00:03.000Z',
+    },
+  );
+  assert.equal(usage.inputTokens, 10);
+  assert.equal(usage.timing.requestSentAt, '2026-08-19T00:00:01.000Z');
 });
 
 test('mergeTiming ignores invalid timestamps and drops empty results', () => {

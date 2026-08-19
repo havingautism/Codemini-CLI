@@ -5,6 +5,7 @@ import {
 } from "./tool-segments.js";
 import { buildHookSegmentEvent } from "./hook-ui.js";
 import { formatToolLabel as coreFormatToolLabel } from "../../src/core/tool-display.js";
+import { mergeTiming, sanitizeTiming } from "../../src/core/usage-timing.js";
 
 const USAGE_KEYS = [
   "inputTokens",
@@ -24,6 +25,8 @@ export function normalizeUsage(usage) {
     const value = Number(usage?.[key]);
     if (Number.isFinite(value)) out[key] = Math.max(0, Math.round(value));
   }
+  const timing = sanitizeTiming(usage.timing);
+  if (timing) out.timing = timing;
   return Object.keys(out).length ? out : null;
 }
 
@@ -39,6 +42,8 @@ export function mergeUsage(current, incoming) {
       Math.round(Number(a[key] || 0) + Number(b[key] || 0)),
     );
   }
+  const timing = mergeTiming(a.timing, b.timing);
+  if (timing) out.timing = timing;
   return out;
 }
 

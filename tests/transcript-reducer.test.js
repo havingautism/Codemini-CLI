@@ -37,6 +37,46 @@ test('assistant usage events add tokens to the parent message', () => {
   });
 });
 
+test('assistant usage merge keeps timing and does not add ISO strings', () => {
+  const message = applyStreamEventToMessage(
+    {
+      id: 'parent',
+      usage: {
+        totalTokens: 35,
+        requests: 1,
+        timing: {
+          requestSentAt: '2026-08-19T00:00:05.000Z',
+          firstTokenAt: '2026-08-19T00:00:06.000Z',
+          completedAt: '2026-08-19T00:00:08.000Z',
+        },
+      },
+      segments: [],
+    },
+    {
+      type: 'assistant:usage',
+      usage: {
+        inputTokens: 100,
+        outputTokens: 20,
+        totalTokens: 120,
+        requests: 1,
+        timing: {
+          requestSentAt: '2026-08-19T00:00:01.000Z',
+          firstTokenAt: '2026-08-19T00:00:03.000Z',
+          completedAt: '2026-08-19T00:00:20.000Z',
+        },
+      },
+    },
+  );
+
+  assert.deepEqual(message.usage.timing, {
+    requestSentAt: '2026-08-19T00:00:01.000Z',
+    firstTokenAt: '2026-08-19T00:00:03.000Z',
+    completedAt: '2026-08-19T00:00:20.000Z',
+  });
+  assert.equal(message.usage.totalTokens, 155);
+  assert.equal(typeof message.usage.timing.requestSentAt, 'string');
+});
+
 test('applyStreamEventToMessage persists hook start/end as skill segments', () => {
   let message = {
     id: 'msg-hook',

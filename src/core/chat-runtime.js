@@ -116,6 +116,7 @@ import {
 import { normalizePlanState } from './plan-state.js';
 import { normalizeSpecState } from './spec-state.js';
 import { normalizeTodos } from './todo-state.js';
+import { mergeTiming } from './usage-timing.js';
 import { isGeneralWorkspaceProjectDir, normalizeProjectDirKey } from './webui-sidebar-config.js';
 import {
   attachReflectTargets,
@@ -524,7 +525,7 @@ export function normalizeModelUsage(usage) {
   ) {
     return null;
   }
-  return {
+  return withTiming({
     inputTokens: Math.round(inputTokens || 0),
     outputTokens: Math.round(outputTokens || 0),
     totalTokens: Math.round(totalTokens || 0),
@@ -534,12 +535,18 @@ export function normalizeModelUsage(usage) {
     reasoningOutputTokens: Math.round(reasoningOutputTokens || 0),
     requests: 1,
     raw: collectRawUsage(usage)
-  };
+  }, usage);
+}
+
+function withTiming(base, ...sources) {
+  const timing = sources.reduce((acc, source) => mergeTiming(acc, source?.timing), null);
+  if (timing) base.timing = timing;
+  return base;
 }
 
 function cloneModelUsage(usage) {
   if (!usage || typeof usage !== 'object') return null;
-  return {
+  return withTiming({
     inputTokens: Math.max(0, Math.round(Number(usage.inputTokens || 0))),
     outputTokens: Math.max(0, Math.round(Number(usage.outputTokens || 0))),
     totalTokens: Math.max(0, Math.round(Number(usage.totalTokens || 0))),
@@ -549,7 +556,7 @@ function cloneModelUsage(usage) {
     reasoningOutputTokens: Math.max(0, Math.round(Number(usage.reasoningOutputTokens || 0))),
     requests: Math.max(0, Math.round(Number(usage.requests || 0))),
     raw: Array.isArray(usage.raw) ? usage.raw.map((item) => ({ ...item })) : []
-  };
+  }, usage);
 }
 
 function mergeModelUsage(left, right) {
@@ -557,7 +564,7 @@ function mergeModelUsage(left, right) {
   const b = cloneModelUsage(right);
   if (!a) return b;
   if (!b) return a;
-  return {
+  return withTiming({
     inputTokens: a.inputTokens + b.inputTokens,
     outputTokens: a.outputTokens + b.outputTokens,
     totalTokens: a.totalTokens + b.totalTokens,
@@ -567,7 +574,7 @@ function mergeModelUsage(left, right) {
     reasoningOutputTokens: a.reasoningOutputTokens + b.reasoningOutputTokens,
     requests: a.requests + b.requests,
     raw: [...a.raw, ...b.raw]
-  };
+  }, a, b);
 }
 
 export function createTurnUsageAccumulator() {

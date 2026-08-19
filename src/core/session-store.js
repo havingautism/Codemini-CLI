@@ -5,6 +5,7 @@ import { normalizePlanState } from './plan-state.js';
 import { normalizeSpecState } from './spec-state.js';
 import { normalizeTodos } from './todo-state.js';
 import { ensureSessionTitleEmoji } from './session-title.js';
+import { sanitizeTiming } from './usage-timing.js';
 import {
   deleteSessionFromSqlite,
   listSessionsFromSqlite,
@@ -109,6 +110,8 @@ function sanitizeUsage(usage) {
   } else if (usage.raw && typeof usage.raw === 'object') {
     out.raw = [{ ...usage.raw }];
   }
+  const timing = sanitizeTiming(usage.timing);
+  if (timing) out.timing = timing;
   return Object.keys(out).length ? out : null;
 }
 
