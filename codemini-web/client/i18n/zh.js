@@ -624,11 +624,13 @@ export const zh = {
   webSearchProviderBingRss: "Bing RSS（无需 API Key）",
   webSearchProviderTavily: "Tavily（推荐）",
   webSearchProviderExa: "Exa",
+  webSearchProviderFirecrawl: "Firecrawl",
   webSearchProviderBingRssDesc: "无需 API Key，通过 RSS 获取基础网页结果。",
   webSearchProviderTavilyDesc: "推荐使用，结果更丰富，可返回图片候选。",
   webSearchProviderExaDesc: "语义搜索 API，需要 Exa API Key。",
+  webSearchProviderFirecrawlDesc: "搜索 API，可返回图片候选，需要 Firecrawl API Key。",
   webSearchProviderHelp:
-    "Bing RSS 无需 API Key。Tavily 推荐使用，并可返回图片候选。Tavily 和 Exa 需要搜索 API Key，或使用对应环境变量。",
+    "Bing RSS 无需 API Key。Tavily 推荐使用，并可返回图片候选。Tavily、Exa 和 Firecrawl 需要搜索 API Key，或使用对应环境变量。",
   tavilyApiKey: "Tavily API Key",
   tavilyApiKeyPlaceholder: "Tavily 需要填写",
   tavilyApiKeyHelp:
@@ -637,6 +639,10 @@ export const zh = {
   exaApiKeyPlaceholder: "Exa 需要填写",
   exaApiKeyHelp:
     "保存在本机 Codemini 配置文件中。也可以留空并使用 EXA_API_KEY。",
+  firecrawlApiKey: "Firecrawl API Key",
+  firecrawlApiKeyPlaceholder: "Firecrawl 需要填写",
+  firecrawlApiKeyHelp:
+    "保存在本机 Codemini 配置文件中。也可以留空并使用 FIRECRAWL_API_KEY。",
   playwright: "Playwright",
   playwrightHelp:
     "web_fetch 的可选浏览器运行时。安装后可更好地读取 JavaScript 渲染页面，而不只依赖静态 HTML。安装命令：npm install -g playwright && playwright install chromium",

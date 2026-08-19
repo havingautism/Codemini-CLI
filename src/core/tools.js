@@ -806,6 +806,9 @@ export async function webSearchQuery(config, args = {}) {
   if (provider === "exa") {
     return searchWithExa(config, { query, maxResults, timeoutMs });
   }
+  if (provider === "firecrawl") {
+    return searchWithFirecrawl(config, { query, maxResults, timeoutMs, region });
+  }
 
   return searchWithBingRss(config, {
     query,
@@ -816,39 +819,38 @@ export async function webSearchQuery(config, args = {}) {
   });
 }
 
+const SEARCH_API_KEY_SOURCES = {
+  tavily: { configKey: "tavily_api_key", envName: "TAVILY_API_KEY" },
+  exa: { configKey: "exa_api_key", envName: "EXA_API_KEY" },
+  firecrawl: { configKey: "firecrawl_api_key", envName: "FIRECRAWL_API_KEY" },
+};
+
 function normalizeWebSearchProvider(value) {
   const provider = String(value || "bing_rss")
     .trim()
     .toLowerCase()
     .replace(/[-\s]+/g, "_");
   if (provider === "bing") return "bing_rss";
-  if (["bing_rss", "tavily", "exa"].includes(provider)) return provider;
+  if (["bing_rss", "tavily", "exa", "firecrawl"].includes(provider)) return provider;
   return "bing_rss";
 }
 
 function resolveSearchApiKey(config, provider) {
-  if (provider === "tavily") {
-    const configured = String(config?.web?.tavily_api_key || "").trim();
-    if (configured) return configured;
-    const legacy = String(config?.web?.search_api_key || "").trim();
-    if (legacy) return legacy;
-    return String(process.env.TAVILY_API_KEY || "").trim();
-  }
-  if (provider === "exa") {
-    const configured = String(config?.web?.exa_api_key || "").trim();
-    if (configured) return configured;
-    const legacy = String(config?.web?.search_api_key || "").trim();
-    if (legacy) return legacy;
-    return String(process.env.EXA_API_KEY || "").trim();
-  }
-  return "";
+  const source = SEARCH_API_KEY_SOURCES[provider];
+  if (!source) return "";
+  const configured = String(config?.web?.[source.configKey] || "").trim();
+  if (configured) return configured;
+  const legacy = String(config?.web?.search_api_key || "").trim();
+  if (legacy) return legacy;
+  return String(process.env[source.envName] || "").trim();
 }
 
 function requireSearchApiKey(config, provider) {
   const key = resolveSearchApiKey(config, provider);
   if (key) return key;
-  const envName = provider === "tavily" ? "TAVILY_API_KEY" : "EXA_API_KEY";
-  const configKey = provider === "tavily" ? "web.tavily_api_key" : "web.exa_api_key";
+  const source = SEARCH_API_KEY_SOURCES[provider];
+  const envName = source?.envName || "SEARCH_API_KEY";
+  const configKey = source ? `web.${source.configKey}` : "web.search_api_key";
   throw new Error(
     `web_search provider "${provider}" requires an API key. Set ${configKey} or ${envName}.`,
   );
@@ -976,6 +978,58 @@ async function searchWithTavily(config, { query, maxResults, timeoutMs }) {
   };
 }
 
+async function searchWithFirecrawl(config, { query, maxResults, timeoutMs, region }) {
+  const apiKey = requireSearchApiKey(config, "firecrawl");
+  const endpoint = String(
+    config?.web?.search_base_url || "https://api.firecrawl.dev/v2/search",
+  ).trim();
+  const country = String(region || "").trim().toUpperCase();
+  const json = await fetchJsonWithTimeout(endpoint, {
+    timeoutMs,
+    errorPrefix: "web_search Firecrawl request failed",
+    headers: {
+      authorization: `Bearer ${apiKey}`,
+    },
+    body: {
+      query,
+      limit: maxResults,
+      sources: [{ type: "web" }, { type: "images" }],
+      timeout: timeoutMs,
+      ...(country.length === 2 ? { country } : {}),
+    },
+  });
+  const data = json?.data && typeof json.data === "object" && !Array.isArray(json.data)
+    ? json.data
+    : json;
+  const webItems = Array.isArray(data?.web)
+    ? data.web
+    : Array.isArray(data)
+      ? data
+      : [];
+  const images = normalizeFirecrawlImages(data?.images, maxResults * 2);
+  const results = webItems.slice(0, maxResults).map((item) => {
+    const url = normalizeSearchResultUrl(item.url);
+    const pageImages = images
+      .filter((image) => image.page_url && image.page_url === url)
+      .map(({ url: imageUrl, description }) => ({ url: imageUrl, description }));
+    return normalizeProviderSearchResult({
+      title: item.title,
+      url: item.url,
+      description: item.description || item.snippet || item.markdown,
+      images: pageImages,
+    });
+  });
+  return {
+    query,
+    engine: "firecrawl",
+    source_url: endpoint,
+    no_results: results.length === 0 && images.length === 0,
+    results,
+    images: images.map(({ url, description }) => ({ url, description })),
+    related: [],
+  };
+}
+
 async function searchWithExa(config, { query, maxResults, timeoutMs }) {
   const apiKey = requireSearchApiKey(config, "exa");
   const endpoint = String(config?.web?.search_base_url || "https://api.exa.ai/search").trim();
@@ -1026,6 +1080,32 @@ function normalizeProviderSearchResult(item = {}) {
     ...(Number.isFinite(Number(item.score)) ? { score: Number(item.score) } : {}),
     ...(images.length ? { images } : {}),
   };
+}
+
+function normalizeFirecrawlImages(value, limit = 8) {
+  const rawItems = Array.isArray(value) ? value : [];
+  const images = [];
+  const seen = new Set();
+  for (const item of rawItems) {
+    if (images.length >= limit) break;
+    const rawUrl = typeof item === "string"
+      ? item
+      : item?.imageUrl || item?.image_url;
+    const url = normalizeSearchResultUrl(rawUrl);
+    if (!url || seen.has(url)) continue;
+    seen.add(url);
+    const pageUrl = typeof item === "object"
+      ? normalizeSearchResultUrl(item.url)
+      : "";
+    images.push({
+      url,
+      description: normalizeWhitespace(
+        typeof item === "string" ? "" : item?.title || item?.description || item?.alt || "",
+      ),
+      ...(pageUrl && pageUrl !== url ? { page_url: pageUrl } : {}),
+    });
+  }
+  return images;
 }
 
 function normalizeTavilyImages(value, limit = 8) {

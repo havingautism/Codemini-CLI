@@ -5,7 +5,7 @@ const HTTP_WEB_SEARCH_DEFINITION = {
   function: {
     name: 'web_search',
     description:
-      'Run a live web search. Defaults to no-API Bing RSS, or uses config.web.search_provider=tavily|exa when configured with an API key. This tool respects config.web.search_enabled and will fail when network search is disabled.',
+      'Run a live web search. Defaults to no-API Bing RSS, or uses config.web.search_provider=tavily|exa|firecrawl when configured with an API key. This tool respects config.web.search_enabled and will fail when network search is disabled.',
     parameters: {
       type: 'object',
       properties: {
@@ -25,7 +25,7 @@ const HTTP_WEB_SEARCH_DEFINITION = {
         },
         provider: {
           type: 'string',
-          description: 'Optional search provider override: bing_rss, tavily, or exa'
+          description: 'Optional search provider override: bing_rss, tavily, exa, or firecrawl'
         }
       },
       required: ['query']
@@ -74,7 +74,14 @@ export function formatWebSearchResult(result) {
   const results = Array.isArray(result.results) ? result.results : [];
   const engine = result.engine ? ` via ${result.engine}` : '';
   const header = `[web_search: "${String(result.query || '').trim()}"${engine}]`;
-  if (result.no_results || results.length === 0) {
+  const imageLines = [];
+  for (const img of (Array.isArray(result.images) ? result.images : []).slice(0, 6)) {
+    const url = typeof img === 'string' ? img : img?.url;
+    if (!url) continue;
+    const desc = typeof img === 'object' ? String(img.description || '').trim() : '';
+    imageLines.push(desc ? `- ${url} (${desc})` : `- ${url}`);
+  }
+  if ((result.no_results || results.length === 0) && imageLines.length === 0) {
     return `${header}\nNo results found.`;
   }
 
@@ -100,16 +107,10 @@ export function formatWebSearchResult(result) {
     return lines.join('\n');
   });
 
-  const topImages = Array.isArray(result.images) ? result.images : [];
-  if (topImages.length) {
-    blocks.push('');
+  if (imageLines.length) {
+    if (blocks.length) blocks.push('');
     blocks.push('Related images:');
-    for (const img of topImages.slice(0, 6)) {
-      const url = typeof img === 'string' ? img : img?.url;
-      if (!url) continue;
-      const desc = typeof img === 'object' ? String(img.description || '').trim() : '';
-      blocks.push(desc ? `- ${url} (${desc})` : `- ${url}`);
-    }
+    blocks.push(...imageLines);
   }
 
   return `${header}\n${blocks.join('\n\n')}`;

@@ -132,6 +132,16 @@ export function buildSettingsFields() {
       visibleWhen: ({ getValue }) => getValue("web.search_provider") === "exa",
     },
     {
+      tab: "web",
+      path: "web.firecrawl_api_key",
+      control: "input",
+      type: "password",
+      label: t("firecrawlApiKey"),
+      placeholder: t("firecrawlApiKeyPlaceholder"),
+      help: t("firecrawlApiKeyHelp"),
+      visibleWhen: ({ getValue }) => getValue("web.search_provider") === "firecrawl",
+    },
+    {
       tab: "context",
       path: "context.preflight_trigger_pct",
       control: "percent",

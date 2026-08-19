@@ -631,11 +631,13 @@ export const en = {
   webSearchProviderBingRss: "Bing RSS (no API key)",
   webSearchProviderTavily: "Tavily (Recommended)",
   webSearchProviderExa: "Exa",
+  webSearchProviderFirecrawl: "Firecrawl",
   webSearchProviderBingRssDesc: "No API key required; basic web results via RSS.",
   webSearchProviderTavilyDesc: "Recommended; richer results and optional image candidates.",
   webSearchProviderExaDesc: "Semantic search API; requires an Exa API key.",
+  webSearchProviderFirecrawlDesc: "Search API with optional image candidates; requires a Firecrawl API key.",
   webSearchProviderHelp:
-    "Bing RSS works without an API key. Tavily is recommended and can return image candidates. Tavily and Exa require a search API key or matching environment variable.",
+    "Bing RSS works without an API key. Tavily is recommended and can return image candidates. Tavily, Exa, and Firecrawl require a search API key or matching environment variable.",
   tavilyApiKey: "Tavily API Key",
   tavilyApiKeyPlaceholder: "Required for Tavily",
   tavilyApiKeyHelp:
@@ -644,6 +646,10 @@ export const en = {
   exaApiKeyPlaceholder: "Required for Exa",
   exaApiKeyHelp:
     "Stored locally in your Codemini config file. You can also leave this empty and use EXA_API_KEY.",
+  firecrawlApiKey: "Firecrawl API Key",
+  firecrawlApiKeyPlaceholder: "Required for Firecrawl",
+  firecrawlApiKeyHelp:
+    "Stored locally in your Codemini config file. You can also leave this empty and use FIRECRAWL_API_KEY.",
   playwright: "Playwright",
   playwrightHelp:
     "Optional browser runtime for web_fetch. When installed, Codemini can render JavaScript-heavy pages instead of relying on static HTML only. Install: npm install -g playwright && playwright install chromium",
