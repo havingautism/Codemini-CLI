@@ -35,7 +35,7 @@ test('Windows microsandbox skill prompts remap run paths to /codemini-skills', a
   }
 });
 
-test('macOS microsandbox skill prompts keep host paths and omit /codemini-skills', () => {
+test('macOS microsandbox skill prompts remap run paths to /codemini-skills', () => {
   const previous = process.env.CODEMINI_GLOBAL_DIR;
   const globalDir = path.join(os.tmpdir(), 'codemini-mac-skill-global');
   process.env.CODEMINI_GLOBAL_DIR = globalDir;
@@ -51,8 +51,8 @@ test('macOS microsandbox skill prompts keep host paths and omit /codemini-skills
       cwd: path.join(os.tmpdir(), 'codemini-mac-skill-ws'),
       platform: 'darwin',
     });
-    assert.doesNotMatch(prompt, /\/codemini-skills/);
-    assert.doesNotMatch(prompt, /<codemini-skill-sandbox>/);
+    assert.match(prompt, /Sandbox skill root: \/codemini-skills\/demo/);
+    assert.match(prompt, /Use these paths with run/);
   } finally {
     if (previous === undefined) delete process.env.CODEMINI_GLOBAL_DIR;
     else process.env.CODEMINI_GLOBAL_DIR = previous;

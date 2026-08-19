@@ -163,14 +163,18 @@ export function readonlySandboxRoots(policy = {}) {
   return [skillsDir];
 }
 
+export const SANDBOX_SKILLS_GUEST_PATH = '/codemini-skills';
+
 /**
- * VM bind mounts for {@link readonlySandboxRoots}. POSIX keeps the host path
- * so skill package context stays valid; Windows guests use `/codemini-skills`.
+ * VM bind mounts for {@link readonlySandboxRoots}.
+ * Always use a Linux guest path. Binding the macOS host path
+ * (`/Users/.../Library/...`) into the microVM can stall sandbox
+ * create and leave session terminal/SSE waiting on startup.
  */
 export function readonlySandboxVolumes(policy = {}) {
   return readonlySandboxRoots(policy).map((hostPath) => ({
     hostPath,
-    guestPath: policy.platform === 'win32' ? '/codemini-skills' : hostPath,
+    guestPath: SANDBOX_SKILLS_GUEST_PATH,
     readonly: true,
   }));
 }

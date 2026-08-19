@@ -102,7 +102,7 @@ test('Microsandbox startup failure is fail-closed', async () => {
   }
 });
 
-test('Microsandbox bind-mounts global skills read-only at the host path', async () => {
+test('Microsandbox bind-mounts global skills read-only at /codemini-skills', async () => {
   const previous = process.env.CODEMINI_GLOBAL_DIR;
   const globalDir = path.join(os.tmpdir(), 'codemini-vm-skills-global');
   process.env.CODEMINI_GLOBAL_DIR = globalDir;
@@ -122,7 +122,7 @@ test('Microsandbox bind-mounts global skills read-only at the host path', async 
     await once(wrapped.child, 'close');
     assert.deepEqual(captured.options.readonlyVolumes, [{
       hostPath: getSkillsDir(),
-      guestPath: getSkillsDir(),
+      guestPath: '/codemini-skills',
       readonly: true,
     }]);
   } finally {

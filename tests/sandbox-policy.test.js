@@ -203,7 +203,7 @@ test('readonly sandbox roots expose global skills but not sessions or writes', (
     );
     assert.deepEqual(readonlySandboxVolumes({ ...policy, platform: 'darwin' }), [{
       hostPath: getSkillsDir(),
-      guestPath: getSkillsDir(),
+      guestPath: '/codemini-skills',
       readonly: true,
     }]);
     assert.deepEqual(readonlySandboxVolumes({ ...policy, platform: 'win32' }), [{
@@ -220,7 +220,7 @@ test('readonly sandbox roots expose global skills but not sessions or writes', (
     );
     assert.equal(
       toSandboxSkillPath(path.join(getSkillsDir(), 'demo', 'scripts', 'score.py'), policy),
-      path.join(getSkillsDir(), 'demo', 'scripts', 'score.py'),
+      '/codemini-skills/demo/scripts/score.py',
     );
   } finally {
     if (previous === undefined) delete process.env.CODEMINI_GLOBAL_DIR;

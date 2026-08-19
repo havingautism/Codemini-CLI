@@ -125,27 +125,27 @@ function UsagePanel({ model }) {
         <section className="flex flex-col gap-2">
           <h3 className="text-[12px] font-semibold text-(--text-primary)">{t("usageTimingTitle")}</h3>
           <div className="flex flex-col gap-1">
-            <div className="relative h-6">
-              <div className="absolute inset-x-0 top-2 flex h-2 overflow-hidden rounded-full">
-                {waitingPct > 0 ? (
-                  <span className="bg-(--text-muted)" style={{ width: `${waitingPct}%` }} />
-                ) : null}
-                {showGeneratingSegment ? (
-                  <span className="bg-(--accent-blue)" style={{ width: `${generatingPct}%` }} />
-                ) : null}
+            {waitingPct >= 18 && waitingPct <= 82 ? (
+              <div className="relative h-3.5">
+                <span
+                  className="absolute top-0 -translate-x-1/2 text-[10px] leading-none text-(--text-muted)"
+                  style={{ left: `${waitingPct}%` }}
+                >
+                  {t("usageFirstToken")}
+                </span>
               </div>
-              <span className="absolute left-0 top-0 text-[10px] text-(--text-muted)">
-                {t("usageRequestSent")}
-              </span>
-              <span
-                className="absolute top-0 -translate-x-1/2 text-[10px] text-(--text-muted)"
-                style={{ left: `${waitingPct}%` }}
-              >
-                {t("usageFirstToken")}
-              </span>
-              <span className="absolute right-0 top-0 text-[10px] text-(--text-muted)">
-                {t("usageComplete")}
-              </span>
+            ) : null}
+            <div className="flex h-2 overflow-hidden rounded-full">
+              {waitingPct > 0 ? (
+                <span className="bg-(--text-muted)" style={{ width: `${waitingPct}%` }} />
+              ) : null}
+              {showGeneratingSegment ? (
+                <span className="bg-(--accent-blue)" style={{ width: `${generatingPct}%` }} />
+              ) : null}
+            </div>
+            <div className="flex justify-between text-[10px] leading-none text-(--text-muted)">
+              <span>{t("usageRequestSent")}</span>
+              <span>{t("usageComplete")}</span>
             </div>
             <div className="flex flex-wrap gap-x-3 gap-y-1 text-(--text-muted)">
               <span className="inline-flex items-center gap-1">

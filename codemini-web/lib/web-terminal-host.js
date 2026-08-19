@@ -2,10 +2,13 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import * as pty from 'node-pty';
 import { resolveShell } from '../../src/core/shell.js';
+import { ensureNodePtySpawnHelperExecutable } from './node-pty-spawn-helper.js';
 import {
   buildPowerShellColorBootstrap,
   buildTerminalColorEnv,
 } from './terminal-env.js';
+
+ensureNodePtySpawnHelperExecutable();
 
 const terminals = new Map();
 let detectedPwshCommand;
@@ -62,14 +65,24 @@ function send(message) {
 function spawnTerminal({ key, cwd, shellDefault, cols, rows }) {
   if (terminals.has(key)) return terminals.get(key);
   const shell = interactiveShell(shellDefault);
-  const terminal = pty.spawn(shell.command, shell.args, {
-    name: 'xterm-256color',
-    cols,
-    rows,
-    cwd,
-    env: buildTerminalColorEnv(process.env),
-    useConpty: process.platform === 'win32',
-  });
+  let terminal;
+  try {
+    terminal = pty.spawn(shell.command, shell.args, {
+      name: 'xterm-256color',
+      cols,
+      rows,
+      cwd,
+      env: buildTerminalColorEnv(process.env),
+      useConpty: process.platform === 'win32',
+    });
+  } catch (error) {
+    send({
+      type: 'error',
+      key,
+      error: String(error?.message || error),
+    });
+    return null;
+  }
   terminals.set(key, terminal);
   terminal.onData((data) => {
     if (terminals.get(key) !== terminal) return;
@@ -96,11 +109,16 @@ function restartTerminal(message) {
 
 process.on('message', (message) => {
   if (!message || typeof message !== 'object') return;
-  const terminal =
-    message.type === 'spawn'
-      ? spawnTerminal(message)
-      : terminals.get(message.key);
   try {
+    if (message.type === 'spawn') {
+      spawnTerminal(message);
+      return;
+    }
+    if (message.type === 'restart') {
+      restartTerminal(message);
+      return;
+    }
+    const terminal = terminals.get(message.key);
     if (message.type === 'input') {
       terminal?.write(String(message.data ?? ''));
     } else if (message.type === 'resize') {
@@ -108,8 +126,6 @@ process.on('message', (message) => {
     } else if (message.type === 'clear') {
       terminal?.clear();
       terminal?.write('\x0c');
-    } else if (message.type === 'restart') {
-      restartTerminal(message);
     }
   } catch (error) {
     send({
@@ -119,3 +135,5 @@ process.on('message', (message) => {
     });
   }
 });
+
+send({ type: 'host-ready' });
