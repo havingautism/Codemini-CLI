@@ -2,7 +2,6 @@ const USER_ROLES = new Set(["you", "user"]);
 const ASSISTANT_ROLES = new Set(["agent", "assistant"]);
 const SKIP_ROLES = new Set(["divider", "system", "plan-overview"]);
 const ERROR_STATUSES = new Set(["failed", "error", "blocked", "aborted"]);
-const RUNNING_STATUSES = new Set(["running", "pending", ""]);
 
 function normalizeRole(message) {
   return String(message?.role || "").toLowerCase();
@@ -50,10 +49,8 @@ function resolveDurationMs({ startedAt, endedAt, durationMs }) {
 function normalizeStatus(status, isStreaming) {
   if (isStreaming) return "running";
   const value = String(status || "").toLowerCase();
+  if (value === "running" || value === "pending") return "running";
   if (ERROR_STATUSES.has(value)) return "error";
-  if (RUNNING_STATUSES.has(value) && value === "running") return "running";
-  if (value === "pending") return "running";
-  if (!value) return "done";
   return "done";
 }
 
@@ -196,7 +193,6 @@ export function buildTrajectory({
           title: "USER",
           body: messageText(message),
           startedAt: messageTime(message),
-          endedAt: messageTime(message),
         }),
       );
       if (!emittedContext) {
@@ -226,7 +222,6 @@ export function buildTrajectory({
           body: messageText(message),
           status: "error",
           startedAt: messageTime(message),
-          endedAt: messageTime(message),
         }),
       );
       return;
@@ -254,15 +249,15 @@ export function buildTrajectory({
         return;
       }
       if (segment?.type === "handoff") {
-        if (!segment.text) return;
+        if (!segment.text && !segment.isStreaming) return;
         events.push(
           makeEvent({
             id: `trajectory-handoff-${message.id || index}-${segmentIndex}`,
             kind: "assistant",
             turn: activeTurn,
             title: "handoff",
-            body: segment.text,
-            status: "done",
+            body: segment.text || "",
+            status: segment.isStreaming ? "running" : "done",
             startedAt: segment.startedAt || messageTime(message),
             endedAt: segment.endedAt || null,
           }),

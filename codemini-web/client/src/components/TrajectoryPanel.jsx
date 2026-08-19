@@ -45,8 +45,10 @@ function downloadJson(filename, payload) {
   const link = document.createElement("a");
   link.href = url;
   link.download = filename;
+  document.body.appendChild(link);
   link.click();
-  URL.revokeObjectURL(url);
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 function EventBody({ event, expanded, onToggle }) {
@@ -183,7 +185,9 @@ export function TrajectoryPanel({
       <ScrollArea className="min-h-0 flex-1">
         {visible.length === 0 ? (
           <div className="px-3 py-10 text-center text-[13px] text-(--text-muted) sm:px-5">
-            {t("trajectoryEmpty")}
+            {built.events.length === 0
+              ? t("trajectoryEmpty")
+              : t("noMatches")}
           </div>
         ) : (
           <ol className="px-3 py-3 sm:px-5">

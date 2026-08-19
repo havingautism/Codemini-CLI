@@ -4,8 +4,8 @@ import React, {
   lazy,
   memo,
   useCallback,
-  useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import { createRoot } from "react-dom/client";
@@ -206,6 +206,11 @@ function Shell() {
   const [sideRailOpen, setSideRailOpen] = useState(false);
   const [sideRailTab, setSideRailTab] = useState("files");
   const [chatPageTab, setChatPageTab] = useState("conversation");
+  const prevSessionIdRef = useRef(state.currentSessionId);
+  if (prevSessionIdRef.current !== state.currentSessionId) {
+    prevSessionIdRef.current = state.currentSessionId;
+    setChatPageTab("conversation");
+  }
 
   const setSidebarCollapsedAndPersist = useCallback((collapsed) => {
     const value = !!collapsed;
@@ -218,9 +223,6 @@ function Shell() {
   }, []);
   const rs = state.runtimeState || {};
   const currentId = state.currentSessionId || rs.sessionId;
-  useEffect(() => {
-    setChatPageTab("conversation");
-  }, [currentId]);
   const reasoningSyncKey = useMemo(
     () =>
       `${rs.reasoningEnabled !== false ? "1" : "0"}:${rs.reasoningEffort || "auto"}`,

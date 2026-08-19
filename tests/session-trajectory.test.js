@@ -144,6 +144,84 @@ test("skips abort dividers and maps error messages", () => {
   assert.equal(errorEvent.body, "boom");
 });
 
+test("USER and error events omit endedAt so duration stays unknown", () => {
+  const result = buildTrajectory({
+    messages: [
+      { id: "u1", role: "you", text: "go", at: "2026-08-19T01:00:00.000Z" },
+      { id: "e1", role: "error", text: "boom", at: "2026-08-19T01:00:01.000Z" },
+    ],
+  });
+  const user = result.events.find((event) => event.kind === "user");
+  const error = result.events.find((event) => event.status === "error");
+  assert.equal(user.endedAt, null);
+  assert.equal(user.durationMs, null);
+  assert.equal(error.endedAt, null);
+  assert.equal(error.durationMs, null);
+  assert.equal(formatTrajectoryDuration(user.durationMs), "—");
+  assert.equal(formatTrajectoryDuration(error.durationMs), "—");
+});
+
+test("handoff text becomes assistant body and empty non-streaming handoff is skipped", () => {
+  const result = buildTrajectory({
+    messages: [
+      { id: "u1", role: "you", text: "go" },
+      {
+        id: "a1",
+        role: "agent",
+        segments: [
+          { type: "handoff", text: "Scout summary for parent" },
+          { type: "handoff", text: "" },
+          { type: "handoff", text: "", isStreaming: true },
+        ],
+      },
+    ],
+  });
+  const handoffs = result.events.filter((event) => event.title === "handoff");
+  assert.equal(handoffs.length, 2);
+  assert.equal(handoffs[0].kind, "assistant");
+  assert.equal(handoffs[0].body, "Scout summary for parent");
+  assert.equal(handoffs[0].status, "done");
+  assert.equal(handoffs[1].kind, "assistant");
+  assert.equal(handoffs[1].body, "");
+  assert.equal(handoffs[1].status, "running");
+});
+
+test("normalizeStatus maps pending and errors; streaming stays running", () => {
+  const result = buildTrajectory({
+    messages: [
+      {
+        id: "a1",
+        role: "agent",
+        segments: [
+          {
+            type: "tools",
+            cards: [
+              { id: "t1", name: "pending-tool", status: "pending" },
+              { id: "t2", name: "failed-tool", status: "failed" },
+              { id: "t3", name: "done-tool", status: "done" },
+              {
+                id: "t4",
+                name: "streaming-tool",
+                status: "failed",
+                isStreaming: true,
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  });
+  const byTitle = Object.fromEntries(
+    result.events
+      .filter((event) => event.kind === "tool")
+      .map((event) => [event.title, event.status]),
+  );
+  assert.equal(byTitle["pending-tool"], "running");
+  assert.equal(byTitle["failed-tool"], "error");
+  assert.equal(byTitle["done-tool"], "done");
+  assert.equal(byTitle["streaming-tool"], "running");
+});
+
 test("filterTrajectoryEvents hides calls and matches search", () => {
   const events = [
     { id: "1", kind: "user", title: "USER", body: "hello", preview: "" },
