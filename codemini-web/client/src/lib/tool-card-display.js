@@ -14,6 +14,16 @@ export function isRequestUserInputCard(card) {
   return extractToolName(card?.name) === "request_user_input";
 }
 
+export function isTodoToolCard(card) {
+  const name = extractToolName(card?.name);
+  return name === "tasks" || name === "update_todos";
+}
+
+/** Conversation-page widgets (todo board, ask-user form). Trajectory inspect should skip these. */
+export function isConversationVisualToolCard(card) {
+  return isRequestUserInputCard(card) || isTodoToolCard(card);
+}
+
 export function parseMaybeJson(value) {
   if (!value) return null;
   if (typeof value === "object") return value;

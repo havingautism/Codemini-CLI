@@ -1,7 +1,19 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { getFileToolMeta, getTodoToolItems } from '../codemini-web/client/src/lib/tool-card-display.js';
+import {
+  getFileToolMeta,
+  getTodoToolItems,
+  isConversationVisualToolCard,
+} from '../codemini-web/client/src/lib/tool-card-display.js';
+
+test('conversation visual tools stay on the chat page, not trajectory inspect', () => {
+  assert.equal(isConversationVisualToolCard({ name: 'request_user_input' }), true);
+  assert.equal(isConversationVisualToolCard({ name: 'tasks' }), true);
+  assert.equal(isConversationVisualToolCard({ name: 'update_todos' }), true);
+  assert.equal(isConversationVisualToolCard({ name: 'read' }), false);
+  assert.equal(isConversationVisualToolCard({ name: 'run' }), false);
+});
 
 test('todo tool items accept streamed arguments and structured results', () => {
   const fromArgs = getTodoToolItems(JSON.stringify({

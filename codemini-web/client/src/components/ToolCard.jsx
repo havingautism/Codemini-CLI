@@ -33,6 +33,7 @@ import {
   getFileToolMeta,
   getTodoToolItems,
   isRequestUserInputCard,
+  isTodoToolCard,
   resolveToolHeaderParts,
 } from "@/lib/tool-card-display.js";
 import { t } from "../../i18n/index.js";
@@ -331,20 +332,77 @@ function FilePathArgument({ path, wrapped = false }) {
   );
 }
 
-export function ToolCard({ card }) {
-  const [open, setOpen] = useState(false);
+function ToolCardHeaderMeta({
+  toolName,
+  Icon,
+  toolLabel,
+  toolArg,
+  shouldRenderFileArg,
+  fileMeta,
+  wrapArg,
+}) {
+  return (
+    <>
+      <span
+        className={isShellToolName(toolName) ? RUN_TOOL_ICON_CLASS : TOOL_ICON_CLASS}
+      >
+        <Icon size={isShellToolName(toolName) ? 13 : 14} />
+      </span>
+      <span className="flex min-w-0 flex-1 items-center overflow-hidden whitespace-nowrap leading-[18px]">
+        <span className="shrink-0">{toolLabel}</span>
+        {toolArg ? (
+          shouldRenderFileArg ? (
+            <FilePathArgument
+              path={fileMeta?.path || toolArg}
+              wrapped={wrapArg || Boolean(fileMeta?.path)}
+            />
+          ) : wrapArg ? (
+            <span className="msg-process-meta__detail ml-1 block min-w-0 flex-1 truncate font-mono text-xs font-normal leading-[18px]">
+              ({toolArg})
+            </span>
+          ) : null
+        ) : null}
+      </span>
+      {fileMeta?.added > 0 && (
+        <span className="font-mono text-xs text-(--accent-green)">
+          +{fileMeta.added}
+        </span>
+      )}
+      {fileMeta?.removed > 0 && (
+        <span className="font-mono text-xs text-(--accent-red)">
+          -{fileMeta.removed}
+        </span>
+      )}
+      {fileMeta?.backupPath && (
+        <span className="inline-flex items-center gap-1 rounded bg-(--accent-blue-bg) px-1.5 py-0.5 text-[10px] font-medium text-(--accent-blue)">
+          <Archive size={11} />
+          {fileMeta.backupReused ? t("backupReusedShort") : t("backupShort")}
+        </span>
+      )}
+    </>
+  );
+}
+
+export function ToolCard({
+  card,
+  defaultOpen = false,
+  collapsible = true,
+  conversationVisual = true,
+}) {
+  const [open, setOpen] = useState(defaultOpen);
   const [fileAction, setFileAction] = useState("");
   const [fileActionError, setFileActionError] = useState("");
+  const showDetails = !collapsible || open;
   const toolName = extractToolName(card.name);
   const Icon = TOOL_ICONS[toolName] || TOOL_ICONS.default;
-  const isTasksTool = toolName === "tasks" || toolName === "update_todos";
+  const isTasksTool = isTodoToolCard(card);
   const todoItems = isTasksTool
     ? getTodoToolItems(card.arguments, card.result)
     : [];
-  if (isTasksTool) {
+  if (conversationVisual && isTasksTool) {
     return <TodoToolCard card={card} todos={todoItems} />;
   }
-  if (isRequestUserInputCard(card)) {
+  if (conversationVisual && isRequestUserInputCard(card)) {
     return <UserInputToolCard card={card} />;
   }
   const fileMeta = getFileToolMeta(
@@ -406,55 +464,42 @@ export function ToolCard({ card }) {
           "after:border-[color:color-mix(in_srgb,var(--accent-orange)_32%,transparent)]",
       )}
     >
-      <div className={TOOL_ROW_CLASS}>
-        <button
-          type="button"
-          className="flex min-h-10 min-w-0 flex-1 items-center gap-2 rounded-md px-1.5 text-left focus-visible:relative focus-visible:z-10"
-          onClick={() => setOpen(!open)}
-          aria-expanded={open}
-        >
-          {open ? (
-            <CaretDown size={14} className={TOOL_CHEVRON_CLASS} />
-          ) : (
-            <CaretRight size={14} className={TOOL_CHEVRON_CLASS} />
-          )}
-          <span
-            className={isShellToolName(toolName) ? RUN_TOOL_ICON_CLASS : TOOL_ICON_CLASS}
+      <div className={cn(TOOL_ROW_CLASS, !collapsible && "hover:bg-transparent")}>
+        {collapsible ? (
+          <button
+            type="button"
+            className="flex min-h-10 min-w-0 flex-1 items-center gap-2 rounded-md px-1.5 text-left focus-visible:relative focus-visible:z-10"
+            onClick={() => setOpen(!open)}
+            aria-expanded={open}
           >
-            <Icon size={isShellToolName(toolName) ? 13 : 14} />
-          </span>
-          <span className="flex min-w-0 flex-1 items-center overflow-hidden whitespace-nowrap leading-[18px]">
-            <span className="shrink-0">{toolLabel}</span>
-            {toolArg ? (
-              shouldRenderFileArg ? (
-                <FilePathArgument
-                  path={fileMeta?.path || toolArg}
-                  wrapped={wrapArg || Boolean(fileMeta?.path)}
-                />
-              ) : wrapArg ? (
-                <span className="msg-process-meta__detail ml-1 block min-w-0 flex-1 truncate font-mono text-xs font-normal leading-[18px]">
-                  ({toolArg})
-                </span>
-              ) : null
-            ) : null}
-          </span>
-          {fileMeta?.added > 0 && (
-            <span className="font-mono text-xs text-(--accent-green)">
-              +{fileMeta.added}
-            </span>
-          )}
-          {fileMeta?.removed > 0 && (
-            <span className="font-mono text-xs text-(--accent-red)">
-              -{fileMeta.removed}
-            </span>
-          )}
-          {fileMeta?.backupPath && (
-            <span className="inline-flex items-center gap-1 rounded bg-(--accent-blue-bg) px-1.5 py-0.5 text-[10px] font-medium text-(--accent-blue)">
-              <Archive size={11} />
-              {fileMeta.backupReused ? t("backupReusedShort") : t("backupShort")}
-            </span>
-          )}
-        </button>
+            {open ? (
+              <CaretDown size={14} className={TOOL_CHEVRON_CLASS} />
+            ) : (
+              <CaretRight size={14} className={TOOL_CHEVRON_CLASS} />
+            )}
+            <ToolCardHeaderMeta
+              toolName={toolName}
+              Icon={Icon}
+              toolLabel={toolLabel}
+              toolArg={toolArg}
+              shouldRenderFileArg={shouldRenderFileArg}
+              fileMeta={fileMeta}
+              wrapArg={wrapArg}
+            />
+          </button>
+        ) : (
+          <div className="flex min-h-10 min-w-0 flex-1 items-center gap-2 rounded-md px-1.5">
+            <ToolCardHeaderMeta
+              toolName={toolName}
+              Icon={Icon}
+              toolLabel={toolLabel}
+              toolArg={toolArg}
+              shouldRenderFileArg={shouldRenderFileArg}
+              fileMeta={fileMeta}
+              wrapArg={wrapArg}
+            />
+          </div>
+        )}
         {canOpenFile && (
           <div
             className="mr-1 flex h-8 shrink-0 items-center gap-0.5"
@@ -508,8 +553,8 @@ export function ToolCard({ card }) {
         </div>
       )}
 
-      {open && (
-        <div className="pb-2 pl-8 pr-2">
+      {showDetails && (
+        <div className={cn("pb-2 pr-2", collapsible ? "pl-8" : "px-3")}>
           {fileMeta ? (
             <>
               {fileMeta.summary && (

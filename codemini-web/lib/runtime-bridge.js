@@ -337,6 +337,7 @@ export class RuntimeBridge {
   #activeStructuredOperationId = null;
   #sessionId = '';
   #forkHandledFor = '';
+  #sentLastSystemPrompt = null;
   #onEvent = null;
   #onLifecycle = null;
 
@@ -423,6 +424,7 @@ export class RuntimeBridge {
     this.#onEvent?.(payload);
     this.#broadcast(payload);
     this.#sessionId = nextSessionId;
+    this.#sentLastSystemPrompt = null;
   }
 
   #forwardRuntimeEvent(event, submitToken) {
@@ -486,8 +488,30 @@ export class RuntimeBridge {
     }
   }
 
+  #buildRuntimeStatePayload() {
+    const state = this.#runtime.getRuntimeState();
+    const serializableState = typeof state?.toJSON === 'function' ? state.toJSON() : state;
+    return {
+      ...serializableState,
+      busy: this.#busy,
+      requestInFlight: this.#busy,
+      codeWikiGenerating: this.#codeWikiGenerating,
+      pendingReflectSkill: serializableState.pendingReflectSkill,
+      pendingSpecApproval: serializableState.pendingSpecApproval,
+      pendingUserInput: this.#userInput.current
+    };
+  }
+
   #broadcastRuntimeState() {
-    this.#publish({ type: 'runtime:state', state: this.getState() });
+    const state = this.#buildRuntimeStatePayload();
+    const prompt = this.#runtime.getLastSystemPrompt?.();
+    const nextPrompt = typeof prompt === 'string' ? prompt : '';
+    if (nextPrompt && nextPrompt !== this.#sentLastSystemPrompt) {
+      this.#sentLastSystemPrompt = nextPrompt;
+      this.#publish({ type: 'runtime:state', state: { ...state, lastSystemPrompt: nextPrompt } });
+      return;
+    }
+    this.#publish({ type: 'runtime:state', state });
   }
 
   broadcastRuntimeState() {
@@ -1552,16 +1576,10 @@ export class RuntimeBridge {
   }
 
   getState() {
-    const state = this.#runtime.getRuntimeState();
-    const serializableState = typeof state?.toJSON === 'function' ? state.toJSON() : state;
+    const prompt = this.#runtime.getLastSystemPrompt?.();
     return {
-      ...serializableState,
-      busy: this.#busy,
-      requestInFlight: this.#busy,
-      codeWikiGenerating: this.#codeWikiGenerating,
-      pendingReflectSkill: serializableState.pendingReflectSkill,
-      pendingSpecApproval: serializableState.pendingSpecApproval,
-      pendingUserInput: this.#userInput.current
+      ...this.#buildRuntimeStatePayload(),
+      lastSystemPrompt: typeof prompt === 'string' ? prompt : ''
     };
   }
 

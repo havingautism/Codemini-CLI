@@ -92,6 +92,18 @@ test('session SQLite store round-trips incremental messages and UI transcript', 
   });
 });
 
+test('session SQLite store round-trips lastSystemPrompt for trajectory reuse', async () => {
+  await withGlobalDir(async (dir) => {
+    const session = await createSession(dir);
+    session.messages.push({ role: 'user', content: 'hello' });
+    session.lastSystemPrompt = 'You are Codemini.\nFollow AGENTS.md.';
+    await saveSession(session);
+
+    const loaded = await loadSession(session.id);
+    assert.equal(loaded.lastSystemPrompt, 'You are Codemini.\nFollow AGENTS.md.');
+  });
+});
+
 test('session save rewrites in-place assistant and parallel-tool tail without dropping prefix', async () => {
   await withGlobalDir(async (dir) => {
     const session = await createSession(dir);

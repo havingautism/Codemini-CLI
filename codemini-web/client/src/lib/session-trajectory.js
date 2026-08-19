@@ -1,5 +1,5 @@
 const USER_ROLES = new Set(["you", "user"]);
-const ASSISTANT_ROLES = new Set(["agent", "assistant"]);
+const ASSISTANT_ROLES = new Set(["agent", "assistant", "general"]);
 const SKIP_ROLES = new Set(["divider", "system", "plan-overview"]);
 const ERROR_STATUSES = new Set(["failed", "error", "blocked", "aborted"]);
 
@@ -78,6 +78,28 @@ export function truncateTrajectoryText(text, max = 240) {
   return `${value.slice(0, max)}…`;
 }
 
+function compactOneLine(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  try {
+    return JSON.stringify(JSON.parse(raw));
+  } catch {
+    return raw.replace(/\s+/g, " ");
+  }
+}
+
+export function formatTrajectoryRowPreview(event) {
+  if (!event) return "";
+  if (event.kind === "tool" || event.kind === "skill") {
+    const name = String(event.title || "").trim();
+    const input = compactOneLine(event.input || event.body);
+    const output = compactOneLine(event.preview || event.output);
+    const left = [name, input].filter(Boolean).join(" ");
+    return output ? `${left} -> ${output}` : left;
+  }
+  return firstLinePreview(event.body || event.input || "", 160);
+}
+
 export function formatTrajectoryDuration(ms) {
   if (!Number.isFinite(ms) || ms < 0) return "—";
   const totalSec = Math.round(ms / 1000);
@@ -99,6 +121,13 @@ export function formatTrajectoryExportStamp(date) {
 export function trajectoryExportFilename(sessionId, date = new Date()) {
   const id = String(sessionId || "session").replace(/[^A-Za-z0-9._-]/g, "_");
   return `codemini-trajectory-${id}-${formatTrajectoryExportStamp(date)}.json`;
+}
+
+function firstLinePreview(text, max = 80) {
+  const value = String(text || "").trim();
+  if (!value) return "";
+  const line = value.split(/\r?\n/).find((part) => part.trim()) || value;
+  return truncateTrajectoryText(line.trim(), max);
 }
 
 function buildSystemBody(runtimeState) {
@@ -132,9 +161,12 @@ function makeEvent(partial) {
     title: partial.title || "",
     body: partial.body || "",
     preview: partial.preview || "",
+    input: partial.input || "",
+    output: partial.output || "",
     status: Object.prototype.hasOwnProperty.call(partial, "status")
       ? partial.status
       : null,
+    sourceCard: partial.sourceCard || null,
     startedAt,
     endedAt,
     durationMs: resolveDurationMs({
@@ -154,23 +186,86 @@ function hasConversationMessages(messages) {
   );
 }
 
+function buildSkillDetail(segment = {}) {
+  const lines = [];
+  const push = (label, value) => {
+    const text = String(value || "").trim();
+    if (text) lines.push(`${label}: ${text}`);
+  };
+  push("name", segment.name);
+  push("event", segment.event);
+  push("kind", segment.kind);
+  push("source", segment.sourceLabel || segment.source);
+  push("tool", segment.toolName);
+  push("matcher", segment.matcher);
+  push("command", segment.command);
+  push("status", segment.status);
+  push("reason", segment.reason);
+  const summary = String(segment.summary || "").trim();
+  if (summary) lines.push(summary);
+  return lines.join("\n");
+}
+
+function collectUserSkillBadges(message) {
+  const badges = Array.isArray(message?.skillBadges) ? message.skillBadges : [];
+  const names = Array.isArray(message?.selectedSkillNames)
+    ? message.selectedSkillNames
+    : [];
+  const seen = new Set();
+  const out = [];
+  for (const badge of badges) {
+    const name = String(badge?.name || "").trim();
+    if (!name || seen.has(name)) continue;
+    seen.add(name);
+    out.push(badge);
+  }
+  for (const raw of names) {
+    const name = String(raw || "").trim();
+    if (!name || seen.has(name)) continue;
+    seen.add(name);
+    out.push({ name, status: "selected" });
+  }
+  return out;
+}
+
+function emitUserSkills(events, message, index, turn) {
+  collectUserSkillBadges(message).forEach((badge, badgeIndex) => {
+    const detail = buildSkillDetail(badge);
+    events.push(
+      makeEvent({
+        id: `trajectory-skill-user-${message.id || index}-${badgeIndex}`,
+        kind: "skill",
+        turn,
+        title: badge.name || "skill",
+        body: detail || badge.name,
+        input: detail,
+        status: normalizeStatus(badge.status, false),
+      }),
+    );
+  });
+}
+
 export function buildTrajectory({
   messages = [],
   runtimeState = null,
   projectCwd = "",
   isGeneral = false,
+  systemPrompt = "",
 } = {}) {
   const list = Array.isArray(messages) ? messages : [];
   const events = [];
 
   if (hasConversationMessages(list)) {
+    const prompt = String(systemPrompt || runtimeState?.lastSystemPrompt || "").trim();
+    const full = prompt || buildSystemBody(runtimeState);
     events.push(
       makeEvent({
         id: "trajectory-system",
         kind: "system",
         turn: 0,
         title: "SYSTEM",
-        body: buildSystemBody(runtimeState),
+        body: firstLinePreview(full),
+        input: full,
       }),
     );
   }
@@ -204,9 +299,11 @@ export function buildTrajectory({
             turn,
             title: "CONTEXT",
             body: buildContextBody({ runtimeState, projectCwd, isGeneral }),
+            input: buildContextBody({ runtimeState, projectCwd, isGeneral }),
           }),
         );
       }
+      emitUserSkills(events, message, index, turn);
       return;
     }
 
@@ -230,16 +327,37 @@ export function buildTrajectory({
     if (!isAssistantMessage(message)) return;
 
     const segments = Array.isArray(message.segments) ? message.segments : [];
+    let emittedBody = false;
     segments.forEach((segment, segmentIndex) => {
       if (segment?.type === "thinking") {
         if (!segment.text && !segment.isStreaming) return;
         events.push(
           makeEvent({
             id: `trajectory-thinking-${message.id || index}-${segmentIndex}`,
-            kind: "assistant",
+            kind: "thinking",
             turn: activeTurn,
             title: "thinking",
             body: segment.text || "",
+            input: segment.text || "",
+            status: segment.isStreaming ? "running" : "done",
+            startedAt: segment.startedAt || messageTime(message),
+            endedAt: segment.endedAt || null,
+            durationMs: segment.durationMs,
+          }),
+        );
+        return;
+      }
+      if (segment?.type === "text") {
+        if (!segment.text && !segment.isStreaming) return;
+        emittedBody = true;
+        events.push(
+          makeEvent({
+            id: `trajectory-body-${message.id || index}-${segmentIndex}`,
+            kind: "assistant",
+            turn: activeTurn,
+            title: "body",
+            body: segment.text || "",
+            input: segment.text || "",
             status: segment.isStreaming ? "running" : "done",
             startedAt: segment.startedAt || messageTime(message),
             endedAt: segment.endedAt || null,
@@ -257,6 +375,7 @@ export function buildTrajectory({
             turn: activeTurn,
             title: "handoff",
             body: segment.text || "",
+            input: segment.text || "",
             status: segment.isStreaming ? "running" : "done",
             startedAt: segment.startedAt || messageTime(message),
             endedAt: segment.endedAt || null,
@@ -265,13 +384,16 @@ export function buildTrajectory({
         return;
       }
       if (segment?.type === "skill") {
+        const detail = buildSkillDetail(segment);
         events.push(
           makeEvent({
             id: `trajectory-skill-${message.id || index}-${segmentIndex}`,
             kind: "skill",
             turn: activeTurn,
             title: segment.name || "skill",
-            body: segment.summary || "",
+            body: segment.summary || detail,
+            input: detail,
+            output: segment.summary || "",
             status: normalizeStatus(segment.status, segment.isStreaming),
             startedAt: segment.startedAt || null,
             endedAt: segment.endedAt || null,
@@ -281,25 +403,48 @@ export function buildTrajectory({
       }
       if (segment?.type !== "tools" || !Array.isArray(segment.cards)) return;
       segment.cards.forEach((card, cardIndex) => {
+        const input = stringifyTrajectoryValue(card?.arguments);
+        const output =
+          stringifyTrajectoryValue(card?.result) ||
+          (typeof card?.summary === "string" ? card.summary : "");
         events.push(
           makeEvent({
             id: `trajectory-tool-${card?.id || `${message.id || index}-${cardIndex}`}`,
             kind: "tool",
             turn: activeTurn,
             title: card?.name || "tool",
-            body: stringifyTrajectoryValue(card?.arguments),
+            body: input,
             preview:
               typeof card?.summary === "string" && card.summary
                 ? card.summary
-                : stringifyTrajectoryValue(card?.result),
+                : output,
+            input,
+            output,
             status: normalizeStatus(card?.status, card?.isStreaming),
             startedAt: card?.startedAt || null,
             endedAt: card?.endedAt || null,
             durationMs: card?.durationMs,
+            sourceCard: card,
           }),
         );
       });
     });
+    if (!emittedBody) {
+      const fallback = messageText(message);
+      if (fallback) {
+        events.push(
+          makeEvent({
+            id: `trajectory-body-${message.id || index}`,
+            kind: "assistant",
+            turn: activeTurn,
+            title: "body",
+            body: fallback,
+            input: fallback,
+            startedAt: messageTime(message),
+          }),
+        );
+      }
+    }
   });
 
   const times = [];
@@ -331,7 +476,14 @@ export function filterTrajectoryEvents(
       return false;
     }
     if (!needle) return true;
-    const haystack = [event.kind, event.title, event.body, event.preview]
+    const haystack = [
+      event.kind,
+      event.title,
+      event.body,
+      event.preview,
+      event.input,
+      event.output,
+    ]
       .map((part) => String(part || "").toLowerCase())
       .join("\n");
     return haystack.includes(needle);

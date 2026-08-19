@@ -8143,6 +8143,12 @@ export async function createChatRuntime({
   const syncExecutionModeWithSession = () => {
     executionMode = resolveRuntimeExecutionMode(executionMode, config, currentSession);
   };
+  const persistLastSystemPrompt = async (prompt) => {
+    const next = String(prompt || '');
+    if (!currentSession || currentSession.lastSystemPrompt === next) return;
+    currentSession.lastSystemPrompt = next;
+    await saveSession(currentSession).catch(() => {});
+  };
 
   const executeSubmission = async (line, onAgentEvent, options = {}) => {
     // 每次提交创建新的 AbortController，替代旧的
@@ -8168,6 +8174,7 @@ export async function createChatRuntime({
       const custom = await loadBundledProjectRequirementsSkill(
         prelim.outputFormat === 'md' ? 'project-requirements-md' : 'project-requirements'
       );
+      await persistLastSystemPrompt(activeReplySystemPrompt);
       return runProjectRequirementsSingleAgent({
         custom,
         parsedInput: {
@@ -8351,6 +8358,7 @@ export async function createChatRuntime({
     };
     const structuredAction = options?.structuredAction;
     if (structuredAction) {
+      await persistLastSystemPrompt(activeReplySystemPrompt);
       const { name, payload = {} } = structuredAction;
       if (name === CHAT_ACTIONS.SPEC_SAVE) return approvePendingSpec({ saveOnly: true });
       if (name === CHAT_ACTIONS.SPEC_EXECUTE) return approvePendingSpec({ executeImmediately: true });
@@ -8511,6 +8519,7 @@ export async function createChatRuntime({
         '- Do not use shell commands, edit/write/apply_patch/delete tools, update plans, generate reports, or write memories.',
         '- Be concise and cite relevant files or report sections when useful.'
       ].join('\n\n');
+      await persistLastSystemPrompt(readOnlySystemPrompt);
       const transientSession = structuredClone(currentSession);
       const result = await askModel({
         text: expandedText,
@@ -8710,6 +8719,7 @@ export async function createChatRuntime({
           isCodingRouteToolAllowed(codingRoute, toolName)
         ))
       : undefined;
+    await persistLastSystemPrompt(systemPromptWithHookContext);
     const result = await askModel({
       text: expandedText,
       ...(optionModelText ? { modelText: optionModelText } : {}),
@@ -8903,6 +8913,7 @@ export async function createChatRuntime({
     })),
     getSessionCompact: () => currentSession.compact || null,
     getAvailableSkills,
+    getLastSystemPrompt: () => String(currentSession?.lastSystemPrompt || ''),
     persistRunStatus,
     getChangeSets: () => listGitOplogChanges(changeTracker),
     getChangeSetPatch: (id) => readGitOplogPatch(changeTracker, id),
