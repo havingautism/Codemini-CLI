@@ -3451,33 +3451,101 @@ samp {
   }
 }
 
-/* Gemini-inspired home light paths */
+/* Empty-session aurora — chat overlay only, unmounts with the welcome stage */
 .codemini-home-empty-stage {
-  gap: clamp(12px, 2.2vh, 22px);
+  gap: clamp(10px, 2vh, 18px);
   padding: 24px 16px 23vh;
 }
 
-.codemini-home-empty-media {
-  width: min(760px, calc(100% - 24px));
-  height: clamp(170px, 23vw, 230px);
+.codemini-home-aurora {
+  --logo-violet: #6050b8;
+  --logo-lilac: #7a6cc8;
+  --logo-sage: #88a890;
+  --aurora-a: color-mix(in srgb, var(--logo-violet) 28%, white);
+  --aurora-b: color-mix(in srgb, var(--logo-sage) 24%, white);
+  --aurora-c: color-mix(in srgb, var(--logo-lilac) 26%, white);
+  --aurora-d: color-mix(in srgb, var(--logo-sage) 18%, var(--logo-violet));
+  --aurora-veil: repeating-linear-gradient(
+    100deg,
+    var(--bg-primary) 0%,
+    var(--bg-primary) 7%,
+    transparent 10%,
+    transparent 12%,
+    var(--bg-primary) 16%
+  );
+  --aurora-bands: repeating-linear-gradient(
+    100deg,
+    var(--aurora-a) 10%,
+    var(--aurora-b) 15%,
+    var(--aurora-c) 20%,
+    var(--aurora-d) 25%,
+    var(--aurora-a) 30%
+  );
+
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
 }
 
-.codemini-gemini-canvas {
-  display: block;
-  width: 100%;
-  height: 100%;
-  pointer-events: none;
+[data-theme="dark"] .codemini-home-aurora {
+  --aurora-a: color-mix(in srgb, var(--logo-violet) 58%, transparent);
+  --aurora-b: color-mix(in srgb, var(--logo-sage) 42%, transparent);
+  --aurora-c: color-mix(in srgb, var(--logo-lilac) 52%, transparent);
+  --aurora-d: color-mix(in srgb, var(--logo-sage) 28%, var(--logo-violet));
+}
+
+.codemini-home-aurora__wash {
+  position: absolute;
+  inset: -20% -10% 12%;
+  background-image: var(--aurora-veil), var(--aurora-bands);
+  background-size: 300% 200%, 200% 100%;
+  background-position: 50% 50%, 50% 50%;
+  filter: blur(28px) saturate(0.92);
+  opacity: 0.38;
+  animation: codemini-aurora 60s linear infinite;
+  -webkit-mask-image: radial-gradient(ellipse 88% 58% at 50% 36%, #000 8%, transparent 70%);
+  mask-image: radial-gradient(ellipse 88% 58% at 50% 36%, #000 8%, transparent 70%);
+}
+
+.codemini-home-aurora__wash::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-image: var(--aurora-veil), var(--aurora-bands);
+  background-size: 200% 100%, 170% 90%;
+  background-position: 50% 50%, 50% 50%;
+  filter: blur(18px);
+  opacity: 0.55;
+  animation: codemini-aurora 48s linear infinite reverse;
+}
+
+[data-theme="dark"] .codemini-home-aurora__wash {
+  opacity: 0.46;
+  filter: blur(30px) saturate(0.98);
+}
+
+@keyframes codemini-aurora {
+  from {
+    background-position: 50% 50%, 50% 50%;
+  }
+  to {
+    background-position: 350% 50%, 350% 50%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .codemini-home-aurora__wash,
+  .codemini-home-aurora__wash::after {
+    animation: none;
+  }
 }
 
 @media (max-width: 735px) {
   .codemini-home-empty-stage {
-    gap: 10px;
+    gap: 8px;
     padding-inline: 8px;
-  }
-
-  .codemini-home-empty-media {
-    width: 100%;
-    height: 150px;
   }
 }
 

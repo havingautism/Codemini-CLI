@@ -371,7 +371,7 @@ export function ToolCard({
     ? getTodoToolItems(card.arguments, card.result)
     : [];
   if (conversationVisual && isTasksTool) {
-    return <TodoCard todos={todoItems} />;
+    return <TodoCard todos={todoItems} persistKey={card?.id || ""} />;
   }
   if (conversationVisual && isRequestUserInputCard(card)) {
     return <UserInputToolCard card={card} />;

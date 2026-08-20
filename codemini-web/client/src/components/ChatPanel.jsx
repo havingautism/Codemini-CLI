@@ -389,14 +389,14 @@ function ChatPanelContent({
       {!messagesLoading && !hasConversation && (
         <div className="absolute inset-0 pointer-events-none overflow-hidden">
           {isGeneral ? (
-            <HomeEmptyVisual mode="general">
+            <HomeEmptyVisual>
               <HomeEmptyCaption
                 promptKey="askAnythingGeneralPrompts"
                 className="codemini-home-empty-title mx-auto max-w-[320px] sm:max-w-none text-[20px] sm:text-[26px] font-medium leading-tight tracking-normal text-(--text-primary) break-words"
               />
             </HomeEmptyVisual>
           ) : (
-            <HomeEmptyVisual mode="project">
+            <HomeEmptyVisual>
               <HomeEmptyCaption
                 promptKey="buildInProjectPrompts"
                 vars={{ project: projectCwd || t("currentProject") }}

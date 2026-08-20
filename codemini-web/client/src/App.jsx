@@ -622,7 +622,7 @@ function Shell() {
               />
               {liveTodoDock ? (
                 <div className="mb-2">
-                  <TodoCard todos={liveTodoDock.todos} />
+                  <TodoCard todos={liveTodoDock.todos} persistKey={liveTodoDock.card?.id || liveTodoDock.messageId} />
                 </div>
               ) : null}
               <ReflectApprovalDialog

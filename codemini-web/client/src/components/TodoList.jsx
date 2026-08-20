@@ -71,11 +71,20 @@ export function TodoList({ todos }) {
   );
 }
 
-export function TodoCard({ todos = [] }) {
-  const [open, setOpen] = useState(
-    () => todos.length === 0 || todos.some((todo) => todo.status !== "completed"),
+const todoOpenByKey = new Map();
+
+export function TodoCard({ todos = [], persistKey = "" }) {
+  const [open, setOpen] = useState(() =>
+    persistKey ? todoOpenByKey.get(persistKey) === true : false,
   );
   const summary = formatTodoStatusSummary(todos);
+  const toggleOpen = () => {
+    setOpen((value) => {
+      const next = !value;
+      if (persistKey) todoOpenByKey.set(persistKey, next);
+      return next;
+    });
+  };
 
   return (
     <section
@@ -85,7 +94,7 @@ export function TodoCard({ todos = [] }) {
       <button
         type="button"
         className="msg-process-row flex min-h-11 w-full min-w-0 cursor-pointer select-none items-center gap-2.5 px-3 py-2.5 text-left text-[13px] transition-colors duration-150 hover:bg-[var(--bg-hover)] focus-visible:relative focus-visible:z-10"
-        onClick={() => setOpen((value) => !value)}
+        onClick={toggleOpen}
         aria-expanded={open}
       >
         <ListBullets size={14} className="shrink-0 text-(--text-secondary)" aria-hidden="true" />
