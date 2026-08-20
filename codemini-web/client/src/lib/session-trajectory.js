@@ -137,25 +137,74 @@ export function trajectoryExportFilename(sessionId, date = new Date()) {
   return `codemini-trajectory-${id}-${formatTrajectoryExportStamp(date)}.json`;
 }
 
-function buildSystemBody(runtimeState) {
-  const rs = runtimeState || {};
-  const lines = [];
-  if (rs.model) lines.push(`model: ${rs.model}`);
-  const provider = rs.sdkProvider || rs.provider;
-  if (provider) lines.push(`provider: ${provider}`);
-  if (rs.mode) lines.push(`mode: ${rs.mode}`);
-  return lines.join("\n");
+function pushContextLine(lines, key, value) {
+  const text = String(value ?? "").trim();
+  if (text) lines.push(`${key}: ${text}`);
 }
 
 function buildContextBody({ runtimeState, projectCwd, isGeneral }) {
   const rs = runtimeState || {};
   const lines = [];
   if (isGeneral) lines.push("chat: general");
-  const cwd = rs.cwd || rs.projectDir || projectCwd;
-  if (cwd) lines.push(`cwd: ${cwd}`);
-  if (rs.approvalMode) lines.push(`approval: ${rs.approvalMode}`);
-  if (rs.sandboxMode) lines.push(`sandbox: ${rs.sandboxMode}`);
+  pushContextLine(lines, "model", rs.model);
+  pushContextLine(lines, "provider", rs.sdkProvider || rs.provider);
+  pushContextLine(lines, "mode", rs.mode);
+  if (rs.reasoningEnabled === false) {
+    lines.push("reasoning: off");
+  } else {
+    pushContextLine(lines, "reasoning", rs.reasoningEffort);
+  }
+  pushContextLine(lines, "cwd", rs.cwd || rs.projectDir || projectCwd);
+  pushContextLine(lines, "approval", rs.approvalMode);
+  pushContextLine(lines, "sandbox", rs.sandboxMode);
+  pushContextLine(lines, "shell", rs.shell);
+  pushContextLine(lines, "soul", rs.activeSoul);
+  const alwaysSkills = Array.isArray(rs.alwaysSkillNames)
+    ? rs.alwaysSkillNames.map((name) => String(name || "").trim()).filter(Boolean)
+    : [];
+  pushContextLine(lines, "always_skills", alwaysSkills.join(", "));
   return lines.join("\n");
+}
+
+export function formatTrajectoryUsage(usage) {
+  if (!usage || typeof usage !== "object") return "";
+  const input = Math.max(0, Math.round(Number(usage.inputTokens) || 0));
+  const output = Math.max(0, Math.round(Number(usage.outputTokens) || 0));
+  const reasoning = Math.max(0, Math.round(Number(usage.reasoningOutputTokens) || 0));
+  const total =
+    Math.max(0, Math.round(Number(usage.totalTokens) || 0)) || input + output;
+  if (total <= 0 && input <= 0 && output <= 0) return "";
+  const parts = [];
+  if (input) parts.push(`in ${input}`);
+  if (output) parts.push(`out ${output}`);
+  if (reasoning) parts.push(`reason ${reasoning}`);
+  parts.push(`${total} tok`);
+  return parts.join(" · ");
+}
+
+function usageTotalTokens(usage) {
+  if (!usage || typeof usage !== "object") return 0;
+  const total = Math.round(Number(usage.totalTokens) || 0);
+  if (total > 0) return total;
+  return (
+    Math.max(0, Math.round(Number(usage.inputTokens) || 0)) +
+    Math.max(0, Math.round(Number(usage.outputTokens) || 0))
+  );
+}
+
+function attachMessageDebug(events, startIndex, message) {
+  const usage = message?.usage && typeof message.usage === "object" ? message.usage : null;
+  const model = String(message?.model || "").trim();
+  const sdkProvider = String(message?.sdkProvider || "").trim();
+  if (!usage && !model && !sdkProvider) return;
+  for (let index = events.length - 1; index >= startIndex; index -= 1) {
+    const event = events[index];
+    if (event.kind === "loop") continue;
+    if (usage) event.usage = usage;
+    if (model) event.model = model;
+    if (sdkProvider) event.sdkProvider = sdkProvider;
+    return;
+  }
 }
 
 function makeEvent(partial) {
@@ -174,6 +223,9 @@ function makeEvent(partial) {
       ? partial.status
       : null,
     sourceCard: partial.sourceCard || null,
+    usage: partial.usage || null,
+    model: partial.model || "",
+    sdkProvider: partial.sdkProvider || "",
     loop: Number(partial.loop) > 0 ? Number(partial.loop) : 0,
     startedAt,
     endedAt,
@@ -444,15 +496,14 @@ export function buildTrajectory({
 
   if (hasConversationMessages(list)) {
     const prompt = String(systemPrompt || runtimeState?.lastSystemPrompt || "").trim();
-    const full = prompt || buildSystemBody(runtimeState);
     events.push(
       makeEvent({
         id: "trajectory-system",
         kind: "system",
         turn: 0,
-        title: "SYSTEM",
-        body: oneLinePreview(full),
-        input: full,
+        title: "system prompt",
+        body: oneLinePreview(prompt),
+        input: prompt,
       }),
     );
   }
@@ -465,13 +516,18 @@ export function buildTrajectory({
 
     if (isUserMessage(message)) {
       turn += 1;
+      const display = messageText(message);
+      const modelContent = String(message?.model_content || "").trim();
       events.push(
         makeEvent({
           id: `trajectory-user-${message.id || index}`,
           kind: "user",
           turn,
-          title: "USER",
-          body: messageText(message),
+          title: "user message",
+          body: display,
+          input: display,
+          output:
+            modelContent && modelContent !== display ? modelContent : "",
           startedAt: messageTime(message),
         }),
       );
@@ -483,7 +539,7 @@ export function buildTrajectory({
             id: "trajectory-context",
             kind: "context",
             turn,
-            title: "CONTEXT",
+            title: "context",
             body: context,
             input: context,
           }),
@@ -499,10 +555,11 @@ export function buildTrajectory({
       events.push(
         makeEvent({
           id: `trajectory-abort-${message.id || index}`,
-          kind: "assistant",
+          kind: "error",
           turn: activeTurn,
           title: "abort",
           body: messageText(message),
+          input: messageText(message),
           status: "error",
           startedAt: messageTime(message),
         }),
@@ -518,8 +575,9 @@ export function buildTrajectory({
           id: `trajectory-divider-${message.id || index}`,
           kind: "assistant",
           turn: activeTurn,
-          title: "divider",
+          title: "notice",
           body: text,
+          input: text,
           startedAt: messageTime(message),
         }),
       );
@@ -534,7 +592,7 @@ export function buildTrajectory({
           id: `trajectory-notice-${message.id || index}`,
           kind: "system",
           turn: activeTurn,
-          title: "system",
+          title: "system notice",
           body: text,
           input: text,
           startedAt: messageTime(message),
@@ -547,10 +605,11 @@ export function buildTrajectory({
       events.push(
         makeEvent({
           id: `trajectory-error-${message.id || index}`,
-          kind: "assistant",
+          kind: "error",
           turn: activeTurn,
-          title: "ASSISTANT",
+          title: "error",
           body: messageText(message),
+          input: messageText(message),
           status: "error",
           startedAt: messageTime(message),
         }),
@@ -575,7 +634,9 @@ export function buildTrajectory({
       return;
     }
 
+    const startIndex = events.length;
     emitModelSegments(events, message, index, activeTurn);
+    attachMessageDebug(events, startIndex, message);
   });
 
   const times = [];
@@ -586,11 +647,17 @@ export function buildTrajectory({
     if (end != null) times.push(end);
   }
 
+  const tokens = list.reduce(
+    (sum, message) => sum + usageTotalTokens(message?.usage),
+    0,
+  );
+
   return {
     metrics: {
       durationMs: times.length >= 2 ? Math.max(...times) - Math.min(...times) : null,
       turns: events.filter((event) => event.kind === "user").length,
       calls: events.filter((event) => event.kind === "tool").length,
+      tokens: tokens > 0 ? tokens : null,
     },
     events,
   };
@@ -614,6 +681,9 @@ export function filterTrajectoryEvents(
       event.preview,
       event.input,
       event.output,
+      event.model,
+      event.sdkProvider,
+      formatTrajectoryUsage(event.usage),
     ]
       .map((part) => String(part || "").toLowerCase())
       .join("\n");

@@ -7,6 +7,7 @@ import {
   formatTrajectoryDuration,
   formatTrajectoryExportStamp,
   formatTrajectoryRowPreview,
+  formatTrajectoryUsage,
   stringifyTrajectoryValue,
   trajectoryExportFilename,
   truncateTrajectoryText,
@@ -20,7 +21,7 @@ test("empty messages yield empty events and zero metrics", () => {
     projectCwd: "/tmp/app",
   });
   assert.deepEqual(result.events, []);
-  assert.deepEqual(result.metrics, { durationMs: null, turns: 0, calls: 0 });
+  assert.deepEqual(result.metrics, { durationMs: null, turns: 0, calls: 0, tokens: null });
 });
 
 test("splits turns and maps thinking, tool calls, and assistant body text", () => {
@@ -88,12 +89,14 @@ test("splits turns and maps thinking, tool calls, and assistant body text", () =
     "user",
   ]);
   assert.equal(result.events[0].turn, 0);
-  assert.match(result.events[0].input, /model: gpt-test/);
-  assert.match(result.events[0].input, /provider: openai/);
-  assert.match(result.events[0].input, /mode: coding/);
-  assert.equal(result.events[0].body, "model: gpt-test...");
+  assert.equal(result.events[0].title, "system prompt");
+  assert.equal(result.events[0].input, "");
   assert.equal(result.events[1].body, "梳理一下整体链路");
   assert.equal(result.events[1].turn, 1);
+  assert.equal(result.events[1].input, "梳理一下整体链路");
+  assert.match(result.events[2].body, /model: gpt-test/);
+  assert.match(result.events[2].body, /provider: openai/);
+  assert.match(result.events[2].body, /mode: coding/);
   assert.match(result.events[2].body, /cwd: \/tmp\/app/);
   assert.equal(result.events[3].kind, "thinking");
   assert.equal(result.events[3].title, "thinking");
@@ -312,7 +315,7 @@ test("wraps assistant work in agent-loop round headers inside a turn", () => {
   assert.deepEqual(
     timeline.map((event) => [event.kind, event.loop || 0, event.title]),
     [
-      ["user", 0, "USER"],
+      ["user", 0, "user message"],
       ["loop", 1, "agent loop 1"],
       ["thinking", 1, "thinking"],
       ["tool", 1, "glob"],
@@ -373,19 +376,25 @@ test("keeps plan-overview, system notices, abort, and errors in time order", () 
     (event) => event.kind !== "context",
   );
   assert.equal(timeline[0].kind, "system");
-  assert.match(timeline[0].input, /model: m/);
+  assert.equal(timeline[0].input, "");
   assert.equal(timeline[1].kind, "user");
   assert.equal(timeline[2].kind, "assistant");
   assert.equal(timeline[2].title, "plan");
   assert.match(timeline[2].body, /Ship the feature/);
   assert.match(timeline[2].input, /Edit/);
   assert.equal(timeline[3].kind, "system");
+  assert.equal(timeline[3].title, "system notice");
   assert.equal(timeline[3].body, "Plan revised.");
+  assert.equal(timeline[4].kind, "error");
   assert.equal(timeline[4].title, "abort");
   assert.equal(timeline[4].status, "error");
   assert.equal(timeline[4].body, "aborted");
+  assert.equal(timeline[5].kind, "error");
+  assert.equal(timeline[5].title, "error");
   assert.equal(timeline[5].status, "error");
   assert.equal(timeline[5].body, "boom");
+  const context = result.events.find((event) => event.kind === "context");
+  assert.match(context.body, /model: m/);
 });
 
 test("USER and error events omit endedAt so duration stays unknown", () => {
@@ -523,8 +532,58 @@ test("system event reuses lastSystemPrompt from session runtime state", () => {
     },
   });
   const system = result.events.find((event) => event.kind === "system");
+  const context = result.events.find((event) => event.kind === "context");
   assert.match(system.body, /Persisted system prompt/);
   assert.match(system.input, /session record/);
+  assert.equal(system.input.includes("model:"), false);
+  assert.match(context.body, /model: gpt-test/);
+});
+
+test("context keeps runtime debug fields and user inspect includes model input", () => {
+  const result = buildTrajectory({
+    messages: [
+      {
+        id: "u1",
+        role: "you",
+        text: "用这个技能",
+        model_content: "用这个技能\n\n<skill>explore</skill>",
+      },
+      {
+        id: "a1",
+        role: "general",
+        model: "gpt-debug",
+        sdkProvider: "openai-compatible",
+        usage: { inputTokens: 120, outputTokens: 40, totalTokens: 160, reasoningOutputTokens: 12 },
+        segments: [{ type: "text", text: "done" }],
+      },
+    ],
+    runtimeState: {
+      model: "gpt-debug",
+      sdkProvider: "openai-compatible",
+      mode: "coding",
+      reasoningEffort: "medium",
+      shell: "zsh",
+      activeSoul: "coder",
+      alwaysSkillNames: ["explore"],
+      approvalMode: "auto",
+      sandboxMode: "workspace-write",
+    },
+  });
+  const user = result.events.find((event) => event.kind === "user");
+  const context = result.events.find((event) => event.kind === "context");
+  const assistant = result.events.find((event) => event.kind === "assistant");
+  assert.equal(user.input, "用这个技能");
+  assert.match(user.output, /<skill>explore<\/skill>/);
+  assert.match(context.body, /model: gpt-debug/);
+  assert.match(context.body, /provider: openai-compatible/);
+  assert.match(context.body, /reasoning: medium/);
+  assert.match(context.body, /shell: zsh/);
+  assert.match(context.body, /soul: coder/);
+  assert.match(context.body, /always_skills: explore/);
+  assert.equal(assistant.model, "gpt-debug");
+  assert.equal(assistant.usage.totalTokens, 160);
+  assert.equal(result.metrics.tokens, 160);
+  assert.equal(formatTrajectoryUsage(assistant.usage), "in 120 · out 40 · reason 12 · 160 tok");
 });
 
 test("filterTrajectoryEvents hides calls and matches search", () => {

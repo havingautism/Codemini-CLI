@@ -18,6 +18,7 @@ import {
   filterTrajectoryEvents,
   formatTrajectoryDuration,
   formatTrajectoryRowPreview,
+  formatTrajectoryUsage,
   stringifyTrajectoryValue,
   trajectoryExportFilename,
 } from "@/lib/session-trajectory.js";
@@ -31,6 +32,7 @@ const KIND_CLASS = {
   assistant: "bg-(--accent-purple-bg) text-(--accent-purple)",
   tool: "bg-(--accent-orange-bg) text-(--accent-orange)",
   skill: "bg-(--accent-teal-bg) text-(--accent-teal)",
+  error: "bg-(--accent-red-bg) text-(--accent-red)",
 };
 
 const KIND_I18N = {
@@ -41,14 +43,38 @@ const KIND_I18N = {
   assistant: "trajectoryKindAssistant",
   tool: "trajectoryKindTool",
   skill: "trajectoryKindSkill",
+  error: "trajectoryKindError",
 };
 
-function kindLabel(kind) {
-  return t(KIND_I18N[kind] || "trajectoryKindAssistant");
+const TITLE_I18N = {
+  handoff: "trajectoryKindHandoff",
+  abort: "trajectoryKindAbort",
+  plan: "trajectoryKindPlan",
+  notice: "trajectoryKindNotice",
+  error: "trajectoryKindError",
+  "system notice": "trajectoryKindSystemNotice",
+};
+
+function kindLabel(event) {
+  const titleKey = TITLE_I18N[event?.title];
+  if (titleKey) return t(titleKey);
+  if (event?.status === "error" && event?.kind !== "tool" && event?.kind !== "skill") {
+    return t("trajectoryKindError");
+  }
+  return t(KIND_I18N[event?.kind] || "trajectoryKindAssistant");
 }
 
 function isInspectable(event) {
-  return ["system", "context", "thinking", "assistant", "tool", "skill"].includes(event?.kind);
+  return [
+    "system",
+    "user",
+    "context",
+    "thinking",
+    "assistant",
+    "tool",
+    "skill",
+    "error",
+  ].includes(event?.kind);
 }
 
 function downloadJson(filename, payload) {
@@ -139,12 +165,27 @@ function InspectSection({ label, value }) {
   );
 }
 
+function inspectMetaLine(event) {
+  const parts = [
+    kindLabel(event),
+    event.status && event.status !== "done" ? event.status : "",
+    event.model || "",
+    event.sdkProvider || "",
+    formatTrajectoryUsage(event.usage),
+    event.startedAt || "",
+    event.endedAt && event.endedAt !== event.startedAt ? event.endedAt : "",
+  ].filter(Boolean);
+  return parts.join(" · ");
+}
+
 function TrajectoryInspectDialog({ event, onClose }) {
   if (!event) return null;
   const input = event.input || (event.kind !== "tool" ? event.body : "");
   const output = event.output || (event.kind === "tool" ? event.preview : "");
   const summary = event.kind === "tool" || event.kind === "skill" ? event.preview : "";
-  const showIo = event.kind === "skill";
+  const showIo = event.kind === "skill" || event.kind === "user";
+  const bodyLabel = kindLabel(event);
+  const meta = inspectMetaLine(event);
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
       <DialogContent
@@ -158,6 +199,11 @@ function TrajectoryInspectDialog({ event, onClose }) {
           </DialogDescription>
         </DialogHeader>
         <div className="min-h-0 min-w-0 flex-1 overflow-y-auto">
+          {meta ? (
+            <div className="mb-2 font-mono text-[11px] leading-5 text-(--text-muted)">
+              {meta}
+            </div>
+          ) : null}
           {event.kind === "tool" ? (
             <ToolCard
               card={cardFromTrajectoryEvent(event)}
@@ -166,15 +212,36 @@ function TrajectoryInspectDialog({ event, onClose }) {
             />
           ) : showIo ? (
             <div className="min-w-0 pb-1">
-              <InspectSection label={t("trajectoryInspectArguments")} value={input} />
-              {summary && summary !== output ? (
+              <InspectSection
+                label={
+                  event.kind === "user"
+                    ? t("trajectoryKindUser")
+                    : t("trajectoryInspectArguments")
+                }
+                value={input}
+              />
+              {event.kind === "user" && output ? (
+                <InspectSection
+                  label={t("trajectoryInspectModelInput")}
+                  value={output}
+                />
+              ) : null}
+              {event.kind === "skill" && summary && summary !== output ? (
                 <InspectSection label={t("trajectoryInspectSummary")} value={summary} />
               ) : null}
-              <InspectSection label={t("trajectoryInspectResult")} value={output} />
+              {event.kind === "skill" ? (
+                <InspectSection label={t("trajectoryInspectResult")} value={output} />
+              ) : null}
             </div>
           ) : (
-            <InspectSection value={input || event.body} />
+            <InspectSection label={bodyLabel} value={input || event.body} />
           )}
+          {event.usage ? (
+            <InspectSection
+              label={t("trajectoryInspectUsage")}
+              value={event.usage}
+            />
+          ) : null}
         </div>
       </DialogContent>
     </Dialog>
@@ -259,6 +326,14 @@ export function TrajectoryPanel({
           />
           {t("trajectoryCalls").replace("{{count}}", String(built.metrics.calls))}
         </label>
+        {built.metrics.tokens != null ? (
+          <span className="font-mono text-[12px] text-(--text-secondary)">
+            {t("trajectoryTokens").replace(
+              "{{count}}",
+              String(built.metrics.tokens),
+            )}
+          </span>
+        ) : null}
         <div className="ml-auto flex min-w-0 items-center gap-2">
           <div className="relative min-w-0 w-36 sm:w-56">
             <MagnifyingGlass
@@ -351,19 +426,28 @@ export function TrajectoryPanel({
                     />
                     <span
                       className={cn(
-                        "w-[88px] shrink-0 rounded px-1.5 py-0.5 text-center font-mono text-[10px] font-semibold tracking-wide",
-                        KIND_CLASS[event.kind] || KIND_CLASS.assistant,
+                        "w-[7.5rem] shrink-0 rounded px-1.5 py-0.5 text-center font-mono text-[10px] font-semibold tracking-wide whitespace-nowrap",
+                        event.status === "error" && event.kind !== "tool"
+                          ? KIND_CLASS.error
+                          : KIND_CLASS[event.kind] || KIND_CLASS.assistant,
                       )}
                     >
-                      {kindLabel(event.kind)}
+                      {kindLabel(event)}
                     </span>
                     <EventRow
                       event={event}
                       onInspect={() => setInspectEvent(event)}
                     />
-                    {showDuration ? (
+                    {showDuration || event.usage ? (
                       <span className="shrink-0 font-mono text-[11px] leading-5 text-(--text-muted)">
-                        {formatTrajectoryDuration(event.durationMs)}
+                        {[
+                          showDuration
+                            ? formatTrajectoryDuration(event.durationMs)
+                            : "",
+                          formatTrajectoryUsage(event.usage),
+                        ]
+                          .filter(Boolean)
+                          .join(" · ")}
                       </span>
                     ) : null}
                   </div>
