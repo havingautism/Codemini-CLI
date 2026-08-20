@@ -52,7 +52,7 @@ function SegmentBar({ segments }) {
   const total = segments.reduce((sum, item) => sum + item.value, 0);
   if (total <= 0) return null;
   return (
-    <div className="flex h-2 w-full overflow-hidden rounded-full">
+    <div className="flex h-2 w-full overflow-hidden rounded-full bg-(--bg-primary)">
       {segments
         .filter((item) => item.value > 0)
         .map((item) => (
@@ -135,7 +135,7 @@ function UsagePanel({ model }) {
                 </span>
               </div>
             ) : null}
-            <div className="flex h-2 overflow-hidden rounded-full">
+            <div className="flex h-2 overflow-hidden rounded-full bg-(--bg-primary)">
               {waitingPct > 0 ? (
                 <span className="bg-(--text-muted)" style={{ width: `${waitingPct}%` }} />
               ) : null}

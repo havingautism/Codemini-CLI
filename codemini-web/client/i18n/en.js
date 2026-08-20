@@ -309,6 +309,12 @@ export const en = {
   usageTtft: "Time to first token (TTFT)",
   usageTps: "Tokens per second (TPS)",
   usageTpsFootnote: "TPS counts output tokens only during the generating segment.",
+  modelPanelTitle: "Model",
+  contextPanelTitle: "Context",
+  modelPanelReply: "This reply",
+  usageContextUsed: "Used",
+  usageContextWindow: "Window",
+  usageContextUsage: "Usage",
 
   // Sidebar
   newChat: "New Chat",

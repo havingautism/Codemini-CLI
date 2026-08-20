@@ -102,7 +102,7 @@ export function StatusBar({ runtimeState, live, stageLabel }) {
         <span className="hidden lg:inline-flex items-center gap-1 whitespace-nowrap">
           <ChartLine size={13} className="shrink-0 opacity-70" />
           <span>CTX</span>
-          <span className="w-12 h-1 bg-(--muted) rounded-full overflow-hidden">
+          <span className="w-12 h-1 bg-(--bg-primary) rounded-full overflow-hidden">
             <span
               className={cn(
                 "block h-full rounded-full transition-all",

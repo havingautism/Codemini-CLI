@@ -305,6 +305,12 @@ export const zh = {
   usageTtft: "首 token 时间 (TTFT)",
   usageTps: "每秒 token 数 (TPS)",
   usageTpsFootnote: "TPS 只统计生成阶段的 output tokens。",
+  modelPanelTitle: "Model",
+  contextPanelTitle: "Context",
+  modelPanelReply: "本条回复",
+  usageContextUsed: "已用",
+  usageContextWindow: "窗口",
+  usageContextUsage: "占用",
 
   // Sidebar
   newChat: "新对话",

@@ -77,6 +77,19 @@ export const ACTIVE_SESSION_STATUSES = new Set([
   "waiting_input",
 ]);
 
+/** Selected sidebar chrome belongs to the open chat, not leftover hover after leaving it. */
+export function isSidebarChatSessionActive(
+  sessionId,
+  currentSessionId,
+  currentView,
+) {
+  return Boolean(
+    sessionId &&
+      sessionId === currentSessionId &&
+      currentView === "chat",
+  );
+}
+
 export function sessionRuntimeIsBusy(runtime) {
   if (!runtime) return false;
   if (runtime.busy === true) return true;

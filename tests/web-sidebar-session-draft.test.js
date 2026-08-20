@@ -8,6 +8,7 @@ import {
   buildVisibleProjectGroups,
   displaySessionTitle,
   filterProjectGroupsByActive,
+  isSidebarChatSessionActive,
   mergeFetchedSessions,
   patchSidebarSession,
   upsertSidebarSession,
@@ -321,6 +322,45 @@ test('opening a project pins the resolved cwd only after a successful open', asy
   assert.ok(
     pinIndex > guardIndex && guardIndex > pinAfterResult,
     'pin must be called after the await and inside the success guard only',
+  );
+});
+
+test('sidebar session highlight stays only while that chat is the current view', () => {
+  assert.equal(
+    isSidebarChatSessionActive('s1', 's1', 'chat'),
+    true,
+  );
+  assert.equal(
+    isSidebarChatSessionActive('s1', 's1', 'research'),
+    false,
+  );
+  assert.equal(
+    isSidebarChatSessionActive('s1', 's1', 'scrapbook'),
+    false,
+  );
+  assert.equal(
+    isSidebarChatSessionActive('s1', 's2', 'chat'),
+    false,
+  );
+  assert.equal(isSidebarChatSessionActive('', 's1', 'chat'), false);
+});
+
+test('project and general sidebar rows both use chat-view-gated session highlight', async () => {
+  const source = await fs.readFile(
+    'codemini-web/client/src/components/Sidebar.jsx',
+    'utf8',
+  );
+  const highlightCalls = [
+    ...source.matchAll(/isSidebarChatSessionActive\(/g),
+  ];
+  assert.ok(
+    highlightCalls.length >= 2,
+    'project and general session rows must both gate highlight on the current chat view',
+  );
+  assert.doesNotMatch(
+    source,
+    /session\.id === currentSessionId\s*\n\s*\? "bg-\(--bg-active\)/,
+    'project sessions must not keep selected/hover chrome after leaving chat',
   );
 });
 

@@ -42,6 +42,7 @@ import {
   activateProjectInList,
   buildVisibleProjectGroups,
   displaySessionTitle,
+  isSidebarChatSessionActive,
   uniqueNormalizedProjectDirs,
 } from "@/lib/session-ui-state.js";
 import {
@@ -902,7 +903,11 @@ export function Sidebar({
                         }}
                         className={cn(
                           "group w-full border-0 bg-transparent flex items-center gap-2 h-[30px] px-2 rounded-md cursor-pointer text-left text-[13px] truncate",
-                          session.id === currentSessionId
+                          isSidebarChatSessionActive(
+                            session.id,
+                            currentSessionId,
+                            currentView,
+                          )
                             ? "bg-(--bg-active) text-(--text-primary)"
                             : "text-(--text-secondary) hover:text-(--text-primary)",
                         )}
@@ -1012,8 +1017,11 @@ export function Sidebar({
               </div>
             )}
             {generalSessions.slice(0, generalSessionLimit).map((session) => {
-              const active =
-                session.id === currentSessionId && currentView === "chat";
+              const active = isSidebarChatSessionActive(
+                session.id,
+                currentSessionId,
+                currentView,
+              );
               return (
                 <div
                   key={session.id}

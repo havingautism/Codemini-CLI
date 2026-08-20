@@ -1,6 +1,7 @@
 import { memo, startTransition, useEffect, useState, useMemo } from "react";
 import { ToolCard } from "./ToolCard";
 import { PlanToolCardGroup } from "./PlanToolCard.jsx";
+import { ModelIdentityBadge } from "./ModelIdentityBadge.jsx";
 import { UsageBadge } from "./UsageBadge.jsx";
 import { isCreatePlanCard } from "@/lib/plan-ui-state.js";
 import { isRequestUserInputCard } from "@/lib/tool-card-display.js";
@@ -64,7 +65,6 @@ import {
   useRuntimeMode,
 } from "@/context/app-context.jsx";
 import { parseScrapbookEntryId } from "@/lib/message-context-parsers.js";
-import { getMessageModelIdentity } from "@/lib/message-model-identity.js";
 import {
   collectFileChangePatch,
   reconcileFileChangesWithGit,
@@ -1877,44 +1877,6 @@ function MessageActionButton({
       </TooltipTrigger>
       <TooltipContent side="bottom" sideOffset={6}>
         {copied ? copiedLabel || label : label}
-      </TooltipContent>
-    </Tooltip>
-  );
-}
-
-function ModelIdentityBadge({ sdkProvider, model }) {
-  const identity = getMessageModelIdentity({ sdkProvider, model });
-  if (!identity) return null;
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <span className="inline-flex h-8 max-w-full items-center gap-2.5 rounded-md px-1.5 text-[11px] text-(--text-muted)">
-          <span className="inline-flex items-center gap-1 whitespace-nowrap">
-            <img
-              src={identity.logo}
-              alt=""
-              width={13}
-              height={13}
-              className="size-[13px] shrink-0 object-contain"
-            />
-            <span className="uppercase">{identity.sdkLabel}</span>
-          </span>
-          <span className="inline-flex items-center gap-1 whitespace-nowrap">
-            {identity.modelLogo ? (
-              <img
-                src={identity.modelLogo}
-                alt=""
-                width={13}
-                height={13}
-                className="size-[13px] shrink-0 object-contain"
-              />
-            ) : null}
-            <span className="uppercase">{identity.model}</span>
-          </span>
-        </span>
-      </TooltipTrigger>
-      <TooltipContent side="bottom" sideOffset={6}>
-        {identity.details}
       </TooltipContent>
     </Tooltip>
   );
