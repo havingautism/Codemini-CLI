@@ -102,7 +102,7 @@ async function waitForPort(port, { timeoutMs = 60000, intervalMs = 200, label = 
   return false;
 }
 
-const apiPort = await findFreePort(Number(process.env.CODEMINI_API_PORT || 8888));
+const apiPort = await findFreePort(Number(process.env.CODEMINI_API_PORT || 5000));
 const webPort = await findFreePort(Number(process.env.CODEMINI_WEB_PORT || 5178));
 
 console.log(`Codemini dev server`);
