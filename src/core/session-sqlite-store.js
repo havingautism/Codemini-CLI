@@ -1,6 +1,7 @@
 import { getGlobalDatabase, transaction } from './sqlite-database.js';
 
 const lastSavedOriginals = new Map();
+const lastSavedCounts = new Map();
 
 function messageText(content) {
   if (typeof content === 'string') return content;
@@ -14,6 +15,7 @@ function parseJson(value, fallback) {
 
 function forgetSessionMessageRefs(sessionId) {
   lastSavedOriginals.delete(sessionId);
+  lastSavedCounts.delete(sessionId);
 }
 
 export function sessionMessageWriteStart(sessionId, messages = []) {
@@ -39,6 +41,7 @@ export function sessionMessageWriteStart(sessionId, messages = []) {
 
 export function rememberSessionMessageRefs(sessionId, messages = []) {
   lastSavedOriginals.set(sessionId, Array.isArray(messages) ? messages.slice() : []);
+  lastSavedCounts.set(sessionId, Array.isArray(messages) ? messages.length : 0);
 }
 
 export function saveSessionToSqlite(session, { writeFrom = 0 } = {}) {
@@ -74,7 +77,13 @@ export function saveSessionToSqlite(session, { writeFrom = 0 } = {}) {
       const message = messages[ordinal];
       upsert.run(id, ordinal, String(message?.role || ''), messageText(message?.content), JSON.stringify(message));
     }
-    db.prepare('DELETE FROM session_messages WHERE session_id = ? AND ordinal >= ?').run(id, messages.length);
+    const previousCount = lastSavedCounts.get(id);
+    // Only trim the tail when the message list actually shrank; unknown previous
+    // count (direct saves without rememberSessionMessageRefs) keeps the old
+    // always-delete behavior to stay safe.
+    if (previousCount === undefined || messages.length < previousCount) {
+      db.prepare('DELETE FROM session_messages WHERE session_id = ? AND ordinal >= ?').run(id, messages.length);
+    }
   });
   return session;
 }
@@ -102,18 +111,19 @@ export function loadSessionFromSqlite(sessionId) {
 
 export function listSessionsFromSqlite(limit = 30, { includeEmpty = false } = {}) {
   const db = getGlobalDatabase();
-  const where = includeEmpty ? '' : 'WHERE message_count > 0';
+  const where = includeEmpty ? '' : 'WHERE s.message_count > 0';
   return db.prepare(`
-    SELECT id, title, updated_at, message_count, project_dir, model, mode,
-      COALESCE((
-        SELECT substr(replace(replace(content_text, char(10), ' '), char(13), ' '), 1, 80)
-        FROM session_messages message
-        WHERE message.session_id = sessions.id
-        ORDER BY ordinal DESC LIMIT 1
-      ), '') AS preview
-    FROM sessions
+    SELECT s.id, s.title, s.updated_at, s.message_count, s.project_dir, s.model, s.mode,
+      COALESCE(substr(replace(replace(m.content_text, char(10), ' '), char(13), ' '), 1, 80), '') AS preview
+    FROM sessions s
+    LEFT JOIN (
+      SELECT session_id, MAX(ordinal) AS max_ordinal
+      FROM session_messages
+      GROUP BY session_id
+    ) last ON last.session_id = s.id
+    LEFT JOIN session_messages m ON m.session_id = s.id AND m.ordinal = last.max_ordinal
     ${where}
-    ORDER BY updated_at DESC
+    ORDER BY s.updated_at DESC
     LIMIT ?
   `).all(Math.max(1, Number(limit || 30))).map((row) => ({
     id: row.id,

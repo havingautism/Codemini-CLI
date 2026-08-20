@@ -59,6 +59,7 @@ async function mapAsyncLimit(values, concurrency, mapper) {
 }
 
 const jsonCache = new LRUCache({ max: 64, ttl: 30 * 1000 });
+const projectContextCache = new LRUCache({ max: 32 });
 const indexUpdateLocks = new Map();
 
 async function safeReadJson(filePath, fallback) {
@@ -712,7 +713,8 @@ export async function refreshIndexedFiles(cwd = process.cwd(), relativePaths = [
   const projectResults = await Promise.all([...grouped.entries()].map(([projectRoot, targets]) => withProjectIndexLock(projectRoot, async () => {
     await ensureCodeminiGitignore(projectRoot);
     const { combinedRules } = await readProjectIgnoreRules(projectRoot);
-    const current = loadProjectFileIndexFromSqlite(projectRoot);
+    const storedIndex = loadProjectIndexFromSqlite(projectRoot);
+    const current = storedIndex?.fileIndex || { updatedAt: '', files: [] };
     const filesByPath = new Map(
       (Array.isArray(current.files) ? current.files : []).map((entry) => [entry.file, entry])
     );
@@ -737,19 +739,42 @@ export async function refreshIndexedFiles(cwd = process.cwd(), relativePaths = [
       };
     }));
 
-    for (const update of updates) {
-      if (update.entry) filesByPath.set(update.path, update.entry);
-      else filesByPath.delete(update.path);
-    }
-    const enrichedFiles = enrichSymbolGraph([...filesByPath.values()]);
+    const changedEntries = new Map(
+      updates.filter((update) => update.entry).map((update) => [update.path, update.entry])
+    );
+    const changedPaths = new Set(changedEntries.keys());
+    const removedPaths = new Set(
+      updates.filter((update) => !update.entry).map((update) => update.path)
+    );
+
+    // Incremental refresh: only changed paths are re-enriched and persisted; the
+    // previous index comes from the in-memory cache (loadProjectIndexFromSqlite).
+    const baseFiles = (Array.isArray(current.files) ? current.files : []).filter(
+      (entry) => !changedPaths.has(entry.file) && !removedPaths.has(entry.file)
+    );
+    // NOTE: re-enriching base + changed together may refresh base entries' called_by
+    // with new callers from the changed files, but we deliberately persist only the
+    // changed entries (the incremental save writes changed files only). Unchanged
+    // files' called_by stays stale until the next full scan — accepted staleness.
+    const enrichedFiles = enrichSymbolGraph([...baseFiles, ...changedEntries.values()]);
+    const enrichedByFile = new Map(enrichedFiles.map((entry) => [entry.file, entry]));
+    const enrichedChangedEntries = [...changedPaths]
+      .map((file) => enrichedByFile.get(file))
+      .filter(Boolean);
+
     const nextFileIndex = {
       updatedAt: new Date().toISOString(),
-      files: enrichedFiles.sort((left, right) => left.file.localeCompare(right.file))
+      files: [...baseFiles, ...enrichedChangedEntries].sort((left, right) => left.file.localeCompare(right.file))
     };
-    saveProjectIndexToSqlite(projectRoot, { fileIndex: nextFileIndex });
+    saveProjectIndexToSqlite(projectRoot, {
+      fileIndex: nextFileIndex,
+      changedFiles: changedPaths,
+      removedFiles: removedPaths
+    });
     refreshProjectKnowledgeGraph(projectRoot, {
-      projectMap: loadProjectIndexFromSqlite(projectRoot)?.projectMap || {},
-      fileIndex: nextFileIndex
+      projectMap: storedIndex?.projectMap || {},
+      fileIndex: nextFileIndex,
+      changedFiles: changedPaths
     });
 
     return {
@@ -796,6 +821,11 @@ export async function buildProjectContextSnippet(cwd = process.cwd(), userText =
   ];
 
   const tokens = tokenizeQuery(userText);
+  const tokenKey = [...tokens].sort().join(',');
+  const contextCacheKey = `${indexedRoot}:${fileIndex.updatedAt}:${tokenKey}`;
+  if (projectContextCache.has(contextCacheKey)) {
+    return projectContextCache.get(contextCacheKey);
+  }
   const scored = [];
   for (const entry of fileIndex.files) {
     let score = 0;
@@ -825,6 +855,7 @@ export async function buildProjectContextSnippet(cwd = process.cwd(), userText =
   }
 
   const snippet = trimMultiline(lines.join('\n'));
+  projectContextCache.set(contextCacheKey, snippet);
   return snippet;
 }
 

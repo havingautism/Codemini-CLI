@@ -8,9 +8,28 @@ export async function* iterateSseJsonEvents(stream) {
   const drain = function* () {
     while (pending.length > 0) {
       const event = pending.shift();
-      yield event.data === '[DONE]'
-        ? { event: event.event || 'message', done: true, data: null }
-        : { event: event.event || 'message', done: false, data: JSON.parse(event.data) };
+      if (event.data === '[DONE]') {
+        yield { event: event.event || 'message', done: true, data: null };
+        continue;
+      }
+      let data = null;
+      let parseError = false;
+      try {
+        data = JSON.parse(event.data);
+      } catch {
+        // keep-alive / ping / malformed payloads must not abort the whole
+        // completion stream; surface them as parse errors instead.
+        parseError = true;
+      }
+      yield parseError
+        ? {
+            event: event.event || 'message',
+            done: false,
+            data: null,
+            parse_error: true,
+            raw: event.data,
+          }
+        : { event: event.event || 'message', done: false, data };
     }
   };
 

@@ -27,6 +27,11 @@ const streamdownControls = {
   mermaid: { display: true, wrap: true },
 };
 
+// While streaming, full Streamdown parses are throttled: only re-run the
+// (expensive) parse when the accumulated text grew by at least this many
+// chars since the last parse. Between parses we render plain pre-wrap text.
+const STREAMING_PARSE_CHUNK = 2048;
+
 class StreamdownErrorBoundary extends Component {
   state = { hasError: false, retryCount: 0 };
   retryTimer = null;
@@ -170,6 +175,34 @@ function StreamdownRendererBody({
   inlineEmbeds,
   useGallery,
 }) {
+  // Length of the text the last full Streamdown parse ran on. While streaming
+  // we only re-parse once the text has grown by >= STREAMING_PARSE_CHUNK, so
+  // per-frame delta flushes render the cheap plain-text fallback instead of
+  // re-parsing + re-tokenizing the entire accumulated markdown each frame.
+  // The write is idempotent, so double-invoked (StrictMode) renders are safe:
+  // worst case a discarded render delays the next parse by a frame.
+  const lastParsedLenRef = useRef(0);
+  const shouldParse =
+    !streaming || content.length - lastParsedLenRef.current >= STREAMING_PARSE_CHUNK;
+  if (shouldParse) {
+    lastParsedLenRef.current = content.length;
+  }
+
+  if (streaming && !shouldParse) {
+    return (
+      <div
+        className={cn(
+          'msg-body',
+          'whitespace-pre-wrap',
+          'streaming-cursor',
+          className,
+        )}
+      >
+        {content}
+      </div>
+    );
+  }
+
   const mode = streaming ? 'streaming' : 'static';
   const parts = streaming
     ? [{ type: 'markdown', text: content }]

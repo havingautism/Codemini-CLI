@@ -271,19 +271,41 @@ function Shell() {
     setMobileSidebarOpen(false);
   }, []);
 
+  const handleNewSession = useCallback(
+    async (...args) => {
+      closeMobileSidebar();
+      return actions.newSession(...args);
+    },
+    [actions, closeMobileSidebar],
+  );
+
+  const handleSwitchSession = useCallback(
+    async (...args) => {
+      closeMobileSidebar();
+      return actions.switchSession(...args);
+    },
+    [actions, closeMobileSidebar],
+  );
+
+  const handleOpenProject = useCallback(
+    async (...args) => {
+      closeMobileSidebar();
+      return actions.openProject(...args);
+    },
+    [actions, closeMobileSidebar],
+  );
+
+  const handleCollapseSidebar = useCallback(() => {
+    setSidebarCollapsedAndPersist(true);
+  }, [setSidebarCollapsedAndPersist]);
+
   const sidebar = (
     <MemoSidebar
         sessions={state.sessions}
         sessionsLoading={state.sessionsLoading}
         currentSessionId={currentId}
-        onNewSession={async (...args) => {
-          closeMobileSidebar();
-          return actions.newSession(...args);
-        }}
-        onSwitchSession={async (...args) => {
-          closeMobileSidebar();
-          return actions.switchSession(...args);
-        }}
+        onNewSession={handleNewSession}
+        onSwitchSession={handleSwitchSession}
         onToggleTheme={actions.toggleTheme}
         onSetTheme={actions.setTheme}
         onOpenSettings={openSettings}
@@ -302,15 +324,12 @@ function Shell() {
         currentView={state.currentView}
         codewikiProjectPath={state.codewikiProjectPath}
         onSwitchView={actions.switchView}
-        onOpenProject={async (...args) => {
-          closeMobileSidebar();
-          return actions.openProject(...args);
-        }}
+        onOpenProject={handleOpenProject}
         onOpenProjectSelector={openProjectSelector}
         onRefreshSessions={actions.loadSessions}
         onRegenerateSessionTitle={actions.regenerateSessionTitle}
         onDeleteSession={actions.deleteSession}
-        onCollapseSidebar={() => setSidebarCollapsedAndPersist(true)}
+        onCollapseSidebar={handleCollapseSidebar}
       />
   );
 

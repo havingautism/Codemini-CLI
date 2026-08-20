@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 
 const DEFAULT_TIMEOUT_SEC = 30;
 
@@ -99,23 +99,54 @@ function buildHookResult(exitCode, fields, eventName = '') {
   };
 }
 
-function killProcessTree(pid) {
-  if (!pid) return;
+// Mirror of src/core/shell.js: walk the descendant tree so a `shell: true`
+// child (which is NOT a process-group leader, so `process.kill(-pid)` would
+// ESRCH) has every descendant killed, not just the /bin/sh wrapper.
+function collectDescendantPids(rootPid, seen = new Set()) {
+  const pid = Number(rootPid);
+  if (!Number.isInteger(pid) || pid <= 0 || seen.has(pid) || process.platform === 'win32') {
+    return [];
+  }
+  seen.add(pid);
+  const result = spawnSync('ps', ['-o', 'pid=', '--ppid', String(pid)], { encoding: 'utf8' });
+  if (result.status !== 0 || !result.stdout) return [];
+  const directChildren = result.stdout
+    .split('\n')
+    .map((value) => Number(String(value || '').trim()))
+    .filter((value) => Number.isInteger(value) && value > 0);
+  const descendants = [];
+  for (const childPid of directChildren) {
+    if (seen.has(childPid)) continue;
+    descendants.push(childPid);
+    descendants.push(...collectDescendantPids(childPid, seen));
+  }
+  return descendants;
+}
+
+function killProcessTree(pid, signal = 'SIGKILL') {
+  const numericPid = Number(pid);
+  if (!Number.isInteger(numericPid) || numericPid <= 0) return;
   if (process.platform === 'win32') {
-    spawn('taskkill', ['/pid', String(pid), '/T', '/F'], {
-      windowsHide: true,
-      stdio: 'ignore',
-    });
+    try {
+      spawn('taskkill', ['/pid', String(numericPid), '/T', '/F'], {
+        windowsHide: true,
+        stdio: 'ignore',
+      }).unref();
+    } catch {}
     return;
   }
-  try {
-    process.kill(-pid, 'SIGKILL');
-  } catch {
+  const descendants = collectDescendantPids(numericPid);
+  for (const targetPid of descendants.reverse()) {
     try {
-      process.kill(pid, 'SIGKILL');
+      process.kill(targetPid, signal);
     } catch {
       // already gone
     }
+  }
+  try {
+    process.kill(numericPid, signal);
+  } catch {
+    // already gone
   }
 }
 

@@ -119,23 +119,27 @@ export function buildReflectTargetPath({ name } = {}) {
 
 export function parseReflectScope(args = []) {
   const requestParts = [];
+  let scope = 'global';
   for (let index = 0; index < args.length; index += 1) {
     const arg = String(args[index] || '');
     if (arg === '--scope') {
       const next = String(args[index + 1] || '').toLowerCase();
       if (next === 'global' || next === 'project') {
+        scope = next;
         index += 1;
       }
       continue;
     }
     if (arg.startsWith('--scope=')) {
       const value = arg.slice('--scope='.length).toLowerCase();
-      if (value === 'global' || value === 'project') continue;
+      if (value === 'global' || value === 'project') {
+        scope = value;
+      }
       continue;
     }
     requestParts.push(arg);
   }
-  return { scope: 'global', request: requestParts.join(' ').trim() };
+  return { scope, request: requestParts.join(' ').trim() };
 }
 
 function normalizeDraftList(parsed) {

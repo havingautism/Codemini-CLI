@@ -3,7 +3,7 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { getBaseConfigDir, getProjectIndexDir } from './paths.js';
 
-const GLOBAL_SCHEMA_VERSION = 12;
+const GLOBAL_SCHEMA_VERSION = 13;
 const PROJECT_SCHEMA_VERSION = 5;
 const databases = new Map();
 
@@ -264,6 +264,8 @@ function createGlobalSchema(db, currentVersion = 0) {
       ON research_scout_runs(wave_id, created_at);
     CREATE INDEX IF NOT EXISTS research_scout_runs_question_idx
       ON research_scout_runs(question_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS research_scout_runs_session_idx
+      ON research_scout_runs(session_id, created_at);
   `);
   if (currentVersion < 8) {
     const evidenceColumns = db
@@ -322,6 +324,9 @@ function createGlobalSchema(db, currentVersion = 0) {
     if (evidenceColumns.length > 0 && !evidenceColumns.includes('sources_json')) {
       db.exec(`ALTER TABLE research_evidence ADD COLUMN sources_json TEXT NOT NULL DEFAULT '[]'`);
     }
+  }
+  if (currentVersion < 13) {
+    db.exec('CREATE INDEX IF NOT EXISTS research_scout_runs_session_idx ON research_scout_runs(session_id, created_at);');
   }
   db.exec(`
     CREATE UNIQUE INDEX IF NOT EXISTS research_evidence_candidate_idx

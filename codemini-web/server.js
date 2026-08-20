@@ -741,7 +741,17 @@ export function createEventBroker() {
       });
       res.write(`data: ${JSON.stringify({ type: "connected" })}\n\n`);
       clients.add(res);
-      res.on("close", () => clients.delete(res));
+      const ping = setInterval(() => {
+        try {
+          res.write(": ping\n\n");
+        } catch {
+          clearInterval(ping);
+        }
+      }, 15000);
+      res.on("close", () => {
+        clearInterval(ping);
+        clients.delete(res);
+      });
     },
   };
 }

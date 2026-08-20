@@ -112,8 +112,19 @@ function plainHighlight(code) {
   };
 }
 
+const HIGHLIGHT_CACHE_MAX = 64;
+const highlightCache = new Map();
+
 function doHighlight(code, language) {
   if (!highlighterInstance) return null;
+  const key = `${code}\u0000${language}`;
+  const cached = highlightCache.get(key);
+  if (cached !== undefined) {
+    // LRU touch: move entry to the end of insertion order
+    highlightCache.delete(key);
+    highlightCache.set(key, cached);
+    return cached;
+  }
   try {
     if (!highlighterInstance.getLoadedLanguages().includes(language)) return null;
 
@@ -123,12 +134,18 @@ function doHighlight(code, language) {
       defaultColor: false,
     });
 
-    return {
+    const value = {
       fg: result.fg,
       bg: result.bg,
       rootStyle: result.rootStyle,
       tokens: result.tokens,
     };
+    highlightCache.set(key, value);
+    if (highlightCache.size > HIGHLIGHT_CACHE_MAX) {
+      const oldest = highlightCache.keys().next().value;
+      highlightCache.delete(oldest);
+    }
+    return value;
   } catch {
     return null;
   }

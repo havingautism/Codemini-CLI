@@ -359,13 +359,23 @@ function fileChangeFingerprint(change) {
   });
 }
 
+const fileChangeFingerprintSets = new WeakMap();
+
 function appendUniqueFileChange(message, fileChange) {
   const existing = Array.isArray(message.file_changes) ? message.file_changes : [];
   const nextKey = fileChangeFingerprint(fileChange);
-  if (existing.some((change) => fileChangeFingerprint(normalizeFileChange(change) || {}) === nextKey)) {
+  let fingerprintSet = fileChangeFingerprintSets.get(message);
+  if (!fingerprintSet || fingerprintSet.size !== existing.length) {
+    fingerprintSet = new Set(
+      existing.map((change) => fileChangeFingerprint(normalizeFileChange(change) || {}))
+    );
+    fileChangeFingerprintSets.set(message, fingerprintSet);
+  }
+  if (fingerprintSet.has(nextKey)) {
     message.file_changes = existing;
     return;
   }
+  fingerprintSet.add(nextKey);
   message.file_changes = [...existing, fileChange];
 }
 

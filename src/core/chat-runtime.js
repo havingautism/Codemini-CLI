@@ -4648,8 +4648,11 @@ async function askModel({
   const maxContextTokens = effectiveMaxContextTokens(config);
   const triggerPct = Number(config.context?.preflight_trigger_pct || 60);
   const hardPct = Number(config.context?.hard_limit_pct || 98);
-  const messagesForEstimate = modelVisibleMessages(compacted ?? session.messages);
-  const preflightTokens = estimatePromptTokensForRequest(messagesForEstimate, modelInputText);
+  // The visible message list and its token estimate are computed once per turn
+  // and reused by every preflight/compact measurement below.
+  const turnVisible = modelVisibleMessages(compacted ?? session.messages);
+  const turnTokens = estimateMessagesTokens(turnVisible);
+  const preflightTokens = turnTokens + estimateMessagesTokens([{ role: 'user', content: String(modelInputText || '') }]);
   const preflightPct = (preflightTokens / maxContextTokens) * 100;
   const selectedSkillNamesForUi = [...new Set(
     (Array.isArray(selectedSkillNames) ? selectedSkillNames : [])
@@ -4658,7 +4661,8 @@ async function askModel({
   )];
 
   if (persistSession && preflightPct >= triggerPct) {
-    const compactSource = modelVisibleMessages(compacted ?? session.messages);
+    // `compacted` is still the original input here, so this equals turnVisible.
+    const compactSource = turnVisible;
     // Phase 0: try micro-compact first (in-place tool result clearing)
     const microEnabled = config.context?.microcompact_enabled !== false;
     const microKeep = Number(config.context?.microcompact_keep_recent || 5);
@@ -4685,7 +4689,9 @@ async function askModel({
     }
     if (needsMacro) {
       const sourceIsCompacted = Boolean(compacted);
-      const macroSource = modelVisibleMessages(compacted ?? session.messages);
+      // After micro-compaction `compacted` may be a new array; only recompute
+      // the visible filter in that case, otherwise reuse the per-turn base.
+      const macroSource = compacted ? modelVisibleMessages(compacted) : turnVisible;
       const auto = await compactMessagesLocally(macroSource, {
         mode: preflightPct >= hardPct ? 'aggressive' : 'conservative',
         force: true,

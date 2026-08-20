@@ -1139,15 +1139,55 @@ export function AppProvider({ children }) {
   const abortFnRef = useRef(null);
   const jumpQueuedPromptInFlightRef = useRef(false);
 
-  const activateSessionView = useCallback((sessionId) => {
-    activeMsgRef.current = null;
-    pendingChangesRef.current = [];
-    pendingSkillBadgesRef.current = [];
-    pendingSkillSegmentsRef.current = [];
-    planStepMessagesRef.current = new Map();
-    planOverviewMsgRef.current = null;
-    setState((prev) => activateSession(prev, sessionId));
+  // Most-recently-visited session ids (most recent last). Used to bound the
+  // sessionMessagesById cache: keep the active session + up to 2 other
+  // recently visited sessions, evicting the rest when a session is switched.
+  // Switching back to an evicted session refetches via loadSessionMessages
+  // (see the switchSession/openChatMessage flows), so eviction is safe.
+  const sessionVisitOrderRef = useRef([]);
+
+  const pruneSessionMessagesCache = useCallback((nextActiveSessionId) => {
+    if (!nextActiveSessionId) return;
+    const order = sessionVisitOrderRef.current.filter(
+      (id) => id && id !== nextActiveSessionId,
+    );
+    order.push(nextActiveSessionId);
+    sessionVisitOrderRef.current = order;
+    setState((prev) => {
+      const cache = prev.sessionMessagesById || {};
+      const cachedIds = Object.keys(cache);
+      if (cachedIds.length <= 3) return prev;
+      const keepIds = new Set([nextActiveSessionId]);
+      // Fill up to 2 most-recently-visited other sessions.
+      for (let i = order.length - 2; i >= 0 && keepIds.size < 3; i -= 1) {
+        const id = order[i];
+        if (id && cache[id] && !keepIds.has(id)) keepIds.add(id);
+      }
+      // Never evict a session that is still busy/running.
+      for (const id of cachedIds) {
+        if (isSessionBusyInState(prev, id)) keepIds.add(id);
+      }
+      const evicted = cachedIds.filter((id) => !keepIds.has(id));
+      if (!evicted.length) return prev;
+      const sessionMessagesById = { ...cache };
+      for (const id of evicted) delete sessionMessagesById[id];
+      return { ...prev, sessionMessagesById };
+    });
   }, [setState]);
+
+  const activateSessionView = useCallback(
+    (sessionId) => {
+      activeMsgRef.current = null;
+      pendingChangesRef.current = [];
+      pendingSkillBadgesRef.current = [];
+      pendingSkillSegmentsRef.current = [];
+      planStepMessagesRef.current = new Map();
+      planOverviewMsgRef.current = null;
+      setState((prev) => activateSession(prev, sessionId));
+      pruneSessionMessagesCache(sessionId);
+    },
+    [pruneSessionMessagesCache, setState],
+  );
 
   const update = useCallback((updates) => {
     setState((prev) => ({ ...prev, ...updates }));

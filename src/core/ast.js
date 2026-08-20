@@ -462,45 +462,64 @@ export async function queryAst(root, args) {
     throw new Error('ast_query requires path and query');
   }
   const captureName = String(args?.capture_name || '').trim();
-  const maxResults = Math.max(1, Math.min(100, Number(args?.max_results || 12)));
+  const parsedMaxResults = Number(args?.max_results);
+  const maxResults = Math.max(
+    1,
+    Math.min(
+      100,
+      Number.isFinite(parsedMaxResults) ? Math.max(0, parsedMaxResults) : 12,
+    ),
+  );
   const parsed = await parseFile(root, relativePath, args?.language);
-  const query = new Query(parsed.loadedLanguage, querySource);
-  const captures = query.captures(parsed.tree.rootNode);
-  const matches = [];
+  let query = null;
+  try {
+    // Invalid query patterns make `new Query` / `query.captures` throw; the
+    // finally below still releases the WASM parser+tree (and the query).
+    query = new Query(parsed.loadedLanguage, querySource);
+    const captures = query.captures(parsed.tree.rootNode);
+    const matches = [];
 
-  for (const capture of captures) {
-    if (captureName && capture.name !== captureName) continue;
-    const targetNode = selectEditableNode(capture.node);
-    matches.push({
-      capture: capture.name,
-      node_type: targetNode.type,
-      start_line: targetNode.startPosition.row + 1,
-      start_column: targetNode.startPosition.column + 1,
-      end_line: targetNode.endPosition.row + 1,
-      end_column: targetNode.endPosition.column + 1,
-      text: clipText(targetNode.text),
-      ast_target: astTargetForNode(relativePath, parsed.language, targetNode)
-    });
-    if (matches.length >= maxResults) break;
+    for (const capture of captures) {
+      if (captureName && capture.name !== captureName) continue;
+      const targetNode = selectEditableNode(capture.node);
+      matches.push({
+        capture: capture.name,
+        node_type: targetNode.type,
+        start_line: targetNode.startPosition.row + 1,
+        start_column: targetNode.startPosition.column + 1,
+        end_line: targetNode.endPosition.row + 1,
+        end_column: targetNode.endPosition.column + 1,
+        text: clipText(targetNode.text),
+        ast_target: astTargetForNode(relativePath, parsed.language, targetNode)
+      });
+      if (matches.length >= maxResults) break;
+    }
+
+    return {
+      path: relativePath,
+      language: parsed.language,
+      query: querySource,
+      capture_name: captureName || undefined,
+      matches,
+      truncated: captures.length > matches.length
+    };
+  } finally {
+    query?.delete?.();
+    deleteParsed(parsed);
   }
-
-  query.delete();
-  deleteParsed(parsed);
-
-  return {
-    path: relativePath,
-    language: parsed.language,
-    query: querySource,
-    capture_name: captureName || undefined,
-    matches,
-    truncated: captures.length > matches.length
-  };
 }
 
 export async function queryAstGrep(root, args) {
   const patternSource = String(args?.pattern || args?.query || '').trim();
   if (!patternSource) throw new Error('ast_grep requires pattern');
-  const maxResults = Math.max(1, Math.min(200, Number(args?.max_results || 50)));
+  const parsedMaxResults = Number(args?.max_results);
+  const maxResults = Math.max(
+    1,
+    Math.min(
+      200,
+      Number.isFinite(parsedMaxResults) ? Math.max(0, parsedMaxResults) : 50,
+    ),
+  );
   const startPath = String(args?.path || '.').trim() || '.';
   const astGrep = await loadAstGrep();
   if (!astGrep) {
@@ -570,28 +589,31 @@ export async function readAstNode(root, args) {
   const astTarget = args?.ast_target;
   if (!relativePath || !astTarget) throw new Error('read_ast_node requires path and ast_target');
   const parsed = await parseFile(root, relativePath, astTarget.language || args?.language);
-  const node = exactNodeForTarget(parsed.tree.rootNode, astTarget);
-  if (!node) {
-    throw new Error('AST target no longer matches the current file');
+  try {
+    // exactNodeForTarget can throw on malformed targets; the finally below
+    // still releases the WASM parser+tree instead of leaking them.
+    const node = exactNodeForTarget(parsed.tree.rootNode, astTarget);
+    if (!node) {
+      throw new Error('AST target no longer matches the current file');
+    }
+
+    return {
+      path: relativePath,
+      language: parsed.language,
+      node: {
+        node_type: node.type,
+        start_line: node.startPosition.row + 1,
+        start_column: node.startPosition.column + 1,
+        end_line: node.endPosition.row + 1,
+        end_column: node.endPosition.column + 1
+      },
+      content: node.text,
+      parent_summary: summarizeNode(node.parent),
+      child_summaries: node.namedChildren.slice(0, 8).map((child) => summarizeNode(child))
+    };
+  } finally {
+    deleteParsed(parsed);
   }
-
-  const result = {
-    path: relativePath,
-    language: parsed.language,
-    node: {
-      node_type: node.type,
-      start_line: node.startPosition.row + 1,
-      start_column: node.startPosition.column + 1,
-      end_line: node.endPosition.row + 1,
-      end_column: node.endPosition.column + 1
-    },
-    content: node.text,
-    parent_summary: summarizeNode(node.parent),
-    child_summaries: node.namedChildren.slice(0, 8).map((child) => summarizeNode(child))
-  };
-
-  deleteParsed(parsed);
-  return result;
 }
 
 export async function resolveAstTarget(root, relativePath, astTarget) {

@@ -24,6 +24,7 @@ const SESSION_INDEX_VERSION = 1;
 const DEFAULT_SESSION_TITLE = '新会话';
 const SESSION_INDEX_WRITE_RETRY_MS = [25, 75, 150];
 let sessionIndexWriteChain = Promise.resolve();
+let legacyImportDone = false;
 
 function isRetryableWindowsRenameError(error) {
   const code = String(error?.code || '').toUpperCase();
@@ -636,7 +637,23 @@ async function archiveMigratedSessionFiles(sessionId) {
   }
 }
 
+async function hasLegacySessionFiles() {
+  try {
+    const entries = await fs.readdir(getSessionsDir());
+    return entries.some((name) =>
+      name.endsWith(SESSION_JSONL_EXT) || name.endsWith(SESSION_LEGACY_EXT)
+    );
+  } catch {
+    return false;
+  }
+}
+
 async function importLegacySessions() {
+  if (legacyImportDone) {
+    // Cheap re-check: if a new legacy file appeared, drop the flag and rescan.
+    if (!await hasLegacySessionFiles()) return;
+    legacyImportDone = false;
+  }
   const files = await listSessionFiles();
   const imported = new Set();
   for (const file of files) {
@@ -651,6 +668,10 @@ async function importLegacySessions() {
       // Leave unreadable legacy files untouched for manual recovery.
     }
   }
+  // Nothing left to import: either the dir is empty or every found file was
+  // migrated+archived this scan. The cheap readdir re-check above protects us
+  // if a new legacy file shows up later.
+  if (files.length === 0 || imported.size === files.length) legacyImportDone = true;
 }
 
 export async function createSession(projectDir = process.cwd()) {

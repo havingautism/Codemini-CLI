@@ -6373,7 +6373,12 @@ export function getBuiltinTools({
           )
         : await readDshFile(workspaceRoot, args, config);
       const readPath = normalizePath(result?.path || args?.path || "").trim();
-      if (readPath && result?.phase !== "directory_listing") {
+      // The dedup/unchanged stub only fires when the mtime-based dedup already
+      // proved this exact path+range is unchanged since an earlier read in this
+      // turn (which recorded the full-file observation). Re-observing here would
+      // re-read and SHA-256 the entire file for no new information, so skip it;
+      // the existing observation entry stays valid for later change detection.
+      if (readPath && result?.phase !== "directory_listing" && result?.unchanged !== true) {
         const readTarget = await resolveInWorkspace(workspaceRoot, readPath, config);
         await observeFile(readTarget);
       }
