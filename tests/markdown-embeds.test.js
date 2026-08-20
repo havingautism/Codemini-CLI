@@ -276,3 +276,24 @@ describe('user question bubbles keep URLs as text', () => {
     }
   });
 });
+
+describe('StreamdownRenderer streaming markdown', () => {
+  it('keeps Streamdown parsing while tokens arrive instead of waiting for a char threshold', async () => {
+    const source = await fs.readFile(
+      'codemini-web/client/src/components/StreamdownRenderer.jsx',
+      'utf8',
+    );
+    assert.doesNotMatch(
+      source,
+      /STREAMING_PARSE_CHUNK/,
+      'streaming replies must not wait for a large char chunk before formatting',
+    );
+    assert.doesNotMatch(
+      source,
+      /lastParsedLenRef/,
+      'streaming replies must not skip Streamdown between parse chunks',
+    );
+    assert.match(source, /parseIncompleteMarkdown/);
+    assert.match(source, /const mode = streaming \? 'streaming' : 'static'/);
+  });
+});
