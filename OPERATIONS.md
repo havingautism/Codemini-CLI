@@ -7,7 +7,7 @@ This document is the day-to-day operator guide for Codemini CLI.
 Use it for:
 - common commands
 - interactive chat workflow
-- plan/spec flow
+- execution modes and approvals
 - session recovery
 - troubleshooting combos
 
@@ -16,12 +16,15 @@ Use [deployment.md](./deployment.md) for packaging, installation, and deployment
 ## Core Commands
 
 ```text
-codemini [prompt]
-codemini chat [prompt]
-codemini run <task>
-codemini config set|get|list <key> [value]
+codemini [prompt] [--plain] [--model <name>] [--fast]
+codemini chat [prompt] [--session <id>] [--plain] [--model <name>] [--fast]
+codemini run <task> [--model <name>] [--fast]
+codemini run --harness <role> <task> [--model <name>] [--fast]
+codemini run --pipeline <task> [--model <name>] [--fast]
+codemini web [--port <port>] [--project <path>] [--session <id>] [--model <name>] [--no-open] [--host <addr>]
+codemini config set|get|list|reset <key> [value]
 codemini doctor
-codemini skill list|install|enable|disable|inspect|reindex
+codemini skill list|install|update|enable|disable|inspect|reindex
 ```
 
 ## First-Time Setup
@@ -79,18 +82,37 @@ codemini config get ui.language
 codemini config list
 ```
 
-### Change runtime mode quickly
+### Change runtime settings quickly
 
 ```powershell
 codemini config set shell.default powershell
 codemini config set ui.language en
-codemini config set soul.preset professional
-codemini config set soul.preset pirate
+codemini config set soul.coding professional
+codemini config set soul.daily playful
 ```
 
 ```bash
 codemini config set shell.default bash
 codemini config set ui.language zh
+```
+
+Soul config uses `soul.coding` (coding mode) and `soul.daily` (daily mode). The old `soul.preset` key is migrated automatically if still present.
+
+### Execution modes
+
+Two modes are available (`execution.mode`): `normal` and `plan`.
+
+```bash
+codemini config set execution.mode normal   # daily chat and lighter tasks
+codemini config set execution.mode plan     # code-focused work with direct editing and optional subagents
+```
+
+Approval modes (`execution.approval_mode`): `review`, `auto`, `full_access`.
+
+```bash
+codemini config set execution.approval_mode review
+codemini config set execution.approval_mode auto
+codemini config set execution.approval_mode full_access
 ```
 
 ### Sandbox (Windows / Linux / macOS)
@@ -137,40 +159,44 @@ Use this when you want to separate:
 
 ## TUI Slash Commands
 
+The terminal TUI recognizes these slash commands (type `/` for the autocomplete list):
+
 ```text
-/help
-/commands
-/brainstorm <question>
-/config list
-/config get <key>
-/history list
-/history current
-/history resume <session_id>
-/spec <topic>
-/plan <goal>
-/plan auto <goal>
-/yes
-/edit <feedback>
-/reject
-/plan from-spec <path?>
-/agents list
-/agents run <role> <task>
-/compact
-/retry
+/compact   compress the current conversation context
+/dream     consolidate memory inbox evidence into durable memory
+/reflect   turn the current workflow into a reviewable skill
+/inbox     show the memory inbox
+/coding    switch to coding mode
+/daily     switch to daily mode
+/tools     expand or collapse process details
+/history   open session history
+/help      show keyboard shortcuts
 ```
+
+In the input line:
+
+- `/` opens the command autocomplete list.
+- `@` references a workspace file.
+- `!` runs a shell command.
 
 Note:
 - The old manual `/tasks` board has been removed.
-- For complex single-task work, the assistant now maintains an internal session todo checklist automatically and shows it in the TUI.
-- `/plan auto run` is deprecated. Use `/plan auto <goal>` then `/yes`, `/edit <feedback>`, or `/reject`.
+- For complex single-task work, the assistant maintains an internal session todo checklist automatically and shows it in the TUI.
+- Plan/spec flows are driven by execution mode and tool calls, not by TUI slash commands; see [Plan and spec flow](#plan-and-spec-flow).
 
-Available sub-agent roles:
+Available harness roles for `codemini run --harness <role>`:
 
 ```text
-planner
+explorer
+architect
+advisor
 coder
+refactorer
 reviewer
 tester
+debugger
+writer
+summarizer
 ```
 
 ## Useful Workflows
@@ -183,47 +209,27 @@ Continue into the relevant files and explain how skill loading works.
 Find where shell.default is used and summarize the config path.
 ```
 
-### Brainstorm before coding
+### Plan and spec flow
 
-```text
-/brainstorm Should login retry stay local or become a shared helper?
-```
+Codemini has two execution modes (`execution.mode`): `normal` (Daily) and `plan` (Coding). In plan mode the agent drafts a plan or spec, surfaces it for review, and proceeds after approval.
 
-Use this when the implementation path is still fuzzy and you want the CLI to compare a few approaches before any code change.
+In the Web UI, pending plan and spec reviews appear as dialogs (Plan review / Spec approval) with confirm, edit, and discard actions. In the TUI, switch mode with `/coding` or `/daily`, and approve or reject tool-level approvals with the approval dialog.
 
-### Spec and plan flow
-
-```text
-/spec Write a Windows PowerShell-first coding CLI usage spec
-/plan from-spec
-```
-
-Then continue with:
-
-```text
-Execute this plan step by step.
-```
-
-For auto plan approval flow:
-
-```text
-/plan auto <goal>
-/yes
-```
-
-or revise/discard before execution:
-
-```text
-/edit <feedback>
-/reject
-```
+`create_spec` is a legacy tool kept for existing callers; prefer writing markdown under `.codemini/workspace/specs/` and implementing directly. `create_plan` has been retired — use `run_subagent` for isolated chunks or implement directly.
 
 ### Session recovery
 
 ```text
-/history list
-/history current
-/history resume <session_id>
+/history
+```
+
+opens the session history picker; select a session to resume it.
+
+You can also load a specific session directly:
+
+```powershell
+codemini chat --session <session_id>
+codemini web --session <session_id>
 ```
 
 ### Skill management
@@ -232,19 +238,18 @@ or revise/discard before execution:
 codemini skill list
 codemini skill inspect my-skill
 codemini skill install .\my-skill
-codemini skill install --scope=global .\my-skill
+codemini skill install --no-hooks .\my-skill
+codemini skill update my-skill
 codemini skill enable my-skill
 codemini skill disable my-skill
 codemini skill reindex
 ```
 
+- `install` supports `--no-hooks` (skip bundled hooks); it installs into the global skills directory.
+- `list` and `inspect` accept `--scope=all|global|builtin`.
+- `update <name>` refreshes a skill installed from a git/package source.
+
 ## Better Prompt Patterns
-## Release Management
-
-### Release Checklist
-
-For information on how to perform a release, please see the [Release Checklist](RELEASE_CHECKLIST.md) document.
-
 
 These usually work better:
 
@@ -265,7 +270,25 @@ Better prompts usually specify:
 
 ## TUI Keys
 
-- `Tab`: autocomplete slash commands
-- `Up/Down`: navigate input history
-- `Ctrl+T`: expand or collapse tool details
-- `Ctrl+C`: exit
+From the `/help` dialog:
+
+| Key | Action |
+| --- | --- |
+| `Enter` | Send |
+| `Ctrl+Enter` | Send / jump queue |
+| `Shift+Enter` / `Ctrl+J` | New line |
+| `↑` / `↓` | Input history |
+| `Wheel` / `Shift+↑` / `Shift+↓` | Scroll conversation |
+| `PageUp` / `PageDown` | Scroll one page |
+| `Ctrl+Shift+↑` / `Ctrl+Shift+↓` | Jump prompts |
+| `/` | Commands autocomplete |
+| `Ctrl+O` / `/tools` | Process details |
+| `Ctrl+T` | Body only / full view |
+| `Esc` | Stop / home |
+| `Ctrl+C` | Clear / exit |
+
+## Release Management
+
+### Release Checklist
+
+For information on how to perform a release, please see the [Release Checklist](RELEASE_CHECKLIST.md) document.

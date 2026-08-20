@@ -11,10 +11,10 @@
 
 <p align="center">
   <a href="https://www.npmjs.com/package/codemini-cli"><img alt="npm version" src="https://img.shields.io/npm/v/codemini-cli?style=flat-square&logo=npm"></a>
-  <a href="https://nodejs.org"><img alt="node version" src="https://img.shields.io/badge/node-%3E%3D22.13-339933?style=flat-square&logo=nodedotjs&logoColor=white"></a>
+  <a href="https://nodejs.org"><img alt="node version" src="https://img.shields.io/badge/node-%3E%3D22.19.0-339933?style=flat-square&logo=nodedotjs&logoColor=white"></a>
   <a href="./LICENSE"><img alt="license" src="https://img.shields.io/badge/license-MIT-blue?style=flat-square"></a>
   <a href="#terminal-tui--web-ui"><img alt="web ui included" src="https://img.shields.io/badge/Web_UI-included-7c3aed?style=flat-square"></a>
-  <a href="#quick-start"><img alt="quick start" src="https://img.shields.io/badge/quick_start-4_commands-0ea5e9?style=flat-square"></a>
+  <a href="#quick-start"><img alt="quick start" src="https://img.shields.io/badge/quick_start-5_commands-0ea5e9?style=flat-square"></a>
 </p>
 
 <p align="center">
@@ -31,33 +31,29 @@
 
 ### What is Codemini?
 
-Codemini is a **coding + tasks CLI** built around a simple premise: agentic help should work everywhere without wasting your context budget.
+Codemini is a **coding + tasks CLI** for Windows, macOS, and Linux. It talks to OpenAI-compatible and Anthropic APIs, and keeps sessions, project state, skills, memories, and indexes on your machine. Model requests go only to the provider you configure.
 
-It can refactor a codebase, automate a Git workflow, run a multi-step pipeline, research a technical question, or process local files. It works on Windows, macOS, and Linux with OpenAI-compatible and Anthropic APIs.
+It can refactor a codebase, drive a Git workflow, run a multi-step pipeline, research a technical question, or process local files.
 
 Codemini provides two interfaces powered by the same runtime:
 
-- A terminal TUI for focused, keyboard-first work.
+- A terminal TUI for keyboard-first work.
 - A browser Web UI for sessions, files, diffs, terminals, research, CodeWiki, skills, hooks, and settings.
 
-Sessions, project state, skills, memories, and runtime metadata remain local. Model requests are sent only to the provider you configure.
+### Design
 
-### Why "Restrained"?
-
-Codemini avoids making every feature part of every prompt.
+Codemini keeps the prompt small instead of making every feature part of every turn.
 
 - **Managed context.** Compaction, prompt preflight, and tool-result spill keep long sessions usable.
-- **Lazy-loaded skills.** Routing metadata stays small; the complete `SKILL.md` is loaded only when selected.
-- **Project-aware retrieval.** Symbols, AST structure, dependencies, and the project graph help locate evidence before reading large files.
+- **Lazy-loaded skills.** Routing metadata stays small; the full `SKILL.md` is loaded only when a skill is selected.
+- **Project-aware retrieval.** Symbols, AST structure, dependencies, and the project graph locate evidence before large files are read.
 - **Proportional approvals.** Read-only work can proceed while risky actions remain visible and reviewable.
 - **Local persistence.** Sessions, memory, indexes, and checkpoints live on your machine.
-- **Provider choice.** Use an OpenAI-compatible or Anthropic endpoint and configure a separate fast model when useful.
-
-The goal is not fewer capabilities. It is less unnecessary context, guessing, and authority.
+- **Provider choice.** Use an OpenAI-compatible or Anthropic endpoint; configure a separate fast model when useful.
 
 ### Quick Start
 
-Requires Node.js 22.13 or newer.
+Requires Node.js 22.19 or newer.
 
 ```bash
 npm install -g codemini-cli
@@ -119,9 +115,9 @@ codemini run --pipeline "Run tests, fix failures, and summarize the result"
 | **Structured Tool Runtime** | Validated tool schemas, deferred tools, parallel calls, plans, todos, subagents, and background tasks. |
 | **Microsandbox** | Linux microVM when `msb` is available; Linux/macOS fall back to Landlock/Seatbelt. |
 | **Approvals & Checkpoints** | Risk-aware approvals, file-change previews, Git-aware workflows, and checkpoints for non-Git projects. |
-| **Terminal TUI** | Interactive chat, streaming tool output, syntax highlighting, and command shortcuts. |
-| **Web UI** | Shared sessions, file browsing, diffs, real PTY terminals, research, CodeWiki, and configuration. |
-| **Deep Research** | Parallel scouts, evidence collection, artifacts, Research Board, Scrapbook, and resource library. |
+| **Terminal TUI** | Interactive chat, streaming tool output, markdown rendering, and command shortcuts. |
+| **Web UI** | Concurrent sessions, file browsing, diffs, real PTY terminals, syntax-highlighted code, research, CodeWiki, and configuration. |
+| **Deep Research** | Parallel scouts, evidence collection, artifacts, research library, Scrapbook, and resource library. |
 | **Skills, Hooks & MCP** | Reusable workflows, Claude-compatible hooks, hook profiles, and external MCP servers. |
 | **Memory & Self-Evolution** | Capture, Dream, and Reflect turn useful work into curated memory and reusable skills. |
 | **Souls** | Change expression and tone without changing execution policy. |
@@ -181,7 +177,7 @@ codemini
 codemini --web
 ```
 
-The Web UI includes concurrent sessions, file browsing and previews, Git changes, a real PTY terminal, CodeWiki, Deep Research, Scrapbook, resource management, skills, hooks, MCP, Souls, memories, and settings.
+The Web UI includes concurrent sessions, file browsing and previews, Git changes, a real PTY terminal, syntax-highlighted code, CodeWiki, Deep Research, Scrapbook, resource management, skills, hooks, MCP, Souls, memories, and settings.
 
 Useful Web UI flags include `--port`, `--project`, `--session`, `--model`, and `--no-open`. The server binds `127.0.0.1` by default; pass `--host 0.0.0.0` to expose it on the LAN (no auth — do this only on trusted networks).
 
@@ -189,10 +185,12 @@ Useful Web UI flags include `--port`, `--project`, `--session`, `--model`, and `
 
 | Command | Purpose |
 | --- | --- |
-| `/capture <text>` | Save a useful signal to the memory inbox. |
 | `/inbox` | Review pending memory evidence. |
-| `/dream [--dry-run]` | Consolidate useful evidence into durable memory. |
+| `/dream` | Consolidate useful evidence into durable memory. |
 | `/reflect` | Convert a successful workflow into a reviewable skill. |
+| `/compact` | Compress the current conversation context. |
+
+TUI slash commands include `/coding`, `/daily`, `/tools`, `/history`, and `/help`. The Web UI also exposes memory actions (Dream, Compact, Capture, Reflect) in the input bar, and a Memory panel with Inbox and Library tabs.
 
 The inbox is temporary by design. Dream promotes useful evidence; Reflect turns a repeatable workflow into an explicit tool that can be inspected and reused.
 
@@ -200,11 +198,11 @@ The inbox is temporary by design. Dream promotes useful evidence; Reflect turns 
 
 Codemini incrementally indexes project files and symbols. Tree-sitter-based parsing supports precise AST and symbol queries, while dependency and knowledge graphs connect callers, files, and architectural areas.
 
-CodeWiki presents this information as a navigable project map. Mutation preflight uses the graph before edits to surface likely downstream impact.
+CodeWiki presents this information as a navigable project map, and the knowledge graph supports change-impact queries before edits.
 
 ### Deep Research
 
-Deep Research coordinates focused scouts, collects evidence, and produces reviewable artifacts. The Web UI adds a Research Board, Scrapbook, and resource library so sources and findings remain attached to the task instead of disappearing into chat history.
+Deep Research coordinates focused scouts, collects evidence, and produces reviewable artifacts. The Web UI adds a Research library, Scrapbook, and resource library so sources and findings remain attached to the task instead of disappearing into chat history.
 
 ### Data Paths
 
@@ -259,20 +257,18 @@ npm run build:web
 
 ### Codemini 是什么？
 
-Codemini 是一款**刻意保持克制的 coding + tasks CLI**：让 Agent 在各个平台都能工作，同时不过度占用上下文。
+Codemini 是一款**coding + tasks CLI**，支持 Windows、macOS 和 Linux，兼容 OpenAI-compatible 与 Anthropic API。会话、项目状态、Skills、Memory 与索引都保存在本机，只有模型请求会发送到你配置的服务商。
 
-它可以重构代码、自动化 Git 工作流、运行多步骤流水线、研究技术问题，也可以处理本地文件。支持 Windows、macOS 和 Linux，并兼容 OpenAI-compatible 与 Anthropic API。
+它可以重构代码、驱动 Git 工作流、运行多步骤流水线、研究技术问题，也可以处理本地文件。
 
 Codemini 提供两个共享同一运行时的界面：
 
-- 适合专注操作和键盘工作流的终端 TUI。
+- 适合键盘操作的终端 TUI。
 - 用于会话、文件、diff、终端、研究、CodeWiki、Skills、Hooks 和设置的浏览器 Web UI。
 
-会话、项目状态、Skills、Memory 与运行时元数据保存在本机。只有模型请求会发送到你配置的服务商。
+### 设计
 
-### 「克制」体现在哪里？
-
-Codemini 不会让每项功能都进入每次提示词。
+Codemini 不会让每项功能都进入每次提示词，而是保持提示词精简。
 
 - **上下文可控。** 压缩、prompt preflight 与工具结果落盘让长会话保持可用。
 - **Skills 懒加载。** 启动时只读取轻量路由信息，选中后才加载完整 `SKILL.md`。
@@ -281,11 +277,9 @@ Codemini 不会让每项功能都进入每次提示词。
 - **本地持久化。** 会话、记忆、索引和 checkpoint 留在本机。
 - **模型自由。** 可使用 OpenAI-compatible 或 Anthropic 接口，也可以单独配置 fast model。
 
-目标不是少做，而是减少不必要的上下文、猜测和权限。
-
 ### 快速开始
 
-需要 Node.js 22.13 或更高版本。
+需要 Node.js 22.19 或更高版本。
 
 ```bash
 npm install -g codemini-cli
@@ -347,9 +341,9 @@ codemini run --pipeline "运行测试、修复失败并总结结果"
 | **结构化工具运行时** | 工具 schema 校验、延迟工具、并行调用、计划、Todo、子 Agent 与后台任务。 |
 | **Microsandbox** | 有 `msb` 时使用 Linux microVM；Linux/macOS 可回退到 Landlock/Seatbelt。 |
 | **审批与 Checkpoint** | 风险审批、文件变更预览、Git 工作流与非 Git 项目的 checkpoint。 |
-| **终端 TUI** | 交互式聊天、流式工具输出、语法高亮与命令快捷方式。 |
-| **Web UI** | 共享会话、文件浏览、diff、真实 PTY 终端、研究、CodeWiki 与配置。 |
-| **Deep Research** | 并行 scouts、证据收集、artifact、Research Board、Scrapbook 与资源库。 |
+| **终端 TUI** | 交互式聊天、流式工具输出、Markdown 渲染与命令快捷方式。 |
+| **Web UI** | 并发会话、文件浏览、diff、真实 PTY 终端、代码语法高亮、研究、CodeWiki 与配置。 |
+| **Deep Research** | 并行 scouts、证据收集、artifact、研究库、Scrapbook 与资源库。 |
 | **Skills、Hooks 与 MCP** | 可复用工作流、Claude-compatible Hooks、Hook Profiles 与外部 MCP 服务。 |
 | **Memory 与自我进化** | Capture、Dream 和 Reflect 将工作沉淀为记忆与可复用 Skills。 |
 | **Souls** | 只改变表达风格，不改变执行策略。 |
@@ -409,18 +403,20 @@ codemini
 codemini --web
 ```
 
-Web UI 包含并发会话、文件浏览与预览、Git 变更、真实 PTY 终端、CodeWiki、Deep Research、Scrapbook、资源管理、Skills、Hooks、MCP、Souls、Memory 与设置。
+Web UI 包含并发会话、文件浏览与预览、Git 变更、真实 PTY 终端、代码语法高亮、CodeWiki、Deep Research、Scrapbook、资源管理、Skills、Hooks、MCP、Souls、Memory 与设置。
 
-常用 Web UI 参数包括 `--port`、`--project`、`--session`、`--model` 和 `--no-open`。
+常用 Web UI 参数包括 `--port`、`--project`、`--session`、`--model` 和 `--no-open`。服务器默认绑定 `127.0.0.1`；传入 `--host 0.0.0.0` 可暴露到局域网（无鉴权，仅限可信网络）。
 
 ### Memory、Reflect 与 Dream
 
 | 命令 | 用途 |
 | --- | --- |
-| `/capture <text>` | 将有用信息保存到 Memory inbox。 |
 | `/inbox` | 查看待整理的记忆证据。 |
-| `/dream [--dry-run]` | 将有用证据整理成长期记忆。 |
+| `/dream` | 将有用证据整理成长期记忆。 |
 | `/reflect` | 将成功工作流转化为可审阅的 Skill。 |
+| `/compact` | 压缩当前会话上下文。 |
+
+TUI 斜杠命令还包括 `/coding`、`/daily`、`/tools`、`/history` 与 `/help`。Web UI 在输入栏也提供记忆动作（Dream、Compact、Capture、Reflect），并设有带 Inbox 与 Library 标签的 Memory 面板。
 
 Inbox 被设计为临时区域。Dream 负责晋升有价值的证据；Reflect 将可重复的工作流变成可检查、可复用的明确工具。
 
@@ -428,11 +424,11 @@ Inbox 被设计为临时区域。Dream 负责晋升有价值的证据；Reflect 
 
 Codemini 会增量索引项目文件与符号。基于 Tree-sitter 的解析提供精确 AST 和符号查询，依赖图与知识图则连接调用方、文件和架构区域。
 
-CodeWiki 将这些信息展示为可导航的项目地图。Mutation preflight 会在修改前查询图谱，提示可能受到影响的下游范围。
+CodeWiki 将这些信息展示为可导航的项目地图，知识图也支持在修改前进行变更影响查询。
 
 ### Deep Research
 
-Deep Research 会协调多个聚焦 scout、收集证据并生成可审阅 artifact。Web UI 提供 Research Board、Scrapbook 与资源库，让来源和结论继续附着在任务上，而不是消失在聊天记录里。
+Deep Research 会协调多个聚焦 scout、收集证据并生成可审阅 artifact。Web UI 提供研究库、Scrapbook 与资源库，让来源和结论继续附着在任务上，而不是消失在聊天记录里。
 
 ### 数据路径
 
