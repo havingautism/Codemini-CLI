@@ -10,15 +10,16 @@ const WEB_DIST_INDEX = path.join(ROOT_DIR, 'codemini-web', 'dist', 'index.html')
 
 function printWebHelp() {
   console.log(`Usage:
-  codemini web [--port <port>] [--project <path>] [--session <id>] [--model <name>] [--no-open]
-  codemini --web [--port <port>] [--project <path>] [--session <id>] [--model <name>] [--no-open]
+  codemini web [--port <port>] [--project <path>] [--session <id>] [--model <name>] [--no-open] [--host <addr>]
+  codemini --web [--port <port>] [--project <path>] [--session <id>] [--model <name>] [--no-open] [--host <addr>]
 
 Options:
   --port, -p      Port for the local Web UI server (default: 3210)
   --project, -d   Project directory to open first
   --session, -s   Existing session id to load
   --model, -m     Override model for this Web UI runtime
-  --no-open       Start the server without opening a browser`);
+  --no-open       Start the server without opening a browser
+  --host          Bind address (default: 127.0.0.1; use 0.0.0.0 only on trusted networks)`);
 }
 
 export async function handleWeb(args = []) {

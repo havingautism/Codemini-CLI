@@ -178,6 +178,7 @@ function ChatPanelContent({
   messagesLoading,
   isGeneral = false,
   targetMessageId = "",
+  dockedTodoMessageId = "",
   onTargetMessageHandled,
   onRetryMessage,
 }) {
@@ -456,6 +457,7 @@ function ChatPanelContent({
                       onRetry={onRetryMessage}
                       projectIsGit={projectIsGit}
                       gitFiles={gitInfo?.files}
+                      dockTodo={Boolean(dockedTodoMessageId) && msg.id === dockedTodoMessageId}
                     />
                   </MessageScrollerItem>
                 ))}

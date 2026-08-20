@@ -183,7 +183,7 @@ codemini --web
 
 The Web UI includes concurrent sessions, file browsing and previews, Git changes, a real PTY terminal, CodeWiki, Deep Research, Scrapbook, resource management, skills, hooks, MCP, Souls, memories, and settings.
 
-Useful Web UI flags include `--port`, `--project`, `--session`, `--model`, and `--no-open`.
+Useful Web UI flags include `--port`, `--project`, `--session`, `--model`, and `--no-open`. The server binds `127.0.0.1` by default; pass `--host 0.0.0.0` to expose it on the LAN (no auth — do this only on trusted networks).
 
 ### Memory, Reflect & Dream
 

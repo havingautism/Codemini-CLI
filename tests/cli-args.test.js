@@ -17,6 +17,9 @@ test('CLI parsers preserve aliases, repeated skills, and positionals', () => {
     scope: 'all', rest: ['install', '--force'],
   });
   assert.deepEqual(parseWebArgs(['node', 'server.js', '-p', '4567', '--no-open']), {
-    port: 4567, session: undefined, model: undefined, project: undefined, open: false,
+    port: 4567, session: undefined, model: undefined, project: undefined, open: false, host: '127.0.0.1',
+  });
+  assert.deepEqual(parseWebArgs(['node', 'server.js', '--host', '0.0.0.0']), {
+    port: 3210, session: undefined, model: undefined, project: undefined, open: true, host: '0.0.0.0',
   });
 });

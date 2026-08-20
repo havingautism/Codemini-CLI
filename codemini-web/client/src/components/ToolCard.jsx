@@ -17,7 +17,7 @@ import {
 } from "@phosphor-icons/react";
 import { LinearRing } from "@/components/ui/spinner";
 import { FileTypeIcon } from "@/components/FileTypeIcon.jsx";
-import { TodoList } from "@/components/TodoList.jsx";
+import { TodoCard } from "@/components/TodoList.jsx";
 import {
   requestFromToolCard,
   resultFromToolCard,
@@ -264,35 +264,6 @@ function UserInputToolCard({ card }) {
   );
 }
 
-function TodoToolCard({ todos }) {
-  const completedCount = todos.filter((todo) => todo.status === "completed").length;
-  const progress = todos.length > 0 ? (completedCount / todos.length) * 100 : 0;
-  return (
-    <section className="codemini-tasks-card overflow-hidden rounded-[20px] px-4 py-3.5" aria-label={t("tasksTitle")}>
-      <div className="flex items-center justify-between gap-4 px-1 pb-2.5">
-        <div className="flex min-w-0 items-center gap-2 text-[12px] font-semibold tracking-[-0.01em] text-(--text-secondary)">
-          <ListChecks size={15} weight="regular" aria-hidden="true" />
-          <span>{t("tasksTitle")}</span>
-        </div>
-        <span className="shrink-0 text-[11px] font-medium tabular-nums text-(--text-muted)">
-          {completedCount}/{todos.length}
-        </span>
-      </div>
-      <div className="mx-1 mb-1 h-1 overflow-hidden rounded-full bg-[color:color-mix(in_srgb,var(--text-primary)_7%,transparent)]" aria-hidden="true">
-        <div
-          className="h-full rounded-full bg-(--text-primary) transition-[width] duration-300 ease-out"
-          style={{ width: `${progress}%` }}
-        />
-      </div>
-      {todos.length > 0 ? (
-        <TodoList todos={todos} />
-      ) : (
-        <div className="px-1 py-3 text-[13px] text-(--text-muted)">{t("todosEmpty")}</div>
-      )}
-    </section>
-  );
-}
-
 const STATUS_STYLES = {
   running: "bg-[var(--accent-orange)]",
   done: "bg-[var(--accent-green)]",
@@ -400,7 +371,7 @@ export function ToolCard({
     ? getTodoToolItems(card.arguments, card.result)
     : [];
   if (conversationVisual && isTasksTool) {
-    return <TodoToolCard card={card} todos={todoItems} />;
+    return <TodoCard todos={todoItems} />;
   }
   if (conversationVisual && isRequestUserInputCard(card)) {
     return <UserInputToolCard card={card} />;

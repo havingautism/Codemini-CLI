@@ -1702,32 +1702,20 @@ body {
   /* box-shadow: var(--message-shadow); */
 }
 
-.codemini-tasks-card {
-  color: var(--text-primary);
-  background: color-mix(in srgb, var(--bg-secondary) 82%, var(--bg-primary));
-  box-shadow:
-    inset 0 0 0 0.5px color-mix(in srgb, var(--text-primary) 8%, transparent),
-    0 1px 2px color-mix(in srgb, black 5%, transparent);
-}
-
-@keyframes codemini-task-breathe {
-  0%, 100% {
-    opacity: 0.55;
-    transform: scale(0.82);
-  }
-  50% {
-    opacity: 1;
-    transform: scale(1);
-  }
-}
-
-.codemini-task-pulse {
-  animation: codemini-task-breathe 1.6s ease-in-out infinite;
+.codemini-task-spinner {
+  width: 14px;
+  height: 14px;
+  border: 1.5px solid color-mix(in srgb, var(--accent-blue) 24%, transparent);
+  border-top-color: var(--accent-blue);
+  border-radius: 50%;
+  animation: loader-ring-spin 0.85s linear infinite;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .codemini-task-pulse {
+  .codemini-task-spinner {
     animation: none;
+    border-color: color-mix(in srgb, var(--accent-blue) 42%, transparent);
+    border-top-color: var(--accent-blue);
   }
 }
 

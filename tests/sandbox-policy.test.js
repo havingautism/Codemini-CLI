@@ -6,6 +6,7 @@ import {
   assertSandboxWriteAllowed,
   isSandboxEnabled,
   normalizeSandboxMode,
+  normalizeSandboxNetwork,
   readonlySandboxRoots,
   readonlySandboxVolumes,
   toSandboxSkillPath,
@@ -21,6 +22,18 @@ test('normalizeSandboxMode defaults to workspace-write on every platform', () =>
   assert.equal(normalizeSandboxMode('', { platform: 'win32' }), 'workspace-write');
   assert.equal(normalizeSandboxMode('', { platform: 'linux' }), 'workspace-write');
   assert.equal(normalizeSandboxMode('read_only'), 'read-only');
+});
+
+test('normalizeSandboxNetwork defaults to allow-all and maps deny aliases', () => {
+  assert.equal(normalizeSandboxNetwork(undefined), 'allow-all');
+  assert.equal(normalizeSandboxNetwork(''), 'allow-all');
+  assert.equal(normalizeSandboxNetwork('allow-all'), 'allow-all');
+  assert.equal(normalizeSandboxNetwork('ALL_ALL'), 'allow-all');
+  assert.equal(normalizeSandboxNetwork('bogus'), 'allow-all');
+  assert.equal(normalizeSandboxNetwork('none'), 'none');
+  assert.equal(normalizeSandboxNetwork('deny-all'), 'none');
+  assert.equal(normalizeSandboxNetwork('deny_all'), 'none');
+  assert.equal(normalizeSandboxNetwork('deny'), 'none');
 });
 
 test('sandbox escalation requires paired fields and a strictly wider mode', () => {

@@ -246,6 +246,25 @@ test('live layout reports a persistent task card even before a final answer exis
   assert.equal(layout.items[1].group.cards[0].name, 'tasks');
 });
 
+test('layout omitTodo keeps hasTodo but parks the card outside the message flow', () => {
+  const groups = [
+    { type: 'thinking', text: 'hmm' },
+    { type: 'tools', cards: [
+      { id: 'todo-1', name: 'tasks', arguments: { tasks: [{ content: 'Inspect', status: 'in_progress' }] } },
+      { id: 'read-1', name: 'read', status: 'done' },
+    ] },
+    { type: 'text', text: 'working' },
+  ];
+  const layout = layoutAnswerProcessWithPlans(groups, null, { fold: false, omitTodo: true });
+  assert.equal(layout.hasTodo, true);
+  const todos = layout.items
+    .filter((item) => item.type === 'group' && item.group?.type === 'tools')
+    .flatMap((item) => item.group.cards || [])
+    .filter((card) => card.name === 'tasks');
+  assert.equal(todos.length, 0);
+  assert.equal(layout.items.some((item) => item.group?.cards?.[0]?.name === 'read'), true);
+});
+
 test('subagent todo stays owned by its plan card and is removed from step details', () => {
   const firstTodo = { id: 'todo-1', name: 'tasks' };
   const latestTodo = { id: 'todo-2', name: 'tasks' };

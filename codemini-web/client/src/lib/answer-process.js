@@ -190,12 +190,16 @@ function findFinalAnswerIndex(groups = []) {
   return -1;
 }
 
-/** Fold process groups; keep create_plan cards in chronological order before the final answer. */
-export function layoutAnswerProcessWithPlans(
-  groups = [],
-  fallbackStartedAt = null,
-  { fold = true } = {},
-) {
+export function extractLatestTodoFromGroups(groups = []) {
+  let latestTodo = null;
+  for (const group of Array.isArray(groups) ? groups : []) {
+    const extracted = extractTodoFromGroup(group);
+    if (extracted.todoCards.length) latestTodo = extracted.todoCards.at(-1);
+  }
+  return latestTodo;
+}
+
+function pullTodosFromGroups(groups = []) {
   const todoCards = [];
   const source = [];
   for (const group of Array.isArray(groups) ? groups : []) {
@@ -203,18 +207,35 @@ export function layoutAnswerProcessWithPlans(
     todoCards.push(...extracted.todoCards);
     if (extracted.rest) source.push(extracted.rest);
   }
-  const latestTodo = todoCards.at(-1);
+  return { todoCards, source, latestTodo: todoCards.at(-1) || null };
+}
+
+function todoLayoutItem(latestTodo) {
+  return latestTodo
+    ? { type: "group", group: { type: "tools", cards: [latestTodo] } }
+    : null;
+}
+
+/** Fold process groups; keep create_plan cards in chronological order before the final answer. */
+export function layoutAnswerProcessWithPlans(
+  groups = [],
+  fallbackStartedAt = null,
+  { fold = true, omitTodo = false } = {},
+) {
+  const { source, latestTodo } = pullTodosFromGroups(groups);
+  const visibleTodo = omitTodo ? null : latestTodo;
   const answerIndex = findFinalAnswerIndex(source);
   const finalAnswer = answerIndex >= 0 ? source[answerIndex] : null;
   const hasFoldCandidate = Boolean(fold && finalAnswer && answerIndex > 0);
 
   if (!hasFoldCandidate) {
+    const parkedTodo = todoLayoutItem(visibleTodo);
     return {
       hasFold: false,
       hasTodo: Boolean(latestTodo),
       items: [
         ...source.map((group) => ({ type: "group", group })),
-        ...(latestTodo ? [{ type: "group", group: { type: "tools", cards: [latestTodo] } }] : []),
+        ...(parkedTodo ? [parkedTodo] : []),
       ],
       durationMs: 0,
     };
@@ -260,9 +281,8 @@ export function layoutAnswerProcessWithPlans(
     pendingProcess.push(group);
   }
   flushProcess();
-  if (latestTodo) {
-    items.push({ type: "group", group: { type: "tools", cards: [latestTodo] } });
-  }
+  const parkedTodo = todoLayoutItem(visibleTodo);
+  if (parkedTodo) items.push(parkedTodo);
   items.push({ type: "group", group: finalAnswer });
   for (const group of trailing) {
     items.push({ type: "group", group });

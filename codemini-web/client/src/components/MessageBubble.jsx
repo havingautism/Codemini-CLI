@@ -2213,6 +2213,7 @@ export const MessageBubble = memo(function MessageBubble({
   onRetry,
   projectIsGit = true,
   gitFiles,
+  dockTodo = false,
 }) {
   const actions = useAppActions();
   const {
@@ -2264,9 +2265,9 @@ export const MessageBubble = memo(function MessageBubble({
       layoutAnswerProcessWithPlans(
         renderGroups,
         message?.timestamp || message?.createdAt,
-        { fold: messageComplete },
+        { fold: messageComplete, omitTodo: dockTodo },
       ),
-    [message?.createdAt, message?.timestamp, messageComplete, renderGroups],
+    [dockTodo, message?.createdAt, message?.timestamp, messageComplete, renderGroups],
   );
   const hasAnswerFold = answerLayout.hasFold;
   const preAnswerDuration = answerLayout.durationMs;

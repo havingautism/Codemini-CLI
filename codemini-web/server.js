@@ -610,6 +610,7 @@ export function parseArgs(argv) {
       model: { type: "string", short: "m" },
       project: { type: "string", short: "d" },
       open: { type: "boolean", default: true },
+      host: { type: "string" },
     },
   });
   return {
@@ -618,6 +619,8 @@ export function parseArgs(argv) {
     model: values.model,
     project: values.project,
     open: values.open,
+    // Local-only by default; pass --host 0.0.0.0 to expose on the LAN.
+    host: String(values.host || "127.0.0.1").trim() || "127.0.0.1",
   };
 }
 
@@ -5569,10 +5572,11 @@ async function main() {
     });
   });
   const server = serve(
-    { fetch: app.fetch, port: args.port, overrideGlobalObjects: false },
+    { fetch: app.fetch, port: args.port, hostname: args.host, overrideGlobalObjects: false },
     () => {
+    const displayHost = args.host === "0.0.0.0" ? "localhost" : args.host;
     console.log(
-      `\n  Codemini Web UI\n  http://localhost:${args.port}\n  Project: ${currentProjectDir}\n`,
+      `\n  Codemini Web UI\n  http://${displayHost}:${args.port}\n  Project: ${currentProjectDir}\n`,
     );
     if (!args.open) return;
     const openCmd =

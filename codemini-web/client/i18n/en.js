@@ -1253,6 +1253,9 @@ export const en = {
   hookTool_tasks: "tasks",
   todosEmpty: "No active tasks",
   tasksTitle: "Tasks",
+  tasksInProgress: "{count} in progress",
+  tasksPending: "{count} pending",
+  tasksCompletedCount: "{count} completed",
   hookTool_update_plan: "update_plan",
   saving: "Saving…",
   skillPackageBatchHooksNote:

@@ -104,6 +104,7 @@ codemini config set sandbox.mode danger-full-access
 codemini config set sandbox.enabled false          # explicit host execution
 codemini config set sandbox.backend auto           # default: VM when msb exists, else OS confine on unix
 codemini config set sandbox.image node:22-bookworm
+codemini config set sandbox.network allow-all      # default; 'none' denies all VM egress
 ```
 
 | Mode | Effect |
@@ -112,7 +113,12 @@ codemini config set sandbox.image node:22-bookworm
 | `read-only` | VM or OS confine with a read-only workspace |
 | `danger-full-access` | Explicit host execution without confinement |
 
-If an enabled sandbox cannot start and no OS fallback exists (Windows without `msb`), Codemini **refuses** to run the command on the host. `npm install` tries to select the matching Microsandbox platform package. Local microVMs require KVM on Linux, Apple Silicon on macOS, or Windows Hypervisor Platform on Windows 11. Intel Macs typically use Seatbelt fallback. Run `npx microsandbox doctor` when the VM backend is selected. The first VM command pulls `sandbox.image`; later sandboxes reuse the image cache.
+| Network | Effect |
+| --- | --- |
+| `allow-all` (default) | VM has unrestricted egress (npm/pip/git/curl keep working) |
+| `none` | VM denies all network egress (aliases: `deny-all`, `deny`) |
+
+If an enabled sandbox cannot start and no OS fallback exists (Windows without `msb`), Codemini **refuses** to run the command on the host. `npm install` tries to select the matching Microsandbox platform package. Local microVMs require KVM on Linux, Apple Silicon on macOS, or Windows Hypervisor Platform on Windows 11. Intel Macs typically use Seatbelt fallback. Run `npx microsandbox doctor` when the VM backend is selected. The first VM command pulls `sandbox.image`; later sandboxes reuse the image cache (a one-line pull notice is printed to stderr on first download). Cached sandbox VMs are stopped explicitly on clean process exit.
 
 Approval and sandboxing remain separate: the microVM enforces the filesystem boundary, while approval mode controls whether an operation may be attempted. Windows keeps its staged write and `apply_patch` tools; only its default command surface changes from PowerShell to sandboxed Bash. When sandbox mode is `read-only`, soft approval is skipped and the approval selector is hidden.
 

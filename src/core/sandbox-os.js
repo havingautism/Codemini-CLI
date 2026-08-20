@@ -1,7 +1,7 @@
 import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
-import { resolveSandboxPolicy, writableRootsForMode } from './sandbox-policy.js';
+import { resolveSandboxPolicy, writableRootsForMode, normalizeSandboxNetwork } from './sandbox-policy.js';
 import { SandboxUnavailableError } from './sandbox-runtime.js';
 
 const require = createRequire(import.meta.url);
@@ -63,16 +63,21 @@ function buildLandlockSpawn(policy, command, binShell) {
   };
 }
 
-function buildSrtConfig(policy) {
+function buildSrtConfig(policy, config = {}) {
   const allowWrite =
     policy.mode === 'read-only'
       ? []
       : [policy.workspaceRoot, path.resolve(os.tmpdir())].filter(Boolean);
 
-  const config = {
+  // Mirror the VM backend's sandbox.network knob. The srt package filters by
+  // domain; `deniedDomains: ['*']` is a best-effort deny-all mapping for the
+  // OS fallback (VM backend semantics are authoritative for this setting).
+  const denyAllNetwork = normalizeSandboxNetwork(config?.sandbox?.network) === 'none';
+
+  const configDoc = {
     network: {
       allowedDomains: [],
-      deniedDomains: [],
+      deniedDomains: denyAllNetwork ? ['*'] : [],
     },
     filesystem: {
       allowWrite,
@@ -84,12 +89,12 @@ function buildSrtConfig(policy) {
 
   const binary = policy.platform === 'win32' ? 'rg.exe' : 'rg';
   try {
-    config.ripgrep = {
+    configDoc.ripgrep = {
       command: require.resolve(`@vscode/ripgrep-${policy.platform}-${process.arch}/bin/${binary}`),
     };
   } catch {}
 
-  return config;
+  return configDoc;
 }
 
 async function loadSandboxManager() {
@@ -98,13 +103,13 @@ async function loadSandboxManager() {
   return mod.SandboxManager;
 }
 
-async function ensureInitialized(policy) {
+async function ensureInitialized(policy, config = {}) {
   const SandboxManager = await loadSandboxManager();
   const key = `${policy.mode}|${policy.workspaceRoot}`;
   if (initializedKey === key && SandboxManager.isSandboxingEnabled?.()) {
     return SandboxManager;
   }
-  const runtimeConfig = buildSrtConfig(policy);
+  const runtimeConfig = buildSrtConfig(policy, config);
   try {
     await SandboxManager.initialize(runtimeConfig, async () => true);
   } catch (error) {
@@ -152,12 +157,12 @@ export async function wrapShellCommandForSandbox({
     };
   }
 
-  const SandboxManager = await ensureInitialized(policy);
+  const SandboxManager = await ensureInitialized(policy, config);
   try {
     const wrapped = await SandboxManager.wrapWithSandbox(
       String(command || ''),
       binShell,
-      buildSrtConfig(policy),
+      buildSrtConfig(policy, config),
       abortSignal,
     );
     return {

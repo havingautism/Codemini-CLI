@@ -23,6 +23,8 @@ import { DreamDialog } from "@/components/DreamDialog.jsx";
 import { SpecApprovalDialog } from "@/components/SpecApprovalDialog.jsx";
 import { RuntimeActivityStrip } from "@/components/RuntimeActivityStrip.jsx";
 import { SessionPanel } from "@/components/SessionPanel.jsx";
+import { TodoCard } from "@/components/TodoList.jsx";
+import { findLiveTodoDock } from "@/lib/live-todo-dock.js";
 import { interactiveRequestForSession } from "@/lib/session-ui-state.js";
 import { DotsThree, FolderSimple, GitDiff, List, SidebarSimple, Terminal } from "@phosphor-icons/react";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -265,6 +267,10 @@ function Shell() {
         ["you", "user", "agent", "assistant"].includes(message?.role),
       ),
     [state.messages],
+  );
+  const liveTodoDock = useMemo(
+    () => findLiveTodoDock(state.messages, { busy: state.busy }),
+    [state.busy, state.messages],
   );
 
   const closeMobileSidebar = useCallback(() => {
@@ -603,6 +609,7 @@ function Shell() {
                 messagesLoading={state.messagesLoading}
                 isGeneral={state.isGeneral}
                 targetMessageId={state.targetMessageId}
+                dockedTodoMessageId={liveTodoDock?.messageId || ""}
                 onTargetMessageHandled={actions.clearChatMessageTarget}
                 onRetryMessage={retryMessage}
               />
@@ -613,6 +620,11 @@ function Shell() {
               <RuntimeActivityStrip
                 activities={state.runtimeActivities}
               />
+              {liveTodoDock ? (
+                <div className="mb-2">
+                  <TodoCard todos={liveTodoDock.todos} />
+                </div>
+              ) : null}
               <ReflectApprovalDialog
                 open={state.reflectDialogOpen}
                 draft={state.pendingReflectApproval}
