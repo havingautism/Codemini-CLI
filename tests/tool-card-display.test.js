@@ -2,12 +2,19 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  FILE_PATH_ARG_TOOLS,
   getConversationToolOutput,
   getFileToolMeta,
   getTodoToolItems,
   getToolInspectSections,
   isConversationVisualToolCard,
 } from '../codemini-web/client/src/lib/tool-card-display.js';
+
+test('file-path argument tools stay defined for conversation tool rows', () => {
+  assert.equal(FILE_PATH_ARG_TOOLS.has('read'), true);
+  assert.equal(FILE_PATH_ARG_TOOLS.has('edit'), true);
+  assert.equal(FILE_PATH_ARG_TOOLS.has('run'), false);
+});
 
 test('conversation visual tools stay on the chat page, not trajectory inspect', () => {
   assert.equal(isConversationVisualToolCard({ name: 'request_user_input' }), true);

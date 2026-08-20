@@ -11,8 +11,13 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { ToolCard } from "@/components/ToolCard.jsx";
+import { BackupNotice, FilePreview } from "@/components/ToolCard.jsx";
 import { cn } from "@/lib/utils";
+import {
+  extractToolName,
+  getFileToolMeta,
+  getToolInspectSections,
+} from "@/lib/tool-card-display.js";
 import {
   buildTrajectory,
   filterTrajectoryEvents,
@@ -53,6 +58,12 @@ const TITLE_I18N = {
   notice: "trajectoryKindNotice",
   error: "trajectoryKindError",
   "system notice": "trajectoryKindSystemNotice",
+};
+
+const INSPECT_SECTION_I18N = {
+  Arguments: "trajectoryInspectArguments",
+  Summary: "trajectoryInspectSummary",
+  Result: "trajectoryInspectResult",
 };
 
 function kindLabel(event) {
@@ -154,14 +165,52 @@ function InspectSection({ label, value }) {
   return (
     <section className="min-w-0">
       {label ? (
-        <div className="mt-3 mb-1 text-[10px] font-bold uppercase tracking-[0.4px] text-(--text-muted)">
+        <div className="mb-1.5 text-[10px] font-bold uppercase tracking-[0.4px] text-(--text-muted)">
           {label}
         </div>
       ) : null}
-      <pre className="m-0 max-h-[min(60vh,32rem)] overflow-auto whitespace-pre-wrap break-words rounded-md border border-(--border-default) bg-(--bg-secondary) p-3 font-mono text-xs leading-relaxed text-(--text-primary)">
-        {text}
-      </pre>
+      <pre className="codemini-inspect-pane">{text}</pre>
     </section>
+  );
+}
+
+function inspectToolName(event) {
+  return String(event?.sourceCard?.name || event?.title || "tool").trim();
+}
+
+function ToolInspectBody({ event }) {
+  const card = cardFromTrajectoryEvent(event);
+  const toolName = extractToolName(card.name);
+  const fileMeta = getFileToolMeta(
+    toolName,
+    card.arguments,
+    card.result,
+    card.summary,
+    card.fileChange,
+    card.resultMeta,
+    card.fileChanges,
+  );
+  const hasFilePreview = Boolean(fileMeta);
+  const sections = getToolInspectSections(card, { hasFilePreview });
+  return (
+    <div className="flex min-w-0 flex-col gap-3 pb-1">
+      <div className="break-all font-mono text-[13px] leading-5 text-(--text-primary)">
+        {inspectToolName(event)}
+      </div>
+      {sections.map((section) => (
+        <InspectSection
+          key={section.label}
+          label={t(INSPECT_SECTION_I18N[section.label] || section.label)}
+          value={section.value}
+        />
+      ))}
+      {fileMeta ? (
+        <>
+          <BackupNotice meta={fileMeta} />
+          <FilePreview meta={fileMeta} />
+        </>
+      ) : null}
+    </div>
   );
 }
 
@@ -184,7 +233,6 @@ function TrajectoryInspectDialog({ event, onClose }) {
   const output = event.output || (event.kind === "tool" ? event.preview : "");
   const summary = event.kind === "tool" || event.kind === "skill" ? event.preview : "";
   const showIo = event.kind === "skill" || event.kind === "user";
-  const bodyLabel = kindLabel(event);
   const meta = inspectMetaLine(event);
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
@@ -205,13 +253,9 @@ function TrajectoryInspectDialog({ event, onClose }) {
             </div>
           ) : null}
           {event.kind === "tool" ? (
-            <ToolCard
-              card={cardFromTrajectoryEvent(event)}
-              collapsible={false}
-              conversationVisual={false}
-            />
+            <ToolInspectBody event={event} />
           ) : showIo ? (
-            <div className="min-w-0 pb-1">
+            <div className="flex min-w-0 flex-col gap-3 pb-1">
               <InspectSection
                 label={
                   event.kind === "user"
@@ -234,13 +278,15 @@ function TrajectoryInspectDialog({ event, onClose }) {
               ) : null}
             </div>
           ) : (
-            <InspectSection label={bodyLabel} value={input || event.body} />
+            <InspectSection value={input || event.body} />
           )}
           {event.usage ? (
-            <InspectSection
-              label={t("trajectoryInspectUsage")}
-              value={event.usage}
-            />
+            <div className="mt-3">
+              <InspectSection
+                label={t("trajectoryInspectUsage")}
+                value={event.usage}
+              />
+            </div>
           ) : null}
         </div>
       </DialogContent>
@@ -326,14 +372,6 @@ export function TrajectoryPanel({
           />
           {t("trajectoryCalls").replace("{{count}}", String(built.metrics.calls))}
         </label>
-        {built.metrics.tokens != null ? (
-          <span className="font-mono text-[12px] text-(--text-secondary)">
-            {t("trajectoryTokens").replace(
-              "{{count}}",
-              String(built.metrics.tokens),
-            )}
-          </span>
-        ) : null}
         <div className="ml-auto flex min-w-0 items-center gap-2">
           <div className="relative min-w-0 w-36 sm:w-56">
             <MagnifyingGlass
@@ -426,7 +464,7 @@ export function TrajectoryPanel({
                     />
                     <span
                       className={cn(
-                        "w-[7.5rem] shrink-0 rounded px-1.5 py-0.5 text-center font-mono text-[10px] font-semibold tracking-wide whitespace-nowrap",
+                        "codemini-trajectory-kind w-[7.5rem] shrink-0 rounded px-1.5 py-0.5 text-center font-mono text-[10px] font-semibold tracking-wide whitespace-nowrap",
                         event.status === "error" && event.kind !== "tool"
                           ? KIND_CLASS.error
                           : KIND_CLASS[event.kind] || KIND_CLASS.assistant,
@@ -438,16 +476,9 @@ export function TrajectoryPanel({
                       event={event}
                       onInspect={() => setInspectEvent(event)}
                     />
-                    {showDuration || event.usage ? (
+                    {showDuration ? (
                       <span className="shrink-0 font-mono text-[11px] leading-5 text-(--text-muted)">
-                        {[
-                          showDuration
-                            ? formatTrajectoryDuration(event.durationMs)
-                            : "",
-                          formatTrajectoryUsage(event.usage),
-                        ]
-                          .filter(Boolean)
-                          .join(" · ")}
+                        {formatTrajectoryDuration(event.durationMs)}
                       </span>
                     ) : null}
                   </div>

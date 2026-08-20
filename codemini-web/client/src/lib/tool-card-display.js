@@ -1,7 +1,14 @@
 import { formatToolLabel, parseToolDisplayName } from "../../../../src/core/tool-display.js";
 import { isMcpToolName } from "../../../../src/core/mcp-tool-display.js";
 
-const FILE_ARG_TOOLS = new Set(["read", "edit", "create", "write", "delete"]);
+export const FILE_PATH_ARG_TOOLS = new Set([
+  "read",
+  "edit",
+  "create",
+  "write",
+  "delete",
+]);
+const FILE_ARG_TOOLS = FILE_PATH_ARG_TOOLS;
 const FILE_PATH_KEYS = new Set(["path", "file", "file_path", "target"]);
 const FILE_CONTENT_KEYS = new Set(["content", "new_content"]);
 

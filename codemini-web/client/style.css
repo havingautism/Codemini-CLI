@@ -1376,6 +1376,8 @@
   /* Thinking / tool / processed rows — dimmer than msg-body primary */
   --text-process: color-mix(in srgb, var(--text-primary) 38%, var(--text-muted));
   --text-process-detail: color-mix(in srgb, var(--text-primary) 22%, var(--text-muted) 78%);
+  --text-process-hover: color-mix(in srgb, var(--text-process) 28%, var(--text-primary) 72%);
+  --text-process-detail-hover: color-mix(in srgb, var(--text-process-detail) 36%, var(--text-primary) 64%);
   --shell-canvas: var(--bg-secondary);
   --workspace-panel-radius: 0.75rem;
   --workspace-panel-border: color-mix(in srgb, var(--text-primary) 5%, transparent);
@@ -1676,7 +1678,7 @@ body {
 }
 
 .msg-process-meta .msg-process-row:hover {
-  color: color-mix(in srgb, var(--text-process) 50%, var(--text-secondary) 50%);
+  color: var(--text-process-hover);
 }
 
 .msg-process-meta .msg-process-thought-body {
@@ -1695,6 +1697,216 @@ body {
 
 .msg-process-rotating-label.is-fading {
   opacity: 0;
+}
+
+/* Hallmark · component: disclosure-tree · genre: modern-minimal · theme: existing tokens
+ * states: default · hover · focus · active · disabled · loading · error · success
+ * contrast: pass (token ink on paper)
+ * DNA: DeepSeek Harness DisclosureRow — one-line rows, nested rail, payload card only
+ */
+.codemini-disclosure {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  min-width: 0;
+}
+
+.codemini-disclosure-row {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-width: 0;
+  min-height: 32px;
+  gap: 8px;
+  padding: 6px 12px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-process);
+  cursor: pointer;
+  text-align: left;
+  font-size: 13px;
+  line-height: 24px;
+  transition: color 100ms var(--ease-out, ease);
+}
+
+.codemini-disclosure-row:hover,
+.codemini-disclosure-row:active,
+.codemini-disclosure-row:focus-visible {
+  background: transparent;
+  color: var(--text-process-hover);
+}
+
+.codemini-disclosure-row:hover > :not(.codemini-disclosure-leading):not(.codemini-disclosure-sep),
+.codemini-disclosure-row:active > :not(.codemini-disclosure-leading):not(.codemini-disclosure-sep),
+.codemini-disclosure-row:focus-visible > :not(.codemini-disclosure-leading):not(.codemini-disclosure-sep) {
+  color: inherit;
+}
+
+.codemini-disclosure-row:hover .msg-process-meta__detail,
+.codemini-disclosure-row:active .msg-process-meta__detail,
+.codemini-disclosure-row:focus-visible .msg-process-meta__detail,
+.codemini-disclosure-row:hover .codemini-disclosure-leading,
+.codemini-disclosure-row:active .codemini-disclosure-leading,
+.codemini-disclosure-row:focus-visible .codemini-disclosure-leading,
+.codemini-disclosure-row:hover .codemini-disclosure-chevron,
+.codemini-disclosure-row:active .codemini-disclosure-chevron,
+.codemini-disclosure-row:focus-visible .codemini-disclosure-chevron {
+  color: var(--text-process-detail-hover);
+}
+
+.codemini-disclosure-row:focus-visible {
+  outline: 2px solid var(--accent-blue);
+  outline-offset: 1px;
+}
+
+.codemini-disclosure-row > button {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.codemini-disclosure-leading {
+  position: relative;
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  color: var(--text-process-detail);
+}
+
+.codemini-disclosure-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 1;
+  transition: opacity 100ms var(--ease-out, ease);
+}
+
+.codemini-disclosure-chevron {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  opacity: 0;
+  color: var(--text-process-detail);
+  transition:
+    opacity 100ms var(--ease-out, ease),
+    transform 100ms var(--ease-out, ease);
+}
+
+.codemini-disclosure-row:hover .codemini-disclosure-icon,
+.codemini-disclosure-row:focus-visible .codemini-disclosure-icon,
+.codemini-disclosure-row[aria-expanded="true"] .codemini-disclosure-icon,
+.codemini-disclosure-leading[data-open="true"] .codemini-disclosure-icon {
+  opacity: 0;
+}
+
+.codemini-disclosure-row:hover .codemini-disclosure-chevron,
+.codemini-disclosure-row:focus-visible .codemini-disclosure-chevron,
+.codemini-disclosure-row[aria-expanded="true"] .codemini-disclosure-chevron,
+.codemini-disclosure-leading[data-open="true"] .codemini-disclosure-chevron {
+  opacity: 1;
+}
+
+.codemini-disclosure-row[aria-expanded="true"] .codemini-disclosure-chevron,
+.codemini-disclosure-leading[data-open="true"] .codemini-disclosure-chevron {
+  transform: rotate(90deg);
+}
+
+.codemini-disclosure-row .msg-process-meta__detail {
+  color: var(--text-process-detail);
+}
+
+.codemini-disclosure-tree {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 8px 0 4px 22px;
+  padding-left: 16px;
+  border-left: 1px solid var(--border-default);
+}
+
+.codemini-disclosure-tree .codemini-disclosure,
+.codemini-disclosure-tree .msg-process-meta {
+  margin-top: 0;
+  margin-bottom: 0;
+}
+
+.codemini-disclosure-tree .codemini-disclosure-tree {
+  margin-left: 20px;
+}
+
+.codemini-disclosure-body {
+  padding: 4px 0 4px 22px;
+  color: var(--text-process);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.codemini-disclosure-tree .codemini-disclosure-body {
+  padding-left: 24px;
+}
+
+.codemini-disclosure-payload {
+  margin: 4px 0 4px 4px;
+  overflow: hidden;
+  border: 1px solid var(--border-default);
+  border-radius: 12px;
+  background: var(--tool-detail-bg);
+}
+
+.codemini-disclosure-payload.codemini-disclosure-scroll {
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+.codemini-inspect-pane {
+  margin: 0;
+  max-height: min(60vh, 32rem);
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  background: var(--bg-secondary);
+  padding: 12px 14px;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace);
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-primary);
+}
+
+.codemini-disclosure-sep {
+  flex: none;
+  width: 2px;
+  height: 2px;
+  margin: 0 2px;
+  border-radius: 1px;
+  background: var(--text-muted);
+}
+
+.codemini-trajectory-kind {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .codemini-disclosure-row,
+  .codemini-disclosure-icon,
+  .codemini-disclosure-chevron {
+    transition: none;
+  }
 }
 
 /* Linear-style cards for structured spec / plan messages */

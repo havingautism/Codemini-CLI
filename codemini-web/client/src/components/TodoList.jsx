@@ -1,5 +1,6 @@
-import { useState } from "react";
+import { memo, useState } from "react";
 import { CaretDown, Check, ListBullets } from "@phosphor-icons/react";
+import { DisclosureRowButton } from "@/components/DisclosureLeading.jsx";
 import { cn } from "@/lib/utils";
 import { t } from "../../i18n/index.js";
 
@@ -30,6 +31,23 @@ function formatTodoStatusSummary(todos = []) {
   return parts.join(" · ");
 }
 
+function todoItemsEqual(left = [], right = []) {
+  if (left === right) return true;
+  if (left.length !== right.length) return false;
+  for (let index = 0; index < left.length; index += 1) {
+    const a = left[index];
+    const b = right[index];
+    if (
+      a?.content !== b?.content ||
+      a?.activeForm !== b?.activeForm ||
+      a?.status !== b?.status
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
 export function TodoList({ todos }) {
   if (!todos?.length) return null;
 
@@ -40,7 +58,7 @@ export function TodoList({ todos }) {
         const inProgress = todo.status === "in_progress";
         return (
           <div
-            key={i}
+            key={`${todo.content || todo.activeForm || "todo"}-${i}`}
             className="flex min-h-11 min-w-0 items-center gap-2.5 py-2.5 text-[13px] leading-5"
             role="listitem"
           >
@@ -73,7 +91,12 @@ export function TodoList({ todos }) {
 
 const todoOpenByKey = new Map();
 
-export function TodoCard({ todos = [], persistKey = "", embedded = false }) {
+export const TodoCard = memo(function TodoCard({
+  todos = [],
+  persistKey = "",
+  variant = "inline",
+}) {
+  const isDock = variant === "dock";
   const [open, setOpen] = useState(() =>
     persistKey ? todoOpenByKey.get(persistKey) === true : false,
   );
@@ -86,55 +109,86 @@ export function TodoCard({ todos = [], persistKey = "", embedded = false }) {
     });
   };
 
+  if (isDock) {
+    return (
+      <section
+        className="codemini-message-surface relative w-full overflow-hidden rounded-xl"
+        aria-label={t("tasksTitle")}
+      >
+        <button
+          type="button"
+          className="msg-process-row flex min-h-11 w-full min-w-0 cursor-pointer select-none items-center gap-2.5 px-3 py-2.5 text-left text-[13px] transition-colors duration-150 hover:bg-[var(--bg-hover)] focus-visible:relative focus-visible:z-10"
+          onClick={toggleOpen}
+          aria-expanded={open}
+        >
+          <ListBullets size={14} className="shrink-0 text-(--text-secondary)" aria-hidden="true" />
+          <span className="shrink-0 text-[13px] font-semibold tracking-[-0.01em] text-(--text-primary)">
+            {t("tasksTitle")}
+          </span>
+          {summary ? (
+            <span className="min-w-0 truncate text-[12px] font-normal tabular-nums text-(--text-muted)">
+              {summary}
+            </span>
+          ) : null}
+          <CaretDown
+            size={12}
+            className={cn(
+              "ml-auto shrink-0 text-(--text-muted) transition-transform duration-150",
+              !open && "rotate-180",
+            )}
+            aria-hidden="true"
+          />
+        </button>
+        {open ? (
+          todos.length > 0 ? (
+            <div className="codemini-fold-body codemini-tasks-list max-h-44 overflow-y-auto px-3 pt-2 pb-3">
+              <TodoList todos={todos} />
+            </div>
+          ) : (
+            <div className="px-3 pt-2 pb-3 text-[13px] text-(--text-muted)">
+              {t("todosEmpty")}
+            </div>
+          )
+        ) : null}
+      </section>
+    );
+  }
+
   return (
     <section
-      className={cn(
-        "relative w-full overflow-hidden rounded-xl",
-        !embedded && "codemini-message-surface",
-      )}
+      className="codemini-disclosure msg-process-meta relative w-full"
       aria-label={t("tasksTitle")}
     >
-      <button
-        type="button"
-        className={cn(
-          "msg-process-row flex min-h-11 w-full min-w-0 cursor-pointer select-none items-center gap-2.5 text-left text-[13px] transition-colors duration-150 hover:bg-[var(--bg-hover)] focus-visible:relative focus-visible:z-10",
-          embedded ? "rounded-md px-1.5 py-1.5" : "px-3 py-2.5",
-        )}
+      <DisclosureRowButton
+        open={open}
         onClick={toggleOpen}
-        aria-expanded={open}
+        icon={<ListBullets size={14} aria-hidden="true" />}
       >
-        <ListBullets size={14} className="shrink-0 text-(--text-secondary)" aria-hidden="true" />
-        <span className="shrink-0 text-[13px] font-semibold tracking-[-0.01em] text-(--text-primary)">
-          {t("tasksTitle")}
-        </span>
+        <span className="shrink-0">{t("tasksTitle")}</span>
         {summary ? (
-          <span className="min-w-0 truncate text-[12px] font-normal tabular-nums text-(--text-muted)">
-            {summary}
-          </span>
+          <>
+            <span className="codemini-disclosure-sep" aria-hidden="true" />
+            <span className="msg-process-meta__detail min-w-0 truncate tabular-nums">
+              {summary}
+            </span>
+          </>
         ) : null}
-        <CaretDown
-          size={12}
-          className={cn(
-            "ml-auto shrink-0 text-(--text-muted) transition-transform duration-150",
-            !open && "rotate-180",
-          )}
-          aria-hidden="true"
-        />
-      </button>
+      </DisclosureRowButton>
       {open ? (
         todos.length > 0 ? (
-          <div
-            className={cn(
-              "codemini-fold-body codemini-tasks-list max-h-44 overflow-y-auto",
-              embedded ? "px-1.5 pb-2 pt-1" : "px-3 pb-3 pt-2",
-            )}
-          >
+          <div className="codemini-disclosure-tree max-h-44 overflow-y-auto">
             <TodoList todos={todos} />
           </div>
         ) : (
-          <div className="px-3 pb-3 pt-2 text-[13px] text-(--text-muted)">{t("todosEmpty")}</div>
+          <div className="codemini-disclosure-body text-[13px] text-(--text-muted)">
+            {t("todosEmpty")}
+          </div>
         )
       ) : null}
     </section>
   );
-}
+}, (prev, next) =>
+  prev.persistKey === next.persistKey &&
+  prev.variant === next.variant &&
+  todoItemsEqual(prev.todos, next.todos),
+);

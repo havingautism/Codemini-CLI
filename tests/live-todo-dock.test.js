@@ -46,6 +46,27 @@ test('findLiveTodoDock ignores completed history when the live assistant has no 
   assert.equal(dock, null);
 });
 
+test('findLiveTodoDock keeps the last parsed todos while a tasks payload is still streaming', () => {
+  const previous = findLiveTodoDock([liveTodoMessage], { busy: true });
+  const streaming = {
+    ...liveTodoMessage,
+    segments: [
+      {
+        type: 'tools',
+        cards: [{
+          id: 'todo-1',
+          name: 'tasks',
+          arguments: '{"tasks":[{"content":"Inspect"',
+        }],
+      },
+    ],
+  };
+  const dock = findLiveTodoDock([streaming], { busy: true, previous });
+  assert.equal(dock.messageId, 'a1');
+  assert.equal(dock.todos.length, 2);
+  assert.equal(dock.todos[0].content, 'Inspect');
+});
+
 test('findLiveTodoDock still pins when a queued user message is trailing', () => {
   const dock = findLiveTodoDock([
     liveTodoMessage,

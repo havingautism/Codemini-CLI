@@ -8,7 +8,7 @@ function isLiveAssistantMessage(message) {
 }
 
 /** Latest in-progress assistant todo, docked above the composer while busy. */
-export function findLiveTodoDock(messages = [], { busy = false } = {}) {
+export function findLiveTodoDock(messages = [], { busy = false, previous = null } = {}) {
   if (!busy) return null;
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index];
@@ -16,12 +16,27 @@ export function findLiveTodoDock(messages = [], { busy = false } = {}) {
     const card = extractLatestTodoFromGroups(buildRenderGroups(message.segments || []));
     if (!card) return null;
     const todos = getTodoToolItems(card.arguments, card.result);
-    if (!todos.length) return null;
-    return {
-      messageId: message.id,
-      card,
-      todos,
-    };
+    if (todos.length) {
+      return {
+        messageId: message.id,
+        card,
+        todos,
+      };
+    }
+    // Streaming a tasks payload often yields empty items for a frame.
+    // Keep the last parsed list for this message so the dock does not blink.
+    if (
+      previous?.messageId === message.id &&
+      Array.isArray(previous.todos) &&
+      previous.todos.length
+    ) {
+      return {
+        messageId: message.id,
+        card,
+        todos: previous.todos,
+      };
+    }
+    return null;
   }
   return null;
 }

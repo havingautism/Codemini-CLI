@@ -269,10 +269,16 @@ function Shell() {
       ),
     [state.messages],
   );
+  const liveTodoDockRef = useRef(null);
   const liveTodoDock = useMemo(
-    () => findLiveTodoDock(state.messages, { busy: state.busy }),
+    () =>
+      findLiveTodoDock(state.messages, {
+        busy: state.busy,
+        previous: liveTodoDockRef.current,
+      }),
     [state.busy, state.messages],
   );
+  liveTodoDockRef.current = liveTodoDock;
 
   const closeMobileSidebar = useCallback(() => {
     setMobileSidebarOpen(false);
@@ -640,7 +646,11 @@ function Shell() {
               />
               {liveTodoDock ? (
                 <div className="mb-2">
-                  <TodoCard todos={liveTodoDock.todos} persistKey={liveTodoDock.card?.id || liveTodoDock.messageId} />
+                  <TodoCard
+                    variant="dock"
+                    todos={liveTodoDock.todos}
+                    persistKey={liveTodoDock.card?.id || liveTodoDock.messageId}
+                  />
                 </div>
               ) : null}
               <ReflectApprovalDialog

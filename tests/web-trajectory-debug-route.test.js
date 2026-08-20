@@ -22,6 +22,19 @@ test("trajectory reuses persisted session system prompt instead of recomposing",
   assert.doesNotMatch(api, /fetchSessionSystemPrompt/);
 });
 
+test("trajectory kind labels use title case", async () => {
+  const [en, zh] = await Promise.all([
+    fs.readFile("codemini-web/client/i18n/en.js", "utf8"),
+    fs.readFile("codemini-web/client/i18n/zh.js", "utf8"),
+  ]);
+  for (const source of [en, zh]) {
+    assert.match(source, /trajectoryKindSystem: "System Prompt"/);
+    assert.match(source, /trajectoryKindUser: "User Message"/);
+    assert.match(source, /trajectoryKindTool: "Tool Call"/);
+    assert.match(source, /trajectoryKindSystemNotice: "System Notice"/);
+  }
+});
+
 test("runtime:state sends lastSystemPrompt only when it changes", () => {
   const published = [];
   let prompt = "You are Codemini.";

@@ -1,6 +1,10 @@
 import { memo, startTransition, useEffect, useState, useMemo } from "react";
 import { ToolCard } from "./ToolCard";
 import { PlanToolCardGroup } from "./PlanToolCard.jsx";
+import {
+  DisclosureLeading,
+  DisclosureRowButton,
+} from "./DisclosureLeading.jsx";
 import { ModelIdentityBadge } from "./ModelIdentityBadge.jsx";
 import { UsageBadge } from "./UsageBadge.jsx";
 import { isCreatePlanCard } from "@/lib/plan-ui-state.js";
@@ -186,12 +190,6 @@ const SKILL_DOT_STYLES = {
 
 const TOOL_COLLAPSE_THRESHOLD = 1;
 const PROCESS_META_CLASS = "msg-process-meta";
-const COLLAPSE_ROW_CLASS =
-  "msg-process-row flex w-full cursor-pointer items-center gap-2 rounded-lg border-0 bg-transparent px-3 py-2 text-left text-[12px] hover:bg-(--bg-hover)";
-const COLLAPSE_CHEVRON_CLASS =
-  "size-[14px] shrink-0 text-(--text-process-detail)";
-const COLLAPSE_ICON_CLASS =
-  "flex size-[18px] shrink-0 items-center justify-center";
 
 function compactBytes(bytes = 0) {
   const value = Number(bytes || 0);
@@ -249,38 +247,24 @@ function ThoughtBlock({ segment }) {
   const thinkingPhrases = resolveModeHintPhrases("thinking", runtimeMode);
 
   return (
-    <div className={cn("my-2", PROCESS_META_CLASS)}>
-      <button
-        type="button"
+    <div className={cn("codemini-disclosure my-2", PROCESS_META_CLASS)}>
+      <DisclosureRowButton
+        open={open}
         onClick={() => setOpen((value) => !value)}
-        className={COLLAPSE_ROW_CLASS}
-        aria-expanded={open}
+        icon={streaming ? <SessionOrb state="thinking" /> : <Brain size={14} />}
       >
-        <CaretRight
-          size={14}
-          className={cn(
-            COLLAPSE_CHEVRON_CLASS,
-            "transition-transform",
-            open && "rotate-90",
-          )}
-        />
-        <span
-          className={cn(COLLAPSE_ICON_CLASS, "text-(--text-process-detail)")}
-        >
-          {streaming ? <SessionOrb state="thinking" /> : <Brain size={15} />}
-        </span>
         {streaming ? (
           <RotatingStatusLabel phrases={thinkingPhrases} active />
         ) : (
           <span>{t("thought")}</span>
         )}
-      </button>
+      </DisclosureRowButton>
       {open && (
-        <div className="relative ml-4.5 mt-1.5 pl-8 before:absolute before:left-0 before:top-0 before:bottom-1 before:w-px before:bg-(--border-default)">
+        <div className="codemini-disclosure-body">
           <StreamdownRenderer
             text={segment.text}
             streaming={segment.isStreaming}
-            className="msg-process-thought-body pl-5 text-[13px] italic leading-5"
+            className="msg-process-thought-body text-[13px] italic leading-5"
             inlineEmbeds={false}
           />
         </div>
@@ -347,35 +331,24 @@ function HandoffBlock({ segment }) {
       : firstLine;
 
   return (
-    <div className="my-2 text-(--text-primary)">
-      <button
-        type="button"
+    <div className={cn("codemini-disclosure my-2", PROCESS_META_CLASS)}>
+      <DisclosureRowButton
+        open={open}
         onClick={() => setOpen((value) => !value)}
-        className={COLLAPSE_ROW_CLASS}
-        aria-expanded={open}
+        icon={<span className="inline-block size-1.5 rounded-full bg-(--accent-blue)" />}
       >
-        <CaretRight
-          size={14}
-          className={cn(
-            COLLAPSE_CHEVRON_CLASS,
-            "transition-transform",
-            open && "rotate-90",
-          )}
-        />
-        <span className={COLLAPSE_ICON_CLASS}>
-          <span className="inline-block size-1.5 rounded-full bg-(--accent-blue)" />
-        </span>
-        <span className="font-medium">Handoff</span>
+        <span>Handoff</span>
+        <span className="codemini-disclosure-sep" aria-hidden="true" />
         <span className="min-w-0 flex-1 truncate text-(--text-muted)">
           {renderInlineMarkdownPreview(preview)}
         </span>
-      </button>
+      </DisclosureRowButton>
       {open && (
-        <div className="relative ml-4.5 mt-1.5 pl-8 before:absolute before:left-0 before:top-0 before:bottom-1 before:w-px before:bg-(--border-default)">
+        <div className="codemini-disclosure-body">
           <StreamdownRenderer
             text={text}
             streaming={false}
-            className="pl-5 text-[13px] leading-5 text-(--text-secondary)"
+            className="text-[13px] leading-5 text-(--text-secondary)"
           />
         </div>
       )}
@@ -561,7 +534,7 @@ function ToolGroup({ cards }) {
       : t("toolGroupTools").replace("{{count}}", total);
 
   return (
-    <div className={cn("my-2", PROCESS_META_CLASS)}>
+    <div className={cn("codemini-disclosure my-2", PROCESS_META_CLASS)}>
       <PlanToolCardGroup cards={planCards} />
       {userInputCards.length > 0 && (
         <div className={cn("flex flex-col gap-2", planCards.length > 0 && "mt-4")}>
@@ -571,32 +544,25 @@ function ToolGroup({ cards }) {
         </div>
       )}
       {total > 0 && shouldUseSummaryHeader && (
-        <button
-          type="button"
+        <DisclosureRowButton
+          open={expanded}
           className={cn(
-            COLLAPSE_ROW_CLASS,
             (planCards.length > 0 || userInputCards.length > 0) && "mt-4",
           )}
           onClick={() => setExpanded((value) => !value)}
-          aria-expanded={expanded}
+          icon={<SkillStatusDot status={groupStatus} />}
         >
-          {expanded ? (
-            <CaretDown size={14} className={COLLAPSE_CHEVRON_CLASS} />
-          ) : (
-            <CaretRight size={14} className={COLLAPSE_CHEVRON_CLASS} />
-          )}
-          <SkillStatusDot status={groupStatus} />
           <span>{summaryLabel}</span>
-        </button>
+        </DisclosureRowButton>
       )}
       {total > 0 && (!shouldUseSummaryHeader || expanded) && (
         <div
           className={cn(
-            "flex flex-col gap-2",
+            shouldUseSummaryHeader
+              ? "codemini-disclosure-tree"
+              : "flex flex-col gap-2",
             planCards.length > 0 && !shouldUseSummaryHeader && "mt-4",
             userInputCards.length > 0 && !shouldUseSummaryHeader && "mt-2",
-            shouldUseSummaryHeader &&
-              "ml-4.5 mt-2 border-l border-(--border-default) pl-3",
           )}
         >
           {otherCards.map((card) => (
@@ -605,8 +571,8 @@ function ToolGroup({ cards }) {
         </div>
       )}
       {hasRunningTool && (
-        <div className="msg-process-meta__detail flex items-center gap-2 px-3 py-1.5 text-[11px] my-2">
-          <span className={COLLAPSE_ICON_CLASS}>
+        <div className="msg-process-meta__detail flex items-center gap-2 px-1 py-1 text-[12px]">
+          <span className="codemini-disclosure-leading">
             <SessionOrb state="shaping" />
           </span>
           <RotatingStatusLabel phrases={toolingPhrases} active />
@@ -696,15 +662,13 @@ function activityKindLabel(badge) {
 
 function SkillStatusDot({ status }) {
   return (
-    <span className={COLLAPSE_ICON_CLASS}>
-      <span
-        aria-hidden="true"
-        className={cn(
-          "size-1.5 rounded-full",
-          SKILL_DOT_STYLES[status] || SKILL_DOT_STYLES.done,
-        )}
-      />
-    </span>
+    <span
+      aria-hidden="true"
+      className={cn(
+        "size-1.5 rounded-full",
+        SKILL_DOT_STYLES[status] || SKILL_DOT_STYLES.done,
+      )}
+    />
   );
 }
 
@@ -729,30 +693,21 @@ function HookActivityDisclosure({ badge, className }) {
   );
 
   return (
-    <div className={className}>
-      <button
-        type="button"
-        className={COLLAPSE_ROW_CLASS}
+    <div className={cn("codemini-disclosure", className)}>
+      <DisclosureRowButton
+        open={open}
+        expandable={hasDetails}
         onClick={() => hasDetails && setOpen((value) => !value)}
-        aria-expanded={hasDetails ? open : undefined}
+        icon={<SkillStatusDot status={badge.status} />}
       >
-        <CaretRight
-          size={14}
-          className={cn(
-            COLLAPSE_CHEVRON_CLASS,
-            "transition-transform",
-            open && "rotate-90",
-            !hasDetails && "invisible",
-          )}
-        />
         <span>{activityKindLabel(badge)}</span>
+        <span className="codemini-disclosure-sep" aria-hidden="true" />
         <span className="msg-process-meta__detail min-w-0 flex-1 truncate font-mono text-xs">
           {skillActivityLabel(badge)}
         </span>
-        <SkillStatusDot status={badge.status} />
-      </button>
+      </DisclosureRowButton>
       {open && hasDetails ? (
-        <div className="relative ml-4.5 mt-1 border-l border-(--border-default) py-1.5 pl-7 text-[12px] text-(--text-secondary)">
+        <div className="codemini-disclosure-tree py-1 text-[12px] text-(--text-secondary)">
           <dl className="grid gap-2">
             {badge.command ? (
               <div className="grid gap-1">
@@ -827,13 +782,16 @@ function SkillActivityList({ badges = [] }) {
         ) : (
           <div
             key={`${badge.name || "skill"}-${badge.status || "done"}-${index}`}
-            className={cn(COLLAPSE_ROW_CLASS, "text-[13px]")}
+            className="codemini-disclosure-row msg-process-row cursor-default"
           >
+            <DisclosureLeading expandable={false}>
+              <SkillStatusDot status={badge.status} />
+            </DisclosureLeading>
             <span>{activityKindLabel(badge)}</span>
+            <span className="codemini-disclosure-sep" aria-hidden="true" />
             <span className="msg-process-meta__detail min-w-0 flex-1 truncate font-mono text-xs">
               {skillActivityLabel(badge)}
             </span>
-            <SkillStatusDot status={badge.status} />
           </div>
         ),
       )}
@@ -853,12 +811,15 @@ function SkillActivityRow({ badge }) {
   }
   return (
     <div className={cn("my-2", PROCESS_META_CLASS)}>
-      <div className={cn(COLLAPSE_ROW_CLASS, "text-[13px]")}>
+      <div className="codemini-disclosure-row msg-process-row cursor-default">
+        <DisclosureLeading expandable={false}>
+          <SkillStatusDot status={badge.status} />
+        </DisclosureLeading>
         <span>{activityKindLabel(badge)}</span>
+        <span className="codemini-disclosure-sep" aria-hidden="true" />
         <span className="msg-process-meta__detail min-w-0 flex-1 truncate font-mono text-xs">
           {skillActivityLabel(badge)}
         </span>
-        <SkillStatusDot status={badge.status} />
       </div>
     </div>
   );
@@ -914,7 +875,7 @@ function ProcessGroup({ group }) {
   if (!planCards.length && !userInputCards.length && !nestedGroups.length) return null;
 
   return (
-    <div className={cn("my-2", PROCESS_META_CLASS)}>
+    <div className={cn("codemini-disclosure my-2", PROCESS_META_CLASS)}>
       <PlanToolCardGroup cards={planCards} />
       {userInputCards.length > 0 && (
         <div className={cn("flex flex-col gap-2", planCards.length > 0 && "mt-4")}>
@@ -925,32 +886,26 @@ function ProcessGroup({ group }) {
       )}
       {nestedGroups.length > 0 && (
         <>
-          <button
-            type="button"
-            onClick={() => setExpanded((value) => !value)}
+          <DisclosureRowButton
+            open={expanded}
             className={cn(
-              COLLAPSE_ROW_CLASS,
               (planCards.length > 0 || userInputCards.length > 0) && "mt-4",
             )}
-            aria-expanded={expanded}
+            onClick={() => setExpanded((value) => !value)}
+            icon={<span className="inline-block size-1.5 rounded-full bg-(--accent-green)" />}
           >
-            {expanded ? (
-              <CaretDown size={14} className={COLLAPSE_CHEVRON_CLASS} />
-            ) : (
-              <CaretRight size={14} className={COLLAPSE_CHEVRON_CLASS} />
-            )}
-            <span className={COLLAPSE_ICON_CLASS}>
-              <span className="inline-block size-1.5 rounded-full bg-(--accent-green)" />
-            </span>
             <span>{label}</span>
-            {details && (
-              <span className="msg-process-meta__detail min-w-0 truncate">
-                {details}
-              </span>
-            )}
-          </button>
+            {details ? (
+              <>
+                <span className="codemini-disclosure-sep" aria-hidden="true" />
+                <span className="msg-process-meta__detail min-w-0 truncate">
+                  {details}
+                </span>
+              </>
+            ) : null}
+          </DisclosureRowButton>
           {expanded && (
-            <div className="relative ml-4.5 mt-2 flex flex-col pl-6 before:absolute before:left-0 before:top-0 before:bottom-1 before:w-px before:bg-(--border-default)">
+            <div className="codemini-disclosure-tree">
               {nestedGroups.map((item, index) => {
                 if (item.type === "thinking") {
                   return <ThoughtBlock key={`p-th-${index}`} segment={item} />;
@@ -2140,30 +2095,16 @@ function AnswerProcessFold({ groups, durationMs }) {
     : t("processed");
 
   return (
-    <div className="codemini-answer-fold my-2">
-      <button
-        type="button"
+    <div className={cn("codemini-answer-fold codemini-disclosure my-2", PROCESS_META_CLASS)}>
+      <DisclosureRowButton
+        open={expanded}
         onClick={() => setExpanded((value) => !value)}
-        className={COLLAPSE_ROW_CLASS}
-        aria-expanded={expanded}
+        icon={<span className="inline-block size-1.5 rounded-full bg-(--accent-blue)" />}
       >
-        <CaretRight
-          size={14}
-          className={cn(
-            COLLAPSE_CHEVRON_CLASS,
-            "transition-transform",
-            expanded && "rotate-90",
-          )}
-        />
-        <span
-          className={cn(COLLAPSE_ICON_CLASS, "text-(--text-process-detail)")}
-        >
-          <span className="inline-block size-1.5 rounded-full bg-(--accent-blue)" />
-        </span>
-        <span className="font-medium">{label}</span>
-      </button>
+        <span>{label}</span>
+      </DisclosureRowButton>
       {expanded && (
-        <div className="relative ml-4.5 mt-2 flex flex-col pl-6 before:absolute before:left-0 before:top-0 before:bottom-1 before:w-px before:bg-(--border-default)">
+        <div className="codemini-disclosure-tree">
           {groups.map((group, i) => renderGroupItem(group, i))}
         </div>
       )}

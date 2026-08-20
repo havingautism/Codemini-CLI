@@ -2,8 +2,6 @@ import { useEffect, useState } from "react";
 import {
   Archive,
   ArrowSquareOut,
-  CaretDown,
-  CaretRight,
   FileText,
   Folder,
   FolderOpen,
@@ -17,6 +15,9 @@ import {
 } from "@phosphor-icons/react";
 import { LinearRing } from "@/components/ui/spinner";
 import { FileTypeIcon } from "@/components/FileTypeIcon.jsx";
+import {
+  DisclosureLeading,
+} from "@/components/DisclosureLeading.jsx";
 import { TodoCard } from "@/components/TodoList.jsx";
 import {
   requestFromToolCard,
@@ -30,10 +31,10 @@ import { interactiveRequestForSession } from "@/lib/session-ui-state.js";
 import { isShellToolName } from "@/lib/tool-names.js";
 import {
   extractToolName,
+  FILE_PATH_ARG_TOOLS,
   getConversationToolOutput,
   getFileToolMeta,
   getTodoToolItems,
-  getToolInspectSections,
   isRequestUserInputCard,
   isTodoToolCard,
   resolveToolHeaderParts,
@@ -151,7 +152,7 @@ function buildPreviewLines(meta) {
   return [];
 }
 
-function FilePreview({ meta }) {
+export function FilePreview({ meta }) {
   const themeType = usePatchThemeType();
   if (isUnifiedPatch(meta?.diffPreview)) {
     return (
@@ -206,7 +207,7 @@ function FilePreview({ meta }) {
   );
 }
 
-function BackupNotice({ meta }) {
+export function BackupNotice({ meta }) {
   if (!meta?.backupPath && !meta?.backupSkipped && !meta?.backupError)
     return null;
   const pathText = meta.backupRelativePath || meta.backupPath;
@@ -262,21 +263,13 @@ const STATUS_STYLES = {
   blocked: "bg-[var(--accent-orange)]",
 };
 const TOOL_ROW_CLASS =
-  "msg-process-row flex min-h-10 select-none items-center gap-1 rounded-md px-1.5 py-0 text-[13px] hover:bg-[var(--bg-hover)]";
+  "codemini-disclosure-row msg-process-row gap-1";
 const DETAIL_PRE_CLASS =
-  "m-0 max-h-100 overflow-x-auto whitespace-pre-wrap break-words rounded-md border border-(--border-default) bg-(--tool-detail-bg) p-2 font-mono text-xs leading-relaxed text-(--text-primary)";
-const TOOL_CHEVRON_CLASS = "size-[14px] shrink-0 text-(--text-process-detail)";
+  "m-0 max-h-100 overflow-x-auto whitespace-pre-wrap break-words p-3 font-mono text-xs leading-relaxed text-(--text-primary)";
 const TOOL_ICON_CLASS =
-  "flex size-[18px] shrink-0 items-center justify-center rounded text-(--text-process-detail)";
+  "flex size-4 shrink-0 items-center justify-center text-(--text-process-detail)";
 const RUN_TOOL_ICON_CLASS =
   "flex h-4 w-5 shrink-0 items-center justify-center rounded-[3px] border border-[color:color-mix(in_srgb,var(--text-process-detail)_45%,transparent)] text-(--text-process-detail)";
-const FILE_PATH_ARG_TOOLS = new Set([
-  "read",
-  "edit",
-  "create",
-  "write",
-  "delete",
-]);
 
 function FilePathArgument({ path, wrapped = false }) {
   const { dir, name } = splitPathForDisplay(path);
@@ -296,9 +289,18 @@ function FilePathArgument({ path, wrapped = false }) {
   );
 }
 
+function ToolCardIcon({ toolName, Icon }) {
+  return (
+    <span
+      className={isShellToolName(toolName) ? RUN_TOOL_ICON_CLASS : TOOL_ICON_CLASS}
+    >
+      <Icon size={isShellToolName(toolName) ? 12 : 14} />
+    </span>
+  );
+}
+
 function ToolCardHeaderMeta({
   toolName,
-  Icon,
   toolLabel,
   toolArg,
   shouldRenderFileArg,
@@ -307,12 +309,7 @@ function ToolCardHeaderMeta({
 }) {
   return (
     <>
-      <span
-        className={isShellToolName(toolName) ? RUN_TOOL_ICON_CLASS : TOOL_ICON_CLASS}
-      >
-        <Icon size={isShellToolName(toolName) ? 13 : 14} />
-      </span>
-      <span className="flex min-w-0 flex-1 items-center overflow-hidden whitespace-nowrap leading-[18px]">
+      <span className="flex min-w-0 flex-1 items-center overflow-hidden whitespace-nowrap leading-6">
         <span className="shrink-0">{toolLabel}</span>
         {toolArg ? (
           shouldRenderFileArg ? (
@@ -321,7 +318,7 @@ function ToolCardHeaderMeta({
               wrapped={wrapArg || Boolean(fileMeta?.path)}
             />
           ) : wrapArg ? (
-            <span className="msg-process-meta__detail ml-1 block min-w-0 flex-1 truncate font-mono text-xs font-normal leading-[18px]">
+            <span className="msg-process-meta__detail ml-1 block min-w-0 flex-1 truncate font-mono text-xs font-normal leading-6">
               ({toolArg})
             </span>
           ) : null
@@ -351,8 +348,6 @@ export function ToolCard({
   card,
   defaultOpen = false,
   collapsible = true,
-  conversationVisual = true,
-  embedded = false,
 }) {
   const [open, setOpen] = useState(defaultOpen);
   const [fileAction, setFileAction] = useState("");
@@ -364,16 +359,12 @@ export function ToolCard({
   const todoItems = isTasksTool
     ? getTodoToolItems(card.arguments, card.result)
     : [];
-  if (conversationVisual && isTasksTool) {
+  if (isTasksTool) {
     return (
-      <TodoCard
-        todos={todoItems}
-        persistKey={card?.id || ""}
-        embedded={embedded}
-      />
+      <TodoCard todos={todoItems} persistKey={card?.id || ""} />
     );
   }
-  if (conversationVisual && isRequestUserInputCard(card)) {
+  if (isRequestUserInputCard(card)) {
     return <UserInputToolCard card={card} />;
   }
   const fileMeta = getFileToolMeta(
@@ -418,45 +409,24 @@ export function ToolCard({
   };
 
   const hasFilePreview = Boolean(fileMeta);
-  const inspectSections = conversationVisual
-    ? []
-    : getToolInspectSections(card, { hasFilePreview });
-  const conversationOutput = conversationVisual
-    ? getConversationToolOutput(card, { hasFilePreview })
-    : "";
-  const showBody =
-    showDetails &&
-    (hasFilePreview ||
-      Boolean(conversationOutput) ||
-      !conversationVisual);
+  const conversationOutput = getConversationToolOutput(card, { hasFilePreview });
+  const showBody = showDetails && (hasFilePreview || Boolean(conversationOutput));
 
   return (
-    <div
-      className={cn(
-        "msg-process-meta relative overflow-hidden after:pointer-events-none after:absolute after:inset-0 after:rounded-[inherit] after:border after:border-transparent after:content-['']",
-        embedded ? "rounded-md" : "codemini-message-surface",
-        card.status === "error" &&
-          "after:border-[color:color-mix(in_srgb,var(--accent-red)_32%,transparent)]",
-        card.status === "blocked" &&
-          "after:border-[color:color-mix(in_srgb,var(--accent-orange)_32%,transparent)]",
-      )}
-    >
-      <div className={cn(TOOL_ROW_CLASS, !collapsible && "hover:bg-transparent")}>
+    <div className="codemini-disclosure msg-process-meta relative">
+      <div className={cn(TOOL_ROW_CLASS, !collapsible && "cursor-default hover:bg-transparent")}>
         {collapsible ? (
           <button
             type="button"
-            className="flex min-h-10 min-w-0 flex-1 items-center gap-2 rounded-md px-1.5 text-left focus-visible:relative focus-visible:z-10"
+            className="flex min-w-0 flex-1 items-center gap-1.5 bg-transparent p-0 text-left"
             onClick={() => setOpen(!open)}
             aria-expanded={open}
           >
-            {open ? (
-              <CaretDown size={14} className={TOOL_CHEVRON_CLASS} />
-            ) : (
-              <CaretRight size={14} className={TOOL_CHEVRON_CLASS} />
-            )}
+            <DisclosureLeading open={open}>
+              <ToolCardIcon toolName={toolName} Icon={Icon} />
+            </DisclosureLeading>
             <ToolCardHeaderMeta
               toolName={toolName}
-              Icon={Icon}
               toolLabel={toolLabel}
               toolArg={toolArg}
               shouldRenderFileArg={shouldRenderFileArg}
@@ -465,10 +435,12 @@ export function ToolCard({
             />
           </button>
         ) : (
-          <div className="flex min-h-10 min-w-0 flex-1 items-center gap-2 rounded-md px-1.5">
+          <div className="flex min-w-0 flex-1 items-center gap-1.5">
+            <DisclosureLeading expandable={false}>
+              <ToolCardIcon toolName={toolName} Icon={Icon} />
+            </DisclosureLeading>
             <ToolCardHeaderMeta
               toolName={toolName}
-              Icon={Icon}
               toolLabel={toolLabel}
               toolArg={toolArg}
               shouldRenderFileArg={shouldRenderFileArg}
@@ -479,13 +451,13 @@ export function ToolCard({
         )}
         {canOpenFile && (
           <div
-            className="mr-1 flex h-8 shrink-0 items-center gap-0.5"
+            className="flex h-6 shrink-0 items-center gap-0.5"
             role="group"
             aria-label={`${t("openFile")} / ${t("revealFile")}: ${basename(filePath)}`}
           >
             <button
               type="button"
-              className="flex size-8 items-center justify-center rounded-lg text-(--text-muted) opacity-80 transition-[background-color,color,opacity,transform] duration-100 hover:bg-(--bg-hover) hover:text-(--accent-blue) hover:opacity-100 active:scale-[0.94] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-(--accent-blue) disabled:cursor-wait disabled:opacity-40 motion-reduce:transform-none motion-reduce:transition-none"
+              className="flex size-6 items-center justify-center rounded-md text-(--text-muted) opacity-80 transition-[background-color,color,opacity,transform] duration-100 hover:bg-(--bg-hover) hover:text-(--accent-blue) hover:opacity-100 active:scale-[0.94] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-(--accent-blue) disabled:cursor-wait disabled:opacity-40 motion-reduce:transform-none motion-reduce:transition-none"
               onClick={(event) => handleFileAction(event, "open")}
               aria-label={`${t("openFile")}: ${basename(filePath)}`}
               title={`${t("openFile")}: ${filePath}`}
@@ -494,12 +466,12 @@ export function ToolCard({
               {fileAction === "open" ? (
                 <LinearRing size="sm" />
               ) : (
-                <ArrowSquareOut size={15} weight="bold" aria-hidden="true" />
+                <ArrowSquareOut size={14} weight="bold" aria-hidden="true" />
               )}
             </button>
             <button
               type="button"
-              className="flex size-8 items-center justify-center rounded-lg text-(--text-muted) opacity-80 transition-[background-color,color,opacity,transform] duration-100 hover:bg-(--bg-hover) hover:text-(--accent-blue) hover:opacity-100 active:scale-[0.94] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-(--accent-blue) disabled:cursor-wait disabled:opacity-40 motion-reduce:transform-none motion-reduce:transition-none"
+              className="flex size-6 items-center justify-center rounded-md text-(--text-muted) opacity-80 transition-[background-color,color,opacity,transform] duration-100 hover:bg-(--bg-hover) hover:text-(--accent-blue) hover:opacity-100 active:scale-[0.94] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-(--accent-blue) disabled:cursor-wait disabled:opacity-40 motion-reduce:transform-none motion-reduce:transition-none"
               onClick={(event) => handleFileAction(event, "reveal")}
               aria-label={`${t("revealFile")}: ${basename(filePath)}`}
               title={`${t("revealFile")}: ${filePath}`}
@@ -508,7 +480,7 @@ export function ToolCard({
               {fileAction === "reveal" ? (
                 <LinearRing size="sm" />
               ) : (
-                <FolderOpen size={15} weight="bold" aria-hidden="true" />
+                <FolderOpen size={14} weight="bold" aria-hidden="true" />
               )}
             </button>
           </div>
@@ -516,7 +488,7 @@ export function ToolCard({
         <span
           aria-hidden="true"
           className={cn(
-            "mr-1.5 h-1.5 w-1.5 shrink-0 rounded-full",
+            "h-1.5 w-1.5 shrink-0 rounded-full",
             STATUS_STYLES[card.status] || "bg-[var(--muted)]",
           )}
         />
@@ -524,44 +496,27 @@ export function ToolCard({
       {fileActionError && (
         <div
           role="alert"
-          className="mx-3 mb-2 rounded-md bg-(--accent-red-bg) px-2.5 py-2 text-xs text-(--accent-red)"
+          className="mx-1 mb-1 rounded-md bg-(--accent-red-bg) px-2.5 py-2 text-xs text-(--accent-red)"
         >
           {fileActionError}
         </div>
       )}
 
       {showBody && (
-        <div className={cn("codemini-fold-body pb-2 pr-2", collapsible ? "pl-8" : "px-3")}>
+        <div
+          className={cn(
+            hasFilePreview
+              ? "codemini-fold-body px-1 pb-1"
+              : "codemini-disclosure-payload",
+          )}
+        >
           {fileMeta ? (
             <>
-              {!conversationVisual && fileMeta.summary && (
-                <div className="pt-1 pl-1 text-xs text-(--text-muted)">
-                  {fileMeta.summary.split("\n")[0]}
-                </div>
-              )}
               <BackupNotice meta={fileMeta} />
               <FilePreview meta={fileMeta} />
             </>
-          ) : conversationVisual ? (
-            <pre className={cn(DETAIL_PRE_CLASS, "mt-1")}>{conversationOutput}</pre>
-          ) : inspectSections.length === 0 ? (
-            <div className="text-xs text-[var(--text-muted)]">
-              No details yet
-            </div>
           ) : (
-            inspectSections.map((section, i) => (
-              <div key={section.label}>
-                <div
-                  className={cn(
-                    "mb-1 text-[10px] font-bold uppercase tracking-[0.4px] text-[var(--text-muted)]",
-                    i === 0 ? "mt-1" : "mt-2",
-                  )}
-                >
-                  {section.label}
-                </div>
-                <pre className={DETAIL_PRE_CLASS}>{section.value}</pre>
-              </div>
-            ))
+            <pre className={DETAIL_PRE_CLASS}>{conversationOutput}</pre>
           )}
         </div>
       )}
