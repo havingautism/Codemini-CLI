@@ -2214,6 +2214,7 @@ export const MessageBubble = memo(function MessageBubble({
   projectIsGit = true,
   gitFiles,
   dockTodo = false,
+  turnActive = false,
 }) {
   const actions = useAppActions();
   const {
@@ -2233,7 +2234,15 @@ export const MessageBubble = memo(function MessageBubble({
   const ts = timestamp ? formatTimestamp(timestamp) : "";
 
   const renderGroups = useMemo(() => {
-    const groups = buildRenderGroups(segments || []);
+    // When no turn is running, a leftover streaming text segment belongs to a
+    // dead stream: drop its streaming flag so the empty-body loader (rendered
+    // by StreamdownRenderer for streaming-but-empty text) and the blinking
+    // cursor stop instead of spinning forever.
+    const groups = buildRenderGroups(segments || []).map((group) =>
+      group.type === "text" && group.isStreaming && !turnActive
+        ? { ...group, isStreaming: false }
+        : group,
+    );
     const hasStreamingText = groups.some(
       (group) => group.type === "text" && group.isStreaming,
     );
@@ -2245,7 +2254,13 @@ export const MessageBubble = memo(function MessageBubble({
     return collapseProcessGroups(groups, {
       disabled: hasStreamingText || messageInProgress,
     });
-  }, [message?.isComplete, message?.loading, message?.planStep, segments]);
+  }, [
+    message?.isComplete,
+    message?.loading,
+    message?.planStep,
+    segments,
+    turnActive,
+  ]);
 
   const messageComplete =
     role === "you" || isMessageComplete(message, renderGroups);
@@ -2326,8 +2341,18 @@ export const MessageBubble = memo(function MessageBubble({
 
     if (message.transientKey === "waiting-response") {
       return (
-        <div data-message-id={message.id} className="py-2 my-[8px] px-6">
-          <div className="max-w-[860px] mx-auto">
+        <div data-message-id={message.id} className="py-2 group/message">
+          <div>
+            <div className="flex items-center gap-2 mb-1.5">
+              <span
+                className={cn(
+                  "inline-flex h-5 items-center rounded-md border px-1.5 py-0 text-[10px] font-medium uppercase tracking-[0.04em]",
+                  ROLE_STYLES.general.badge,
+                )}
+              >
+                {ROLE_STYLES.general.label}
+              </span>
+            </div>
             <ResponseLoader
               className="msg-body"
               label={legacyText || t("waitingResponse")}
@@ -2574,13 +2599,13 @@ export const MessageBubble = memo(function MessageBubble({
               renderGroups.map((group, i) => renderGroupItem(group, i))
             )}
 
-            {planStep &&
+            {turnActive &&
               renderGroups.length === 0 &&
-              planStep.status !== "done" &&
-              planStep.status !== "failed" && (
+              !messageComplete &&
+              !message.manualAborted && (
                 <ResponseLoader
                   className="msg-body"
-                  label="等待工具调用或模型输出"
+                  label={t("waitingResponse")}
                 />
               )}
 

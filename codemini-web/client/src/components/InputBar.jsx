@@ -1549,8 +1549,8 @@ export function InputBar({
                               askBlocked
                                 ? "opacity-60"
                                 : scrapbookContext?.entryId === entry.id
-                                  ? "border-(--border-strong) bg-(--bg-subtle)"
-                                  : "border-transparent hover:bg-(--bg-subtle)/80",
+                                  ? "border-(--border-strong) bg-(--selected-bg)"
+                                  : "border-transparent hover:bg-(--bg-hover)",
                             )}
                           >
                             <button
@@ -1560,7 +1560,7 @@ export function InputBar({
                                 "flex min-w-0 flex-1 flex-col items-stretch gap-1.5 rounded-lg px-2 py-2 text-left",
                                 askBlocked
                                   ? "cursor-not-allowed"
-                                  : "hover:bg-(--bg-hover)/60",
+                                  : "hover:bg-(--bg-hover)",
                               )}
                               onClick={() => selectScrapbookEntry(entry.id)}
                             >
@@ -1603,7 +1603,7 @@ export function InputBar({
                       {hasMoreScrapbookEntries ? (
                         <button
                           type="button"
-                          className="shrink-0 rounded-xl px-3 py-2 text-[12px] text-(--text-secondary) transition-colors hover:bg-(--bg-subtle) hover:text-(--text-primary)"
+                          className="shrink-0 rounded-xl px-3 py-2 text-[12px] text-(--text-secondary) transition-colors hover:bg-(--bg-hover) hover:text-(--text-primary)"
                           onClick={() =>
                             setScrapbookVisibleCount(
                               (current) => current + SCRAPBOOK_PICKER_PAGE_SIZE,

@@ -196,6 +196,7 @@ function Shell() {
   const { state, actions } = useApp();
   const approvalRequest = interactiveRequestForSession(state, "approval");
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  const [activateProject, setActivateProject] = useState({ dir: "", token: 0 });
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
     if (typeof window === "undefined") return false;
     try {
@@ -294,9 +295,21 @@ function Shell() {
   );
 
   const handleOpenProject = useCallback(
-    async (...args) => {
+    async (path, options = {}) => {
       closeMobileSidebar();
-      return actions.openProject(...args);
+      const openingGeneral =
+        path === "__codemini_general__" || !String(path || "").trim();
+      // Pin the sidebar group only after the server resolves the path, using
+      // the resolved cwd so relative/`~` inputs match session project keys.
+      // Pinning after success also avoids a stray empty group on failure.
+      const result = await actions.openProject(path, options);
+      if (!openingGeneral && result?.ok && result.cwd) {
+        setActivateProject((prev) => ({
+          dir: result.cwd,
+          token: prev.token + 1,
+        }));
+      }
+      return result;
     },
     [actions, closeMobileSidebar],
   );
@@ -336,6 +349,10 @@ function Shell() {
         onRegenerateSessionTitle={actions.regenerateSessionTitle}
         onDeleteSession={actions.deleteSession}
         onCollapseSidebar={handleCollapseSidebar}
+        currentProjectDir={state.runtimeState?.cwd || ""}
+        isGeneral={state.isGeneral}
+        activateProjectDir={activateProject.dir}
+        activateProjectToken={activateProject.token}
       />
   );
 
@@ -610,6 +627,7 @@ function Shell() {
                 isGeneral={state.isGeneral}
                 targetMessageId={state.targetMessageId}
                 dockedTodoMessageId={liveTodoDock?.messageId || ""}
+                busy={state.busy}
                 onTargetMessageHandled={actions.clearChatMessageTarget}
                 onRetryMessage={retryMessage}
               />
@@ -796,7 +814,7 @@ function Shell() {
           <ProjectSelector
             open={state.projectOpen}
             onOpenChange={actions.setProjectOpen}
-            onOpenProject={actions.openProject}
+            onOpenProject={handleOpenProject}
           />
         )}
       </Suspense>

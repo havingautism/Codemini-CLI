@@ -4353,9 +4353,11 @@ export function AppProvider({ children }) {
           } else if (nextView === "chat") {
             update({ messagesLoading: false });
           }
+          return result;
         } catch {
           if (nextView === "chat") update({ messagesLoading: false });
         }
+        return undefined;
       },
 
       switchView: (view, options = {}) => {

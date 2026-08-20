@@ -620,6 +620,102 @@ test('late subagent child events stay nested after the parent card completes', (
   assert.equal(topLevelCards.some((card) => card.id === 'late-read-1'), false);
 });
 
+test('assistant:start drops waiting-response so the loader is not above General', () => {
+  const next = reduceSessionTranscriptEvent(
+    {
+      sessionMessagesById: {
+        'session-a': [
+          {
+            id: 'user-1',
+            role: 'you',
+            segments: [{ type: 'text', text: 'hello' }],
+          },
+          {
+            id: 'wait-1',
+            role: 'system',
+            text: 'Waiting for response…',
+            transientKey: 'waiting-response',
+          },
+        ],
+      },
+    },
+    {
+      type: 'assistant:start',
+      sessionId: 'session-a',
+      messageId: 'answer-1',
+    },
+  );
+
+  const messages = next.sessionMessagesById['session-a'];
+  assert.equal(
+    messages.some((message) => message.transientKey === 'waiting-response'),
+    false,
+  );
+  assert.equal(messages.at(-1).id, 'answer-1');
+  assert.equal(messages.at(-1).role, 'general');
+  const streamingText = (messages.at(-1).segments || []).find(
+    (segment) => segment.type === 'text' && segment.isStreaming,
+  );
+  assert.equal(streamingText?.text, '');
+});
+
+test('assistant:start keeps a real system message that merely mentions the waiting phrase', () => {
+  const next = reduceSessionTranscriptEvent(
+    {
+      sessionMessagesById: {
+        'session-a': [
+          {
+            id: 'sys-1',
+            role: 'system',
+            text: '工具输出：等待回复中，请稍候。',
+          },
+        ],
+      },
+    },
+    {
+      type: 'assistant:start',
+      sessionId: 'session-a',
+      messageId: 'answer-1',
+    },
+  );
+
+  const messages = next.sessionMessagesById['session-a'];
+  assert.equal(
+    messages.some((message) => message.id === 'sys-1'),
+    true,
+    'a system message containing the phrase must not be dropped',
+  );
+  assert.equal(messages.at(-1).id, 'answer-1');
+});
+
+test('assistant:start drops a legacy waiting bubble whose text matches the label exactly', () => {
+  const next = reduceSessionTranscriptEvent(
+    {
+      sessionMessagesById: {
+        'session-a': [
+          {
+            id: 'wait-1',
+            role: 'system',
+            text: '正在等待回复…',
+          },
+        ],
+      },
+    },
+    {
+      type: 'assistant:start',
+      sessionId: 'session-a',
+      messageId: 'answer-1',
+    },
+  );
+
+  const messages = next.sessionMessagesById['session-a'];
+  assert.equal(
+    messages.some((message) => message.id === 'wait-1'),
+    false,
+    'legacy exact-label waiting bubble should still be dropped',
+  );
+});
+
 test('reduceSessionTranscriptEvent keeps SDK and model metadata on a new answer', () => {
   const next = reduceSessionTranscriptEvent(
     { sessionMessagesById: { 'session-a': [] } },

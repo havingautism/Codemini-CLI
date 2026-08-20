@@ -1405,6 +1405,7 @@
   --selected-edge: color-mix(in srgb, var(--text-primary) 10%, transparent);
   --badge-bg: color-mix(in srgb, var(--text-primary) 6%, var(--bg-primary));
   --badge-edge: color-mix(in srgb, var(--text-primary) 8%, transparent);
+  --bg-subtle: color-mix(in srgb, var(--text-primary) 3.5%, transparent);
   --message-surface: color-mix(in srgb, var(--bg-secondary) 72%, var(--bg-primary));
   --message-edge: color-mix(in srgb, var(--text-primary) 6%, transparent);
   --message-shadow:
@@ -1495,7 +1496,7 @@ body {
 
 /* Linear-style shell: gray canvas + inset rounded workspace panel */
 .codemini-app-shell {
-  background: #f2f2f2;
+  background: var(--shell-canvas, #f8f8fa);
 }
 
 [data-theme="dark"] .codemini-app-shell {
@@ -1727,7 +1728,6 @@ body {
 }
 
 .codemini-user-bubble {
-  border: 0;
   box-shadow: none;
 }
 
@@ -2194,7 +2194,8 @@ samp {
 
 .codemini-markdown-table-strip .codemini-horizontal-scroll-strip__viewport {
   border-radius: 10px;
-  background: color-mix(in srgb, var(--text-primary) 5%, transparent);
+  background: var(--message-surface);
+  box-shadow: inset 0 0 0 1px var(--message-edge);
 }
 
 /* ── Linear loaders (theme + palette aware) ── */
@@ -2530,7 +2531,8 @@ samp {
 .msg-body [data-streamdown="table-wrapper"]>div:nth-child(2) {
   border: 0 !important;
   border-radius: var(--radius-lg) !important;
-  background: color-mix(in srgb, var(--text-primary) 5%, transparent) !important;
+  background: var(--message-surface) !important;
+  box-shadow: inset 0 0 0 1px var(--message-edge);
   overflow-x: scroll !important;
   overflow-y: hidden !important;
   overscroll-behavior-x: contain;
@@ -2709,6 +2711,10 @@ samp {
   line-height: 1.35;
   box-decoration-break: clone;
   -webkit-box-decoration-break: clone;
+}
+
+:root:not([data-theme="dark"]) .msg-body :not(pre)>code {
+  background: color-mix(in srgb, var(--text-primary) 4%, transparent);
 }
 
 .msg-body [data-streamdown="table-wrapper"] [class*="absolute"][class*="top-full"],
@@ -3659,13 +3665,13 @@ samp {
 }
 
 :root:not([data-theme="dark"]) .settings-nav-trigger:hover {
-  background: color-mix(in srgb, var(--text-primary) 3%, transparent);
+  background: var(--bg-hover);
   color: var(--text-primary);
 }
 
 :root:not([data-theme="dark"]) .settings-nav-trigger[data-state="active"] {
   border-color: transparent;
-  background: color-mix(in srgb, var(--text-primary) 6%, transparent) !important;
+  background: var(--selected-bg) !important;
   color: var(--text-primary);
   box-shadow: none !important;
 }
@@ -3681,19 +3687,19 @@ samp {
 
 :root:not([data-theme="dark"]) .settings-choice-item:hover {
   border-color: transparent !important;
-  background: color-mix(in srgb, var(--text-primary) 3%, transparent) !important;
+  background: var(--bg-hover) !important;
 }
 
 :root:not([data-theme="dark"]) .settings-choice-item[data-state="on"] {
   border-color: transparent !important;
-  background: color-mix(in srgb, var(--text-primary) 6%, transparent) !important;
+  background: var(--selected-bg) !important;
   color: var(--text-primary);
   box-shadow: none !important;
 }
 
 :root:not([data-theme="dark"]) .settings-segmented {
   border-color: transparent;
-  background: color-mix(in srgb, var(--text-primary) 3%, transparent);
+  background: var(--bg-subtle);
   box-shadow: none;
 }
 
@@ -3703,11 +3709,11 @@ samp {
 }
 
 :root:not([data-theme="dark"]) .settings-segmented-item:hover {
-  background: color-mix(in srgb, var(--text-primary) 3%, transparent);
+  background: var(--bg-hover);
 }
 
 :root:not([data-theme="dark"]) .settings-segmented-item[data-state="on"] {
-  background: color-mix(in srgb, var(--text-primary) 6%, transparent) !important;
+  background: var(--selected-bg) !important;
   color: var(--text-primary);
   box-shadow: none !important;
 }
@@ -3731,7 +3737,7 @@ samp {
   --foreground: #1d1d1f;
   --card: #ffffff;
   --card-foreground: #1d1d1f;
-  --popover: rgba(255, 255, 255, 0.88);
+  --popover: rgba(255, 255, 255, 0.96);
   --popover-foreground: #1d1d1f;
   --primary: #1d1d1f;
   --primary-foreground: #ffffff;
@@ -3744,17 +3750,15 @@ samp {
   --border: rgba(0, 0, 0, 0.1);
   --input: rgba(0, 0, 0, 0.12);
   --ring: transparent;
-  --sidebar: rgba(245, 245, 247, 0.72);
+  --sidebar: rgba(248, 248, 250, 0.86);
   --sidebar-foreground: #1d1d1f;
-  --bg-primary: #f3f3f3;
+  --bg-primary: #ffffff;
   --bg-secondary: #f5f5f7;
-  --bg-tertiary: #e8e8ed;
-  --bg-hover: rgba(0, 0, 0, 0.055);
-  --bg-active: rgba(0, 0, 0, 0.09);
-  --bg-input: rgba(255, 255, 255, 0.86);
+  --bg-tertiary: #ececf0;
+  --bg-input: rgba(255, 255, 255, 0.96);
   --text-primary: #1d1d1f;
   --text-secondary: #6e6e73;
-  --text-muted: #86868b;
+  --text-muted: #7a7a80;
   --border-default: rgba(0, 0, 0, 0.1);
   --border-strong: rgba(0, 0, 0, 0.18);
   --accent-blue: #0071e3;
@@ -3763,11 +3767,11 @@ samp {
   --md-link: #0071e3;
   --md-code-bg: #f5f5f7;
   --md-code-border: rgba(0, 0, 0, 0.1);
-  --md-inline-code-bg: #f5f5f7;
+  --md-inline-code-bg: color-mix(in srgb, var(--text-primary) 4%, white);
   --md-inline-code-text: #1d1d1f;
-  --md-table-header-bg: #f5f5f7;
-  --md-table-row-alt-bg: #fbfbfd;
-  --material-elevated: rgba(255, 255, 255, 0.84);
+  --md-table-header-bg: #ffffff;
+  --md-table-row-alt-bg: #ffffff;
+  --material-elevated: rgba(255, 255, 255, 0.96);
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
   --shadow-default: 0 8px 30px rgba(0, 0, 0, 0.09);
   --shadow-lg: 0 22px 60px rgba(0, 0, 0, 0.16);
@@ -3781,13 +3785,17 @@ samp {
   --input-shell-bg: rgba(255, 255, 255, 0.88);
   --input-shell-border: rgba(0, 0, 0, 0.08);
   --input-shell-shadow: 0 10px 38px rgba(0, 0, 0, 0.11);
-  --badge-bg: color-mix(in srgb, var(--text-primary) 3%, white);
-  --badge-edge: color-mix(in srgb, var(--text-primary) 4%, transparent);
-  --interactive-hover: color-mix(in srgb, var(--text-primary) 3.5%, white);
-  --selected-bg: color-mix(in srgb, var(--text-primary) 5.5%, white);
-  --selected-edge: color-mix(in srgb, var(--text-primary) 5%, transparent);
+  --badge-bg: color-mix(in srgb, var(--text-primary) 4%, var(--bg-secondary));
+  --badge-edge: color-mix(in srgb, var(--text-primary) 6%, transparent);
+  --interactive-hover: color-mix(in srgb, var(--text-primary) 6%, var(--bg-secondary));
+  --selected-bg: color-mix(in srgb, var(--text-primary) 11%, var(--bg-secondary));
+  --selected-edge: color-mix(in srgb, var(--text-primary) 8%, transparent);
+  --bg-subtle: color-mix(in srgb, var(--text-primary) 3%, var(--bg-secondary));
   --bg-hover: var(--interactive-hover);
   --bg-active: var(--selected-bg);
+  --message-surface: var(--bg-secondary);
+  --message-edge: color-mix(in srgb, var(--text-primary) 6%, transparent);
+  --shell-canvas: #f8f8fa;
 }
 
 :root:not([data-theme="dark"]) .settings-provider-card {
@@ -3832,6 +3840,7 @@ samp {
   --bg-tertiary: #2b2b2f;
   --bg-hover: rgba(255, 255, 255, 0.09);
   --bg-active: rgba(255, 255, 255, 0.14);
+  --bg-subtle: color-mix(in srgb, var(--text-primary) 4%, transparent);
   --bg-input: rgba(29, 29, 31, 0.9);
   --text-primary: #f5f5f7;
   --text-secondary: #a1a1a6;
@@ -3864,6 +3873,21 @@ samp {
   -webkit-backdrop-filter: saturate(180%) blur(20px);
 }
 
+.codemini-sidebar :is(button, a, [class*="cursor-pointer"]),
+.codemini-sidebar .group {
+  transition: color 140ms ease, background-color 140ms ease;
+}
+
+.codemini-sidebar :is(button, a):hover,
+.codemini-sidebar :is(button, a):hover span {
+  color: var(--text-primary);
+}
+
+.codemini-sidebar :is(button, a):hover svg,
+.codemini-sidebar .group:hover svg {
+  color: var(--text-primary);
+}
+
 /* .codemini-app-shell {
   background:
     radial-gradient(circle at 78% -18%, color-mix(in srgb, var(--accent-blue) 7%, transparent), transparent 38%),
@@ -3893,8 +3917,8 @@ samp {
 }
 
 :root:not([data-theme="dark"]) .codemini-input-chip--selected {
-  background: rgba(29, 29, 31, 0.035);
-  box-shadow: inset 0 0 0 1px rgba(29, 29, 31, 0.045);
+  background: var(--selected-bg);
+  box-shadow: inset 0 0 0 1px var(--selected-edge);
 }
 
 :root:not([data-theme="dark"]) .codemini-input-shell button {
@@ -3907,37 +3931,37 @@ samp {
 
 /* The light input shell is nearly white, so keep its quick controls visually quiet. */
 :root:not([data-theme="dark"]) .codemini-input-pill {
-  background: rgba(29, 29, 31, 0.025) !important;
+  background: var(--bg-subtle) !important;
   box-shadow: none !important;
 }
 
 :root:not([data-theme="dark"]) .codemini-input-pill:hover {
-  background: rgba(29, 29, 31, 0.04) !important;
+  background: var(--bg-hover) !important;
   box-shadow: none !important;
 }
 
 :root:not([data-theme="dark"]) .codemini-input-chip {
-  background: rgba(29, 29, 31, 0.025);
-  box-shadow: inset 0 0 0 1px rgba(29, 29, 31, 0.04);
+  background: var(--bg-subtle);
+  box-shadow: inset 0 0 0 1px var(--badge-edge);
 }
 
 :root:not([data-theme="dark"]) .codemini-input-chip:hover {
-  background: rgba(29, 29, 31, 0.04);
+  background: var(--bg-hover);
 }
 
 :root:not([data-theme="dark"]) [data-slot="select-item"][data-highlighted],
 :root:not([data-theme="dark"]) [data-slot="select-item"]:hover,
 :root:not([data-theme="dark"]) [data-slot="select-item"]:focus {
-  background: rgba(29, 29, 31, 0.055);
+  background: var(--bg-hover);
 }
 
 :root:not([data-theme="dark"]) [data-slot="select-item"][data-state="checked"] {
-  background: rgba(29, 29, 31, 0.1);
+  background: var(--selected-bg);
 }
 
 :root:not([data-theme="dark"]) [data-slot="select-item"][data-state="checked"][data-highlighted],
 :root:not([data-theme="dark"]) [data-slot="select-item"][data-state="checked"]:hover {
-  background: rgba(29, 29, 31, 0.12);
+  background: var(--selected-bg);
 }
 
 :root[data-theme="dark"] .codemini-workspace-panel {

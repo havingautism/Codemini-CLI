@@ -47,6 +47,31 @@ export function isSessionBusyInState(state, sessionId) {
   return sessionRuntimeIsBusy(state?.sessionRuntimeById?.[sessionId]);
 }
 
+// Legacy persisted waiting bubbles may have lost their transientKey on the
+// server round-trip. Match only the exact known labels instead of a substring
+// so a real system message merely containing the phrase is never dropped.
+const WAITING_RESPONSE_TEXT = new Set([
+  "等待回复",
+  "等待回复…",
+  "正在等待回复",
+  "正在等待回复…",
+  "Waiting for response",
+  "Waiting for response…",
+]);
+
+function isWaitingResponseMessage(message) {
+  if (!message) return false;
+  if (message.transientKey === "waiting-response") return true;
+  const text = String(message.text || "").trim();
+  return message.role === "system" && WAITING_RESPONSE_TEXT.has(text);
+}
+
+function withoutWaitingResponseMessages(messages = []) {
+  return (Array.isArray(messages) ? messages : []).filter(
+    (message) => !isWaitingResponseMessage(message),
+  );
+}
+
 function planStepNumberFromMessageId(messageId) {
   const match = String(messageId || "").match(/^plan-step-(\d+)(?:-|$)/);
   if (!match) return null;
@@ -376,7 +401,13 @@ export function reduceSessionTranscriptEvent(state, event) {
               {
                 id: messageId,
                 role: "general",
-                segments: [],
+                segments: [
+                  {
+                    type: "text",
+                    text: "",
+                    isStreaming: true,
+                  },
+                ],
                 skillBadges: [],
                 fileChanges: [],
                 sdkProvider: event.sdkProvider || "",
@@ -405,6 +436,11 @@ export function reduceSessionTranscriptEvent(state, event) {
         };
       }
     }
+    const startedMessages = sessionMessagesById[sessionId] || [];
+    sessionMessagesById = {
+      ...sessionMessagesById,
+      [sessionId]: withoutWaitingResponseMessages(startedMessages),
+    };
   } else if (isPlanTranscriptEvent(event.type)) {
     const nextMessages = messages.map((message) => {
       if (message.id !== messageId) return message;

@@ -179,6 +179,7 @@ function ChatPanelContent({
   isGeneral = false,
   targetMessageId = "",
   dockedTodoMessageId = "",
+  busy = false,
   onTargetMessageHandled,
   onRetryMessage,
 }) {
@@ -458,6 +459,7 @@ function ChatPanelContent({
                       projectIsGit={projectIsGit}
                       gitFiles={gitInfo?.files}
                       dockTodo={Boolean(dockedTodoMessageId) && msg.id === dockedTodoMessageId}
+                      turnActive={busy}
                     />
                   </MessageScrollerItem>
                 ))}

@@ -37,7 +37,13 @@ import { Spinner } from "@/components/ui/spinner";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { t, setLocale, getLocale } from "../../i18n/index.js";
-import { ACTIVE_SESSION_STATUSES, displaySessionTitle } from "@/lib/session-ui-state.js";
+import {
+  ACTIVE_SESSION_STATUSES,
+  activateProjectInList,
+  buildVisibleProjectGroups,
+  displaySessionTitle,
+  uniqueNormalizedProjectDirs,
+} from "@/lib/session-ui-state.js";
 import {
   fetchWebuiActiveProjects,
   patchWebuiActiveProject,
@@ -177,7 +183,7 @@ function SessionActions({ session, regenerating, onRegenerate, onDelete }) {
       <PopoverTrigger asChild>
         <button
           type="button"
-          className="inline-flex size-6 shrink-0 items-center justify-center rounded-md text-(--text-muted) opacity-0 hover:bg-(--bg-active) hover:text-(--text-primary) group-hover:opacity-100 focus:opacity-100"
+          className="inline-flex size-6 shrink-0 items-center justify-center rounded-md text-(--text-muted) opacity-0 hover:text-(--text-primary) group-hover:opacity-100 focus:opacity-100"
           onClick={(event) => event.stopPropagation()}
           aria-label={t("sessionActions")}
         >
@@ -258,6 +264,10 @@ export function Sidebar({
   onRegenerateSessionTitle,
   onDeleteSession,
   onCollapseSidebar,
+  currentProjectDir = "",
+  isGeneral = false,
+  activateProjectDir = "",
+  activateProjectToken = 0,
 }) {
   const [expandedProjects, setExpandedProjects] = useState(new Set());
   const [projectSessionLimits, setProjectSessionLimits] = useState({});
@@ -305,7 +315,13 @@ export function Sidebar({
           }
           clearLegacyProjectKeys();
         }
-        if (!cancelled) setActiveProjectDirs(active);
+        if (!cancelled) {
+          setActiveProjectDirs((prev) =>
+            prev.length
+              ? uniqueNormalizedProjectDirs([...prev, ...active])
+              : active,
+          );
+        }
       } catch {
         if (!cancelled) setActiveProjectDirs([]);
       } finally {
@@ -316,6 +332,19 @@ export function Sidebar({
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    if (!activateProjectToken || !activateProjectDir) return;
+    const key = normalizeProjectDirKey(activateProjectDir);
+    if (!key) return;
+    setActiveProjectDirs((prev) => activateProjectInList(prev, key));
+    setExpandedProjects((prev) => {
+      if (prev.has(key)) return prev;
+      const next = new Set(prev);
+      next.add(key);
+      return next;
+    });
+  }, [activateProjectDir, activateProjectToken]);
 
   // sessionsLoading starts as false before the first fetch. Only treat the
   // sessions snapshot as ready after a real load cycle completes, or once
@@ -358,53 +387,48 @@ export function Sidebar({
 
   const {
     allSessions,
-    currentSession,
     activeProjectKey,
     generalSessions,
     projectSessionsOnly,
-    projectGroups,
     visibleProjectGroupEntries,
   } = useMemo(() => {
     const all = Array.isArray(sessions) ? sessions : [];
     const current = all.find((s) => s.id === currentSessionId);
     const general = [];
     const projectOnly = [];
-    const groups = new Map();
     for (const session of all) {
       if (session.isGeneral) {
         general.push(session);
         continue;
       }
+      if (Number(session.messageCount || 0) <= 0) continue;
       projectOnly.push(session);
-      const key = getProjectKey(session);
-      if (!groups.has(key)) groups.set(key, []);
-      groups.get(key).push(session);
     }
-    const entries = Array.from(groups.entries());
-    if (activeProjectsReady && activeProjectDirs.length) {
-      const order = new Map(
-        activeProjectDirs.map((projectKey, index) => [projectKey, index]),
-      );
-      entries.sort((a, b) => {
-        const aIndex = order.has(a[0])
-          ? order.get(a[0])
-          : Number.MAX_SAFE_INTEGER;
-        const bIndex = order.has(b[0])
-          ? order.get(b[0])
-          : Number.MAX_SAFE_INTEGER;
-        return aIndex - bIndex;
-      });
-    }
+    const entries = buildVisibleProjectGroups({
+      sessions: all,
+      activeProjectDirs,
+      ready: activeProjectsReady,
+    });
+    const currentKey = !isGeneral && currentProjectDir
+      ? normalizeProjectDirKey(currentProjectDir)
+      : current
+        ? getProjectKey(current)
+        : null;
     return {
       allSessions: all,
-      currentSession: current,
-      activeProjectKey: current ? getProjectKey(current) : null,
+      activeProjectKey: currentKey || null,
       generalSessions: general,
       projectSessionsOnly: projectOnly,
-      projectGroups: groups,
       visibleProjectGroupEntries: entries,
     };
-  }, [sessions, currentSessionId, activeProjectDirs, activeProjectsReady]);
+  }, [
+    sessions,
+    currentSessionId,
+    activeProjectDirs,
+    activeProjectsReady,
+    currentProjectDir,
+    isGeneral,
+  ]);
 
   const projectsAreaEmpty = visibleProjectGroupEntries.length === 0;
   const projectsAreaReady =
@@ -432,22 +456,35 @@ export function Sidebar({
   const requestRemoveFromActive = (projectKey) => {
     if (!projectKey || projectKey === "unknown") return;
     setOpenProjectMenuKey(null);
-    setPendingRemoveActive({
+    const pending = {
       projectKey,
       label: getProjectName(projectKey),
-    });
+    };
+    // Open the confirm dialog after the popover unmounts so Radix does not
+    // treat the same pointer event as an outside click and dismiss it.
+    queueMicrotask(() => setPendingRemoveActive(pending));
   };
 
   const removeFromActive = async (projectKey) => {
-    setActiveProjectDirs((prev) => prev.filter((key) => key !== projectKey));
+    const targetKey = normalizeProjectDirKey(projectKey);
+    setActiveProjectDirs((prev) =>
+      prev.filter((key) => normalizeProjectDirKey(key) !== targetKey),
+    );
     setExpandedProjects((prev) => {
-      if (!prev.has(projectKey)) return prev;
+      const matchKey = [...prev].find(
+        (key) => normalizeProjectDirKey(key) === targetKey,
+      );
+      if (!matchKey) return prev;
       const next = new Set(prev);
-      next.delete(projectKey);
+      next.delete(matchKey);
       return next;
     });
     try {
-      await patchWebuiActiveProject("deactivate", projectKey);
+      const storedKey =
+        activeProjectDirs.find(
+          (key) => normalizeProjectDirKey(key) === targetKey,
+        ) || projectKey;
+      await patchWebuiActiveProject("deactivate", storedKey);
     } catch {
       // Silently ignore API errors — the optimistic local update stands.
     }
@@ -553,7 +590,7 @@ export function Sidebar({
           {typeof onCollapseSidebar === "function" ? (
             <button
               type="button"
-              className="hidden md:inline-flex size-7 shrink-0 items-center justify-center rounded-md border-0 bg-transparent text-(--text-muted) cursor-pointer hover:bg-(--bg-hover) hover:text-(--text-primary)"
+              className="hidden md:inline-flex size-7 shrink-0 items-center justify-center rounded-md border-0 bg-transparent text-(--text-muted) cursor-pointer hover:text-(--text-primary)"
               title={t("collapseSidebar")}
               aria-label={t("collapseSidebar")}
               onClick={onCollapseSidebar}
@@ -563,7 +600,7 @@ export function Sidebar({
           ) : null}
         </div>
         <button
-          className="w-full border-0 bg-transparent flex items-center gap-2.5 h-[30px] px-2 rounded-md cursor-pointer text-left text-[13px] hover:bg-(--bg-hover) text-(--text-primary)"
+          className="w-full border-0 bg-transparent flex items-center gap-2.5 h-[30px] px-2 rounded-md cursor-pointer text-left text-[13px] text-(--text-primary)"
           onClick={openGeneralNewSession}
         >
           <Plus
@@ -576,8 +613,8 @@ export function Sidebar({
 
         <button
           className={cn(
-            "w-full border-0 bg-transparent flex items-center gap-2.5 h-[30px] px-2 rounded-md cursor-pointer text-left text-[13px] hover:bg-(--bg-hover)",
-            currentView === "scrapbook" ? "bg-(--bg-hover) text-(--text-primary)" : "text-(--text-primary)",
+            "w-full border-0 bg-transparent flex items-center gap-2.5 h-[30px] px-2 rounded-md cursor-pointer text-left text-[13px]",
+            currentView === "scrapbook" ? "bg-(--bg-active) text-(--text-primary)" : "text-(--text-primary)",
           )}
           onClick={onOpenScrapbook}
         >
@@ -590,8 +627,8 @@ export function Sidebar({
         </button>
         <button
           className={cn(
-            "w-full border-0 bg-transparent flex items-center gap-2.5 h-[30px] px-2 rounded-md cursor-pointer text-left text-[13px] hover:bg-(--bg-hover)",
-            currentView === "research" ? "bg-(--bg-hover) text-(--text-primary)" : "text-(--text-primary)",
+            "w-full border-0 bg-transparent flex items-center gap-2.5 h-[30px] px-2 rounded-md cursor-pointer text-left text-[13px]",
+            currentView === "research" ? "bg-(--bg-active) text-(--text-primary)" : "text-(--text-primary)",
           )}
           onClick={onOpenResearch}
         >
@@ -606,7 +643,7 @@ export function Sidebar({
         <Separator className="mx-2 my-2 bg-(--border-default)/40" />
 
         <button
-          className="w-full border-0 bg-transparent flex items-center gap-2.5 h-[30px] px-2 rounded-md cursor-pointer text-left text-[13px] hover:bg-(--bg-hover) text-(--text-primary)"
+          className="w-full border-0 bg-transparent flex items-center gap-2.5 h-[30px] px-2 rounded-md cursor-pointer text-left text-[13px] text-(--text-primary)"
           onClick={onOpenSkills}
         >
           <Hammer
@@ -618,7 +655,7 @@ export function Sidebar({
         </button>
 
         <button
-          className="w-full border-0 bg-transparent flex items-center gap-2.5 h-[30px] px-2 rounded-md cursor-pointer text-left text-[13px] hover:bg-(--bg-hover) text-(--text-primary)"
+          className="w-full border-0 bg-transparent flex items-center gap-2.5 h-[30px] px-2 rounded-md cursor-pointer text-left text-[13px] text-(--text-primary)"
           onClick={onOpenMcp}
         >
           <PlugsConnected
@@ -630,7 +667,7 @@ export function Sidebar({
         </button>
 
         <button
-          className="w-full border-0 bg-transparent flex items-center gap-2.5 h-[30px] px-2 rounded-md cursor-pointer text-left text-[13px] hover:bg-(--bg-hover) text-(--text-primary)"
+          className="w-full border-0 bg-transparent flex items-center gap-2.5 h-[30px] px-2 rounded-md cursor-pointer text-left text-[13px] text-(--text-primary)"
           onClick={onOpenHooks}
         >
           <Lightning
@@ -642,7 +679,7 @@ export function Sidebar({
         </button>
 
         <button
-          className="w-full border-0 bg-transparent flex items-center gap-2.5 h-[30px] px-2 rounded-md cursor-pointer text-left text-[13px] hover:bg-(--bg-hover) text-(--text-primary)"
+          className="w-full border-0 bg-transparent flex items-center gap-2.5 h-[30px] px-2 rounded-md cursor-pointer text-left text-[13px] text-(--text-primary)"
           onClick={onOpenSouls}
         >
           <MaskHappy
@@ -653,7 +690,7 @@ export function Sidebar({
           <span className="truncate">{t("souls")}</span>
         </button>
         <button
-          className="w-full border-0 bg-transparent flex items-center gap-2.5 h-[30px] px-2 rounded-md cursor-pointer text-left text-[13px] hover:bg-(--bg-hover) text-(--text-primary)"
+          className="w-full border-0 bg-transparent flex items-center gap-2.5 h-[30px] px-2 rounded-md cursor-pointer text-left text-[13px] text-(--text-primary)"
           onClick={onOpenMemory}
         >
           <Brain
@@ -674,7 +711,7 @@ export function Sidebar({
         <div className="flex items-center gap-1 px-2.5 pb-1.5">
           <button
             type="button"
-            className="flex min-w-0 flex-1 items-center gap-1 rounded-md px-1.5 py-0.5 text-left hover:bg-(--bg-hover)"
+            className="flex min-w-0 flex-1 items-center gap-1 rounded-md px-1.5 py-0.5 text-left hover:text-(--text-primary)"
             aria-expanded={projectsSectionOpen}
             title={
               projectsSectionOpen
@@ -702,7 +739,7 @@ export function Sidebar({
           </button>
           <button
             type="button"
-            className="inline-flex size-6 shrink-0 items-center justify-center rounded-md border-0 bg-transparent text-(--text-muted) cursor-pointer hover:bg-(--bg-hover) hover:text-(--text-primary)"
+            className="inline-flex size-6 shrink-0 items-center justify-center rounded-md border-0 bg-transparent text-(--text-muted) cursor-pointer hover:text-(--text-primary)"
             title={t("openProjectDialog")}
             aria-label={t("openProjectDialog")}
             onClick={() => onOpenProjectSelector?.()}
@@ -751,8 +788,8 @@ export function Sidebar({
               <div key={projectKey}>
                 <div
                   className={cn(
-                    "w-full border-0 bg-transparent flex items-center gap-1 h-[28px] px-1.5 rounded-md text-left text-[12px] font-medium tracking-[0.2px] hover:bg-(--bg-hover)",
-                    "text-(--text-muted) hover:text-(--text-secondary)",
+                    "w-full border-0 bg-transparent flex items-center gap-1 h-[28px] px-1.5 rounded-md text-left text-[12px] font-medium tracking-[0.2px]",
+                    "text-(--text-muted) hover:text-(--text-primary)",
                   )}
                   title={projectKey === "unknown" ? "" : projectKey}
                 >
@@ -777,7 +814,7 @@ export function Sidebar({
                   {canOpenCodeWiki && (
                     <button
                       type="button"
-                      className="inline-flex size-6 shrink-0 items-center justify-center rounded-md border-0 bg-transparent text-(--text-muted) cursor-pointer hover:bg-(--bg-active) hover:text-(--text-primary)"
+                      className="inline-flex size-6 shrink-0 items-center justify-center rounded-md border-0 bg-transparent text-(--text-muted) cursor-pointer hover:text-(--text-primary)"
                       title={t("newSessionInProject")}
                       aria-label={`${t("newSessionInProject")} ${getProjectName(projectKey)}`}
                       onClick={(event) =>
@@ -791,7 +828,7 @@ export function Sidebar({
                     <button
                       type="button"
                       className={cn(
-                        "inline-flex size-6 shrink-0 items-center justify-center rounded-md border-0 bg-transparent text-(--text-muted) cursor-pointer hover:bg-(--bg-active) hover:text-(--text-primary)",
+                        "inline-flex size-6 shrink-0 items-center justify-center rounded-md border-0 bg-transparent text-(--text-muted) cursor-pointer hover:text-(--text-primary)",
                         currentView === "codewiki" &&
                           isActive &&
                           "bg-(--bg-active) text-(--text-primary)",
@@ -805,9 +842,11 @@ export function Sidebar({
                       <BookOpenText size={13} strokeWidth={1.9} />
                     </button>
                   )}
-                  <span className="text-[11px] px-2">
-                    {projectSessions.length}
-                  </span>
+                  {projectSessions.length > 0 ? (
+                    <span className="text-[11px] px-2">
+                      {projectSessions.length}
+                    </span>
+                  ) : null}
                   <Popover
                     open={openProjectMenuKey === projectKey}
                     onOpenChange={(open) =>
@@ -817,7 +856,7 @@ export function Sidebar({
                     <PopoverTrigger asChild>
                       <button
                         type="button"
-                        className="inline-flex size-6 shrink-0 items-center justify-center rounded-md border-0 bg-transparent text-(--text-muted) cursor-pointer hover:bg-(--bg-active) hover:text-(--text-primary)"
+                        className="inline-flex size-6 shrink-0 items-center justify-center rounded-md border-0 bg-transparent text-(--text-muted) cursor-pointer hover:bg-(--bg-hover) hover:text-(--text-primary)"
                         aria-label={t("projectActions")}
                         onClick={(event) => event.stopPropagation()}
                       >
@@ -827,6 +866,7 @@ export function Sidebar({
                     <PopoverContent
                       align="end"
                       className="w-44 p-1"
+                      onCloseAutoFocus={(event) => event.preventDefault()}
                       onClick={(event) => event.stopPropagation()}
                     >
                       <button
@@ -835,11 +875,11 @@ export function Sidebar({
                         onPointerDown={(event) => {
                           event.preventDefault();
                           event.stopPropagation();
+                          requestRemoveFromActive(projectKey);
                         }}
                         onClick={(event) => {
                           event.preventDefault();
                           event.stopPropagation();
-                          requestRemoveFromActive(projectKey);
                         }}
                       >
                         <X size={14} className="shrink-0" />
@@ -864,7 +904,7 @@ export function Sidebar({
                           "group w-full border-0 bg-transparent flex items-center gap-2 h-[30px] px-2 rounded-md cursor-pointer text-left text-[13px] truncate",
                           session.id === currentSessionId
                             ? "bg-(--bg-active) text-(--text-primary)"
-                            : "text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary)",
+                            : "text-(--text-secondary) hover:text-(--text-primary)",
                         )}
                       >
                         <span className="flex min-w-0 flex-1 items-center gap-1.5">
@@ -889,7 +929,7 @@ export function Sidebar({
                     {projectSessionLimit < projectSessions.length && (
                       <button
                         type="button"
-                        className="h-[26px] rounded-md border-0 bg-transparent px-2 text-left text-[12px] font-medium text-(--text-muted) hover:bg-(--bg-hover) hover:text-(--text-primary)"
+                        className="h-[26px] rounded-md border-0 bg-transparent px-2 text-left text-[12px] font-medium text-(--text-muted) hover:text-(--text-primary)"
                         onClick={() =>
                           loadMoreProjectSessions(
                             projectKey,
@@ -927,7 +967,7 @@ export function Sidebar({
           <div className="flex items-center gap-1 px-0.5 pb-1.5">
             <button
               type="button"
-              className="flex min-w-0 flex-1 items-center gap-1 rounded-md px-1.5 py-0.5 text-left hover:bg-(--bg-hover)"
+              className="flex min-w-0 flex-1 items-center gap-1 rounded-md px-1.5 py-0.5 text-left hover:text-(--text-primary)"
               aria-expanded={conversationsSectionOpen}
               title={
                 conversationsSectionOpen
@@ -955,7 +995,7 @@ export function Sidebar({
             </button>
             <button
               type="button"
-              className="inline-flex size-7 shrink-0 items-center justify-center rounded-md border-0 bg-transparent text-(--text-muted) cursor-pointer hover:bg-(--bg-hover) hover:text-(--text-primary)"
+              className="inline-flex size-7 shrink-0 items-center justify-center rounded-md border-0 bg-transparent text-(--text-muted) cursor-pointer hover:text-(--text-primary)"
               title={t("newChat")}
               aria-label={t("newChat")}
               onClick={openGeneralNewSession}
@@ -988,7 +1028,7 @@ export function Sidebar({
                     "group flex h-[34px] w-full cursor-pointer items-center gap-2 rounded-lg border-0 px-2 text-left text-[13px]",
                     active
                       ? "bg-(--bg-active) text-(--text-primary)"
-                      : "text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary)",
+                      : "text-(--text-secondary) hover:text-(--text-primary)",
                   )}
                 >
                   <span className="flex min-w-0 flex-1 items-center gap-1.5">
@@ -1014,7 +1054,7 @@ export function Sidebar({
             {generalSessionLimit < generalSessions.length && (
               <button
                 type="button"
-                className="h-[28px] rounded-md border-0 bg-transparent px-2 text-left text-[12px] font-medium text-(--text-muted) hover:bg-(--bg-hover) hover:text-(--text-primary)"
+                className="h-[28px] rounded-md border-0 bg-transparent px-2 text-left text-[12px] font-medium text-(--text-muted) hover:text-(--text-primary)"
                 onClick={loadMoreGeneralSessions}
               >
                 {t("showMoreSessions")}
@@ -1024,7 +1064,7 @@ export function Sidebar({
               <button
                 type="button"
                 onClick={openGeneralNewSession}
-                className="h-[34px] rounded-lg border-0 bg-transparent px-2 text-left text-[13px] text-(--text-muted) hover:bg-(--bg-hover) hover:text-(--text-primary)"
+                className="h-[34px] rounded-lg border-0 bg-transparent px-2 text-left text-[13px] text-(--text-muted) hover:text-(--text-primary)"
               >
                 {t("noConversations")}
               </button>
@@ -1040,7 +1080,7 @@ export function Sidebar({
         <Separator className="my-2 bg-transparent" />
         {versionInfo?.latest && versionInfo.latest !== versionInfo.current && (
           <button
-            className="w-full border-0 bg-(--bg-tertiary) rounded-md mb-2 px-2.5 py-1.5 cursor-pointer text-[11px] text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary) flex items-center justify-center gap-1.5"
+            className="w-full border-0 bg-(--bg-tertiary) rounded-md mb-2 px-2.5 py-1.5 cursor-pointer text-[11px] text-(--text-secondary) hover:text-(--text-primary) flex items-center justify-center gap-1.5"
             onClick={updateStatus === "updating" ? undefined : onUpdate}
             disabled={updateStatus === "updating"}
           >
@@ -1055,7 +1095,7 @@ export function Sidebar({
         )}
         <div className="flex items-center justify-center gap-1">
           <button
-            className="border-0 bg-transparent inline-flex items-center justify-center size-8 rounded-lg cursor-pointer hover:bg-(--bg-hover) hover:text-(--text-primary) text-(--text-secondary)"
+            className="border-0 bg-transparent inline-flex items-center justify-center size-8 rounded-lg cursor-pointer hover:text-(--text-primary) text-(--text-secondary)"
             onClick={onOpenAbout}
             title={t("about")}
             aria-label={t("about")}
@@ -1066,7 +1106,7 @@ export function Sidebar({
             href="https://github.com/havingautism/Codemini-CLI"
             target="_blank"
             rel="noreferrer"
-            className="border-0 bg-transparent inline-flex items-center justify-center size-8 rounded-lg cursor-pointer hover:bg-(--bg-hover) hover:text-(--text-primary) text-(--text-secondary)"
+            className="border-0 bg-transparent inline-flex items-center justify-center size-8 rounded-lg cursor-pointer hover:text-(--text-primary) text-(--text-secondary)"
             title={t("projectRepository")}
             aria-label={t("projectRepository")}
           >
@@ -1075,7 +1115,7 @@ export function Sidebar({
           <Popover>
             <PopoverTrigger asChild>
               <button
-                className="border-0 bg-transparent inline-flex items-center justify-center size-8 rounded-lg cursor-pointer hover:bg-(--bg-hover) hover:text-(--text-primary) text-(--text-secondary)"
+                className="border-0 bg-transparent inline-flex items-center justify-center size-8 rounded-lg cursor-pointer hover:text-(--text-primary) text-(--text-secondary)"
                 title={t("switchLanguage")}
                 aria-label={t("switchLanguage")}
               >
@@ -1111,7 +1151,7 @@ export function Sidebar({
           <Popover>
             <PopoverTrigger asChild>
               <button
-                className="border-0 bg-transparent inline-flex items-center justify-center size-8 rounded-lg cursor-pointer hover:bg-(--bg-hover) hover:text-(--text-primary) text-(--text-secondary)"
+                className="border-0 bg-transparent inline-flex items-center justify-center size-8 rounded-lg cursor-pointer hover:text-(--text-primary) text-(--text-secondary)"
                 title={t("switchTheme")}
                 aria-label={t("switchTheme")}
               >
@@ -1149,7 +1189,7 @@ export function Sidebar({
             </PopoverContent>
           </Popover>
           <button
-            className="border-0 bg-transparent inline-flex items-center justify-center size-8 rounded-lg cursor-pointer hover:bg-(--bg-hover) hover:text-(--text-primary) text-(--text-secondary)"
+            className="border-0 bg-transparent inline-flex items-center justify-center size-8 rounded-lg cursor-pointer hover:text-(--text-primary) text-(--text-secondary)"
             onClick={onOpenSettings}
             title={t("settings")}
             aria-label={t("settings")}

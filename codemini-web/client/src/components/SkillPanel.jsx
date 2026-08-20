@@ -960,7 +960,7 @@ function SkillPackageSelectDialog({
                   return (
                     <label
                       key={skill.name}
-                      className="flex cursor-pointer items-start gap-3 px-3 py-2.5 hover:bg-(--bg-subtle)"
+                      className="flex cursor-pointer items-start gap-3 px-3 py-2.5 hover:bg-(--bg-hover)"
                     >
                       <Checkbox
                         className="mt-0.5"

@@ -479,7 +479,7 @@ export function ToolCard({
           >
             <button
               type="button"
-              className="flex size-8 items-center justify-center rounded-lg text-(--text-muted) opacity-80 transition-[background-color,color,opacity,transform] duration-100 hover:bg-(--bg-tertiary) hover:text-(--accent-blue) hover:opacity-100 active:scale-[0.94] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-(--accent-blue) disabled:cursor-wait disabled:opacity-40 motion-reduce:transform-none motion-reduce:transition-none"
+              className="flex size-8 items-center justify-center rounded-lg text-(--text-muted) opacity-80 transition-[background-color,color,opacity,transform] duration-100 hover:bg-(--bg-hover) hover:text-(--accent-blue) hover:opacity-100 active:scale-[0.94] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-(--accent-blue) disabled:cursor-wait disabled:opacity-40 motion-reduce:transform-none motion-reduce:transition-none"
               onClick={(event) => handleFileAction(event, "open")}
               aria-label={`${t("openFile")}: ${basename(filePath)}`}
               title={`${t("openFile")}: ${filePath}`}
@@ -493,7 +493,7 @@ export function ToolCard({
             </button>
             <button
               type="button"
-              className="flex size-8 items-center justify-center rounded-lg text-(--text-muted) opacity-80 transition-[background-color,color,opacity,transform] duration-100 hover:bg-(--bg-tertiary) hover:text-(--accent-blue) hover:opacity-100 active:scale-[0.94] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-(--accent-blue) disabled:cursor-wait disabled:opacity-40 motion-reduce:transform-none motion-reduce:transition-none"
+              className="flex size-8 items-center justify-center rounded-lg text-(--text-muted) opacity-80 transition-[background-color,color,opacity,transform] duration-100 hover:bg-(--bg-hover) hover:text-(--accent-blue) hover:opacity-100 active:scale-[0.94] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-(--accent-blue) disabled:cursor-wait disabled:opacity-40 motion-reduce:transform-none motion-reduce:transition-none"
               onClick={(event) => handleFileAction(event, "reveal")}
               aria-label={`${t("revealFile")}: ${basename(filePath)}`}
               title={`${t("revealFile")}: ${filePath}`}
