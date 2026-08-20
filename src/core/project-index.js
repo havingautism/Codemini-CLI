@@ -811,7 +811,6 @@ export async function buildProjectContextSnippet(cwd = process.cwd(), userText =
   if (!projectMap || !Array.isArray(fileIndex?.files)) return '';
 
   const lines = [
-    'Project Context:',
     `- project_root: ${indexedRoot}`,
     `- languages: ${(projectMap.languages || []).slice(0, 6).join(', ') || 'unknown'}`,
     `- source_roots: ${(projectMap.sourceRoots || []).slice(0, 6).join(', ') || 'none'}`,

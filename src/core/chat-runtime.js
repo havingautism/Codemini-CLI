@@ -82,7 +82,8 @@ import { getReplyLanguage, getReplyLanguageName, stripReplyLanguageDirective, bu
 import { composeSystemPrompt } from './system-prompt-composer.js';
 import { buildTurnContextPrefix, buildTurnUserPrompt } from './turn-context.js';
 import { buildSubAgentShellRulesPrompt, buildSubAgentRuntimeNote, resolveShellContext } from './shell-profile.js';
-import { getProjectPlansDir, getProjectSpecsDir, getProjectWorkspaceDir, getSessionsDir, getSkillsDir } from './paths.js';
+import { getMemoryDir, getProjectMemoryDir, getProjectPlansDir, getProjectSpecsDir, getProjectWorkspaceDir, getSessionsDir, getSkillsDir } from './paths.js';
+import { buildMemorySnapshot } from './memory-prompt.js';
 import { buildProjectContextSnippet, initializeProjectIndex } from './project-index.js';
 import { queryProjectKnowledgeGraph } from './project-knowledge-graph.js';
 import { captureToInbox, listInbox } from './memory-store.js';
@@ -4620,6 +4621,7 @@ async function askModel({
   config,
   model,
   systemPrompt,
+  turnRoutingContext = '',
   onAgentEvent,
   requestToolApproval,
   persistSession = true,
@@ -4821,16 +4823,26 @@ async function askModel({
   const projectContextSnippet = await projectContextPromise;
   // Compose effectiveSystemPrompt without redundant composeSystemPrompt wrapping:
   // systemPrompt already went through composeSystemPrompt in buildActiveSystemPrompt.
-  // We only need to strip the old replyLanguage, append the execution mode block, and re-append replyLanguage.
-  const strippedSystem = stripReplyLanguageDirective(systemPrompt || '');
-  const effectiveSystemPrompt = buildSystemPromptWithReplyLanguage(
-    [strippedSystem, executionModePrompt].filter(Boolean).join('\n\n'),
-    config
-  );
+  // Insert the execution-mode block immediately BEFORE the reply-language
+  // directive. The directive sits above the volatile tail (<relevant_memory>),
+  // so the stable prefix stays cacheable and memory remains the last block.
+  const systemPromptText = String(systemPrompt || '');
+  const directiveIndex = systemPromptText.lastIndexOf('[Reply language]');
+  const effectiveSystemPrompt = directiveIndex >= 0
+    ? [
+        systemPromptText.slice(0, directiveIndex).trimEnd(),
+        executionModePrompt,
+        systemPromptText.slice(directiveIndex),
+      ].filter(Boolean).join('\n\n')
+    : buildSystemPromptWithReplyLanguage(
+        [systemPromptText.trim(), executionModePrompt].filter(Boolean).join('\n\n'),
+        config,
+      );
   const projectContextPrompt = buildTurnUserPrompt({
     turnContextPrefix: buildTurnContextPrefix(config),
     projectContextSnippet,
     projectContextGuidance,
+    turnRoutingContext,
     userText: modelInputText
   });
 
@@ -7778,6 +7790,48 @@ export async function createChatRuntime({
   let commandsReloadedAt = Date.now();
   let commandsReloadPromise = null;
   let skillIndexPromptCache = null;
+  // Memoize the deterministic base prompt and the volatile memory snapshot so
+  // the composed system prompt is not re-read/re-rendered from disk every turn.
+  let baseSystemPromptMemo = { configRef: null, root: '', value: '' };
+  let memorySnapshotMemo = null;
+  const getMemoizedBaseSystemPrompt = () => {
+    if (baseSystemPromptMemo.configRef === config && baseSystemPromptMemo.root === root) {
+      return baseSystemPromptMemo.value;
+    }
+    const value = getBaseSystemPrompt();
+    baseSystemPromptMemo = { configRef: config, root, value };
+    return value;
+  };
+  const memoryFilesMtimeKey = async (workspaceRoot) => {
+    const paths = [
+      path.join(getMemoryDir(), 'user.json'),
+      path.join(getMemoryDir(), 'global.json'),
+    ];
+    try {
+      const dir = getProjectMemoryDir(workspaceRoot);
+      const entries = await fs.readdir(dir);
+      for (const entry of entries) {
+        if (String(entry).endsWith('.json')) paths.push(path.join(dir, entry));
+      }
+    } catch {}
+    const stamps = await Promise.all(paths.map((filePath) =>
+      fs.stat(filePath).then((stat) => `${filePath}:${stat.mtimeMs}`, () => `${filePath}:missing`),
+    ));
+    return stamps.join('|');
+  };
+  const getMemoizedMemorySnapshot = async () => {
+    const mtimeKey = await memoryFilesMtimeKey(root);
+    if (
+      memorySnapshotMemo
+      && memorySnapshotMemo.configRef === config
+      && memorySnapshotMemo.mtimeKey === mtimeKey
+    ) {
+      return memorySnapshotMemo.value;
+    }
+    const value = await buildMemorySnapshot({ config, workspaceRoot: root }).catch(() => '');
+    memorySnapshotMemo = { configRef: config, mtimeKey, value };
+    return value;
+  };
   const reloadCommandsAndSkills = async ({ force = false } = {}) => {
     if (!force && Date.now() - commandsReloadedAt < COMMAND_RELOAD_TTL_MS) return false;
     if (commandsReloadPromise) return commandsReloadPromise;
@@ -8148,21 +8202,22 @@ export async function createChatRuntime({
   };
 
   const getSkillIndexPrompt = async () => {
-    const skillIndexCacheKey = `${executionMode}:${JSON.stringify(config.skills || {})}`;
+    const skillIndexCacheKey = `${executionMode}:${JSON.stringify(config.skills || {})}:${Array.from(commands.keys()).sort().join(',')}`;
     if (
       !skillIndexPromptCache
       || skillIndexPromptCache.key !== skillIndexCacheKey
       || Date.now() >= skillIndexPromptCache.expiresAt
     ) {
+      const value = await buildSkillIndexPromptBlock(root, config, executionMode, {
+        modelInvocableOnly: true,
+      });
       skillIndexPromptCache = {
         key: skillIndexCacheKey,
         expiresAt: Date.now() + COMMAND_RELOAD_TTL_MS,
-        value: buildSkillIndexPromptBlock(root, config, executionMode, {
-          modelInvocableOnly: true,
-        }),
+        value,
       };
     }
-    return Promise.resolve(skillIndexPromptCache.value);
+    return skillIndexPromptCache.value;
   };
 
   const buildActiveSystemPrompt = async ({
@@ -8171,10 +8226,11 @@ export async function createChatRuntime({
   } = {}) => {
     const memoryGuide = `Use save_memory only for explicit lasting preferences or stable project conventions; never store secrets or duplicates. Write it in ${getReplyLanguageName(config)}. Coding discoveries go through later Dream/session review.`;
     return composeSystemPrompt({
-      shellRulesPrompt: getBaseSystemPrompt(),
+      shellRulesPrompt: getMemoizedBaseSystemPrompt(),
       config,
       workspaceRoot: root,
       skillsPrompt: includeSkillIndex ? getSkillIndexPrompt() : '',
+      memorySnapshot: await getMemoizedMemorySnapshot(),
       extraPrompts: includeMemoryGuide ? [memoryGuide] : [],
       soulContext: normalizeExecutionMode(executionMode) === 'plan' ? 'coding' : 'daily',
     });
@@ -8734,10 +8790,6 @@ export async function createChatRuntime({
     const alwaysSkillPrompt = injectAlwaysSkills
       ? buildAlwaysSkillPromptBlock(commands, config, dismissedAlwaysSkills, executionMode, root)
       : '';
-    const appendPromptParts = (prompt, parts) => buildSystemPromptWithReplyLanguage(
-      [stripReplyLanguageDirective(prompt || ''), ...parts.filter(Boolean)].join('\n\n'),
-      config,
-    );
     const routedSkillIndexPrompt = codingRoute?.decisions?.skills?.inject_index
       ? codingSkillIndexPrompt
       : '';
@@ -8748,25 +8800,24 @@ export async function createChatRuntime({
       executionMode,
       root,
     );
-    const skillPrompt = appendPromptParts(activeReplySystemPrompt, [
+    const memoryHint = isCodingMode ? '' : buildMemoryRouteHintBlock(memoryRoute);
+    const codingRouteDecisionBlock = buildCodingRouteDecisionBlock(codingRoute);
+    // Per-turn routing / skill / hook context belongs in the user turn, not the
+    // system prompt, so the system prompt stays a stable, cacheable prefix.
+    const turnRoutingContext = [
       routedSkillIndexPrompt,
       routedSelectedSkillPrompt,
       alwaysSkillPrompt,
-    ]);
-    const memoryHint = isCodingMode ? '' : buildMemoryRouteHintBlock(memoryRoute);
-    const routedSystemPrompt = appendPromptParts(skillPrompt, [
       memoryHint,
-      buildCodingRouteDecisionBlock(codingRoute),
-    ]);
-    const systemPromptWithHookContext = hookContexts.length > 0
-      ? appendPromptParts(routedSystemPrompt, hookContexts)
-      : routedSystemPrompt;
+      codingRouteDecisionBlock,
+      ...hookContexts,
+    ].filter(Boolean).join('\n\n');
     const codingRouteAllowedTools = isCodingMode
       ? EXECUTION_MODE_TOOL_POLICY.plan.filter((toolName) => (
           isCodingRouteToolAllowed(codingRoute, toolName)
         ))
       : undefined;
-    await persistLastSystemPrompt(systemPromptWithHookContext);
+    await persistLastSystemPrompt(activeReplySystemPrompt);
     const result = await askModel({
       text: expandedText,
       ...(optionModelText ? { modelText: optionModelText } : {}),
@@ -8774,7 +8825,8 @@ export async function createChatRuntime({
       session: currentSession,
       config,
       model,
-      systemPrompt: systemPromptWithHookContext,
+      systemPrompt: activeReplySystemPrompt,
+      turnRoutingContext,
       onAgentEvent,
       requestToolApproval: activeRequestToolApproval,
       requestUserInput: activeRequestUserInput,

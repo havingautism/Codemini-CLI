@@ -41,7 +41,7 @@ export function TodoList({ todos }) {
         return (
           <div
             key={i}
-            className="flex min-h-8 min-w-0 items-center gap-2.5 px-1.5 py-1.5 text-[13px] leading-5"
+            className="flex min-h-11 min-w-0 items-center gap-2.5 py-2.5 text-[13px] leading-5"
             role="listitem"
           >
             <span
@@ -117,11 +117,11 @@ export function TodoCard({ todos = [], persistKey = "" }) {
       </button>
       {open ? (
         todos.length > 0 ? (
-          <div className="codemini-fold-body codemini-tasks-list max-h-44 overflow-y-auto px-2 pb-2">
+          <div className="codemini-fold-body codemini-tasks-list max-h-44 overflow-y-auto px-3 pb-3 pt-2">
             <TodoList todos={todos} />
           </div>
         ) : (
-          <div className="px-3 pb-3 text-[13px] text-(--text-muted)">{t("todosEmpty")}</div>
+          <div className="px-3 pb-3 pt-2 text-[13px] text-(--text-muted)">{t("todosEmpty")}</div>
         )
       ) : null}
     </section>

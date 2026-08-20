@@ -57,11 +57,23 @@ export function buildSystemPromptWithReplyLanguage(baseSystemPrompt, config = {}
     buildGeneratedProseLanguageRule(config)
   ].join('\n');
 
-  return `${String(baseSystemPrompt || '').trim()}\n\n${directive}`.trim();
+  // Idempotent: strip any trailing directive first so re-applying never
+  // duplicates the block (the directive is always the last section).
+  const base = stripReplyLanguageDirective(baseSystemPrompt);
+  return `${base}\n\n${directive}`.trim();
 }
 
 export function stripReplyLanguageDirective(systemPrompt) {
-  return String(systemPrompt || '')
-    .replace(/\n{0,2}\[Reply language\](?:\n(?!\[[^\]\n]+\])[^\n]*)*/g, '')
-    .trim();
+  const text = String(systemPrompt || '');
+  // Strip only a "[Reply language]" directive BLOCK (exactly three lines:
+  // marker, "Respond in <lang>.", prose rule). Content BELOW the directive —
+  // e.g. the volatile <relevant_memory> section that now lives at the very end
+  // of the system prompt — must survive. Anchored to the LAST matching block
+  // so earlier literal "[Reply language]" text is left untouched.
+  const matches = [...text.matchAll(
+    /\n{0,2}\[Reply language\]\nRespond in (?:English|Simplified Chinese)\.\n[^\n]*(?=\n|$)/g,
+  )];
+  if (matches.length === 0) return text.trim();
+  const last = matches[matches.length - 1];
+  return `${text.slice(0, last.index)}${text.slice(last.index + last[0].length)}`.trim();
 }

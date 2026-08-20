@@ -14,7 +14,7 @@ test("trajectory reuses persisted session system prompt instead of recomposing",
   ]);
   assert.doesNotMatch(server, /\/api\/debug\/system-prompt/);
   assert.doesNotMatch(runtime, /getActiveSystemPrompt/);
-  assert.match(runtime, /persistLastSystemPrompt\(systemPromptWithHookContext\)/);
+  assert.match(runtime, /persistLastSystemPrompt\(activeReplySystemPrompt\)/);
   assert.match(runtime, /getLastSystemPrompt:/);
   assert.match(bridge, /lastSystemPrompt/);
   assert.doesNotMatch(panel, /fetchSessionSystemPrompt/);

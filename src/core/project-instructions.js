@@ -60,9 +60,10 @@ export async function loadProjectInstructions({
   if (!body) return '';
 
   return [
-    'Project Instructions:',
+    '<project_instructions>',
     `Source: ${found.relativePath}`,
-    body
+    body,
+    '</project_instructions>'
   ].join('\n');
 }
 

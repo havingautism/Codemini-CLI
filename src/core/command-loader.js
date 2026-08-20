@@ -490,9 +490,10 @@ function formatSkillIndexPromptBlock(entries = []) {
   const lines = entries.map((entry) => entry.promptLine);
   if (!lines.length) return '';
   return [
-    '# Indexed skills',
+    '<available_skills>',
     'Select only a strong match; load it with skill({name:"<name>"}).',
-    ...lines
+    ...lines,
+    '</available_skills>'
   ].join('\n');
 }
 

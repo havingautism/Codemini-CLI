@@ -95,17 +95,17 @@ function getEnvBlock(cwd = process.cwd(), config = {}, platform = process.platfo
     : context.sandbox.mode;
 
   if (vm) {
-    return `<env>
+    return `<environment>
 Working directory: project root
 Is directory a git repo: ${isGitRepo ? 'Yes' : 'No'}
 Platform: ${commandPlatform}
 Shell: bash
 Network: unrestricted outbound access
 Sandbox: ${context.sandbox.mode}
-</env>`;
+</environment>`;
   }
 
-  return `<env>
+  return `<environment>
 Working directory: ${cwd}
 Is directory a git repo: ${isGitRepo ? 'Yes' : 'No'}
 Host platform: ${platform}
@@ -114,7 +114,7 @@ Shell: ${context.shell || os.userInfo().shell || 'unknown'}
 Shell working directory: ${context.commandCwd}
 OS Version: ${os.version || os.release()}
 Sandbox: ${sandboxLabel}
-</env>`;
+</environment>`;
 }
 
 function getMarkdownImageBlock() {
