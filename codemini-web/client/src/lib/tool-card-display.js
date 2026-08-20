@@ -251,3 +251,34 @@ export function resolveToolHeaderParts(card, toolName, fileMeta) {
   }
   return { label: preferredLabel, arg: "", wrapArg: false };
 }
+
+export function formatToolDetail(value) {
+  if (typeof value !== "string") return JSON.stringify(value, null, 2);
+  const text = value.trim();
+  if (!text) return "";
+  try {
+    return JSON.stringify(JSON.parse(text), null, 2);
+  } catch {
+    return value;
+  }
+}
+
+export function getToolInspectSections(card, { hasFilePreview = false } = {}) {
+  const sections = [];
+  if (card?.arguments != null && card.arguments !== "") {
+    sections.push({ label: "Arguments", value: formatToolDetail(card.arguments) });
+  }
+  if (card?.summary && !hasFilePreview) {
+    sections.push({ label: "Summary", value: String(card.summary) });
+  }
+  if (card?.result && !hasFilePreview) {
+    sections.push({ label: "Result", value: formatToolDetail(card.result) });
+  }
+  return sections;
+}
+
+export function getConversationToolOutput(card, { hasFilePreview = false } = {}) {
+  if (hasFilePreview) return "";
+  if (card?.result == null || card.result === "") return "";
+  return formatToolDetail(card.result);
+}

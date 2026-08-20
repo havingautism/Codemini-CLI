@@ -164,6 +164,7 @@ function StepProcessFold({ segments }) {
                     <ToolCard
                       key={card.id || `${card.name}-${index}`}
                       card={card}
+                      embedded
                     />
                   ))}
                 </div>
@@ -302,7 +303,7 @@ function SubagentTaskDetails({ task }) {
   if (!text) return null;
 
   return (
-    <div className="mb-2 flex items-start gap-2.5 rounded-md bg-(--bg-primary) px-2.5 py-2 text-[11px] leading-relaxed">
+    <div className="mb-2 flex items-start gap-2.5 rounded-lg border border-(--border-default) bg-(--bg-primary) px-2.5 py-2 text-[11px] leading-relaxed">
       <span className="shrink-0 pt-px font-medium text-(--text-muted)">
         {t("planStepTask")}
       </span>
@@ -338,7 +339,7 @@ function SubagentDependencyDetails({ step, dependsOn = [] }) {
         : t("subagentDependencyReceived");
 
   return (
-    <div className="mb-2 flex min-h-8 items-center gap-2 rounded-md bg-(--bg-primary) px-2.5 py-1.5 text-[12px]">
+    <div className="mb-2 flex min-h-8 items-center gap-2 rounded-lg border border-(--border-default) bg-(--bg-primary) px-2.5 py-1.5 text-[12px]">
       <span
         className={cn(
           "size-1.5 shrink-0 rounded-full",
@@ -540,7 +541,7 @@ export function PlanToolCard({ card }) {
           {isSubagent ? <SubagentTaskDetails task={goal} /> : null}
           {todoCard ? (
             <div className="mb-2">
-              <ToolCard card={todoCard} />
+              <ToolCard card={todoCard} embedded />
             </div>
           ) : null}
           {isSubagent ? (

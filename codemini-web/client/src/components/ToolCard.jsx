@@ -30,8 +30,10 @@ import { interactiveRequestForSession } from "@/lib/session-ui-state.js";
 import { isShellToolName } from "@/lib/tool-names.js";
 import {
   extractToolName,
+  getConversationToolOutput,
   getFileToolMeta,
   getTodoToolItems,
+  getToolInspectSections,
   isRequestUserInputCard,
   isTodoToolCard,
   resolveToolHeaderParts,
@@ -60,17 +62,6 @@ const TOOL_ICONS = {
   web_search: MagnifyingGlass,
   default: Wrench,
 };
-
-function formatDetail(value) {
-  if (typeof value !== "string") return JSON.stringify(value, null, 2);
-  const text = value.trim();
-  if (!text) return "";
-  try {
-    return JSON.stringify(JSON.parse(text), null, 2);
-  } catch {
-    return value;
-  }
-}
 
 function basename(pathText) {
   const value = String(pathText || "").replace(/\\/g, "/");
@@ -164,7 +155,7 @@ function FilePreview({ meta }) {
   const themeType = usePatchThemeType();
   if (isUnifiedPatch(meta?.diffPreview)) {
     return (
-      <div className="mt-2 max-h-[420px] overflow-auto rounded-md border border-(--border-default) bg-(--bg-secondary) text-xs">
+      <div className="mt-2 max-h-[420px] overflow-auto rounded-md border border-(--border-default) bg-(--tool-detail-bg) text-xs">
         <PatchDiff
           patch={meta.diffPreview}
           options={{
@@ -179,7 +170,7 @@ function FilePreview({ meta }) {
   const lines = buildPreviewLines(meta);
   if (!lines.length) return null;
   return (
-    <div className="mt-2 overflow-hidden rounded-md border border-(--border-default) bg-(--bg-secondary)">
+    <div className="mt-2 overflow-hidden rounded-md border border-(--border-default) bg-(--tool-detail-bg)">
       <div className="flex items-center gap-2 border-b border-(--border-default) px-3 py-2 font-mono text-xs">
         <span className="min-w-0 flex-1 truncate text-(--text-primary)">
           {basename(meta.path) || "file"}
@@ -272,6 +263,8 @@ const STATUS_STYLES = {
 };
 const TOOL_ROW_CLASS =
   "msg-process-row flex min-h-10 select-none items-center gap-1 rounded-md px-1.5 py-0 text-[13px] hover:bg-[var(--bg-hover)]";
+const DETAIL_PRE_CLASS =
+  "m-0 max-h-100 overflow-x-auto whitespace-pre-wrap break-words rounded-md border border-(--border-default) bg-(--tool-detail-bg) p-2 font-mono text-xs leading-relaxed text-(--text-primary)";
 const TOOL_CHEVRON_CLASS = "size-[14px] shrink-0 text-(--text-process-detail)";
 const TOOL_ICON_CLASS =
   "flex size-[18px] shrink-0 items-center justify-center rounded text-(--text-process-detail)";
@@ -359,6 +352,7 @@ export function ToolCard({
   defaultOpen = false,
   collapsible = true,
   conversationVisual = true,
+  embedded = false,
 }) {
   const [open, setOpen] = useState(defaultOpen);
   const [fileAction, setFileAction] = useState("");
@@ -371,7 +365,13 @@ export function ToolCard({
     ? getTodoToolItems(card.arguments, card.result)
     : [];
   if (conversationVisual && isTasksTool) {
-    return <TodoCard todos={todoItems} persistKey={card?.id || ""} />;
+    return (
+      <TodoCard
+        todos={todoItems}
+        persistKey={card?.id || ""}
+        embedded={embedded}
+      />
+    );
   }
   if (conversationVisual && isRequestUserInputCard(card)) {
     return <UserInputToolCard card={card} />;
@@ -417,18 +417,24 @@ export function ToolCard({
     }
   };
 
-  const sections = [];
-  if (card.arguments != null && card.arguments !== "")
-    sections.push(["Arguments", formatDetail(card.arguments)]);
-  if (card.summary && !fileMeta)
-    sections.push(["Summary", String(card.summary)]);
-  if (card.result && !fileMeta)
-    sections.push(["Result", formatDetail(card.result)]);
+  const hasFilePreview = Boolean(fileMeta);
+  const inspectSections = conversationVisual
+    ? []
+    : getToolInspectSections(card, { hasFilePreview });
+  const conversationOutput = conversationVisual
+    ? getConversationToolOutput(card, { hasFilePreview })
+    : "";
+  const showBody =
+    showDetails &&
+    (hasFilePreview ||
+      Boolean(conversationOutput) ||
+      !conversationVisual);
 
   return (
     <div
       className={cn(
-        "codemini-message-surface msg-process-meta relative overflow-hidden after:pointer-events-none after:absolute after:inset-0 after:rounded-[inherit] after:border after:border-transparent after:content-['']",
+        "msg-process-meta relative overflow-hidden after:pointer-events-none after:absolute after:inset-0 after:rounded-[inherit] after:border after:border-transparent after:content-['']",
+        embedded ? "rounded-md" : "codemini-message-surface",
         card.status === "error" &&
           "after:border-[color:color-mix(in_srgb,var(--accent-red)_32%,transparent)]",
         card.status === "blocked" &&
@@ -524,31 +530,36 @@ export function ToolCard({
         </div>
       )}
 
-      {showDetails && (
+      {showBody && (
         <div className={cn("codemini-fold-body pb-2 pr-2", collapsible ? "pl-8" : "px-3")}>
           {fileMeta ? (
             <>
-              {fileMeta.summary && (
-                <div className="text-xs text-(--text-muted) pt-1 pl-1">
+              {!conversationVisual && fileMeta.summary && (
+                <div className="pt-1 pl-1 text-xs text-(--text-muted)">
                   {fileMeta.summary.split("\n")[0]}
                 </div>
               )}
               <BackupNotice meta={fileMeta} />
               <FilePreview meta={fileMeta} />
             </>
-          ) : sections.length === 0 ? (
+          ) : conversationVisual ? (
+            <pre className={cn(DETAIL_PRE_CLASS, "mt-1")}>{conversationOutput}</pre>
+          ) : inspectSections.length === 0 ? (
             <div className="text-xs text-[var(--text-muted)]">
               No details yet
             </div>
           ) : (
-            sections.map(([label, value], i) => (
-              <div key={i}>
-                <div className="mt-2 mb-1 text-[10px] font-bold uppercase tracking-[0.4px] text-[var(--text-muted)]">
-                  {label}
+            inspectSections.map((section, i) => (
+              <div key={section.label}>
+                <div
+                  className={cn(
+                    "mb-1 text-[10px] font-bold uppercase tracking-[0.4px] text-[var(--text-muted)]",
+                    i === 0 ? "mt-1" : "mt-2",
+                  )}
+                >
+                  {section.label}
                 </div>
-                <pre className="m-0 p-2 rounded bg-(--bg-primary) text-(--text-primary) font-mono text-xs leading-relaxed max-h-100 overflow-x-auto whitespace-pre-wrap break-words">
-                  {value}
-                </pre>
+                <pre className={DETAIL_PRE_CLASS}>{section.value}</pre>
               </div>
             ))
           )}

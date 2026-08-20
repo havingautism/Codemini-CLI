@@ -1407,6 +1407,8 @@
   --badge-edge: color-mix(in srgb, var(--text-primary) 8%, transparent);
   --bg-subtle: color-mix(in srgb, var(--text-primary) 3.5%, transparent);
   --message-surface: color-mix(in srgb, var(--bg-secondary) 72%, var(--bg-primary));
+  --fold-surface: transparent;
+  --tool-detail-bg: var(--bg-primary);
   --message-edge: color-mix(in srgb, var(--text-primary) 6%, transparent);
   --message-shadow:
     0 1px 2px color-mix(in srgb, black 6%, transparent),
@@ -1703,9 +1705,9 @@ body {
   /* box-shadow: var(--message-shadow); */
 }
 
-/* Expanded fold bodies stay lighter than the card chrome so nested cards still read as cards. */
+/* Nested fold bodies stay on the parent card; tool output uses --tool-detail-bg. */
 .codemini-fold-body {
-  background: var(--bg-primary);
+  background: var(--fold-surface);
 }
 
 .codemini-task-spinner {
@@ -1937,6 +1939,8 @@ body {
   --badge-bg: color-mix(in srgb, var(--text-primary) 8%, var(--bg-secondary));
   --badge-edge: color-mix(in srgb, var(--text-primary) 13%, transparent);
   --message-surface: color-mix(in srgb, var(--text-primary) 5%, var(--bg-secondary));
+  --fold-surface: transparent;
+  --tool-detail-bg: var(--bg-primary);
   --message-edge: color-mix(in srgb, var(--text-primary) 10%, transparent);
 }
 

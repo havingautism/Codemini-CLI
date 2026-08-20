@@ -61,9 +61,11 @@ test("Apple light reading surfaces stay white while chrome stays slightly gray",
     css,
     /\.msg-body \[data-streamdown="table-wrapper"\]>div:nth-child\(2\) \{[^}]*background: var\(--message-surface\)/,
   );
+  assert.match(css, /--fold-surface:\s*transparent/);
+  assert.match(css, /--tool-detail-bg:\s*var\(--bg-primary\)/);
   assert.match(
     css,
-    /\.codemini-fold-body \{[^}]*background: var\(--bg-primary\)/,
+    /\.codemini-fold-body \{[^}]*background: var\(--fold-surface\)/,
   );
 });
 

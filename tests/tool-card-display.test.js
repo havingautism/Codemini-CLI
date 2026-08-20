@@ -2,8 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  getConversationToolOutput,
   getFileToolMeta,
   getTodoToolItems,
+  getToolInspectSections,
   isConversationVisualToolCard,
 } from '../codemini-web/client/src/lib/tool-card-display.js';
 
@@ -71,4 +73,33 @@ test('delete tool preview keeps only the patch for its displayed file', () => {
   assert.equal((meta.diffPreview.match(/^diff --git /gm) || []).length, 1);
   assert.equal(meta.path, 'delete.txt');
   assert.equal(meta.diffPreview, deletedPatch);
+});
+
+test('conversation tool cards expose result output without inspect sections', () => {
+  const card = {
+    name: 'glob',
+    arguments: { pattern: '*.md' },
+    summary: 'keys: pattern,matches,truncated,total,engine',
+    result: '[glob: "*.md"]\nREADME.md',
+  };
+
+  assert.equal(getConversationToolOutput(card), '[glob: "*.md"]\nREADME.md');
+  assert.deepEqual(
+    getToolInspectSections(card).map((section) => section.label),
+    ['Arguments', 'Summary', 'Result'],
+  );
+});
+
+test('conversation file edits keep output on the preview, not a result dump', () => {
+  const card = {
+    name: 'edit',
+    arguments: { path: 'a.js', old_text: 'a', new_text: 'b' },
+    result: 'updated a.js',
+  };
+
+  assert.equal(getConversationToolOutput(card, { hasFilePreview: true }), '');
+  assert.deepEqual(
+    getToolInspectSections(card, { hasFilePreview: true }).map((section) => section.label),
+    ['Arguments'],
+  );
 });

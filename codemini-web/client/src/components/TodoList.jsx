@@ -73,7 +73,7 @@ export function TodoList({ todos }) {
 
 const todoOpenByKey = new Map();
 
-export function TodoCard({ todos = [], persistKey = "" }) {
+export function TodoCard({ todos = [], persistKey = "", embedded = false }) {
   const [open, setOpen] = useState(() =>
     persistKey ? todoOpenByKey.get(persistKey) === true : false,
   );
@@ -88,12 +88,18 @@ export function TodoCard({ todos = [], persistKey = "" }) {
 
   return (
     <section
-      className="codemini-message-surface relative w-full overflow-hidden rounded-xl"
+      className={cn(
+        "relative w-full overflow-hidden rounded-xl",
+        !embedded && "codemini-message-surface",
+      )}
       aria-label={t("tasksTitle")}
     >
       <button
         type="button"
-        className="msg-process-row flex min-h-11 w-full min-w-0 cursor-pointer select-none items-center gap-2.5 px-3 py-2.5 text-left text-[13px] transition-colors duration-150 hover:bg-[var(--bg-hover)] focus-visible:relative focus-visible:z-10"
+        className={cn(
+          "msg-process-row flex min-h-11 w-full min-w-0 cursor-pointer select-none items-center gap-2.5 text-left text-[13px] transition-colors duration-150 hover:bg-[var(--bg-hover)] focus-visible:relative focus-visible:z-10",
+          embedded ? "rounded-md px-1.5 py-1.5" : "px-3 py-2.5",
+        )}
         onClick={toggleOpen}
         aria-expanded={open}
       >
@@ -117,7 +123,12 @@ export function TodoCard({ todos = [], persistKey = "" }) {
       </button>
       {open ? (
         todos.length > 0 ? (
-          <div className="codemini-fold-body codemini-tasks-list max-h-44 overflow-y-auto px-3 pb-3 pt-2">
+          <div
+            className={cn(
+              "codemini-fold-body codemini-tasks-list max-h-44 overflow-y-auto",
+              embedded ? "px-1.5 pb-2 pt-1" : "px-3 pb-3 pt-2",
+            )}
+          >
             <TodoList todos={todos} />
           </div>
         ) : (
