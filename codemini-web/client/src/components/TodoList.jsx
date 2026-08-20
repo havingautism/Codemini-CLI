@@ -117,7 +117,7 @@ export function TodoCard({ todos = [], persistKey = "" }) {
       </button>
       {open ? (
         todos.length > 0 ? (
-          <div className="codemini-tasks-list max-h-44 overflow-y-auto px-2 pb-2">
+          <div className="codemini-fold-body codemini-tasks-list max-h-44 overflow-y-auto px-2 pb-2">
             <TodoList todos={todos} />
           </div>
         ) : (

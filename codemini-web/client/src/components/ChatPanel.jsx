@@ -11,7 +11,7 @@ import {
   useMessageScroller,
 } from "@/components/ui/message-scroller";
 import { cn } from "@/lib/utils";
-import { hasConversationContent } from "@/lib/chat-empty-state.js";
+import { hasConversationContent, isSupersededWaitingResponse } from "@/lib/chat-empty-state.js";
 import { getActiveMessageIndex } from "@/lib/chat-navigation.js";
 import { t } from "../../i18n/index.js";
 import { HomeEmptyVisual } from "./HomeEmptyVisual.jsx";
@@ -447,22 +447,25 @@ function ChatPanelContent({
           <MessageScrollerContent className="gap-0 py-[32px_0_24px]">
             <div className="w-[calc(100%_-_32px)] max-w-[920px] sm:w-[calc(100%_-_64px)] mx-auto">
               <Suspense fallback={null}>
-                {messages.map((msg) => (
-                  <MessageScrollerItem
-                    key={msg.id}
-                    data-msg-scroll-id={msg.id}
-                    data-scroll-anchor-id={msg.id}
-                  >
-                    <MessageBubble
-                      message={msg}
-                      onRetry={onRetryMessage}
-                      projectIsGit={projectIsGit}
-                      gitFiles={gitInfo?.files}
-                      dockTodo={Boolean(dockedTodoMessageId) && msg.id === dockedTodoMessageId}
-                      turnActive={busy}
-                    />
-                  </MessageScrollerItem>
-                ))}
+                {messages.map((msg, index) => {
+                  if (isSupersededWaitingResponse(messages, index)) return null;
+                  return (
+                    <MessageScrollerItem
+                      key={msg.id}
+                      data-msg-scroll-id={msg.id}
+                      data-scroll-anchor-id={msg.id}
+                    >
+                      <MessageBubble
+                        message={msg}
+                        onRetry={onRetryMessage}
+                        projectIsGit={projectIsGit}
+                        gitFiles={gitInfo?.files}
+                        dockTodo={Boolean(dockedTodoMessageId) && msg.id === dockedTodoMessageId}
+                        turnActive={busy}
+                      />
+                    </MessageScrollerItem>
+                  );
+                })}
               </Suspense>
             </div>
           </MessageScrollerContent>

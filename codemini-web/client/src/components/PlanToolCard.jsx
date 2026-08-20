@@ -228,7 +228,7 @@ function StepAnswer({ segment }) {
       {open ? (
         <ScrollArea
           type="auto"
-          className="mt-2 h-64 rounded-md bg-(--bg-tertiary) dark:bg-(--bg-primary)"
+          className="mt-2 h-64 rounded-md bg-(--bg-primary)"
           viewportClassName="px-3 py-2 text-[12px] leading-relaxed text-(--text-secondary)"
         >
           <StreamdownRenderer
@@ -302,7 +302,7 @@ function SubagentTaskDetails({ task }) {
   if (!text) return null;
 
   return (
-    <div className="mb-2 flex items-start gap-2.5 rounded-md bg-(--bg-tertiary) px-2.5 py-2 text-[11px] leading-relaxed dark:bg-(--bg-primary)">
+    <div className="mb-2 flex items-start gap-2.5 rounded-md bg-(--bg-primary) px-2.5 py-2 text-[11px] leading-relaxed">
       <span className="shrink-0 pt-px font-medium text-(--text-muted)">
         {t("planStepTask")}
       </span>
@@ -338,7 +338,7 @@ function SubagentDependencyDetails({ step, dependsOn = [] }) {
         : t("subagentDependencyReceived");
 
   return (
-    <div className="mb-2 flex min-h-8 items-center gap-2 rounded-md bg-(--bg-tertiary) px-2.5 py-1.5 text-[12px] dark:bg-(--bg-primary)">
+    <div className="mb-2 flex min-h-8 items-center gap-2 rounded-md bg-(--bg-primary) px-2.5 py-1.5 text-[12px]">
       <span
         className={cn(
           "size-1.5 shrink-0 rounded-full",
@@ -536,7 +536,7 @@ export function PlanToolCard({ card }) {
       </button>
 
       {expanded ? (
-        <div className="px-3 pb-3 pt-2">
+        <div className="codemini-fold-body px-3 pb-3 pt-2">
           {isSubagent ? <SubagentTaskDetails task={goal} /> : null}
           {todoCard ? (
             <div className="mb-2">

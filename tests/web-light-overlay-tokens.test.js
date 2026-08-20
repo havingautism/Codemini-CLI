@@ -49,6 +49,7 @@ test("Apple light reading surfaces stay white while chrome stays slightly gray",
 
   assert.match(light, /--bg-primary:\s*#ffffff/);
   assert.match(light, /--bg-secondary:\s*#f5f5f7/);
+  assert.match(light, /--bg-tertiary:\s*#f8f8fa/);
   assert.match(light, /--shell-canvas:\s*#f8f8fa/);
   assert.match(light, /--message-surface:\s*var\(--bg-secondary\)/);
   assert.match(light, /--material-elevated:\s*rgba\(255,\s*255,\s*255,\s*0\.96\)/);
@@ -59,6 +60,10 @@ test("Apple light reading surfaces stay white while chrome stays slightly gray",
   assert.match(
     css,
     /\.msg-body \[data-streamdown="table-wrapper"\]>div:nth-child\(2\) \{[^}]*background: var\(--message-surface\)/,
+  );
+  assert.match(
+    css,
+    /\.codemini-fold-body \{[^}]*background: var\(--bg-primary\)/,
   );
 });
 

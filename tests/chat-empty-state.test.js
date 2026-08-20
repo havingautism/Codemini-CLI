@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 
-import { hasConversationContent } from '../codemini-web/client/src/lib/chat-empty-state.js';
+import { hasConversationContent, isSupersededWaitingResponse } from '../codemini-web/client/src/lib/chat-empty-state.js';
 
 test('startup Hook metadata does not suppress the project welcome page', () => {
   const startupHookMessage = {
@@ -63,26 +63,43 @@ test('empty session uses a CSS aurora that unmounts once conversation starts', a
   );
 });
 
-test('waiting-response loader sits under the General role label, not above it', async () => {
+test('waiting-response is a dots loader and disappears once General starts rendering', async () => {
   const source = await fs.readFile(
     'codemini-web/client/src/components/MessageBubble.jsx',
     'utf8',
   );
   const start = source.indexOf('transientKey === "waiting-response"');
   assert.ok(start >= 0, 'waiting-response branch must exist');
-  const slice = source.slice(start, start + 1200);
-  const labelIndex = slice.search(/ROLE_STYLES\.general\.label|style\.label/);
-  const loaderIndex = slice.indexOf('ResponseLoader');
-  assert.ok(labelIndex >= 0, 'waiting-response must render the General label');
-  assert.ok(loaderIndex >= 0, 'waiting-response must render the loader');
-  assert.ok(
-    labelIndex < loaderIndex,
-    'General label must be rendered before the loader',
-  );
+  const slice = source.slice(start, start + 800);
+  assert.match(slice, /<Spinner/);
   assert.doesNotMatch(
-    slice.slice(0, loaderIndex),
-    /px-6/,
-    'waiting-response must use the same bubble padding as General',
+    slice,
+    /ROLE_STYLES\.general/,
+    'waiting-response must not render a General label of its own',
+  );
+
+  const panel = await fs.readFile(
+    'codemini-web/client/src/components/ChatPanel.jsx',
+    'utf8',
+  );
+  assert.match(panel, /isSupersededWaitingResponse/);
+
+  const waiting = {
+    id: 'wait-1',
+    role: 'system',
+    transientKey: 'waiting-response',
+  };
+  const general = { id: 'answer-1', role: 'general', segments: [] };
+  assert.equal(
+    isSupersededWaitingResponse([{ id: 'you-1', role: 'you' }, waiting], 1),
+    false,
+  );
+  assert.equal(
+    isSupersededWaitingResponse(
+      [{ id: 'you-1', role: 'you' }, waiting, general],
+      1,
+    ),
+    true,
   );
 });
 

@@ -30,6 +30,7 @@ import {
   LinearRing,
   ResponseLoader,
   SessionOrb,
+  Spinner,
 } from "@/components/ui/spinner";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -2304,22 +2305,10 @@ export const MessageBubble = memo(function MessageBubble({
     if (message.transientKey === "waiting-response") {
       return (
         <div data-message-id={message.id} className="py-2 group/message">
-          <div>
-            <div className="flex items-center gap-2 mb-1.5">
-              <span
-                className={cn(
-                  "inline-flex h-5 items-center rounded-md border px-1.5 py-0 text-[10px] font-medium uppercase tracking-[0.04em]",
-                  ROLE_STYLES.general.badge,
-                )}
-              >
-                {ROLE_STYLES.general.label}
-              </span>
-            </div>
-            <ResponseLoader
-              className="msg-body"
-              label={legacyText || t("waitingResponse")}
-            />
-          </div>
+          <Spinner
+            className="min-h-5"
+            aria-label={legacyText || t("waitingResponse")}
+          />
         </div>
       );
     }

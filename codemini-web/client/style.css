@@ -1703,6 +1703,11 @@ body {
   /* box-shadow: var(--message-shadow); */
 }
 
+/* Expanded fold bodies stay lighter than the card chrome so nested cards still read as cards. */
+.codemini-fold-body {
+  background: var(--bg-primary);
+}
+
 .codemini-task-spinner {
   width: 14px;
   height: 14px;
@@ -3754,7 +3759,7 @@ samp {
   --sidebar-foreground: #1d1d1f;
   --bg-primary: #ffffff;
   --bg-secondary: #f5f5f7;
-  --bg-tertiary: #ececf0;
+  --bg-tertiary: #f8f8fa;
   --bg-input: rgba(255, 255, 255, 0.96);
   --text-primary: #1d1d1f;
   --text-secondary: #6e6e73;

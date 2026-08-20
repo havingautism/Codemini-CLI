@@ -132,7 +132,7 @@ function InspectSection({ label, value }) {
           {label}
         </div>
       ) : null}
-      <pre className="m-0 max-h-[min(60vh,32rem)] overflow-auto whitespace-pre-wrap break-words rounded-md bg-(--bg-tertiary) p-3 font-mono text-xs leading-relaxed text-(--text-primary) dark:bg-(--bg-primary)">
+      <pre className="m-0 max-h-[min(60vh,32rem)] overflow-auto whitespace-pre-wrap break-words rounded-md bg-(--bg-primary) p-3 font-mono text-xs leading-relaxed text-(--text-primary)">
         {text}
       </pre>
     </section>
