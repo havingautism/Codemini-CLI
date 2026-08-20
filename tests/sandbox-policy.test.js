@@ -6,17 +6,34 @@ import {
   assertSandboxWriteAllowed,
   isSandboxEnabled,
   normalizeSandboxMode,
+  normalizeSandboxNetwork,
+  readonlySandboxRoots,
+  readonlySandboxVolumes,
+  toSandboxSkillPath,
   resolveApprovalUiEnabled,
   resolveSandboxPolicy,
   validateSandboxEscalationArgs,
   writableRootsForMode,
 } from '../src/core/sandbox-policy.js';
+import { getSessionsDir, getSkillsDir } from '../src/core/paths.js';
 import { __setSandboxProbeTestHooks } from '../src/core/sandbox-probe.js';
 
 test('normalizeSandboxMode defaults to workspace-write on every platform', () => {
   assert.equal(normalizeSandboxMode('', { platform: 'win32' }), 'workspace-write');
   assert.equal(normalizeSandboxMode('', { platform: 'linux' }), 'workspace-write');
   assert.equal(normalizeSandboxMode('read_only'), 'read-only');
+});
+
+test('normalizeSandboxNetwork defaults to allow-all and maps deny aliases', () => {
+  assert.equal(normalizeSandboxNetwork(undefined), 'allow-all');
+  assert.equal(normalizeSandboxNetwork(''), 'allow-all');
+  assert.equal(normalizeSandboxNetwork('allow-all'), 'allow-all');
+  assert.equal(normalizeSandboxNetwork('ALL_ALL'), 'allow-all');
+  assert.equal(normalizeSandboxNetwork('bogus'), 'allow-all');
+  assert.equal(normalizeSandboxNetwork('none'), 'none');
+  assert.equal(normalizeSandboxNetwork('deny-all'), 'none');
+  assert.equal(normalizeSandboxNetwork('deny_all'), 'none');
+  assert.equal(normalizeSandboxNetwork('deny'), 'none');
 });
 
 test('sandbox escalation requires paired fields and a strictly wider mode', () => {
@@ -174,5 +191,68 @@ test('assertSandboxWriteAllowed fences read-only and workspace-write', () => {
   });
   if (!underTmp) {
     assert.match(String(denied || ''), /sandbox: file access denied/);
+  }
+});
+
+test('readonly sandbox roots expose global skills but not sessions or writes', () => {
+  const previous = process.env.CODEMINI_GLOBAL_DIR;
+  const globalDir = path.resolve('/opt/codemini-readonly-skills-global');
+  process.env.CODEMINI_GLOBAL_DIR = globalDir;
+  try {
+    const ws = path.join(os.tmpdir(), 'codemini-readonly-skills-ws');
+    const policy = { mode: 'workspace-write', workspaceRoot: ws, platform: 'darwin' };
+    const roots = readonlySandboxRoots(policy);
+    assert.deepEqual(roots, [getSkillsDir()]);
+    assert.equal(roots.includes(getSessionsDir()), false);
+    assert.equal(writableRootsForMode(policy).includes(getSkillsDir()), false);
+    assert.match(
+      String(assertSandboxWriteAllowed(path.join(getSkillsDir(), 'demo', 'SKILL.md'), {
+        enabled: true,
+        mode: 'workspace-write',
+        workspaceRoot: ws,
+        platform: 'darwin',
+      }) || ''),
+      /sandbox: file access denied/,
+    );
+    assert.deepEqual(readonlySandboxVolumes({ ...policy, platform: 'darwin' }), [{
+      hostPath: getSkillsDir(),
+      guestPath: '/codemini-skills',
+      readonly: true,
+    }]);
+    assert.deepEqual(readonlySandboxVolumes({ ...policy, platform: 'win32' }), [{
+      hostPath: getSkillsDir(),
+      guestPath: '/codemini-skills',
+      readonly: true,
+    }]);
+    assert.equal(
+      toSandboxSkillPath(path.join(getSkillsDir(), 'demo', 'scripts', 'score.py'), {
+        ...policy,
+        platform: 'win32',
+      }),
+      '/codemini-skills/demo/scripts/score.py',
+    );
+    assert.equal(
+      toSandboxSkillPath(path.join(getSkillsDir(), 'demo', 'scripts', 'score.py'), policy),
+      '/codemini-skills/demo/scripts/score.py',
+    );
+  } finally {
+    if (previous === undefined) delete process.env.CODEMINI_GLOBAL_DIR;
+    else process.env.CODEMINI_GLOBAL_DIR = previous;
+  }
+});
+
+test('skills inside the workspace are not extra-mounted', () => {
+  const previous = process.env.CODEMINI_GLOBAL_DIR;
+  const ws = path.join(os.tmpdir(), 'codemini-skills-inside-ws');
+  process.env.CODEMINI_GLOBAL_DIR = ws;
+  try {
+    assert.deepEqual(readonlySandboxRoots({
+      mode: 'workspace-write',
+      workspaceRoot: ws,
+      platform: 'darwin',
+    }), []);
+  } finally {
+    if (previous === undefined) delete process.env.CODEMINI_GLOBAL_DIR;
+    else process.env.CODEMINI_GLOBAL_DIR = previous;
   }
 });

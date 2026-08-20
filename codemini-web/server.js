@@ -5,6 +5,8 @@ import { execSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 import { parseArgs as parseNodeArgs } from "node:util";
+import { promisify } from "node:util";
+import zlib from "node:zlib";
 import { Readable } from "node:stream";
 import sharp from "sharp";
 import fg from "fast-glob";
@@ -43,6 +45,7 @@ import {
   serializeSessionMessages,
 } from "./lib/runtime-bridge.js";
 import { RuntimePool, startRuntimeEvictionTimer } from "./lib/runtime-pool.js";
+import { createEmptySessionAllocator } from "./lib/empty-session-allocator.js";
 import { resolveGitCwd, shouldAdoptGitCwd } from "./lib/git-project.js";
 import {
   createGitInfoReader,
@@ -535,6 +538,11 @@ try {
   if (stat.isDirectory()) CLIENT_DIR = distDir;
 } catch {}
 
+const gzipAsync = promisify(zlib.gzip);
+const FINGERPRINTED_ASSET = /-[A-Za-z0-9]{8,}\.[A-Za-z0-9]+$/;
+const COMPRESSIBLE_EXT = new Set([".html", ".css", ".js", ".mjs", ".json", ".svg", ".md", ".txt"]);
+const staticFileCache = new Map();
+
 const MIME_TYPES = {
   ".html": "text/html; charset=utf-8",
   ".css": "text/css; charset=utf-8",
@@ -602,6 +610,7 @@ export function parseArgs(argv) {
       model: { type: "string", short: "m" },
       project: { type: "string", short: "d" },
       open: { type: "boolean", default: true },
+      host: { type: "string" },
     },
   });
   return {
@@ -610,6 +619,8 @@ export function parseArgs(argv) {
     model: values.model,
     project: values.project,
     open: values.open,
+    // Local-only by default; pass --host 0.0.0.0 to expose on the LAN.
+    host: String(values.host || "127.0.0.1").trim() || "127.0.0.1",
   };
 }
 
@@ -733,7 +744,17 @@ export function createEventBroker() {
       });
       res.write(`data: ${JSON.stringify({ type: "connected" })}\n\n`);
       clients.add(res);
-      res.on("close", () => clients.delete(res));
+      const ping = setInterval(() => {
+        try {
+          res.write(": ping\n\n");
+        } catch {
+          clearInterval(ping);
+        }
+      }, 15000);
+      res.on("close", () => {
+        clearInterval(ping);
+        clients.delete(res);
+      });
     },
   };
 }
@@ -764,6 +785,39 @@ const TERMINAL_RUNTIME_STATUSES = new Set([
   "idle",
 ]);
 const APPROVAL_ACTION_NAMES = new Set(["approval.approve", "approval.reject"]);
+
+function matchesEmptySessionProject(session, projectDir) {
+  if (isGeneralProjectDir(projectDir)) {
+    return isGeneralProjectDir(session.projectDir);
+  }
+  if (isGeneralProjectDir(session.projectDir)) return false;
+  return (
+    normalizeProjectDirKey(session.projectDir) ===
+    normalizeProjectDirKey(projectDir)
+  );
+}
+
+function createPooledEmptySessionAllocator(
+  pool,
+  {
+    listSessions: listFn = listSessions,
+    loadSession: loadFn = loadSession,
+    createSession: createFn = createSession,
+  } = {},
+) {
+  return createEmptySessionAllocator({
+    listSessions: () => listFn(1000, { includeEmpty: true }),
+    loadSession: loadFn,
+    createSession: createFn,
+    projectKeyOf: (projectDir) =>
+      isGeneralProjectDir(projectDir)
+        ? "__codemini_general__"
+        : normalizeProjectDirKey(projectDir) || String(projectDir || ""),
+    matchesProject: matchesEmptySessionProject,
+    isBusy: (sessionId) =>
+      ACTIVE_RUNTIME_STATUSES.has(pool.getSessionState(sessionId)?.status),
+  });
+}
 
 function interactionConflict(res, status) {
   const alreadyResuming = status === "queued" || status === "running";
@@ -903,12 +957,14 @@ export function createWebRuntimeApi({
   listSessions: listStoredSessions = listSessions,
   deleteSession: deleteStoredSession = deleteSession,
   createSession: createStoredSession = createSession,
+  loadSession: loadStoredSession = loadSession,
   loadActiveProjects = loadWebuiActiveProjects,
   runtimeStatusStore = null,
   getDefaultProjectDir = () => process.cwd(),
   setDefaultProjectDir = null,
   loadConfig: loadRuntimeConfig = loadConfig,
   getConfigStatus: getRuntimeConfigStatus = getConfigStatus,
+  allocateEmptySession = null,
 }) {
   const loadBridge = async (res, sessionId) => {
     const id = requireSessionId(res, sessionId);
@@ -933,6 +989,13 @@ export function createWebRuntimeApi({
     }
     return poolBridge(pool, id);
   };
+  const allocateSession =
+    allocateEmptySession ||
+    createPooledEmptySessionAllocator(pool, {
+      listSessions: listStoredSessions,
+      loadSession: loadStoredSession,
+      createSession: createStoredSession,
+    });
   const submitOperation = (sessionId, invoke) =>
     pool.submit(sessionId, (bridge) =>
       typeof bridge.runPooled === "function"
@@ -999,15 +1062,8 @@ export function createWebRuntimeApi({
         const projectDir =
           normalizeProjectPath(body?.projectDir || getDefaultProjectDir()) ||
           getDefaultProjectDir();
-        const projectKey = normalizeProjectDirKey(projectDir);
-        const all = await listSessions(1000, { includeEmpty: true });
-        const reusable = all.find((session) => {
-          if (Number(session.messageCount || 0) > 0) return false;
-          return normalizeProjectDirKey(session.projectDir) === projectKey;
-        });
-        const session = reusable
-          ? await loadSession(reusable.id)
-          : await createStoredSession(projectDir);
+        const allocated = await allocateSession(projectDir);
+        const session = allocated.session;
         await ensureSession(session.id);
         const isGeneral = isGeneralProjectDir(session.projectDir);
         jsonResponse(res, {
@@ -1015,7 +1071,7 @@ export function createWebRuntimeApi({
           sessionId: session.id,
           cwd: session.projectDir,
           isGeneral,
-          reusedSession: Boolean(reusable?.id),
+          reusedSession: allocated.reused,
         });
       } catch (error) {
         jsonResponse(
@@ -1328,7 +1384,9 @@ export function createWebRuntimeApi({
       const body = await readBody(req);
       const id = requireSessionId(res, body?.sessionId);
       if (!id) return true;
-      const aborted = await pool.abort(id);
+      const aborted = await pool.abort(id, {
+        continueInPlace: body?.continueInPlace === true,
+      });
       jsonResponse(res, { ok: aborted }, aborted ? 200 : 404);
       return true;
 
@@ -2030,14 +2088,35 @@ function buildCodeWikiHistoryContext(history = [], replyLanguage) {
   return lines.length > 1 ? lines.join("\n") : "";
 }
 
-async function serveStatic(res, filePath) {
-  const ext = path.extname(filePath);
+export async function serveStatic(res, filePath, req) {
+  const ext = path.extname(filePath).toLowerCase();
   const mime = MIME_TYPES[ext] || "application/octet-stream";
   try {
-    const data = await fs.readFile(filePath);
-    res.writeHead(200, { "Content-Type": mime, "Content-Length": data.length });
-    res.end(data);
+    const stat = await fs.stat(filePath);
+    let entry = staticFileCache.get(filePath);
+    if (!entry || entry.mtimeMs !== stat.mtimeMs) {
+      entry = { mtimeMs: stat.mtimeMs, raw: await fs.readFile(filePath), gzip: null };
+      staticFileCache.set(filePath, entry);
+    }
+    const headers = { "Content-Type": mime };
+    if (ext === ".html") headers["Cache-Control"] = "no-cache";
+    else if (FINGERPRINTED_ASSET.test(path.basename(filePath))) {
+      headers["Cache-Control"] = "public, max-age=31536000, immutable";
+    }
+    const accept = String(req?.headers?.["accept-encoding"] || "");
+    const useGzip = COMPRESSIBLE_EXT.has(ext) && accept.includes("gzip");
+    let body = entry.raw;
+    if (useGzip) {
+      if (!entry.gzip) entry.gzip = await gzipAsync(entry.raw);
+      body = entry.gzip;
+      headers["Content-Encoding"] = "gzip";
+      headers["Vary"] = "Accept-Encoding";
+    }
+    headers["Content-Length"] = body.length;
+    res.writeHead(200, headers);
+    res.end(body);
   } catch {
+    staticFileCache.delete(filePath);
     res.writeHead(404, { "Content-Type": "text/plain" });
     res.end("Not found");
   }
@@ -2551,7 +2630,16 @@ async function main() {
       }
       const sessionBridge = new RuntimeBridge(runtime, {
         sessionId,
-        onEvent: eventBroker.publish,
+        onEvent: (event) => {
+          if (event?.type === "session:forked") {
+            const previousId = String(event.previousSessionId || "").trim();
+            const nextId = String(event.nextSessionId || "").trim();
+            if (previousId && nextId && previousId !== nextId) {
+              pool.rekeySession(previousId, nextId);
+            }
+          }
+          eventBroker.publish(event);
+        },
         onLifecycle: (lifecycle) => {
           const status = lifecycle?.status;
           if (status === "running") return;
@@ -2594,7 +2682,7 @@ async function main() {
           resolve({ status });
         },
       });
-      sessionBridge.abort = () => sessionBridge.handleAbort();
+      sessionBridge.abort = (options) => sessionBridge.handleAbort(options);
       sessionBridge.runPooled = (start) =>
         new Promise((resolve, reject) => {
           lifecycleWaiters.set(sessionId, resolve);
@@ -2655,11 +2743,13 @@ async function main() {
       else await runtimeStatusStore.set(session.id, "idle");
     },
   });
+  const allocateEmptySession = createPooledEmptySessionAllocator(pool);
   const runtimeApi = createWebRuntimeApi({
     pool,
     eventBroker,
     ensureSession: ensurePooledSession,
     runtimeStatusStore,
+    allocateEmptySession,
     getDefaultProjectDir: () => currentProjectDir,
     setDefaultProjectDir: (dir) => {
       const next = String(dir || "").trim();
@@ -3259,38 +3349,22 @@ async function main() {
         if (!stat.isDirectory()) throw new Error("Not a directory");
         let reusedSessionId = null;
         let session;
-        if (openingGeneral) {
-          const all = await listSessions(1000, { includeEmpty: true });
-          const reusable = all.find(
-            (entry) =>
-              isGeneralProjectDir(entry.projectDir) &&
-              Number(entry.messageCount || 0) === 0,
-          );
-          // Always reuse one empty general draft instead of stacking placeholders.
-          reusedSessionId = reusable?.id || null;
-          session = reusedSessionId
-            ? await loadSession(reusedSessionId)
-            : await createSession(GENERAL_PROJECT_DIR);
-        } else {
+        if (!openingGeneral) {
           await patchWebuiActiveProjects({
             action: "activate",
             projectDir: resolved,
           });
           currentProjectDir = resolved;
-          if (forceNewSession) {
-            const all = await listSessions(1000, { includeEmpty: true });
-            const targetKey = normalizeProjectDirKey(currentProjectDir);
-            const reusable = all.find(
-              (entry) =>
-                !isGeneralProjectDir(entry.projectDir) &&
-                normalizeProjectDirKey(entry.projectDir) === targetKey &&
-                Number(entry.messageCount || 0) === 0,
-            );
-            reusedSessionId = reusable?.id || null;
-          } else {
-            reusedSessionId =
-              await findPreferredSessionForProject(currentProjectDir);
-          }
+        }
+        if (openingGeneral || forceNewSession) {
+          const allocated = await allocateEmptySession(
+            openingGeneral ? GENERAL_PROJECT_DIR : currentProjectDir,
+          );
+          reusedSessionId = allocated.reused ? allocated.session.id : null;
+          session = allocated.session;
+        } else {
+          reusedSessionId =
+            await findPreferredSessionForProject(currentProjectDir);
           session = reusedSessionId
             ? await loadSession(reusedSessionId)
             : await createSession(currentProjectDir);
@@ -4340,7 +4414,7 @@ async function main() {
         res.end();
         return;
       }
-      await serveStatic(res, filePath);
+      await serveStatic(res, filePath, req);
       return;
     }
 
@@ -4398,7 +4472,7 @@ async function main() {
         }
         return;
       }
-      await serveStatic(res, reportPath);
+      await serveStatic(res, reportPath, req);
       return;
     }
 
@@ -5498,10 +5572,11 @@ async function main() {
     });
   });
   const server = serve(
-    { fetch: app.fetch, port: args.port, overrideGlobalObjects: false },
+    { fetch: app.fetch, port: args.port, hostname: args.host, overrideGlobalObjects: false },
     () => {
+    const displayHost = args.host === "0.0.0.0" ? "localhost" : args.host;
     console.log(
-      `\n  Codemini Web UI\n  http://localhost:${args.port}\n  Project: ${currentProjectDir}\n`,
+      `\n  Codemini Web UI\n  http://${displayHost}:${args.port}\n  Project: ${currentProjectDir}\n`,
     );
     if (!args.open) return;
     const openCmd =

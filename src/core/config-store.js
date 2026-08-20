@@ -119,7 +119,8 @@ const DEFAULT_CONFIG = {
     search_provider: 'bing_rss',
     search_api_key: '',
     tavily_api_key: '',
-    exa_api_key: ''
+    exa_api_key: '',
+    firecrawl_api_key: ''
   },
   webui: {
     sidebar: {
@@ -308,12 +309,13 @@ function normalizePolicyLists(config) {
   next.web = next.web || {};
   next.web.search_enabled = next.web.search_enabled !== false;
   const rawSearchProvider = String(next.web.search_provider || '').trim().toLowerCase().replace(/[-\s]+/g, '_');
-  next.web.search_provider = ['bing_rss', 'bing', 'tavily', 'exa'].includes(rawSearchProvider)
+  next.web.search_provider = ['bing_rss', 'bing', 'tavily', 'exa', 'firecrawl'].includes(rawSearchProvider)
     ? (rawSearchProvider === 'bing' ? 'bing_rss' : rawSearchProvider)
     : 'bing_rss';
   next.web.search_api_key = String(next.web.search_api_key || '').trim();
   next.web.tavily_api_key = String(next.web.tavily_api_key || '').trim();
   next.web.exa_api_key = String(next.web.exa_api_key || '').trim();
+  next.web.firecrawl_api_key = String(next.web.firecrawl_api_key || '').trim();
   next.webui = next.webui || {};
   next.webui.sidebar = next.webui.sidebar || {};
   next.webui.sidebar.active_project_dirs = uniqueStrings(

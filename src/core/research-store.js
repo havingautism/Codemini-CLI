@@ -302,6 +302,28 @@ function toJson(value) {
   return JSON.stringify(value ?? null);
 }
 
+/** Structural equality for plain JSON data (objects/arrays/primitives). */
+function deepEqual(a, b) {
+  if (Object.is(a, b)) return true;
+  if (typeof a !== 'object' || typeof b !== 'object' || a === null || b === null) return false;
+  if (Array.isArray(a) !== Array.isArray(b)) return false;
+  if (Array.isArray(a)) {
+    if (a.length !== b.length) return false;
+    for (let index = 0; index < a.length; index += 1) {
+      if (!deepEqual(a[index], b[index])) return false;
+    }
+    return true;
+  }
+  const aKeys = Object.keys(a);
+  const bKeys = Object.keys(b);
+  if (aKeys.length !== bKeys.length) return false;
+  for (const key of aKeys) {
+    if (!Object.prototype.hasOwnProperty.call(b, key)) return false;
+    if (!deepEqual(a[key], b[key])) return false;
+  }
+  return true;
+}
+
 function sumLegacyPools(pools, field) {
   if (!pools || typeof pools !== 'object') return 0;
   const base = Number(pools.base?.[field]) || 0;
@@ -419,7 +441,7 @@ export function extractResearchResumeCheckpoint(timeline = []) {
   return null;
 }
 
-function mapSession(row) {
+function mapSession(row, { includeReportMarkdown = true } = {}) {
   if (!row) return null;
   const timeline = Array.isArray(parseJson(row.timeline_json, []))
     ? parseJson(row.timeline_json, [])
@@ -441,7 +463,7 @@ function mapSession(row) {
     timeline,
     resumeCheckpoint: extractResearchResumeCheckpoint(timeline),
     conclusions: normalizeResearchConclusions(parseJson(row.conclusions_json, [])),
-    reportMarkdown: row.report_markdown || '',
+    ...(includeReportMarkdown ? { reportMarkdown: row.report_markdown || '' } : {}),
   };
 }
 
@@ -600,21 +622,30 @@ export function createResearchSession({
   return getResearchSession(id);
 }
 
-export function listResearchSessions({ query = '' } = {}) {
+export function listResearchSessions({ query = '', limit = 100 } = {}) {
   const db = getGlobalDatabase();
   const trimmed = String(query || '').trim();
+  const columns = `
+    id, created_at, updated_at, question, preferences_json, seed_json,
+    budget_json, budget_used_json, phase, run_state, last_run_phase,
+    last_error, plan_json, timeline_json, conclusions_json
+  `;
   const rows = trimmed
     ? db.prepare(`
-        SELECT * FROM research_sessions
+        SELECT ${columns}
+        FROM research_sessions
         WHERE lower(question) LIKE '%' || lower(?) || '%'
            OR lower(report_markdown) LIKE '%' || lower(?) || '%'
         ORDER BY updated_at DESC, created_at DESC
-      `).all(trimmed, trimmed)
+        LIMIT ?
+      `).all(trimmed, trimmed, Math.max(1, Number(limit) || 100))
     : db.prepare(`
-        SELECT * FROM research_sessions
+        SELECT ${columns}
+        FROM research_sessions
         ORDER BY updated_at DESC, created_at DESC
-      `).all();
-  return rows.map(mapSession);
+        LIMIT ?
+      `).all(Math.max(1, Number(limit) || 100));
+  return rows.map((row) => mapSession(row, { includeReportMarkdown: false }));
 }
 
 export function getResearchSession(sessionId) {
@@ -639,60 +670,78 @@ export function deleteResearchSession(sessionId) {
 export function updateResearchSession(sessionId, patch = {}) {
   const current = getResearchSession(sessionId);
   if (!current) return null;
-  const next = {
-    question: patch.question != null ? String(patch.question) : current.question,
-    preferences: patch.preferences != null
-      ? normalizePreferences({ ...current.preferences, ...patch.preferences })
-      : current.preferences,
-    seed: patch.seed != null ? normalizeSeed(patch.seed) : current.seed,
-    budget: patch.budget != null ? normalizeBudget(patch.budget) : current.budget,
-    budgetUsed: patch.budgetUsed != null
-      ? normalizeBudgetUsed(patch.budgetUsed)
-      : current.budgetUsed,
-    phase: patch.phase != null ? String(patch.phase) : current.phase,
-    runState: patch.runState != null
-      ? normalizeResearchRunState(patch.runState)
-      : current.runState,
-    lastRunPhase: patch.lastRunPhase != null
-      ? normalizeResearchRunPhase(patch.lastRunPhase)
-      : current.lastRunPhase,
-    lastError: patch.lastError != null ? String(patch.lastError) : current.lastError,
-    plan: patch.plan != null ? patch.plan : current.plan,
-    timeline: patch.timeline != null
-      ? (Array.isArray(patch.timeline) ? patch.timeline : current.timeline)
-      : current.timeline,
-    reportMarkdown: patch.reportMarkdown != null
-      ? String(patch.reportMarkdown)
-      : current.reportMarkdown,
-    conclusions: patch.conclusions != null
-      ? normalizeResearchConclusions(patch.conclusions)
-      : current.conclusions,
+  const columns = [];
+  const params = [];
+  const addSet = (column, value) => {
+    columns.push(`${column} = ?`);
+    params.push(value);
   };
+
+  // Only write columns whose provided value actually differs from the stored one.
+  if (patch.question != null) {
+    const value = String(patch.question);
+    if (value !== current.question) addSet('question', value);
+  }
+  if (patch.preferences != null) {
+    const value = normalizePreferences({ ...current.preferences, ...patch.preferences });
+    if (!deepEqual(value, current.preferences)) addSet('preferences_json', toJson(value));
+  }
+  if (patch.seed != null) {
+    const value = normalizeSeed(patch.seed);
+    if (!deepEqual(value, current.seed)) addSet('seed_json', toJson(value));
+  }
+  if (patch.budget != null) {
+    const value = normalizeBudget(patch.budget);
+    if (!deepEqual(value, current.budget)) addSet('budget_json', toJson(value));
+  }
+  if (patch.budgetUsed != null) {
+    const value = normalizeBudgetUsed(patch.budgetUsed);
+    if (!deepEqual(value, current.budgetUsed)) addSet('budget_used_json', toJson(value));
+  }
+  if (patch.phase != null) {
+    const value = String(patch.phase);
+    if (value !== current.phase) addSet('phase', value);
+  }
+  if (patch.runState != null) {
+    const value = normalizeResearchRunState(patch.runState);
+    if (value !== current.runState) addSet('run_state', value);
+  }
+  if (patch.lastRunPhase != null) {
+    const value = normalizeResearchRunPhase(patch.lastRunPhase);
+    if (value !== current.lastRunPhase) addSet('last_run_phase', value);
+  }
+  if (patch.lastError != null) {
+    const value = String(patch.lastError);
+    if (value !== current.lastError) addSet('last_error', value);
+  }
+  if (patch.plan != null) {
+    const value = patch.plan;
+    if (!deepEqual(value, current.plan)) addSet('plan_json', toJson(value));
+  }
+  if (patch.timeline != null) {
+    const value = Array.isArray(patch.timeline) ? patch.timeline : current.timeline;
+    if (!deepEqual(value, current.timeline)) addSet('timeline_json', toJson(value));
+  }
+  if (patch.reportMarkdown != null) {
+    const value = String(patch.reportMarkdown);
+    if (value !== current.reportMarkdown) addSet('report_markdown', value);
+  }
+  if (patch.conclusions != null) {
+    const value = normalizeResearchConclusions(patch.conclusions);
+    if (!deepEqual(value, current.conclusions)) addSet('conclusions_json', toJson(value));
+  }
+
   const now = nowIso();
-  getGlobalDatabase().prepare(`
-    UPDATE research_sessions
-    SET updated_at = ?, question = ?, preferences_json = ?, seed_json = ?,
-        budget_json = ?, budget_used_json = ?, phase = ?, run_state = ?,
-        last_run_phase = ?, last_error = ?, plan_json = ?, timeline_json = ?,
-        conclusions_json = ?, report_markdown = ?
-    WHERE id = ?
-  `).run(
-    now,
-    next.question,
-    toJson(next.preferences),
-    toJson(next.seed),
-    toJson(next.budget),
-    toJson(next.budgetUsed),
-    next.phase,
-    next.runState,
-    next.lastRunPhase,
-    next.lastError,
-    toJson(next.plan || {}),
-    toJson(next.timeline || []),
-    toJson(next.conclusions || []),
-    next.reportMarkdown,
-    current.id,
-  );
+  const db = getGlobalDatabase();
+  if (columns.length === 0) {
+    db.prepare('UPDATE research_sessions SET updated_at = ? WHERE id = ?').run(now, current.id);
+  } else {
+    db.prepare(`
+      UPDATE research_sessions
+      SET updated_at = ?, ${columns.join(', ')}
+      WHERE id = ?
+    `).run(now, ...params, current.id);
+  }
   return getResearchSession(current.id);
 }
 
@@ -762,8 +811,7 @@ export function getResearchQuestion(questionId) {
   return mapQuestion(row);
 }
 
-export function updateResearchQuestion(questionId, patch = {}) {
-  const current = getResearchQuestion(questionId);
+function applyResearchQuestionPatch(current, patch = {}) {
   if (!current) return null;
   const status = patch.status != null ? String(patch.status) : current.status;
   if (!QUESTION_STATUSES.has(status)) {
@@ -814,6 +862,10 @@ export function updateResearchQuestion(questionId, patch = {}) {
     current.id,
   );
   return getResearchQuestion(current.id);
+}
+
+export function updateResearchQuestion(questionId, patch = {}) {
+  return applyResearchQuestionPatch(getResearchQuestion(questionId), patch);
 }
 
 export function createResearchWave(sessionId, {
@@ -1150,6 +1202,7 @@ export function applyResearchCommit(sessionId, commit = {}) {
 
   const questions = listResearchQuestions(session.id);
   const questionIds = new Set(questions.map((q) => q.id));
+  const questionById = new Map(questions.map((q) => [q.id, q]));
 
   for (const item of acceptEvidence) {
     const qid = String(item?.questionId || '');
@@ -1250,7 +1303,7 @@ export function applyResearchCommit(sessionId, commit = {}) {
         patch.coverage = item.coverage;
       }
       if (item.lastScoutAt != null) patch.lastScoutAt = String(item.lastScoutAt);
-      updateResearchQuestion(qid, patch);
+      applyResearchQuestionPatch(questionById.get(qid), patch);
       updatedQuestionIds.push(qid);
     }
 

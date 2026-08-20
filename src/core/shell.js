@@ -92,7 +92,9 @@ const PACKAGE_SERVICE_RE = /\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:dev|start|se
 const VITE_OR_SERVE_RE = /\b(?:vite|serve)\b/i;
 const SERVICE_HINT_RE = /\b(?:watch|serve|server|dev|preview)\b/i;
 const AUTO_STOP_GRACE_MS = 150;
-const LONG_RUNNING_STARTUP_WINDOW_MS = 1500;
+const MAX_BUFFERED_OUTPUT = 8 * 1024 * 1024;
+const OUTPUT_TRUNCATION_MARKER = '\n...[output truncated at 8MB]...\n';
+const READY_OUTPUT_WINDOW_CHARS = 64_000;
 
 function normalizeCommand(command) {
   return String(command || '').trim();
@@ -145,10 +147,6 @@ export function classifyCommandIntent(command) {
     return { kind: 'service', longRunning: true };
   }
 
-  if (SERVICE_HINT_RE.test(value)) {
-    return { kind: 'service', longRunning: true };
-  }
-
   return { kind: 'generic', longRunning: false };
 }
 
@@ -160,6 +158,21 @@ export function isLikelyLongRunningCommand(command) {
 export function hasReadyOutput(text) {
   const value = String(text || '');
   return READY_OUTPUT_PATTERNS.some((pattern) => pattern.test(value));
+}
+
+function appendOutputWithCap(current, chunk, state) {
+  if (state.truncated) return current;
+  const text = chunk.toString();
+  const combined = current + text;
+  if (combined.length <= MAX_BUFFERED_OUTPUT) return combined;
+  const headLength = Math.floor(MAX_BUFFERED_OUTPUT * 0.6);
+  const tailLength = MAX_BUFFERED_OUTPUT - headLength - OUTPUT_TRUNCATION_MARKER.length;
+  state.truncated = true;
+  return (
+    combined.slice(0, headLength) +
+    OUTPUT_TRUNCATION_MARKER +
+    combined.slice(combined.length - tailLength)
+  );
 }
 
 function collectDescendantPids(rootPid, seen = new Set()) {
@@ -302,14 +315,19 @@ export async function runShellCommand({
 
     let stdout = '';
     let stderr = '';
+    let stdoutReadyWindow = '';
+    let stderrReadyWindow = '';
+    const stdoutState = { truncated: false };
+    const stderrState = { truncated: false };
     let timedOut = false;
     let autoStopped = false;
     let aborted = false;
     let stopReason = '';
     let finalized = false;
+    let killTimer = null;
     const longRunningCommand = isLikelyLongRunningCommand(command);
     const autoStopWindowMs = longRunningCommand
-      ? Math.min(LONG_RUNNING_STARTUP_WINDOW_MS, Math.max(350, Math.floor(timeoutMs * 0.6)))
+      ? Math.min(30_000, Math.max(5_000, Math.floor(timeoutMs * 0.6)))
       : 0;
 
     const withSandboxFields = (value) => {
@@ -327,6 +345,7 @@ export async function runShellCommand({
       if (finalized) return;
       finalized = true;
       clearTimeout(timer);
+      clearTimeout(killTimer);
       if (autoStopTimer) clearTimeout(autoStopTimer);
       signal?.removeEventListener('abort', abortCommand);
       let next = withSandboxFields(value);
@@ -362,6 +381,7 @@ export async function runShellCommand({
       if (finalized) return;
       finalized = true;
       clearTimeout(timer);
+      clearTimeout(killTimer);
       if (autoStopTimer) clearTimeout(autoStopTimer);
       signal?.removeEventListener('abort', abortCommand);
       reject(error);
@@ -370,6 +390,7 @@ export async function runShellCommand({
     const timer = setTimeout(() => {
       timedOut = true;
       terminateChild(child, 'SIGTERM');
+      killTimer = setTimeout(() => terminateChild(child, 'SIGKILL'), AUTO_STOP_GRACE_MS);
     }, timeoutMs);
     const autoStopTimer =
       autoStopWindowMs > 0
@@ -382,31 +403,46 @@ export async function runShellCommand({
       if (finalized || aborted) return;
       aborted = true;
       terminateChild(child, 'SIGTERM');
+      killTimer = setTimeout(() => terminateChild(child, 'SIGKILL'), AUTO_STOP_GRACE_MS);
     };
     signal?.addEventListener('abort', abortCommand, { once: true });
     if (signal?.aborted) abortCommand();
+
+    const autoStopPayload = () => ({
+      code: stopReason === 'startup_window' ? 124 : 0,
+      stdout,
+      stderr,
+      auto_stopped: true,
+      stop_reason: stopReason,
+    });
 
     const finalizeAutoStop = (reason) => {
       if (timedOut || autoStopped || finalized) return;
       autoStopped = true;
       stopReason = reason;
+      if (reason === 'startup_window') {
+        stderr +=
+          '\n[auto-stopped: no ready output within startup window — the command may still be starting; rerun in background if it is a long-running server]';
+      }
       terminateChild(child, 'SIGTERM');
       setTimeout(() => {
         terminateChild(child, 'SIGKILL');
       }, AUTO_STOP_GRACE_MS);
-      void finalizeResolve({ code: 0, stdout, stderr, auto_stopped: true, stop_reason: stopReason });
+      void finalizeResolve(autoStopPayload());
     };
 
     child.stdout.on('data', (chunk) => {
-      stdout += chunk.toString();
-      if (longRunningCommand && hasReadyOutput(stdout)) {
+      stdout = appendOutputWithCap(stdout, chunk, stdoutState);
+      stdoutReadyWindow = (stdoutReadyWindow + chunk.toString()).slice(-READY_OUTPUT_WINDOW_CHARS);
+      if (longRunningCommand && hasReadyOutput(stdoutReadyWindow)) {
         finalizeAutoStop('ready_output');
       }
     });
 
     child.stderr.on('data', (chunk) => {
-      stderr += chunk.toString();
-      if (longRunningCommand && hasReadyOutput(stderr)) {
+      stderr = appendOutputWithCap(stderr, chunk, stderrState);
+      stderrReadyWindow = (stderrReadyWindow + chunk.toString()).slice(-READY_OUTPUT_WINDOW_CHARS);
+      if (longRunningCommand && hasReadyOutput(stderrReadyWindow)) {
         finalizeAutoStop('ready_output');
       }
     });
@@ -426,7 +462,7 @@ export async function runShellCommand({
         return;
       }
       if (autoStopped) {
-        void finalizeResolve({ code: 0, stdout, stderr, auto_stopped: true, stop_reason: stopReason });
+        void finalizeResolve(autoStopPayload());
         return;
       }
       void finalizeResolve({ code, stdout, stderr });

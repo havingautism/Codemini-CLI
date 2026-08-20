@@ -15,6 +15,8 @@ const PLAN_NESTED_STREAM_EVENTS = new Set([
   "tool:result",
   "tool:error",
   "tool:blocked",
+  "step:start",
+  "step:end",
 ]);
 
 export function isCompletedStatus(status) {
@@ -201,13 +203,32 @@ export function findActivePlanParentMessage(messages = []) {
     .find((message) => messageHasActivePlanRun(message));
 }
 
+export function isPlanTranscriptEvent(type) {
+  const value = String(type || "");
+  return (
+    value === "plan:steps" ||
+    value === "plan:step_start" ||
+    value === "plan:progress" ||
+    value === "plan:step_done"
+  );
+}
+
+/** Legacy create_plan pipeline only. run_subagent is one-step (total=1). */
+export function isLegacyFinalPlanStep(event) {
+  if (String(event?.type || "") !== "plan:step_done") return false;
+  return (
+    String(event.role || "").toLowerCase() === "summarizer" ||
+    (Number(event.total) > 1 && Number(event.step) === Number(event.total))
+  );
+}
+
 export function shouldNestStreamEventInPlan(message, event) {
   if (!PLAN_NESTED_STREAM_EVENTS.has(String(event?.type || ""))) return false;
   if (isCreatePlanToolEvent(event)) return false;
 
   const parentToolCallId = String(event?.parentToolCallId || "").trim();
   if (parentToolCallId) {
-    return Boolean(findCreatePlanCard(message, parentToolCallId)?.planRun?.steps?.length);
+    return Boolean(findCreatePlanCard(message, parentToolCallId));
   }
 
   if (!messageHasActivePlanRun(message)) return false;
@@ -219,7 +240,9 @@ export function shouldNestStreamEventInPlan(message, event) {
   if (
     event.type === "assistant:delta" ||
     event.type === "assistant:reasoning_delta" ||
-    event.type === "assistant:response"
+    event.type === "assistant:response" ||
+    event.type === "step:start" ||
+    event.type === "step:end"
   ) {
     return (card?.planRun?.steps || []).some(
       (step) => String(step?.status || "").toLowerCase() === "running",
@@ -337,8 +360,7 @@ export function applyStreamEventToPlanRun(message, event, options = {}) {
 
   const cardId = String(event.parentToolCallId || event.toolCallId || "").trim();
   const hasExplicitPlanParent = Boolean(
-    event.parentToolCallId &&
-      findCreatePlanCard(message, event.parentToolCallId)?.planRun?.steps?.length,
+    event.parentToolCallId && findCreatePlanCard(message, event.parentToolCallId),
   );
   if (!messageHasActivePlanRun(message) && !hasExplicitPlanParent) return message;
 
@@ -346,8 +368,25 @@ export function applyStreamEventToPlanRun(message, event, options = {}) {
   const next = upsertCreatePlanCard(
     message,
     (card) => {
-      const planRun = card.planRun;
-      if (!planRun?.steps?.length) return card;
+      let planRun = card.planRun;
+      if (!planRun?.steps?.length) {
+        if (!hasExplicitPlanParent) return card;
+        planRun = {
+          ...(planRun || createEmptyPlanRun()),
+          phase: "executing",
+          steps: [
+            {
+              index: 1,
+              role: "general",
+              title: "",
+              status: "running",
+              summary: "",
+              segments: [],
+              toolCallId: cardId || card.id || "",
+            },
+          ],
+        };
+      }
       const steps = planRun.steps.map((step) => ({ ...step }));
       let stepIndex = -1;
       if (cardId) {

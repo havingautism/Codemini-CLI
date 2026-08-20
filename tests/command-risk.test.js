@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import path from 'node:path';
 import {
   classifyCommandRisk,
   isRoutineProjectCommand,
@@ -7,6 +8,7 @@ import {
   requiresDeterministicCommandApproval,
 } from '../src/core/command-risk.js';
 import { evaluateCommandPolicy } from '../src/core/command-policy.js';
+import { getSessionsDir, getSkillsDir } from '../src/core/paths.js';
 
 test('interpreter and package-script commands are never classified as read-only', () => {
   for (const command of [
@@ -252,4 +254,44 @@ test('bash policy ignores the null device and absolute-looking fragments inside 
     evaluateCommandPolicy('echo nope >/tmp/outside.txt', config, workspaceRoot, 'linux').reason,
     /absolute path outside workspace/,
   );
+});
+
+test('bash policy allows read-only global skill scripts but not sessions', () => {
+  const previous = process.env.CODEMINI_GLOBAL_DIR;
+  const globalDir = '/tmp/codemini-policy-skills-global';
+  process.env.CODEMINI_GLOBAL_DIR = globalDir;
+  try {
+    const config = {
+      shell: { default: 'bash' },
+      sandbox: { enabled: false },
+      policy: {
+        safe_mode: true,
+        command_allowlist: [],
+        blocked_commands: [],
+        blocked_path_patterns: [],
+        blocked_command_patterns: [],
+      },
+    };
+    const workspaceRoot = '/home/user/projects/app';
+    const skillScript = path.posix.join(getSkillsDir(), 'demo', 'scripts', 'score.py');
+    const sessionFile = path.posix.join(getSessionsDir(), 'abc', 'log.txt');
+    assert.equal(
+      evaluateCommandPolicy(`python ${skillScript}`, config, workspaceRoot, 'linux').allowed,
+      true,
+    );
+    assert.match(
+      evaluateCommandPolicy(`cat ${sessionFile}`, config, workspaceRoot, 'linux').reason,
+      /absolute path outside workspace/,
+    );
+
+    process.env.CODEMINI_GLOBAL_DIR = '/Users/someone/Library/Preferences/codemini-global';
+    const macSkillScript = path.posix.join(getSkillsDir(), 'demo', 'scripts', 'score.py');
+    assert.equal(
+      evaluateCommandPolicy(`python ${macSkillScript}`, config, workspaceRoot, 'linux').allowed,
+      true,
+    );
+  } finally {
+    if (previous === undefined) delete process.env.CODEMINI_GLOBAL_DIR;
+    else process.env.CODEMINI_GLOBAL_DIR = previous;
+  }
 });

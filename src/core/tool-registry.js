@@ -5,7 +5,7 @@ const DEFAULT_CONCURRENT_TOOLS = new Set([
   'ast_query', 'read_ast_node',
   'web_fetch', 'web_search',
   'list_background_tasks', 'get_background_task',
-  'read_plan',
+  'read_plan', 'tasks', 'tasks',
   'query_project_index', 'tool_search',
   'skill',
 ]);
@@ -52,14 +52,25 @@ function definitionParameters(definition) {
     || { type: 'object', properties: {} };
 }
 
+// Tool schemas are identical across turns/platforms, and zod compile is far
+// more expensive than stringifying the parameters, so cache compiled
+// validators keyed by the canonical parameter JSON.
+const validatorCache = new Map();
+
 function compileValidator(name, definition) {
+  const key = JSON.stringify(definitionParameters(definition));
+  const cached = validatorCache.get(key);
+  if (cached) return cached;
+  let validator;
   try {
-    return z.fromJSONSchema(definitionParameters(definition));
+    validator = z.fromJSONSchema(definitionParameters(definition));
   } catch (error) {
     throw new ToolRegistryContractError(
       `Tool "${name}" has an invalid JSON Schema: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
+  validatorCache.set(key, validator);
+  return validator;
 }
 
 function defaultConcurrencyClassifier(name) {

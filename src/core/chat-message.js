@@ -33,6 +33,9 @@ export function composeSelectedSkills(commands, submission, options = {}) {
     normalized.skillNames,
     normalized.text,
     {
+      config: options.config,
+      cwd: options.cwd,
+      platform: options.platform,
       isEnabled(command) {
         if (command?.metadata?.enabled === false) return false;
         return typeof options.isEnabled !== 'function' || options.isEnabled(command);

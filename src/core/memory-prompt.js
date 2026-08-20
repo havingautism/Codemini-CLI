@@ -26,20 +26,31 @@ export async function buildMemorySnapshot({
 
   const maxItems = Math.max(1, Number(config?.memory?.max_items_per_scope || 12));
 
+  // Stable append-only ordering: sort by createdAt (immutable) with id tiebreak,
+  // then keep the newest `maxItems`. A single save_memory appends a new item
+  // instead of reshuffling every entry via `updatedAt`, so the prompt cache
+  // prefix stays stable across turns.
+  const stableRecent = (items = []) => [...items]
+    .sort((left, right) =>
+      String(left.createdAt || '').localeCompare(String(right.createdAt || '')) ||
+      String(left.id || '').localeCompare(String(right.id || '')))
+    .slice(-maxItems);
+
   const sections = [
-    renderScope('User Memory (preferences / interests / habits):', user.slice(0, maxItems)),
-    renderScope('Global Memory (cross-project tools / environment):', globalItems.slice(0, maxItems)),
-    renderScope('Project Memory (this repository only):', project.slice(0, maxItems))
+    renderScope('User Memory (preferences / interests / habits):', stableRecent(user)),
+    renderScope('Global Memory (cross-project tools / environment):', stableRecent(globalItems)),
+    renderScope('Project Memory (this repository only):', stableRecent(project))
   ].filter(Boolean);
 
   if (sections.length === 0) return '';
 
   const snapshot = [
-    'Persistent Memory:',
+    '<relevant_memory>',
     'Use these durable notes only as stable guidance. Prefer fresh reads when code or files can verify the answer.',
     'When recalling memory, preserve command names, file paths, identifiers, and punctuation exactly. Do not rewrite exact_text values.',
     'Actively notice lasting user preferences and interests; save them with save_memory(scope="user", kind="preference"). Write new memory content/summary in the active reply language from the system prompt.',
-    ...sections
+    ...sections,
+    '</relevant_memory>'
   ].join('\n\n');
 
   const maxChars = Math.max(200, Number(config?.memory?.max_prompt_chars || 4000));

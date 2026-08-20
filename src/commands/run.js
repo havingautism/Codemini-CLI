@@ -20,7 +20,7 @@ import { parseArgs } from 'node:util';
 
 const CLI_ROLE_TOOL_POLICY = {
   ...ROLE_TOOL_POLICY,
-  planner: ['read', 'read_plan', 'tool_search', 'skill', 'update_plan', 'update_todos'],
+  planner: ['read', 'read_plan', 'tool_search', 'skill', 'update_plan', 'tasks'],
   coder: (ROLE_TOOL_POLICY.coder || []).filter((tool) => !['web_fetch', 'web_search'].includes(tool)),
   refactorer: (ROLE_TOOL_POLICY.refactorer || []).filter((tool) => !['web_fetch', 'web_search'].includes(tool)),
   writer: ROLE_TOOL_POLICY.writer || []
@@ -342,7 +342,9 @@ export async function handleRun(args) {
       text: parsed.task,
       skillNames: parsed.skillNames
     }, {
-      isEnabled: (command) => skillIsEligible(config.skills, command.name, config.execution?.mode, command)
+      isEnabled: (command) => skillIsEligible(config.skills, command.name, config.execution?.mode, command),
+      config,
+      cwd: workspaceRoot,
     });
     if (composed.error) throw new Error(composed.error);
     effectiveTask = composed.modelText;

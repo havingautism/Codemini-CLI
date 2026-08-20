@@ -8,6 +8,7 @@ import {
   splitMarkdownForEmbeds,
 } from '../codemini-web/client/src/lib/markdown-embeds.js';
 import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
 import { describe, it } from 'node:test';
 
 describe('isPublicHttpUrl', () => {
@@ -235,5 +236,64 @@ describe('promoteTableCellImageUrls', () => {
       normalized,
       "19. France's Anssi Will Block PQC *— 40 points · 7 comments postquantum.com · 1h ago*",
     );
+  });
+});
+
+describe('user question bubbles keep URLs as text', () => {
+  const userPrompt = [
+    'https://github.com/anthropics/skills/tree/main/skills/skill-creator',
+    '介绍一下这个 skill 是如何工作的',
+  ].join('\n');
+
+  it('does not promote a pasted URL plus question into an embed card', () => {
+    const parts = splitMarkdownForEmbeds(userPrompt, { includeLinks: false });
+    assert.equal(parts.some((part) => part.type === 'embed'), false);
+    assert.equal(
+      parts.some(
+        (part) =>
+          part.type === 'markdown' &&
+          part.text.includes('https://github.com/anthropics/skills/tree/main/skills/skill-creator'),
+      ),
+      true,
+    );
+  });
+
+  it('UserText disables inline embed cards', async () => {
+    const source = await fs.readFile(
+      'codemini-web/client/src/components/MessageBubble.jsx',
+      'utf8',
+    );
+    const userTextFn = source.match(
+      /function UserText\([\s\S]*?\n\}\n\nfunction UserSkillChips/,
+    )?.[0];
+    assert.ok(userTextFn, 'UserText should still exist in MessageBubble');
+    const renderers = [...userTextFn.matchAll(/<StreamdownRenderer[\s\S]*?\/>/g)].map(
+      (match) => match[0],
+    );
+    assert.ok(renderers.length >= 1, 'UserText should render markdown');
+    for (const renderer of renderers) {
+      assert.match(renderer, /inlineEmbeds=\{false\}/);
+    }
+  });
+});
+
+describe('StreamdownRenderer streaming markdown', () => {
+  it('keeps Streamdown parsing while tokens arrive instead of waiting for a char threshold', async () => {
+    const source = await fs.readFile(
+      'codemini-web/client/src/components/StreamdownRenderer.jsx',
+      'utf8',
+    );
+    assert.doesNotMatch(
+      source,
+      /STREAMING_PARSE_CHUNK/,
+      'streaming replies must not wait for a large char chunk before formatting',
+    );
+    assert.doesNotMatch(
+      source,
+      /lastParsedLenRef/,
+      'streaming replies must not skip Streamdown between parse chunks',
+    );
+    assert.match(source, /parseIncompleteMarkdown/);
+    assert.match(source, /const mode = streaming \? 'streaming' : 'static'/);
   });
 });

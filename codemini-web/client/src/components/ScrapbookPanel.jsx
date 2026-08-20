@@ -135,7 +135,7 @@ function formatEntryDate(entry) {
 function ScrapbookSummaryLoading() {
   return (
     <div
-      className="relative overflow-hidden rounded-2xl border border-primary/15 bg-primary/[0.045] px-5 py-6"
+      className="relative overflow-hidden rounded-2xl border border-(--message-edge) bg-(--bg-primary) px-5 py-6 shadow-[var(--shadow-sm)]"
       role="status"
       aria-live="polite"
     >
@@ -312,6 +312,7 @@ export function ScrapbookPanel() {
   const [deleting, setDeleting] = useState(false);
   const [sourceDraft, setSourceDraft] = useState("");
   const [sourceAdding, setSourceAdding] = useState(false);
+  const [openSource, setOpenSource] = useState(null);
   const [studioKind, setStudioKind] = useState("mindmap");
   const [studioGenerating, setStudioGenerating] = useState(false);
   const [mindmapExpanded, setMindmapExpanded] = useState(false);
@@ -986,20 +987,27 @@ export function ScrapbookPanel() {
                       key={source.id}
                       className="group flex items-center gap-2 rounded-xl px-2 py-2.5 hover:bg-(--bg-hover)"
                     >
-                      <SourceIcon
-                        size={15}
-                        className="shrink-0 text-(--text-muted)"
-                      />
-                      <div className="min-w-0 flex-1">
-                        <div className="truncate text-[12px] text-(--text-secondary)">
-                          {source.name || source.url || t("scrapbookUntitled")}
-                        </div>
-                        {source.status && source.status !== "ready" ? (
-                          <div className="mt-0.5 text-[10px] text-(--text-muted)">
-                            {t("scrapbookSourcePending")}
+                      <button
+                        type="button"
+                        onClick={() => setOpenSource(source)}
+                        className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                        aria-label={`${t("scrapbookOpenOriginalSource")}: ${source.name || source.url || t("scrapbookUntitled")}`}
+                      >
+                        <SourceIcon
+                          size={15}
+                          className="shrink-0 text-(--text-muted)"
+                        />
+                        <div className="min-w-0 flex-1">
+                          <div className="truncate text-[12px] text-(--text-secondary)">
+                            {source.name || source.url || t("scrapbookUntitled")}
                           </div>
-                        ) : null}
-                      </div>
+                          {source.status && source.status !== "ready" ? (
+                            <div className="mt-0.5 text-[10px] text-(--text-muted)">
+                              {t("scrapbookSourcePending")}
+                            </div>
+                          ) : null}
+                        </div>
+                      </button>
                       <Popover>
                         <PopoverTrigger asChild>
                           <button
@@ -1079,7 +1087,7 @@ export function ScrapbookPanel() {
             </button>
 
             <main
-              className={`${detailPane === "summary" ? "flex" : "hidden"} min-h-0 flex-col bg-(--bg-primary) lg:flex`}
+              className={`${detailPane === "summary" ? "flex" : "hidden"} min-h-0 flex-col bg-(--bg-secondary) lg:flex`}
             >
               <div className="flex shrink-0 items-center gap-3 px-5 py-4 sm:px-7">
                 <div>
@@ -1104,21 +1112,25 @@ export function ScrapbookPanel() {
                 </button>
               </div>
               <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 pb-8 sm:px-7">
-                {!selectedEntry ? (
-                  <div className="flex min-h-56 items-center justify-center text-[12px] text-(--text-muted)">
-                    <CircleNotch size={18} className="mr-2 animate-spin" />
-                    {t("scrapbookLoading")}
-                  </div>
-                ) : summaryBusy && !summaryPartialText ? (
-                  <ScrapbookSummaryLoading />
-                ) : (
-                  <StreamdownRenderer
-                    text={summaryText}
-                    streaming={summaryBusy}
-                    inlineEmbeds={false}
-                    className="mx-auto max-w-3xl text-[14px] leading-7 text-(--text-secondary)"
-                  />
-                )}
+                <div className="codemini-chat-session mx-auto max-w-3xl">
+                  {!selectedEntry ? (
+                    <div className="flex min-h-56 items-center justify-center text-[12px] text-(--text-muted)">
+                      <CircleNotch size={18} className="mr-2 animate-spin" />
+                      {t("scrapbookLoading")}
+                    </div>
+                  ) : summaryBusy && !summaryPartialText ? (
+                    <ScrapbookSummaryLoading />
+                  ) : (
+                    <article className="rounded-2xl border border-(--message-edge) bg-(--bg-primary) px-5 py-5 shadow-[var(--shadow-sm)] sm:px-6 sm:py-6">
+                      <StreamdownRenderer
+                        text={summaryText}
+                        streaming={summaryBusy}
+                        inlineEmbeds={false}
+                        className="codemini-assistant-markdown text-(--text-primary)"
+                      />
+                    </article>
+                  )}
+                </div>
               </div>
             </main>
 
@@ -1237,6 +1249,53 @@ export function ScrapbookPanel() {
                 </button>
               </div>
             </aside>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={Boolean(openSource)}
+        onOpenChange={(open) => {
+          if (!open) setOpenSource(null);
+        }}
+      >
+        <DialogContent className="grid max-h-[88vh] grid-rows-[auto_minmax(0,1fr)] gap-0 overflow-hidden p-0 sm:max-w-4xl">
+          <DialogHeader className="border-b border-(--border-default) px-5 py-4 sm:px-6">
+            <DialogTitle className="pr-8 text-[16px]">
+              {openSource?.name || openSource?.url || t("scrapbookUntitled")}
+            </DialogTitle>
+            <DialogDescription className="flex items-center gap-2">
+              <span>{t("scrapbookOriginalContent")}</span>
+              {openSource?.url ? (
+                <button
+                  type="button"
+                  onClick={() =>
+                    window.open(
+                      openSource.url,
+                      "_blank",
+                      "noopener,noreferrer",
+                    )
+                  }
+                  className="inline-flex items-center gap-1 text-primary hover:underline"
+                >
+                  <ArrowSquareOut size={12} />
+                  {t("scrapbookJumpToOriginalLink")}
+                </button>
+              ) : null}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="min-h-0 overflow-y-auto bg-(--bg-secondary) p-5 sm:p-6">
+            {openSource?.contentText ? (
+              <pre className="whitespace-pre-wrap break-words font-sans text-[13px] leading-6 text-(--text-secondary)">
+                {openSource.contentText}
+              </pre>
+            ) : (
+              <div className="flex min-h-40 items-center justify-center text-[12px] text-(--text-muted)">
+                {openSource?.status === "pending_fetch"
+                  ? t("scrapbookSourcePending")
+                  : t("scrapbookNoContent")}
+              </div>
+            )}
           </div>
         </DialogContent>
       </Dialog>

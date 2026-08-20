@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { getSkillsDir } from './paths.js';
 import { selectSandboxBackend } from './sandbox-probe.js';
 
 export const SANDBOX_MODES = Object.freeze([
@@ -8,6 +9,17 @@ export const SANDBOX_MODES = Object.freeze([
   'workspace-write',
   'danger-full-access',
 ]);
+
+/**
+ * VM network confinement knob. `'none'` (aliases: `deny-all`, `deny`) denies
+ * all egress from the microVM; anything else keeps the default allow-all
+ * behavior so network-dependent tools (npm, pip, git, curl) keep working.
+ */
+export function normalizeSandboxNetwork(value) {
+  const raw = String(value || 'allow-all').trim().toLowerCase().replace(/_/g, '-');
+  if (raw === 'none' || raw === 'deny-all' || raw === 'deny') return 'none';
+  return 'allow-all';
+}
 
 export function normalizeSandboxMode(value, { platform = process.platform } = {}) {
   const raw = String(value || '').trim().toLowerCase().replace(/_/g, '-');
@@ -148,6 +160,48 @@ export function writableRootsForMode(policy) {
   const tmp = path.resolve(os.tmpdir());
   if (!roots.includes(tmp)) roots.push(tmp);
   return roots;
+}
+
+/**
+ * Host paths the sandbox may read in addition to the workspace.
+ * Global skills stay available for SKILL.md scripts/references; sessions,
+ * memory, and config stay out.
+ */
+export function readonlySandboxRoots(policy = {}) {
+  const workspace = path.resolve(policy.workspaceRoot || process.cwd());
+  const skillsDir = path.resolve(getSkillsDir());
+  if (pathUnderRoot(skillsDir, workspace)) return [];
+  return [skillsDir];
+}
+
+export const SANDBOX_SKILLS_GUEST_PATH = '/codemini-skills';
+
+/**
+ * VM bind mounts for {@link readonlySandboxRoots}.
+ * Always use a Linux guest path. Binding the macOS host path
+ * (`/Users/.../Library/...`) into the microVM can stall sandbox
+ * create and leave session terminal/SSE waiting on startup.
+ */
+export function readonlySandboxVolumes(policy = {}) {
+  return readonlySandboxRoots(policy).map((hostPath) => ({
+    hostPath,
+    guestPath: SANDBOX_SKILLS_GUEST_PATH,
+    readonly: true,
+  }));
+}
+
+/** Map a host skill path to the microVM path used by `run`. Identity on POSIX. */
+export function toSandboxSkillPath(hostPath, policy = {}) {
+  const abs = path.resolve(String(hostPath || ''));
+  const volumes = readonlySandboxVolumes(policy);
+  for (const volume of volumes) {
+    if (!pathUnderRoot(abs, volume.hostPath)) continue;
+    const rel = path.relative(volume.hostPath, abs);
+    const guestRel = rel.split(/[\\/]/).filter(Boolean).join('/');
+    const guestRoot = String(volume.guestPath || '').replace(/\\/g, '/').replace(/\/+$/, '');
+    return guestRel ? `${guestRoot}/${guestRel}` : guestRoot;
+  }
+  return abs;
 }
 
 function pathUnderRoot(targetAbs, rootAbs) {

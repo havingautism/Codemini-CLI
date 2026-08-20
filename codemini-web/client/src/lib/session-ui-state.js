@@ -1,5 +1,74 @@
 import { normalizeProjectDirKey } from "../../../shared/project-key.js";
 
+export function uniqueNormalizedProjectDirs(items = []) {
+  const out = [];
+  const seen = new Set();
+  for (const item of Array.isArray(items) ? items : []) {
+    const key = normalizeProjectDirKey(item);
+    if (!key || key === "unknown" || seen.has(key)) continue;
+    seen.add(key);
+    out.push(key);
+  }
+  return out;
+}
+
+export function activateProjectInList(activeProjectDirs = [], projectDir = "") {
+  const key = normalizeProjectDirKey(projectDir);
+  const current = uniqueNormalizedProjectDirs(activeProjectDirs);
+  if (!key) return current;
+  return [key, ...current.filter((item) => item !== key)];
+}
+
+export function filterProjectGroupsByActive(
+  entries = [],
+  activeProjectDirs = [],
+  { ready = true } = {},
+) {
+  const list = Array.isArray(entries) ? [...entries] : [];
+  if (!ready) return list;
+
+  const active = uniqueNormalizedProjectDirs(activeProjectDirs);
+  if (!active.length) return [];
+
+  const order = new Map(active.map((key, index) => [key, index]));
+  return list
+    .filter(([key]) => order.has(normalizeProjectDirKey(key)))
+    .sort(
+      (left, right) =>
+        order.get(normalizeProjectDirKey(left[0])) -
+        order.get(normalizeProjectDirKey(right[0])),
+    );
+}
+
+export function buildVisibleProjectGroups({
+  sessions = [],
+  activeProjectDirs = [],
+  ready = true,
+} = {}) {
+  const groups = new Map();
+  for (const session of Array.isArray(sessions) ? sessions : []) {
+    if (session?.isGeneral) continue;
+    if (Number(session.messageCount || 0) <= 0) continue;
+    const key = normalizeProjectDirKey(
+      session.projectKey || session.projectDir,
+    );
+    if (!key || key === "unknown") continue;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(session);
+  }
+
+  const active = uniqueNormalizedProjectDirs(activeProjectDirs);
+  if (!ready) return [...groups.entries()];
+
+  for (const key of active) {
+    if (!groups.has(key)) groups.set(key, []);
+  }
+
+  return filterProjectGroupsByActive([...groups.entries()], active, {
+    ready: true,
+  });
+}
+
 export const ACTIVE_SESSION_STATUSES = new Set([
   "queued",
   "running",
@@ -7,6 +76,37 @@ export const ACTIVE_SESSION_STATUSES = new Set([
   "waiting_approval",
   "waiting_input",
 ]);
+
+/** Selected sidebar chrome belongs to the open chat, not leftover hover after leaving it. */
+export function isSidebarChatSessionActive(
+  sessionId,
+  currentSessionId,
+  currentView,
+) {
+  return Boolean(
+    sessionId &&
+      sessionId === currentSessionId &&
+      currentView === "chat",
+  );
+}
+
+export function sessionRuntimeIsBusy(runtime) {
+  if (!runtime) return false;
+  if (runtime.busy === true) return true;
+  return ACTIVE_SESSION_STATUSES.has(runtime.status);
+}
+
+export function rekeyPendingQueue(queueMap, fromId, toId) {
+  const previousId = String(fromId || "").trim();
+  const nextId = String(toId || "").trim();
+  const next = queueMap instanceof Map ? new Map(queueMap) : new Map();
+  if (!previousId || !nextId || previousId === nextId) return next;
+  const queued = next.get(previousId) || [];
+  next.delete(previousId);
+  if (queued.length) next.set(nextId, queued);
+  else next.delete(nextId);
+  return next;
+}
 
 export function activeSessionIds(runtimeById = {}) {
   return Object.entries(runtimeById)

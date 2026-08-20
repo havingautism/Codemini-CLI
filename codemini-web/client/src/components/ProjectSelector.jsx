@@ -74,7 +74,7 @@ export function ProjectSelector({ open, onOpenChange, onOpenProject }) {
     const p = pathInput.trim();
     if (!p) return;
     onOpenChange(false);
-    onOpenProject(p);
+    onOpenProject(p, { newSession: true });
   };
 
   const normalizedPath = (currentDir || "").replace(/\\/g, "/");

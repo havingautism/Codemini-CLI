@@ -4,7 +4,6 @@ import {
   Editor,
   ProcessTerminal,
   ScrollView,
-  Spacer,
   TuiAltScreen,
   VStack,
   isKeyRelease,
@@ -25,6 +24,7 @@ import {
   PlanProgress,
   ProcessedFold,
   ReasoningBlock,
+  SurfaceSpacer,
   TodoProgress,
   ToolCallGroup,
   appendHistory,
@@ -32,11 +32,19 @@ import {
   createSystemMessage,
   createUserMessage,
   oneLine,
+  paintBackground,
   toolEventKey
 } from './components/messages.js';
 import { ModeHome } from './components/mode-home.js';
 import { createTuiCopy } from './copy.js';
 import { color, editorTheme } from './theme.js';
+
+/** Editor variant that paints every rendered line with the dark surface color. */
+class SurfaceEditor extends Editor {
+  render(width) {
+    return super.render(width).map((line) => paintBackground(line, width));
+  }
+}
 
 const TUI_COMMANDS = [
   { name: 'compact', description: 'compact', action: 'compact' },
@@ -69,6 +77,7 @@ export function buildSlashCommands(runtime, copy = createTuiCopy('en')) {
 export async function runOpenCodeTui({ runtime, sessionId, model, safeMode = true, version = '', language = 'en', terminal: suppliedTerminal, workspaceDir = '', currentDirectory = process.cwd() }) {
   const terminal = suppliedTerminal || new ProcessTerminal();
   const copy = createTuiCopy(language);
+  let activeSessionId = sessionId;
   const defaultWorkspaceDir = workspaceDir || runtime.getRuntimeState?.().workspaceRoot || currentDirectory;
   const tui = new TuiAltScreen(terminal, true, undefined, { mouse: true, wheelScrollLines: 6 });
   const transcript = new Container();
@@ -79,11 +88,11 @@ export async function runOpenCodeTui({ runtime, sessionId, model, safeMode = tru
     scrollbar: 'always',
     scrollbarStyle: color.dim
   });
-  const editor = new Editor(tui, editorTheme, { paddingX: 1, autocompleteMaxVisible: 8 });
+  const editor = new SurfaceEditor(tui, editorTheme, { paddingX: 1, autocompleteMaxVisible: 8 });
   const header = new TopBar({ version });
   const activity = new ActivityBar({ tui, copy });
   const queuePanel = new QueuePanel(copy);
-  const footer = new Footer({ runtime, model, sessionId, safeMode });
+  const footer = new Footer({ runtime, model, sessionId: activeSessionId, safeMode });
   const bottom = new VStack([queuePanel, editor, activity, footer], { gap: 0 });
   const chatLayout = new VStack([
     { component: header, basis: 'auto', shrink: 0, minSize: 1 },
@@ -164,7 +173,7 @@ export async function runOpenCodeTui({ runtime, sessionId, model, safeMode = tru
 
   const ensureAssistant = () => {
     if (activeAssistant) return activeAssistant;
-    activeAssistantSpacer = new Spacer(1);
+    activeAssistantSpacer = new SurfaceSpacer(1);
     activeAssistant = createAssistantMessage('');
     transcript.addChild(activeAssistantSpacer);
     transcript.addChild(activeAssistant);
@@ -184,7 +193,7 @@ export async function runOpenCodeTui({ runtime, sessionId, model, safeMode = tru
     activeProcessFold = new ProcessedFold(copy);
     activeProcessFold.setBodyOnly(bodyOnlyView);
     processFolds.push(activeProcessFold);
-    transcript.addChild(new Spacer(1));
+    transcript.addChild(new SurfaceSpacer(1));
     transcript.addChild(activeProcessFold);
     return activeProcessFold;
   };
@@ -259,7 +268,7 @@ export async function runOpenCodeTui({ runtime, sessionId, model, safeMode = tru
       if (event.toolCalls?.length || event.assistantMessage?.tool_calls?.length) moveAssistantIntoProcess();
     } else if (type === 'tool:start' || type === 'system_tool:start' || type === 'skill:start') {
       const id = toolEventKey(event, type);
-      if (type === 'tool:start' && String(event.name || '').toLowerCase() === 'update_todos') {
+      if (type === 'tool:start' && ['tasks', 'update_todos'].includes(String(event.name || '').toLowerCase())) {
         const todo = updateTodo(event);
         toolRows.set(id, todo);
         editor.borderColor = color.warning;
@@ -302,7 +311,7 @@ export async function runOpenCodeTui({ runtime, sessionId, model, safeMode = tru
     } else if (type === 'plan:steps') {
       finishReasoning();
       activePlan = new PlanProgress(copy, event);
-      ensureProcessFold().addChild(new Spacer(1));
+      ensureProcessFold().addChild(new SurfaceSpacer(1));
       ensureProcessFold().addChild(activePlan);
       setActivity('tool', copy.working);
     } else if (type === 'plan:step_start' || type === 'plan:progress' || type === 'plan:step_done') {
@@ -326,18 +335,46 @@ export async function runOpenCodeTui({ runtime, sessionId, model, safeMode = tru
       }
       return;
     }
-    transcript.addChild(new Spacer(1));
+    transcript.addChild(new SurfaceSpacer(1));
     transcript.addChild(createSystemMessage(text, result.type === 'error' ? color.error : color.muted));
   };
 
   const switchMode = async (mode) => {
     await runtime.setExecutionMode?.(mode);
-    transcript.addChild(new Spacer(1));
+    transcript.addChild(new SurfaceSpacer(1));
     transcript.addChild(createSystemMessage(copy.switchedMode(mode), color.accent));
     requestRender();
   };
 
-  const submit = async (text, alreadyShown = false) => {
+  const resetTranscriptForContinuation = () => {
+    for (const child of [...(transcript.children || [])]) transcript.removeChild(child);
+    processFolds.length = 0;
+    reasoningBlocks.length = 0;
+    toolGroups.length = 0;
+    toolRows.clear();
+    activeAssistant = null;
+    activeAssistantSpacer = null;
+    activeReasoning = null;
+    activeToolGroup = null;
+    activeTodo = null;
+    activePlan = null;
+    activeProcessFold = null;
+    activeText = '';
+    const history = runtime.getSessionMessages?.() || [];
+    const restored = appendHistory(transcript, history, copy, {
+      bodyOnly: bodyOnlyView,
+      expanded: toolsExpanded
+    });
+    processFolds.push(...restored.processFolds);
+    reasoningBlocks.push(...restored.reasoningBlocks);
+    toolGroups.push(...restored.toolGroups);
+    transcript.addChild(new SurfaceSpacer(1));
+    transcript.addChild(createSystemMessage(copy.continuedInNewSession, color.warning));
+    if (!history.length) transcript.addChild(createSystemMessage(copy.emptyHint));
+    requestRender();
+  };
+
+  const submit = async (text, alreadyShown = false, priority = false) => {
     const value = String(text || '').trim();
     if (!value) return;
     const commandName = value.match(/^\/([A-Za-z0-9_-]+)\s*$/)?.[1]?.toLowerCase();
@@ -358,11 +395,14 @@ export async function runOpenCodeTui({ runtime, sessionId, model, safeMode = tru
       return;
     }
     if (!alreadyShown) {
-      transcript.addChild(new Spacer(1));
+      transcript.addChild(new SurfaceSpacer(1));
       transcript.addChild(createUserMessage(value));
     }
     if (busy) {
-      queue.push(value);
+      // Enter: append to the end of the queue. Ctrl+Enter (priority): jump the
+      // queue — the next free slot is taken by this prompt instead.
+      if (priority) queue.unshift(value);
+      else queue.push(value);
       setActivity('tool', copy.queued(queue.length));
       return;
     }
@@ -399,11 +439,20 @@ export async function runOpenCodeTui({ runtime, sessionId, model, safeMode = tru
       activeReasoning = null;
       activeText = '';
       editor.borderColor = color.dim;
+      const nextSessionId = runtime.getCurrentSessionId?.() || activeSessionId;
+      const continuedInNewSession = nextSessionId !== activeSessionId;
+      if (continuedInNewSession) {
+        activeSessionId = nextSessionId;
+        footer.sessionId = nextSessionId;
+        resetTranscriptForContinuation();
+      }
       setActivity('idle', queue.length ? copy.queued(queue.length) : copy.ready);
       if (queue.length) {
         const next = queue.shift();
         queuePanel.setItems(queue);
-        submit(next, true);
+        // After a fork the queued prompt was painted on the old transcript, so
+        // show it again on the continuation session.
+        submit(next, !continuedInNewSession);
       }
     }
   };
@@ -436,11 +485,11 @@ export async function runOpenCodeTui({ runtime, sessionId, model, safeMode = tru
     const sessions = await runtime.getSessionHistory?.(30) || [];
     const picker = new SessionPicker(sessions, {
       copy,
-      currentSessionId: sessionId,
+      currentSessionId: activeSessionId,
       onCancel: closeSessionHistory,
       onSelect: (nextSessionId) => {
         closeSessionHistory();
-        if (nextSessionId !== sessionId) stop({ sessionId: nextSessionId });
+        if (nextSessionId !== activeSessionId) stop({ sessionId: nextSessionId });
         else if (phase === 'home') enterMode(home.mode);
       }
     });
@@ -610,6 +659,11 @@ export async function runOpenCodeTui({ runtime, sessionId, model, safeMode = tru
       if (helpHandle) closeHelp();
       if (historyHandle) closeSessionHistory();
       if (settingsHandle) closeSettingsDialog();
+      return { consume: true };
+    }
+    if (matchesKey(data, 'ctrl+enter')) {
+      const text = editor.getText();
+      if (text.trim()) submit(text, false, true);
       return { consume: true };
     }
     if (matchesKey(data, 'ctrl+o')) {

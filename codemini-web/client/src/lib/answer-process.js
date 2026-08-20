@@ -25,11 +25,19 @@ function isCreatePlanCard(card) {
 }
 
 function isTodoCard(card) {
-  return String(card?.name || "").toLowerCase().replace(/\(.*$/, "") === "update_todos";
+  return ["tasks", "update_todos"].includes(
+    String(card?.name || "").toLowerCase().replace(/\(.*$/, ""),
+  );
 }
 
-export function extractLatestTodoFromPlanSteps(steps = []) {
-  let todoCard = null;
+function isUserInputCard(card) {
+  return String(card?.name || "")
+    .toLowerCase()
+    .replace(/\(.*$/, "") === "request_user_input";
+}
+
+export function extractLatestTodoFromPlanSteps(steps = [], fallbackCard = null) {
+  let todoCard = fallbackCard;
   const nextSteps = (Array.isArray(steps) ? steps : []).map((step) => {
     let changed = false;
     const segments = [];
@@ -124,8 +132,74 @@ function isCreatePlanGroup(group) {
   return false;
 }
 
-/** Fold process groups; keep create_plan cards in chronological order before the final answer. */
-export function layoutAnswerProcessWithPlans(groups = [], fallbackStartedAt = null) {
+function extractUserInputFromGroup(group) {
+  if (!group || typeof group !== "object") {
+    return { userInputCards: [], rest: null };
+  }
+
+  if (group.type === "tools") {
+    const cards = Array.isArray(group.cards) ? group.cards : [];
+    const userInputCards = cards.filter(isUserInputCard);
+    const otherCards = cards.filter((card) => !isUserInputCard(card));
+    return {
+      userInputCards,
+      rest: otherCards.length ? { ...group, cards: otherCards } : null,
+    };
+  }
+
+  if (group.type === "process") {
+    const userInputCards = [];
+    const restGroups = [];
+    for (const inner of Array.isArray(group.groups) ? group.groups : []) {
+      const extracted = extractUserInputFromGroup(inner);
+      userInputCards.push(...extracted.userInputCards);
+      if (extracted.rest) restGroups.push(extracted.rest);
+    }
+    return {
+      userInputCards,
+      rest: restGroups.length ? { ...group, groups: restGroups } : null,
+    };
+  }
+
+  return { userInputCards: [], rest: group };
+}
+
+function isUserInputGroup(group) {
+  if (group?.type === "tools") {
+    return (group.cards || []).some(isUserInputCard);
+  }
+  if (group?.type === "process") {
+    return extractUserInputFromGroup(group).userInputCards.length > 0;
+  }
+  return false;
+}
+
+function peelTrailingTextGroups(pending) {
+  const textGroups = [];
+  while (pending.at(-1)?.type === "text") {
+    textGroups.unshift(pending.pop());
+  }
+  return textGroups;
+}
+
+function findFinalAnswerIndex(groups = []) {
+  for (let index = groups.length - 1; index >= 0; index -= 1) {
+    const group = groups[index];
+    if (group?.type === "text" && String(group.text || "").trim()) return index;
+  }
+  return -1;
+}
+
+export function extractLatestTodoFromGroups(groups = []) {
+  let latestTodo = null;
+  for (const group of Array.isArray(groups) ? groups : []) {
+    const extracted = extractTodoFromGroup(group);
+    if (extracted.todoCards.length) latestTodo = extracted.todoCards.at(-1);
+  }
+  return latestTodo;
+}
+
+function pullTodosFromGroups(groups = []) {
   const todoCards = [];
   const source = [];
   for (const group of Array.isArray(groups) ? groups : []) {
@@ -133,24 +207,42 @@ export function layoutAnswerProcessWithPlans(groups = [], fallbackStartedAt = nu
     todoCards.push(...extracted.todoCards);
     if (extracted.rest) source.push(extracted.rest);
   }
-  const latestTodo = todoCards.at(-1);
-  const finalAnswer = source.at(-1);
-  const hasFinalAnswer =
-    finalAnswer?.type === "text" && String(finalAnswer.text || "").trim();
-  const hasFoldCandidate = Boolean(hasFinalAnswer && source.length > 1);
+  return { todoCards, source, latestTodo: todoCards.at(-1) || null };
+}
+
+function todoLayoutItem(latestTodo) {
+  return latestTodo
+    ? { type: "group", group: { type: "tools", cards: [latestTodo] } }
+    : null;
+}
+
+/** Fold process groups; keep create_plan cards in chronological order before the final answer. */
+export function layoutAnswerProcessWithPlans(
+  groups = [],
+  fallbackStartedAt = null,
+  { fold = true, omitTodo = false } = {},
+) {
+  const { source, latestTodo } = pullTodosFromGroups(groups);
+  const visibleTodo = omitTodo ? null : latestTodo;
+  const answerIndex = findFinalAnswerIndex(source);
+  const finalAnswer = answerIndex >= 0 ? source[answerIndex] : null;
+  const hasFoldCandidate = Boolean(fold && finalAnswer && answerIndex > 0);
 
   if (!hasFoldCandidate) {
+    const parkedTodo = todoLayoutItem(visibleTodo);
     return {
       hasFold: false,
+      hasTodo: Boolean(latestTodo),
       items: [
         ...source.map((group) => ({ type: "group", group })),
-        ...(latestTodo ? [{ type: "group", group: { type: "tools", cards: [latestTodo] } }] : []),
+        ...(parkedTodo ? [parkedTodo] : []),
       ],
       durationMs: 0,
     };
   }
 
-  const beforeAnswer = source.slice(0, -1);
+  const beforeAnswer = source.slice(0, answerIndex);
+  const trailing = source.slice(answerIndex + 1);
   const items = [];
   let pendingProcess = [];
 
@@ -173,13 +265,28 @@ export function layoutAnswerProcessWithPlans(groups = [], fallbackStartedAt = nu
       pushPlanCards(planCards);
       continue;
     }
+    if (isUserInputGroup(group)) {
+      const { userInputCards, rest } = extractUserInputFromGroup(group);
+      const precedingText = peelTrailingTextGroups(pendingProcess);
+      if (rest) pendingProcess.push(rest);
+      flushProcess();
+      for (const textGroup of precedingText) {
+        items.push({ type: "group", group: textGroup });
+      }
+      if (userInputCards.length) {
+        items.push({ type: "group", group: { type: "tools", cards: userInputCards } });
+      }
+      continue;
+    }
     pendingProcess.push(group);
   }
   flushProcess();
-  if (latestTodo) {
-    items.push({ type: "group", group: { type: "tools", cards: [latestTodo] } });
-  }
+  const parkedTodo = todoLayoutItem(visibleTodo);
+  if (parkedTodo) items.push(parkedTodo);
   items.push({ type: "group", group: finalAnswer });
+  for (const group of trailing) {
+    items.push({ type: "group", group });
+  }
 
   const foldGroups = items
     .filter((item) => item.type === "fold")
@@ -195,6 +302,7 @@ export function layoutAnswerProcessWithPlans(groups = [], fallbackStartedAt = nu
 
   return {
     hasFold: items.some((item) => item.type === "fold" && item.groups?.length),
+    hasTodo: Boolean(latestTodo),
     items,
     durationMs,
   };

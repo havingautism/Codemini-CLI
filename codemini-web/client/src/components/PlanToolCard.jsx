@@ -2,29 +2,22 @@ import { useMemo, useState } from "react";
 import { Avatar, Style } from "@dicebear/core";
 import bottts from "@dicebear/styles/bottts.json" with { type: "json" };
 import {
-  CaretDown,
-  CaretRight,
   UserCircle,
-  UsersThree,
 } from "@phosphor-icons/react";
 import { SessionOrb } from "@/components/ui/spinner";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { StreamdownRenderer } from "@/components/StreamdownRenderer.jsx";
+import {
+  DisclosureRowButton,
+} from "@/components/DisclosureLeading.jsx";
 import { ToolCard } from "@/components/ToolCard.jsx";
 import { UsageBadge } from "@/components/UsageBadge.jsx";
 import { extractLatestTodoFromPlanSteps } from "@/lib/answer-process.js";
+import { getTodoToolItems } from "@/lib/tool-card-display.js";
 import { cn } from "@/lib/utils";
 import { planPhaseTitle, shouldExpandPlanStep } from "@/lib/plan-ui-state.js";
 import { isShellToolName } from "@/lib/tool-names.js";
 import { t } from "../../i18n/index.js";
 
-const ROW_CLASS =
-  "msg-process-row flex min-h-11 cursor-pointer select-none items-center gap-2.5 px-3 py-2.5 text-[13px] transition-colors duration-150 hover:bg-[var(--bg-hover)] focus-visible:relative focus-visible:z-10";
-const CHEVRON_CLASS = "size-[14px] shrink-0 text-(--text-process-detail)";
-const ICON_CLASS =
-  "flex size-6 shrink-0 items-center justify-center rounded-full bg-(--bg-tertiary) text-(--text-secondary)";
-const FOLD_ROW_CLASS =
-  "flex w-full items-center gap-2 rounded-md px-1.5 py-1 text-left text-[12px] text-(--text-muted) transition-colors hover:bg-(--bg-hover) hover:text-(--text-secondary)";
 const SUBAGENT_AVATAR_STYLE = new Style(bottts);
 
 const STATUS_DOT = {
@@ -69,7 +62,7 @@ function SubagentAvatar({ seed }) {
     [seed],
   );
 
-  return <img src={src} alt="" className="size-6 rounded-full" />;
+  return <img src={src} alt="" className="size-5 shrink-0 rounded-full" />;
 }
 
 function splitStepSegments(segments = []) {
@@ -122,32 +115,28 @@ function StepProcessFold({ segments }) {
   if (!segments.length) return null;
 
   return (
-    <div className="my-0.5">
-      <button
-        type="button"
+    <div className="codemini-disclosure my-0.5">
+      <DisclosureRowButton
+        open={expanded}
         onClick={() => setExpanded((value) => !value)}
-        className={FOLD_ROW_CLASS}
-        aria-expanded={expanded}
+        icon={<span className="inline-block size-1.5 rounded-full bg-(--accent-green)" />}
       >
-        {expanded ? (
-          <CaretDown size={13} className="shrink-0" />
-        ) : (
-          <CaretRight size={13} className="shrink-0" />
-        )}
-        <span className="inline-block size-1.5 rounded-full bg-(--accent-green)" />
         <span>{label}</span>
         {details ? (
-          <span className="min-w-0 truncate opacity-70">{details}</span>
+          <>
+            <span className="codemini-disclosure-sep" aria-hidden="true" />
+            <span className="min-w-0 truncate opacity-70">{details}</span>
+          </>
         ) : null}
-      </button>
+      </DisclosureRowButton>
       {expanded ? (
-        <div className="relative ml-3.5 mt-2 flex flex-col gap-1.5 border-l border-(--border-default) pl-3">
+        <div className="codemini-disclosure-tree">
           {segments.map((item, index) => {
             if (item.type === "thinking") {
               return (
                 <div
                   key={`th-${index}`}
-                  className="text-[12px] italic leading-5 text-(--text-secondary)"
+                  className="codemini-disclosure-body text-[12px] italic leading-5 text-(--text-secondary)"
                 >
                   <StreamdownRenderer
                     text={item.text}
@@ -159,11 +148,12 @@ function StepProcessFold({ segments }) {
             }
             if (item.type === "tools") {
               return (
-                <div key={`tools-${index}`} className="flex flex-col gap-1.5">
+                <div key={`tools-${index}`} className="flex flex-col gap-1">
                   {(item.cards || []).map((card) => (
                     <ToolCard
                       key={card.id || `${card.name}-${index}`}
                       card={card}
+                      embedded
                     />
                   ))}
                 </div>
@@ -206,37 +196,32 @@ function StepAnswer({ segment }) {
       : firstLine;
 
   return (
-    <div>
-      <button
-        type="button"
+    <div className="codemini-disclosure">
+      <DisclosureRowButton
+        open={open}
         onClick={() => setOpen((value) => !value)}
-        className={FOLD_ROW_CLASS}
-        aria-expanded={open}
+        icon={<span className="inline-block size-1.5 rounded-full bg-(--accent-blue)" />}
       >
-        {open ? (
-          <CaretDown size={13} className="shrink-0" />
-        ) : (
-          <CaretRight size={13} className="shrink-0" />
-        )}
-        <span className="inline-block size-1.5 rounded-full bg-(--accent-blue)" />
-        <span className="font-medium text-(--text-secondary)">
+        <span className="text-(--text-secondary)">
           {t("subagentHandoff")}
         </span>
-
-        <span className="flex-1" />
-      </button>
+        {preview ? (
+          <>
+            <span className="codemini-disclosure-sep" aria-hidden="true" />
+            <span className="min-w-0 flex-1 truncate text-(--text-muted)">
+              {preview}
+            </span>
+          </>
+        ) : null}
+      </DisclosureRowButton>
       {open ? (
-        <ScrollArea
-          type="auto"
-          className="mt-2 h-64 rounded-md bg-(--bg-tertiary) dark:bg-(--bg-primary)"
-          viewportClassName="px-3 py-2 text-[12px] leading-relaxed text-(--text-secondary)"
-        >
+        <div className="codemini-disclosure-payload codemini-disclosure-scroll mt-1 max-h-64 px-3 py-2 text-[12px] leading-relaxed text-(--text-secondary)">
           <StreamdownRenderer
             text={text}
             streaming={false}
             inlineEmbeds={false}
           />
-        </ScrollArea>
+        </div>
       ) : null}
     </div>
   );
@@ -302,21 +287,17 @@ function SubagentTaskDetails({ task }) {
   if (!text) return null;
 
   return (
-    <div className="mb-2 flex items-start gap-2.5 rounded-md bg-(--bg-tertiary) px-2.5 py-2 text-[11px] leading-relaxed dark:bg-(--bg-primary)">
-      <span className="shrink-0 pt-px font-medium text-(--text-muted)">
+    <div className="codemini-disclosure">
+      <div className="px-3 py-1.5 text-[13px] leading-6 text-(--text-process)">
         {t("planStepTask")}
-      </span>
-      <ScrollArea
-        type="auto"
-        className="max-h-48 min-w-0 flex-1"
-        viewportClassName="max-h-48 pr-2 text-(--text-secondary)"
-      >
+      </div>
+      <div className="codemini-disclosure-payload codemini-disclosure-scroll mt-1 max-h-48 px-3 py-2 text-[12px] leading-relaxed text-(--text-secondary)">
         <StreamdownRenderer
           text={text}
           streaming={false}
           inlineEmbeds={false}
         />
-      </ScrollArea>
+      </div>
     </div>
   );
 }
@@ -338,7 +319,7 @@ function SubagentDependencyDetails({ step, dependsOn = [] }) {
         : t("subagentDependencyReceived");
 
   return (
-    <div className="mb-2 flex min-h-8 items-center gap-2 rounded-md bg-(--bg-tertiary) px-2.5 py-1.5 text-[12px] dark:bg-(--bg-primary)">
+    <div className="mb-1 flex min-h-8 items-center gap-2 px-1 text-[12px]">
       <span
         className={cn(
           "size-1.5 shrink-0 rounded-full",
@@ -362,19 +343,30 @@ function SubagentStepRow({ step, index }) {
   const persona = String(step?.role || "").trim();
 
   return (
-    <div className="overflow-hidden">
-      <button
-        type="button"
-        className={ROW_CLASS}
+    <div className="codemini-disclosure overflow-hidden">
+      <DisclosureRowButton
+        open={open}
         onClick={() => setExpanded((value) => !value)}
-        aria-expanded={open}
+        icon={
+          status === "running" ? (
+            <SessionOrb state="tool" />
+          ) : (
+            <span
+              className={cn(
+                "h-1.5 w-1.5 shrink-0 rounded-full",
+                status === "done"
+                  ? STATUS_DOT.completed
+                  : status === "failed"
+                    ? STATUS_DOT.failed
+                    : status === "waiting" || status === "blocked"
+                      ? STATUS_DOT[status]
+                      : "bg-[var(--muted)]",
+              )}
+            />
+          )
+        }
       >
-        {open ? (
-          <CaretDown size={14} className={CHEVRON_CLASS} />
-        ) : (
-          <CaretRight size={14} className={CHEVRON_CLASS} />
-        )}
-        <span className="min-w-0 flex-1 truncate leading-[18px]">
+        <span className="min-w-0 flex-1 truncate leading-6">
           {persona ? (
             <span className="shrink-0 text-(--text-secondary)">{persona}</span>
           ) : null}
@@ -385,25 +377,9 @@ function SubagentStepRow({ step, index }) {
             {step.title || `Task ${index + 1}`}
           </span>
         </span>
-        {status === "running" ? (
-          <SessionOrb state="tool" />
-        ) : (
-          <span
-            className={cn(
-              "h-1.5 w-1.5 shrink-0 rounded-full",
-              status === "done"
-                ? STATUS_DOT.completed
-                : status === "failed"
-                  ? STATUS_DOT.failed
-                  : status === "waiting" || status === "blocked"
-                    ? STATUS_DOT[status]
-                    : "bg-[var(--muted)]",
-            )}
-          />
-        )}
-      </button>
+      </DisclosureRowButton>
       {open ? (
-        <div className="pb-2 pl-6 pr-3">
+        <div className="codemini-disclosure-tree">
           <StepBody step={step} />
         </div>
       ) : null}
@@ -411,16 +387,33 @@ function SubagentStepRow({ step, index }) {
   );
 }
 
-export function PlanToolCard({ card, grouped = false }) {
+export function PlanToolCard({ card }) {
   const planRun = card?.planRun || null;
   const phase =
     planRun?.phase || (card?.status === "done" ? "completed" : "planning");
   const running = String(card?.status || "").toLowerCase() === "running";
   const isSubagent = isRunSubagentCard(card);
   const rawSteps = Array.isArray(planRun?.steps) ? planRun.steps : [];
+  const assignedTasks = Array.isArray(card?.arguments?.tasks)
+    ? card.arguments.tasks
+    : [];
+  const assignedTasksCard = assignedTasks.length
+    ? {
+        id: `${card?.id || "subagent"}-assigned-tasks`,
+        name: "tasks",
+        status: "done",
+        arguments: { tasks: assignedTasks },
+      }
+    : null;
   const { steps, todoCard } = isSubagent
-    ? extractLatestTodoFromPlanSteps(rawSteps)
+    ? extractLatestTodoFromPlanSteps(rawSteps, assignedTasksCard)
     : { steps: rawSteps, todoCard: null };
+  const todoItems = todoCard
+    ? getTodoToolItems(todoCard.arguments, todoCard.result)
+    : [];
+  const todoCompleted = todoItems.filter(
+    (item) => item.status === "completed",
+  ).length;
   const primary = steps[0] || null;
   const persona = String(
     primary?.role || card?.arguments?.name || card?.arguments?.role || "",
@@ -448,59 +441,17 @@ export function PlanToolCard({ card, grouped = false }) {
     : card?.displayName || planPhaseTitle(phase);
   const singleTask = steps.length <= 1;
   const [open, setOpen] = useState(
-    !isSubagent && !grouped && (running || phase === "executing"),
+    !isSubagent && (running || phase === "executing"),
   );
   const expanded = open;
 
   return (
-    <div
-      className={cn(
-        "msg-process-meta relative w-full overflow-hidden",
-        grouped
-          ? "bg-transparent"
-          : "codemini-message-surface rounded-xl",
-        card.status === "error" &&
-          "after:pointer-events-none after:absolute after:inset-0 after:rounded-[inherit] after:border after:border-[color:color-mix(in_srgb,var(--accent-red)_32%,transparent)] after:content-['']",
-      )}
-    >
-      <button
-        type="button"
-        className={cn(ROW_CLASS, "w-full rounded-none text-left")}
+    <div className="codemini-disclosure msg-process-meta relative w-full">
+      <DisclosureRowButton
+        open={expanded}
         onClick={() => setOpen((value) => !value)}
-        aria-expanded={expanded}
-      >
-        {expanded ? (
-          <CaretDown size={14} className={CHEVRON_CLASS} />
-        ) : (
-          <CaretRight size={14} className={CHEVRON_CLASS} />
-        )}
-        {isSubagent ? (
-          persona ? (
-            <SubagentAvatar seed={persona} />
-          ) : (
-            <span className="size-6 shrink-0" aria-hidden="true" />
-          )
-        ) : (
-          <span className={ICON_CLASS}>
-            <UserCircle size={15} aria-hidden="true" />
-          </span>
-        )}
-        <span className="flex min-w-0 flex-1 items-start overflow-hidden leading-[18px]">
-          <span className="shrink-0 font-medium text-(--text-primary)">
-            {title}
-          </span>
-          {taskSummary && !expanded ? (
-            <span
-              className="msg-process-meta__detail ml-1.5 min-w-0 flex-1 truncate whitespace-nowrap text-xs font-normal leading-[18px]"
-              title={taskSummary}
-            >
-              <span aria-hidden="true">· </span>
-              {taskSummary}
-            </span>
-          ) : null}
-        </span>
-        <span className="flex shrink-0 items-center gap-1.5 text-[12px] text-(--text-secondary)">
-          {running && phase !== "waiting" ? (
+        icon={
+          running && phase !== "waiting" ? (
             <SessionOrb state="tool" />
           ) : (
             <span
@@ -510,25 +461,46 @@ export function PlanToolCard({ card, grouped = false }) {
                 STATUS_DOT[phase] || "bg-[var(--text-muted)]",
               )}
             />
-          )}
+          )
+        }
+      >
+        {isSubagent ? (
+          persona ? (
+            <SubagentAvatar seed={persona} />
+          ) : (
+            <UserCircle size={15} aria-hidden="true" className="shrink-0 text-(--text-secondary)" />
+          )
+        ) : (
+          <UserCircle size={15} aria-hidden="true" className="shrink-0 text-(--text-secondary)" />
+        )}
+        <span className="shrink-0">{title}</span>
+        {taskSummary && !expanded ? (
+          <>
+            <span className="codemini-disclosure-sep" aria-hidden="true" />
+            <span
+              className="msg-process-meta__detail min-w-0 flex-1 truncate"
+              title={taskSummary}
+            >
+              {taskSummary}
+            </span>
+          </>
+        ) : (
+          <span className="min-w-0 flex-1" />
+        )}
+        <span className="flex shrink-0 items-center gap-1.5 text-[12px] text-(--text-secondary)">
           <span>{isSubagent ? statusLabel(phase) : planPhaseTitle(phase)}</span>
+          {isSubagent && todoItems.length ? (
+            <span className="tabular-nums text-(--text-muted)">
+              {todoCompleted}/{todoItems.length}
+            </span>
+          ) : null}
         </span>
-      </button>
-
-      {!expanded && todoCard ? (
-        <div className="mt-2 px-3 pb-3">
-          <ToolCard card={todoCard} />
-        </div>
-      ) : null}
+      </DisclosureRowButton>
 
       {expanded ? (
-        <div className="px-3 pb-3 pt-2">
+        <div className="codemini-disclosure-tree">
           {isSubagent ? <SubagentTaskDetails task={goal} /> : null}
-          {todoCard ? (
-            <div className="mb-2">
-              <ToolCard card={todoCard} />
-            </div>
-          ) : null}
+          {todoCard ? <ToolCard card={todoCard} embedded /> : null}
           {isSubagent ? (
             <SubagentDependencyDetails
               step={primary}
@@ -541,7 +513,7 @@ export function PlanToolCard({ card, grouped = false }) {
             singleTask ? (
               <StepBody step={primary} />
             ) : (
-              <div className="flex flex-col">
+              <div className="flex flex-col gap-1">
                 {steps.map((step, index) => (
                   <SubagentStepRow
                     key={`${step.toolCallId || step.index || index}-${step.role || "step"}`}
@@ -569,36 +541,12 @@ export function PlanToolCard({ card, grouped = false }) {
 
 export function PlanToolCardGroup({ cards = [] }) {
   const items = Array.isArray(cards) ? cards.filter(Boolean) : [];
-  const canGroup =
-    items.length > 1 && items.every((card) => isRunSubagentCard(card));
-
-  if (!canGroup) {
-    return items.map((card) => (
-      <PlanToolCard key={card.id || card.name} card={card} />
-    ));
-  }
-
+  if (!items.length) return null;
   return (
-    <section
-      className="codemini-message-surface msg-process-meta w-full overflow-hidden rounded-xl"
-      aria-label={t("subagentGroupTitle")}
-    >
-      <div className="flex min-h-11 items-center gap-2.5 border-b border-(--border-default) px-3 py-2.5">
-        <span className={ICON_CLASS}>
-          <UsersThree size={15} aria-hidden="true" />
-        </span>
-        <span className="font-medium text-(--text-primary)">
-          {t("subagentGroupTitle")}
-        </span>
-        <span className="text-xs text-(--text-muted)">
-          {t("subagentGroupCount").replace("{{count}}", items.length)}
-        </span>
-      </div>
-      <div className="divide-y divide-(--border-default)">
-        {items.map((card) => (
-          <PlanToolCard key={card.id || card.name} card={card} grouped />
-        ))}
-      </div>
-    </section>
+    <div className="flex flex-col gap-2">
+      {items.map((card) => (
+        <PlanToolCard key={card.id || card.name} card={card} />
+      ))}
+    </div>
   );
 }

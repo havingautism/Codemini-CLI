@@ -710,14 +710,14 @@ function GuideComposer({ open, onOpenChange, busy, error, onSubmit }) {
             <textarea
               autoFocus
               rows={4}
-              className="min-h-[124px] w-full resize-none rounded-2xl border border-(--border-default) bg-(--bg-secondary)/70 px-4 py-3.5 text-[15px] leading-6 text-(--text-primary) outline-none transition-[border-color,box-shadow,background-color] placeholder:text-(--text-muted) hover:bg-(--bg-secondary) focus:border-primary/45 focus:bg-(--bg-primary) focus:shadow-[0_0_0_3px_color-mix(in_srgb,var(--primary)_12%,transparent)]"
+              className="min-h-[124px] w-full resize-none rounded-2xl border border-(--border-default) bg-(--bg-primary) px-4 py-3.5 text-[15px] leading-6 text-(--text-primary) outline-none transition-[border-color,box-shadow,background-color] placeholder:text-(--text-muted) hover:border-(--border-strong) focus:border-primary/45 focus:bg-(--bg-primary) focus:shadow-[0_0_0_3px_color-mix(in_srgb,var(--primary)_12%,transparent)]"
               value={question}
               onChange={(e) => setQuestion(e.target.value)}
               placeholder={t("deepResearchQuestionPlaceholder")}
             />
           </label>
 
-          <div className="mt-4 overflow-hidden rounded-2xl border border-(--border-default) bg-(--bg-secondary)/40">
+          <div className="mt-4 overflow-hidden rounded-2xl border border-(--border-default) bg-(--bg-subtle)">
             <button
               type="button"
               aria-expanded={contextOpen}
@@ -824,7 +824,7 @@ function GuideComposer({ open, onOpenChange, busy, error, onSubmit }) {
           ) : null}
         </div>
 
-        <DialogFooter className="shrink-0 items-center border-t border-(--separator) bg-(--bg-secondary)/35 px-5 py-3 sm:justify-between sm:px-6">
+        <DialogFooter className="shrink-0 items-center border-t border-(--separator) bg-(--bg-primary) px-5 py-3 sm:justify-between sm:px-6">
           <span className="hidden text-[10px] text-(--text-muted) sm:block">
             {t("deepResearchSubmitShortcut")}
           </span>

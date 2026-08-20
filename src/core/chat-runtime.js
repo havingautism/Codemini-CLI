@@ -6,7 +6,8 @@ import {
   isSkillIndexEligible,
   isSkillModelInvocationDisabled,
   isUserInvocableSkill,
-  renderCommandPrompt
+  renderCommandPrompt,
+  appendSkillSandboxMountHint,
 } from './command-loader.js';
 import { skillIsEligible } from './skill-contexts.js';
 import {
@@ -51,6 +52,7 @@ import { getBuiltinTools } from './tools.js';
 import { canonicalShellToolName, shellToolName, toolNameAllowed } from './shell-tool-name.js';
 import { createToolRuntime } from './tool-runtime.js';
 import {
+  createContinuationSession,
   deriveSessionTitle,
   loadSession,
   listSessions,
@@ -79,8 +81,9 @@ import {
 import { getReplyLanguage, getReplyLanguageName, stripReplyLanguageDirective, buildSystemPromptWithReplyLanguage, appendStructuredOutputLanguageRule } from './reply-language.js';
 import { composeSystemPrompt } from './system-prompt-composer.js';
 import { buildTurnContextPrefix, buildTurnUserPrompt } from './turn-context.js';
-import { buildSubAgentShellRulesPrompt } from './shell-profile.js';
-import { getProjectPlansDir, getProjectSpecsDir, getProjectWorkspaceDir, getSessionsDir, getSkillsDir } from './paths.js';
+import { buildSubAgentShellRulesPrompt, buildSubAgentRuntimeNote, resolveShellContext } from './shell-profile.js';
+import { getMemoryDir, getProjectMemoryDir, getProjectPlansDir, getProjectSpecsDir, getProjectWorkspaceDir, getSessionsDir, getSkillsDir } from './paths.js';
+import { buildMemorySnapshot } from './memory-prompt.js';
 import { buildProjectContextSnippet, initializeProjectIndex } from './project-index.js';
 import { queryProjectKnowledgeGraph } from './project-knowledge-graph.js';
 import { captureToInbox, listInbox } from './memory-store.js';
@@ -88,7 +91,6 @@ import {
   classifyMemoryRoute,
   isSensitiveMemoryContent,
   shouldAutoCaptureUserPrompt as shouldAutoCaptureUserPromptShared,
-  buildMemoryDecisionGraphBlock,
   buildMemoryRouteHintBlock
 } from './memory-policy.js';
 import {
@@ -116,6 +118,11 @@ import {
 import { normalizePlanState } from './plan-state.js';
 import { normalizeSpecState } from './spec-state.js';
 import { normalizeTodos } from './todo-state.js';
+import {
+  attachTimingToUsage,
+  createStreamTimingTracker,
+  mergeTiming
+} from './usage-timing.js';
 import { isGeneralWorkspaceProjectDir, normalizeProjectDirKey } from './webui-sidebar-config.js';
 import {
   attachReflectTargets,
@@ -524,7 +531,7 @@ export function normalizeModelUsage(usage) {
   ) {
     return null;
   }
-  return {
+  return withTiming({
     inputTokens: Math.round(inputTokens || 0),
     outputTokens: Math.round(outputTokens || 0),
     totalTokens: Math.round(totalTokens || 0),
@@ -534,12 +541,18 @@ export function normalizeModelUsage(usage) {
     reasoningOutputTokens: Math.round(reasoningOutputTokens || 0),
     requests: 1,
     raw: collectRawUsage(usage)
-  };
+  }, usage);
+}
+
+function withTiming(base, ...sources) {
+  const timing = sources.reduce((acc, source) => mergeTiming(acc, source?.timing), null);
+  if (timing) base.timing = timing;
+  return base;
 }
 
 function cloneModelUsage(usage) {
   if (!usage || typeof usage !== 'object') return null;
-  return {
+  return withTiming({
     inputTokens: Math.max(0, Math.round(Number(usage.inputTokens || 0))),
     outputTokens: Math.max(0, Math.round(Number(usage.outputTokens || 0))),
     totalTokens: Math.max(0, Math.round(Number(usage.totalTokens || 0))),
@@ -549,7 +562,7 @@ function cloneModelUsage(usage) {
     reasoningOutputTokens: Math.max(0, Math.round(Number(usage.reasoningOutputTokens || 0))),
     requests: Math.max(0, Math.round(Number(usage.requests || 0))),
     raw: Array.isArray(usage.raw) ? usage.raw.map((item) => ({ ...item })) : []
-  };
+  }, usage);
 }
 
 function mergeModelUsage(left, right) {
@@ -557,7 +570,7 @@ function mergeModelUsage(left, right) {
   const b = cloneModelUsage(right);
   if (!a) return b;
   if (!b) return a;
-  return {
+  return withTiming({
     inputTokens: a.inputTokens + b.inputTokens,
     outputTokens: a.outputTokens + b.outputTokens,
     totalTokens: a.totalTokens + b.totalTokens,
@@ -567,7 +580,7 @@ function mergeModelUsage(left, right) {
     reasoningOutputTokens: a.reasoningOutputTokens + b.reasoningOutputTokens,
     requests: a.requests + b.requests,
     raw: [...a.raw, ...b.raw]
-  };
+  }, a, b);
 }
 
 export function createTurnUsageAccumulator() {
@@ -640,7 +653,7 @@ export const EXECUTION_MODE_TOOL_POLICY = {
     'read', 'search_code', 'grep', 'ast_grep', 'list', 'glob', 'ast_query', 'read_ast_node',
     'query_project_index', 'query_project_graph', 'tool_search', 'skill', 'web_fetch', 'web_search',
     'save_memory',
-    'update_todos',
+    'tasks',
     'edit', 'write', 'begin_write', 'write_chunk', 'commit_write', 'abort_write', 'apply_patch', 'delete', 'run',
     'run_subagent', 'request_user_input'
   ]
@@ -662,15 +675,17 @@ function displayExecutionMode(mode) {
   return normalizeExecutionMode(mode) === 'plan' ? 'code' : 'normal';
 }
 
-function resolveExecutionModeAllowedTools(executionMode, callerAllowedTools, config) {
+function resolveExecutionModeAllowedTools(executionMode, callerAllowedTools, config, commandPlatform = process.platform) {
   const mode = normalizeExecutionMode(executionMode);
   const modePolicy = adaptToolNamesForPlatform(
     normalizeToolPolicy(EXECUTION_MODE_TOOL_POLICY[mode] || [], config).map(canonicalShellToolName),
+    commandPlatform,
   );
   if (!modePolicy.length) return callerAllowedTools;
   if (Array.isArray(callerAllowedTools)) {
     return adaptToolNamesForPlatform(
       normalizeToolPolicy(callerAllowedTools, config).map(canonicalShellToolName).filter((name) => modePolicy.includes(name)),
+      commandPlatform,
     );
   }
   return modePolicy;
@@ -682,92 +697,54 @@ export function buildExecutionModePromptBlock(executionMode, platform = process.
     const unixCrud = platform !== 'win32';
     return [
       'Execution Mode: coding',
-      'You are in coding mode. Treat implementation requests as authorization to inspect the repository, make focused changes, and verify them. Prefer the smallest complete solution that follows the project\'s existing architecture and conventions.',
+      'Implement only when requested. Preserve public contracts, project conventions, unrelated user changes, and platform compatibility.',
       '',
-      'Coding workflow:',
-      '1. Read project instructions, then use project-index/search/read tools to inspect only the relevant code, tests, configuration, and callers before editing.',
-      '2. If requirements have materially different interpretations, use request_user_input when available. Do not interrupt for low-impact details with a safe default.',
-      '3. Choose the workflow yourself: implement directly, write a normal Markdown design document for user confirmation, or delegate a bounded task with run_subagent. There is no create_plan/create_spec orchestration tool.',
-      '4. Preserve public contracts, local naming, error handling, platform compatibility, and dependency choices unless the request explicitly changes them. Avoid unrelated refactors and speculative abstractions.',
-      '5. For bugs, first reproduce or establish a concrete failing signal, inspect evidence, test a falsifiable cause, apply the smallest root-cause fix, and add a regression check when the repository has an appropriate test seam.',
-      '6. Verify with the narrowest project-native checks that cover the changed behavior, then inspect the diff. Never claim fixed, passing, or complete without fresh evidence; state what was not verified.',
-      '7. Respect task intent: explanation or review requests authorize inspection and reporting, diagnosis requests authorize finding the cause, and explicit build/fix/change requests authorize implementation. Do not turn read-only work into edits without user intent.',
+      'Workflow: inspect relevant source and callers → clarify only material choices → make the smallest complete change → run focused verification → inspect the diff.',
+      'The injected <coding_harness> route is authoritative for memory capability, and directive for tasks, skills, clarification, and bounded delegation.',
+      'For bugs, establish a failing signal and fix the shared root cause. Never claim completion without fresh evidence.',
       '',
       'Subagent tool (run_subagent):',
-      '- Prefer delegation for non-trivial coding work when a bounded, independently verifiable chunk can benefit from clean context, parallel read-only investigation, focused implementation, test triage, or independent review.',
-      '- Do not delegate the whole ambiguous request, use a subagent merely to make a plan, or use one to avoid inspecting the relevant code yourself. The parent agent owns decomposition, integration, and the final answer.',
-      '- Always pass a one- or two-sentence summary for the collapsed UI card and a separate complete prompt (task + success criteria + out-of-scope) for the expanded details and worker. Put durable handoff notes in context.',
-      '- Invent a short human name for each worker (e.g. David, Mira, Kai) via `name` — do not use preset role enums. Capability comes from `tools`, not the name.',
-      `- Default tools allow edits. For read-only explore/review, pass a read-only tools list (e.g. read, search_code, web_search). For verify/test, include ${commandToolName} when needed.`,
-      '- Subagents run on the configured Lite/Fast model. Keep assignments narrow and provide enough evidence and acceptance criteria for that model to finish without rediscovering the parent task.',
-      '- For parallel read-only work, emit multiple run_subagent calls in the same response and give each an explicit read-only tools list. Workers with default or mutating tools run sequentially because they share one worktree.',
-      '- For dependent work in the same response, give upstream calls a task_id and later calls depends_on. Dependencies must reference earlier task_id values. The runtime waits and injects successful upstream handoffs automatically; do not duplicate them in context.',
-      '- Subagents can never call run_subagent/create_plan/create_spec.',
+      '- Prefer delegation for non-trivial coding work only when a bounded, independently verifiable chunk benefits from clean context or parallel read-only evidence.',
+      '- The parent agent owns decomposition, integration, and the final answer. Workers use the configured Lite/Fast model.',
+      `- Pass a one- or two-sentence summary plus concrete task, success criteria, and scope. Give read-only workers explicit tools; include ${commandToolName} only for execution they own.`,
+      '- Do not copy the parent transcript into the worker. Pass a task envelope: goal, file paths, constraints, and known facts.',
+      '- Workers return a short conclusion and a handoff path under .codemini/handoffs/. Read that file only when details are required; do not copy the raw dump forward.',
       '',
       'User input workflow:',
-      '- Inspect first when repository evidence can resolve the uncertainty without asking the user.',
-      '- When request_user_input is available, use it when the user\'s preference, desired scope, target outcome, constraints, or choice among reasonable approaches would materially change the work.',
-      '- Prefer a short structured form over a plain-text clarification when 1-3 focused choices can capture the needed direction. Include a recommended or sensible default option when appropriate.',
-      '- Use request_user_input when an answer is required to continue, and also when structured choices would substantially improve the usefulness or fit of the result.',
-      '- Do not interrupt for low-impact details when a safe, reversible assumption is available. After the user responds or skips, incorporate the result and continue the original task.',
+      '- Inspect first. Use request_user_input when preference, scope, target, or constraints materially change the work.',
+      '- Prefer a structured form for 1-3 choices when it would substantially improve the usefulness or fit; continue with safe reversible defaults for incidental details.',
       '',
       'Design documents:',
       '- Create a design document only when implementation is blocked by a material product/architecture decision, multiple viable approaches have meaningfully different tradeoffs, or the change affects public contracts, data migration, security, cost, or broad scope.',
-      '- Do not create a design document for routine fixes, localized reversible changes, or decisions the user has already made. Inspect enough evidence first, then write the shortest useful Markdown under .codemini/workspace/specs/ (session subdirectory is fine). This is a file, not workflow state or a special tool.',
-      '- Record only the decisions and tradeoffs that need agreement, tell the user the path, and wait for confirmation before implementing those material choices.',
-      '- After confirmation, revise the document if needed and implement directly or with run_subagent.',
+      '- Do not create a design document for routine fixes. Record only material decisions and wait for confirmation before implementing those material choices.',
       '',
       'Tool discipline:',
       unixCrud
-        ? '- Prefer dedicated project-index, search, read, edit, and write tools over raw shell equivalents. Load deferred tools with tool_search only when needed.'
-        : '- Prefer dedicated project-index, search, read, edit, and patch tools over raw shell equivalents. Load deferred tools with tool_search only when needed.',
-      `- Choose the narrowest relevant project-native verification, and use ${commandToolName} for tests, builds, type checks, linters, generators, and version-control inspection—not as the default way to read or search source code.`,
-      unixCrud
-        ? '- Use read with file_path/offset/limit. Read an existing file before edit or overwrite; use edit with file_path/old_string/new_string and write with file_path/content.'
-        : '- Use edit for precise existing-file changes, apply_patch for coherent multi-file changes, and write only for small new files or intentional whole-file output. For long whole-file content, use begin_write, bounded sequential write_chunk calls, then commit_write; abort unfinished transactions.',
-      '- Search the web for current external documentation, versions, compatibility, or unfamiliar APIs when that information affects correctness; prefer primary sources and link the sources that support material claims.',
-      '',
-      'Workflow boundaries:',
-      unixCrud
-        ? `- Do not claim edit/write/delete/${commandToolName} are unavailable in coding mode; they are available for direct tasks.`
-        : `- Do not claim edit/write/begin_write/write_chunk/commit_write/apply_patch/delete/${commandToolName} are unavailable in coding mode; they are available for direct tasks.`,
-      '- Preserve unrelated user changes in a dirty worktree. Never discard, overwrite, or reformat work outside the requested scope.',
-      '- If the request is too unknown to act on safely, ask one focused question instead of guessing.'
+        ? '- Read before editing; use edit old_string/new_string for existing files and write for new files.'
+        : '- Use edit for precise changes, apply_patch for coherent multi-file work, and begin_write/write_chunk/commit_write only for long whole-file output.',
+      `- Use ${commandToolName} for focused tests, builds, generators, and git inspection—not ordinary source reading.`
     ].join('\n');
   }
   return [
     'Execution Mode: normal',
-    'You are in normal mode. Help with everyday questions and lightweight tasks conversationally. Be proactive about clarifying underspecified requests and verifying external facts instead of guessing.',
-    '',
-    'Task boundaries:',
-    `- Match the action to the request: answer and explain without changing state; review or diagnose by inspecting and reporting; create, edit, ${commandToolName}, or send only when the user asks for that outcome.`,
-    '- Use the shared workspace for relevant read-only context when helpful, but do not turn an ordinary question into a repository task without a clear connection.',
-    '- Make safe, reversible assumptions for low-impact details and state them briefly. Stop for user direction when different choices would materially change the result or require broader authority.',
-    '- Preserve user data and existing work. Do not overwrite files, broaden scope, or perform external side effects merely because a tool is available.',
-    '',
+    'Handle everyday questions and lightweight tasks conversationally. Answer without changing state unless the user asks for an action.',
+      '',
     'User input workflow:',
-    '- Treat a request as underspecified when multiple plausible interpretations would lead to meaningfully different answers, recommendations, formats, scopes, or outcomes.',
-    '- When request_user_input is available, use it for underspecified requests and whenever the user\'s preference, desired scope, target outcome, constraints, or choice among multiple reasonable approaches would materially change the response.',
-    '- Prefer a short structured form over a plain-text clarification when 1-3 focused choices can capture the needed direction. Include a recommended or sensible default option when appropriate.',
-    '- Use request_user_input when an answer is required to continue, and also when structured choices would substantially improve the usefulness or fit of the result.',
-    '- Do not interrupt for low-impact details. If a safe, reversible assumption is obvious, state it briefly and continue.',
-    '- After the user responds or skips, incorporate the result and continue the original task.',
-    '',
+    '- Keep request_user_input available. Use a short structured form when 1-3 preference, scope, format, or outcome choices would materially improve the answer.',
+    '- Make safe reversible assumptions for incidental details. Preserve user data and avoid external side effects without clear authorization.',
+      '',
     'Web research workflow:',
-    '- Use web_search when the answer depends on current or changeable information, the user asks for the latest or for verification, the topic is unfamiliar or niche, recommendations could cost meaningful time or money, or useful source links would improve the answer.',
-    '- For a broad or vague request that would benefit from current context, search first when research can narrow the space, then use request_user_input with informed options if the user\'s intent still matters.',
-    '- Prefer a small number of targeted searches, synthesize the findings, distinguish sourced facts from your own inference, and link sources near the material claims they support.',
-    '- Do not search for timeless casual questions when it would add no value, and respect an explicit request not to browse.',
-    '- If web_search is unavailable or disabled, say so briefly when current information is necessary rather than presenting stale knowledge as verified.'
+    '- Search for current, changeable, unfamiliar, high-stakes, recommendation, or explicitly verified information. Use targeted queries, cite material claims, and distinguish inference from sourced facts.',
+    `- Use ${commandToolName} or workspace tools only when they directly support the request.`
   ].join('\n');
 }
 
 export const ROLE_TOOL_POLICY = {
-  planner: ['read', 'read_plan', 'tool_search', 'skill', 'update_plan', 'update_todos'],
+  planner: ['read', 'read_plan', 'tool_search', 'skill', 'update_plan', 'tasks'],
   explorer: ['read', 'search_code', 'tool_search', 'skill', 'web_fetch', 'web_search'],
   architect: ['read', 'search_code', 'tool_search', 'skill', 'web_search'],
   advisor: ['read', 'search_code', 'tool_search', 'skill'],
-  coder: ['read', 'search_code', 'edit', 'write', 'begin_write', 'write_chunk', 'commit_write', 'abort_write', 'apply_patch', 'delete', 'run', 'tool_search', 'skill', 'web_fetch', 'web_search', 'update_todos'],
+  coder: ['read', 'search_code', 'edit', 'write', 'begin_write', 'write_chunk', 'commit_write', 'abort_write', 'apply_patch', 'delete', 'run', 'tool_search', 'skill', 'web_fetch', 'web_search', 'tasks'],
   refactorer: ['read', 'search_code', 'edit', 'write', 'begin_write', 'write_chunk', 'commit_write', 'abort_write', 'apply_patch', 'delete', 'run', 'tool_search', 'skill'],
   reviewer: ['read', 'search_code', 'tool_search', 'skill'],
   tester: ['read', 'search_code', 'run', 'tool_search', 'skill'],
@@ -847,6 +824,33 @@ export function getSubAgentPersonaPrompt(name = 'Alex') {
   ].join('\n');
 }
 
+export function compactSubAgentResultForParent({
+  text = '',
+  summary = '',
+  handoffPath = '',
+  artifactPaths = [],
+  maxChars = SUB_AGENT_PARENT_RESULT_MAX_CHARS,
+} = {}) {
+  const artifacts = [...new Set(
+    (Array.isArray(artifactPaths) ? artifactPaths : [])
+      .map((item) => String(item || '').trim())
+      .filter(Boolean)
+  )];
+  const body = String(text || '').trim();
+  const pathLine = String(handoffPath || '').trim();
+  const previewBudget = pathLine ? Math.min(maxChars, 1500) : maxChars;
+  const clipped = body.length <= previewBudget
+    ? body
+    : `${body.slice(0, previewBudget).trimEnd()}\n\n[truncated]`;
+  return [
+    'Subagent finished. Use this conclusion; read the handoff file only if you need details.',
+    String(summary || '').trim() ? `Summary: ${String(summary).trim()}` : '',
+    clipped || '(empty)',
+    pathLine ? `Handoff: ${pathLine}` : '',
+    artifacts.length ? `Artifacts:\n${artifacts.map((item) => `- ${item}`).join('\n')}` : '',
+  ].filter(Boolean).join('\n');
+}
+
 /**
  * Role/persona policy ∩ optional parent allow-list, minus forbidden spawn tools.
  * Unknown persona names (e.g. "David") use the coder tool baseline; parent restricts via `tools`.
@@ -866,6 +870,7 @@ export function resolveSubAgentToolAllowList({
     ),
     platform,
   );
+  if (!roleTools.includes('tasks')) roleTools.push('tasks');
   if (!Array.isArray(tools)) return roleTools;
   const requested = adaptToolNamesForPlatform(
     normalizeToolPolicy(tools, config).map(canonicalShellToolName).filter(
@@ -883,6 +888,7 @@ export function resolveSubAgentToolAllowList({
   ) {
     granted.push('tool_search');
   }
+  if (!granted.includes('tasks')) granted.push('tasks');
   return granted;
 }
 
@@ -925,6 +931,12 @@ const SUB_AGENT_CONTEXT_MAX_MESSAGES = 4;
 const SUB_AGENT_CONTEXT_MAX_CHARS = 1200;
 const SUB_AGENT_EVIDENCE_MAX_ITEMS = 3;
 const SUB_AGENT_HANDOFF_MAX_ITEMS = 6;
+const SUB_AGENT_PARENT_RESULT_MAX_CHARS = 4000;
+const SUBAGENT_STABLE_SKILLS_PROMPT = [
+  'You are a Codemini subagent.',
+  'Do only the assigned task. Do not invent extra scope. Do not spawn other agents.',
+  'Use tools as needed, then return a concise handoff to the parent agent and stop.'
+].join('\n');
 const PROJECT_REQUIREMENTS_SECTION_MARKERS = [
   { key: 'summary', marker: 'REQUIREMENTS_SUMMARY', labels: ['1', 'summary', 'overview', 'project overview', 'executive summary', '项目概述', '项目总览', '概述'] },
   { key: 'architecture', marker: 'REQUIREMENTS_ARCHITECTURE', labels: ['2', 'architecture', 'system architecture', 'system map', '架构', '系统架构图', '系统架构', '架构图'] },
@@ -2285,77 +2297,106 @@ function selectAutoSkillNames(text = '') {
   return selected;
 }
 
-function classifyTaskComplexity(text = '') {
+const EMPTY_TASK_DIMENSIONS = Object.freeze({
+  complexity: 'simple',
+  discussion: false,
+  ambiguous: false,
+  implementation: false,
+  localized: false,
+  multiFile: false,
+  verification: false,
+  architecture: false,
+  explicitPlan: false,
+  multiAction: false,
+});
+
+export function classifyTaskDimensions(text = '') {
   const input = String(text || '').trim();
-  if (!input) return 'simple';
+  if (!input) return { ...EMPTY_TASK_DIMENSIONS };
 
   const lower = input.toLowerCase();
-  const explicitPlanning =
+  const explicitPlan =
     /(plan first|make a plan|implementation plan|先做计划|先出方案|先规划|先计划)/i.test(lower);
-  if (explicitPlanning) return 'complex';
-
-  const simpleSkip =
+  const trivial =
     /(typo|readme|console\.log|log this|rename\s+\w+|one line|small tweak|tiny fix|格式化|拼写|注释|文案|小改|微调)/i.test(
       lower
     );
-  if (simpleSkip) return 'simple';
-
-  const discussionFirst =
-    /(brainstorm|头脑风暴|方案|思路|怎么做|如何做|which (?:approach|option|way)|best way|trade-?off|not sure|unsure|unclear|whether it should|要不要|不确定|先别写|先不要写|先讨论|先想一下)/i.test(
+  const discussion =
+    /(brainstorm|头脑风暴|方案|思路|怎么做|如何做|先别写|先不要写|先讨论|先想一下)/i.test(lower);
+  const ambiguous =
+    /(not sure|unsure|unclear|help me think|let'?s think|should we|which (?:approach|option|way)|best way|trade-?off|whether it should|要不要|不确定|不明确|哪个方案|怎么设计|如何设计|取舍)/i.test(
       lower
     );
-  if (discussionFirst) return 'simple';
-
-  const implementationRequest =
+  const implementation =
     /\b(add|build|create|implement|support|introduce|design|refactor|rework|migrate|change|update|rewrite|restructure)\b/i.test(
       lower
     ) ||
     /(新增|增加|实现|支持|设计|重构|改造|迁移|调整|重写|重做)/i.test(lower);
-  if (!implementationRequest) return 'simple';
-
-  const broadSignalPattern =
-    /\b(auth|authentication|workflow|flow|system|architecture|api|endpoint|state management|session state|cache|caching|database|migration|service|integration|error handling|error recovery|shared helper|helper module)\b/gi;
-  const broadSignals = lower.match(broadSignalPattern) || [];
-  const multipleActions = /\b(and|plus|also|while|along with)\b/i.test(lower) || /[，、；;].+/.test(input);
+  const broadSignals = lower.match(
+    /\b(auth|authentication|workflow|flow|system|architecture|api|endpoint|state management|session state|cache|caching|database|migration|service|integration|error handling|error recovery|shared helper|helper module)\b/gi
+  ) || [];
+  const multiAction = /\b(and|plus|also|while|along with)\b/i.test(lower) || /[，、；;].+/.test(input);
   const singleFileScoped =
     /\b(?:in|inside|within|only in)\s+[-_/.\w]+\.(?:[cm]?[jt]sx?|py|go|rb|java|rs|php|md)\b/i.test(lower) ||
     /\b(?:src|app|lib|tests?)\/[-_/.\w]+\.(?:[cm]?[jt]sx?|py|go|rb|java|rs|php|md)\b/i.test(lower);
   const fileMentions = (lower.match(/[-_/.\w]+\.(?:[cm]?[jt]sx?|py|go|rb|java|rs|php|md)\b/g) || []).length;
-  const multiFileScope =
+  const multiFile =
     fileMentions >= 2 ||
     /\b(across|multiple files?|cross-file|cross file)\b/i.test(lower) ||
     /跨文件|多文件/.test(input);
-  const verificationHeavy = /\b(with tests?|and tests?|verify|validation|error handling|error recovery)\b/i.test(lower) || /测试|验证|校验|错误处理|错误恢复/.test(input);
-  const architectureHeavy =
+  const verification =
+    /\b(with tests?|and tests?|verify|validation|error handling|error recovery)\b/i.test(lower)
+    || /测试|验证|校验|错误处理|错误恢复/.test(input);
+  const architecture =
     broadSignals.length >= 3 ||
     /\b(architecture|workflow|migration|state management|session state|integration)\b/i.test(lower) ||
     /架构|流程|迁移|状态/.test(input);
+  const localized = singleFileScoped && !multiAction && !verification;
 
-  if (singleFileScoped && !multipleActions && !verificationHeavy) return 'simple';
-  if (architectureHeavy && (multiFileScope || multipleActions || verificationHeavy)) return 'complex';
-  if (multiFileScope || verificationHeavy || multipleActions) return 'medium';
-  return 'simple';
+  let complexity = 'simple';
+  if (explicitPlan) complexity = 'complex';
+  else if (trivial) complexity = 'simple';
+  else if (!implementation) complexity = 'simple';
+  else if (localized) complexity = 'simple';
+  else if (architecture && (multiFile || multiAction || verification)) complexity = 'complex';
+  else if (multiFile || verification || multiAction) complexity = 'medium';
+
+  return {
+    complexity,
+    discussion,
+    ambiguous,
+    implementation,
+    localized,
+    multiFile,
+    verification,
+    architecture,
+    explicitPlan,
+    multiAction,
+  };
 }
 
 export function classifyAutoRoute(text = '') {
   const selectedSkills = selectAutoSkillNames(text);
+  const dimensions = classifyTaskDimensions(text);
   const hasBrainstorm = selectedSkills.includes('discussion');
   if (hasBrainstorm) {
     return {
       mode: 'brainstorm',
       autoPlan: false,
       selectedSkills,
-      complexity: 'discussion'
+      complexity: 'discussion',
+      dimensions: { ...dimensions, discussion: true },
     };
   }
 
-  const complexity = classifyTaskComplexity(text);
+  const complexity = dimensions.complexity;
   if (complexity === 'complex') {
     return {
       mode: 'direct_complex',
       autoPlan: false,
       selectedSkills: [],
-      complexity
+      complexity,
+      dimensions,
     };
   }
 
@@ -2363,16 +2404,9 @@ export function classifyAutoRoute(text = '') {
     mode: complexity === 'medium' ? 'direct_medium' : 'direct',
     autoPlan: false,
     selectedSkills,
-    complexity
+    complexity,
+    dimensions,
   };
-}
-
-function buildMediumTaskPromptBlock() {
-  return [
-    'Task Mode: medium',
-    '- Give a brief execution outline focused on the affected files and behavior, then choose whether to work directly or delegate a bounded chunk.',
-    '- If material ambiguity appears during implementation, pause for one focused clarification instead of guessing.'
-  ].join('\n');
 }
 
 function getAlwaysSkillCommands(commands, config, dismissedSkills = null, activeMode = config?.execution?.mode) {
@@ -2390,13 +2424,15 @@ function getAlwaysSkillCommands(commands, config, dismissedSkills = null, active
     });
 }
 
-export function buildAlwaysSkillPromptBlock(commands, config, dismissedSkills = null, activeMode = config?.execution?.mode) {
+export function buildAlwaysSkillPromptBlock(commands, config, dismissedSkills = null, activeMode = config?.execution?.mode, cwd = process.cwd()) {
   const selected = getAlwaysSkillCommands(commands, config, dismissedSkills, activeMode);
   if (selected.length === 0) return '';
-  return selected.map((skill) => `[Always skill: ${skill.name}]\n${skill.content}`).join('\n\n');
+  return selected.map((skill) => (
+    `[Always skill: ${skill.name}]\n${appendSkillSandboxMountHint(skill, skill.content, { config, cwd })}`
+  )).join('\n\n');
 }
 
-function buildSelectedSkillPromptBlock(commands, names = [], config = {}, executionMode = 'code') {
+function buildSelectedSkillPromptBlock(commands, names = [], config = {}, executionMode = 'code', cwd = process.cwd()) {
   const selected = [];
   for (const name of names) {
     const skill = commands?.get?.(name);
@@ -2406,7 +2442,9 @@ function buildSelectedSkillPromptBlock(commands, names = [], config = {}, execut
       || isSkillModelInvocationDisabled(skill)
       || !isSkillEnabled(config, name, skill, executionMode)
     ) continue;
-    selected.push(`[Lite-selected skill: ${skill.name}]\n${skill.content}`);
+    selected.push(
+      `[Lite-selected skill: ${skill.name}]\n${appendSkillSandboxMountHint(skill, skill.content, { config, cwd })}`,
+    );
   }
   return selected.join('\n\n');
 }
@@ -4095,6 +4133,8 @@ function resolveFastModel(config) {
   return String(config?.model?.fast_name || config?.model?.lite_name || config?.model?.name || '').trim();
 }
 
+const CODING_ROUTE_JUDGE_TIMEOUT_MS = 3000;
+
 async function judgeCodingRouteNodes({ request, config, model, signal }) {
   const routeModel = resolveFastModel(config) || model || config?.model?.name;
   if (!routeModel) return null;
@@ -4112,11 +4152,36 @@ async function judgeCodingRouteNodes({ request, config, model, signal }) {
     reasoningEffort: 'off',
     maxTokens: 480,
     payloadExtras: { max_tokens: 480 },
-    timeoutMs: Math.min(Number(config?.gateway?.timeout_ms || 30000), 30000),
+    timeoutMs: Math.min(Number(config?.gateway?.timeout_ms || CODING_ROUTE_JUDGE_TIMEOUT_MS), CODING_ROUTE_JUDGE_TIMEOUT_MS),
     maxRetries: 0,
     signal,
   });
   return result?.text || '';
+}
+
+const ROUTE_TRACE_EDIT_TOOLS = new Set(['edit', 'write', 'begin_write', 'write_chunk', 'commit_write', 'apply_patch', 'delete']);
+
+/**
+ * Extract only the previous completed user turn. Older work must not make an
+ * unrelated request look like a continuation.
+ */
+export function buildPreviousTurnToolTrace(session, { maxTools = 8 } = {}) {
+  const recentTools = [];
+  let editCount = 0;
+  const messages = Array.isArray(session?.messages) ? session.messages : [];
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const msg = messages[i];
+    if (msg?.role === 'user') break;
+    if (msg?.role !== 'assistant' || !Array.isArray(msg.tool_calls)) continue;
+    for (const call of msg.tool_calls) {
+      if (recentTools.length >= maxTools) break;
+      const name = String(call?.function?.name || call?.name || '').trim();
+      if (!name) continue;
+      recentTools.push(name);
+      if (ROUTE_TRACE_EDIT_TOOLS.has(name)) editCount += 1;
+    }
+  }
+  return { recentTools: recentTools.reverse(), editCount };
 }
 
 export function resolveSubAgentModel(config, fallbackModel = '') {
@@ -4305,6 +4370,11 @@ function stampedMessage(role, content, extra = {}) {
     at: new Date().toISOString(),
     ...extra
   };
+}
+
+function abortContinuesInPlace(signal) {
+  const reason = signal?.reason;
+  return Boolean(reason) && typeof reason === 'object' && reason.continueInPlace === true;
 }
 
 function getPendingSpecState(session) {
@@ -4551,6 +4621,7 @@ async function askModel({
   config,
   model,
   systemPrompt,
+  turnRoutingContext = '',
   onAgentEvent,
   requestToolApproval,
   persistSession = true,
@@ -4567,6 +4638,7 @@ async function askModel({
   titleCoordinator = null,
   projectIsGit = Boolean(config?.runtime?.project_is_git),
   onExecutionModeSync = null,
+  onContinuationSession = null,
   workspaceRoot = process.cwd(),
   selectedSkillNames = [],
   skillHooksSession = null,
@@ -4578,8 +4650,11 @@ async function askModel({
   const maxContextTokens = effectiveMaxContextTokens(config);
   const triggerPct = Number(config.context?.preflight_trigger_pct || 60);
   const hardPct = Number(config.context?.hard_limit_pct || 98);
-  const messagesForEstimate = modelVisibleMessages(compacted ?? session.messages);
-  const preflightTokens = estimatePromptTokensForRequest(messagesForEstimate, modelInputText);
+  // The visible message list and its token estimate are computed once per turn
+  // and reused by every preflight/compact measurement below.
+  const turnVisible = modelVisibleMessages(compacted ?? session.messages);
+  const turnTokens = estimateMessagesTokens(turnVisible);
+  const preflightTokens = turnTokens + estimateMessagesTokens([{ role: 'user', content: String(modelInputText || '') }]);
   const preflightPct = (preflightTokens / maxContextTokens) * 100;
   const selectedSkillNamesForUi = [...new Set(
     (Array.isArray(selectedSkillNames) ? selectedSkillNames : [])
@@ -4588,7 +4663,8 @@ async function askModel({
   )];
 
   if (persistSession && preflightPct >= triggerPct) {
-    const compactSource = modelVisibleMessages(compacted ?? session.messages);
+    // `compacted` is still the original input here, so this equals turnVisible.
+    const compactSource = turnVisible;
     // Phase 0: try micro-compact first (in-place tool result clearing)
     const microEnabled = config.context?.microcompact_enabled !== false;
     const microKeep = Number(config.context?.microcompact_keep_recent || 5);
@@ -4615,7 +4691,9 @@ async function askModel({
     }
     if (needsMacro) {
       const sourceIsCompacted = Boolean(compacted);
-      const macroSource = modelVisibleMessages(compacted ?? session.messages);
+      // After micro-compaction `compacted` may be a new array; only recompute
+      // the visible filter in that case, otherwise reuse the per-turn base.
+      const macroSource = compacted ? modelVisibleMessages(compacted) : turnVisible;
       const auto = await compactMessagesLocally(macroSource, {
         mode: preflightPct >= hardPct ? 'aggressive' : 'conservative',
         force: true,
@@ -4692,6 +4770,11 @@ async function askModel({
   const projectContextPromise = (config.context?.project_context_enabled !== false)
     ? buildProjectContextSnippet(workspaceRoot, modelInputText).catch(() => '')
     : Promise.resolve('');
+  // Snapshot lengths before this turn appends anything. Compacted is often
+  // shorter than session.messages, so abort cleanup must not reuse the session
+  // index as a compacted index.
+  const turnStartMessageCount = session.messages.length;
+  const turnStartCompactedCount = compacted ? compacted.length : 0;
   if (text) {
     const modelExtra =
       typeof modelText === 'string' && modelText && modelText !== text
@@ -4728,24 +4811,38 @@ async function askModel({
   const projectContextGuidance =
     'Use this project context as lightweight guidance and verify important details with fresh reads when needed.';
   const normalizedExecutionMode = normalizeExecutionMode(executionMode || config.execution?.mode || 'normal');
+  const executionShellContext = resolveShellContext(config, {
+    cwd: workspaceRoot,
+    platform: process.platform,
+  });
   const executionModePrompt = buildExecutionModePromptBlock(
     normalizedExecutionMode,
-    process.platform,
-    config?.shell?.default,
+    executionShellContext.commandPlatform,
+    executionShellContext.shell,
   );
   const projectContextSnippet = await projectContextPromise;
   // Compose effectiveSystemPrompt without redundant composeSystemPrompt wrapping:
   // systemPrompt already went through composeSystemPrompt in buildActiveSystemPrompt.
-  // We only need to strip the old replyLanguage, append the execution mode block, and re-append replyLanguage.
-  const strippedSystem = stripReplyLanguageDirective(systemPrompt || '');
-  const effectiveSystemPrompt = buildSystemPromptWithReplyLanguage(
-    [strippedSystem, executionModePrompt].filter(Boolean).join('\n\n'),
-    config
-  );
+  // Insert the execution-mode block immediately BEFORE the reply-language
+  // directive. The directive sits above the volatile tail (<relevant_memory>),
+  // so the stable prefix stays cacheable and memory remains the last block.
+  const systemPromptText = String(systemPrompt || '');
+  const directiveIndex = systemPromptText.lastIndexOf('[Reply language]');
+  const effectiveSystemPrompt = directiveIndex >= 0
+    ? [
+        systemPromptText.slice(0, directiveIndex).trimEnd(),
+        executionModePrompt,
+        systemPromptText.slice(directiveIndex),
+      ].filter(Boolean).join('\n\n')
+    : buildSystemPromptWithReplyLanguage(
+        [systemPromptText.trim(), executionModePrompt].filter(Boolean).join('\n\n'),
+        config,
+      );
   const projectContextPrompt = buildTurnUserPrompt({
     turnContextPrefix: buildTurnContextPrefix(config),
     projectContextSnippet,
     projectContextGuidance,
+    turnRoutingContext,
     userText: modelInputText
   });
 
@@ -4793,6 +4890,7 @@ async function askModel({
     onRunSubAgent: normalizedExecutionMode === 'plan'
       ? async ({
           prompt,
+          tasks = [],
           summary = '',
           name = '',
           role = '',
@@ -4811,10 +4909,14 @@ async function askModel({
           const policyKey = ROLE_TOOL_POLICY[identityKey] ? identityKey : 'coder';
           const taskRole = ROLE_TOOL_POLICY[identityKey] ? identityKey : persona;
           const taskPrompt = String(prompt || '').trim();
-          if (!taskPrompt) return { ok: false, error: 'prompt is required' };
+          const assignedTasks = normalizeTodos(tasks);
+          if (!taskPrompt && assignedTasks.length === 0) {
+            return { ok: false, error: 'prompt or tasks is required' };
+          }
+          const effectivePrompt = taskPrompt || 'Complete the assigned tasks.';
           const handoff = String(context || '').trim();
           const declaredGoal = String(goal || '').trim();
-          const title = trimInline(taskPrompt, 72) || persona;
+          const title = trimInline(assignedTasks[0]?.content || effectivePrompt, 72) || persona;
           const callId = String(toolCallId || `sub-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`).trim();
           const emit = (evt) => {
             if (onAgentEvent) onAgentEvent({ ...evt, toolCallId: callId });
@@ -4825,7 +4927,7 @@ async function askModel({
             taskId: dependencyTaskId,
             dependsOn,
             name: persona,
-            prompt: taskPrompt
+            prompt: effectivePrompt
           });
           if (!dependencyRegistration.ok) {
             emit({
@@ -4861,7 +4963,7 @@ async function askModel({
             total: 1,
             role: persona,
             title,
-            goal: taskPrompt,
+            goal: effectivePrompt,
             status: dependencyRegistration.dependencies.length ? 'waiting' : 'running',
             taskId: dependencyTaskId,
             dependsOn: dependencyRegistration.dependencies,
@@ -4911,13 +5013,14 @@ async function askModel({
             upstreamContext
           ].filter(Boolean);
           const scopedTask = contextSections.length
-            ? `${contextSections.join('\n\n')}\n\nTask:\n${taskPrompt}`
-            : taskPrompt;
+            ? `${contextSections.join('\n\n')}\n\nTask:\n${effectivePrompt}`
+            : effectivePrompt;
               let childUsage = null;
           try {
             const output = await runSubAgentTask({
               role: taskRole,
               task: scopedTask,
+              initialTasks: assignedTasks,
               goal: declaredGoal,
               priorSteps: [],
               parentSession: session,
@@ -4985,14 +5088,12 @@ async function askModel({
               artifactPaths: output.artifactPaths || [],
               ...(savedHandoff ? { handoffPath: savedHandoff.path } : {}),
               ...(fileChanges.length ? { fileChanges } : {}),
-              message: [
-                'Subagent finished. Summarize for the user in plain language:',
-                '- what the subagent did',
-                '- what remains or was left unverified',
-                'Do not paste the raw subagent dump unless asked.',
-                '',
-                output.text || '(empty)'
-              ].join('\n')
+              message: compactSubAgentResultForParent({
+                text: output.text,
+                summary,
+                handoffPath: savedHandoff?.path,
+                artifactPaths: output.artifactPaths,
+              }),
             };
             dependencyRegistration.settle(result);
             return result;
@@ -5035,7 +5136,12 @@ async function askModel({
   const baseDeferredDefinitions = exposeUpdatePlan
     ? deferredDefinitions
     : Object.fromEntries(Object.entries(deferredDefinitions).filter(([name]) => name !== 'update_plan'));
-  const modeAllowedTools = resolveExecutionModeAllowedTools(normalizedExecutionMode, allowedTools, config);
+  const modeAllowedTools = resolveExecutionModeAllowedTools(
+    normalizedExecutionMode,
+    allowedTools,
+    config,
+    executionShellContext.commandPlatform,
+  );
   const filteredDefinitions = Array.isArray(modeAllowedTools)
     ? baseDefinitions.filter((t) => toolNameAllowed(modeAllowedTools, t.function?.name || t.name))
     : baseDefinitions;
@@ -5297,6 +5403,98 @@ async function askModel({
     if (onAgentEvent) onAgentEvent(event);
   };
 
+  // Freeze the aborted turn on the current session, then fork a continuation
+  // session that only keeps completed history. Send-now / continue-in-place
+  // skips the fork so the next prompt appends below the stopped turn.
+  const discardAbortedTurnMessages = async () => {
+    const addedCount = session.messages.length - turnStartMessageCount;
+    if (addedCount <= 0) return false;
+    if (session.messages[turnStartMessageCount]?.role === 'user') {
+      session.messages[turnStartMessageCount] = {
+        ...session.messages[turnStartMessageCount],
+        local_only: true,
+        model_visible: false
+      };
+      session.messages.splice(turnStartMessageCount + 1);
+    } else {
+      session.messages.splice(turnStartMessageCount);
+    }
+    if (compacted) {
+      const compactedAdded = compacted.length - turnStartCompactedCount;
+      if (compactedAdded > 0) {
+        if (compacted[turnStartCompactedCount]?.role === 'user') {
+          compacted[turnStartCompactedCount] = {
+            ...compacted[turnStartCompactedCount],
+            local_only: true,
+            model_visible: false
+          };
+          compacted.splice(turnStartCompactedCount + 1);
+        } else {
+          compacted.splice(turnStartCompactedCount);
+        }
+        if (onCompactedUpdate) onCompactedUpdate(compacted);
+      }
+    }
+    if (persistSession) {
+      session.model = model || config.model.name;
+      session.mode = executionMode || config.execution?.mode || 'normal';
+      await saveSession(session).catch(() => {});
+    }
+    return true;
+  };
+
+  const forkContinuationAfterAbort = async () => {
+    const discarded = await discardAbortedTurnMessages();
+    if (!persistSession || !discarded) return null;
+    const continuation = await createContinuationSession(session, {
+      messages: (session.messages || []).slice(0, turnStartMessageCount),
+      compactView: compacted ? compacted.slice(0, turnStartCompactedCount) : null
+    });
+    if (typeof onContinuationSession === 'function') {
+      await onContinuationSession(continuation);
+    }
+    if (onAgentEvent) {
+      onAgentEvent({
+        type: 'session:forked',
+        sessionId: continuation.id,
+        previousSessionId: session.id
+      });
+    }
+    return continuation;
+  };
+
+  const settleAbortedTurnInPlace = async () => {
+    const turnMessages = session.messages.slice(turnStartMessageCount);
+    const resultIds = new Set(
+      turnMessages
+        .filter((message) => message?.role === 'tool' && message.tool_call_id)
+        .map((message) => String(message.tool_call_id)),
+    );
+    for (const message of turnMessages) {
+      if (message?.role !== 'assistant' || !Array.isArray(message.tool_calls)) continue;
+      for (const call of message.tool_calls) {
+        const id = String(call?.id || '');
+        if (!id || resultIds.has(id)) continue;
+        session.messages.push(stampedMessage('tool', 'Aborted by user.', {
+          tool_call_id: id,
+          tool_status: 'aborted'
+        }));
+        resultIds.add(id);
+        if (call && typeof call === 'object') call.status = 'aborted';
+      }
+    }
+    if (persistSession) {
+      session.model = model || config.model.name;
+      session.mode = executionMode || config.execution?.mode || 'normal';
+      await saveSession(session).catch(() => {});
+    }
+  };
+
+  const handleAbortAftermath = async () => {
+    if (abortContinuesInPlace(signal)) await settleAbortedTurnInPlace();
+    else await forkContinuationAfterAbort();
+  };
+
   const sessionLenBeforeLoop = session.messages.length;
   const toolRuntime = createToolRuntime({
     definitions: filteredDefinitions,
@@ -5306,102 +5504,137 @@ async function askModel({
     displayLabels: displayLabels || {},
     maxParallelCalls: toolConfig.tools?.max_parallel_calls
   });
-  const loopResult = await runAgentLoop({
-    systemPrompt: effectiveSystemPrompt,
-    userPrompt: loopUserPrompt,
-    model: model || config.model.name,
+  let loopResult;
+  try {
+    loopResult = await runAgentLoop({
+      systemPrompt: effectiveSystemPrompt,
+      userPrompt: loopUserPrompt,
+      model: model || config.model.name,
+      toolRuntime,
+      initialMessages: initialMessagesForModel,
+      onEvent: wrappedAgentEvent,
+      executionMode: normalizedExecutionMode,
+      approvalMode: (() => {
+        const sandbox = resolveSandboxPolicy({
+          config,
+          cwd: workspaceRoot,
+          platform: process.platform,
+        });
+        // Read-only OS sandbox already blocks writes — skip soft approval prompts.
+        if (sandbox.enabled && sandbox.mode === 'read-only') return 'full_access';
+        return config.execution?.approval_mode || 'auto';
+      })(),
+      projectIsGit: resolveApprovalProjectIsGit({
+        projectIsGit,
+        changeTrackerEnabled: changeTracker?.mode === 'git-oplog',
+        workspaceHasGit: Boolean(config?.runtime?.project_is_git)
+      }),
+      alwaysAllowTools: effectiveAlwaysAllowTools,
+      toolResultMaxChars: config.context?.tool_result_max_chars || 12000,
+      toolResultStore,
+      getTasks: () => normalizeTodos(session.todos),
+      requestToolApproval,
+      signal,
+      skipAnalysisNudge,
+      config: toolConfig,
+      skillHooksSession,
+      onSkillLoaded,
+      workspaceRoot,
+      changeTracker: changeTracker?.enabled
+        ? {
+            begin: (meta) => beginGitOplogCapture(changeTracker, meta),
+            capture: (scope, meta) => captureGitOplogChanges(changeTracker, scope, meta)
+          }
+        : null,
+      requestCompletion: async ({ messages, tools, model: selectedModel }) => {
+        let started = false;
+        const startAssistantStream = () => {
+          if (!started) {
+            started = true;
+            wrappedAgentEvent({
+              type: 'assistant:start',
+              sdkProvider: config.sdk?.provider === 'anthropic'
+                ? 'anthropic'
+                : 'openai-compatible',
+              model: selectedModel
+            });
+          }
+        };
+        const tracker = createStreamTimingTracker();
+        const applyTiming = (result) => {
+          const timing = tracker.finish();
+          if (!timing) return result;
+          if (result && typeof result === 'object') {
+            return {
+              ...result,
+              usage: attachTimingToUsage(result.usage, timing)
+            };
+          }
+          if (activeAssistantIndex >= 0 && session.messages[activeAssistantIndex]) {
+            const current = session.messages[activeAssistantIndex];
+            current.usage = attachTimingToUsage(current.usage, timing);
+          }
+          return result;
+        };
 
-
-    toolRuntime,
-    initialMessages: initialMessagesForModel,
-    onEvent: wrappedAgentEvent,
-    executionMode: normalizedExecutionMode,
-    approvalMode: (() => {
-      const sandbox = resolveSandboxPolicy({
-        config,
-        cwd: workspaceRoot,
-        platform: process.platform,
-      });
-      // Read-only OS sandbox already blocks writes — skip soft approval prompts.
-      if (sandbox.enabled && sandbox.mode === 'read-only') return 'full_access';
-      return config.execution?.approval_mode || 'auto';
-    })(),
-    projectIsGit: resolveApprovalProjectIsGit({
-      projectIsGit,
-      changeTrackerEnabled: changeTracker?.mode === 'git-oplog',
-      workspaceHasGit: Boolean(config?.runtime?.project_is_git)
-    }),
-    alwaysAllowTools: effectiveAlwaysAllowTools,
-    toolResultMaxChars: config.context?.tool_result_max_chars || 12000,
-    toolResultStore,
-    requestToolApproval,
-    signal,
-    skipAnalysisNudge,
-    config: toolConfig,
-    skillHooksSession,
-    onSkillLoaded,
-    workspaceRoot,
-    changeTracker: changeTracker?.enabled
-      ? {
-          begin: (meta) => beginGitOplogCapture(changeTracker, meta),
-          capture: (scope, meta) => captureGitOplogChanges(changeTracker, scope, meta)
-        }
-      : null,
-    requestCompletion: async ({ messages, tools, model: selectedModel }) => {
-      let started = false;
-      const startAssistantStream = () => {
-        if (!started) {
-          started = true;
-          wrappedAgentEvent({
-            type: 'assistant:start',
-            sdkProvider: config.sdk?.provider === 'anthropic'
-              ? 'anthropic'
-              : 'openai-compatible',
-            model: selectedModel
+        try {
+          const result = await createChatCompletionStream({
+            sdkProvider: config.sdk?.provider,
+            baseUrl: config.gateway.base_url,
+            apiKey: config.gateway.api_key,
+            model: selectedModel,
+            messages,
+            tools,
+            reasoningEffort: resolveConfiguredReasoningEffort({
+              enabled: config.model?.reasoning_enabled,
+              effort: config.model?.reasoning_effort
+            }),
+            timeoutMs: config.gateway.timeout_ms || 1800000,
+            maxRetries: config.gateway.max_retries ?? 2,
+            maxTokens: (() => {
+              const configured = Number(config.model?.max_output_tokens);
+              if (Number.isFinite(configured) && configured > 0) return Math.floor(configured);
+              return config.sdk?.provider === 'anthropic' ? 16384 : undefined;
+            })(),
+            signal,
+            onTextDelta: (delta) => {
+              tracker.noteTextDelta(delta);
+              startAssistantStream();
+              wrappedAgentEvent({ type: 'assistant:delta', text: delta });
+            },
+            onReasoningDelta: (delta) => {
+              tracker.noteReasoningDelta(delta);
+              startAssistantStream();
+              wrappedAgentEvent({ type: 'assistant:reasoning_delta', text: delta });
+            },
+            onToolCallDelta: (toolCall) => {
+              tracker.noteToolCallDelta();
+              startAssistantStream();
+              wrappedAgentEvent({ type: 'assistant:tool_call_delta', toolCall });
+            }
           });
-        }
-      };
 
-      const result = await createChatCompletionStream({
-        sdkProvider: config.sdk?.provider,
-        baseUrl: config.gateway.base_url,
-        apiKey: config.gateway.api_key,
-        model: selectedModel,
-        messages,
-        tools,
-        reasoningEffort: resolveConfiguredReasoningEffort({
-          enabled: config.model?.reasoning_enabled,
-          effort: config.model?.reasoning_effort
-        }),
-        timeoutMs: config.gateway.timeout_ms || 1800000,
-        maxRetries: config.gateway.max_retries ?? 2,
-        maxTokens: (() => {
-          const configured = Number(config.model?.max_output_tokens);
-          if (Number.isFinite(configured) && configured > 0) return Math.floor(configured);
-          return config.sdk?.provider === 'anthropic' ? 16384 : undefined;
-        })(),
-        signal,
-        onTextDelta: (delta) => {
-          startAssistantStream();
-          wrappedAgentEvent({ type: 'assistant:delta', text: delta });
-        },
-        onReasoningDelta: (delta) => {
-          startAssistantStream();
-          wrappedAgentEvent({ type: 'assistant:reasoning_delta', text: delta });
-        },
-        onToolCallDelta: (toolCall) => {
-          startAssistantStream();
-          wrappedAgentEvent({ type: 'assistant:tool_call_delta', toolCall });
-        }
-      });
+          if (!started && !result?.incomplete && (result?.text || result?.toolCalls?.length)) {
+            startAssistantStream();
+          }
 
-      if (!started && !result?.incomplete && (result?.text || result?.toolCalls?.length)) {
-        startAssistantStream();
+          return applyTiming(result);
+        } catch (error) {
+          applyTiming(null);
+          throw error;
+        }
       }
-
-      return result;
+    });
+  } catch (error) {
+    if (signal?.aborted || error?.name === 'AbortError') {
+      await handleAbortAftermath();
     }
-  });
+    throw error;
+  }
+  if (signal?.aborted || loopResult?.aborted) {
+    await handleAbortAftermath();
+    return { text: '', aborted: true };
+  }
 
   if (persistSession) {
     // Sync new messages to compacted view
@@ -5441,6 +5674,7 @@ async function askModel({
 export async function runSubAgentTask({
   role,
   task,
+  initialTasks = [],
   goal = '',
   priorSteps = [],
   parentSession,
@@ -5459,14 +5693,21 @@ export async function runSubAgentTask({
   tools = null,
   onUsage = null,
   projectIsGit = Boolean(config?.runtime?.project_is_git),
-  workspaceRoot = process.cwd()
+  workspaceRoot = process.cwd(),
+  inheritParentContext = false,
 }) {
-  const subSession = { id: `sub-${Date.now()}`, messages: [] };
+  const assignedTasks = normalizeTodos(initialTasks);
+  const subSession = {
+    id: `sub-${Date.now()}`,
+    messages: [],
+    todos: assignedTasks,
+  };
   const subAgentModel = resolveSubAgentModel(config, model);
   const rolePrompt = getSubAgentRolePrompt(role);
   const cleanContextRole = role === 'reviewer' || role === 'tester';
-  const contextPacket = cleanContextRole ? '' : buildSubAgentContextPacket(parentSession, task || goal);
-  const evidencePacket = cleanContextRole ? '' : buildSubAgentEvidencePacket(parentSession);
+  const copyParent = inheritParentContext === true && !cleanContextRole;
+  const contextPacket = copyParent ? buildSubAgentContextPacket(parentSession, task || goal) : '';
+  const evidencePacket = copyParent ? buildSubAgentEvidencePacket(parentSession) : '';
   const handoffPacket = buildStepArtifactPacket(priorSteps, role);
   const handoffFocusPaths = collectStepArtifacts(priorSteps, role)?.focusPaths || [];
   const focusedTaskNote = buildFocusedTaskNote(role, handoffFocusPaths);
@@ -5479,7 +5720,25 @@ export async function runSubAgentTask({
       ? `Accumulated plan ledger (clean-context; no executor transcripts):\n${planFileContext}`
       : `Accumulated plan file context (results from prior steps):\n${planFileContext}`
     : '';
+  const roleAllowedTools = resolveSubAgentToolAllowList({ role, tools, config });
+  const runtimeNote = buildSubAgentRuntimeNote(roleAllowedTools, {
+    shell: config?.shell?.default,
+    workspaceRoot,
+    role,
+    config,
+  });
+  const handoffCatalogPrompt = buildSubAgentHandoffCatalog(
+    await listSubAgentHandoffs({
+      workspaceRoot,
+      sessionId: parentSession?.id,
+    }).catch(() => []),
+  );
   const scopedTask = [
+    'Role:',
+    rolePrompt,
+    extraRolePrompt,
+    runtimeNote,
+    handoffCatalogPrompt,
     contextPacket,
     goalRequirementPacket,
     evidencePacket,
@@ -5487,6 +5746,12 @@ export async function runSubAgentTask({
     planFileSection,
     verificationPacket,
     focusedTaskNote,
+    assignedTasks.length
+      ? [
+          'Assigned tasks (use the tasks tool to keep this checklist current):',
+          ...assignedTasks.map((item) => `- [${item.status}] ${item.content}`),
+        ].join('\n')
+      : '',
     'Task:',
     task
   ]
@@ -5518,7 +5783,6 @@ export async function runSubAgentTask({
       );
     }
   };
-  const roleAllowedTools = resolveSubAgentToolAllowList({ role, tools, config });
   const workspaceHasGit = Boolean(config?.runtime?.project_is_git) || changeTracker?.mode === 'git-oplog';
   const approvalOptions = resolvePlanSubAgentApprovalOptions({
     role,
@@ -5531,20 +5795,13 @@ export async function runSubAgentTask({
   const subShellRulesPrompt = buildSubAgentShellRulesPrompt(roleAllowedTools, {
     shell: config?.shell?.default,
     workspaceRoot,
-    role,
     config
   });
-  const handoffCatalogPrompt = buildSubAgentHandoffCatalog(
-    await listSubAgentHandoffs({
-      workspaceRoot,
-      sessionId: parentSession?.id,
-    }).catch(() => []),
-  );
   if (onSessionActive) onSessionActive(subSession);
   const subSystemPrompt = await composeSystemPrompt({
     shellRulesPrompt: subShellRulesPrompt,
     config,
-    skillsPrompt: [rolePrompt, extraRolePrompt, handoffCatalogPrompt].filter(Boolean).join('\n\n'),
+    skillsPrompt: SUBAGENT_STABLE_SKILLS_PROMPT,
     includeSoul: false,
     includeMemory: false
   });
@@ -6184,32 +6441,9 @@ async function buildAutoPlanArtifact({
           role: 'user',
           content: [
             'Create an execution plan and assign best sub-agent role for each step.',
-            `Return strict JSON only with shape {"summary":"...","task_size":"trivial|small|medium|large","task_type":"advisory|implementation|debugging|verification|refactor|documentation|hybrid","target_confidence":"known|likely|unknown","rationale":"...","steps":[{"title":"...","role":"${EXECUTOR_AGENT_ROLES.join('|')}","task":"...","consumes":"...","produces":"...","target_files":["..."],"success_criteria":"...","verification":"...","handoff":"..."}]}. No markdown.`,
-            `The available roles are ${EXECUTOR_AGENT_ROLES.join(', ')}. Use only the roles the task actually needs.`,
-            'Always include a summarizer as the final step. The summarizer synthesizes prior step results without re-analyzing.',
-            'All executor steps (explorer, architect, advisor, coder, refactorer, reviewer, tester, debugger, writer) should write detailed step results, not final summaries.',
             `Task class: ${normalizedTaskClass}`,
-            'Before choosing roles, decide whether the request is advisory, implementation, verification-heavy, debugging, or a hybrid.',
-            'Set task_size, task_type, target_confidence, and rationale before listing steps. Use these fields to justify why each role is necessary.',
             requirementPacket,
-            'The first step should usually be an explorer to inspect the target area before implementation.',
-            'For debugging goals: explorer -> debugger (trace cause) -> coder (fix) -> tester (verify).',
-            'For implementation-advisory goals: explorer -> advisor -> coder.',
-            'If the user explicitly asks to fix/repair/update/implement/change files, include a coder/refactorer/writer step. Do not return advisor-only plans for repair requests.',
-            'For refactoring goals: explorer -> refactorer -> tester.',
-            'For documentation goals: explorer -> writer.',
-            'For analysis, recommendation, optimization, audit, or project-review goals, keep the plan lean and usually limit it to explorer/advisor.',
-            'Do not include reviewer/tester for advisory goals unless the user explicitly asks to validate, verify, or independently review the findings.',
-            'Avoid template-only titles like "Initial analysis", "Review recommendations", or "Test and verify" for advisory goals.',
-            'For implementation-heavy changes, prefer review and/or testing steps near the end only when they materially improve confidence.',
-            'If target_confidence is known, skip explorer unless the implementation still needs fresh code context.',
-            'If task_size is small or trivial, keep the plan to the minimum useful executor steps plus summarizer.',
-            'Do not add reviewer or tester unless their specific success evidence is clear.',
-            'Never assign every step to coder. Use explorer for inspection, coder for implementation, tester for verification, and summarizer as the final synthesis step.',
-            'Never assign explorer, architect, or advisor to implementation, coding, editing, or feature-delivery tasks. Those roles are read-only.',
-            'Each step task must include enough handoff detail to execute without guessing: targets, consumed inputs, produced outputs, expected outcome, out-of-scope boundaries, success criteria, verification intent, and handoff artifact.',
-            'Fold setup, fixtures, tests, and docs into the task whose deliverable needs them unless they are independently reviewable deliverables.',
-            'Prefer 3-5 steps total.'
+            'Follow the planning policy and JSON schema in the system prompt; do not repeat or explain them.'
           ]
             .filter(Boolean)
             .join('\n')
@@ -6495,12 +6729,12 @@ async function renderProjectRequirementsSkillPrompt(custom, options, workspaceRo
       metadata: { type: 'skill' },
       content: stripFrontmatter(raw)
     };
-    return expandFileMentions(renderCommandPrompt(mdSkill, options.focusArgs), workspaceRoot);
+    return expandFileMentions(renderCommandPrompt(mdSkill, options.focusArgs, { cwd: workspaceRoot }), workspaceRoot);
   }
   const skill = custom?.content
     ? custom
     : await loadBundledProjectRequirementsSkill('project-requirements');
-  return expandFileMentions(renderCommandPrompt(skill, options.focusArgs), workspaceRoot);
+  return expandFileMentions(renderCommandPrompt(skill, options.focusArgs, { cwd: workspaceRoot }), workspaceRoot);
 }
 
 function getProjectRequirementsDefaultOutputFormat(custom) {
@@ -7471,10 +7705,10 @@ export async function createChatRuntime({
     startupEvents.push({
       type: 'tool',
       id: `startup-todos-${String(session?.id || 'session')}`,
-      name: 'update_todos',
+      name: 'tasks',
       status: 'done',
-      arguments: { todos: initialTodos },
-      summary: `${initialTodos.length} todo item(s)`
+      arguments: { tasks: initialTodos },
+      summary: `${initialTodos.length} task item(s)`
     });
   }
   const initialPlanState = normalizePlanState(session?.planState);
@@ -7556,6 +7790,48 @@ export async function createChatRuntime({
   let commandsReloadedAt = Date.now();
   let commandsReloadPromise = null;
   let skillIndexPromptCache = null;
+  // Memoize the deterministic base prompt and the volatile memory snapshot so
+  // the composed system prompt is not re-read/re-rendered from disk every turn.
+  let baseSystemPromptMemo = { configRef: null, root: '', value: '' };
+  let memorySnapshotMemo = null;
+  const getMemoizedBaseSystemPrompt = () => {
+    if (baseSystemPromptMemo.configRef === config && baseSystemPromptMemo.root === root) {
+      return baseSystemPromptMemo.value;
+    }
+    const value = getBaseSystemPrompt();
+    baseSystemPromptMemo = { configRef: config, root, value };
+    return value;
+  };
+  const memoryFilesMtimeKey = async (workspaceRoot) => {
+    const paths = [
+      path.join(getMemoryDir(), 'user.json'),
+      path.join(getMemoryDir(), 'global.json'),
+    ];
+    try {
+      const dir = getProjectMemoryDir(workspaceRoot);
+      const entries = await fs.readdir(dir);
+      for (const entry of entries) {
+        if (String(entry).endsWith('.json')) paths.push(path.join(dir, entry));
+      }
+    } catch {}
+    const stamps = await Promise.all(paths.map((filePath) =>
+      fs.stat(filePath).then((stat) => `${filePath}:${stat.mtimeMs}`, () => `${filePath}:missing`),
+    ));
+    return stamps.join('|');
+  };
+  const getMemoizedMemorySnapshot = async () => {
+    const mtimeKey = await memoryFilesMtimeKey(root);
+    if (
+      memorySnapshotMemo
+      && memorySnapshotMemo.configRef === config
+      && memorySnapshotMemo.mtimeKey === mtimeKey
+    ) {
+      return memorySnapshotMemo.value;
+    }
+    const value = await buildMemorySnapshot({ config, workspaceRoot: root }).catch(() => '');
+    memorySnapshotMemo = { configRef: config, mtimeKey, value };
+    return value;
+  };
   const reloadCommandsAndSkills = async ({ force = false } = {}) => {
     if (!force && Date.now() - commandsReloadedAt < COMMAND_RELOAD_TTL_MS) return false;
     if (commandsReloadPromise) return commandsReloadPromise;
@@ -7761,6 +8037,11 @@ export async function createChatRuntime({
       ? { ...(currentSession.compact || {}), view, timestamp: new Date().toISOString(), ...meta }
       : null;
   };
+  const adoptContinuationSession = (next) => {
+    if (!next?.id || next.id === currentSession?.id) return;
+    currentSession = next;
+    compactedForModel = Array.isArray(next.compact?.view) ? next.compact.view : null;
+  };
   const appendSessionMessage = (message) => {
     currentSession.messages.push(message);
     if (compactedForModel) {
@@ -7921,36 +8202,35 @@ export async function createChatRuntime({
   };
 
   const getSkillIndexPrompt = async () => {
-    const skillIndexCacheKey = `${executionMode}:${JSON.stringify(config.skills || {})}`;
+    const skillIndexCacheKey = `${executionMode}:${JSON.stringify(config.skills || {})}:${Array.from(commands.keys()).sort().join(',')}`;
     if (
       !skillIndexPromptCache
       || skillIndexPromptCache.key !== skillIndexCacheKey
       || Date.now() >= skillIndexPromptCache.expiresAt
     ) {
+      const value = await buildSkillIndexPromptBlock(root, config, executionMode, {
+        modelInvocableOnly: true,
+      });
       skillIndexPromptCache = {
         key: skillIndexCacheKey,
         expiresAt: Date.now() + COMMAND_RELOAD_TTL_MS,
-        value: buildSkillIndexPromptBlock(root, config, executionMode, {
-          modelInvocableOnly: true,
-        }),
+        value,
       };
     }
-    return Promise.resolve(skillIndexPromptCache.value);
+    return skillIndexPromptCache.value;
   };
 
   const buildActiveSystemPrompt = async ({
     includeSkillIndex = true,
     includeMemoryGuide = true,
   } = {}) => {
-    const memoryGuide = [
-      `Persistent memory is for self-evolution: when the user asks you to remember something lasting, call save_memory. Use scope="user" kind="preference" for tastes/interests, scope="project" kind="convention" for project rules, and kind="lesson" for reusable learnings. Write memory content and summary in ${getReplyLanguageName(config)}. Verify changeable details from files; never store secrets. Do not duplicate an equivalent fact already present in Persistent Memory.`,
-      buildMemoryDecisionGraphBlock()
-    ].join('\n\n');
+    const memoryGuide = `Use save_memory only for explicit lasting preferences or stable project conventions; never store secrets or duplicates. Write it in ${getReplyLanguageName(config)}. Coding discoveries go through later Dream/session review.`;
     return composeSystemPrompt({
-      shellRulesPrompt: getBaseSystemPrompt(),
+      shellRulesPrompt: getMemoizedBaseSystemPrompt(),
       config,
       workspaceRoot: root,
       skillsPrompt: includeSkillIndex ? getSkillIndexPrompt() : '',
+      memorySnapshot: await getMemoizedMemorySnapshot(),
       extraPrompts: includeMemoryGuide ? [memoryGuide] : [],
       soulContext: normalizeExecutionMode(executionMode) === 'plan' ? 'coding' : 'daily',
     });
@@ -7964,6 +8244,12 @@ export async function createChatRuntime({
   };
   const syncExecutionModeWithSession = () => {
     executionMode = resolveRuntimeExecutionMode(executionMode, config, currentSession);
+  };
+  const persistLastSystemPrompt = async (prompt) => {
+    const next = String(prompt || '');
+    if (!currentSession || currentSession.lastSystemPrompt === next) return;
+    currentSession.lastSystemPrompt = next;
+    await saveSession(currentSession).catch(() => {});
   };
 
   const executeSubmission = async (line, onAgentEvent, options = {}) => {
@@ -7990,6 +8276,7 @@ export async function createChatRuntime({
       const custom = await loadBundledProjectRequirementsSkill(
         prelim.outputFormat === 'md' ? 'project-requirements-md' : 'project-requirements'
       );
+      await persistLastSystemPrompt(activeReplySystemPrompt);
       return runProjectRequirementsSingleAgent({
         custom,
         parsedInput: {
@@ -8108,6 +8395,7 @@ export async function createChatRuntime({
           backupManager,
           titleCoordinator,
           onExecutionModeSync: syncExecutionModeWithSession,
+          onContinuationSession: adoptContinuationSession,
           workspaceRoot: root,
           skillHooksSession
         });
@@ -8172,6 +8460,7 @@ export async function createChatRuntime({
     };
     const structuredAction = options?.structuredAction;
     if (structuredAction) {
+      await persistLastSystemPrompt(activeReplySystemPrompt);
       const { name, payload = {} } = structuredAction;
       if (name === CHAT_ACTIONS.SPEC_SAVE) return approvePendingSpec({ saveOnly: true });
       if (name === CHAT_ACTIONS.SPEC_EXECUTE) return approvePendingSpec({ executeImmediately: true });
@@ -8332,6 +8621,7 @@ export async function createChatRuntime({
         '- Do not use shell commands, edit/write/apply_patch/delete tools, update plans, generate reports, or write memories.',
         '- Be concise and cite relevant files or report sections when useful.'
       ].join('\n\n');
+      await persistLastSystemPrompt(readOnlySystemPrompt);
       const transientSession = structuredClone(currentSession);
       const result = await askModel({
         text: expandedText,
@@ -8353,6 +8643,47 @@ export async function createChatRuntime({
       return { type: 'assistant', text: result.text, aborted: !!result.aborted };
     }
     const expandedText = await expandFileMentions(inputText, root);
+    const autoRoute = classifyAutoRoute(expandedText);
+    const isCodingMode = normalizeExecutionMode(executionMode) === 'plan';
+    const memoryRoute = classifyMemoryRoute(expandedText);
+    const routingRuntimeState = isCodingMode
+      ? buildRuntimeStateSnapshot({
+          currentSession,
+          config,
+          model,
+          executionMode,
+          extraSession: null,
+          workspaceRoot: root,
+        })
+      : null;
+    const contextUsage = routingRuntimeState
+      ? {
+          estimated_tokens: routingRuntimeState.currentContextTokens,
+          max_tokens: routingRuntimeState.maxContextTokens,
+          usage_pct: routingRuntimeState.contextUsagePct,
+        }
+      : {};
+    const toolTrace = isCodingMode ? buildPreviousTurnToolTrace(currentSession) : {};
+    const useSemanticJudge = isCodingMode;
+    const codingRoutePromise = (async () => {
+      const codingSkillIndexPrompt = useSemanticJudge ? await getSkillIndexPrompt() : '';
+      return {
+        codingSkillIndexPrompt,
+        codingRoute: await evaluateCodingRouteGraph({
+          executionMode: normalizeExecutionMode(executionMode),
+          text: expandedText,
+          autoRoute,
+          memoryRoute,
+          skillIndexPrompt: codingSkillIndexPrompt,
+          contextUsage,
+          sensitive: isSensitiveMemoryContent(expandedText),
+          judge: useSemanticJudge
+            ? (request) => judgeCodingRouteNodes({ request, config, model, signal })
+            : null,
+          toolTrace,
+        }),
+      };
+    })();
 
     // Refresh workspace + package profiles every turn so installs/toggles take
     // effect without restarting the runtime. SessionStart only re-fires for
@@ -8414,39 +8745,7 @@ export async function createChatRuntime({
       ...(Array.isArray(skillHooksSession.sessionStartContexts) ? skillHooksSession.sessionStartContexts : []),
       ...formatHookContextLines(userPromptHookResult, 'UserPromptSubmit'),
     ];
-
-    const autoRoute = classifyAutoRoute(expandedText);
-    const isCodingMode = normalizeExecutionMode(executionMode) === 'plan';
-    const memoryRoute = classifyMemoryRoute(expandedText);
-    const codingSkillIndexPrompt = isCodingMode ? await getSkillIndexPrompt() : '';
-    const routingRuntimeState = isCodingMode
-      ? buildRuntimeStateSnapshot({
-          currentSession,
-          config,
-          model,
-          executionMode,
-          extraSession: null,
-          workspaceRoot: root,
-        })
-      : null;
-    const codingRoute = await evaluateCodingRouteGraph({
-      executionMode: normalizeExecutionMode(executionMode),
-      text: expandedText,
-      autoRoute,
-      memoryRoute,
-      skillIndexPrompt: codingSkillIndexPrompt,
-      contextUsage: routingRuntimeState
-        ? {
-            estimated_tokens: routingRuntimeState.currentContextTokens,
-            max_tokens: routingRuntimeState.maxContextTokens,
-            usage_pct: routingRuntimeState.contextUsagePct,
-          }
-        : {},
-      sensitive: isSensitiveMemoryContent(expandedText),
-      judge: isCodingMode
-        ? (request) => judgeCodingRouteNodes({ request, config, model, signal })
-        : null,
-    });
+    const { codingSkillIndexPrompt, codingRoute } = await codingRoutePromise;
     if (codingRoute.active) {
       onAgentEvent?.({
         type: 'routing:graph',
@@ -8489,18 +8788,8 @@ export async function createChatRuntime({
       );
     }
     const alwaysSkillPrompt = injectAlwaysSkills
-      ? buildAlwaysSkillPromptBlock(commands, config, dismissedAlwaysSkills, executionMode)
+      ? buildAlwaysSkillPromptBlock(commands, config, dismissedAlwaysSkills, executionMode, root)
       : '';
-    const handoffCatalogPrompt = buildSubAgentHandoffCatalog(
-      await listSubAgentHandoffs({
-        workspaceRoot: root,
-        sessionId: currentSession.id,
-      }).catch(() => []),
-    );
-    const appendPromptParts = (prompt, parts) => buildSystemPromptWithReplyLanguage(
-      [stripReplyLanguageDirective(prompt || ''), ...parts.filter(Boolean)].join('\n\n'),
-      config,
-    );
     const routedSkillIndexPrompt = codingRoute?.decisions?.skills?.inject_index
       ? codingSkillIndexPrompt
       : '';
@@ -8509,27 +8798,26 @@ export async function createChatRuntime({
       graphSelectedSkillNames,
       config,
       executionMode,
+      root,
     );
-    const skillPrompt = appendPromptParts(activeReplySystemPrompt, [
+    const memoryHint = isCodingMode ? '' : buildMemoryRouteHintBlock(memoryRoute);
+    const codingRouteDecisionBlock = buildCodingRouteDecisionBlock(codingRoute);
+    // Per-turn routing / skill / hook context belongs in the user turn, not the
+    // system prompt, so the system prompt stays a stable, cacheable prefix.
+    const turnRoutingContext = [
       routedSkillIndexPrompt,
       routedSelectedSkillPrompt,
       alwaysSkillPrompt,
-      handoffCatalogPrompt,
-    ]);
-    const memoryHint = isCodingMode ? '' : buildMemoryRouteHintBlock(memoryRoute);
-    const routedSystemPrompt = appendPromptParts(skillPrompt, [
-      isCodingMode && autoRoute.mode === 'direct_medium' ? buildMediumTaskPromptBlock() : '',
       memoryHint,
-      buildCodingRouteDecisionBlock(codingRoute),
-    ]);
-    const systemPromptWithHookContext = hookContexts.length > 0
-      ? appendPromptParts(routedSystemPrompt, hookContexts)
-      : routedSystemPrompt;
+      codingRouteDecisionBlock,
+      ...hookContexts,
+    ].filter(Boolean).join('\n\n');
     const codingRouteAllowedTools = isCodingMode
       ? EXECUTION_MODE_TOOL_POLICY.plan.filter((toolName) => (
           isCodingRouteToolAllowed(codingRoute, toolName)
         ))
       : undefined;
+    await persistLastSystemPrompt(activeReplySystemPrompt);
     const result = await askModel({
       text: expandedText,
       ...(optionModelText ? { modelText: optionModelText } : {}),
@@ -8537,7 +8825,8 @@ export async function createChatRuntime({
       session: currentSession,
       config,
       model,
-      systemPrompt: systemPromptWithHookContext,
+      systemPrompt: activeReplySystemPrompt,
+      turnRoutingContext,
       onAgentEvent,
       requestToolApproval: activeRequestToolApproval,
       requestUserInput: activeRequestUserInput,
@@ -8550,6 +8839,7 @@ export async function createChatRuntime({
       backupManager,
       titleCoordinator,
       onExecutionModeSync: syncExecutionModeWithSession,
+      onContinuationSession: adoptContinuationSession,
       workspaceRoot: root,
       selectedSkillNames: [
         ...(Array.isArray(options?.selectedSkillNames) ? options.selectedSkillNames : []),
@@ -8587,7 +8877,9 @@ export async function createChatRuntime({
     const normalized = normalizeChatSubmission(submission);
     await reloadCommandsAndSkills();
     const composed = composeSelectedSkills(commands, normalized, {
-      isEnabled: (command) => isSkillEnabled(config, command.name, command, executionMode)
+      isEnabled: (command) => isSkillEnabled(config, command.name, command, executionMode),
+      config,
+      cwd: root,
     });
     if (composed.error) throw new Error(composed.error);
     if (typeof onAgentEvent === 'function') {
@@ -8700,9 +8992,13 @@ export async function createChatRuntime({
     submitCodeWiki: (line, onAgentEvent, options = {}) => executeSubmission(line, onAgentEvent, options),
     dispatchAction,
     getSession: () => currentSession,
-    abort: () => {
+    abort: (options = {}) => {
       if (activeAbortController && !activeAbortController.signal.aborted) {
-        activeAbortController.abort();
+        if (options?.continueInPlace === true) {
+          activeAbortController.abort({ continueInPlace: true });
+        } else {
+          activeAbortController.abort();
+        }
         return true;
       }
       return false;
@@ -8718,6 +9014,7 @@ export async function createChatRuntime({
     })),
     getSessionCompact: () => currentSession.compact || null,
     getAvailableSkills,
+    getLastSystemPrompt: () => String(currentSession?.lastSystemPrompt || ''),
     persistRunStatus,
     getChangeSets: () => listGitOplogChanges(changeTracker),
     getChangeSetPatch: (id) => readGitOplogPatch(changeTracker, id),

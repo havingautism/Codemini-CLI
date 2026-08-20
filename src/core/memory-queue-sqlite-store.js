@@ -105,11 +105,26 @@ export function removeInboxEntryFromSqlite(id) {
   ).run(id).changes || 0) > 0;
 }
 
+export function pruneMemoryQueueArchive({ olderThanDays = 90 } = {}) {
+  const days = Math.max(0, Math.floor(Number(olderThanDays) || 90));
+  const result = getGlobalDatabase().prepare(`
+    DELETE FROM memory_queue_entries
+    WHERE bucket = 'archive' AND day < date('now', ?)
+  `).run(`-${days} days`);
+  return Number(result.changes || 0);
+}
+
 export function archiveMemoryQueueEntry(entry, archived) {
   const db = getGlobalDatabase();
   transaction(db, () => {
     putEntry(db, 'archive', archived);
     db.prepare("DELETE FROM memory_queue_entries WHERE id = ? AND bucket = 'inbox'").run(entry.id);
   });
+  // Best-effort archive-bucket pruning; archiving must never fail because of it.
+  try {
+    pruneMemoryQueueArchive();
+  } catch {
+    // Ignore prune failures.
+  }
   return archived;
 }

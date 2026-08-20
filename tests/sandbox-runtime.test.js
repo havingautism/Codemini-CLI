@@ -1,11 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
+import os from 'node:os';
+import path from 'node:path';
 import {
   __setSandboxRuntimeTestHooks,
   createSandboxProcess,
   SandboxUnavailableError,
 } from '../src/core/sandbox-runtime.js';
+import { getSkillsDir } from '../src/core/paths.js';
 
 function fakeSandbox(events, captured = {}) {
   return {
@@ -96,6 +99,36 @@ test('Microsandbox startup failure is fail-closed', async () => {
     assert.match(error.message, /WHP is unavailable/);
   } finally {
     __setSandboxRuntimeTestHooks(null);
+  }
+});
+
+test('Microsandbox bind-mounts global skills read-only at /codemini-skills', async () => {
+  const previous = process.env.CODEMINI_GLOBAL_DIR;
+  const globalDir = path.join(os.tmpdir(), 'codemini-vm-skills-global');
+  process.env.CODEMINI_GLOBAL_DIR = globalDir;
+  const captured = {};
+  __setSandboxRuntimeTestHooks({
+    createSandbox: async (options) => {
+      captured.options = options;
+      return fakeSandbox([{ kind: 'exited', code: 0 }]);
+    },
+  });
+  try {
+    const wrapped = createSandboxProcess({
+      command: 'true',
+      config: { sandbox: { enabled: true, mode: 'workspace-write', backend: 'microsandbox' } },
+      cwd: path.join(os.tmpdir(), 'codemini-vm-skills-ws'),
+    });
+    await once(wrapped.child, 'close');
+    assert.deepEqual(captured.options.readonlyVolumes, [{
+      hostPath: getSkillsDir(),
+      guestPath: '/codemini-skills',
+      readonly: true,
+    }]);
+  } finally {
+    __setSandboxRuntimeTestHooks(null);
+    if (previous === undefined) delete process.env.CODEMINI_GLOBAL_DIR;
+    else process.env.CODEMINI_GLOBAL_DIR = previous;
   }
 });
 

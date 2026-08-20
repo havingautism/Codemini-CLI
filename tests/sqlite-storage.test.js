@@ -18,7 +18,8 @@ import {
 } from '../src/core/session-store.js';
 import {
   loadUiTranscriptFromSqlite,
-  saveUiTranscriptToSqlite
+  saveUiTranscriptToSqlite,
+  sessionMessageWriteStart
 } from '../src/core/session-sqlite-store.js';
 import {
   claimSessionMemoryReview,
@@ -38,6 +39,7 @@ import {
   refreshIndexedFile
 } from '../src/core/project-index.js';
 import {
+  loadProjectIndexFromSqlite,
   saveProjectIndexToSqlite
 } from '../src/core/project-index-sqlite-store.js';
 import {
@@ -87,6 +89,51 @@ test('session SQLite store round-trips incremental messages and UI transcript', 
 
     assert.equal((await deleteSession(session.id)).removed >= 1, true);
     await assert.rejects(() => loadSession(session.id));
+  });
+});
+
+test('session SQLite store round-trips lastSystemPrompt for trajectory reuse', async () => {
+  await withGlobalDir(async (dir) => {
+    const session = await createSession(dir);
+    session.messages.push({ role: 'user', content: 'hello' });
+    session.lastSystemPrompt = 'You are Codemini.\nFollow AGENTS.md.';
+    await saveSession(session);
+
+    const loaded = await loadSession(session.id);
+    assert.equal(loaded.lastSystemPrompt, 'You are Codemini.\nFollow AGENTS.md.');
+  });
+});
+
+test('session save rewrites in-place assistant and parallel-tool tail without dropping prefix', async () => {
+  await withGlobalDir(async (dir) => {
+    const session = await createSession(dir);
+    const user = { role: 'user', content: 'hello' };
+    const assistant = {
+      role: 'assistant',
+      content: 'one',
+      tool_calls: [{ id: 't1', function: { name: 'read_file', arguments: '{}' } }]
+    };
+    session.messages.push(user, assistant);
+    await saveSession(session);
+    assistant.content = 'two';
+    await saveSession(session);
+
+    let loaded = await loadSession(session.id);
+    assert.deepEqual(loaded.messages.map((message) => message.content), ['hello', 'two']);
+
+    const tool = { role: 'tool', content: 'result', tool_call_id: 't1' };
+    session.messages.push(tool);
+    await saveSession(session);
+    assistant.tool_calls[0].status = 'done';
+    assistant.content = 'three';
+    await saveSession(session);
+
+    loaded = await loadSession(session.id);
+    assert.equal(loaded.messages[0].content, 'hello');
+    assert.equal(loaded.messages[1].content, 'three');
+    assert.equal(loaded.messages[1].tool_calls[0].status, 'done');
+    assert.equal(loaded.messages[2].content, 'result');
+    assert.equal(sessionMessageWriteStart(session.id, session.messages), 1);
   });
 });
 
@@ -156,6 +203,35 @@ test('project index persists files and symbols in per-project SQLite', async () 
     await refreshIndexedFile(root, 'src/hello.js');
     const result = await queryProjectIndex(root, { query: 'renamedHello' });
     assert.equal(result.matches[0].file, 'src/hello.js');
+  } finally {
+    closeSqliteDatabasesForTests();
+    await fs.rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  }
+});
+
+test('project index sqlite load caches until updatedAt changes', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-project-index-cache-'));
+  try {
+    const firstFile = { file: 'a.js', language: 'JavaScript', size: 1, mtimeMs: 1 };
+    saveProjectIndexToSqlite(root, {
+      projectMap: { root },
+      fileIndex: { updatedAt: '2026-08-16T00:00:00.000Z', files: [firstFile] }
+    });
+    assert.equal(loadProjectIndexFromSqlite(root).fileIndex.files[0].file, 'a.js');
+
+    getProjectDatabase(root).prepare(
+      'UPDATE indexed_files SET payload_json = ? WHERE file = ?'
+    ).run(JSON.stringify({ ...firstFile, file: 'stale.js' }), 'a.js');
+    assert.equal(loadProjectIndexFromSqlite(root).fileIndex.files[0].file, 'a.js');
+
+    saveProjectIndexToSqlite(root, {
+      projectMap: { root },
+      fileIndex: {
+        updatedAt: '2026-08-16T00:00:01.000Z',
+        files: [{ file: 'c.js', language: 'JavaScript', size: 1, mtimeMs: 1 }]
+      }
+    });
+    assert.equal(loadProjectIndexFromSqlite(root).fileIndex.files[0].file, 'c.js');
   } finally {
     closeSqliteDatabasesForTests();
     await fs.rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });

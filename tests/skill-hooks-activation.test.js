@@ -77,7 +77,7 @@ test('buildSkillIndexPreview returns raw debug JSON including frontmatter trigge
     assert.equal(preview.coding.count, 1);
     assert.equal(preview.coding.skills[0].name, 'with-triggers');
     assert.deepEqual(preview.coding.skills[0].triggers, ['review since X', 'code review']);
-    assert.match(preview.coding.prompt, /# Indexed skills/);
+    assert.match(preview.coding.prompt, /<available_skills>/);
     assert.match(
       preview.coding.prompt,
       /- \/with-triggers - Test skill with-triggers \(triggers: review since X, code review\)/,

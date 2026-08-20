@@ -28,7 +28,6 @@ import {
   resolveSandboxPolicy,
   validateSandboxEscalationArgs,
 } from './sandbox-policy.js';
-import { createMutationGraphPreflight } from './mutation-graph-preflight.js';
 import { fireSkillHookEvent, formatHookContextLines } from './skill-hooks-runtime.js';
 import {
   isCompletionTruncated,
@@ -191,7 +190,7 @@ function compactToolResult(result, toolName, args, maxChars = 12000) {
     return `${obj.tasks.length} task(s)`;
   }
   if ('newTodos' in obj && Array.isArray(obj.newTodos)) {
-    return obj.newTodos.length > 0 ? `updated ${obj.newTodos.length} todo item(s)` : 'cleared todo list';
+    return obj.newTodos.length > 0 ? `updated ${obj.newTodos.length} task item(s)` : 'cleared task list';
   }
   if ('newPlan' in obj) {
     return obj.newPlan ? `updated plan state (${String(obj.newPlan.status || 'draft')})` : 'cleared plan state';
@@ -360,13 +359,23 @@ function fileChangeFingerprint(change) {
   });
 }
 
+const fileChangeFingerprintSets = new WeakMap();
+
 function appendUniqueFileChange(message, fileChange) {
   const existing = Array.isArray(message.file_changes) ? message.file_changes : [];
   const nextKey = fileChangeFingerprint(fileChange);
-  if (existing.some((change) => fileChangeFingerprint(normalizeFileChange(change) || {}) === nextKey)) {
+  let fingerprintSet = fileChangeFingerprintSets.get(message);
+  if (!fingerprintSet || fingerprintSet.size !== existing.length) {
+    fingerprintSet = new Set(
+      existing.map((change) => fileChangeFingerprint(normalizeFileChange(change) || {}))
+    );
+    fileChangeFingerprintSets.set(message, fingerprintSet);
+  }
+  if (fingerprintSet.has(nextKey)) {
     message.file_changes = existing;
     return;
   }
+  fingerprintSet.add(nextKey);
   message.file_changes = [...existing, fileChange];
 }
 
@@ -638,7 +647,7 @@ function normalizeToolCallName(name) {
   return String(name || '').trim();
 }
 
-const FULL_CONTEXT_TOOL_RESULTS = new Set(['skill', 'update_todos', 'web_search']);
+const FULL_CONTEXT_TOOL_RESULTS = new Set(['skill', 'tasks', 'web_search']);
 
 function shouldPersistLargeToolResult(toolName) {
   return !FULL_CONTEXT_TOOL_RESULTS.has(normalizeToolCallName(toolName));
@@ -690,6 +699,7 @@ export async function runAgentLoop({
   toolDisplayLabels = {},
   toolMetadata = {},
   shouldCheckpoint = null,
+  getTasks = null,
   workspaceRoot = config?.workspaceRoot || process.cwd()
 }) {
   const toolRuntime = providedToolRuntime || createToolRuntime({
@@ -718,6 +728,7 @@ export async function runAgentLoop({
   let finalText = '';
   let lastAssistantText = '';
   let pendingSummaryNudges = 0;
+  let toolBatchesSinceTaskUpdate = 0;
   const analysisGuard = createAnalysisGuardState(userPrompt);
   const alwaysAllowSet = new Set([
     ...MEMORY_ALWAYS_ALLOW_TOOLS,
@@ -725,25 +736,6 @@ export async function runAgentLoop({
     ...(Array.isArray(alwaysAllowTools) ? alwaysAllowTools : []).map((t) => String(t))
   ]);
   let lastAutoDreamCheckStep = 0;
-
-  const mutationGraphPreflight = createMutationGraphPreflight({
-    queryGraph: toolRuntime.has('query_project_graph')
-      ? (args) => toolRuntime.execute('query_project_graph', args, {
-          signal,
-          workspaceRoot,
-          orchestrationId: 'mutation-graph-preflight',
-        })
-      : null,
-    onError: (error, context) => {
-      if (!onEvent) return;
-      onEvent({
-        type: 'system_tool:error',
-        id: `project-graph-preflight:${Date.now()}`,
-        name: 'project_graph_preflight',
-        summary: `Graph preflight degraded for ${(context?.files || []).join(', ')}: ${error instanceof Error ? error.message : String(error)}`,
-      });
-    },
-  });
 
   let stopHookBlockCount = 0;
   async function fireStopHooks(lastAssistantMessage = '') {
@@ -791,11 +783,38 @@ export async function runAgentLoop({
           report: { ok: false, error: String(error?.message || error || 'unknown dream error') }
         });
       }
-      // Auto-dream is best-effort; don't block the loop
+      // Auto-dream is best-effort; callers must not await this on the turn path.
     }
   }
 
   let step = 0;
+  let stepStartedAt = 0;
+  let stepOpen = false;
+  const emitStepEnd = (reason) => {
+    if (!stepOpen) return;
+    stepOpen = false;
+    if (!onEvent) return;
+    const endedAt = new Date().toISOString();
+    onEvent({
+      type: 'step:end',
+      step,
+      reason,
+      durationMs: Math.max(0, Date.now() - stepStartedAt),
+      endedAt,
+    });
+  };
+  const emitStepStart = () => {
+    stepStartedAt = Date.now();
+    stepOpen = true;
+    if (onEvent) {
+      onEvent({
+        type: 'step:start',
+        step,
+        startedAt: new Date(stepStartedAt).toISOString(),
+      });
+    }
+  };
+
   while (true) {
     step += 1;
     // 检查是否已被用户中止
@@ -803,8 +822,7 @@ export async function runAgentLoop({
       if (onEvent) onEvent({ type: 'aborted', step });
       break;
     }
-    if (onEvent) onEvent({ type: 'step:start', step });
-    await maybeRunAutoDream(step);
+    emitStepStart();
     const pruneResult = applyAggressiveToolPruneBeta(messages, config);
     if (pruneResult.changed) {
       messages.splice(0, messages.length, ...pruneResult.messages);
@@ -824,11 +842,13 @@ export async function runAgentLoop({
 
     // 流式请求完成后再次检查中止状态
     if (signal?.aborted) {
+      emitStepEnd('abort');
       if (onEvent) onEvent({ type: 'aborted', step });
       break;
     }
 
     if (completion?.incomplete) {
+      emitStepEnd('incomplete');
       continue;
     }
 
@@ -870,6 +890,7 @@ export async function runAgentLoop({
           content:
             'You have not inspected enough relevant source files yet. Query the project index if needed, then inspect the next relevant source files before concluding. Do not stop after unrelated directories, tests, skills, souls, or templates.'
         });
+        emitStepEnd('nudge');
         continue;
       }
       if (!skipAnalysisNudge && shouldAskForConcreteFinalAnswer(assistantText, messages.slice(0, -1)) && pendingSummaryNudges < 2) {
@@ -879,6 +900,7 @@ export async function runAgentLoop({
           content:
             'You have already inspected tool results. Before stopping, check whether the task is actually complete. If it is, provide a concise final answer with specific findings or concrete next steps. If it is not, continue with the next tool call.'
         });
+        emitStepEnd('nudge');
         continue;
       }
       finalText = assistantText;
@@ -888,9 +910,11 @@ export async function runAgentLoop({
           role: 'user',
           content: stopResult.reason || 'A Stop hook requires more work before this turn can finish.'
         });
+        emitStepEnd('stop_hook');
         continue;
       }
-      await maybeRunAutoDream(step, { force: true });
+      void maybeRunAutoDream(step, { force: true });
+      emitStepEnd('final');
       return { text: finalText, messages, steps: step };
     }
 
@@ -956,19 +980,6 @@ export async function runAgentLoop({
         continue;
       }
       const isSandboxEscalation = Boolean(sandboxEscalation);
-      const graphPreflight = await mutationGraphPreflight.inspect({
-        toolName,
-        args,
-        step,
-      });
-      if (graphPreflight?.required) {
-        approvalResults.set(call.id, {
-          approved: false,
-          args: approvalArgs,
-          graphPreflightContent: clipToolResult(graphPreflight.content, toolResultMaxChars),
-        });
-        continue;
-      }
       const shellApproval = isShellToolName(toolName)
         ? resolveShellApprovalStrategy({
             command: args?.command || '',
@@ -1164,28 +1175,6 @@ export async function runAgentLoop({
           durationMs: 0,
           summary: reason,
           status: 'error',
-        };
-      }
-
-      if (approvalState.graphPreflightContent) {
-        const summary = 'Project graph impact review required before mutation';
-        if (onEvent) {
-          onEvent({
-            type: 'tool:blocked',
-            name: toolName,
-            displayName,
-            id: call.id,
-            arguments: effectiveArgs,
-            summary,
-          });
-        }
-        return {
-          callId: call.id,
-          content: approvalState.graphPreflightContent,
-          blocked: true,
-          durationMs: 0,
-          summary,
-          status: 'blocked',
         };
       }
 
@@ -1426,12 +1415,6 @@ export async function runAgentLoop({
       }
 
       const durationMs = Date.now() - startedAt;
-      mutationGraphPreflight.record({
-        toolName,
-        args: effectiveArgs,
-        result: toolResult,
-        step,
-      });
       const runFailureMessage = resolveRunToolFailure(toolName, toolResult);
       if (runFailureMessage) {
         const summary = trimInline(runFailureMessage, 120);
@@ -1619,6 +1602,31 @@ export async function runAgentLoop({
       }
     }
 
+    const calledTasks = callsWithMeta.some(({ toolName }) =>
+      ["tasks", "update_todos"].includes(String(toolName || "").toLowerCase()),
+    );
+    if (calledTasks) {
+      toolBatchesSinceTaskUpdate = 0;
+    } else {
+      const completedWork = callsWithMeta.some(({ call }) => {
+        const entry = resultEntries.get(call.id);
+        return entry && !entry.blocked && !entry.error;
+      });
+      const currentTasks = typeof getTasks === "function" ? getTasks() : [];
+      const hasActiveTask = Array.isArray(currentTasks)
+        && currentTasks.some((task) => task?.status === "in_progress");
+      toolBatchesSinceTaskUpdate = completedWork && hasActiveTask
+        ? toolBatchesSinceTaskUpdate + 1
+        : 0;
+      if (toolBatchesSinceTaskUpdate >= 2) {
+        messages.push({
+          role: "user",
+          content: "Progress checkpoint: update the tasks checklist now to reflect completed work and the next active item, then continue.",
+        });
+        toolBatchesSinceTaskUpdate = 0;
+      }
+    }
+
     let workflowCompleteText = '';
     for (const { call } of callsWithMeta) {
       const entry = resultEntries.get(call.id);
@@ -1628,8 +1636,9 @@ export async function runAgentLoop({
       }
     }
     if (workflowCompleteText) {
-      await maybeRunAutoDream(step, { force: true });
+      void maybeRunAutoDream(step, { force: true });
       await fireStopHooks(workflowCompleteText);
+      emitStepEnd('workflow');
       return { text: workflowCompleteText, messages, steps: step, workflowComplete: true };
     }
     if (typeof shouldCheckpoint === 'function') {
@@ -1641,6 +1650,7 @@ export async function runAgentLoop({
       if (checkpoint) {
         const checkpointText = lastAssistantText || '';
         if (onEvent) onEvent({ type: 'checkpoint', step });
+        emitStepEnd('checkpoint');
         return {
           text: checkpointText,
           messages,
@@ -1649,8 +1659,10 @@ export async function runAgentLoop({
         };
       }
     }
+    emitStepEnd('tools');
   }
 
+  emitStepEnd('abort');
   // 如果被用户中止，返回已有内容并标记
   if (signal?.aborted) {
     const fallback = lastAssistantText || '';
@@ -1663,7 +1675,7 @@ export async function runAgentLoop({
   }
 
   const fallback = lastAssistantText || 'Stopped before final response.';
-  await maybeRunAutoDream(step, { force: true });
+  void maybeRunAutoDream(step, { force: true });
   await fireStopHooks(fallback);
   return {
     text: fallback,

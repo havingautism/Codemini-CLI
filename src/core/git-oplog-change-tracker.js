@@ -264,7 +264,11 @@ function gitApplyArgs(tracker, ...args) {
 
 export async function beginGitOplogCapture(tracker, { toolName = '', args = {} } = {}) {
   if (!isGitOplogChangeTrackerAvailable(tracker)) return null;
-  const explicitPaths = FILE_TOOLS.has(String(toolName || '')) ? extractPathCandidates(args, [], { root: tracker.workspaceRoot }) : [];
+  const normalizedToolName = String(toolName || '');
+  if (!FILE_TOOLS.has(normalizedToolName) && normalizedToolName !== 'run' && normalizedToolName !== 'Bash') {
+    return null;
+  }
+  const explicitPaths = FILE_TOOLS.has(normalizedToolName) ? extractPathCandidates(args, [], { root: tracker.workspaceRoot }) : [];
   const dirtyPaths = await listDirtyPaths(tracker);
   const paths = explicitPaths.length ? explicitPaths : dirtyPaths;
   const snapshots = new Map();
@@ -282,7 +286,7 @@ export async function beginGitOplogCapture(tracker, { toolName = '', args = {} }
 
 export async function captureGitOplogChanges(tracker, capture, { toolName = '', toolCallId = '', summary = '', args = {}, declaredFileChanges = [] } = {}) {
   if (!isGitOplogChangeTrackerAvailable(tracker) || !capture) return null;
-  const afterDirtyPaths = await listDirtyPaths(tracker);
+  const afterDirtyPaths = capture.explicit ? [] : await listDirtyPaths(tracker);
   const declaredPaths = extractPathCandidates(args, declaredFileChanges, { root: tracker.workspaceRoot });
   const candidates = new Set([
     ...capture.paths,

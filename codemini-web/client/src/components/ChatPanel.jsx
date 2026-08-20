@@ -11,7 +11,7 @@ import {
   useMessageScroller,
 } from "@/components/ui/message-scroller";
 import { cn } from "@/lib/utils";
-import { hasConversationContent } from "@/lib/chat-empty-state.js";
+import { hasConversationContent, isSupersededWaitingResponse } from "@/lib/chat-empty-state.js";
 import { getActiveMessageIndex } from "@/lib/chat-navigation.js";
 import { t } from "../../i18n/index.js";
 import { HomeEmptyVisual } from "./HomeEmptyVisual.jsx";
@@ -178,12 +178,16 @@ function ChatPanelContent({
   messagesLoading,
   isGeneral = false,
   targetMessageId = "",
+  dockedTodoMessageId = "",
+  busy = false,
   onTargetMessageHandled,
   onRetryMessage,
 }) {
   const scrollRef = useRef(null);
   const settleTimerRef = useRef(0);
   const jumpFinishTimerRef = useRef(0);
+  const scrollRafRef = useRef(0);
+  const measureCacheRef = useRef({ scrollTop: 0, rects: new Map() });
   const [activeNavIndex, setActiveNavIndex] = useState(-1);
   const [pendingScrollTargetId, setPendingScrollTargetId] = useState("");
   const [layoutSettled, setLayoutSettled] = useState(false);
@@ -220,7 +224,7 @@ function ChatPanelContent({
     el.scrollIntoView({ behavior, block: "center" });
   }, [pauseFollowEnd, userMessages]);
 
-  const updateScrollState = useCallback(() => {
+  const measureScrollState = useCallback(() => {
     const el = scrollRef.current;
     if (!el) return;
     const userEls = el.querySelectorAll(
@@ -233,9 +237,39 @@ function ChatPanelContent({
     // layout for off-screen items, causing offsetTop to return 0
     // for elements inside skipped containers.
     const viewportRect = el.getBoundingClientRect();
-    const messageRects = Array.from(userEls, (userEl) =>
-      userEl.getBoundingClientRect(),
-    );
+    const cache = measureCacheRef.current;
+    const delta = el.scrollTop - cache.scrollTop;
+    cache.scrollTop = el.scrollTop;
+    // Only (re)measure user messages near the viewport: off-screen entries
+    // reuse their cached client rect translated by the scroll delta, so we
+    // avoid forcing layout on far-away messages on every scroll. Translated
+    // rects of far-off-screen messages never win the closest-to-center pick;
+    // anything near the viewport is measured fresh.
+    const margin = Math.max(el.clientHeight * 2, 480);
+    const messageRects = [];
+    const seenIds = new Set();
+    userEls.forEach((userEl) => {
+      const id = userEl.getAttribute("data-message-id");
+      seenIds.add(id);
+      const prev = cache.rects.get(id);
+      const prevTop = prev ? prev.top - delta : null;
+      const prevBottom = prev ? prev.bottom - delta : null;
+      const nearViewport =
+        prevTop === null ||
+        (prevBottom >= viewportRect.top - margin &&
+          prevTop <= viewportRect.bottom + margin);
+      if (nearViewport) {
+        const rect = userEl.getBoundingClientRect();
+        cache.rects.set(id, rect);
+        messageRects.push(rect);
+      } else {
+        messageRects.push({ top: prevTop, bottom: prevBottom });
+      }
+    });
+    // Drop cache entries for messages that left the conversation.
+    for (const id of cache.rects.keys()) {
+      if (!seenIds.has(id)) cache.rects.delete(id);
+    }
     setActiveNavIndex(
       getActiveMessageIndex({
         viewportTop: viewportRect.top,
@@ -247,20 +281,34 @@ function ChatPanelContent({
     );
   }, []);
 
+  // rAF-throttled scroll handler: at most one measurement per frame, so
+  // bursts of scroll events do not each trigger full layout work.
+  const handleScroll = useCallback(() => {
+    if (scrollRafRef.current) return;
+    scrollRafRef.current = requestAnimationFrame(() => {
+      scrollRafRef.current = 0;
+      measureScrollState();
+    });
+  }, [measureScrollState]);
+
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
-    el.addEventListener("scroll", updateScrollState, { passive: true });
+    el.addEventListener("scroll", handleScroll, { passive: true });
     return () => {
-      el.removeEventListener("scroll", updateScrollState);
+      el.removeEventListener("scroll", handleScroll);
+      if (scrollRafRef.current) {
+        cancelAnimationFrame(scrollRafRef.current);
+        scrollRafRef.current = 0;
+      }
     };
-  }, [updateScrollState]);
+  }, [handleScroll]);
 
   useEffect(() => {
     requestAnimationFrame(() => {
-      requestAnimationFrame(updateScrollState);
+      requestAnimationFrame(measureScrollState);
     });
-  }, [messages, messagesLoading, updateScrollState]);
+  }, [messages, messagesLoading, measureScrollState]);
 
   useEffect(() => {
     const viewport = scrollRef.current;
@@ -342,14 +390,14 @@ function ChatPanelContent({
       {!messagesLoading && !hasConversation && (
         <div className="absolute inset-0 pointer-events-none overflow-hidden">
           {isGeneral ? (
-            <HomeEmptyVisual mode="general">
+            <HomeEmptyVisual>
               <HomeEmptyCaption
                 promptKey="askAnythingGeneralPrompts"
                 className="codemini-home-empty-title mx-auto max-w-[320px] sm:max-w-none text-[20px] sm:text-[26px] font-medium leading-tight tracking-normal text-(--text-primary) break-words"
               />
             </HomeEmptyVisual>
           ) : (
-            <HomeEmptyVisual mode="project">
+            <HomeEmptyVisual>
               <HomeEmptyCaption
                 promptKey="buildInProjectPrompts"
                 vars={{ project: projectCwd || t("currentProject") }}
@@ -399,20 +447,25 @@ function ChatPanelContent({
           <MessageScrollerContent className="gap-0 py-[32px_0_24px]">
             <div className="w-[calc(100%_-_32px)] max-w-[920px] sm:w-[calc(100%_-_64px)] mx-auto">
               <Suspense fallback={null}>
-                {messages.map((msg) => (
-                  <MessageScrollerItem
-                    key={msg.id}
-                    data-msg-scroll-id={msg.id}
-                    data-scroll-anchor-id={msg.id}
-                  >
-                    <MessageBubble
-                      message={msg}
-                      onRetry={onRetryMessage}
-                      projectIsGit={projectIsGit}
-                      gitFiles={gitInfo?.files}
-                    />
-                  </MessageScrollerItem>
-                ))}
+                {messages.map((msg, index) => {
+                  if (isSupersededWaitingResponse(messages, index)) return null;
+                  return (
+                    <MessageScrollerItem
+                      key={msg.id}
+                      data-msg-scroll-id={msg.id}
+                      data-scroll-anchor-id={msg.id}
+                    >
+                      <MessageBubble
+                        message={msg}
+                        onRetry={onRetryMessage}
+                        projectIsGit={projectIsGit}
+                        gitFiles={gitInfo?.files}
+                        dockTodo={Boolean(dockedTodoMessageId) && msg.id === dockedTodoMessageId}
+                        turnActive={busy}
+                      />
+                    </MessageScrollerItem>
+                  );
+                })}
               </Suspense>
             </div>
           </MessageScrollerContent>

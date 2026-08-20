@@ -149,11 +149,14 @@ export async function uploadAttachments(sessionId, files = []) {
   return res.json();
 }
 
-export async function abortRequest(sessionId) {
+export async function abortRequest(sessionId, { continueInPlace } = {}) {
   const res = await api('/api/abort', {
     method: 'POST',
     headers: JSON_HEADERS,
-    body: JSON.stringify({ sessionId })
+    body: JSON.stringify({
+      sessionId,
+      ...(continueInPlace ? { continueInPlace: true } : {}),
+    })
   });
   if (res.ok) return;
 

@@ -8,6 +8,7 @@ import {
   finishThinkingSegments,
   finishStreamingTextSegments,
   normalizeUsage,
+  settleIncompleteTranscriptMessage,
   updateSkillInSegments,
 } from '../shared/transcript-segments.js';
 import { buildHookSegmentEvent } from '../shared/hook-ui.js';
@@ -16,6 +17,7 @@ import {
   applyPlanEventToMessage,
   applyStreamEventToPlanRun,
   isCreatePlanToolEvent,
+  isLegacyFinalPlanStep,
   messageHasActivePlanRun,
   shouldNestStreamEventInPlan,
   settleRunningCreatePlanCards,
@@ -334,6 +336,8 @@ export class RuntimeBridge {
   #operationSequence = 0;
   #activeStructuredOperationId = null;
   #sessionId = '';
+  #forkHandledFor = '';
+  #sentLastSystemPrompt = null;
   #onEvent = null;
   #onLifecycle = null;
 
@@ -387,6 +391,56 @@ export class RuntimeBridge {
     });
   }
 
+  #flushUiTranscriptTo(sessionId) {
+    const id = String(sessionId || '').trim();
+    if (!id || this.#uiMessages.length === 0) return;
+    try {
+      saveUiTranscriptToSqlite(id, this.#uiMessages);
+    } catch {}
+  }
+
+  #handleSessionForked(event) {
+    const previousSessionId = String(event?.previousSessionId || this.#sessionId || '').trim();
+    const nextSessionId = String(event?.nextSessionId || event?.sessionId || '').trim();
+    if (!nextSessionId || nextSessionId === previousSessionId) return;
+    if (this.#forkHandledFor === nextSessionId) return;
+    this.#forkHandledFor = nextSessionId;
+    this.#settleIncompleteUiMessages('aborted');
+    this.#flushUiTranscriptTo(previousSessionId);
+    this.#uiMessages = [];
+    this.#uiActiveMsgId = null;
+    this.#uiPlanStepIds = new Map();
+    this.#uiPlanOverviewId = null;
+    this.#uiPlanParentMsgId = null;
+    this.#uiPendingSkillBadges = [];
+    this.#uiPendingSkillSegments = [];
+    this.#uiTranscriptSessionId = nextSessionId;
+    const payload = {
+      type: 'session:forked',
+      sessionId: previousSessionId,
+      previousSessionId,
+      nextSessionId
+    };
+    this.#onEvent?.(payload);
+    this.#broadcast(payload);
+    this.#sessionId = nextSessionId;
+    this.#sentLastSystemPrompt = null;
+  }
+
+  #forwardRuntimeEvent(event, submitToken) {
+    if (event?.type === 'session:forked') {
+      this.#handleSessionForked(event);
+      return;
+    }
+    if (!this.#isSubmitActive(submitToken)) return;
+    const messageId = this.#recordUiEvent(event);
+    this.#publish(messageId ? { ...event, messageId } : event);
+    if (['spec:pending_approval', 'reflect:pending_approval'].includes(event?.type)) {
+      this.#busy = false;
+      this.#broadcastRuntimeState();
+    }
+  }
+
   #publish(event) {
     const incomingSessionId = String(event?.sessionId || '').trim();
     const tagged = {
@@ -422,18 +476,42 @@ export class RuntimeBridge {
   }
 
   #broadcast(event) {
-    const tagged = event?.sessionId === this.#sessionId
-      ? event
-      : { ...event, sessionId: this.#sessionId };
-    if (tagged !== event) this.#onEvent?.(tagged);
+    const incomingSessionId = String(event?.sessionId || '').trim();
+    const tagged = {
+      ...event,
+      sessionId: incomingSessionId || this.#sessionId
+    };
+    if (tagged.sessionId !== event?.sessionId) this.#onEvent?.(tagged);
     const data = `data: ${JSON.stringify(tagged)}\n\n`;
     for (const res of this.#clients) {
       try { res.write(data); } catch {}
     }
   }
 
+  #buildRuntimeStatePayload() {
+    const state = this.#runtime.getRuntimeState();
+    const serializableState = typeof state?.toJSON === 'function' ? state.toJSON() : state;
+    return {
+      ...serializableState,
+      busy: this.#busy,
+      requestInFlight: this.#busy,
+      codeWikiGenerating: this.#codeWikiGenerating,
+      pendingReflectSkill: serializableState.pendingReflectSkill,
+      pendingSpecApproval: serializableState.pendingSpecApproval,
+      pendingUserInput: this.#userInput.current
+    };
+  }
+
   #broadcastRuntimeState() {
-    this.#publish({ type: 'runtime:state', state: this.getState() });
+    const state = this.#buildRuntimeStatePayload();
+    const prompt = this.#runtime.getLastSystemPrompt?.();
+    const nextPrompt = typeof prompt === 'string' ? prompt : '';
+    if (nextPrompt && nextPrompt !== this.#sentLastSystemPrompt) {
+      this.#sentLastSystemPrompt = nextPrompt;
+      this.#publish({ type: 'runtime:state', state: { ...state, lastSystemPrompt: nextPrompt } });
+      return;
+    }
+    this.#publish({ type: 'runtime:state', state });
   }
 
   broadcastRuntimeState() {
@@ -441,7 +519,7 @@ export class RuntimeBridge {
   }
 
   async #writeUiTranscriptSnapshot() {
-    const sessionId = this.getSessionId();
+    const sessionId = this.#uiTranscriptSessionId || this.#sessionId;
     if (!sessionId) return;
     // Guard against wiping a persisted transcript with an unhydrated in-memory
     // buffer (e.g. bridge recreate / HMR / page refresh then first new turn).
@@ -496,6 +574,7 @@ export class RuntimeBridge {
   #resetUiTranscriptIfSessionChanged() {
     const sessionId = this.getSessionId();
     if (sessionId === this.#uiTranscriptSessionId) return;
+    this.#flushUiTranscriptTo(this.#uiTranscriptSessionId);
     this.#uiTranscriptSessionId = sessionId;
     this.#uiMessages = [];
     this.#uiActiveMsgId = null;
@@ -581,26 +660,35 @@ export class RuntimeBridge {
     this.#uiMessages = this.#uiMessages.filter((message) => message.transientKey !== 'waiting-response');
   }
 
+  #resetActiveAssistantTarget() {
+    this.#uiActiveMsgId = null;
+    this.#uiPlanParentMsgId = null;
+    this.#uiPlanStepIds = new Map();
+  }
+
+  #activeAssistantReusable() {
+    const active = this.#uiMessages.find((message) => message.id === this.#uiActiveMsgId);
+    return Boolean(active) && active.manualAborted !== true;
+  }
+
+  #settleIncompleteUiMessages(reason = 'aborted') {
+    this.#uiMessages = this.#uiMessages.map((message) =>
+      settleRunningCreatePlanCards(
+        settleIncompleteTranscriptMessage(message, { reason }),
+        { reason },
+      ),
+    );
+    this.#flushUiTranscriptTo(this.#uiTranscriptSessionId || this.#sessionId);
+  }
+
   #markUiMessageManualAborted() {
-    const mark = (id) => {
-      if (!id) return false;
-      return this.#updateUiMessage(id, (message) => ({
-        ...message,
-        manualAborted: true,
-        isComplete: true
-      }));
-    };
-    if (mark(this.#uiActiveMsgId)) return this.#uiActiveMsgId;
-    const lastAssistant = [...this.#uiMessages]
-      .reverse()
-      .find((message) =>
-        message?.role !== 'you' &&
-        message?.role !== 'divider' &&
-        message?.role !== 'system' &&
-        !message?.transientKey
-      );
-    if (lastAssistant?.id) mark(lastAssistant.id);
-    return lastAssistant?.id || '';
+    this.#settleIncompleteUiMessages('aborted');
+    return this.#uiActiveMsgId || [...this.#uiMessages].reverse().find((message) =>
+      message?.role !== 'you' &&
+      message?.role !== 'divider' &&
+      message?.role !== 'system' &&
+      !message?.transientKey
+    )?.id || '';
   }
 
   #addUiRunStatusMessage(text, { status = 'error', retryPrompt = '' } = {}) {
@@ -658,7 +746,7 @@ export class RuntimeBridge {
         const pendingSkillSegments = this.#uiPendingSkillSegments;
         this.#uiPendingSkillBadges = [];
         this.#uiPendingSkillSegments = [];
-        if (!activeId) {
+        if (!this.#activeAssistantReusable()) {
           this.#uiActiveMsgId = this.#addUiMessage({
             role: 'general',
             text: '',
@@ -670,7 +758,7 @@ export class RuntimeBridge {
             isComplete: false
           });
         } else {
-          this.#updateUiMessage(activeId, (message) => ({
+          this.#updateUiMessage(this.#uiActiveMsgId, (message) => ({
             ...message,
             isComplete: false,
             ...(event.sdkProvider ? { sdkProvider: event.sdkProvider } : {}),
@@ -693,7 +781,9 @@ export class RuntimeBridge {
       case 'tool:end':
       case 'tool:result':
       case 'tool:error':
-      case 'tool:blocked': {
+      case 'tool:blocked':
+      case 'step:start':
+      case 'step:end': {
         const toolName = String(event.name || event.toolName || '').trim();
         if (event.type === 'tool:start' && (toolName === 'create_plan' || toolName === 'run_subagent') && this.#uiActiveMsgId) {
           this.#uiPlanParentMsgId = this.#uiActiveMsgId;
@@ -704,7 +794,34 @@ export class RuntimeBridge {
             ? this.#resolveCreatePlanToolTargetId()
             : null;
         const targetId = createPlanTargetId || this.#uiActiveMsgId;
-        if (!targetId) break;
+        if (!targetId) {
+          if (event.type === 'step:start') {
+            this.#removeUiTransientWaiting();
+            const pendingSegments = applyStreamEventToMessage(
+              { segments: this.#uiPendingSkillSegments },
+              event,
+              streamOptions
+            ).segments;
+            this.#uiActiveMsgId = this.#addUiMessage({
+              role: 'general',
+              text: '',
+              timestamp: event.startedAt || new Date().toISOString(),
+              skillBadges: this.#uiPendingSkillBadges,
+              segments: pendingSegments,
+              isComplete: false
+            });
+            this.#uiPendingSkillSegments = [];
+            this.#uiPendingSkillBadges = [];
+            publishedMessageId = this.#uiActiveMsgId;
+          } else if (event.type === 'step:end') {
+            this.#uiPendingSkillSegments = applyStreamEventToMessage(
+              { segments: this.#uiPendingSkillSegments },
+              event,
+              streamOptions
+            ).segments;
+          }
+          break;
+        }
 
         if (event.type === 'assistant:usage') {
           this.#updateUiMessage(targetId, (message) =>
@@ -783,10 +900,7 @@ export class RuntimeBridge {
           // Legacy multi-step plan pipeline: settle when the final/summarizer step ends.
           // run_subagent is one-step (total=1); settling here would abort sibling parallel cards.
           // Those cards are completed by their own tool:end instead.
-          const isLegacyFinalPlanStep =
-            String(event.role || '').toLowerCase() === 'summarizer' ||
-            (Number(event.total) > 1 && Number(event.step) === Number(event.total));
-          if (isLegacyFinalPlanStep) {
+          if (isLegacyFinalPlanStep(event)) {
             this.#settleCreatePlanToolCard(undefined, 'completed');
           }
         }
@@ -995,6 +1109,7 @@ export class RuntimeBridge {
   handleSubmit(line, options = {}) {
     if (this.#busy) return { error: true, message: 'A request is already in progress' };
     this.#ensureUiTranscriptLoaded();
+    this.#resetActiveAssistantTarget();
     const trimmed = String(line || '').trim();
     if (!options?.readOnlyCodeWiki && trimmed && !isWorkflowControlLine(trimmed, this.getState())) {
       this.#addUiMessage({
@@ -1012,23 +1127,21 @@ export class RuntimeBridge {
     this.#activeSubmitLine = line;
     this.#runStatusRecorded = false;
     this.#runtime.submit(line, (event) => {
-      if (!this.#isSubmitActive(submitToken)) return;
-      const messageId = this.#recordUiEvent(event);
-      this.#publish(messageId ? { ...event, messageId } : event);
-      if (['spec:pending_approval', 'reflect:pending_approval'].includes(event?.type)) {
-        this.#busy = false;
-        this.#broadcastRuntimeState();
-      }
+      this.#forwardRuntimeEvent(event, submitToken);
     }, options).then(async (result) => {
       if (!this.#isSubmitActive(submitToken)) return;
       if (this.#uiActiveMsgId) {
-        this.#updateUiMessage(this.#uiActiveMsgId, (message) => ({
-          ...message,
-          isComplete: true,
-          segments: finishStreamingTextSegments(
-            finishThinkingSegments(message.segments)
-          )
-        }));
+        this.#updateUiMessage(this.#uiActiveMsgId, (message) =>
+          settleIncompleteTranscriptMessage(
+            {
+              ...message,
+              segments: finishStreamingTextSegments(
+                finishThinkingSegments(message.segments)
+              )
+            },
+            { reason: result?.aborted ? 'aborted' : 'completed' },
+          ),
+        );
       }
       this.#uiActiveMsgId = null;
       this.#uiPlanStepIds = new Map();
@@ -1081,6 +1194,7 @@ export class RuntimeBridge {
       return { accepted: false, error: true, code: 'BUSY', message: 'A request is already in progress' };
     }
     this.#ensureUiTranscriptLoaded();
+    this.#resetActiveAssistantTarget();
     const selectedSkills = [...new Set(
       (Array.isArray(selectedSkillNames) ? selectedSkillNames : [])
         .map((name) => String(name || '').trim())
@@ -1108,20 +1222,22 @@ export class RuntimeBridge {
     const operationId = `chat-${Date.now()}-${++this.#operationSequence}`;
     this.#activeStructuredOperationId = operationId;
     const onAgentEvent = (event) => {
-      if (!this.#isSubmitActive(submitToken)) return;
-      const messageId = this.#recordUiEvent(event);
-      this.#publish(messageId ? { ...event, messageId } : event);
+      this.#forwardRuntimeEvent(event, submitToken);
     };
     Promise.resolve().then(() => run(onAgentEvent)).then((result) => {
       if (!this.#isSubmitActive(submitToken)) return;
       if (this.#uiActiveMsgId) {
-        this.#updateUiMessage(this.#uiActiveMsgId, (message) => ({
-          ...message,
-          isComplete: true,
-          segments: finishStreamingTextSegments(
-            finishThinkingSegments(message.segments)
-          )
-        }));
+        this.#updateUiMessage(this.#uiActiveMsgId, (message) =>
+          settleIncompleteTranscriptMessage(
+            {
+              ...message,
+              segments: finishStreamingTextSegments(
+                finishThinkingSegments(message.segments)
+              )
+            },
+            { reason: result?.aborted || result?.type === 'aborted' ? 'aborted' : 'completed' },
+          ),
+        );
       }
       this.#uiActiveMsgId = null;
       this.#uiPlanStepIds = new Map();
@@ -1333,24 +1449,28 @@ export class RuntimeBridge {
     return this.#busy;
   }
 
-  async handleAbort() {
-    const retryPrompt = this.#activeSubmitLine;
+  async handleAbort(options = {}) {
     const wasBusy = this.#busy;
+    const originSessionId = this.#sessionId;
     const operationId = this.#activeStructuredOperationId;
     this.#activeStructuredOperationId = null;
     this.#userInput.resolveAll({ status: 'skipped', answers: {} });
     this.#approval.resolveAll({ approved: false, reason: 'aborted' });
     if (wasBusy) this.#invalidateSubmit();
-    const abortToken = this.#submitToken;
-    const aborted = this.#runtime.abort();
-    if (wasBusy && !aborted) {
+    const aborted = this.#runtime.abort(options);
+    if (wasBusy) {
+      this.#settleIncompleteUiMessages('aborted');
+      this.#resetActiveAssistantTarget();
       if (!this.#runStatusRecorded) {
-        const text = 'Aborted: Request released.';
-        await this.#recordRunStatus(text, { status: 'aborted', retryPrompt });
-        this.#broadcast({
+        this.#publish({
           type: 'submit:done',
+          sessionId: originSessionId,
           ...(operationId ? { operationId } : {}),
-          result: { type: 'aborted', aborted: true, text: 'Request released.' }
+          result: {
+            type: 'aborted',
+            aborted: true,
+            text: aborted ? 'Request aborted.' : 'Request released.'
+          }
         });
       }
       this.#busy = false;
@@ -1358,22 +1478,6 @@ export class RuntimeBridge {
       this.#activeSubmitLine = '';
       this.#publishLifecycle('aborted');
       this.#broadcastRuntimeState();
-    } else if (wasBusy && aborted) {
-      if (!this.#runStatusRecorded) {
-        const text = 'Aborted: Request aborted.';
-        await this.#recordRunStatus(text, { status: 'aborted', retryPrompt });
-        this.#broadcast({
-          type: 'submit:done',
-          ...(operationId ? { operationId } : {}),
-          result: { type: 'aborted', aborted: true, text: 'Request aborted.' }
-        });
-      }
-      this.#publishLifecycle('aborted');
-      setTimeout(async () => {
-        if (!this.#busy || !this.#isSubmitActive(abortToken)) return;
-        this.#busy = false;
-        this.#broadcastRuntimeState();
-      }, 5000);
     }
     return aborted;
   }
@@ -1501,16 +1605,10 @@ export class RuntimeBridge {
   }
 
   getState() {
-    const state = this.#runtime.getRuntimeState();
-    const serializableState = typeof state?.toJSON === 'function' ? state.toJSON() : state;
+    const prompt = this.#runtime.getLastSystemPrompt?.();
     return {
-      ...serializableState,
-      busy: this.#busy,
-      requestInFlight: this.#busy,
-      codeWikiGenerating: this.#codeWikiGenerating,
-      pendingReflectSkill: serializableState.pendingReflectSkill,
-      pendingSpecApproval: serializableState.pendingSpecApproval,
-      pendingUserInput: this.#userInput.current
+      ...this.#buildRuntimeStatePayload(),
+      lastSystemPrompt: typeof prompt === 'string' ? prompt : ''
     };
   }
 

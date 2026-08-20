@@ -5,12 +5,15 @@ import { normalizePlanState } from './plan-state.js';
 import { normalizeSpecState } from './spec-state.js';
 import { normalizeTodos } from './todo-state.js';
 import { ensureSessionTitleEmoji } from './session-title.js';
+import { sanitizeTiming } from './usage-timing.js';
 import {
   deleteSessionFromSqlite,
   listSessionsFromSqlite,
   loadSessionFromSqlite,
   pruneSessionsFromSqlite,
-  saveSessionToSqlite
+  rememberSessionMessageRefs,
+  saveSessionToSqlite,
+  sessionMessageWriteStart
 } from './session-sqlite-store.js';
 
 const ALLOWED_ROLES = new Set(['system', 'user', 'assistant', 'tool']);
@@ -21,6 +24,7 @@ const SESSION_INDEX_VERSION = 1;
 const DEFAULT_SESSION_TITLE = '新会话';
 const SESSION_INDEX_WRITE_RETRY_MS = [25, 75, 150];
 let sessionIndexWriteChain = Promise.resolve();
+let legacyImportDone = false;
 
 function isRetryableWindowsRenameError(error) {
   const code = String(error?.code || '').toUpperCase();
@@ -107,6 +111,8 @@ function sanitizeUsage(usage) {
   } else if (usage.raw && typeof usage.raw === 'object') {
     out.raw = [{ ...usage.raw }];
   }
+  const timing = sanitizeTiming(usage.timing);
+  if (timing) out.timing = timing;
   return Object.keys(out).length ? out : null;
 }
 
@@ -347,6 +353,10 @@ function sanitizeSession(session, fallbackId = '') {
     if (typeof session?.compact?.mode === 'string' && session.compact.mode.trim()) {
       out.compact.mode = session.compact.mode.trim();
     }
+  }
+
+  if (typeof session?.lastSystemPrompt === 'string' && session.lastSystemPrompt) {
+    out.lastSystemPrompt = session.lastSystemPrompt;
   }
 
   return out;
@@ -627,7 +637,23 @@ async function archiveMigratedSessionFiles(sessionId) {
   }
 }
 
+async function hasLegacySessionFiles() {
+  try {
+    const entries = await fs.readdir(getSessionsDir());
+    return entries.some((name) =>
+      name.endsWith(SESSION_JSONL_EXT) || name.endsWith(SESSION_LEGACY_EXT)
+    );
+  } catch {
+    return false;
+  }
+}
+
 async function importLegacySessions() {
+  if (legacyImportDone) {
+    // Cheap re-check: if a new legacy file appeared, drop the flag and rescan.
+    if (!await hasLegacySessionFiles()) return;
+    legacyImportDone = false;
+  }
   const files = await listSessionFiles();
   const imported = new Set();
   for (const file of files) {
@@ -642,6 +668,10 @@ async function importLegacySessions() {
       // Leave unreadable legacy files untouched for manual recovery.
     }
   }
+  // Nothing left to import: either the dir is empty or every found file was
+  // migrated+archived this scan. The cheap readdir re-check above protects us
+  // if a new legacy file shows up later.
+  if (files.length === 0 || imported.size === files.length) legacyImportDone = true;
 }
 
 export async function createSession(projectDir = process.cwd()) {
@@ -664,6 +694,34 @@ export async function createSession(projectDir = process.cwd()) {
   return payload;
 }
 
+function cloneSessionMessages(messages = []) {
+  return (Array.isArray(messages) ? messages : []).map((message) => ({ ...message }));
+}
+
+/** Copy completed history into a new session so a manual stop can continue without appending under the aborted turn. */
+export async function createContinuationSession(source, { messages = [], compactView = null } = {}) {
+  const created = await createSession(source?.projectDir);
+  created.messages = cloneSessionMessages(messages);
+  if (typeof source?.title === 'string' && source.title.trim()) created.title = source.title;
+  if (source?.model) created.model = source.model;
+  if (source?.mode) created.mode = source.mode;
+  if (Array.isArray(source?.todos) && source.todos.length) created.todos = source.todos;
+  if (source?.planState) created.planState = source.planState;
+  if (source?.specState) created.specState = source.specState;
+  if (typeof source?.lastSystemPrompt === 'string' && source.lastSystemPrompt) {
+    created.lastSystemPrompt = source.lastSystemPrompt;
+  }
+  if (Array.isArray(compactView) && compactView.length) {
+    created.compact = {
+      ...(source?.compact && typeof source.compact === 'object' ? source.compact : {}),
+      view: cloneSessionMessages(compactView),
+      timestamp: new Date().toISOString()
+    };
+  }
+  await saveSession(created);
+  return created;
+}
+
 export async function loadSession(sessionId) {
   const stored = loadSessionFromSqlite(sessionId);
   if (stored) return sanitizeSession(stored, sessionId);
@@ -674,9 +732,12 @@ export async function loadSession(sessionId) {
 }
 
 export async function saveSession(session, { preserveUpdatedAt = '' } = {}) {
+  const originals = Array.isArray(session?.messages) ? session.messages : [];
+  const writeFrom = sessionMessageWriteStart(session?.id, originals);
   const normalized = sanitizeSession(session);
   normalized.updatedAt = String(preserveUpdatedAt || '').trim() || new Date().toISOString();
-  saveSessionToSqlite(normalized);
+  saveSessionToSqlite(normalized, { writeFrom });
+  rememberSessionMessageRefs(session.id, originals);
 }
 
 export async function resolveSession(sessionId) {

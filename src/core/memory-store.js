@@ -370,18 +370,26 @@ export function rememberMemory(args = {}) {
 
 async function forgetMemoryUnlocked({ scope, id, workspaceRoot = process.cwd(), projectAlias = '' }) {
   const normalizedScope = ensureScope(scope);
+  if (normalizedScope === 'project') {
+    // Project memories live across all memory/project/*.json files. Remove
+    // the id from EACH file individually — never write the merged list back
+    // into project.json (that would duplicate every other file's items).
+    const files = await listProjectMemoryFiles(workspaceRoot);
+    let removed = 0;
+    for (const file of files) {
+      const bucket = await readMemoryBucketDocument(file);
+      const next = bucket.items.filter((item) => String(item?.id || '') !== id);
+      if (next.length !== bucket.items.length) {
+        await writeMemoryBucket(file, next, { maintenance: bucket.maintenance });
+        removed += bucket.items.length - next.length;
+      }
+    }
+    return { removed };
+  }
   const filePath = buildFilePath(normalizedScope, workspaceRoot, projectAlias);
   const existing = await listMemories({ scope: normalizedScope, workspaceRoot, projectAlias });
   const kept = existing.filter((item) => item.id !== id);
   await writeMemoryBucket(filePath, kept);
-  if (normalizedScope === 'project') {
-    const files = (await listProjectMemoryFiles(workspaceRoot)).filter((file) => file !== filePath);
-    await Promise.all(files.map(async (file) => {
-      const bucket = await readMemoryBucket(file);
-      const next = bucket.filter((item) => String(item?.id || '') !== id);
-      if (next.length !== bucket.length) await writeMemoryBucket(file, next);
-    }));
-  }
   return { removed: existing.length - kept.length };
 }
 

@@ -14,6 +14,11 @@ const CLIENT_NAME = 'codemini-cli';
 const CLIENT_VERSION = '0.8.4';
 const DEFAULT_TIMEOUT_MS = 30_000;
 const runtimeClients = new Map();
+// In-flight connection creations keyed by server id, so concurrent
+// getRuntimeConnection calls share one connection instead of spawning
+// duplicate stdio MCP servers (and orphaning one of them).
+const pendingConnections = new Map();
+let closeAllPromise = null;
 
 function stringRecord(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
@@ -153,10 +158,23 @@ async function getRuntimeConnection(serverInput) {
   const signature = serverSignature(server);
   const existing = runtimeClients.get(server.id);
   if (existing?.signature === signature) return existing;
-  if (existing) await existing.client.close().catch(() => {});
-  const connection = await createConnection(server);
-  runtimeClients.set(server.id, connection);
-  return connection;
+  // Another call is already creating a fresh connection for this server id:
+  // await it instead of racing (a second createConnection would spawn and
+  // then orphan a second stdio MCP server process).
+  const pending = pendingConnections.get(server.id);
+  if (pending) return pending;
+  const promise = (async () => {
+    if (existing) await existing.client.close().catch(() => {});
+    const connection = await createConnection(server);
+    runtimeClients.set(server.id, connection);
+    return connection;
+  })();
+  pendingConnections.set(server.id, promise);
+  try {
+    return await promise;
+  } finally {
+    if (pendingConnections.get(server.id) === promise) pendingConnections.delete(server.id);
+  }
 }
 
 export async function inspectMcpServer(serverInput) {
@@ -241,7 +259,49 @@ export function getMcpToolBundle(config = {}) {
 
 export async function closeMcpClient(serverId) {
   const id = String(serverId || '').trim();
+  // Wait for an in-flight creation to settle so we never orphan the stdio
+  // server process it is about to spawn, then close whatever it created.
+  const pending = pendingConnections.get(id);
+  if (pending) {
+    try {
+      await pending;
+    } catch {
+      // creation failed; nothing was registered
+    }
+    if (pendingConnections.get(id) === pending) pendingConnections.delete(id);
+  }
   const existing = runtimeClients.get(id);
   runtimeClients.delete(id);
   await existing?.client?.close().catch(() => {});
 }
+
+/**
+ * Best-effort close of every runtime MCP connection. Safe to call at shutdown
+ * (exit handlers below); in-session callers must not use this mid-turn because
+ * it tears down live connections. Runs at most once per process.
+ */
+export function closeAllMcpClients() {
+  if (closeAllPromise) return closeAllPromise;
+  const connections = [...runtimeClients.values()];
+  runtimeClients.clear();
+  pendingConnections.clear();
+  closeAllPromise = Promise.allSettled(
+    connections.map((connection) => connection.client.close().catch(() => {})),
+  ).then(() => undefined);
+  return closeAllPromise;
+}
+
+// Module-level safeguard: only act when the process is actually exiting, never
+// mid-session. 'beforeExit' lets the async close complete on natural exit;
+// 'exit' is the last chance fallback (fire-and-forget — the OS reaps the
+// stdio children's pipes regardless).
+process.on('beforeExit', () => {
+  void closeAllMcpClients().catch(() => {});
+});
+process.on('exit', () => {
+  try {
+    void closeAllMcpClients().catch(() => {});
+  } catch {
+    // never throw from an exit handler
+  }
+});

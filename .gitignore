@@ -1,5 +1,9 @@
 node_modules/
 .npm-cache/
+/bun.lock
+/bun.lockb
+/codemini-web/bun.lock
+/codemini-web/bun.lockb
 
 # Local runtime/state
 .env

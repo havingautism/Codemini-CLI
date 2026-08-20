@@ -5,6 +5,7 @@ import React, {
   memo,
   useCallback,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import { createRoot } from "react-dom/client";
@@ -17,14 +18,17 @@ import { ChatPanel } from "@/components/ChatPanel.jsx";
 import { InputBar } from "@/components/InputBar.jsx";
 import { StatusBar } from "@/components/StatusBar.jsx";
 import { ApprovalDialog } from "@/components/ApprovalDialog.jsx";
-import { UserInputDialog } from "@/components/UserInputDialog.jsx";
 import { ReflectApprovalDialog } from "@/components/ReflectApprovalDialog.jsx";
 import { DreamDialog } from "@/components/DreamDialog.jsx";
 import { SpecApprovalDialog } from "@/components/SpecApprovalDialog.jsx";
 import { RuntimeActivityStrip } from "@/components/RuntimeActivityStrip.jsx";
 import { SessionPanel } from "@/components/SessionPanel.jsx";
+import { TodoCard } from "@/components/TodoList.jsx";
+import { findLiveTodoDock } from "@/lib/live-todo-dock.js";
 import { interactiveRequestForSession } from "@/lib/session-ui-state.js";
 import { DotsThree, FolderSimple, GitDiff, List, SidebarSimple, Terminal } from "@phosphor-icons/react";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { TrajectoryPanel } from "@/components/TrajectoryPanel.jsx";
 import "../style.css";
 import "./apple-design.css";
 
@@ -191,8 +195,8 @@ class ErrorBoundary extends Component {
 function Shell() {
   const { state, actions } = useApp();
   const approvalRequest = interactiveRequestForSession(state, "approval");
-  const userInputRequest = interactiveRequestForSession(state, "userInput");
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  const [activateProject, setActivateProject] = useState({ dir: "", token: 0 });
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
     if (typeof window === "undefined") return false;
     try {
@@ -204,6 +208,12 @@ function Shell() {
   });
   const [sideRailOpen, setSideRailOpen] = useState(false);
   const [sideRailTab, setSideRailTab] = useState("files");
+  const [chatPageTab, setChatPageTab] = useState("conversation");
+  const prevSessionIdRef = useRef(state.currentSessionId);
+  if (prevSessionIdRef.current !== state.currentSessionId) {
+    prevSessionIdRef.current = state.currentSessionId;
+    setChatPageTab("conversation");
+  }
 
   const setSidebarCollapsedAndPersist = useCallback((collapsed) => {
     const value = !!collapsed;
@@ -259,24 +269,68 @@ function Shell() {
       ),
     [state.messages],
   );
+  const liveTodoDockRef = useRef(null);
+  const liveTodoDock = useMemo(
+    () =>
+      findLiveTodoDock(state.messages, {
+        busy: state.busy,
+        previous: liveTodoDockRef.current,
+      }),
+    [state.busy, state.messages],
+  );
+  liveTodoDockRef.current = liveTodoDock;
 
   const closeMobileSidebar = useCallback(() => {
     setMobileSidebarOpen(false);
   }, []);
+
+  const handleNewSession = useCallback(
+    async (...args) => {
+      closeMobileSidebar();
+      return actions.newSession(...args);
+    },
+    [actions, closeMobileSidebar],
+  );
+
+  const handleSwitchSession = useCallback(
+    async (...args) => {
+      closeMobileSidebar();
+      return actions.switchSession(...args);
+    },
+    [actions, closeMobileSidebar],
+  );
+
+  const handleOpenProject = useCallback(
+    async (path, options = {}) => {
+      closeMobileSidebar();
+      const openingGeneral =
+        path === "__codemini_general__" || !String(path || "").trim();
+      // Pin the sidebar group only after the server resolves the path, using
+      // the resolved cwd so relative/`~` inputs match session project keys.
+      // Pinning after success also avoids a stray empty group on failure.
+      const result = await actions.openProject(path, options);
+      if (!openingGeneral && result?.ok && result.cwd) {
+        setActivateProject((prev) => ({
+          dir: result.cwd,
+          token: prev.token + 1,
+        }));
+      }
+      return result;
+    },
+    [actions, closeMobileSidebar],
+  );
+
+  const handleCollapseSidebar = useCallback(() => {
+    setSidebarCollapsedAndPersist(true);
+  }, [setSidebarCollapsedAndPersist]);
 
   const sidebar = (
     <MemoSidebar
         sessions={state.sessions}
         sessionsLoading={state.sessionsLoading}
         currentSessionId={currentId}
-        onNewSession={async (...args) => {
-          closeMobileSidebar();
-          return actions.newSession(...args);
-        }}
-        onSwitchSession={async (...args) => {
-          closeMobileSidebar();
-          return actions.switchSession(...args);
-        }}
+        onNewSession={handleNewSession}
+        onSwitchSession={handleSwitchSession}
         onToggleTheme={actions.toggleTheme}
         onSetTheme={actions.setTheme}
         onOpenSettings={openSettings}
@@ -295,15 +349,16 @@ function Shell() {
         currentView={state.currentView}
         codewikiProjectPath={state.codewikiProjectPath}
         onSwitchView={actions.switchView}
-        onOpenProject={async (...args) => {
-          closeMobileSidebar();
-          return actions.openProject(...args);
-        }}
+        onOpenProject={handleOpenProject}
         onOpenProjectSelector={openProjectSelector}
         onRefreshSessions={actions.loadSessions}
         onRegenerateSessionTitle={actions.regenerateSessionTitle}
         onDeleteSession={actions.deleteSession}
-        onCollapseSidebar={() => setSidebarCollapsedAndPersist(true)}
+        onCollapseSidebar={handleCollapseSidebar}
+        currentProjectDir={state.runtimeState?.cwd || ""}
+        isGeneral={state.isGeneral}
+        activateProjectDir={activateProject.dir}
+        activateProjectToken={activateProject.token}
       />
   );
 
@@ -490,6 +545,20 @@ function Shell() {
                     )}
                   </button>
                 )}
+                <Tabs
+                  value={chatPageTab}
+                  onValueChange={setChatPageTab}
+                  className="min-w-0 shrink-0 gap-0"
+                >
+                  <TabsList variant="line" className="h-8 p-0">
+                    <TabsTrigger value="conversation" className="px-2 text-[13px]">
+                      {t("chatTabConversation")}
+                    </TabsTrigger>
+                    <TabsTrigger value="trajectory" className="px-2 text-[13px]">
+                      {t("trajectory")}
+                    </TabsTrigger>
+                  </TabsList>
+                </Tabs>
               </div>
               <div className="flex items-center gap-1 shrink-0">
                 <button
@@ -544,25 +613,46 @@ function Shell() {
             <div className="flex flex-1 min-h-0 min-w-0 overflow-hidden">
             <div className="codemini-chat-session flex flex-1 flex-col min-h-0 min-w-0 overflow-hidden">
             {/* Chat Panel */}
-            <ChatPanel
-              key={state.currentSessionId || "new-chat"}
-              messages={state.messages}
-              projectCwd={state.projectCwd}
-              skills={state.skills}
-              gitInfo={state.gitInfo}
-              projectIsGit={state.runtimeState?.projectIsGit === true}
-              messagesLoading={state.messagesLoading}
-              isGeneral={state.isGeneral}
-              targetMessageId={state.targetMessageId}
-              onTargetMessageHandled={actions.clearChatMessageTarget}
-              onRetryMessage={retryMessage}
-            />
+            {chatPageTab === "trajectory" ? (
+              <TrajectoryPanel
+                messages={state.messages}
+                runtimeState={state.runtimeState}
+                projectCwd={state.projectCwd}
+                isGeneral={state.isGeneral}
+                sessionId={currentId}
+              />
+            ) : (
+              <ChatPanel
+                key={state.currentSessionId || "new-chat"}
+                messages={state.messages}
+                projectCwd={state.projectCwd}
+                skills={state.skills}
+                gitInfo={state.gitInfo}
+                projectIsGit={state.runtimeState?.projectIsGit === true}
+                messagesLoading={state.messagesLoading}
+                isGeneral={state.isGeneral}
+                targetMessageId={state.targetMessageId}
+                dockedTodoMessageId={liveTodoDock?.messageId || ""}
+                busy={state.busy}
+                onTargetMessageHandled={actions.clearChatMessageTarget}
+                onRetryMessage={retryMessage}
+              />
+            )}
 
             {/* Plan Review / Input Area */}
             <div className="w-[calc(100%_-_32px)] max-w-[940px] sm:w-[calc(100%_-_48px)] mx-auto mb-2 sm:mb-3 shrink-0 z-30 bg-transparent relative">
               <RuntimeActivityStrip
                 activities={state.runtimeActivities}
               />
+              {liveTodoDock ? (
+                <div className="mb-2">
+                  <TodoCard
+                    variant="dock"
+                    todos={liveTodoDock.todos}
+                    persistKey={liveTodoDock.card?.id || liveTodoDock.messageId}
+                  />
+                </div>
+              ) : null}
               <ReflectApprovalDialog
                 open={state.reflectDialogOpen}
                 draft={state.pendingReflectApproval}
@@ -650,14 +740,6 @@ function Shell() {
         }
       />
 
-      <UserInputDialog
-        request={userInputRequest}
-        open={!!userInputRequest}
-        onRespond={(id, response) =>
-          actions.respondToUserInput(id, response, userInputRequest?.sessionId)
-        }
-      />
-
       <SpecApprovalDialog
         spec={state.pendingSpecApproval}
         open={!!state.pendingSpecApproval}
@@ -742,7 +824,7 @@ function Shell() {
           <ProjectSelector
             open={state.projectOpen}
             onOpenChange={actions.setProjectOpen}
-            onOpenProject={actions.openProject}
+            onOpenProject={handleOpenProject}
           />
         )}
       </Suspense>

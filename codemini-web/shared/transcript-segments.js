@@ -5,6 +5,7 @@ import {
 } from "./tool-segments.js";
 import { buildHookSegmentEvent } from "./hook-ui.js";
 import { formatToolLabel as coreFormatToolLabel } from "../../src/core/tool-display.js";
+import { mergeTiming, sanitizeTiming } from "../../src/core/usage-timing.js";
 
 const USAGE_KEYS = [
   "inputTokens",
@@ -24,6 +25,8 @@ export function normalizeUsage(usage) {
     const value = Number(usage?.[key]);
     if (Number.isFinite(value)) out[key] = Math.max(0, Math.round(value));
   }
+  const timing = sanitizeTiming(usage.timing);
+  if (timing) out.timing = timing;
   return Object.keys(out).length ? out : null;
 }
 
@@ -39,6 +42,8 @@ export function mergeUsage(current, incoming) {
       Math.round(Number(a[key] || 0) + Number(b[key] || 0)),
     );
   }
+  const timing = mergeTiming(a.timing, b.timing);
+  if (timing) out.timing = timing;
   return out;
 }
 
@@ -133,7 +138,9 @@ export function appendTextSegment(segments, delta, isStreaming = true) {
   if (!value) return Array.isArray(segments) ? segments : [];
   const current = Array.isArray(segments) ? segments : [];
   const now = new Date().toISOString();
-  const insertAt = indexBeforeTrailingCreatePlan(current);
+  const insertAtPlan = indexBeforeTrailingCreatePlan(current);
+  const insertAt =
+    insertAtPlan >= 0 ? insertAtPlan : indexBeforeTrailingUserInput(current);
   const before = insertAt >= 0 ? current.slice(0, insertAt) : current;
   const after = insertAt >= 0 ? current.slice(insertAt) : [];
   const last = before[before.length - 1];
@@ -263,6 +270,133 @@ export function finishStreamingTextSegments(segments) {
   );
 }
 
+const TERMINAL_TOOL_STATUSES = new Set([
+  "done",
+  "failed",
+  "error",
+  "blocked",
+  "aborted",
+  "completed",
+  "skipped",
+]);
+
+function isOpenWorkStatus(status) {
+  const value = String(status || "").toLowerCase();
+  return !value || !TERMINAL_TOOL_STATUSES.has(value);
+}
+
+function isPlanLikeToolCard(card) {
+  const name = String(card?.name || "").toLowerCase();
+  return name === "create_plan" || name === "run_subagent";
+}
+
+function settleOpenToolCard(card, { status, summary }) {
+  if (!card || typeof card !== "object") return card;
+  if (isPlanLikeToolCard(card) || !isOpenWorkStatus(card.status)) return card;
+  const endedAt = new Date().toISOString();
+  const durationMs = resolveThinkingDurationMs(
+    {
+      startedAt: card.startedAt,
+      endedAt,
+      durationMs: Number.isFinite(Number(card.durationMs))
+        ? Number(card.durationMs)
+        : undefined,
+    },
+    endedAt,
+  );
+  return {
+    ...card,
+    status,
+    summary: card.summary || summary,
+    isStreaming: false,
+    ...(Number.isFinite(durationMs) ? { durationMs } : {}),
+  };
+}
+
+function settleOpenWorkInSegments(segments, { status, summary } = {}) {
+  const endedAt = new Date().toISOString();
+  return (Array.isArray(segments) ? segments : []).map((seg) => {
+    if (!seg || typeof seg !== "object") return seg;
+    if (seg.type === "thinking") {
+      return {
+        ...seg,
+        isStreaming: false,
+        endedAt: seg.endedAt || endedAt,
+        durationMs: resolveThinkingDurationMs(seg, endedAt),
+      };
+    }
+    if (seg.type === "text") return { ...seg, isStreaming: false };
+    if (seg.type === "skill" || seg.type === "hook") {
+      if (!isOpenWorkStatus(seg.status)) return seg;
+      return { ...seg, status: status === "done" ? "done" : "error", isStreaming: false };
+    }
+    if (seg.type === "tools" && Array.isArray(seg.cards)) {
+      return {
+        ...seg,
+        cards: seg.cards.map((card) => settleOpenToolCard(card, { status, summary })),
+      };
+    }
+    if (seg.type === "process" && Array.isArray(seg.groups)) {
+      return {
+        ...seg,
+        groups: settleOpenWorkInSegments(seg.groups, { status, summary }),
+      };
+    }
+    return seg;
+  });
+}
+
+export function settleIncompleteTranscriptMessage(message, { reason = "aborted" } = {}) {
+  if (!message || typeof message !== "object") return message;
+  const status = reason === "completed" ? "done" : "error";
+  const summary =
+    reason === "aborted" ? "Aborted" : reason === "failed" ? "Failed" : "";
+  const skillBadges = Array.isArray(message.skillBadges)
+    ? message.skillBadges.map((badge) =>
+        isOpenWorkStatus(badge?.status)
+          ? { ...badge, status: status === "done" ? "done" : "error" }
+          : badge,
+      )
+    : message.skillBadges;
+  const planStep = message.planStep
+    ? {
+        ...message.planStep,
+        status: TERMINAL_TOOL_STATUSES.has(
+          String(message.planStep.status || "").toLowerCase(),
+        )
+          ? message.planStep.status
+          : reason === "completed"
+            ? "done"
+            : "failed",
+      }
+    : message.planStep;
+  return {
+    ...message,
+    isComplete: true,
+    loading: false,
+    ...(reason === "aborted" ? { manualAborted: true } : {}),
+    segments: settleOpenWorkInSegments(message.segments, { status, summary }),
+    skillBadges,
+    planStep,
+  };
+}
+
+export function repairSettledTranscriptMessages(messages = []) {
+  return (Array.isArray(messages) ? messages : []).map((message) => {
+    if (!message || typeof message !== "object") return message;
+    const settled =
+      message.manualAborted === true ||
+      message.isComplete === true ||
+      message.responseStatus === "aborted";
+    if (!settled) return message;
+    return settleIncompleteTranscriptMessage(message, {
+      reason: message.manualAborted || message.responseStatus === "aborted"
+        ? "aborted"
+        : "completed",
+    });
+  });
+}
+
 export function hasThinkingSegment(segments) {
   return (Array.isArray(segments) ? segments : []).some(
     (seg) => seg.type === "thinking" && String(seg.text || "").trim(),
@@ -339,8 +473,21 @@ function shouldParkPreambleBeforeCreatePlan(card) {
   return true;
 }
 
-/** Keep preamble text/thinking before a trailing create_plan tool card. */
-function indexBeforeTrailingCreatePlan(segments = []) {
+function isRequestUserInputToolCard(card) {
+  const name = String(card?.name || "")
+    .toLowerCase()
+    .replace(/\(.*$/, "");
+  return name === "request_user_input";
+}
+
+function shouldParkPreambleBeforeUserInput(card) {
+  if (!isRequestUserInputToolCard(card)) return false;
+  const status = String(card?.status || "").toLowerCase();
+  return status === "running" || status === "blocked";
+}
+
+/** Keep preamble text/thinking before a trailing pinned tool card. */
+function indexBeforeTrailingPinnedTool(segments = [], matchCard) {
   const current = Array.isArray(segments) ? segments : [];
   for (let index = current.length - 1; index >= 0; index -= 1) {
     const segment = current[index];
@@ -352,11 +499,18 @@ function indexBeforeTrailingCreatePlan(segments = []) {
       continue;
     }
     if (segment?.type !== "tools" || !Array.isArray(segment.cards)) break;
-    const planCard = segment.cards.find(isCreatePlanToolCard);
-    if (!planCard || !shouldParkPreambleBeforeCreatePlan(planCard)) break;
+    if (!segment.cards.some(matchCard)) break;
     return index;
   }
   return -1;
+}
+
+function indexBeforeTrailingCreatePlan(segments = []) {
+  return indexBeforeTrailingPinnedTool(segments, shouldParkPreambleBeforeCreatePlan);
+}
+
+function indexBeforeTrailingUserInput(segments = []) {
+  return indexBeforeTrailingPinnedTool(segments, shouldParkPreambleBeforeUserInput);
 }
 
 function buildToolCardFromEvent(event, options = {}) {
@@ -430,6 +584,36 @@ export function applyStreamEventToMessage(message, event, options = {}) {
         segments: appendThinkingSegment(message.segments, event.text, true),
       };
     }
+    case "step:start": {
+      const step = Math.max(1, Number(event.step) || 1);
+      const now = event.startedAt || new Date().toISOString();
+      return {
+        ...message,
+        isComplete: false,
+        segments: [
+          ...(Array.isArray(message.segments) ? message.segments : []),
+          { type: "loop", phase: "start", step, startedAt: now },
+        ],
+      };
+    }
+    case "step:end": {
+      const step = Math.max(1, Number(event.step) || 1);
+      const now = event.endedAt || new Date().toISOString();
+      return {
+        ...message,
+        segments: [
+          ...(Array.isArray(message.segments) ? message.segments : []),
+          {
+            type: "loop",
+            phase: "end",
+            step,
+            reason: event.reason || "",
+            durationMs: event.durationMs,
+            endedAt: now,
+          },
+        ],
+      };
+    }
     case "assistant:response": {
       const reasoningText = getReasoningTextFromAssistantMessage(
         event.assistantMessage,
@@ -483,7 +667,7 @@ export function applyStreamEventToMessage(message, event, options = {}) {
         : message.segments;
       return {
         ...message,
-        segments: String(toolCard.name || "").toLowerCase() === "update_todos"
+        segments: ["tasks", "update_todos"].includes(String(toolCard.name || "").toLowerCase())
           ? upsertSingletonToolCardInSegments(baseSegments, toolCard)
           : upsertToolCardInSegments(baseSegments, toolCard),
       };
@@ -668,6 +852,8 @@ export function isTranscriptStreamEvent(type) {
     value === "skill:error" ||
     value === "hook:start" ||
     value === "hook:end" ||
-    value === "hook:error"
+    value === "hook:error" ||
+    value === "step:start" ||
+    value === "step:end"
   );
 }

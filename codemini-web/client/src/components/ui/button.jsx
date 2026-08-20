@@ -14,7 +14,7 @@ const buttonVariants = variants(
         secondary: "bg-(--badge-bg) text-(--text-primary) shadow-[inset_0_0_0_1px_var(--badge-edge)] hover:bg-(--bg-hover)",
         ghost: "bg-(--badge-bg) text-(--text-secondary) shadow-[0_1px_2px_color-mix(in_srgb,black_5%,transparent)] hover:bg-(--bg-hover) hover:text-(--text-primary) hover:shadow-[0_1px_3px_color-mix(in_srgb,black_10%,transparent)] active:scale-[0.97]",
         // Circular dismiss / icon-close — matches Settings modal close button
-        close: "rounded-full border-0 bg-(--badge-bg) text-(--text-secondary) shadow-[0_1px_2px_color-mix(in_srgb,black_5%,transparent)] hover:bg-(--bg-active) hover:text-(--text-primary) hover:shadow-[0_1px_3px_color-mix(in_srgb,black_10%,transparent)] active:scale-95",
+        close: "rounded-full border-0 bg-(--badge-bg) text-(--text-secondary) shadow-[0_1px_2px_color-mix(in_srgb,black_5%,transparent)] hover:bg-(--bg-hover) hover:text-(--text-primary) hover:shadow-[0_1px_3px_color-mix(in_srgb,black_10%,transparent)] active:scale-95",
         link: "text-primary underline-offset-4 hover:underline",
       },
       size: {

@@ -2,8 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
+  buildPreviousTurnToolTrace,
   buildExecutionModePromptBlock,
   classifyAutoRoute,
+  classifyTaskDimensions,
 } from '../src/core/chat-runtime.js';
 
 const chatRuntimeSource = readFileSync(
@@ -30,6 +32,25 @@ test('classifyAutoRoute suggests direct for localized edits', () => {
   assert.equal('suggested' in route, false);
 });
 
+test('classifyTaskDimensions exposes routing axes instead of a single score', () => {
+  const discussion = classifyTaskDimensions('先讨论一下登录鉴权要怎么设计');
+  assert.equal(discussion.discussion, true);
+  assert.equal(discussion.implementation, true);
+
+  const typo = classifyTaskDimensions('Fix the typo in README.md');
+  assert.equal(typo.complexity, 'simple');
+  assert.equal(typo.localized, true);
+  assert.equal(typo.implementation, false);
+
+  const complex = classifyTaskDimensions(
+    'Add authentication workflow with session state, database migration, and API endpoint integration across multiple files'
+  );
+  assert.equal(complex.complexity, 'complex');
+  assert.equal(complex.multiFile, true);
+  assert.equal(complex.architecture, true);
+  assert.equal(complex.implementation, true);
+});
+
 test('coding prompt keeps subagent delegation bounded and parent-owned', () => {
   const prompt = buildExecutionModePromptBlock('coding');
   assert.match(prompt, /bounded, independently verifiable chunk/);
@@ -38,6 +59,16 @@ test('coding prompt keeps subagent delegation bounded and parent-owned', () => {
   assert.match(prompt, /Prefer delegation for non-trivial coding work/);
   assert.doesNotMatch(prompt, /Default: do the work yourself/);
   assert.doesNotMatch(prompt, /Do not call run_subagent for a simple localized edit/);
+});
+
+test('previous-turn trace stops at the latest user boundary', () => {
+  const trace = buildPreviousTurnToolTrace({ messages: [
+    { role: 'user', content: 'old task' },
+    { role: 'assistant', tool_calls: [{ function: { name: 'edit' } }, { function: { name: 'write' } }] },
+    { role: 'user', content: 'new unrelated task' },
+    { role: 'assistant', tool_calls: [{ function: { name: 'read' } }] },
+  ] });
+  assert.deepEqual(trace, { recentTools: ['read'], editCount: 0 });
 });
 
 test('coding prompt actively uses structured user input for material choices', () => {
@@ -69,4 +100,19 @@ test('coding prompt describes the platform-specific write tools', () => {
   const windowsPrompt = buildExecutionModePromptBlock('coding', 'win32');
   assert.match(windowsPrompt, /apply_patch/);
   assert.match(windowsPrompt, /begin_write/);
+});
+
+test('coding prompt can follow the effective sandbox command platform', () => {
+  const vmPrompt = buildExecutionModePromptBlock('coding', 'linux', 'bash');
+  assert.match(vmPrompt, /old_string\/new_string/);
+  assert.doesNotMatch(vmPrompt, /apply_patch|begin_write/);
+  assert.match(
+    chatRuntimeSource,
+    /resolveExecutionModeAllowedTools\([\s\S]*?executionShellContext\.commandPlatform/,
+  );
+});
+
+test('execution-mode injections stay compact', () => {
+  assert.ok(buildExecutionModePromptBlock('coding', 'win32').length < 3000);
+  assert.ok(buildExecutionModePromptBlock('normal', 'win32').length < 1500);
 });

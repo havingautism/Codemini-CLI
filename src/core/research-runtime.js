@@ -499,7 +499,19 @@ export async function runResearchLeadTurn({
   const controller = signal ? null : new AbortController();
   const runSignal = signal || controller.signal;
   const runId = randomUUID();
-  activeRuns.set(sessionId, { runId, controller: controller || { abort: () => {} }, phase: resolvedPhase });
+  // Refuse to overwrite an in-flight run: abortResearchRun would otherwise
+  // only be able to abort the newest controller, orphaning the older one.
+  const existingRun = activeRuns.get(sessionId);
+  if (
+    existingRun
+    && !existingRun.signal?.aborted
+    && !existingRun.controller?.signal?.aborted
+  ) {
+    throw new Error(
+      'Research run already in progress for this session — abort or wait for it to finish',
+    );
+  }
+  activeRuns.set(sessionId, { runId, controller: controller || { abort: () => {} }, signal: runSignal, phase: resolvedPhase });
 
   if (resolvedPhase === 'investigating') {
     try {

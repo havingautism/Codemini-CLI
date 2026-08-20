@@ -6,6 +6,11 @@ const GRAPH_SCHEMA_VERSION = 1;
 const DEFAULT_MAX_NODES = 80;
 const DEFAULT_TOKEN_BUDGET = 2400;
 
+// In-memory graph cache for queries, keyed by the stored graph_version: parsed
+// node/edge payloads are reused across loadGraph/queryProjectKnowledgeGraph calls
+// until a refresh persists a new version.
+const graphCache = new Map();
+
 function normalizePath(value = '') {
   return String(value || '').replace(/\\/g, '/').replace(/^\.\/+/, '');
 }
@@ -46,6 +51,145 @@ function resolveImport(sourceFile, specifier, fileSet) {
   return candidates.find((candidate) => fileSet.has(candidate)) || '';
 }
 
+// Populate the shared short-name symbol index for one file entry. Called for ALL
+// files before any call-edge derivation so resolution sees the complete project.
+function indexSymbols(entry, symbolsByShortName) {
+  const file = normalizePath(entry.file);
+  for (const symbol of entry.symbols || []) {
+    const shortName = String(symbol.name || '').split('.').pop();
+    if (!shortName) continue;
+    if (!symbolsByShortName.has(shortName)) symbolsByShortName.set(shortName, []);
+    symbolsByShortName.get(shortName).push({
+      id: nodeId('symbol', symbol.symbol_id || `${file}#${symbol.name}`),
+      file,
+      symbol
+    });
+  }
+}
+
+// Derive the nodes/edges attributable to a single file entry (module/file/interface/
+// symbol nodes, contains/handles/defines/imports/calls edges) into the shared
+// Maps. Used by both the full build and the incremental refresh path.
+function deriveFileSubgraph(entry, { fileSet, symbolsByShortName, addNode, addEdge, version }) {
+  const file = normalizePath(entry.file);
+  const module = moduleName(file);
+  const moduleId = nodeId('module', module);
+  const fileId = nodeId('file', file);
+  const isTest = /(^|\/)(__tests__|tests?|specs?)(\/|$)|\.(test|spec)\.[^.]+$/i.test(file);
+  addNode({
+    id: moduleId,
+    type: 'module',
+    label: module,
+    file: '',
+    range: null,
+    summary: `Module containing project files under ${module}/`,
+    graph_version: version
+  });
+  addNode({
+    id: fileId,
+    type: isTest ? 'test' : 'file',
+    label: path.posix.basename(file),
+    file,
+    language: entry.language || '',
+    range: null,
+    summary: unique([
+      ...(entry.exports || []).slice(0, 4),
+      ...(entry.classes || []).slice(0, 2)
+    ]).length
+      ? `Exports ${unique([...(entry.exports || []), ...(entry.classes || [])]).slice(0, 6).join(', ')}`
+      : `${entry.language || 'source'} file`,
+    graph_version: version
+  });
+  addEdge({
+    source: moduleId,
+    target: fileId,
+    relation: 'contains',
+    confidence: 'EXTRACTED',
+    confidence_score: 1,
+    evidence: { file, range: null, resolver: 'directory-layout' }
+  });
+
+  for (const item of entry.interfaces || []) {
+    const displayName = item.method ? `${item.method} ${item.name}` : item.name;
+    const interfaceId = nodeId('interface', `${item.kind}:${displayName}`);
+    addNode({
+      id: interfaceId,
+      type: 'interface',
+      interface_kind: item.kind,
+      label: displayName,
+      file,
+      range: null,
+      summary: `${item.kind} interface ${displayName}`,
+      graph_version: version
+    });
+    addEdge({
+      source: fileId,
+      target: interfaceId,
+      relation: 'handles',
+      confidence: 'EXTRACTED',
+      confidence_score: 1,
+      evidence: { file, range: null, resolver: `${item.kind}-interface-extractor` }
+    });
+  }
+
+  for (const symbol of entry.symbols || []) {
+    const symbolId = nodeId('symbol', symbol.symbol_id || `${file}#${symbol.name}`);
+    const shortName = String(symbol.name || '').split('.').pop();
+    addNode({
+      id: symbolId,
+      type: symbol.type || 'symbol',
+      label: symbol.name || shortName || symbolId,
+      file,
+      range: symbol.range || null,
+      signature: symbol.signature || '',
+      summary: symbol.signature || `${symbol.type || 'symbol'} ${symbol.name || ''}`.trim(),
+      graph_version: version
+    });
+    addEdge({
+      source: fileId,
+      target: symbolId,
+      relation: 'defines',
+      confidence: 'EXTRACTED',
+      confidence_score: 1,
+      evidence: { file, range: symbol.range || null, resolver: 'project-index-symbol' }
+    });
+  }
+
+  for (const specifier of entry.imports || []) {
+    const targetFile = resolveImport(file, specifier, fileSet);
+    if (!targetFile) continue;
+    addEdge({
+      source: fileId,
+      target: nodeId('file', targetFile),
+      relation: 'imports',
+      confidence: 'EXTRACTED',
+      confidence_score: 1,
+      evidence: { file, range: null, resolver: 'relative-import' }
+    });
+  }
+
+  for (const symbol of entry.symbols || []) {
+    const sourceId = nodeId('symbol', symbol.symbol_id || `${file}#${symbol.name}`);
+    for (const rawCall of symbol.calls || []) {
+      const shortName = String(rawCall || '').split('.').pop();
+      const targets = (symbolsByShortName.get(shortName) || []).filter((target) => target.id !== sourceId);
+      if (targets.length === 0) continue;
+      const confidence = targets.length === 1 ? 'INFERRED' : 'AMBIGUOUS';
+      const score = targets.length === 1 ? 0.85 : 0.4;
+      for (const target of targets.slice(0, confidence === 'AMBIGUOUS' ? 4 : 1)) {
+        addEdge({
+          source: sourceId,
+          target: target.id,
+          relation: 'calls',
+          confidence,
+          confidence_score: score,
+          evidence: { file, range: symbol.range || null, resolver: 'short-name-call-resolution', expression: rawCall }
+        });
+      }
+    }
+  }
+}
+
 function buildGraph(projectMap = {}, fileIndex = {}) {
   const version = graphVersion(fileIndex);
   const files = Array.isArray(fileIndex.files) ? fileIndex.files : [];
@@ -65,131 +209,11 @@ function buildGraph(projectMap = {}, fileIndex = {}) {
     if (!edges.has(id)) edges.set(id, { ...edge, id, graph_version: version });
   };
 
+  // Index every symbol first so call resolution sees the complete project
+  // regardless of file iteration order.
+  for (const entry of files) indexSymbols(entry, symbolsByShortName);
   for (const entry of files) {
-    const file = normalizePath(entry.file);
-    const module = moduleName(file);
-    const moduleId = nodeId('module', module);
-    const fileId = nodeId('file', file);
-    const isTest = /(^|\/)(__tests__|tests?|specs?)(\/|$)|\.(test|spec)\.[^.]+$/i.test(file);
-    addNode({
-      id: moduleId,
-      type: 'module',
-      label: module,
-      file: '',
-      range: null,
-      summary: `Module containing project files under ${module}/`,
-      graph_version: version
-    });
-    addNode({
-      id: fileId,
-      type: isTest ? 'test' : 'file',
-      label: path.posix.basename(file),
-      file,
-      language: entry.language || '',
-      range: null,
-      summary: unique([
-        ...(entry.exports || []).slice(0, 4),
-        ...(entry.classes || []).slice(0, 2)
-      ]).length
-        ? `Exports ${unique([...(entry.exports || []), ...(entry.classes || [])]).slice(0, 6).join(', ')}`
-        : `${entry.language || 'source'} file`,
-      graph_version: version
-    });
-    addEdge({
-      source: moduleId,
-      target: fileId,
-      relation: 'contains',
-      confidence: 'EXTRACTED',
-      confidence_score: 1,
-      evidence: { file, range: null, resolver: 'directory-layout' }
-    });
-
-    for (const item of entry.interfaces || []) {
-      const displayName = item.method ? `${item.method} ${item.name}` : item.name;
-      const interfaceId = nodeId('interface', `${item.kind}:${displayName}`);
-      addNode({
-        id: interfaceId,
-        type: 'interface',
-        interface_kind: item.kind,
-        label: displayName,
-        file,
-        range: null,
-        summary: `${item.kind} interface ${displayName}`,
-        graph_version: version
-      });
-      addEdge({
-        source: fileId,
-        target: interfaceId,
-        relation: 'handles',
-        confidence: 'EXTRACTED',
-        confidence_score: 1,
-        evidence: { file, range: null, resolver: `${item.kind}-interface-extractor` }
-      });
-    }
-
-    for (const symbol of entry.symbols || []) {
-      const symbolId = nodeId('symbol', symbol.symbol_id || `${file}#${symbol.name}`);
-      const shortName = String(symbol.name || '').split('.').pop();
-      addNode({
-        id: symbolId,
-        type: symbol.type || 'symbol',
-        label: symbol.name || shortName || symbolId,
-        file,
-        range: symbol.range || null,
-        signature: symbol.signature || '',
-        summary: symbol.signature || `${symbol.type || 'symbol'} ${symbol.name || ''}`.trim(),
-        graph_version: version
-      });
-      addEdge({
-        source: fileId,
-        target: symbolId,
-        relation: 'defines',
-        confidence: 'EXTRACTED',
-        confidence_score: 1,
-        evidence: { file, range: symbol.range || null, resolver: 'project-index-symbol' }
-      });
-      if (shortName) {
-        if (!symbolsByShortName.has(shortName)) symbolsByShortName.set(shortName, []);
-        symbolsByShortName.get(shortName).push({ id: symbolId, file, symbol });
-      }
-    }
-  }
-
-  for (const entry of files) {
-    const file = normalizePath(entry.file);
-    const fileId = nodeId('file', file);
-    for (const specifier of entry.imports || []) {
-      const targetFile = resolveImport(file, specifier, fileSet);
-      if (!targetFile) continue;
-      addEdge({
-        source: fileId,
-        target: nodeId('file', targetFile),
-        relation: 'imports',
-        confidence: 'EXTRACTED',
-        confidence_score: 1,
-        evidence: { file, range: null, resolver: 'relative-import' }
-      });
-    }
-    for (const symbol of entry.symbols || []) {
-      const sourceId = nodeId('symbol', symbol.symbol_id || `${file}#${symbol.name}`);
-      for (const rawCall of symbol.calls || []) {
-        const shortName = String(rawCall || '').split('.').pop();
-        const targets = (symbolsByShortName.get(shortName) || []).filter((target) => target.id !== sourceId);
-        if (targets.length === 0) continue;
-        const confidence = targets.length === 1 ? 'INFERRED' : 'AMBIGUOUS';
-        const score = targets.length === 1 ? 0.85 : 0.4;
-        for (const target of targets.slice(0, confidence === 'AMBIGUOUS' ? 4 : 1)) {
-          addEdge({
-            source: sourceId,
-            target: target.id,
-            relation: 'calls',
-            confidence,
-            confidence_score: score,
-            evidence: { file, range: symbol.range || null, resolver: 'short-name-call-resolution', expression: rawCall }
-          });
-        }
-      }
-    }
+    deriveFileSubgraph(entry, { fileSet, symbolsByShortName, addNode, addEdge, version });
   }
 
   const testFiles = files.filter((entry) => /(^|\/)(__tests__|tests?|specs?)(\/|$)|\.(test|spec)\.[^.]+$/i.test(entry.file));
@@ -254,23 +278,168 @@ function persistGraph(projectRoot, graph) {
       edges: graph.edges.length
     }));
   });
+  graphCache.delete(graph.graph_version);
 }
 
-export function refreshProjectKnowledgeGraph(projectRoot, { projectMap = {}, fileIndex = {} } = {}) {
-  const graph = buildGraph(projectMap, fileIndex);
+// Incremental rebuild: derive and persist only the changed files' subgraph while
+// keeping every unchanged file's rows. Falls back to the full rebuild on error.
+function incrementalRefresh(projectRoot, { fileIndex, changedFiles, version }) {
+  const db = getProjectDatabase(projectRoot);
+  const files = Array.isArray(fileIndex.files) ? fileIndex.files : [];
+  const fileSet = new Set(files.map((entry) => normalizePath(entry.file)));
+  const symbolsByShortName = new Map();
+  const nodes = new Map();
+  const edges = new Map();
+
+  const addNode = (node) => {
+    if (!node?.id) return;
+    const current = nodes.get(node.id);
+    nodes.set(node.id, current ? { ...current, ...node } : node);
+  };
+  const addEdge = (edge) => {
+    if (!edge?.source || !edge?.target || edge.source === edge.target) return;
+    const id = edge.id || `${edge.source}->${edge.target}:${edge.relation}`;
+    if (!edges.has(id)) edges.set(id, { ...edge, id, graph_version: version });
+  };
+
+  // Full-project indexes: call targets and relative-import resolution must see
+  // every file, while only the changed files' subgraphs are re-derived.
+  for (const entry of files) indexSymbols(entry, symbolsByShortName);
+
+  const changedPaths = new Set([...changedFiles].map(normalizePath));
+  const changedEntries = files.filter((entry) => changedPaths.has(normalizePath(entry.file)));
+  for (const entry of changedEntries) {
+    deriveFileSubgraph(entry, { fileSet, symbolsByShortName, addNode, addEdge, version });
+  }
+
+  // tested_by edges (source file -> test file) are NOT part of deriveFileSubgraph.
+  // The deletes below cascade away every tested_by edge whose source file node or
+  // whose test file was changed, so re-derive them for the affected test files:
+  // the changed test files themselves, plus any test file whose tested source
+  // files changed (their edges were cascade-deleted with the source nodes).
+  const affectedStems = new Set();
+  for (const entry of changedEntries) {
+    const file = normalizePath(entry.file);
+    if (/(^|\/)(__tests__|tests?|specs?)(\/|$)|\.(test|spec)\.[^.]+$/i.test(file)) {
+      affectedStems.add(path.posix.basename(file).replace(/\.(test|spec)?\.[^.]+$/i, '').toLowerCase());
+    }
+    const stem = path.posix.basename(file).replace(/\.[^.]+$/, '').toLowerCase();
+    if (stem) affectedStems.add(stem);
+  }
+  for (const testEntry of files) {
+    const testFile = normalizePath(testEntry.file);
+    if (!/(^|\/)(__tests__|tests?|specs?)(\/|$)|\.(test|spec)\.[^.]+$/i.test(testFile)) continue;
+    const testStem = path.posix.basename(testFile).replace(/\.(test|spec)?\.[^.]+$/i, '').toLowerCase();
+    if (!testStem || (!changedPaths.has(testFile) && !affectedStems.has(testStem))) continue;
+    for (const entry of files) {
+      const file = normalizePath(entry.file);
+      if (file === testFile) continue;
+      const stem = path.posix.basename(file).replace(/\.[^.]+$/, '').toLowerCase();
+      if (stem !== testStem) continue;
+      addEdge({
+        source: nodeId('file', file),
+        target: nodeId('file', testFile),
+        relation: 'tested_by',
+        confidence: 'INFERRED',
+        confidence_score: 0.85,
+        evidence: { file: testFile, range: null, resolver: 'test-file-name' }
+      });
+    }
+  }
+
+  return transaction(db, () => {
+    const changedArgs = [...changedPaths];
+    const placeholders = changedArgs.map(() => '?').join(',');
+    // Drop the changed files' old rows; edges pointing at their nodes cascade via
+    // the FK, and re-derivation below recreates the changed files' subgraph.
+    db.prepare(`DELETE FROM knowledge_graph_nodes WHERE file IN (${placeholders})`).run(...changedArgs);
+    db.prepare(
+      `DELETE FROM knowledge_graph_edges WHERE source_file IN (${placeholders}) OR target IN (SELECT id FROM knowledge_graph_nodes WHERE file IN (${placeholders}))`
+    ).run(...changedArgs, ...changedArgs);
+
+    // Shared nodes (e.g. module nodes covering unchanged files too) may already
+    // exist, so upsert rather than plain-insert; ON CONFLICT DO UPDATE avoids the
+    // FK cascade that INSERT OR REPLACE would trigger.
+    const putNode = db.prepare(`
+      INSERT INTO knowledge_graph_nodes(id, type, label, file, graph_version, payload_json)
+      VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        type = excluded.type, label = excluded.label, file = excluded.file,
+        graph_version = excluded.graph_version, payload_json = excluded.payload_json
+    `);
+    const putEdge = db.prepare(`
+      INSERT INTO knowledge_graph_edges(id, source, target, relation, confidence, source_file, graph_version, payload_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        source = excluded.source, target = excluded.target, relation = excluded.relation,
+        confidence = excluded.confidence, source_file = excluded.source_file,
+        graph_version = excluded.graph_version, payload_json = excluded.payload_json
+    `);
+    for (const node of nodes.values()) {
+      putNode.run(node.id, node.type, node.label || '', node.file || '', node.graph_version, JSON.stringify(node));
+    }
+    for (const edge of edges.values()) {
+      putEdge.run(
+        edge.id, edge.source, edge.target, edge.relation, edge.confidence || 'AMBIGUOUS',
+        edge.evidence?.file || '', edge.graph_version, JSON.stringify(edge)
+      );
+    }
+
+    const nodeCount = Number(db.prepare('SELECT COUNT(*) AS count FROM knowledge_graph_nodes').get().count || 0);
+    const edgeCount = Number(db.prepare('SELECT COUNT(*) AS count FROM knowledge_graph_edges').get().count || 0);
+    const builtAt = new Date().toISOString();
+    db.prepare(`
+      INSERT INTO project_metadata(key, payload_json) VALUES ('knowledge_graph', ?)
+      ON CONFLICT(key) DO UPDATE SET payload_json = excluded.payload_json
+    `).run(JSON.stringify({
+      schema_version: GRAPH_SCHEMA_VERSION,
+      graph_version: version,
+      built_at: builtAt,
+      nodes: nodeCount,
+      edges: edgeCount
+    }));
+    graphCache.delete(version);
+
+    return {
+      graph_version: version,
+      built_at: builtAt,
+      nodes: nodeCount,
+      edges: edgeCount
+    };
+  });
+}
+
+export function refreshProjectKnowledgeGraph(projectRoot, { projectMap = {}, fileIndex = {}, changedFiles = null } = {}) {
   const db = getProjectDatabase(projectRoot);
   const current = JSON.parse(
     db.prepare("SELECT payload_json FROM project_metadata WHERE key = 'knowledge_graph'").get()?.payload_json || '{}'
   );
-  if (current.graph_version === graph.graph_version) {
+  const version = graphVersion(fileIndex);
+  // Short-circuit before buildGraph: graphVersion hashing is cheap, buildGraph is
+  // the expensive part. The stored graph is already up to date.
+  if (current.graph_version === version) {
     return {
       graph_version: current.graph_version,
-      built_at: current.built_at || graph.built_at,
-      nodes: Number(current.nodes || graph.nodes.length),
-      edges: Number(current.edges || graph.edges.length),
+      built_at: current.built_at || new Date().toISOString(),
+      nodes: Number(current.nodes || 0),
+      edges: Number(current.edges || 0),
       unchanged: true
     };
   }
+  // The version changed: any cached graph for the old (or new) version is stale.
+  graphCache.delete(current.graph_version);
+  graphCache.delete(version);
+
+  const canIncrement = changedFiles instanceof Set && changedFiles.size > 0 && Boolean(current.graph_version);
+  if (canIncrement) {
+    try {
+      return incrementalRefresh(projectRoot, { fileIndex, changedFiles, version });
+    } catch {
+      // Fall back to the full rebuild on any error so correctness is never lost.
+    }
+  }
+
+  const graph = buildGraph(projectMap, fileIndex);
   persistGraph(projectRoot, graph);
   return {
     graph_version: graph.graph_version,
@@ -285,10 +454,16 @@ function loadGraph(projectRoot) {
   const metadata = JSON.parse(
     db.prepare("SELECT payload_json FROM project_metadata WHERE key = 'knowledge_graph'").get()?.payload_json || '{}'
   );
+  const version = metadata.graph_version;
+  const cached = version ? graphCache.get(version) : undefined;
+  if (cached) {
+    return { ...metadata, nodes: cached.nodes, edges: cached.edges };
+  }
   const nodes = db.prepare('SELECT payload_json FROM knowledge_graph_nodes ORDER BY id').all()
     .map((row) => JSON.parse(row.payload_json));
   const edges = db.prepare('SELECT payload_json FROM knowledge_graph_edges ORDER BY id').all()
     .map((row) => JSON.parse(row.payload_json));
+  if (version) graphCache.set(version, { nodes, edges });
   return { ...metadata, nodes, edges };
 }
 

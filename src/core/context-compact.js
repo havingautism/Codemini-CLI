@@ -86,7 +86,7 @@ function summarizeToolResultText(text, options = {}) {
   if (parsed && typeof parsed === 'object') {
     return summarizeObjectToolResult(parsed, { maxSummaryChars, summaryTailChars });
   }
-  // Plain-text tool results (e.g. update_todos, read_plan, update_plan) are
+  // Plain-text tool results (e.g. tasks, read_plan, update_plan) are
   // already structured summaries. Preserve newlines so the model can still
   // read the structure; only clip by length.
   if (raw.length <= maxSummaryChars) return raw;
@@ -511,7 +511,7 @@ export function applyAggressiveToolPruneBeta(messages, config = {}) {
     replaceWith: 'summary',
     maxSummaryChars: summaryHeadChars + summaryTailChars,
     summaryTailChars,
-    protectedToolNames: ['skill', 'update_todos'],
+    protectedToolNames: ['skill', 'tasks'],
     triggerExtra,
     groupByStep: true
   });

@@ -12,6 +12,7 @@ import {
   ArrowUp,
   Camera,
   CaretDown,
+  CaretUp,
   CircleNotch,
   FileText,
   Hammer,
@@ -785,8 +786,11 @@ export function InputBar({
   const textareaRef = useRef(null);
   const fileInputRef = useRef(null);
   const actionSubmissionRef = useRef(false);
+  const imeComposingRef = useRef(false);
 
   const rs = runtimeState || {};
+  const pendingQueueItems =
+    state?.pendingQueues?.[state?.currentSessionId] || [];
   const mode = rs.mode || "normal";
   const approvalMode = rs.approvalMode || "auto";
   const approvalUiEnabled = rs.approvalUiEnabled !== false;
@@ -834,6 +838,9 @@ export function InputBar({
     [selectedSkills],
   );
   const inputLocked = busy || disabled || uploadingAttachments;
+  // While a turn is running the composer stays unlocked so new prompts can be
+  // queued; only hard blockers lock it.
+  const composerLocked = disabled || uploadingAttachments;
   const isGeneralChat = projectCwd === "__codemini_general__";
 
   useEffect(() => {
@@ -864,63 +871,85 @@ export function InputBar({
     setPaletteOpen(false);
   }, [inputLocked, actionSubmitting]);
 
-  const submitCurrent = useCallback(async () => {
-    const val = value.trim();
-    const hasText = val.length > 0;
-    const hasAttachments = attachments.length > 0;
-    const hasScrapbookContext = Boolean(scrapbookContext);
-    const hasSkills = selectedSkills.length > 0;
-    if (
-      (!hasText && !hasAttachments && !hasScrapbookContext && !hasSkills) ||
-      inputLocked
-    )
-      return;
+  const submitCurrent = useCallback(
+    async (priority = false) => {
+      const val = value.trim();
+      const hasText = val.length > 0;
+      const hasAttachments = attachments.length > 0;
+      const hasScrapbookContext = Boolean(scrapbookContext);
+      const hasSkills = selectedSkills.length > 0;
+      if (
+        (!hasText && !hasAttachments && !hasScrapbookContext && !hasSkills) ||
+        composerLocked
+      )
+        return;
 
-    let fallbackText = val;
-    if (!hasText && (hasAttachments || hasScrapbookContext)) {
-      fallbackText = t("attachmentFallbackPrompt");
-    }
+      let fallbackText = val;
+      if (!hasText && (hasAttachments || hasScrapbookContext)) {
+        fallbackText = t("attachmentFallbackPrompt");
+      }
 
-    const dismissedSkills = [...dismissedDefaultSkills];
-    try {
-      await onSubmit({
-        text: fallbackText,
-        skillNames: selectedSkillNames,
-        attachmentIds: attachments.map((item) => item.id).filter(Boolean),
-        attachments: scrapbookContext
-          ? [...attachments, scrapbookContext.attachment]
-          : attachments,
-        dismissedAlwaysSkills: dismissedSkills,
-        ...(scrapbookContext?.modelText
-          ? { modelText: scrapbookContext.modelText }
-          : {}),
-      });
-    } catch {
-      return;
-    }
-    setValue("");
-    setAttachments([]);
-    setScrapbookContext(null);
-    setSelectedSkills([]);
-    setDismissedDefaultSkills(new Set());
-    setAttachmentError("");
-    setPaletteOpen(false);
-    setHistoryIndex(-1);
-    if (textareaRef.current) textareaRef.current.style.height = "auto";
-  }, [
-    value,
-    attachments,
-    scrapbookContext,
-    selectedSkills,
-    selectedSkillNames,
-    dismissedDefaultSkills,
-    inputLocked,
-    onSubmit,
-  ]);
+      const dismissedSkills = [...dismissedDefaultSkills];
+      try {
+        await onSubmit(
+          {
+            text: fallbackText,
+            skillNames: selectedSkillNames,
+            attachmentIds: attachments.map((item) => item.id).filter(Boolean),
+            attachments: scrapbookContext
+              ? [...attachments, scrapbookContext.attachment]
+              : attachments,
+            dismissedAlwaysSkills: dismissedSkills,
+            ...(scrapbookContext?.modelText
+              ? { modelText: scrapbookContext.modelText }
+              : {}),
+          },
+          { priority },
+        );
+      } catch {
+        return;
+      }
+      setValue("");
+      setAttachments([]);
+      setScrapbookContext(null);
+      setSelectedSkills([]);
+      setDismissedDefaultSkills(new Set());
+      setAttachmentError("");
+      setPaletteOpen(false);
+      setHistoryIndex(-1);
+      if (textareaRef.current) textareaRef.current.style.height = "auto";
+    },
+    [
+      value,
+      attachments,
+      scrapbookContext,
+      selectedSkills,
+      selectedSkillNames,
+      dismissedDefaultSkills,
+      composerLocked,
+      onSubmit,
+    ],
+  );
 
   const handleKeyDown = useCallback(
     (e) => {
-      if (e.key === "Enter" && !e.shiftKey) {
+      // IME confirm (Enter / 229 Process) must not send or queue.
+      if (
+        imeComposingRef.current ||
+        e.isComposing ||
+        e.nativeEvent?.isComposing ||
+        e.key === "Process" ||
+        e.keyCode === 229
+      ) {
+        return;
+      }
+      if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+        if (composerLocked || actionParameter.activeAction) return;
+        e.preventDefault();
+        submitCurrent(false);
+        return;
+      }
+      if (e.key === "Enter" && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
         if (actionParameter.activeAction) {
           e.preventDefault();
           if (actionSubmissionRef.current) return;
@@ -988,6 +1017,7 @@ export function InputBar({
       paletteOpen,
       actionParameter,
       onAction,
+      composerLocked,
     ],
   );
 
@@ -1177,10 +1207,85 @@ export function InputBar({
       />
       <div
         className={cn(
-          "codemini-input-shell flex flex-col gap-2.5 px-2 py-2 sm:px-2.5",
+          "codemini-input-shell flex flex-col gap-2 px-2 py-2 sm:px-2.5",
           busy && "codemini-input-shell--busy",
         )}
       >
+        {pendingQueueItems.length > 0 && (
+          <div className="codemini-input-queue">
+            <div className="codemini-input-queue-meta">
+              <span>
+                {t("queuePendingHint")}
+                {pendingQueueItems.length > 1
+                  ? ` · ${t("queueMore").replace(
+                      "{{count}}",
+                      String(pendingQueueItems.length - 1),
+                    )}`
+                  : ""}
+              </span>
+            </div>
+            <div className="codemini-input-queue-list">
+              {pendingQueueItems.map((item, index) => {
+                const text =
+                  typeof item === "string" ? item : String(item?.text || "");
+                const isNext = index === 0;
+                return (
+                  <div
+                    key={`${index}-${text}`}
+                    className={cn(
+                      "codemini-input-queue-item",
+                      isNext && "codemini-input-queue-item--next",
+                    )}
+                    title={text}
+                  >
+                    <span className="codemini-input-queue-dot" aria-hidden="true" />
+                    <span className="min-w-0 flex-1 truncate">{text}</span>
+                    <div className="codemini-input-queue-actions">
+                      <button
+                        type="button"
+                        className="codemini-input-queue-action"
+                        title={t("queueMoveUp")}
+                        aria-label={t("queueMoveUp")}
+                        disabled={index === 0}
+                        onClick={() => actions.moveQueuedPrompt?.(index, -1)}
+                      >
+                        <CaretUp size={12} />
+                      </button>
+                      <button
+                        type="button"
+                        className="codemini-input-queue-action"
+                        title={t("queueMoveDown")}
+                        aria-label={t("queueMoveDown")}
+                        disabled={index === pendingQueueItems.length - 1}
+                        onClick={() => actions.moveQueuedPrompt?.(index, 1)}
+                      >
+                        <CaretDown size={12} />
+                      </button>
+                      <button
+                        type="button"
+                        className="codemini-input-queue-action"
+                        title={t("queueJumpTitle")}
+                        aria-label={t("queueJump")}
+                        onClick={() => actions.jumpQueuedPrompt?.(index)}
+                      >
+                        <ArrowUp size={12} />
+                      </button>
+                      <button
+                        type="button"
+                        className="codemini-input-queue-action"
+                        title={t("queueRemove")}
+                        aria-label={t("queueRemove")}
+                        onClick={() => actions.removeQueuedPrompt?.(index)}
+                      >
+                        <X size={12} />
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
         {(selectedSkills.length > 0 ||
           visibleDefaultSkillNames.length > 0 ||
           attachments.length > 0 ||
@@ -1312,16 +1417,27 @@ export function InputBar({
                 : handleInput
             }
             onKeyDown={handleKeyDown}
+            onCompositionStart={() => {
+              imeComposingRef.current = true;
+            }}
+            onCompositionEnd={() => {
+              // Chrome fires the confirming Enter after compositionend with
+              // isComposing=false; keep the guard until that keydown passes.
+              imeComposingRef.current = true;
+              window.setTimeout(() => {
+                imeComposingRef.current = false;
+              }, 0);
+            }}
             placeholder={
               actionParameter.activeAction === "capture"
                 ? "Capture summary (required; Esc to cancel)"
                 : busy
-                  ? t("inputDisabled")
+                  ? t("queueWhileBusy")
                   : disabled
                     ? disabledReason || t("inputDisabled")
                     : t("sendMessageToCodemini")
             }
-            disabled={inputLocked}
+            disabled={composerLocked}
             rows={1}
             className="flex-1 resize-none border-0 outline-none bg-transparent text-(--text-primary) min-h-[30px] max-h-[150px] p-1 leading-[1.5] text-[14px] placeholder:text-(--text-muted) disabled:opacity-50 disabled:cursor-not-allowed"
             style={{ height: "auto" }}
@@ -1433,8 +1549,8 @@ export function InputBar({
                               askBlocked
                                 ? "opacity-60"
                                 : scrapbookContext?.entryId === entry.id
-                                  ? "border-(--border-strong) bg-(--bg-subtle)"
-                                  : "border-transparent hover:bg-(--bg-subtle)/80",
+                                  ? "border-(--border-strong) bg-(--selected-bg)"
+                                  : "border-transparent hover:bg-(--bg-hover)",
                             )}
                           >
                             <button
@@ -1444,7 +1560,7 @@ export function InputBar({
                                 "flex min-w-0 flex-1 flex-col items-stretch gap-1.5 rounded-lg px-2 py-2 text-left",
                                 askBlocked
                                   ? "cursor-not-allowed"
-                                  : "hover:bg-(--bg-hover)/60",
+                                  : "hover:bg-(--bg-hover)",
                               )}
                               onClick={() => selectScrapbookEntry(entry.id)}
                             >
@@ -1487,7 +1603,7 @@ export function InputBar({
                       {hasMoreScrapbookEntries ? (
                         <button
                           type="button"
-                          className="shrink-0 rounded-xl px-3 py-2 text-[12px] text-(--text-secondary) transition-colors hover:bg-(--bg-subtle) hover:text-(--text-primary)"
+                          className="shrink-0 rounded-xl px-3 py-2 text-[12px] text-(--text-secondary) transition-colors hover:bg-(--bg-hover) hover:text-(--text-primary)"
                           onClick={() =>
                             setScrapbookVisibleCount(
                               (current) => current + SCRAPBOOK_PICKER_PAGE_SIZE,
@@ -1565,7 +1681,7 @@ export function InputBar({
                     ? "bg-(--text-primary) text-(--bg-primary) hover:opacity-85"
                     : "bg-(--text-muted)/25 text-(--text-muted) cursor-not-allowed",
                 )}
-                onClick={submitCurrent}
+                onClick={() => submitCurrent(false)}
                 disabled={
                   (!value.trim() &&
                     attachments.length === 0 &&

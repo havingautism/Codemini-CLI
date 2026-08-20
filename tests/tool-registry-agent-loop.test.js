@@ -136,6 +136,35 @@ test('agent loop bounds parallel tool bodies, preserves result order, and passes
   );
 });
 
+test('agent loop nudges a live task checklist after two tool batches without progress', async () => {
+  let requests = 0;
+  const result = await runAgentLoop({
+    systemPrompt: 'test',
+    userPrompt: 'inspect and fix',
+    model: 'test-model',
+    toolDefinitions: [definition('read')],
+    toolHandlers: { read: async () => ({ ok: true }) },
+    getTasks: () => [{ content: 'Inspect', status: 'in_progress' }],
+    approvalMode: 'full_access',
+    skipAnalysisNudge: true,
+    config: { memory: { enabled: false } },
+    requestCompletion: async ({ messages }) => {
+      requests += 1;
+      if (requests <= 2) {
+        return {
+          text: '',
+          toolCalls: [{ id: `read-${requests}`, name: 'read', arguments: '{}' }],
+        };
+      }
+      assert.match(messages.at(-1)?.content || '', /update the tasks checklist now/i);
+      return { text: 'done', toolCalls: [] };
+    },
+  });
+
+  assert.equal(result.text, 'done');
+  assert.equal(requests, 3);
+});
+
 test('model calls cannot bypass active tool visibility by guessing deferred or host-only names', async () => {
   let requests = 0;
   let deferredCalls = 0;
@@ -235,4 +264,45 @@ test('tool_search activation applies on the next model response', async () => {
 
   assert.equal(deferredCalls, 1);
   assert.equal(result.text, 'done');
+});
+
+test('agent loop emits step start and end around each model round', async () => {
+  const events = [];
+  let requests = 0;
+  const toolRuntime = createToolRuntime({
+    definitions: [definition('echo')],
+    handlers: {
+      echo: async () => ({ ok: true }),
+    },
+  });
+
+  await runAgentLoop({
+    systemPrompt: 'test',
+    userPrompt: 'call echo',
+    model: 'test-model',
+    toolRuntime,
+    approvalMode: 'full_access',
+    skipAnalysisNudge: true,
+    config: { memory: { enabled: false } },
+    onEvent: (event) => events.push(event.type === 'step:start' || event.type === 'step:end' ? event : null),
+    requestCompletion: async () => {
+      requests += 1;
+      return requests === 1
+        ? { text: '', toolCalls: [{ id: 'echo-1', name: 'echo', arguments: '{}' }] }
+        : { text: 'done', toolCalls: [] };
+    },
+  });
+
+  const steps = events.filter(Boolean);
+  assert.deepEqual(
+    steps.map((event) => [event.type, event.step, event.reason || null]),
+    [
+      ['step:start', 1, null],
+      ['step:end', 1, 'tools'],
+      ['step:start', 2, null],
+      ['step:end', 2, 'final'],
+    ],
+  );
+  assert.equal(typeof steps[1].durationMs, 'number');
+  assert.ok(steps[1].durationMs >= 0);
 });

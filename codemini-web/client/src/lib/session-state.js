@@ -4,12 +4,73 @@ import {
 } from "../../../shared/transcript-segments.js";
 import { stripPlanProgressText } from "../../../shared/plan-progress-text.js";
 import {
+  applyPlanEventToMessage,
   applyStreamEventToPlanRun,
   findActivePlanParentMessage,
   isCreatePlanToolEvent,
-  messageHasActivePlanRun,
+  isLegacyFinalPlanStep,
+  isPlanTranscriptEvent,
   shouldNestStreamEventInPlan,
+  settleCompletedPlanToolCards,
 } from "./plan-ui-state.js";
+import { sessionRuntimeIsBusy } from "./session-ui-state.js";
+
+const SESSION_SCOPED_RUNTIME_KEYS = new Set([
+  "sessionId",
+  "busy",
+  "status",
+  "queuePosition",
+  "pendingApproval",
+  "pendingUserInput",
+  "pendingSpecApproval",
+  "pendingReflectSkill",
+  "requestInFlight",
+  "needsAttention",
+  "parallelWriteRisk",
+]);
+
+function projectIdleRuntimeState(previous, sessionId) {
+  const next = {
+    sessionId,
+    busy: false,
+    status: "idle",
+  };
+  if (!previous || typeof previous !== "object") return next;
+  for (const [key, value] of Object.entries(previous)) {
+    if (SESSION_SCOPED_RUNTIME_KEYS.has(key)) continue;
+    next[key] = value;
+  }
+  return next;
+}
+
+export function isSessionBusyInState(state, sessionId) {
+  return sessionRuntimeIsBusy(state?.sessionRuntimeById?.[sessionId]);
+}
+
+// Legacy persisted waiting bubbles may have lost their transientKey on the
+// server round-trip. Match only the exact known labels instead of a substring
+// so a real system message merely containing the phrase is never dropped.
+const WAITING_RESPONSE_TEXT = new Set([
+  "等待回复",
+  "等待回复…",
+  "正在等待回复",
+  "正在等待回复…",
+  "Waiting for response",
+  "Waiting for response…",
+]);
+
+function isWaitingResponseMessage(message) {
+  if (!message) return false;
+  if (message.transientKey === "waiting-response") return true;
+  const text = String(message.text || "").trim();
+  return message.role === "system" && WAITING_RESPONSE_TEXT.has(text);
+}
+
+function withoutWaitingResponseMessages(messages = []) {
+  return (Array.isArray(messages) ? messages : []).filter(
+    (message) => !isWaitingResponseMessage(message),
+  );
+}
 
 function planStepNumberFromMessageId(messageId) {
   const match = String(messageId || "").match(/^plan-step-(\d+)(?:-|$)/);
@@ -42,15 +103,30 @@ export function hydrateSessionRuntimes(state, runtimes = {}) {
 export function activateSession(state, sessionId) {
   if (!sessionId || sessionId === state.currentSessionId) return state;
   const runtime = state.sessionRuntimeById?.[sessionId];
+  const busy = sessionRuntimeIsBusy(runtime);
   return {
     ...state,
     currentSessionId: sessionId,
     messages: state.sessionMessagesById?.[sessionId] || [],
-    ...(runtime
+    busy,
+    live: busy,
+    stage: busy ? state.stage : "idle",
+    stageLabel: busy ? state.stageLabel : "",
+    runtimeState: runtime
+      ? { ...runtime, sessionId }
+      : projectIdleRuntimeState(state.runtimeState, sessionId),
+    approvalRequest: runtime?.pendingApproval || null,
+    userInputRequest: runtime?.pendingUserInput || null,
+    ...(!runtime
       ? {
-          runtimeState: runtime,
-          approvalRequest: runtime.pendingApproval || null,
-          userInputRequest: runtime.pendingUserInput || null,
+          sessionRuntimeById: {
+            ...state.sessionRuntimeById,
+            [sessionId]: {
+              sessionId,
+              status: "idle",
+              busy: false,
+            },
+          },
         }
       : {}),
   };
@@ -62,14 +138,22 @@ export function projectVisibleSessionState(state) {
     state.sessionMessagesById || {},
     state.currentSessionId,
   );
-  if (!runtime && !hasSessionMessages) return state;
-  const busy = runtime
-    ? typeof runtime.busy === "boolean"
-      ? runtime.busy
-      : ["queued", "running", "waiting", "waiting_approval", "waiting_input"].includes(
-          runtime.status,
-        )
-    : false;
+  if (!runtime && !hasSessionMessages) {
+    return {
+      ...state,
+      busy: false,
+      live: false,
+      stage: "idle",
+      stageLabel: "",
+      approvalRequest: null,
+      userInputRequest: null,
+      runtimeState: projectIdleRuntimeState(
+        state.runtimeState,
+        state.currentSessionId,
+      ),
+    };
+  }
+  const busy = sessionRuntimeIsBusy(runtime);
   return {
     ...state,
     busy,
@@ -83,7 +167,14 @@ export function projectVisibleSessionState(state) {
           approvalRequest: runtime.pendingApproval || null,
           userInputRequest: runtime.pendingUserInput || null,
         }
-      : {}),
+      : {
+          runtimeState: projectIdleRuntimeState(
+            state.runtimeState,
+            state.currentSessionId,
+          ),
+          approvalRequest: null,
+          userInputRequest: null,
+        }),
     ...(!busy ? { stage: "idle", stageLabel: "" } : {}),
   };
 }
@@ -234,21 +325,33 @@ export function reduceSessionTranscriptEvent(state, event) {
   const activePlanParent = findActivePlanParentMessage(messages);
   const messageId = (() => {
     // While a plan card is running, keep nested agent streams on that parent.
-    if (activePlanParent?.id && !isCreatePlanToolEvent(event)) {
+    if (
+      activePlanParent?.id &&
+      activePlanParent.manualAborted !== true &&
+      !isCreatePlanToolEvent(event)
+    ) {
       return activePlanParent.id;
     }
-    if (event.messageId || event.operationId) {
-      return event.messageId || event.operationId;
+    const requested = String(event.messageId || event.operationId || "").trim();
+    const requestedMessage = requested
+      ? messages.find((message) => message?.id === requested)
+      : null;
+    if (requested && requestedMessage?.manualAborted !== true) {
+      return requested;
     }
     if (event.type !== "assistant:start") {
       const liveMessage = [...messages]
         .reverse()
-        .find((message) => message && message.isComplete !== true);
+        .find(
+          (message) =>
+            message &&
+            message.isComplete !== true &&
+            message.manualAborted !== true &&
+            !message.transientKey,
+        );
       if (liveMessage?.id) return liveMessage.id;
-      const latestMessage = messages.at(-1);
-      if (latestMessage?.id) return latestMessage.id;
     }
-    return `session-stream-${sessionId}`;
+    return `session-stream-${sessionId}-${Date.now()}`;
   })();
   if (event.type === "assistant:start") {
     // Plan-internal assistant turns must not spawn sibling bubbles.
@@ -298,7 +401,13 @@ export function reduceSessionTranscriptEvent(state, event) {
               {
                 id: messageId,
                 role: "general",
-                segments: [],
+                segments: [
+                  {
+                    type: "text",
+                    text: "",
+                    isStreaming: true,
+                  },
+                ],
                 skillBadges: [],
                 fileChanges: [],
                 sdkProvider: event.sdkProvider || "",
@@ -327,10 +436,45 @@ export function reduceSessionTranscriptEvent(state, event) {
         };
       }
     }
-  } else if (isTranscriptStreamEvent(event.type)) {
+    const startedMessages = sessionMessagesById[sessionId] || [];
     sessionMessagesById = {
       ...sessionMessagesById,
-      [sessionId]: messages.map((message) => {
+      [sessionId]: withoutWaitingResponseMessages(startedMessages),
+    };
+  } else if (isPlanTranscriptEvent(event.type)) {
+    const nextMessages = messages.map((message) => {
+      if (message.id !== messageId) return message;
+      return applyPlanEventToMessage(message, event);
+    });
+    sessionMessagesById = {
+      ...sessionMessagesById,
+      [sessionId]: isLegacyFinalPlanStep(event)
+        ? settleCompletedPlanToolCards(nextMessages)
+        : nextMessages,
+    };
+  } else if (isTranscriptStreamEvent(event.type)) {
+    let nextMessages = messages;
+    if (
+      (event.type === "step:start" || event.type === "step:end") &&
+      messageId &&
+      !messages.some((message) => message.id === messageId)
+    ) {
+      nextMessages = [
+        ...messages,
+        {
+          id: messageId,
+          role: "general",
+          segments: [],
+          skillBadges: [],
+          fileChanges: [],
+          isComplete: false,
+          timestamp: event.startedAt || new Date().toISOString(),
+        },
+      ];
+    }
+    sessionMessagesById = {
+      ...sessionMessagesById,
+      [sessionId]: nextMessages.map((message) => {
         if (message.id !== messageId) return message;
         if (isCreatePlanToolEvent(event) || shouldNestStreamEventInPlan(message, event)) {
           return applyStreamEventToPlanRun(message, event, {

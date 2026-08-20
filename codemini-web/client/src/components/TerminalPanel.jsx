@@ -216,7 +216,7 @@ export function TerminalPanel({
           setShell(data.snapshot.shell || "pwsh");
           setCwd(data.snapshot.cwd || projectCwd || "");
           setConnection(
-            data.snapshot.connected === false ? "disconnected" : "connected",
+            data.snapshot.connected === false ? "connecting" : "connected",
           );
           window.requestAnimationFrame(() => {
             fitAndSync();

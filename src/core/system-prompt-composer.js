@@ -42,15 +42,20 @@ export async function composeSystemPrompt({
         : '',
     Promise.resolve(skillsPrompt),
   ]);
-  const hasProjectInstructions = /\bProject Instructions:\s*\n/i.test(shellAndSoul);
   const body = joinPromptParts([
     shellAndSoul,
-    hasProjectInstructions ? '' : projectInstructionsPrompt,
+    projectInstructionsPrompt,
     resolvedSkillsPrompt,
-    memoryPrompt,
     projectContextSnippet,
     projectContextSnippet ? projectContextGuidance : '',
     ...extraPrompts
   ]);
-  return buildSystemPromptWithReplyLanguage(body, config);
+  const basePrompt = buildSystemPromptWithReplyLanguage(body, config);
+  // <relevant_memory> is the most volatile section (save_memory / Dream /
+  // session review can change it mid-session), so it sits BELOW the reply
+  // language directive, at the very end of the system prompt. That keeps the
+  // stable prefix (skeleton + env + instructions + skills + reply language)
+  // byte-identical and cacheable when memory changes.
+  if (!memoryPrompt) return basePrompt;
+  return [basePrompt, memoryPrompt].filter(Boolean).join('\n\n');
 }

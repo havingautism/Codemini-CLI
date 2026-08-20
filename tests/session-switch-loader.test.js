@@ -24,6 +24,7 @@ test('cold session switch returns stored history without waiting for runtime war
       id: 'project-session',
       projectDir: 'E:/projects/demo',
       model: 'test-model',
+      lastSystemPrompt: 'Stored session system prompt',
       messages: [{ role: 'user', content: 'hello' }],
       compact: null,
     }),
@@ -37,6 +38,7 @@ test('cold session switch returns stored history without waiting for runtime war
   assert.deepEqual(result.sessionData.messages, [{ role: 'user', content: 'hello' }]);
   assert.deepEqual(result.sessionData.uiMessages, [{ id: 'ui-1', role: 'you', text: 'hello' }]);
   assert.equal(result.state.runtimePending, true);
+  assert.equal(result.state.lastSystemPrompt, 'Stored session system prompt');
 
   finishWarmup();
 });

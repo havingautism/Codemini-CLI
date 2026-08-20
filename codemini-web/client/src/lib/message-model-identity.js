@@ -35,6 +35,10 @@ export function getModelLogo(modelName) {
   return null;
 }
 
+function sameModelName(left, right) {
+  return String(left || "").trim().toLowerCase() === String(right || "").trim().toLowerCase();
+}
+
 /** Resolve the persisted SDK/model pair into branded UI fields. */
 export function getMessageModelIdentity({ sdkProvider, model } = {}) {
   const providerKey = String(sdkProvider || "").trim().toLowerCase();
@@ -48,5 +52,41 @@ export function getMessageModelIdentity({ sdkProvider, model } = {}) {
     model: modelName,
     modelLogo: getModelLogo(modelName),
     details: `${provider.sdkLabel} · ${modelName}`,
+  };
+}
+
+/** Shape the hover panel for the message model badge. */
+export function buildModelPanelModel({ sdkProvider, model, runtimeState } = {}) {
+  const identity = getMessageModelIdentity({ sdkProvider, model });
+  if (!identity) return null;
+
+  const rs = runtimeState && typeof runtimeState === "object" ? runtimeState : {};
+  const mainModel = String(rs.mainModel || rs.model || "").trim();
+  const fastModel = String(rs.fastModel || "").trim();
+  const used = Number(rs.currentContextTokens);
+  const max = Number(rs.maxContextTokens);
+  const hasContext = Number.isFinite(max) && max > 0;
+  const pct = Number.isFinite(Number(rs.contextUsagePct))
+    ? Math.min(100, Math.max(0, Math.round(Number(rs.contextUsagePct))))
+    : hasContext && Number.isFinite(used)
+      ? Math.min(100, Math.max(0, Math.round((used / max) * 100)))
+      : 0;
+
+  return {
+    identity,
+    sdkLabel: identity.sdkLabel,
+    replyModel: identity.model,
+    mainModel,
+    fastModel,
+    showReplyModel: Boolean(
+      identity.model && mainModel && !sameModelName(identity.model, mainModel),
+    ),
+    context: hasContext
+      ? {
+          used: Number.isFinite(used) ? Math.max(0, used) : 0,
+          max,
+          pct,
+        }
+      : null,
   };
 }

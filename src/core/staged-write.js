@@ -4,6 +4,7 @@ import { createHash, randomUUID } from 'node:crypto';
 
 export const DEFAULT_WRITE_CHUNK_MAX_CHARS = 12_000;
 export const DEFAULT_STAGED_WRITE_MAX_CHARS = 4 * 1024 * 1024;
+export const STAGED_WRITE_TTL_MS = 30 * 60 * 1000;
 
 function normalizeExpectedSha256(value) {
   return String(value || '').trim().toLowerCase().replace(/^sha256:/, '');
@@ -20,6 +21,39 @@ export function createStagedWriteStore({
   const transactions = new Map();
   const writeIdByTarget = new Map();
 
+  function cleanupTransactionTempFile(transaction) {
+    if (!transaction) return;
+    try {
+      const directory = path.dirname(transaction.target);
+      const baseName = path.basename(transaction.target);
+      const safeId = String(transaction.writeId || '').replace(/[^a-zA-Z0-9_-]/g, '');
+      if (!safeId) return;
+      // Temp files written by atomicWriteUtf8 carry the write id, so this
+      // can only remove leftovers belonging to this exact transaction.
+      void fs.rm(path.join(directory, `.${baseName}.codemini-${safeId}.tmp`), { force: true })
+        .catch(() => {});
+    } catch {
+      // best-effort cleanup only
+    }
+  }
+
+  // Expire transactions older than STAGED_WRITE_TTL_MS (never committed or
+  // aborted — turn aborted, model error, disconnect). Frees the target so a
+  // later begin_write succeeds, and keeps the transactions map bounded.
+  function expireStaleTransactions(now = Date.now()) {
+    const stale = [];
+    for (const [writeId, transaction] of transactions) {
+      if (!transaction?.createdAt || now - transaction.createdAt > STAGED_WRITE_TTL_MS) {
+        stale.push(transaction);
+        transactions.delete(writeId);
+        if (writeIdByTarget.get(transaction.target) === writeId) {
+          writeIdByTarget.delete(transaction.target);
+        }
+      }
+    }
+    for (const transaction of stale) cleanupTransactionTempFile(transaction);
+  }
+
   function requireTransaction(writeId) {
     const id = String(writeId || '').trim();
     const transaction = transactions.get(id);
@@ -30,6 +64,7 @@ export function createStagedWriteStore({
   }
 
   function begin({ path: relativePath, target, overwrite = false, existed = false }) {
+    expireStaleTransactions();
     const normalizedTarget = path.resolve(String(target || ''));
     const activeId = writeIdByTarget.get(normalizedTarget);
     if (activeId) {
@@ -61,6 +96,7 @@ export function createStagedWriteStore({
   }
 
   function append({ writeId, sequence, content }) {
+    expireStaleTransactions();
     const transaction = requireTransaction(writeId);
     const seq = Number(sequence);
     if (!Number.isSafeInteger(seq) || seq < 0) {
@@ -115,6 +151,7 @@ export function createStagedWriteStore({
   }
 
   function prepareCommit({ writeId, totalChunks, expectedSha256 = '' }) {
+    expireStaleTransactions();
     const transaction = requireTransaction(writeId);
     const expectedCount = Number(totalChunks);
     if (!Number.isSafeInteger(expectedCount) || expectedCount < 0) {
@@ -143,6 +180,7 @@ export function createStagedWriteStore({
   }
 
   function abort(writeId) {
+    expireStaleTransactions();
     const transaction = requireTransaction(writeId);
     transactions.delete(transaction.writeId);
     writeIdByTarget.delete(transaction.target);

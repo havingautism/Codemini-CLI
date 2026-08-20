@@ -114,6 +114,12 @@ export function getSearchProviderOptions() {
       description: t("webSearchProviderExaDesc"),
       logo: "/logos/exa-color.svg",
     },
+    {
+      value: "firecrawl",
+      label: t("webSearchProviderFirecrawl"),
+      description: t("webSearchProviderFirecrawlDesc"),
+      logo: "/logos/firecrawl-color.svg",
+    },
   ];
 }
 

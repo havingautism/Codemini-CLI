@@ -94,6 +94,12 @@ export function upsertToolCardInSegments(segments, toolCard) {
 
 export function upsertSingletonToolCardInSegments(segments, toolCard) {
   const singletonName = String(toolCard?.name || "").toLowerCase();
+  const matchesSingleton = (card) => {
+    const cardName = String(card?.name || "").toLowerCase();
+    return ["tasks", "update_todos"].includes(singletonName)
+      ? ["tasks", "update_todos"].includes(cardName)
+      : cardName === singletonName;
+  };
   let found = false;
   const source = (Array.isArray(segments) ? segments : [])
     .map((segment) => {
@@ -102,7 +108,7 @@ export function upsertSingletonToolCardInSegments(segments, toolCard) {
       }
       const cards = [];
       for (const card of segment.cards) {
-        if (String(card?.name || "").toLowerCase() !== singletonName) {
+        if (!matchesSingleton(card)) {
           cards.push(card);
         } else if (!found) {
           cards.push({ ...card, ...toolCard });

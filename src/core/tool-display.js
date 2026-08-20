@@ -5,7 +5,8 @@ export const TOOL_DISPLAY_LABELS = {
   create_plan: 'Plan',
   create_spec: 'Create Spec',
   run_subagent: 'Subagent',
-  update_todos: 'Update Todos',
+  tasks: 'Tasks',
+  update_todos: 'Tasks',
   read_plan: 'Read Plan',
   update_plan: 'Update Plan',
   search_code: 'Search Code',
@@ -239,7 +240,7 @@ export function formatToolDisplayName(name, args = {}, options = {}) {
     const topic = trimInline(args?.topic || '', 96);
     return topic ? formatToolWithArg(formatToolLabel('create_spec'), topic) : formatToolLabel('create_spec');
   }
-  if (toolName === 'update_todos' || toolName === 'read_plan' || toolName === 'update_plan') {
+  if (toolName === 'tasks' || toolName === 'read_plan' || toolName === 'update_plan') {
     return formatToolLabel(toolName);
   }
   if (toolName === 'list_background_tasks') {

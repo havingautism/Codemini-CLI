@@ -181,7 +181,7 @@ export function summarizeToolResult(result) {
       return `${obj.tasks.length} task(s)`;
     }
     if ('newTodos' in obj && Array.isArray(obj.newTodos)) {
-      return obj.newTodos.length > 0 ? `updated ${obj.newTodos.length} todo item(s)` : 'cleared todo list';
+      return obj.newTodos.length > 0 ? `updated ${obj.newTodos.length} task item(s)` : 'cleared task list';
     }
     if ('newPlan' in obj) {
       return obj.newPlan ? `updated plan state (${String(obj.newPlan.status || 'draft')})` : 'cleared plan state';

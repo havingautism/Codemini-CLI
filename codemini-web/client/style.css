@@ -1376,6 +1376,8 @@
   /* Thinking / tool / processed rows — dimmer than msg-body primary */
   --text-process: color-mix(in srgb, var(--text-primary) 38%, var(--text-muted));
   --text-process-detail: color-mix(in srgb, var(--text-primary) 22%, var(--text-muted) 78%);
+  --text-process-hover: color-mix(in srgb, var(--text-process) 28%, var(--text-primary) 72%);
+  --text-process-detail-hover: color-mix(in srgb, var(--text-process-detail) 36%, var(--text-primary) 64%);
   --shell-canvas: var(--bg-secondary);
   --workspace-panel-radius: 0.75rem;
   --workspace-panel-border: color-mix(in srgb, var(--text-primary) 5%, transparent);
@@ -1405,7 +1407,10 @@
   --selected-edge: color-mix(in srgb, var(--text-primary) 10%, transparent);
   --badge-bg: color-mix(in srgb, var(--text-primary) 6%, var(--bg-primary));
   --badge-edge: color-mix(in srgb, var(--text-primary) 8%, transparent);
+  --bg-subtle: color-mix(in srgb, var(--text-primary) 3.5%, transparent);
   --message-surface: color-mix(in srgb, var(--bg-secondary) 72%, var(--bg-primary));
+  --fold-surface: transparent;
+  --tool-detail-bg: var(--bg-primary);
   --message-edge: color-mix(in srgb, var(--text-primary) 6%, transparent);
   --message-shadow:
     0 1px 2px color-mix(in srgb, black 6%, transparent),
@@ -1495,7 +1500,7 @@ body {
 
 /* Linear-style shell: gray canvas + inset rounded workspace panel */
 .codemini-app-shell {
-  background: #f2f2f2;
+  background: var(--shell-canvas, #f8f8fa);
 }
 
 [data-theme="dark"] .codemini-app-shell {
@@ -1673,7 +1678,7 @@ body {
 }
 
 .msg-process-meta .msg-process-row:hover {
-  color: color-mix(in srgb, var(--text-process) 50%, var(--text-secondary) 50%);
+  color: var(--text-process-hover);
 }
 
 .msg-process-meta .msg-process-thought-body {
@@ -1694,12 +1699,244 @@ body {
   opacity: 0;
 }
 
+/* Hallmark · component: disclosure-tree · genre: modern-minimal · theme: existing tokens
+ * states: default · hover · focus · active · disabled · loading · error · success
+ * contrast: pass (token ink on paper)
+ * DNA: DeepSeek Harness DisclosureRow — one-line rows, nested rail, payload card only
+ */
+.codemini-disclosure {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  min-width: 0;
+}
+
+.codemini-disclosure-row {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-width: 0;
+  min-height: 32px;
+  gap: 8px;
+  padding: 6px 12px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-process);
+  cursor: pointer;
+  text-align: left;
+  font-size: 13px;
+  line-height: 24px;
+  transition: color 100ms var(--ease-out, ease);
+}
+
+.codemini-disclosure-row:hover,
+.codemini-disclosure-row:active,
+.codemini-disclosure-row:focus-visible {
+  background: transparent;
+  color: var(--text-process-hover);
+}
+
+.codemini-disclosure-row:hover > :not(.codemini-disclosure-leading):not(.codemini-disclosure-sep),
+.codemini-disclosure-row:active > :not(.codemini-disclosure-leading):not(.codemini-disclosure-sep),
+.codemini-disclosure-row:focus-visible > :not(.codemini-disclosure-leading):not(.codemini-disclosure-sep) {
+  color: inherit;
+}
+
+.codemini-disclosure-row:hover .msg-process-meta__detail,
+.codemini-disclosure-row:active .msg-process-meta__detail,
+.codemini-disclosure-row:focus-visible .msg-process-meta__detail,
+.codemini-disclosure-row:hover .codemini-disclosure-leading,
+.codemini-disclosure-row:active .codemini-disclosure-leading,
+.codemini-disclosure-row:focus-visible .codemini-disclosure-leading,
+.codemini-disclosure-row:hover .codemini-disclosure-chevron,
+.codemini-disclosure-row:active .codemini-disclosure-chevron,
+.codemini-disclosure-row:focus-visible .codemini-disclosure-chevron {
+  color: var(--text-process-detail-hover);
+}
+
+.codemini-disclosure-row:focus-visible {
+  outline: 2px solid var(--accent-blue);
+  outline-offset: 1px;
+}
+
+.codemini-disclosure-row > button {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.codemini-disclosure-leading {
+  position: relative;
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  color: var(--text-process-detail);
+}
+
+.codemini-disclosure-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 1;
+  transition: opacity 100ms var(--ease-out, ease);
+}
+
+.codemini-disclosure-chevron {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  opacity: 0;
+  color: var(--text-process-detail);
+  transition:
+    opacity 100ms var(--ease-out, ease),
+    transform 100ms var(--ease-out, ease);
+}
+
+.codemini-disclosure-row:hover .codemini-disclosure-icon,
+.codemini-disclosure-row:focus-visible .codemini-disclosure-icon,
+.codemini-disclosure-row[aria-expanded="true"] .codemini-disclosure-icon,
+.codemini-disclosure-leading[data-open="true"] .codemini-disclosure-icon {
+  opacity: 0;
+}
+
+.codemini-disclosure-row:hover .codemini-disclosure-chevron,
+.codemini-disclosure-row:focus-visible .codemini-disclosure-chevron,
+.codemini-disclosure-row[aria-expanded="true"] .codemini-disclosure-chevron,
+.codemini-disclosure-leading[data-open="true"] .codemini-disclosure-chevron {
+  opacity: 1;
+}
+
+.codemini-disclosure-row[aria-expanded="true"] .codemini-disclosure-chevron,
+.codemini-disclosure-leading[data-open="true"] .codemini-disclosure-chevron {
+  transform: rotate(90deg);
+}
+
+.codemini-disclosure-row .msg-process-meta__detail {
+  color: var(--text-process-detail);
+}
+
+.codemini-disclosure-tree {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 8px 0 4px 22px;
+  padding-left: 16px;
+  border-left: 1px solid var(--border-default);
+}
+
+.codemini-disclosure-tree .codemini-disclosure,
+.codemini-disclosure-tree .msg-process-meta {
+  margin-top: 0;
+  margin-bottom: 0;
+}
+
+.codemini-disclosure-tree .codemini-disclosure-tree {
+  margin-left: 20px;
+}
+
+.codemini-disclosure-body {
+  padding: 4px 0 4px 22px;
+  color: var(--text-process);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.codemini-disclosure-tree .codemini-disclosure-body {
+  padding-left: 24px;
+}
+
+.codemini-disclosure-payload {
+  margin: 4px 0 4px 4px;
+  overflow: hidden;
+  border: 1px solid var(--border-default);
+  border-radius: 12px;
+  background: var(--tool-detail-bg);
+}
+
+.codemini-disclosure-payload.codemini-disclosure-scroll {
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+.codemini-inspect-pane {
+  margin: 0;
+  max-height: min(60vh, 32rem);
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  background: var(--bg-secondary);
+  padding: 12px 14px;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace);
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-primary);
+}
+
+.codemini-disclosure-sep {
+  flex: none;
+  width: 2px;
+  height: 2px;
+  margin: 0 2px;
+  border-radius: 1px;
+  background: var(--text-muted);
+}
+
+.codemini-trajectory-kind {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .codemini-disclosure-row,
+  .codemini-disclosure-icon,
+  .codemini-disclosure-chevron {
+    transition: none;
+  }
+}
+
 /* Linear-style cards for structured spec / plan messages */
 .codemini-message-surface {
   border: 1px solid var(--message-edge);
   border-radius: var(--radius-lg);
   background: var(--message-surface);
   /* box-shadow: var(--message-shadow); */
+}
+
+/* Nested fold bodies stay on the parent card; tool output uses --tool-detail-bg. */
+.codemini-fold-body {
+  background: var(--fold-surface);
+}
+
+.codemini-task-spinner {
+  width: 14px;
+  height: 14px;
+  border: 1.5px solid color-mix(in srgb, var(--accent-blue) 24%, transparent);
+  border-top-color: var(--accent-blue);
+  border-radius: 50%;
+  animation: loader-ring-spin 0.85s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .codemini-task-spinner {
+    animation: none;
+    border-color: color-mix(in srgb, var(--accent-blue) 42%, transparent);
+    border-top-color: var(--accent-blue);
+  }
 }
 
 .codemini-status-chip {
@@ -1710,7 +1947,6 @@ body {
 }
 
 .codemini-user-bubble {
-  border: 0;
   box-shadow: none;
 }
 
@@ -1915,6 +2151,8 @@ body {
   --badge-bg: color-mix(in srgb, var(--text-primary) 8%, var(--bg-secondary));
   --badge-edge: color-mix(in srgb, var(--text-primary) 13%, transparent);
   --message-surface: color-mix(in srgb, var(--text-primary) 5%, var(--bg-secondary));
+  --fold-surface: transparent;
+  --tool-detail-bg: var(--bg-primary);
   --message-edge: color-mix(in srgb, var(--text-primary) 10%, transparent);
 }
 
@@ -1946,6 +2184,100 @@ body {
   .codemini-input-shell::before {
     animation: none;
   }
+}
+
+.codemini-input-queue {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid color-mix(in srgb, var(--surface-edge) 85%, transparent);
+}
+
+.codemini-input-queue-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 2px;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.3;
+}
+
+.codemini-input-queue-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 7.5rem;
+  overflow-y: auto;
+}
+
+.codemini-input-queue-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 6px 8px;
+  border-radius: var(--radius-lg);
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.codemini-input-queue-item--next {
+  color: var(--text-primary);
+  background: color-mix(in srgb, var(--interactive-hover) 88%, transparent);
+  box-shadow: inset 0 0 0 1px var(--surface-edge);
+}
+
+.codemini-input-queue-dot {
+  width: 6px;
+  height: 6px;
+  flex-shrink: 0;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text-muted) 55%, transparent);
+}
+
+.codemini-input-queue-item--next .codemini-input-queue-dot {
+  background: var(--accent-purple);
+}
+
+.codemini-input-queue-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  flex-shrink: 0;
+}
+
+.codemini-input-queue-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.codemini-input-queue-action:hover,
+.codemini-input-queue-action:focus-visible {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.codemini-input-queue-action:disabled {
+  opacity: 0.32;
+  cursor: default;
+}
+
+.codemini-input-queue-action:disabled:hover {
+  background: transparent;
+  color: var(--text-muted);
 }
 
 .codemini-input-chip {
@@ -2083,7 +2415,8 @@ samp {
 
 .codemini-markdown-table-strip .codemini-horizontal-scroll-strip__viewport {
   border-radius: 10px;
-  background: color-mix(in srgb, var(--text-primary) 5%, transparent);
+  background: var(--message-surface);
+  box-shadow: inset 0 0 0 1px var(--message-edge);
 }
 
 /* ── Linear loaders (theme + palette aware) ── */
@@ -2419,7 +2752,8 @@ samp {
 .msg-body [data-streamdown="table-wrapper"]>div:nth-child(2) {
   border: 0 !important;
   border-radius: var(--radius-lg) !important;
-  background: color-mix(in srgb, var(--text-primary) 5%, transparent) !important;
+  background: var(--message-surface) !important;
+  box-shadow: inset 0 0 0 1px var(--message-edge);
   overflow-x: scroll !important;
   overflow-y: hidden !important;
   overscroll-behavior-x: contain;
@@ -2598,6 +2932,10 @@ samp {
   line-height: 1.35;
   box-decoration-break: clone;
   -webkit-box-decoration-break: clone;
+}
+
+:root:not([data-theme="dark"]) .msg-body :not(pre)>code {
+  background: color-mix(in srgb, var(--text-primary) 4%, transparent);
 }
 
 .msg-body [data-streamdown="table-wrapper"] [class*="absolute"][class*="top-full"],
@@ -3340,33 +3678,101 @@ samp {
   }
 }
 
-/* Gemini-inspired home light paths */
+/* Empty-session aurora — chat overlay only, unmounts with the welcome stage */
 .codemini-home-empty-stage {
-  gap: clamp(12px, 2.2vh, 22px);
+  gap: clamp(10px, 2vh, 18px);
   padding: 24px 16px 23vh;
 }
 
-.codemini-home-empty-media {
-  width: min(760px, calc(100% - 24px));
-  height: clamp(170px, 23vw, 230px);
+.codemini-home-aurora {
+  --logo-violet: #6050b8;
+  --logo-lilac: #7a6cc8;
+  --logo-sage: #88a890;
+  --aurora-a: color-mix(in srgb, var(--logo-violet) 28%, white);
+  --aurora-b: color-mix(in srgb, var(--logo-sage) 24%, white);
+  --aurora-c: color-mix(in srgb, var(--logo-lilac) 26%, white);
+  --aurora-d: color-mix(in srgb, var(--logo-sage) 18%, var(--logo-violet));
+  --aurora-veil: repeating-linear-gradient(
+    100deg,
+    var(--bg-primary) 0%,
+    var(--bg-primary) 7%,
+    transparent 10%,
+    transparent 12%,
+    var(--bg-primary) 16%
+  );
+  --aurora-bands: repeating-linear-gradient(
+    100deg,
+    var(--aurora-a) 10%,
+    var(--aurora-b) 15%,
+    var(--aurora-c) 20%,
+    var(--aurora-d) 25%,
+    var(--aurora-a) 30%
+  );
+
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
 }
 
-.codemini-gemini-canvas {
-  display: block;
-  width: 100%;
-  height: 100%;
-  pointer-events: none;
+[data-theme="dark"] .codemini-home-aurora {
+  --aurora-a: color-mix(in srgb, var(--logo-violet) 58%, transparent);
+  --aurora-b: color-mix(in srgb, var(--logo-sage) 42%, transparent);
+  --aurora-c: color-mix(in srgb, var(--logo-lilac) 52%, transparent);
+  --aurora-d: color-mix(in srgb, var(--logo-sage) 28%, var(--logo-violet));
+}
+
+.codemini-home-aurora__wash {
+  position: absolute;
+  inset: -20% -10% 12%;
+  background-image: var(--aurora-veil), var(--aurora-bands);
+  background-size: 300% 200%, 200% 100%;
+  background-position: 50% 50%, 50% 50%;
+  filter: blur(28px) saturate(0.92);
+  opacity: 0.38;
+  animation: codemini-aurora 60s linear infinite;
+  -webkit-mask-image: radial-gradient(ellipse 88% 58% at 50% 36%, #000 8%, transparent 70%);
+  mask-image: radial-gradient(ellipse 88% 58% at 50% 36%, #000 8%, transparent 70%);
+}
+
+.codemini-home-aurora__wash::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-image: var(--aurora-veil), var(--aurora-bands);
+  background-size: 200% 100%, 170% 90%;
+  background-position: 50% 50%, 50% 50%;
+  filter: blur(18px);
+  opacity: 0.55;
+  animation: codemini-aurora 48s linear infinite reverse;
+}
+
+[data-theme="dark"] .codemini-home-aurora__wash {
+  opacity: 0.46;
+  filter: blur(30px) saturate(0.98);
+}
+
+@keyframes codemini-aurora {
+  from {
+    background-position: 50% 50%, 50% 50%;
+  }
+  to {
+    background-position: 350% 50%, 350% 50%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .codemini-home-aurora__wash,
+  .codemini-home-aurora__wash::after {
+    animation: none;
+  }
 }
 
 @media (max-width: 735px) {
   .codemini-home-empty-stage {
-    gap: 10px;
+    gap: 8px;
     padding-inline: 8px;
-  }
-
-  .codemini-home-empty-media {
-    width: 100%;
-    height: 150px;
   }
 }
 
@@ -3480,13 +3886,13 @@ samp {
 }
 
 :root:not([data-theme="dark"]) .settings-nav-trigger:hover {
-  background: color-mix(in srgb, var(--text-primary) 3%, transparent);
+  background: var(--bg-hover);
   color: var(--text-primary);
 }
 
 :root:not([data-theme="dark"]) .settings-nav-trigger[data-state="active"] {
   border-color: transparent;
-  background: color-mix(in srgb, var(--text-primary) 6%, transparent) !important;
+  background: var(--selected-bg) !important;
   color: var(--text-primary);
   box-shadow: none !important;
 }
@@ -3502,19 +3908,19 @@ samp {
 
 :root:not([data-theme="dark"]) .settings-choice-item:hover {
   border-color: transparent !important;
-  background: color-mix(in srgb, var(--text-primary) 3%, transparent) !important;
+  background: var(--bg-hover) !important;
 }
 
 :root:not([data-theme="dark"]) .settings-choice-item[data-state="on"] {
   border-color: transparent !important;
-  background: color-mix(in srgb, var(--text-primary) 6%, transparent) !important;
+  background: var(--selected-bg) !important;
   color: var(--text-primary);
   box-shadow: none !important;
 }
 
 :root:not([data-theme="dark"]) .settings-segmented {
   border-color: transparent;
-  background: color-mix(in srgb, var(--text-primary) 3%, transparent);
+  background: var(--bg-subtle);
   box-shadow: none;
 }
 
@@ -3524,11 +3930,11 @@ samp {
 }
 
 :root:not([data-theme="dark"]) .settings-segmented-item:hover {
-  background: color-mix(in srgb, var(--text-primary) 3%, transparent);
+  background: var(--bg-hover);
 }
 
 :root:not([data-theme="dark"]) .settings-segmented-item[data-state="on"] {
-  background: color-mix(in srgb, var(--text-primary) 6%, transparent) !important;
+  background: var(--selected-bg) !important;
   color: var(--text-primary);
   box-shadow: none !important;
 }
@@ -3552,7 +3958,7 @@ samp {
   --foreground: #1d1d1f;
   --card: #ffffff;
   --card-foreground: #1d1d1f;
-  --popover: rgba(255, 255, 255, 0.88);
+  --popover: rgba(255, 255, 255, 0.96);
   --popover-foreground: #1d1d1f;
   --primary: #1d1d1f;
   --primary-foreground: #ffffff;
@@ -3565,17 +3971,15 @@ samp {
   --border: rgba(0, 0, 0, 0.1);
   --input: rgba(0, 0, 0, 0.12);
   --ring: transparent;
-  --sidebar: rgba(245, 245, 247, 0.72);
+  --sidebar: rgba(248, 248, 250, 0.86);
   --sidebar-foreground: #1d1d1f;
-  --bg-primary: #f3f3f3;
+  --bg-primary: #ffffff;
   --bg-secondary: #f5f5f7;
-  --bg-tertiary: #e8e8ed;
-  --bg-hover: rgba(0, 0, 0, 0.055);
-  --bg-active: rgba(0, 0, 0, 0.09);
-  --bg-input: rgba(255, 255, 255, 0.86);
+  --bg-tertiary: #f8f8fa;
+  --bg-input: rgba(255, 255, 255, 0.96);
   --text-primary: #1d1d1f;
   --text-secondary: #6e6e73;
-  --text-muted: #86868b;
+  --text-muted: #7a7a80;
   --border-default: rgba(0, 0, 0, 0.1);
   --border-strong: rgba(0, 0, 0, 0.18);
   --accent-blue: #0071e3;
@@ -3584,11 +3988,11 @@ samp {
   --md-link: #0071e3;
   --md-code-bg: #f5f5f7;
   --md-code-border: rgba(0, 0, 0, 0.1);
-  --md-inline-code-bg: #f5f5f7;
+  --md-inline-code-bg: color-mix(in srgb, var(--text-primary) 4%, white);
   --md-inline-code-text: #1d1d1f;
-  --md-table-header-bg: #f5f5f7;
-  --md-table-row-alt-bg: #fbfbfd;
-  --material-elevated: rgba(255, 255, 255, 0.84);
+  --md-table-header-bg: #ffffff;
+  --md-table-row-alt-bg: #ffffff;
+  --material-elevated: rgba(255, 255, 255, 0.96);
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
   --shadow-default: 0 8px 30px rgba(0, 0, 0, 0.09);
   --shadow-lg: 0 22px 60px rgba(0, 0, 0, 0.16);
@@ -3602,13 +4006,17 @@ samp {
   --input-shell-bg: rgba(255, 255, 255, 0.88);
   --input-shell-border: rgba(0, 0, 0, 0.08);
   --input-shell-shadow: 0 10px 38px rgba(0, 0, 0, 0.11);
-  --badge-bg: color-mix(in srgb, var(--text-primary) 3%, white);
-  --badge-edge: color-mix(in srgb, var(--text-primary) 4%, transparent);
-  --interactive-hover: color-mix(in srgb, var(--text-primary) 3.5%, white);
-  --selected-bg: color-mix(in srgb, var(--text-primary) 5.5%, white);
-  --selected-edge: color-mix(in srgb, var(--text-primary) 5%, transparent);
+  --badge-bg: color-mix(in srgb, var(--text-primary) 4%, var(--bg-secondary));
+  --badge-edge: color-mix(in srgb, var(--text-primary) 6%, transparent);
+  --interactive-hover: color-mix(in srgb, var(--text-primary) 6%, var(--bg-secondary));
+  --selected-bg: color-mix(in srgb, var(--text-primary) 11%, var(--bg-secondary));
+  --selected-edge: color-mix(in srgb, var(--text-primary) 8%, transparent);
+  --bg-subtle: color-mix(in srgb, var(--text-primary) 3%, var(--bg-secondary));
   --bg-hover: var(--interactive-hover);
   --bg-active: var(--selected-bg);
+  --message-surface: var(--bg-secondary);
+  --message-edge: color-mix(in srgb, var(--text-primary) 6%, transparent);
+  --shell-canvas: #f8f8fa;
 }
 
 :root:not([data-theme="dark"]) .settings-provider-card {
@@ -3653,6 +4061,7 @@ samp {
   --bg-tertiary: #2b2b2f;
   --bg-hover: rgba(255, 255, 255, 0.09);
   --bg-active: rgba(255, 255, 255, 0.14);
+  --bg-subtle: color-mix(in srgb, var(--text-primary) 4%, transparent);
   --bg-input: rgba(29, 29, 31, 0.9);
   --text-primary: #f5f5f7;
   --text-secondary: #a1a1a6;
@@ -3685,6 +4094,21 @@ samp {
   -webkit-backdrop-filter: saturate(180%) blur(20px);
 }
 
+.codemini-sidebar :is(button, a, [class*="cursor-pointer"]),
+.codemini-sidebar .group {
+  transition: color 140ms ease, background-color 140ms ease;
+}
+
+.codemini-sidebar :is(button, a):hover,
+.codemini-sidebar :is(button, a):hover span {
+  color: var(--text-primary);
+}
+
+.codemini-sidebar :is(button, a):hover svg,
+.codemini-sidebar .group:hover svg {
+  color: var(--text-primary);
+}
+
 /* .codemini-app-shell {
   background:
     radial-gradient(circle at 78% -18%, color-mix(in srgb, var(--accent-blue) 7%, transparent), transparent 38%),
@@ -3714,8 +4138,8 @@ samp {
 }
 
 :root:not([data-theme="dark"]) .codemini-input-chip--selected {
-  background: rgba(29, 29, 31, 0.035);
-  box-shadow: inset 0 0 0 1px rgba(29, 29, 31, 0.045);
+  background: var(--selected-bg);
+  box-shadow: inset 0 0 0 1px var(--selected-edge);
 }
 
 :root:not([data-theme="dark"]) .codemini-input-shell button {
@@ -3728,37 +4152,37 @@ samp {
 
 /* The light input shell is nearly white, so keep its quick controls visually quiet. */
 :root:not([data-theme="dark"]) .codemini-input-pill {
-  background: rgba(29, 29, 31, 0.025) !important;
+  background: var(--bg-subtle) !important;
   box-shadow: none !important;
 }
 
 :root:not([data-theme="dark"]) .codemini-input-pill:hover {
-  background: rgba(29, 29, 31, 0.04) !important;
+  background: var(--bg-hover) !important;
   box-shadow: none !important;
 }
 
 :root:not([data-theme="dark"]) .codemini-input-chip {
-  background: rgba(29, 29, 31, 0.025);
-  box-shadow: inset 0 0 0 1px rgba(29, 29, 31, 0.04);
+  background: var(--bg-subtle);
+  box-shadow: inset 0 0 0 1px var(--badge-edge);
 }
 
 :root:not([data-theme="dark"]) .codemini-input-chip:hover {
-  background: rgba(29, 29, 31, 0.04);
+  background: var(--bg-hover);
 }
 
 :root:not([data-theme="dark"]) [data-slot="select-item"][data-highlighted],
 :root:not([data-theme="dark"]) [data-slot="select-item"]:hover,
 :root:not([data-theme="dark"]) [data-slot="select-item"]:focus {
-  background: rgba(29, 29, 31, 0.055);
+  background: var(--bg-hover);
 }
 
 :root:not([data-theme="dark"]) [data-slot="select-item"][data-state="checked"] {
-  background: rgba(29, 29, 31, 0.1);
+  background: var(--selected-bg);
 }
 
 :root:not([data-theme="dark"]) [data-slot="select-item"][data-state="checked"][data-highlighted],
 :root:not([data-theme="dark"]) [data-slot="select-item"][data-state="checked"]:hover {
-  background: rgba(29, 29, 31, 0.12);
+  background: var(--selected-bg);
 }
 
 :root[data-theme="dark"] .codemini-workspace-panel {

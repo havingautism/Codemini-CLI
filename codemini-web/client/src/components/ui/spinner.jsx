@@ -7,9 +7,9 @@ const SESSION_ORB_STATES = {
   response: "shaping",
 };
 
-export function Spinner({ className }) {
+export function Spinner({ className, ...props }) {
   return (
-    <span role="status" className={cn("loading-dots", className)}>
+    <span role="status" className={cn("loading-dots", className)} {...props}>
       <span />
       <span />
       <span />

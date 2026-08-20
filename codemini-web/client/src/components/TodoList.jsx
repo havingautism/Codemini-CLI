@@ -1,40 +1,83 @@
-import { Check } from '@phosphor-icons/react';
-import { cn } from '@/lib/utils';
+import { memo, useState } from "react";
+import { CaretDown, Check, ListBullets } from "@phosphor-icons/react";
+import { DisclosureRowButton } from "@/components/DisclosureLeading.jsx";
+import { cn } from "@/lib/utils";
+import { t } from "../../i18n/index.js";
+
+function countTodosByStatus(todos = []) {
+  let pending = 0;
+  let inProgress = 0;
+  let completed = 0;
+  for (const todo of todos) {
+    if (todo.status === "completed") completed += 1;
+    else if (todo.status === "in_progress") inProgress += 1;
+    else pending += 1;
+  }
+  return { pending, inProgress, completed };
+}
+
+function formatTodoStatusSummary(todos = []) {
+  const { pending, inProgress, completed } = countTodosByStatus(todos);
+  const parts = [];
+  if (inProgress > 0) {
+    parts.push(t("tasksInProgress").replace("{count}", String(inProgress)));
+  }
+  if (pending > 0) {
+    parts.push(t("tasksPending").replace("{count}", String(pending)));
+  }
+  if (parts.length === 0 && completed > 0) {
+    parts.push(t("tasksCompletedCount").replace("{count}", String(completed)));
+  }
+  return parts.join(" · ");
+}
+
+function todoItemsEqual(left = [], right = []) {
+  if (left === right) return true;
+  if (left.length !== right.length) return false;
+  for (let index = 0; index < left.length; index += 1) {
+    const a = left[index];
+    const b = right[index];
+    if (
+      a?.content !== b?.content ||
+      a?.activeForm !== b?.activeForm ||
+      a?.status !== b?.status
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
 
 export function TodoList({ todos }) {
   if (!todos?.length) return null;
 
   return (
-    <div className="flex flex-col gap-0.5" role="list">
+    <div className="flex flex-col" role="list">
       {todos.map((todo, i) => {
-        const completed = todo.status === 'completed';
-        const inProgress = todo.status === 'in_progress';
+        const completed = todo.status === "completed";
+        const inProgress = todo.status === "in_progress";
         return (
           <div
-            key={i}
-            className={cn(
-              'flex min-w-0 items-start gap-3 rounded-lg px-2.5 py-2 text-[13px] leading-5',
-              inProgress && 'bg-(--bg-secondary)',
-            )}
+            key={`${todo.content || todo.activeForm || "todo"}-${i}`}
+            className="flex min-h-11 min-w-0 items-center gap-2.5 py-2.5 text-[13px] leading-5"
             role="listitem"
           >
             <span
               aria-hidden="true"
               className={cn(
-                'mt-px flex size-[18px] shrink-0 items-center justify-center rounded-[5px] border transition-colors',
-                completed && 'border-primary bg-primary text-primary-foreground',
-                inProgress && 'border-(--text-muted) bg-(--bg-primary)',
-                !completed && !inProgress && 'border-(--border-default) bg-(--bg-primary)',
+                "relative flex size-[15px] shrink-0 items-center justify-center",
+                completed && "rounded-full bg-(--text-primary) text-(--bg-primary)",
+                !completed && !inProgress && "rounded-full border border-[color:color-mix(in_srgb,var(--text-primary)_22%,transparent)]",
               )}
             >
-              {completed ? <Check size={12} weight="bold" /> : null}
-              {inProgress ? <span className="size-1.5 rounded-full bg-(--text-secondary)" /> : null}
+              {completed ? <Check size={9} weight="bold" /> : null}
+              {inProgress ? <span className="codemini-task-spinner" /> : null}
             </span>
             <span
               className={cn(
-                'min-w-0 break-words text-(--text-primary)',
-                completed && 'text-(--text-muted) line-through decoration-[color:color-mix(in_srgb,var(--text-muted)_60%,transparent)]',
-                inProgress && 'font-medium',
+                "min-w-0 flex-1 break-words font-normal tracking-[-0.006em] text-(--text-primary)",
+                completed && "text-(--text-muted) line-through decoration-[color:color-mix(in_srgb,var(--text-muted)_45%,transparent)]",
+                inProgress && "text-(--text-primary)",
               )}
             >
               {todo.content || todo.activeForm}
@@ -45,3 +88,107 @@ export function TodoList({ todos }) {
     </div>
   );
 }
+
+const todoOpenByKey = new Map();
+
+export const TodoCard = memo(function TodoCard({
+  todos = [],
+  persistKey = "",
+  variant = "inline",
+}) {
+  const isDock = variant === "dock";
+  const [open, setOpen] = useState(() =>
+    persistKey ? todoOpenByKey.get(persistKey) === true : false,
+  );
+  const summary = formatTodoStatusSummary(todos);
+  const toggleOpen = () => {
+    setOpen((value) => {
+      const next = !value;
+      if (persistKey) todoOpenByKey.set(persistKey, next);
+      return next;
+    });
+  };
+
+  if (isDock) {
+    return (
+      <section
+        className="codemini-message-surface relative w-full overflow-hidden rounded-xl"
+        aria-label={t("tasksTitle")}
+      >
+        <button
+          type="button"
+          className="msg-process-row flex min-h-11 w-full min-w-0 cursor-pointer select-none items-center gap-2.5 px-3 py-2.5 text-left text-[13px] transition-colors duration-150 hover:bg-[var(--bg-hover)] focus-visible:relative focus-visible:z-10"
+          onClick={toggleOpen}
+          aria-expanded={open}
+        >
+          <ListBullets size={14} className="shrink-0 text-(--text-secondary)" aria-hidden="true" />
+          <span className="shrink-0 text-[13px] font-semibold tracking-[-0.01em] text-(--text-primary)">
+            {t("tasksTitle")}
+          </span>
+          {summary ? (
+            <span className="min-w-0 truncate text-[12px] font-normal tabular-nums text-(--text-muted)">
+              {summary}
+            </span>
+          ) : null}
+          <CaretDown
+            size={12}
+            className={cn(
+              "ml-auto shrink-0 text-(--text-muted) transition-transform duration-150",
+              !open && "rotate-180",
+            )}
+            aria-hidden="true"
+          />
+        </button>
+        {open ? (
+          todos.length > 0 ? (
+            <div className="codemini-fold-body codemini-tasks-list max-h-44 overflow-y-auto px-3 pt-2 pb-3">
+              <TodoList todos={todos} />
+            </div>
+          ) : (
+            <div className="px-3 pt-2 pb-3 text-[13px] text-(--text-muted)">
+              {t("todosEmpty")}
+            </div>
+          )
+        ) : null}
+      </section>
+    );
+  }
+
+  return (
+    <section
+      className="codemini-disclosure msg-process-meta relative w-full"
+      aria-label={t("tasksTitle")}
+    >
+      <DisclosureRowButton
+        open={open}
+        onClick={toggleOpen}
+        icon={<ListBullets size={14} aria-hidden="true" />}
+      >
+        <span className="shrink-0">{t("tasksTitle")}</span>
+        {summary ? (
+          <>
+            <span className="codemini-disclosure-sep" aria-hidden="true" />
+            <span className="msg-process-meta__detail min-w-0 truncate tabular-nums">
+              {summary}
+            </span>
+          </>
+        ) : null}
+      </DisclosureRowButton>
+      {open ? (
+        todos.length > 0 ? (
+          <div className="codemini-disclosure-tree max-h-44 overflow-y-auto">
+            <TodoList todos={todos} />
+          </div>
+        ) : (
+          <div className="codemini-disclosure-body text-[13px] text-(--text-muted)">
+            {t("todosEmpty")}
+          </div>
+        )
+      ) : null}
+    </section>
+  );
+}, (prev, next) =>
+  prev.persistKey === next.persistKey &&
+  prev.variant === next.variant &&
+  todoItemsEqual(prev.todos, next.todos),
+);

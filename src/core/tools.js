@@ -1,9 +1,10 @@
 import fs from "node:fs/promises";
-import { createReadStream, realpathSync } from "node:fs";
+import { createReadStream, existsSync, realpathSync } from "node:fs";
 import { createInterface } from "node:readline";
 import path from "node:path";
 import os from "node:os";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
+import { createRequire } from "node:module";
 import { createHash } from "node:crypto";
 import { rgPath } from "@vscode/ripgrep";
 import net from "node:net";
@@ -67,7 +68,11 @@ import { runDreamConsolidation } from "./dream-consolidate.js";
 import { inferMemoryScope, normalizeMemoryKind } from "./memory-policy.js";
 import { getReplyLanguageName } from "./reply-language.js";
 import { normalizePlanState } from "./plan-state.js";
-import { normalizeTodos } from "./todo-state.js";
+import {
+  canonicalizeTodos,
+  countTodosByStatus,
+  normalizeTodos,
+} from "./todo-state.js";
 import {
   normalizeAssumptionItems,
   normalizeFilePathValue,
@@ -590,22 +595,77 @@ function playwrightInstallHint() {
   return "For JavaScript-rendered pages, install Playwright for richer web_fetch results: npm install -g playwright && playwright install chromium";
 }
 
-async function loadOptionalPlaywright() {
+function isMissingPlaywrightError(error) {
+  const code = String(error?.code || "");
+  const message = String(error?.message || "");
+  return (
+    code === "ERR_MODULE_NOT_FOUND" ||
+    code === "MODULE_NOT_FOUND" ||
+    /Cannot find package 'playwright'|Cannot find module 'playwright'/i.test(message)
+  );
+}
+
+function unwrapPlaywrightModule(mod) {
+  if (mod && typeof mod.chromium?.executablePath === "function") return mod;
+  if (mod?.default && typeof mod.default.chromium?.executablePath === "function") {
+    return mod.default;
+  }
+  return null;
+}
+
+function readNpmGlobalNodeModules() {
   try {
-    return await import("playwright");
+    const root = execFileSync("npm", ["root", "-g"], {
+      encoding: "utf8",
+      timeout: 2500,
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    return root || "";
+  } catch {
+    return "";
+  }
+}
+
+function playwrightGlobalNodeModulesCandidates() {
+  const extra = String(process.env.CODEMINI_NPM_GLOBAL_NODE_MODULES || "").trim();
+  if (extra) return [extra];
+  const roots = [];
+  const add = (value) => {
+    const root = String(value || "").trim();
+    if (!root || roots.includes(root)) return;
+    roots.push(root);
+  };
+  const execDir = path.dirname(process.execPath);
+  add(path.resolve(execDir, "..", "lib", "node_modules"));
+  add(path.resolve(execDir, "node_modules"));
+  add(readNpmGlobalNodeModules());
+  return roots;
+}
+
+function loadPlaywrightFromNodeModules(nodeModulesDir) {
+  const root = String(nodeModulesDir || "").trim();
+  if (!root) return null;
+  try {
+    const requireFromRoot = createRequire(path.join(root, "package.json"));
+    return unwrapPlaywrightModule(requireFromRoot("playwright"));
   } catch (error) {
-    const code = String(error?.code || "");
-    const message = String(error?.message || "");
-    if (
-      code === "ERR_MODULE_NOT_FOUND" ||
-      /Cannot find package 'playwright'|Cannot find module 'playwright'/i.test(
-        message,
-      )
-    ) {
-      return null;
-    }
+    if (isMissingPlaywrightError(error)) return null;
     throw error;
   }
+}
+
+async function loadOptionalPlaywright() {
+  try {
+    const imported = unwrapPlaywrightModule(await import("playwright"));
+    if (imported) return imported;
+  } catch (error) {
+    if (!isMissingPlaywrightError(error)) throw error;
+  }
+  for (const root of playwrightGlobalNodeModulesCandidates()) {
+    const loaded = loadPlaywrightFromNodeModules(root);
+    if (loaded) return loaded;
+  }
+  return null;
 }
 
 export async function detectPlaywrightStatus() {
@@ -621,8 +681,8 @@ export async function detectPlaywrightStatus() {
   }
   let chromiumReady = false;
   try {
-    playwright.chromium.executablePath();
-    chromiumReady = true;
+    const executablePath = String(playwright.chromium.executablePath() || "").trim();
+    chromiumReady = Boolean(executablePath) && existsSync(executablePath);
   } catch {}
   return {
     packageInstalled: true,
@@ -802,6 +862,9 @@ export async function webSearchQuery(config, args = {}) {
   if (provider === "exa") {
     return searchWithExa(config, { query, maxResults, timeoutMs });
   }
+  if (provider === "firecrawl") {
+    return searchWithFirecrawl(config, { query, maxResults, timeoutMs, region });
+  }
 
   return searchWithBingRss(config, {
     query,
@@ -812,39 +875,38 @@ export async function webSearchQuery(config, args = {}) {
   });
 }
 
+const SEARCH_API_KEY_SOURCES = {
+  tavily: { configKey: "tavily_api_key", envName: "TAVILY_API_KEY" },
+  exa: { configKey: "exa_api_key", envName: "EXA_API_KEY" },
+  firecrawl: { configKey: "firecrawl_api_key", envName: "FIRECRAWL_API_KEY" },
+};
+
 function normalizeWebSearchProvider(value) {
   const provider = String(value || "bing_rss")
     .trim()
     .toLowerCase()
     .replace(/[-\s]+/g, "_");
   if (provider === "bing") return "bing_rss";
-  if (["bing_rss", "tavily", "exa"].includes(provider)) return provider;
+  if (["bing_rss", "tavily", "exa", "firecrawl"].includes(provider)) return provider;
   return "bing_rss";
 }
 
 function resolveSearchApiKey(config, provider) {
-  if (provider === "tavily") {
-    const configured = String(config?.web?.tavily_api_key || "").trim();
-    if (configured) return configured;
-    const legacy = String(config?.web?.search_api_key || "").trim();
-    if (legacy) return legacy;
-    return String(process.env.TAVILY_API_KEY || "").trim();
-  }
-  if (provider === "exa") {
-    const configured = String(config?.web?.exa_api_key || "").trim();
-    if (configured) return configured;
-    const legacy = String(config?.web?.search_api_key || "").trim();
-    if (legacy) return legacy;
-    return String(process.env.EXA_API_KEY || "").trim();
-  }
-  return "";
+  const source = SEARCH_API_KEY_SOURCES[provider];
+  if (!source) return "";
+  const configured = String(config?.web?.[source.configKey] || "").trim();
+  if (configured) return configured;
+  const legacy = String(config?.web?.search_api_key || "").trim();
+  if (legacy) return legacy;
+  return String(process.env[source.envName] || "").trim();
 }
 
 function requireSearchApiKey(config, provider) {
   const key = resolveSearchApiKey(config, provider);
   if (key) return key;
-  const envName = provider === "tavily" ? "TAVILY_API_KEY" : "EXA_API_KEY";
-  const configKey = provider === "tavily" ? "web.tavily_api_key" : "web.exa_api_key";
+  const source = SEARCH_API_KEY_SOURCES[provider];
+  const envName = source?.envName || "SEARCH_API_KEY";
+  const configKey = source ? `web.${source.configKey}` : "web.search_api_key";
   throw new Error(
     `web_search provider "${provider}" requires an API key. Set ${configKey} or ${envName}.`,
   );
@@ -972,6 +1034,58 @@ async function searchWithTavily(config, { query, maxResults, timeoutMs }) {
   };
 }
 
+async function searchWithFirecrawl(config, { query, maxResults, timeoutMs, region }) {
+  const apiKey = requireSearchApiKey(config, "firecrawl");
+  const endpoint = String(
+    config?.web?.search_base_url || "https://api.firecrawl.dev/v2/search",
+  ).trim();
+  const country = String(region || "").trim().toUpperCase();
+  const json = await fetchJsonWithTimeout(endpoint, {
+    timeoutMs,
+    errorPrefix: "web_search Firecrawl request failed",
+    headers: {
+      authorization: `Bearer ${apiKey}`,
+    },
+    body: {
+      query,
+      limit: maxResults,
+      sources: [{ type: "web" }, { type: "images" }],
+      timeout: timeoutMs,
+      ...(country.length === 2 ? { country } : {}),
+    },
+  });
+  const data = json?.data && typeof json.data === "object" && !Array.isArray(json.data)
+    ? json.data
+    : json;
+  const webItems = Array.isArray(data?.web)
+    ? data.web
+    : Array.isArray(data)
+      ? data
+      : [];
+  const images = normalizeFirecrawlImages(data?.images, maxResults * 2);
+  const results = webItems.slice(0, maxResults).map((item) => {
+    const url = normalizeSearchResultUrl(item.url);
+    const pageImages = images
+      .filter((image) => image.page_url && image.page_url === url)
+      .map(({ url: imageUrl, description }) => ({ url: imageUrl, description }));
+    return normalizeProviderSearchResult({
+      title: item.title,
+      url: item.url,
+      description: item.description || item.snippet || item.markdown,
+      images: pageImages,
+    });
+  });
+  return {
+    query,
+    engine: "firecrawl",
+    source_url: endpoint,
+    no_results: results.length === 0 && images.length === 0,
+    results,
+    images: images.map(({ url, description }) => ({ url, description })),
+    related: [],
+  };
+}
+
 async function searchWithExa(config, { query, maxResults, timeoutMs }) {
   const apiKey = requireSearchApiKey(config, "exa");
   const endpoint = String(config?.web?.search_base_url || "https://api.exa.ai/search").trim();
@@ -1022,6 +1136,32 @@ function normalizeProviderSearchResult(item = {}) {
     ...(Number.isFinite(Number(item.score)) ? { score: Number(item.score) } : {}),
     ...(images.length ? { images } : {}),
   };
+}
+
+function normalizeFirecrawlImages(value, limit = 8) {
+  const rawItems = Array.isArray(value) ? value : [];
+  const images = [];
+  const seen = new Set();
+  for (const item of rawItems) {
+    if (images.length >= limit) break;
+    const rawUrl = typeof item === "string"
+      ? item
+      : item?.imageUrl || item?.image_url;
+    const url = normalizeSearchResultUrl(rawUrl);
+    if (!url || seen.has(url)) continue;
+    seen.add(url);
+    const pageUrl = typeof item === "object"
+      ? normalizeSearchResultUrl(item.url)
+      : "";
+    images.push({
+      url,
+      description: normalizeWhitespace(
+        typeof item === "string" ? "" : item?.title || item?.description || item?.alt || "",
+      ),
+      ...(pageUrl && pageUrl !== url ? { page_url: pageUrl } : {}),
+    });
+  }
+  return images;
 }
 
 function normalizeTavilyImages(value, limit = 8) {
@@ -4870,37 +5010,39 @@ export function getBuiltinTools({
     {
       type: "function",
       function: {
-        name: "update_todos",
+        name: "tasks",
         description:
-          "Create or replace the structured todo checklist for the current session. Use this proactively for complex single-task work to track progress. Provide the full current list each time, and keep exactly one item in_progress when work is actively underway.",
+          "Record and update a structured task list for the current work. Send the ENTIRE list every call — it REPLACES the previous list (there are no partial updates, no per-item edits, no read-back). Use it to plan multi-step work and show progress: add one item per concrete step before you start. Mark every task being actively worked as in_progress — several at once when work genuinely runs in parallel, one for sequential work; while work remains, at least one task should be in_progress. Mark a task completed the moment it is done (do not batch completions), and leave no in_progress item only once all work is complete. Skip the list for trivial single-step tasks. Statuses: pending, in_progress, completed.",
         parameters: {
           type: "object",
           properties: {
-            todos: {
+            tasks: {
               type: "array",
               items: {
                 type: "object",
                 properties: {
                   content: {
                     type: "string",
-                    description: 'Imperative task text such as "Run tests"',
-                  },
-                  activeForm: {
-                    type: "string",
-                    description:
-                      'Present continuous form such as "Running tests"',
+                    description: "What the task is — a short imperative line.",
                   },
                   status: {
                     type: "string",
-                    description: "pending, in_progress, or completed",
+                    enum: ["pending", "in_progress", "completed"],
+                    description:
+                      "pending (not started) | in_progress (now) | completed (done).",
+                  },
+                  activeForm: {
+                    type: "string",
+                    description: "Optional. Ignored for display; content is shown.",
                   },
                 },
-                required: ["content", "activeForm", "status"],
+                required: ["content", "status"],
               },
-              description: "The full current todo checklist for this session",
+              description:
+                "The COMPLETE task list, replacing any previous list.",
             },
           },
-          required: ["todos"],
+          required: ["tasks"],
         },
       },
     },
@@ -5061,14 +5203,32 @@ export function getBuiltinTools({
       function: {
         name: "run_subagent",
         description:
-          "Delegate work to a clean-context subagent so project inspection, test output, and independent reasoning do not bloat the main context. Prefer this for repository exploration, architecture/dependency lookup, broad code reading, test execution and failure triage, review, option comparison, and isolated implementation chunks. You write the full prompt and optional handoff context. Invent a short human name for the worker (e.g. David, Mira). For a dependency DAG, assign task_id and let later calls use depends_on; upstream handoffs are injected automatically. Dependencies must reference earlier calls in the same response. Capability is controlled by tools (default allows edits; pass a read-only list for explore/review/test-only work). Independent same-response calls run in parallel only when every call has an explicit read-only tools list; default or mutating workers run sequentially because they share one worktree. Subagents cannot call run_subagent/create_plan/create_spec. Avoid only truly atomic actions where delegation adds no useful evidence.",
+          "Delegate work to a clean-context subagent so project inspection, test output, and independent reasoning do not bloat the main context. Pass a compact task envelope (goal, files, constraints, known facts) in tasks/prompt; do not copy the parent transcript. Prefer this for repository exploration, architecture/dependency lookup, broad code reading, test execution and failure triage, review, option comparison, and isolated implementation chunks. Invent a short human name for the worker (e.g. David, Mira). For a dependency DAG, assign task_id and let later calls use depends_on; upstream handoffs are injected automatically. Dependencies must reference earlier calls in the same response. Capability is controlled by tools (default allows edits; pass a read-only list for explore/review/test-only work). Independent same-response calls run in parallel only when every call has an explicit read-only tools list; default or mutating workers run sequentially because they share one worktree. Subagents cannot call run_subagent/create_plan/create_spec. Avoid only truly atomic actions where delegation adds no useful evidence.",
         parameters: {
           type: "object",
           properties: {
             prompt: {
               type: "string",
               description:
-                "Full task prompt for the subagent: goal, targets, success criteria, out-of-scope, and verification intent.",
+                "Optional scope, constraints, context, and handoff details. Use tasks for the concrete work items.",
+            },
+            tasks: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  content: { type: "string" },
+                  status: {
+                    type: "string",
+                    enum: ["pending", "in_progress", "completed"],
+                    description: "pending, in_progress, or completed",
+                  },
+                  activeForm: { type: "string" },
+                },
+                required: ["content"],
+              },
+              description:
+                "Concrete structured task checklist assigned to this subagent. Prefer this over burying work items in prompt prose.",
             },
             summary: {
               type: "string",
@@ -5112,7 +5272,7 @@ export function getBuiltinTools({
                 "Optional tool allow-list. Defaults to the coding edit baseline. Use a read-only subset for explore/review. On Linux/mac staged write and apply_patch are unavailable (prefer edit/write); glob/grep are part of the inspect baseline. run_subagent/create_plan/create_spec are always forbidden.",
             },
           },
-          required: ["prompt"],
+          required: [],
         },
       },
     });
@@ -6213,7 +6373,12 @@ export function getBuiltinTools({
           )
         : await readDshFile(workspaceRoot, args, config);
       const readPath = normalizePath(result?.path || args?.path || "").trim();
-      if (readPath && result?.phase !== "directory_listing") {
+      // The dedup/unchanged stub only fires when the mtime-based dedup already
+      // proved this exact path+range is unchanged since an earlier read in this
+      // turn (which recorded the full-file observation). Re-observing here would
+      // re-read and SHA-256 the entire file for no new information, so skip it;
+      // the existing observation entry stays valid for later change detection.
+      if (readPath && result?.phase !== "directory_listing" && result?.unchanged !== true) {
         const readTarget = await resolveInWorkspace(workspaceRoot, readPath, config);
         await observeFile(readTarget);
       }
@@ -6629,11 +6794,15 @@ export function getBuiltinTools({
         },
       },
     ),
-    update_todos: async (args = {}) => {
+    tasks: async (args = {}) => {
       const oldTodos = normalizeTodos(
         typeof getTodos === "function" ? getTodos() : [],
       );
-      const nextTodos = normalizeTodos(args?.todos);
+      const parsed = canonicalizeTodos(args?.tasks);
+      if (parsed.error) {
+        return { ok: false, error: parsed.error };
+      }
+      const nextTodos = parsed.todos;
       if (typeof onTodosUpdate === "function") {
         onTodosUpdate(nextTodos);
       }
@@ -6641,6 +6810,7 @@ export function getBuiltinTools({
         ok: true,
         oldTodos,
         newTodos: nextTodos,
+        counts: countTodosByStatus(nextTodos),
       };
     },
     read_plan: async (args = {}) => {
@@ -6755,12 +6925,14 @@ export function getBuiltinTools({
           error: "run_subagent is not available in the current mode.",
         };
       }
+      const assignedTasks = normalizeTodos(args?.tasks);
       const prompt = String(args?.prompt || "").trim();
-      if (!prompt) {
-        return { ok: false, error: "prompt is required" };
+      if (!prompt && assignedTasks.length === 0) {
+        return { ok: false, error: "prompt or tasks is required" };
       }
       return onRunSubAgent({
-        prompt,
+        prompt: prompt || "Complete the assigned tasks.",
+        tasks: assignedTasks,
         summary: String(args?.summary || "").trim(),
         name: String(args?.name || "").trim(),
         role: String(args?.role || "").trim(),
@@ -6947,7 +7119,11 @@ export function getBuiltinTools({
           : [];
       emitSystemTool({ type: "skill:start", name: command.name });
       try {
-        const content = renderCommandPrompt(command, skillArgs);
+        const content = renderCommandPrompt(command, skillArgs, {
+          config,
+          cwd: workspaceRoot,
+          platform,
+        });
         emitSystemTool({ type: "skill:end", name: command.name });
         return {
           name: command.name,
@@ -7229,20 +7405,11 @@ export function getBuiltinTools({
       return `${header}\n${dirs.join("\n")}${dirs.length && files.length ? "\n" : ""}${files.join("\n")}`;
     },
 
-    update_todos(result) {
+    tasks(result) {
       if (!result || typeof result !== "object") return String(result);
-      const nextTodos = normalizeTodos(result.newTodos);
-      if (nextTodos.length === 0) return "Todo list cleared.";
-      const lines = nextTodos.map((item) => {
-        const box =
-          item.status === "completed"
-            ? "[x]"
-            : item.status === "in_progress"
-              ? "[~]"
-              : "[ ]";
-        return `${box} ${item.content}`;
-      });
-      return ["Updated todo list:", ...lines].join("\n");
+      if (result.ok === false && result.error) return String(result.error);
+      const counts = result.counts || countTodosByStatus(result.newTodos);
+      return `Updated todo list: ${counts.pending} pending, ${counts.inProgress} in progress, ${counts.completed} completed.`;
     },
 
     read_plan(result) {

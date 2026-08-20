@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { getEffectivePolicy } from './shell-profile.js';
-import { getBaseConfigDir } from './paths.js';
+import { getBaseConfigDir, getSkillsDir } from './paths.js';
 import { isVmSandbox, resolveSandboxPolicy } from './sandbox-policy.js';
 import { inspectShellCommandPaths } from './shell-path-policy.js';
 
@@ -203,6 +203,7 @@ function allowedPathRoots(workspaceRoot, config = {}) {
   return [
     workspaceRoot,
     path.join(getBaseConfigDir(), 'workspace'),
+    getSkillsDir(),
     ...(Array.isArray(config?.policy?.allowed_paths) ? config.policy.allowed_paths : [])
   ]
     .map((item) => String(item || '').trim())
@@ -270,8 +271,21 @@ export function evaluateCommandPolicy(command, config, workspaceRoot = process.c
     return { allowed: true };
   }
 
+  const allowedRoots = allowedPathRoots(workspaceRoot, config);
+  const pathInspection = inspectShellCommandPaths({
+    command: cmd,
+    shell: config?.shell?.default,
+    workspaceRoot,
+    allowedRoots,
+  });
   if (includesAny(lower, policy.blocked_path_patterns)) {
-    return { allowed: false, reason: 'blocked protected system path' };
+    const pathLike = pathInspection.candidates.filter(
+      (candidate) => candidate.kind === 'absolute' || candidate.kind === 'relative-escape',
+    );
+    const onlyAllowedRoots = pathLike.length > 0 && pathLike.every((candidate) => candidate.outside !== true);
+    if (!onlyAllowedRoots) {
+      return { allowed: false, reason: 'blocked protected system path' };
+    }
   }
 
   const token = firstToken(cmd);
@@ -297,13 +311,6 @@ export function evaluateCommandPolicy(command, config, workspaceRoot = process.c
     }
   }
 
-  const allowedRoots = allowedPathRoots(workspaceRoot, config);
-  const pathInspection = inspectShellCommandPaths({
-    command: cmd,
-    shell: config?.shell?.default,
-    workspaceRoot,
-    allowedRoots,
-  });
   const outside = pathInspection.outside[0];
   if (outside) {
     const reason = outside.kind === 'relative-escape'

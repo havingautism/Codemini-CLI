@@ -13,13 +13,35 @@ test('coding tools expose run_subagent when onRunSubAgent is provided', () => {
   assert.equal(typeof handlers.run_subagent, 'function');
 });
 
-test('run_subagent requires a prompt', async () => {
+test('run_subagent requires a prompt or tasks', async () => {
   const { handlers } = getBuiltinTools({
     onRunSubAgent: async () => ({ ok: true, text: 'done' }),
   });
   const empty = await handlers.run_subagent({});
   assert.equal(empty.ok, false);
-  assert.match(empty.error, /prompt/i);
+  assert.match(empty.error, /prompt or tasks/i);
+});
+
+test('run_subagent accepts structured tasks without duplicating them in prompt prose', async () => {
+  let seen = null;
+  const { definitions, handlers } = getBuiltinTools({
+    onRunSubAgent: async (args) => {
+      seen = args;
+      return { ok: true, text: 'done' };
+    },
+  });
+  const def = definitions.find((item) => item.function?.name === 'run_subagent');
+  assert.equal(Boolean(def?.function?.parameters?.properties?.tasks), true);
+
+  await handlers.run_subagent({
+    name: 'Mira',
+    tasks: [{ content: 'Inspect notebook sources', activeForm: 'Inspecting notebook sources', status: 'pending' }],
+  });
+
+  assert.equal(seen.prompt, 'Complete the assigned tasks.');
+  assert.deepEqual(seen.tasks, [
+    { content: 'Inspect notebook sources', activeForm: 'Inspecting notebook sources', status: 'pending' },
+  ]);
 });
 
 test('run_subagent forwards invented name to handler', async () => {

@@ -44,3 +44,55 @@ test('reloading config synchronizes the model across loaded sessions', async () 
     ['session-a', 'session-b'],
   );
 });
+
+test('rekeySession moves a live pool entry to the continuation id', async () => {
+  const events = [];
+  const pool = new RuntimePool({
+    runtimeFactory: async ({ sessionId }) => ({
+      sessionId,
+      abort: async () => true,
+    }),
+    onEvent: (event) => events.push(event),
+    maxConcurrent: 1,
+  });
+
+  await pool.ensureSession({
+    sessionId: 'session-old',
+    projectDir: '/tmp/project',
+    model: 'model',
+  });
+  let releaseRun;
+  const runDone = new Promise((resolve) => {
+    releaseRun = resolve;
+  });
+  const accepted = pool.submit('session-old', () => runDone);
+  assert.equal(accepted.state, 'running');
+  assert.equal(pool.getSessionState('session-old').sessionId, 'session-old');
+
+  assert.equal(pool.rekeySession('session-old', 'session-new'), true);
+  assert.equal(pool.getSessionState('session-old'), null);
+  assert.equal(pool.getSessionState('session-new').sessionId, 'session-new');
+  assert.equal(pool.getSessionState('session-new').status, 'running');
+  assert.equal(pool.rekeySession('session-old', 'session-new'), false);
+  assert.equal(pool.rekeySession('session-new', 'session-new'), false);
+
+  await pool.ensureSession({
+    sessionId: 'session-queued',
+    projectDir: '/tmp/project',
+    model: 'model',
+  });
+  let releaseQueued;
+  const queuedDone = new Promise((resolve) => {
+    releaseQueued = resolve;
+  });
+  const queuedSubmit = pool.submit('session-queued', () => queuedDone);
+  assert.equal(queuedSubmit.state, 'queued');
+  assert.equal(pool.rekeySession('session-queued', 'session-queued-next'), true);
+  assert.equal(pool.getSessionState('session-queued'), null);
+  assert.equal(pool.getSessionState('session-queued-next').status, 'queued');
+
+  releaseRun({ status: 'aborted' });
+  releaseQueued({ status: 'completed' });
+  await pool.abort('session-new');
+  await pool.abort('session-queued-next');
+});

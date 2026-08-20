@@ -5,7 +5,8 @@ import { Container, getCapabilities, setCapabilities } from '@earendil-works/pi-
 
 import { buildSlashCommands, runOpenCodeTui } from '../src/tui/opencode-chat-app.js';
 import { ActivityBar, ApprovalDialog, Footer, TopBar } from '../src/tui/components/chrome.js';
-import { PlanProgress, ProcessedFold, ReasoningBlock, TodoProgress, ToolCall, ToolCallGroup, appendHistory, createAssistantMessage, createUserMessage, linkMarkdownImages } from '../src/tui/components/messages.js';
+import { PlanProgress, ProcessedFold, ReasoningBlock, TodoProgress, ToolCall, ToolCallGroup, appendHistory, createAssistantMessage, createSystemMessage, createUserMessage, linkMarkdownImages } from '../src/tui/components/messages.js';
+import { ModeHome } from '../src/tui/components/mode-home.js';
 import { createTuiCopy } from '../src/tui/copy.js';
 
 class FakeTerminal {
@@ -229,6 +230,108 @@ test('OpenCode-style TUI queues prompts while a turn is running', async () => {
   await running;
 });
 
+test('Ctrl+Enter jumps the queue while a turn is running', async () => {
+  const terminal = new FakeTerminal();
+  const calls = [];
+  let releaseFirst;
+  const firstTurn = new Promise((resolve) => { releaseFirst = resolve; });
+  const runtime = {
+    getSessionMessages: () => [],
+    getInputHistory: async () => [],
+    getAvailableSkills: () => [],
+    getRuntimeState: () => ({ model: 'test-model', workspaceRoot: 'E:\\repo' }),
+    setRequestToolApproval() {},
+    setExecutionMode: async () => {},
+    submitMessage: async ({ text }, onEvent) => {
+      calls.push(text);
+      if (calls.length === 1) await firstTurn;
+      onEvent({ type: 'assistant:start' });
+      onEvent({ type: 'assistant:delta', text: `reply:${text}` });
+      onEvent({ type: 'assistant:response', text: `reply:${text}` });
+      return { type: 'assistant', text: `reply:${text}` };
+    }
+  };
+
+  const running = runOpenCodeTui({ runtime, sessionId: 'queue-jump-test', model: 'test-model', terminal });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  terminal.send('\r');
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  for (const key of 'first') terminal.send(key);
+  terminal.send('\r');
+  await waitFor(() => calls.length === 1);
+
+  // Enter while busy appends to the end of the queue...
+  for (const key of 'normal') terminal.send(key);
+  terminal.send('\r');
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  // ...Ctrl+Enter while busy jumps the queue instead.
+  for (const key of 'urgent') terminal.send(key);
+  terminal.send('\u001b[27;5;13~');
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  releaseFirst();
+  await waitFor(() => calls.length === 3);
+  assert.deepEqual(calls, ['first', 'urgent', 'normal']);
+  await waitFor(() => stripAnsi(terminal.output).includes('reply:urgent'));
+  terminal.send('\u0003');
+  terminal.send('\u0003');
+  await running;
+});
+
+test('manual stop continues on a new session instead of appending under the aborted turn', async () => {
+  const terminal = new FakeTerminal();
+  const calls = [];
+  let currentSessionId = 'old-session';
+  let rejectFirst;
+  const firstTurn = new Promise((_, reject) => { rejectFirst = reject; });
+  const runtime = {
+    getSessionMessages: () => [],
+    getInputHistory: async () => [],
+    getAvailableSkills: () => [],
+    getCurrentSessionId: () => currentSessionId,
+    getRuntimeState: () => ({ model: 'test-model', workspaceRoot: 'E:\\repo', sessionId: currentSessionId }),
+    setRequestToolApproval() {},
+    setExecutionMode: async () => {},
+    abort() {
+      currentSessionId = 'new-session';
+      const error = new Error('Aborted');
+      error.name = 'AbortError';
+      rejectFirst(error);
+      return true;
+    },
+    submitMessage: async ({ text }, onEvent) => {
+      calls.push(text);
+      if (calls.length === 1) {
+        onEvent({ type: 'assistant:start' });
+        onEvent({ type: 'assistant:delta', text: 'partial-' });
+        await firstTurn;
+      }
+      onEvent({ type: 'assistant:start' });
+      onEvent({ type: 'assistant:delta', text: `reply:${text}` });
+      onEvent({ type: 'assistant:response', text: `reply:${text}` });
+      return { type: 'assistant', text: `reply:${text}` };
+    }
+  };
+
+  const running = runOpenCodeTui({ runtime, sessionId: 'old-session', model: 'test-model', terminal });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  terminal.send('\r');
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  for (const key of 'first') terminal.send(key);
+  terminal.send('\r');
+  await waitFor(() => calls.length === 1);
+  for (const key of 'next') terminal.send(key);
+  terminal.send('\r');
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  terminal.send('\u001b');
+  await waitFor(() => calls.length === 2);
+  await waitFor(() => /continued in a new conversation|已在新会话中继续/.test(stripAnsi(terminal.output)));
+  await waitFor(() => stripAnsi(terminal.output).includes('reply:next'));
+  terminal.send('\u0003');
+  terminal.send('\u0003');
+  await running;
+});
+
 test('up arrow recalls editor history instead of scrolling the transcript', async () => {
   const terminal = new FakeTerminal();
   const calls = [];
@@ -269,36 +372,36 @@ test('tool calls collapse by default and expose details when toggled', () => {
 });
 
 test('todo progress is a persistent card that updates in place', () => {
-  const todo = new TodoProgress({ todos: [
+  const todo = new TodoProgress({ tasks: [
     { content: 'Inspect', status: 'completed' },
     { content: 'Build', status: 'in_progress' },
     { content: 'Verify', status: 'pending' },
   ] });
 
   let rendered = stripAnsi(todo.render(80).join('\n'));
-  assert.match(rendered, /Todos  1\/3/);
+  assert.match(rendered, /Tasks  1\/3/);
   assert.match(rendered, /✓ Inspect/);
   assert.match(rendered, /● Build/);
   assert.match(rendered, /○ Verify/);
-  todo.update({ arguments: { todos: [
+  todo.update({ arguments: { tasks: [
     { content: 'Inspect', status: 'completed' },
     { content: 'Build', status: 'completed' },
   ] } });
   rendered = stripAnsi(todo.render(80).join('\n'));
-  assert.match(rendered, /Todos  2\/2/);
+  assert.match(rendered, /Tasks  2\/2/);
   assert.doesNotMatch(rendered, /Verify/);
-  assert.match(stripAnsi(new TodoProgress({ todos: [] }).render(80).join('\n')), /Todos  0\/0[\s\S]*No active todos/);
+  assert.match(stripAnsi(new TodoProgress({ tasks: [] }).render(80).join('\n')), /Tasks  0\/0[\s\S]*No active tasks/);
 });
 
 test('processed folds keep pinned todo cards visible while body-only', () => {
   const fold = new ProcessedFold(createTuiCopy('en'));
   fold.addChild(new ReasoningBlock(createTuiCopy('en'), 'hidden details', { complete: true }));
-  fold.addPinnedChild(new TodoProgress({ todos: [{ content: 'Build', status: 'in_progress' }] }));
+  fold.addPinnedChild(new TodoProgress({ tasks: [{ content: 'Build', status: 'in_progress' }] }));
   fold.finish();
   fold.setBodyOnly(true);
   const rendered = stripAnsi(fold.render(80).join('\n'));
   assert.match(rendered, /Processed/);
-  assert.match(rendered, /Todos/);
+  assert.match(rendered, /Tasks/);
   assert.match(rendered, /Build/);
   assert.doesNotMatch(rendered, /hidden details/);
 });
@@ -335,9 +438,30 @@ test('reasoning, tool groups and Processed folds leave one line of breathing roo
   tools.add({ name: 'read', arguments: { path: 'README.md' } });
   const processed = new ProcessedFold(copy);
   processed.finish();
-  assert.equal(reasoning.render(80).at(-1), '');
-  assert.equal(tools.render(80).at(-1), '');
-  assert.equal(processed.render(80).at(-1), '');
+  assert.equal(stripAnsi(reasoning.render(80).at(-1)), ' '.repeat(80));
+  assert.equal(stripAnsi(tools.render(80).at(-1)), ' '.repeat(80));
+  assert.equal(stripAnsi(processed.render(80).at(-1)), ' '.repeat(80));
+});
+
+test('every rendered TUI line is painted with the dark surface background', () => {
+  const copy = createTuiCopy('en');
+  const dark = /\u001b\[48;2;31;34;41m/;
+  const painted = (lines) => lines.every((line) => dark.test(line));
+  assert.equal(painted(new ModeHome({ copy, getHeight: () => 24, onAction() {} }).render(80)), true);
+  assert.equal(painted(createUserMessage('hello **world**').render(80)), true);
+  assert.equal(painted(createAssistantMessage('# hi').render(80)), true);
+  assert.equal(painted(createSystemMessage('notice').render(80)), true);
+  assert.equal(painted(new ReasoningBlock(copy, 'hidden details', { complete: true }).render(80)), true);
+  const todo = new TodoProgress({ tasks: [{ content: 'Build', status: 'in_progress' }] });
+  assert.equal(painted(todo.render(80)), true);
+  const tools = new ToolCallGroup(copy);
+  tools.add({ name: 'read', arguments: { path: 'README.md' } });
+  tools.setExpanded(true);
+  assert.equal(painted(tools.render(80)), true);
+  const processed = new ProcessedFold(copy);
+  processed.addChild(new ReasoningBlock(copy, 'details', { complete: true }));
+  processed.finish();
+  assert.equal(painted(processed.render(80)), true);
 });
 
 test('settings modal updates reasoning, approval, sandbox and persona', async () => {

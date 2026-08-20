@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import stripAnsiText from 'strip-ansi';
 import { resolveShell } from '../../src/core/shell.js';
+import { ensureNodePtySpawnHelperExecutable } from './node-pty-spawn-helper.js';
 export {
   buildPowerShellColorBootstrap,
   buildTerminalColorEnv,
@@ -100,8 +101,10 @@ function handleHostMessage(message) {
   }
   if (message.type === 'error') {
     const data = `\r\n\u001b[31m[terminal error: ${message.error}]\u001b[0m\r\n`;
+    session.connected = false;
     appendTranscript(session, data);
     broadcast(session, { type: 'data', data });
+    broadcast(session, { type: 'status', connected: false });
     return;
   }
   if (message.type === 'exit') {
@@ -118,19 +121,65 @@ function handleHostMessage(message) {
   }
 }
 
+const pendingHostMessages = [];
+
+function flushHostQueue(host = terminalHost) {
+  if (!host?.connected) return;
+  while (pendingHostMessages.length > 0) {
+    host.send(pendingHostMessages.shift());
+  }
+}
+
+function terminalHostExecArgv(argv = process.execArgv) {
+  const filtered = [];
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if (arg === '--input-type' || arg.startsWith('--input-type=')) {
+      if (arg === '--input-type') i += 1;
+      continue;
+    }
+    if (arg === '--eval' || arg === '-e' || arg === '--print' || arg === '-p') {
+      i += 1;
+      continue;
+    }
+    filtered.push(arg);
+  }
+  return filtered;
+}
+
+function enqueueHostMessage(message) {
+  if (message?.type === 'resize') {
+    const index = pendingHostMessages.findIndex(
+      (item) => item?.type === 'resize' && item.key === message.key,
+    );
+    if (index >= 0) pendingHostMessages.splice(index, 1);
+  }
+  pendingHostMessages.push(message);
+}
+
 function ensureHost() {
-  if (terminalHost?.connected) return terminalHost;
+  if (terminalHost) return terminalHost;
+  ensureNodePtySpawnHelperExecutable();
   const host = fork(HOST_FILE, [], {
     cwd: process.cwd(),
     env: process.env,
+    execArgv: terminalHostExecArgv(),
     windowsHide: true,
     stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
   });
   terminalHost = host;
-  host.on('message', handleHostMessage);
+  host.on('message', (message) => {
+    if (message?.type === 'host-ready') {
+      flushHostQueue(host);
+      return;
+    }
+    handleHostMessage(message);
+  });
+  host.on('spawn', () => flushHostQueue(host));
   host.on('exit', () => {
     if (terminalHost !== host) return;
     terminalHost = null;
+    pendingHostMessages.length = 0;
     for (const session of sessions.values()) {
       session.connected = false;
       broadcast(session, { type: 'status', connected: false });
@@ -141,7 +190,12 @@ function ensureHost() {
 
 function sendToHost(message) {
   const host = ensureHost();
-  if (host.connected) host.send(message);
+  if (host.connected) {
+    flushHostQueue(host);
+    host.send(message);
+    return;
+  }
+  enqueueHostMessage(message);
 }
 
 function spawnSession(session) {
@@ -317,6 +371,7 @@ export function runTerminalCommand({
 /** Test helper */
 export async function _resetTerminalSessionsForTests() {
   sessions.clear();
+  pendingHostMessages.length = 0;
   const host = terminalHost;
   terminalHost = null;
   if (!host) return;

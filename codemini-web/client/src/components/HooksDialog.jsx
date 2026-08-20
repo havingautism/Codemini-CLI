@@ -149,7 +149,7 @@ export function HooksEventEditor({ hooksState, onHooksStateChange, disabled }) {
               'rounded-lg border border-(--border-default) transition-colors',
               entry.checked
                 ? 'bg-(--bg-primary)'
-                : 'bg-(--bg-subtle)/40 hover:bg-(--bg-subtle)',
+                : 'bg-(--bg-subtle)/40 hover:bg-(--bg-hover)',
             )}
           >
             <label className="flex cursor-pointer items-start gap-3 px-3 py-2.5">
@@ -414,8 +414,8 @@ function SkillHooksListItem({ skill, selected, hookCount, onSelect }) {
       className={cn(
         'flex w-full items-start gap-2 rounded-lg border px-3 py-2.5 text-left transition-colors',
         selected
-          ? 'border-(--border-strong) bg-(--bg-subtle)'
-          : 'border-transparent hover:border-(--border-default) hover:bg-(--bg-subtle)/60',
+          ? 'border-(--border-strong) bg-(--selected-bg)'
+          : 'border-transparent hover:border-(--border-default) hover:bg-(--bg-hover)',
       )}
     >
       <div className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-md bg-(--bg-primary) text-(--text-muted)">

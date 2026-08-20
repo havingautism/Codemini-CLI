@@ -12,6 +12,18 @@ export function createStreamEventBatcher({
   let queued = [];
   let scheduledId = null;
 
+  // Materialize chunk-accumulated deltas into the single `text` property
+  // consumers read, restoring the original event shape before delivery.
+  const deliver = (events) => {
+    for (const event of events) {
+      if (Array.isArray(event.chunks)) {
+        event.text = event.chunks.join('');
+        delete event.chunks;
+      }
+      handleEvent(event);
+    }
+  };
+
   const flush = () => {
     if (scheduledId !== null) {
       cancel(scheduledId);
@@ -19,7 +31,7 @@ export function createStreamEventBatcher({
     }
     const events = queued;
     queued = [];
-    for (const event of events) handleEvent(event);
+    deliver(events);
   };
 
   const scheduleFlush = () => {
@@ -28,7 +40,7 @@ export function createStreamEventBatcher({
       scheduledId = null;
       const events = queued;
       queued = [];
-      for (const event of events) handleEvent(event);
+      deliver(events);
     });
   };
 
@@ -45,9 +57,11 @@ export function createStreamEventBatcher({
         && previous.sessionId === event.sessionId
         && previous.messageId === event.messageId
       ) {
-        previous.text = `${previous.text || ''}${event.text || ''}`;
+        // Accumulate chunks instead of concatenating the whole string per
+        // delta (avoids O(n^2) full-string copies while streaming).
+        previous.chunks.push(event.text || '');
       } else {
-        queued.push({ ...event });
+        queued.push({ ...event, chunks: [event.text || ''] });
       }
       scheduleFlush();
     },

@@ -15,6 +15,7 @@ import {
   writeTerminalInput,
   stripAnsi,
 } from '../codemini-web/lib/web-terminal.js';
+import { ensureNodePtySpawnHelperExecutable } from '../codemini-web/lib/node-pty-spawn-helper.js';
 
 async function withTempCwd(fn) {
   const testRoot = path.join(process.cwd(), '.codemini', 'test-terminal');
@@ -87,6 +88,25 @@ test(
       assert.match(raw, /\u001b\[96msample\.ts\u001b\[[0-9;]*m/);
       assert.match(raw, /\u001b\[93mconfig\.json\u001b\[[0-9;]*m/);
     });
+  },
+);
+
+test(
+  'repairs node-pty spawn-helper execute bit on macOS',
+  { skip: process.platform !== 'darwin' },
+  async () => {
+    const { helpers } = ensureNodePtySpawnHelperExecutable();
+    if (!helpers.length) return;
+    const helper = helpers[0];
+    const previous = (await fs.stat(helper)).mode;
+    await fs.chmod(helper, previous & ~0o111);
+    try {
+      const result = ensureNodePtySpawnHelperExecutable();
+      assert.ok(result.repaired.includes(helper));
+      assert.notEqual((await fs.stat(helper)).mode & 0o111, 0);
+    } finally {
+      await fs.chmod(helper, previous | 0o111);
+    }
   },
 );
 
@@ -187,6 +207,17 @@ test('rapid terminal resizes do not duplicate a hand-typed command', async () =>
         ? `$${marker} = 1`
         : `${marker}=1`;
 
+    getTerminalSnapshot(cwd, shellDefault);
+    for (let index = 0; index < 40; index += 1) {
+      const current = getTerminalSnapshot(cwd, shellDefault);
+      if (
+        current.connected &&
+        /[%$#>] ?$/.test(stripAnsi(current.data).trimEnd())
+      ) {
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
     writeTerminalInput(cwd, `${command}\r`, shellDefault);
     for (let index = 0; index < 24; index += 1) {
       resizeTerminal(

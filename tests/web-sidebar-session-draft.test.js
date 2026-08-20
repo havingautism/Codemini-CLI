@@ -1,9 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
 
 import {
+  activateProjectInList,
   buildConversationStartSidebarEntry,
+  buildVisibleProjectGroups,
   displaySessionTitle,
+  filterProjectGroupsByActive,
+  isSidebarChatSessionActive,
   mergeFetchedSessions,
   patchSidebarSession,
   upsertSidebarSession,
@@ -171,3 +176,191 @@ test('mergeFetchedSessions keeps an existing conversation updated during the fet
 
   assert.deepEqual(merged.map((session) => session.id), ['active']);
 });
+
+test('filterProjectGroupsByActive hides a project removed from the active area', () => {
+  const entries = [
+    ['/Users/me/alpha', [{ id: 'a1' }]],
+    ['/Users/me/beta', [{ id: 'b1' }]],
+  ];
+  const visible = filterProjectGroupsByActive(entries, ['/Users/me/beta']);
+  assert.deepEqual(
+    visible.map(([key]) => key),
+    ['/Users/me/beta'],
+  );
+});
+
+test('filterProjectGroupsByActive hides every project when the active list is empty', () => {
+  const entries = [['/Users/me/alpha', [{ id: 'a1' }]]];
+  assert.deepEqual(filterProjectGroupsByActive(entries, []), []);
+});
+
+test('filterProjectGroupsByActive keeps fetch order until active projects are ready', () => {
+  const entries = [
+    ['/Users/me/alpha', [{ id: 'a1' }]],
+    ['/Users/me/beta', [{ id: 'b1' }]],
+  ];
+  const visible = filterProjectGroupsByActive(entries, ['/Users/me/beta'], {
+    ready: false,
+  });
+  assert.deepEqual(
+    visible.map(([key]) => key),
+    ['/Users/me/alpha', '/Users/me/beta'],
+  );
+});
+
+test('filterProjectGroupsByActive still hides after mergeFetchedSessions keeps a deactivated project', () => {
+  const merged = mergeFetchedSessions(
+    [
+      {
+        id: 'gone',
+        title: '已移除项目的会话',
+        projectKey: '/Users/me/alpha',
+        messageCount: 2,
+        updatedAt: '2026-07-13T12:00:05.000Z',
+      },
+    ],
+    [],
+    {
+      sessionIdsAtRequestStart: new Set(['gone']),
+      requestStartedAt: Date.parse('2026-07-13T12:00:01.000Z'),
+    },
+  );
+  const groups = new Map();
+  for (const session of merged) {
+    const key = session.projectKey;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(session);
+  }
+  assert.equal(filterProjectGroupsByActive([...groups.entries()], []).length, 0);
+});
+
+test('activateProjectInList pins a newly opened project to the front of the active area', () => {
+  const next = activateProjectInList(
+    ['/Users/me/old'],
+    '/Users/me/new-app',
+  );
+  assert.deepEqual(next, ['/Users/me/new-app', '/Users/me/old']);
+});
+
+test('activateProjectInList re-adds a previously removed project without duplicating it', () => {
+  const next = activateProjectInList(
+    ['/Users/me/kept'],
+    '/Users/me/kept',
+  );
+  assert.deepEqual(next, ['/Users/me/kept']);
+});
+
+test('buildVisibleProjectGroups shows an opened project folder with no conversation history', () => {
+  const visible = buildVisibleProjectGroups({
+    sessions: [
+      {
+        id: 'draft',
+        projectKey: '/Users/me/new-app',
+        projectDir: '/Users/me/new-app',
+        messageCount: 0,
+      },
+    ],
+    activeProjectDirs: ['/Users/me/new-app'],
+    ready: true,
+  });
+
+  assert.deepEqual(
+    visible.map(([key, sessions]) => [key, sessions.map((session) => session.id)]),
+    [['/Users/me/new-app', []]],
+  );
+});
+
+test('buildVisibleProjectGroups lists existing history under a re-added project but keeps empty drafts out', () => {
+  const visible = buildVisibleProjectGroups({
+    sessions: [
+      {
+        id: 'old-chat',
+        projectKey: '/Users/me/readded',
+        messageCount: 4,
+      },
+      {
+        id: 'new-draft',
+        projectKey: '/Users/me/readded',
+        messageCount: 0,
+      },
+    ],
+    activeProjectDirs: ['/Users/me/readded'],
+    ready: true,
+  });
+
+  assert.deepEqual(
+    visible.map(([key, sessions]) => [key, sessions.map((session) => session.id)]),
+    [['/Users/me/readded', ['old-chat']]],
+  );
+});
+
+test('opening a project pins the resolved cwd only after a successful open', async () => {
+  const app = await fs.readFile('codemini-web/client/src/App.jsx', 'utf8');
+  const start = app.indexOf('const handleOpenProject = useCallback(');
+  assert.ok(start >= 0, 'handleOpenProject must exist');
+  const handle = app.slice(start, start + 1100);
+
+  const pinAfterResult = handle.indexOf(
+    'const result = await actions.openProject(path, options);',
+  );
+  assert.ok(pinAfterResult >= 0, 'openProject result must be awaited first');
+  const pinBlock = handle.slice(pinAfterResult);
+  assert.match(
+    pinBlock,
+    /result\?\.ok && result\.cwd/,
+    'pin must be gated on a successful open with a resolved cwd',
+  );
+  assert.match(
+    pinBlock,
+    /dir:\s*result\.cwd/,
+    'pin must use the server-resolved cwd, not the raw input path',
+  );
+  const guardIndex = handle.indexOf(
+    'if (!openingGeneral && result?.ok && result.cwd)',
+  );
+  const pinIndex = handle.indexOf('setActivateProject(');
+  assert.ok(
+    pinIndex > guardIndex && guardIndex > pinAfterResult,
+    'pin must be called after the await and inside the success guard only',
+  );
+});
+
+test('sidebar session highlight stays only while that chat is the current view', () => {
+  assert.equal(
+    isSidebarChatSessionActive('s1', 's1', 'chat'),
+    true,
+  );
+  assert.equal(
+    isSidebarChatSessionActive('s1', 's1', 'research'),
+    false,
+  );
+  assert.equal(
+    isSidebarChatSessionActive('s1', 's1', 'scrapbook'),
+    false,
+  );
+  assert.equal(
+    isSidebarChatSessionActive('s1', 's2', 'chat'),
+    false,
+  );
+  assert.equal(isSidebarChatSessionActive('', 's1', 'chat'), false);
+});
+
+test('project and general sidebar rows both use chat-view-gated session highlight', async () => {
+  const source = await fs.readFile(
+    'codemini-web/client/src/components/Sidebar.jsx',
+    'utf8',
+  );
+  const highlightCalls = [
+    ...source.matchAll(/isSidebarChatSessionActive\(/g),
+  ];
+  assert.ok(
+    highlightCalls.length >= 2,
+    'project and general session rows must both gate highlight on the current chat view',
+  );
+  assert.doesNotMatch(
+    source,
+    /session\.id === currentSessionId\s*\n\s*\? "bg-\(--bg-active\)/,
+    'project sessions must not keep selected/hover chrome after leaving chat',
+  );
+});
+

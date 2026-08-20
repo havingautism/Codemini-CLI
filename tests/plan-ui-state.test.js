@@ -5,10 +5,12 @@ import {
   applyPlanEventToMessage,
   applyStreamEventToPlanRun,
   findPlanStepMessageId,
+  isLegacyFinalPlanStep,
   planPhaseTitle,
   planRunFromTranscript,
   settleCompletedPlanToolCards,
   settleRunningCreatePlanCards,
+  shouldNestStreamEventInPlan,
   updatePlanOverviewStepStatus,
 } from '../codemini-web/client/src/lib/plan-ui-state.js';
 
@@ -203,6 +205,91 @@ test('settleCompletedPlanToolCards repairs a duplicated sibling tool from an old
   assert.equal(list.status, 'done');
   assert.equal(list.result, 'files');
   assert.deepEqual(subagent.planRun.steps[0].segments, []);
+});
+
+test('isLegacyFinalPlanStep ignores one-step run_subagent completion', () => {
+  assert.equal(
+    isLegacyFinalPlanStep({ type: 'plan:step_done', step: 1, total: 1, role: 'Kai' }),
+    false,
+  );
+  assert.equal(
+    isLegacyFinalPlanStep({ type: 'plan:step_done', step: 5, total: 5, role: 'summarizer' }),
+    true,
+  );
+  assert.equal(
+    isLegacyFinalPlanStep({ type: 'plan:step_done', step: 3, total: 3, role: 'coder' }),
+    true,
+  );
+});
+
+test('shouldNestStreamEventInPlan follows parentToolCallId before steps exist', () => {
+  const message = {
+    id: 'parent',
+    segments: [
+      {
+        type: 'tools',
+        cards: [
+          {
+            id: 'subagent-1',
+            name: 'run_subagent',
+            status: 'running',
+            planRun: { phase: 'planning', steps: [] },
+          },
+        ],
+      },
+    ],
+  };
+  assert.equal(
+    shouldNestStreamEventInPlan(message, {
+      type: 'tool:start',
+      id: 'read-1',
+      name: 'read',
+      parentToolCallId: 'subagent-1',
+    }),
+    true,
+  );
+  assert.equal(
+    shouldNestStreamEventInPlan(message, {
+      type: 'tool:start',
+      id: 'list-1',
+      name: 'list',
+    }),
+    false,
+  );
+});
+
+test('applyStreamEventToPlanRun nests child tools before plan steps exist', () => {
+  let message = {
+    id: 'parent',
+    role: 'general',
+    segments: [
+      {
+        type: 'tools',
+        cards: [
+          {
+            id: 'subagent-1',
+            name: 'run_subagent',
+            status: 'running',
+            planRun: { phase: 'planning', steps: [] },
+          },
+        ],
+      },
+    ],
+  };
+  message = applyStreamEventToPlanRun(message, {
+    type: 'tool:start',
+    id: 'read-1',
+    name: 'read',
+    parentToolCallId: 'subagent-1',
+  });
+  const nested = message.segments[0].cards[0].planRun.steps[0].segments
+    .filter((segment) => segment.type === 'tools')
+    .flatMap((segment) => segment.cards);
+  assert.equal(nested[0]?.id, 'read-1');
+  assert.equal(
+    message.segments[0].cards.some((card) => card.id === 'read-1'),
+    false,
+  );
 });
 
 test('applyStreamEventToPlanRun nests thinking and tools into the running step', () => {

@@ -25,21 +25,22 @@ export function buildTurnUserPrompt({
   turnContextPrefix = '',
   projectContextSnippet = '',
   projectContextGuidance = '',
+  turnRoutingContext = '',
   userText = ''
 } = {}) {
   const prefix = String(turnContextPrefix || '').trim();
   const snippet = String(projectContextSnippet || '').trim();
   const guidance = String(projectContextGuidance || '').trim();
+  const routing = String(turnRoutingContext || '').trim();
   const request = String(userText || '').trim();
-  const hasContext = Boolean(prefix || snippet);
 
   const parts = [
     prefix,
-    snippet,
-    snippet && guidance ? guidance : '',
-    request
-      ? (hasContext ? `User request:\n${request}` : request)
-      : ''
+    routing ? `<turn_context>\n${routing}\n</turn_context>` : '',
+    snippet
+      ? `<project_context>\n${snippet}\n${guidance ? `${guidance}\n` : ''}</project_context>`
+      : '',
+    request ? `<task>\n${request}\n</task>` : ''
   ].filter(Boolean);
 
   return parts.join('\n\n');

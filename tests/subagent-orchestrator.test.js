@@ -81,6 +81,24 @@ test("dependencies reject forward references, duplicate ids, and invalid ids", (
   assert.match(invalid.error, /task_id/i);
 });
 
+test("upstream handoffs clip long text and advertise the file path", () => {
+  const longText = "x".repeat(2000);
+  const formatted = formatSubAgentUpstreamContext([
+    {
+      ok: true,
+      taskId: "inspect",
+      name: "Rin",
+      prompt: "Inspect the project",
+      text: longText,
+      handoffPath: ".codemini/handoffs/session-a/call-1/handoff.md",
+    },
+  ]);
+  assert.match(formatted, /Handoff: \.codemini\/handoffs\/session-a\/call-1\/handoff\.md/);
+  assert.match(formatted, /\[truncated\]/);
+  assert.equal(formatted.includes(longText), false);
+  assert.ok(formatted.length < 1800);
+});
+
 test("task ids are scoped to one orchestration group", () => {
   const coordinator = createSubAgentDependencyCoordinator();
   assert.equal(

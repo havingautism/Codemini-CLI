@@ -1,13 +1,34 @@
 import { formatToolLabel, parseToolDisplayName } from "../../../../src/core/tool-display.js";
 import { isMcpToolName } from "../../../../src/core/mcp-tool-display.js";
 
-const FILE_ARG_TOOLS = new Set(["read", "edit", "create", "write", "delete"]);
+export const FILE_PATH_ARG_TOOLS = new Set([
+  "read",
+  "edit",
+  "create",
+  "write",
+  "delete",
+]);
+const FILE_ARG_TOOLS = FILE_PATH_ARG_TOOLS;
 const FILE_PATH_KEYS = new Set(["path", "file", "file_path", "target"]);
 const FILE_CONTENT_KEYS = new Set(["content", "new_content"]);
 
 export function extractToolName(name) {
   const match = String(name).match(/^(\w+)/);
   return match ? match[1] : name;
+}
+
+export function isRequestUserInputCard(card) {
+  return extractToolName(card?.name) === "request_user_input";
+}
+
+export function isTodoToolCard(card) {
+  const name = extractToolName(card?.name);
+  return name === "tasks" || name === "update_todos";
+}
+
+/** Conversation-page widgets (todo board, ask-user form). Trajectory inspect should skip these. */
+export function isConversationVisualToolCard(card) {
+  return isRequestUserInputCard(card) || isTodoToolCard(card);
 }
 
 export function parseMaybeJson(value) {
@@ -24,7 +45,7 @@ export function parseMaybeJson(value) {
 export function getTodoToolItems(args, result) {
   const parsedArgs = parseMaybeJson(args) || {};
   const parsedResult = parseMaybeJson(result) || {};
-  const todos = parsedResult.newTodos || parsedResult.todos || parsedArgs.todos;
+  const todos = parsedResult.newTodos || parsedResult.tasks || parsedArgs.tasks || parsedResult.todos || parsedArgs.todos;
   if (!Array.isArray(todos)) return [];
   return todos
     .map((item) => ({
@@ -236,4 +257,35 @@ export function resolveToolHeaderParts(card, toolName, fileMeta) {
     return { label: preferredLabel, arg: keyArg, wrapArg: true };
   }
   return { label: preferredLabel, arg: "", wrapArg: false };
+}
+
+export function formatToolDetail(value) {
+  if (typeof value !== "string") return JSON.stringify(value, null, 2);
+  const text = value.trim();
+  if (!text) return "";
+  try {
+    return JSON.stringify(JSON.parse(text), null, 2);
+  } catch {
+    return value;
+  }
+}
+
+export function getToolInspectSections(card, { hasFilePreview = false } = {}) {
+  const sections = [];
+  if (card?.arguments != null && card.arguments !== "") {
+    sections.push({ label: "Arguments", value: formatToolDetail(card.arguments) });
+  }
+  if (card?.summary && !hasFilePreview) {
+    sections.push({ label: "Summary", value: String(card.summary) });
+  }
+  if (card?.result && !hasFilePreview) {
+    sections.push({ label: "Result", value: formatToolDetail(card.result) });
+  }
+  return sections;
+}
+
+export function getConversationToolOutput(card, { hasFilePreview = false } = {}) {
+  if (hasFilePreview) return "";
+  if (card?.result == null || card.result === "") return "";
+  return formatToolDetail(card.result);
 }

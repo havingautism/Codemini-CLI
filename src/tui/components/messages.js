@@ -54,7 +54,7 @@ function todoItems(value) {
   if (typeof value === 'string') {
     try { parsed = JSON.parse(value); } catch { return []; }
   }
-  const todos = parsed?.newTodos || parsed?.todos;
+  const todos = parsed?.newTodos || parsed?.tasks;
   if (!Array.isArray(todos)) return [];
   return todos
     .map((item) => ({
@@ -64,11 +64,39 @@ function todoItems(value) {
     .filter((item) => item.content);
 }
 
-function surfaceLine(text, width, background = color.surfaceBg, indent = 1) {
+export function surfaceLine(text, width, background = color.surfaceBg, indent = 1) {
   const safe = wrapTextWithAnsi(text, Math.max(1, width - indent - 1));
   return safe.map((line) => background(
     `${' '.repeat(indent)}${line}${' '.repeat(Math.max(0, width - visibleWidth(line) - indent))}`
   ));
+}
+
+/**
+ * Paint a rendered line (or empty string) with a full-width background so the
+ * terminal's own background never shows through — the TUI surface stays dark
+ * even inside light-themed terminals.
+ */
+export function paintBackground(text, width, background = color.surfaceBg) {
+  const safe = String(text).replace(/(?:\x1b\[(?:0|39|49)m)+$/g, '');
+  const pad = Math.max(0, width - visibleWidth(safe));
+  return background(`${safe}${' '.repeat(pad)}`);
+}
+
+/** Blank rows painted with the dark surface color, mirroring pi-tui's Spacer. */
+export class SurfaceSpacer {
+  constructor(lines = 1) {
+    this.lines = lines;
+  }
+
+  setLines(lines) {
+    this.lines = lines;
+  }
+
+  invalidate() {}
+
+  render(width) {
+    return Array.from({ length: this.lines }, () => color.surfaceBg(' '.repeat(width)));
+  }
 }
 
 export class ToolCall {
@@ -165,8 +193,8 @@ export class ToolCallGroup {
     const label = this.copy?.toolCalls?.(count) || `${count} tool call${count === 1 ? '' : 's'}`;
     const title = `${bold(style(`${marker} ${icon} ${label}${suffix}`))}${names ? color.dim(`  ${names}`) : ''}`;
     const header = surfaceLine(title, width, color.surfaceBg);
-    if (!this.expanded) return [...header, ''];
-    return [...header, ...this.rows.flatMap((row) => row.render(width)), ''];
+    if (!this.expanded) return [...header, paintBackground('', width)];
+    return [...header, ...this.rows.flatMap((row) => row.render(width)), paintBackground('', width)];
   }
 }
 
@@ -184,16 +212,20 @@ export class TodoProgress {
     if (typeof value === 'string') {
       try { parsed = JSON.parse(value); } catch { return; }
     }
-    if (Array.isArray(parsed?.todos) || Array.isArray(parsed?.newTodos)) {
+    if (Array.isArray(parsed?.tasks) || Array.isArray(parsed?.newTodos)) {
       this.items = todoItems(parsed);
     }
   }
 
   render(width) {
     const done = this.items.filter((item) => item.status === 'completed').length;
-    const header = `${bold(color.text(this.copy?.todos || 'Todos'))}  ${color.muted(`${done}/${this.items.length}`)}`;
+    const header = `${bold(color.text(this.copy?.todos || 'Tasks'))}  ${color.muted(`${done}/${this.items.length}`)}`;
     if (!this.items.length) {
-      return [header, `└─ ${color.dim(this.copy?.todosEmpty || 'No active todos')}`, ''];
+      return [
+        paintBackground(header, width),
+        paintBackground(`└─ ${color.dim(this.copy?.todosEmpty || 'No active tasks')}`, width),
+        paintBackground('', width)
+      ];
     }
     const rows = this.items.map((item, index) => {
       const icon = item.status === 'completed'
@@ -207,7 +239,7 @@ export class TodoProgress {
       const branch = index === this.items.length - 1 ? '└─' : '├─';
       return `${color.dim(branch)} ${icon} ${text}`;
     });
-    return [header, ...rows, ''];
+    return [paintBackground(header, width), ...rows.map((line) => paintBackground(line, width)), paintBackground('', width)];
   }
 }
 
@@ -237,9 +269,9 @@ export class ReasoningBlock {
       : this.copy.reasoningLive;
     const preview = !this.complete && this.text ? `  ${oneLine(this.text, Math.max(20, width - 28))}` : '';
     const header = surfaceLine(`${color.purple(marker)} ${color.muted(label)}${color.dim(preview)}`, width);
-    if (!this.expanded || !this.text) return [...header, ''];
+    if (!this.expanded || !this.text) return [...header, paintBackground('', width)];
     const body = wrapTextWithAnsi(color.dim(this.text.trim()), Math.max(1, width - 4)).slice(0, 24);
-    return [...header, ...body.map((line) => `${color.dim('│')}  ${line}`), ''];
+    return [...header, ...body.map((line) => paintBackground(`${color.dim('│')}  ${line}`, width)), paintBackground('', width)];
   }
 }
 
@@ -268,7 +300,7 @@ export class ProcessedFold {
     const action = this.bodyOnly ? this.copy.showFull : this.copy.showBodyOnly;
     const header = surfaceLine(`${color.purple(marker)} ${color.muted(this.copy.processed)}  ${color.dim(action)}`, width);
     const lines = this.bodyOnly ? [...header, ...pinned] : [...header, ...content, ...pinned];
-    return lines.at(-1) === '' ? lines : [...lines, ''];
+    return lines.at(-1) === '' ? lines : [...lines, paintBackground('', width)];
   }
 }
 
@@ -302,7 +334,7 @@ export class PlanProgress {
       const icon = step.status === 'running' ? color.purple('●') : step.status === 'done' || step.status === 'completed' ? color.success('✓') : step.status === 'failed' || step.status === 'error' ? color.error('✗') : color.dim('○');
       return ` ${icon} ${color.text(oneLine(step.title, Math.max(20, width - 18)))}${step.role ? color.dim(`  ${step.role}`) : ''}`;
     });
-    return [...header, ...lines];
+    return [...header, ...lines.map((line) => paintBackground(line, width))];
   }
 }
 
@@ -326,7 +358,7 @@ class UserMessage {
       return `${color.border('│')} ${line}${padding} ${color.border('│')}`;
     });
     const bottom = color.border(`╰${'─'.repeat(frameWidth - 2)}╯`);
-    return [`\u001b]133;A\u0007${top}`, ...body, bottom];
+    return [`\u001b]133;A\u0007${top}`, ...body, bottom].map((line) => paintBackground(line, width));
   }
 }
 
@@ -337,7 +369,7 @@ class AssistantMessage {
 
   invalidate() { this.markdown.invalidate(); }
   setText(text) { this.markdown.setText(linkMarkdownImages(text)); }
-  render(width) { return this.markdown.render(width); }
+  render(width) { return this.markdown.render(width).map((line) => paintBackground(line, width)); }
 }
 
 class SystemNotice {
@@ -347,7 +379,7 @@ class SystemNotice {
   }
 
   invalidate() {}
-  render(width) { return wrapTextWithAnsi(`${color.dim('•')} ${this.style(this.text)}`, width); }
+  render(width) { return wrapTextWithAnsi(`${color.dim('•')} ${this.style(this.text)}`, width).map((line) => paintBackground(line, width)); }
 }
 
 export function createUserMessage(text) {
@@ -417,7 +449,7 @@ export function appendHistory(transcript, history, copy, { bodyOnly = true, expa
             summary: result.tool_summary || oneLine(result.content, 160),
             durationMs: result.tool_duration_ms
           };
-          if (String(event.name || '').toLowerCase() === 'update_todos') {
+          if (['tasks', 'update_todos'].includes(String(event.name || '').toLowerCase())) {
             latestTodo = event;
             continue;
           }

@@ -1,9 +1,9 @@
 :root {
-  --apple-canvas: #f5f5f7;
+  --apple-canvas: #f8f8fa;
   --apple-text: #1d1d1f;
   --apple-blue: #0071e3;
   --apple-material: rgba(255, 255, 255, 0.72);
-  --apple-material-raised: rgba(255, 255, 255, 0.88);
+  --apple-material-raised: rgba(255, 255, 255, 0.96);
   --apple-secondary-text: #6e6e73;
 }
 

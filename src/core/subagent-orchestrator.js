@@ -86,6 +86,7 @@ export function createSubAgentDependencyCoordinator() {
                 prompt: dependencyRecord.prompt,
                 ok: result?.ok !== false,
                 text: String(result?.text || result?.error || "").trim(),
+                handoffPath: String(result?.handoffPath || "").trim(),
               };
             }),
           );
@@ -105,17 +106,27 @@ export function createSubAgentDependencyCoordinator() {
   };
 }
 
-export function formatSubAgentUpstreamContext(upstream = []) {
+const UPSTREAM_HANDOFF_MAX_CHARS = 1500;
+
+function clipHandoffText(text, maxChars = UPSTREAM_HANDOFF_MAX_CHARS) {
+  const body = String(text || "").trim();
+  if (body.length <= maxChars) return body;
+  return `${body.slice(0, maxChars).trimEnd()}\n\n[truncated]`;
+}
+
+export function formatSubAgentUpstreamContext(upstream = [], { maxChars = UPSTREAM_HANDOFF_MAX_CHARS } = {}) {
   const sections = (Array.isArray(upstream) ? upstream : [])
     .filter((item) => item?.ok && String(item?.text || "").trim())
     .map((item) => {
       const identity = [item.taskId, item.name].filter(Boolean).join(" — ");
+      const handoffPath = String(item.handoffPath || "").trim();
       return [
         `### ${identity || "Upstream task"}`,
         ...(item.prompt ? [`Task: ${item.prompt}`] : []),
         "Status: completed",
+        ...(handoffPath ? [`Handoff: ${handoffPath}`] : []),
         "",
-        String(item.text || "").trim(),
+        clipHandoffText(item.text, maxChars),
       ].join("\n");
     });
   return sections.length ? `Upstream handoffs:\n\n${sections.join("\n\n")}` : "";

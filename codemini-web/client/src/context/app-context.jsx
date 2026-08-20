@@ -25,6 +25,7 @@ import {
   alignSessionAssistantMessages,
   alignSessionUserMessages,
   hydrateSessionRuntimes,
+  isSessionBusyInState,
   mergeAlignedAssistantSkillContext,
   mergeAlignedUserContext,
   projectVisibleSessionState,
@@ -43,6 +44,7 @@ import {
   mergeFetchedSessions,
   patchSidebarSession,
   projectSessionRuntime,
+  rekeyPendingQueue,
   upsertSidebarSession,
 } from "../lib/session-ui-state.js";
 import { normalizeProjectDirKey } from "../../../shared/project-key.js";
@@ -52,7 +54,6 @@ import {
   settleCompletedPlanToolCards,
   settleRunningCreatePlanCards,
   updatePlanOverviewStepStatus,
-  applyPlanEventToMessage,
   planRunFromTranscript,
 } from "../lib/plan-ui-state.js";
 import {
@@ -61,6 +62,8 @@ import {
   finishThinkingSegments,
   mergeUsage,
   normalizeUsage,
+  settleIncompleteTranscriptMessage,
+  repairSettledTranscriptMessages,
   updateSkillInSegments,
 } from "../../../shared/transcript-segments.js";
 import { buildHookSegmentEvent } from "../../../shared/hook-ui.js";
@@ -108,7 +111,10 @@ function markPreviousAssistantManualAborted(messages = [], fromIndex = -1) {
     ) {
       continue;
     }
-    list[i] = { ...prev, manualAborted: true, isComplete: true };
+    list[i] = settleIncompleteTranscriptMessage(
+      { ...prev, isComplete: true },
+      { reason: "aborted" },
+    );
     break;
   }
   return list;
@@ -260,6 +266,9 @@ function projectNameFromRuntimeState(rs = {}) {
 const initialState = {
   stage: "idle",
   busy: false,
+  // Per-session prompt queue: { [sessionId]: [text, ...] } — prompts typed while
+  // a turn is running wait here instead of failing the in-flight guard.
+  pendingQueues: {},
   currentView: "chat",
   scrapbookEntryId: null,
   researchSessionId: null,
@@ -1122,16 +1131,63 @@ export function AppProvider({ children }) {
   const operationWaitersRef = useRef(new Map());
   const earlyOperationResultsRef = useRef(new Map());
   const sessionOperationsRef = useRef(new Set());
+  // Per-session prompt queue: Map<sessionId, Array<{ message, options }>>
+  const pendingQueueRef = useRef(new Map());
+  const switchSessionRef = useRef(null);
+  const drainQueueRef = useRef(null);
+  const abortContinueInPlaceRef = useRef(false);
+  const abortFnRef = useRef(null);
+  const jumpQueuedPromptInFlightRef = useRef(false);
 
-  const activateSessionView = useCallback((sessionId) => {
-    activeMsgRef.current = null;
-    pendingChangesRef.current = [];
-    pendingSkillBadgesRef.current = [];
-    pendingSkillSegmentsRef.current = [];
-    planStepMessagesRef.current = new Map();
-    planOverviewMsgRef.current = null;
-    setState((prev) => activateSession(prev, sessionId));
+  // Most-recently-visited session ids (most recent last). Used to bound the
+  // sessionMessagesById cache: keep the active session + up to 2 other
+  // recently visited sessions, evicting the rest when a session is switched.
+  // Switching back to an evicted session refetches via loadSessionMessages
+  // (see the switchSession/openChatMessage flows), so eviction is safe.
+  const sessionVisitOrderRef = useRef([]);
+
+  const pruneSessionMessagesCache = useCallback((nextActiveSessionId) => {
+    if (!nextActiveSessionId) return;
+    const order = sessionVisitOrderRef.current.filter(
+      (id) => id && id !== nextActiveSessionId,
+    );
+    order.push(nextActiveSessionId);
+    sessionVisitOrderRef.current = order;
+    setState((prev) => {
+      const cache = prev.sessionMessagesById || {};
+      const cachedIds = Object.keys(cache);
+      if (cachedIds.length <= 3) return prev;
+      const keepIds = new Set([nextActiveSessionId]);
+      // Fill up to 2 most-recently-visited other sessions.
+      for (let i = order.length - 2; i >= 0 && keepIds.size < 3; i -= 1) {
+        const id = order[i];
+        if (id && cache[id] && !keepIds.has(id)) keepIds.add(id);
+      }
+      // Never evict a session that is still busy/running.
+      for (const id of cachedIds) {
+        if (isSessionBusyInState(prev, id)) keepIds.add(id);
+      }
+      const evicted = cachedIds.filter((id) => !keepIds.has(id));
+      if (!evicted.length) return prev;
+      const sessionMessagesById = { ...cache };
+      for (const id of evicted) delete sessionMessagesById[id];
+      return { ...prev, sessionMessagesById };
+    });
   }, [setState]);
+
+  const activateSessionView = useCallback(
+    (sessionId) => {
+      activeMsgRef.current = null;
+      pendingChangesRef.current = [];
+      pendingSkillBadgesRef.current = [];
+      pendingSkillSegmentsRef.current = [];
+      planStepMessagesRef.current = new Map();
+      planOverviewMsgRef.current = null;
+      setState((prev) => activateSession(prev, sessionId));
+      pruneSessionMessagesCache(sessionId);
+    },
+    [pruneSessionMessagesCache, setState],
+  );
 
   const update = useCallback((updates) => {
     setState((prev) => ({ ...prev, ...updates }));
@@ -1261,9 +1317,9 @@ export function AppProvider({ children }) {
         dreamDialogError: "",
         userInputRequest: rs?.pendingUserInput || null,
         busy,
-        live: busy || prev.live,
-        stage: busy ? "thinking" : prev.stage,
-        stageLabel: busy ? t("waitingResponse") : prev.stageLabel,
+        live: busy,
+        stage: busy ? "thinking" : "idle",
+        stageLabel: busy ? t("waitingResponse") : "",
         codewikiGeneration: codeWikiGenerating
           ? {
               status: "running",
@@ -1460,6 +1516,7 @@ export function AppProvider({ children }) {
         m.transientKey
       )
         continue;
+      if (m.manualAborted) continue;
       if (m.isComplete === false) {
         activeMsgRef.current = m.id;
         return;
@@ -1567,9 +1624,11 @@ export function AppProvider({ children }) {
                 ?.changes || [];
           if (!isAlive()) return;
           const restored = sanitizeManualAbortMessages(
-            enrichUiMessagesWithScrapbookAttachments(
-              settleCompletedPlanToolCards(uiMessages),
-              messages,
+            repairSettledTranscriptMessages(
+              enrichUiMessagesWithScrapbookAttachments(
+                settleCompletedPlanToolCards(uiMessages),
+                messages,
+              ),
             ),
           );
           const overview = [...restored]
@@ -1913,19 +1972,21 @@ export function AppProvider({ children }) {
         }
 
         const restored = sanitizeManualAbortMessages(
-          settleCompletedPlanToolCards(
-            mergeAlignedAssistantSkillContext(
-              alignSessionAssistantMessages(
-                mergeAlignedUserContext(
-                  alignSessionUserMessages(
-                    mergeStructuredUiPlans(processed, uiMessages),
+          repairSettledTranscriptMessages(
+            settleCompletedPlanToolCards(
+              mergeAlignedAssistantSkillContext(
+                alignSessionAssistantMessages(
+                  mergeAlignedUserContext(
+                    alignSessionUserMessages(
+                      mergeStructuredUiPlans(processed, uiMessages),
+                      uiMessages,
+                    ),
                     uiMessages,
                   ),
                   uiMessages,
                 ),
                 uiMessages,
               ),
-              uiMessages,
             ),
           ),
         );
@@ -1991,13 +2052,57 @@ export function AppProvider({ children }) {
         // CodeWiki generate may run on a dedicated idle session while chat is
         // busy — still apply its progress/done events in the UI.
         const isCodeWikiEvent = String(event.type || "").startsWith("codewiki:");
-        if (event.sessionId !== s.currentSessionId && !isCodeWikiEvent) return;
+        const isCrossSessionUiEvent =
+          event.type === "session:forked" ||
+          event.type === "session:title" ||
+          event.type === "session:title_status";
+        if (
+          event.sessionId !== stateRef.current.currentSessionId &&
+          !isCodeWikiEvent &&
+          !isCrossSessionUiEvent
+        ) {
+          return;
+        }
       }
       const activeId = activeMsgRef.current;
 
       switch (event.type) {
         case "connected":
           break;
+
+        case "session:forked": {
+          const previousId = String(
+            event.previousSessionId || event.sessionId || "",
+          ).trim();
+          const nextId = String(event.nextSessionId || "").trim();
+          const currentId = stateRef.current.currentSessionId;
+          if (!nextId || nextId === previousId) break;
+          const nextQueues = rekeyPendingQueue(
+            pendingQueueRef.current,
+            previousId,
+            nextId,
+          );
+          pendingQueueRef.current = nextQueues;
+          const queued = nextQueues.get(nextId) || [];
+          setState((prev) => {
+            const pendingQueues = { ...prev.pendingQueues };
+            delete pendingQueues[previousId];
+            if (queued.length) {
+              pendingQueues[nextId] = queued.map((item) =>
+                String(item.message?.text || ""),
+              );
+            } else {
+              delete pendingQueues[nextId];
+            }
+            return { ...prev, pendingQueues };
+          });
+          if (previousId && previousId !== currentId) break;
+          void (async () => {
+            await switchSessionRef.current?.(nextId, { fromAbortFork: true });
+            drainQueueRef.current?.(nextId);
+          })();
+          break;
+        }
 
         case "assistant:start": {
           if (
@@ -2036,14 +2141,20 @@ export function AppProvider({ children }) {
             });
             break;
           }
-          const msgId = event.messageId || activeId;
-          if (msgId) setActiveMsg(msgId);
+          const requestedId = event.messageId || activeId;
+          const requested = (s.messages || []).find(
+            (message) => message.id === requestedId,
+          );
+          const msgId =
+            requested?.manualAborted === true ? event.messageId : requestedId;
+          if (msgId && requested?.manualAborted !== true) setActiveMsg(msgId);
           const pendingSkillBadges = pendingSkillBadgesRef.current;
           pendingSkillBadgesRef.current = [];
           const pendingSkillSegments = pendingSkillSegmentsRef.current;
           pendingSkillSegmentsRef.current = [];
           if (
             msgId &&
+            requested?.manualAborted !== true &&
             (pendingSkillBadges.length || pendingSkillSegments.length)
           ) {
             setState((prev) => ({
@@ -2155,10 +2266,6 @@ export function AppProvider({ children }) {
             messages: withoutEmptyPlanRunPlaceholder(
               removeTransientMessages(prev.messages, "waiting-response"),
               activeId,
-            ).map((message) =>
-              parentId && message.id === parentId
-                ? applyPlanEventToMessage(message, event)
-                : message,
             ),
           }));
           break;
@@ -2176,37 +2283,22 @@ export function AppProvider({ children }) {
             planParentMsgRef.current = parentId;
             setActiveMsg(parentId);
           }
-          const isFinalPlanStep =
-            event.type === "plan:step_done" &&
-            (String(event.role || "").toLowerCase() === "summarizer" ||
-              (Number(event.total) > 0 &&
-                Number(event.step) === Number(event.total)));
-          setState((prev) => {
-            const nextMessages = prev.messages.map((message) =>
-              parentId && message.id === parentId
-                ? applyPlanEventToMessage(message, event)
-                : message,
-            );
-            return {
-              ...prev,
-              planSteps: prev.planSteps.map((step, index) =>
-                index === event.step - 1
-                  ? {
-                      ...step,
-                      status:
-                        event.status ||
-                        (event.type === "plan:step_start"
-                          ? "running"
-                          : step.status),
-                      ...(event.model ? { model: event.model } : {}),
-                    }
-                  : step,
-              ),
-              messages: isFinalPlanStep
-                ? settleCompletedPlanToolCards(nextMessages)
-                : nextMessages,
-            };
-          });
+          setState((prev) => ({
+            ...prev,
+            planSteps: prev.planSteps.map((step, index) =>
+              index === event.step - 1
+                ? {
+                    ...step,
+                    status:
+                      event.status ||
+                      (event.type === "plan:step_start"
+                        ? "running"
+                        : step.status),
+                    ...(event.model ? { model: event.model } : {}),
+                  }
+                : step,
+            ),
+          }));
           if (event.type === "plan:step_start") {
             update({
               stage: "tooling",
@@ -2628,6 +2720,21 @@ export function AppProvider({ children }) {
           if (rs?.sessionId && stateRef.current.currentView === "chat") {
             updateRoute("chat", rs.sessionId, { replace: true });
           }
+          // HTTP 202 returns before the turn finishes, so queued prompts wait
+          // here. Skip aborted turns: stop/fork drains after session:forked,
+          // and jump drains itself after continue-in-place abort.
+          if (!isAbortRelatedResult(result)) {
+            stateRef.current = {
+              ...stateRef.current,
+              busy: false,
+              live: false,
+              stage: "idle",
+              stageLabel: "",
+            };
+            drainQueueRef.current?.(
+              event.sessionId || s.currentSessionId,
+            );
+          }
           break;
         }
 
@@ -2946,7 +3053,7 @@ export function AppProvider({ children }) {
                   role: "system",
                   text: summary ? `${ev.name}: ${summary}` : ev.name,
                   timestamp: new Date().toISOString(),
-                  startupTodos: ev.arguments?.todos,
+                  startupTodos: ev.arguments?.tasks,
                 });
               }
             }
@@ -3071,16 +3178,22 @@ export function AppProvider({ children }) {
     document.documentElement.dataset.theme = resolved;
   }, []);
 
-  const actions = useMemo(
-    () => ({
-      submit: async (input, options = {}) => {
-        const sessionId = options.sessionId || stateRef.current.currentSessionId;
-        return runSessionOperation(sessionOperationsRef.current, sessionId, async () => {
-        const message = typeof input === "string"
-          ? { text: input, skillNames: [], attachmentIds: [], dismissedAlwaysSkills: [] }
-          : input || {};
-        const line = String(message.text || "");
-        if (!line.trim() && !(message.attachmentIds || []).length && !(message.skillNames || []).length) return;
+  const actions = useMemo(() => {
+    const snapshotPendingQueues = () => {
+      const out = {};
+      for (const [sid, queue] of pendingQueueRef.current) {
+        out[sid] = queue.map((item) => String(item.message.text || ""));
+      }
+      return out;
+    };
+
+    const runSubmitPrompt = async (input, options = {}) => {
+      const sessionId = options.sessionId || stateRef.current.currentSessionId;
+      const message = typeof input === "string"
+        ? { text: input, skillNames: [], attachmentIds: [], dismissedAlwaysSkills: [] }
+        : input || {};
+      const line = String(message.text || "");
+      if (!line.trim() && !(message.attachmentIds || []).length && !(message.skillNames || []).length) return;
         const selectedSkillBadges = [
           ...new Set(
             (Array.isArray(message.skillNames) ? message.skillNames : [])
@@ -3091,16 +3204,16 @@ export function AppProvider({ children }) {
         if (stateRef.current.currentView !== "chat" && !options.stayInView)
           update({ currentView: "chat" });
         const userMessageId = addMessage({
-          role: "you",
-          text: line,
-          skillBadges: selectedSkillBadges,
-          attachments: Array.isArray(options.attachments)
-            ? options.attachments
-            : Array.isArray(message.attachments)
-              ? message.attachments
-              : [],
-          timestamp: new Date().toISOString(),
-        });
+              role: "you",
+              text: line,
+              skillBadges: selectedSkillBadges,
+              attachments: Array.isArray(options.attachments)
+                ? options.attachments
+                : Array.isArray(message.attachments)
+                  ? message.attachments
+                  : [],
+              timestamp: new Date().toISOString(),
+            });
         // Sidebar bubbles appear when the conversation starts, not when the
         // empty draft is created/reused.
         setState((prev) => {
@@ -3139,12 +3252,22 @@ export function AppProvider({ children }) {
           timestamp: new Date().toISOString(),
           transientKey: "waiting-response",
         });
-        update({
+        setState((prev) => ({
+          ...prev,
           busy: true,
           live: true,
           stage: "thinking",
           stageLabel: t("waitingResponse"),
-        });
+          sessionRuntimeById: {
+            ...prev.sessionRuntimeById,
+            [sessionId]: {
+              ...prev.sessionRuntimeById[sessionId],
+              sessionId,
+              busy: true,
+              status: "running",
+            },
+          },
+        }));
         try {
           const res = await api.submitMessage(sessionId, {
             text: line,
@@ -3176,7 +3299,7 @@ export function AppProvider({ children }) {
           }
           if (result?.error)
             throw new Error(result.message || "Request failed");
-          await waitForAcceptedOperation(result, {
+          return await waitForAcceptedOperation(result, {
             sessionId,
             waiters: operationWaitersRef.current,
             earlyResults: earlyOperationResultsRef.current,
@@ -3188,19 +3311,177 @@ export function AppProvider({ children }) {
               ...prev,
               messages: prev.messages.filter((m) => m.id !== waitingId),
             }));
-          addMessage({
-            role: "error",
-            text: `Failed: ${err.message}`,
-            timestamp: new Date().toISOString(),
-            responseStatus: "error",
-            retryPrompt: line,
-            retryable: Boolean(line.trim()),
-          });
+          if (
+            !isAbortRelatedText(err.message) &&
+            err?.name !== "AbortError"
+          ) {
+            addMessage({
+              role: "error",
+              text: `Failed: ${err.message}`,
+              timestamp: new Date().toISOString(),
+              responseStatus: "error",
+              retryPrompt: line,
+              retryable: Boolean(line.trim()),
+            });
+          }
           update({ busy: false, live: false });
           throw err;
         }
-        });
-      },
+    };
+
+    const submitRef = { current: null };
+    const drainQueue = (sessionId) => {
+      const queueRef_ = pendingQueueRef.current;
+      const queue = (queueRef_.get(sessionId) || []).slice();
+      const next = queue.shift();
+      if (!next) {
+        queueRef_.delete(sessionId);
+        update({ pendingQueues: snapshotPendingQueues() });
+        return;
+      }
+      queueRef_.set(sessionId, queue);
+      update({ pendingQueues: snapshotPendingQueues() });
+      void submitRef.current?.(next.message, {
+        ...next.options,
+        sessionId,
+        __queued: true,
+      }).catch(() => {});
+    };
+    drainQueueRef.current = drainQueue;
+
+    const submit = async (input, options = {}) => {
+        const sessionId = options.sessionId || stateRef.current.currentSessionId;
+        const message = typeof input === "string"
+          ? { text: input, skillNames: [], attachmentIds: [], dismissedAlwaysSkills: [] }
+          : input || {};
+        const line = String(message.text || "");
+        if (!line.trim() && !(message.attachmentIds || []).length && !(message.skillNames || []).length) return;
+        const queued = options.__queued === true;
+        const priority = options.priority === true || message.priority === true;
+        const sessionBusy =
+          sessionOperationsRef.current.has(sessionId) ||
+          isSessionBusyInState(stateRef.current, sessionId);
+        // While a turn is already running for this session, keep the prompt in
+        // the composer queue (Cursor-style) instead of sending it into the
+        // transcript. Enter appends; jump aborts the current turn and drains.
+        if (!queued && sessionBusy) {
+          if (stateRef.current.currentView !== "chat" && !options.stayInView) {
+            update({ currentView: "chat" });
+          }
+          const queue = pendingQueueRef.current.get(sessionId) || [];
+          const queuedItem = {
+            message,
+            options: { ...options, __queued: true, priority: false },
+          };
+          if (priority) queue.unshift(queuedItem);
+          else queue.push(queuedItem);
+          pendingQueueRef.current.set(sessionId, queue);
+          update({ pendingQueues: snapshotPendingQueues() });
+          return;
+        }
+        let skipDrain = false;
+        try {
+          const result = await runSessionOperation(
+            sessionOperationsRef.current,
+            sessionId,
+            () => runSubmitPrompt(input, options),
+          );
+          if (
+            isAbortRelatedResult(result) &&
+            abortContinueInPlaceRef.current !== true
+          ) {
+            skipDrain = true;
+          }
+          return result;
+        } catch (err) {
+          if (
+            (isAbortRelatedText(err?.message) ||
+              err?.name === "AbortError") &&
+            abortContinueInPlaceRef.current !== true
+          ) {
+            skipDrain = true;
+          }
+          throw err;
+        } finally {
+          // Chat submit resolves on HTTP 202 while the turn is still running.
+          // Drain only when this session is actually free; otherwise the next
+          // queued prompt would overlap the live turn (or get dropped on busy).
+          const stillBusy =
+            sessionOperationsRef.current.has(sessionId) ||
+            isSessionBusyInState(stateRef.current, sessionId);
+          if (!skipDrain && !stillBusy) drainQueue(sessionId);
+          abortContinueInPlaceRef.current = false;
+        }
+    };
+    submitRef.current = submit;
+
+    const removeQueuedPrompt = (index, sessionId = stateRef.current.currentSessionId) => {
+      const queue = (pendingQueueRef.current.get(sessionId) || []).slice();
+      const at = Number(index);
+      if (!Number.isInteger(at) || at < 0 || at >= queue.length) return;
+      queue.splice(at, 1);
+      if (queue.length) pendingQueueRef.current.set(sessionId, queue);
+      else pendingQueueRef.current.delete(sessionId);
+      update({ pendingQueues: snapshotPendingQueues() });
+    };
+
+    const moveQueuedPrompt = (index, delta, sessionId = stateRef.current.currentSessionId) => {
+      const queue = (pendingQueueRef.current.get(sessionId) || []).slice();
+      const at = Number(index);
+      const step = Number(delta);
+      const next = at + step;
+      if (
+        !Number.isInteger(at) ||
+        !Number.isInteger(step) ||
+        step === 0 ||
+        at < 0 ||
+        at >= queue.length ||
+        next < 0 ||
+        next >= queue.length
+      ) {
+        return;
+      }
+      const [item] = queue.splice(at, 1);
+      queue.splice(next, 0, item);
+      pendingQueueRef.current.set(sessionId, queue);
+      update({ pendingQueues: snapshotPendingQueues() });
+    };
+
+    const jumpQueuedPrompt = async (index, sessionId = stateRef.current.currentSessionId) => {
+      if (jumpQueuedPromptInFlightRef.current) return;
+      const queue = (pendingQueueRef.current.get(sessionId) || []).slice();
+      const at = Number(index);
+      if (!Number.isInteger(at) || at < 0 || at >= queue.length) return;
+      if (at > 0) {
+        const [item] = queue.splice(at, 1);
+        queue.unshift(item);
+        pendingQueueRef.current.set(sessionId, queue);
+        update({ pendingQueues: snapshotPendingQueues() });
+      }
+      // Chat submit resolves on HTTP 202, before the turn finishes, so the
+      // in-flight submit's `finally` will not drain after this abort. Wait for
+      // the pause to land, then send the jumped prompt in the same click.
+      jumpQueuedPromptInFlightRef.current = true;
+      abortContinueInPlaceRef.current = true;
+      try {
+        const sessionBusy =
+          sessionOperationsRef.current.has(sessionId) ||
+          isSessionBusyInState(stateRef.current, sessionId);
+        if (sessionBusy) {
+          await abortFnRef.current?.({ continueInPlace: true });
+        }
+        drainQueue(sessionId);
+      } finally {
+        jumpQueuedPromptInFlightRef.current = false;
+        abortContinueInPlaceRef.current = false;
+      }
+    };
+
+    return {
+      submit,
+      removeQueuedPrompt,
+      moveQueuedPrompt,
+      jumpQueuedPrompt,
 
       runChatAction: async (actionName, payload = {}) => {
         const sessionId = stateRef.current.currentSessionId;
@@ -3289,17 +3570,41 @@ export function AppProvider({ children }) {
         });
       },
 
-      abort: async () => {
+      abort: async (options = {}) => {
+        const continueInPlace =
+          options.continueInPlace === true ||
+          abortContinueInPlaceRef.current === true;
         try {
-          await api.abortRequest(stateRef.current.currentSessionId);
+          await api.abortRequest(stateRef.current.currentSessionId, {
+            continueInPlace,
+          });
         } catch {}
         planRunPendingRef.current = false;
-        update({
+        activeMsgRef.current = null;
+        const sessionId = stateRef.current.currentSessionId;
+        const previousRuntime = stateRef.current.sessionRuntimeById || {};
+        const abortUi = {
           busy: false,
           live: false,
           stage: "idle",
           stageLabel: "",
-        });
+          activeMsgId: null,
+          ...(sessionId
+            ? {
+                sessionRuntimeById: {
+                  ...previousRuntime,
+                  [sessionId]: {
+                    ...previousRuntime[sessionId],
+                    sessionId,
+                    status: "aborted",
+                    busy: false,
+                  },
+                },
+              }
+            : {}),
+        };
+        stateRef.current = { ...stateRef.current, ...abortUi };
+        update(abortUi);
         setState((prev) => {
           const abortedSteps = getAbortedPlanStepIndexes(prev.messages);
           return {
@@ -3331,36 +3636,10 @@ export function AppProvider({ children }) {
                   },
                 };
               }
-              if (message.isComplete === false) {
-                const settled = settleRunningCreatePlanCards(
-                  {
-                    ...message,
-                    isComplete: true,
-                    manualAborted: true,
-                    segments: finishThinkingSegments(message.segments || []).map(
-                      (seg) =>
-                        seg.type === "text"
-                          ? { ...seg, isStreaming: false }
-                          : seg,
-                    ),
-                    planStep: message.planStep
-                      ? {
-                          ...message.planStep,
-                          status: ["done", "failed"].includes(
-                            String(message.planStep.status || ""),
-                          )
-                            ? message.planStep.status
-                            : "failed",
-                          summary: message.planStep.summary || "Aborted",
-                        }
-                      : message.planStep,
-                  },
-                  { reason: "aborted" },
-                );
-                return settled;
-              }
-              // Completed messages can still own a running create_plan card.
-              return settleRunningCreatePlanCards(message, { reason: "aborted" });
+              return settleRunningCreatePlanCards(
+                settleIncompleteTranscriptMessage(message, { reason: "aborted" }),
+                { reason: "aborted" },
+              );
             }),
           };
         });
@@ -3681,16 +3960,15 @@ export function AppProvider({ children }) {
                 },
                 projectCwd: projectNameFromRuntimeState(result.state),
                 isGeneral: !!result.state.isGeneral,
+                busy: !!result.state.busy,
                 live: !!result.state.busy,
                 stageLabel: result.state.busy ? t("waitingResponse") : "",
               }));
             else {
               await loadState(sessionId);
-              // loadState uses prev.live as fallback for idle sessions;
-              // after a session switch, prev.live belongs to the old session,
-              // so correct live/stageLabel from the new runtimeState.
               const rs = stateRef.current.runtimeState;
               update({
+                busy: !!rs?.busy,
                 live: !!rs?.busy,
                 stageLabel: rs?.busy ? t("waitingResponse") : "",
                 targetMessageId,
@@ -3710,6 +3988,14 @@ export function AppProvider({ children }) {
               });
             }
             await msgPromise;
+            if (options.fromAbortFork) {
+              addMessage({
+                role: "divider",
+                dividerType: "continuation",
+                text: t("continuedInNewSession"),
+                timestamp: new Date().toISOString(),
+              });
+            }
           } else {
             update({ messagesLoading: false });
           }
@@ -3758,9 +4044,7 @@ export function AppProvider({ children }) {
               loadSessionMessages(null, { sessionId: replacement.sessionId }),
               loadGitInfo({ sessionId: replacement.sessionId }),
             ]);
-            // Replacement session is always idle; reset live/stageLabel
-            // since loadState may have kept prev.live from the deleted session.
-            update({ live: false, stageLabel: "" });
+            update({ busy: false, live: false, stage: "idle", stageLabel: "" });
           }
           loadSessions();
           return result;
@@ -3815,9 +4099,7 @@ export function AppProvider({ children }) {
               updateRoute("chat", result.sessionId);
               activateSessionView(result.sessionId);
               await loadState(result.sessionId);
-              // A new session is always idle; reset live/stageLabel
-              // since loadState falls back to prev.live from the old session.
-              update({ live: false, stageLabel: "" });
+              update({ busy: false, live: false, stage: "idle", stageLabel: "" });
             }
             // Empty drafts stay out of the sidebar until the first message.
             loadSessions({ force: true });
@@ -3857,11 +4139,12 @@ export function AppProvider({ children }) {
               projectCwd: projectNameFromRuntimeState(result.state),
               isGeneral: !!result.state.isGeneral,
               live: !!result.state.busy,
+              busy: !!result.state.busy,
               stageLabel: result.state.busy ? t("waitingResponse") : "",
             }));
           } else {
             await loadState(result.sessionId);
-            update({ live: false, stageLabel: "" });
+            update({ live: false, busy: false, stage: "idle", stageLabel: "" });
           }
           if (result.sessionData) {
             await loadSessionMessages(result.sessionData, { sessionId: result.sessionId });
@@ -3961,6 +4244,7 @@ export function AppProvider({ children }) {
                 },
                 projectCwd: projectNameFromRuntimeState(result.state),
                 isGeneral: !!result.state.isGeneral,
+                busy: !!result.state.busy,
                 live: !!result.state.busy,
                 stageLabel: result.state.busy ? t("waitingResponse") : "",
               }));
@@ -3968,6 +4252,7 @@ export function AppProvider({ children }) {
               await loadState(targetSessionId);
               const rs = stateRef.current.runtimeState;
               update({
+                busy: !!rs?.busy,
                 live: !!rs?.busy,
                 stageLabel: rs?.busy ? t("waitingResponse") : "",
                 targetMessageId,
@@ -4039,15 +4324,15 @@ export function AppProvider({ children }) {
                 },
                 projectCwd: projectNameFromRuntimeState(result.state),
                 isGeneral: !!result.state.isGeneral,
+                busy: !!result.state.busy,
                 live: !!result.state.busy,
                 stageLabel: result.state.busy ? t("waitingResponse") : "",
               }));
             } else {
               await loadState(result.sessionId);
-              // loadState falls back to prev.live for idle sessions;
-              // after switching, prev.live belongs to the old session.
               const rs = stateRef.current.runtimeState;
               update({
+                busy: !!rs?.busy,
                 live: !!rs?.busy,
                 stageLabel: rs?.busy ? t("waitingResponse") : "",
               });
@@ -4068,9 +4353,11 @@ export function AppProvider({ children }) {
           } else if (nextView === "chat") {
             update({ messagesLoading: false });
           }
+          return result;
         } catch {
           if (nextView === "chat") update({ messagesLoading: false });
         }
+        return undefined;
       },
 
       switchView: (view, options = {}) => {
@@ -4234,8 +4521,8 @@ export function AppProvider({ children }) {
           update({ updateStatus: "error" });
         }
       },
-    }),
-    [
+    };
+  }, [
       activateSessionView,
       addMessage,
       applyTheme,
@@ -4250,6 +4537,9 @@ export function AppProvider({ children }) {
       upsertRuntimeActivity,
     ],
   );
+
+  switchSessionRef.current = actions.switchSession;
+  abortFnRef.current = actions.abort;
 
   const projectedSessions = useMemo(
     () => projectSessionRuntime(state.sessions, state.sessionRuntimeById),

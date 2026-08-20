@@ -8,6 +8,7 @@ import {
 import { readSkillRegistry } from './skill-registry.js';
 import { normalizeSkillContexts, skillIsEligible } from './skill-contexts.js';
 import { parseFrontmatter } from './frontmatter.js';
+import { isVmSandbox, resolveSandboxPolicy, toSandboxSkillPath } from './sandbox-policy.js';
 
 const SKILL_CATALOG_FILE = 'codemini.skills.json';
 const FRONTMATTER_READ_BYTES = 16 * 1024;
@@ -160,6 +161,29 @@ function renderSkillPackageContext(command) {
     lines.push('Auxiliary directories: none detected.');
   }
   lines.push('</codemini-skill-package>');
+  return lines.join('\n');
+}
+
+function renderSandboxSkillMountContext(command, policy) {
+  if (command?.metadata?.type !== 'skill' || !isVmSandbox(policy)) return '';
+  const root = command.metadata?.rootPath || (command.path ? path.dirname(command.path) : '');
+  if (!root) return '';
+  const sandboxRoot = toSandboxSkillPath(root, policy);
+  const resolvedRoot = path.resolve(root);
+  if (sandboxRoot === resolvedRoot || sandboxRoot === root) return '';
+  const dirs = listExistingSkillDirs(root);
+  const lines = [
+    '<codemini-skill-sandbox>',
+    'Commands run in a Linux microVM. Use these paths with run. Keep host paths for read and grep.',
+    `Sandbox skill root: ${sandboxRoot}`,
+  ];
+  if (dirs.length > 0) {
+    lines.push('Sandbox auxiliary directories:');
+    for (const dir of dirs) {
+      lines.push(`- ${dir.name}: ${toSandboxSkillPath(dir.path, policy)}`);
+    }
+  }
+  lines.push('</codemini-skill-sandbox>');
   return lines.join('\n');
 }
 
@@ -466,9 +490,10 @@ function formatSkillIndexPromptBlock(entries = []) {
   const lines = entries.map((entry) => entry.promptLine);
   if (!lines.length) return '';
   return [
-    '# Indexed skills',
-    'Agent-requested skills installed by the user are listed here. Always skills are injected in full and manual skills require explicit invocation, so neither appears in this index. Load full instructions with skill({name:"<name>"}). Search with skill({query:"..."}).',
-    ...lines
+    '<available_skills>',
+    'Select only a strong match; load it with skill({name:"<name>"}).',
+    ...lines,
+    '</available_skills>'
   ].join('\n');
 }
 
@@ -531,16 +556,25 @@ export async function buildSkillIndexPreview(cwd = process.cwd(), config = {}) {
   };
 }
 
-export function renderCommandPrompt(command, args) {
+export function appendSkillSandboxMountHint(command, content, { config, cwd, platform } = {}) {
+  const hint = renderSandboxSkillMountContext(
+    command,
+    resolveSandboxPolicy({ config, cwd: cwd || process.cwd(), platform }),
+  );
+  return hint ? `${content}\n\n${hint}` : content;
+}
+
+export function renderCommandPrompt(command, args, options = {}) {
   const hasArgPlaceholders = /\{\{args\}\}/.test(command.content) || /\{\{\d+\}\}/.test(command.content);
   let content = substituteVariables(command.content, args);
   if (!hasArgPlaceholders && Array.isArray(args) && args.length > 0) {
     content = `${content}\n\n[User task]\n${args.join(' ')}`;
   }
+  content = appendSkillSandboxMountHint(command, content, options);
   return `[Executing ${command.metadata.type === 'skill' ? 'skill' : 'command'}: /${command.name}]\n\n${content}`;
 }
 
-export function composeExplicitSkillPrompt(commands, names, question, { isEnabled } = {}) {
+export function composeExplicitSkillPrompt(commands, names, question, { isEnabled, config, cwd, platform } = {}) {
   const selected = [];
   for (const name of names || []) {
     const command = commands?.get?.(name);
@@ -559,7 +593,7 @@ export function composeExplicitSkillPrompt(commands, names, question, { isEnable
   const prompt = [
     '[Explicit skill composition]',
     'Apply every selected skill. Preserve declaration order. If instructions conflict, explain the conflict instead of silently overriding one skill.',
-    ...selected.map((command) => renderCommandPrompt(command, [])),
+    ...selected.map((command) => renderCommandPrompt(command, [], { config, cwd, platform })),
     `[User task]\n${effectiveTask}`
   ].join('\n\n');
   return { prompt, selected };
