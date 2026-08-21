@@ -117,7 +117,7 @@ export const en = {
   subagentDependencyWaiting: "Waiting for",
   subagentDependencyReceived: "Handoff received",
   subagentDependencyBlocked: "Upstream incomplete",
-  forkBranch: "Fork",
+  forkBranch: "Parallel task",
   forkStatusReady: "Ready",
   forkStatusRunning: "Running",
   forkStatusWaiting: "Waiting",

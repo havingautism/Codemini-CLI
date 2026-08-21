@@ -1938,7 +1938,13 @@ body {
   border: 1.5px solid color-mix(in srgb, var(--accent-blue) 24%, transparent);
   border-top-color: var(--accent-blue);
   border-radius: 50%;
-  animation: loader-ring-spin 0.85s linear infinite;
+  animation: codemini-task-spinner-spin 0.85s linear infinite;
+}
+
+@keyframes codemini-task-spinner-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

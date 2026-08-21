@@ -50,7 +50,7 @@ export function isCreatePlanCard(card) {
 export function planPhaseTitle(phase, { toolName = "" } = {}) {
   const kind = String(toolName || "")
     .toLowerCase()
-    .replace(/\(.*$/, "") === "fork_task" ? "Fork" : "Subagent";
+    .replace(/\(.*$/, "") === "fork_task" ? "Parallel task" : "Subagent";
   switch (String(phase || "").toLowerCase()) {
     case "planning":
       return `${kind} · 准备`;
@@ -69,6 +69,16 @@ export function planPhaseTitle(phase, { toolName = "" } = {}) {
     default:
       return `${kind} · 任务`;
   }
+}
+
+export function stripDelegationTaskPrefix(value) {
+  return String(value || "")
+    .trim()
+    .replace(
+      /^(?:(?:子代理|分支|并行任务)(?:\s*[-_]?\s*[a-z0-9一二三四五六七八九十甲乙丙丁]+)?|(?:sub-?agent|branch|parallel task)(?:\s*[-_]?\s*[a-z0-9]+)?)\s*[:：]\s*/i,
+      "",
+    )
+    .trim();
 }
 
 export function createEmptyPlanRun({ goal = "", steps = [] } = {}) {
@@ -598,9 +608,19 @@ export function applyPlanEventToMessage(message, event) {
           : anyWaiting
             ? "waiting"
             : "executing";
+        const completedForkTasks =
+          type === "plan:step_done" &&
+          ["done", "completed"].includes(String(status || "").toLowerCase()) &&
+          String(card.name || "").toLowerCase().replace(/\(.*$/, "") === "fork_task" &&
+          Array.isArray(card.arguments?.tasks)
+            ? card.arguments.tasks.map((task) => ({ ...task, status: "completed" }))
+            : null;
 
         return {
           ...card,
+          ...(completedForkTasks
+            ? { arguments: { ...card.arguments, tasks: completedForkTasks } }
+            : {}),
           status: allDone
             ? anyFailed
               ? "error"

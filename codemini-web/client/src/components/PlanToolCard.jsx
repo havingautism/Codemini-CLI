@@ -15,7 +15,11 @@ import { extractLatestTodoFromPlanSteps } from "@/lib/answer-process.js";
 import { getTodoToolItems } from "@/lib/tool-card-display.js";
 import { formatToolGroupSummaryLabel } from "@/lib/tool-group-summary.js";
 import { cn } from "@/lib/utils";
-import { planPhaseTitle, shouldExpandPlanStep } from "@/lib/plan-ui-state.js";
+import {
+  planPhaseTitle,
+  shouldExpandPlanStep,
+  stripDelegationTaskPrefix,
+} from "@/lib/plan-ui-state.js";
 import { t } from "../../i18n/index.js";
 
 const SUBAGENT_AVATAR_STYLE = new Style(bottts);
@@ -351,6 +355,7 @@ function SubagentStepRow({ step, index }) {
   const [expanded, setExpanded] = useState(shouldExpandPlanStep(step));
   const open = status === "running" ? true : expanded;
   const persona = String(step?.role || "").trim();
+  const title = stripDelegationTaskPrefix(step?.title) || `Task ${index + 1}`;
 
   return (
     <div className="codemini-disclosure overflow-hidden">
@@ -384,7 +389,7 @@ function SubagentStepRow({ step, index }) {
             <span className="msg-process-meta__detail mx-1">·</span>
           ) : null}
           <span className="msg-process-meta__detail">
-            {step.title || `Task ${index + 1}`}
+            {title}
           </span>
         </span>
       </DisclosureRowButton>
@@ -430,7 +435,7 @@ export function PlanToolCard({ card }) {
   const persona = String(
     primary?.role || card?.arguments?.name || card?.arguments?.role || "",
   ).trim();
-  const goal = String(
+  const goal = stripDelegationTaskPrefix(
     isDelegationCard
       ? card?.arguments?.prompt ||
           planRun?.goal ||
@@ -442,18 +447,16 @@ export function PlanToolCard({ card }) {
           card?.arguments?.prompt ||
           card?.summary ||
           "",
-  ).trim();
-  const taskSummary = String(
+  );
+  const taskSummary = stripDelegationTaskPrefix(
     isDelegationCard
       ? card?.arguments?.summary || card?.arguments?.goal || goal
       : goal,
-  ).trim();
+  );
   const title = isSubagent
     ? persona || t("subagentWorker")
     : isFork
-      ? persona
-        ? `${t("forkBranch")} · ${persona}`
-        : t("forkBranch")
+      ? t("forkBranch")
       : card?.displayName || planPhaseTitle(phase);
   const singleTask = steps.length <= 1;
   const [open, setOpen] = useState(
@@ -480,15 +483,15 @@ export function PlanToolCard({ card }) {
           )
         }
       >
-        {isSubagent || isFork ? (
+        {isSubagent ? (
           persona ? (
             <SubagentAvatar seed={persona} />
           ) : (
             <UserCircle size={15} aria-hidden="true" className="shrink-0 text-(--text-secondary)" />
           )
-        ) : (
+        ) : !isFork ? (
           <UserCircle size={15} aria-hidden="true" className="shrink-0 text-(--text-secondary)" />
-        )}
+        ) : null}
         <span className="shrink-0">{title}</span>
         {taskSummary && !expanded ? (
           <>

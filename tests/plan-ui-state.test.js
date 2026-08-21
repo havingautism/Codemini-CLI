@@ -11,8 +11,16 @@ import {
   settleCompletedPlanToolCards,
   settleRunningCreatePlanCards,
   shouldNestStreamEventInPlan,
+  stripDelegationTaskPrefix,
   updatePlanOverviewStepStatus,
 } from '../codemini-web/client/src/lib/plan-ui-state.js';
+
+test('delegation task labels omit generated branch prefixes', () => {
+  assert.equal(stripDelegationTaskPrefix('子代理 B：检查文件'), '检查文件');
+  assert.equal(stripDelegationTaskPrefix('分支-a: 检查缓存'), '检查缓存');
+  assert.equal(stripDelegationTaskPrefix('Parallel task 2: run tests'), 'run tests');
+  assert.equal(stripDelegationTaskPrefix('分支策略：比较实现'), '分支策略：比较实现');
+});
 
 test('planPhaseTitle maps phases', () => {
   assert.equal(planPhaseTitle('planning'), 'Subagent · 准备');
@@ -528,7 +536,48 @@ test('fork plan:step_done carries usage onto the fork card step', () => {
   assert.equal(message.usage, undefined);
 });
 
-test('fork cards render a Fork identity while subagent cards stay Subagent', () => {
+test('fork_task uses the Parallel task product label', () => {
+  assert.equal(planPhaseTitle('executing', { toolName: 'fork_task' }), 'Parallel task · 运行中');
+  assert.equal(planPhaseTitle('completed', { toolName: 'fork_task' }), 'Parallel task · 完成');
+});
+
+test('completed fork branches settle their assigned checklist', () => {
+  let message = { id: 'parent', role: 'general', segments: [] };
+  const tasks = [
+    { content: 'List files', status: 'in_progress' },
+    { content: 'Return results', status: 'pending' },
+  ];
+  message = applyStreamEventToPlanRun(message, {
+    type: 'tool:start',
+    id: 'fork-1',
+    name: 'fork_task',
+    arguments: { prompt: 'Inspect files', name: 'files', tasks },
+  });
+  message = applyPlanEventToMessage(message, {
+    type: 'plan:step_start',
+    step: 1,
+    toolCallId: 'fork-1',
+    role: 'files',
+    title: 'Inspect files',
+  });
+  message = applyPlanEventToMessage(message, {
+    type: 'plan:step_done',
+    step: 1,
+    toolCallId: 'fork-1',
+    role: 'files',
+    title: 'Inspect files',
+    status: 'done',
+  });
+
+  const card = message.segments[0].cards[0];
+  assert.equal(card.status, 'done');
+  assert.deepEqual(
+    card.arguments.tasks.map((task) => task.status),
+    ['completed', 'completed'],
+  );
+});
+
+test('fork cards render a Parallel task identity while subagent cards stay Subagent', () => {
   const runCard = (name) => {
     let message = { id: 'parent', role: 'general', segments: [] };
     message = applyStreamEventToPlanRun(message, {
@@ -558,7 +607,7 @@ test('fork cards render a Fork identity while subagent cards stay Subagent', () 
 
   const forkCard = runCard('fork_task');
   assert.equal(forkCard.name, 'fork_task');
-  assert.equal(forkCard.displayName, 'Fork · 完成');
+  assert.equal(forkCard.displayName, 'Parallel task · 完成');
 
   const subagentCard = runCard('run_subagent');
   assert.equal(subagentCard.name, 'run_subagent');

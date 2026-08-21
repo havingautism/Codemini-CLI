@@ -121,7 +121,7 @@ export const zh = {
   subagentDependencyWaiting: "等待上游",
   subagentDependencyReceived: "已接收交接",
   subagentDependencyBlocked: "上游未完成",
-  forkBranch: "Fork 分支",
+  forkBranch: "并行任务",
   forkStatusReady: "准备中",
   forkStatusRunning: "运行中",
   forkStatusWaiting: "等待依赖",

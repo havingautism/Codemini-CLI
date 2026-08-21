@@ -24,6 +24,8 @@ test('conversation folds use a disclosure tree instead of nested surface cards',
     'codemini-web/client/src/components/PlanToolCard.jsx',
     'utf8',
   );
+  const en = await fs.readFile('codemini-web/client/i18n/en.js', 'utf8');
+  const zh = await fs.readFile('codemini-web/client/i18n/zh.js', 'utf8');
 
   assert.match(
     css,
@@ -96,6 +98,16 @@ test('conversation folds use a disclosure tree instead of nested surface cards',
   assert.match(todo, /DisclosureRowButton/);
   assert.match(todo, /variant === "dock"/);
   assert.match(todo, /codemini-message-surface/);
+  assert.match(todo, /className="codemini-task-spinner"/);
+  assert.match(
+    css,
+    /@keyframes codemini-task-spinner-spin[\s\S]*?transform: rotate\(360deg\)/,
+    'in-progress task indicator must visibly rotate',
+  );
+  assert.match(
+    css,
+    /\.codemini-task-spinner \{[\s\S]*?animation: codemini-task-spinner-spin/,
+  );
   assert.match(plan, /DisclosureRowButton/);
   assert.doesNotMatch(plan, /codemini-message-surface/);
   assert.doesNotMatch(
@@ -108,4 +120,12 @@ test('conversation folds use a disclosure tree instead of nested surface cards',
     /function SubagentTaskDetails[\s\S]*?planStepTask[\s\S]*?codemini-disclosure-scroll mt-1 max-h-48/,
   );
   assert.match(plan, /codemini-disclosure-scroll mt-1 max-h-64/);
+  assert.match(en, /forkBranch: "Parallel task"/);
+  assert.match(zh, /forkBranch: "并行任务"/);
+  assert.match(plan, /: isFork\s*\? t\("forkBranch"\)/);
+  assert.doesNotMatch(
+    plan,
+    /isSubagent \|\| isFork \? \([\s\S]*?<SubagentAvatar/,
+    'parallel tasks should not render branch avatars',
+  );
 });
