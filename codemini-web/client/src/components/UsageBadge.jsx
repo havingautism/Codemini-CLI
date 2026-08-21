@@ -26,19 +26,11 @@ function formatGrouped(value) {
   return number.toLocaleString(locale);
 }
 
-function cachePct(tokens) {
-  const base =
-    tokens.cacheMiss > 0 || tokens.cacheWrite > 0
-      ? tokens.cached + tokens.cacheMiss + tokens.cacheWrite
-      : tokens.input;
-  return base > 0 ? (tokens.cached / base) * 100 : 0;
-}
-
 export function getUsageSummary(usage) {
   const model = buildUsagePanelModel(usage);
   if (!model) return null;
   const { tokens } = model;
-  const pct = cachePct(tokens);
+  const pct = tokens.cacheHitRate * 100;
   const labelParts = [`${formatUsageNumber(tokens.total)} ${t("usageTokens")}`];
   if (tokens.cached > 0 || tokens.input > 0) {
     labelParts.push(

@@ -1,6 +1,7 @@
 import {
   applyStreamEventToMessage,
   isTranscriptStreamEvent,
+  routingGraphFromEvent,
 } from "../../../shared/transcript-segments.js";
 import { stripPlanProgressText } from "../../../shared/plan-progress-text.js";
 import {
@@ -324,6 +325,15 @@ export function reduceSessionTranscriptEvent(state, event) {
   const messages = state.sessionMessagesById[sessionId] || [];
   const activePlanParent = findActivePlanParentMessage(messages);
   const messageId = (() => {
+    if (event.type === "routing:graph") {
+      const requested = String(event.messageId || "").trim();
+      const userMessage = requested
+        ? messages.find(
+            (message) => message?.id === requested && message?.role === "you",
+          )
+        : [...messages].reverse().find((message) => message?.role === "you");
+      if (userMessage?.id) return userMessage.id;
+    }
     // While a plan card is running, keep nested agent streams on that parent.
     if (
       activePlanParent?.id &&
@@ -353,7 +363,16 @@ export function reduceSessionTranscriptEvent(state, event) {
     }
     return `session-stream-${sessionId}-${Date.now()}`;
   })();
-  if (event.type === "assistant:start") {
+  if (event.type === "routing:graph") {
+    sessionMessagesById = {
+      ...sessionMessagesById,
+      [sessionId]: messages.map((message) =>
+        message.id === messageId
+          ? { ...message, routingGraph: routingGraphFromEvent(event) }
+          : message,
+      ),
+    };
+  } else if (event.type === "assistant:start") {
     // Plan-internal assistant turns must not spawn sibling bubbles.
     if (activePlanParent?.id) {
       sessionMessagesById = {

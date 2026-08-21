@@ -1,13 +1,26 @@
 import { parseModelJsonObject } from './model-json.js';
 
-const GRAPH_VERSION = 'coding-turn-route-v13';
+const GRAPH_VERSION = 'coding-turn-route-v16';
 const MAX_SELECTED_SKILLS = 2;
 const CONTEXT_ADVISORY_PCT = 60;
 const CONTEXT_HARD_PCT = 80;
 const EXPLICIT_DELEGATION_INTENT_RE =
   /\b(?:use|run|spawn)\s+(?:an?\s+)?sub-?agents?\b|\bdelegate\b.{0,24}\bsub-?agents?\b|(?:使用|启用|调用|委派|让).{0,12}(?:子代理|子智能体)/iu;
-const DELEGATION_OPTOUT_RE =
+const SUBAGENT_OPTOUT_RE =
   /\b(?:do not|don't|never|without)\b.{0,24}\bsub-?agents?\b|(?:不要|别|无需).{0,12}(?:子代理|子智能体)/iu;
+const EXPLICIT_FORK_INTENT_RE =
+  /\b(?:use|run|spawn)\s+(?:an?\s+)?(?:forks?|parallel (?:tasks?|branches?))\b|(?:使用|启用|调用).{0,12}(?:并行任务|并行分支|分支任务)/iu;
+const FORK_OPTOUT_RE =
+  /\b(?:do not|don't|never|without)\b.{0,24}\b(?:forks?|parallel (?:tasks?|branches?))\b|(?:不要|别|无需).{0,12}(?:并行任务|并行分支|分支任务)/iu;
+// Fork branches replay the parent's full prefix, so they fit same-state
+// parallel work — explicit "in parallel / separately" markers or 分别/并行
+// style phrasing — rather than generic exploration words.
+const PARALLEL_FORK_INTENT_PATTERNS = [
+  /\b(?:inspect|review|analy[sz]e|check|audit|compare|investigate)\b[\s\S]{0,120}\b(?:in parallel|separately|independently|concurrently)\b/iu,
+  /\b(?:in parallel|separately|concurrently)\b[\s\S]{0,80}\b(?:inspect|review|analy[sz]e|check|audit)\b/iu,
+  /(?:并行|同时|分别|分头|各自).{0,24}(?:检查|审查|分析|调研|评估|排查|对比)/u,
+  /(?:检查|审查|分析|调研|评估|排查|对比).{0,24}(?:和|与|、).{0,24}(?:检查|审查|分析|调研|评估|排查|对比)/u,
+];
 
 function contextPressure(contextUsage = {}) {
   const estimatedTokens = Number(contextUsage?.estimated_tokens || 0);
@@ -26,11 +39,25 @@ function contextPressure(contextUsage = {}) {
 
 function hasExplicitDelegationIntent(text = '') {
   const input = String(text || '');
-  return !DELEGATION_OPTOUT_RE.test(input) && EXPLICIT_DELEGATION_INTENT_RE.test(input);
+  return !SUBAGENT_OPTOUT_RE.test(input) && EXPLICIT_DELEGATION_INTENT_RE.test(input);
 }
 
-function hasDelegationOptOut(text = '') {
-  return DELEGATION_OPTOUT_RE.test(String(text || ''));
+function hasSubagentOptOut(text = '') {
+  return SUBAGENT_OPTOUT_RE.test(String(text || ''));
+}
+
+function hasExplicitForkIntent(text = '') {
+  const input = String(text || '');
+  return !FORK_OPTOUT_RE.test(input) && EXPLICIT_FORK_INTENT_RE.test(input);
+}
+
+function hasForkOptOut(text = '') {
+  return FORK_OPTOUT_RE.test(String(text || ''));
+}
+
+function hasParallelInvestigationIntent(text = '') {
+  const input = String(text || '');
+  return PARALLEL_FORK_INTENT_PATTERNS.some((re) => re.test(input));
 }
 
 function hasMultiStepTaskIntent(text = '') {
@@ -39,6 +66,43 @@ function hasMultiStepTaskIntent(text = '') {
   return numberedSteps.length >= 2
     || /\b(?:implement|fix|refactor|debug)\b[\s\S]{0,100}\b(?:test|verify|build)\b/iu.test(input)
     || /(?:实现|修改|修复|重构|排查)[\s\S]{0,50}(?:测试|验证|构建)/u.test(input);
+}
+
+const VALID_DELEGATION_MODES = new Set([
+  'direct',
+  'parallel_task',
+  'subagent',
+  'subagent_dag',
+]);
+
+function requestedDelegationMode(raw = {}) {
+  const mode = String(raw?.delegation?.mode || '').trim().toLowerCase();
+  return VALID_DELEGATION_MODES.has(mode) ? mode : '';
+}
+
+function resolveDelegationMode(raw = {}, { text = '', contextUsage = {}, taskRequired = false } = {}) {
+  const pressure = contextPressure(contextUsage);
+  const subagentOptOut = hasSubagentOptOut(text);
+  const forkOptOut = hasForkOptOut(text);
+  const explicitSubagent = hasExplicitDelegationIntent(text);
+  const explicitFork = hasExplicitForkIntent(text);
+  const parallelIntent = hasParallelInvestigationIntent(text);
+  const requested = requestedDelegationMode(raw);
+  const nonAtomic = taskRequired || raw?.tasks?.required === true || parallelIntent;
+
+  if (requested === 'subagent_dag' && !subagentOptOut) return 'subagent_dag';
+  if (explicitSubagent && !subagentOptOut) return 'subagent';
+  if (explicitFork && !forkOptOut) return 'parallel_task';
+  if (pressure.hard && nonAtomic && !subagentOptOut) return 'subagent';
+
+  if (requested === 'parallel_task' && !forkOptOut && !pressure.hard) return requested;
+  if ((requested === 'subagent' || requested === 'subagent_dag') && !subagentOptOut) return requested;
+  if (requested === 'direct') return requested;
+
+  if (!forkOptOut && !pressure.hard && raw?.forks?.enabled === true) return 'parallel_task';
+  if (!subagentOptOut && raw?.subagents?.enabled === true) return 'subagent';
+  if (!forkOptOut && !pressure.hard && parallelIntent) return 'parallel_task';
+  return 'direct';
 }
 
 const TASK_CONTINUATION_RE = /(?:继续|接着|然后|顺便|还有|另外|再(?:改|加|补|跑|测|调)|也(?:要|需要|想|把))/u;
@@ -72,8 +136,13 @@ const GRAPH_NODES = Object.freeze({
   }),
   subagent_gate: Object.freeze({
     decision: 'subagents',
-    enforcement: 'advisory',
+    enforcement: 'hard_gate',
     evaluate: normalizeSubagentDecision,
+  }),
+  fork_gate: Object.freeze({
+    decision: 'forks',
+    enforcement: 'directive',
+    evaluate: normalizeForkDecision,
   }),
   task_gate: Object.freeze({
     decision: 'tasks',
@@ -92,6 +161,7 @@ const CODING_GATE_ORDER = Object.freeze([
   ['skills', 'skill_selection_gate'],
   ['tasks', 'task_gate'],
   ['subagents', 'subagent_gate'],
+  ['forks', 'fork_gate'],
   ['memory', 'memory_gate'],
 ]);
 
@@ -104,16 +174,26 @@ export function selectCodingRouteGates({
   const selectedSkills = Array.isArray(raw?.skills?.selected_names)
     ? raw.skills.selected_names.filter(Boolean)
     : [];
+  const delegationMode = resolveDelegationMode(raw, {
+    text,
+    contextUsage,
+    taskRequired: hasMultiStepTaskIntent(text) || hasEditContinuationIntent(text, toolTrace),
+  });
   return {
     clarification: raw?.clarification?.mode === 'ask',
     skills: selectedSkills.length > 0 || raw?.skills?.inject_index === true,
     tasks: hasMultiStepTaskIntent(text)
       || hasEditContinuationIntent(text, toolTrace)
       || raw?.tasks?.required === true,
-    subagents: hasDelegationOptOut(text)
-      || contextPressure(contextUsage).hard
+    subagents: hasSubagentOptOut(text)
       || hasExplicitDelegationIntent(text)
+      || delegationMode === 'subagent'
+      || delegationMode === 'subagent_dag'
       || raw?.subagents?.enabled === true,
+    forks: hasForkOptOut(text)
+      || delegationMode === 'parallel_task'
+      || hasParallelInvestigationIntent(text)
+      || raw?.forks?.enabled === true,
     memory: true,
   };
 }
@@ -173,14 +253,14 @@ function judgeRequest({
     systemPrompt: [
       'You are the semantic judge inside a coding-turn routing graph.',
       'Judge difficulty from meaning, not keywords. A short request can still need tasks, skills, or subagents; a long or jargon-heavy request can still be atomic.',
-      'Route one coding turn through five nodes. Return strict JSON and no prose.',
+      'Route one coding turn through six nodes. Return strict JSON and no prose.',
       '- clarification: "ask" only when a material choice remains after repository inspection; otherwise "auto". request_user_input always remains available.',
       '- skills: none by default; select at most two exact indexed names only for strong workflow matches.',
       '- tasks: required for 2+ meaningful steps, multiple files/phases, implementation plus verification, or multi-hypothesis debugging. A required heuristic route cannot be downgraded.',
-      '- subagents: enable only for bounded independent work, parallel read-only investigation, or independent verification. At >=80% context usage require two.',
+      '- delegation: choose exactly one execution recommendation. direct for atomic work; parallel_task recommends the always-available fork_task tool for bounded independent work sharing the same state/prefix; subagent enables clean-context run_subagent for a different role/model or independent verification; subagent_dag enables run_subagent only when downstream work depends on upstream findings. At >=80% context usage prefer subagent over parallel_task for non-atomic work.',
       '- memory: may downgrade but never upgrade the heuristic. Save only explicit durable preferences, remember requests, or stable project conventions; never secrets. Coding discoveries go to later Dream/session review.',
       '',
-      'Return {"clarification":{"mode":"ask|auto","suggested_questions":["focused question"],"reason":"..."},"skills":{"selected_names":["exact-name"],"reason":"..."},"tasks":{"required":true,"items":[{"content":"Inspect implementation"}],"reason":"..."},"subagents":{"enabled":true,"recommended_count":1,"focus":["bounded focus"],"reason":"..."},"memory":{"leaf":"save_memory|dream_inbox|ignore","reason":"..."}}',
+      'Return {"clarification":{"mode":"ask|auto","suggested_questions":["focused question"],"reason":"..."},"skills":{"selected_names":["exact-name"],"reason":"..."},"tasks":{"required":true,"items":[{"content":"Inspect implementation"}],"reason":"..."},"delegation":{"mode":"direct|parallel_task|subagent|subagent_dag","recommended_count":2,"focus":["bounded focus"],"reason":"..."},"memory":{"leaf":"save_memory|dream_inbox|ignore","reason":"..."}}',
     ].join('\n'),
     userPrompt: [
       `User turn:\n${String(text || '').trim()}`,
@@ -202,10 +282,29 @@ function fallbackDecision({
 }) {
   const pressure = contextPressure(contextUsage);
   const delegationIntent = hasExplicitDelegationIntent(text);
+  const forkIntent = hasParallelInvestigationIntent(text);
   const taskRequired = hasMultiStepTaskIntent(text)
     || hasEditContinuationIntent(text, toolTrace);
-  const enableSubagents = pressure.hard || delegationIntent;
+  const delegationMode = resolveDelegationMode({}, {
+    text,
+    contextUsage,
+    taskRequired,
+  });
+  const enableSubagents = delegationMode === 'subagent' || delegationMode === 'subagent_dag';
+  const enableForks = delegationMode === 'parallel_task';
   return {
+    delegation: {
+      mode: delegationMode,
+      recommended_count: enableForks ? 2 : enableSubagents ? (pressure.hard ? 2 : 1) : 0,
+      focus: [],
+      reason: enableForks
+        ? 'parallel same-state investigation'
+        : enableSubagents
+          ? pressure.hard
+            ? 'hard context-isolation fallback'
+            : 'explicit delegation request'
+          : 'direct execution fallback',
+    },
     memory: {
       leaf: VALID_MEMORY_LEAVES.has(memoryRoute?.leaf) ? memoryRoute.leaf : 'ignore',
       reason: 'deterministic memory-route fallback',
@@ -219,12 +318,22 @@ function fallbackDecision({
     },
     subagents: {
       enabled: enableSubagents,
-      recommended_count: pressure.hard ? 2 : delegationIntent ? 1 : 0,
+      recommended_count: enableSubagents ? (pressure.hard ? 2 : 1) : 0,
       focus: [],
       reason: pressure.hard
         ? 'hard context-isolation fallback'
         : delegationIntent
           ? 'explicit delegation request'
+          : 'semantic-difficulty fallback',
+    },
+    forks: {
+      enabled: enableForks,
+      recommended_count: enableForks ? 2 : 0,
+      focus: [],
+      reason: pressure.hard
+        ? 'hard context pressure prefers clean-context subagents'
+        : forkIntent
+          ? 'parallel same-state investigation'
           : 'semantic-difficulty fallback',
     },
     tasks: {
@@ -279,18 +388,27 @@ function normalizeSkillDecision(raw, fallback, {
 function normalizeSubagentDecision(raw, fallback, { contextUsage = {}, text = '' } = {}) {
   const pressure = contextPressure(contextUsage);
   const delegationIntent = hasExplicitDelegationIntent(text);
-  const optedOut = hasDelegationOptOut(text);
-  const subagentsEnabled =
-    !optedOut && (pressure.hard || delegationIntent || raw?.subagents?.enabled === true);
+  const optedOut = hasSubagentOptOut(text);
+  const delegationMode = resolveDelegationMode(raw, {
+    text,
+    contextUsage,
+    taskRequired: fallback.tasks.required,
+  });
+  const subagentsEnabled = delegationMode === 'subagent' || delegationMode === 'subagent_dag';
+  const request = requestedDelegationMode(raw) === delegationMode
+    ? raw.delegation
+    : raw?.subagents;
   const fallbackCount = Math.min(2, Math.max(1, fallback.subagents.recommended_count || 1));
-  const requestedCount = Number.parseInt(raw?.subagents?.recommended_count, 10) || fallbackCount;
+  const requestedCount = Number.parseInt(request?.recommended_count, 10) || fallbackCount;
   const recommendedCount = subagentsEnabled
-    ? pressure.hard
+    ? delegationMode === 'subagent_dag'
+      ? 2
+      : pressure.hard
       ? 2
       : Math.min(2, Math.max(1, requestedCount))
     : 0;
   const subagentFocus = subagentsEnabled
-    ? (Array.isArray(raw?.subagents?.focus) ? raw.subagents.focus : [])
+    ? (Array.isArray(request?.focus) ? request.focus : [])
         .map((focus) => String(focus || '').trim().slice(0, 160))
         .filter(Boolean)
         .slice(0, recommendedCount)
@@ -305,7 +423,53 @@ function normalizeSubagentDecision(raw, fallback, { contextUsage = {}, text = ''
         ? 'hard context-isolation policy'
         : delegationIntent
           ? 'explicit delegation request'
-          : raw?.subagents?.reason || fallback.subagents.reason || '',
+          : request?.reason || fallback.subagents.reason || '',
+    ).slice(0, 240),
+  };
+}
+
+const MAX_FORK_BRANCHES = 3;
+
+function normalizeForkDecision(raw, fallback, { contextUsage = {}, text = '' } = {}) {
+  const pressure = contextPressure(contextUsage);
+  const forkIntent = hasParallelInvestigationIntent(text);
+  const optedOut = hasForkOptOut(text) || raw?.forks?.opted_out === true;
+  const delegationMode = resolveDelegationMode(raw, {
+    text,
+    contextUsage,
+    taskRequired: fallback.tasks.required,
+  });
+  const forksEnabled = delegationMode === 'parallel_task';
+  const request = requestedDelegationMode(raw) === delegationMode
+    ? raw.delegation
+    : raw?.forks;
+  const fallbackCount = Math.min(
+    MAX_FORK_BRANCHES,
+    Math.max(1, Number(fallback.forks?.recommended_count) || 2),
+  );
+  const requestedCount = Number.parseInt(request?.recommended_count, 10) || fallbackCount;
+  const recommendedCount = forksEnabled
+    ? Math.min(MAX_FORK_BRANCHES, Math.max(1, requestedCount))
+    : 0;
+  const focus = forksEnabled
+    ? (Array.isArray(request?.focus) ? request.focus : [])
+        .map((focus) => String(focus || '').trim().slice(0, 160))
+        .filter(Boolean)
+        .slice(0, recommendedCount)
+    : [];
+  return {
+    enabled: forksEnabled,
+    opted_out: optedOut,
+    recommended_count: recommendedCount,
+    focus,
+    reason: String(
+      optedOut
+        ? 'delegation opt-out'
+        : pressure.hard
+          ? 'hard context pressure prefers clean-context subagents'
+          : forkIntent
+            ? 'parallel same-state investigation'
+            : request?.reason || fallback.forks.reason || '',
     ).slice(0, 240),
   };
 }
@@ -412,6 +576,11 @@ export async function evaluateCodingRouteGraph({
     contextUsage,
     raw,
   });
+  const delegationMode = resolveDelegationMode(raw, {
+    text,
+    contextUsage,
+    taskRequired: fallback.tasks.required || raw?.tasks?.required === true,
+  });
 
   const graph = executeGraph({
     coding: true,
@@ -431,12 +600,16 @@ export async function evaluateCodingRouteGraph({
     graph_version: GRAPH_VERSION,
     ...graph,
     source,
+    delegation_mode: delegationMode,
   };
 }
 
 export function isCodingRouteToolAllowed(result, toolName) {
   if (toolName === 'run_subagent') {
-    return result?.decisions?.subagents?.opted_out !== true;
+    return result?.delegation_mode === 'subagent' || result?.delegation_mode === 'subagent_dag';
+  }
+  if (toolName === 'fork_task') {
+    return true;
   }
   if (toolName === 'save_memory') {
     return result?.decisions?.memory?.allow_save_memory === true;
@@ -446,7 +619,8 @@ export function isCodingRouteToolAllowed(result, toolName) {
 
 export function buildCodingRouteDecisionBlock(result) {
   if (!result?.active || !result.decisions) return '';
-  const { clarification, memory, skills, subagents, tasks } = result.decisions;
+  const { clarification, memory, skills, subagents, forks, tasks } = result.decisions;
+  const delegationMode = result.delegation_mode || 'direct';
   const skillSelection = !skills
     ? ''
     : skills.selected_names.length > 0
@@ -454,8 +628,12 @@ export function buildCodingRouteDecisionBlock(result) {
       : skills.inject_index
         ? 'candidate index fallback'
         : 'none';
-  const subagentFocus = subagents?.focus?.length > 0
-    ? `; focus=${subagents.focus.join(' | ')}`
+  const delegationDecision = delegationMode === 'parallel_task' ? forks : subagents;
+  const delegationCount = delegationDecision?.recommended_count > 0
+    ? `; count=${delegationDecision.recommended_count}`
+    : '';
+  const delegationFocus = delegationDecision?.focus?.length > 0
+    ? `; focus=${delegationDecision.focus.join(' | ')}`
     : '';
   const suggestedTasks = tasks?.items?.length > 0
     ? `; suggested=${tasks.items.map((item) => item.content).join(' | ')}`
@@ -470,17 +648,21 @@ export function buildCodingRouteDecisionBlock(result) {
       : '',
     skills ? `skills=${skillSelection}` : '',
     tasks ? `tasks=${tasks.required ? `required${suggestedTasks}` : 'optional'}` : '',
-    subagents
-      ? `subagents=${subagents.opted_out ? 'disabled' : subagents.enabled ? `recommended:${subagents.recommended_count}${subagentFocus}` : 'optional'}`
-      : '',
+    `delegation=${delegationMode}${delegationCount}${delegationFocus}`,
     memory
       ? `memory=${memory.leaf}; save_memory=${memory.allow_save_memory ? 'enabled' : 'disabled'}`
       : '',
     skills?.selected_names?.length > 0
       ? 'Apply selected skills as active workflows.'
       : '',
-    subagents?.enabled
-      ? 'Delegate only the routed bounded work; the parent owns integration and final verification.'
+    delegationMode === 'subagent'
+      ? 'Use run_subagent only for the routed bounded clean-context work; the parent owns integration and final verification.'
+      : '',
+    delegationMode === 'subagent_dag'
+      ? 'Use run_subagent with task_id and depends_on for the routed dependency DAG; the parent owns integration and final verification.'
+      : '',
+    delegationMode === 'parallel_task'
+      ? 'Use fork_task for the routed parallel work; do not call run_subagent. Keep branches read-only or assign disjoint files.'
       : '',
     tasks?.required
       ? 'Call tasks before major tool work; keep one item in_progress and settle the list before final.'

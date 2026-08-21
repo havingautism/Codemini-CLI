@@ -220,6 +220,32 @@ test('buildUsagePanelModel barInput excludes cached tokens already counted in in
     cachedInputTokens: 40,
     cacheMissInputTokens: 55,
   });
-  assert.equal(withCacheMiss.tokens.cacheMiss, 55);
-  assert.equal(withCacheMiss.tokens.barInput, 55);
+  assert.equal(withCacheMiss.tokens.cacheMiss, 60);
+  assert.equal(withCacheMiss.tokens.barInput, 60);
+});
+
+test('cache hit rate treats cached tokens as part of input, not extra input', () => {
+  const model = buildUsagePanelModel({
+    inputTokens: 44004,
+    outputTokens: 1086,
+    totalTokens: 45090,
+    cachedInputTokens: 42752,
+    requests: 4,
+  });
+
+  assert.ok(Math.abs(model.tokens.cacheHitRate - (42752 / 44004)) < 1e-9);
+});
+
+test('parallel usage derives cache misses from input minus cached tokens', () => {
+  const model = buildUsagePanelModel({
+    inputTokens: 20996,
+    outputTokens: 344,
+    totalTokens: 21340,
+    cachedInputTokens: 20224,
+    cacheMissInputTokens: 20996,
+    requests: 2,
+  });
+
+  assert.equal(model.tokens.cacheMiss, 772);
+  assert.equal(model.tokens.barInput, 772);
 });

@@ -617,8 +617,6 @@ function Shell() {
               <TrajectoryPanel
                 messages={state.messages}
                 runtimeState={state.runtimeState}
-                projectCwd={state.projectCwd}
-                isGeneral={state.isGeneral}
                 sessionId={currentId}
               />
             ) : (

@@ -11,8 +11,16 @@ import {
   settleCompletedPlanToolCards,
   settleRunningCreatePlanCards,
   shouldNestStreamEventInPlan,
+  stripDelegationTaskPrefix,
   updatePlanOverviewStepStatus,
 } from '../codemini-web/client/src/lib/plan-ui-state.js';
+
+test('delegation task labels omit generated branch prefixes', () => {
+  assert.equal(stripDelegationTaskPrefix('子代理 B：检查文件'), '检查文件');
+  assert.equal(stripDelegationTaskPrefix('分支-a: 检查缓存'), '检查缓存');
+  assert.equal(stripDelegationTaskPrefix('Parallel task 2: run tests'), 'run tests');
+  assert.equal(stripDelegationTaskPrefix('分支策略：比较实现'), '分支策略：比较实现');
+});
 
 test('planPhaseTitle maps phases', () => {
   assert.equal(planPhaseTitle('planning'), 'Subagent · 准备');
@@ -67,6 +75,8 @@ test('applyPlanEventToMessage keeps plan progress on create_plan card', () => {
     title: 'Inspect',
     status: 'done',
     output: 'Handoff done',
+    sdkProvider: 'openai-compatible',
+    model: 'lite-model',
     usage: { inputTokens: 80, outputTokens: 20, totalTokens: 100, requests: 1 },
     usageScope: 'subagent',
   });
@@ -84,6 +94,8 @@ test('applyPlanEventToMessage keeps plan progress on create_plan card', () => {
   assert.equal(card.planRun.phase, 'completed');
   assert.equal(card.displayName, 'Subagent · 完成');
   assert.equal(card.planRun.steps[0].usage.totalTokens, 100);
+  assert.equal(card.planRun.steps[0].sdkProvider, 'openai-compatible');
+  assert.equal(card.planRun.steps[0].model, 'lite-model');
   assert.equal(card.planRun.steps[1].segments[0].type, 'text');
   // Parent message usage stays unset; subagent tokens live on the step only.
   assert.equal(message.usage, undefined);
@@ -403,4 +415,209 @@ test('different tool call ids create separate cards', () => {
     .filter((card) => card.name === 'run_subagent');
   assert.equal(cards.length, 2);
   assert.deepEqual(cards.map((card) => card.id).sort(), ['call-1', 'call-2']);
+});
+
+test('fork_task tool:start creates a plan card that plan steps update', () => {
+  let message = { id: 'parent', role: 'general', segments: [] };
+
+  message = applyStreamEventToPlanRun(message, {
+    type: 'tool:start',
+    id: 'fork-1',
+    name: 'fork_task',
+    displayName: 'Fork · frontend',
+    arguments: { prompt: 'Check the frontend', name: 'frontend' },
+  });
+  let cards = message.segments
+    .filter((segment) => segment.type === 'tools')
+    .flatMap((segment) => segment.cards || []);
+  assert.equal(cards.length, 1);
+  assert.equal(cards[0].name, 'fork_task');
+  assert.equal(cards[0].status, 'running');
+  assert.ok(cards[0].planRun, 'fork card must get a planRun');
+
+  message = applyPlanEventToMessage(message, {
+    type: 'plan:step_start',
+    step: 1,
+    toolCallId: 'fork-1',
+    role: 'frontend',
+    title: 'Check the frontend',
+    status: 'running',
+    model: 'mock-model',
+  });
+  cards = message.segments
+    .filter((segment) => segment.type === 'tools')
+    .flatMap((segment) => segment.cards || []);
+  assert.equal(cards[0].planRun.steps[0].role, 'frontend');
+  assert.equal(cards[0].planRun.steps[0].status, 'running');
+  assert.equal(cards[0].planRun.steps[0].model, 'mock-model');
+});
+
+test('fork branch child tools nest inside the fork card step', () => {
+  let message = { id: 'parent', role: 'general', segments: [] };
+  message = applyStreamEventToPlanRun(message, {
+    type: 'tool:start',
+    id: 'fork-1',
+    name: 'fork_task',
+    displayName: 'Fork · backend',
+    arguments: { prompt: 'Check the backend', name: 'backend' },
+  });
+  message = applyPlanEventToMessage(message, {
+    type: 'plan:step_start',
+    step: 1,
+    toolCallId: 'fork-1',
+    role: 'backend',
+    title: 'Check the backend',
+  });
+
+  // A tool the branch itself ran, tagged with the fork card's parentToolCallId.
+  message = applyStreamEventToPlanRun(message, {
+    type: 'tool:start',
+    id: 'branch-read-1',
+    parentToolCallId: 'fork-1',
+    name: 'read',
+    arguments: { file_path: 'src/backend/main.js' },
+  });
+  message = applyStreamEventToPlanRun(message, {
+    type: 'tool:end',
+    id: 'branch-read-1',
+    parentToolCallId: 'fork-1',
+    name: 'read',
+    summary: 'Read src/backend/main.js',
+  });
+
+  const card = message.segments
+    .filter((segment) => segment.type === 'tools')
+    .flatMap((segment) => segment.cards || [])
+    .find((item) => item.id === 'fork-1');
+  const nested = (card?.planRun?.steps || [])
+    .flatMap((step) => step.segments || [])
+    .filter((segment) => segment.type === 'tools')
+    .flatMap((segment) => segment.cards || []);
+  assert.equal(nested.length, 1);
+  assert.equal(nested[0].name, 'read');
+  assert.equal(nested[0].id, 'branch-read-1');
+});
+
+test('fork plan:step_done carries usage onto the fork card step', () => {
+  let message = { id: 'parent', role: 'general', segments: [] };
+  message = applyStreamEventToPlanRun(message, {
+    type: 'tool:start',
+    id: 'fork-1',
+    name: 'fork_task',
+    displayName: 'Fork · tests',
+    arguments: { prompt: 'Run the tests', name: 'tests' },
+  });
+  message = applyPlanEventToMessage(message, {
+    type: 'plan:step_start',
+    step: 1,
+    toolCallId: 'fork-1',
+    role: 'tests',
+    title: 'Run the tests',
+  });
+  message = applyPlanEventToMessage(message, {
+    type: 'plan:step_done',
+    step: 1,
+    toolCallId: 'fork-1',
+    role: 'tests',
+    title: 'Run the tests',
+    status: 'done',
+    output: 'Fork branch "tests" finished.',
+    sdkProvider: 'openai-compatible',
+    model: 'mock-model',
+    usage: { inputTokens: 5000, outputTokens: 200, totalTokens: 5200, cachedInputTokens: 4800, requests: 1 },
+    usageScope: 'fork',
+  });
+
+  const card = message.segments
+    .filter((segment) => segment.type === 'tools')
+    .flatMap((segment) => segment.cards || [])
+    .find((item) => item.id === 'fork-1');
+  assert.equal(card.status, 'done');
+  assert.equal(card.planRun.phase, 'completed');
+  assert.equal(card.planRun.steps[0].status, 'done');
+  assert.equal(card.planRun.steps[0].usage.totalTokens, 5200);
+  assert.equal(card.planRun.steps[0].usage.cachedInputTokens, 4800);
+  assert.equal(card.planRun.steps[0].usage.requests, 1);
+  assert.equal(card.planRun.steps[0].sdkProvider, 'openai-compatible');
+  assert.equal(card.planRun.steps[0].model, 'mock-model');
+  // Parent message usage stays unset; fork tokens live on the step only.
+  assert.equal(message.usage, undefined);
+});
+
+test('fork_task uses the Parallel task product label', () => {
+  assert.equal(planPhaseTitle('executing', { toolName: 'fork_task' }), 'Parallel task · 运行中');
+  assert.equal(planPhaseTitle('completed', { toolName: 'fork_task' }), 'Parallel task · 完成');
+});
+
+test('completed fork branches settle their assigned checklist', () => {
+  let message = { id: 'parent', role: 'general', segments: [] };
+  const tasks = [
+    { content: 'List files', status: 'in_progress' },
+    { content: 'Return results', status: 'pending' },
+  ];
+  message = applyStreamEventToPlanRun(message, {
+    type: 'tool:start',
+    id: 'fork-1',
+    name: 'fork_task',
+    arguments: { prompt: 'Inspect files', name: 'files', tasks },
+  });
+  message = applyPlanEventToMessage(message, {
+    type: 'plan:step_start',
+    step: 1,
+    toolCallId: 'fork-1',
+    role: 'files',
+    title: 'Inspect files',
+  });
+  message = applyPlanEventToMessage(message, {
+    type: 'plan:step_done',
+    step: 1,
+    toolCallId: 'fork-1',
+    role: 'files',
+    title: 'Inspect files',
+    status: 'done',
+  });
+
+  const card = message.segments[0].cards[0];
+  assert.equal(card.status, 'done');
+  assert.deepEqual(
+    card.arguments.tasks.map((task) => task.status),
+    ['completed', 'completed'],
+  );
+});
+
+test('fork cards render a Parallel task identity while subagent cards stay Subagent', () => {
+  const runCard = (name) => {
+    let message = { id: 'parent', role: 'general', segments: [] };
+    message = applyStreamEventToPlanRun(message, {
+      type: 'tool:start',
+      id: `${name}-1`,
+      name,
+      displayName: name === 'fork_task' ? 'Fork · tests' : 'Subagent · Mira',
+      arguments: { name: name === 'fork_task' ? 'tests' : 'Mira', prompt: 'Do the thing' },
+    });
+    message = applyPlanEventToMessage(message, {
+      type: 'plan:step_start',
+      step: 1,
+      toolCallId: `${name}-1`,
+      role: name === 'fork_task' ? 'tests' : 'Mira',
+      title: 'Do the thing',
+    });
+    message = applyPlanEventToMessage(message, {
+      type: 'plan:step_done',
+      step: 1,
+      toolCallId: `${name}-1`,
+      role: name === 'fork_task' ? 'tests' : 'Mira',
+      title: 'Do the thing',
+      status: 'done',
+    });
+    return message.segments[0].cards[0];
+  };
+
+  const forkCard = runCard('fork_task');
+  assert.equal(forkCard.name, 'fork_task');
+  assert.equal(forkCard.displayName, 'Parallel task · 完成');
+
+  const subagentCard = runCard('run_subagent');
+  assert.equal(subagentCard.name, 'run_subagent');
+  assert.equal(subagentCard.displayName, 'Subagent · 完成');
 });

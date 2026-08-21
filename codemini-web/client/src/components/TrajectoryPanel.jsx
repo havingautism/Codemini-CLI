@@ -32,7 +32,7 @@ import { t } from "../../i18n/index.js";
 const KIND_CLASS = {
   system: "bg-(--bg-secondary) text-(--text-muted)",
   user: "bg-(--accent-blue-bg) text-(--accent-blue)",
-  context: "bg-(--accent-green-bg) text-(--accent-green)",
+  routing: "bg-(--accent-teal-bg) text-(--accent-teal)",
   thinking: "bg-(--accent-purple-bg) text-(--accent-purple)",
   assistant: "bg-(--accent-purple-bg) text-(--accent-purple)",
   tool: "bg-(--accent-orange-bg) text-(--accent-orange)",
@@ -43,7 +43,7 @@ const KIND_CLASS = {
 const KIND_I18N = {
   system: "trajectoryKindSystem",
   user: "trajectoryKindUser",
-  context: "trajectoryKindContext",
+  routing: "trajectoryKindRouting",
   thinking: "trajectoryKindThinking",
   assistant: "trajectoryKindAssistant",
   tool: "trajectoryKindTool",
@@ -79,7 +79,7 @@ function isInspectable(event) {
   return [
     "system",
     "user",
-    "context",
+    "routing",
     "thinking",
     "assistant",
     "tool",
@@ -297,8 +297,6 @@ function TrajectoryInspectDialog({ event, onClose }) {
 export function TrajectoryPanel({
   messages = [],
   runtimeState = null,
-  projectCwd = "",
-  isGeneral = false,
   sessionId = "",
 }) {
   const [showDuration, setShowDuration] = useState(true);
@@ -313,10 +311,8 @@ export function TrajectoryPanel({
       buildTrajectory({
         messages,
         runtimeState,
-        projectCwd,
-        isGeneral,
       }),
-    [messages, runtimeState, projectCwd, isGeneral],
+    [messages, runtimeState],
   );
 
   const visible = useMemo(

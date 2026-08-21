@@ -1005,3 +1005,37 @@ test('step start and end become hidden loop segments on the live message', () =>
   assert.equal(message.segments[2].durationMs, 800);
   assert.equal(message.segments[2].reason, 'tools');
 });
+
+test('routing graph decisions attach to the routed user turn', () => {
+  const state = {
+    sessionMessagesById: {
+      'session-route': [
+        planningSubagentMessage(),
+        { id: 'user-route', role: 'you', text: 'Fix it', timestamp: '2026-08-21T00:00:00.000Z' },
+      ],
+    },
+  };
+  const next = reduceSessionTranscriptEvent(state, {
+    type: 'routing:graph',
+    sessionId: 'session-route',
+    messageId: 'user-route',
+    graphVersion: 'coding-turn-route-v14',
+    path: ['coding_gate', 'task_gate'],
+    source: 'llm',
+    delegationMode: 'direct',
+    decisions: { tasks: { required: true, reason: 'multi-step work' } },
+    startedAt: '2026-08-21T00:00:01.000Z',
+  });
+
+  assert.deepEqual(
+    next.sessionMessagesById['session-route'][1].routingGraph,
+    {
+      graphVersion: 'coding-turn-route-v14',
+      path: ['coding_gate', 'task_gate'],
+      source: 'llm',
+      delegationMode: 'direct',
+      decisions: { tasks: { required: true, reason: 'multi-step work' } },
+      startedAt: '2026-08-21T00:00:01.000Z',
+    },
+  );
+});

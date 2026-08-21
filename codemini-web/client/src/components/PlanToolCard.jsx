@@ -11,11 +11,16 @@ import {
 } from "@/components/DisclosureLeading.jsx";
 import { ToolCard } from "@/components/ToolCard.jsx";
 import { UsageBadge } from "@/components/UsageBadge.jsx";
+import { ModelIdentityBadge } from "@/components/ModelIdentityBadge.jsx";
 import { extractLatestTodoFromPlanSteps } from "@/lib/answer-process.js";
 import { getTodoToolItems } from "@/lib/tool-card-display.js";
 import { formatToolGroupSummaryLabel } from "@/lib/tool-group-summary.js";
 import { cn } from "@/lib/utils";
-import { planPhaseTitle, shouldExpandPlanStep } from "@/lib/plan-ui-state.js";
+import {
+  planPhaseTitle,
+  shouldExpandPlanStep,
+  stripDelegationTaskPrefix,
+} from "@/lib/plan-ui-state.js";
 import { t } from "../../i18n/index.js";
 
 const SUBAGENT_AVATAR_STYLE = new Style(bottts);
@@ -38,12 +43,27 @@ const STATUS_LABEL_KEY = {
   aborted: "subagentStatusAborted",
 };
 
-function statusLabel(phase) {
-  return t(STATUS_LABEL_KEY[phase] || "subagentStatusReady");
+const FORK_STATUS_LABEL_KEY = {
+  planning: "forkStatusReady",
+  executing: "forkStatusRunning",
+  waiting: "forkStatusWaiting",
+  completed: "forkStatusDone",
+  blocked: "forkStatusBlocked",
+  failed: "forkStatusFailed",
+  aborted: "forkStatusAborted",
+};
+
+function statusLabel(phase, kind = "subagent") {
+  const keys = kind === "fork" ? FORK_STATUS_LABEL_KEY : STATUS_LABEL_KEY;
+  return t(keys[phase] || (kind === "fork" ? "forkStatusReady" : "subagentStatusReady"));
 }
 
 function isRunSubagentCard(card) {
   return String(card?.name || "").toLowerCase() === "run_subagent";
+}
+
+function isForkCard(card) {
+  return String(card?.name || "").toLowerCase() === "fork_task";
 }
 
 function isProcessSegment(segment) {
@@ -249,7 +269,12 @@ function StepBody({ step }) {
           )}
         </div>
         {step?.usage ? (
-          <div className="flex justify-end">
+          <div className="flex items-center justify-end gap-1">
+            <ModelIdentityBadge
+              sdkProvider={step.sdkProvider}
+              model={step.model}
+              showOnlyWhenDifferent
+            />
             <UsageBadge usage={step.usage} />
           </div>
         ) : null}
@@ -269,7 +294,12 @@ function StepBody({ step }) {
         </div>
       )}
       {step?.usage ? (
-        <div className="flex justify-end">
+        <div className="flex items-center justify-end gap-1">
+          <ModelIdentityBadge
+            sdkProvider={step.sdkProvider}
+            model={step.model}
+            showOnlyWhenDifferent
+          />
           <UsageBadge usage={step.usage} />
         </div>
       ) : null}
@@ -336,6 +366,7 @@ function SubagentStepRow({ step, index }) {
   const [expanded, setExpanded] = useState(shouldExpandPlanStep(step));
   const open = status === "running" ? true : expanded;
   const persona = String(step?.role || "").trim();
+  const title = stripDelegationTaskPrefix(step?.title) || `Task ${index + 1}`;
 
   return (
     <div className="codemini-disclosure overflow-hidden">
@@ -369,7 +400,7 @@ function SubagentStepRow({ step, index }) {
             <span className="msg-process-meta__detail mx-1">·</span>
           ) : null}
           <span className="msg-process-meta__detail">
-            {step.title || `Task ${index + 1}`}
+            {title}
           </span>
         </span>
       </DisclosureRowButton>
@@ -388,6 +419,8 @@ export function PlanToolCard({ card }) {
     planRun?.phase || (card?.status === "done" ? "completed" : "planning");
   const running = String(card?.status || "").toLowerCase() === "running";
   const isSubagent = isRunSubagentCard(card);
+  const isFork = isForkCard(card);
+  const isDelegationCard = isSubagent || isFork;
   const rawSteps = Array.isArray(planRun?.steps) ? planRun.steps : [];
   const assignedTasks = Array.isArray(card?.arguments?.tasks)
     ? card.arguments.tasks
@@ -400,7 +433,7 @@ export function PlanToolCard({ card }) {
         arguments: { tasks: assignedTasks },
       }
     : null;
-  const { steps, todoCard } = isSubagent
+  const { steps, todoCard } = isDelegationCard
     ? extractLatestTodoFromPlanSteps(rawSteps, assignedTasksCard)
     : { steps: rawSteps, todoCard: null };
   const todoItems = todoCard
@@ -413,8 +446,8 @@ export function PlanToolCard({ card }) {
   const persona = String(
     primary?.role || card?.arguments?.name || card?.arguments?.role || "",
   ).trim();
-  const goal = String(
-    isSubagent
+  const goal = stripDelegationTaskPrefix(
+    isDelegationCard
       ? card?.arguments?.prompt ||
           planRun?.goal ||
           card?.arguments?.goal ||
@@ -425,18 +458,20 @@ export function PlanToolCard({ card }) {
           card?.arguments?.prompt ||
           card?.summary ||
           "",
-  ).trim();
-  const taskSummary = String(
-    isSubagent
+  );
+  const taskSummary = stripDelegationTaskPrefix(
+    isDelegationCard
       ? card?.arguments?.summary || card?.arguments?.goal || goal
       : goal,
-  ).trim();
+  );
   const title = isSubagent
     ? persona || t("subagentWorker")
-    : card?.displayName || planPhaseTitle(phase);
+    : isFork
+      ? t("forkBranch")
+      : card?.displayName || planPhaseTitle(phase);
   const singleTask = steps.length <= 1;
   const [open, setOpen] = useState(
-    !isSubagent && (running || phase === "executing"),
+    !isDelegationCard && (running || phase === "executing"),
   );
   const expanded = open;
 
@@ -465,9 +500,9 @@ export function PlanToolCard({ card }) {
           ) : (
             <UserCircle size={15} aria-hidden="true" className="shrink-0 text-(--text-secondary)" />
           )
-        ) : (
+        ) : !isFork ? (
           <UserCircle size={15} aria-hidden="true" className="shrink-0 text-(--text-secondary)" />
-        )}
+        ) : null}
         <span className="shrink-0">{title}</span>
         {taskSummary && !expanded ? (
           <>
@@ -483,8 +518,14 @@ export function PlanToolCard({ card }) {
           <span className="min-w-0 flex-1" />
         )}
         <span className="flex shrink-0 items-center gap-1.5 text-[12px] text-(--text-secondary)">
-          <span>{isSubagent ? statusLabel(phase) : planPhaseTitle(phase)}</span>
-          {isSubagent && todoItems.length ? (
+          <span>
+            {isSubagent
+              ? statusLabel(phase, "subagent")
+              : isFork
+                ? statusLabel(phase, "fork")
+                : planPhaseTitle(phase)}
+          </span>
+          {isDelegationCard && todoItems.length ? (
             <span className="tabular-nums text-(--text-muted)">
               {todoCompleted}/{todoItems.length}
             </span>
@@ -494,7 +535,7 @@ export function PlanToolCard({ card }) {
 
       {expanded ? (
         <div className="codemini-disclosure-tree">
-          {isSubagent ? <SubagentTaskDetails task={goal} /> : null}
+          {isDelegationCard ? <SubagentTaskDetails task={goal} /> : null}
           {todoCard ? <ToolCard card={todoCard} embedded /> : null}
           {isSubagent ? (
             <SubagentDependencyDetails

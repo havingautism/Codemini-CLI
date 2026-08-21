@@ -8,6 +8,7 @@ import {
   finishThinkingSegments,
   finishStreamingTextSegments,
   normalizeUsage,
+  routingGraphFromEvent,
   settleIncompleteTranscriptMessage,
   updateSkillInSegments,
 } from '../shared/transcript-segments.js';
@@ -33,6 +34,12 @@ import {
 import { CHAT_ACTIONS } from '../../src/core/chat-action-dispatcher.js';
 
 const CODEWIKI_GENERATE_TIMEOUT_MS = 35 * 60 * 1000;
+
+/** Tools rendered as plan/subagent cards (one card per tool call, planRun steps). */
+const PLAN_CARD_TOOL_NAMES = new Set(["create_plan", "run_subagent", "fork_task"]);
+function isPlanCardToolName(name) {
+  return PLAN_CARD_TOOL_NAMES.has(String(name || "").trim());
+}
 
 function webTranscriptPath(sessionId) {
   return path.join(getSessionsDir(), 'web-ui-transcripts', `${String(sessionId || 'unknown')}.json`);
@@ -606,7 +613,7 @@ export class RuntimeBridge {
               segment?.type === 'tools' &&
               (Array.isArray(segment.cards) ? segment.cards : []).some(
                 (card) =>
-                  (card?.name === 'create_plan' || card?.name === 'run_subagent') &&
+                  isPlanCardToolName(card?.name) &&
                   card.status === 'running',
               ),
           ),
@@ -628,7 +635,7 @@ export class RuntimeBridge {
             segment?.type === 'tools' &&
             (Array.isArray(segment.cards) ? segment.cards : []).some(
               (card) =>
-                (card?.name === 'create_plan' || card?.name === 'run_subagent') &&
+                isPlanCardToolName(card?.name) &&
                 card.status === 'running',
             ),
         ),
@@ -740,6 +747,16 @@ export class RuntimeBridge {
 
     let publishedMessageId = null;
     switch (event.type) {
+      case 'routing:graph': {
+        const userMsgId = this.#lastUserMessageId();
+        if (!userMsgId) break;
+        this.#updateUiMessage(userMsgId, (message) => ({
+          ...message,
+          routingGraph: routingGraphFromEvent(event),
+        }));
+        publishedMessageId = userMsgId;
+        break;
+      }
       case 'assistant:start': {
         this.#removeUiTransientWaiting();
         const pendingSkillBadges = this.#uiPendingSkillBadges;
@@ -785,12 +802,12 @@ export class RuntimeBridge {
       case 'step:start':
       case 'step:end': {
         const toolName = String(event.name || event.toolName || '').trim();
-        if (event.type === 'tool:start' && (toolName === 'create_plan' || toolName === 'run_subagent') && this.#uiActiveMsgId) {
+        if (event.type === 'tool:start' && isPlanCardToolName(toolName) && this.#uiActiveMsgId) {
           this.#uiPlanParentMsgId = this.#uiActiveMsgId;
         }
         const createPlanTargetId =
           ['tool:end', 'tool:result', 'tool:error', 'tool:blocked'].includes(event.type) &&
-          (toolName === 'create_plan' || toolName === 'run_subagent')
+          isPlanCardToolName(toolName)
             ? this.#resolveCreatePlanToolTargetId()
             : null;
         const targetId = createPlanTargetId || this.#uiActiveMsgId;
@@ -833,7 +850,7 @@ export class RuntimeBridge {
 
         // Nest plan-owned streams into the create_plan card / running step.
         if (
-          (toolName === 'create_plan' || toolName === 'run_subagent') ||
+          isPlanCardToolName(toolName) ||
           (this.#uiPlanParentMsgId && targetId === this.#uiPlanParentMsgId)
         ) {
           this.#updateUiMessage(targetId, (message) => {
@@ -848,7 +865,7 @@ export class RuntimeBridge {
           publishedMessageId = targetId;
           if (
             ['tool:end', 'tool:error', 'tool:blocked'].includes(event.type) &&
-            (toolName === 'create_plan' || toolName === 'run_subagent')
+            isPlanCardToolName(toolName)
           ) {
             // One card per tool call — do not abort sibling parallel subagents.
             const parent = this.#uiMessages.find(

@@ -81,7 +81,6 @@ test("splits turns and maps thinking, tool calls, and assistant body text", () =
   assert.deepEqual(kinds, [
     "system",
     "user",
-    "context",
     "thinking",
     "tool",
     "skill",
@@ -94,26 +93,22 @@ test("splits turns and maps thinking, tool calls, and assistant body text", () =
   assert.equal(result.events[1].body, "梳理一下整体链路");
   assert.equal(result.events[1].turn, 1);
   assert.equal(result.events[1].input, "梳理一下整体链路");
-  assert.match(result.events[2].body, /model: gpt-test/);
-  assert.match(result.events[2].body, /provider: openai/);
-  assert.match(result.events[2].body, /mode: coding/);
-  assert.match(result.events[2].body, /cwd: \/tmp\/app/);
-  assert.equal(result.events[3].kind, "thinking");
-  assert.equal(result.events[3].title, "thinking");
-  assert.equal(result.events[3].body, "I will inspect the repo.");
-  assert.equal(result.events[4].title, "glob");
-  assert.equal(result.events[4].sourceCard?.name, "glob");
-  assert.equal(result.events[4].sourceCard?.arguments?.pattern, "README*");
-  assert.match(result.events[4].body, /README\*/);
-  assert.match(result.events[4].input, /README\*/);
-  assert.equal(result.events[4].preview, "README.md");
-  assert.equal(result.events[4].output, "README.md");
-  assert.equal(result.events[5].kind, "skill");
-  assert.equal(result.events[6].kind, "assistant");
-  assert.equal(result.events[6].title, "body");
-  assert.equal(result.events[6].body, "这里是给用户看的最终回复");
-  assert.equal(result.events[7].turn, 2);
-  assert.equal(result.events.filter((event) => event.kind === "context").length, 1);
+  assert.equal(result.events[2].kind, "thinking");
+  assert.equal(result.events[2].title, "thinking");
+  assert.equal(result.events[2].body, "I will inspect the repo.");
+  assert.equal(result.events[3].title, "glob");
+  assert.equal(result.events[3].sourceCard?.name, "glob");
+  assert.equal(result.events[3].sourceCard?.arguments?.pattern, "README*");
+  assert.match(result.events[3].body, /README\*/);
+  assert.match(result.events[3].input, /README\*/);
+  assert.equal(result.events[3].preview, "README.md");
+  assert.equal(result.events[3].output, "README.md");
+  assert.equal(result.events[4].kind, "skill");
+  assert.equal(result.events[5].kind, "assistant");
+  assert.equal(result.events[5].title, "body");
+  assert.equal(result.events[5].body, "这里是给用户看的最终回复");
+  assert.equal(result.events[6].turn, 2);
+  assert.equal(result.events.some((event) => event.kind === "context"), false);
 });
 
 test("text-only assistant turn still emits thinking and body without tool calls", () => {
@@ -134,7 +129,7 @@ test("text-only assistant turn still emits thinking and body without tool calls"
   assert.equal(result.metrics.calls, 0);
   assert.deepEqual(
     result.events.map((event) => event.kind),
-    ["system", "user", "context", "thinking", "assistant"],
+    ["system", "user", "thinking", "assistant"],
   );
   const thinking = result.events.find((event) => event.kind === "thinking");
   const body = result.events.find((event) => event.kind === "assistant");
@@ -191,7 +186,7 @@ test("maps web UI general-role turns including tasks tool cards", () => {
   assert.equal(result.metrics.calls, 1);
   assert.deepEqual(
     result.events.map((event) => event.kind),
-    ["system", "user", "context", "thinking", "tool", "assistant"],
+    ["system", "user", "thinking", "tool", "assistant"],
   );
   const tool = result.events.find((event) => event.kind === "tool");
   assert.equal(tool.title, "tasks");
@@ -237,9 +232,7 @@ test("includes coder-role model turns without assistant-role inference", () => {
       },
     ],
   });
-  const timeline = result.events.filter(
-    (event) => event.kind !== "system" && event.kind !== "context",
-  );
+  const timeline = result.events.filter((event) => event.kind !== "system");
   assert.deepEqual(
     timeline.map((event) => event.kind),
     ["user", "assistant"],
@@ -264,9 +257,7 @@ test("orders messages by timestamps instead of array position", () => {
       },
     ],
   });
-  const timeline = result.events.filter(
-    (event) => event.kind !== "system" && event.kind !== "context",
-  );
+  const timeline = result.events.filter((event) => event.kind !== "system");
   assert.deepEqual(
     timeline.map((event) => event.body),
     ["first question", "later answer"],
@@ -309,9 +300,7 @@ test("wraps assistant work in agent-loop round headers inside a turn", () => {
       },
     ],
   });
-  const timeline = result.events.filter(
-    (event) => event.kind !== "system" && event.kind !== "context",
-  );
+  const timeline = result.events.filter((event) => event.kind !== "system");
   assert.deepEqual(
     timeline.map((event) => [event.kind, event.loop || 0, event.title]),
     [
@@ -372,9 +361,7 @@ test("keeps plan-overview, system notices, abort, and errors in time order", () 
     ],
     runtimeState: { model: "m" },
   });
-  const timeline = result.events.filter(
-    (event) => event.kind !== "context",
-  );
+  const timeline = result.events;
   assert.equal(timeline[0].kind, "system");
   assert.equal(timeline[0].input, "");
   assert.equal(timeline[1].kind, "user");
@@ -393,8 +380,7 @@ test("keeps plan-overview, system notices, abort, and errors in time order", () 
   assert.equal(timeline[5].title, "error");
   assert.equal(timeline[5].status, "error");
   assert.equal(timeline[5].body, "boom");
-  const context = result.events.find((event) => event.kind === "context");
-  assert.match(context.body, /model: m/);
+  assert.equal(result.events.some((event) => event.kind === "context"), false);
 });
 
 test("USER and error events omit endedAt so duration stays unknown", () => {
@@ -532,14 +518,13 @@ test("system event reuses lastSystemPrompt from session runtime state", () => {
     },
   });
   const system = result.events.find((event) => event.kind === "system");
-  const context = result.events.find((event) => event.kind === "context");
   assert.match(system.body, /Persisted system prompt/);
   assert.match(system.input, /session record/);
   assert.equal(system.input.includes("model:"), false);
-  assert.match(context.body, /model: gpt-test/);
+  assert.equal(result.events.some((event) => event.kind === "context"), false);
 });
 
-test("context keeps runtime debug fields and user inspect includes model input", () => {
+test("omits synthetic runtime context while user inspect keeps model input", () => {
   const result = buildTrajectory({
     messages: [
       {
@@ -570,20 +555,52 @@ test("context keeps runtime debug fields and user inspect includes model input",
     },
   });
   const user = result.events.find((event) => event.kind === "user");
-  const context = result.events.find((event) => event.kind === "context");
   const assistant = result.events.find((event) => event.kind === "assistant");
   assert.equal(user.input, "用这个技能");
   assert.match(user.output, /<skill>explore<\/skill>/);
-  assert.match(context.body, /model: gpt-debug/);
-  assert.match(context.body, /provider: openai-compatible/);
-  assert.match(context.body, /reasoning: medium/);
-  assert.match(context.body, /shell: zsh/);
-  assert.match(context.body, /soul: coder/);
-  assert.match(context.body, /always_skills: explore/);
+  assert.equal(result.events.some((event) => event.kind === "context"), false);
   assert.equal(assistant.model, "gpt-debug");
   assert.equal(assistant.usage.totalTokens, 160);
   assert.equal(result.metrics.tokens, 160);
   assert.equal(formatTrajectoryUsage(assistant.usage), "in 120 · out 40 · reason 12 · 160 tok");
+});
+
+test("shows graph routing decisions on the routed user turn", () => {
+  const result = buildTrajectory({
+    messages: [
+      {
+        id: "u-route",
+        role: "you",
+        text: "修复并验证",
+        model_content: [
+          "<turn_context>",
+          '<coding_harness version="coding-turn-route-v14" source="llm">',
+          "tasks=required",
+          "</coding_harness>",
+          "</turn_context>",
+          "",
+          "<task>",
+          "修复并验证",
+          "</task>",
+        ].join("\n"),
+        routingGraph: {
+          graphVersion: "coding-turn-route-v14",
+          path: ["coding_gate", "task_gate"],
+          source: "llm",
+          delegationMode: "direct",
+          decisions: { tasks: { required: true, reason: "multi-step work" } },
+        },
+      },
+    ],
+  });
+
+  const user = result.events.find((event) => event.kind === "user");
+  const routing = result.events.find((event) => event.kind === "routing");
+  assert.match(user.output, /<coding_harness/);
+  assert.equal(routing.turn, 1);
+  assert.equal(routing.title, "graph routing");
+  assert.match(routing.body, /coding_gate → task_gate/);
+  assert.match(routing.input, /"required": true/);
 });
 
 test("filterTrajectoryEvents hides calls and matches search", () => {

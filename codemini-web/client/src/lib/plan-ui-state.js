@@ -39,28 +39,46 @@ export function isCreatePlanCard(card) {
   const name = String(card?.name || "")
     .toLowerCase()
     .replace(/\(.*$/, "");
-  return name === "create_plan" || name === "run_subagent" || Boolean(card?.planRun);
+  return (
+    name === "create_plan" ||
+    name === "run_subagent" ||
+    name === "fork_task" ||
+    Boolean(card?.planRun)
+  );
 }
 
-export function planPhaseTitle(phase) {
+export function planPhaseTitle(phase, { toolName = "" } = {}) {
+  const kind = String(toolName || "")
+    .toLowerCase()
+    .replace(/\(.*$/, "") === "fork_task" ? "Parallel task" : "Subagent";
   switch (String(phase || "").toLowerCase()) {
     case "planning":
-      return "Subagent · 准备";
+      return `${kind} · 准备`;
     case "executing":
-      return "Subagent · 运行中";
+      return `${kind} · 运行中`;
     case "waiting":
-      return "Subagent · 等待依赖";
+      return `${kind} · 等待依赖`;
     case "completed":
-      return "Subagent · 完成";
+      return `${kind} · 完成`;
     case "blocked":
-      return "Subagent · 依赖阻塞";
+      return `${kind} · 依赖阻塞`;
     case "failed":
-      return "Subagent · 失败";
+      return `${kind} · 失败`;
     case "aborted":
-      return "Subagent · 已中止";
+      return `${kind} · 已中止`;
     default:
-      return "Subagent · 任务";
+      return `${kind} · 任务`;
   }
+}
+
+export function stripDelegationTaskPrefix(value) {
+  return String(value || "")
+    .trim()
+    .replace(
+      /^(?:(?:子代理|分支|并行任务)(?:\s*[-_]?\s*[a-z0-9一二三四五六七八九十甲乙丙丁]+)?|(?:sub-?agent|branch|parallel task)(?:\s*[-_]?\s*[a-z0-9]+)?)\s*[:：]\s*/i,
+      "",
+    )
+    .trim();
 }
 
 export function createEmptyPlanRun({ goal = "", steps = [] } = {}) {
@@ -235,7 +253,7 @@ export function shouldNestStreamEventInPlan(message, event) {
 
   const card = findCreatePlanCard(message);
   const cardName = String(card?.name || "").toLowerCase().replace(/\(.*$/, "");
-  if (cardName === "run_subagent") return false;
+  if (cardName === "run_subagent" || cardName === "fork_task") return false;
 
   if (
     event.type === "assistant:delta" ||
@@ -256,7 +274,7 @@ export function isCreatePlanToolEvent(event) {
   const name = String(event?.name || event?.toolName || event?.toolCall?.name || "")
     .toLowerCase()
     .replace(/\(.*$/, "");
-  return name === "create_plan" || name === "run_subagent";
+  return name === "create_plan" || name === "run_subagent" || name === "fork_task";
 }
 
 /** Apply assistant/tool stream events into the currently running plan step. */
@@ -276,7 +294,7 @@ export function applyStreamEventToPlanRun(message, event, options = {}) {
             displayName:
               event.displayName ||
               card.displayName ||
-              planPhaseTitle("executing") ||
+              planPhaseTitle("executing", { toolName: event.name || event.toolCall?.name || card.name }) ||
               options.formatToolLabel?.("run_subagent"),
             arguments:
               event.arguments ||
@@ -303,7 +321,7 @@ export function applyStreamEventToPlanRun(message, event, options = {}) {
             planRun: card.planRun
               ? { ...card.planRun, phase: "aborted" }
               : card.planRun,
-            displayName: planPhaseTitle("aborted"),
+            displayName: planPhaseTitle("aborted", { toolName: card.name }),
           };
         }
         if (type === "tool:error") {
@@ -315,7 +333,7 @@ export function applyStreamEventToPlanRun(message, event, options = {}) {
             planRun: card.planRun
               ? { ...card.planRun, phase: "failed" }
               : card.planRun,
-            displayName: planPhaseTitle("failed"),
+            displayName: planPhaseTitle("failed", { toolName: card.name }),
           };
         }
         if (type === "tool:end") {
@@ -349,7 +367,7 @@ export function applyStreamEventToPlanRun(message, event, options = {}) {
             durationMs: event.durationMs,
             ...(event.summary ? { summary: event.summary } : {}),
             planRun,
-            displayName: planPhaseTitle(planRun?.phase || "completed"),
+            displayName: planPhaseTitle(planRun?.phase || "completed", { toolName: card.name }),
           };
         }
         return card;
@@ -459,7 +477,7 @@ export function applyPlanEventToMessage(message, event) {
       (card) => ({
         ...card,
         status: "running",
-        displayName: planPhaseTitle("executing"),
+        displayName: planPhaseTitle("executing", { toolName: card.name }),
         planRun: {
           ...planRun,
           goal:
@@ -590,9 +608,19 @@ export function applyPlanEventToMessage(message, event) {
           : anyWaiting
             ? "waiting"
             : "executing";
+        const completedForkTasks =
+          type === "plan:step_done" &&
+          ["done", "completed"].includes(String(status || "").toLowerCase()) &&
+          String(card.name || "").toLowerCase().replace(/\(.*$/, "") === "fork_task" &&
+          Array.isArray(card.arguments?.tasks)
+            ? card.arguments.tasks.map((task) => ({ ...task, status: "completed" }))
+            : null;
 
         return {
           ...card,
+          ...(completedForkTasks
+            ? { arguments: { ...card.arguments, tasks: completedForkTasks } }
+            : {}),
           status: allDone
             ? anyFailed
               ? "error"
@@ -600,7 +628,7 @@ export function applyPlanEventToMessage(message, event) {
                 ? "blocked"
                 : "done"
             : "running",
-          displayName: planPhaseTitle(phase),
+          displayName: planPhaseTitle(phase, { toolName: card.name }),
           planRun: {
             ...current,
             phase,
@@ -701,7 +729,7 @@ export function settleRunningCreatePlanCards(message, { reason = "aborted" } = {
         return {
           ...card,
           status: planRun?.phase === "failed" ? "error" : "done",
-          displayName: planPhaseTitle(planRun?.phase || terminalPhase),
+          displayName: planPhaseTitle(planRun?.phase || terminalPhase, { toolName: card.name }),
           planRun,
         };
       });

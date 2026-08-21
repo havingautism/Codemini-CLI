@@ -144,7 +144,13 @@ test('manual stop discards partial turn messages and keeps the next turn clean',
     assert.equal(turnB.type, 'assistant');
     assert.match(String(turnB.text || ''), /done-/);
     assert.equal(runtime.getCurrentSessionId(), continuationId);
-    assert.ok(continuation.messages.some((message) => message?.role === 'user' && message.content === 'second question'));
+    const secondUser = continuation.messages.find(
+      (message) => message?.role === 'user' && message.content === 'second question',
+    );
+    assert.ok(secondUser);
+    assert.match(secondUser.model_content, /<runtime>/);
+    assert.match(secondUser.model_content, /<task>\s*second question\s*<\/task>/);
+    assert.equal(secondUser.model_content_scope, 'current_turn');
     assert.ok(session.messages.every((message) => message.content !== 'second question'));
 
     const secondBody = bodies.find((body) => Array.isArray(body?.messages)
