@@ -16,7 +16,7 @@ import {
   CheckCircle,
   WarningCircle,
   XCircle,
-} from "@phosphor-icons/react";
+} from "@/lib/icons";
 import { cn } from "@/lib/utils";
 import * as api from "@/hooks/use-api";
 import { Spinner } from "@/components/ui/spinner";

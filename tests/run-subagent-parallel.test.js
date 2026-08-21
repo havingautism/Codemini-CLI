@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   resolveSubAgentToolAllowList,
+  resolveSubAgentRolePolicy,
   SUBAGENT_FORBIDDEN_TOOLS,
   normalizeSubAgentPersonaName,
   getSubAgentPersonaPrompt,
@@ -52,12 +53,20 @@ test('every subagent role keeps tasks even with an explicit read-only allow-list
   }
 });
 
-test('subagent allow-list cannot grant tools outside role policy', () => {
-  const tools = resolveSubAgentToolAllowList({
-    role: 'explorer',
-    tools: ['read', 'edit', 'write'],
-  });
-  assert.deepEqual(tools, ['read', 'tasks']);
+test('explicit tools override the role baseline (parent intent wins)', () => {
+  assert.deepEqual(
+    resolveSubAgentToolAllowList({ role: 'explorer', tools: ['read', 'edit', 'write'] }),
+    ['read', 'edit', 'write', 'tasks'],
+  );
+  // The reported bug: a read-only role can be handed shell execution explicitly.
+  assert.deepEqual(
+    resolveSubAgentToolAllowList({ role: 'explorer', tools: ['Bash'], platform: 'linux' }),
+    ['run', 'tasks'],
+  );
+  assert.deepEqual(
+    resolveSubAgentToolAllowList({ role: 'reviewer', tools: ['Powershell'], platform: 'win32' }),
+    ['run', 'tasks'],
+  );
 });
 
 test('subagent allow-list accepts public shell tool names and keeps internal policy canonical', () => {
@@ -79,6 +88,15 @@ test('freeform persona names use coder tool baseline', () => {
   assert.equal(tools.includes('read'), true);
   assert.equal(tools.includes('edit'), true);
   assert.equal(tools.includes('run_subagent'), false);
+});
+
+test('a persona name that collides with a role keyword stays a coder persona', () => {
+  // name="Writer" must NOT silently become the read-only writer role; only the
+  // explicit `role` field selects a pipeline policy.
+  assert.deepEqual(resolveSubAgentRolePolicy('Writer', ''), { persona: 'Writer', policyKey: 'coder', taskRole: 'Writer' });
+  assert.deepEqual(resolveSubAgentRolePolicy('', 'writer'), { persona: 'Writer', policyKey: 'writer', taskRole: 'writer' });
+  assert.deepEqual(resolveSubAgentRolePolicy('', 'explorer'), { persona: 'Explorer', policyKey: 'explorer', taskRole: 'explorer' });
+  assert.deepEqual(resolveSubAgentRolePolicy('David', ''), { persona: 'David', policyKey: 'coder', taskRole: 'David' });
 });
 
 test('unix subagent baselines drop staged write and promote glob/grep', () => {
@@ -122,6 +140,10 @@ test('Windows subagents keep explicitly requested inspection tools', () => {
 test('persona name normalization keeps playful short names', () => {
   assert.equal(normalizeSubAgentPersonaName('david'), 'David');
   assert.equal(normalizeSubAgentPersonaName(''), 'Alex');
+  // Kebab/snake suffixes are preserved so parallel workers stay distinct.
+  assert.equal(normalizeSubAgentPersonaName('Reader-A'), 'Reader-A');
+  assert.equal(normalizeSubAgentPersonaName('Reader-B'), 'Reader-B');
+  assert.equal(normalizeSubAgentPersonaName('John_doe'), 'John_doe');
   assert.match(getSubAgentPersonaPrompt('mira'), /You are Mira/);
   assert.match(getSubAgentPersonaPrompt('mira'), /Choose the clearest format/);
   assert.doesNotMatch(getSubAgentPersonaPrompt('mira'), /Findings:\n|Actions Taken:\n/);
@@ -275,7 +297,7 @@ test('parallel run_subagent handlers actually overlap in wall time', async () =>
   assert.equal(maxConcurrent, 2);
 });
 
-test('default mutating run_subagent handlers stay serial', async () => {
+test('default mutating run_subagent handlers run in parallel without a read-only tools list', async () => {
   const { runAgentLoop } = await import('../src/core/agent-loop.js');
   const active = new Set();
   let maxConcurrent = 0;
@@ -284,7 +306,7 @@ test('default mutating run_subagent handlers stay serial', async () => {
 
   await runAgentLoop({
     systemPrompt: 'sys',
-    userPrompt: 'serial',
+    userPrompt: 'parallel',
     model: 'test',
     approvalMode: 'full_access',
     skipAnalysisNudge: true,
@@ -314,7 +336,7 @@ test('default mutating run_subagent handlers stay serial', async () => {
     },
   });
 
-  assert.equal(maxConcurrent, 1);
+  assert.equal(maxConcurrent, 2);
 });
 
 test('dependent subagent cards distinguish waiting and dependency-blocked states', () => {

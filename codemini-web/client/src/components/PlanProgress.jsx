@@ -2,7 +2,7 @@ import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { t } from "../../i18n/index.js";
-import { X } from "@phosphor-icons/react";
+import { X } from "@/lib/icons";
 import { PlanStepStatusGlyph } from "@/components/plan-step-icons.jsx";
 
 export const ROLE_PILLS = {

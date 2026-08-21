@@ -3,8 +3,8 @@ import { Avatar, Style } from "@dicebear/core";
 import bottts from "@dicebear/styles/bottts.json" with { type: "json" };
 import {
   UserCircle,
-} from "@phosphor-icons/react";
-import { SessionOrb } from "@/components/ui/spinner";
+} from "@/lib/icons";
+import { SessionOrb, Spinner } from "@/components/ui/spinner";
 import { StreamdownRenderer } from "@/components/StreamdownRenderer.jsx";
 import {
   DisclosureRowButton,
@@ -13,9 +13,9 @@ import { ToolCard } from "@/components/ToolCard.jsx";
 import { UsageBadge } from "@/components/UsageBadge.jsx";
 import { extractLatestTodoFromPlanSteps } from "@/lib/answer-process.js";
 import { getTodoToolItems } from "@/lib/tool-card-display.js";
+import { formatToolGroupSummaryLabel } from "@/lib/tool-group-summary.js";
 import { cn } from "@/lib/utils";
 import { planPhaseTitle, shouldExpandPlanStep } from "@/lib/plan-ui-state.js";
-import { isShellToolName } from "@/lib/tool-names.js";
 import { t } from "../../i18n/index.js";
 
 const SUBAGENT_AVATAR_STYLE = new Style(bottts);
@@ -82,28 +82,17 @@ function splitStepSegments(segments = []) {
 
 function StepProcessFold({ segments }) {
   const [expanded, setExpanded] = useState(false);
-  const toolCount = segments.reduce((sum, item) => {
-    if (item.type !== "tools") return sum;
-    return sum + Math.max(1, item.cards?.length || 0);
-  }, 0);
-  const commandCount = segments.reduce((sum, item) => {
-    if (item.type !== "tools") return sum;
-    return (
-      sum +
-      (item.cards || []).filter((card) => {
-        const name = String(card?.name || "").toLowerCase();
-        return isShellToolName(name);
-      }).length
-    );
-  }, 0);
   const thoughtCount = segments.filter(
     (item) => item.type === "thinking",
   ).length;
+  const toolCards = segments.flatMap((item) =>
+    item.type === "tools" ? item.cards || [] : [],
+  );
+  const toolCount = toolCards.length;
+  const running = toolCards.some((card) => card.status === "running");
   const label =
     thoughtCount === 0 && toolCount > 0
-      ? commandCount === toolCount
-        ? t("toolGroupCommands").replace("{{count}}", toolCount)
-        : t("toolGroupTools").replace("{{count}}", toolCount)
+      ? formatToolGroupSummaryLabel(toolCards, t)
       : t("processed");
   const details =
     thoughtCount === 0 && toolCount > 0
@@ -119,7 +108,13 @@ function StepProcessFold({ segments }) {
       <DisclosureRowButton
         open={expanded}
         onClick={() => setExpanded((value) => !value)}
-        icon={<span className="inline-block size-1.5 rounded-full bg-(--accent-green)" />}
+        icon={
+          running ? (
+            <Spinner className="loading-dots--tool" aria-hidden="true" />
+          ) : (
+            <span className="inline-block size-1.5 rounded-full bg-(--accent-green)" />
+          )
+        }
       >
         <span>{label}</span>
         {details ? (

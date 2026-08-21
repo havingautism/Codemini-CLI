@@ -17,3 +17,19 @@ export function resolveFollowEnd(prevFollow, { atEnd, isUserDriven, reason = '' 
   if (!isUserDriven) return prevFollow;
   return atEnd;
 }
+
+export function findPinnedDisclosure(target) {
+  const toggle = target?.closest?.('[aria-expanded]');
+  if (!toggle) return null;
+  return toggle.closest('.codemini-disclosure') || toggle;
+}
+
+/**
+ * Keep a disclosure header at the same viewport Y after it grows or shrinks.
+ * Stick-to-bottom would otherwise make the extra height appear above the toggle.
+ */
+export function commitElementPin(viewport, previousTop, nextTop) {
+  if (!viewport) return false;
+  viewport.scrollTop += nextTop - previousTop;
+  return isViewportAtEnd(viewport);
+}

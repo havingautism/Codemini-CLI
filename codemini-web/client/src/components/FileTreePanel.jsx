@@ -17,7 +17,7 @@ import {
   FolderOpen,
   MagnifyingGlass,
   X,
-} from "@phosphor-icons/react";
+} from "@/lib/icons";
 import {
   fetchWorkspacePreview,
   fetchWorkspaceTree,

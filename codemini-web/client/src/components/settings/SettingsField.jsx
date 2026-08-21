@@ -1,4 +1,4 @@
-import { Question } from "@phosphor-icons/react";
+import { Question } from "@/lib/icons";
 import {
   Tooltip,
   TooltipContent,

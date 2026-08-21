@@ -5,7 +5,7 @@ import {
   GitBranch,
   Play,
   Star,
-} from "@phosphor-icons/react";
+} from "@/lib/icons";
 import { cn } from "@/lib/utils";
 import { fetchEmbed } from "@/hooks/use-api.js";
 import {

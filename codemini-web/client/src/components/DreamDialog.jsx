@@ -1,4 +1,4 @@
-import { ArrowClockwise, CheckCircle, WarningCircle } from "@phosphor-icons/react";
+import { ArrowClockwise, CheckCircle, WarningCircle } from "@/lib/icons";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import {

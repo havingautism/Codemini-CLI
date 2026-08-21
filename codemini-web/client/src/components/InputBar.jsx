@@ -26,7 +26,7 @@ import {
   Plus,
   Sparkle,
   X,
-} from "@phosphor-icons/react";
+} from "@/lib/icons";
 import { cn } from "@/lib/utils";
 import { t } from "../../i18n/index.js";
 import * as api from "@/hooks/use-api";
@@ -643,7 +643,7 @@ function ActionSkillPalette({
                   item.disabled ? t("actionRequiresConversation") : undefined
                 }
                 className={cn(
-                  "w-full border-0 rounded-md px-2.5 py-2 text-left cursor-pointer grid grid-cols-[22px_minmax(96px,180px)_minmax(0,1fr)_auto] items-start gap-2 text-[12px] transition-colors",
+                  "action-skill-palette-item w-full border-0 rounded-md px-2.5 py-2 text-left cursor-pointer grid grid-cols-[22px_minmax(96px,180px)_minmax(0,1fr)_auto] items-start gap-2 text-[12px] transition-colors outline-none shadow-none focus:outline-none focus:shadow-none focus-visible:outline-none focus-visible:shadow-none",
                   item.disabled
                     ? "cursor-not-allowed bg-transparent text-(--text-muted) opacity-45"
                     : isHovered
@@ -702,8 +702,8 @@ function ActionSkillPalette({
       className="absolute bottom-full left-0 right-0 mb-1.5 max-h-[360px] overflow-y-auto rounded-lg border border-(--border-default) bg-(--bg-primary) shadow-[var(--shadow-default)] z-50 animate-in fade-in-0 zoom-in-95 slide-in-from-bottom-2 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95"
       style={{ scrollbarWidth: "thin" }}
     >
-      <div className="sticky top-0 z-10 bg-(--bg-primary) p-2">
-        <label className="flex items-center gap-2 rounded-md border border-(--border-default) px-2">
+      <div className="sticky top-0 z-10 border-b border-(--border-default) bg-(--bg-primary) px-2 pt-2 pb-1.5">
+        <label className="action-skill-palette-search-shell flex items-center gap-2 rounded-md px-2">
           <MagnifyingGlass size={14} className="text-(--text-muted)" />
           <input
             ref={searchRef}
@@ -712,7 +712,7 @@ function ActionSkillPalette({
             onChange={(event) => onQueryChange(event.target.value)}
             aria-label={t("searchActionsAndSkills")}
             placeholder={t("searchActionsAndSkills")}
-            className="h-8 min-w-0 flex-1 border-0 bg-transparent text-[12px] outline-none"
+            className="action-skill-palette-search h-8 min-w-0 flex-1 appearance-none border-0 bg-transparent p-0 text-[12px] text-(--text-primary) shadow-none outline-none ring-0 cursor-text placeholder:text-(--text-muted) focus:outline-none focus:ring-0 focus:shadow-none focus-visible:outline-none focus-visible:ring-0 focus-visible:shadow-none"
           />
         </label>
         {error ? (
@@ -1439,7 +1439,7 @@ export function InputBar({
             }
             disabled={composerLocked}
             rows={1}
-            className="flex-1 resize-none border-0 outline-none bg-transparent text-(--text-primary) min-h-[30px] max-h-[150px] p-1 leading-[1.5] text-[14px] placeholder:text-(--text-muted) disabled:opacity-50 disabled:cursor-not-allowed"
+            className="flex-1 resize-none border-0 outline-none bg-transparent text-(--text-primary) min-h-[30px] max-h-[150px] p-1 leading-[1.5] text-[14px] placeholder:text-(--text-muted) cursor-text disabled:opacity-50 disabled:cursor-not-allowed"
             style={{ height: "auto" }}
           />
         </div>
@@ -1524,7 +1524,7 @@ export function InputBar({
                       }}
                       placeholder={t("scrapbookSearchPlaceholder")}
                       aria-label={t("scrapbookSearchPlaceholder")}
-                      className="scrapbook-picker-search h-9 min-w-0 flex-1 appearance-none border-0 bg-transparent p-0 text-[12px] text-(--text-primary) shadow-none outline-none ring-0 placeholder:text-(--text-muted) focus:outline-none focus:ring-0 focus-visible:outline-none focus-visible:ring-0"
+                      className="scrapbook-picker-search h-9 min-w-0 flex-1 appearance-none border-0 bg-transparent p-0 text-[12px] text-(--text-primary) shadow-none outline-none ring-0 cursor-text placeholder:text-(--text-muted) focus:outline-none focus:ring-0 focus-visible:outline-none focus-visible:ring-0"
                     />
                   </label>
                 </div>

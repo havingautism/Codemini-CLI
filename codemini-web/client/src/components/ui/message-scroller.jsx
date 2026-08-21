@@ -1,9 +1,11 @@
 import * as React from "react";
-import { ArrowDown } from "@phosphor-icons/react";
+import { ArrowDown } from "@/lib/icons";
 
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import {
+  commitElementPin,
+  findPinnedDisclosure,
   isViewportAtEnd,
   resolveFollowEnd,
   syncViewportAfterResize,
@@ -17,6 +19,7 @@ function MessageScrollerProvider({ children, initialFollowEnd = true }) {
   const [atEnd, setAtEnd] = React.useState(true);
   const followEndRef = React.useRef(initialFollowEnd);
   const userScrollRef = React.useRef(false);
+  const pinGenerationRef = React.useRef(0);
 
   const measure = React.useCallback((node, { isUserDriven = false } = {}) => {
     if (!node) return;
@@ -68,6 +71,33 @@ function MessageScrollerProvider({ children, initialFollowEnd = true }) {
       if (event.target !== viewport) return;
       if (event.offsetX >= viewport.clientWidth) markUserScroll();
     };
+    const onDisclosureClick = (event) => {
+      const element = findPinnedDisclosure(event.target);
+      if (!element || !viewport.contains(element)) return;
+      const previousTop = element.getBoundingClientRect().top;
+      const generation = ++pinGenerationRef.current;
+      const previousOverflowAnchor = viewport.style.overflowAnchor;
+      followEndRef.current = false;
+      viewport.style.overflowAnchor = "none";
+      let frames = 0;
+      const commit = () => {
+        if (generation !== pinGenerationRef.current) return;
+        const atEnd = commitElementPin(
+          viewport,
+          previousTop,
+          element.getBoundingClientRect().top,
+        );
+        frames += 1;
+        if (frames < 2) {
+          requestAnimationFrame(commit);
+          return;
+        }
+        viewport.style.overflowAnchor = previousOverflowAnchor;
+        followEndRef.current = atEnd;
+        measure(viewport, { isUserDriven: false });
+      };
+      requestAnimationFrame(commit);
+    };
     const observer = new ResizeObserver(() => {
       syncViewportAfterResize(viewport, followEndRef.current);
       measure(viewport, { isUserDriven: false });
@@ -80,6 +110,7 @@ function MessageScrollerProvider({ children, initialFollowEnd = true }) {
     viewport.addEventListener("touchmove", markUserScroll, { passive: true });
     viewport.addEventListener("keydown", markUserScroll);
     viewport.addEventListener("pointerdown", onScrollbarPointerDown);
+    viewport.addEventListener("click", onDisclosureClick, true);
     return () => {
       observer.disconnect();
       window.clearTimeout(clearUserScrollTimer);
@@ -89,6 +120,7 @@ function MessageScrollerProvider({ children, initialFollowEnd = true }) {
       viewport.removeEventListener("touchmove", markUserScroll);
       viewport.removeEventListener("keydown", markUserScroll);
       viewport.removeEventListener("pointerdown", onScrollbarPointerDown);
+      viewport.removeEventListener("click", onDisclosureClick, true);
     };
   }, [viewport, measure]);
 

@@ -1,5 +1,5 @@
 import { memo, useState } from "react";
-import { CaretDown, Check, ListBullets } from "@phosphor-icons/react";
+import { CaretDown, Check, ListBullets } from "@/lib/icons";
 import { DisclosureRowButton } from "@/components/DisclosureLeading.jsx";
 import { cn } from "@/lib/utils";
 import { t } from "../../i18n/index.js";

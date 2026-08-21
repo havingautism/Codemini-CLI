@@ -7,7 +7,7 @@ import {
   Plug,
   ShieldWarning,
   Sparkle,
-} from "@phosphor-icons/react";
+} from "@/lib/icons";
 import { cn } from "@/lib/utils";
 import { getModelLogo } from "@/lib/message-model-identity.js";
 import { t } from "../../i18n/index.js";

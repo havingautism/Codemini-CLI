@@ -8,12 +8,12 @@ const DEFAULT_CONCURRENT_TOOLS = new Set([
   'read_plan', 'tasks', 'tasks',
   'query_project_index', 'tool_search',
   'skill',
-]);
-
-const PARALLEL_SAFE_SUBAGENT_TOOLS = new Set([
-  'read', 'search_code', 'grep', 'ast_grep', 'glob', 'list',
-  'ast_query', 'read_ast_node', 'web_fetch', 'web_search',
-  'query_project_index', 'query_project_graph', 'tool_search',
+  // Subagents isolate their own session/context and return compact results
+  // plus declared file changes, so same-response calls run in parallel by
+  // default (no read-only tools list required). depends_on still orders
+  // workers that must wait for an upstream result; the coordinator resolves
+  // those promises regardless of scheduling.
+  'run_subagent',
 ]);
 
 export class ToolRegistryContractError extends Error {
@@ -75,10 +75,6 @@ function compileValidator(name, definition) {
 
 function defaultConcurrencyClassifier(name) {
   if (DEFAULT_CONCURRENT_TOOLS.has(name)) return () => true;
-  if (name === 'run_subagent') {
-    return (args = {}) => Array.isArray(args?.tools)
-      && args.tools.every((toolName) => PARALLEL_SAFE_SUBAGENT_TOOLS.has(String(toolName || '').trim().toLowerCase()));
-  }
   return () => false;
 }
 

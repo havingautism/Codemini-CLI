@@ -1,5 +1,5 @@
 import { startTransition, useEffect, useState } from "react";
-import { LinkSimple } from "@phosphor-icons/react";
+import { LinkSimple } from "@/lib/icons";
 import { EmbedCard } from "@/components/EmbedCard.jsx";
 import { HorizontalScrollStrip } from "@/components/HorizontalScrollStrip.jsx";
 import { embedBannerContentKey } from "@/lib/embed-banner-key.js";

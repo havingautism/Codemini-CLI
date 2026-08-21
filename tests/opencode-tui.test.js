@@ -5,9 +5,10 @@ import { Container, getCapabilities, setCapabilities } from '@earendil-works/pi-
 
 import { buildSlashCommands, runOpenCodeTui } from '../src/tui/opencode-chat-app.js';
 import { ActivityBar, ApprovalDialog, Footer, TopBar } from '../src/tui/components/chrome.js';
-import { PlanProgress, ProcessedFold, ReasoningBlock, TodoProgress, ToolCall, ToolCallGroup, appendHistory, createAssistantMessage, createSystemMessage, createUserMessage, linkMarkdownImages } from '../src/tui/components/messages.js';
+import { PlanProgress, ProcessedFold, ReasoningBlock, TodoProgress, ToolCall, ToolCallGroup, appendHistory, createAssistantMessage, createSystemMessage, createUserMessage, linkMarkdownImages, paintBackground } from '../src/tui/components/messages.js';
 import { ModeHome } from '../src/tui/components/mode-home.js';
 import { createTuiCopy } from '../src/tui/copy.js';
+import { color, CURSOR_COLOR, sealAnsi, SURFACE_BG } from '../src/tui/theme.js';
 
 class FakeTerminal {
   columns = 80;
@@ -428,7 +429,7 @@ test('chat chrome keeps only the logo on top and runtime details at the bottom',
 
   const activity = new ActivityBar({ tui: { requestRender() {} }, copy: createTuiCopy('en') }).render(80).join('\n');
   assert.match(stripAnsi(activity), /● Ready.*\/ commands/);
-  assert.match(activity, /\u001b\[48;2;38;42;52m/);
+  assert.match(activity, /\u001b\[48;2;20;20;24m/);
 });
 
 test('reasoning, tool groups and Processed folds leave one line of breathing room below', () => {
@@ -443,10 +444,59 @@ test('reasoning, tool groups and Processed folds leave one line of breathing roo
   assert.equal(stripAnsi(processed.render(80).at(-1)), ' '.repeat(80));
 });
 
+test('dark TUI restores light text after nested colors instead of the terminal default', () => {
+  const nested = color.muted(`${color.accent('＋')} label`);
+  assert.doesNotMatch(nested, /\u001b\[39m/);
+  assert.doesNotMatch(color.surfaceBg(color.selectionBg('x')), /\u001b\[49m/);
+  assert.match(nested, /\u001b\[38;2;224;224;224m label/);
+
+  const menu = new ModeHome({
+    copy: createTuiCopy('zh'),
+    version: '0.9.0',
+    getHeight: () => 24,
+    onAction() {}
+  }).render(80).find((line) => stripAnsi(line).includes('新对话'));
+  assert.ok(menu);
+  assert.doesNotMatch(menu, /\u001b\[39m/);
+  assert.doesNotMatch(menu, /\u001b\[49m/);
+  assert.match(menu, /\u001b\[38;2;224;224;224m/);
+  assert.equal(menu.includes(SURFACE_BG), true);
+});
+
+test('chat input uses a light cursor cell instead of a dark hardware block', async () => {
+  const terminal = new FakeTerminal();
+  const runtime = {
+    getSessionMessages: () => [],
+    getInputHistory: async () => [],
+    getAvailableSkills: () => [],
+    getRuntimeState: () => ({ mode: 'plan', model: 'test-model', workspaceRoot: 'E:\\repo' }),
+    setRequestToolApproval() {},
+    setExecutionMode: async () => {},
+    submitMessage: async () => ({ type: 'noop' })
+  };
+  const running = runOpenCodeTui({ runtime, sessionId: 'cursor-test', model: 'test-model', terminal });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(terminal.output.includes(CURSOR_COLOR), true);
+  terminal.send('\r');
+  await waitFor(() => terminal.output.includes('\u001b[48;2;236;236;240m'));
+  assert.match(terminal.output, /\u001b\[\d+;\d+H\u001b\[\?25l/);
+  terminal.send('\u0003');
+  terminal.send('\u0003');
+  await running;
+});
+
+test('editor cursor is a high-contrast block on the dark input line', () => {
+  const sealed = sealAnsi('\u001b[7m \u001b[0m typed');
+  assert.doesNotMatch(sealed, /\u001b\[7m/);
+  assert.match(sealed, /\u001b\[38;2;14;14;16m\u001b\[48;2;236;236;240m /);
+  const painted = paintBackground('\u001b[7mA\u001b[0m', 24);
+  assert.match(painted, /\u001b\[48;2;236;236;240mA/);
+  assert.equal(painted.includes(SURFACE_BG), true);
+});
+
 test('every rendered TUI line is painted with the dark surface background', () => {
   const copy = createTuiCopy('en');
-  const dark = /\u001b\[48;2;31;34;41m/;
-  const painted = (lines) => lines.every((line) => dark.test(line));
+  const painted = (lines) => lines.every((line) => line.includes(SURFACE_BG));
   assert.equal(painted(new ModeHome({ copy, getHeight: () => 24, onAction() {} }).render(80)), true);
   assert.equal(painted(createUserMessage('hello **world**').render(80)), true);
   assert.equal(painted(createAssistantMessage('# hi').render(80)), true);

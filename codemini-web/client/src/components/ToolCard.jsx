@@ -12,8 +12,8 @@ import {
   Terminal,
   Trash,
   Wrench,
-} from "@phosphor-icons/react";
-import { LinearRing } from "@/components/ui/spinner";
+} from "@/lib/icons";
+import { LinearRing, Spinner } from "@/components/ui/spinner";
 import { FileTypeIcon } from "@/components/FileTypeIcon.jsx";
 import {
   DisclosureLeading,
@@ -485,14 +485,22 @@ export function ToolCard({
             </button>
           </div>
         )}
-        <span
-          aria-hidden="true"
-          className={cn(
-            "h-1.5 w-1.5 shrink-0 rounded-full",
-            STATUS_STYLES[card.status] || "bg-[var(--muted)]",
-          )}
-        />
+        {card.status === "running" ? (
+          <Spinner
+            className="loading-dots--tool"
+            aria-label={t("toolRunning")}
+          />
+        ) : (
+          <span
+            aria-hidden="true"
+            className={cn(
+              "h-1.5 w-1.5 shrink-0 rounded-full",
+              STATUS_STYLES[card.status] || "bg-[var(--muted)]",
+            )}
+          />
+        )}
       </div>
+
       {fileActionError && (
         <div
           role="alert"

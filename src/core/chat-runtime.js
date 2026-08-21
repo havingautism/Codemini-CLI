@@ -739,17 +739,26 @@ export function buildExecutionModePromptBlock(executionMode, platform = process.
   ].join('\n');
 }
 
+// Subagent capability tiers, composed per role below to avoid repeating the
+// same tool lists. An explicit parent `tools` list overrides these defaults.
+// planner/summarizer intentionally omit search_code: they must not browse code.
+const SUBAGENT_READ_TOOLS = ['read', 'search_code', 'tool_search', 'skill'];
+const SUBAGENT_EDIT_TOOLS = [
+  'edit', 'write', 'begin_write', 'write_chunk', 'commit_write',
+  'abort_write', 'apply_patch', 'delete',
+];
+
 export const ROLE_TOOL_POLICY = {
-  planner: ['read', 'read_plan', 'tool_search', 'skill', 'update_plan', 'tasks'],
-  explorer: ['read', 'search_code', 'tool_search', 'skill', 'web_fetch', 'web_search'],
-  architect: ['read', 'search_code', 'tool_search', 'skill', 'web_search'],
-  advisor: ['read', 'search_code', 'tool_search', 'skill'],
-  coder: ['read', 'search_code', 'edit', 'write', 'begin_write', 'write_chunk', 'commit_write', 'abort_write', 'apply_patch', 'delete', 'run', 'tool_search', 'skill', 'web_fetch', 'web_search', 'tasks'],
-  refactorer: ['read', 'search_code', 'edit', 'write', 'begin_write', 'write_chunk', 'commit_write', 'abort_write', 'apply_patch', 'delete', 'run', 'tool_search', 'skill'],
-  reviewer: ['read', 'search_code', 'tool_search', 'skill'],
-  tester: ['read', 'search_code', 'run', 'tool_search', 'skill'],
-  debugger: ['read', 'search_code', 'run', 'tool_search', 'skill', 'web_search'],
-  writer: ['read', 'search_code', 'tool_search', 'skill', 'web_search', 'web_fetch'],
+  planner: ['read', 'read_plan', 'tool_search', 'skill', 'update_plan'],
+  explorer: [...SUBAGENT_READ_TOOLS, 'web_fetch', 'web_search'],
+  architect: [...SUBAGENT_READ_TOOLS, 'web_search'],
+  advisor: [...SUBAGENT_READ_TOOLS],
+  coder: [...SUBAGENT_READ_TOOLS, ...SUBAGENT_EDIT_TOOLS, 'run', 'web_fetch', 'web_search'],
+  refactorer: [...SUBAGENT_READ_TOOLS, ...SUBAGENT_EDIT_TOOLS, 'run'],
+  reviewer: [...SUBAGENT_READ_TOOLS],
+  tester: [...SUBAGENT_READ_TOOLS, 'run'],
+  debugger: [...SUBAGENT_READ_TOOLS, 'run', 'web_search'],
+  writer: [...SUBAGENT_READ_TOOLS, 'web_fetch', 'web_search'],
   summarizer: ['read', 'tool_search', 'skill'],
   codewiki: CODEWIKI_ROLE_TOOLS
 };
@@ -801,14 +810,29 @@ export function adaptToolNamesForPlatform(
 
 export function normalizeSubAgentPersonaName(value, fallback = 'Alex') {
   const text = String(value || '')
-    .replace(/[_-]+/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, 32);
   if (!text) return fallback;
-  // Keep playful names readable; avoid dumping whole sentences into the badge.
+  // Preserve kebab/snake suffixes so parallel workers like "Reader-A" and
+  // "Reader-B" stay distinct, but still take only the first whitespace word to
+  // keep the badge short.
   const first = text.split(' ')[0] || text;
   return first.charAt(0).toUpperCase() + first.slice(1);
+}
+
+/**
+ * Resolve a subagent's identity into a persona name, pipeline policy key, and
+ * prompt role. Only the explicit `role` field selects a pipeline policy; a
+ * persona `name` never maps onto a role, so a name like "Writer" stays a
+ * coder-baseline persona instead of silently becoming a read-only role.
+ */
+export function resolveSubAgentRolePolicy(name = '', role = '') {
+  const roleKey = String(role || '').trim().toLowerCase();
+  const persona = normalizeSubAgentPersonaName(String(name || role || '').trim(), 'Alex');
+  const policyKey = ROLE_TOOL_POLICY[roleKey] ? roleKey : 'coder';
+  const taskRole = ROLE_TOOL_POLICY[roleKey] ? roleKey : persona;
+  return { persona, policyKey, taskRole };
 }
 
 export function getSubAgentPersonaPrompt(name = 'Alex') {
@@ -852,9 +876,12 @@ export function compactSubAgentResultForParent({
 }
 
 /**
- * Role/persona policy ∩ optional parent allow-list, minus forbidden spawn tools.
- * Unknown persona names (e.g. "David") use the coder tool baseline; parent restricts via `tools`.
- * On Linux/mac, allow-lists follow the DSH-aligned CRUD surface (no staged write / apply_patch).
+ * Subagent tool allow-list. Unknown persona names (e.g. "David") use the coder
+ * tool baseline. When the parent passes an explicit `tools` list, it OVERRIDES
+ * the role baseline (minus always-forbidden spawn tools and platform-incompatible
+ * names), so a read-only role can still be handed `run`/`Bash` explicitly.
+ * On Linux/mac, allow-lists follow the DSH-aligned CRUD surface (no staged
+ * write / apply_patch).
  */
 export function resolveSubAgentToolAllowList({
   role = 'coder',
@@ -879,11 +906,9 @@ export function resolveSubAgentToolAllowList({
     platform,
     { promoteInspection: false },
   );
-  const roleSet = new Set(roleTools);
-  const granted = requested.filter((name) => roleSet.has(name));
+  const granted = [...requested];
   if (
     granted.some((name) => ['list', 'glob', 'grep'].includes(name))
-    && roleSet.has('tool_search')
     && !granted.includes('tool_search')
   ) {
     granted.push('tool_search');
@@ -4902,12 +4927,7 @@ async function askModel({
           dependsOn = [],
           tools = null
         } = {}) => {
-          const identityRaw = String(name || role || '').trim();
-          const identityKey = identityRaw.toLowerCase();
-          const persona = normalizeSubAgentPersonaName(identityRaw, 'Alex');
-          // Soft alias: known pipeline role strings still get that tool policy; freeform names use coder baseline.
-          const policyKey = ROLE_TOOL_POLICY[identityKey] ? identityKey : 'coder';
-          const taskRole = ROLE_TOOL_POLICY[identityKey] ? identityKey : persona;
+          const { persona, policyKey, taskRole } = resolveSubAgentRolePolicy(name, role);
           const taskPrompt = String(prompt || '').trim();
           const assignedTasks = normalizeTodos(tasks);
           if (!taskPrompt && assignedTasks.length === 0) {

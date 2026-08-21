@@ -1,4 +1,4 @@
-import { CheckCircle, XCircle } from "@phosphor-icons/react";
+import { CheckCircle, XCircle } from "@/lib/icons";
 import { SessionOrb } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 

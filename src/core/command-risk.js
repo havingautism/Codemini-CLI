@@ -68,6 +68,16 @@ const HIGH_RISK_PATTERNS = [
 
 const SHELL_WRITE_SYNTAX_PATTERNS = [/>\s*\S/, />>\s*\S/, /\|&\s*\S/];
 
+/**
+ * Whether the command text uses shell redirection that can write files or
+ * streams (`>`, `>>`, `|&`). `classifyCommandRisk` only folds this into its
+ * "read-only" result on non-Windows platforms, so Windows callers that gate on
+ * the classification should check this explicitly.
+ */
+export function hasShellWriteSyntax(command) {
+  return SHELL_WRITE_SYNTAX_PATTERNS.some((pattern) => pattern.test(String(command || '')));
+}
+
 /* ── 核心分类逻辑 ──────────────────────────────────────────────── */
 
 /**

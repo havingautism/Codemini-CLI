@@ -14,7 +14,7 @@ import {
   PencilLine,
   Recycle,
   X,
-} from "@phosphor-icons/react";
+} from "@/lib/icons";
 
 /** Role glyph shown in the step badge (pending / as base for status overlays). */
 export const ROLE_STEP_ICONS = {

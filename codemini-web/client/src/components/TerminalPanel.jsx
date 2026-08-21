@@ -8,7 +8,7 @@ import {
   Terminal as TerminalIcon,
   Trash,
   X,
-} from "@phosphor-icons/react";
+} from "@/lib/icons";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
