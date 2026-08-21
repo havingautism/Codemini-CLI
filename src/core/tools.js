@@ -5206,7 +5206,7 @@ export function getBuiltinTools({
       function: {
         name: "run_subagent",
         description:
-          "Delegate work to a clean-context subagent so project inspection, test output, and independent reasoning do not bloat the main context. Pass a compact task envelope (goal, files, constraints, known facts) in tasks/prompt; do not copy the parent transcript. Prefer this for repository exploration, architecture/dependency lookup, broad code reading, test execution and failure triage, review, option comparison, and isolated implementation chunks. Invent a short human name for the worker (e.g. David, Mira). Independent same-response calls run in parallel automatically (no read-only tools list or depends_on needed); workers share one worktree, so give each parallel worker disjoint file ownership or chain dependent work with task_id/depends_on to avoid conflicting edits. For a dependency DAG, assign task_id and let later calls use depends_on; upstream handoffs are injected automatically. Dependencies must reference earlier calls in the same response. Capability is controlled by tools (default allows edits; pass a read-only list for explore/review/test-only work). Subagents cannot call run_subagent/create_plan/create_spec. Avoid only truly atomic actions where delegation adds no useful evidence.",
+          "Delegate work to a clean-context subagent so project inspection, test output, and independent reasoning do not bloat the main context. Pass a compact task envelope (goal, files, constraints, known facts) in tasks/prompt; do not copy the parent transcript. Prefer this for repository exploration, architecture/dependency lookup, broad code reading, test execution and failure triage, review, option comparison, and isolated implementation chunks. Invent a short human name for the worker (e.g. David, Mira). Independent same-response calls run in parallel automatically (no read-only tools list or depends_on needed); workers share one worktree, so give each parallel worker disjoint file ownership or chain dependent work with task_id/depends_on to avoid conflicting edits. For a dependency DAG, assign task_id and let later calls use depends_on; upstream handoffs are injected automatically. Dependencies must reference earlier calls in the same response. Capability is controlled by tools: omit it for the role default, or pass an explicit allow-list (e.g. Bash/run to grant shell) to override the role baseline. Subagents cannot call run_subagent/create_plan/create_spec. Avoid only truly atomic actions where delegation adds no useful evidence.",
         parameters: {
           type: "object",
           properties: {
@@ -5241,12 +5241,12 @@ export function getBuiltinTools({
             name: {
               type: "string",
               description:
-                "Short invented persona name for this worker (e.g. David, Mira, Kai). Shown on the Subagent card. Do not use preset role enums.",
+                "Short invented persona name for this worker (e.g. David, Mira, Kai). Shown on the Subagent card. Does not affect the tool allow-list.",
             },
             role: {
               type: "string",
               description:
-                "Deprecated alias of name. Prefer name. Known legacy role strings still map to their tool policies if used alone.",
+                "Rarely needed: a plan-pipeline role (planner, explorer, coder, tester, ...) that preselects a default tool policy and behavior. In normal coding use, leave it unset and pass tools instead; an explicit tools list always overrides it.",
             },
             context: {
               type: "string",
@@ -5272,7 +5272,7 @@ export function getBuiltinTools({
               type: "array",
               items: { type: "string" },
               description:
-                "Optional tool allow-list. Defaults to the coding edit baseline. Use a read-only subset for explore/review. On Linux/mac staged write and apply_patch are unavailable (prefer edit/write); glob/grep are part of the inspect baseline. run_subagent/create_plan/create_spec are always forbidden.",
+                "Optional tool allow-list. When omitted, the worker gets its role's default baseline. When provided, it OVERRIDES that baseline (list Bash/run to grant shell execution even to a read-only role). On Linux/mac staged write and apply_patch are unavailable (prefer edit/write); glob/grep are part of the inspect baseline. run_subagent/create_plan/create_spec are always forbidden.",
             },
           },
           required: [],
