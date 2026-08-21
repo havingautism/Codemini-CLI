@@ -1449,9 +1449,9 @@ export function CodeWikiPanel({
             </Alert>
           )}
 
-          <div className="flex-1 min-h-0 p-4 pt-3">
+          <div className="flex-1 min-h-0">
             {CODEWIKI_SYMBOL_GRAPH_ENABLED && activeDoc === "graph" ? (
-              <div className="h-full min-h-[420px] overflow-hidden rounded-xl border border-(--border-default) bg-(--bg-secondary)">
+              <div className="h-full min-h-0 overflow-hidden">
                 <SymbolGraphView
                   graph={symbolGraph}
                   loading={graphLoading}
@@ -1461,7 +1461,7 @@ export function CodeWikiPanel({
                 />
               </div>
             ) : showReportLoading ? (
-              <div className="codewiki-empty-state h-full min-h-[420px] flex flex-col items-center justify-center text-center px-8">
+              <div className="codewiki-empty-state h-full min-h-0 flex flex-col items-center justify-center text-center px-8">
                 <CircleNotch
                   size={28}
                   className="animate-spin text-(--text-muted)"
@@ -1482,7 +1482,7 @@ export function CodeWikiPanel({
                 )}
               </div>
             ) : showReportFailed ? (
-              <div className="codewiki-empty-state h-full min-h-[420px] flex flex-col items-center justify-center text-center px-8">
+              <div className="codewiki-empty-state h-full min-h-0 flex flex-col items-center justify-center text-center px-8">
                 <WarningCircle size={28} className="text-(--text-muted)" />
                 <h2 className="mt-5 text-[20px] font-semibold tracking-[-0.02em] text-(--text-primary)">
                   {t("reportGenerateFailed")}
@@ -1503,7 +1503,7 @@ export function CodeWikiPanel({
                 </button>
               </div>
             ) : !selected && !loading ? (
-              <div className="codewiki-empty-state h-full min-h-[420px] flex flex-col items-center justify-center text-center px-8">
+              <div className="codewiki-empty-state h-full min-h-0 flex flex-col items-center justify-center text-center px-8">
                 <span className="codewiki-empty-icon" aria-hidden="true">
                   <BookOpenText size={28} />
                 </span>
@@ -1536,7 +1536,7 @@ export function CodeWikiPanel({
                 </p>
               </div>
             ) : (
-              <div className="h-full min-h-[420px] overflow-hidden rounded-xl border border-(--border-default) bg-(--bg-secondary)">
+              <div className="h-full min-h-0 overflow-hidden">
                 {frameError ? (
                   <div className="h-full flex flex-col items-center justify-center px-8 text-center">
                     <WarningCircle size={28} className="text-(--text-muted)" />
@@ -1613,20 +1613,21 @@ export function CodeWikiPanel({
           </div>
         </main>
 
-        <div
-          className="codewiki-resizer max-xl:hidden"
-          role="separator"
-          aria-orientation="vertical"
-          aria-label={t("resizeCodeWikiPanel")}
-          title={t("dragToResize")}
-          onMouseDown={handleQaResizeStart}
-        >
-          <span className="codewiki-resizer-handle">
-            <DotsSixVertical size={10} aria-hidden="true" />
-          </span>
-        </div>
+        <aside className="codewiki-question-panel relative z-20 min-h-0 flex flex-col max-xl:hidden">
+          <div
+            className="codemini-terminal-resizer absolute inset-y-0 -left-2 z-30 flex w-2 cursor-col-resize touch-none select-none items-center justify-center border-0! max-xl:hidden"
+            role="separator"
+            aria-orientation="vertical"
+            aria-label={t("resizeCodeWikiPanel")}
+            title={t("dragToResize")}
+            onMouseDown={handleQaResizeStart}
+          >
+            <span className="codewiki-resizer-handle">
+              <DotsSixVertical size={10} aria-hidden="true" />
+            </span>
+          </div>
 
-        <aside className="codewiki-question-panel min-h-0 flex flex-col max-xl:hidden">
+          <div className="codewiki-question-panel-body flex min-h-0 flex-1 flex-col overflow-hidden">
           <div className="codewiki-question-header">
             <div className="flex items-center gap-2.5">
               <span className="codewiki-question-mark" aria-hidden="true">
@@ -1793,6 +1794,7 @@ export function CodeWikiPanel({
               {askInputLocked ? t("askAfterGeneration") : t("askShortcut")}
             </p> */}
           </form>
+          </div>
         </aside>
       {qaResizing && <div className="codewiki-resize-overlay" />}
       <ConfirmDialog

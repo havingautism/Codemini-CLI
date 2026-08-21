@@ -87,11 +87,23 @@ test("workspace session and side rail share the same panel chrome", async () => 
 
   assert.match(
     css,
-    /\.codemini-workspace-panel,\s*\.codemini-workspace-rail \{[^}]*border: 1px solid var\(--workspace-panel-border\)/,
+    /\.codemini-workspace-panel,\s*\.codemini-workspace-rail(?:,\s*\.[a-z-]+)* \{[^}]*border: 1px solid var\(--workspace-panel-border\)/,
   );
   assert.match(
     css,
-    /\.codemini-workspace-panel,\s*\.codemini-workspace-rail \{[^}]*border-color: color-mix\(in srgb, var\(--border-default\) 78%, transparent\)/,
+    /\.codemini-workspace-panel,\s*\.codemini-workspace-rail(?:,\s*\.[a-z-]+)* \{[^}]*border-color: color-mix\(in srgb, var\(--border-default\) 78%, transparent\)/,
+  );
+  assert.match(css, /\.codewiki-sidebar,/);
+  assert.match(css, /\.codewiki-main,/);
+  assert.match(css, /\.codewiki-question-panel \{/);
+  assert.match(
+    css,
+    /\.codewiki-layout \{[^}]*grid-template-columns: 276px minmax\(0, 1fr\) var\(--codewiki-qa-width, 420px\)/,
+  );
+  assert.match(css, /\.codewiki-layout \{[^}]*gap: 0\.5rem/);
+  assert.doesNotMatch(
+    css,
+    /grid-template-columns: 276px minmax\(0, 1fr\) 12px var\(--codewiki-qa-width/,
   );
   assert.match(
     css,

@@ -150,23 +150,26 @@
 
 .codewiki-layout {
   display: grid;
-  grid-template-columns: 276px minmax(0, 1fr) 12px var(--codewiki-qa-width, 420px);
-  background: var(--bg-primary);
+  grid-template-columns: 276px minmax(0, 1fr) var(--codewiki-qa-width, 420px);
+  gap: 0.5rem;
+  min-height: 0;
+  background: transparent;
   color: var(--text-primary);
-  font-family:
-    -apple-system,
-    BlinkMacSystemFont,
-    "SF Pro Text",
-    "SF Pro Display",
-    "PingFang SC",
-    "Helvetica Neue",
-    var(--font-sans);
   -webkit-font-smoothing: antialiased;
 }
 
-.codewiki-sidebar {
-  border-right: 1px solid color-mix(in srgb, var(--text-primary) 8%, transparent);
-  background: color-mix(in srgb, var(--bg-secondary) 88%, var(--bg-primary));
+.codewiki-sidebar,
+.codewiki-main {
+  overflow: hidden;
+}
+
+.codewiki-question-panel {
+  position: relative;
+  overflow: visible;
+}
+
+.codewiki-question-panel-body {
+  border-radius: inherit;
 }
 
 .codewiki-brand-mark,
@@ -369,26 +372,22 @@
 }
 
 .codewiki-main {
-  background: var(--bg-primary);
+  min-width: 0;
 }
 
 .codewiki-content-toolbar {
   display: flex;
-  min-height: 52px;
+  min-height: 48px;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 8px 16px;
-  border-bottom: 1px solid color-mix(in srgb, var(--text-primary) 8%, transparent);
-  background: color-mix(in srgb, var(--bg-primary) 78%, transparent);
-  backdrop-filter: saturate(180%) blur(20px);
-  -webkit-backdrop-filter: saturate(180%) blur(20px);
+  padding: 8px 20px;
+  border-bottom: 1px solid var(--border-default);
+  background: transparent;
 }
 
 .codewiki-empty-state {
-  border: 1px solid color-mix(in srgb, var(--text-primary) 8%, transparent);
-  border-radius: 18px;
-  background: color-mix(in srgb, var(--bg-secondary) 55%, var(--bg-primary));
+  background: transparent;
 }
 
 .codewiki-empty-icon {
@@ -443,13 +442,12 @@
 }
 
 .codewiki-question-panel {
-  background: color-mix(in srgb, var(--bg-secondary) 72%, var(--bg-primary));
-  border-left: 1px solid color-mix(in srgb, var(--text-primary) 6%, transparent);
+  min-width: 0;
 }
 
 .codewiki-question-header {
-  padding: 16px 16px 13px;
-  border-bottom: 1px solid color-mix(in srgb, var(--text-primary) 8%, transparent);
+  padding: 12px 16px 13px;
+  border-bottom: 1px solid var(--border-default);
 }
 
 .codewiki-reference-chip {
@@ -1512,7 +1510,10 @@ body {
 }
 
 .codemini-workspace-panel,
-.codemini-workspace-rail {
+.codemini-workspace-rail,
+.codewiki-sidebar,
+.codewiki-main,
+.codewiki-question-panel {
   border-radius: var(--workspace-panel-radius);
   border: 1px solid var(--workspace-panel-border);
   background: var(--apple-material);
@@ -4144,7 +4145,10 @@ samp {
 } */
 
 .codemini-workspace-panel,
-.codemini-workspace-rail {
+.codemini-workspace-rail,
+.codewiki-sidebar,
+.codewiki-main,
+.codewiki-question-panel {
   border-color: color-mix(in srgb, var(--border-default) 78%, transparent);
   background: var(--bg-primary);
   box-shadow: var(--shadow-sm);
@@ -4153,7 +4157,10 @@ samp {
 }
 
 :root:not([data-theme="dark"]) .codemini-workspace-panel,
-:root:not([data-theme="dark"]) .codemini-workspace-rail {
+:root:not([data-theme="dark"]) .codemini-workspace-rail,
+:root:not([data-theme="dark"]) .codewiki-sidebar,
+:root:not([data-theme="dark"]) .codewiki-main,
+:root:not([data-theme="dark"]) .codewiki-question-panel {
   background: #fcfcfd;
 }
 
@@ -4216,7 +4223,10 @@ samp {
 }
 
 :root[data-theme="dark"] .codemini-workspace-panel,
-:root[data-theme="dark"] .codemini-workspace-rail {
+:root[data-theme="dark"] .codemini-workspace-rail,
+:root[data-theme="dark"] .codewiki-sidebar,
+:root[data-theme="dark"] .codewiki-main,
+:root[data-theme="dark"] .codewiki-question-panel {
   background: #19191c;
 }
 
