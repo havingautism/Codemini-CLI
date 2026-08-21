@@ -85,7 +85,8 @@ test('builtin concurrency policy lives behind the registry seam', () => {
   assert.equal(registry.isConcurrencySafe('read', { path: 'a' }), true);
   assert.equal(registry.isConcurrencySafe('edit', { path: 'a' }), false);
   assert.equal(registry.isConcurrencySafe('run_subagent', { tools: ['read', 'glob'] }), true);
-  assert.equal(registry.isConcurrencySafe('run_subagent', { tools: ['read', 'edit'] }), false);
+  assert.equal(registry.isConcurrencySafe('run_subagent', { tools: ['read', 'edit'] }), true);
+  assert.equal(registry.isConcurrencySafe('run_subagent', {}), true);
 });
 
 test('the complete builtin tool bundle satisfies the registry contract', async () => {

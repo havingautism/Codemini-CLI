@@ -20,6 +20,8 @@ import {
   terminateChild,
 } from "./shell.js";
 import { evaluateCommandPolicy } from "./command-policy.js";
+import { classifyCommandRisk, hasShellWriteSyntax } from "./command-risk.js";
+import { createWriteCoordinator } from "./write-coordinator.js";
 import {
   assertSandboxWriteAllowed,
   isOsSandbox,
@@ -28,6 +30,7 @@ import {
   validateSandboxEscalationArgs,
 } from "./sandbox-policy.js";
 import { resolveShellContext } from "./shell-profile.js";
+import { isShellToolName } from "./shell-tool-name.js";
 import {
   findEnclosingSymbol,
   queryAst,
@@ -5203,7 +5206,7 @@ export function getBuiltinTools({
       function: {
         name: "run_subagent",
         description:
-          "Delegate work to a clean-context subagent so project inspection, test output, and independent reasoning do not bloat the main context. Pass a compact task envelope (goal, files, constraints, known facts) in tasks/prompt; do not copy the parent transcript. Prefer this for repository exploration, architecture/dependency lookup, broad code reading, test execution and failure triage, review, option comparison, and isolated implementation chunks. Invent a short human name for the worker (e.g. David, Mira). For a dependency DAG, assign task_id and let later calls use depends_on; upstream handoffs are injected automatically. Dependencies must reference earlier calls in the same response. Capability is controlled by tools (default allows edits; pass a read-only list for explore/review/test-only work). Independent same-response calls run in parallel only when every call has an explicit read-only tools list; default or mutating workers run sequentially because they share one worktree. Subagents cannot call run_subagent/create_plan/create_spec. Avoid only truly atomic actions where delegation adds no useful evidence.",
+          "Delegate work to a clean-context subagent so project inspection, test output, and independent reasoning do not bloat the main context. Pass a compact task envelope (goal, files, constraints, known facts) in tasks/prompt; do not copy the parent transcript. Prefer this for repository exploration, architecture/dependency lookup, broad code reading, test execution and failure triage, review, option comparison, and isolated implementation chunks. Invent a short human name for the worker (e.g. David, Mira). Independent same-response calls run in parallel automatically (no read-only tools list or depends_on needed); workers share one worktree, so give each parallel worker disjoint file ownership or chain dependent work with task_id/depends_on to avoid conflicting edits. For a dependency DAG, assign task_id and let later calls use depends_on; upstream handoffs are injected automatically. Dependencies must reference earlier calls in the same response. Capability is controlled by tools (default allows edits; pass a read-only list for explore/review/test-only work). Subagents cannot call run_subagent/create_plan/create_spec. Avoid only truly atomic actions where delegation adds no useful evidence.",
         parameters: {
           type: "object",
           properties: {
@@ -7876,9 +7879,106 @@ export function getBuiltinTools({
     }
   }
 
+  // Parallel run_subagent workers share this worktree, so mutations are
+  // coordinated: file writes serialize per target path (different files still
+  // overlap) and mutating shell runs go exclusive (their targets are unknown).
+  // Read-only commands skip the lock so parallel inspection stays parallel.
+  // One coordinator per tool bundle = shared by the parent loop and every
+  // subagent loop built from these handlers.
+  //
+  // Same-file "conflict wait" semantics: tool mutations re-observe the target
+  // after every write (commitManagedMutation), so a waiting edit applies
+  // against the latest content — disjoint same-file edits both land, and only
+  // overlapping ones fail with an explicit old_text/anchor mismatch. Changes
+  // from outside the tool (external edits, sibling shell writes) keep failing
+  // the observed-version check (FS_STALE_VERSION), preserving the
+  // read-before-write discipline instead of silently overwriting.
+  const writeCoordinator = createWriteCoordinator();
+  const fileWriteTools = new Set([
+    "edit", "write", "create", "delete", "apply_patch", "commit_write",
+    "add_code_comment", "update_code_comment",
+  ]);
+  const shellName = shellContext.shell;
+
+  // Resolve the normalized absolute lock key(s) for one file-mutation call.
+  // Exactly one distinct target → per-path lock; multiple or unknown targets
+  // (multi-file apply_patch, edit falling back to a recent read) → exclusive.
+  const extractFileLockKeys = (name, args) => {
+    if (!args || typeof args !== "object") return [];
+    const candidates = [];
+    for (const value of [
+      args.path,
+      args.file_path,
+      args.target,
+      args.file,
+      args.ast_target?.path,
+    ]) {
+      if (typeof value === "string") candidates.push(value);
+    }
+    if (name === "apply_patch" && typeof args.patch_text === "string") {
+      for (const match of args.patch_text.matchAll(/^\*\*\* (?:Add|Update|Delete) File: (.+)$/gm)) {
+        candidates.push(match[1]);
+      }
+      for (const match of args.patch_text.matchAll(/^\*\*\* Move to: (.+)$/gm)) {
+        candidates.push(match[1]);
+      }
+    }
+    const keys = [];
+    const seen = new Set();
+    for (const raw of candidates) {
+      const cleaned = normalizeFilePathValue(String(raw || ""), {
+        stripInlineRange: true,
+      }).trim();
+      if (!cleaned || cleaned === "." || cleaned === "./") continue;
+      let absolute;
+      try {
+        absolute = path.resolve(workspaceRoot, cleaned);
+      } catch {
+        continue;
+      }
+      const key = isWin ? absolute.toLowerCase() : absolute;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      keys.push(key);
+    }
+    return keys;
+  };
+
+  const wrapMutationHandler = (name, handler) => {
+    const wrapped = async (args, context) => {
+      if (fileWriteTools.has(name)) {
+        const keys = extractFileLockKeys(name, args);
+        if (keys.length === 1) {
+          return writeCoordinator.withFileLock(keys[0], () => handler(args, context));
+        }
+        return writeCoordinator.withRunLock(() => handler(args, context));
+      }
+      // Shell tools: read-only-classified commands run unlocked; anything that
+      // may write goes exclusive so it never interleaves with file mutations.
+      const command = String(args?.command || "").trim();
+      const risk = command
+        ? classifyCommandRisk(command, shellName, platform)
+        : "read-only";
+      // On Windows, classifyCommandRisk does not fold `>`/`>>`/`|&` into its
+      // read-only verdict, so guard that here: a redirect can write files even
+      // when the leading token is a read-only command (e.g. `echo x > out.txt`).
+      if (risk === "read-only" && !hasShellWriteSyntax(command)) return handler(args, context);
+      return writeCoordinator.withRunLock(() => handler(args, context));
+    };
+    return Object.assign(wrapped, handler);
+  };
+
+  const coordinatedHandlers = {};
+  for (const [name, handler] of Object.entries(handlers)) {
+    coordinatedHandlers[name] =
+      fileWriteTools.has(name) || isShellToolName(name)
+        ? wrapMutationHandler(name, handler)
+        : handler;
+  }
+
   return {
     definitions,
-    handlers,
+    handlers: coordinatedHandlers,
     formatters,
     deferredDefinitions: deferredToolCatalog,
     displayLabels: mcpTools.displayLabels || {},

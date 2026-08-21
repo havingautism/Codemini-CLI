@@ -275,7 +275,7 @@ test('parallel run_subagent handlers actually overlap in wall time', async () =>
   assert.equal(maxConcurrent, 2);
 });
 
-test('default mutating run_subagent handlers stay serial', async () => {
+test('default mutating run_subagent handlers run in parallel without a read-only tools list', async () => {
   const { runAgentLoop } = await import('../src/core/agent-loop.js');
   const active = new Set();
   let maxConcurrent = 0;
@@ -284,7 +284,7 @@ test('default mutating run_subagent handlers stay serial', async () => {
 
   await runAgentLoop({
     systemPrompt: 'sys',
-    userPrompt: 'serial',
+    userPrompt: 'parallel',
     model: 'test',
     approvalMode: 'full_access',
     skipAnalysisNudge: true,
@@ -314,7 +314,7 @@ test('default mutating run_subagent handlers stay serial', async () => {
     },
   });
 
-  assert.equal(maxConcurrent, 1);
+  assert.equal(maxConcurrent, 2);
 });
 
 test('dependent subagent cards distinguish waiting and dependency-blocked states', () => {
