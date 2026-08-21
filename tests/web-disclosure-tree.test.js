@@ -56,6 +56,25 @@ test('conversation folds use a disclosure tree instead of nested surface cards',
 
   assert.match(bubble, /codemini-disclosure-tree/);
   assert.match(
+    toolCard,
+    /card\.status === "running" \? \(\s*<Spinner/,
+    'running tools use an inline dots loader instead of a trailing status layer',
+  );
+  assert.doesNotMatch(
+    toolCard,
+    /runningLabel/,
+    'running tools should not render a text status layer under the row',
+  );
+  assert.match(css, /\.loading-dots--tool \{/);
+  assert.match(css, /\.loading-dots--tool \{[\s\S]*?color: var\(--text-primary\);/);
+  assert.match(
+    bubble,
+    /status === "running"\) \{\s*return <Spinner className="loading-dots--tool"/,
+    'collapsed running tool groups use the same inline dots loader',
+  );
+  assert.match(bubble, /formatToolGroupSummaryLabel/);
+  assert.match(plan, /formatToolGroupSummaryLabel/);
+  assert.match(
     bubble,
     /codemini-answer-fold codemini-disclosure my-2", PROCESS_META_CLASS/,
   );

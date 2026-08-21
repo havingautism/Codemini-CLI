@@ -9,6 +9,7 @@ import { ModelIdentityBadge } from "./ModelIdentityBadge.jsx";
 import { UsageBadge } from "./UsageBadge.jsx";
 import { isCreatePlanCard } from "@/lib/plan-ui-state.js";
 import { isRequestUserInputCard } from "@/lib/tool-card-display.js";
+import { formatToolGroupSummaryLabel } from "@/lib/tool-group-summary.js";
 import { StreamdownRenderer } from "./StreamdownRenderer";
 import { EmbedBanner } from "./EmbedBanner.jsx";
 import {
@@ -47,7 +48,6 @@ import {
   AttachmentTrigger,
 } from "@/components/ui/attachment";
 import { cn } from "@/lib/utils";
-import { isShellToolName } from "@/lib/tool-names.js";
 import {
   isManualSkillCommand,
   parseUserSkillPrompt,
@@ -511,7 +511,6 @@ function DreamNotice({ notice }) {
 
 function ToolGroup({ cards }) {
   const [expanded, setExpanded] = useState(false);
-  const runtimeMode = useRuntimeMode();
   const planCards = cards.filter(isCreatePlanCard);
   const userInputCards = cards.filter(isRequestUserInputCard);
   const otherCards = cards.filter(
@@ -522,16 +521,8 @@ function ToolGroup({ cards }) {
   let groupStatus = "done";
   if (otherCards.some((card) => card.status === "blocked")) groupStatus = "blocked";
   if (hasRunningTool) groupStatus = "running";
-  const toolingPhrases = resolveModeHintPhrases("tooling", runtimeMode);
   const shouldUseSummaryHeader = total > TOOL_COLLAPSE_THRESHOLD;
-  const runCount = otherCards.filter((card) => {
-    const name = String(card.name || "").toLowerCase();
-    return isShellToolName(name);
-  }).length;
-  const summaryLabel =
-    runCount === total
-      ? t("toolGroupCommands").replace("{{count}}", total)
-      : t("toolGroupTools").replace("{{count}}", total);
+  const summaryLabel = formatToolGroupSummaryLabel(otherCards, t);
 
   return (
     <div className={cn("codemini-disclosure my-2", PROCESS_META_CLASS)}>
@@ -568,14 +559,6 @@ function ToolGroup({ cards }) {
           {otherCards.map((card) => (
             <ToolCard key={card.id} card={card} />
           ))}
-        </div>
-      )}
-      {hasRunningTool && (
-        <div className="msg-process-meta__detail flex items-center gap-2 px-1 py-1 text-[12px]">
-          <span className="codemini-disclosure-leading">
-            <SessionOrb state="shaping" />
-          </span>
-          <RotatingStatusLabel phrases={toolingPhrases} active />
         </div>
       )}
     </div>
@@ -661,6 +644,9 @@ function activityKindLabel(badge) {
 }
 
 function SkillStatusDot({ status }) {
+  if (status === "running") {
+    return <Spinner className="loading-dots--tool" aria-hidden="true" />;
+  }
   return (
     <span
       aria-hidden="true"
@@ -841,29 +827,16 @@ function ProcessGroup({ group }) {
       return kept.length ? { ...item, cards: kept } : null;
     })
     .filter(Boolean);
-  const toolCount = nestedGroups.reduce(
-    (sum, item) =>
-      item.type === "tools" ? sum + Math.max(1, item.cards?.length || 0) : sum,
-    0,
+  const nestedToolCards = nestedGroups.flatMap((item) =>
+    item.type === "tools" ? item.cards || [] : [],
   );
-  const commandCount = nestedGroups.reduce((sum, item) => {
-    if (item.type !== "tools") return sum;
-    return (
-      sum +
-      (item.cards || []).filter((card) => {
-        const name = String(card?.name || "").toLowerCase();
-        return isShellToolName(name);
-      }).length
-    );
-  }, 0);
+  const toolCount = nestedToolCards.length;
   const thoughtCount = nestedGroups.filter(
     (item) => item.type === "thinking",
   ).length;
   const label =
     thoughtCount === 0 && toolCount > 0
-      ? commandCount === toolCount
-        ? t("toolGroupCommands").replace("{{count}}", toolCount)
-        : t("toolGroupTools").replace("{{count}}", toolCount)
+      ? formatToolGroupSummaryLabel(nestedToolCards, t)
       : t("processed");
   const details =
     thoughtCount === 0 && toolCount > 0

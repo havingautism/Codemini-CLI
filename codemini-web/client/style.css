@@ -2466,6 +2466,16 @@ samp {
   animation-delay: 0.36s;
 }
 
+.loading-dots--tool {
+  gap: 2px;
+  color: var(--text-primary);
+}
+
+.loading-dots--tool span {
+  width: 2.5px;
+  height: 2.5px;
+}
+
 /* Tool-call loader: bouncing mercury beads */
 .loading-dots--prism {
   gap: 4px;

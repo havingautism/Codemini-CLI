@@ -1384,6 +1384,7 @@ export function SkillPanel({ projectDirs = [] }) {
   const [applyingPackageKey, setApplyingPackageKey] = useState("");
   const [actionError, setActionError] = useState("");
   const [indexPreviewOpen, setIndexPreviewOpen] = useState(false);
+  const skillSelectTimerRef = useRef(0);
   const projectKey = projectDirsKey(projectDirs);
   const requestProjectDirs = useMemo(
     () => (projectKey ? projectKey.split("\n") : []),
@@ -1403,6 +1404,10 @@ export function SkillPanel({ projectDirs = [] }) {
   useEffect(() => {
     loadSkills();
   }, [loadSkills]);
+
+  useEffect(() => {
+    return () => window.clearTimeout(skillSelectTimerRef.current);
+  }, []);
 
   const handleToggle = async (skill, enabled) => {
     // 乐观更新：立即翻转本地状态，用户秒切无闪烁
@@ -1504,14 +1509,19 @@ export function SkillPanel({ projectDirs = [] }) {
       if (skills.length === 0) throw new Error(t("skillSelectEmpty"));
       setSelectedSkillNames(new Set(skills.map((skill) => skill.name)));
       setInstallHooks(false);
-      setSkillSelect({
-        mode: "install",
-        source,
-        packageName: preview.packageName || preview.packageSource || source,
-        skills,
-        contexts: contextsFromTab(installTarget || activeTab || "global"),
-      });
       setInstallOpen(false);
+      window.clearTimeout(skillSelectTimerRef.current);
+      // Close the source dialog first; opening a second Radix dialog in the
+      // same tick after a long git clone often leaves the UI blank.
+      skillSelectTimerRef.current = window.setTimeout(() => {
+        setSkillSelect({
+          mode: "install",
+          source,
+          packageName: preview.packageName || preview.packageSource || source,
+          skills,
+          contexts: contextsFromTab(installTarget || activeTab || "global"),
+        });
+      }, 220);
     } catch (err) {
       setInstallError(err.message || "Install failed");
     } finally {
@@ -1834,6 +1844,7 @@ export function SkillPanel({ projectDirs = [] }) {
               <Button
                 variant="outline"
                 onClick={() => {
+                  window.clearTimeout(skillSelectTimerRef.current);
                   setInstallError("");
                   setInstallTarget(activeTab || "global");
                   setInstallOpen(true);

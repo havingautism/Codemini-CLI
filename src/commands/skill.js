@@ -51,14 +51,7 @@ export function parseScopeArgs(args = [], { defaultScope = 'global', allowAll = 
   return { scope, rest: args.filter((_, index) => !consumed.has(index)) };
 }
 
-function isGitLikeSource(value = '') {
-  const text = String(value || '').trim();
-  return (
-    /^https:\/\/github\.com\/[^/\s]+\/[^/\s]+(?:\.git|(?:\/tree\/.+)|\/)?$/i.test(text) ||
-    /^git@github\.com:[^/\s]+\/[^/\s]+(?:\.git)?$/i.test(text) ||
-    /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(text)
-  );
-}
+const GIT_CLONE_TIMEOUT_MS = 120000;
 
 function normalizeNpxSkillSource(value = '') {
   const text = String(value || '').trim();
@@ -66,19 +59,48 @@ function normalizeNpxSkillSource(value = '') {
   return match ? match[1].trim().split(/\s+/)[0] : text;
 }
 
+function canonicalizeRemoteSkillSource(value = '') {
+  const text = normalizeNpxSkillSource(value);
+  try {
+    const parsed = new URL(text);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return text;
+    const host = parsed.hostname.replace(/^www\./i, '').toLowerCase();
+    if (host !== 'github.com') return text;
+    const pathname = parsed.pathname.replace(/\/+$/, '') || '/';
+    return `https://github.com${pathname}`;
+  } catch {
+    return text;
+  }
+}
+
+function isGitLikeSource(value = '') {
+  return Boolean(normalizeGitSource(value)?.url);
+}
+
 export function normalizeGitSource(source = '') {
-  const raw = normalizeNpxSkillSource(source);
-  const githubTree = raw.match(/^https:\/\/github\.com\/([^/\s]+)\/([^/\s]+)\/tree\/(.+?)\/?$/i);
-  if (githubTree) {
-    const [, owner, repo, treeRef] = githubTree;
-    const [branch, ...pathParts] = treeRef.split('/').filter(Boolean);
-    return { url: `https://github.com/${owner}/${repo}.git`, branch, subPath: pathParts.join('/') };
+  const raw = canonicalizeRemoteSkillSource(source);
+  const githubRef = raw.match(/^https:\/\/github\.com\/([^/\s]+)\/([^/\s]+)\/(tree|blob)\/(.+)$/i);
+  if (githubRef) {
+    const [, owner, repo, kind, refPath] = githubRef;
+    const [branch, ...pathParts] = refPath.split('/').filter(Boolean);
+    if (
+      kind.toLowerCase() === 'blob'
+      && pathParts.length
+      && /^SKILL\.md$/i.test(pathParts[pathParts.length - 1])
+    ) {
+      pathParts.pop();
+    }
+    return {
+      url: `https://github.com/${owner}/${repo}.git`,
+      branch: branch || null,
+      subPath: pathParts.join('/'),
+    };
   }
-  if (/^https:\/\/github\.com\/[^/\s]+\/[^/\s]+\.git\/?$/i.test(raw)) {
-    return { url: raw.replace(/\/$/, ''), branch: null, subPath: '' };
+  if (/^https:\/\/github\.com\/[^/\s]+\/[^/\s]+\.git$/i.test(raw)) {
+    return { url: raw, branch: null, subPath: '' };
   }
-  if (/^https:\/\/github\.com\/[^/\s]+\/[^/\s]+\/?$/i.test(raw)) {
-    return { url: raw.replace(/\/$/, '') + '.git', branch: null, subPath: '' };
+  if (/^https:\/\/github\.com\/[^/\s]+\/[^/\s]+$/i.test(raw)) {
+    return { url: `${raw}.git`, branch: null, subPath: '' };
   }
   if (/^git@github\.com:/i.test(raw)) {
     return { url: raw.endsWith('.git') ? raw : `${raw}.git`, branch: null, subPath: '' };
@@ -169,14 +191,32 @@ async function runGitClone(source, destDir) {
   await new Promise((resolve, reject) => {
     const args = ['clone', '--depth', '1'];
     if (normalized.branch) args.push('--branch', normalized.branch);
-    args.push(normalized.url, destDir);
-    const child = execFile('git', args, { windowsHide: true }, (error, stdout, stderr) => {
-      if (error) {
-        reject(new Error(`git clone failed: ${stderr || stdout || error.message}`));
-        return;
-      }
-      resolve();
-    });
+    args.push('--', normalized.url, destDir);
+    const child = execFile(
+      'git',
+      args,
+      {
+        windowsHide: true,
+        timeout: GIT_CLONE_TIMEOUT_MS,
+        env: {
+          ...process.env,
+          GIT_TERMINAL_PROMPT: '0',
+          GCM_INTERACTIVE: 'never',
+        },
+      },
+      (error, stdout, stderr) => {
+        if (error) {
+          const timedOut = error.killed === true || /ETIMEDOUT/i.test(error.message || '');
+          reject(new Error(
+            timedOut
+              ? `git clone timed out after ${Math.round(GIT_CLONE_TIMEOUT_MS / 1000)}s: ${normalized.url}`
+              : `git clone failed: ${stderr || stdout || error.message}`,
+          ));
+          return;
+        }
+        resolve();
+      },
+    );
     child.stdin?.end();
   });
 }

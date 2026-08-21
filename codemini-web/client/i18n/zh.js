@@ -91,8 +91,12 @@ export const zh = {
   toolDone: "完成",
   toolError: "错误",
   toolBlocked: "已阻止",
-  toolGroupTools: "已运行 {{count}} 个工具",
-  toolGroupCommands: "已运行 {{count}} 条命令",
+  toolGroupTools: "已完成 {{count}} 个工具",
+  toolGroupCommands: "已完成 {{count}} 条命令",
+  toolGroupToolsRunning: "正在运行 {{count}} 个工具",
+  toolGroupCommandsRunning: "正在运行 {{count}} 条命令",
+  toolGroupToolsMixed: "已完成 {{done}} 个工具，正在运行 {{running}} 个工具",
+  toolGroupCommandsMixed: "已完成 {{done}} 条命令，正在运行 {{running}} 条命令",
   toolGroupExpand: "点击展开",
 
   // Plan
