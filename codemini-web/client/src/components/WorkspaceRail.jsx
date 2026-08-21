@@ -4,7 +4,7 @@ import {
   FolderSimple,
   Terminal as TerminalIcon,
   X,
-} from "@phosphor-icons/react";
+} from "@/lib/icons";
 import { FileTreePanel } from "@/components/FileTreePanel.jsx";
 import { TerminalPanel } from "@/components/TerminalPanel.jsx";
 import { t } from "../../i18n/index.js";

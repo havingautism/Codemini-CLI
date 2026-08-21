@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { Download, MagnifyingGlass } from "@phosphor-icons/react";
+import { Download, MagnifyingGlass } from "@/lib/icons";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";

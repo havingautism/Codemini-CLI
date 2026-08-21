@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { Brain } from "@phosphor-icons/react";
+import { Brain } from "@/lib/icons";
 import { cn } from "@/lib/utils";
 import { Switch } from "@/components/ui/switch";
 import {

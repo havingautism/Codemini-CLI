@@ -6,7 +6,7 @@ import {
   useMemo,
   useState,
 } from 'react';
-import { CaretLeft, CaretRight, X } from '@phosphor-icons/react';
+import { CaretLeft, CaretRight, X } from '@/lib/icons';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogClose, DialogContent, DialogTitle } from '@/components/ui/dialog';
 import { t } from '../../i18n/index.js';

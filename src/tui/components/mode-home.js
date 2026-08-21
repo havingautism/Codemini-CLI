@@ -19,12 +19,12 @@ function center(text, width) {
 
 function row(action, width, selected = false) {
   const contentWidth = Math.max(1, width - 2);
-  const left = `${selected ? '›' : ' '}  ${action.icon}  ${action.label}`;
-  const right = action.description;
+  const left = `${selected ? '›' : ' '}  ${action.icon}  ${color.text(action.label)}`;
+  const right = color.muted(action.description);
   const gap = Math.max(2, contentWidth - visibleWidth(left) - visibleWidth(right));
   const safe = truncateToWidth(`${left}${' '.repeat(gap)}${right}`, contentWidth, '…');
   const line = ` ${safe}${' '.repeat(Math.max(0, contentWidth - visibleWidth(safe)))} `;
-  return selected ? color.selectionBg(bold(color.text(line))) : color.surfaceBg(color.muted(line));
+  return selected ? color.selectionBg(bold(line)) : color.surfaceBg(line);
 }
 
 function badge(icon, value, style = color.text) {

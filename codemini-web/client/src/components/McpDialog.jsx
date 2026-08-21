@@ -9,7 +9,7 @@ import {
   Plus,
   Trash,
   WarningCircle,
-} from '@phosphor-icons/react';
+} from '@/lib/icons';
 import { ResourceLibraryDialog } from '@/components/ResourceLibraryDialog.jsx';
 import { ConfirmDialog } from '@/components/ConfirmDialog.jsx';
 import { SettingsField } from '@/components/settings/SettingsField.jsx';

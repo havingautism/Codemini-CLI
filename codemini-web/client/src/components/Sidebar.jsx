@@ -24,7 +24,7 @@ import {
   Sun,
   User,
   X,
-} from "@phosphor-icons/react";
+} from "@/lib/icons";
 import { Separator } from "@/components/ui/separator";
 import {
   Popover,

@@ -2762,6 +2762,36 @@ samp {
   }
 }
 
+:root:not([data-theme="dark"]) .streaming-cursor::after {
+  background: var(--text-primary);
+  background-size: auto;
+  box-shadow: none;
+  animation: stream-caret-pulse-light 1.05s ease-in-out infinite;
+}
+
+@keyframes stream-caret-pulse-light {
+  0%,
+  38% {
+    opacity: 1;
+  }
+
+  50%,
+  88% {
+    opacity: 0.18;
+  }
+
+  100% {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .streaming-cursor::after {
+    animation: none;
+    opacity: 0.85;
+  }
+}
+
 /* ── Streamdown (markdown renderer) overrides ── */
 .msg-body [data-streamdown="table-wrapper"],
 .msg-body [data-streamdown="code-block"],

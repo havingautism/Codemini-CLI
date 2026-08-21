@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { X } from "@phosphor-icons/react";
+import { X } from "@/lib/icons";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogClose, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";

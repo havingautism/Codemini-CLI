@@ -29,7 +29,7 @@ import {
   Target,
   Trash,
   WarningCircle,
-} from "@phosphor-icons/react";
+} from "@/lib/icons";
 import { t } from "../../i18n/index.js";
 import { useApp } from "@/context/app-context.jsx";
 import { MarkdownPreview } from "@/components/MarkdownEditor.jsx";

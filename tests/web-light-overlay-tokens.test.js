@@ -143,3 +143,11 @@ test("light input and settings chrome use overlay tokens instead of one-off gray
     /:root:not\(\[data-theme="dark"\]\) \.codemini-input-pill:hover \{[\s\S]*?rgba\(29,\s*29,\s*31/,
   );
 });
+
+test("light streaming caret uses ink instead of mercury glow", async () => {
+  const css = await fs.readFile("codemini-web/client/style.css", "utf8");
+  assert.match(
+    css,
+    /:root:not\(\[data-theme="dark"\]\) \.streaming-cursor::after \{[\s\S]*?background: var\(--text-primary\);[\s\S]*?box-shadow: none;/,
+  );
+});

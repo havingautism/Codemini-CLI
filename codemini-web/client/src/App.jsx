@@ -26,7 +26,7 @@ import { SessionPanel } from "@/components/SessionPanel.jsx";
 import { TodoCard } from "@/components/TodoList.jsx";
 import { findLiveTodoDock } from "@/lib/live-todo-dock.js";
 import { interactiveRequestForSession } from "@/lib/session-ui-state.js";
-import { DotsThree, FolderSimple, GitDiff, List, SidebarSimple, Terminal } from "@phosphor-icons/react";
+import { DotsThree, FolderSimple, GitDiff, List, SidebarSimple, Terminal } from "@/lib/icons";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { TrajectoryPanel } from "@/components/TrajectoryPanel.jsx";
 import "../style.css";
@@ -700,9 +700,7 @@ function Shell() {
               <div className="flex items-center gap-3 pt-1.5 px-1 sm:px-2 min-h-[24px] overflow-hidden">
                 {state.versionInfo?.current && (
                   <span className="inline-flex items-center gap-1 text-[11px] text-(--text-muted) shrink-0">
-                    <span className="inline-flex size-3.5 items-center justify-center rounded-[3px] bg-foreground text-background">
-                      <Terminal size={12} strokeWidth={2.5} />
-                    </span>
+                    <Terminal size={12} strokeWidth={2.5} className="shrink-0" />
                     Codemini CLI@{state.versionInfo.current}
                   </span>
                 )}

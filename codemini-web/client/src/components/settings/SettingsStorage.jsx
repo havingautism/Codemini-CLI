@@ -4,7 +4,7 @@ import {
   Database,
   FolderOpen,
   WarningCircle,
-} from "@phosphor-icons/react";
+} from "@/lib/icons";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { SettingsSection } from "@/components/settings/SettingsSection.jsx";

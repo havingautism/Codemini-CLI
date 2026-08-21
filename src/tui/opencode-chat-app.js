@@ -4,7 +4,6 @@ import {
   Editor,
   ProcessTerminal,
   ScrollView,
-  TuiAltScreen,
   VStack,
   isKeyRelease,
   matchesKey
@@ -33,6 +32,7 @@ import {
   createUserMessage,
   oneLine,
   paintBackground,
+  SurfaceTui,
   toolEventKey
 } from './components/messages.js';
 import { ModeHome } from './components/mode-home.js';
@@ -79,7 +79,7 @@ export async function runOpenCodeTui({ runtime, sessionId, model, safeMode = tru
   const copy = createTuiCopy(language);
   let activeSessionId = sessionId;
   const defaultWorkspaceDir = workspaceDir || runtime.getRuntimeState?.().workspaceRoot || currentDirectory;
-  const tui = new TuiAltScreen(terminal, true, undefined, { mouse: true, wheelScrollLines: 6 });
+  const tui = new SurfaceTui(terminal, false, undefined, { mouse: true, wheelScrollLines: 6 });
   const transcript = new Container();
   const scroll = new ScrollView(transcript, {
     follow: 'end',

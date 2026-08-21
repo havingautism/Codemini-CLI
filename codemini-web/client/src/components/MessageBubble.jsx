@@ -99,7 +99,7 @@ import {
   Notebook,
   Play,
   XCircle,
-} from "@phosphor-icons/react";
+} from "@/lib/icons";
 
 const NEUTRAL_ROLE_BADGE =
   "border-(--border-default) bg-(--bg-secondary) text-(--text-secondary)";

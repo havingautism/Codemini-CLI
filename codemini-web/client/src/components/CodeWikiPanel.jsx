@@ -13,7 +13,7 @@ import {
   Network,
   Sparkle,
   WarningCircle,
-} from "@phosphor-icons/react";
+} from "@/lib/icons";
 import {
   deleteCodeWikiReport,
   fetchCodeWikiReportText,

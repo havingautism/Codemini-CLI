@@ -3,7 +3,7 @@ import { Avatar, Style } from "@dicebear/core";
 import bottts from "@dicebear/styles/bottts.json" with { type: "json" };
 import {
   UserCircle,
-} from "@phosphor-icons/react";
+} from "@/lib/icons";
 import { SessionOrb, Spinner } from "@/components/ui/spinner";
 import { StreamdownRenderer } from "@/components/StreamdownRenderer.jsx";
 import {

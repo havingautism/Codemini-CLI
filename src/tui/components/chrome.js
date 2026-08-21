@@ -1,14 +1,14 @@
 import { SelectList, matchesKey, truncateToWidth, visibleWidth } from '@earendil-works/pi-tui';
 
-import { bold, color, selectTheme } from '../theme.js';
+import { bold, color, sealAnsi, selectTheme, TEXT_FG } from '../theme.js';
 import { oneLine } from './messages.js';
 
 const SPINNER = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 const LIVE_STATES = new Set(['thinking', 'generating', 'tool', 'sending', 'stopping']);
 
 function fill(text, width, background = color.surfaceBg, padding = 1) {
-  const safe = truncateToWidth(text, Math.max(1, width - padding * 2), '…');
-  return background(`${' '.repeat(padding)}${safe}${' '.repeat(Math.max(0, width - visibleWidth(safe) - padding * 2))}${' '.repeat(padding)}`);
+  const safe = truncateToWidth(sealAnsi(text), Math.max(1, width - padding * 2), '…');
+  return background(`${TEXT_FG}${' '.repeat(padding)}${safe}${' '.repeat(Math.max(0, width - visibleWidth(safe) - padding * 2))}${' '.repeat(padding)}`);
 }
 
 function joinSides(left, right, width) {

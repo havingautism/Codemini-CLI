@@ -7,7 +7,7 @@ import { Spinner } from '@/components/ui/spinner';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { cn } from '@/lib/utils';
 import { formatTimestamp } from '../../utils/time.js';
-import { DotsThree, HandPalm, Warning } from "@phosphor-icons/react";
+import { DotsThree, HandPalm, Warning } from "@/lib/icons";
 import { useState } from 'react';
 import { t } from '../../i18n/index.js';
 import { ACTIVE_SESSION_STATUSES } from '@/lib/session-ui-state.js';

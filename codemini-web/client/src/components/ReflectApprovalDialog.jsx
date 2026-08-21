@@ -26,7 +26,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { LinearRing } from "@/components/ui/spinner";
-import { ArrowClockwise, CheckCircle, WarningCircle } from "@phosphor-icons/react";
+import { ArrowClockwise, CheckCircle, WarningCircle } from "@/lib/icons";
 import { t } from "../../i18n/index.js";
 import { CHAT_ACTION_NAMES } from "@/lib/chat-action-names.js";
 

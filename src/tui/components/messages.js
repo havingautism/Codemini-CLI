@@ -1,8 +1,8 @@
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { Image, Markdown, Spacer, visibleWidth, wrapTextWithAnsi } from '@earendil-works/pi-tui';
+import { Image, Markdown, TuiAltScreen, visibleWidth, wrapTextWithAnsi } from '@earendil-works/pi-tui';
 
-import { bold, color, markdownTheme } from '../theme.js';
+import { bold, color, markdownTheme, sealAnsi, CURSOR_COLOR, CURSOR_COLOR_RESET, CURSOR_SHAPE, CURSOR_SHAPE_RESET, SURFACE_BG, TEXT_FG } from '../theme.js';
 
 export function messageText(content) {
   if (typeof content === 'string') return content;
@@ -77,9 +77,35 @@ export function surfaceLine(text, width, background = color.surfaceBg, indent = 
  * even inside light-themed terminals.
  */
 export function paintBackground(text, width, background = color.surfaceBg) {
-  const safe = String(text).replace(/(?:\x1b\[(?:0|39|49)m)+$/g, '');
+  const safe = sealAnsi(String(text)).replace(/(?:\x1b\[(?:0|39|49)m)+$/g, '');
   const pad = Math.max(0, width - visibleWidth(safe));
-  return background(`${safe}${' '.repeat(pad)}`);
+  return background(`${TEXT_FG}${SURFACE_BG}${safe}${' '.repeat(pad)}`);
+}
+
+function looksLikeImageLine(line) {
+  return String(line).includes('\u001b_G') || String(line).includes('\u001b]1337;');
+}
+
+/** Alternate-screen TUI that paints leftover layout cells with the dark surface. */
+export class SurfaceTui extends TuiAltScreen {
+  beforeTerminalStart() {
+    super.beforeTerminalStart();
+    this.terminal.write(`${CURSOR_SHAPE}${CURSOR_COLOR}`);
+  }
+
+  afterTerminalStop(options) {
+    super.afterTerminalStop(options);
+    this.terminal.write(`${CURSOR_SHAPE_RESET}${CURSOR_COLOR_RESET}`);
+  }
+
+  applyLineResets(lines) {
+    const width = Math.max(1, this.terminal?.columns || 80);
+    for (let index = 0; index < lines.length; index += 1) {
+      if (looksLikeImageLine(lines[index])) continue;
+      lines[index] = paintBackground(lines[index] || '', width);
+    }
+    return super.applyLineResets(lines);
+  }
 }
 
 /** Blank rows painted with the dark surface color, mirroring pi-tui's Spacer. */
@@ -411,7 +437,7 @@ export function appendHistory(transcript, history, copy, { bodyOnly = true, expa
       for (const message of messages) {
         const text = message?.role === 'system' ? messageText(message.content).trim() : '';
         if (!text) continue;
-        transcript.addChild(new Spacer(1));
+        transcript.addChild(new SurfaceSpacer(1));
         transcript.addChild(createSystemMessage(text));
       }
       return;
@@ -461,7 +487,7 @@ export function appendHistory(transcript, history, copy, { bodyOnly = true, expa
         }
       }
       if (text && message !== finalAssistant) {
-        if (fold.children.length) fold.addChild(new Spacer(1));
+        if (fold.children.length) fold.addChild(new SurfaceSpacer(1));
         fold.addChild(createAssistantMessage(text));
       }
     }
@@ -472,12 +498,12 @@ export function appendHistory(transcript, history, copy, { bodyOnly = true, expa
       fold.finish();
       fold.setBodyOnly(bodyOnly);
       processFolds.push(fold);
-      transcript.addChild(new Spacer(1));
+      transcript.addChild(new SurfaceSpacer(1));
       transcript.addChild(fold);
     }
     const finalText = messageText(finalAssistant?.content).trim();
     if (finalText) {
-      if (!fold.children.length && !fold.pinnedChildren.length) transcript.addChild(new Spacer(1));
+      if (!fold.children.length && !fold.pinnedChildren.length) transcript.addChild(new SurfaceSpacer(1));
       transcript.addChild(createAssistantMessage(finalText));
     }
   };
@@ -495,7 +521,7 @@ export function appendHistory(transcript, history, copy, { bodyOnly = true, expa
     const text = messageText(message.content).trim();
     const images = messageImages(message);
     if (!text && !images.length) continue;
-    transcript.addChild(new Spacer(1));
+    transcript.addChild(new SurfaceSpacer(1));
     transcript.addChild(createUserMessage(text || copy.imageAttachment));
     for (const image of images) transcript.addChild(image);
   }

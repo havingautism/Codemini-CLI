@@ -1,4 +1,4 @@
-import { CaretRight } from "@phosphor-icons/react";
+import { CaretRight } from "@/lib/icons";
 import { cn } from "@/lib/utils";
 
 export function DisclosureLeading({

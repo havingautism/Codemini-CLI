@@ -26,7 +26,7 @@ import {
   Plus,
   Sparkle,
   X,
-} from "@phosphor-icons/react";
+} from "@/lib/icons";
 import { cn } from "@/lib/utils";
 import { t } from "../../i18n/index.js";
 import * as api from "@/hooks/use-api";

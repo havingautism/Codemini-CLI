@@ -11,7 +11,7 @@ import {
   TerminalWindow,
   Warning,
   WindowsLogo,
-} from "@phosphor-icons/react";
+} from "./icons.js";
 import { t } from "../../i18n/index.js";
 
 export function getExecutionModeOptions() {

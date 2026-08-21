@@ -11,7 +11,7 @@ import {
   FlowArrow,
   GearSix,
   Terminal,
-} from "@phosphor-icons/react";
+} from "@/lib/icons";
 import { t } from "../../i18n/index.js";
 
 const FEATURES = [

@@ -12,7 +12,7 @@ import {
   Terminal,
   Trash,
   Wrench,
-} from "@phosphor-icons/react";
+} from "@/lib/icons";
 import { LinearRing, Spinner } from "@/components/ui/spinner";
 import { FileTypeIcon } from "@/components/FileTypeIcon.jsx";
 import {
