@@ -1436,6 +1436,7 @@ export const en = {
   workspaceRailTitle: "Workspace",
   workspaceRailResize: "Resize workspace panel",
   workspaceFilesTab: "Files",
+  workspaceGitTab: "Git changes",
   workspaceNeedsProject: "Open a project to browse files",
   workspaceTreeLoading: "Loading files…",
   workspaceTreeEmpty: "No files to show",

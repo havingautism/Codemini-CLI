@@ -1387,6 +1387,7 @@ export const zh = {
   workspaceRailTitle: "工作区",
   workspaceRailResize: "调整工作区宽度",
   workspaceFilesTab: "文件",
+  workspaceGitTab: "Git 变更",
   workspaceNeedsProject: "请先打开项目以浏览文件",
   workspaceTreeLoading: "正在加载文件…",
   workspaceTreeEmpty: "没有可显示的文件",

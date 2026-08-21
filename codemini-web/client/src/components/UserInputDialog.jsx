@@ -32,7 +32,7 @@ function OptionLabel({ option }) {
     <span className="flex min-w-0 flex-col">
       <span className="text-[13px] text-(--text-primary)">{option.label}</span>
       {option.description && (
-        <span className="text-[11px] leading-4 text-(--text-muted)">{option.description}</span>
+        <span data-option-description className="text-[11px] leading-4 text-(--text-muted)">{option.description}</span>
       )}
     </span>
   );
@@ -75,7 +75,7 @@ function QuestionField({ question, value, other, onChange, onOtherChange, disabl
 
       {question.type === 'select' && (
         <Select value={value} onValueChange={onChange} disabled={disabled}>
-          <SelectTrigger className="w-full">
+          <SelectTrigger className="w-full [&_[data-option-description]]:hidden">
             <SelectValue placeholder={question.placeholder || t('userInputSelectPlaceholder')} />
           </SelectTrigger>
           <SelectContent position="popper" className="max-w-[min(32rem,calc(100vw-2rem))]">

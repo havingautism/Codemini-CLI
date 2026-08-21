@@ -554,14 +554,14 @@ function ResearchLibraryCard({
               <DotsThreeVertical size={16} weight="bold" />
             </button>
           </PopoverTrigger>
-          <PopoverContent align="end" className="w-40 p-1.5">
+          <PopoverContent align="end" className="w-40 rounded-md p-1.5">
             <button
               type="button"
               onClick={() => {
                 onMenuOpenChange("");
                 onDelete(session);
               }}
-              className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-[12px] text-accent-red hover:bg-(--accent-red-bg)"
+              className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-[12px] text-accent-red hover:bg-(--accent-red-bg)"
             >
               <Trash size={14} />
               {t("deepResearchDelete")}

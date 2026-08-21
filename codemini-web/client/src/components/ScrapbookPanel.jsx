@@ -277,11 +277,11 @@ function ScrapbookLibraryCard({
               <DotsThreeVertical size={18} weight="bold" />
             </button>
           </PopoverTrigger>
-          <PopoverContent align="end" sideOffset={4} className="w-40 p-1">
+          <PopoverContent align="end" sideOffset={4} className="w-40 rounded-md p-1">
             <button
               type="button"
               onClick={() => onDelete(entry)}
-              className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-[12px] text-accent-red hover:bg-(--accent-red-bg)"
+              className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-[12px] text-accent-red hover:bg-(--accent-red-bg)"
             >
               <Trash size={14} />
               {t("scrapbookDelete")}
@@ -1021,7 +1021,7 @@ export function ScrapbookPanel() {
                         <PopoverContent
                           align="end"
                           sideOffset={4}
-                          className="w-40 p-1"
+                          className="w-40 rounded-md p-1"
                         >
                           {canOpenSource ? (
                             <button
@@ -1033,7 +1033,7 @@ export function ScrapbookPanel() {
                                   "noopener,noreferrer",
                                 )
                               }
-                              className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-[12px] text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary)"
+                              className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-[12px] text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary)"
                             >
                               <ArrowSquareOut size={14} />
                               {t("scrapbookJumpToOriginalLink")}
@@ -1048,7 +1048,7 @@ export function ScrapbookPanel() {
                                   jumpMessageId,
                                 )
                               }
-                              className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-[12px] text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary)"
+                              className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-[12px] text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary)"
                             >
                               <ArrowSquareOut size={14} />
                               {t("scrapbookJumpToMessage")}
@@ -1057,7 +1057,7 @@ export function ScrapbookPanel() {
                           <button
                             type="button"
                             onClick={() => void handleRemoveSource(source.id)}
-                            className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-[12px] text-accent-red hover:bg-(--accent-red-bg)"
+                            className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-[12px] text-accent-red hover:bg-(--accent-red-bg)"
                           >
                             <Trash size={14} />
                             {t("scrapbookDelete")}

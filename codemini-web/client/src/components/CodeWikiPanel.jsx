@@ -1386,7 +1386,7 @@ export function CodeWikiPanel({
                       </PopoverTrigger>
                       <PopoverContent
                         align="end"
-                        className="w-36 p-1"
+                        className="w-36 rounded-md p-1"
                         onClick={(event) => event.stopPropagation()}
                       >
                         <Button

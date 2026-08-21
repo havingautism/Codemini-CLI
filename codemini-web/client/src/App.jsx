@@ -87,11 +87,6 @@ const AboutDialog = lazy(() =>
     default: module.AboutDialog,
   })),
 );
-const GitDiffDialog = lazy(() =>
-  import("@/components/GitDiffDialog.jsx").then((module) => ({
-    default: module.GitDiffDialog,
-  })),
-);
 const WorkspaceRail = lazy(() =>
   import("@/components/WorkspaceRail.jsx").then((module) => ({
     default: module.WorkspaceRail,
@@ -524,7 +519,10 @@ function Shell() {
                     Number(state.gitInfo.linesRemoved) > 0) && (
                   <button
                     type="button"
-                    onClick={() => actions.setGitDiffOpen(true)}
+                    onClick={() => {
+                      setSideRailTab("git");
+                      setSideRailOpen(true);
+                    }}
                     className="inline-flex items-center gap-1.5 text-[12px] shrink-0 border-0 bg-transparent cursor-pointer hover:text-(--text-primary) p-0 text-(--text-muted)"
                     title={t("gitDiffTitle")}
                   >
@@ -605,6 +603,28 @@ function Shell() {
                   }}
                 >
                   <Terminal size={16} />
+                </button>
+                <button
+                  type="button"
+                  className={
+                    "inline-flex size-8 items-center justify-center rounded-md border-0 cursor-pointer " +
+                    (sideRailOpen && sideRailTab === "git"
+                      ? "bg-(--bg-hover) text-(--text-primary)"
+                      : "bg-transparent text-(--text-muted) hover:bg-(--bg-hover) hover:text-(--text-primary)")
+                  }
+                  aria-label={t("workspaceGitTab")}
+                  title={t("workspaceGitTab")}
+                  aria-pressed={sideRailOpen && sideRailTab === "git"}
+                  onClick={() => {
+                    if (sideRailOpen && sideRailTab === "git") {
+                      setSideRailOpen(false);
+                      return;
+                    }
+                    setSideRailTab("git");
+                    setSideRailOpen(true);
+                  }}
+                >
+                  <GitDiff size={16} />
                 </button>
               </div>
             </div>
@@ -805,14 +825,6 @@ function Shell() {
             open={state.aboutOpen}
             onOpenChange={actions.setAboutOpen}
             version={state.versionInfo?.current}
-          />
-        )}
-
-        {state.gitDiffOpen && (
-          <GitDiffDialog
-            open={state.gitDiffOpen}
-            onOpenChange={actions.setGitDiffOpen}
-            sessionId={state.currentSessionId}
           />
         )}
 
