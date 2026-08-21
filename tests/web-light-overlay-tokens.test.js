@@ -59,13 +59,51 @@ test("Apple light reading surfaces stay white while chrome stays slightly gray",
   );
   assert.match(
     css,
-    /\.msg-body \[data-streamdown="table-wrapper"\]>div:nth-child\(2\) \{[^}]*background: var\(--message-surface\)/,
+    /\.msg-body \[data-streamdown="table-wrapper"\]>div:nth-child\(2\) \{[^}]*background: var\(--message-surface\)[^}]*box-shadow: inset 0 0 0 1px var\(--message-edge\)/,
+  );
+  assert.match(
+    css,
+    /\.msg-body \[data-streamdown="code-block"\] \{[^}]*background: var\(--message-surface\)[^}]*box-shadow: inset 0 0 0 1px var\(--message-edge\)/,
+  );
+  assert.match(
+    css,
+    /\.msg-body blockquote \{[^}]*background: var\(--message-surface\)[^}]*box-shadow: inset 0 0 0 1px var\(--message-edge\)/,
+  );
+  assert.match(
+    css,
+    /\.msg-body\.codemini-assistant-markdown blockquote \{[^}]*background: var\(--message-surface\)[^}]*box-shadow: inset 0 0 0 1px var\(--message-edge\)/,
   );
   assert.match(css, /--fold-surface:\s*transparent/);
   assert.match(css, /--tool-detail-bg:\s*var\(--bg-primary\)/);
   assert.match(
     css,
     /\.codemini-fold-body \{[^}]*background: var\(--fold-surface\)/,
+  );
+});
+
+test("workspace session and side rail share the same panel chrome", async () => {
+  const css = await fs.readFile("codemini-web/client/style.css", "utf8");
+  const app = await fs.readFile("codemini-web/client/src/App.jsx", "utf8");
+
+  assert.match(
+    css,
+    /\.codemini-workspace-panel,\s*\.codemini-workspace-rail \{[^}]*border: 1px solid var\(--workspace-panel-border\)/,
+  );
+  assert.match(
+    css,
+    /\.codemini-workspace-panel,\s*\.codemini-workspace-rail \{[^}]*border-color: color-mix\(in srgb, var\(--border-default\) 78%, transparent\)/,
+  );
+  assert.match(
+    css,
+    /\.codemini-workspace-rail \{[^}]*overflow: visible/,
+  );
+  assert.match(
+    app,
+    /relative grid min-h-0 min-w-0 flex-1 grid-cols-\[minmax\(0,1fr\)_auto\] gap-2 overflow-hidden/,
+  );
+  assert.match(
+    app,
+    /codemini-workspace-panel[\s\S]*WorkspaceRail/,
   );
 });
 

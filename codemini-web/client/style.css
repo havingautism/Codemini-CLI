@@ -1511,10 +1511,19 @@ body {
   background: transparent;
 }
 
-.codemini-workspace-panel {
+.codemini-workspace-panel,
+.codemini-workspace-rail {
   border-radius: var(--workspace-panel-radius);
   border: 1px solid var(--workspace-panel-border);
   background: var(--apple-material);
+}
+
+.codemini-workspace-rail {
+  overflow: visible;
+}
+
+.codemini-workspace-rail-body {
+  border-radius: inherit;
 }
 
 /* Chat session: +1px vs app chrome (14px → 15px base) */
@@ -2610,18 +2619,18 @@ samp {
 }
 
 #root button,
-#root button *,
+#root button *:not(:is(input, textarea, [contenteditable="true"])),
 #root [role="button"],
-#root [role="button"] *,
+#root [role="button"] *:not(:is(input, textarea, [contenteditable="true"])),
 #root .cursor-pointer,
-#root .cursor-pointer *,
+#root .cursor-pointer *:not(:is(input, textarea, [contenteditable="true"])),
 #root a,
-#root a *,
+#root a *:not(:is(input, textarea, [contenteditable="true"])),
 #root select,
 #root summary,
-#root summary *,
+#root summary *:not(:is(input, textarea, [contenteditable="true"])),
 #root label:has(input),
-#root label:has(input) * {
+#root label:has(input) *:not(:is(input, textarea, [contenteditable="true"])) {
   cursor: pointer;
 }
 
@@ -2632,6 +2641,22 @@ samp {
   caret-color: auto;
   cursor: text;
   user-select: text;
+}
+
+#root :is(
+  input[type="button"],
+  input[type="submit"],
+  input[type="reset"],
+  input[type="checkbox"],
+  input[type="radio"],
+  input[type="file"],
+  input[type="range"],
+  input[type="color"],
+  input[type="image"]
+) {
+  caret-color: transparent;
+  cursor: pointer;
+  user-select: none;
 }
 
 #root .cursor-not-allowed,
@@ -2890,7 +2915,8 @@ samp {
   padding: 12px 14px;
   border: 0;
   border-radius: var(--radius-lg);
-  background: color-mix(in srgb, var(--text-primary) 6%, transparent);
+  background: var(--message-surface);
+  box-shadow: inset 0 0 0 1px var(--message-edge);
   color: var(--text-secondary);
   font-style: normal;
 }
@@ -3016,7 +3042,8 @@ samp {
   padding: 0 !important;
   border: 0 !important;
   border-radius: var(--radius-lg) !important;
-  background: color-mix(in srgb, var(--text-primary) 5%, transparent) !important;
+  background: var(--message-surface) !important;
+  box-shadow: inset 0 0 0 1px var(--message-edge);
   overflow: hidden !important;
 }
 
@@ -3118,7 +3145,8 @@ samp {
   margin: 16px 0;
   padding: 12px 14px;
   border-radius: 10px;
-  background: color-mix(in srgb, var(--text-primary) 5%, transparent);
+  background: var(--message-surface);
+  box-shadow: inset 0 0 0 1px var(--message-edge);
 }
 
 .msg-body.codemini-assistant-markdown :not(pre)>code {
@@ -4115,7 +4143,8 @@ samp {
     var(--shell-canvas, var(--bg-secondary));
 } */
 
-.codemini-workspace-panel {
+.codemini-workspace-panel,
+.codemini-workspace-rail {
   border-color: color-mix(in srgb, var(--border-default) 78%, transparent);
   background: var(--bg-primary);
   box-shadow: var(--shadow-sm);
@@ -4123,7 +4152,8 @@ samp {
     0 8px 18px color-mix(in srgb, black 6%, transparent); */
 }
 
-:root:not([data-theme="dark"]) .codemini-workspace-panel {
+:root:not([data-theme="dark"]) .codemini-workspace-panel,
+:root:not([data-theme="dark"]) .codemini-workspace-rail {
   background: #fcfcfd;
 }
 
@@ -4185,7 +4215,8 @@ samp {
   background: var(--selected-bg);
 }
 
-:root[data-theme="dark"] .codemini-workspace-panel {
+:root[data-theme="dark"] .codemini-workspace-panel,
+:root[data-theme="dark"] .codemini-workspace-rail {
   background: #19191c;
 }
 
@@ -4210,17 +4241,36 @@ samp {
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text-primary) 13%, transparent);
 }
 
-.scrapbook-picker-search-shell:focus-within {
+.scrapbook-picker-search-shell:focus-within,
+.action-skill-palette-search-shell:focus-within {
   outline: none;
 }
 
 .scrapbook-picker-search,
 .scrapbook-picker-search:focus,
-.scrapbook-picker-search:focus-visible {
+.scrapbook-picker-search:focus-visible,
+.action-skill-palette-search,
+.action-skill-palette-search:focus,
+.action-skill-palette-search:focus-visible {
   border: 0 !important;
   outline: none !important;
   box-shadow: none !important;
   background: transparent !important;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.action-skill-palette-search::-webkit-search-decoration,
+.action-skill-palette-search::-webkit-search-cancel-button,
+.action-skill-palette-search::-webkit-search-results-button,
+.action-skill-palette-search::-webkit-search-results-decoration {
+  -webkit-appearance: none;
+}
+
+.action-skill-palette-item:focus,
+.action-skill-palette-item:focus-visible {
+  outline: none !important;
+  box-shadow: none !important;
 }
 
 .codemini-input-shell textarea:focus-visible {

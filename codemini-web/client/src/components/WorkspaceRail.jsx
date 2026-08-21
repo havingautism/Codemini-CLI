@@ -42,12 +42,12 @@ export function WorkspaceRail({
 
   return (
     <aside
-      className="codemini-workspace-rail relative flex min-h-0 shrink-0 flex-col bg-(--bg-primary) max-md:absolute max-md:inset-y-0 max-md:right-0 max-md:z-40 max-md:w-full! max-md:shadow-xl"
+      className="codemini-workspace-rail relative z-20 flex min-h-0 shrink-0 flex-col max-md:absolute max-md:inset-y-0 max-md:right-0 max-md:z-40 max-md:w-full! max-md:shadow-xl"
       style={{ width: `${panelWidth}px` }}
       aria-label={t("workspaceRailTitle")}
     >
       <div
-        className="codemini-terminal-resizer absolute inset-y-0 -left-1 z-10 flex w-2 cursor-col-resize touch-none select-none items-center justify-center border-0! max-md:hidden"
+        className="codemini-terminal-resizer absolute inset-y-0 -left-2 z-30 flex w-2 cursor-col-resize touch-none select-none items-center justify-center border-0! max-md:hidden"
         role="separator"
         aria-label={t("workspaceRailResize")}
         aria-orientation="vertical"
@@ -82,72 +82,74 @@ export function WorkspaceRail({
         </span>
       </div>
 
-      <div className="flex h-12 shrink-0 items-center gap-1 px-2">
-        <div className="flex min-w-0 flex-1 items-center gap-1">
+      <div className="codemini-workspace-rail-body flex min-h-0 flex-1 flex-col overflow-hidden">
+        <div className="flex h-12 shrink-0 items-center gap-1 px-2">
+          <div className="flex min-w-0 flex-1 items-center gap-1">
+            <button
+              type="button"
+              className={tabButtonClass(activeTab === "files")}
+              aria-pressed={activeTab === "files"}
+              disabled={workspaceDisabled}
+              title={
+                workspaceDisabled
+                  ? t("workspaceNeedsProject")
+                  : t("workspaceFilesTab")
+              }
+              onClick={() => onTabChange?.("files")}
+            >
+              <FolderSimple size={14} />
+              <span>{t("workspaceFilesTab")}</span>
+            </button>
+            <button
+              type="button"
+              className={tabButtonClass(activeTab === "terminal")}
+              aria-pressed={activeTab === "terminal"}
+              title={t("terminalTitle")}
+              onClick={() => onTabChange?.("terminal")}
+            >
+              <TerminalIcon size={14} />
+              <span>{t("terminalTitle")}</span>
+            </button>
+          </div>
           <button
             type="button"
-            className={tabButtonClass(activeTab === "files")}
-            aria-pressed={activeTab === "files"}
-            disabled={workspaceDisabled}
-            title={
-              workspaceDisabled
-                ? t("workspaceNeedsProject")
-                : t("workspaceFilesTab")
-            }
-            onClick={() => onTabChange?.("files")}
+            className="codemini-terminal-action"
+            title={t("close")}
+            aria-label={t("close")}
+            onClick={onClose}
           >
-            <FolderSimple size={14} />
-            <span>{t("workspaceFilesTab")}</span>
-          </button>
-          <button
-            type="button"
-            className={tabButtonClass(activeTab === "terminal")}
-            aria-pressed={activeTab === "terminal"}
-            title={t("terminalTitle")}
-            onClick={() => onTabChange?.("terminal")}
-          >
-            <TerminalIcon size={14} />
-            <span>{t("terminalTitle")}</span>
+            <X size={14} />
           </button>
         </div>
-        <button
-          type="button"
-          className="codemini-terminal-action"
-          title={t("close")}
-          aria-label={t("close")}
-          onClick={onClose}
-        >
-          <X size={14} />
-        </button>
-      </div>
 
-      <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-        <div
-          className={
-            activeTab === "files"
-              ? "flex min-h-0 flex-1 flex-col overflow-hidden"
-              : "hidden"
-          }
-        >
-          <FileTreePanel
-            sessionId={sessionId}
-            projectCwd={projectCwd}
-            disabled={workspaceDisabled}
-          />
-        </div>
-        <div
-          className={
-            activeTab === "terminal"
-              ? "flex min-h-0 flex-1 flex-col overflow-hidden"
-              : "hidden"
-          }
-        >
-          <TerminalPanel
-            sessionId={sessionId}
-            projectCwd={projectCwd}
-            disabled={workspaceDisabled}
-            embedded
-          />
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+          <div
+            className={
+              activeTab === "files"
+                ? "flex min-h-0 flex-1 flex-col overflow-hidden"
+                : "hidden"
+            }
+          >
+            <FileTreePanel
+              sessionId={sessionId}
+              projectCwd={projectCwd}
+              disabled={workspaceDisabled}
+            />
+          </div>
+          <div
+            className={
+              activeTab === "terminal"
+                ? "flex min-h-0 flex-1 flex-col overflow-hidden"
+                : "hidden"
+            }
+          >
+            <TerminalPanel
+              sessionId={sessionId}
+              projectCwd={projectCwd}
+              disabled={workspaceDisabled}
+              embedded
+            />
+          </div>
         </div>
       </div>
     </aside>

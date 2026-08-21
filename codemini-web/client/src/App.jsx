@@ -481,7 +481,8 @@ function Shell() {
             </Suspense>
           </div>
         ) : (
-          <div className="codemini-workspace-panel flex flex-1 flex-col min-h-0 overflow-hidden">
+          <div className="relative grid min-h-0 min-w-0 flex-1 grid-cols-[minmax(0,1fr)_auto] gap-2 overflow-hidden">
+          <div className="codemini-workspace-panel flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
             {/* Titlebar */}
             <div className="flex items-center justify-between h-12 px-3 sm:px-5 shrink-0 border-b border-(--border-default)">
               <div className="flex items-center gap-2.5 min-w-0">
@@ -610,8 +611,7 @@ function Shell() {
 
             {/* Plan Progress (during execution) — now rendered as a chat message via plan-overview */}
 
-            <div className="flex flex-1 min-h-0 min-w-0 overflow-hidden">
-            <div className="codemini-chat-session flex flex-1 flex-col min-h-0 min-w-0 overflow-hidden">
+            <div className="codemini-chat-session flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
             {/* Chat Panel */}
             {chatPageTab === "trajectory" ? (
               <TrajectoryPanel
@@ -714,6 +714,7 @@ function Shell() {
               </div>
             </div>
             </div>
+          </div>
             {sideRailOpen ? (
               <Suspense fallback={null}>
                 <WorkspaceRail
@@ -727,7 +728,6 @@ function Shell() {
                 />
               </Suspense>
             ) : null}
-            </div>
           </div>
         )}
       </div>
