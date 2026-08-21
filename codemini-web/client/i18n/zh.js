@@ -802,7 +802,7 @@ export const zh = {
   trajectoryEmpty: "还没有轨迹",
   trajectoryKindSystem: "System Prompt",
   trajectoryKindUser: "User Message",
-  trajectoryKindContext: "Context",
+  trajectoryKindRouting: "Graph Routing",
   trajectoryKindThinking: "Thinking",
   trajectoryKindAssistant: "Assistant",
   trajectoryKindTool: "Tool Call",

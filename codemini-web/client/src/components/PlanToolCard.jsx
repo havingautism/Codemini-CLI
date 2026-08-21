@@ -11,6 +11,7 @@ import {
 } from "@/components/DisclosureLeading.jsx";
 import { ToolCard } from "@/components/ToolCard.jsx";
 import { UsageBadge } from "@/components/UsageBadge.jsx";
+import { ModelIdentityBadge } from "@/components/ModelIdentityBadge.jsx";
 import { extractLatestTodoFromPlanSteps } from "@/lib/answer-process.js";
 import { getTodoToolItems } from "@/lib/tool-card-display.js";
 import { formatToolGroupSummaryLabel } from "@/lib/tool-group-summary.js";
@@ -268,7 +269,12 @@ function StepBody({ step }) {
           )}
         </div>
         {step?.usage ? (
-          <div className="flex justify-end">
+          <div className="flex items-center justify-end gap-1">
+            <ModelIdentityBadge
+              sdkProvider={step.sdkProvider}
+              model={step.model}
+              showOnlyWhenDifferent
+            />
             <UsageBadge usage={step.usage} />
           </div>
         ) : null}
@@ -288,7 +294,12 @@ function StepBody({ step }) {
         </div>
       )}
       {step?.usage ? (
-        <div className="flex justify-end">
+        <div className="flex items-center justify-end gap-1">
+          <ModelIdentityBadge
+            sdkProvider={step.sdkProvider}
+            model={step.model}
+            showOnlyWhenDifferent
+          />
           <UsageBadge usage={step.usage} />
         </div>
       ) : null}

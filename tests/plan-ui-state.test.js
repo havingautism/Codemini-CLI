@@ -75,6 +75,8 @@ test('applyPlanEventToMessage keeps plan progress on create_plan card', () => {
     title: 'Inspect',
     status: 'done',
     output: 'Handoff done',
+    sdkProvider: 'openai-compatible',
+    model: 'lite-model',
     usage: { inputTokens: 80, outputTokens: 20, totalTokens: 100, requests: 1 },
     usageScope: 'subagent',
   });
@@ -92,6 +94,8 @@ test('applyPlanEventToMessage keeps plan progress on create_plan card', () => {
   assert.equal(card.planRun.phase, 'completed');
   assert.equal(card.displayName, 'Subagent · 完成');
   assert.equal(card.planRun.steps[0].usage.totalTokens, 100);
+  assert.equal(card.planRun.steps[0].sdkProvider, 'openai-compatible');
+  assert.equal(card.planRun.steps[0].model, 'lite-model');
   assert.equal(card.planRun.steps[1].segments[0].type, 'text');
   // Parent message usage stays unset; subagent tokens live on the step only.
   assert.equal(message.usage, undefined);
@@ -518,6 +522,8 @@ test('fork plan:step_done carries usage onto the fork card step', () => {
     title: 'Run the tests',
     status: 'done',
     output: 'Fork branch "tests" finished.',
+    sdkProvider: 'openai-compatible',
+    model: 'mock-model',
     usage: { inputTokens: 5000, outputTokens: 200, totalTokens: 5200, cachedInputTokens: 4800, requests: 1 },
     usageScope: 'fork',
   });
@@ -532,6 +538,8 @@ test('fork plan:step_done carries usage onto the fork card step', () => {
   assert.equal(card.planRun.steps[0].usage.totalTokens, 5200);
   assert.equal(card.planRun.steps[0].usage.cachedInputTokens, 4800);
   assert.equal(card.planRun.steps[0].usage.requests, 1);
+  assert.equal(card.planRun.steps[0].sdkProvider, 'openai-compatible');
+  assert.equal(card.planRun.steps[0].model, 'mock-model');
   // Parent message usage stays unset; fork tokens live on the step only.
   assert.equal(message.usage, undefined);
 });

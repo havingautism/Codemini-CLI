@@ -16,3 +16,15 @@ test('automatic graph-selected skills become visible activity badges', async () 
     );
   }
 });
+
+test('graph routing events are persisted and reduced onto the user turn', async () => {
+  const [bridge, sessionState] = await Promise.all([
+    fs.readFile('codemini-web/lib/runtime-bridge.js', 'utf8'),
+    fs.readFile('codemini-web/client/src/lib/session-state.js', 'utf8'),
+  ]);
+
+  assert.equal(bridge.includes("case 'routing:graph'"), true);
+  assert.match(bridge, /routingGraph:\s*routingGraphFromEvent\(event\)/);
+  assert.equal(sessionState.includes('event.type === "routing:graph"'), true);
+  assert.match(sessionState, /routingGraph:\s*routingGraphFromEvent\(event\)/);
+});

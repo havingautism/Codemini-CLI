@@ -82,14 +82,14 @@ function ModelPanel({ model }) {
   );
 }
 
-export function ModelIdentityBadge({ sdkProvider, model }) {
+export function ModelIdentityBadge({ sdkProvider, model, showOnlyWhenDifferent = false }) {
   const { state } = useApp();
   const panel = buildModelPanelModel({
     sdkProvider,
     model,
     runtimeState: state.runtimeState,
   });
-  if (!panel) return null;
+  if (!panel || (showOnlyWhenDifferent && !panel.showReplyModel)) return null;
   const { identity } = panel;
   return (
     <Tooltip>

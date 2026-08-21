@@ -256,13 +256,15 @@ test('bash policy ignores the null device and absolute-looking fragments inside 
   );
 });
 
-test('bash policy allows read-only global skill scripts but not sessions', () => {
+test('shell policy allows read-only global skill scripts but not sessions', () => {
   const previous = process.env.CODEMINI_GLOBAL_DIR;
   const globalDir = '/tmp/codemini-policy-skills-global';
   process.env.CODEMINI_GLOBAL_DIR = globalDir;
   try {
+    const platform = process.platform;
+    const shell = platform === 'win32' ? 'powershell' : 'bash';
     const config = {
-      shell: { default: 'bash' },
+      shell: { default: shell },
       sandbox: { enabled: false },
       policy: {
         safe_mode: true,
@@ -272,22 +274,27 @@ test('bash policy allows read-only global skill scripts but not sessions', () =>
         blocked_command_patterns: [],
       },
     };
-    const workspaceRoot = '/home/user/projects/app';
-    const skillScript = path.posix.join(getSkillsDir(), 'demo', 'scripts', 'score.py');
-    const sessionFile = path.posix.join(getSessionsDir(), 'abc', 'log.txt');
+    const workspaceRoot = process.cwd();
+    const skillScript = path.join(getSkillsDir(), 'demo', 'scripts', 'score.py');
+    const sessionFile = path.join(getSessionsDir(), 'abc', 'log.txt');
     assert.equal(
-      evaluateCommandPolicy(`python ${skillScript}`, config, workspaceRoot, 'linux').allowed,
+      evaluateCommandPolicy(`python "${skillScript}"`, config, workspaceRoot, platform).allowed,
       true,
     );
     assert.match(
-      evaluateCommandPolicy(`cat ${sessionFile}`, config, workspaceRoot, 'linux').reason,
+      evaluateCommandPolicy(
+        `${platform === 'win32' ? 'Get-Content' : 'cat'} "${sessionFile}"`,
+        config,
+        workspaceRoot,
+        platform,
+      ).reason,
       /absolute path outside workspace/,
     );
 
     process.env.CODEMINI_GLOBAL_DIR = '/Users/someone/Library/Preferences/codemini-global';
-    const macSkillScript = path.posix.join(getSkillsDir(), 'demo', 'scripts', 'score.py');
+    const macSkillScript = path.join(getSkillsDir(), 'demo', 'scripts', 'score.py');
     assert.equal(
-      evaluateCommandPolicy(`python ${macSkillScript}`, config, workspaceRoot, 'linux').allowed,
+      evaluateCommandPolicy(`python "${macSkillScript}"`, config, workspaceRoot, platform).allowed,
       true,
     );
   } finally {

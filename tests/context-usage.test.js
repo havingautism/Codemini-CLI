@@ -1,6 +1,20 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildRuntimeStateSnapshot } from '../src/core/chat-runtime.js';
+import {
+  attachCurrentTurnModelContent,
+  buildRuntimeStateSnapshot,
+} from '../src/core/chat-runtime.js';
+
+test('current-turn model input is persisted for trajectory inspection', () => {
+  const message = attachCurrentTurnModelContent(
+    { role: 'user', content: 'Fix the bug' },
+    '<turn_context>\n<coding_harness>tasks=required</coding_harness>\n</turn_context>\n\n<task>\nFix the bug\n</task>',
+  );
+
+  assert.equal(message.content, 'Fix the bug');
+  assert.match(message.model_content, /<coding_harness>tasks=required<\/coding_harness>/);
+  assert.equal(message.model_content_scope, 'current_turn');
+});
 
 test('runtime CTX reports the latest request input usage, not the next-request estimate', () => {
   const snapshot = buildRuntimeStateSnapshot({

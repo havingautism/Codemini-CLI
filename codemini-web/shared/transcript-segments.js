@@ -30,6 +30,19 @@ export function normalizeUsage(usage) {
   return Object.keys(out).length ? out : null;
 }
 
+export function routingGraphFromEvent(event = {}) {
+  return {
+    graphVersion: String(event.graphVersion || ''),
+    path: Array.isArray(event.path) ? event.path : [],
+    source: String(event.source || ''),
+    delegationMode: String(event.delegationMode || ''),
+    decisions: event.decisions && typeof event.decisions === 'object'
+      ? event.decisions
+      : {},
+    startedAt: event.startedAt || new Date().toISOString(),
+  };
+}
+
 export function mergeUsage(current, incoming) {
   const a = normalizeUsage(current);
   const b = normalizeUsage(incoming);

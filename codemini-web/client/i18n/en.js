@@ -817,7 +817,7 @@ export const en = {
   trajectoryEmpty: "No trajectory yet",
   trajectoryKindSystem: "System Prompt",
   trajectoryKindUser: "User Message",
-  trajectoryKindContext: "Context",
+  trajectoryKindRouting: "Graph Routing",
   trajectoryKindThinking: "Thinking",
   trajectoryKindAssistant: "Assistant",
   trajectoryKindTool: "Tool Call",

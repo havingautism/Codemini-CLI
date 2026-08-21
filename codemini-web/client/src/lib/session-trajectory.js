@@ -101,7 +101,7 @@ function pickToolOutput(event) {
 
 export function formatTrajectoryRowPreview(event) {
   if (!event) return "";
-  if (event.kind === "system" || event.kind === "context") {
+  if (event.kind === "system") {
     return oneLinePreview(event.input || event.body, 160);
   }
   if (event.kind === "tool" || event.kind === "skill") {
@@ -135,35 +135,6 @@ export function formatTrajectoryExportStamp(date) {
 export function trajectoryExportFilename(sessionId, date = new Date()) {
   const id = String(sessionId || "session").replace(/[^A-Za-z0-9._-]/g, "_");
   return `codemini-trajectory-${id}-${formatTrajectoryExportStamp(date)}.json`;
-}
-
-function pushContextLine(lines, key, value) {
-  const text = String(value ?? "").trim();
-  if (text) lines.push(`${key}: ${text}`);
-}
-
-function buildContextBody({ runtimeState, projectCwd, isGeneral }) {
-  const rs = runtimeState || {};
-  const lines = [];
-  if (isGeneral) lines.push("chat: general");
-  pushContextLine(lines, "model", rs.model);
-  pushContextLine(lines, "provider", rs.sdkProvider || rs.provider);
-  pushContextLine(lines, "mode", rs.mode);
-  if (rs.reasoningEnabled === false) {
-    lines.push("reasoning: off");
-  } else {
-    pushContextLine(lines, "reasoning", rs.reasoningEffort);
-  }
-  pushContextLine(lines, "cwd", rs.cwd || rs.projectDir || projectCwd);
-  pushContextLine(lines, "approval", rs.approvalMode);
-  pushContextLine(lines, "sandbox", rs.sandboxMode);
-  pushContextLine(lines, "shell", rs.shell);
-  pushContextLine(lines, "soul", rs.activeSoul);
-  const alwaysSkills = Array.isArray(rs.alwaysSkillNames)
-    ? rs.alwaysSkillNames.map((name) => String(name || "").trim()).filter(Boolean)
-    : [];
-  pushContextLine(lines, "always_skills", alwaysSkills.join(", "));
-  return lines.join("\n");
 }
 
 export function formatTrajectoryUsage(usage) {
@@ -487,8 +458,6 @@ function emitUserSkills(events, message, index, turn) {
 export function buildTrajectory({
   messages = [],
   runtimeState = null,
-  projectCwd = "",
-  isGeneral = false,
   systemPrompt = "",
 } = {}) {
   const list = Array.isArray(messages) ? messages : [];
@@ -509,8 +478,6 @@ export function buildTrajectory({
   }
 
   let turn = 0;
-  let emittedContext = false;
-
   orderMessagesByTime(list).forEach(({ message, index }) => {
     const role = normalizeRole(message);
 
@@ -531,17 +498,20 @@ export function buildTrajectory({
           startedAt: messageTime(message),
         }),
       );
-      if (!emittedContext) {
-        emittedContext = true;
-        const context = buildContextBody({ runtimeState, projectCwd, isGeneral });
+      if (message?.routingGraph) {
+        const routing = message.routingGraph;
+        const path = Array.isArray(routing.path) ? routing.path.join(" → ") : "";
         events.push(
           makeEvent({
-            id: "trajectory-context",
-            kind: "context",
+            id: `trajectory-routing-${message.id || index}`,
+            kind: "routing",
             turn,
-            title: "context",
-            body: context,
-            input: context,
+            title: "graph routing",
+            body: [routing.graphVersion, routing.source, routing.delegationMode, path]
+              .filter(Boolean)
+              .join(" · "),
+            input: stringifyTrajectoryValue(routing),
+            startedAt: routing.startedAt || messageTime(message),
           }),
         );
       }

@@ -111,3 +111,16 @@ test('model identity hover uses the same tooltip chrome as token usage', async (
   );
   assert.match(usage, /rounded-full bg-\(--bg-primary\)/);
 });
+
+test('delegated usage only shows model identity when it differs from the main model', async () => {
+  const badge = await fs.readFile(
+    'codemini-web/client/src/components/ModelIdentityBadge.jsx',
+    'utf8',
+  );
+  const planCard = await fs.readFile(
+    'codemini-web/client/src/components/PlanToolCard.jsx',
+    'utf8',
+  );
+  assert.match(badge, /showOnlyWhenDifferent && !panel\.showReplyModel/);
+  assert.match(planCard, /<ModelIdentityBadge[\s\S]*?showOnlyWhenDifferent[\s\S]*?<UsageBadge usage=\{step\.usage\}/);
+});

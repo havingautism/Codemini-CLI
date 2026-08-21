@@ -4052,6 +4052,16 @@ export function injectProjectContextIntoLastUserMessage(messages = [], projectCo
   return [...next, { role: 'user', content: contextPrompt }];
 }
 
+export function attachCurrentTurnModelContent(message, modelContent = '') {
+  const content = String(modelContent || '');
+  if (message?.role !== 'user' || !content || content === message.content) return message;
+  return {
+    ...message,
+    model_content: content,
+    model_content_scope: 'current_turn',
+  };
+}
+
 function summarizePromptBudgetAudit(audit) {
   const totalTokens = audit?.total?.estimated_tokens || 0;
   const maxContextTokens = audit?.max_context_tokens || 0;
@@ -5032,6 +5042,7 @@ async function askModel({
             config
           });
           const stepModel = resolveSubAgentModel(config, model);
+          const stepSdkProvider = config.sdk?.provider || '';
           emit({
             type: 'plan:step_start',
             toolCallId: callId,
@@ -5043,6 +5054,7 @@ async function askModel({
             status: dependencyRegistration.dependencies.length ? 'waiting' : 'running',
             taskId: dependencyTaskId,
             dependsOn: dependencyRegistration.dependencies,
+            sdkProvider: stepSdkProvider,
             model: stepModel
           });
           const dependencyResult = await dependencyRegistration.wait();
@@ -5081,6 +5093,7 @@ async function askModel({
             status: 'running',
             taskId: dependencyTaskId,
             dependsOn: dependencyRegistration.dependencies,
+            sdkProvider: stepSdkProvider,
             model: stepModel
           });
           const upstreamContext = formatSubAgentUpstreamContext(dependencyResult.upstream);
@@ -5145,6 +5158,8 @@ async function askModel({
               dependsOn: dependencyRegistration.dependencies,
               summary: trimInline(output.text || '', 160),
               output: formatPlanStepOutputForDisplay(output.text || ''),
+              sdkProvider: stepSdkProvider,
+              model: stepModel,
               ...(savedHandoff ? { handoffPath: savedHandoff.path } : {}),
               ...(childUsage ? { usage: childUsage, usageScope: 'subagent' } : {})
             });
@@ -5185,6 +5200,8 @@ async function askModel({
               taskId: dependencyTaskId,
               dependsOn: dependencyRegistration.dependencies,
               summary: String(err?.message || err),
+              sdkProvider: stepSdkProvider,
+              model: stepModel,
               ...(childUsage ? { usage: childUsage, usageScope: 'subagent' } : {})
             });
             const result = {
@@ -5224,6 +5241,7 @@ async function askModel({
             if (onAgentEvent) onAgentEvent({ ...evt, toolCallId: callId });
           };
           const title = trimInline(assignedTasks[0]?.content || effectivePrompt, 72) || branchName;
+          const stepSdkProvider = config.sdk?.provider || '';
           emit({
             type: 'plan:step_start',
             toolCallId: callId,
@@ -5233,6 +5251,7 @@ async function askModel({
             title,
             goal: effectivePrompt,
             status: 'running',
+            sdkProvider: stepSdkProvider,
             model
           });
           let childUsage = null;
@@ -5276,6 +5295,8 @@ async function askModel({
               status: failed ? 'failed' : 'done',
               summary: trimInline(output.text || '', 160),
               output: formatPlanStepOutputForDisplay(output.text || ''),
+              sdkProvider: stepSdkProvider,
+              model,
               ...(childUsage ? { usage: childUsage, usageScope: 'fork' } : {})
             });
             const fileChanges = collectPlanImplementationFileChanges([
@@ -5306,6 +5327,8 @@ async function askModel({
               title,
               status: 'failed',
               summary: String(err?.message || err),
+              sdkProvider: stepSdkProvider,
+              model,
               ...(childUsage ? { usage: childUsage, usageScope: 'fork' } : {})
             });
             return {
@@ -5380,6 +5403,21 @@ async function askModel({
     : persistSession
       ? injectProjectContextIntoLastUserMessage(baseInitialMessages, projectContextPrompt)
       : baseInitialMessages;
+  if (persistSession && text) {
+    const userMessage = session.messages[turnStartMessageCount];
+    const nextUserMessage = attachCurrentTurnModelContent(userMessage, projectContextPrompt);
+    if (nextUserMessage !== userMessage) {
+      session.messages[turnStartMessageCount] = nextUserMessage;
+      if (compacted) {
+        compacted[turnStartCompactedCount] = attachCurrentTurnModelContent(
+          compacted[turnStartCompactedCount],
+          projectContextPrompt,
+        );
+        onCompactedUpdate?.(compacted);
+      }
+      await saveSession(session);
+    }
+  }
   const loopUserPrompt = persistSession
     ? ''
     : projectContextPrompt;
@@ -9084,9 +9122,11 @@ export async function createChatRuntime({
     if (codingRoute.active) {
       onAgentEvent?.({
         type: 'routing:graph',
+        startedAt: new Date().toISOString(),
         graphVersion: codingRoute.graph_version,
         path: codingRoute.path,
         source: codingRoute.source,
+        delegationMode: codingRoute.delegation_mode,
         decisions: codingRoute.decisions,
       });
     }

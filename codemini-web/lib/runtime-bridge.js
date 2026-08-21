@@ -8,6 +8,7 @@ import {
   finishThinkingSegments,
   finishStreamingTextSegments,
   normalizeUsage,
+  routingGraphFromEvent,
   settleIncompleteTranscriptMessage,
   updateSkillInSegments,
 } from '../shared/transcript-segments.js';
@@ -746,6 +747,16 @@ export class RuntimeBridge {
 
     let publishedMessageId = null;
     switch (event.type) {
+      case 'routing:graph': {
+        const userMsgId = this.#lastUserMessageId();
+        if (!userMsgId) break;
+        this.#updateUiMessage(userMsgId, (message) => ({
+          ...message,
+          routingGraph: routingGraphFromEvent(event),
+        }));
+        publishedMessageId = userMsgId;
+        break;
+      }
       case 'assistant:start': {
         this.#removeUiTransientWaiting();
         const pendingSkillBadges = this.#uiPendingSkillBadges;

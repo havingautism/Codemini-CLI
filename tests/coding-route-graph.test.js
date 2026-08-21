@@ -83,7 +83,7 @@ test('coding route graph uses semantic node decisions to gate capabilities', asy
   assert.equal(result.decisions.skills.inject_index, false);
   assert.equal(result.decisions.subagents.enabled, true);
   assert.equal(result.decisions.subagents.recommended_count, 2);
-  assert.equal(result.decisions.subagents.enforcement, 'advisory');
+  assert.equal(result.decisions.subagents.enforcement, 'hard_gate');
   assert.deepEqual(result.decisions.subagents.focus, [
     'inspect architecture',
     'verify tests',
@@ -98,7 +98,7 @@ test('coding route graph uses semantic node decisions to gate capabilities', asy
     'memory_gate',
     'complete',
   ]);
-  assert.match(buildCodingRouteDecisionBlock(result), /subagents=recommended:2/);
+  assert.match(buildCodingRouteDecisionBlock(result), /delegation=subagent; count=2/);
   assert.match(buildCodingRouteDecisionBlock(result), /tasks=required/);
 });
 
@@ -189,6 +189,7 @@ test('advisory context pressure does not hard-force delegation', async () => {
 test('hard context pressure uses window percentage and overrides a conservative judge', async () => {
   const result = await evaluateCodingRouteGraph({
     executionMode: 'plan',
+    text: '修复这个问题并运行测试验证',
     contextUsage: {
       estimated_tokens: 115000,
       max_tokens: 128000,
@@ -197,6 +198,7 @@ test('hard context pressure uses window percentage and overrides a conservative 
     judge: async () => ({
       memory: { leaf: 'ignore' },
       skills: { selected_names: [] },
+      tasks: { required: false },
       subagents: {
         enabled: false,
         recommended_count: 0,
@@ -231,7 +233,7 @@ test('generic exploration and testing words do not force delegation', async () =
     });
 
     assert.equal(result.decisions.subagents, undefined);
-    assert.equal(isCodingRouteToolAllowed(result, 'run_subagent'), true);
+    assert.equal(isCodingRouteToolAllowed(result, 'run_subagent'), false);
   }
 });
 
@@ -547,12 +549,14 @@ test('parallel investigation intent recommends fork branches without delegation'
     });
 
     assert.equal(result.source, 'fallback');
+    assert.equal(result.delegation_mode, 'parallel_task');
     assert.equal(result.decisions.forks.enabled, true);
     assert.equal(result.decisions.forks.recommended_count, 2);
-    assert.equal(result.decisions.forks.enforcement, 'advisory');
+    assert.equal(result.decisions.forks.enforcement, 'directive');
     assert.equal(result.decisions.subagents, undefined);
     assert.ok(result.path.includes('fork_gate'));
-    assert.match(buildCodingRouteDecisionBlock(result), /forks=prefer:2/);
+    assert.equal(isCodingRouteToolAllowed(result, 'run_subagent'), false);
+    assert.match(buildCodingRouteDecisionBlock(result), /delegation=parallel_task; count=2/);
   }
 });
 
@@ -575,16 +579,17 @@ test('semantic judge can recommend fork branches with a capped count and focus',
   });
 
   assert.equal(result.source, 'llm');
+  assert.equal(result.delegation_mode, 'parallel_task');
   assert.equal(result.decisions.forks.enabled, true);
   assert.equal(result.decisions.forks.recommended_count, 3);
   assert.deepEqual(result.decisions.forks.focus, ['frontend', 'backend', 'tests']);
   assert.equal(isCodingRouteToolAllowed(result, 'fork_task'), true);
   const block = buildCodingRouteDecisionBlock(result);
-  assert.match(block, /forks=prefer:3; focus=frontend \| backend \| tests/);
-  assert.match(block, /Prefer fork_task branches/);
+  assert.match(block, /delegation=parallel_task; count=3; focus=frontend \| backend \| tests/);
+  assert.match(block, /Use fork_task.*do not call run_subagent/);
 });
 
-test('hard context pressure disables forks while keeping subagents', async () => {
+test('hard context pressure recommends subagents while fork_task remains available', async () => {
   const result = await evaluateCodingRouteGraph({
     executionMode: 'plan',
     text: '分别检查 frontend、backend 和 tests',
@@ -606,11 +611,12 @@ test('hard context pressure disables forks while keeping subagents', async () =>
   assert.equal(result.decisions.subagents.enabled, true);
   assert.equal(result.decisions.forks.enabled, false);
   assert.equal(result.decisions.forks.recommended_count, 0);
+  assert.equal(result.delegation_mode, 'subagent');
   assert.equal(isCodingRouteToolAllowed(result, 'fork_task'), true);
-  assert.match(buildCodingRouteDecisionBlock(result), /subagents=recommended:2/);
+  assert.match(buildCodingRouteDecisionBlock(result), /delegation=subagent; count=2/);
 });
 
-test('delegation opt-out hides fork_task too', async () => {
+test('subagent opt-out does not disable an explicitly selected parallel task', async () => {
   for (const text of ['Do not use subagents', '不要使用子代理']) {
     const result = await evaluateCodingRouteGraph({
       executionMode: 'plan',
@@ -626,15 +632,15 @@ test('delegation opt-out hides fork_task too', async () => {
     });
 
     assert.equal(result.decisions.subagents.opted_out, true);
-    assert.equal(result.decisions.forks.opted_out, true);
-    assert.equal(result.decisions.forks.enabled, false);
+    assert.equal(result.decisions.forks.opted_out, false);
+    assert.equal(result.decisions.forks.enabled, true);
+    assert.equal(result.delegation_mode, 'parallel_task');
     assert.equal(isCodingRouteToolAllowed(result, 'run_subagent'), false);
-    assert.equal(isCodingRouteToolAllowed(result, 'fork_task'), false);
-    assert.match(buildCodingRouteDecisionBlock(result), /forks=disabled/);
+    assert.equal(isCodingRouteToolAllowed(result, 'fork_task'), true);
   }
 });
 
-test('generic exploration words do not open the fork gate', async () => {
+test('generic exploration words do not recommend forks but keep the tool available', async () => {
   for (const text of [
     'Inspect the repository architecture and dependencies',
     '运行测试并定位失败原因',
@@ -651,6 +657,7 @@ test('generic exploration words do not open the fork gate', async () => {
     });
 
     assert.equal(result.decisions.forks, undefined);
+    assert.equal(result.delegation_mode, 'direct');
     assert.equal(isCodingRouteToolAllowed(result, 'fork_task'), true);
   }
 });
@@ -664,5 +671,96 @@ test('fork intent alone does not open the subagent gate', async () => {
 
   assert.equal(result.decisions.forks.enabled, true);
   assert.equal(result.decisions.subagents, undefined);
+  assert.equal(result.delegation_mode, 'parallel_task');
+  assert.equal(isCodingRouteToolAllowed(result, 'run_subagent'), false);
+});
+
+test('explicit subagent intent wins over generic parallel wording', async () => {
+  const result = await evaluateCodingRouteGraph({
+    executionMode: 'plan',
+    text: '使用子代理分别检查 frontend、backend 和 tests',
+  });
+
+  assert.equal(result.delegation_mode, 'subagent');
   assert.equal(isCodingRouteToolAllowed(result, 'run_subagent'), true);
+  assert.equal(isCodingRouteToolAllowed(result, 'fork_task'), true);
+});
+
+test('parallel task opt-out is independent from subagent opt-out', async () => {
+  const result = await evaluateCodingRouteGraph({
+    executionMode: 'plan',
+    text: '不要使用并行任务，分别检查 frontend 和 backend',
+    judge: async () => ({
+      memory: { leaf: 'ignore' },
+      skills: { selected_names: [] },
+      tasks: { required: true },
+      delegation: { mode: 'subagent', recommended_count: 1 },
+    }),
+  });
+
+  assert.equal(result.delegation_mode, 'subagent');
+  assert.equal(isCodingRouteToolAllowed(result, 'run_subagent'), true);
+  assert.equal(isCodingRouteToolAllowed(result, 'fork_task'), true);
+});
+
+test('explicit parallel task intent overrides context-pressure preference', async () => {
+  const result = await evaluateCodingRouteGraph({
+    executionMode: 'plan',
+    text: '使用并行任务分别检查 frontend 和 backend',
+    contextUsage: { usage_pct: 90, max_tokens: 128000, estimated_tokens: 115200 },
+  });
+
+  assert.equal(result.delegation_mode, 'parallel_task');
+  assert.equal(isCodingRouteToolAllowed(result, 'fork_task'), true);
+  assert.equal(isCodingRouteToolAllowed(result, 'run_subagent'), false);
+});
+
+test('atomic work stays direct under hard context pressure', async () => {
+  const result = await evaluateCodingRouteGraph({
+    executionMode: 'plan',
+    text: '修复 README 中一个错字',
+    contextUsage: { usage_pct: 90, max_tokens: 128000, estimated_tokens: 115200 },
+    judge: async () => ({
+      memory: { leaf: 'ignore' },
+      skills: { selected_names: [] },
+      tasks: { required: false },
+      delegation: { mode: 'direct' },
+    }),
+  });
+
+  assert.equal(result.delegation_mode, 'direct');
+  assert.equal(isCodingRouteToolAllowed(result, 'run_subagent'), false);
+  assert.equal(isCodingRouteToolAllowed(result, 'fork_task'), true);
+});
+
+test('sequential wording does not select parallel tasks', async () => {
+  const result = await evaluateCodingRouteGraph({
+    executionMode: 'plan',
+    text: '逐一检查 frontend、backend 和 tests',
+  });
+
+  assert.equal(result.delegation_mode, 'direct');
+  assert.equal(isCodingRouteToolAllowed(result, 'fork_task'), true);
+});
+
+test('semantic judge can select a subagent DAG while fork_task remains available', async () => {
+  const result = await evaluateCodingRouteGraph({
+    executionMode: 'plan',
+    text: '先检查配置，再根据检查结果修复并验证',
+    judge: async () => ({
+      memory: { leaf: 'ignore' },
+      skills: { selected_names: [] },
+      tasks: { required: true },
+      delegation: {
+        mode: 'subagent_dag',
+        recommended_count: 2,
+        focus: ['inspect', 'fix after inspect'],
+      },
+    }),
+  });
+
+  assert.equal(result.delegation_mode, 'subagent_dag');
+  assert.equal(isCodingRouteToolAllowed(result, 'run_subagent'), true);
+  assert.equal(isCodingRouteToolAllowed(result, 'fork_task'), true);
+  assert.match(buildCodingRouteDecisionBlock(result), /Use run_subagent with task_id and depends_on/);
 });
