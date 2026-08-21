@@ -119,6 +119,16 @@ test('conversation folds use a disclosure tree instead of nested surface cards',
     plan,
     /function SubagentTaskDetails[\s\S]*?planStepTask[\s\S]*?codemini-disclosure-scroll mt-1 max-h-48/,
   );
+  assert.match(
+    plan,
+    /function StepAnswer[\s\S]*?subagentHandoff[\s\S]*?codemini-disclosure-payload[\s\S]*?function StepBody/,
+    'handoffs should render as a static title and payload like task details',
+  );
+  assert.doesNotMatch(
+    plan,
+    /function StepAnswer[\s\S]*?(?:DisclosureRowButton|setOpen|preview)[\s\S]*?function StepBody/,
+    'handoffs should not expose preview text or disclosure state',
+  );
   assert.match(plan, /codemini-disclosure-scroll mt-1 max-h-64/);
   assert.match(en, /forkBranch: "Parallel task"/);
   assert.match(zh, /forkBranch: "并行任务"/);

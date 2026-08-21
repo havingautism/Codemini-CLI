@@ -452,6 +452,30 @@ test('fork_task tool:start creates a plan card that plan steps update', () => {
   assert.equal(cards[0].planRun.steps[0].model, 'mock-model');
 });
 
+test('blocked delegation inside fork branches does not create subagent cards', () => {
+  let message = { id: 'parent', role: 'general', segments: [] };
+  for (const id of ['fork-a', 'fork-b']) {
+    message = applyStreamEventToPlanRun(message, {
+      type: 'tool:start',
+      id,
+      name: 'fork_task',
+      arguments: { prompt: `Inspect ${id}`, name: id },
+    });
+    message = applyStreamEventToPlanRun(message, {
+      type: 'tool:blocked',
+      id: `blocked-${id}`,
+      name: 'run_subagent',
+      arguments: {},
+      parentToolCallId: id,
+    });
+  }
+
+  const cards = message.segments
+    .filter((segment) => segment.type === 'tools')
+    .flatMap((segment) => segment.cards || []);
+  assert.deepEqual(cards.map((card) => card.name), ['fork_task', 'fork_task']);
+});
+
 test('fork branch child tools nest inside the fork card step', () => {
   let message = { id: 'parent', role: 'general', segments: [] };
   message = applyStreamEventToPlanRun(message, {

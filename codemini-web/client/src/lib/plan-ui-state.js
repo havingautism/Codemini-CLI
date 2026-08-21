@@ -281,6 +281,8 @@ export function isCreatePlanToolEvent(event) {
 export function applyStreamEventToPlanRun(message, event, options = {}) {
   if (!message || !event?.type) return message;
   if (isCreatePlanToolEvent(event)) {
+    const parentCardId = String(event.parentToolCallId || "").trim();
+    if (parentCardId && findCreatePlanCard(message, parentCardId)) return message;
     const cardId = String(event.id || event.toolCall?.id || event.toolCallId || "").trim();
     return upsertCreatePlanCard(
       message,
