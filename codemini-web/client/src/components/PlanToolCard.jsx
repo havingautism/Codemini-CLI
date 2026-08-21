@@ -184,7 +184,6 @@ function StepProcessFold({ segments }) {
 
 function StepAnswer({ segment }) {
   const isHandoff = segment?.type === "handoff";
-  const [open, setOpen] = useState(!isHandoff);
   const text = String(segment?.text || "").trim();
   if (!text) return null;
 
@@ -200,44 +199,18 @@ function StepAnswer({ segment }) {
     );
   }
 
-  const firstLine =
-    text
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .find(Boolean) || "";
-  const preview =
-    firstLine.length > 120
-      ? `${firstLine.slice(0, 117).trimEnd()}...`
-      : firstLine;
-
   return (
     <div className="codemini-disclosure">
-      <DisclosureRowButton
-        open={open}
-        onClick={() => setOpen((value) => !value)}
-        icon={<span className="inline-block size-1.5 rounded-full bg-(--accent-blue)" />}
-      >
-        <span className="text-(--text-secondary)">
-          {t("subagentHandoff")}
-        </span>
-        {preview ? (
-          <>
-            <span className="codemini-disclosure-sep" aria-hidden="true" />
-            <span className="min-w-0 flex-1 truncate text-(--text-muted)">
-              {preview}
-            </span>
-          </>
-        ) : null}
-      </DisclosureRowButton>
-      {open ? (
-        <div className="codemini-disclosure-payload codemini-disclosure-scroll mt-1 max-h-64 px-3 py-2 text-[12px] leading-relaxed text-(--text-secondary)">
-          <StreamdownRenderer
-            text={text}
-            streaming={false}
-            inlineEmbeds={false}
-          />
-        </div>
-      ) : null}
+      <div className="px-3 py-1.5 text-[13px] leading-6 text-(--text-process)">
+        {t("subagentHandoff")}
+      </div>
+      <div className="codemini-disclosure-payload codemini-disclosure-scroll mt-1 max-h-64 px-3 py-2 text-[12px] leading-relaxed text-(--text-secondary)">
+        <StreamdownRenderer
+          text={text}
+          streaming={false}
+          inlineEmbeds={false}
+        />
+      </div>
     </div>
   );
 }

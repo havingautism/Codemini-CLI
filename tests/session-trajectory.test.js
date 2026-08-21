@@ -111,6 +111,28 @@ test("splits turns and maps thinking, tool calls, and assistant body text", () =
   assert.equal(result.events.some((event) => event.kind === "context"), false);
 });
 
+test("user trajectory includes image and file attachments", () => {
+  const result = buildTrajectory({
+    messages: [
+      {
+        id: "u1",
+        role: "you",
+        text: "检查这些附件",
+        attachments: [
+          { id: "image-1", kind: "image", name: "screenshot.png" },
+          { id: "file-1", kind: "file", name: "requirements.pdf" },
+        ],
+      },
+    ],
+  });
+
+  const user = result.events.find((event) => event.kind === "user");
+  assert.match(user.body, /screenshot\.png/);
+  assert.match(user.body, /requirements\.pdf/);
+  assert.match(user.input, /screenshot\.png/);
+  assert.match(user.input, /requirements\.pdf/);
+});
+
 test("text-only assistant turn still emits thinking and body without tool calls", () => {
   const result = buildTrajectory({
     messages: [

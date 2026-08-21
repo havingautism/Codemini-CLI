@@ -21,6 +21,18 @@ function messageText(message) {
   return "";
 }
 
+function messageAttachmentSummary(message) {
+  const attachments = Array.isArray(message?.attachments) ? message.attachments : [];
+  const items = attachments.filter(Boolean).map((attachment, index) => {
+    const kind = String(attachment?.kind || "file").trim() || "file";
+    const name = String(
+      attachment?.name || attachment?.filename || attachment?.id || `attachment-${index + 1}`,
+    ).trim();
+    return `[${kind}] ${name}`;
+  });
+  return items.length ? `Attachments: ${items.join(", ")}` : "";
+}
+
 function messageTime(message) {
   return message?.at || message?.timestamp || null;
 }
@@ -484,6 +496,8 @@ export function buildTrajectory({
     if (isUserMessage(message)) {
       turn += 1;
       const display = messageText(message);
+      const attachmentSummary = messageAttachmentSummary(message);
+      const trajectoryDisplay = [display, attachmentSummary].filter(Boolean).join(" · ");
       const modelContent = String(message?.model_content || "").trim();
       events.push(
         makeEvent({
@@ -491,8 +505,8 @@ export function buildTrajectory({
           kind: "user",
           turn,
           title: "user message",
-          body: display,
-          input: display,
+          body: trajectoryDisplay,
+          input: trajectoryDisplay,
           output:
             modelContent && modelContent !== display ? modelContent : "",
           startedAt: messageTime(message),
