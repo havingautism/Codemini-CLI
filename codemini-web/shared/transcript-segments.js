@@ -287,7 +287,7 @@ function isOpenWorkStatus(status) {
 
 function isPlanLikeToolCard(card) {
   const name = String(card?.name || "").toLowerCase();
-  return name === "create_plan" || name === "run_subagent";
+  return name === "create_plan" || name === "run_subagent" || name === "fork_task";
 }
 
 function settleOpenToolCard(card, { status, summary }) {
@@ -452,7 +452,7 @@ function isCreatePlanToolCard(card) {
   const name = String(card?.name || "")
     .toLowerCase()
     .replace(/\(.*$/, "");
-  return name === "create_plan" || name === "run_subagent" || Boolean(card?.planRun);
+  return name === "create_plan" || name === "run_subagent" || name === "fork_task" || Boolean(card?.planRun);
 }
 
 /**

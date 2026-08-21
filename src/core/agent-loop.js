@@ -685,6 +685,7 @@ export async function runAgentLoop({
   approvalMode = 'auto',
   projectIsGit = false,
   alwaysAllowTools = [],
+  forbiddenTools = [],
   requestToolApproval,
   toolResultMaxChars = 12000,
   toolFormatters = {},
@@ -735,6 +736,11 @@ export async function runAgentLoop({
     ...STAGED_WRITE_ALWAYS_ALLOW_TOOLS,
     ...(Array.isArray(alwaysAllowTools) ? alwaysAllowTools : []).map((t) => String(t))
   ]);
+  const forbiddenToolSet = new Set(
+    (Array.isArray(forbiddenTools) ? forbiddenTools : [])
+      .map((name) => String(name || '').trim())
+      .filter(Boolean),
+  );
   let lastAutoDreamCheckStep = 0;
 
   let stopHookBlockCount = 0;
@@ -1160,6 +1166,24 @@ export async function runAgentLoop({
     // Collect results keyed by call.id, then write to messages in original order
     const resultEntries = new Map(); // call.id -> { content, error? }
 
+    // Fork point: captured once per step, shared by every fork_task call in the
+    // batch. The prefix is everything before the current assistant message (the
+    // one carrying the fork calls); tool definitions are frozen at dispatch so
+    // every branch serializes the same tool schemas the parent is using
+    // (byte-identical prefix → vLLM APC / provider prompt-cache reuse).
+    let stepForkPoint = null;
+    const getStepForkPoint = () => {
+      if (!stepForkPoint) {
+        const lastAssistant = messages[messages.length - 1];
+        stepForkPoint = {
+          messages: structuredClone(messages.slice(0, -1)),
+          toolDefinitions: toolRuntime.definitions(),
+          parentNote: String(lastAssistant?.content || '').trim().slice(0, 600),
+        };
+      }
+      return stepForkPoint;
+    };
+
     // Helper to execute a single tool call
     async function executeOne({ call, args, toolName, displayName, isParallelSafe }) {
       const startedAt = Date.now();
@@ -1175,6 +1199,21 @@ export async function runAgentLoop({
           durationMs: 0,
           summary: reason,
           status: 'error',
+        };
+      }
+
+      if (forbiddenToolSet.has(toolName)) {
+        const reason = `Tool "${toolName}" is not available inside a fork branch.`;
+        if (onEvent) {
+          onEvent({ type: 'tool:blocked', name: toolName, displayName, id: call.id, arguments: effectiveArgs });
+        }
+        return {
+          callId: call.id,
+          content: JSON.stringify({ error: reason, code: 'FORK_TOOL_FORBIDDEN' }),
+          blocked: true,
+          durationMs: 0,
+          summary: reason,
+          status: 'blocked',
         };
       }
 
@@ -1393,6 +1432,7 @@ export async function runAgentLoop({
           workspaceRoot,
           executionMode,
           approvalMode: normalizedApprovalMode,
+          ...(toolName === 'fork_task' ? { forkPoint: getStepForkPoint() } : {}),
         });
       } catch (error) {
         const durationMs = Date.now() - startedAt;

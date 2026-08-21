@@ -4115,6 +4115,7 @@ export function getBuiltinTools({
   onCreatePlan,
   onCreateSpec,
   onRunSubAgent,
+  onForkTask,
   requestUserInput,
   afterManagedFileBackup,
   beforeApplyPatchMutation,
@@ -5273,6 +5274,55 @@ export function getBuiltinTools({
               items: { type: "string" },
               description:
                 "Optional tool allow-list. When omitted, the worker gets its role's default baseline. When provided, it OVERRIDES that baseline (list Bash/run to grant shell execution even to a read-only role). On Linux/mac staged write and apply_patch are unavailable (prefer edit/write); glob/grep are part of the inspect baseline. run_subagent/create_plan/create_spec are always forbidden.",
+            },
+          },
+          required: [],
+        },
+      },
+    });
+  }
+  if (typeof onForkTask === "function") {
+    workflowToolDefinitions.push({
+      type: "function",
+      function: {
+        name: "fork_task",
+        description:
+          "Fork parallel branches of the current agent: each branch inherits the full conversation prefix, system prompt, identity, model, and tools, and runs independently on its assigned task; only the structured result (findings, changes, usage) returns to the main loop. Prefer fork_task over run_subagent when branches should share the same state lineage and prompt prefix (cheap prefix-cache reuse on cached providers / vLLM) and the work is parallel investigation, option comparison, or bounded same-identity chunks. Issue several fork_task calls in the same response so branches run concurrently; give each branch a short label in name (e.g. frontend, backend, tests). Branches share one worktree, so assign each branch disjoint file ownership and prefer read-only investigation; treat branch findings as snapshot evidence the parent reconciles. Branches cannot call fork_task/run_subagent/request_user_input and cannot update the plan. When a clean context, a different role/model, or a role-specific tool policy is required, use run_subagent instead.",
+        parameters: {
+          type: "object",
+          properties: {
+            prompt: {
+              type: "string",
+              description:
+                "Optional scope, constraints, and success criteria for this branch. Use tasks for the concrete work items.",
+            },
+            tasks: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  content: { type: "string" },
+                  status: {
+                    type: "string",
+                    enum: ["pending", "in_progress", "completed"],
+                    description: "pending, in_progress, or completed",
+                  },
+                  activeForm: { type: "string" },
+                },
+                required: ["content"],
+              },
+              description:
+                "Concrete structured task checklist assigned to this branch. Prefer this over burying work items in prompt prose.",
+            },
+            summary: {
+              type: "string",
+              description:
+                "One or two concise sentences describing the branch for the collapsed Fork card. Always provide this separately from prompt.",
+            },
+            name: {
+              type: "string",
+              description:
+                "Short invented branch label (e.g. frontend, backend, tests). Shown on the Fork card.",
             },
           },
           required: [],
@@ -6948,6 +6998,28 @@ export function getBuiltinTools({
         tools: Array.isArray(args?.tools) ? args.tools : null,
       });
     },
+    fork_task: async (args = {}, ctx = {}) => {
+      if (typeof onForkTask !== "function") {
+        return {
+          ok: false,
+          error: "fork_task is not available in the current mode.",
+        };
+      }
+      const assignedTasks = normalizeTodos(args?.tasks);
+      const prompt = String(args?.prompt || "").trim();
+      if (!prompt && assignedTasks.length === 0) {
+        return { ok: false, error: "prompt or tasks is required" };
+      }
+      return onForkTask({
+        prompt,
+        tasks: assignedTasks,
+        summary: String(args?.summary || "").trim(),
+        name: String(args?.name || "").trim(),
+        toolCallId: String(ctx?.toolCallId || args?.tool_call_id || "").trim(),
+        orchestrationId: String(ctx?.orchestrationId || "").trim(),
+        forkPoint: ctx?.forkPoint || null,
+      });
+    },
     create_spec: async (args = {}) => {
       if (typeof onCreateSpec !== "function") {
         return {
@@ -7481,6 +7553,14 @@ export function getBuiltinTools({
     },
 
     run_subagent(result) {
+      if (!result || typeof result !== "object") return String(result);
+      if (result.error) return String(result.error);
+      if (result.message) return String(result.message);
+      if (result.text) return String(result.text);
+      return JSON.stringify(result);
+    },
+
+    fork_task(result) {
       if (!result || typeof result !== "object") return String(result);
       if (result.error) return String(result.error);
       if (result.message) return String(result.message);

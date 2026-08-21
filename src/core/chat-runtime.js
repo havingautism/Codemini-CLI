@@ -655,7 +655,7 @@ export const EXECUTION_MODE_TOOL_POLICY = {
     'save_memory',
     'tasks',
     'edit', 'write', 'begin_write', 'write_chunk', 'commit_write', 'abort_write', 'apply_patch', 'delete', 'run',
-    'run_subagent', 'request_user_input'
+    'run_subagent', 'fork_task', 'request_user_input'
   ]
 };
 
@@ -709,6 +709,11 @@ export function buildExecutionModePromptBlock(executionMode, platform = process.
       `- Pass a one- or two-sentence summary plus concrete task, success criteria, and scope. Give read-only workers explicit tools; include ${commandToolName} only for execution they own.`,
       '- Do not copy the parent transcript into the worker. Pass a task envelope: goal, file paths, constraints, and known facts.',
       '- Workers return a short conclusion and a handoff path under .codemini/handoffs/. Read that file only when details are required; do not copy the raw dump forward.',
+      '',
+      'Fork tool (fork_task):',
+      '- Prefer fork_task over run_subagent when branches share the full state and prompt prefix (same identity/model): parallel investigation, option comparison, or bounded same-identity chunks. Issue several fork_task calls in one response to run branches concurrently.',
+      '- Branches inherit the whole conversation prefix, so pass only the branch task and a short name; do not restate history. Branches share one worktree: prefer read-only investigation or disjoint file ownership.',
+      '- For a clean context, a different role/model, or role-specific tools, use run_subagent. Branches cannot fork or ask the user questions.',
       '',
       'User input workflow:',
       '- Inspect first. Use request_user_input when preference, scope, target, or constraints materially change the work.',
@@ -764,7 +769,17 @@ export const ROLE_TOOL_POLICY = {
 };
 
 /** Subagents must never spawn nested agents / workflow orchestrators. */
-export const SUBAGENT_FORBIDDEN_TOOLS = ['run_subagent', 'create_plan', 'create_spec'];
+export const SUBAGENT_FORBIDDEN_TOOLS = ['run_subagent', 'fork_task', 'create_plan', 'create_spec'];
+
+/**
+ * Fork branches keep the parent's full tool schemas for prefix-cache reuse,
+ * but execution of these tools is denied. Branches must never fork/subdelegate
+ * further, pause the whole turn for user input, or mutate parent-owned plan
+ * state while sibling branches are running.
+ */
+export const FORK_FORBIDDEN_TOOLS = [
+  'fork_task', 'run_subagent', 'request_user_input', 'update_plan', 'create_plan', 'create_spec'
+];
 
 const WINDOWS_STAGED_WRITE_TOOLS = [
   'begin_write',
@@ -872,6 +887,35 @@ export function compactSubAgentResultForParent({
     clipped || '(empty)',
     pathLine ? `Handoff: ${pathLine}` : '',
     artifacts.length ? `Artifacts:\n${artifacts.map((item) => `- ${item}`).join('\n')}` : '',
+  ].filter(Boolean).join('\n');
+}
+
+const FORK_RESULT_MAX_CHARS = 4000;
+
+export function compactForkResultForParent({
+  name = 'Fork',
+  text = '',
+  summary = '',
+  status = 'done',
+  fileChanges = [],
+  maxChars = FORK_RESULT_MAX_CHARS,
+} = {}) {
+  const body = String(text || '').trim();
+  const clipped = body.length <= maxChars
+    ? body
+    : `${body.slice(0, maxChars).trimEnd()}\n\n[truncated]`;
+  const changedPaths = [...new Set(
+    (Array.isArray(fileChanges) ? fileChanges : [])
+      .map((change) => String(change?.path || '').trim())
+      .filter(Boolean),
+  )];
+  return [
+    `Fork branch "${name}" finished with status ${status}. Use this conclusion; branch tool details stay in the branch.`,
+    String(summary || '').trim() ? `Summary: ${String(summary).trim()}` : '',
+    clipped || '(empty)',
+    changedPaths.length
+      ? `Changed files:\n${changedPaths.map((path) => `- ${path}`).join('\n')}`
+      : '',
   ].filter(Boolean).join('\n');
 }
 
@@ -4667,7 +4711,12 @@ async function askModel({
   workspaceRoot = process.cwd(),
   selectedSkillNames = [],
   skillHooksSession = null,
-  onSkillLoaded = null
+  onSkillLoaded = null,
+  initialMessagesOverride = null,
+  skipExecutionModeInsert = false,
+  skipSystemPromptInsert = false,
+  toolDefinitionsOverride = null,
+  forbiddenTools = [],
 }) {
   let compacted = compactedInput;
   const modelInputText = typeof modelText === 'string' && modelText ? modelText : text;
@@ -4852,17 +4901,24 @@ async function askModel({
   // directive. The directive sits above the volatile tail (<relevant_memory>),
   // so the stable prefix stays cacheable and memory remains the last block.
   const systemPromptText = String(systemPrompt || '');
-  const directiveIndex = systemPromptText.lastIndexOf('[Reply language]');
-  const effectiveSystemPrompt = directiveIndex >= 0
-    ? [
-        systemPromptText.slice(0, directiveIndex).trimEnd(),
-        executionModePrompt,
-        systemPromptText.slice(directiveIndex),
-      ].filter(Boolean).join('\n\n')
-    : buildSystemPromptWithReplyLanguage(
-        [systemPromptText.trim(), executionModePrompt].filter(Boolean).join('\n\n'),
-        config,
-      );
+  // Fork branches pass the parent's already-composed effectiveSystemPrompt and
+  // must keep it byte-identical for prefix-cache reuse, so skip re-inserting
+  // the execution-mode block (the parent's prompt already contains it).
+  const effectiveSystemPrompt = skipExecutionModeInsert
+    ? systemPromptText
+    : (() => {
+        const directiveIndex = systemPromptText.lastIndexOf('[Reply language]');
+        return directiveIndex >= 0
+          ? [
+              systemPromptText.slice(0, directiveIndex).trimEnd(),
+              executionModePrompt,
+              systemPromptText.slice(directiveIndex),
+            ].filter(Boolean).join('\n\n')
+          : buildSystemPromptWithReplyLanguage(
+              [systemPromptText.trim(), executionModePrompt].filter(Boolean).join('\n\n'),
+              config,
+            );
+      })();
   const projectContextPrompt = buildTurnUserPrompt({
     turnContextPrefix: buildTurnContextPrefix(config),
     projectContextSnippet,
@@ -5142,6 +5198,125 @@ async function askModel({
           }
         }
       : undefined,
+    onForkTask: normalizedExecutionMode === 'plan'
+      ? async ({
+          prompt,
+          tasks = [],
+          summary = '',
+          name = '',
+          toolCallId = '',
+          forkPoint = null
+        } = {}) => {
+          const taskPrompt = String(prompt || '').trim();
+          const assignedTasks = normalizeTodos(tasks);
+          if (!taskPrompt && assignedTasks.length === 0) {
+            return { ok: false, error: 'prompt or tasks is required' };
+          }
+          if (!forkPoint || !Array.isArray(forkPoint.messages) || forkPoint.messages.length === 0) {
+            return { ok: false, error: 'fork_task requires a live agent loop; fork point unavailable.' };
+          }
+          const effectivePrompt = taskPrompt || 'Complete the assigned tasks.';
+          const branchName = normalizeSubAgentPersonaName(name, 'Fork');
+          const callId = String(
+            toolCallId || `fork-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          ).trim();
+          const emit = (evt) => {
+            if (onAgentEvent) onAgentEvent({ ...evt, toolCallId: callId });
+          };
+          const title = trimInline(assignedTasks[0]?.content || effectivePrompt, 72) || branchName;
+          emit({
+            type: 'plan:step_start',
+            toolCallId: callId,
+            step: 1,
+            total: 1,
+            role: branchName,
+            title,
+            goal: effectivePrompt,
+            status: 'running',
+            model
+          });
+          let childUsage = null;
+          try {
+            const output = await runForkTask({
+              task: taskPrompt,
+              tasks: assignedTasks,
+              parentNote: String(forkPoint.parentNote || '').trim(),
+              forkPointMessages: forkPoint.messages,
+              toolDefinitions: forkPoint.toolDefinitions,
+              systemPrompt: effectiveSystemPrompt,
+              config,
+              model,
+              onAgentEvent,
+              requestToolApproval,
+              requestUserInput,
+              signal,
+              changeTracker,
+              backupManager,
+              onUsage: (usage) => {
+                childUsage = mergeModelUsage(childUsage, usage);
+              },
+              projectIsGit: resolveApprovalProjectIsGit({
+                projectIsGit,
+                changeTrackerEnabled: changeTracker?.mode === 'git-oplog',
+                workspaceHasGit: Boolean(config?.runtime?.project_is_git)
+              }),
+              workspaceRoot,
+              parentToolCallId: callId,
+              alwaysAllowTools: effectiveAlwaysAllowTools,
+              executionMode: normalizedExecutionMode
+            });
+            const failed = subAgentRunFailed(output, signal);
+            emit({
+              type: 'plan:step_done',
+              toolCallId: callId,
+              step: 1,
+              total: 1,
+              role: branchName,
+              title,
+              status: failed ? 'failed' : 'done',
+              summary: trimInline(output.text || '', 160),
+              output: formatPlanStepOutputForDisplay(output.text || ''),
+              ...(childUsage ? { usage: childUsage, usageScope: 'fork' } : {})
+            });
+            const fileChanges = collectPlanImplementationFileChanges([
+              { role: 'fork', messages: output.messages || [] }
+            ]);
+            return {
+              ok: !failed,
+              workflowComplete: false,
+              name: branchName,
+              text: output.text || '',
+              ...(childUsage ? { usage: childUsage } : {}),
+              ...(fileChanges.length ? { fileChanges } : {}),
+              message: compactForkResultForParent({
+                name: branchName,
+                text: output.text,
+                summary,
+                status: failed ? 'failed' : 'done',
+                fileChanges,
+              }),
+            };
+          } catch (err) {
+            emit({
+              type: 'plan:step_done',
+              toolCallId: callId,
+              step: 1,
+              total: 1,
+              role: branchName,
+              title,
+              status: 'failed',
+              summary: String(err?.message || err),
+              ...(childUsage ? { usage: childUsage, usageScope: 'fork' } : {})
+            });
+            return {
+              ok: false,
+              error: String(err?.message || err),
+              text: '',
+              ...(childUsage ? { usage: childUsage } : {})
+            };
+          }
+        }
+      : undefined,
     backupManager
   });
 
@@ -5162,15 +5337,26 @@ async function askModel({
     config,
     executionShellContext.commandPlatform,
   );
-  const filteredDefinitions = Array.isArray(modeAllowedTools)
-    ? baseDefinitions.filter((t) => toolNameAllowed(modeAllowedTools, t.function?.name || t.name))
-    : baseDefinitions;
+  const frozenDefinitions = Array.isArray(toolDefinitionsOverride)
+    ? toolDefinitionsOverride
+    : null;
+  const filteredDefinitions = frozenDefinitions
+    ? frozenDefinitions
+    : Array.isArray(modeAllowedTools)
+      ? baseDefinitions.filter((t) => toolNameAllowed(modeAllowedTools, t.function?.name || t.name))
+      : baseDefinitions;
   const filteredHandlers = Array.isArray(modeAllowedTools)
     ? Object.fromEntries(Object.entries(baseHandlers).filter(([name]) => toolNameAllowed(modeAllowedTools, name)))
     : baseHandlers;
   const filteredDeferred = Array.isArray(modeAllowedTools)
     ? Object.fromEntries(Object.entries(baseDeferredDefinitions).filter(([name]) => modeAllowedTools.includes(name)))
     : baseDeferredDefinitions;
+  const activeDefinitionNames = new Set(
+    filteredDefinitions.map((tool) => String(tool?.function?.name || tool?.name || '').trim()),
+  );
+  const nonDuplicateFilteredDeferred = Object.fromEntries(
+    Object.entries(filteredDeferred).filter(([name]) => !activeDefinitionNames.has(name)),
+  );
   const modePolicyTools = EXECUTION_MODE_TOOL_POLICY[normalizedExecutionMode];
   const effectiveAlwaysAllowTools = Array.isArray(modePolicyTools)
     ? [
@@ -5183,11 +5369,17 @@ async function askModel({
       ];
 
   const modelSourceMessages = compacted ?? session.messages;
-  const currentTurnUserIndex = findCurrentTurnUserIndex(modelSourceMessages, text, expectedModelText);
+  const currentTurnUserIndex = initialMessagesOverride
+    ? -1
+    : findCurrentTurnUserIndex(modelSourceMessages, text, expectedModelText);
   const baseInitialMessages = toOpenAIMessages(modelSourceMessages, { currentTurnUserIndex });
-  const initialMessagesForModel = persistSession
-    ? injectProjectContextIntoLastUserMessage(baseInitialMessages, projectContextPrompt)
-    : baseInitialMessages;
+  // Fork branches inject the parent's OpenAI-shaped message prefix verbatim so
+  // the branch request reuses the parent's prompt prefix byte-for-byte.
+  const initialMessagesForModel = initialMessagesOverride
+    ? initialMessagesOverride
+    : persistSession
+      ? injectProjectContextIntoLastUserMessage(baseInitialMessages, projectContextPrompt)
+      : baseInitialMessages;
   const loopUserPrompt = persistSession
     ? ''
     : projectContextPrompt;
@@ -5520,14 +5712,14 @@ async function askModel({
     definitions: filteredDefinitions,
     handlers: filteredHandlers,
     formatters,
-    deferredDefinitions: filteredDeferred,
+    deferredDefinitions: nonDuplicateFilteredDeferred,
     displayLabels: displayLabels || {},
     maxParallelCalls: toolConfig.tools?.max_parallel_calls
   });
   let loopResult;
   try {
     loopResult = await runAgentLoop({
-      systemPrompt: effectiveSystemPrompt,
+      systemPrompt: skipSystemPromptInsert ? '' : effectiveSystemPrompt,
       userPrompt: loopUserPrompt,
       model: model || config.model.name,
       toolRuntime,
@@ -5550,6 +5742,7 @@ async function askModel({
         workspaceHasGit: Boolean(config?.runtime?.project_is_git)
       }),
       alwaysAllowTools: effectiveAlwaysAllowTools,
+      forbiddenTools,
       toolResultMaxChars: config.context?.tool_result_max_chars || 12000,
       toolResultStore,
       getTasks: () => normalizeTodos(session.todos),
@@ -5857,11 +6050,133 @@ export async function runSubAgentTask({
   };
 }
 
+function buildForkTaskInstruction(task, parentNote = '', tasks = []) {
+  const framing = [
+    'You are a parallel branch of the main agent. You inherit its full conversation, identity, system prompt, and tools, and you work independently on the task below.',
+    'Investigate with the same discipline as the main agent, then stop and return a structured result: findings with file/line evidence, any changes you made, and open questions.',
+    'Do not call fork_task, run_subagent, or request_user_input. Do not update the plan. Treat your observations as a snapshot — the parent may be changing files concurrently.'
+  ].join(' ');
+  return [
+    parentNote ? `Parent agent note: ${parentNote}` : '',
+    framing,
+    String(task || '').trim()
+      ? `Branch task:\n${String(task).trim()}`
+      : '',
+    Array.isArray(tasks) && tasks.length > 0
+      ? `Assigned checklist:\n${tasks
+          .map((item, index) => `${index + 1}. ${String(item?.content || '').trim()}`)
+          .join('\n')}`
+      : '',
+  ].filter(Boolean).join('\n\n');
+}
+
+/**
+ * Runs one fork branch of the current agent turn.
+ *
+ * The branch reuses the parent's system prompt verbatim and replays the
+ * parent's exact OpenAI-shaped message prefix (captured at dispatch in
+ * agent-loop), then appends its own user turn. Everything the branch does —
+ * tool calls, results, file changes — stays in the branch's local messages;
+ * only the structured result (text + file changes + usage) returns to the
+ * parent loop. This is what makes fork branches cheap on prefix-cached
+ * providers / vLLM: system + prefix are byte-identical across branches.
+ */
+export async function runForkTask({
+  task,
+  tasks = [],
+  parentNote = '',
+  forkPointMessages = [],
+  toolDefinitions = [],
+  systemPrompt,
+  config,
+  model,
+  onAgentEvent,
+  requestToolApproval,
+  requestUserInput,
+  signal,
+  changeTracker,
+  backupManager,
+  onUsage,
+  projectIsGit,
+  workspaceRoot,
+  parentToolCallId = '',
+  alwaysAllowTools = [],
+  executionMode = 'plan',
+}) {
+  const branchSession = {
+    id: `fork-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    messages: [],
+    todos: normalizeTodos(tasks),
+  };
+  // Deep-clone the prefix per branch: the branch loop splices/prunes its own
+  // array and may mutate assistant message objects, so branches must never
+  // share the parent's live messages.
+  const prefix = (Array.isArray(forkPointMessages) ? forkPointMessages : [])
+    .map((message) => structuredClone(message));
+  // Keep the parent's frozen schemas byte-identical for prompt-cache reuse.
+  // Forbidden branch operations are rejected by the execution policy instead
+  // of removing their schemas from the provider request.
+  const branchToolNames = (Array.isArray(toolDefinitions) ? toolDefinitions : [])
+    .map((def) => String(def?.function?.name || '').trim())
+    .filter(Boolean);
+  const branchAlwaysAllow = (Array.isArray(alwaysAllowTools) ? alwaysAllowTools : [])
+    .filter((name) => !FORK_FORBIDDEN_TOOLS.includes(String(name || '').trim()));
+  const taskInstruction = buildForkTaskInstruction(task, parentNote, branchSession.todos);
+  const wrappedOnAgentEvent = (evt) => {
+    if (evt?.type === 'assistant:response' && typeof onUsage === 'function') {
+      const usage = normalizeModelUsage(evt.usage || evt.assistantMessage?.usage);
+      if (usage) onUsage(usage);
+    }
+    if (
+      ['assistant:start', 'assistant:delta', 'assistant:reasoning_delta', 'assistant:response', 'assistant:tool_call_delta'].includes(String(evt?.type || ''))
+    ) {
+      return;
+    }
+    if (onAgentEvent) {
+      onAgentEvent(parentToolCallId ? { ...evt, parentToolCallId } : evt);
+    }
+  };
+  const result = await askModel({
+    text: taskInstruction,
+    session: branchSession,
+    config,
+    model,
+    systemPrompt,
+    onAgentEvent: wrappedOnAgentEvent,
+    requestToolApproval,
+    requestUserInput,
+    persistSession: false,
+    executionMode,
+    allowedTools: branchToolNames,
+    alwaysAllowTools: branchAlwaysAllow,
+    skipAnalysisNudge: true,
+    signal,
+    changeTracker,
+    backupManager,
+    workspaceRoot,
+    projectIsGit,
+    initialMessagesOverride: prefix,
+    skipExecutionModeInsert: true,
+    skipSystemPromptInsert: true,
+    toolDefinitionsOverride: toolDefinitions,
+    forbiddenTools: FORK_FORBIDDEN_TOOLS,
+  });
+  const text = result.text || '';
+  const hasErrorLine = /(^|\n)\s*error\s*:/i.test(text);
+  return {
+    text,
+    hasErrorLine,
+    messages: Array.isArray(branchSession.messages)
+      ? structuredClone(branchSession.messages)
+      : [],
+  };
+}
+
 export function collectPlanImplementationFileChanges(priorSteps = []) {
   const changes = [];
   const seen = new Set();
   for (const step of Array.isArray(priorSteps) ? priorSteps : []) {
-    if (!['coder', 'refactorer', 'writer'].includes(String(step?.role || ''))) continue;
+    if (!['coder', 'refactorer', 'writer', 'fork'].includes(String(step?.role || ''))) continue;
     for (const msg of Array.isArray(step?.messages) ? step.messages : []) {
       const items = [msg?.tool_file_change, ...(Array.isArray(msg?.tool_file_changes) ? msg.tool_file_changes : [])].filter(Boolean);
       for (const item of items) {

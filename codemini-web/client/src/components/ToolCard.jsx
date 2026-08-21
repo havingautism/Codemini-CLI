@@ -50,6 +50,7 @@ const TOOL_ICONS = {
   apply_patch: PencilLine,
   create_plan: ListChecks,
   run_subagent: ListChecks,
+  fork_task: ListChecks,
   tasks: ListChecks,
   create_spec: FileText,
   delete: Trash,

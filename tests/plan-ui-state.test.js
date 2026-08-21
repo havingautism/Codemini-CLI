@@ -404,3 +404,163 @@ test('different tool call ids create separate cards', () => {
   assert.equal(cards.length, 2);
   assert.deepEqual(cards.map((card) => card.id).sort(), ['call-1', 'call-2']);
 });
+
+test('fork_task tool:start creates a plan card that plan steps update', () => {
+  let message = { id: 'parent', role: 'general', segments: [] };
+
+  message = applyStreamEventToPlanRun(message, {
+    type: 'tool:start',
+    id: 'fork-1',
+    name: 'fork_task',
+    displayName: 'Fork · frontend',
+    arguments: { prompt: 'Check the frontend', name: 'frontend' },
+  });
+  let cards = message.segments
+    .filter((segment) => segment.type === 'tools')
+    .flatMap((segment) => segment.cards || []);
+  assert.equal(cards.length, 1);
+  assert.equal(cards[0].name, 'fork_task');
+  assert.equal(cards[0].status, 'running');
+  assert.ok(cards[0].planRun, 'fork card must get a planRun');
+
+  message = applyPlanEventToMessage(message, {
+    type: 'plan:step_start',
+    step: 1,
+    toolCallId: 'fork-1',
+    role: 'frontend',
+    title: 'Check the frontend',
+    status: 'running',
+    model: 'mock-model',
+  });
+  cards = message.segments
+    .filter((segment) => segment.type === 'tools')
+    .flatMap((segment) => segment.cards || []);
+  assert.equal(cards[0].planRun.steps[0].role, 'frontend');
+  assert.equal(cards[0].planRun.steps[0].status, 'running');
+  assert.equal(cards[0].planRun.steps[0].model, 'mock-model');
+});
+
+test('fork branch child tools nest inside the fork card step', () => {
+  let message = { id: 'parent', role: 'general', segments: [] };
+  message = applyStreamEventToPlanRun(message, {
+    type: 'tool:start',
+    id: 'fork-1',
+    name: 'fork_task',
+    displayName: 'Fork · backend',
+    arguments: { prompt: 'Check the backend', name: 'backend' },
+  });
+  message = applyPlanEventToMessage(message, {
+    type: 'plan:step_start',
+    step: 1,
+    toolCallId: 'fork-1',
+    role: 'backend',
+    title: 'Check the backend',
+  });
+
+  // A tool the branch itself ran, tagged with the fork card's parentToolCallId.
+  message = applyStreamEventToPlanRun(message, {
+    type: 'tool:start',
+    id: 'branch-read-1',
+    parentToolCallId: 'fork-1',
+    name: 'read',
+    arguments: { file_path: 'src/backend/main.js' },
+  });
+  message = applyStreamEventToPlanRun(message, {
+    type: 'tool:end',
+    id: 'branch-read-1',
+    parentToolCallId: 'fork-1',
+    name: 'read',
+    summary: 'Read src/backend/main.js',
+  });
+
+  const card = message.segments
+    .filter((segment) => segment.type === 'tools')
+    .flatMap((segment) => segment.cards || [])
+    .find((item) => item.id === 'fork-1');
+  const nested = (card?.planRun?.steps || [])
+    .flatMap((step) => step.segments || [])
+    .filter((segment) => segment.type === 'tools')
+    .flatMap((segment) => segment.cards || []);
+  assert.equal(nested.length, 1);
+  assert.equal(nested[0].name, 'read');
+  assert.equal(nested[0].id, 'branch-read-1');
+});
+
+test('fork plan:step_done carries usage onto the fork card step', () => {
+  let message = { id: 'parent', role: 'general', segments: [] };
+  message = applyStreamEventToPlanRun(message, {
+    type: 'tool:start',
+    id: 'fork-1',
+    name: 'fork_task',
+    displayName: 'Fork · tests',
+    arguments: { prompt: 'Run the tests', name: 'tests' },
+  });
+  message = applyPlanEventToMessage(message, {
+    type: 'plan:step_start',
+    step: 1,
+    toolCallId: 'fork-1',
+    role: 'tests',
+    title: 'Run the tests',
+  });
+  message = applyPlanEventToMessage(message, {
+    type: 'plan:step_done',
+    step: 1,
+    toolCallId: 'fork-1',
+    role: 'tests',
+    title: 'Run the tests',
+    status: 'done',
+    output: 'Fork branch "tests" finished.',
+    usage: { inputTokens: 5000, outputTokens: 200, totalTokens: 5200, cachedInputTokens: 4800, requests: 1 },
+    usageScope: 'fork',
+  });
+
+  const card = message.segments
+    .filter((segment) => segment.type === 'tools')
+    .flatMap((segment) => segment.cards || [])
+    .find((item) => item.id === 'fork-1');
+  assert.equal(card.status, 'done');
+  assert.equal(card.planRun.phase, 'completed');
+  assert.equal(card.planRun.steps[0].status, 'done');
+  assert.equal(card.planRun.steps[0].usage.totalTokens, 5200);
+  assert.equal(card.planRun.steps[0].usage.cachedInputTokens, 4800);
+  assert.equal(card.planRun.steps[0].usage.requests, 1);
+  // Parent message usage stays unset; fork tokens live on the step only.
+  assert.equal(message.usage, undefined);
+});
+
+test('fork cards render a Fork identity while subagent cards stay Subagent', () => {
+  const runCard = (name) => {
+    let message = { id: 'parent', role: 'general', segments: [] };
+    message = applyStreamEventToPlanRun(message, {
+      type: 'tool:start',
+      id: `${name}-1`,
+      name,
+      displayName: name === 'fork_task' ? 'Fork · tests' : 'Subagent · Mira',
+      arguments: { name: name === 'fork_task' ? 'tests' : 'Mira', prompt: 'Do the thing' },
+    });
+    message = applyPlanEventToMessage(message, {
+      type: 'plan:step_start',
+      step: 1,
+      toolCallId: `${name}-1`,
+      role: name === 'fork_task' ? 'tests' : 'Mira',
+      title: 'Do the thing',
+    });
+    message = applyPlanEventToMessage(message, {
+      type: 'plan:step_done',
+      step: 1,
+      toolCallId: `${name}-1`,
+      role: name === 'fork_task' ? 'tests' : 'Mira',
+      title: 'Do the thing',
+      status: 'done',
+    });
+    return message.segments[0].cards[0];
+  };
+
+  const forkCard = runCard('fork_task');
+  assert.equal(forkCard.name, 'fork_task');
+  assert.equal(forkCard.displayName, 'Fork · 完成');
+
+  const subagentCard = runCard('run_subagent');
+  assert.equal(subagentCard.name, 'run_subagent');
+  assert.equal(subagentCard.displayName, 'Subagent · 完成');
+});

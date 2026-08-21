@@ -14,6 +14,9 @@ const DEFAULT_CONCURRENT_TOOLS = new Set([
   // workers that must wait for an upstream result; the coordinator resolves
   // those promises regardless of scheduling.
   'run_subagent',
+  // Fork branches inherit a frozen prefix and return only a compact result,
+  // so several fork_task calls in one response run concurrently.
+  'fork_task',
 ]);
 
 export class ToolRegistryContractError extends Error {

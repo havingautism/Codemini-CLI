@@ -57,7 +57,7 @@ test('coding route graph uses semantic node decisions to gate capabilities', asy
     memoryRoute: { leaf: 'save_memory', scope: 'project', kind: 'convention' },
     skillIndexPrompt: '# Indexed skills\n- /tdd - Test driven development',
     judge: async ({ systemPrompt, userPrompt }) => {
-      assert.match(systemPrompt, /five nodes/);
+      assert.match(systemPrompt, /six nodes/);
       assert.match(systemPrompt, /Judge difficulty from meaning/);
       assert.match(userPrompt, /\/tdd/);
       return JSON.stringify({
@@ -533,4 +533,136 @@ test('semantic judge opens clarification before skills when it asks', async () =
   assert.ok(result.path.includes('clarification_gate'));
   assert.ok(result.path.includes('skill_selection_gate'));
   assert.ok(result.path.indexOf('clarification_gate') < result.path.indexOf('skill_selection_gate'));
+});
+
+test('parallel investigation intent recommends fork branches without delegation', async () => {
+  for (const text of [
+    '分别检查 frontend、backend 和 tests',
+    'Inspect the frontend and backend in parallel',
+  ]) {
+    const result = await evaluateCodingRouteGraph({
+      executionMode: 'plan',
+      text,
+      autoRoute: { complexity: 'medium' },
+    });
+
+    assert.equal(result.source, 'fallback');
+    assert.equal(result.decisions.forks.enabled, true);
+    assert.equal(result.decisions.forks.recommended_count, 2);
+    assert.equal(result.decisions.forks.enforcement, 'advisory');
+    assert.equal(result.decisions.subagents, undefined);
+    assert.ok(result.path.includes('fork_gate'));
+    assert.match(buildCodingRouteDecisionBlock(result), /forks=prefer:2/);
+  }
+});
+
+test('semantic judge can recommend fork branches with a capped count and focus', async () => {
+  const result = await evaluateCodingRouteGraph({
+    executionMode: 'plan',
+    text: 'Check the module layout',
+    judge: async () => ({
+      memory: { leaf: 'ignore' },
+      skills: { selected_names: [] },
+      tasks: { required: false },
+      subagents: { enabled: false },
+      forks: {
+        enabled: true,
+        recommended_count: 9,
+        focus: ['frontend', 'backend', 'tests', 'ignored-extra'],
+        reason: 'disjoint areas can share the same conversation state',
+      },
+    }),
+  });
+
+  assert.equal(result.source, 'llm');
+  assert.equal(result.decisions.forks.enabled, true);
+  assert.equal(result.decisions.forks.recommended_count, 3);
+  assert.deepEqual(result.decisions.forks.focus, ['frontend', 'backend', 'tests']);
+  assert.equal(isCodingRouteToolAllowed(result, 'fork_task'), true);
+  const block = buildCodingRouteDecisionBlock(result);
+  assert.match(block, /forks=prefer:3; focus=frontend \| backend \| tests/);
+  assert.match(block, /Prefer fork_task branches/);
+});
+
+test('hard context pressure disables forks while keeping subagents', async () => {
+  const result = await evaluateCodingRouteGraph({
+    executionMode: 'plan',
+    text: '分别检查 frontend、backend 和 tests',
+    contextUsage: {
+      estimated_tokens: 115000,
+      max_tokens: 128000,
+      usage_pct: 90,
+    },
+    judge: async () => ({
+      memory: { leaf: 'ignore' },
+      skills: { selected_names: [] },
+      tasks: { required: false },
+      subagents: { enabled: false },
+      forks: { enabled: true, recommended_count: 3, reason: 'parallel audit' },
+    }),
+  });
+
+  // Branches replay the full prefix: at 90% usage the route prefers clean-context subagents.
+  assert.equal(result.decisions.subagents.enabled, true);
+  assert.equal(result.decisions.forks.enabled, false);
+  assert.equal(result.decisions.forks.recommended_count, 0);
+  assert.equal(isCodingRouteToolAllowed(result, 'fork_task'), true);
+  assert.match(buildCodingRouteDecisionBlock(result), /subagents=recommended:2/);
+});
+
+test('delegation opt-out hides fork_task too', async () => {
+  for (const text of ['Do not use subagents', '不要使用子代理']) {
+    const result = await evaluateCodingRouteGraph({
+      executionMode: 'plan',
+      text,
+      autoRoute: { complexity: 'simple' },
+      judge: async () => ({
+        memory: { leaf: 'ignore' },
+        skills: { selected_names: [] },
+        tasks: { required: false },
+        subagents: { enabled: true, recommended_count: 2 },
+        forks: { enabled: true, recommended_count: 2 },
+      }),
+    });
+
+    assert.equal(result.decisions.subagents.opted_out, true);
+    assert.equal(result.decisions.forks.opted_out, true);
+    assert.equal(result.decisions.forks.enabled, false);
+    assert.equal(isCodingRouteToolAllowed(result, 'run_subagent'), false);
+    assert.equal(isCodingRouteToolAllowed(result, 'fork_task'), false);
+    assert.match(buildCodingRouteDecisionBlock(result), /forks=disabled/);
+  }
+});
+
+test('generic exploration words do not open the fork gate', async () => {
+  for (const text of [
+    'Inspect the repository architecture and dependencies',
+    '运行测试并定位失败原因',
+  ]) {
+    const result = await evaluateCodingRouteGraph({
+      executionMode: 'plan',
+      text,
+      autoRoute: { complexity: 'simple' },
+      judge: async () => ({
+        memory: { leaf: 'ignore' },
+        skills: { selected_names: [] },
+        subagents: { enabled: false, reason: 'looks simple' },
+      }),
+    });
+
+    assert.equal(result.decisions.forks, undefined);
+    assert.equal(isCodingRouteToolAllowed(result, 'fork_task'), true);
+  }
+});
+
+test('fork intent alone does not open the subagent gate', async () => {
+  const result = await evaluateCodingRouteGraph({
+    executionMode: 'plan',
+    text: '分别检查 frontend、backend 和 tests',
+    autoRoute: { complexity: 'medium' },
+  });
+
+  assert.equal(result.decisions.forks.enabled, true);
+  assert.equal(result.decisions.subagents, undefined);
+  assert.equal(isCodingRouteToolAllowed(result, 'run_subagent'), true);
 });

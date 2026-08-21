@@ -5,6 +5,7 @@ export const TOOL_DISPLAY_LABELS = {
   create_plan: 'Plan',
   create_spec: 'Create Spec',
   run_subagent: 'Subagent',
+  fork_task: 'Fork',
   tasks: 'Tasks',
   update_todos: 'Tasks',
   read_plan: 'Read Plan',
@@ -234,6 +235,12 @@ export function formatToolDisplayName(name, args = {}, options = {}) {
     const goal = trimInline(args?.goal || args?.prompt || '', 96);
     const persona = trimInline(args?.name || args?.role || 'Alex', 24);
     const label = `Subagent · ${persona || 'Alex'}`;
+    return goal ? formatToolWithArg(label, goal) : label;
+  }
+  if (toolName === 'fork_task') {
+    const goal = trimInline(args?.prompt || '', 96);
+    const branch = trimInline(args?.name || 'Fork', 24);
+    const label = `Fork · ${branch || 'Fork'}`;
     return goal ? formatToolWithArg(label, goal) : label;
   }
   if (toolName === 'create_spec') {
