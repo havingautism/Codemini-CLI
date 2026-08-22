@@ -2238,9 +2238,16 @@ async function runCommand(root, config, args, context = {}) {
     throw new Error("sandbox escalation requires explicit user approval");
   }
   const sandboxMode = escalation?.mode;
+  const hostPowerShellEscalation = process.platform === "win32"
+    && sandboxMode === "danger-full-access"
+    && isVmSandbox(resolveSandboxPolicy({ config, cwd: root }));
+  const executionShell = hostPowerShellEscalation ? "powershell" : config.shell.default;
 
   if (shouldBackground) {
-    return startBackgroundTask(root, config, {
+    return startBackgroundTask(root, {
+      ...config,
+      shell: { ...(config?.shell || {}), default: executionShell },
+    }, {
       ...args,
       sandbox_mode: sandboxMode,
     });
@@ -2249,7 +2256,7 @@ async function runCommand(root, config, args, context = {}) {
   const result = await runShellCommand({
     command,
     cwd: root,
-    shell: config.shell.default,
+    shell: executionShell,
     timeoutMs: Number(
       args?.timeout ||
         args?.timeout_ms ||
@@ -2260,7 +2267,21 @@ async function runCommand(root, config, args, context = {}) {
     config,
     sandboxMode,
   });
-  const payload = { ...result, command };
+  const payload = {
+    ...result,
+    command,
+    shell: executionShell,
+    ...(hostPowerShellEscalation
+      ? {
+          sandbox: {
+            wrapped: false,
+            mode: "danger-full-access",
+            backend: "host",
+            escalated: true,
+          },
+        }
+      : {}),
+  };
   const failureMessage = buildRunFailureMessage(payload);
   if (failureMessage) {
     payload.failed = true;
@@ -4144,7 +4165,7 @@ export function getBuiltinTools({
           type: "string",
           enum: ["workspace-write", "danger-full-access"],
           description:
-            "The wider sandbox mode this file operation needs. Requires justification and explicit user approval.",
+            "The wider sandbox mode this operation needs. Requires justification, LLM risk advice, and explicit user approval.",
         },
         justification: {
           type: "string",
@@ -5055,7 +5076,9 @@ export function getBuiltinTools({
       function: {
         name: commandToolName,
         description: vmSandbox
-          ? `Run a compact Bash command inside the Linux microVM sandbox (${sandboxPolicy.mode}) from the project root with unrestricted outbound networking. Use project-relative paths. Ordinary Bash commands, including curl, are available; commands with destructive or external side effects may still require approval. On denial, stderr includes [sandbox: ...]; retry with a wider sandbox_permissions plus justification when needed. Use run_in_background=true for long-running commands. Put command last.`
+          ? platform === "win32"
+            ? `Run a compact Bash command inside the Linux microVM sandbox (${sandboxPolicy.mode}) from the project root. If a build or test cannot use Windows-native dependencies because the guest is Linux, retry that exact verification command with sandbox_permissions="danger-full-access" and justification; the escalated command must be Windows PowerShell-compatible and runs on the host only after LLM risk advice and user approval. Do not escalate ordinary code failures, missing dependencies, or timeouts. Use project-relative paths and run_in_background=true only for long-running sandboxed commands. Put command last.`
+            : `Run a compact Bash command inside the Linux microVM sandbox (${sandboxPolicy.mode}) from the project root with unrestricted outbound networking. Use project-relative paths. Ordinary Bash commands, including curl, are available; commands with destructive or external side effects may still require approval. On denial, stderr includes [sandbox: ...]; retry with a wider sandbox_permissions plus justification when needed. Use run_in_background=true for long-running commands. Put command last.`
           : osSandbox
             ? `Run a compact ${shellContext.shell === "powershell" ? "PowerShell" : "Bash"} command on the host under OS confinement (${osKind}, ${sandboxPolicy.mode}) with unrestricted outbound networking. Use host paths from the current working directory. Commands with destructive or external side effects may still require approval. On denial, stderr includes [sandbox: ...]; retry with a wider sandbox_permissions plus justification when needed. Use run_in_background=true for long-running commands. Put command last.`
           : `Run a compact ${shellContext.shell === "powershell" ? "PowerShell" : "Bash"} command directly on the ${platform === "win32" ? "Windows" : "host"} system without microVM confinement. Use run_in_background=true for long-running commands. Put command last.`,

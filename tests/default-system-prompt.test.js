@@ -35,7 +35,7 @@ test('OS confinement prompt keeps the host cwd and Seatbelt or Landlock', () => 
   assert.doesNotMatch(prompt, /Use project-relative paths/i);
 });
 
-test('sandboxed prompt presents only the Linux guest environment', () => {
+test('sandboxed prompt presents the Linux guest command environment', () => {
   const prompt = buildDefaultSystemPrompt({
     shell: { default: 'bash' },
     sandbox: { enabled: true, mode: 'workspace-write', backend: 'microsandbox' },
@@ -53,10 +53,18 @@ test('Windows prompt follows sandbox state instead of the host platform alone', 
   }, { workspaceRoot: process.cwd(), platform: 'win32' });
   assert.match(confined, /Bash coding guidelines/);
   assert.match(confined, /Platform: linux \(Microsandbox guest\)/);
+  assert.match(confined, /Host platform: win32/);
   assert.match(confined, /Shell: bash/);
   assert.match(confined, /Sandbox: workspace-write/);
   assert.doesNotMatch(confined, /PowerShell coding guidelines/);
-  assert.doesNotMatch(confined, /Host platform:|OS Version:|E:\\\\/i);
+  assert.doesNotMatch(confined, /OS Version:|E:\\\\/i);
+  assert.match(confined, /Windows host.+Linux microVM/i);
+  assert.match(confined, /native dependencies.+OS\/ABI mismatch/i);
+  assert.match(confined, /sandbox_permissions.+danger-full-access/i);
+  assert.match(confined, /Windows PowerShell/i);
+  assert.match(confined, /ordinary code failures/i);
+  assert.match(confined, /missing project dependencies/i);
+  assert.match(confined, /timeouts/i);
   assert.match(confined, /Current working directory: project root/);
   assert.match(confined, /"file_path":"src\/auth\/service\.ts"/);
   assert.match(confined, /old_string/);

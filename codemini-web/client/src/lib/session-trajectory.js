@@ -649,12 +649,25 @@ export function buildTrajectory({
 
 export function filterTrajectoryEvents(
   events,
-  { query = "", includeCalls = true } = {},
+  { query = "", includeCalls = true, turn = null, kind = "" } = {},
 ) {
   const list = Array.isArray(events) ? events : [];
   const needle = String(query || "").trim().toLowerCase();
+  const turnFilter = turn == null || turn === "" || turn === "all"
+    ? null
+    : Number(turn);
+  const kindFilter = String(kind || "").trim();
   return list.filter((event) => {
-    if (!includeCalls && (event.kind === "tool" || event.kind === "skill")) {
+    if (kindFilter) {
+      if (event.kind !== kindFilter) return false;
+    } else if (!includeCalls && (event.kind === "tool" || event.kind === "skill")) {
+      return false;
+    }
+    if (
+      turnFilter != null &&
+      Number.isFinite(turnFilter) &&
+      Number(event.turn) !== turnFilter
+    ) {
       return false;
     }
     if (!needle) return true;

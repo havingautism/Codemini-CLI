@@ -45,8 +45,8 @@ export function WorkflowReviewDialog({
           contentClassName,
         )}
       >
-        <div className="shrink-0 border-b border-(--border-default) bg-(--bg-primary) px-4 py-3">
-          <DialogHeader showCloseButton={false} className="gap-0">
+        <div className="border-b border-(--border-default) bg-(--bg-primary)">
+          <DialogHeader showCloseButton={false} className="gap-0 px-6">
             <div className="flex items-start justify-between gap-3">
               <div className="flex min-w-0 flex-1 flex-col gap-1">
                 <DialogTitle>

@@ -277,11 +277,11 @@ function ScrapbookLibraryCard({
               <DotsThreeVertical size={18} weight="bold" />
             </button>
           </PopoverTrigger>
-          <PopoverContent align="end" sideOffset={4} className="w-40 p-1">
+          <PopoverContent align="end" sideOffset={4} className="w-40 rounded-md p-1">
             <button
               type="button"
               onClick={() => onDelete(entry)}
-              className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-[12px] text-accent-red hover:bg-(--accent-red-bg)"
+              className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-[12px] text-accent-red hover:bg-(--accent-red-bg)"
             >
               <Trash size={14} />
               {t("scrapbookDelete")}
@@ -684,7 +684,7 @@ export function ScrapbookPanel() {
 
             <div className="flex flex-wrap items-center gap-2">
               <div
-                className={`flex h-10 items-center overflow-hidden rounded-full border border-(--border-default) bg-(--bg-primary) transition-[width,border-color] ${
+                className={`flex h-10 items-center overflow-hidden rounded-full border border-(--border-strong) bg-(--bg-primary) transition-[width,border-color] ${
                   searchOpen || query ? "w-full sm:w-56" : "w-10"
                 }`}
               >
@@ -708,7 +708,7 @@ export function ScrapbookPanel() {
                 ) : null}
               </div>
 
-              <div className="inline-flex h-10 overflow-hidden rounded-full border border-(--border-default)">
+              <div className="inline-flex h-10 overflow-hidden rounded-full border border-(--border-strong)">
                 <button
                   type="button"
                   onClick={() => setViewMode("grid")}
@@ -725,7 +725,7 @@ export function ScrapbookPanel() {
                 <button
                   type="button"
                   onClick={() => setViewMode("list")}
-                  className={`flex w-10 items-center justify-center border-l border-(--border-default) transition ${
+                  className={`flex w-10 items-center justify-center border-l border-(--border-strong) transition ${
                     viewMode === "list"
                       ? "bg-primary/16 text-primary"
                       : "text-(--text-secondary) hover:bg-(--bg-hover)"
@@ -742,7 +742,7 @@ export function ScrapbookPanel() {
                 <select
                   value={sortMode}
                   onChange={(event) => setSortMode(event.target.value)}
-                  className="h-10 appearance-none rounded-full border border-(--border-default) bg-(--bg-primary) pl-4 pr-9 text-[12px] font-medium text-(--text-secondary) outline-none hover:bg-(--bg-hover)"
+                  className="h-10 appearance-none rounded-full border border-(--border-strong) bg-(--bg-primary) pl-4 pr-9 text-[12px] font-medium text-(--text-secondary) outline-none hover:bg-(--bg-hover)"
                 >
                   <option value="recent">{t("scrapbookSortRecent")}</option>
                   <option value="title">{t("scrapbookSortTitle")}</option>
@@ -822,7 +822,7 @@ export function ScrapbookPanel() {
                 <button
                   type="button"
                   onClick={() => setComposerOpen(true)}
-                  className="group flex min-h-52 flex-col items-center justify-center rounded-2xl border border-(--border-default) bg-transparent text-(--text-secondary) transition hover:border-(--border-strong) hover:bg-(--bg-hover) hover:text-(--text-primary) focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
+                  className="group flex min-h-52 flex-col items-center justify-center rounded-2xl border border-(--border-strong) bg-transparent text-(--text-secondary) transition hover:border-[color-mix(in_srgb,var(--text-primary)_28%,transparent)] hover:bg-(--bg-hover) hover:text-(--text-primary) focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
                 >
                   <span className="flex size-14 items-center justify-center rounded-full bg-primary/14 text-primary transition group-hover:scale-105">
                     <Plus size={23} weight="bold" />
@@ -859,7 +859,7 @@ export function ScrapbookPanel() {
         }}
       >
         <DialogContent className="grid h-[calc(100dvh-0.5rem)] max-h-[1040px] grid-rows-[auto_auto_minmax(0,1fr)] gap-0 overflow-hidden rounded-2xl p-0 sm:h-[min(96vh,1040px)] sm:max-w-[calc(100vw-1rem)] lg:grid-rows-[auto_minmax(0,1fr)] xl:max-w-[1560px]">
-          <DialogHeader className="shrink-0 px-5 pb-3 pt-5 sm:px-6">
+          <DialogHeader className="px-6">
             <DialogTitle className="pr-2 text-[20px] leading-7">
               {selectedEntry
                 ? entryTitle(selectedEntry)
@@ -1021,7 +1021,7 @@ export function ScrapbookPanel() {
                         <PopoverContent
                           align="end"
                           sideOffset={4}
-                          className="w-40 p-1"
+                          className="w-40 rounded-md p-1"
                         >
                           {canOpenSource ? (
                             <button
@@ -1033,7 +1033,7 @@ export function ScrapbookPanel() {
                                   "noopener,noreferrer",
                                 )
                               }
-                              className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-[12px] text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary)"
+                              className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-[12px] text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary)"
                             >
                               <ArrowSquareOut size={14} />
                               {t("scrapbookJumpToOriginalLink")}
@@ -1048,7 +1048,7 @@ export function ScrapbookPanel() {
                                   jumpMessageId,
                                 )
                               }
-                              className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-[12px] text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary)"
+                              className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-[12px] text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary)"
                             >
                               <ArrowSquareOut size={14} />
                               {t("scrapbookJumpToMessage")}
@@ -1057,7 +1057,7 @@ export function ScrapbookPanel() {
                           <button
                             type="button"
                             onClick={() => void handleRemoveSource(source.id)}
-                            className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-[12px] text-accent-red hover:bg-(--accent-red-bg)"
+                            className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-[12px] text-accent-red hover:bg-(--accent-red-bg)"
                           >
                             <Trash size={14} />
                             {t("scrapbookDelete")}
@@ -1260,7 +1260,7 @@ export function ScrapbookPanel() {
         }}
       >
         <DialogContent className="grid max-h-[88vh] grid-rows-[auto_minmax(0,1fr)] gap-0 overflow-hidden p-0 sm:max-w-4xl">
-          <DialogHeader className="border-b border-(--border-default) px-5 py-4 sm:px-6">
+          <DialogHeader className="border-b border-(--border-default) px-6">
             <DialogTitle className="pr-8 text-[16px]">
               {openSource?.name || openSource?.url || t("scrapbookUntitled")}
             </DialogTitle>
@@ -1302,7 +1302,7 @@ export function ScrapbookPanel() {
 
       <Dialog open={mindmapExpanded} onOpenChange={setMindmapExpanded}>
         <DialogContent className="grid h-[calc(100dvh-1rem)] max-h-[1100px] grid-rows-[auto_minmax(0,1fr)] gap-0 overflow-hidden rounded-2xl p-0 sm:h-[min(96vh,1100px)] sm:max-w-[calc(100vw-1rem)] xl:max-w-[1700px]">
-          <DialogHeader className="px-5 py-4 sm:px-6">
+          <DialogHeader className="px-6">
             <DialogTitle className="flex items-center gap-2 pr-8 text-[16px]">
               <TreeStructure size={18} />
               {t("scrapbookMindMap")}

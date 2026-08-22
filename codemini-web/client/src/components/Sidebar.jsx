@@ -193,7 +193,7 @@ function SessionActions({ session, regenerating, onRegenerate, onDelete }) {
       </PopoverTrigger>
       <PopoverContent
         align="end"
-        className="w-40 p-1"
+        className="w-40 rounded-md p-1"
         onClick={(event) => event.stopPropagation()}
       >
         <button
@@ -866,7 +866,7 @@ export function Sidebar({
                     </PopoverTrigger>
                     <PopoverContent
                       align="end"
-                      className="w-44 p-1"
+                      className="w-44 rounded-md p-1"
                       onCloseAutoFocus={(event) => event.preventDefault()}
                       onClick={(event) => event.stopPropagation()}
                     >
@@ -1133,7 +1133,7 @@ export function Sidebar({
             <PopoverContent
               align="center"
               side="top"
-              className="flex w-30 flex-col gap-1 p-1"
+              className="flex w-30 flex-col gap-1 rounded-md p-1"
             >
               {["zh", "en"].map((locale) => (
                 <button
@@ -1173,7 +1173,7 @@ export function Sidebar({
             <PopoverContent
               align="center"
               side="top"
-              className="flex w-40 flex-col gap-1 p-1"
+              className="flex w-40 flex-col gap-1 rounded-md p-1"
             >
               {[
                 { mode: "light", icon: Sun, label: t("lightMode") },

@@ -28,7 +28,6 @@ import { useApp } from "@/context/app-context.jsx";
 import { openWorkspaceFile } from "@/hooks/use-api.js";
 import { cn } from "@/lib/utils";
 import { interactiveRequestForSession } from "@/lib/session-ui-state.js";
-import { isShellToolName } from "@/lib/tool-names.js";
 import {
   extractToolName,
   FILE_PATH_ARG_TOOLS,
@@ -269,8 +268,6 @@ const DETAIL_PRE_CLASS =
   "m-0 max-h-100 overflow-x-auto whitespace-pre-wrap break-words p-3 font-mono text-xs leading-relaxed text-(--text-primary)";
 const TOOL_ICON_CLASS =
   "flex size-4 shrink-0 items-center justify-center text-(--text-process-detail)";
-const RUN_TOOL_ICON_CLASS =
-  "flex h-4 w-5 shrink-0 items-center justify-center rounded-[3px] border border-[color:color-mix(in_srgb,var(--text-process-detail)_45%,transparent)] text-(--text-process-detail)";
 
 function FilePathArgument({ path, wrapped = false }) {
   const { dir, name } = splitPathForDisplay(path);
@@ -290,12 +287,10 @@ function FilePathArgument({ path, wrapped = false }) {
   );
 }
 
-function ToolCardIcon({ toolName, Icon }) {
+function ToolCardIcon({ Icon }) {
   return (
-    <span
-      className={isShellToolName(toolName) ? RUN_TOOL_ICON_CLASS : TOOL_ICON_CLASS}
-    >
-      <Icon size={isShellToolName(toolName) ? 12 : 14} />
+    <span className={TOOL_ICON_CLASS}>
+      <Icon size={14} />
     </span>
   );
 }

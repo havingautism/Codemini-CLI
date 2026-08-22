@@ -170,6 +170,40 @@ test('Windows keeps staged writes while using Bash and sandbox escalation', () =
   assert.ok(shell?.function?.parameters?.properties?.sandbox_permissions);
 });
 
+test('approved Windows Microsandbox shell escalation runs npm on host PowerShell', async (t) => {
+  if (process.platform !== 'win32') return t.skip('Windows host escalation');
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-host-escalation-'));
+  await fs.writeFile(
+    path.join(workspaceRoot, 'package.json'),
+    JSON.stringify({ scripts: { test: 'node --check check.js' } }),
+    'utf8',
+  );
+  await fs.writeFile(path.join(workspaceRoot, 'check.js'), 'const ok = true;\n', 'utf8');
+  const bundle = getBuiltinTools({
+    workspaceRoot,
+    config: {
+      policy: { allowed_paths: [] },
+      shell: { default: 'bash', timeout_ms: 15_000 },
+      sandbox: { enabled: true, mode: 'workspace-write', backend: 'microsandbox' },
+    },
+    platform: 'win32',
+  });
+  try {
+    const result = await bundle.handlers.Bash(markSandboxEscalationApproved({
+      command: 'npm test',
+      sandbox_permissions: 'danger-full-access',
+      justification: 'The Linux guest cannot load Windows native dependencies.',
+    }));
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.shell, 'powershell');
+    assert.equal(result.sandbox?.backend, 'host');
+    assert.equal(result.sandbox?.escalated, true);
+  } finally {
+    await bundle.dispose?.();
+    await fs.rm(workspaceRoot, { recursive: true, force: true });
+  }
+});
+
 test('Windows file mutations can use an approved sandbox escalation', async () => {
   const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-win-sandbox-'));
   const bundle = getBuiltinTools({
@@ -243,7 +277,7 @@ test('Linux promotes grep/glob and drops staged write + apply_patch', () => {
   assert.ok(shell?.function?.parameters?.properties?.sandbox_permissions);
 });
 
-test('Linux keeps Codemini tools and removes only Windows write workarounds', () => {
+test('Linux keeps Codemini tools and removes Windows-only tools', () => {
   const windows = exposedNames(getBuiltinTools({
     workspaceRoot: process.cwd(),
     config: { sandbox: { enabled: true, mode: 'workspace-write', backend: 'microsandbox' } },
@@ -256,7 +290,13 @@ test('Linux keeps Codemini tools and removes only Windows write workarounds', ()
   }));
   assert.deepEqual(
     [...windows].filter((name) => !linux.has(name)).sort(),
-    ['abort_write', 'apply_patch', 'begin_write', 'commit_write', 'write_chunk'],
+    [
+      'abort_write',
+      'apply_patch',
+      'begin_write',
+      'commit_write',
+      'write_chunk',
+    ],
   );
   assert.deepEqual([...linux].filter((name) => !windows.has(name)), []);
 });

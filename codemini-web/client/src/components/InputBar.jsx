@@ -231,7 +231,7 @@ function ModeSelector({ sessionId, current, disabled = false }) {
               <ToggleGroupItem
                 key={opt.value}
                 value={opt.value}
-                className="gap-2 data-[state=on]:shadow-none"
+                className="gap-2 rounded-md data-[state=on]:shadow-none"
               >
                 <Icon data-icon="inline-start" className="mt-0.5" />
                 <span className="min-w-0 flex-1 overflow-hidden">
@@ -312,7 +312,7 @@ function ApprovalModeSelector({ sessionId, current, disabled = false }) {
               <ToggleGroupItem
                 key={opt.value}
                 value={opt.value}
-                className="gap-2 data-[state=on]:shadow-none"
+                className="gap-2 rounded-md data-[state=on]:shadow-none"
               >
                 <Icon data-icon="inline-start" className="mt-0.5" />
                 <span className="min-w-0 flex-1 overflow-hidden">
@@ -407,7 +407,7 @@ function SandboxModeSelector({
               <ToggleGroupItem
                 key={opt.value}
                 value={opt.value}
-                className="gap-2 data-[state=on]:shadow-none"
+                className="gap-2 rounded-md data-[state=on]:shadow-none"
               >
                 <Icon data-icon="inline-start" className="mt-0.5" />
                 <span className="min-w-0 flex-1 overflow-hidden">
@@ -493,7 +493,7 @@ function SoulQuickSwitch({ disabled = false, mode = "normal" }) {
         side="top"
         align="start"
         sideOffset={6}
-        className="w-52 p-1"
+        className="w-52 rounded-md p-1"
       >
         <div className="text-[11px] text-(--text-muted) px-2 py-1.5 font-medium">
           {t("switchSoul")} ·{" "}
@@ -1131,6 +1131,14 @@ export function InputBar({
     [inputLocked, rs.sessionId],
   );
 
+  const handlePaste = useCallback((event) => {
+    if (actionParameter.activeAction) return;
+    const files = Array.from(event.clipboardData?.files || []);
+    if (!files.length) return;
+    event.preventDefault();
+    handleFiles(files);
+  }, [actionParameter.activeAction, handleFiles]);
+
   const removeAttachment = useCallback((id) => {
     setAttachments((current) => current.filter((item) => item.id !== id));
   }, []);
@@ -1417,6 +1425,7 @@ export function InputBar({
                 : handleInput
             }
             onKeyDown={handleKeyDown}
+            onPaste={handlePaste}
             onCompositionStart={() => {
               imeComposingRef.current = true;
             }}

@@ -554,14 +554,14 @@ function ResearchLibraryCard({
               <DotsThreeVertical size={16} weight="bold" />
             </button>
           </PopoverTrigger>
-          <PopoverContent align="end" className="w-40 p-1.5">
+          <PopoverContent align="end" className="w-40 rounded-md p-1.5">
             <button
               type="button"
               onClick={() => {
                 onMenuOpenChange("");
                 onDelete(session);
               }}
-              className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-[12px] text-accent-red hover:bg-(--accent-red-bg)"
+              className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-[12px] text-accent-red hover:bg-(--accent-red-bg)"
             >
               <Trash size={14} />
               {t("deepResearchDelete")}
@@ -684,7 +684,7 @@ function GuideComposer({ open, onOpenChange, busy, error, onSubmit }) {
       >
         <DialogHeader
           showCloseButton={!busy}
-          className="shrink-0 border-b border-(--separator) px-5 py-4 sm:px-6"
+          className="border-b border-(--separator) px-6"
         >
           <div className="flex min-w-0 items-start gap-3">
             <span className="mt-0.5 flex size-9 shrink-0 items-center justify-center rounded-[11px] bg-primary/14 text-primary ring-1 ring-primary/15">
@@ -3519,7 +3519,7 @@ export function ResearchPanel() {
             <div className="flex flex-wrap items-center gap-2">
               <div
                 className={cn(
-                  "flex h-10 items-center overflow-hidden rounded-full border border-(--border-default) bg-(--bg-primary) transition-[width,border-color]",
+                  "flex h-10 items-center overflow-hidden rounded-full border border-(--border-strong) bg-(--bg-primary) transition-[width,border-color]",
                   searchOpen || query ? "w-full sm:w-56" : "w-10",
                 )}
               >
@@ -3542,7 +3542,7 @@ export function ResearchPanel() {
                 ) : null}
               </div>
 
-              <div className="inline-flex h-10 overflow-hidden rounded-full border border-(--border-default)">
+              <div className="inline-flex h-10 overflow-hidden rounded-full border border-(--border-strong)">
                 <button
                   type="button"
                   onClick={() => setViewMode("grid")}
@@ -3562,7 +3562,7 @@ export function ResearchPanel() {
                   type="button"
                   onClick={() => setViewMode("list")}
                   className={cn(
-                    "flex w-10 items-center justify-center border-l border-(--border-default) transition",
+                    "flex w-10 items-center justify-center border-l border-(--border-strong) transition",
                     viewMode === "list"
                       ? "bg-primary/16 text-primary"
                       : "text-(--text-secondary) hover:bg-(--bg-hover)",
@@ -3580,7 +3580,7 @@ export function ResearchPanel() {
                   value={sortMode}
                   onChange={(e) => setSortMode(e.target.value)}
                   aria-label={t("deepResearchSortLabel")}
-                  className="h-10 appearance-none rounded-full border border-(--border-default) bg-(--bg-primary) pl-4 pr-9 text-[12px] font-medium text-(--text-secondary) outline-none hover:bg-(--bg-hover)"
+                  className="h-10 appearance-none rounded-full border border-(--border-strong) bg-(--bg-primary) pl-4 pr-9 text-[12px] font-medium text-(--text-secondary) outline-none hover:bg-(--bg-hover)"
                 >
                   <option value="recent">{t("deepResearchSortRecent")}</option>
                   <option value="title">{t("deepResearchSortTitle")}</option>
@@ -3661,7 +3661,7 @@ export function ResearchPanel() {
                 <button
                   type="button"
                   onClick={() => setComposerOpen(true)}
-                  className="group flex min-h-52 flex-col items-center justify-center rounded-2xl border border-(--border-default) bg-transparent text-(--text-secondary) transition hover:border-(--border-strong) hover:bg-(--bg-hover) hover:text-(--text-primary) focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
+                  className="group flex min-h-52 flex-col items-center justify-center rounded-2xl border border-(--border-strong) bg-transparent text-(--text-secondary) transition hover:border-[color-mix(in_srgb,var(--text-primary)_28%,transparent)] hover:bg-(--bg-hover) hover:text-(--text-primary) focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
                 >
                   <span className="flex size-14 items-center justify-center rounded-full bg-primary/14 text-primary transition group-hover:scale-105">
                     <Plus size={23} weight="bold" />
@@ -3698,7 +3698,7 @@ export function ResearchPanel() {
         }}
       >
         <DialogContent className="grid h-[calc(100dvh-0.5rem)] max-h-[1040px] w-[calc(100vw-0.5rem)] max-w-[calc(100vw-0.5rem)] grid-rows-[auto_minmax(0,1fr)] gap-0 overflow-hidden rounded-2xl p-0 sm:h-[min(96vh,1040px)] sm:w-[calc(100vw-1rem)] sm:max-w-[calc(100vw-1rem)] xl:max-w-[1560px]">
-          <DialogHeader className="shrink-0 border-b border-(--separator) bg-(--material-elevated) px-5 py-4 sm:px-6">
+          <DialogHeader className="border-b border-(--separator) bg-(--material-elevated) px-6">
             <div className="flex min-w-0 items-start gap-3">
               {researchDisplayTitle(session).emoji ? (
                 <span

@@ -11,6 +11,13 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { BackupNotice, FilePreview } from "@/components/ToolCard.jsx";
 import { cn } from "@/lib/utils";
 import {
@@ -302,6 +309,8 @@ export function TrajectoryPanel({
   const [showDuration, setShowDuration] = useState(true);
   const [showTurns, setShowTurns] = useState(true);
   const [showCalls, setShowCalls] = useState(true);
+  const [turnFilter, setTurnFilter] = useState("all");
+  const [kindFilter, setKindFilter] = useState("all");
   const [query, setQuery] = useState("");
   const [exportError, setExportError] = useState("");
   const [inspectEvent, setInspectEvent] = useState(null);
@@ -315,13 +324,29 @@ export function TrajectoryPanel({
     [messages, runtimeState],
   );
 
+  const turnOptions = useMemo(() => {
+    const seen = new Set();
+    for (const event of built.events) {
+      const turn = Number(event.turn);
+      if (turn > 0) seen.add(turn);
+    }
+    return [...seen].sort((a, b) => a - b);
+  }, [built.events]);
+
+  const activeTurn = turnOptions.includes(Number(turnFilter))
+    ? Number(turnFilter)
+    : null;
+  const activeKind = KIND_I18N[kindFilter] ? kindFilter : "";
+
   const visible = useMemo(
     () =>
       filterTrajectoryEvents(built.events, {
         query,
         includeCalls: showCalls,
+        turn: activeTurn,
+        kind: activeKind,
       }),
-    [built.events, query, showCalls],
+    [built.events, query, showCalls, activeTurn, activeKind],
   );
 
   const exportLog = () => {
@@ -349,25 +374,60 @@ export function TrajectoryPanel({
             checked={showDuration}
             onCheckedChange={(value) => setShowDuration(value === true)}
           />
-          {t("trajectoryDuration").replace(
-            "{{value}}",
-            formatTrajectoryDuration(built.metrics.durationMs),
-          )}
+          {t("trajectoryDuration")}
         </label>
         <label className="inline-flex items-center gap-1.5 text-[12px] text-(--text-secondary)">
           <Checkbox
             checked={showTurns}
             onCheckedChange={(value) => setShowTurns(value === true)}
           />
-          {t("trajectoryTurns").replace("{{count}}", String(built.metrics.turns))}
+          {t("trajectoryTurns")}
         </label>
         <label className="inline-flex items-center gap-1.5 text-[12px] text-(--text-secondary)">
           <Checkbox
             checked={showCalls}
             onCheckedChange={(value) => setShowCalls(value === true)}
           />
-          {t("trajectoryCalls").replace("{{count}}", String(built.metrics.calls))}
+          {t("trajectoryCalls")}
         </label>
+        <Select
+          value={activeTurn == null ? "all" : String(activeTurn)}
+          onValueChange={(value) => value && setTurnFilter(value)}
+        >
+          <SelectTrigger
+            className="h-8 min-w-[6.5rem] px-2.5 text-[12px]"
+            aria-label={t("trajectoryFilterTurn")}
+          >
+            <SelectValue placeholder={t("trajectoryFilterAll")} />
+          </SelectTrigger>
+          <SelectContent align="start">
+            <SelectItem value="all">{t("trajectoryFilterAll")}</SelectItem>
+            {turnOptions.map((turn) => (
+              <SelectItem key={turn} value={String(turn)}>
+                {t("trajectoryTurnLabel").replace("{{count}}", String(turn))}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Select
+          value={activeKind || "all"}
+          onValueChange={(value) => value && setKindFilter(value)}
+        >
+          <SelectTrigger
+            className="h-8 min-w-[7.5rem] px-2.5 text-[12px]"
+            aria-label={t("trajectoryFilterKind")}
+          >
+            <SelectValue placeholder={t("trajectoryFilterAll")} />
+          </SelectTrigger>
+          <SelectContent align="start">
+            <SelectItem value="all">{t("trajectoryFilterAll")}</SelectItem>
+            {Object.keys(KIND_I18N).map((kind) => (
+              <SelectItem key={kind} value={kind}>
+                {t(KIND_I18N[kind])}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
         <div className="ml-auto flex min-w-0 items-center gap-2">
           <div className="relative min-w-0 w-36 sm:w-56">
             <MagnifyingGlass

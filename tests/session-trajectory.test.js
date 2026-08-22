@@ -648,6 +648,35 @@ test("filterTrajectoryEvents hides calls and matches search", () => {
   );
 });
 
+test("filterTrajectoryEvents matches turn and kind", () => {
+  const events = [
+    { id: "1", kind: "user", turn: 1, title: "USER", body: "hello" },
+    { id: "2", kind: "thinking", turn: 1, title: "thinking", body: "hmm" },
+    { id: "3", kind: "tool", turn: 1, title: "glob", body: "{}" },
+    { id: "4", kind: "thinking", turn: 2, title: "thinking", body: "next" },
+    { id: "5", kind: "tool", turn: 2, title: "read", body: "{}" },
+    { id: "6", kind: "loop", turn: 2, title: "agent loop 1", body: "" },
+  ];
+  assert.deepEqual(
+    filterTrajectoryEvents(events, { turn: 2 }).map((event) => event.id),
+    ["4", "5", "6"],
+  );
+  assert.deepEqual(
+    filterTrajectoryEvents(events, { kind: "thinking" }).map((event) => event.id),
+    ["2", "4"],
+  );
+  assert.deepEqual(
+    filterTrajectoryEvents(events, { turn: 2, kind: "tool" }).map((event) => event.id),
+    ["5"],
+  );
+  assert.deepEqual(
+    filterTrajectoryEvents(events, { kind: "tool", includeCalls: false }).map(
+      (event) => event.id,
+    ),
+    ["3", "5"],
+  );
+});
+
 test("duration, export stamp, stringify, and truncate helpers", () => {
   assert.equal(formatTrajectoryDuration(null), "—");
   assert.equal(formatTrajectoryDuration(200), "<1s");

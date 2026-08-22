@@ -178,7 +178,7 @@ function McpServerEditorDialog({ open, server, onOpenChange, onSaved }) {
     <>
       <Dialog open={open} onOpenChange={requestClose}>
         <DialogContent className="flex max-h-[88vh] w-[calc(100vw-2rem)] max-w-[780px] flex-col gap-0 overflow-hidden p-0 sm:max-w-[780px]">
-          <DialogHeader className="shrink-0 border-b border-(--border-default) px-5 py-4 sm:px-6">
+          <DialogHeader className="shrink-0 border-b border-(--border-default) px-6">
             <DialogTitle>{originalId ? t('mcpEditServer') : t('mcpNewServer')}</DialogTitle>
             <DialogDescription>{t('mcpEditorHint')}</DialogDescription>
           </DialogHeader>
@@ -316,7 +316,7 @@ function McpToolSyncDialog({ preview, selectedNames, applying, onSelectedNamesCh
   return (
     <Dialog open={!!preview} onOpenChange={(open) => !applying && onOpenChange(open)}>
       <DialogContent className="flex max-h-[82vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-[640px]">
-        <DialogHeader className="shrink-0 border-b border-(--border-default) px-5 py-4 sm:px-6">
+          <DialogHeader className="border-b border-(--border-default) px-6">
           <DialogTitle>{t('mcpUpdateTools')}</DialogTitle>
           <DialogDescription>
             {t('mcpUpdateToolsHint').replace('{{name}}', preview?.server?.name || '')}

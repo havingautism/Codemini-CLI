@@ -18,7 +18,7 @@ export function ResourceLibraryDialog({
           className,
         )}
       >
-        <DialogHeader className="shrink-0 border-b border-(--border-default) px-4 py-3 sm:px-6">
+        <DialogHeader className="border-b border-(--border-default) px-6">
           <div className="flex min-w-0 items-center gap-3">
             {Icon ? (
               <span className="flex size-5 shrink-0 items-center justify-center">

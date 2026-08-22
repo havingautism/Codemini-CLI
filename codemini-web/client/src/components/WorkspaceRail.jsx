@@ -2,10 +2,12 @@ import { useRef, useState } from "react";
 import {
   DotsSixVertical,
   FolderSimple,
+  GitDiff as GitDiffIcon,
   Terminal as TerminalIcon,
   X,
 } from "@/lib/icons";
 import { FileTreePanel } from "@/components/FileTreePanel.jsx";
+import { GitChangesPanel } from "@/components/GitChangesPanel.jsx";
 import { TerminalPanel } from "@/components/TerminalPanel.jsx";
 import { t } from "../../i18n/index.js";
 
@@ -21,7 +23,8 @@ export function WorkspaceRail({
 }) {
   const [panelWidth, setPanelWidth] = useState(DEFAULT_PANEL_WIDTH);
   const resizingRef = useRef(false);
-  const activeTab = tab === "terminal" ? "terminal" : "files";
+  const activeTab =
+    tab === "terminal" ? "terminal" : tab === "git" ? "git" : "files";
   const workspaceDisabled = !String(projectCwd || "").trim();
 
   const updatePanelWidth = (clientX) => {
@@ -110,6 +113,16 @@ export function WorkspaceRail({
               <TerminalIcon size={14} />
               <span>{t("terminalTitle")}</span>
             </button>
+            <button
+              type="button"
+              className={tabButtonClass(activeTab === "git")}
+              aria-pressed={activeTab === "git"}
+              title={t("workspaceGitTab")}
+              onClick={() => onTabChange?.("git")}
+            >
+              <GitDiffIcon size={14} />
+              <span>{t("workspaceGitTab")}</span>
+            </button>
           </div>
           <button
             type="button"
@@ -148,6 +161,18 @@ export function WorkspaceRail({
               projectCwd={projectCwd}
               disabled={workspaceDisabled}
               embedded
+            />
+          </div>
+          <div
+            className={
+              activeTab === "git"
+                ? "flex min-h-0 flex-1 flex-col overflow-hidden"
+                : "hidden"
+            }
+          >
+            <GitChangesPanel
+              sessionId={sessionId}
+              projectCwd={projectCwd}
             />
           </div>
         </div>

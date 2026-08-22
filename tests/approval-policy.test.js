@@ -10,7 +10,11 @@ import {
   toolRequiresUserApproval
 } from '../src/core/approval-policy.js';
 import { resolveShellApprovalStrategy, runAgentLoop } from '../src/core/agent-loop.js';
-import { getBuiltinTools, hasRunCommandSafeModeApproval } from '../src/core/tools.js';
+import {
+  getBuiltinTools,
+  hasRunCommandSafeModeApproval,
+  hasSandboxEscalationApproval,
+} from '../src/core/tools.js';
 import { closeSqliteDatabasesForTests } from '../src/core/sqlite-database.js';
 import { resolvePlanSubAgentApprovalOptions, ROLE_TOOL_POLICY } from '../src/core/chat-runtime.js';
 
@@ -151,6 +155,70 @@ test('sandbox escalation always requires explicit approval', () => {
       approvalMode,
     );
   }
+});
+
+test('sandbox escalation gives the user LLM risk advice before approval', async () => {
+  let completionIndex = 0;
+  let approvalRequests = 0;
+  let evaluatorCalls = 0;
+  let handlerArgs = null;
+  const config = {
+    memory: { enabled: false },
+    sandbox: { enabled: true, mode: 'workspace-write', backend: 'microsandbox' },
+  };
+
+  const result = await runAgentLoop({
+    systemPrompt: 'test',
+    userPrompt: 'verify on the host',
+    model: 'test-model',
+    workspaceRoot: process.cwd(),
+    requestCompletion: async () => {
+      completionIndex += 1;
+      return completionIndex === 1
+        ? {
+            text: '',
+            toolCalls: [{
+              id: 'host-escalation',
+              name: 'Bash',
+              arguments: JSON.stringify({
+                command: 'npm test',
+                sandbox_permissions: 'danger-full-access',
+                justification: 'The Linux guest cannot load Windows native dependencies.',
+              }),
+              argumentsComplete: true,
+            }],
+          }
+        : { text: 'done', toolCalls: [] };
+    },
+    evaluateCommand: async () => {
+      evaluatorCalls += 1;
+      return {
+        risk: 'medium',
+        description: 'Runs project tests on the Windows host.',
+        recommendation: 'review',
+      };
+    },
+    toolHandlers: {
+      Bash: async (args) => {
+        handlerArgs = args;
+        return { ok: true };
+      },
+    },
+    approvalMode: 'full_access',
+    alwaysAllowTools: ['run'],
+    requestToolApproval: async (request) => {
+      approvalRequests += 1;
+      assert.equal(request.arguments?._evaluation?.risk, 'medium');
+      return { approved: true };
+    },
+    skipAnalysisNudge: true,
+    config,
+  });
+
+  assert.equal(result.text, 'done');
+  assert.equal(approvalRequests, 1);
+  assert.equal(evaluatorCalls, 1);
+  assert.equal(hasSandboxEscalationApproval(handlerArgs), true);
 });
 
 test('deterministic command gates survive every approval mode', () => {
