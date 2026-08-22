@@ -6,6 +6,7 @@ import {
   buildExecutionModePromptBlock,
   classifyAutoRoute,
   classifyTaskDimensions,
+  EXECUTION_MODE_TOOL_POLICY,
 } from '../src/core/chat-runtime.js';
 
 const chatRuntimeSource = readFileSync(
@@ -110,6 +111,10 @@ test('coding prompt can follow the effective sandbox command platform', () => {
     chatRuntimeSource,
     /resolveExecutionModeAllowedTools\([\s\S]*?executionShellContext\.commandPlatform/,
   );
+});
+
+test('coding mode keeps the approved host verification escape hatch routable', () => {
+  assert.ok(EXECUTION_MODE_TOOL_POLICY.plan.includes('run_host_verification'));
 });
 
 test('execution-mode injections stay compact', () => {

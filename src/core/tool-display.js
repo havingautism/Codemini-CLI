@@ -21,6 +21,7 @@ export const TOOL_DISPLAY_LABELS = {
   list_background_tasks: 'List Background Tasks',
   get_background_task: 'Get Background Task',
   stop_background_task: 'Stop Background Task',
+  run_host_verification: 'Host Verification',
   add_code_comment: 'Add Code Comment',
   update_code_comment: 'Update Code Comment',
   read: 'Read',
@@ -155,6 +156,15 @@ export function formatToolDisplayName(name, args = {}, options = {}) {
   if (toolName === 'glob') {
     const pattern = trimInline(args?.pattern || '', 96);
     return pattern ? formatToolWithArg(formatToolLabel('glob'), pattern) : formatToolLabel('glob');
+  }
+  if (toolName === 'run_host_verification') {
+    const command = trimInline(
+      [args?.program, ...(Array.isArray(args?.args) ? args.args : [])].filter(Boolean).join(' '),
+      96,
+    );
+    return command
+      ? formatToolWithArg(formatToolLabel('run_host_verification'), command)
+      : formatToolLabel('run_host_verification');
   }
   if (toolName === 'list') {
     const target = trimInline(args?.path || '.', 96) || '.';

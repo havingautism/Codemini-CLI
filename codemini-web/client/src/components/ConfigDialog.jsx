@@ -456,7 +456,7 @@ export function ConfigDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-[720px] h-[666px] max-h-[85vh] flex flex-col p-0 gap-0">
-        <DialogHeader className="shrink-0 px-6 pt-6 pb-2">
+        <DialogHeader className="shrink-0 px-6">
           <DialogTitle>{t("settingsTitle")}</DialogTitle>
         </DialogHeader>
 

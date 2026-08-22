@@ -148,7 +148,7 @@ function SoulEditorDialog({ soul, open, onSave, onOpenChange, defaultCategory = 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="flex max-h-[85vh] flex-col gap-4 overflow-hidden p-0 sm:max-w-[720px]">
-        <DialogHeader className="shrink-0 px-4 pb-2 pt-6 sm:px-6">
+        <DialogHeader className="shrink-0 px-6">
           <DialogTitle>{soul ? t("editSoul") : t("newSoul")}</DialogTitle>
         </DialogHeader>
         <div className="flex min-h-0 flex-col px-4 pb-4 sm:px-6">

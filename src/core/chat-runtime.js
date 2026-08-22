@@ -655,6 +655,7 @@ export const EXECUTION_MODE_TOOL_POLICY = {
     'save_memory',
     'tasks',
     'edit', 'write', 'begin_write', 'write_chunk', 'commit_write', 'abort_write', 'apply_patch', 'delete', 'run',
+    'run_host_verification',
     'run_subagent', 'fork_task', 'request_user_input'
   ]
 };
@@ -758,11 +759,11 @@ export const ROLE_TOOL_POLICY = {
   explorer: [...SUBAGENT_READ_TOOLS, 'web_fetch', 'web_search'],
   architect: [...SUBAGENT_READ_TOOLS, 'web_search'],
   advisor: [...SUBAGENT_READ_TOOLS],
-  coder: [...SUBAGENT_READ_TOOLS, ...SUBAGENT_EDIT_TOOLS, 'run', 'web_fetch', 'web_search'],
-  refactorer: [...SUBAGENT_READ_TOOLS, ...SUBAGENT_EDIT_TOOLS, 'run'],
+  coder: [...SUBAGENT_READ_TOOLS, ...SUBAGENT_EDIT_TOOLS, 'run', 'run_host_verification', 'web_fetch', 'web_search'],
+  refactorer: [...SUBAGENT_READ_TOOLS, ...SUBAGENT_EDIT_TOOLS, 'run', 'run_host_verification'],
   reviewer: [...SUBAGENT_READ_TOOLS],
-  tester: [...SUBAGENT_READ_TOOLS, 'run'],
-  debugger: [...SUBAGENT_READ_TOOLS, 'run', 'web_search'],
+  tester: [...SUBAGENT_READ_TOOLS, 'run', 'run_host_verification'],
+  debugger: [...SUBAGENT_READ_TOOLS, 'run', 'run_host_verification', 'web_search'],
   writer: [...SUBAGENT_READ_TOOLS, 'web_fetch', 'web_search'],
   summarizer: ['read', 'tool_search', 'skill'],
   codewiki: CODEWIKI_ROLE_TOOLS

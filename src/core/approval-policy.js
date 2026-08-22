@@ -56,6 +56,7 @@ export function toolRequiresUserApproval({
   if (isOutsideWorkspaceMutation && !osSandboxConfining) return true;
   if (isDeterministicCommandGate) return true;
   if (isSandboxEscalation) return true;
+  if (name === 'run_host_verification') return true;
   if (normalizedApprovalMode === 'full_access') return false;
   if (normalizedApprovalMode === 'auto') {
     return Boolean(isSafeModeRun);

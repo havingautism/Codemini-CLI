@@ -168,6 +168,39 @@ test('Windows keeps staged writes while using Bash and sandbox escalation', () =
   assert.ok(write?.function?.parameters?.properties?.sandbox_permissions);
   const shell = bundle.definitions.find((d) => d?.function?.name === 'Bash');
   assert.ok(shell?.function?.parameters?.properties?.sandbox_permissions);
+  assert.ok(active.has('run_host_verification'));
+});
+
+test('host verification is exposed only for Windows Microsandbox', () => {
+  const cases = [
+    {
+      platform: 'win32',
+      sandbox: { enabled: true, mode: 'workspace-write', backend: 'microsandbox' },
+      expected: true,
+    },
+    {
+      platform: 'win32',
+      sandbox: { enabled: false, mode: 'danger-full-access' },
+      expected: false,
+    },
+    {
+      platform: 'linux',
+      sandbox: { enabled: true, mode: 'workspace-write', backend: 'microsandbox' },
+      expected: false,
+    },
+  ];
+  for (const item of cases) {
+    const bundle = getBuiltinTools({
+      workspaceRoot: process.cwd(),
+      config: { sandbox: item.sandbox },
+      platform: item.platform,
+    });
+    assert.equal(
+      names(bundle.definitions).includes('run_host_verification'),
+      item.expected,
+      `${item.platform} ${item.sandbox.backend || 'off'}`,
+    );
+  }
 });
 
 test('Windows file mutations can use an approved sandbox escalation', async () => {
@@ -243,7 +276,7 @@ test('Linux promotes grep/glob and drops staged write + apply_patch', () => {
   assert.ok(shell?.function?.parameters?.properties?.sandbox_permissions);
 });
 
-test('Linux keeps Codemini tools and removes only Windows write workarounds', () => {
+test('Linux keeps Codemini tools and removes Windows-only tools', () => {
   const windows = exposedNames(getBuiltinTools({
     workspaceRoot: process.cwd(),
     config: { sandbox: { enabled: true, mode: 'workspace-write', backend: 'microsandbox' } },
@@ -256,7 +289,14 @@ test('Linux keeps Codemini tools and removes only Windows write workarounds', ()
   }));
   assert.deepEqual(
     [...windows].filter((name) => !linux.has(name)).sort(),
-    ['abort_write', 'apply_patch', 'begin_write', 'commit_write', 'write_chunk'],
+    [
+      'abort_write',
+      'apply_patch',
+      'begin_write',
+      'commit_write',
+      'run_host_verification',
+      'write_chunk',
+    ],
   );
   assert.deepEqual([...linux].filter((name) => !windows.has(name)), []);
 });

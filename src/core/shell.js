@@ -387,10 +387,18 @@ export async function runShellCommand({
       reject(error);
     };
 
-    const timer = setTimeout(() => {
-      timedOut = true;
+    const stopChild = (error) => {
       terminateChild(child, 'SIGTERM');
-      killTimer = setTimeout(() => terminateChild(child, 'SIGKILL'), AUTO_STOP_GRACE_MS);
+      killTimer = setTimeout(() => {
+        terminateChild(child, 'SIGKILL');
+        finalizeReject(error);
+      }, AUTO_STOP_GRACE_MS);
+    };
+
+    const timer = setTimeout(() => {
+      if (finalized || aborted) return;
+      timedOut = true;
+      stopChild(new Error(`Command timed out after ${timeoutMs}ms`));
     }, timeoutMs);
     const autoStopTimer =
       autoStopWindowMs > 0
@@ -400,10 +408,9 @@ export async function runShellCommand({
         : null;
 
     const abortCommand = () => {
-      if (finalized || aborted) return;
+      if (finalized || aborted || timedOut) return;
       aborted = true;
-      terminateChild(child, 'SIGTERM');
-      killTimer = setTimeout(() => terminateChild(child, 'SIGKILL'), AUTO_STOP_GRACE_MS);
+      stopChild(Object.assign(new Error('Command aborted'), { code: 'ABORT_ERR' }));
     };
     signal?.addEventListener('abort', abortCommand, { once: true });
     if (signal?.aborted) abortCommand();

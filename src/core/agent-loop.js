@@ -12,6 +12,7 @@ import { createToolRuntime, buildInvalidToolArgumentsResult } from './tool-runti
 import { createToolResultStore, summarizeToolResult } from './tool-result-store.js';
 import { applyAggressiveToolPruneBeta } from './context-compact.js';
 import {
+  markHostVerificationApproved,
   markOutsideWorkspaceMutationApproved,
   markRunCommandSafeModeApproved,
   markSandboxEscalationApproved,
@@ -1158,6 +1159,9 @@ export async function runAgentLoop({
           if (approved && isSandboxEscalation) {
             approvalArgs = markSandboxEscalationApproved(approvalArgs);
           }
+          if (approved && toolName === 'run_host_verification') {
+            approvalArgs = markHostVerificationApproved(approvalArgs);
+          }
         }
       }
       approvalResults.set(call.id, { approved, args: approvalArgs, reason: approvalReason });
@@ -1381,6 +1385,9 @@ export async function runAgentLoop({
           }
           if (updatedShellApproval?.policyBlocked) {
             effectiveArgs = markRunCommandSafeModeApproved(effectiveArgs);
+          }
+          if (toolName === 'run_host_verification') {
+            effectiveArgs = markHostVerificationApproved(effectiveArgs);
           }
         }
         if (preToolUse.decision === 'defer') {

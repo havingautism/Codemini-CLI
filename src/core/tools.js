@@ -32,6 +32,11 @@ import {
 import { resolveShellContext } from "./shell-profile.js";
 import { isShellToolName } from "./shell-tool-name.js";
 import {
+  buildHostVerificationCommand,
+  HOST_VERIFICATION_PROGRAMS,
+  HOST_VERIFICATION_TOOL_NAME,
+} from "./host-verification.js";
+import {
   findEnclosingSymbol,
   queryAst,
   queryAstGrep,
@@ -122,6 +127,7 @@ const SKILL_ALIASES = new Map();
 const RUN_COMMAND_SAFE_MODE_APPROVED = Symbol("runCommandSafeModeApproved");
 const OUTSIDE_WORKSPACE_MUTATION_APPROVED = Symbol("outsideWorkspaceMutationApproved");
 const SANDBOX_ESCALATION_APPROVED = Symbol("sandboxEscalationApproved");
+const HOST_VERIFICATION_APPROVED = Symbol("hostVerificationApproved");
 const backgroundTaskRegistry = new Map();
 let backgroundTaskCounter = 0;
 let backgroundTaskLogCursorCounter = 0;
@@ -150,6 +156,19 @@ export function markSandboxEscalationApproved(args = {}) {
 
 export function hasSandboxEscalationApproval(args = {}) {
   return Boolean(args?.[SANDBOX_ESCALATION_APPROVED]);
+}
+
+export function markHostVerificationApproved(args = {}) {
+  const next = { ...(args && typeof args === "object" ? args : {}) };
+  Object.defineProperty(next, HOST_VERIFICATION_APPROVED, {
+    value: true,
+    enumerable: false,
+  });
+  return next;
+}
+
+export function hasHostVerificationApproval(args = {}) {
+  return Boolean(args?.[HOST_VERIFICATION_APPROVED]);
 }
 
 export function markOutsideWorkspaceMutationApproved(args = {}, approval = {}) {
@@ -2277,6 +2296,68 @@ async function runCommand(root, config, args, context = {}) {
   return payload;
 }
 
+async function runHostVerification(root, config, args, context = {}, platform = process.platform) {
+  if (platform !== "win32") {
+    throw new Error("host verification is available only on Windows with Microsandbox");
+  }
+  if (!hasHostVerificationApproval(args)) {
+    throw new Error("host verification requires explicit user approval");
+  }
+
+  const spec = buildHostVerificationCommand(args);
+  const workspaceOnlyConfig = {
+    ...config,
+    policy: { ...(config?.policy || {}), allowed_paths: [] },
+  };
+  const cwd = await resolveInWorkspace(root, args?.cwd || ".", workspaceOnlyConfig);
+  const stat = await fs.stat(cwd);
+  if (!stat.isDirectory()) throw new Error("host verification cwd must be a directory");
+
+  const timeoutMs = Math.min(
+    30 * 60_000,
+    Math.max(1_000, Number(args?.timeout || config?.shell?.timeout_ms || 240_000)),
+  );
+  const hostConfig = {
+    ...config,
+    sandbox: {
+      ...(config?.sandbox || {}),
+      enabled: false,
+      mode: "danger-full-access",
+    },
+    shell: {
+      ...(config?.shell || {}),
+      default: "powershell",
+    },
+  };
+  const result = await runShellCommand({
+    command: spec.command,
+    cwd,
+    shell: "powershell",
+    timeoutMs,
+    signal: context.signal,
+    config: hostConfig,
+  });
+  const payload = {
+    ...result,
+    command: [spec.program, ...spec.args].join(" "),
+    cwd: toWorkspaceRelative(root, cwd) || ".",
+    host_verification: true,
+    shell: "powershell",
+    sandbox: {
+      wrapped: false,
+      mode: "danger-full-access",
+      backend: "host",
+      bypassed: true,
+    },
+  };
+  const failureMessage = buildRunFailureMessage(payload);
+  if (failureMessage) {
+    payload.failed = true;
+    payload.error = failureMessage;
+  }
+  return payload;
+}
+
 function nextBackgroundTaskId() {
   backgroundTaskCounter += 1;
   return `task_${String(backgroundTaskCounter).padStart(3, "0")}`;
@@ -4131,6 +4212,7 @@ export function getBuiltinTools({
   const sandboxPolicy = shellContext.sandbox;
   const vmSandbox = isVmSandbox(sandboxPolicy);
   const osSandbox = isOsSandbox(sandboxPolicy);
+  const hostVerificationAvailable = isWin && vmSandbox;
   const osKind = platform === "darwin" ? "Seatbelt" : "Landlock";
   config = {
     ...(config || {}),
@@ -5830,6 +5912,44 @@ export function getBuiltinTools({
       ]
     : [...primaryDefinitions, ...workflowToolDefinitions, ...userInputToolDefinitions];
 
+  if (hostVerificationAvailable) {
+    definitions.push({
+      type: "function",
+      function: {
+        name: HOST_VERIFICATION_TOOL_NAME,
+        description:
+          "Run an approved build, test, lint, typecheck, or check command directly on the Windows host when Linux Microsandbox cannot use host-native dependencies. This explicitly bypasses the sandbox and always requires user approval. Pass a supported program and literal argument array; raw shell syntax, installers, run/deploy commands, and background execution are rejected.",
+        parameters: {
+          type: "object",
+          properties: {
+            cwd: {
+              type: "string",
+              description: "Project-relative working directory. Defaults to the project root.",
+            },
+            program: {
+              type: "string",
+              enum: [...HOST_VERIFICATION_PROGRAMS],
+              description: "Approved verification runner available on the Windows host.",
+            },
+            args: {
+              type: "array",
+              items: { type: "string" },
+              maxItems: 100,
+              description: "Literal runner arguments. Shell operators are not interpreted.",
+            },
+            timeout: {
+              type: "number",
+              minimum: 1000,
+              maximum: 1800000,
+              description: "Timeout in milliseconds. Defaults to 240000.",
+            },
+          },
+          required: ["program", "args"],
+        },
+      },
+    });
+  }
+
   // Linux/mac: DSH-aligned CRUD — promote glob/grep; drop staged write + apply_patch entirely.
   // Windows keeps the current always-on write toolkit (encoding-safe staged writes).
   if (!isWin) {
@@ -6331,6 +6451,12 @@ export function getBuiltinTools({
   }
 
   const handlers = {
+    ...(hostVerificationAvailable
+      ? {
+          [HOST_VERIFICATION_TOOL_NAME]: (args, context) =>
+            runHostVerification(workspaceRoot, config, args, context, platform),
+        }
+      : {}),
     read: async (args) => {
       const inlineQuery = String(args?.query || "").trim();
       const directAstTarget = args?.ast_target;
@@ -7723,6 +7849,19 @@ export function getBuiltinTools({
       return `[delete: ${kind}] deleted ${target}${backup}`;
     },
 
+    run_host_verification(result) {
+      if (!result || typeof result !== "object") return String(result);
+      const parts = [
+        `[host verification | sandbox: bypassed | cwd: ${result.cwd || "."}]`,
+        `[exit: ${result.code ?? 0}]`,
+      ];
+      if (result.command) parts.push(`command: ${result.command}`);
+      if (result.stdout) parts.push(`stdout:\n${result.stdout}`);
+      if (result.stderr) parts.push(`stderr:\n${result.stderr}`);
+      if (result.error) parts.push(`error:\n${result.error}`);
+      return parts.join("\n");
+    },
+
     run(result) {
       if (!result || typeof result !== "object") return String(result);
       const sandboxBackend = result?.sandbox?.backend || sandboxPolicy.backend;
@@ -8026,6 +8165,9 @@ export function getBuiltinTools({
 
   const wrapMutationHandler = (name, handler) => {
     const wrapped = async (args, context) => {
+      if (name === HOST_VERIFICATION_TOOL_NAME) {
+        return writeCoordinator.withRunLock(() => handler(args, context));
+      }
       if (fileWriteTools.has(name)) {
         const keys = extractFileLockKeys(name, args);
         if (keys.length === 1) {
@@ -8051,7 +8193,7 @@ export function getBuiltinTools({
   const coordinatedHandlers = {};
   for (const [name, handler] of Object.entries(handlers)) {
     coordinatedHandlers[name] =
-      fileWriteTools.has(name) || isShellToolName(name)
+      name === HOST_VERIFICATION_TOOL_NAME || fileWriteTools.has(name) || isShellToolName(name)
         ? wrapMutationHandler(name, handler)
         : handler;
   }

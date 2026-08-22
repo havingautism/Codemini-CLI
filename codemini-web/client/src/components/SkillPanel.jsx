@@ -368,7 +368,7 @@ function SkillEditorDialog({ skill, open, onSave, onOpenChange, defaultContext =
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="flex h-[86vh] max-h-[86vh] flex-col overflow-hidden p-0 sm:max-w-[720px]">
-        <DialogHeader className="shrink-0 px-4 pb-2 pt-6 sm:px-6">
+        <DialogHeader className="shrink-0 px-6">
           <DialogTitle>{skill ? t("editSkill") : t("newSkill")}</DialogTitle>
         </DialogHeader>
         <div className="min-h-0 flex-1 overflow-y-auto px-4 sm:px-6">
@@ -821,7 +821,7 @@ function InstallDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="flex flex-col gap-4 overflow-hidden p-0 sm:max-w-[480px]">
-        <DialogHeader className="shrink-0 px-4 pb-2 pt-6 sm:px-6">
+        <DialogHeader className="shrink-0 px-6">
           <DialogTitle>{t("installSkill")}</DialogTitle>
         </DialogHeader>
         <div className="flex flex-col gap-4 px-4 pb-6 sm:px-6">
@@ -922,7 +922,7 @@ function SkillPackageSelectDialog({
   return (
     <Dialog open={open} onOpenChange={(next) => !confirming && onOpenChange?.(next)}>
       <DialogContent className="flex max-h-[85vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-[520px]">
-        <DialogHeader className="shrink-0 px-4 pb-2 pt-6 sm:px-6">
+        <DialogHeader className="shrink-0 px-6">
           <DialogTitle>
             {mode === "update" ? t("updateSkillPackage") : t("installSkill")}
           </DialogTitle>
@@ -1169,7 +1169,7 @@ function PackageBatchDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="flex flex-col gap-4 overflow-hidden p-0 sm:max-w-[480px]">
-        <DialogHeader className="shrink-0 px-4 pb-2 pt-6 sm:px-6">
+        <DialogHeader className="shrink-0 px-6">
           <DialogTitle>{t("skillPackageBatchEdit")}</DialogTitle>
         </DialogHeader>
         <div className="flex flex-col gap-4 px-4 pb-6 sm:px-6">
@@ -1310,7 +1310,7 @@ function SkillIndexPreviewDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="flex max-h-[82vh] w-[calc(100vw-2rem)] max-w-[780px] flex-col gap-0 overflow-hidden p-0 sm:max-w-[780px]">
-        <DialogHeader className="shrink-0 border-b border-(--border-default) px-4 py-3 sm:px-5">
+        <DialogHeader className="shrink-0 border-b border-(--border-default) px-6">
           <DialogTitle>{t("previewSkillIndex")}</DialogTitle>
           <DialogDescription>{t("previewSkillIndexHint")}</DialogDescription>
         </DialogHeader>

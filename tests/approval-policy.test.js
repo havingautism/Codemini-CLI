@@ -10,7 +10,11 @@ import {
   toolRequiresUserApproval
 } from '../src/core/approval-policy.js';
 import { resolveShellApprovalStrategy, runAgentLoop } from '../src/core/agent-loop.js';
-import { getBuiltinTools, hasRunCommandSafeModeApproval } from '../src/core/tools.js';
+import {
+  getBuiltinTools,
+  hasHostVerificationApproval,
+  hasRunCommandSafeModeApproval,
+} from '../src/core/tools.js';
 import { closeSqliteDatabasesForTests } from '../src/core/sqlite-database.js';
 import { resolvePlanSubAgentApprovalOptions, ROLE_TOOL_POLICY } from '../src/core/chat-runtime.js';
 
@@ -151,6 +155,76 @@ test('sandbox escalation always requires explicit approval', () => {
       approvalMode,
     );
   }
+});
+
+test('host verification always requires explicit approval', () => {
+  for (const approvalMode of ['review', 'auto', 'full_access']) {
+    assert.equal(
+      toolRequiresUserApproval({
+        approvalMode,
+        projectIsGit: true,
+        toolName: 'run_host_verification',
+        alwaysAllowTools: ['run_host_verification'],
+      }),
+      true,
+      approvalMode,
+    );
+  }
+});
+
+test('agent loop uses user approval without LLM review for host verification', async () => {
+  let completionIndex = 0;
+  let approvalRequests = 0;
+  let evaluatorCalls = 0;
+  let handlerArgs = null;
+  const config = {
+    memory: { enabled: false },
+    sandbox: { enabled: true, mode: 'workspace-write', backend: 'microsandbox' },
+  };
+
+  const result = await runAgentLoop({
+    systemPrompt: 'test',
+    userPrompt: 'verify on the host',
+    model: 'test-model',
+    workspaceRoot: process.cwd(),
+    requestCompletion: async () => {
+      completionIndex += 1;
+      return completionIndex === 1
+        ? {
+            text: '',
+            toolCalls: [{
+              id: 'host-verification',
+              name: 'run_host_verification',
+              arguments: JSON.stringify({ program: 'npm', args: ['test'] }),
+              argumentsComplete: true,
+            }],
+          }
+        : { text: 'done', toolCalls: [] };
+    },
+    evaluateCommand: async () => {
+      evaluatorCalls += 1;
+      return { risk: 'low', recommendation: 'allow' };
+    },
+    toolHandlers: {
+      run_host_verification: async (args) => {
+        handlerArgs = args;
+        return { ok: true };
+      },
+    },
+    approvalMode: 'full_access',
+    alwaysAllowTools: ['run_host_verification'],
+    requestToolApproval: async () => {
+      approvalRequests += 1;
+      return { approved: true };
+    },
+    skipAnalysisNudge: true,
+    config,
+  });
+
+  assert.equal(result.text, 'done');
+  assert.equal(approvalRequests, 1);
+  assert.equal(evaluatorCalls, 0);
+  assert.equal(hasHostVerificationApproval(handlerArgs), true);
 });
 
 test('deterministic command gates survive every approval mode', () => {
