@@ -4,7 +4,6 @@ import {
   ArrowsOutSimple,
   ArrowSquareOut,
   ArrowsClockwise,
-  CaretDown,
   CircleNotch,
   DotsThreeVertical,
   FileText,
@@ -45,6 +44,13 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog.jsx";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import {
   Popover,
   PopoverContent,
@@ -737,21 +743,21 @@ export function ScrapbookPanel() {
                 </button>
               </div>
 
-              <label className="relative">
-                <span className="sr-only">{t("scrapbookSortLabel")}</span>
-                <select
-                  value={sortMode}
-                  onChange={(event) => setSortMode(event.target.value)}
-                  className="h-10 appearance-none rounded-full border border-(--border-strong) bg-(--bg-primary) pl-4 pr-9 text-[12px] font-medium text-(--text-secondary) outline-none hover:bg-(--bg-hover)"
+              <Select
+                value={sortMode}
+                onValueChange={setSortMode}
+              >
+                <SelectTrigger
+                  aria-label={t("scrapbookSortLabel")}
+                  className="h-10 rounded-full border border-(--border-strong) bg-(--bg-primary) pl-4 pr-3 text-[12px] font-medium text-(--text-secondary) hover:bg-(--bg-hover)"
                 >
-                  <option value="recent">{t("scrapbookSortRecent")}</option>
-                  <option value="title">{t("scrapbookSortTitle")}</option>
-                </select>
-                <CaretDown
-                  size={12}
-                  className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-(--text-muted)"
-                />
-              </label>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent align="end">
+                  <SelectItem value="recent">{t("scrapbookSortRecent")}</SelectItem>
+                  <SelectItem value="title">{t("scrapbookSortTitle")}</SelectItem>
+                </SelectContent>
+              </Select>
 
               <button
                 type="button"
