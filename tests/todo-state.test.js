@@ -4,6 +4,9 @@ import {
   canonicalizeTodos,
   countTodosByStatus,
   normalizeTodos,
+  settleTodoCardsInSegments,
+  settleTodoToolCard,
+  settleTodosCompleted,
 } from '../src/core/todo-state.js';
 import { getBuiltinTools } from '../src/core/tools.js';
 import { createToolRegistry } from '../src/core/tool-registry.js';
@@ -13,6 +16,62 @@ test('normalizeTodos keeps items that omit activeForm', () => {
     normalizeTodos([{ content: 'Inspect sources', status: 'in_progress' }]),
     [{ content: 'Inspect sources', activeForm: '', status: 'in_progress' }],
   );
+});
+
+test('settleTodosCompleted marks leftover items completed without adding work', () => {
+  assert.deepEqual(
+    settleTodosCompleted([
+      { content: 'Inspect', status: 'completed' },
+      { content: 'Return a summary', status: 'in_progress' },
+      { content: 'Skip me', status: 'pending' },
+    ]).map((item) => item.status),
+    ['completed', 'completed', 'completed'],
+  );
+});
+
+test('settleTodoToolCard fills leftover tasks on arguments and structured results', () => {
+  const settled = settleTodoToolCard({
+    name: 'tasks',
+    status: 'done',
+    arguments: {
+      tasks: [
+        { content: 'Inspect', status: 'completed' },
+        { content: 'Return a summary', status: 'in_progress' },
+      ],
+    },
+    result: {
+      newTodos: [
+        { content: 'Inspect', status: 'completed' },
+        { content: 'Return a summary', status: 'in_progress' },
+      ],
+    },
+  });
+  assert.deepEqual(
+    settled.arguments.tasks.map((item) => item.status),
+    ['completed', 'completed'],
+  );
+  assert.deepEqual(
+    settled.result.newTodos.map((item) => item.status),
+    ['completed', 'completed'],
+  );
+  assert.equal(settleTodoToolCard({ name: 'read', arguments: { path: 'a.js' } }).name, 'read');
+});
+
+test('settleTodoCardsInSegments only rewrites tasks cards', () => {
+  const segments = settleTodoCardsInSegments([
+    {
+      type: 'tools',
+      cards: [
+        {
+          name: 'tasks',
+          arguments: { tasks: [{ content: 'Return a summary', status: 'in_progress' }] },
+        },
+        { name: 'read', status: 'done' },
+      ],
+    },
+  ]);
+  assert.equal(segments[0].cards[0].arguments.tasks[0].status, 'completed');
+  assert.equal(segments[0].cards[1].status, 'done');
 });
 
 test('canonicalizeTodos rejects empty and duplicate content', () => {

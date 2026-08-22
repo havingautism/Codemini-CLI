@@ -884,6 +884,70 @@ test('reduceSessionTranscriptEvent reuses matching plan step messageId', () => {
   assert.equal(messages[0].isComplete, false);
 });
 
+test('successful settle completes leftover tasks without rewriting other tools', () => {
+  const settled = settleIncompleteTranscriptMessage(
+    {
+      id: 'msg-complete',
+      role: 'general',
+      isComplete: false,
+      segments: [
+        {
+          type: 'tools',
+          cards: [
+            {
+              id: 'todo-1',
+              name: 'tasks',
+              status: 'done',
+              arguments: {
+                tasks: [
+                  { content: 'Inspect', status: 'completed' },
+                  { content: 'Return a summary', status: 'in_progress' },
+                ],
+              },
+            },
+            { id: 'read-1', name: 'read', status: 'done' },
+          ],
+        },
+      ],
+    },
+    { reason: 'completed' },
+  );
+
+  assert.deepEqual(
+    settled.segments[0].cards[0].arguments.tasks.map((task) => task.status),
+    ['completed', 'completed'],
+  );
+  assert.equal(settled.segments[0].cards[1].status, 'done');
+});
+
+test('aborted settle does not mark leftover tasks completed', () => {
+  const settled = settleIncompleteTranscriptMessage(
+    {
+      id: 'msg-abort-todos',
+      role: 'general',
+      isComplete: false,
+      segments: [
+        {
+          type: 'tools',
+          cards: [
+            {
+              id: 'todo-1',
+              name: 'tasks',
+              status: 'done',
+              arguments: {
+                tasks: [{ content: 'Return a summary', status: 'in_progress' }],
+              },
+            },
+          ],
+        },
+      ],
+    },
+    { reason: 'aborted' },
+  );
+
+  assert.equal(settled.segments[0].cards[0].arguments.tasks[0].status, 'in_progress');
+});
+
 test('abort settles running tools, thinking, and hooks so loaders do not stay open', () => {
   const settled = settleIncompleteTranscriptMessage(
     {

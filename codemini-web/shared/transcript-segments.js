@@ -5,6 +5,7 @@ import {
 } from "./tool-segments.js";
 import { buildHookSegmentEvent } from "./hook-ui.js";
 import { formatToolLabel as coreFormatToolLabel } from "../../src/core/tool-display.js";
+import { settleTodoCardsInSegments } from "../../src/core/todo-state.js";
 import { mergeTiming, sanitizeTiming } from "../../src/core/usage-timing.js";
 
 const USAGE_KEYS = [
@@ -388,7 +389,11 @@ export function settleIncompleteTranscriptMessage(message, { reason = "aborted" 
     isComplete: true,
     loading: false,
     ...(reason === "aborted" ? { manualAborted: true } : {}),
-    segments: settleOpenWorkInSegments(message.segments, { status, summary }),
+    segments: reason === "completed"
+      ? settleTodoCardsInSegments(
+          settleOpenWorkInSegments(message.segments, { status, summary }),
+        )
+      : settleOpenWorkInSegments(message.segments, { status, summary }),
     skillBadges,
     planStep,
   };
