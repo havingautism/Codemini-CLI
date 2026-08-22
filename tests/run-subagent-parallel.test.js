@@ -53,13 +53,6 @@ test('every subagent role keeps tasks even with an explicit read-only allow-list
   }
 });
 
-test('implementation and test subagents can request approved host verification', () => {
-  for (const role of ['coder', 'refactorer', 'tester', 'debugger']) {
-    const tools = resolveSubAgentToolAllowList({ role, platform: 'win32' });
-    assert.equal(tools.includes('run_host_verification'), true, role);
-  }
-});
-
 test('explicit tools override the role baseline (parent intent wins)', () => {
   assert.deepEqual(
     resolveSubAgentToolAllowList({ role: 'explorer', tools: ['read', 'edit', 'write'] }),

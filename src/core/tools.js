@@ -32,11 +32,6 @@ import {
 import { resolveShellContext } from "./shell-profile.js";
 import { isShellToolName } from "./shell-tool-name.js";
 import {
-  buildHostVerificationCommand,
-  HOST_VERIFICATION_PROGRAMS,
-  HOST_VERIFICATION_TOOL_NAME,
-} from "./host-verification.js";
-import {
   findEnclosingSymbol,
   queryAst,
   queryAstGrep,
@@ -127,7 +122,6 @@ const SKILL_ALIASES = new Map();
 const RUN_COMMAND_SAFE_MODE_APPROVED = Symbol("runCommandSafeModeApproved");
 const OUTSIDE_WORKSPACE_MUTATION_APPROVED = Symbol("outsideWorkspaceMutationApproved");
 const SANDBOX_ESCALATION_APPROVED = Symbol("sandboxEscalationApproved");
-const HOST_VERIFICATION_APPROVED = Symbol("hostVerificationApproved");
 const backgroundTaskRegistry = new Map();
 let backgroundTaskCounter = 0;
 let backgroundTaskLogCursorCounter = 0;
@@ -156,19 +150,6 @@ export function markSandboxEscalationApproved(args = {}) {
 
 export function hasSandboxEscalationApproval(args = {}) {
   return Boolean(args?.[SANDBOX_ESCALATION_APPROVED]);
-}
-
-export function markHostVerificationApproved(args = {}) {
-  const next = { ...(args && typeof args === "object" ? args : {}) };
-  Object.defineProperty(next, HOST_VERIFICATION_APPROVED, {
-    value: true,
-    enumerable: false,
-  });
-  return next;
-}
-
-export function hasHostVerificationApproval(args = {}) {
-  return Boolean(args?.[HOST_VERIFICATION_APPROVED]);
 }
 
 export function markOutsideWorkspaceMutationApproved(args = {}, approval = {}) {
@@ -2257,9 +2238,16 @@ async function runCommand(root, config, args, context = {}) {
     throw new Error("sandbox escalation requires explicit user approval");
   }
   const sandboxMode = escalation?.mode;
+  const hostPowerShellEscalation = process.platform === "win32"
+    && sandboxMode === "danger-full-access"
+    && isVmSandbox(resolveSandboxPolicy({ config, cwd: root }));
+  const executionShell = hostPowerShellEscalation ? "powershell" : config.shell.default;
 
   if (shouldBackground) {
-    return startBackgroundTask(root, config, {
+    return startBackgroundTask(root, {
+      ...config,
+      shell: { ...(config?.shell || {}), default: executionShell },
+    }, {
       ...args,
       sandbox_mode: sandboxMode,
     });
@@ -2268,7 +2256,7 @@ async function runCommand(root, config, args, context = {}) {
   const result = await runShellCommand({
     command,
     cwd: root,
-    shell: config.shell.default,
+    shell: executionShell,
     timeoutMs: Number(
       args?.timeout ||
         args?.timeout_ms ||
@@ -2279,7 +2267,21 @@ async function runCommand(root, config, args, context = {}) {
     config,
     sandboxMode,
   });
-  const payload = { ...result, command };
+  const payload = {
+    ...result,
+    command,
+    shell: executionShell,
+    ...(hostPowerShellEscalation
+      ? {
+          sandbox: {
+            wrapped: false,
+            mode: "danger-full-access",
+            backend: "host",
+            escalated: true,
+          },
+        }
+      : {}),
+  };
   const failureMessage = buildRunFailureMessage(payload);
   if (failureMessage) {
     payload.failed = true;
@@ -2292,68 +2294,6 @@ async function runCommand(root, config, args, context = {}) {
     ]
       .filter(Boolean)
       .join("\n");
-  }
-  return payload;
-}
-
-async function runHostVerification(root, config, args, context = {}, platform = process.platform) {
-  if (platform !== "win32") {
-    throw new Error("host verification is available only on Windows with Microsandbox");
-  }
-  if (!hasHostVerificationApproval(args)) {
-    throw new Error("host verification requires explicit user approval");
-  }
-
-  const spec = buildHostVerificationCommand(args);
-  const workspaceOnlyConfig = {
-    ...config,
-    policy: { ...(config?.policy || {}), allowed_paths: [] },
-  };
-  const cwd = await resolveInWorkspace(root, args?.cwd || ".", workspaceOnlyConfig);
-  const stat = await fs.stat(cwd);
-  if (!stat.isDirectory()) throw new Error("host verification cwd must be a directory");
-
-  const timeoutMs = Math.min(
-    30 * 60_000,
-    Math.max(1_000, Number(args?.timeout || config?.shell?.timeout_ms || 240_000)),
-  );
-  const hostConfig = {
-    ...config,
-    sandbox: {
-      ...(config?.sandbox || {}),
-      enabled: false,
-      mode: "danger-full-access",
-    },
-    shell: {
-      ...(config?.shell || {}),
-      default: "powershell",
-    },
-  };
-  const result = await runShellCommand({
-    command: spec.command,
-    cwd,
-    shell: "powershell",
-    timeoutMs,
-    signal: context.signal,
-    config: hostConfig,
-  });
-  const payload = {
-    ...result,
-    command: [spec.program, ...spec.args].join(" "),
-    cwd: toWorkspaceRelative(root, cwd) || ".",
-    host_verification: true,
-    shell: "powershell",
-    sandbox: {
-      wrapped: false,
-      mode: "danger-full-access",
-      backend: "host",
-      bypassed: true,
-    },
-  };
-  const failureMessage = buildRunFailureMessage(payload);
-  if (failureMessage) {
-    payload.failed = true;
-    payload.error = failureMessage;
   }
   return payload;
 }
@@ -4212,7 +4152,6 @@ export function getBuiltinTools({
   const sandboxPolicy = shellContext.sandbox;
   const vmSandbox = isVmSandbox(sandboxPolicy);
   const osSandbox = isOsSandbox(sandboxPolicy);
-  const hostVerificationAvailable = isWin && vmSandbox;
   const osKind = platform === "darwin" ? "Seatbelt" : "Landlock";
   config = {
     ...(config || {}),
@@ -4226,7 +4165,7 @@ export function getBuiltinTools({
           type: "string",
           enum: ["workspace-write", "danger-full-access"],
           description:
-            "The wider sandbox mode this file operation needs. Requires justification and explicit user approval.",
+            "The wider sandbox mode this operation needs. Requires justification, LLM risk advice, and explicit user approval.",
         },
         justification: {
           type: "string",
@@ -5137,7 +5076,9 @@ export function getBuiltinTools({
       function: {
         name: commandToolName,
         description: vmSandbox
-          ? `Run a compact Bash command inside the Linux microVM sandbox (${sandboxPolicy.mode}) from the project root with unrestricted outbound networking. Use project-relative paths. Ordinary Bash commands, including curl, are available; commands with destructive or external side effects may still require approval. On denial, stderr includes [sandbox: ...]; retry with a wider sandbox_permissions plus justification when needed. Use run_in_background=true for long-running commands. Put command last.`
+          ? platform === "win32"
+            ? `Run a compact Bash command inside the Linux microVM sandbox (${sandboxPolicy.mode}) from the project root. If a build or test cannot use Windows-native dependencies because the guest is Linux, retry that exact verification command with sandbox_permissions="danger-full-access" and justification; the escalated command must be Windows PowerShell-compatible and runs on the host only after LLM risk advice and user approval. Do not escalate ordinary code failures, missing dependencies, or timeouts. Use project-relative paths and run_in_background=true only for long-running sandboxed commands. Put command last.`
+            : `Run a compact Bash command inside the Linux microVM sandbox (${sandboxPolicy.mode}) from the project root with unrestricted outbound networking. Use project-relative paths. Ordinary Bash commands, including curl, are available; commands with destructive or external side effects may still require approval. On denial, stderr includes [sandbox: ...]; retry with a wider sandbox_permissions plus justification when needed. Use run_in_background=true for long-running commands. Put command last.`
           : osSandbox
             ? `Run a compact ${shellContext.shell === "powershell" ? "PowerShell" : "Bash"} command on the host under OS confinement (${osKind}, ${sandboxPolicy.mode}) with unrestricted outbound networking. Use host paths from the current working directory. Commands with destructive or external side effects may still require approval. On denial, stderr includes [sandbox: ...]; retry with a wider sandbox_permissions plus justification when needed. Use run_in_background=true for long-running commands. Put command last.`
           : `Run a compact ${shellContext.shell === "powershell" ? "PowerShell" : "Bash"} command directly on the ${platform === "win32" ? "Windows" : "host"} system without microVM confinement. Use run_in_background=true for long-running commands. Put command last.`,
@@ -5912,44 +5853,6 @@ export function getBuiltinTools({
       ]
     : [...primaryDefinitions, ...workflowToolDefinitions, ...userInputToolDefinitions];
 
-  if (hostVerificationAvailable) {
-    definitions.push({
-      type: "function",
-      function: {
-        name: HOST_VERIFICATION_TOOL_NAME,
-        description:
-          "Run an approved build, test, lint, typecheck, or check command directly on the Windows host when Linux Microsandbox cannot use host-native dependencies. This explicitly bypasses the sandbox and always requires user approval. Pass a supported program and literal argument array; raw shell syntax, installers, run/deploy commands, and background execution are rejected.",
-        parameters: {
-          type: "object",
-          properties: {
-            cwd: {
-              type: "string",
-              description: "Project-relative working directory. Defaults to the project root.",
-            },
-            program: {
-              type: "string",
-              enum: [...HOST_VERIFICATION_PROGRAMS],
-              description: "Approved verification runner available on the Windows host.",
-            },
-            args: {
-              type: "array",
-              items: { type: "string" },
-              maxItems: 100,
-              description: "Literal runner arguments. Shell operators are not interpreted.",
-            },
-            timeout: {
-              type: "number",
-              minimum: 1000,
-              maximum: 1800000,
-              description: "Timeout in milliseconds. Defaults to 240000.",
-            },
-          },
-          required: ["program", "args"],
-        },
-      },
-    });
-  }
-
   // Linux/mac: DSH-aligned CRUD — promote glob/grep; drop staged write + apply_patch entirely.
   // Windows keeps the current always-on write toolkit (encoding-safe staged writes).
   if (!isWin) {
@@ -6451,12 +6354,6 @@ export function getBuiltinTools({
   }
 
   const handlers = {
-    ...(hostVerificationAvailable
-      ? {
-          [HOST_VERIFICATION_TOOL_NAME]: (args, context) =>
-            runHostVerification(workspaceRoot, config, args, context, platform),
-        }
-      : {}),
     read: async (args) => {
       const inlineQuery = String(args?.query || "").trim();
       const directAstTarget = args?.ast_target;
@@ -7849,19 +7746,6 @@ export function getBuiltinTools({
       return `[delete: ${kind}] deleted ${target}${backup}`;
     },
 
-    run_host_verification(result) {
-      if (!result || typeof result !== "object") return String(result);
-      const parts = [
-        `[host verification | sandbox: bypassed | cwd: ${result.cwd || "."}]`,
-        `[exit: ${result.code ?? 0}]`,
-      ];
-      if (result.command) parts.push(`command: ${result.command}`);
-      if (result.stdout) parts.push(`stdout:\n${result.stdout}`);
-      if (result.stderr) parts.push(`stderr:\n${result.stderr}`);
-      if (result.error) parts.push(`error:\n${result.error}`);
-      return parts.join("\n");
-    },
-
     run(result) {
       if (!result || typeof result !== "object") return String(result);
       const sandboxBackend = result?.sandbox?.backend || sandboxPolicy.backend;
@@ -8165,9 +8049,6 @@ export function getBuiltinTools({
 
   const wrapMutationHandler = (name, handler) => {
     const wrapped = async (args, context) => {
-      if (name === HOST_VERIFICATION_TOOL_NAME) {
-        return writeCoordinator.withRunLock(() => handler(args, context));
-      }
       if (fileWriteTools.has(name)) {
         const keys = extractFileLockKeys(name, args);
         if (keys.length === 1) {
@@ -8193,7 +8074,7 @@ export function getBuiltinTools({
   const coordinatedHandlers = {};
   for (const [name, handler] of Object.entries(handlers)) {
     coordinatedHandlers[name] =
-      name === HOST_VERIFICATION_TOOL_NAME || fileWriteTools.has(name) || isShellToolName(name)
+      fileWriteTools.has(name) || isShellToolName(name)
         ? wrapMutationHandler(name, handler)
         : handler;
   }

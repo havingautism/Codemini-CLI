@@ -12,8 +12,8 @@ import {
 import { resolveShellApprovalStrategy, runAgentLoop } from '../src/core/agent-loop.js';
 import {
   getBuiltinTools,
-  hasHostVerificationApproval,
   hasRunCommandSafeModeApproval,
+  hasSandboxEscalationApproval,
 } from '../src/core/tools.js';
 import { closeSqliteDatabasesForTests } from '../src/core/sqlite-database.js';
 import { resolvePlanSubAgentApprovalOptions, ROLE_TOOL_POLICY } from '../src/core/chat-runtime.js';
@@ -157,22 +157,7 @@ test('sandbox escalation always requires explicit approval', () => {
   }
 });
 
-test('host verification always requires explicit approval', () => {
-  for (const approvalMode of ['review', 'auto', 'full_access']) {
-    assert.equal(
-      toolRequiresUserApproval({
-        approvalMode,
-        projectIsGit: true,
-        toolName: 'run_host_verification',
-        alwaysAllowTools: ['run_host_verification'],
-      }),
-      true,
-      approvalMode,
-    );
-  }
-});
-
-test('agent loop uses user approval without LLM review for host verification', async () => {
+test('sandbox escalation gives the user LLM risk advice before approval', async () => {
   let completionIndex = 0;
   let approvalRequests = 0;
   let evaluatorCalls = 0;
@@ -193,9 +178,13 @@ test('agent loop uses user approval without LLM review for host verification', a
         ? {
             text: '',
             toolCalls: [{
-              id: 'host-verification',
-              name: 'run_host_verification',
-              arguments: JSON.stringify({ program: 'npm', args: ['test'] }),
+              id: 'host-escalation',
+              name: 'Bash',
+              arguments: JSON.stringify({
+                command: 'npm test',
+                sandbox_permissions: 'danger-full-access',
+                justification: 'The Linux guest cannot load Windows native dependencies.',
+              }),
               argumentsComplete: true,
             }],
           }
@@ -203,18 +192,23 @@ test('agent loop uses user approval without LLM review for host verification', a
     },
     evaluateCommand: async () => {
       evaluatorCalls += 1;
-      return { risk: 'low', recommendation: 'allow' };
+      return {
+        risk: 'medium',
+        description: 'Runs project tests on the Windows host.',
+        recommendation: 'review',
+      };
     },
     toolHandlers: {
-      run_host_verification: async (args) => {
+      Bash: async (args) => {
         handlerArgs = args;
         return { ok: true };
       },
     },
     approvalMode: 'full_access',
-    alwaysAllowTools: ['run_host_verification'],
-    requestToolApproval: async () => {
+    alwaysAllowTools: ['run'],
+    requestToolApproval: async (request) => {
       approvalRequests += 1;
+      assert.equal(request.arguments?._evaluation?.risk, 'medium');
       return { approved: true };
     },
     skipAnalysisNudge: true,
@@ -223,8 +217,8 @@ test('agent loop uses user approval without LLM review for host verification', a
 
   assert.equal(result.text, 'done');
   assert.equal(approvalRequests, 1);
-  assert.equal(evaluatorCalls, 0);
-  assert.equal(hasHostVerificationApproval(handlerArgs), true);
+  assert.equal(evaluatorCalls, 1);
+  assert.equal(hasSandboxEscalationApproval(handlerArgs), true);
 });
 
 test('deterministic command gates survive every approval mode', () => {

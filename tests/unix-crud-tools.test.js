@@ -168,38 +168,39 @@ test('Windows keeps staged writes while using Bash and sandbox escalation', () =
   assert.ok(write?.function?.parameters?.properties?.sandbox_permissions);
   const shell = bundle.definitions.find((d) => d?.function?.name === 'Bash');
   assert.ok(shell?.function?.parameters?.properties?.sandbox_permissions);
-  assert.ok(active.has('run_host_verification'));
 });
 
-test('host verification is exposed only for Windows Microsandbox', () => {
-  const cases = [
-    {
-      platform: 'win32',
+test('approved Windows Microsandbox shell escalation runs npm on host PowerShell', async (t) => {
+  if (process.platform !== 'win32') return t.skip('Windows host escalation');
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-host-escalation-'));
+  await fs.writeFile(
+    path.join(workspaceRoot, 'package.json'),
+    JSON.stringify({ scripts: { test: 'node --check check.js' } }),
+    'utf8',
+  );
+  await fs.writeFile(path.join(workspaceRoot, 'check.js'), 'const ok = true;\n', 'utf8');
+  const bundle = getBuiltinTools({
+    workspaceRoot,
+    config: {
+      policy: { allowed_paths: [] },
+      shell: { default: 'bash', timeout_ms: 15_000 },
       sandbox: { enabled: true, mode: 'workspace-write', backend: 'microsandbox' },
-      expected: true,
     },
-    {
-      platform: 'win32',
-      sandbox: { enabled: false, mode: 'danger-full-access' },
-      expected: false,
-    },
-    {
-      platform: 'linux',
-      sandbox: { enabled: true, mode: 'workspace-write', backend: 'microsandbox' },
-      expected: false,
-    },
-  ];
-  for (const item of cases) {
-    const bundle = getBuiltinTools({
-      workspaceRoot: process.cwd(),
-      config: { sandbox: item.sandbox },
-      platform: item.platform,
-    });
-    assert.equal(
-      names(bundle.definitions).includes('run_host_verification'),
-      item.expected,
-      `${item.platform} ${item.sandbox.backend || 'off'}`,
-    );
+    platform: 'win32',
+  });
+  try {
+    const result = await bundle.handlers.Bash(markSandboxEscalationApproved({
+      command: 'npm test',
+      sandbox_permissions: 'danger-full-access',
+      justification: 'The Linux guest cannot load Windows native dependencies.',
+    }));
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.shell, 'powershell');
+    assert.equal(result.sandbox?.backend, 'host');
+    assert.equal(result.sandbox?.escalated, true);
+  } finally {
+    await bundle.dispose?.();
+    await fs.rm(workspaceRoot, { recursive: true, force: true });
   }
 });
 
@@ -294,7 +295,6 @@ test('Linux keeps Codemini tools and removes Windows-only tools', () => {
       'apply_patch',
       'begin_write',
       'commit_write',
-      'run_host_verification',
       'write_chunk',
     ],
   );

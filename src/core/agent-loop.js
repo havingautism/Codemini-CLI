@@ -12,7 +12,6 @@ import { createToolRuntime, buildInvalidToolArgumentsResult } from './tool-runti
 import { createToolResultStore, summarizeToolResult } from './tool-result-store.js';
 import { applyAggressiveToolPruneBeta } from './context-compact.js';
 import {
-  markHostVerificationApproved,
   markOutsideWorkspaceMutationApproved,
   markRunCommandSafeModeApproved,
   markSandboxEscalationApproved,
@@ -1043,9 +1042,9 @@ export async function runAgentLoop({
             preflightErrorContent = clipToolResult({ error: message }, toolResultMaxChars);
           }
         }
-        /* Ambiguous commands use the legacy LLM reviewer only without a confining sandbox. */
-        if (isShellToolName(toolName) && (isSafeModeRun || isDeterministicCommandGate) && !preflightErrorContent) {
-          if (isSafeModeRun) {
+        /* Escalations always get LLM risk advice; other commands keep the existing review policy. */
+        if (isShellToolName(toolName) && (isSafeModeRun || isDeterministicCommandGate || isSandboxEscalation) && !preflightErrorContent) {
+          if (isSafeModeRun || isSandboxEscalation) {
             try {
               const evaluateCommandFn = typeof evaluateCommand === 'function'
                 ? evaluateCommand
@@ -1068,7 +1067,7 @@ export async function runAgentLoop({
                   ? { reason: runPolicyCheck.reason, suggestion: runPolicyCheck.suggestion || '' }
                   : null
               };
-              if (shouldDenyHighRiskRunEvaluation(config, evaluation)) {
+              if (!isSandboxEscalation && shouldDenyHighRiskRunEvaluation(config, evaluation)) {
                 preflightErrorContent = clipToolResult({
                   error: 'Command blocked by safe mode: high-risk command denied because dangerous commands are disabled',
                   evaluation
@@ -1158,9 +1157,6 @@ export async function runAgentLoop({
           }
           if (approved && isSandboxEscalation) {
             approvalArgs = markSandboxEscalationApproved(approvalArgs);
-          }
-          if (approved && toolName === 'run_host_verification') {
-            approvalArgs = markHostVerificationApproved(approvalArgs);
           }
         }
       }
@@ -1385,9 +1381,6 @@ export async function runAgentLoop({
           }
           if (updatedShellApproval?.policyBlocked) {
             effectiveArgs = markRunCommandSafeModeApproved(effectiveArgs);
-          }
-          if (toolName === 'run_host_verification') {
-            effectiveArgs = markHostVerificationApproved(effectiveArgs);
           }
         }
         if (preToolUse.decision === 'defer') {

@@ -53,8 +53,11 @@ Tool: apply_patch({"patch_text":"*** Begin Patch\\n*** Update File: ${path.join(
     : shellContext.sandbox.mode === 'workspace-write'
       ? 'Writes are confined to the project workspace and temporary directory. Request wider sandbox permissions with a justification only when the task explicitly requires access outside them.'
       : 'No filesystem sandbox is active. Keep writes and destructive commands narrowly scoped to the user request.';
+  const windowsVmEscalationHint = vm && platform === 'win32'
+    ? 'Current environment uses a Windows host and a Linux microVM for ordinary Bash commands. Host-installed native dependencies (for example node_modules bindings, Python wheels, or compiled Rust/C/C++ tools) may fail in the guest because of an OS/ABI mismatch. When that mismatch blocks a build, test, lint, or typecheck, retry the exact verification command with sandbox_permissions: "danger-full-access" and a concise justification; it will run on the Windows host through Windows PowerShell after LLM risk advice and explicit user approval. Do not escalate for ordinary code failures, missing project dependencies, or timeouts.'
+    : '';
   const sandboxHint = vm
-    ? `Shell commands run inside a Linux microVM sandbox (${shellContext.sandbox.mode}); use project-relative paths and treat [sandbox: ...] errors as confinement failures. ${accessRule}`
+    ? `Shell commands run inside a Linux microVM sandbox (${shellContext.sandbox.mode}); use project-relative paths and treat [sandbox: ...] errors as confinement failures. ${accessRule} ${windowsVmEscalationHint}`.trim()
     : osConfine
       ? `Shell commands run on the host under OS confinement (${platform === 'darwin' ? 'Seatbelt' : 'Landlock'}, ${shellContext.sandbox.mode}); use host paths and treat [sandbox: ...] errors as confinement failures. ${accessRule}`
       : `Shell commands run directly on the host. ${accessRule}`;
@@ -98,6 +101,7 @@ function getEnvBlock(cwd = process.cwd(), config = {}, platform = process.platfo
     return `<environment>
 Working directory: project root
 Is directory a git repo: ${isGitRepo ? 'Yes' : 'No'}
+Host platform: ${platform}
 Platform: ${commandPlatform}
 Shell: bash
 Network: unrestricted outbound access
