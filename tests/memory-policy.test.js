@@ -165,6 +165,7 @@ test('rememberMemory keeps pinned items when trimming budget', async () => {
     assert.equal(items.length, 2);
     assert.ok(items.some((item) => item.pinned && item.content.includes('keep me')));
   } finally {
+    closeSqliteDatabasesForTests(tmp);
     if (prev === undefined) delete process.env.CODEMINI_GLOBAL_DIR;
     else process.env.CODEMINI_GLOBAL_DIR = prev;
     await fs.rm(tmp, { recursive: true, force: true });
@@ -207,6 +208,7 @@ test('rememberMemory reports when pinned items leave no capacity', async () => {
     assert.equal(items.length, 2);
     assert.equal(items.some((item) => item.content.includes('preference C')), false);
   } finally {
+    closeSqliteDatabasesForTests(tmp);
     if (prev === undefined) delete process.env.CODEMINI_GLOBAL_DIR;
     else process.env.CODEMINI_GLOBAL_DIR = prev;
     await fs.rm(tmp, { recursive: true, force: true });
@@ -231,7 +233,7 @@ test('listInbox normalizes legacy repo scope to project', async () => {
     const byRepoAlias = await listInbox({ scope: 'repo' });
     assert.ok(byRepoAlias.some((item) => item.id === entry.id));
   } finally {
-    closeSqliteDatabasesForTests();
+    closeSqliteDatabasesForTests(tmp);
     if (prev === undefined) delete process.env.CODEMINI_GLOBAL_DIR;
     else process.env.CODEMINI_GLOBAL_DIR = prev;
     await fs.rm(tmp, { recursive: true, force: true });
@@ -260,6 +262,7 @@ test('buildMemorySnapshot does not duplicate lifecycle sections', async () => {
     assert.doesNotMatch(snapshot, /Active Guidance \(Operational/);
     assert.doesNotMatch(snapshot, /Stable Learnings \(LongTerm/);
   } finally {
+    closeSqliteDatabasesForTests(tmp);
     if (prev === undefined) delete process.env.CODEMINI_GLOBAL_DIR;
     else process.env.CODEMINI_GLOBAL_DIR = prev;
     await fs.rm(tmp, { recursive: true, force: true });
@@ -325,7 +328,7 @@ test('captureToInbox is idempotent for session review keys', async () => {
     const items = await listInbox();
     assert.equal(items.length, 1);
   } finally {
-    closeSqliteDatabasesForTests();
+    closeSqliteDatabasesForTests(tmp);
     if (prev === undefined) delete process.env.CODEMINI_GLOBAL_DIR;
     else process.env.CODEMINI_GLOBAL_DIR = prev;
     await fs.rm(tmp, { recursive: true, force: true });
@@ -347,7 +350,7 @@ test('concurrent inbox captures do not overwrite each other', async () => {
     const items = await listInbox();
     assert.equal(items.length, 20);
   } finally {
-    closeSqliteDatabasesForTests();
+    closeSqliteDatabasesForTests(tmp);
     if (prev === undefined) delete process.env.CODEMINI_GLOBAL_DIR;
     else process.env.CODEMINI_GLOBAL_DIR = prev;
     await fs.rm(tmp, { recursive: true, force: true });
@@ -371,6 +374,7 @@ test('concurrent memory writes preserve every item within capacity', async () =>
     const items = await listMemories({ scope: 'user', workspaceRoot: tmp });
     assert.equal(items.length, 8);
   } finally {
+    closeSqliteDatabasesForTests(tmp);
     if (prev === undefined) delete process.env.CODEMINI_GLOBAL_DIR;
     else process.env.CODEMINI_GLOBAL_DIR = prev;
     await fs.rm(tmp, { recursive: true, force: true });
@@ -410,7 +414,7 @@ test('session review state uses content hashes instead of a permanent boolean', 
     });
     assert.equal(changed.claimed, true);
   } finally {
-    closeSqliteDatabasesForTests();
+    closeSqliteDatabasesForTests(tmp);
     if (prev === undefined) delete process.env.CODEMINI_GLOBAL_DIR;
     else process.env.CODEMINI_GLOBAL_DIR = prev;
     await fs.rm(tmp, { recursive: true, force: true });

@@ -22,6 +22,9 @@ export const MEMORY_SCOPES = Object.freeze(['user', 'global', 'project']);
  */
 export const MEMORY_KINDS = Object.freeze(['preference', 'convention', 'lesson', 'note']);
 
+/** Orthogonal knowledge family — not a scope. */
+export const MEMORY_FAMILIES = Object.freeze(['personal', 'repo', 'coding', 'procedure']);
+
 const USER_PROFILE_KINDS = new Set(['preference']);
 const LONGTERM_KINDS = new Set(['preference', 'convention']);
 const OPERATIONAL_KINDS = new Set(['lesson', 'note']);
@@ -83,6 +86,31 @@ export function normalizeMemoryKind(value, fallback = 'note') {
   const aliased = KIND_ALIASES[raw] || raw;
   if (MEMORY_KINDS.includes(aliased)) return aliased;
   return fallback;
+}
+
+export function normalizeMemoryFamily(value, fallback = 'repo') {
+  const options = fallback && typeof fallback === 'object' ? fallback : { fallback };
+  const resolvedFallback = options.fallback === undefined ? 'repo' : options.fallback;
+  const family = String(value || '').trim().toLowerCase();
+  if (MEMORY_FAMILIES.includes(family)) return family;
+  return resolvedFallback;
+}
+
+const PROCEDURE_PATTERN =
+  /(?:\d+\.\s+\S|步骤\s*\d|must run|after changing|然后(?:运行|执行)|修改.+后必须|regression tests?|workflow)/i;
+
+export function inferMemoryFamily({ family, scope, kind, content = '', summary = '' } = {}) {
+  const explicit = normalizeMemoryFamily(family, { fallback: '' });
+  if (explicit) return explicit;
+  const normalizedKind = normalizeMemoryKind(kind, 'note');
+  const normalizedScope = normalizeMemoryScope(scope, { fallback: 'project' });
+  if (normalizedKind === 'preference' || normalizedScope === 'user') return 'personal';
+  if (normalizedKind === 'lesson') return 'coding';
+  const blob = `${summary} ${content}`;
+  if (normalizedKind === 'convention' && PROCEDURE_PATTERN.test(blob)) return 'procedure';
+  if (normalizedScope === 'project') return 'repo';
+  if (normalizedKind === 'convention') return 'procedure';
+  return 'coding';
 }
 
 /** Infer scope when the model omits it: preference → user, else project. */

@@ -1,9 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  canShowFileChangeUndo,
+  enrichFileChangesWithGit,
   reconcileFileChangesWithGit,
   resolveFileChangeSequenceAction,
   resolveFileChangePreviewLines,
+  summarizeFileChangesWorkspace,
   unifiedPatchToPreviewLines,
 } from '../codemini-web/client/src/lib/file-change-preview.js';
 
@@ -15,17 +18,81 @@ test('file change sequences collapse to their net action', () => {
   assert.equal(resolveFileChangeSequenceAction(['edit', 'delete']), 'delete');
 });
 
-test('file change summary follows the final git worktree state', () => {
+test('enrichFileChangesWithGit preserves historical snapshots', () => {
   const staleCreate = [{ path: 'workspace/tool-test.md', action: 'create', linesAdded: 5 }];
-  assert.deepEqual(reconcileFileChangesWithGit(staleCreate, undefined), []);
-  assert.deepEqual(reconcileFileChangesWithGit(staleCreate, []), []);
+  assert.deepEqual(enrichFileChangesWithGit(staleCreate, undefined), [
+    {
+      path: 'workspace/tool-test.md',
+      action: 'create',
+      linesAdded: 5,
+      workspace: { dirty: undefined },
+    },
+  ]);
+  assert.deepEqual(enrichFileChangesWithGit(staleCreate, []), [
+    {
+      path: 'workspace/tool-test.md',
+      action: 'create',
+      linesAdded: 5,
+      workspace: { dirty: false },
+    },
+  ]);
 
   assert.deepEqual(
-    reconcileFileChangesWithGit(staleCreate, [
+    enrichFileChangesWithGit(staleCreate, [
       { path: 'workspace\\tool-test.md', status: 'D' },
     ]),
-    [{ path: 'workspace/tool-test.md', action: 'delete', linesAdded: 5 }],
+    [
+      {
+        path: 'workspace/tool-test.md',
+        action: 'create',
+        linesAdded: 5,
+        workspace: { dirty: true, status: 'D' },
+      },
+    ],
   );
+});
+
+test('reconcileFileChangesWithGit is an enrich alias and no longer filters history', () => {
+  const changes = [{ path: 'src/a.ts', action: 'edit', linesAdded: 1 }];
+  assert.equal(reconcileFileChangesWithGit(changes, []).length, 1);
+});
+
+test('canShowFileChangeUndo hides undo when workspace is clean', () => {
+  const dirty = {
+    path: 'src/a.ts',
+    changeSetId: 'cs-1',
+    workspace: { dirty: true },
+  };
+  const clean = {
+    path: 'src/a.ts',
+    changeSetId: 'cs-1',
+    workspace: { dirty: false },
+  };
+  assert.equal(canShowFileChangeUndo(dirty), true);
+  assert.equal(canShowFileChangeUndo(clean), false);
+  assert.equal(
+    canShowFileChangeUndo({ ...dirty, workspace: { dirty: undefined } }),
+    true,
+  );
+});
+
+test('summarizeFileChangesWorkspace distinguishes loading from clean', () => {
+  const changes = [
+    { workspace: { dirty: true } },
+    { workspace: { dirty: false } },
+  ];
+  assert.deepEqual(summarizeFileChangesWorkspace(changes, undefined, 'loading'), {
+    status: 'loading',
+    dirty: 0,
+    clean: 0,
+    total: 2,
+  });
+  assert.deepEqual(summarizeFileChangesWorkspace(changes, [], 'ready'), {
+    status: 'ready',
+    dirty: 1,
+    clean: 1,
+    total: 2,
+  });
 });
 
 test('unifiedPatchToPreviewLines keeps context around comment-only additions', () => {

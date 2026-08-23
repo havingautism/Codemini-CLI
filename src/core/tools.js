@@ -5718,6 +5718,11 @@ export function getBuiltinTools({
               description:
                 'One of four kinds: "preference" (user tastes/interests/habits), "convention" (workflows/rules), "lesson" (corrections/learnings), "note" (other durable facts). Default: note.',
             },
+            family: {
+              type: "string",
+              description:
+                'Optional knowledge family: "personal", "repo", "coding", or "procedure". Omit to infer from scope/kind.',
+            },
             replace_similar: {
               type: "boolean",
               description:
@@ -5746,14 +5751,17 @@ export function getBuiltinTools({
       type: "function",
       function: {
         name: "search_memory",
-        description: "Search stored persistent memories for one scope.",
+        description: "Search stored persistent memories with FTS. Scope may be user, global, project, or all.",
         parameters: {
           type: "object",
           properties: {
-            scope: { type: "string", description: "user, global, or project" },
             query: { type: "string", description: "Search phrase" },
+            scope: { type: "string", description: "user, global, project, or all. Default: all" },
+            family: { type: "string", description: "Optional family: personal, repo, coding, procedure" },
+            kind: { type: "string", description: "Optional kind filter" },
+            limit: { type: "number", description: "Max hits, 1-10. Default: 5" },
           },
-          required: ["scope", "query"],
+          required: ["query"],
         },
       },
     },
@@ -7105,6 +7113,7 @@ export function getBuiltinTools({
         scope: memoryScope,
         content: args.content,
         kind,
+        family: args.family,
         summary: args.summary || String(args.content || "").slice(0, 80),
         source: "tool",
         replaceSimilar: args.replace_similar !== false,
@@ -7118,12 +7127,16 @@ export function getBuiltinTools({
       items: await listMemories({ scope: args.scope, workspaceRoot }),
     }),
     search_memory: async (args = {}) => ({
-      scope: String(args.scope || ""),
+      scope: String(args.scope || "all"),
       query: String(args.query || ""),
       items: await searchMemories({
-        scope: args.scope,
+        scope: args.scope || "all",
         query: args.query,
+        family: args.family,
+        kind: args.kind,
+        limit: args.limit,
         workspaceRoot,
+        config,
       }),
     }),
     forget_memory: async (args = {}) => ({

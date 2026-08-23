@@ -1,13 +1,11 @@
-import fs from 'node:fs/promises';
 import path from 'node:path';
 import { sha256 } from './crypto-utils.js';
-import { getMemoryDir, getProjectMemoryDir } from './paths.js';
 import {
   assertSafeMemoryContent,
+  inferMemoryFamily,
   normalizeMemoryKind,
   normalizeMemoryScope,
-  normalizeMemoryText,
-  summarizeMemoryContent
+  normalizeMemoryText
 } from './memory-policy.js';
 import {
   archiveMemoryQueueEntry,
@@ -18,6 +16,18 @@ import {
   saveMemoryQueueEntry,
   updateInboxEntryInSqlite
 } from './memory-queue-sqlite-store.js';
+import {
+  dbForScope,
+  deleteMemory,
+  ensurePersistentMemoryImported,
+  getMaintenance,
+  listMemoriesFromDb,
+  normalizePersistentMemory,
+  replaceScopeMemories,
+  setMaintenance
+} from './memory-sqlite-store.js';
+import { retrieveMemories } from './memory-retriever.js';
+import { transaction } from './sqlite-database.js';
 
 const ALLOWED_SCOPES = new Set(['user', 'global', 'project']);
 const mutationLocks = new Map();
@@ -59,45 +69,24 @@ function ensureScope(scope) {
   return value;
 }
 
-async function ensureParent(filePath) {
-  await fs.mkdir(path.dirname(filePath), { recursive: true });
+function lockKeyForScope(scope, workspaceRoot = process.cwd()) {
+  if (scope === 'project') return `memories:project:${path.resolve(workspaceRoot)}`;
+  return `memories:global:${scope}`;
 }
 
-function buildFilePath(scope, workspaceRoot = process.cwd(), projectAlias = '') {
-  if (scope === 'user') return path.join(getMemoryDir(), 'user.json');
-  if (scope === 'global') return path.join(getMemoryDir(), 'global.json');
-  return path.join(getProjectMemoryDir(workspaceRoot), 'project.json');
+async function readScopeMemoryItems(scope, workspaceRoot = process.cwd(), projectAlias = '') {
+  const normalizedScope = ensureScope(scope);
+  await ensurePersistentMemoryImported({ workspaceRoot, scope: normalizedScope });
+  const db = dbForScope(normalizedScope, workspaceRoot, { create: false });
+  if (!db) return [];
+  const projectKey = normalizedScope === 'project' ? getProjectMemoryKey(workspaceRoot, projectAlias) : '';
+  return listMemoriesFromDb(db, { scope: normalizedScope }).map((item) => (
+    projectKey ? { ...item, projectKey } : item
+  ));
 }
 
-async function listProjectMemoryFiles(workspaceRoot = process.cwd()) {
-  const dir = getProjectMemoryDir(workspaceRoot);
-  try {
-    const entries = await fs.readdir(dir, { withFileTypes: true });
-    return entries
-      .filter((entry) => entry.isFile() && entry.name.endsWith('.json'))
-      .map((entry) => path.join(dir, entry.name))
-      .sort();
-  } catch {
-    return [];
-  }
-}
-
-async function readMemoryBucket(filePath) {
-  const doc = await readMemoryBucketDocument(filePath);
-  return doc.items;
-}
-
-async function readMemoryBucketDocument(filePath) {
-  try {
-    const raw = await fs.readFile(filePath, 'utf8');
-    const parsed = JSON.parse(raw);
-    return {
-      items: Array.isArray(parsed?.items) ? parsed.items : [],
-      maintenance: parsed?.maintenance && typeof parsed.maintenance === 'object' ? parsed.maintenance : null
-    };
-  } catch {
-    return { items: [], maintenance: null };
-  }
+function normalizeMemoryItem(item, scope, projectKey = '') {
+  return normalizePersistentMemory(item, scope, projectKey);
 }
 
 function memoryBucketHash(items = []) {
@@ -113,67 +102,6 @@ function memoryBucketHash(items = []) {
     }))
     .sort((left, right) => left.id.localeCompare(right.id));
   return sha256(JSON.stringify(stable));
-}
-
-async function writeMemoryBucket(filePath, items, { maintenance = null } = {}) {
-  await ensureParent(filePath);
-  const doc = { items };
-  if (maintenance) doc.maintenance = maintenance;
-  await fs.writeFile(filePath, `${JSON.stringify(doc, null, 2)}\n`, 'utf8');
-}
-
-function dedupeMemoryItems(items = []) {
-  const deduped = [];
-  const seen = new Set();
-  for (const item of items) {
-    const key = item.id ? `id:${item.id}` : `${item.kind}:${normalizeMemoryText(item.content)}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    deduped.push(item);
-  }
-  return deduped;
-}
-
-async function readProjectMemoryItems(workspaceRoot = process.cwd(), projectAlias = '') {
-  const projectKey = getProjectMemoryKey(workspaceRoot, projectAlias);
-  const files = await listProjectMemoryFiles(workspaceRoot);
-  const items = [];
-  for (const file of files) {
-    const bucket = await readMemoryBucket(file);
-    items.push(...bucket.map((item) => normalizeMemoryItem(item, 'project', projectKey)));
-  }
-  return dedupeMemoryItems(items)
-    .sort((left, right) => String(right.updatedAt).localeCompare(String(left.updatedAt)));
-}
-
-async function readScopeMemoryItems(scope, workspaceRoot = process.cwd(), projectAlias = '') {
-  const normalizedScope = ensureScope(scope);
-  if (normalizedScope === 'project') return readProjectMemoryItems(workspaceRoot, projectAlias);
-  const filePath = buildFilePath(normalizedScope, workspaceRoot, projectAlias);
-  return (await readMemoryBucket(filePath))
-    .map((item) => normalizeMemoryItem(item, normalizedScope, ''))
-    .sort((left, right) => String(right.updatedAt).localeCompare(String(left.updatedAt)));
-}
-
-function normalizeMemoryItem(item, scope, projectKey = '') {
-  const now = nowIso();
-  const content = normalizeMemoryText(item?.content || '');
-  return {
-    id: String(item?.id || `mem_${sha256(`${scope}:${projectKey}:${content}:${now}:${Math.random()}`).slice(0, 12)}`),
-    scope,
-    projectKey: projectKey || undefined,
-    kind: normalizeMemoryKind(item?.kind, 'note'),
-    ...(normalizeMemoryText(item?.semanticKey) ? { semanticKey: normalizeMemoryText(item.semanticKey).slice(0, 160) } : {}),
-    content,
-    summary: normalizeMemoryText(item?.summary || summarizeMemoryContent(content)),
-    source: String(item?.source || 'tool').trim() || 'tool',
-    confidence: Number.isFinite(Number(item?.confidence)) ? Number(item.confidence) : 0.9,
-    createdAt: String(item?.createdAt || now),
-    updatedAt: String(item?.updatedAt || now),
-    hits: Number.isFinite(Number(item?.hits)) ? Number(item.hits) : 0,
-    pinned: item?.pinned === true,
-    ...(item?.lifecycle ? { lifecycle: String(item.lifecycle) } : {})
-  };
 }
 
 function sameMemory(left, right) {
@@ -203,14 +131,13 @@ export async function listMemories({ scope, workspaceRoot = process.cwd(), proje
 
 export async function getMemoryBucketMaintenance({ scope, workspaceRoot = process.cwd(), projectAlias = '' }) {
   const normalizedScope = ensureScope(scope);
-  const filePath = buildFilePath(normalizedScope, workspaceRoot, projectAlias);
-  const doc = await readMemoryBucketDocument(filePath);
-  const items = normalizedScope === 'project'
-    ? await readProjectMemoryItems(workspaceRoot, projectAlias)
-    : doc.items.map((item) => normalizeMemoryItem(item, normalizedScope, ''));
+  await ensurePersistentMemoryImported({ workspaceRoot, scope: normalizedScope });
+  const db = dbForScope(normalizedScope, workspaceRoot);
+  const items = await readScopeMemoryItems(normalizedScope, workspaceRoot, projectAlias);
   const currentHash = memoryBucketHash(items);
-  const storedHash = String(doc.maintenance?.contentHash || '');
-  const maintainedAt = String(doc.maintenance?.maintainedAt || '');
+  const stored = getMaintenance(db, normalizedScope) || {};
+  const storedHash = String(stored.contentHash || '');
+  const maintainedAt = String(stored.maintainedAt || '');
   return {
     scope: normalizedScope,
     itemCount: items.length,
@@ -223,21 +150,23 @@ export async function getMemoryBucketMaintenance({ scope, workspaceRoot = proces
 
 async function markMemoryBucketMaintainedUnlocked({ scope, workspaceRoot = process.cwd(), projectAlias = '' }) {
   const normalizedScope = ensureScope(scope);
-  const filePath = buildFilePath(normalizedScope, workspaceRoot, projectAlias);
+  await ensurePersistentMemoryImported({ workspaceRoot, scope: normalizedScope });
+  const db = dbForScope(normalizedScope, workspaceRoot);
   const items = await readScopeMemoryItems(normalizedScope, workspaceRoot, projectAlias);
   const maintenance = {
     maintainedAt: nowIso(),
     contentHash: memoryBucketHash(items),
     itemCount: items.length
   };
-  await writeMemoryBucket(filePath, items, { maintenance });
+  setMaintenance(db, normalizedScope, maintenance);
   return { scope: normalizedScope, ...maintenance };
 }
 
 export function markMemoryBucketMaintained(args = {}) {
   const normalizedScope = ensureScope(args.scope);
-  const filePath = buildFilePath(normalizedScope, args.workspaceRoot, args.projectAlias);
-  return withMutationLock(`bucket:${filePath}`, () => markMemoryBucketMaintainedUnlocked({ ...args, scope: normalizedScope }));
+  return withMutationLock(lockKeyForScope(normalizedScope, args.workspaceRoot), () => (
+    markMemoryBucketMaintainedUnlocked({ ...args, scope: normalizedScope })
+  ));
 }
 
 async function replaceMemoryBucketUnlocked({
@@ -248,7 +177,8 @@ async function replaceMemoryBucketUnlocked({
   markMaintained = false
 } = {}) {
   const normalizedScope = ensureScope(scope);
-  const filePath = buildFilePath(normalizedScope, workspaceRoot, projectAlias);
+  await ensurePersistentMemoryImported({ workspaceRoot, scope: normalizedScope });
+  const db = dbForScope(normalizedScope, workspaceRoot);
   const projectKey = normalizedScope === 'project' ? getProjectMemoryKey(workspaceRoot, projectAlias) : '';
   const normalizedItems = (Array.isArray(items) ? items : [])
     .map((item) => normalizeMemoryItem(item, normalizedScope, projectKey))
@@ -260,7 +190,10 @@ async function replaceMemoryBucketUnlocked({
         itemCount: normalizedItems.length
       }
     : null;
-  await writeMemoryBucket(filePath, normalizedItems, { maintenance });
+  transaction(db, () => {
+    replaceScopeMemories(db, normalizedScope, normalizedItems);
+    if (maintenance) setMaintenance(db, normalizedScope, maintenance);
+  });
   return {
     scope: normalizedScope,
     items: normalizedItems,
@@ -270,8 +203,9 @@ async function replaceMemoryBucketUnlocked({
 
 export function replaceMemoryBucket(args = {}) {
   const normalizedScope = ensureScope(args.scope);
-  const filePath = buildFilePath(normalizedScope, args.workspaceRoot, args.projectAlias);
-  return withMutationLock(`bucket:${filePath}`, () => replaceMemoryBucketUnlocked({ ...args, scope: normalizedScope }));
+  return withMutationLock(lockKeyForScope(normalizedScope, args.workspaceRoot), () => (
+    replaceMemoryBucketUnlocked({ ...args, scope: normalizedScope })
+  ));
 }
 
 async function rememberMemoryUnlocked({
@@ -285,6 +219,11 @@ async function rememberMemoryUnlocked({
   pinned = false,
   semanticKey = '',
   lifecycle = '',
+  family = '',
+  toolName = '',
+  environmentKey = '',
+  tags = [],
+  evidence = null,
   workspaceRoot = process.cwd(),
   projectAlias = '',
   config = {}
@@ -294,17 +233,23 @@ async function rememberMemoryUnlocked({
   if (!normalizedContent) throw new Error('Memory content is required');
   assertSafeMemoryContent(normalizedContent);
 
-  const filePath = buildFilePath(normalizedScope, workspaceRoot, projectAlias);
+  await ensurePersistentMemoryImported({ workspaceRoot, scope: normalizedScope });
+  const db = dbForScope(normalizedScope, workspaceRoot);
   const projectKey = normalizedScope === 'project' ? getProjectMemoryKey(workspaceRoot, projectAlias) : '';
   const existing = await readScopeMemoryItems(normalizedScope, workspaceRoot, projectAlias);
   const probe = normalizeMemoryItem({
     content: normalizedContent,
     kind: normalizeMemoryKind(kind, 'note'),
+    family,
     summary,
     source,
     confidence,
     pinned,
     semanticKey,
+    toolName,
+    environmentKey,
+    tags,
+    evidence,
     ...(lifecycle ? { lifecycle: validateLifecycle(lifecycle) } : {})
   }, normalizedScope, projectKey);
 
@@ -316,6 +261,10 @@ async function rememberMemoryUnlocked({
       ...probe,
       id: existing[replaceIndex].id,
       createdAt: existing[replaceIndex].createdAt,
+      hitCount: existing[replaceIndex].hitCount,
+      hits: existing[replaceIndex].hits,
+      successCount: existing[replaceIndex].successCount,
+      failureCount: existing[replaceIndex].failureCount,
       updatedAt: nowIso()
     };
     existing.splice(replaceIndex, 1, saved);
@@ -336,7 +285,6 @@ async function rememberMemoryUnlocked({
     seen.add(key);
     deduped.push(item);
   }
-  // Prefer pinned items when capping; preserve relative order among survivors.
   const ranked = deduped.map((item, index) => ({ item, index }));
   const pinnedRanked = ranked.filter((entry) => entry.item.pinned);
   const unpinnedRanked = ranked.filter((entry) => !entry.item.pinned);
@@ -353,7 +301,7 @@ async function rememberMemoryUnlocked({
     const [removed] = capped.splice(removeIdx, 1);
     totalChars -= measureMemoryChars(removed);
   }
-  await writeMemoryBucket(filePath, capped);
+  transaction(db, () => replaceScopeMemories(db, normalizedScope, capped));
   if (!capped.some((item) => item.id === saved.id)) {
     const error = new Error('Memory was not saved because pinned items occupy the configured capacity');
     error.code = 'MEMORY_CAPACITY_PINNED';
@@ -364,40 +312,51 @@ async function rememberMemoryUnlocked({
 
 export function rememberMemory(args = {}) {
   const normalizedScope = ensureScope(args.scope);
-  const filePath = buildFilePath(normalizedScope, args.workspaceRoot, args.projectAlias);
-  return withMutationLock(`bucket:${filePath}`, () => rememberMemoryUnlocked({ ...args, scope: normalizedScope }));
+  return withMutationLock(lockKeyForScope(normalizedScope, args.workspaceRoot), () => (
+    rememberMemoryUnlocked({ ...args, scope: normalizedScope })
+  ));
 }
 
-async function forgetMemoryUnlocked({ scope, id, workspaceRoot = process.cwd(), projectAlias = '' }) {
+async function forgetMemoryUnlocked({ scope, id, workspaceRoot = process.cwd() }) {
   const normalizedScope = ensureScope(scope);
-  if (normalizedScope === 'project') {
-    // Project memories live across all memory/project/*.json files. Remove
-    // the id from EACH file individually — never write the merged list back
-    // into project.json (that would duplicate every other file's items).
-    const files = await listProjectMemoryFiles(workspaceRoot);
-    let removed = 0;
-    for (const file of files) {
-      const bucket = await readMemoryBucketDocument(file);
-      const next = bucket.items.filter((item) => String(item?.id || '') !== id);
-      if (next.length !== bucket.items.length) {
-        await writeMemoryBucket(file, next, { maintenance: bucket.maintenance });
-        removed += bucket.items.length - next.length;
-      }
-    }
-    return { removed };
-  }
-  const filePath = buildFilePath(normalizedScope, workspaceRoot, projectAlias);
-  const existing = await listMemories({ scope: normalizedScope, workspaceRoot, projectAlias });
-  const kept = existing.filter((item) => item.id !== id);
-  await writeMemoryBucket(filePath, kept);
-  return { removed: existing.length - kept.length };
+  await ensurePersistentMemoryImported({ workspaceRoot, scope: normalizedScope });
+  const db = dbForScope(normalizedScope, workspaceRoot);
+  const removed = deleteMemory(db, id);
+  return { removed };
 }
 
-export async function searchMemories({ scope, query, workspaceRoot = process.cwd(), projectAlias = '' }) {
-  const items = await listMemories({ scope, workspaceRoot, projectAlias });
-  const needle = normalizeMemoryText(query).toLowerCase();
-  if (!needle) return items;
-  return items.filter((item) => item.content.toLowerCase().includes(needle) || item.summary.toLowerCase().includes(needle));
+export async function searchMemories({
+  scope = 'all',
+  query = '',
+  family,
+  kind,
+  limit,
+  workspaceRoot = process.cwd(),
+  config = {}
+} = {}) {
+  const needle = normalizeMemoryText(query);
+  const requestedScope = String(scope || 'all').trim().toLowerCase();
+  if (!needle) {
+    if (requestedScope === 'all') {
+      const [user, globalItems, project] = await Promise.all([
+        listMemories({ scope: 'user', workspaceRoot }),
+        listMemories({ scope: 'global', workspaceRoot }),
+        listMemories({ scope: 'project', workspaceRoot })
+      ]);
+      return [...user, ...globalItems, ...project];
+    }
+    return listMemories({ scope: requestedScope, workspaceRoot });
+  }
+  return retrieveMemories({
+    query: needle,
+    scope: requestedScope,
+    family,
+    kind,
+    limit,
+    workspaceRoot,
+    config,
+    mode: 'turn'
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -426,6 +385,7 @@ function normalizeInboxScope(value) {
 async function captureToInboxUnlocked({
   scope = 'global',
   type = 'observation',
+  family = '',
   summary,
   details = '',
   suggestedAction = '',
@@ -455,6 +415,13 @@ async function captureToInboxUnlocked({
     scope: normalizeInboxScope(scope),
     source,
     type: normalizeMemoryKind(type, 'note'),
+    family: inferMemoryFamily({
+      family,
+      scope: normalizeInboxScope(scope),
+      kind: normalizeMemoryKind(type, 'note'),
+      content: normalizedDetails,
+      summary: normalizedSummary
+    }),
     summary: normalizedSummary,
     details: normalizedDetails,
     suggestedAction: normalizedSuggestedAction,
@@ -481,7 +448,20 @@ async function captureToInboxUnlocked({
             decisionState: String(evidence.decisionState || '').slice(0, 40),
             durableScore: Math.max(0, Math.min(10, Number(evidence.durableScore) || 0)),
             confidence: Math.max(0, Math.min(1, Number(evidence.confidence) || 0)),
-            reason: normalizeMemoryText(evidence.reason).slice(0, 240)
+            reason: normalizeMemoryText(evidence.reason).slice(0, 240),
+            ...(evidence.successful_recovery === true ? { successful_recovery: true } : {}),
+            ...(Number.isFinite(Number(evidence.failed_attempts))
+              ? { failed_attempts: Number(evidence.failed_attempts) }
+              : {}),
+            ...(evidence.failed_approach
+              ? { failed_approach: String(evidence.failed_approach).slice(0, 240) }
+              : {}),
+            ...(evidence.working_approach
+              ? { working_approach: String(evidence.working_approach).slice(0, 240) }
+              : {}),
+            ...(Array.isArray(evidence.tool_names)
+              ? { tool_names: evidence.tool_names.map((name) => String(name).slice(0, 40)).filter(Boolean).slice(0, 8) }
+              : {})
           }
         }
       : {})
@@ -496,8 +476,9 @@ async function captureToInboxUnlocked({
 
 export function forgetMemory(args = {}) {
   const normalizedScope = ensureScope(args.scope);
-  const filePath = buildFilePath(normalizedScope, args.workspaceRoot, args.projectAlias);
-  return withMutationLock(`bucket:${filePath}`, () => forgetMemoryUnlocked({ ...args, scope: normalizedScope }));
+  return withMutationLock(lockKeyForScope(normalizedScope, args.workspaceRoot), () => (
+    forgetMemoryUnlocked({ ...args, scope: normalizedScope })
+  ));
 }
 
 export function captureToInbox(args = {}) {
@@ -571,8 +552,11 @@ export async function promoteMemory({
     scope: normalizeMemoryScope(scope, { fallback: 'global' }),
     content,
     kind: normalizeMemoryKind(entry.type || entry.kind, 'note'),
+    family: entry.family || '',
     semanticKey: entry.semanticKey || '',
     summary: normalizeMemoryText(entry.summary),
+    toolName: entry.toolName || '',
+    evidence: entry.evidence,
     source: `dream-promote:${entry.id}`,
     confidence: Math.min(1, Math.max(0.5, confidence)),
     lifecycle: lc,

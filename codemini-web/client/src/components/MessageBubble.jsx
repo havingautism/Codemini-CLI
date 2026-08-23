@@ -72,10 +72,13 @@ import {
 import { parseScrapbookEntryId } from "@/lib/message-context-parsers.js";
 import {
   collectFileChangePatch,
-  reconcileFileChangesWithGit,
+  canShowFileChangeUndo,
+  enrichFileChangesWithGit,
   resolveFileChangeSequenceAction,
   resolveFileChangePreviewLines,
+  summarizeFileChangesWorkspace,
 } from "@/lib/file-change-preview.js";
+import { useGitWorkspace } from "@/hooks/use-git-workspace.js";
 import { ROLE_BADGE_CLASS, ROLE_PILLS } from "./PlanProgress.jsx";
 import { PlanStepStatusGlyph } from "@/components/plan-step-icons.jsx";
 import {
@@ -1161,8 +1164,37 @@ function summarizeFileChanges(changes = []) {
   };
 }
 
-function FileChangesOverviewBar({ changes }) {
+function resolveGitWorkspaceStatusLabel(status) {
+  if (status === "?" || status === "A") return t("gitDiffUntracked");
+  if (status === "D") return t("gitDiffDeleted");
+  return t("gitDiffModified");
+}
+
+function FileChangeWorkspaceBadge({ workspace }) {
+  if (!workspace || workspace.dirty === undefined) return null;
+  if (workspace.dirty) {
+    return (
+      <span
+        className="shrink-0 rounded px-1.5 py-px text-[10px] font-medium text-(--accent-blue)"
+        title={resolveGitWorkspaceStatusLabel(workspace.status)}
+      >
+        {t("fileChangeWorkspaceDirty")}
+      </span>
+    );
+  }
+  return (
+    <span
+      className="shrink-0 rounded px-1.5 py-px text-[10px] font-medium text-(--text-muted)"
+      title={t("fileChangeWorkspaceClean")}
+    >
+      {t("fileChangeWorkspaceClean")}
+    </span>
+  );
+}
+
+function FileChangesOverviewBar({ changes, gitStatus }) {
   const stats = summarizeFileChanges(changes);
+  const workspace = summarizeFileChangesWorkspace(changes, undefined, gitStatus);
   if (!stats.fileCount) return null;
 
   const actionColors = {
@@ -1214,6 +1246,21 @@ function FileChangesOverviewBar({ changes }) {
           <span className="text-(--accent-red)">−{stats.totalRemoved}</span>
         )}
       </span>
+      {workspace.status === "ready" && workspace.dirty > 0 && (
+        <span className="text-[11px] text-(--text-muted)">
+          {t("fileChangesWorkspaceDirty").replace(
+            "{{count}}",
+            String(workspace.dirty),
+          )}
+        </span>
+      )}
+      {workspace.status === "ready" &&
+        workspace.dirty === 0 &&
+        workspace.total > 0 && (
+          <span className="text-[11px] text-(--text-muted)">
+            {t("fileChangesWorkspaceClean")}
+          </span>
+        )}
       {/* {breakdown.length > 0 && (
         <div className="ml-auto flex flex-wrap items-center gap-1.5">
           {breakdown.map((item) => (
@@ -1233,7 +1280,7 @@ function FileChangesOverviewBar({ changes }) {
   );
 }
 
-function FileChangesSummary({ changes }) {
+function FileChangesSummary({ changes, gitStatus }) {
   const currentSessionId = useCurrentSessionId();
   const [openFiles, setOpenFiles] = useState(() => new Set());
   const [undoing, setUndoing] = useState(() => new Set());
@@ -1302,7 +1349,7 @@ function FileChangesSummary({ changes }) {
   return (
     <>
       <div className="codemini-message-surface mt-6 overflow-hidden">
-        <FileChangesOverviewBar changes={changes} />
+        <FileChangesOverviewBar changes={changes} gitStatus={gitStatus} />
         {changes.map((c, i) => {
           const key = `${c.path}-${i}`;
           const fileOpen = openFiles.has(key);
@@ -1374,6 +1421,7 @@ function FileChangesSummary({ changes }) {
                     -{c.linesRemoved}
                   </span>
                 )}
+                <FileChangeWorkspaceBadge workspace={c.workspace} />
                 {canOpenFile && (
                   <div
                     className="flex h-6 shrink-0 items-center gap-0.5"
@@ -1422,7 +1470,7 @@ function FileChangesSummary({ changes }) {
                     </button>
                   </div>
                 )}
-                {changeSetIds.length > 0 && (
+                {canShowFileChangeUndo(c) && (
                   <span
                     role="button"
                     tabIndex={0}
@@ -1862,13 +1910,7 @@ export function shouldShowPostCompletionExtras(
   return String(planStep.role || "").toLowerCase() === "summarizer";
 }
 
-function shouldShowFileChanges(
-  message,
-  messageComplete,
-  mergedFileChanges,
-  projectIsGit,
-) {
-  if (!projectIsGit) return false;
+function shouldShowFileChanges(message, messageComplete, mergedFileChanges) {
   return shouldShowPostCompletionExtras(
     message,
     messageComplete,
@@ -2107,11 +2149,10 @@ function AnswerProcessFold({ groups, durationMs }) {
 export const MessageBubble = memo(function MessageBubble({
   message,
   onRetry,
-  projectIsGit = true,
-  gitFiles,
   dockTodo = false,
   turnActive = false,
 }) {
+  const git = useGitWorkspace();
   const actions = useAppActions();
   const {
     role,
@@ -2182,10 +2223,17 @@ export const MessageBubble = memo(function MessageBubble({
   );
   const hasAnswerFold = answerLayout.hasFold;
   const preAnswerDuration = answerLayout.durationMs;
-  const mergedFileChanges = useMemo(() => {
-    const merged = mergeFileChanges(fileChanges || []);
-    return reconcileFileChangesWithGit(merged, gitFiles);
-  }, [fileChanges, gitFiles]);
+  const mergedFileChanges = useMemo(
+    () => mergeFileChanges(fileChanges || []),
+    [fileChanges],
+  );
+  const enrichedFileChanges = useMemo(
+    () =>
+      enrichFileChangesWithGit(mergedFileChanges, git.files, {
+        gitKnown: git.isReady,
+      }),
+    [mergedFileChanges, git.files, git.isReady],
+  );
 
   const rawMessageText = getMessageText(message) || legacyText || "";
   const rawResponseStatus = String(
@@ -2368,7 +2416,6 @@ export const MessageBubble = memo(function MessageBubble({
     message,
     messageComplete,
     mergedFileChanges,
-    projectIsGit,
   );
   const showRelatedLinks = shouldShowPostCompletionExtras(
     message,
@@ -2498,7 +2545,10 @@ export const MessageBubble = memo(function MessageBubble({
             {showRelatedLinks && <EmbedBanner items={messageEmbeds} />}
 
             {showFileChanges && (
-              <FileChangesSummary changes={mergedFileChanges} />
+              <FileChangesSummary
+                changes={enrichedFileChanges}
+                gitStatus={git.status}
+              />
             )}
             {message.manualAborted && (
               <p className="mt-2 text-xs text-(--text-muted)">

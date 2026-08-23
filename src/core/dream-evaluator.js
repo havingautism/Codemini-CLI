@@ -1,5 +1,5 @@
 import { createChatCompletion } from './provider/index.js';
-import { normalizeMemoryKind, normalizeMemoryScope, buildDreamPromotionGraphBlock } from './memory-policy.js';
+import { inferMemoryFamily, normalizeMemoryKind, normalizeMemoryScope, buildDreamPromotionGraphBlock } from './memory-policy.js';
 import { appendStructuredOutputLanguageRule } from './reply-language.js';
 
 const EVAL_TIMEOUT_MS = 30000;
@@ -76,6 +76,13 @@ function parseResults(text) {
       action: r.action === 'keep' ? 'keep' : r.action === 'retry' ? 'retry' : 'discard',
       scope: normalizeMemoryScope(r.scope, { fallback: 'global' }),
       kind: normalizeMemoryKind(r.kind, 'note'),
+      family: inferMemoryFamily({
+        family: r.family,
+        scope: normalizeMemoryScope(r.scope, { fallback: 'global' }),
+        kind: normalizeMemoryKind(r.kind, 'note'),
+        content: String(r.content || ''),
+        summary: String(r.summary || '')
+      }),
       content: String(r.content || '').slice(0, 300),
       summary: String(r.summary || '').slice(0, 120),
       confidence: Math.min(1, Math.max(0.5, Number(r.confidence) || 0.7)),

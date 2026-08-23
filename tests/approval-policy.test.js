@@ -345,6 +345,8 @@ test('outside-workspace inspection reports resolved absolute targets', async () 
 
 test('agent loop requests review before a full-access outside write', async () => {
   const parent = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-outside-loop-'));
+  const previousGlobalDir = process.env.CODEMINI_GLOBAL_DIR;
+  process.env.CODEMINI_GLOBAL_DIR = parent;
   const project = path.join(parent, 'project');
   const outside = path.join(parent, 'outside.txt');
   let completionIndex = 0;
@@ -396,12 +398,17 @@ test('agent loop requests review before a full-access outside write', async () =
       [path.join(physicalParent, 'outside.txt')]
     );
   } finally {
-    await fs.rm(parent, { recursive: true, force: true });
+    closeSqliteDatabasesForTests(parent);
+    if (previousGlobalDir === undefined) delete process.env.CODEMINI_GLOBAL_DIR;
+    else process.env.CODEMINI_GLOBAL_DIR = previousGlobalDir;
+    await fs.rm(parent, { recursive: true, force: true, maxRetries: 8, retryDelay: 50 });
   }
 });
 
 test('approval grants one exact outside write without changing allowed_paths', async () => {
   const parent = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-outside-grant-'));
+  const previousGlobalDir = process.env.CODEMINI_GLOBAL_DIR;
+  process.env.CODEMINI_GLOBAL_DIR = parent;
   const project = path.join(parent, 'project');
   const outside = path.join(parent, 'approved.txt');
   const config = {
@@ -446,8 +453,10 @@ test('approval grants one exact outside write without changing allowed_paths', a
     assert.deepEqual(config.policy.allowed_paths, []);
   } finally {
     await tools?.dispose();
-    closeSqliteDatabasesForTests();
-    await fs.rm(parent, { recursive: true, force: true });
+    closeSqliteDatabasesForTests(parent);
+    if (previousGlobalDir === undefined) delete process.env.CODEMINI_GLOBAL_DIR;
+    else process.env.CODEMINI_GLOBAL_DIR = previousGlobalDir;
+    await fs.rm(parent, { recursive: true, force: true, maxRetries: 8, retryDelay: 50 });
   }
 });
 

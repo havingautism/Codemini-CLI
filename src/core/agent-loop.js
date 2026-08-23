@@ -1,6 +1,8 @@
 import path from 'node:path';
 import { trimInline as _trimInline, normalizePath } from './string-utils.js';
 import { captureToInbox, listInbox } from './memory-store.js';
+import { createExperienceTracker } from './memory-experience-tracker.js';
+import { retrieveMemories, renderToolExperience } from './memory-retriever.js';
 import {
   isRoutineProjectCommand,
   requiresApprovalEvaluation,
@@ -703,6 +705,13 @@ export async function runAgentLoop({
   getTasks = null,
   workspaceRoot = config?.workspaceRoot || process.cwd()
 }) {
+  const experienceTracker = config?.memory?.enabled === false || config?.memory?.experience?.enabled === false
+    ? null
+    : createExperienceTracker({ workspaceRoot, config });
+  const settleLoop = async (payload) => {
+    if (experienceTracker) await experienceTracker.flush().catch(() => {});
+    return payload;
+  };
   const toolRuntime = providedToolRuntime || createToolRuntime({
     toolRegistry: providedToolRegistry,
     definitions: toolDefinitions,
@@ -921,7 +930,7 @@ export async function runAgentLoop({
       }
       void maybeRunAutoDream(step, { force: true });
       emitStepEnd('final');
-      return { text: finalText, messages, steps: step };
+      return settleLoop({ text: finalText, messages, steps: step });
     }
 
     pendingSummaryNudges = 0;
@@ -1422,6 +1431,18 @@ export async function runAgentLoop({
         } catch {}
       }
 
+      const toolExperiencePromise = (
+        config?.memory?.enabled === false || config?.memory?.retrieval?.enabled === false
+      )
+        ? Promise.resolve([])
+        : retrieveMemories({
+            query: [toolName, String(effectiveArgs?.command || effectiveArgs?.path || ''), process.platform].join(' '),
+            family: ['coding'],
+            workspaceRoot,
+            config,
+            mode: 'tool'
+          }).catch(() => []);
+
       let toolResult;
       try {
         toolResult = await toolRuntime.execute(toolName, effectiveArgs, {
@@ -1441,12 +1462,15 @@ export async function runAgentLoop({
         if (onEvent) {
           onEvent({ type: 'tool:error', name: toolName, displayName, id: call.id, arguments: effectiveArgs, durationMs, summary });
         }
-        if (isAutoCaptureEnabled(config) && shouldAutoCaptureError(toolName, message)) {
+        experienceTracker?.recordAttempt({ tool: toolName, args: effectiveArgs, result: 'failure', error: message });
+        if (!experienceTracker && isAutoCaptureEnabled(config) && shouldAutoCaptureError(toolName, message)) {
           await captureToolFailure(toolName, message, effectiveArgs, config).catch(() => {});
         }
+        const lessons = await toolExperiencePromise;
+        const content = clipToolResult({ error: message }, toolResultMaxChars);
         return {
           callId: call.id,
-          content: clipToolResult({ error: message }, toolResultMaxChars),
+          content: lessons.length ? `${renderToolExperience(lessons)}\n\n${content}` : content,
           error: true,
           durationMs,
           summary,
@@ -1468,15 +1492,23 @@ export async function runAgentLoop({
             summary
           });
         }
-        if (isAutoCaptureEnabled(config) && shouldAutoCaptureRunFailure(runFailureMessage)) {
+        if (!experienceTracker && isAutoCaptureEnabled(config) && shouldAutoCaptureRunFailure(runFailureMessage)) {
           await captureToolFailure(toolName, runFailureMessage, effectiveArgs, config).catch(() => {});
         }
+        experienceTracker?.recordAttempt({
+          tool: toolName,
+          args: effectiveArgs,
+          result: 'failure',
+          error: runFailureMessage
+        });
         let formatted = formatToolResult(toolResult, toolName, effectiveArgs, toolRuntime, toolResultMaxChars);
         if (!String(formatted || '').trim() || formatted === emptyToolResultMarker(toolName)) {
           formatted = runFailureMessage;
         } else if (!/^error:/im.test(formatted)) {
           formatted = `error: ${runFailureMessage}\n\n${formatted}`;
         }
+        const lessons = await toolExperiencePromise;
+        if (lessons.length) formatted = `${renderToolExperience(lessons)}\n\n${formatted}`;
         if (shouldPersistLargeToolResult(toolName)) {
           formatted = await activeToolResultStore.storeResultIfNeeded(call.id, formatted, toolResult);
         }
@@ -1557,9 +1589,12 @@ export async function runAgentLoop({
 
       if (toolResult && typeof toolResult === 'object' && toolResult.error) {
         const errMsg = String(toolResult.error).slice(0, 120);
-        if (isAutoCaptureEnabled(config) && shouldAutoCaptureError(toolName, errMsg)) {
+        experienceTracker?.recordAttempt({ tool: toolName, args: effectiveArgs, result: 'failure', error: errMsg });
+        if (!experienceTracker && isAutoCaptureEnabled(config) && shouldAutoCaptureError(toolName, errMsg)) {
           await captureToolFailure(toolName, errMsg, effectiveArgs, config).catch(() => {});
         }
+      } else {
+        experienceTracker?.recordAttempt({ tool: toolName, args: effectiveArgs, result: 'success' });
       }
 
       // P1b: Use per-tool formatter if available, else fallback
@@ -1568,6 +1603,8 @@ export async function runAgentLoop({
       if (hookContexts.length > 0) {
         formatted = `${formatted}\n\n[Hook context]\n${hookContexts.join('\n')}`;
       }
+      const lessons = await toolExperiencePromise;
+      if (lessons.length) formatted = `${renderToolExperience(lessons)}\n\n${formatted}`;
       noteAnalysisEvidence(analysisGuard, toolName, effectiveArgs, toolResult);
 
       // A loaded deferred schema becomes visible on the next model response.
@@ -1679,7 +1716,7 @@ export async function runAgentLoop({
       void maybeRunAutoDream(step, { force: true });
       await fireStopHooks(workflowCompleteText);
       emitStepEnd('workflow');
-      return { text: workflowCompleteText, messages, steps: step, workflowComplete: true };
+      return settleLoop({ text: workflowCompleteText, messages, steps: step, workflowComplete: true });
     }
     if (typeof shouldCheckpoint === 'function') {
       const checkpoint = await shouldCheckpoint({
@@ -1691,12 +1728,12 @@ export async function runAgentLoop({
         const checkpointText = lastAssistantText || '';
         if (onEvent) onEvent({ type: 'checkpoint', step });
         emitStepEnd('checkpoint');
-        return {
+        return settleLoop({
           text: checkpointText,
           messages,
           steps: step,
           checkpoint: true,
-        };
+        });
       }
     }
     emitStepEnd('tools');
@@ -1706,22 +1743,22 @@ export async function runAgentLoop({
   // 如果被用户中止，返回已有内容并标记
   if (signal?.aborted) {
     const fallback = lastAssistantText || '';
-    return {
+    return settleLoop({
       text: fallback,
       messages,
       steps: step,
       aborted: true
-    };
+    });
   }
 
   const fallback = lastAssistantText || 'Stopped before final response.';
   void maybeRunAutoDream(step, { force: true });
   await fireStopHooks(fallback);
-  return {
+  return settleLoop({
     text: fallback,
     messages,
     steps: step
-  };
+  });
 }
 
 function attachToolCallSessionMeta(assistantMessage, callId, meta = {}) {

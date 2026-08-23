@@ -67,7 +67,7 @@ async function withGlobalDir(task) {
     closeSqliteDatabasesForTests();
     if (previous === undefined) delete process.env.CODEMINI_GLOBAL_DIR;
     else process.env.CODEMINI_GLOBAL_DIR = previous;
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 50 });
   }
 }
 

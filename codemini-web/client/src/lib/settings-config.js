@@ -207,6 +207,33 @@ export function buildSettingsFields() {
       help: t("projectContextEnabledHelp"),
     },
     {
+      tab: "memory",
+      path: "memory.embedding.enabled",
+      control: "switch",
+      label: t("memoryEmbeddingEnabled"),
+      help: t("memoryEmbeddingEnabledHelp"),
+    },
+    {
+      tab: "memory",
+      path: "memory.embedding.model",
+      control: "input",
+      label: t("memoryEmbeddingModel"),
+      placeholder: "text-embedding-3-small",
+      help: t("memoryEmbeddingModelHelp"),
+      visibleWhen: ({ getValue }) => getValue("memory.embedding.enabled") === true
+        || getValue("memory.embedding.enabled") === "true",
+    },
+    {
+      tab: "memory",
+      path: "memory.embedding.base_url",
+      control: "input",
+      label: t("memoryEmbeddingBaseUrl"),
+      placeholder: "https://api.openai.com/v1",
+      help: t("memoryEmbeddingBaseUrlHelp"),
+      visibleWhen: ({ getValue }) => getValue("memory.embedding.enabled") === true
+        || getValue("memory.embedding.enabled") === "true",
+    },
+    {
       tab: "shell",
       path: "shell.default",
       control: "choiceList",

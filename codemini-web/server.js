@@ -3170,6 +3170,7 @@ async function main() {
           untracked: 0,
           linesAdded: 0,
           linesRemoved: 0,
+          files: [],
         });
       }
       return;

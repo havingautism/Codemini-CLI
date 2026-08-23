@@ -183,6 +183,7 @@ export const SETTINGS_TABS = [
   { id: "execution", labelKey: "execution" },
   { id: "web", labelKey: "webSearch" },
   { id: "context", labelKey: "context" },
+  { id: "memory", labelKey: "memory" },
   { id: "shell", labelKey: "shell" },
   { id: "storage", labelKey: "storage" },
   { id: "policy", labelKey: "policy" },

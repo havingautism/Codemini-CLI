@@ -82,7 +82,7 @@ import { getReplyLanguage, getReplyLanguageName, stripReplyLanguageDirective, bu
 import { composeSystemPrompt } from './system-prompt-composer.js';
 import { buildTurnContextPrefix, buildTurnUserPrompt } from './turn-context.js';
 import { buildSubAgentShellRulesPrompt, buildSubAgentRuntimeNote, resolveShellContext } from './shell-profile.js';
-import { getMemoryDir, getProjectMemoryDir, getProjectPlansDir, getProjectSpecsDir, getProjectWorkspaceDir, getSessionsDir, getSkillsDir } from './paths.js';
+import { getBaseConfigDir, getProjectIndexDir, getProjectPlansDir, getProjectSpecsDir, getProjectWorkspaceDir, getSessionsDir, getSkillsDir } from './paths.js';
 import { buildMemorySnapshot } from './memory-prompt.js';
 import { buildProjectContextSnippet, initializeProjectIndex } from './project-index.js';
 import { queryProjectKnowledgeGraph } from './project-knowledge-graph.js';
@@ -8177,23 +8177,16 @@ export async function createChatRuntime({
   };
   const memoryFilesMtimeKey = async (workspaceRoot) => {
     const paths = [
-      path.join(getMemoryDir(), 'user.json'),
-      path.join(getMemoryDir(), 'global.json'),
+      path.join(getBaseConfigDir(), 'codemini.sqlite'),
+      path.join(getProjectIndexDir(workspaceRoot), 'index.sqlite'),
     ];
-    try {
-      const dir = getProjectMemoryDir(workspaceRoot);
-      const entries = await fs.readdir(dir);
-      for (const entry of entries) {
-        if (String(entry).endsWith('.json')) paths.push(path.join(dir, entry));
-      }
-    } catch {}
     const stamps = await Promise.all(paths.map((filePath) =>
       fs.stat(filePath).then((stat) => `${filePath}:${stat.mtimeMs}`, () => `${filePath}:missing`),
     ));
     return stamps.join('|');
   };
-  const getMemoizedMemorySnapshot = async () => {
-    const mtimeKey = await memoryFilesMtimeKey(root);
+  const getMemoizedMemorySnapshot = async (userQuery = '') => {
+    const mtimeKey = `${await memoryFilesMtimeKey(root)}::${String(userQuery || '')}`;
     if (
       memorySnapshotMemo
       && memorySnapshotMemo.configRef === config
@@ -8201,7 +8194,7 @@ export async function createChatRuntime({
     ) {
       return memorySnapshotMemo.value;
     }
-    const value = await buildMemorySnapshot({ config, workspaceRoot: root }).catch(() => '');
+    const value = await buildMemorySnapshot({ config, workspaceRoot: root, query: userQuery }).catch(() => '');
     memorySnapshotMemo = { configRef: config, mtimeKey, value };
     return value;
   };
@@ -8596,14 +8589,19 @@ export async function createChatRuntime({
   const buildActiveSystemPrompt = async ({
     includeSkillIndex = true,
     includeMemoryGuide = true,
+    userQuery = '',
   } = {}) => {
     const memoryGuide = `Use save_memory only for explicit lasting preferences or stable project conventions; never store secrets or duplicates. Write it in ${getReplyLanguageName(config)}. Coding discoveries go through later Dream/session review.`;
+    const [skillsPrompt, memorySnapshot] = await Promise.all([
+      includeSkillIndex ? getSkillIndexPrompt() : Promise.resolve(''),
+      getMemoizedMemorySnapshot(userQuery),
+    ]);
     return composeSystemPrompt({
       shellRulesPrompt: getMemoizedBaseSystemPrompt(),
       config,
       workspaceRoot: root,
-      skillsPrompt: includeSkillIndex ? getSkillIndexPrompt() : '',
-      memorySnapshot: await getMemoizedMemorySnapshot(),
+      skillsPrompt,
+      memorySnapshot,
       extraPrompts: includeMemoryGuide ? [memoryGuide] : [],
       soulContext: normalizeExecutionMode(executionMode) === 'plan' ? 'coding' : 'daily',
     });
@@ -8630,11 +8628,12 @@ export async function createChatRuntime({
     activeAbortController = new AbortController();
     const { signal } = activeAbortController;
     const codingRouteEnabled = normalizeExecutionMode(executionMode) === 'plan';
+    const inputText = String(line || '');
     const activeReplySystemPrompt = await buildActiveSystemPrompt({
       includeSkillIndex: !codingRouteEnabled,
       includeMemoryGuide: !codingRouteEnabled,
+      userQuery: inputText,
     });
-    const inputText = String(line || '');
     const optionModelText = typeof options?.modelText === 'string' && options.modelText.trim()
       ? await expandFileMentions(options.modelText, root)
       : '';

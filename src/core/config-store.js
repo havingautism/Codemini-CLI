@@ -98,6 +98,25 @@ const DEFAULT_CONFIG = {
     max_global_chars: 2200,
     max_project_chars: 2200,
     project_binding: 'path-or-alias',
+    retrieval: {
+      enabled: true,
+      mode: 'fts',
+      turn_limit: 5,
+      tool_limit: 3,
+      min_score: 0.2
+    },
+    experience: {
+      enabled: true,
+      capture_failures: true,
+      writeback_on_recovery: true,
+      max_attempts_per_episode: 6
+    },
+    embedding: {
+      enabled: false,
+      provider: 'openai-compatible',
+      model: '',
+      base_url: ''
+    },
     background_review: {
       enabled: true,
       on_start: true,
@@ -269,6 +288,27 @@ function normalizePolicyLists(config) {
   next.memory.project_binding = ['path', 'alias', 'path-or-alias'].includes(String(next.memory.project_binding || ''))
     ? String(next.memory.project_binding)
     : 'path-or-alias';
+  next.memory.retrieval = next.memory.retrieval || {};
+  next.memory.retrieval.enabled = next.memory.retrieval.enabled !== false;
+  next.memory.retrieval.mode = String(next.memory.retrieval.mode || 'fts').trim().toLowerCase() === 'hybrid'
+    ? 'hybrid'
+    : 'fts';
+  next.memory.retrieval.turn_limit = Math.max(1, Math.min(10, Number(next.memory.retrieval.turn_limit || 5)));
+  next.memory.retrieval.tool_limit = Math.max(1, Math.min(10, Number(next.memory.retrieval.tool_limit || 3)));
+  next.memory.retrieval.min_score = Math.max(0, Math.min(1, Number(next.memory.retrieval.min_score ?? 0.2)));
+  next.memory.experience = next.memory.experience || {};
+  next.memory.experience.enabled = next.memory.experience.enabled !== false;
+  next.memory.experience.capture_failures = next.memory.experience.capture_failures !== false;
+  next.memory.experience.writeback_on_recovery = next.memory.experience.writeback_on_recovery !== false;
+  next.memory.experience.max_attempts_per_episode = Math.max(1, Number(next.memory.experience.max_attempts_per_episode || 6));
+  next.memory.embedding = next.memory.embedding || {};
+  next.memory.embedding.enabled = next.memory.embedding.enabled === true;
+  next.memory.embedding.provider = String(next.memory.embedding.provider || 'openai-compatible').trim().toLowerCase() === 'anthropic'
+    ? 'anthropic'
+    : 'openai-compatible';
+  next.memory.embedding.model = String(next.memory.embedding.model || '').trim();
+  next.memory.embedding.base_url = String(next.memory.embedding.base_url || '').trim();
+  next.memory.retrieval.mode = next.memory.embedding.enabled ? 'hybrid' : 'fts';
   next.memory.background_review = next.memory.background_review || {};
   next.memory.background_review.enabled = next.memory.background_review.enabled !== false;
   next.memory.background_review.on_start = next.memory.background_review.on_start !== false;
@@ -441,7 +481,7 @@ export async function saveConfig(config) {
 export async function setConfigValue(keyPath, value) {
   const config = await loadConfig();
   setNested(config, keyPath, value);
-  await saveConfig(config);
+  await saveConfig(normalizePolicyLists(config));
 }
 
 export async function getConfigValue(keyPath) {

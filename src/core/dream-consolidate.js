@@ -209,7 +209,8 @@ export async function runDreamConsolidation({
         /* 用 LLM 提炼后的内容覆盖原始报错 */
         summary: evaluation.summary || entry.summary,
         details: evaluation.content || entry.details || entry.summary,
-        type: evaluation.kind || entry.type || 'observation'
+        type: evaluation.kind || entry.type || 'observation',
+        family: evaluation.family || entry.family
       };
 
       if (!dryRun) {

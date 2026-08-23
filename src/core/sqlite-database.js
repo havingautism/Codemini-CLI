@@ -3,8 +3,8 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { getBaseConfigDir, getProjectIndexDir } from './paths.js';
 
-const GLOBAL_SCHEMA_VERSION = 13;
-const PROJECT_SCHEMA_VERSION = 5;
+const GLOBAL_SCHEMA_VERSION = 14;
+const PROJECT_SCHEMA_VERSION = 6;
 const databases = new Map();
 
 function configure(db) {
@@ -47,6 +47,8 @@ function openDatabase(filePath, schema, version) {
     db.close();
     throw error;
   }
+  // FTS5 virtual tables cannot be created inside the schema transaction.
+  ensureMemoriesSchema(db);
   databases.set(resolved, db);
   return db;
 }
@@ -469,17 +471,64 @@ function createProjectSchema(db, currentVersion = 0) {
   }
 }
 
-export function getGlobalDatabase() {
+function ensureMemoriesSchema(db) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS memories (
+      id TEXT PRIMARY KEY,
+      scope TEXT NOT NULL,
+      family TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      semantic_key TEXT NOT NULL DEFAULT '',
+      content TEXT NOT NULL,
+      summary TEXT NOT NULL DEFAULT '',
+      lifecycle TEXT NOT NULL DEFAULT 'operational',
+      confidence REAL NOT NULL DEFAULT 0.8,
+      utility_score REAL NOT NULL DEFAULT 0.5,
+      source TEXT NOT NULL DEFAULT '',
+      source_session_id TEXT NOT NULL DEFAULT '',
+      tool_name TEXT NOT NULL DEFAULT '',
+      environment_key TEXT NOT NULL DEFAULT '',
+      tags_json TEXT NOT NULL DEFAULT '[]',
+      evidence_json TEXT NOT NULL DEFAULT '{}',
+      hit_count INTEGER NOT NULL DEFAULT 0,
+      success_count INTEGER NOT NULL DEFAULT 0,
+      failure_count INTEGER NOT NULL DEFAULT 0,
+      pinned INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      last_hit_at TEXT
+    ) STRICT;
+    CREATE INDEX IF NOT EXISTS memories_scope_updated_idx ON memories(scope, updated_at DESC);
+    CREATE INDEX IF NOT EXISTS memories_family_idx ON memories(family, kind);
+    CREATE INDEX IF NOT EXISTS memories_semantic_idx ON memories(scope, semantic_key);
+  `);
+  db.exec(`
+    CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
+      id UNINDEXED,
+      summary,
+      content,
+      tags,
+      tool_name,
+      tokenize = 'unicode61'
+    );
+  `);
+}
+
+export function getGlobalDatabase({ create = true } = {}) {
+  const filePath = path.join(getBaseConfigDir(), 'codemini.sqlite');
+  if (!create && !fs.existsSync(filePath)) return null;
   return openDatabase(
-    path.join(getBaseConfigDir(), 'codemini.sqlite'),
+    filePath,
     createGlobalSchema,
     GLOBAL_SCHEMA_VERSION
   );
 }
 
-export function getProjectDatabase(cwd = process.cwd()) {
+export function getProjectDatabase(cwd = process.cwd(), { create = true } = {}) {
+  const filePath = path.join(getProjectIndexDir(cwd), 'index.sqlite');
+  if (!create && !fs.existsSync(filePath)) return null;
   return openDatabase(
-    path.join(getProjectIndexDir(cwd), 'index.sqlite'),
+    filePath,
     createProjectSchema,
     PROJECT_SCHEMA_VERSION
   );
@@ -497,7 +546,11 @@ export function transaction(db, task) {
   }
 }
 
-export function closeSqliteDatabasesForTests() {
-  for (const db of databases.values()) db.close();
-  databases.clear();
+export function closeSqliteDatabasesForTests(rootDir = '') {
+  const marker = rootDir ? path.basename(path.resolve(rootDir)).toLowerCase() : '';
+  for (const [filePath, db] of [...databases]) {
+    if (marker && !String(filePath).toLowerCase().includes(marker)) continue;
+    try { db.close(); } catch { /* already closed by a parallel test */ }
+    databases.delete(filePath);
+  }
 }

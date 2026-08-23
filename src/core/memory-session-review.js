@@ -4,6 +4,7 @@ import { listSessions, loadSession } from './session-store.js';
 import { captureToInbox } from './memory-store.js';
 import {
   assertSafeMemoryContent,
+  inferMemoryFamily,
   normalizeMemoryKind,
   normalizeMemoryScope,
   normalizeMemoryText,
@@ -126,6 +127,7 @@ export function normalizeSessionMemoryCandidate(candidate, sourceMessages = []) 
   return {
     scope,
     kind,
+    family: inferMemoryFamily({ family: candidate?.family, scope, kind, content, summary }),
     content,
     summary,
     semanticKey,
@@ -210,6 +212,7 @@ export async function reviewSessionMemory({ sessionId, config }) {
       const entry = await captureToInbox({
         scope: candidate.scope,
         type: candidate.kind,
+        family: candidate.family,
         summary: candidate.summary,
         details: candidate.content,
         source: 'session-review',
