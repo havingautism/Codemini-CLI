@@ -4087,6 +4087,34 @@ export function AppProvider({ children }) {
         }
       },
 
+      forkSession: async (messageId) => {
+        const sessionId = String(stateRef.current.currentSessionId || "").trim();
+        const targetMessageId = String(messageId || "").trim();
+        if (!sessionId || !targetMessageId) {
+          return { error: true, message: "Missing session" };
+        }
+        if (
+          stateRef.current.busy ||
+          stateRef.current.live ||
+          isSessionBusyInState(stateRef.current, sessionId)
+        ) {
+          return { error: true, message: t("forkSessionBusy") };
+        }
+        update({ messagesLoading: true });
+        try {
+          const result = await api.forkSession(sessionId, targetMessageId);
+          if (!result?.ok || !result.sessionId) {
+            update({ messagesLoading: false });
+            return result || { error: true, message: "Failed to fork session" };
+          }
+          await switchSessionRef.current?.(result.sessionId);
+          return { ok: true, sessionId: result.sessionId };
+        } catch (err) {
+          update({ messagesLoading: false });
+          return { error: true, message: err?.message || "Failed to fork session" };
+        }
+      },
+
       newSession: async () => {
         update({ currentView: "chat", messagesLoading: true });
         try {

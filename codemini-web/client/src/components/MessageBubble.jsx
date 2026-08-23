@@ -94,6 +94,7 @@ import {
   Copy,
   FileText,
   FolderOpen,
+  GitBranch,
   Hammer,
   Moon,
   Notebook,
@@ -1884,6 +1885,8 @@ function MessageActions({
   retryPrompt = "",
   canRetry = false,
   canSaveToScrapbook = false,
+  canFork = false,
+  messageId = "",
   onSaveToScrapbook,
   onRetry,
   align = "left",
@@ -1893,6 +1896,7 @@ function MessageActions({
   const [copied, setCopied] = useState(false);
   const [saved, setSaved] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [forking, setForking] = useState(false);
   const [saveDialogOpen, setSaveDialogOpen] = useState(false);
 
   async function handleCopy() {
@@ -1929,6 +1933,21 @@ function MessageActions({
         onClick={handleCopy}
       >
         <Copy size={17} />
+      </MessageActionButton>
+      <MessageActionButton
+        label={canFork ? t("forkSession") : t("forkSessionBusy")}
+        disabled={!canFork || forking || !messageId}
+        onClick={async () => {
+          if (!canFork || forking || !messageId) return;
+          setForking(true);
+          try {
+            await actions.forkSession(messageId);
+          } finally {
+            setForking(false);
+          }
+        }}
+      >
+        <GitBranch size={17} />
       </MessageActionButton>
       {canSaveToScrapbook && (
         <MessageActionButton
@@ -2405,6 +2424,8 @@ export const MessageBubble = memo(function MessageBubble({
             retryPrompt={retryPrompt}
             canRetry={canRetry}
             canSaveToScrapbook={false}
+            canFork={!turnActive}
+            messageId={message.id}
             onRetry={onRetry}
             align="right"
             className={cn(
@@ -2498,6 +2519,8 @@ export const MessageBubble = memo(function MessageBubble({
               retryPrompt={retryPrompt}
               canRetry={canRetry}
               canSaveToScrapbook={canSaveToScrapbook}
+              canFork={!turnActive}
+              messageId={message.id}
               onSaveToScrapbook={() =>
                 actions.saveAssistantReplyToScrapbook({
                   messageId: message.id,

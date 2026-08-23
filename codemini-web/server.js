@@ -34,6 +34,10 @@ import {
   deleteSession,
   saveSession,
 } from "../src/core/session-store.js";
+import {
+  forkIdleSession,
+  sessionForkBlockedReason,
+} from "../src/core/session-fork.js";
 import { buildDefaultSystemPrompt } from "../src/core/default-system-prompt.js";
 import {
   parseFrontmatter,
@@ -1080,6 +1084,42 @@ export function createWebRuntimeApi({
             error: true,
             message: error?.message || "Failed to create session",
           },
+          400,
+        );
+      }
+      return true;
+
+  }));
+  runtimeRoutes.post("/api/sessions/fork", nodeRoute(async (req, res) => {
+      const body = await readBody(req);
+      const sessionId = requireSessionId(res, body?.sessionId);
+      if (!sessionId) return true;
+      try {
+        const live = pool.entries.get(sessionId);
+        const state = pool.getSessionState(sessionId);
+        const blocked = sessionForkBlockedReason({
+          busy: live?.bridge?.busy === true || state?.busy === true,
+          status: state?.status,
+        });
+        if (blocked) {
+          jsonResponse(res, { error: true, code: "BUSY", message: blocked }, 409);
+          return true;
+        }
+        const messageId = String(body?.messageId || "").trim();
+        if (!messageId) {
+          jsonResponse(res, { error: true, message: "Missing messageId" }, 400);
+          return true;
+        }
+        const source = live?.bridge?.runtime?.getSession?.() || await loadSession(sessionId);
+        const uiMessages = live?.bridge
+          ? await live.bridge.getUiMessages(sessionId)
+          : loadPersistedUiMessages(sessionId) || [];
+        const created = await forkIdleSession(source, { uiMessages, messageId });
+        jsonResponse(res, { ok: true, sessionId: created.id });
+      } catch (error) {
+        jsonResponse(
+          res,
+          { error: true, message: error?.message || "Failed to fork session" },
           400,
         );
       }

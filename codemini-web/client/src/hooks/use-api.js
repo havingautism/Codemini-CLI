@@ -269,6 +269,15 @@ export async function newSession(projectDir) {
   return res.json();
 }
 
+export async function forkSession(sessionId, messageId) {
+  const res = await api('/api/sessions/fork', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ sessionId, messageId })
+  });
+  return res.json();
+}
+
 export async function fetchConfig() {
   const res = await api('/api/config');
   return res.json();

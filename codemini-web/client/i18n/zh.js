@@ -748,6 +748,8 @@ export const zh = {
   copyCode: "复制",
   copyMessage: "复制",
   copied: "已复制",
+  forkSession: "分叉",
+  forkSessionBusy: "会话进行中，完成后可分叉",
   connected: "已连接",
   disconnected: "连接断开，正在重连...",
   unknownProject: "未知项目",

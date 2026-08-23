@@ -762,6 +762,8 @@ export const en = {
   copyCode: "Copy",
   copyMessage: "Copy",
   copied: "Copied",
+  forkSession: "Fork",
+  forkSessionBusy: "Wait until this session finishes",
   connected: "Connected",
   disconnected: "Disconnected, reconnecting...",
   unknownProject: "Unknown Project",
