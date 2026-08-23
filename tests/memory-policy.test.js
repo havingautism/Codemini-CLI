@@ -8,6 +8,8 @@ import {
   classifyMemoryRoute,
   chooseMemoryLifecycle,
   inferMemoryScope,
+  nextLifecycleFromCounts,
+  nextUtilityFromCounts,
   normalizeMemoryKind,
   normalizeMemoryScope,
   shouldAutoCaptureUserPrompt,
@@ -50,9 +52,20 @@ test('inferMemoryScope defaults preference to user and others to project', () =>
 
 test('chooseMemoryLifecycle maps kinds to longterm/operational', () => {
   assert.equal(chooseMemoryLifecycle('preference'), 'longterm');
-  assert.equal(chooseMemoryLifecycle('convention'), 'longterm');
+  assert.equal(chooseMemoryLifecycle('convention'), 'operational');
   assert.equal(chooseMemoryLifecycle('lesson'), 'operational');
   assert.equal(chooseMemoryLifecycle('note'), 'operational');
+});
+
+test('success and failure counts drive lifecycle and utility', () => {
+  assert.equal(nextLifecycleFromCounts({ lifecycle: 'operational', confirmationCount: 3, failureCount: 0 }), 'longterm');
+  assert.equal(nextLifecycleFromCounts({ lifecycle: 'operational', successCount: 3, failureCount: 0 }), 'operational');
+  assert.equal(nextLifecycleFromCounts({ lifecycle: 'operational', pinned: true }), 'longterm');
+  assert.equal(nextLifecycleFromCounts({ lifecycle: 'operational', successCount: 0, failureCount: 2 }), 'archived');
+  assert.equal(nextLifecycleFromCounts({ lifecycle: 'archived', confirmationCount: 9, failureCount: 0 }), 'archived');
+  assert.equal(nextLifecycleFromCounts({ lifecycle: 'operational', confirmationCount: 2, failureCount: 0 }), 'operational');
+  assert.ok(nextUtilityFromCounts(3, 0) > 0.5);
+  assert.ok(nextUtilityFromCounts(0, 2) < 0.5);
 });
 
 test('classifyDirectMemoryPrompt captures interests as user preference', () => {

@@ -625,6 +625,36 @@ test("shows graph routing decisions on the routed user turn", () => {
   assert.match(routing.input, /"required": true/);
 });
 
+test("shows memory inject on the user turn that queried retrieval", () => {
+  const result = buildTrajectory({
+    messages: [
+      {
+        id: "u-mem",
+        role: "you",
+        text: "列出当前目录",
+        memoryInject: {
+          query: "列出当前目录",
+          mode: "turn",
+          profile: [{ id: "p1", scope: "user", kind: "preference", summary: "Use PowerShell" }],
+          guaranteed: [],
+          retrieved: [{ id: "r1", scope: "project", kind: "lesson", family: "coding", summary: "python missing, use py -3" }],
+          recovery: [
+            { tool: "run", query: "run python error", hits: [{ id: "r1", summary: "python missing, use py -3" }] },
+          ],
+        },
+      },
+    ],
+  });
+
+  const memory = result.events.find((event) => event.kind === "memory");
+  assert.equal(memory.turn, 1);
+  assert.equal(memory.title, "memory inject");
+  assert.match(memory.body, /profile 1/);
+  assert.match(memory.body, /retrieved 1/);
+  assert.match(memory.body, /recovery 1/);
+  assert.match(memory.input, /Use PowerShell/);
+});
+
 test("filterTrajectoryEvents hides calls and matches search", () => {
   const events = [
     { id: "1", kind: "user", title: "USER", body: "hello", preview: "" },

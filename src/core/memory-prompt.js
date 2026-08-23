@@ -1,5 +1,5 @@
 import { listMemories } from './memory-store.js';
-import { retrieveMemories, renderRetrievedMemory } from './memory-retriever.js';
+import { compactMemoryHit, retrieveMemories, renderRetrievedMemory } from './memory-retriever.js';
 
 function renderScope(title, items = []) {
   if (!Array.isArray(items) || items.length === 0) return '';
@@ -14,38 +14,66 @@ function renderScope(title, items = []) {
   return `${title}\n${lines.join('\n')}`;
 }
 
-function pickProfile(items = [], { max = 6, personal = false, conventions = false } = {}) {
+function takeItems(items = [], { max, seen, pred } = {}) {
   const selected = [];
-  const seen = new Set();
-  const take = (item) => {
-    if (!item?.id || seen.has(item.id) || selected.length >= max) return;
+  for (const item of items) {
+    if (!item?.id || seen.has(item.id) || selected.length >= max) continue;
+    if (item.lifecycle === 'archived') continue;
+    if (pred && !pred(item)) continue;
     seen.add(item.id);
     selected.push(item);
-  };
-  for (const item of items) if (item.pinned) take(item);
-  if (personal) {
-    for (const item of items) {
-      if (item.family === 'personal' || item.kind === 'preference') take(item);
-    }
   }
-  if (conventions) {
-    for (const item of items) {
-      if (item.kind === 'convention' || item.family === 'repo' || item.family === 'procedure') take(item);
-    }
-  }
-  const stable = [...items].sort((left, right) =>
-    String(left.createdAt || '').localeCompare(String(right.createdAt || '')) ||
-    String(left.id || '').localeCompare(String(right.id || '')));
-  for (const item of stable.slice(-max)) take(item);
   return selected;
 }
 
-export async function buildMemorySnapshot({
+function pickProfile(items = [], { max = 6, personal = false, conventions = false, seen = new Set() } = {}) {
+  const selected = [];
+  const take = (pred) => {
+    selected.push(...takeItems(items, { max: max - selected.length, seen, pred }));
+  };
+  take((item) => item.pinned);
+  if (personal) take((item) => item.family === 'personal' || item.kind === 'preference');
+  if (conventions) take((item) => item.kind === 'convention' || item.family === 'procedure');
+  return selected;
+}
+
+const GUARANTEE_TAG_PATTERN = /^(user_correction|critical_project_rule|security_constraint|safety|critical)$/i;
+
+function hasGuaranteeTag(item) {
+  const tags = Array.isArray(item?.tags) ? item.tags : [];
+  return tags.some((tag) => GUARANTEE_TAG_PATTERN.test(String(tag)));
+}
+
+// Guaranteed = pinned + user correction / critical rule / safety constraint
+// tags (design §13/§62). These always inject, independent of BM25 recall.
+function pickGuaranteed(items = [], { max = 6 } = {}) {
+  return takeItems(items, {
+    max,
+    seen: new Set(),
+    pred: (item) => item.pinned === true || hasGuaranteeTag(item)
+  });
+}
+
+function bootstrapEnabled(config = {}) {
+  if (config?.memory?.enabled === false) return false;
+  if (config?.memory?.bootstrap?.enabled === false) return false;
+  if (config?.memory?.bootstrap?.enabled === true) return true;
+  return config?.memory?.inject_on_session_start !== false;
+}
+
+export async function composeMemorySnapshot({
   config = {},
   workspaceRoot = process.cwd(),
   query = ''
-}) {
-  if (config?.memory?.enabled === false || config?.memory?.inject_on_session_start === false) return '';
+} = {}) {
+  const emptyInject = {
+    query: String(query || ''),
+    mode: 'turn',
+    profile: [],
+    guaranteed: [],
+    retrieved: []
+  };
+  if (!bootstrapEnabled(config)) return { text: '', inject: null };
 
   const retrievalEnabled = config?.memory?.retrieval?.enabled !== false;
   const [user, globalItems, project, retrieved] = await Promise.all([
@@ -63,28 +91,51 @@ export async function buildMemorySnapshot({
       : Promise.resolve([])
   ]);
 
+  const guaranteed = pickGuaranteed([...user, ...globalItems, ...project]);
+  const guaranteedIds = new Set(guaranteed.map((item) => item.id));
+  const seen = new Set(guaranteedIds);
+  const userProfile = pickProfile(user, { max: 6, personal: true, seen });
+  const globalProfile = pickProfile(globalItems, { max: 4, conventions: true, seen });
+  const projectProfile = pickProfile(project, { max: 6, conventions: true, seen });
+  const profileItems = [...userProfile, ...globalProfile, ...projectProfile];
   const profileSections = [
-    renderScope('User Memory (preferences / interests / habits):', pickProfile(user, { max: 6, personal: true })),
-    renderScope('Global Memory (cross-project tools / environment):', pickProfile(globalItems, { max: 4 })),
-    renderScope('Project Memory (this repository only):', pickProfile(project, { max: 6, conventions: true }))
+    renderScope('User Memory (preferences / interests / habits):', userProfile),
+    renderScope('Global Memory (cross-project tools / environment):', globalProfile),
+    renderScope('Project Memory (this repository only):', projectProfile)
   ].filter(Boolean);
+  const retrievedHits = retrieved.filter((item) => item?.id && !guaranteedIds.has(item.id) && !seen.has(item.id));
+  const retrievedBlock = renderRetrievedMemory(retrievedHits);
+  const guaranteedBlock = guaranteed.length
+    ? `<guaranteed_memory>\n${renderScope('Must follow:', guaranteed)}\n</guaranteed_memory>`
+    : '';
+  const inject = {
+    ...emptyInject,
+    profile: profileItems.map(compactMemoryHit),
+    guaranteed: guaranteed.map(compactMemoryHit),
+    retrieved: retrievedHits.map(compactMemoryHit)
+  };
 
-  const retrievedBlock = renderRetrievedMemory(retrieved);
-  const profileBody = profileSections;
-
-  if (profileBody.length === 0 && !retrievedBlock) return '';
+  if (profileSections.length === 0 && !retrievedBlock && !guaranteedBlock) {
+    return { text: '', inject };
+  }
 
   const snapshot = [
     '<relevant_memory>',
     'Use these durable notes only as stable guidance. Prefer fresh reads when code or files can verify the answer.',
     'When recalling memory, preserve command names, file paths, identifiers, and punctuation exactly. Do not rewrite exact_text values.',
     'Actively notice lasting user preferences and interests; save them with save_memory(scope="user", kind="preference"). Write new memory content/summary in the active reply language from the system prompt.',
-    profileBody.length ? `<memory_profile>\n${profileBody.join('\n\n')}\n</memory_profile>` : '',
+    profileSections.length ? `<memory_profile>\n${profileSections.join('\n\n')}\n</memory_profile>` : '',
+    guaranteedBlock,
     retrievedBlock,
     '</relevant_memory>'
   ].filter(Boolean).join('\n\n');
 
   const maxChars = Math.max(200, Number(config?.memory?.max_prompt_chars || 4000));
-  if (snapshot.length <= maxChars) return snapshot;
-  return `${snapshot.slice(0, maxChars - 3)}...`;
+  const text = snapshot.length <= maxChars ? snapshot : `${snapshot.slice(0, maxChars - 3)}...`;
+  return { text, inject };
+}
+
+export async function buildMemorySnapshot(opts = {}) {
+  const composed = await composeMemorySnapshot(opts);
+  return composed.text;
 }

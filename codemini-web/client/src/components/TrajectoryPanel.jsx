@@ -40,17 +40,20 @@ const KIND_CLASS = {
   system: "bg-(--bg-secondary) text-(--text-muted)",
   user: "bg-(--accent-blue-bg) text-(--accent-blue)",
   routing: "bg-(--accent-teal-bg) text-(--accent-teal)",
+  memory: "bg-(--accent-blue-bg) text-(--accent-blue)",
   thinking: "bg-(--accent-purple-bg) text-(--accent-purple)",
   assistant: "bg-(--accent-purple-bg) text-(--accent-purple)",
   tool: "bg-(--accent-orange-bg) text-(--accent-orange)",
   skill: "bg-(--accent-teal-bg) text-(--accent-teal)",
   error: "bg-(--accent-red-bg) text-(--accent-red)",
+  memory: "bg-(--bg-secondary) text-(--accent-blue)",
 };
 
 const KIND_I18N = {
   system: "trajectoryKindSystem",
   user: "trajectoryKindUser",
   routing: "trajectoryKindRouting",
+  memory: "trajectoryKindMemory",
   thinking: "trajectoryKindThinking",
   assistant: "trajectoryKindAssistant",
   tool: "trajectoryKindTool",
@@ -87,6 +90,7 @@ function isInspectable(event) {
     "system",
     "user",
     "routing",
+    "memory",
     "thinking",
     "assistant",
     "tool",

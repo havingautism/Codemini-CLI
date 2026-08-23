@@ -34,6 +34,7 @@ test("trajectory kind labels use title case", async () => {
     assert.match(source, /trajectoryKindUser: "User Message"/);
     assert.match(source, /trajectoryKindTool: "Tool Call"/);
     assert.match(source, /trajectoryKindRouting: "Graph Routing"/);
+    assert.match(source, /trajectoryKindMemory: "Memory Inject"/);
     assert.match(source, /trajectoryKindSystemNotice: "System Notice"/);
   }
 });

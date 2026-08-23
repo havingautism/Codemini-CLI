@@ -1103,3 +1103,41 @@ test('routing graph decisions attach to the routed user turn', () => {
     },
   );
 });
+
+test('memory retrieve events attach to the user turn and merge recovery', () => {
+  const state = {
+    sessionMessagesById: {
+      'session-mem': [
+        { id: 'user-mem', role: 'you', text: 'list dir', timestamp: '2026-08-23T00:00:00.000Z' },
+      ],
+    },
+  };
+  const afterTurn = reduceSessionTranscriptEvent(state, {
+    type: 'memory:retrieved',
+    sessionId: 'session-mem',
+    messageId: 'user-mem',
+    query: 'list dir',
+    mode: 'turn',
+    profile: [{ id: 'p1', kind: 'preference', summary: 'PowerShell' }],
+    guaranteed: [],
+    retrieved: [],
+    startedAt: '2026-08-23T00:00:01.000Z',
+  });
+  const afterFail = reduceSessionTranscriptEvent(afterTurn, {
+    type: 'memory:retrieved',
+    sessionId: 'session-mem',
+    messageId: 'user-mem',
+    mode: 'failure',
+    tool: 'run',
+    query: 'run python error',
+    retrieved: [{ id: 'r1', kind: 'lesson', summary: 'use py -3' }],
+    startedAt: '2026-08-23T00:00:02.000Z',
+  });
+
+  const inject = afterFail.sessionMessagesById['session-mem'][0].memoryInject;
+  assert.equal(inject.query, 'list dir');
+  assert.equal(inject.profile[0].summary, 'PowerShell');
+  assert.equal(inject.recovery.length, 1);
+  assert.equal(inject.recovery[0].tool, 'run');
+  assert.equal(inject.recovery[0].hits[0].id, 'r1');
+});

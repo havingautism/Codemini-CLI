@@ -235,6 +235,9 @@ function sanitizeMessage(msg) {
   if (typeof msg?.retry_prompt === 'string' && msg.retry_prompt.trim()) {
     out.retry_prompt = msg.retry_prompt;
   }
+  if (msg?.memoryInject && typeof msg.memoryInject === 'object' && !Array.isArray(msg.memoryInject)) {
+    out.memoryInject = { ...msg.memoryInject };
+  }
   if (msg?.tool_call_id) out.tool_call_id = String(msg.tool_call_id);
   if (Number.isFinite(Number(msg?.tool_duration_ms))) out.tool_duration_ms = Number(msg.tool_duration_ms);
   if (typeof msg?.tool_summary === 'string' && msg.tool_summary.trim()) out.tool_summary = msg.tool_summary.trim();

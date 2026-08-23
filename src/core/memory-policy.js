@@ -26,8 +26,6 @@ export const MEMORY_KINDS = Object.freeze(['preference', 'convention', 'lesson',
 export const MEMORY_FAMILIES = Object.freeze(['personal', 'repo', 'coding', 'procedure']);
 
 const USER_PROFILE_KINDS = new Set(['preference']);
-const LONGTERM_KINDS = new Set(['preference', 'convention']);
-const OPERATIONAL_KINDS = new Set(['lesson', 'note']);
 
 /** Map legacy fine-grained kinds onto the four buckets. */
 const KIND_ALIASES = Object.freeze({
@@ -52,6 +50,25 @@ export function normalizeMemoryText(value) {
   return String(value || '').replace(/\s+/g, ' ').trim();
 }
 
+/**
+ * Pre-segment text for FTS indexing/querying (design §7).
+ * Uses Intl.Segmenter("zh", word) so CJK runs become space-separated words
+ * the unicode61 tokenizer can index; falls back to the raw text when unavailable.
+ */
+export function segmentSearchText(value) {
+  const text = normalizeMemoryText(value);
+  if (!text) return '';
+  if (typeof Intl === 'undefined' || typeof Intl.Segmenter !== 'function') return text;
+  try {
+    const segmenter = new Intl.Segmenter('zh', { granularity: 'word' });
+    return Array.from(segmenter.segment(text), (segment) => segment.segment.trim())
+      .filter(Boolean)
+      .join(' ');
+  } catch {
+    return text;
+  }
+}
+
 export function isSensitiveMemoryContent(value) {
   const text = normalizeMemoryText(value);
   if (!text) return false;
@@ -68,6 +85,52 @@ export function summarizeMemoryContent(value, maxChars = 72) {
   const text = normalizeMemoryText(value);
   if (text.length <= maxChars) return text;
   return `${text.slice(0, Math.max(0, maxChars - 3))}...`;
+}
+
+/**
+ * Deterministic tool-error classification (design §22). Classification is for
+ * correlation / recall / metrics / dedup — never stored as memory by itself.
+ */
+export function classifyToolError(error) {
+  const text = String(error || '');
+  if (/command not found|exit 127|is not recognized as an internal or external command|not recognized as a cmdlet/i.test(text)) return 'command_not_found';
+  if (/permission denied|EACCES|operation not permitted|not permitted/i.test(text)) return 'permission_denied';
+  if (/ENOENT|no such file|file not found|cannot find module/i.test(text)) return 'file_not_found';
+  if (/invalid argument|bad argument|unrecognized option|unknown option|invalid option/i.test(text)) return 'invalid_arguments';
+  if (/cannot find package|no such package|missing dependency|dependency .*not found|ERR_MODULE_NOT_FOUND/i.test(text)) return 'dependency_missing';
+  if (/build fail|compilation failed|failed to compile|compile error/i.test(text)) return 'build_failure';
+  if (/test fail|assertion|failing test|failed test|tests? fail/i.test(text)) return 'test_failure';
+  if (/timeout|timed out|ETIMEDOUT/i.test(text)) return 'timeout';
+  if (/ECONNREFUSED|ECONNRESET|ENOTFOUND|network|socket|connection refused|connection reset/i.test(text)) return 'network_failure';
+  if (/outside the workspace|workspace escape|path .*outside|not within the workspace/i.test(text)) return 'workspace_escape';
+  if (/policy|blocked by policy|denied by policy|not allowed|sandbox/i.test(text)) return 'policy_blocked';
+  return 'unknown';
+}
+
+/**
+ * Skip failure recall for signals that can't produce a reusable lesson
+ * (design §63): user cancels, policy blocks, transient network, rate limits,
+ * and obvious malformed args.
+ */
+export function shouldSkipFailureRecall(error) {
+  const text = String(error || '');
+  return /user cancelled|cancelled by user|aborted by user|^cancelled$|^canceled$/i.test(text)
+    || /rate limit|429|too many requests/i.test(text)
+    || /policy|blocked by policy|denied by policy|not allowed/i.test(text)
+    || /ECONNRESET|ECONNABORTED|connection reset|connection aborted/i.test(text)
+    || /invalid argument|bad argument|unrecognized option|malformed/i.test(text);
+}
+
+/**
+ * True when a successful command execution is a deterministic verification
+ * signal (test / build / lint / typecheck) — design §20.
+ */
+export function isVerificationCommand(command) {
+  const text = String(command || '');
+  if (!text) return false;
+  return /(^|[\s/&;])(npm|pnpm|yarn|npx)( run)? (test|build|lint|typecheck)\b/i.test(text)
+    || /(^|[\s/&;])(tsc|eslint|pytest|vitest|jest|mocha|cargo test|go test|node --test)(\s|$)/i.test(text)
+    || /\b(test|build|lint|typecheck|check)\b/i.test(text);
 }
 
 /**
@@ -124,9 +187,31 @@ export function inferMemoryScope({ scope, kind } = {}) {
 
 export function chooseMemoryLifecycle(kind) {
   const value = normalizeMemoryKind(kind, 'note');
-  if (LONGTERM_KINDS.has(value)) return 'longterm';
-  if (OPERATIONAL_KINDS.has(value)) return 'operational';
+  if (value === 'preference') return 'longterm';
   return 'operational';
+}
+
+export function nextUtilityFromCounts(successCount = 0, failureCount = 0) {
+  return Math.max(0, Math.min(1, 0.5 + 0.08 * Number(successCount || 0) - 0.12 * Number(failureCount || 0)));
+}
+
+export function nextLifecycleFromCounts({
+  lifecycle = 'operational',
+  successCount = 0,
+  failureCount = 0,
+  confirmationCount = 0,
+  pinned = false,
+  kind = ''
+} = {}) {
+  const current = String(lifecycle || 'operational');
+  if (current === 'archived') return 'archived';
+  const success = Number(successCount || 0);
+  const failure = Number(failureCount || 0);
+  if (failure >= 2 && failure >= success) return 'archived';
+  if (pinned === true || normalizeMemoryKind(kind, '') === 'preference' || Number(confirmationCount || 0) >= 3) {
+    return 'longterm';
+  }
+  return current || 'operational';
 }
 
 export function isUserProfileKind(kind) {

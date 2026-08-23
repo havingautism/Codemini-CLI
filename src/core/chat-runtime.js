@@ -83,7 +83,7 @@ import { composeSystemPrompt } from './system-prompt-composer.js';
 import { buildTurnContextPrefix, buildTurnUserPrompt } from './turn-context.js';
 import { buildSubAgentShellRulesPrompt, buildSubAgentRuntimeNote, resolveShellContext } from './shell-profile.js';
 import { getBaseConfigDir, getProjectIndexDir, getProjectPlansDir, getProjectSpecsDir, getProjectWorkspaceDir, getSessionsDir, getSkillsDir } from './paths.js';
-import { buildMemorySnapshot } from './memory-prompt.js';
+import { composeMemorySnapshot } from './memory-prompt.js';
 import { buildProjectContextSnippet, initializeProjectIndex } from './project-index.js';
 import { queryProjectKnowledgeGraph } from './project-knowledge-graph.js';
 import { captureToInbox, listInbox } from './memory-store.js';
@@ -4720,6 +4720,7 @@ async function askModel({
   onContinuationSession = null,
   workspaceRoot = process.cwd(),
   selectedSkillNames = [],
+  memoryInject = null,
   skillHooksSession = null,
   onSkillLoaded = null,
   initialMessagesOverride = null,
@@ -4873,7 +4874,8 @@ async function askModel({
           skill_badges: selectedSkillNamesForUi.map((name) => ({ name, status: 'selected' }))
         }
       : {};
-    const userMessage = stampedMessage('user', text, { ...modelExtra, ...imageExtra, ...selectedSkillExtra });
+    const memoryExtra = memoryInject && typeof memoryInject === 'object' ? { memoryInject } : {};
+    const userMessage = stampedMessage('user', text, { ...modelExtra, ...imageExtra, ...selectedSkillExtra, ...memoryExtra });
     session.messages.push(userMessage);
     if (compacted) {
       compacted.push({ ...userMessage });
@@ -6059,7 +6061,7 @@ export async function runSubAgentTask({
   const subResult = await askModel({
     text: scopedTask,
     session: subSession,
-    config,
+    config: withCandidateMemoryWrites(config),
     model: subAgentModel,
     systemPrompt: subSystemPrompt,
     onAgentEvent: wrappedOnAgentEvent,
@@ -6106,6 +6108,13 @@ function buildForkTaskInstruction(task, parentNote = '', tasks = []) {
           .join('\n')}`
       : '',
   ].filter(Boolean).join('\n\n');
+}
+
+function withCandidateMemoryWrites(config = {}) {
+  return {
+    ...config,
+    memory: { ...(config.memory || {}), candidate_writes: true }
+  };
 }
 
 /**
@@ -6177,7 +6186,7 @@ export async function runForkTask({
   const result = await askModel({
     text: taskInstruction,
     session: branchSession,
-    config,
+    config: withCandidateMemoryWrites(config),
     model,
     systemPrompt,
     onAgentEvent: wrappedOnAgentEvent,
@@ -8194,9 +8203,9 @@ export async function createChatRuntime({
     ) {
       return memorySnapshotMemo.value;
     }
-    const value = await buildMemorySnapshot({ config, workspaceRoot: root, query: userQuery }).catch(() => '');
-    memorySnapshotMemo = { configRef: config, mtimeKey, value };
-    return value;
+    const composed = await composeMemorySnapshot({ config, workspaceRoot: root, query: userQuery }).catch(() => ({ text: '', inject: null }));
+    memorySnapshotMemo = { configRef: config, mtimeKey, value: composed.text || '', inject: composed.inject || null };
+    return memorySnapshotMemo.value;
   };
   const reloadCommandsAndSkills = async ({ force = false } = {}) => {
     if (!force && Date.now() - commandsReloadedAt < COMMAND_RELOAD_TTL_MS) return false;
@@ -8634,6 +8643,14 @@ export async function createChatRuntime({
       includeMemoryGuide: !codingRouteEnabled,
       userQuery: inputText,
     });
+    const memoryInject = memorySnapshotMemo?.inject || null;
+    if (memoryInject && typeof onAgentEvent === 'function') {
+      onAgentEvent({
+        type: 'memory:retrieved',
+        startedAt: new Date().toISOString(),
+        ...memoryInject,
+      });
+    }
     const optionModelText = typeof options?.modelText === 'string' && options.modelText.trim()
       ? await expandFileMentions(options.modelText, root)
       : '';
@@ -9220,7 +9237,8 @@ export async function createChatRuntime({
         ...graphSelectedSkillNames,
       ],
       skillHooksSession,
-      onSkillLoaded: (skillName) => armSkillHooksByName(skillName, { onAgentEvent })
+      onSkillLoaded: (skillName) => armSkillHooksByName(skillName, { onAgentEvent }),
+      memoryInject,
     });
     syncExecutionModeWithSession();
     void captureUserPromptForDream(expandedText);

@@ -28,3 +28,17 @@ test('graph routing events are persisted and reduced onto the user turn', async 
   assert.equal(sessionState.includes('event.type === "routing:graph"'), true);
   assert.match(sessionState, /routingGraph:\s*routingGraphFromEvent\(event\)/);
 });
+
+test('memory retrieve events are persisted and reduced onto the user turn', async () => {
+  const [bridge, sessionState, runtime] = await Promise.all([
+    fs.readFile('codemini-web/lib/runtime-bridge.js', 'utf8'),
+    fs.readFile('codemini-web/client/src/lib/session-state.js', 'utf8'),
+    fs.readFile('src/core/chat-runtime.js', 'utf8'),
+  ]);
+
+  assert.equal(bridge.includes("case 'memory:retrieved'"), true);
+  assert.match(bridge, /memoryInject:\s*memoryInjectFromEvent\(event/);
+  assert.equal(sessionState.includes('event.type === "memory:retrieved"'), true);
+  assert.match(sessionState, /memoryInject:\s*memoryInjectFromEvent\(event/);
+  assert.match(runtime, /type: 'memory:retrieved'/);
+});

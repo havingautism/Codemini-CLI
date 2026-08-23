@@ -66,6 +66,7 @@ import {
   listMemories,
   rememberMemory,
   searchMemories,
+  captureToInbox,
 } from "./memory-store.js";
 import { runDreamConsolidation } from "./dream-consolidate.js";
 import { inferMemoryScope, normalizeMemoryKind } from "./memory-policy.js";
@@ -5737,11 +5738,14 @@ export function getBuiltinTools({
       type: "function",
       function: {
         name: "list_memory",
-        description: "List stored persistent memories for one scope.",
+        description: "List stored persistent memories for one scope, optionally filtered by family/kind/lifecycle.",
         parameters: {
           type: "object",
           properties: {
             scope: { type: "string", description: "user, global, or project" },
+            family: { type: "string", description: "Optional family filter: personal, repo, coding, procedure" },
+            kind: { type: "string", description: "Optional kind filter: preference, convention, lesson, note" },
+            lifecycle: { type: "string", description: "Optional lifecycle filter: operational, longterm, archived" },
           },
           required: ["scope"],
         },
@@ -7109,6 +7113,18 @@ export function getBuiltinTools({
     save_memory: async (args = {}) => {
       const kind = normalizeMemoryKind(args.kind, "note");
       const memoryScope = inferMemoryScope({ scope: args.scope, kind });
+      if (config?.memory?.candidate_writes === true) {
+        const entry = await captureToInbox({
+          scope: memoryScope,
+          type: kind,
+          family: args.family,
+          summary: args.summary || String(args.content || "").slice(0, 80),
+          details: args.content,
+          source: "branch-candidate",
+          projectDir: workspaceRoot,
+        });
+        return { ok: true, candidate: true, scope: memoryScope, entry };
+      }
       const saved = await rememberMemory({
         scope: memoryScope,
         content: args.content,
@@ -7117,6 +7133,7 @@ export function getBuiltinTools({
         summary: args.summary || String(args.content || "").slice(0, 80),
         source: "tool",
         replaceSimilar: args.replace_similar !== false,
+        agentRole: args.agent_role || args.agentRole || '',
         workspaceRoot,
         config,
       });
@@ -7124,7 +7141,13 @@ export function getBuiltinTools({
     },
     list_memory: async (args = {}) => ({
       scope: String(args.scope || ""),
-      items: await listMemories({ scope: args.scope, workspaceRoot }),
+      items: await listMemories({
+        scope: args.scope,
+        family: args.family,
+        kind: args.kind,
+        lifecycle: args.lifecycle,
+        workspaceRoot
+      }),
     }),
     search_memory: async (args = {}) => ({
       scope: String(args.scope || "all"),

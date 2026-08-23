@@ -37,7 +37,7 @@ Discard:
 - secrets or sensitive data
 
 Respond with JSON only:
-{"candidates":[{"scope":"user|project|global","kind":"preference|convention|lesson|note","content":"durable statement","summary":"under 80 chars","semantic_key":"stable namespace key","decision_state":"explicit|accepted|implemented|verified|repeated|proposed|brainstormed","durable_score":0,"confidence":0.0,"evidence_indices":[0],"reason":"short rationale"}]}
+{"candidates":[{"scope":"user|project|global","kind":"preference|convention|lesson|note","family":"personal|repo|coding|procedure","content":"durable statement","summary":"under 80 chars","semantic_key":"stable namespace key","decision_state":"explicit|accepted|implemented|verified|repeated|proposed|brainstormed","durable_score":0,"confidence":0.0,"evidence_indices":[0],"reason":"short rationale"}]}
 
 Use durable_score 0-10. A candidate needs at least 5. Project ideas must be accepted, implemented, verified, or repeated. Global knowledge needs explicit cross-project/environment evidence. If uncertain, return an empty candidates array.
 

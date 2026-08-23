@@ -14,20 +14,16 @@ const { buildSettingsFields } = await import(
   '../codemini-web/client/src/lib/settings-config.js'
 );
 
-test('settings expose a Memory tab with embedding fields', async () => {
-  assert.ok(SETTINGS_TABS.some((tab) => tab.id === 'memory'));
+test('settings do not expose a Memory embedding tab or fields', async () => {
+  assert.equal(SETTINGS_TABS.some((tab) => tab.id === 'memory'), false);
   const fields = buildSettingsFields();
-  const paths = fields.filter((field) => field.tab === 'memory').map((field) => field.path);
-  assert.deepEqual(paths, [
-    'memory.embedding.enabled',
-    'memory.embedding.model',
-    'memory.embedding.base_url',
-  ]);
+  assert.equal(fields.some((field) => field.tab === 'memory' || String(field.path || '').startsWith('memory.embedding.')), false);
   const en = await fs.readFile('codemini-web/client/i18n/en.js', 'utf8');
   const zh = await fs.readFile('codemini-web/client/i18n/zh.js', 'utf8');
   for (const source of [en, zh]) {
-    assert.match(source, /memoryEmbeddingEnabled:/);
-    assert.match(source, /memoryEmbeddingModel:/);
-    assert.match(source, /memoryEmbeddingBaseUrl:/);
+    assert.doesNotMatch(source, /memoryEmbeddingEnabled:/);
+    assert.doesNotMatch(source, /memoryEmbeddingModel:/);
+    assert.doesNotMatch(source, /memoryEmbeddingBaseUrl:/);
+    assert.doesNotMatch(source, /memoryEmbeddingApiKey:/);
   }
 });

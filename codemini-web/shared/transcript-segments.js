@@ -44,6 +44,45 @@ export function routingGraphFromEvent(event = {}) {
   };
 }
 
+export function memoryInjectFromEvent(event = {}, current = null) {
+  const startedAt = event.startedAt || new Date().toISOString();
+  const retrieved = Array.isArray(event.retrieved)
+    ? event.retrieved
+    : Array.isArray(event.hits)
+      ? event.hits
+      : [];
+  if (event.mode === 'failure') {
+    const base = current && typeof current === 'object' ? { ...current } : {
+      query: '',
+      mode: 'turn',
+      profile: [],
+      guaranteed: [],
+      retrieved: [],
+    };
+    return {
+      ...base,
+      startedAt: base.startedAt || startedAt,
+      recovery: [
+        ...(Array.isArray(base.recovery) ? base.recovery : []),
+        {
+          tool: String(event.tool || event.toolName || ''),
+          query: String(event.query || ''),
+          hits: retrieved,
+        },
+      ],
+    };
+  }
+  return {
+    query: String(event.query || ''),
+    mode: 'turn',
+    profile: Array.isArray(event.profile) ? event.profile : [],
+    guaranteed: Array.isArray(event.guaranteed) ? event.guaranteed : [],
+    retrieved,
+    startedAt,
+    ...(Array.isArray(current?.recovery) ? { recovery: current.recovery } : {}),
+  };
+}
+
 export function mergeUsage(current, incoming) {
   const a = normalizeUsage(current);
   const b = normalizeUsage(incoming);

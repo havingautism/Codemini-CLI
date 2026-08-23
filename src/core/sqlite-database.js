@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { getBaseConfigDir, getProjectIndexDir } from './paths.js';
+import { segmentSearchText } from './memory-policy.js';
 
 const GLOBAL_SCHEMA_VERSION = 14;
 const PROJECT_SCHEMA_VERSION = 6;
@@ -486,32 +487,88 @@ function ensureMemoriesSchema(db) {
       utility_score REAL NOT NULL DEFAULT 0.5,
       source TEXT NOT NULL DEFAULT '',
       source_session_id TEXT NOT NULL DEFAULT '',
+      source_branch_id TEXT NOT NULL DEFAULT '',
       tool_name TEXT NOT NULL DEFAULT '',
       environment_key TEXT NOT NULL DEFAULT '',
+      agent_role TEXT NOT NULL DEFAULT '*',
+      expected_valid_days INTEGER,
       tags_json TEXT NOT NULL DEFAULT '[]',
       evidence_json TEXT NOT NULL DEFAULT '{}',
       hit_count INTEGER NOT NULL DEFAULT 0,
       success_count INTEGER NOT NULL DEFAULT 0,
       failure_count INTEGER NOT NULL DEFAULT 0,
       pinned INTEGER NOT NULL DEFAULT 0,
+      confirmation_count INTEGER NOT NULL DEFAULT 0,
+      access_count INTEGER NOT NULL DEFAULT 0,
+      last_confirmed_at TEXT,
+      last_accessed_at TEXT,
+      revision INTEGER NOT NULL DEFAULT 1,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       last_hit_at TEXT
     ) STRICT;
     CREATE INDEX IF NOT EXISTS memories_scope_updated_idx ON memories(scope, updated_at DESC);
     CREATE INDEX IF NOT EXISTS memories_family_idx ON memories(family, kind);
+    CREATE INDEX IF NOT EXISTS memories_semantic_key_idx ON memories(semantic_key);
     CREATE INDEX IF NOT EXISTS memories_semantic_idx ON memories(scope, semantic_key);
+    CREATE INDEX IF NOT EXISTS memories_tool_idx ON memories(tool_name, environment_key);
+    CREATE INDEX IF NOT EXISTS memories_lifecycle_idx ON memories(lifecycle, updated_at DESC);
   `);
+  const memoryColumns = new Set(db.prepare('PRAGMA table_info(memories)').all().map((row) => row.name));
+  if (!memoryColumns.has('confirmation_count')) {
+    db.exec('ALTER TABLE memories ADD COLUMN confirmation_count INTEGER NOT NULL DEFAULT 0');
+  }
+  if (!memoryColumns.has('last_confirmed_at')) {
+    db.exec('ALTER TABLE memories ADD COLUMN last_confirmed_at TEXT');
+  }
+  if (!memoryColumns.has('revision')) {
+    db.exec('ALTER TABLE memories ADD COLUMN revision INTEGER NOT NULL DEFAULT 1');
+  }
+  if (!memoryColumns.has('source_branch_id')) {
+    db.exec("ALTER TABLE memories ADD COLUMN source_branch_id TEXT NOT NULL DEFAULT ''");
+  }
+  if (!memoryColumns.has('agent_role')) {
+    db.exec("ALTER TABLE memories ADD COLUMN agent_role TEXT NOT NULL DEFAULT '*'");
+  }
+  if (!memoryColumns.has('expected_valid_days')) {
+    db.exec('ALTER TABLE memories ADD COLUMN expected_valid_days INTEGER');
+  }
+  if (!memoryColumns.has('access_count')) {
+    db.exec('ALTER TABLE memories ADD COLUMN access_count INTEGER NOT NULL DEFAULT 0');
+    db.exec('UPDATE memories SET access_count = hit_count WHERE access_count = 0 AND hit_count > 0');
+  }
+  if (!memoryColumns.has('last_accessed_at')) {
+    db.exec('ALTER TABLE memories ADD COLUMN last_accessed_at TEXT');
+    db.exec('UPDATE memories SET last_accessed_at = last_hit_at WHERE last_accessed_at IS NULL AND last_hit_at IS NOT NULL');
+  }
+  const ftsColumns = (() => {
+    try {
+      return new Set(db.prepare('PRAGMA table_info(memory_fts)').all().map((row) => row.name));
+    } catch {
+      return new Set();
+    }
+  })();
+  const ftsNeedsMigration = ftsColumns.size > 0 && !ftsColumns.has('search_text');
+  if (ftsNeedsMigration) {
+    db.exec('DROP TABLE IF EXISTS memory_fts');
+  }
   db.exec(`
     CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
       id UNINDEXED,
-      summary,
-      content,
-      tags,
-      tool_name,
+      search_text,
+      raw_content UNINDEXED,
+      tool_name UNINDEXED,
       tokenize = 'unicode61'
     );
   `);
+  if (ftsNeedsMigration) {
+    const insert = db.prepare('INSERT INTO memory_fts(id, search_text, raw_content, tool_name) VALUES (?, ?, ?, ?)');
+    for (const row of db.prepare('SELECT id, summary, content, tool_name FROM memories').all()) {
+      const raw = [row.summary, row.content].filter(Boolean).join(' ');
+      if (!raw) continue;
+      insert.run(row.id, segmentSearchText(raw), String(row.content || ''), String(row.tool_name || ''));
+    }
+  }
 }
 
 export function getGlobalDatabase({ create = true } = {}) {

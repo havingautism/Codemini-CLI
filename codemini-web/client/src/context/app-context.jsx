@@ -1703,6 +1703,9 @@ export function AppProvider({ children }) {
               attachments: parseUserBannerAttachmentsFromModelContent(msg.model_content),
               skillBadges: skillBadgesFromSessionMessage(msg),
               fileChanges: [],
+              ...(msg.memoryInject && typeof msg.memoryInject === "object"
+                ? { memoryInject: msg.memoryInject }
+                : {}),
             });
           } else if (msg.role === "assistant") {
             const responseStatus = String(

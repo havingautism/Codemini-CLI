@@ -694,15 +694,6 @@ export const zh = {
   storageSizeHelp: "大小包含 SQLite 主文件以及当前的 WAL 和共享内存文件；运行期间数值可能变化。",
   storageLoadFailed: "无法读取存储信息",
   storageOpenFailed: "无法打开目标文件夹",
-  memoryEmbeddingEnabled: "记忆 Embedding",
-  memoryEmbeddingEnabledHelp:
-    "打开后会把检索模式标为 hybrid，并保存 embedding 模型配置。当前版本实际检索仍是 FTS，向量重排尚未接入。",
-  memoryEmbeddingModel: "Embedding 模型",
-  memoryEmbeddingModelHelp:
-    "OpenAI 兼容的 embedding 模型名。在 hybrid 检索接入前，这里只负责把配置存下来。",
-  memoryEmbeddingBaseUrl: "Embedding Base URL",
-  memoryEmbeddingBaseUrlHelp:
-    "可选。留空则复用当前 Gateway 的 Base URL 和 API Key。",
   context: "上下文",
   contextMaxTokens: "上下文 Token 预算",
   preflightTrigger: "预压缩阈值 (%)",
@@ -821,6 +812,7 @@ export const zh = {
   trajectoryKindSystem: "System Prompt",
   trajectoryKindUser: "User Message",
   trajectoryKindRouting: "Graph Routing",
+  trajectoryKindMemory: "Memory Inject",
   trajectoryKindThinking: "Thinking",
   trajectoryKindAssistant: "Assistant",
   trajectoryKindTool: "Tool Call",

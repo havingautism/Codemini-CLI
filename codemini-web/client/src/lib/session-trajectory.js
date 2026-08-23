@@ -467,6 +467,38 @@ function emitUserSkills(events, message, index, turn) {
   });
 }
 
+function emitMemoryInject(events, message, index, turn) {
+  const inject = message?.memoryInject;
+  if (!inject || typeof inject !== "object") return;
+  const profile = Array.isArray(inject.profile) ? inject.profile.length : 0;
+  const guaranteed = Array.isArray(inject.guaranteed) ? inject.guaranteed.length : 0;
+  const retrieved = Array.isArray(inject.retrieved) ? inject.retrieved.length : 0;
+  const recoveryHits = (Array.isArray(inject.recovery) ? inject.recovery : []).reduce(
+    (sum, item) => sum + (Array.isArray(item?.hits) ? item.hits.length : 0),
+    0,
+  );
+  const queryPreview = oneLinePreview(inject.query, 48);
+  events.push(
+    makeEvent({
+      id: `trajectory-memory-${message.id || index}`,
+      kind: "memory",
+      turn,
+      title: "memory inject",
+      body: [
+        queryPreview ? `query ${queryPreview}` : "",
+        `profile ${profile}`,
+        `guaranteed ${guaranteed}`,
+        `retrieved ${retrieved}`,
+        recoveryHits ? `recovery ${recoveryHits}` : "",
+      ]
+        .filter(Boolean)
+        .join(" · "),
+      input: stringifyTrajectoryValue(inject),
+      startedAt: inject.startedAt || messageTime(message),
+    }),
+  );
+}
+
 export function buildTrajectory({
   messages = [],
   runtimeState = null,
@@ -512,6 +544,7 @@ export function buildTrajectory({
           startedAt: messageTime(message),
         }),
       );
+      emitMemoryInject(events, message, index, turn);
       if (message?.routingGraph) {
         const routing = message.routingGraph;
         const path = Array.isArray(routing.path) ? routing.path.join(" → ") : "";

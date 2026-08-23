@@ -4,16 +4,17 @@ import {
   ensurePersistentMemoryImported,
   listMemoriesFromDb,
   recordMemoryHits,
+  recordMemoryOutcome,
+  recordMemoryConfirmation,
   searchFts
 } from './memory-sqlite-store.js';
 import {
-  familyScore,
   lexicalFromBm25,
   recencyScore,
-  scopeScore,
-  scoreMemoryHit
+  scoreMemoryHit,
+  verificationSignal
 } from './memory-ranker.js';
-import { inferMemoryFamily, normalizeMemoryFamily, normalizeMemoryScope, normalizeMemoryText } from './memory-policy.js';
+import { classifyToolError, normalizeMemoryFamily, normalizeMemoryScope, normalizeMemoryText } from './memory-policy.js';
 
 function clamp(value, min, max, fallback) {
   const number = Number(value);
@@ -35,6 +36,21 @@ function requestedScopes(scope) {
   return [normalizeMemoryScope(raw, { fallback: 'project' })];
 }
 
+export function compactMemoryHit(item = {}) {
+  const out = {
+    id: String(item.id || ''),
+    scope: String(item.scope || ''),
+    kind: String(item.kind || ''),
+    family: String(item.family || ''),
+    summary: String(item.summary || item.content || '').slice(0, 120),
+    lifecycle: String(item.lifecycle || '')
+  };
+  if (item.pinned === true) out.pinned = true;
+  if (Number.isFinite(Number(item.score))) out.score = Number(item.score);
+  if (item.recallReason) out.recallReason = String(item.recallReason);
+  return out;
+}
+
 function recallReason(item, query) {
   const bits = [];
   if (item.toolName) bits.push(item.toolName);
@@ -47,16 +63,13 @@ function recallReason(item, query) {
   return bits.join(' · ') || 'related memory';
 }
 
-function rankItem(item, { query, scope, families, now }) {
-  const lexical = lexicalFromBm25(item.ftsRank ?? 0.4);
+function rankItem(item, { query, now }) {
+  const bm25 = lexicalFromBm25(item.ftsRank ?? 0.4);
   const score = scoreMemoryHit({
-    lexicalScore: Number.isFinite(item.ftsRank) ? lexical : 0.35,
-    scopeScore: scopeScore(item.scope, scope === 'all' ? item.scope : scope),
-    familyScore: familyScore(item.family || inferMemoryFamily(item), families),
+    bm25Score: Number.isFinite(item.ftsRank) ? bm25 : 0.35,
     confidence: item.confidence,
-    utilityScore: item.utilityScore,
-    recencyScore: recencyScore(item.updatedAt, now),
-    verifiedRecovery: item.evidence?.successful_recovery === true || Number(item.successCount) >= 3
+    verification: verificationSignal(item),
+    recencyScore: recencyScore(item.updatedAt, now)
   });
   return {
     ...item,
@@ -78,12 +91,26 @@ export async function retrieveMemories({
   if (config?.memory?.enabled === false || config?.memory?.retrieval?.enabled === false) return [];
   const scopes = requestedScopes(scope);
   const families = requestedFamilies(family);
-  const turnLimit = clamp(config?.memory?.retrieval?.turn_limit, 1, 10, 5);
-  const toolLimit = clamp(config?.memory?.retrieval?.tool_limit, 1, 10, 3);
-  const topK = clamp(limit, 1, 10, mode === 'tool' ? toolLimit : turnLimit);
+  const turnLimit = clamp(
+    config?.memory?.retrieval?.turn_top_k ?? config?.memory?.retrieval?.turn_limit,
+    1,
+    10,
+    5
+  );
+  const failureLimit = clamp(
+    config?.memory?.retrieval?.failure_top_k ?? config?.memory?.retrieval?.tool_limit,
+    1,
+    10,
+    3
+  );
+  const topK = clamp(limit, 1, 10, mode === 'failure' ? failureLimit : turnLimit);
   const minScore = Number(config?.memory?.retrieval?.min_score ?? 0.2);
   const needle = normalizeMemoryText(query);
   const root = path.resolve(workspaceRoot || process.cwd());
+  const indexOpts = {
+    rebuild: config?.memory?.index?.rebuild_on_corruption !== false,
+    fallback: config?.memory?.index?.substring_fallback !== false
+  };
 
   await Promise.all(scopes.map((itemScope) => ensurePersistentMemoryImported({
     workspaceRoot: root,
@@ -97,7 +124,7 @@ export async function retrieveMemories({
       for (const itemScope of scopes.filter((value) => value === 'user' || value === 'global')) {
         const familyFilter = families.length === 1 ? families[0] : '';
         searchJobs.push(needle
-          ? searchFts(globalDb, { query: needle, scope: itemScope, family: familyFilter, kind, limit: 30 })
+          ? searchFts(globalDb, { query: needle, scope: itemScope, family: familyFilter, kind, limit: 30, ...indexOpts })
           : listMemoriesFromDb(globalDb, { scope: itemScope, family: familyFilter }));
       }
     }
@@ -107,7 +134,7 @@ export async function retrieveMemories({
     if (projectDb) {
       const familyFilter = families.length === 1 ? families[0] : '';
       searchJobs.push(needle
-        ? searchFts(projectDb, { query: needle, scope: 'project', family: familyFilter, kind, limit: 30 })
+        ? searchFts(projectDb, { query: needle, scope: 'project', family: familyFilter, kind, limit: 30, ...indexOpts })
         : listMemoriesFromDb(projectDb, { scope: 'project', family: familyFilter }));
     }
   }
@@ -118,10 +145,11 @@ export async function retrieveMemories({
   const ranked = [];
   for (const item of chunks.flat()) {
     if (seen.has(`${item.scope}:${item.id}`)) continue;
+    if (item.lifecycle === 'archived') continue;
     if (families.length && !families.includes(item.family)) continue;
     if (kind && item.kind !== kind) continue;
     seen.add(`${item.scope}:${item.id}`);
-    ranked.push(rankItem(item, { query: needle, scope, families, now }));
+    ranked.push(rankItem(item, { query: needle, now }));
   }
   ranked.sort((left, right) => right.score - left.score || String(right.updatedAt).localeCompare(String(left.updatedAt)));
   const hits = ranked.filter((item) => !needle || item.score >= minScore || Number.isFinite(item.ftsRank)).slice(0, topK);
@@ -141,6 +169,42 @@ export async function retrieveMemories({
   return hits;
 }
 
+export function recordRetrievedOutcome(items = [], result = 'success', workspaceRoot = process.cwd()) {
+  if (!Array.isArray(items) || items.length === 0) return;
+  const root = path.resolve(workspaceRoot || process.cwd());
+  const grouped = new Map();
+  for (const item of items) {
+    if (!item?.id) continue;
+    const key = item.scope === 'project' ? `project:${root}` : 'global';
+    if (!grouped.has(key)) grouped.set(key, []);
+    grouped.get(key).push(item.id);
+  }
+  for (const [key, ids] of grouped.entries()) {
+    const db = key.startsWith('project:')
+      ? dbForScope('project', root, { create: false })
+      : dbForScope('user', root, { create: false });
+    try { recordMemoryOutcome(db, ids, result); } catch { /* outcome counts are best-effort */ }
+  }
+}
+
+export function confirmRetrievedMemories(items = [], workspaceRoot = process.cwd()) {
+  if (!Array.isArray(items) || items.length === 0) return;
+  const root = path.resolve(workspaceRoot || process.cwd());
+  const grouped = new Map();
+  for (const item of items) {
+    if (!item?.id) continue;
+    const key = item.scope === 'project' ? `project:${root}` : 'global';
+    if (!grouped.has(key)) grouped.set(key, []);
+    grouped.get(key).push(item.id);
+  }
+  for (const [key, ids] of grouped.entries()) {
+    const db = key.startsWith('project:')
+      ? dbForScope('project', root, { create: false })
+      : dbForScope('user', root, { create: false });
+    try { recordMemoryConfirmation(db, ids); } catch { /* confirmation is best-effort */ }
+  }
+}
+
 export function renderRetrievedMemory(items = []) {
   if (!Array.isArray(items) || items.length === 0) return '';
   const lines = items.map((item) => {
@@ -154,8 +218,19 @@ export function renderRetrievedMemory(items = []) {
   return ['<retrieved_memory>', ...lines, '</retrieved_memory>'].join('\n');
 }
 
-export function renderToolExperience(items = []) {
+export function renderRecoveryMemory(items = []) {
   if (!Array.isArray(items) || items.length === 0) return '';
   const lines = items.map((item) => `- [${item.family || item.kind}] ${item.summary || item.content}`);
-  return ['<tool_experience>', ...lines, '</tool_experience>'].join('\n');
+  return [
+    '<recovery_memory>',
+    'Previous verified lessons relevant to the latest failure:',
+    ...lines,
+    '</recovery_memory>'
+  ].join('\n');
+}
+
+export function buildFailureMemoryQuery({ tool, args, error } = {}) {
+  const command = String(args?.command || args?.path || args?.cmd || '').replace(/\s+/g, ' ').trim().slice(0, 80);
+  const errorClass = classifyToolError(error);
+  return [tool, command, errorClass, process.platform].filter(Boolean).join(' ');
 }

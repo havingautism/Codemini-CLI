@@ -701,15 +701,6 @@ export const en = {
   storageSizeHelp: "Size includes the SQLite database plus current WAL and shared-memory files, so it may change while Codemini is running.",
   storageLoadFailed: "Unable to load storage information",
   storageOpenFailed: "Unable to open the target folder",
-  memoryEmbeddingEnabled: "Memory Embeddings",
-  memoryEmbeddingEnabledHelp:
-    "Marks retrieval as hybrid and stores the embedding model settings. Current retrieval still uses FTS; vector rerank is not wired yet.",
-  memoryEmbeddingModel: "Embedding Model",
-  memoryEmbeddingModelHelp:
-    "OpenAI-compatible embedding model. Leave empty until hybrid retrieval is implemented.",
-  memoryEmbeddingBaseUrl: "Embedding Base URL",
-  memoryEmbeddingBaseUrlHelp:
-    "Optional. Leave empty to reuse the current Gateway base URL and API key.",
   context: "Context",
   contextMaxTokens: "Context Token Budget",
   preflightTrigger: "Preflight Trigger (%)",
@@ -836,6 +827,7 @@ export const en = {
   trajectoryKindSystem: "System Prompt",
   trajectoryKindUser: "User Message",
   trajectoryKindRouting: "Graph Routing",
+  trajectoryKindMemory: "Memory Inject",
   trajectoryKindThinking: "Thinking",
   trajectoryKindAssistant: "Assistant",
   trajectoryKindTool: "Tool Call",

@@ -24,7 +24,9 @@ import {
   listMemoriesFromDb,
   normalizePersistentMemory,
   replaceScopeMemories,
-  setMaintenance
+  setMaintenance,
+  syncMemoryFts,
+  updateMemoryWithRevision
 } from './memory-sqlite-store.js';
 import { retrieveMemories } from './memory-retriever.js';
 import { transaction } from './sqlite-database.js';
@@ -74,13 +76,13 @@ function lockKeyForScope(scope, workspaceRoot = process.cwd()) {
   return `memories:global:${scope}`;
 }
 
-async function readScopeMemoryItems(scope, workspaceRoot = process.cwd(), projectAlias = '') {
+async function readScopeMemoryItems(scope, workspaceRoot = process.cwd(), projectAlias = '', filters = {}) {
   const normalizedScope = ensureScope(scope);
   await ensurePersistentMemoryImported({ workspaceRoot, scope: normalizedScope });
   const db = dbForScope(normalizedScope, workspaceRoot, { create: false });
   if (!db) return [];
   const projectKey = normalizedScope === 'project' ? getProjectMemoryKey(workspaceRoot, projectAlias) : '';
-  return listMemoriesFromDb(db, { scope: normalizedScope }).map((item) => (
+  return listMemoriesFromDb(db, { scope: normalizedScope, ...filters }).map((item) => (
     projectKey ? { ...item, projectKey } : item
   ));
 }
@@ -124,9 +126,39 @@ function budgetForScope(scope, config = {}) {
   return Math.max(80, Number(config?.memory?.max_project_chars || 2200));
 }
 
-export async function listMemories({ scope, workspaceRoot = process.cwd(), projectAlias = '' }) {
+export async function listMemories({
+  scope,
+  workspaceRoot = process.cwd(),
+  projectAlias = '',
+  family,
+  kind,
+  lifecycle
+}) {
   const normalizedScope = ensureScope(scope);
-  return readScopeMemoryItems(normalizedScope, workspaceRoot, projectAlias);
+  return readScopeMemoryItems(normalizedScope, workspaceRoot, projectAlias, { family, kind, lifecycle });
+}
+
+/**
+ * Optimistic update facade (design §48). Returns the refreshed memory or
+ * null when expectedRevision no longer matches (stale write).
+ */
+export async function updateMemory({
+  id,
+  scope,
+  patch = {},
+  expectedRevision,
+  workspaceRoot = process.cwd()
+}) {
+  const normalizedScope = ensureScope(scope);
+  await ensurePersistentMemoryImported({ workspaceRoot, scope: normalizedScope });
+  const db = dbForScope(normalizedScope, workspaceRoot);
+  const changed = updateMemoryWithRevision(db, id, patch, expectedRevision);
+  if (!changed) return null;
+  const updated = listMemoriesFromDb(db, { scope: normalizedScope }).find((item) => item.id === id) || null;
+  if (updated) {
+    try { syncMemoryFts(db, updated); } catch { /* FTS is derived and rebuildable */ }
+  }
+  return updated;
 }
 
 export async function getMemoryBucketMaintenance({ scope, workspaceRoot = process.cwd(), projectAlias = '' }) {
@@ -222,6 +254,7 @@ async function rememberMemoryUnlocked({
   family = '',
   toolName = '',
   environmentKey = '',
+  agentRole = '',
   tags = [],
   evidence = null,
   workspaceRoot = process.cwd(),
@@ -248,6 +281,7 @@ async function rememberMemoryUnlocked({
     semanticKey,
     toolName,
     environmentKey,
+    agentRole,
     tags,
     evidence,
     ...(lifecycle ? { lifecycle: validateLifecycle(lifecycle) } : {})
@@ -263,6 +297,10 @@ async function rememberMemoryUnlocked({
       createdAt: existing[replaceIndex].createdAt,
       hitCount: existing[replaceIndex].hitCount,
       hits: existing[replaceIndex].hits,
+      accessCount: existing[replaceIndex].accessCount ?? existing[replaceIndex].hitCount,
+      confirmationCount: existing[replaceIndex].confirmationCount || 0,
+      lastConfirmedAt: existing[replaceIndex].lastConfirmedAt,
+      revision: existing[replaceIndex].revision || 1,
       successCount: existing[replaceIndex].successCount,
       failureCount: existing[replaceIndex].failureCount,
       updatedAt: nowIso()
@@ -450,6 +488,10 @@ async function captureToInboxUnlocked({
             confidence: Math.max(0, Math.min(1, Number(evidence.confidence) || 0)),
             reason: normalizeMemoryText(evidence.reason).slice(0, 240),
             ...(evidence.successful_recovery === true ? { successful_recovery: true } : {}),
+            ...(evidence.verified === true ? { verified: true } : {}),
+            ...(evidence.verification && typeof evidence.verification === 'object'
+              ? { verification: { type: String(evidence.verification.type || '').slice(0, 40) } }
+              : {}),
             ...(Number.isFinite(Number(evidence.failed_attempts))
               ? { failed_attempts: Number(evidence.failed_attempts) }
               : {}),

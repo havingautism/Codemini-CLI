@@ -1,6 +1,8 @@
 import { createChatCompletion } from './provider/index.js';
 import { inferMemoryFamily, normalizeMemoryKind, normalizeMemoryScope, buildDreamPromotionGraphBlock } from './memory-policy.js';
 import { appendStructuredOutputLanguageRule } from './reply-language.js';
+import { isMemoryStale } from './memory-lifecycle.js';
+import { retentionScore } from './memory-ranker.js';
 
 const EVAL_TIMEOUT_MS = 30000;
 
@@ -37,7 +39,7 @@ const MAINTENANCE_SYSTEM_PROMPT = `You are maintaining an existing persistent me
 Your job:
 1. Merge duplicates and near-duplicates.
 2. Summarize clusters into fewer, higher-signal memories.
-3. Remove stale, contradictory, trivial, or overly specific noise.
+3. Remove stale, contradictory, trivial, or overly specific noise. An item with "stale":true or an expired expected_valid_days should be archived (reason "stale") unless it is still clearly valid.
 4. Preserve important exact commands, file paths, preferences, and constraints.
 5. Keep memories scoped exactly to the bucket you receive.
 6. Use only these kinds: preference | convention | lesson | note.
@@ -193,7 +195,18 @@ export async function evaluateMemoryMaintenance({ scope, items, config, workspac
     semantic_key: String(item.semanticKey || '').slice(0, 160),
     confidence: item.confidence,
     pinned: item.pinned === true,
-    lifecycle: item.lifecycle || ''
+    lifecycle: item.lifecycle || '',
+    success_count: Number(item.successCount || 0),
+    failure_count: Number(item.failureCount || 0),
+    utility_score: Number(item.utilityScore || 0),
+    expected_valid_days: Number.isFinite(Number(item.expectedValidDays)) ? Number(item.expectedValidDays) : null,
+    stale: config?.memory?.lifecycle?.staleness_review !== false ? isMemoryStale(item, Date.now()) : false,
+    retention_score: retentionScore({
+      confidence: item.confidence,
+      lastConfirmedAt: item.lastConfirmedAt,
+      accessCount: item.accessCount,
+      now: Date.now()
+    })
   }));
 
   try {

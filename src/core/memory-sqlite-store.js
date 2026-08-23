@@ -6,9 +6,12 @@ import { getBaseConfigDir, getMemoryDir, getProjectIndexDir, getProjectMemoryDir
 import { getGlobalDatabase, getProjectDatabase, transaction } from './sqlite-database.js';
 import {
   inferMemoryFamily,
+  nextLifecycleFromCounts,
+  nextUtilityFromCounts,
   normalizeMemoryKind,
   normalizeMemoryScope,
   normalizeMemoryText,
+  segmentSearchText,
   summarizeMemoryContent
 } from './memory-policy.js';
 
@@ -22,10 +25,6 @@ function nowIso() {
   return new Date().toISOString();
 }
 
-function tagsText(tags) {
-  return Array.isArray(tags) ? tags.map((tag) => String(tag || '').trim()).filter(Boolean).join(' ') : '';
-}
-
 export function dbForScope(scope, workspaceRoot = process.cwd(), { create = true } = {}) {
   return scope === 'project'
     ? getProjectDatabase(workspaceRoot, { create })
@@ -36,6 +35,7 @@ export function rowToMemoryItem(row, projectKey = '') {
   const tags = parseJson(row?.tags_json, []);
   const evidence = parseJson(row?.evidence_json, {});
   const hitCount = Number(row?.hit_count || 0);
+  const confirmationCount = Number(row?.confirmation_count || 0);
   return {
     id: String(row.id),
     scope: row.scope,
@@ -49,18 +49,26 @@ export function rowToMemoryItem(row, projectKey = '') {
     utilityScore: Number(row.utility_score),
     source: row.source,
     ...(row.source_session_id ? { sourceSessionId: row.source_session_id } : {}),
+    ...(row.source_branch_id ? { sourceBranchId: row.source_branch_id } : {}),
     ...(row.tool_name ? { toolName: row.tool_name } : {}),
     ...(row.environment_key ? { environmentKey: row.environment_key } : {}),
+    ...(row.agent_role && row.agent_role !== '*' ? { agentRole: row.agent_role } : {}),
+    ...(Number.isFinite(Number(row.expected_valid_days)) ? { expectedValidDays: Number(row.expected_valid_days) } : {}),
     tags: Array.isArray(tags) ? tags : [],
     evidence: evidence && typeof evidence === 'object' && !Array.isArray(evidence) ? evidence : {},
     hitCount,
     hits: hitCount,
+    accessCount: Number(row?.access_count ?? row?.hit_count ?? 0),
+    confirmationCount,
     successCount: Number(row.success_count || 0),
     failureCount: Number(row.failure_count || 0),
     pinned: Number(row.pinned) === 1,
+    revision: Number(row.revision || 1),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     ...(row.last_hit_at ? { lastHitAt: row.last_hit_at } : {}),
+    ...(row.last_accessed_at || row.last_hit_at ? { lastAccessedAt: row.last_accessed_at || row.last_hit_at } : {}),
+    ...(row.last_confirmed_at ? { lastConfirmedAt: row.last_confirmed_at } : {}),
     ...(projectKey ? { projectKey } : {})
   };
 }
@@ -94,33 +102,48 @@ export function normalizePersistentMemory(item, scope, projectKey = '') {
     utilityScore: Number.isFinite(Number(item?.utilityScore)) ? Number(item.utilityScore) : 0.5,
     source: String(item?.source || 'tool').trim() || 'tool',
     ...(normalizeMemoryText(item?.sourceSessionId) ? { sourceSessionId: String(item.sourceSessionId).slice(0, 120) } : {}),
+    ...(normalizeMemoryText(item?.sourceBranchId) ? { sourceBranchId: String(item.sourceBranchId).slice(0, 120) } : {}),
     ...(normalizeMemoryText(item?.toolName) ? { toolName: String(item.toolName).slice(0, 80) } : {}),
     ...(normalizeMemoryText(item?.environmentKey) ? { environmentKey: String(item.environmentKey).slice(0, 80) } : {}),
+    ...(normalizeMemoryText(item?.agentRole) ? { agentRole: String(item.agentRole).slice(0, 40) } : {}),
+    ...(Number.isFinite(Number(item?.expectedValidDays)) ? { expectedValidDays: Math.max(0, Math.floor(Number(item.expectedValidDays))) } : {}),
     tags,
     evidence,
     hitCount,
     hits: hitCount,
+    accessCount: Number.isFinite(Number(item?.accessCount ?? item?.hitCount ?? item?.hits))
+      ? Number(item.accessCount ?? item.hitCount ?? item.hits)
+      : 0,
+    confirmationCount: Number.isFinite(Number(item?.confirmationCount)) ? Number(item.confirmationCount) : 0,
     successCount: Number.isFinite(Number(item?.successCount)) ? Number(item.successCount) : 0,
     failureCount: Number.isFinite(Number(item?.failureCount)) ? Number(item.failureCount) : 0,
     pinned: item?.pinned === true,
+    revision: Math.max(1, Number(item?.revision || 1)),
     createdAt: String(item?.createdAt || now),
     updatedAt: String(item?.updatedAt || now),
     ...(item?.lastHitAt ? { lastHitAt: String(item.lastHitAt) } : {}),
+    ...(item?.lastAccessedAt ? { lastAccessedAt: String(item.lastAccessedAt) } : {}),
+    ...(item?.lastConfirmedAt ? { lastConfirmedAt: String(item.lastConfirmedAt) } : {}),
     ...(projectKey ? { projectKey } : {})
   };
 }
 
+export function syncMemoryFts(db, item) {
+  return syncFts(db, item);
+}
+
 function syncFts(db, item) {
   db.prepare('DELETE FROM memory_fts WHERE id = ?').run(item.id);
-  if (!item?.content && !item?.summary) return;
+  const rawContent = String(item.content || '');
+  const rawText = [item.summary, rawContent].filter(Boolean).join(' ');
+  if (!rawText) return;
   db.prepare(`
-    INSERT INTO memory_fts(id, summary, content, tags, tool_name)
-    VALUES (?, ?, ?, ?, ?)
+    INSERT INTO memory_fts(id, search_text, raw_content, tool_name)
+    VALUES (?, ?, ?, ?)
   `).run(
     item.id,
-    String(item.summary || ''),
-    String(item.content || ''),
-    tagsText(item.tags),
+    segmentSearchText(rawText),
+    rawContent,
     String(item.toolName || '')
   );
 }
@@ -129,10 +152,12 @@ export function upsertMemory(db, item) {
   db.prepare(`
     INSERT INTO memories(
       id, scope, family, kind, semantic_key, content, summary, lifecycle,
-      confidence, utility_score, source, source_session_id, tool_name, environment_key,
-      tags_json, evidence_json, hit_count, success_count, failure_count, pinned,
+      confidence, utility_score, source, source_session_id, source_branch_id,
+      tool_name, environment_key, agent_role, expected_valid_days,
+      tags_json, evidence_json, hit_count, access_count, success_count, failure_count,
+      pinned, confirmation_count, last_confirmed_at, last_accessed_at, revision,
       created_at, updated_at, last_hit_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       scope = excluded.scope,
       family = excluded.family,
@@ -145,14 +170,22 @@ export function upsertMemory(db, item) {
       utility_score = excluded.utility_score,
       source = excluded.source,
       source_session_id = excluded.source_session_id,
+      source_branch_id = excluded.source_branch_id,
       tool_name = excluded.tool_name,
       environment_key = excluded.environment_key,
+      agent_role = excluded.agent_role,
+      expected_valid_days = excluded.expected_valid_days,
       tags_json = excluded.tags_json,
       evidence_json = excluded.evidence_json,
       hit_count = excluded.hit_count,
+      access_count = excluded.access_count,
       success_count = excluded.success_count,
       failure_count = excluded.failure_count,
       pinned = excluded.pinned,
+      confirmation_count = excluded.confirmation_count,
+      last_confirmed_at = excluded.last_confirmed_at,
+      last_accessed_at = excluded.last_accessed_at,
+      revision = memories.revision + 1,
       updated_at = excluded.updated_at,
       last_hit_at = excluded.last_hit_at
   `).run(
@@ -168,28 +201,111 @@ export function upsertMemory(db, item) {
     item.utilityScore,
     item.source,
     item.sourceSessionId || '',
+    item.sourceBranchId || '',
     item.toolName || '',
     item.environmentKey || '',
+    item.agentRole || '*',
+    item.expectedValidDays ?? null,
     JSON.stringify(item.tags || []),
     JSON.stringify(item.evidence && typeof item.evidence === 'object' ? item.evidence : {}),
     item.hitCount || 0,
+    item.accessCount ?? item.hitCount ?? 0,
     item.successCount || 0,
     item.failureCount || 0,
     item.pinned ? 1 : 0,
+    item.confirmationCount || 0,
+    item.lastConfirmedAt || null,
+    item.lastAccessedAt || null,
+    item.revision || 1,
     item.createdAt,
     item.updatedAt,
     item.lastHitAt || null
   );
-  syncFts(db, item);
+  try {
+    syncFts(db, item);
+  } catch {
+    // ponytail: canonical write already committed; query path rebuilds FTS
+  }
   return item;
 }
 
 export function deleteMemory(db, id) {
-  db.prepare('DELETE FROM memory_fts WHERE id = ?').run(id);
-  return Number(db.prepare('DELETE FROM memories WHERE id = ?').run(id).changes || 0);
+  const removed = Number(db.prepare('DELETE FROM memories WHERE id = ?').run(id).changes || 0);
+  try {
+    db.prepare('DELETE FROM memory_fts WHERE id = ?').run(id);
+  } catch {
+    // next rebuild drops stale FTS rows
+  }
+  return removed;
 }
 
-export function listMemoriesFromDb(db, { scope, family } = {}) {
+export function listMemoriesFromDb(db, { scope, family, kind, lifecycle } = {}) {
+  const clauses = [];
+  const params = [];
+  if (scope && scope !== 'all') {
+    clauses.push('scope = ?');
+    params.push(scope);
+  }
+  if (family && family !== 'all') {
+    clauses.push('family = ?');
+    params.push(family);
+  }
+  if (kind && kind !== 'all') {
+    clauses.push('kind = ?');
+    params.push(kind);
+  }
+  if (lifecycle && lifecycle !== 'all') {
+    clauses.push('lifecycle = ?');
+    params.push(lifecycle);
+  }
+  const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+  return db.prepare(`
+    SELECT * FROM memories ${where}
+    ORDER BY updated_at DESC, id DESC
+  `).all(...params).map((row) => rowToMemoryItem(row));
+}
+
+export function ftsQuery(query) {
+  const tokens = queryTokens(query)
+    .map((token) => `"${token.replace(/"/g, '')}"`);
+  return tokens.join(' OR ');
+}
+
+const MEMORY_FTS_DDL = `
+  CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
+    id UNINDEXED,
+    search_text,
+    raw_content UNINDEXED,
+    tool_name UNINDEXED,
+    tokenize = 'unicode61'
+  );
+`;
+
+export function rebuildMemoryIndex(db) {
+  db.exec('DROP TABLE IF EXISTS memory_fts');
+  db.exec(MEMORY_FTS_DDL);
+  const insert = db.prepare(`
+    INSERT INTO memory_fts(id, search_text, raw_content, tool_name)
+    VALUES (?, ?, ?, ?)
+  `);
+  for (const row of db.prepare('SELECT * FROM memories').all()) {
+    const item = rowToMemoryItem(row);
+    const rawContent = String(item.content || '');
+    const rawText = [item.summary, rawContent].filter(Boolean).join(' ');
+    if (!rawText) continue;
+    insert.run(item.id, segmentSearchText(rawText), rawContent, String(item.toolName || ''));
+  }
+}
+
+function queryTokens(query) {
+  const segmented = segmentSearchText(query);
+  if (!segmented) return [];
+  return segmented.split(/\s+/).filter(Boolean).slice(0, 12);
+}
+
+function searchSubstring(db, { query, scope, family, kind, limit = 30 } = {}) {
+  const tokens = queryTokens(query).map((token) => token.toLowerCase());
+  if (!tokens.length) return [];
   const clauses = [];
   const params = [];
   if (scope && scope !== 'all') {
@@ -200,24 +316,29 @@ export function listMemoriesFromDb(db, { scope, family } = {}) {
     clauses.push('family = ?');
     params.push(family);
   }
-  const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+  if (kind) {
+    clauses.push('kind = ?');
+    params.push(kind);
+  }
+  clauses.push(`(${tokens.map(() => '(LOWER(content) LIKE ? OR LOWER(summary) LIKE ?)').join(' OR ')})`);
+  for (const token of tokens) {
+    const like = `%${token.replace(/[%_]/g, '')}%`;
+    params.push(like, like);
+  }
+  params.push(Math.max(1, Math.min(50, Number(limit) || 30)));
   return db.prepare(`
-    SELECT * FROM memories ${where}
-    ORDER BY updated_at DESC, id DESC
-  `).all(...params).map((row) => rowToMemoryItem(row));
+    SELECT * FROM memories
+    WHERE ${clauses.join(' AND ')}
+    ORDER BY updated_at DESC
+    LIMIT ?
+  `).all(...params).map((row) => {
+    const item = rowToMemoryItem(row);
+    item.ftsRank = 0.5;
+    return item;
+  });
 }
 
-export function ftsQuery(query) {
-  const tokens = String(query || '')
-    .split(/[^\p{L}\p{N}]+/u)
-    .map((token) => token.trim())
-    .filter((token) => token.length >= 2 || /^[\p{Script=Han}]$/u.test(token))
-    .slice(0, 12)
-    .map((token) => `"${token.replace(/"/g, '')}"`);
-  return tokens.join(' OR ');
-}
-
-export function searchFts(db, { query, scope, family, kind, limit = 30 } = {}) {
+function queryFts(db, { query, scope, family, kind, limit = 30 } = {}) {
   const match = ftsQuery(query);
   if (!match) return [];
   const clauses = ['memory_fts MATCH ?'];
@@ -235,31 +356,106 @@ export function searchFts(db, { query, scope, family, kind, limit = 30 } = {}) {
     params.push(kind);
   }
   params.push(Math.max(1, Math.min(50, Number(limit) || 30)));
+  return db.prepare(`
+    SELECT memories.*, bm25(memory_fts) AS fts_rank
+    FROM memory_fts
+    JOIN memories ON memories.id = memory_fts.id
+    WHERE ${clauses.join(' AND ')}
+    ORDER BY fts_rank
+    LIMIT ?
+  `).all(...params).map((row) => {
+    const item = rowToMemoryItem(row);
+    item.ftsRank = Number(row.fts_rank);
+    return item;
+  });
+}
+
+export function searchFts(db, options = {}) {
+  const rebuild = options.rebuild !== false;
+  const fallback = options.fallback !== false;
   try {
-    return db.prepare(`
-      SELECT memories.*, bm25(memory_fts) AS fts_rank
-      FROM memory_fts
-      JOIN memories ON memories.id = memory_fts.id
-      WHERE ${clauses.join(' AND ')}
-      ORDER BY fts_rank
-      LIMIT ?
-    `).all(...params).map((row) => {
-      const item = rowToMemoryItem(row);
-      item.ftsRank = Number(row.fts_rank);
-      return item;
-    });
+    return queryFts(db, options);
   } catch {
+    if (rebuild) {
+      try {
+        rebuildMemoryIndex(db);
+        return queryFts(db, options);
+      } catch {
+        // fall through to substring
+      }
+    }
+    if (fallback) {
+      try {
+        return searchSubstring(db, options);
+      } catch {
+        return [];
+      }
+    }
     return [];
   }
 }
 
+function mergeReinforcement(item, existing = []) {
+  const prev = existing.find((row) =>
+    (item.id && row.id === item.id)
+    || (item.semanticKey && row.semanticKey && item.semanticKey === row.semanticKey)
+    || (item.content && row.content === item.content)
+  );
+  if (!prev) return item;
+  const successCount = Math.max(Number(item.successCount || 0), Number(prev.successCount || 0));
+  const failureCount = Math.max(Number(item.failureCount || 0), Number(prev.failureCount || 0));
+  const confirmationCount = Math.max(Number(item.confirmationCount || 0), Number(prev.confirmationCount || 0));
+  return {
+    ...item,
+    id: prev.id,
+    hitCount: Math.max(Number(item.hitCount || 0), Number(prev.hitCount || 0)),
+    accessCount: Math.max(Number(item.accessCount || item.hitCount || 0), Number(prev.accessCount || prev.hitCount || 0)),
+    confirmationCount,
+    successCount,
+    failureCount,
+    revision: Math.max(Number(item.revision || 1), Number(prev.revision || 1)),
+    lastConfirmedAt: item.lastConfirmedAt || prev.lastConfirmedAt,
+    utilityScore: nextUtilityFromCounts(successCount, failureCount),
+    lifecycle: nextLifecycleFromCounts({
+      lifecycle: item.lifecycle || prev.lifecycle,
+      successCount,
+      failureCount,
+      confirmationCount,
+      pinned: item.pinned === true || prev.pinned === true,
+      kind: item.kind || prev.kind
+    })
+  };
+}
+
 export function replaceScopeMemories(db, scope, items = []) {
   const existing = listMemoriesFromDb(db, { scope });
-  const keepIds = new Set(items.map((item) => item.id));
+  const merged = items.map((item) => mergeReinforcement(item, existing));
+  const keepIds = new Set(merged.map((item) => item.id));
   for (const item of existing) {
     if (!keepIds.has(item.id)) deleteMemory(db, item.id);
   }
-  for (const item of items) upsertMemory(db, item);
+  for (const item of merged) upsertMemory(db, item);
+}
+
+export function recordMemoryOutcome(db, ids = [], result = 'success') {
+  if (!db || !ids.length) return;
+  const successDelta = result === 'success' ? 1 : 0;
+  const failureDelta = result === 'success' ? 0 : 1;
+  const stmt = db.prepare(`
+    UPDATE memories SET
+      success_count = success_count + ?,
+      failure_count = failure_count + ?,
+      utility_score = MAX(0.0, MIN(1.0, 0.5 + 0.08 * (success_count + ?) - 0.12 * (failure_count + ?))),
+      lifecycle = CASE
+        WHEN lifecycle = 'archived' THEN 'archived'
+        WHEN failure_count + ? >= 2 AND failure_count + ? >= success_count + ? THEN 'archived'
+        ELSE lifecycle
+      END
+    WHERE id = ?
+  `);
+  for (const id of ids) {
+    stmt.run(successDelta, failureDelta, successDelta, failureDelta, failureDelta, failureDelta, successDelta, id);
+  }
 }
 
 export function getMaintenance(db, scope) {
@@ -274,11 +470,75 @@ export function setMaintenance(db, scope, meta) {
   `).run(`memory_maintained_${scope}`, JSON.stringify(meta || {}));
 }
 
+/**
+ * Optimistic update with revision conflict detection (design §39).
+ * Bumps revision and updated_at atomically; returns 0 when the revision
+ * no longer matches (stale write) so the caller can reload and retry/merge.
+ */
+const UPDATE_PATCH_COLUMNS = {
+  scope: 'scope',
+  family: 'family',
+  kind: 'kind',
+  semanticKey: 'semantic_key',
+  content: 'content',
+  summary: 'summary',
+  lifecycle: 'lifecycle',
+  confidence: 'confidence',
+  pinned: 'pinned',
+  tags: 'tags_json',
+  evidence: 'evidence_json',
+  toolName: 'tool_name',
+  environmentKey: 'environment_key',
+  agentRole: 'agent_role',
+  expectedValidDays: 'expected_valid_days',
+  sourceBranchId: 'source_branch_id'
+};
+
+export function updateMemoryWithRevision(db, id, patch = {}, expectedRevision) {
+  if (!id) return 0;
+  const setClauses = [];
+  const params = [];
+  for (const [field, column] of Object.entries(UPDATE_PATCH_COLUMNS)) {
+    if (!(field in patch)) continue;
+    setClauses.push(`${column} = ?`);
+    const value = patch[field];
+    if (column === 'tags_json') params.push(JSON.stringify(Array.isArray(value) ? value : []));
+    else if (column === 'evidence_json') params.push(JSON.stringify(value && typeof value === 'object' && !Array.isArray(value) ? value : {}));
+    else if (column === 'pinned') params.push(value ? 1 : 0);
+    else params.push(value);
+  }
+  setClauses.push('revision = revision + 1');
+  setClauses.push('updated_at = ?');
+  params.push(patch.updatedAt || nowIso());
+  const where = expectedRevision == null ? 'id = ?' : 'id = ? AND revision = ?';
+  params.push(id);
+  if (expectedRevision != null) params.push(Number(expectedRevision));
+  return Number(db.prepare(`UPDATE memories SET ${setClauses.join(', ')} WHERE ${where}`).run(...params).changes || 0);
+}
+
 export function recordMemoryHits(db, ids = []) {
   const now = nowIso();
   const stmt = db.prepare(`
     UPDATE memories
-    SET hit_count = hit_count + 1, last_hit_at = ?
+    SET hit_count = hit_count + 1, last_hit_at = ?,
+        access_count = access_count + 1, last_accessed_at = ?
+    WHERE id = ?
+  `);
+  for (const id of ids) stmt.run(now, now, id);
+}
+
+export function recordMemoryConfirmation(db, ids = []) {
+  if (!db || !ids.length) return;
+  const now = nowIso();
+  const stmt = db.prepare(`
+    UPDATE memories SET
+      confirmation_count = confirmation_count + 1,
+      last_confirmed_at = ?,
+      lifecycle = CASE
+        WHEN lifecycle = 'archived' THEN 'archived'
+        WHEN pinned = 1 OR kind = 'preference' OR confirmation_count + 1 >= 3 THEN 'longterm'
+        ELSE lifecycle
+      END
     WHERE id = ?
   `);
   for (const id of ids) stmt.run(now, id);

@@ -2,7 +2,8 @@ import path from 'node:path';
 import { trimInline as _trimInline, normalizePath } from './string-utils.js';
 import { captureToInbox, listInbox } from './memory-store.js';
 import { createExperienceTracker } from './memory-experience-tracker.js';
-import { retrieveMemories, renderToolExperience } from './memory-retriever.js';
+import { retrieveMemories, renderRecoveryMemory, buildFailureMemoryQuery, compactMemoryHit } from './memory-retriever.js';
+import { isVerificationCommand, shouldSkipFailureRecall } from './memory-policy.js';
 import {
   isRoutineProjectCommand,
   requiresApprovalEvaluation,
@@ -212,7 +213,7 @@ const DREAM_AUTO_CAPTURE_COOLDOWN_MS = 60_000;
 const lastAutoCaptureByTool = new Map();
 
 function isAutoCaptureEnabled(config = {}) {
-  return config?.memory?.enabled !== false && config?.memory?.auto_capture !== false;
+  return config?.memory?.enabled !== false && config?.memory?.experience?.legacy_error_capture === true;
 }
 
 function shouldAutoCaptureError(toolName, message) {
@@ -253,6 +254,32 @@ async function captureToolFailure(toolName, message, args, config = {}) {
     details,
     source: 'auto-capture'
   });
+}
+
+async function attachRecoveryMemory(content, { toolName, args, error, config, workspaceRoot, experienceTracker, onEvent }) {
+  if (config?.memory?.enabled === false || config?.memory?.retrieval?.enabled === false) return content;
+  if (shouldSkipFailureRecall(error)) return content;
+  const query = buildFailureMemoryQuery({ tool: toolName, args, error });
+  const hits = await retrieveMemories({
+    query,
+    family: ['coding'],
+    workspaceRoot,
+    config,
+    mode: 'failure'
+  }).catch(() => []);
+  if (!hits.length) return content;
+  experienceTracker?.noteRecovery(hits);
+  if (typeof onEvent === 'function') {
+    onEvent({
+      type: 'memory:retrieved',
+      mode: 'failure',
+      tool: toolName,
+      query,
+      retrieved: hits.map(compactMemoryHit),
+      startedAt: new Date().toISOString()
+    });
+  }
+  return `${renderRecoveryMemory(hits)}\n\n${content}`;
 }
 
 function shouldAutoCaptureRunFailure(message) {
@@ -1431,18 +1458,6 @@ export async function runAgentLoop({
         } catch {}
       }
 
-      const toolExperiencePromise = (
-        config?.memory?.enabled === false || config?.memory?.retrieval?.enabled === false
-      )
-        ? Promise.resolve([])
-        : retrieveMemories({
-            query: [toolName, String(effectiveArgs?.command || effectiveArgs?.path || ''), process.platform].join(' '),
-            family: ['coding'],
-            workspaceRoot,
-            config,
-            mode: 'tool'
-          }).catch(() => []);
-
       let toolResult;
       try {
         toolResult = await toolRuntime.execute(toolName, effectiveArgs, {
@@ -1466,11 +1481,13 @@ export async function runAgentLoop({
         if (!experienceTracker && isAutoCaptureEnabled(config) && shouldAutoCaptureError(toolName, message)) {
           await captureToolFailure(toolName, message, effectiveArgs, config).catch(() => {});
         }
-        const lessons = await toolExperiencePromise;
-        const content = clipToolResult({ error: message }, toolResultMaxChars);
+        const content = await attachRecoveryMemory(
+          clipToolResult({ error: message }, toolResultMaxChars),
+          { toolName, args: effectiveArgs, error: message, config, workspaceRoot, experienceTracker, onEvent }
+        );
         return {
           callId: call.id,
-          content: lessons.length ? `${renderToolExperience(lessons)}\n\n${content}` : content,
+          content,
           error: true,
           durationMs,
           summary,
@@ -1507,8 +1524,15 @@ export async function runAgentLoop({
         } else if (!/^error:/im.test(formatted)) {
           formatted = `error: ${runFailureMessage}\n\n${formatted}`;
         }
-        const lessons = await toolExperiencePromise;
-        if (lessons.length) formatted = `${renderToolExperience(lessons)}\n\n${formatted}`;
+        formatted = await attachRecoveryMemory(formatted, {
+          toolName,
+          args: effectiveArgs,
+          error: runFailureMessage,
+          config,
+          workspaceRoot,
+          experienceTracker,
+          onEvent
+        });
         if (shouldPersistLargeToolResult(toolName)) {
           formatted = await activeToolResultStore.storeResultIfNeeded(call.id, formatted, toolResult);
         }
@@ -1595,6 +1619,9 @@ export async function runAgentLoop({
         }
       } else {
         experienceTracker?.recordAttempt({ tool: toolName, args: effectiveArgs, result: 'success' });
+        if (typeof effectiveArgs?.command === 'string' && isVerificationCommand(effectiveArgs.command)) {
+          experienceTracker?.noteVerification({ type: 'test_exit_zero', tool: toolName });
+        }
       }
 
       // P1b: Use per-tool formatter if available, else fallback
@@ -1603,8 +1630,17 @@ export async function runAgentLoop({
       if (hookContexts.length > 0) {
         formatted = `${formatted}\n\n[Hook context]\n${hookContexts.join('\n')}`;
       }
-      const lessons = await toolExperiencePromise;
-      if (lessons.length) formatted = `${renderToolExperience(lessons)}\n\n${formatted}`;
+      if (toolResult && typeof toolResult === 'object' && toolResult.error) {
+        formatted = await attachRecoveryMemory(formatted, {
+          toolName,
+          args: effectiveArgs,
+          error: toolResult.error,
+          config,
+          workspaceRoot,
+          experienceTracker,
+          onEvent
+        });
+      }
       noteAnalysisEvidence(analysisGuard, toolName, effectiveArgs, toolResult);
 
       // A loaded deferred schema becomes visible on the next model response.

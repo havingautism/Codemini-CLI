@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { rememberMemory, listMemories, forgetMemory, searchMemories } from '../src/core/memory-store.js';
+import { dbForScope, searchFts } from '../src/core/memory-sqlite-store.js';
 import { withMemoryEnv } from './helpers/memory-env.js';
 
 test('rememberMemory persists to sqlite and listMemories reads it back with family', async () => {
@@ -75,5 +76,49 @@ test('project memories stay in the project database and do not leak across repos
     const fromB = await listMemories({ scope: 'project', workspaceRoot: projectB });
     assert.equal(fromA.length, 1);
     assert.equal(fromB.length, 0);
+  });
+});
+
+test('dropped FTS index rebuilds on search', async () => {
+  await withMemoryEnv(async (dir) => {
+    await rememberMemory({
+      scope: 'global',
+      kind: 'lesson',
+      content: 'Windows 下 pnpm 脚本应该通过 PowerShell 执行',
+      summary: 'Windows pnpm via PowerShell',
+      workspaceRoot: dir,
+      config: { memory: { max_items_per_scope: 50 } }
+    });
+    const db = dbForScope('global', dir);
+    db.exec('DROP TABLE memory_fts');
+    const hits = await searchMemories({
+      scope: 'global',
+      query: 'Windows package script',
+      workspaceRoot: dir
+    });
+    assert.ok(hits.length >= 1);
+    assert.match(hits[0].content, /pnpm/);
+  });
+});
+
+test('FTS query failure falls back to substring when rebuild is skipped', async () => {
+  await withMemoryEnv(async (dir) => {
+    await rememberMemory({
+      scope: 'global',
+      kind: 'lesson',
+      content: 'PowerShell uses . instead of source',
+      summary: 'PowerShell dot source',
+      workspaceRoot: dir,
+      config: { memory: { max_items_per_scope: 50 } }
+    });
+    const db = dbForScope('global', dir);
+    db.exec('DROP TABLE memory_fts');
+    const hits = searchFts(db, {
+      query: 'PowerShell source',
+      scope: 'global',
+      rebuild: false,
+      fallback: true
+    });
+    assert.ok(hits.some((item) => /PowerShell/.test(item.content)));
   });
 });
