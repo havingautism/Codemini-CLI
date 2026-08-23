@@ -56,6 +56,8 @@ test('writing lead prompt follows Codemini reply language only', () => {
   const zh = buildLeadSystemPrompt('writing', session, { ui: { reply_language: 'zh' } });
   assert.match(zh, /Simplified Chinese \(Codemini reply-language preference\)/);
   assert.match(zh, /Synthesize claims, summaries, gaps/);
+  assert.match(zh, /Attribute factual claims to sources from the writing pack/);
+  assert.doesNotMatch(zh, /Do not require inline citation markers/);
 
   const en = buildLeadSystemPrompt('writing', session, { ui: { reply_language: 'en' } });
   assert.match(en, /English \(Codemini reply-language preference\)/);
