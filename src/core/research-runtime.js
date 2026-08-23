@@ -197,10 +197,10 @@ function buildLeadSystemPrompt(phase, session, config = {}) {
       '- Follow Suggested outline as a starting point; merge or rename headings freely.',
       '- Prefer findings → evidence → limitations for substantive blocks (brief may compress this).',
       '- When evidence lists multiple sources, prefer the strongest primary ones in prose.',
+      '- Attribute factual claims to sources from the writing pack when helpful (evidence id, URL, or short label). Format is not prescribed.',
       ...depthGuidance,
       'Length follows the pack: a thin pack means a shorter report is correct; do not pad.',
       'Do not call run_subagent or submit_research_commit.',
-      'Do not require inline citation markers.',
       'Call submit_research_report with markdown report body when finished.',
     ].filter(Boolean).join('\n');
   }
