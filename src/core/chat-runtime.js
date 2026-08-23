@@ -4721,6 +4721,7 @@ async function askModel({
   workspaceRoot = process.cwd(),
   selectedSkillNames = [],
   memoryInject = null,
+  retrievedText = '',
   skillHooksSession = null,
   onSkillLoaded = null,
   initialMessagesOverride = null,
@@ -4861,10 +4862,13 @@ async function askModel({
   const turnStartMessageCount = session.messages.length;
   const turnStartCompactedCount = compacted ? compacted.length : 0;
   if (text) {
-    const modelExtra =
-      typeof modelText === 'string' && modelText && modelText !== text
-        ? { model_content: modelText, model_content_scope: 'current_turn' }
-        : {};
+    const baseModelText = typeof modelText === 'string' && modelText && modelText !== text ? modelText : '';
+    const retrievedPart = typeof retrievedText === 'string' && retrievedText.trim() ? retrievedText.trim() : '';
+    let modelContent = baseModelText || text;
+    if (retrievedPart) modelContent = `${retrievedPart}\n\n${modelContent}`;
+    const modelExtra = modelContent !== text
+      ? { model_content: modelContent, model_content_scope: 'current_turn' }
+      : {};
     const imageExtra = Array.isArray(modelImages) && modelImages.length
       ? { model_images: modelImages }
       : {};
@@ -8204,7 +8208,7 @@ export async function createChatRuntime({
       return memorySnapshotMemo.value;
     }
     const composed = await composeMemorySnapshot({ config, workspaceRoot: root, query: userQuery }).catch(() => ({ text: '', inject: null }));
-    memorySnapshotMemo = { configRef: config, mtimeKey, value: composed.text || '', inject: composed.inject || null };
+    memorySnapshotMemo = { configRef: config, mtimeKey, value: composed.text || '', retrievedText: composed.retrievedText || '', inject: composed.inject || null };
     return memorySnapshotMemo.value;
   };
   const reloadCommandsAndSkills = async ({ force = false } = {}) => {
@@ -8644,6 +8648,7 @@ export async function createChatRuntime({
       userQuery: inputText,
     });
     const memoryInject = memorySnapshotMemo?.inject || null;
+    const retrievedText = memorySnapshotMemo?.retrievedText || '';
     if (memoryInject && typeof onAgentEvent === 'function') {
       onAgentEvent({
         type: 'memory:retrieved',
@@ -9239,6 +9244,7 @@ export async function createChatRuntime({
       skillHooksSession,
       onSkillLoaded: (skillName) => armSkillHooksByName(skillName, { onAgentEvent }),
       memoryInject,
+      retrievedText,
     });
     syncExecutionModeWithSession();
     void captureUserPromptForDream(expandedText);

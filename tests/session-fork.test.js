@@ -110,6 +110,8 @@ test('web UI forks the clicked message, not the whole transcript', async () => {
     new URL('../codemini-web/client/src/components/MessageBubble.jsx', import.meta.url),
     'utf8'
   );
+  assert.match(bubble, /canSaveToScrapbook=\{false\}\s+onRetry=\{onRetry\}/);
+  assert.match(bubble, /showFork\s+canFork=\{!turnActive\}/);
   assert.match(bubble, /forkSession\(messageId\)/);
   const server = await fs.readFile(
     new URL('../codemini-web/server.js', import.meta.url),

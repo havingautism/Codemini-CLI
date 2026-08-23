@@ -1927,6 +1927,7 @@ function MessageActions({
   retryPrompt = "",
   canRetry = false,
   canSaveToScrapbook = false,
+  showFork = false,
   canFork = false,
   messageId = "",
   onSaveToScrapbook,
@@ -1976,21 +1977,23 @@ function MessageActions({
       >
         <Copy size={17} />
       </MessageActionButton>
-      <MessageActionButton
-        label={canFork ? t("forkSession") : t("forkSessionBusy")}
-        disabled={!canFork || forking || !messageId}
-        onClick={async () => {
-          if (!canFork || forking || !messageId) return;
-          setForking(true);
-          try {
-            await actions.forkSession(messageId);
-          } finally {
-            setForking(false);
-          }
-        }}
-      >
-        <GitBranch size={17} />
-      </MessageActionButton>
+      {showFork && (
+        <MessageActionButton
+          label={canFork ? t("forkSession") : t("forkSessionBusy")}
+          disabled={!canFork || forking || !messageId}
+          onClick={async () => {
+            if (!canFork || forking || !messageId) return;
+            setForking(true);
+            try {
+              await actions.forkSession(messageId);
+            } finally {
+              setForking(false);
+            }
+          }}
+        >
+          <GitBranch size={17} />
+        </MessageActionButton>
+      )}
       {canSaveToScrapbook && (
         <MessageActionButton
           label={saving ? t("scrapbookSavingAnswer") : t("scrapbookSaveAnswer")}
@@ -2471,8 +2474,6 @@ export const MessageBubble = memo(function MessageBubble({
             retryPrompt={retryPrompt}
             canRetry={canRetry}
             canSaveToScrapbook={false}
-            canFork={!turnActive}
-            messageId={message.id}
             onRetry={onRetry}
             align="right"
             className={cn(
@@ -2569,6 +2570,7 @@ export const MessageBubble = memo(function MessageBubble({
               retryPrompt={retryPrompt}
               canRetry={canRetry}
               canSaveToScrapbook={canSaveToScrapbook}
+              showFork
               canFork={!turnActive}
               messageId={message.id}
               onSaveToScrapbook={() =>

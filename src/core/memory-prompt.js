@@ -116,7 +116,7 @@ export async function composeMemorySnapshot({
   };
 
   if (profileSections.length === 0 && !retrievedBlock && !guaranteedBlock) {
-    return { text: '', inject };
+    return { text: '', retrievedText: '', inject };
   }
 
   const snapshot = [
@@ -126,13 +126,12 @@ export async function composeMemorySnapshot({
     'Actively notice lasting user preferences and interests; save them with save_memory(scope="user", kind="preference"). Write new memory content/summary in the active reply language from the system prompt.',
     profileSections.length ? `<memory_profile>\n${profileSections.join('\n\n')}\n</memory_profile>` : '',
     guaranteedBlock,
-    retrievedBlock,
     '</relevant_memory>'
   ].filter(Boolean).join('\n\n');
 
   const maxChars = Math.max(200, Number(config?.memory?.max_prompt_chars || 4000));
   const text = snapshot.length <= maxChars ? snapshot : `${snapshot.slice(0, maxChars - 3)}...`;
-  return { text, inject };
+  return { text, retrievedText: retrievedBlock, inject };
 }
 
 export async function buildMemorySnapshot(opts = {}) {

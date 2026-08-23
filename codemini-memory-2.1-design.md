@@ -2900,6 +2900,7 @@ coding-oriented
 - 新增 `verificationSignal()`：仅 deterministic 证据（confirmation / verified evidence / success_count）驱动 10% 权重。
 - 中文检索落地：`Intl.Segmenter("zh", word)` 预分词写入 `search_text`（`segmentSearchText`），FTS schema 迁移为 `search_text / raw_content / tool_name`。
 - `retentionScore` 已接线：`memory-lifecycle.js` 用它计算 low-utility 候选。
+- 缓存友好：`<retrieved_memory>` 从 system prompt 尾部移到 user turn（经 `model_content`，仅当前 turn 模型可见，不污染 transcript）；system prompt 只保留稳定的 profile/guaranteed，稳定前缀可 100% 命中 prefix cache。
 
 **Concurrency / API（§35/§39/§48）**
 - `updateMemoryWithRevision()` 实现乐观并发（`WHERE id=? AND revision=?`），facade 增加 `MemoryStore.update(id, patch, expectedRevision)`。

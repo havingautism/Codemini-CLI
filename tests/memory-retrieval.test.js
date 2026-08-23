@@ -201,3 +201,29 @@ test('recovery memory block wraps coding lessons for the next turn', () => {
   assert.match(block, /<recovery_memory>/);
   assert.match(block, /tsx/);
 });
+
+test('retrieved memory rides the user turn, not the system prompt tail', async () => {
+  await withMemoryEnv(async (dir) => {
+    await rememberMemory({
+      scope: 'global',
+      kind: 'lesson',
+      family: 'coding',
+      content: 'Use node instead of pnpm exec tsx in this repo',
+      summary: 'node not tsx',
+      workspaceRoot: dir,
+      config: STORE_CONFIG
+    });
+    const composed = await composeMemorySnapshot({
+      config: { memory: { enabled: true, bootstrap: { enabled: true }, retrieval: { enabled: true, turn_limit: 5 } } },
+      workspaceRoot: dir,
+      query: 'run the tsx migration'
+    });
+    // System prompt tail keeps profile/guaranteed but drops retrieved memory.
+    assert.doesNotMatch(composed.text, /<retrieved_memory>/);
+    // Retrieved memory is returned separately, for the user turn.
+    assert.match(composed.retrievedText, /<retrieved_memory>/);
+    assert.match(composed.retrievedText, /tsx/);
+    // Structured inject still carries retrieved hits for the trajectory UI.
+    assert.ok(composed.inject.retrieved.some((item) => /tsx/i.test(item.summary || item.content)));
+  });
+});
