@@ -19,12 +19,15 @@ export function WorkspaceRail({
   onTabChange,
   sessionId = "",
   projectCwd = "",
+  isGit = false,
   onClose,
 }) {
   const [panelWidth, setPanelWidth] = useState(DEFAULT_PANEL_WIDTH);
   const resizingRef = useRef(false);
-  const activeTab =
+  const requestedTab =
     tab === "terminal" ? "terminal" : tab === "git" ? "git" : "files";
+  const activeTab =
+    requestedTab === "git" && !isGit ? "files" : requestedTab;
   const workspaceDisabled = !String(projectCwd || "").trim();
 
   const updatePanelWidth = (clientX) => {
@@ -113,6 +116,7 @@ export function WorkspaceRail({
               <TerminalIcon size={14} />
               <span>{t("terminalTitle")}</span>
             </button>
+            {isGit ? (
             <button
               type="button"
               className={tabButtonClass(activeTab === "git")}
@@ -123,6 +127,7 @@ export function WorkspaceRail({
               <GitDiffIcon size={14} />
               <span>{t("workspaceGitTab")}</span>
             </button>
+            ) : null}
           </div>
           <button
             type="button"

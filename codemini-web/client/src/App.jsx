@@ -4,6 +4,7 @@ import React, {
   lazy,
   memo,
   useCallback,
+  useEffect,
   useMemo,
   useRef,
   useState,
@@ -220,7 +221,15 @@ function Shell() {
     }
   }, []);
   const rs = state.runtimeState || {};
+  const projectIsGit = state.gitInfo?.isGit === true;
   const currentId = state.currentSessionId || rs.sessionId;
+
+  useEffect(() => {
+    if (!projectIsGit && sideRailTab === "git") {
+      setSideRailTab("files");
+    }
+  }, [projectIsGit, sideRailTab]);
+
   const reasoningSyncKey = useMemo(
     () =>
       `${rs.reasoningEnabled !== false ? "1" : "0"}:${rs.reasoningEffort || "auto"}`,
@@ -604,6 +613,7 @@ function Shell() {
                 >
                   <Terminal size={16} />
                 </button>
+                {projectIsGit ? (
                 <button
                   type="button"
                   className={
@@ -626,6 +636,7 @@ function Shell() {
                 >
                   <GitDiff size={16} />
                 </button>
+                ) : null}
               </div>
             </div>
 
@@ -740,6 +751,7 @@ function Shell() {
                   projectCwd={
                     state.runtimeState?.cwd || state.projectCwd || ""
                   }
+                  isGit={projectIsGit}
                   onClose={() => setSideRailOpen(false)}
                 />
               </Suspense>
