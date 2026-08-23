@@ -5,6 +5,7 @@ import path from 'node:path';
 import { rememberMemory, listMemories, searchMemories } from '../src/core/memory-store.js';
 import { retrieveMemories, renderRecoveryMemory } from '../src/core/memory-retriever.js';
 import { composeMemorySnapshot, buildMemorySnapshot } from '../src/core/memory-prompt.js';
+import { toOpenAIMessages } from '../src/core/chat-runtime.js';
 import { withMemoryEnv } from './helpers/memory-env.js';
 
 const STORE_CONFIG = { memory: { max_items_per_scope: 50, max_prompt_chars: 8000 } };
@@ -226,4 +227,14 @@ test('retrieved memory rides the user turn, not the system prompt tail', async (
     // Structured inject still carries retrieved hits for the trajectory UI.
     assert.ok(composed.inject.retrieved.some((item) => /tsx/i.test(item.summary || item.content)));
   });
+});
+
+test('retrieved memory reaches the model through user content (not a dropped model_content)', () => {
+  const messages = [
+    { role: 'user', content: '<retrieved_memory>\n- [coding] use node not tsx\n</retrieved_memory>\n\nrun the migration' }
+  ];
+  const openai = toOpenAIMessages(messages, { currentTurnUserIndex: -1 });
+  assert.equal(openai.length, 1);
+  assert.match(openai[0].content, /<retrieved_memory>/);
+  assert.match(openai[0].content, /run the migration/);
 });

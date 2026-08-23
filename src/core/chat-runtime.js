@@ -245,7 +245,7 @@ function findCurrentTurnUserIndex(messages = [], text = '', modelText = '') {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index];
     if (message?.role !== 'user') continue;
-    if (message.content === text && message.model_content === modelText) return index;
+    if (message.content === text) return index;
   }
   return -1;
 }
@@ -4862,13 +4862,22 @@ async function askModel({
   const turnStartMessageCount = session.messages.length;
   const turnStartCompactedCount = compacted ? compacted.length : 0;
   if (text) {
-    const baseModelText = typeof modelText === 'string' && modelText && modelText !== text ? modelText : '';
+    const hasFileMentions = typeof modelText === 'string' && modelText && modelText !== text;
     const retrievedPart = typeof retrievedText === 'string' && retrievedText.trim() ? retrievedText.trim() : '';
-    let modelContent = baseModelText || text;
-    if (retrievedPart) modelContent = `${retrievedPart}\n\n${modelContent}`;
-    const modelExtra = modelContent !== text
-      ? { model_content: modelContent, model_content_scope: 'current_turn' }
-      : {};
+    let userContent = text;
+    let modelExtra = {};
+    if (hasFileMentions) {
+      // File mentions keep raw content (so findCurrentTurnUserIndex still
+      // matches) and fold retrieved memory into model_content.
+      modelExtra = {
+        model_content: retrievedPart ? `${retrievedPart}\n\n${modelText}` : modelText,
+        model_content_scope: 'current_turn',
+      };
+    } else if (retrievedPart) {
+      // No file mentions: prepend retrieved memory to the user content so the
+      // stored history stays byte-stable (cache-friendly) across turns.
+      userContent = `${retrievedPart}\n\n${text}`;
+    }
     const imageExtra = Array.isArray(modelImages) && modelImages.length
       ? { model_images: modelImages }
       : {};
@@ -4879,7 +4888,7 @@ async function askModel({
         }
       : {};
     const memoryExtra = memoryInject && typeof memoryInject === 'object' ? { memoryInject } : {};
-    const userMessage = stampedMessage('user', text, { ...modelExtra, ...imageExtra, ...selectedSkillExtra, ...memoryExtra });
+    const userMessage = stampedMessage('user', userContent, { ...modelExtra, ...imageExtra, ...selectedSkillExtra, ...memoryExtra });
     session.messages.push(userMessage);
     if (compacted) {
       compacted.push({ ...userMessage });
