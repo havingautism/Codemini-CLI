@@ -625,7 +625,7 @@ test("shows graph routing decisions on the routed user turn", () => {
   assert.match(routing.input, /"required": true/);
 });
 
-test("shows memory inject on the user turn that queried retrieval", () => {
+test("shows only retrieved memory on the user turn that queried retrieval", () => {
   const result = buildTrajectory({
     messages: [
       {
@@ -649,10 +649,25 @@ test("shows memory inject on the user turn that queried retrieval", () => {
   const memory = result.events.find((event) => event.kind === "memory");
   assert.equal(memory.turn, 1);
   assert.equal(memory.title, "memory inject");
-  assert.match(memory.body, /profile 1/);
   assert.match(memory.body, /retrieved 1/);
-  assert.match(memory.body, /recovery 1/);
-  assert.match(memory.input, /Use PowerShell/);
+  assert.doesNotMatch(memory.body, /profile|guaranteed|recovery/);
+  assert.doesNotMatch(memory.input, /Use PowerShell/);
+  assert.match(memory.input, /python missing, use py -3/);
+});
+
+test("omits a memory trajectory event when the turn retrieved nothing", () => {
+  const result = buildTrajectory({
+    messages: [
+      {
+        id: "u-no-memory",
+        role: "you",
+        text: "hello",
+        memoryInject: { query: "hello", profile: [], guaranteed: [], retrieved: [] },
+      },
+    ],
+  });
+
+  assert.equal(result.events.some((event) => event.kind === "memory"), false);
 });
 
 test("filterTrajectoryEvents hides calls and matches search", () => {

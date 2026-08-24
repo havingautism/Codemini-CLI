@@ -8,7 +8,7 @@ import { composeMemorySnapshot, buildMemorySnapshot } from '../src/core/memory-p
 import { toOpenAIMessages } from '../src/core/chat-runtime.js';
 import { withMemoryEnv } from './helpers/memory-env.js';
 
-const STORE_CONFIG = { memory: { max_items_per_scope: 50, max_prompt_chars: 8000 } };
+const STORE_CONFIG = { memory: { max_items_per_scope: 50, max_prompt_chars: 8000, retrieval: { min_score: 0 } } };
 
 test('Case A: high-value project convention is injected for a new session install task', async () => {
   await withMemoryEnv(async (dir) => {
@@ -21,14 +21,14 @@ test('Case A: high-value project convention is injected for a new session instal
       config: STORE_CONFIG
     });
     const snapshot = await buildMemorySnapshot({
-      config: { memory: { enabled: true, inject_on_session_start: true, retrieval: { enabled: true, turn_limit: 5 } } },
+      config: { memory: { enabled: true, inject_on_session_start: true, retrieval: { enabled: true, turn_limit: 5, min_score: 0 } } },
       workspaceRoot: dir,
       query: '安装一个 dependency'
     });
     assert.match(snapshot, /pnpm/);
     assert.match(snapshot, /<memory_profile>|<retrieved_memory>/);
     const composed = await composeMemorySnapshot({
-      config: { memory: { enabled: true, inject_on_session_start: true, retrieval: { enabled: true, turn_limit: 5 } } },
+      config: { memory: { enabled: true, inject_on_session_start: true, retrieval: { enabled: true, turn_limit: 5, min_score: 0 } } },
       workspaceRoot: dir,
       query: '安装一个 dependency'
     });
@@ -84,9 +84,30 @@ test('Case F: FTS retrieval works without embedding config', async () => {
       scope: 'all',
       query: 'Windows package script',
       workspaceRoot: dir,
-      config: { memory: { retrieval: { mode: 'fts' } } }
+      config: { memory: { retrieval: { mode: 'fts', min_score: 0 } } }
     });
     assert.ok(hits.length >= 1);
+  });
+});
+
+test('FTS retrieval respects the minimum score', async () => {
+  await withMemoryEnv(async (dir) => {
+    await rememberMemory({
+      scope: 'global',
+      kind: 'lesson',
+      content: 'PowerShell uses native commands',
+      summary: 'PowerShell native commands',
+      workspaceRoot: dir,
+      config: STORE_CONFIG
+    });
+
+    const hits = await retrieveMemories({
+      query: 'PowerShell commands',
+      workspaceRoot: dir,
+      config: { memory: { retrieval: { enabled: true, min_score: 1, turn_top_k: 5 } } }
+    });
+
+    assert.equal(hits.length, 0);
   });
 });
 
@@ -215,7 +236,7 @@ test('retrieved memory rides the user turn, not the system prompt tail', async (
       config: STORE_CONFIG
     });
     const composed = await composeMemorySnapshot({
-      config: { memory: { enabled: true, bootstrap: { enabled: true }, retrieval: { enabled: true, turn_limit: 5 } } },
+      config: { memory: { enabled: true, bootstrap: { enabled: true }, retrieval: { enabled: true, turn_limit: 5, min_score: 0 } } },
       workspaceRoot: dir,
       query: 'run the tsx migration'
     });
@@ -226,6 +247,23 @@ test('retrieved memory rides the user turn, not the system prompt tail', async (
     assert.match(composed.retrievedText, /tsx/);
     // Structured inject still carries retrieved hits for the trajectory UI.
     assert.ok(composed.inject.retrieved.some((item) => /tsx/i.test(item.summary || item.content)));
+  });
+});
+
+test('turn retrieval remains enabled when bootstrap injection is disabled', async () => {
+  await withMemoryEnv(async (dir) => {
+    await rememberMemory({
+      scope: 'global', kind: 'lesson', family: 'coding',
+      content: 'Use node instead of pnpm exec tsx in this repo',
+      summary: 'node not tsx', workspaceRoot: dir, config: STORE_CONFIG
+    });
+    const composed = await composeMemorySnapshot({
+      config: { memory: { enabled: true, bootstrap: { enabled: false }, retrieval: { enabled: true, min_score: 0 } } },
+      workspaceRoot: dir,
+      query: 'run the tsx migration'
+    });
+    assert.equal(composed.text, '');
+    assert.match(composed.retrievedText, /node not tsx/i);
   });
 });
 

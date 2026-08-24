@@ -42,3 +42,16 @@ test('memory retrieve events are persisted and reduced onto the user turn', asyn
   assert.match(sessionState, /memoryInject:\s*memoryInjectFromEvent\(event/);
   assert.match(runtime, /type: 'memory:retrieved'/);
 });
+
+test('retrieved memories surface beside the reply notebook action', async () => {
+  const [chatPanel, messageBubble] = await Promise.all([
+    fs.readFile('codemini-web/client/src/components/ChatPanel.jsx', 'utf8'),
+    fs.readFile('codemini-web/client/src/components/MessageBubble.jsx', 'utf8'),
+  ]);
+
+  assert.match(chatPanel, /retrievedMemoriesByReplyId/);
+  assert.match(chatPanel, /message\.memoryInject\?\.retrieved/);
+  assert.match(messageBubble, /<RetrievedMemoryButton memories=\{retrievedMemories\} \/>/);
+  assert.match(messageBubble, /memoryRetrievedCount/);
+  assert.match(messageBubble, /memory\?\.recallReason/);
+});

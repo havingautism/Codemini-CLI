@@ -81,6 +81,31 @@ test('non-git file checkpoints use the Web UI change-set contract and undo safel
   assert.equal(await fs.readFile(filePath, 'utf8'), 'before\n');
 });
 
+test('undo rejects a later edit even when the reverse patch would apply cleanly', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-oplog-hash-'));
+  const filePath = path.join(root, 'note.txt');
+  t.after(async () => {
+    closeSqliteDatabasesForTests();
+    await fs.rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  });
+
+  const before = ['before', ...Array.from({ length: 18 }, (_, index) => `stable-${index}`), 'tail'].join('\n') + '\n';
+  const after = before.replace('before', 'after');
+  await fs.writeFile(filePath, before, 'utf8');
+  const tracker = await createGitOplogChangeTracker({ workspaceRoot: root, sessionId: 'session-hash' });
+  const capture = await beginGitOplogCapture(tracker, { toolName: 'edit', args: { path: 'note.txt' } });
+  await fs.writeFile(filePath, after, 'utf8');
+  const [change] = await captureGitOplogChanges(tracker, capture, {
+    toolName: 'edit',
+    toolCallId: 'tool-hash',
+    args: { path: 'note.txt' }
+  });
+
+  const manuallyEdited = after.replace('tail', 'manual tail');
+  await fs.writeFile(filePath, manuallyEdited, 'utf8');
+  await assert.rejects(undoGitOplogChange(tracker, change.changeSetId), /newer edits conflict/);
+  assert.equal(await fs.readFile(filePath, 'utf8'), manuallyEdited);
+});
 test('non-git mutations stop before writing when the backup checkpoint fails', async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-non-git-backup-failure-'));
   const tools = getBuiltinTools({

@@ -73,12 +73,9 @@ import { parseScrapbookEntryId } from "@/lib/message-context-parsers.js";
 import {
   collectFileChangePatch,
   canShowFileChangeUndo,
-  enrichFileChangesWithGit,
   resolveFileChangeSequenceAction,
   resolveFileChangePreviewLines,
-  summarizeFileChangesWorkspace,
 } from "@/lib/file-change-preview.js";
-import { useGitWorkspace } from "@/hooks/use-git-workspace.js";
 import { ROLE_BADGE_CLASS, ROLE_PILLS } from "./PlanProgress.jsx";
 import { PlanStepStatusGlyph } from "@/components/plan-step-icons.jsx";
 import {
@@ -1142,96 +1139,23 @@ function FileChangePreview({ change }) {
 function summarizeFileChanges(changes = []) {
   let totalAdded = 0;
   let totalRemoved = 0;
-  let edits = 0;
-  let creates = 0;
-  let deletes = 0;
 
   for (const change of changes) {
     totalAdded += Number(change?.linesAdded || 0);
     totalRemoved += Number(change?.linesRemoved || 0);
-    if (change?.action === "create") creates += 1;
-    else if (change?.action === "delete") deletes += 1;
-    else edits += 1;
   }
 
   return {
     fileCount: changes.length,
     totalAdded,
     totalRemoved,
-    edits,
-    creates,
-    deletes,
   };
 }
 
-function resolveGitWorkspaceStatusLabel(status) {
-  if (status === "?" || status === "A") return t("gitDiffUntracked");
-  if (status === "D") return t("gitDiffDeleted");
-  return t("gitDiffModified");
-}
-
-function FileChangeWorkspaceBadge({ workspace }) {
-  if (!workspace || workspace.dirty === undefined) return null;
-  if (workspace.dirty) {
-    return (
-      <span
-        className="shrink-0 rounded px-1.5 py-px text-[10px] font-medium text-(--accent-blue)"
-        title={resolveGitWorkspaceStatusLabel(workspace.status)}
-      >
-        {t("fileChangeWorkspaceDirty")}
-      </span>
-    );
-  }
-  return (
-    <span
-      className="shrink-0 rounded px-1.5 py-px text-[10px] font-medium text-(--text-muted)"
-      title={t("fileChangeWorkspaceClean")}
-    >
-      {t("fileChangeWorkspaceClean")}
-    </span>
-  );
-}
-
-function FileChangesOverviewBar({ changes, gitStatus }) {
+function FileChangesOverviewBar({ changes }) {
   const stats = summarizeFileChanges(changes);
-  const workspace = summarizeFileChangesWorkspace(changes, undefined, gitStatus);
   if (!stats.fileCount) return null;
 
-  const actionColors = {
-    edit: "bg-(--accent-blue-bg) text-(--accent-blue)",
-    create: "bg-(--accent-green-bg) text-(--accent-green)",
-    delete: "bg-(--accent-red-bg) text-(--accent-red)",
-  };
-
-  const breakdown = [
-    stats.edits > 0
-      ? {
-          key: "edit",
-          label: t("fileChangesOverviewEdits").replace(
-            "{{count}}",
-            stats.edits,
-          ),
-        }
-      : null,
-    stats.creates > 0
-      ? {
-          key: "create",
-          label: t("fileChangesOverviewCreates").replace(
-            "{{count}}",
-            stats.creates,
-          ),
-        }
-      : null,
-    stats.deletes > 0
-      ? {
-          key: "delete",
-          label: t("fileChangesOverviewDeletes").replace(
-            "{{count}}",
-            stats.deletes,
-          ),
-        }
-      : null,
-  ].filter(Boolean);
 
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-(--border-default) bg-(--bg-tertiary) px-3 py-2.5">
@@ -1246,41 +1170,11 @@ function FileChangesOverviewBar({ changes, gitStatus }) {
           <span className="text-(--accent-red)">−{stats.totalRemoved}</span>
         )}
       </span>
-      {workspace.status === "ready" && workspace.dirty > 0 && (
-        <span className="text-[11px] text-(--text-muted)">
-          {t("fileChangesWorkspaceDirty").replace(
-            "{{count}}",
-            String(workspace.dirty),
-          )}
-        </span>
-      )}
-      {workspace.status === "ready" &&
-        workspace.dirty === 0 &&
-        workspace.total > 0 && (
-          <span className="text-[11px] text-(--text-muted)">
-            {t("fileChangesWorkspaceClean")}
-          </span>
-        )}
-      {/* {breakdown.length > 0 && (
-        <div className="ml-auto flex flex-wrap items-center gap-1.5">
-          {breakdown.map((item) => (
-            <span
-              key={item.key}
-              className={cn(
-                "rounded px-[5px] py-px text-[10px] font-semibold",
-                actionColors[item.key],
-              )}
-            >
-              {item.label}
-            </span>
-          ))}
-        </div>
-      )} */}
     </div>
   );
 }
 
-function FileChangesSummary({ changes, gitStatus }) {
+function FileChangesSummary({ changes }) {
   const currentSessionId = useCurrentSessionId();
   const [openFiles, setOpenFiles] = useState(() => new Set());
   const [undoing, setUndoing] = useState(() => new Set());
@@ -1349,7 +1243,7 @@ function FileChangesSummary({ changes, gitStatus }) {
   return (
     <>
       <div className="codemini-message-surface mt-6 overflow-hidden">
-        <FileChangesOverviewBar changes={changes} gitStatus={gitStatus} />
+        <FileChangesOverviewBar changes={changes} />
         {changes.map((c, i) => {
           const key = `${c.path}-${i}`;
           const fileOpen = openFiles.has(key);
@@ -1421,7 +1315,6 @@ function FileChangesSummary({ changes, gitStatus }) {
                     -{c.linesRemoved}
                   </span>
                 )}
-                <FileChangeWorkspaceBadge workspace={c.workspace} />
                 {canOpenFile && (
                   <div
                     className="flex h-6 shrink-0 items-center gap-0.5"
@@ -1860,6 +1753,63 @@ function MessageActionButton({
   );
 }
 
+function RetrievedMemoryButton({ memories = [] }) {
+  if (!memories.length) return null;
+  const countLabel = t("memoryRetrievedCount").replace("{n}", memories.length);
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          aria-label={countLabel}
+          className="inline-flex size-8 items-center justify-center rounded-md border-0 bg-transparent text-(--text-muted) transition-colors hover:bg-(--bg-hover) hover:text-(--text-primary) focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--border-strong)"
+        >
+          <Brain size={17} />
+        </button>
+      </TooltipTrigger>
+      <TooltipContent
+        side="bottom"
+        align="start"
+        sideOffset={6}
+        className="w-80 max-w-[calc(100vw-2rem)] p-0 text-left text-pretty"
+      >
+        <div className="border-b border-(--border-default) px-3 py-2 text-[11px] font-semibold text-(--text-secondary)">
+          {countLabel}
+        </div>
+        <div className="grid max-h-72 gap-0.5 overflow-y-auto p-1.5">
+          {memories.map((memory, index) => {
+            const score = Number(memory?.score);
+            const meta = [
+              memory?.scope,
+              memory?.kind,
+              memory?.family,
+              Number.isFinite(score) ? score.toFixed(3) : "",
+            ].filter(Boolean);
+            return (
+              <div key={memory?.id || index} className="rounded-md px-2 py-1.5">
+                <div className="text-[12px] leading-5 text-(--text-primary)">
+                  {memory?.summary || memory?.content || memory?.id}
+                </div>
+                {meta.length ? (
+                  <div className="mt-0.5 font-mono text-[10px] leading-4 text-(--text-muted)">
+                    {meta.join(" · ")}
+                  </div>
+                ) : null}
+                {memory?.recallReason ? (
+                  <div className="mt-0.5 text-[10px] leading-4 text-(--text-muted)">
+                    {memory.recallReason}
+                  </div>
+                ) : null}
+              </div>
+            );
+          })}
+        </div>
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
 function isMessageComplete(message, renderGroups = []) {
   if (message?.loading) return false;
   if (message?.isComplete === false) return false;
@@ -1927,6 +1877,7 @@ function MessageActions({
   retryPrompt = "",
   canRetry = false,
   canSaveToScrapbook = false,
+  retrievedMemories = [],
   showFork = false,
   canFork = false,
   messageId = "",
@@ -2005,6 +1956,7 @@ function MessageActions({
           <Notebook size={17} />
         </MessageActionButton>
       )}
+      <RetrievedMemoryButton memories={retrievedMemories} />
       {canRetry && (
         <MessageActionButton
           label={t("retry")}
@@ -2151,11 +2103,11 @@ function AnswerProcessFold({ groups, durationMs }) {
 
 export const MessageBubble = memo(function MessageBubble({
   message,
+  retrievedMemories = [],
   onRetry,
   dockTodo = false,
   turnActive = false,
 }) {
-  const git = useGitWorkspace();
   const actions = useAppActions();
   const {
     role,
@@ -2229,13 +2181,6 @@ export const MessageBubble = memo(function MessageBubble({
   const mergedFileChanges = useMemo(
     () => mergeFileChanges(fileChanges || []),
     [fileChanges],
-  );
-  const enrichedFileChanges = useMemo(
-    () =>
-      enrichFileChangesWithGit(mergedFileChanges, git.files, {
-        gitKnown: git.isReady,
-      }),
-    [mergedFileChanges, git.files, git.isReady],
   );
 
   const rawMessageText = getMessageText(message) || legacyText || "";
@@ -2546,10 +2491,7 @@ export const MessageBubble = memo(function MessageBubble({
             {showRelatedLinks && <EmbedBanner items={messageEmbeds} />}
 
             {showFileChanges && (
-              <FileChangesSummary
-                changes={enrichedFileChanges}
-                gitStatus={git.status}
-              />
+              <FileChangesSummary changes={mergedFileChanges} />
             )}
             {message.manualAborted && (
               <p className="mt-2 text-xs text-(--text-muted)">
@@ -2570,6 +2512,7 @@ export const MessageBubble = memo(function MessageBubble({
               retryPrompt={retryPrompt}
               canRetry={canRetry}
               canSaveToScrapbook={canSaveToScrapbook}
+              retrievedMemories={retrievedMemories}
               showFork
               canFork={!turnActive}
               messageId={message.id}

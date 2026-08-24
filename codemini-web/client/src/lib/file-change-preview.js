@@ -32,41 +32,6 @@ export function resolveFileChangeSequenceAction(actions = []) {
   return existsAfter ? "edit" : "delete";
 }
 
-function normalizeGitPath(value) {
-  return String(value || "")
-    .replace(/\\/g, "/")
-    .replace(/^\.\//, "");
-}
-
-/** Git enriches historical snapshots; it must never erase them. */
-export function enrichFileChangesWithGit(fileChanges = [], gitFiles, { gitKnown } = {}) {
-  const resolvedKnown =
-    typeof gitKnown === "boolean" ? gitKnown : Array.isArray(gitFiles);
-  const statusByPath = new Map(
-    resolvedKnown
-      ? (Array.isArray(gitFiles) ? gitFiles : [])
-          .map((file) => [normalizeGitPath(file?.path), file])
-          .filter(([filePath]) => filePath)
-      : [],
-  );
-  return (Array.isArray(fileChanges) ? fileChanges : []).map((change) => {
-    if (!resolvedKnown) {
-      return { ...change, workspace: { dirty: undefined } };
-    }
-    const gitFile = statusByPath.get(normalizeGitPath(change?.path));
-    if (!gitFile) {
-      return { ...change, workspace: { dirty: false } };
-    }
-    return {
-      ...change,
-      workspace: {
-        dirty: true,
-        status: gitFile.status,
-      },
-    };
-  });
-}
-
 export function canShowFileChangeUndo(change) {
   const ids = Array.isArray(change?.changeSetIds)
     ? change.changeSetIds
@@ -75,35 +40,7 @@ export function canShowFileChangeUndo(change) {
       : [];
   if (!ids.filter(Boolean).length) return false;
   if (change?.revertedAt) return false;
-  if (change?.workspace?.dirty === false) return false;
   return true;
-}
-
-export function summarizeFileChangesWorkspace(
-  changes = [],
-  gitFiles,
-  gitStatus = "loading",
-) {
-  const total = Array.isArray(changes) ? changes.length : 0;
-  if (!total) return { status: "empty", dirty: 0, clean: 0, total: 0 };
-  if (gitStatus === "loading") {
-    return { status: "loading", dirty: 0, clean: 0, total };
-  }
-  if (gitStatus === "error") {
-    return { status: "error", dirty: 0, clean: 0, total };
-  }
-  let dirty = 0;
-  let clean = 0;
-  for (const change of changes) {
-    if (change?.workspace?.dirty) dirty += 1;
-    else clean += 1;
-  }
-  return { status: "ready", dirty, clean, total };
-}
-
-/** @deprecated Use enrichFileChangesWithGit — filtering history by git status erases transcript semantics. */
-export function reconcileFileChangesWithGit(fileChanges = [], gitFiles) {
-  return enrichFileChangesWithGit(fileChanges, gitFiles);
 }
 
 export function buildFileChangePreviewLines(previewText, action = "edit") {

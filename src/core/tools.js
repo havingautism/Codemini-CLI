@@ -7114,15 +7114,27 @@ export function getBuiltinTools({
       const kind = normalizeMemoryKind(args.kind, "note");
       const memoryScope = inferMemoryScope({ scope: args.scope, kind });
       if (config?.memory?.candidate_writes === true) {
-        const entry = await captureToInbox({
+        const context = config?.memory?.candidate_context || {};
+        const candidate = {
           scope: memoryScope,
-          type: kind,
+          kind,
           family: args.family,
           summary: args.summary || String(args.content || "").slice(0, 80),
-          details: args.content,
-          source: "branch-candidate",
-          projectDir: workspaceRoot,
-        });
+          content: args.content,
+          sourceBranchId: context.branchId || '',
+          agentRole: context.agentRole || ''
+        };
+        const entry = typeof context.sink === 'function'
+          ? await context.sink(candidate)
+          : await captureToInbox({
+              scope: candidate.scope,
+              type: candidate.kind,
+              family: candidate.family,
+              summary: candidate.summary,
+              details: candidate.content,
+              source: "branch-candidate",
+              projectDir: workspaceRoot,
+            });
         return { ok: true, candidate: true, scope: memoryScope, entry };
       }
       const saved = await rememberMemory({

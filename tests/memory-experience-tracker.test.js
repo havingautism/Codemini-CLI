@@ -72,3 +72,25 @@ test('same-command retry then success needs verification before writing', async 
     assert.equal(written, null);
   });
 });
+
+test('same-command success is a retry, not a learned recovery', async () => {
+  await withMemoryEnv(async (dir) => {
+    const tracker = createExperienceTracker({ sessionId: 'sess-retry', workspaceRoot: dir, config: CFG });
+    tracker.recordAttempt({ tool: 'run', args: { command: 'npm test' }, result: 'failure', error: 'test failure' });
+    tracker.recordAttempt({ tool: 'run', args: { command: 'npm test' }, result: 'success' });
+    tracker.noteVerification();
+    assert.equal(await tracker.flush(), null);
+    assert.equal((await listInbox()).length, 0);
+  });
+});
+
+test('unrelated command success cannot recover a failed approach', async () => {
+  await withMemoryEnv(async (dir) => {
+    const tracker = createExperienceTracker({ sessionId: 'sess-unrelated', workspaceRoot: dir, config: CFG });
+    tracker.recordAttempt({ tool: 'run', args: { command: 'node missing.js' }, result: 'failure', error: 'file not found' });
+    tracker.recordAttempt({ tool: 'run', args: { command: 'git status' }, result: 'success' });
+    tracker.noteVerification();
+    assert.equal(await tracker.flush(), null);
+    assert.equal((await listInbox()).length, 0);
+  });
+});

@@ -503,6 +503,15 @@ async function captureToInboxUnlocked({
               : {}),
             ...(Array.isArray(evidence.tool_names)
               ? { tool_names: evidence.tool_names.map((name) => String(name).slice(0, 40)).filter(Boolean).slice(0, 8) }
+              : {}),
+            ...(Array.isArray(evidence.sourceBranchIds)
+              ? { sourceBranchIds: [...new Set(evidence.sourceBranchIds.map((id) => String(id).slice(0, 120)).filter(Boolean))].slice(0, 16) }
+              : {}),
+            ...(Array.isArray(evidence.agentRoles)
+              ? { agentRoles: [...new Set(evidence.agentRoles.map((role) => String(role).slice(0, 40)).filter(Boolean))].slice(0, 16) }
+              : {}),
+            ...(Number.isFinite(Number(evidence.branchCandidateCount))
+              ? { branchCandidateCount: Math.max(0, Number(evidence.branchCandidateCount)) }
               : {})
           }
         }
@@ -525,6 +534,54 @@ export function forgetMemory(args = {}) {
 
 export function captureToInbox(args = {}) {
   return withMutationLock('inbox', () => captureToInboxUnlocked(args));
+}
+
+export async function commitForkMemoryCandidates({
+  candidates = [],
+  sessionId = '',
+  workspaceRoot = process.cwd()
+} = {}) {
+  const grouped = new Map();
+  for (const candidate of Array.isArray(candidates) ? candidates : []) {
+    const summary = normalizeMemoryText(candidate?.summary || candidate?.content);
+    if (!summary) continue;
+    const scope = normalizeInboxScope(candidate.scope);
+    const kind = normalizeMemoryKind(candidate.kind, 'note');
+    const family = inferMemoryFamily({
+      family: candidate.family,
+      scope,
+      kind,
+      content: candidate.content,
+      summary
+    });
+    const key = [scope, family, kind, normalizeMemoryText(candidate.semanticKey) || summary.toLowerCase()].join(':');
+    if (!grouped.has(key)) grouped.set(key, []);
+    grouped.get(key).push({ ...candidate, scope, kind, family, summary });
+  }
+  const entries = [];
+  for (const [key, group] of grouped) {
+    const first = group[0];
+    const sourceBranchIds = [...new Set(group.map((item) => String(item.sourceBranchId || '')).filter(Boolean))];
+    const agentRoles = [...new Set(group.map((item) => String(item.agentRole || '')).filter(Boolean))];
+    entries.push(await captureToInbox({
+      scope: first.scope,
+      type: first.kind,
+      family: first.family,
+      summary: first.summary,
+      details: group.map((item) => String(item.content || '')).sort((a, b) => b.length - a.length)[0],
+      source: 'fork-parent-join',
+      semanticKey: first.semanticKey || '',
+      idempotencyKey: `fork-join:${sessionId}:${sha256(key).slice(0, 24)}`,
+      evidence: {
+        sessionId,
+        sourceBranchIds,
+        agentRoles,
+        branchCandidateCount: group.length
+      },
+      projectDir: workspaceRoot
+    }));
+  }
+  return { joined: entries.length, entries };
 }
 
 export async function listInbox({ since, scope } = {}) {

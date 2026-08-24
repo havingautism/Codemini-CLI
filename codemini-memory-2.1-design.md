@@ -2886,7 +2886,7 @@ coding-oriented
 
 ## 77. 当前实现进度与遗留问题
 
-> 本节是暂存区代码相对本设计文档的实现核对与补齐记录。上一轮核对发现的缺口已大部分补齐（P0/P1 完成，P2 部分完成），剩余项为 P2/P3 的未来项，逐条标注。
+> 本节是暂存区代码相对本设计文档的实现核对与补齐记录。2026-08-24 复核后，缓存前缀、Experience 归因、Fork parent join 与 writeback 配置均已补齐；剩余项为不影响当前闭环的 P2/P3 演进项。
 
 ### 77.1 已完成
 
@@ -2900,7 +2900,8 @@ coding-oriented
 - 新增 `verificationSignal()`：仅 deterministic 证据（confirmation / verified evidence / success_count）驱动 10% 权重。
 - 中文检索落地：`Intl.Segmenter("zh", word)` 预分词写入 `search_text`（`segmentSearchText`），FTS schema 迁移为 `search_text / raw_content / tool_name`。
 - `retentionScore` 已接线：`memory-lifecycle.js` 用它计算 low-utility 候选。
-- 缓存友好：`<retrieved_memory>` 从 system prompt 尾部移到 user turn（直接拼进 user content 存储，历史字节稳定；file mentions 场景则折进 `model_content`）；system prompt 只保留稳定的 profile/guaranteed，稳定前缀 + 历史可命中 prefix cache。
+- 缓存友好：session 首次请求冻结 bootstrap/profile 到 `memoryBootstrapSnapshot`；后续 durable write 不再改写 system 前缀。逐 turn 的 `<retrieved_memory>` 仅追加到当前 user content，历史消息字节保持不变。
+- file mentions 展开后的 `model_content` 不再标记 `current_turn`，因此后续请求仍复用相同的模型可见历史；`bootstrap.enabled=false` 只关闭 bootstrap，不再误伤 turn retrieval。
 
 **Concurrency / API（§35/§39/§48）**
 - `updateMemoryWithRevision()` 实现乐观并发（`WHERE id=? AND revision=?`），facade 增加 `MemoryStore.update(id, patch, expectedRevision)`。
@@ -2908,16 +2909,21 @@ coding-oriented
 
 **Experience（§16–22）**
 - `memory-experience-tracker.js` 重写为 Episode 状态机（open→failed→recovering→recovered→verified）。
-- recovery detection 用 input fingerprint 区分「同命令重试」与「策略变更」（§19）。
+- recovery detection 同时要求不同 input fingerprint、相同 tool family、共享有意义的目标词；同命令重试或失败后执行无关成功命令都不会形成恢复（§19/§64）。
+- agent loop 向 tracker 传入真实 `sessionId`，生成的 lesson evidence 可追溯到会话。
 - verification：`noteVerification()` 由 agent loop 在 test/build/lint 成功（`isVerificationCommand`）时触发（§20）；只有 verified 才写 lesson。
 - 新增 `memory-experience-extractor.js` 确定性 extractor（§21），产出带 `verified:true` + `verification.type` 证据的 coding candidate。
 - 错误分类扩到 12 类（`classifyToolError`，§22）；failure recall 增加 skip guard（§63）。
+
+**Fork / Writeback（§41/§67）**
+- Fork branch 的 `save_memory` 只进入 branch-local candidate sink；parent join 按 scope/family/kind/semantic key 去重，再统一写 inbox，并合并 `sourceBranchIds`、`agentRoles`、`sessionId` 证据。
+- `memory.writeback.enabled` 已门控直接 review、turn 后调度和启动 backlog；`writeback.idle_delay_ms` 优先于旧的 background-review delay。
 
 **Lifecycle / Prompt / Config（§13/§26/§43/§45/§62）**
 - 新增 `memory-lifecycle.js`：`isMemoryStale` / `findStaleMemories` / `findLowUtilityMemories`。
 - Dream 维护请求携带 `expected_valid_days` / `stale` / `retention_score` 信号，staleness 由 `lifecycle.staleness_review` 配置门控。
 - Guaranteed 扩为 pinned + `user_correction`/`critical_project_rule`/`security_constraint`/`critical` 标签（§62）；global profile 补 conventions（§11.1/§14）。
-- 配置补齐 `writeback` / `lifecycle` 块；`require_verification` 已被 tracker 真正消费；`agentRole` 可经 `save_memory` 写入。
+- 配置补齐 `writeback` / `lifecycle` 块；`require_verification` 已被 tracker 真正消费；`agentRole` 可经 `save_memory` 或 Fork candidate provenance 写入。
 
 ### 77.2 仍遗留（P2/P3，未来项）
 
@@ -2925,14 +2931,14 @@ coding-oriented
 2. **Consolidation / Contradiction 结构化输出（§28/§29/§32）**：Dream 维护提示词已能合并重复、归档矛盾/过期项，但输出仍是 `{items, archives}`，未实现 §32 的 `{promotions, staleness, consolidations, archives}` 四段结构（EXTEND 续期动作未单独建模）。
 3. **Memory Budget token-aware（§44）**：仍是 `max_prompt_chars` 按字符截断，`bootstrap.max_tokens` 未参与截断；`retrieval/recovery.max_tokens` 未实现。
 4. **Retention Capacity eviction（§61）**：`findLowUtilityMemories` 已提供 retention-score 排序原语，但未接入容量淘汰路径（现有 `max_items_per_scope` + 字符预算仍兜底）。
-5. **Fork parent-join（§41）**：分支 candidate 落 inbox 后由 Dream 统一去重/合并，未做显式的 parent-join dedupe/evidence-merge 步骤。
-6. **Query Expansion（§60）**：未实现 LLM/关键词扩展。
-7. **Metrics（§51）**：未采集 retrieval_hits 等指标。
-8. **`utility_score`/`hit_count`/`last_hit_at` 遗留列**：保留以兼容 WebUI 与旧数据，未从 schema 移除（SQLite STRICT 删列需重建表，收益低）。
+5. **Query Expansion（§60）**：未实现 LLM/关键词扩展。
+6. **Metrics（§51）**：未采集 retrieval_hits 等指标。
+7. **`utility_score`/`hit_count`/`last_hit_at` 遗留列**：保留以兼容 WebUI 与旧数据，未从 schema 移除（SQLite STRICT 删列需重建表，收益低）。
 
 ### 77.3 测试覆盖
 
 - 新增/更新：`memory-ranking`（§10 公式）、`memory-experience-tracker`（verified gate）、`memory-experience-extractor`、`memory-lifecycle`（staleness/retention）。
+- 新增回归：`memory-cache-prefix`（bootstrap/system 前缀稳定 + file mentions 历史稳定）、`memory-fork-join`（parent dedupe/evidence merge）、`memory-session-review-config`（writeback gate）。
 - 已有且保持通过：`memory-policy` / `memory-sqlite-store` / `memory-retrieval` / `memory-reinforcement` / `sqlite-storage` / `session-trajectory` / `transcript-reducer` / `coding-route-visibility` / `web-memory-settings` / `web-trajectory-debug-route`。
-- 未覆盖端到端场景：Scenario G（staleness）、Scenario H（fork parent join）——对应功能见 §77.2。
+- 仍未覆盖端到端场景：Scenario G（staleness maintenance 全链路）。
 - 待补测试文件（§70）：`memory-fts5.test.js` / `memory-fork-snapshot.test.js` / `memory-index-rebuild.test.js`。

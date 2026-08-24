@@ -86,7 +86,7 @@ import { getBaseConfigDir, getProjectIndexDir, getProjectPlansDir, getProjectSpe
 import { composeMemorySnapshot } from './memory-prompt.js';
 import { buildProjectContextSnippet, initializeProjectIndex } from './project-index.js';
 import { queryProjectKnowledgeGraph } from './project-knowledge-graph.js';
-import { captureToInbox, listInbox } from './memory-store.js';
+import { captureToInbox, commitForkMemoryCandidates, listInbox } from './memory-store.js';
 import {
   classifyMemoryRoute,
   isSensitiveMemoryContent,
@@ -230,9 +230,6 @@ function modelContentForMessage(message, index, { currentTurnUserIndex = -1 } = 
     ];
   }
   if (!modelContent) return message?.content;
-  if (message?.model_content_scope === 'current_turn' && index !== currentTurnUserIndex) {
-    return message?.content;
-  }
   return modelContent;
 }
 
@@ -4058,7 +4055,6 @@ export function attachCurrentTurnModelContent(message, modelContent = '') {
   return {
     ...message,
     model_content: content,
-    model_content_scope: 'current_turn',
   };
 }
 
@@ -4871,7 +4867,6 @@ async function askModel({
       // matches) and fold retrieved memory into model_content.
       modelExtra = {
         model_content: retrievedPart ? `${retrievedPart}\n\n${modelText}` : modelText,
-        model_content_scope: 'current_turn',
       };
     } else if (retrievedPart) {
       // No file mentions: prepend retrieved memory to the user content so the
@@ -5296,6 +5291,7 @@ async function askModel({
               }),
               workspaceRoot,
               parentToolCallId: callId,
+              agentRole: branchName,
               alwaysAllowTools: effectiveAlwaysAllowTools,
               executionMode: normalizedExecutionMode
             });
@@ -5321,6 +5317,7 @@ async function askModel({
               ok: !failed,
               workflowComplete: false,
               name: branchName,
+              memoryCandidates: output.memoryCandidates || [],
               text: output.text || '',
               ...(childUsage ? { usage: childUsage } : {}),
               ...(fileChanges.length ? { fileChanges } : {}),
@@ -5806,6 +5803,12 @@ async function askModel({
       skillHooksSession,
       onSkillLoaded,
       workspaceRoot,
+      sessionId: session.id,
+      onForkJoin: (candidates) => commitForkMemoryCandidates({
+        candidates,
+        sessionId: session.id,
+        workspaceRoot
+      }),
       changeTracker: changeTracker?.enabled
         ? {
             begin: (meta) => beginGitOplogCapture(changeTracker, meta),
@@ -6123,10 +6126,14 @@ function buildForkTaskInstruction(task, parentNote = '', tasks = []) {
   ].filter(Boolean).join('\n\n');
 }
 
-function withCandidateMemoryWrites(config = {}) {
+function withCandidateMemoryWrites(config = {}, candidateContext = {}) {
   return {
     ...config,
-    memory: { ...(config.memory || {}), candidate_writes: true }
+    memory: {
+      ...(config.memory || {}),
+      candidate_writes: true,
+      candidate_context: candidateContext
+    }
   };
 }
 
@@ -6160,6 +6167,7 @@ export async function runForkTask({
   projectIsGit,
   workspaceRoot,
   parentToolCallId = '',
+  agentRole = 'fork',
   alwaysAllowTools = [],
   executionMode = 'plan',
 }) {
@@ -6168,6 +6176,7 @@ export async function runForkTask({
     messages: [],
     todos: normalizeTodos(tasks),
   };
+  const memoryCandidates = [];
   // Deep-clone the prefix per branch: the branch loop splices/prunes its own
   // array and may mutate assistant message objects, so branches must never
   // share the parent's live messages.
@@ -6199,7 +6208,14 @@ export async function runForkTask({
   const result = await askModel({
     text: taskInstruction,
     session: branchSession,
-    config: withCandidateMemoryWrites(config),
+    config: withCandidateMemoryWrites(config, {
+      branchId: branchSession.id,
+      agentRole,
+      sink: async (candidate) => {
+        memoryCandidates.push(candidate);
+        return { ...candidate, id: `branch-candidate-${memoryCandidates.length}` };
+      }
+    }),
     model,
     systemPrompt,
     onAgentEvent: wrappedOnAgentEvent,
@@ -6226,6 +6242,7 @@ export async function runForkTask({
   return {
     text,
     hasErrorLine,
+    memoryCandidates,
     messages: Array.isArray(branchSession.messages)
       ? structuredClone(branchSession.messages)
       : [],
@@ -8185,10 +8202,9 @@ export async function createChatRuntime({
   let commandsReloadedAt = Date.now();
   let commandsReloadPromise = null;
   let skillIndexPromptCache = null;
-  // Memoize the deterministic base prompt and the volatile memory snapshot so
-  // the composed system prompt is not re-read/re-rendered from disk every turn.
+  // Bootstrap memory is frozen on the session; turn recall stays in the user tail.
   let baseSystemPromptMemo = { configRef: null, root: '', value: '' };
-  let memorySnapshotMemo = null;
+  let turnMemorySnapshot = { retrievedText: '', inject: null };
   const getMemoizedBaseSystemPrompt = () => {
     if (baseSystemPromptMemo.configRef === config && baseSystemPromptMemo.root === root) {
       return baseSystemPromptMemo.value;
@@ -8197,28 +8213,14 @@ export async function createChatRuntime({
     baseSystemPromptMemo = { configRef: config, root, value };
     return value;
   };
-  const memoryFilesMtimeKey = async (workspaceRoot) => {
-    const paths = [
-      path.join(getBaseConfigDir(), 'codemini.sqlite'),
-      path.join(getProjectIndexDir(workspaceRoot), 'index.sqlite'),
-    ];
-    const stamps = await Promise.all(paths.map((filePath) =>
-      fs.stat(filePath).then((stat) => `${filePath}:${stat.mtimeMs}`, () => `${filePath}:missing`),
-    ));
-    return stamps.join('|');
-  };
-  const getMemoizedMemorySnapshot = async (userQuery = '') => {
-    const mtimeKey = `${await memoryFilesMtimeKey(root)}::${String(userQuery || '')}`;
-    if (
-      memorySnapshotMemo
-      && memorySnapshotMemo.configRef === config
-      && memorySnapshotMemo.mtimeKey === mtimeKey
-    ) {
-      return memorySnapshotMemo.value;
+  const getSessionMemoryBootstrap = async () => {
+    if (typeof currentSession?.memoryBootstrapSnapshot === 'string') {
+      return currentSession.memoryBootstrapSnapshot;
     }
-    const composed = await composeMemorySnapshot({ config, workspaceRoot: root, query: userQuery }).catch(() => ({ text: '', inject: null }));
-    memorySnapshotMemo = { configRef: config, mtimeKey, value: composed.text || '', retrievedText: composed.retrievedText || '', inject: composed.inject || null };
-    return memorySnapshotMemo.value;
+    const composed = await composeMemorySnapshot({ config, workspaceRoot: root, query: '' }).catch(() => ({ text: '' }));
+    currentSession.memoryBootstrapSnapshot = composed.text || '';
+    await saveSession(currentSession).catch(() => {});
+    return currentSession.memoryBootstrapSnapshot;
   };
   const reloadCommandsAndSkills = async ({ force = false } = {}) => {
     if (!force && Date.now() - commandsReloadedAt < COMMAND_RELOAD_TTL_MS) return false;
@@ -8614,10 +8616,13 @@ export async function createChatRuntime({
     userQuery = '',
   } = {}) => {
     const memoryGuide = `Use save_memory only for explicit lasting preferences or stable project conventions; never store secrets or duplicates. Write it in ${getReplyLanguageName(config)}. Coding discoveries go through later Dream/session review.`;
-    const [skillsPrompt, memorySnapshot] = await Promise.all([
+    const [skillsPrompt, memorySnapshot, recalled] = await Promise.all([
       includeSkillIndex ? getSkillIndexPrompt() : Promise.resolve(''),
-      getMemoizedMemorySnapshot(userQuery),
+      getSessionMemoryBootstrap(),
+      composeMemorySnapshot({ config, workspaceRoot: root, query: userQuery, includeBootstrap: false })
+        .catch(() => ({ retrievedText: '', inject: null })),
     ]);
+    turnMemorySnapshot = recalled;
     return composeSystemPrompt({
       shellRulesPrompt: getMemoizedBaseSystemPrompt(),
       config,
@@ -8656,8 +8661,8 @@ export async function createChatRuntime({
       includeMemoryGuide: !codingRouteEnabled,
       userQuery: inputText,
     });
-    const memoryInject = memorySnapshotMemo?.inject || null;
-    const retrievedText = memorySnapshotMemo?.retrievedText || '';
+    const memoryInject = turnMemorySnapshot?.inject || null;
+    const retrievedText = turnMemorySnapshot?.retrievedText || '';
     if (memoryInject && typeof onAgentEvent === 'function') {
       onAgentEvent({
         type: 'memory:retrieved',

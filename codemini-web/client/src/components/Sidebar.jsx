@@ -5,6 +5,7 @@ import {
   Brain,
   CaretDown,
   CaretRight,
+  Compass,
   DotsThree,
   Folder,
   GearSix,
@@ -16,7 +17,6 @@ import {
   Monitor,
   Moon,
   Notebook,
-  MagnifyingGlass,
   PencilLine,
   PlugsConnected,
   Plus,
@@ -633,7 +633,7 @@ export function Sidebar({
           )}
           onClick={onOpenResearch}
         >
-          <MagnifyingGlass
+          <Compass
             size={15}
             strokeWidth={2}
             className="text-(--text-secondary) shrink-0"

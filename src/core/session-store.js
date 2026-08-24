@@ -361,6 +361,9 @@ function sanitizeSession(session, fallbackId = '') {
   if (typeof session?.lastSystemPrompt === 'string' && session.lastSystemPrompt) {
     out.lastSystemPrompt = session.lastSystemPrompt;
   }
+  if (typeof session?.memoryBootstrapSnapshot === 'string') {
+    out.memoryBootstrapSnapshot = session.memoryBootstrapSnapshot;
+  }
 
   return out;
 }
@@ -713,6 +716,9 @@ export async function createContinuationSession(source, { messages = [], compact
   if (source?.specState) created.specState = source.specState;
   if (typeof source?.lastSystemPrompt === 'string' && source.lastSystemPrompt) {
     created.lastSystemPrompt = source.lastSystemPrompt;
+  }
+  if (typeof source?.memoryBootstrapSnapshot === 'string') {
+    created.memoryBootstrapSnapshot = source.memoryBootstrapSnapshot;
   }
   if (Array.isArray(compactView) && compactView.length) {
     created.compact = {

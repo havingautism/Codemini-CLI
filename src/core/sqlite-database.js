@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { getBaseConfigDir, getProjectIndexDir } from './paths.js';
-import { segmentSearchText } from './memory-policy.js';
+import { insertMemoryFtsRow, MEMORY_FTS_DDL } from './memory-fts.js';
 
 const GLOBAL_SCHEMA_VERSION = 14;
 const PROJECT_SCHEMA_VERSION = 6;
@@ -552,21 +552,11 @@ function ensureMemoriesSchema(db) {
   if (ftsNeedsMigration) {
     db.exec('DROP TABLE IF EXISTS memory_fts');
   }
-  db.exec(`
-    CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
-      id UNINDEXED,
-      search_text,
-      raw_content UNINDEXED,
-      tool_name UNINDEXED,
-      tokenize = 'unicode61'
-    );
-  `);
+  db.exec(MEMORY_FTS_DDL);
   if (ftsNeedsMigration) {
     const insert = db.prepare('INSERT INTO memory_fts(id, search_text, raw_content, tool_name) VALUES (?, ?, ?, ?)');
     for (const row of db.prepare('SELECT id, summary, content, tool_name FROM memories').all()) {
-      const raw = [row.summary, row.content].filter(Boolean).join(' ');
-      if (!raw) continue;
-      insert.run(row.id, segmentSearchText(raw), String(row.content || ''), String(row.tool_name || ''));
+      insertMemoryFtsRow(insert, row);
     }
   }
 }

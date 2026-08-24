@@ -4,6 +4,7 @@ import path from 'node:path';
 import { sha256 } from './crypto-utils.js';
 import { getBaseConfigDir, getMemoryDir, getProjectIndexDir, getProjectMemoryDir } from './paths.js';
 import { getGlobalDatabase, getProjectDatabase, transaction } from './sqlite-database.js';
+import { insertMemoryFtsRow, MEMORY_FTS_DDL } from './memory-fts.js';
 import {
   inferMemoryFamily,
   nextLifecycleFromCounts,
@@ -134,18 +135,10 @@ export function syncMemoryFts(db, item) {
 
 function syncFts(db, item) {
   db.prepare('DELETE FROM memory_fts WHERE id = ?').run(item.id);
-  const rawContent = String(item.content || '');
-  const rawText = [item.summary, rawContent].filter(Boolean).join(' ');
-  if (!rawText) return;
-  db.prepare(`
+  insertMemoryFtsRow(db.prepare(`
     INSERT INTO memory_fts(id, search_text, raw_content, tool_name)
     VALUES (?, ?, ?, ?)
-  `).run(
-    item.id,
-    segmentSearchText(rawText),
-    rawContent,
-    String(item.toolName || '')
-  );
+  `), item);
 }
 
 export function upsertMemory(db, item) {
@@ -271,15 +264,6 @@ export function ftsQuery(query) {
   return tokens.join(' OR ');
 }
 
-const MEMORY_FTS_DDL = `
-  CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
-    id UNINDEXED,
-    search_text,
-    raw_content UNINDEXED,
-    tool_name UNINDEXED,
-    tokenize = 'unicode61'
-  );
-`;
 
 export function rebuildMemoryIndex(db) {
   db.exec('DROP TABLE IF EXISTS memory_fts');
@@ -289,11 +273,7 @@ export function rebuildMemoryIndex(db) {
     VALUES (?, ?, ?, ?)
   `);
   for (const row of db.prepare('SELECT * FROM memories').all()) {
-    const item = rowToMemoryItem(row);
-    const rawContent = String(item.content || '');
-    const rawText = [item.summary, rawContent].filter(Boolean).join(' ');
-    if (!rawText) continue;
-    insert.run(item.id, segmentSearchText(rawText), rawContent, String(item.toolName || ''));
+    insertMemoryFtsRow(insert, rowToMemoryItem(row));
   }
 }
 

@@ -470,13 +470,8 @@ function emitUserSkills(events, message, index, turn) {
 function emitMemoryInject(events, message, index, turn) {
   const inject = message?.memoryInject;
   if (!inject || typeof inject !== "object") return;
-  const profile = Array.isArray(inject.profile) ? inject.profile.length : 0;
-  const guaranteed = Array.isArray(inject.guaranteed) ? inject.guaranteed.length : 0;
-  const retrieved = Array.isArray(inject.retrieved) ? inject.retrieved.length : 0;
-  const recoveryHits = (Array.isArray(inject.recovery) ? inject.recovery : []).reduce(
-    (sum, item) => sum + (Array.isArray(item?.hits) ? item.hits.length : 0),
-    0,
-  );
+  const retrieved = Array.isArray(inject.retrieved) ? inject.retrieved : [];
+  if (!retrieved.length) return;
   const queryPreview = oneLinePreview(inject.query, 48);
   events.push(
     makeEvent({
@@ -486,14 +481,11 @@ function emitMemoryInject(events, message, index, turn) {
       title: "memory inject",
       body: [
         queryPreview ? `query ${queryPreview}` : "",
-        `profile ${profile}`,
-        `guaranteed ${guaranteed}`,
-        `retrieved ${retrieved}`,
-        recoveryHits ? `recovery ${recoveryHits}` : "",
+        `retrieved ${retrieved.length}`,
       ]
         .filter(Boolean)
         .join(" · "),
-      input: stringifyTrajectoryValue(inject),
+      input: stringifyTrajectoryValue({ query: inject.query || "", retrieved }),
       startedAt: inject.startedAt || messageTime(message),
     }),
   );

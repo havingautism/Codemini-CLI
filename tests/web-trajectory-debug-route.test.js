@@ -21,6 +21,10 @@ test("trajectory reuses persisted session system prompt instead of recomposing",
   assert.match(panel, /trajectoryLoopLabel/);
   assert.match(panel, /trajectoryFilterKind/);
   assert.match(panel, /trajectoryFilterTurn/);
+  assert.match(panel, /kindOptions/);
+  assert.match(panel, /trajectoryEventCount/);
+  assert.match(panel, /trajectoryResetFilters/);
+  assert.match(panel, /<Eye size=\{13\} \/>/);
   assert.doesNotMatch(api, /fetchSessionSystemPrompt/);
 });
 

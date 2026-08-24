@@ -54,7 +54,8 @@ test('searchMemories uses FTS rather than exact substring only', async () => {
     const hits = await searchMemories({
       scope: 'global',
       query: 'Windows package script fails',
-      workspaceRoot: dir
+      workspaceRoot: dir,
+      config: { memory: { retrieval: { min_score: 0 } } }
     });
     assert.ok(hits.length >= 1);
     assert.match(hits[0].content, /pnpm/);
@@ -94,7 +95,8 @@ test('dropped FTS index rebuilds on search', async () => {
     const hits = await searchMemories({
       scope: 'global',
       query: 'Windows package script',
-      workspaceRoot: dir
+      workspaceRoot: dir,
+      config: { memory: { retrieval: { min_score: 0 } } }
     });
     assert.ok(hits.length >= 1);
     assert.match(hits[0].content, /pnpm/);

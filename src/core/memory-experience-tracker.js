@@ -20,6 +20,35 @@ function fingerprintOf(tool, args) {
   return `${String(tool || '')}:${summarizeArgs(args)}`.slice(0, 160);
 }
 
+const STRATEGY_NOISE = new Set([
+  'npm', 'pnpm', 'npx', 'yarn', 'bun', 'node', 'python', 'python3', 'py',
+  'git', 'status', 'exec', 'run', 'bash', 'sh', 'cmd', 'powershell', 'pwsh',
+  'test', 'tests', 'build', 'lint', 'check', 'start'
+]);
+
+function toolFamily(tool) {
+  const name = String(tool || '').toLowerCase();
+  if (['run', 'bash', 'shell', 'powershell'].includes(name)) return 'shell';
+  if (['read', 'write', 'edit', 'apply_patch', 'create', 'delete'].includes(name)) return 'file';
+  return name;
+}
+
+function strategyTerms(args) {
+  return new Set(summarizeArgs(args)
+    .toLowerCase()
+    .match(/[\p{L}\p{N}_.-]+/gu)
+    ?.map((term) => term.replace(/^.*[\\/]/, '').replace(/\.[a-z0-9]+$/i, ''))
+    .filter((term) => term.length > 1 && !STRATEGY_NOISE.has(term)) || []);
+}
+
+function isCorrelatedStrategy(failed, tool, args, fingerprint) {
+  if (!failed || failed.fingerprint === fingerprint) return false;
+  if (failed.toolFamily !== toolFamily(tool)) return false;
+  const nextTerms = strategyTerms(args);
+  if (!failed.terms.size || !nextTerms.size) return false;
+  return [...failed.terms].some((term) => nextTerms.has(term));
+}
+
 /**
  * Experience episode tracker (design §16–21).
  *
@@ -71,18 +100,43 @@ export function createExperienceTracker({
         if (state === 'open') {
           state = 'failed';
           failedFingerprint = fingerprint;
-          lastFailedApproach = { tool: toolName, argsSummary: summarizeArgs(args), errorClass: classifyToolError(error) };
+          lastFailedApproach = {
+            tool: toolName,
+            argsSummary: summarizeArgs(args),
+            errorClass: classifyToolError(error),
+            fingerprint,
+            toolFamily: toolFamily(toolName),
+            terms: strategyTerms(args)
+          };
         } else if (state === 'failed') {
           if (fingerprint !== failedFingerprint) {
             state = 'recovering';
             failedFingerprint = fingerprint;
-            lastFailedApproach = { tool: toolName, argsSummary: summarizeArgs(args), errorClass: classifyToolError(error) };
+            lastFailedApproach = {
+              tool: toolName,
+              argsSummary: summarizeArgs(args),
+              errorClass: classifyToolError(error),
+              fingerprint,
+              toolFamily: toolFamily(toolName),
+              terms: strategyTerms(args)
+            };
           }
         } else if (state === 'recovering') {
           failedFingerprint = fingerprint;
-          lastFailedApproach = { tool: toolName, argsSummary: summarizeArgs(args), errorClass: classifyToolError(error) };
+          lastFailedApproach = {
+            tool: toolName,
+            argsSummary: summarizeArgs(args),
+            errorClass: classifyToolError(error),
+            fingerprint,
+            toolFamily: toolFamily(toolName),
+            terms: strategyTerms(args)
+          };
         }
-      } else if (isCommand && (state === 'failed' || state === 'recovering')) {
+      } else if (
+        isCommand
+        && (state === 'failed' || state === 'recovering')
+        && isCorrelatedStrategy(lastFailedApproach, toolName, args, fingerprint)
+      ) {
         state = 'recovered';
         workingApproach = { tool: toolName, argsSummary: summarizeArgs(args) };
       }

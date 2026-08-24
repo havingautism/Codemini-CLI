@@ -78,6 +78,24 @@ function rankItem(item, { query, now }) {
   };
 }
 
+function updateMemoryGroups(items, root, update, { create = false } = {}) {
+  const grouped = new Map();
+  for (const item of Array.isArray(items) ? items : []) {
+    if (!item?.id) continue;
+    const scope = item.scope === 'project' ? 'project' : 'user';
+    if (!grouped.has(scope)) grouped.set(scope, []);
+    grouped.get(scope).push(item.id);
+  }
+  for (const [scope, ids] of grouped) {
+    try {
+      const db = dbForScope(scope, root, { create });
+      if (db) update(db, ids);
+    } catch {
+      // Reinforcement metadata is best-effort.
+    }
+  }
+}
+
 export async function retrieveMemories({
   query = '',
   scope = 'all',
@@ -104,7 +122,7 @@ export async function retrieveMemories({
     3
   );
   const topK = clamp(limit, 1, 10, mode === 'failure' ? failureLimit : turnLimit);
-  const minScore = Number(config?.memory?.retrieval?.min_score ?? 0.2);
+  const minScore = Number(config?.memory?.retrieval?.min_score ?? 0.6);
   const needle = normalizeMemoryText(query);
   const root = path.resolve(workspaceRoot || process.cwd());
   const indexOpts = {
@@ -152,57 +170,21 @@ export async function retrieveMemories({
     ranked.push(rankItem(item, { query: needle, now }));
   }
   ranked.sort((left, right) => right.score - left.score || String(right.updatedAt).localeCompare(String(left.updatedAt)));
-  const hits = ranked.filter((item) => !needle || item.score >= minScore || Number.isFinite(item.ftsRank)).slice(0, topK);
+  const hits = ranked.filter((item) => !needle || item.score >= minScore).slice(0, topK);
 
-  const grouped = new Map();
-  for (const item of hits) {
-    const key = item.scope === 'project' ? `project:${root}` : 'global';
-    if (!grouped.has(key)) grouped.set(key, []);
-    grouped.get(key).push(item.id);
-  }
-  Promise.all([...grouped.entries()].map(([key, ids]) => {
-    const db = key.startsWith('project:') ? dbForScope('project', root) : dbForScope('user', root);
-    try { recordMemoryHits(db, ids); } catch { /* hit counts are best-effort */ }
-    return null;
-  })).catch(() => {});
+  updateMemoryGroups(hits, root, recordMemoryHits, { create: true });
 
   return hits;
 }
 
 export function recordRetrievedOutcome(items = [], result = 'success', workspaceRoot = process.cwd()) {
-  if (!Array.isArray(items) || items.length === 0) return;
   const root = path.resolve(workspaceRoot || process.cwd());
-  const grouped = new Map();
-  for (const item of items) {
-    if (!item?.id) continue;
-    const key = item.scope === 'project' ? `project:${root}` : 'global';
-    if (!grouped.has(key)) grouped.set(key, []);
-    grouped.get(key).push(item.id);
-  }
-  for (const [key, ids] of grouped.entries()) {
-    const db = key.startsWith('project:')
-      ? dbForScope('project', root, { create: false })
-      : dbForScope('user', root, { create: false });
-    try { recordMemoryOutcome(db, ids, result); } catch { /* outcome counts are best-effort */ }
-  }
+  updateMemoryGroups(items, root, (db, ids) => recordMemoryOutcome(db, ids, result));
 }
 
 export function confirmRetrievedMemories(items = [], workspaceRoot = process.cwd()) {
-  if (!Array.isArray(items) || items.length === 0) return;
   const root = path.resolve(workspaceRoot || process.cwd());
-  const grouped = new Map();
-  for (const item of items) {
-    if (!item?.id) continue;
-    const key = item.scope === 'project' ? `project:${root}` : 'global';
-    if (!grouped.has(key)) grouped.set(key, []);
-    grouped.get(key).push(item.id);
-  }
-  for (const [key, ids] of grouped.entries()) {
-    const db = key.startsWith('project:')
-      ? dbForScope('project', root, { create: false })
-      : dbForScope('user', root, { create: false });
-    try { recordMemoryConfirmation(db, ids); } catch { /* confirmation is best-effort */ }
-  }
+  updateMemoryGroups(items, root, recordMemoryConfirmation);
 }
 
 export function renderRetrievedMemory(items = []) {

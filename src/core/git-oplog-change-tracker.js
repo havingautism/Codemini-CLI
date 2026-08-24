@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
+import { createHash } from 'node:crypto';
 import { normalizePath } from './string-utils.js';
 import { runGit } from './process-run.js';
 import {
@@ -9,7 +10,7 @@ import {
   saveChangeOperationToSqlite
 } from './change-oplog-sqlite-store.js';
 
-const CHANGE_OPLOG_VERSION = 1;
+const CHANGE_OPLOG_VERSION = 2;
 const FILE_TOOLS = new Set(['edit', 'create', 'write', 'commit_write', 'apply_patch', 'delete']);
 
 function ensurePatchNewline(patch) {
@@ -117,9 +118,17 @@ async function readHeadSnapshot(root, relativePath) {
 }
 
 function hashBuffer(buffer) {
-  let hash = 5381;
-  for (const byte of buffer) hash = ((hash << 5) + hash + byte) >>> 0;
-  return hash.toString(16);
+  return createHash('sha256').update(buffer).digest('hex');
+}
+
+async function assertOperationMatchesCurrentFiles(tracker, operation) {
+  for (const file of Array.isArray(operation?.files) ? operation.files : []) {
+    if (typeof file?.afterExists !== 'boolean' || typeof file?.afterHash !== 'string') continue;
+    const current = await readWorktreeSnapshot(tracker.workspaceRoot, file.path);
+    if (current.exists !== file.afterExists || current.hash !== file.afterHash) {
+      throw new Error(`File changed since this change was recorded: ${file.path}`);
+    }
+  }
 }
 
 function countPatchLines(patch) {
@@ -312,6 +321,10 @@ export async function captureGitOplogChanges(tracker, capture, { toolName = '', 
       linesAdded: stats.added,
       linesRemoved: stats.removed,
       changedLine: firstChangedLineFromPatch(patch),
+      beforeExists: before.exists,
+      beforeHash: before.hash,
+      afterExists: after.exists,
+      afterHash: after.hash,
       diffPreview: patch
     });
     patches.push(patch);
@@ -389,6 +402,7 @@ export async function undoGitOplogChange(tracker, opId) {
   }
   const patch = await fs.readFile(op.patchPath, 'utf8');
   try {
+    await assertOperationMatchesCurrentFiles(tracker, op);
     await runGit(gitApplyArgs(tracker, '-R', '--check', '--whitespace=nowarn'), {
       cwd: tracker.workspaceRoot,
       input: patch,
@@ -443,6 +457,7 @@ export async function undoGitOplogChanges(tracker, opIds = []) {
   try {
     for (const item of patches) {
       if (!String(item.patch || '').trim()) continue;
+      await assertOperationMatchesCurrentFiles(tracker, item.op);
       await runGit(gitApplyArgs(tracker, '-R', '--check', '--whitespace=nowarn'), {
         cwd: tracker.workspaceRoot,
         input: item.patch,

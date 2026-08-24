@@ -64,7 +64,8 @@ function bootstrapEnabled(config = {}) {
 export async function composeMemorySnapshot({
   config = {},
   workspaceRoot = process.cwd(),
-  query = ''
+  query = '',
+  includeBootstrap = bootstrapEnabled(config)
 } = {}) {
   const emptyInject = {
     query: String(query || ''),
@@ -73,14 +74,16 @@ export async function composeMemorySnapshot({
     guaranteed: [],
     retrieved: []
   };
-  if (!bootstrapEnabled(config)) return { text: '', inject: null };
+  if (config?.memory?.enabled === false) return { text: '', retrievedText: '', inject: null };
 
-  const retrievalEnabled = config?.memory?.retrieval?.enabled !== false;
+  const bootstrap = includeBootstrap && bootstrapEnabled(config);
+  const retrieval = config?.memory?.retrieval?.enabled !== false && String(query || '').trim();
+  if (!bootstrap && !retrieval) return { text: '', retrievedText: '', inject: emptyInject };
   const [user, globalItems, project, retrieved] = await Promise.all([
-    listMemories({ scope: 'user', workspaceRoot }),
-    listMemories({ scope: 'global', workspaceRoot }),
-    listMemories({ scope: 'project', workspaceRoot }),
-    retrievalEnabled && String(query || '').trim()
+    bootstrap ? listMemories({ scope: 'user', workspaceRoot }) : Promise.resolve([]),
+    bootstrap ? listMemories({ scope: 'global', workspaceRoot }) : Promise.resolve([]),
+    bootstrap ? listMemories({ scope: 'project', workspaceRoot }) : Promise.resolve([]),
+    retrieval
       ? retrieveMemories({
           query,
           workspaceRoot,
@@ -119,7 +122,7 @@ export async function composeMemorySnapshot({
     return { text: '', retrievedText: '', inject };
   }
 
-  const snapshot = [
+  const snapshot = bootstrap ? [
     '<relevant_memory>',
     'Use these durable notes only as stable guidance. Prefer fresh reads when code or files can verify the answer.',
     'When recalling memory, preserve command names, file paths, identifiers, and punctuation exactly. Do not rewrite exact_text values.',
@@ -127,7 +130,7 @@ export async function composeMemorySnapshot({
     profileSections.length ? `<memory_profile>\n${profileSections.join('\n\n')}\n</memory_profile>` : '',
     guaranteedBlock,
     '</relevant_memory>'
-  ].filter(Boolean).join('\n\n');
+  ].filter(Boolean).join('\n\n') : '';
 
   const maxChars = Math.max(200, Number(config?.memory?.max_prompt_chars || 4000));
   const text = snapshot.length <= maxChars ? snapshot : `${snapshot.slice(0, maxChars - 3)}...`;

@@ -191,7 +191,11 @@ async function evaluateSession({ session, messages, config, maxInputChars }) {
 }
 
 export async function reviewSessionMemory({ sessionId, config }) {
-  if (config?.memory?.enabled === false || config?.memory?.background_review?.enabled === false) {
+  if (
+    config?.memory?.enabled === false ||
+    config?.memory?.writeback?.enabled === false ||
+    config?.memory?.background_review?.enabled === false
+  ) {
     return { skipped: true, reason: 'disabled' };
   }
   const session = await loadSession(sessionId);
@@ -255,8 +259,12 @@ function enqueueReview(sessionId, config) {
 }
 
 export function scheduleSessionMemoryReview({ sessionId, config, delayMs } = {}) {
-  if (!sessionId || config?.memory?.background_review?.enabled === false) return;
-  const delay = Math.max(0, Number(delayMs ?? config?.memory?.background_review?.idle_delay_ms ?? 1500));
+  if (
+    !sessionId ||
+    config?.memory?.writeback?.enabled === false ||
+    config?.memory?.background_review?.enabled === false
+  ) return false;
+  const delay = Math.max(0, Number(delayMs ?? config?.memory?.writeback?.idle_delay_ms ?? config?.memory?.background_review?.idle_delay_ms ?? 1500));
   const existing = scheduledSessions.get(sessionId);
   if (existing) clearTimeout(existing);
   const timer = setTimeout(() => {
@@ -265,14 +273,19 @@ export function scheduleSessionMemoryReview({ sessionId, config, delayMs } = {})
   }, delay);
   timer.unref?.();
   scheduledSessions.set(sessionId, timer);
+  return true;
 }
 
 export function scheduleMemoryReviewBacklog({ config, currentSessionId } = {}) {
-  if (config?.memory?.background_review?.enabled === false || config?.memory?.background_review?.on_start === false) return;
+  if (
+    config?.memory?.writeback?.enabled === false ||
+    config?.memory?.background_review?.enabled === false ||
+    config?.memory?.background_review?.on_start === false
+  ) return false;
   const now = Date.now();
-  if (backlogTimer || now - lastBacklogScheduledAt < 60000) return;
+  if (backlogTimer || now - lastBacklogScheduledAt < 60000) return false;
   lastBacklogScheduledAt = now;
-  const delay = Math.max(0, Number(config?.memory?.background_review?.idle_delay_ms || 1500));
+  const delay = Math.max(0, Number(config?.memory?.writeback?.idle_delay_ms ?? config?.memory?.background_review?.idle_delay_ms ?? 1500));
   backlogTimer = setTimeout(async () => {
     backlogTimer = null;
     try {
@@ -296,4 +309,5 @@ export function scheduleMemoryReviewBacklog({ config, currentSessionId } = {}) {
     }
   }, delay);
   backlogTimer.unref?.();
+  return true;
 }

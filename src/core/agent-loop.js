@@ -730,11 +730,13 @@ export async function runAgentLoop({
   toolMetadata = {},
   shouldCheckpoint = null,
   getTasks = null,
-  workspaceRoot = config?.workspaceRoot || process.cwd()
+  onForkJoin = null,
+  workspaceRoot = config?.workspaceRoot || process.cwd(),
+  sessionId = ''
 }) {
   const experienceTracker = config?.memory?.enabled === false || config?.memory?.experience?.enabled === false
     ? null
-    : createExperienceTracker({ workspaceRoot, config });
+    : createExperienceTracker({ sessionId, workspaceRoot, config });
   const settleLoop = async (payload) => {
     if (experienceTracker) await experienceTracker.flush().catch(() => {});
     return payload;
@@ -1663,6 +1665,9 @@ export async function runAgentLoop({
         fileChanges,
         resultMeta,
         toolWireName: toolResult?.toolWireName,
+        memoryCandidates: toolResult?.ok !== false && Array.isArray(toolResult?.memoryCandidates)
+          ? toolResult.memoryCandidates
+          : [],
         workflowComplete: Boolean(toolResult?.workflowComplete),
         workflowMessage: String(toolResult?.message || toolResult?.summary || '').trim()
       };
@@ -1673,6 +1678,19 @@ export async function runAgentLoop({
       execute: executeOne,
     });
     for (const result of orderedResults) resultEntries.set(result.callId, result);
+    if (typeof onForkJoin === 'function') {
+      const candidates = callsWithMeta
+        .filter(({ toolName }) => toolName === 'fork_task')
+        .flatMap(({ call }) => resultEntries.get(call.id)?.memoryCandidates || []);
+      if (candidates.length) {
+        await onForkJoin(candidates).catch((error) => {
+          onEvent?.({
+            type: 'memory:error',
+            summary: String(error?.message || error)
+          });
+        });
+      }
+    }
 
     // Write results to messages in original tool call order
     for (const { call, toolName, displayName, args } of callsWithMeta) {

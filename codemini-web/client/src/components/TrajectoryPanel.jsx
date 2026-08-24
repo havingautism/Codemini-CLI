@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { Download, MagnifyingGlass } from "@/lib/icons";
+import { Download, Eye, MagnifyingGlass, X } from "@/lib/icons";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -40,7 +40,6 @@ const KIND_CLASS = {
   system: "bg-(--bg-secondary) text-(--text-muted)",
   user: "bg-(--accent-blue-bg) text-(--accent-blue)",
   routing: "bg-(--accent-teal-bg) text-(--accent-teal)",
-  memory: "bg-(--accent-blue-bg) text-(--accent-blue)",
   thinking: "bg-(--accent-purple-bg) text-(--accent-purple)",
   assistant: "bg-(--accent-purple-bg) text-(--accent-purple)",
   tool: "bg-(--accent-orange-bg) text-(--accent-orange)",
@@ -140,10 +139,12 @@ function EventRow({ event, onInspect }) {
       {inspectable ? (
         <button
           type="button"
-          className="shrink-0 border-0 bg-transparent p-0 text-[11px] leading-5 text-(--accent-blue) opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100 hover:opacity-80"
+          className="inline-flex size-6 shrink-0 items-center justify-center rounded border-0 bg-transparent text-(--text-muted) transition-colors hover:bg-(--bg-hover) hover:text-(--text-primary) focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-(--border-strong)"
           onClick={onInspect}
+          aria-label={t("trajectoryInspect")}
+          title={t("trajectoryInspect")}
         >
-          {t("trajectoryInspect")}
+          <Eye size={13} />
         </button>
       ) : null}
     </div>
@@ -337,10 +338,15 @@ export function TrajectoryPanel({
     return [...seen].sort((a, b) => a - b);
   }, [built.events]);
 
+  const kindOptions = useMemo(() => {
+    const seen = new Set(built.events.map((event) => event.kind));
+    return Object.keys(KIND_I18N).filter((kind) => seen.has(kind));
+  }, [built.events]);
+
   const activeTurn = turnOptions.includes(Number(turnFilter))
     ? Number(turnFilter)
     : null;
-  const activeKind = KIND_I18N[kindFilter] ? kindFilter : "";
+  const activeKind = kindOptions.includes(kindFilter) ? kindFilter : "";
 
   const visible = useMemo(
     () =>
@@ -366,6 +372,16 @@ export function TrajectoryPanel({
     } catch {
       setExportError(t("trajectoryExportFailed"));
     }
+  };
+
+  const hasActiveFilters = Boolean(
+    query || activeTurn != null || activeKind || !showCalls,
+  );
+  const resetFilters = () => {
+    setQuery("");
+    setTurnFilter("all");
+    setKindFilter("all");
+    setShowCalls(true);
   };
 
   let lastTurn = null;
@@ -425,15 +441,32 @@ export function TrajectoryPanel({
           </SelectTrigger>
           <SelectContent align="start">
             <SelectItem value="all">{t("trajectoryFilterAll")}</SelectItem>
-            {Object.keys(KIND_I18N).map((kind) => (
+            {kindOptions.map((kind) => (
               <SelectItem key={kind} value={kind}>
                 {t(KIND_I18N[kind])}
               </SelectItem>
             ))}
           </SelectContent>
         </Select>
-        <div className="ml-auto flex min-w-0 items-center gap-2">
-          <div className="relative min-w-0 w-36 sm:w-56">
+        <div className="ml-auto flex w-full min-w-0 items-center gap-2 sm:w-auto">
+          <span className="shrink-0 font-mono text-[11px] text-(--text-muted)">
+            {t("trajectoryEventCount")
+              .replace("{{visible}}", String(visible.length))
+              .replace("{{total}}", String(built.events.length))}
+          </span>
+          {hasActiveFilters ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              onClick={resetFilters}
+              aria-label={t("trajectoryResetFilters")}
+              title={t("trajectoryResetFilters")}
+            >
+              <X size={13} />
+            </Button>
+          ) : null}
+          <div className="relative min-w-0 flex-1 sm:w-56 sm:flex-none">
             <MagnifyingGlass
               size={13}
               className="pointer-events-none absolute top-1/2 left-2.5 -translate-y-1/2 text-(--text-muted)"
@@ -514,7 +547,7 @@ export function TrajectoryPanel({
                   ) : null}
                   <div
                     className={cn(
-                      "flex h-7 min-w-0 items-center gap-3 overflow-hidden",
+                      "-mx-1 flex h-7 min-w-0 items-center gap-3 overflow-hidden rounded-md px-1 transition-colors hover:bg-(--bg-hover) focus-within:bg-(--bg-hover)",
                       event.loop > 0 && "pl-4",
                     )}
                   >

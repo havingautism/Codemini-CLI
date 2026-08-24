@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises';
-import path from 'node:path';
 import { getConfigFilePath } from './paths.js';
+import { atomicWriteUtf8 } from './staged-write.js';
 import { normalizeReplyLanguage } from './reply-language.js';
 import { normalizeShellName, resolveShellContext } from './shell-profile.js';
 import {
@@ -106,7 +106,7 @@ const DEFAULT_CONFIG = {
       tool_limit: 3,
       turn_top_k: 5,
       failure_top_k: 3,
-      min_score: 0.2
+      min_score: 0.6
     },
     experience: {
       enabled: true,
@@ -190,10 +190,6 @@ const DEFAULT_CONFIG = {
     servers: []
   }
 };
-
-async function ensureDir(filePath) {
-  await fs.mkdir(path.dirname(filePath), { recursive: true });
-}
 
 function isObject(v) {
   return v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -323,7 +319,7 @@ function normalizePolicyLists(config) {
   )));
   next.memory.retrieval.turn_limit = next.memory.retrieval.turn_top_k;
   next.memory.retrieval.tool_limit = next.memory.retrieval.failure_top_k;
-  next.memory.retrieval.min_score = Math.max(0, Math.min(1, Number(next.memory.retrieval.min_score ?? 0.2)));
+  next.memory.retrieval.min_score = Math.max(0, Math.min(1, Number(next.memory.retrieval.min_score ?? 0.6)));
   next.memory.experience = next.memory.experience || {};
   next.memory.experience.enabled = next.memory.experience.enabled !== false;
   next.memory.experience.capture_failures = next.memory.experience.capture_failures !== false;
@@ -483,30 +479,55 @@ function migrateSoulConfig(parsed = {}) {
 
 export async function loadConfig() {
   const configPath = getConfigFilePath();
+  const stat = await fs.stat(configPath).catch(() => null);
+  const mtime = stat ? stat.mtimeMs : 0;
+  const size = stat ? stat.size : 0;
+  if (cachedConfig && cachedConfigStat && cachedConfigStat.mtime === mtime && cachedConfigStat.size === size) {
+    return structuredClone(cachedConfig);
+  }
+  let raw;
   try {
-    const stat = await fs.stat(configPath).catch(() => null);
-    const mtime = stat ? stat.mtimeMs : 0;
-    const size = stat ? stat.size : 0;
-    if (cachedConfig && cachedConfigStat && cachedConfigStat.mtime === mtime && cachedConfigStat.size === size) {
-      return structuredClone(cachedConfig);
+    raw = await fs.readFile(configPath, 'utf8');
+  } catch (error) {
+    if (error?.code !== 'ENOENT') {
+      throw new Error(`Failed to read configuration at ${configPath}; existing file was preserved.`, { cause: error });
     }
-    const raw = await fs.readFile(configPath, 'utf8');
-    const parsed = migrateSoulConfig(JSON.parse(raw));
-    const config = normalizePolicyLists(deepMerge(DEFAULT_CONFIG, parsed));
-    cachedConfig = config;
-    cachedConfigStat = { mtime, size };
-    return structuredClone(config);
-  } catch {
     const defaultConfig = normalizePolicyLists(structuredClone(DEFAULT_CONFIG));
     await saveConfig(defaultConfig);
     return defaultConfig;
   }
+  let parsed;
+  try {
+    parsed = migrateSoulConfig(JSON.parse(raw));
+  } catch (error) {
+    throw new Error(`Failed to parse configuration at ${configPath}; existing file was preserved.`, { cause: error });
+  }
+  const config = normalizePolicyLists(deepMerge(DEFAULT_CONFIG, parsed));
+  cachedConfig = config;
+  cachedConfigStat = { mtime, size };
+  return structuredClone(config);
+}
+
+async function backupValidConfig(configPath) {
+  let raw;
+  try {
+    raw = await fs.readFile(configPath, 'utf8');
+  } catch (error) {
+    if (error?.code === 'ENOENT') return;
+    throw error;
+  }
+  try {
+    JSON.parse(raw);
+  } catch {
+    return;
+  }
+  await atomicWriteUtf8(`${configPath}.bak`, raw);
 }
 
 export async function saveConfig(config) {
   const configPath = getConfigFilePath();
-  await ensureDir(configPath);
-  await fs.writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, 'utf8');
+  await backupValidConfig(configPath);
+  await atomicWriteUtf8(configPath, `${JSON.stringify(config, null, 2)}\n`);
   cachedConfig = normalizePolicyLists(structuredClone(config));
   const stat = await fs.stat(configPath).catch(() => null);
   cachedConfigStat = stat ? { mtime: stat.mtimeMs, size: stat.size } : null;

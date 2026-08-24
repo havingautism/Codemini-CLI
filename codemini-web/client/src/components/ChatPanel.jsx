@@ -269,6 +269,21 @@ function ChatPanelContent({
     [messages],
   );
 
+  const retrievedMemoriesByReplyId = useMemo(() => {
+    const byReplyId = new Map();
+    let current = [];
+    for (const message of messages) {
+      if (message?.role === "you") {
+        current = Array.isArray(message.memoryInject?.retrieved)
+          ? message.memoryInject.retrieved
+          : [];
+      } else if (current.length && message?.id) {
+        byReplyId.set(message.id, current);
+      }
+    }
+    return byReplyId;
+  }, [messages]);
+
   const scrollToMessage = useCallback((msgId, { behavior = "smooth" } = {}) => {
     const el = scrollRef.current?.querySelector(`[data-message-id="${msgId}"]`);
     if (!el) return;
@@ -477,6 +492,7 @@ function ChatPanelContent({
                     >
                       <MessageBubble
                         message={msg}
+                        retrievedMemories={retrievedMemoriesByReplyId.get(msg.id)}
                         onRetry={onRetryMessage}
                         dockTodo={Boolean(dockedTodoMessageId) && msg.id === dockedTodoMessageId}
                         turnActive={busy}
