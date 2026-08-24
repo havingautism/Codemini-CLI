@@ -2046,6 +2046,9 @@ function InvestigationBoard({
   );
 }
 
+const RESEARCH_BOARD_SCROLL =
+  "max-h-[min(40vh,20rem)] overflow-x-hidden overflow-y-auto overscroll-contain [scrollbar-gutter:stable]";
+
 function QuestionsBoard({ questions = [], liveScouts = {} }) {
   const liveByQuestion = useMemo(() => {
     const map = new Map();
@@ -2074,7 +2077,7 @@ function QuestionsBoard({ questions = [], liveScouts = {} }) {
       {!questions.length ? (
         <div className="text-[12px] text-(--text-muted)">—</div>
       ) : (
-        <div className="divide-y divide-(--separator) border-y border-(--border-default)">
+        <div className={`divide-y divide-(--separator) border-y border-(--border-default) ${RESEARCH_BOARD_SCROLL}`}>
           {questions.map((q, index) => {
             const live = liveByQuestion.get(q.id);
             const unresolved = unresolvedDependencyIds(q, questions);
@@ -2365,7 +2368,7 @@ function LimitationsBoard({ limitations = [], questions = [] }) {
           {t("deepResearchNoLimitations")}
         </div>
       ) : (
-        <div className="divide-y divide-(--separator) border-y border-(--border-default)">
+        <div className={`divide-y divide-(--separator) border-y border-(--border-default) ${RESEARCH_BOARD_SCROLL}`}>
           {limitations.map((item, index) => (
             <div
               key={`${item.questionId}-${item.criterionId}-${index}`}
