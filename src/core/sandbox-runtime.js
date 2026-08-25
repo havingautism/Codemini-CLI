@@ -117,7 +117,19 @@ async function createSandbox({ key, policy, config, port }) {
     .workdir(GUEST_WORKSPACE)
     .shell('/bin/bash')
     .security('restricted')
-    .network((network) => network.enabled(true).policy(networkPolicy))
+    .network((network) => {
+      let configured = network.enabled(true).policy(networkPolicy);
+      // Windows proxy/TUN clients commonly return RFC 2544 fake-IP answers
+      // (198.18.0.0/15). Microsandbox's DNS rebinding guard rejects those
+      // answers as non-public, turning every lookup in the guest into
+      // ENOTFOUND even though outbound networking is explicitly allow-all.
+      // Rebinding protection adds no boundary in this mode because callers can
+      // already connect to private IPs directly; keep the default for deny-all.
+      if (networkMode === 'allow-all') {
+        configured = configured.dns((dns) => dns.rebindProtection(false));
+      }
+      return configured;
+    })
     .quietLogs()
     .ephemeral(true)
     .volume(GUEST_WORKSPACE, (mount) => {

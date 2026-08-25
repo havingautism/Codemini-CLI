@@ -61,6 +61,23 @@ test('conversation start keeps general chats in the general section', () => {
   assert.equal(entry.projectKey, undefined);
 });
 
+test('conversation start title only uses visible text, never attachment payload metadata', () => {
+  const entry = buildConversationStartSidebarEntry({
+    sessionId: 'attachment-1',
+    text: '请查看附件',
+    attachments: [{
+      name: 'login.png',
+      path: 'C:/Users/secret/login.png',
+      url: 'data:image/png;base64,c2VjcmV0',
+      text: 'private extracted text',
+    }],
+    isGeneral: true,
+  });
+
+  assert.equal(entry.title, '💬 请查看附件');
+  assert.doesNotMatch(entry.title, /login|Users|base64|private/i);
+});
+
 test('later turns update metadata without resetting an existing title', () => {
   const next = upsertSidebarSession(
     [

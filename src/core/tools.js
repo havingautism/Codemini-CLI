@@ -5039,7 +5039,7 @@ export function getBuiltinTools({
       function: {
         name: "tasks",
         description:
-          "Record and update a structured task list for the current work. Send the ENTIRE list every call — it REPLACES the previous list (there are no partial updates, no per-item edits, no read-back). Use it to plan multi-step work and show progress: add one item per concrete step before you start. Mark every task being actively worked as in_progress — several at once when work genuinely runs in parallel, one for sequential work; while work remains, at least one task should be in_progress. Mark a task completed the moment it is done (do not batch completions), and leave no in_progress item only once all work is complete. Skip the list for trivial single-step tasks. Statuses: pending, in_progress, completed.",
+          "Replace the current task list with the complete list. Use it for multi-step work, keep active work in_progress, and mark finished items completed. Skip trivial single-step work.",
         parameters: {
           type: "object",
           properties: {
@@ -5050,23 +5050,20 @@ export function getBuiltinTools({
                 properties: {
                   content: {
                     type: "string",
-                    description: "What the task is — a short imperative line.",
+                    description: "Short imperative step.",
                   },
                   status: {
                     type: "string",
                     enum: ["pending", "in_progress", "completed"],
-                    description:
-                      "pending (not started) | in_progress (now) | completed (done).",
                   },
                   activeForm: {
                     type: "string",
-                    description: "Optional. Ignored for display; content is shown.",
+                    description: "Optional present-participle activity label.",
                   },
                 },
                 required: ["content", "status"],
               },
-              description:
-                "The COMPLETE task list, replacing any previous list.",
+              description: "Complete replacement list.",
             },
           },
           required: ["tasks"],
@@ -5154,18 +5151,10 @@ export function getBuiltinTools({
           function: {
             name: "request_user_input",
             description:
-              "Ask the user concise structured questions when confirmation, a choice, or missing information would materially affect the work. The call pauses until the user answers or skips. Prefer 1-3 questions and put the recommended option first when appropriate.",
+              "Ask 1-3 concise questions only when the answers materially affect the work. The call pauses for the user.",
             parameters: {
               type: "object",
               properties: {
-                title: {
-                  type: "string",
-                  description: "Short title for the form.",
-                },
-                description: {
-                  type: "string",
-                  description: "Optional context explaining why the input is needed.",
-                },
                 questions: {
                   type: "array",
                   minItems: 1,
@@ -5175,47 +5164,28 @@ export function getBuiltinTools({
                     properties: {
                       id: {
                         type: "string",
-                        description: "Stable snake_case key used in the returned answers object.",
+                        description: "Stable snake_case answer key.",
                       },
-                      question: { type: "string", description: "Concise question shown to the user." },
-                      label: { type: "string", description: "Legacy alias for question." },
-                      type: {
-                        type: "string",
-                        enum: ["text", "select", "radio", "checkbox"],
-                      },
-                      placeholder: { type: "string" },
-                      required: { type: "boolean" },
+                      question: { type: "string" },
                       multi_select: {
                         type: "boolean",
-                        description: "Allow multiple option selections. Infers a checkbox field.",
-                      },
-                      multiline: {
-                        type: "boolean",
-                        description: "For text fields, render a multi-line input.",
-                      },
-                      allow_other: {
-                        type: "boolean",
-                        description: "Allow the user to provide a value not listed in options. Defaults to true for choice questions.",
+                        description: "Allow multiple choices.",
                       },
                       options: {
                         type: "array",
+                        description: "Omit for free text. A custom answer is allowed automatically.",
                         items: {
                           type: "object",
                           properties: {
                             label: { type: "string" },
-                            value: { type: "string" },
                             description: { type: "string" },
                           },
                           required: ["label"],
                         },
                       },
                     },
-                    required: ["id"],
+                    required: ["id", "question"],
                   },
-                },
-                submit_label: {
-                  type: "string",
-                  description: "Optional submit button label.",
                 },
               },
               required: ["questions"],
@@ -5232,14 +5202,14 @@ export function getBuiltinTools({
       function: {
         name: "run_subagent",
         description:
-          "Delegate work to a clean-context subagent so project inspection, test output, and independent reasoning do not bloat the main context. Pass a compact task envelope (goal, files, constraints, known facts) in tasks/prompt; do not copy the parent transcript. Prefer this for repository exploration, architecture/dependency lookup, broad code reading, test execution and failure triage, review, option comparison, and isolated implementation chunks. Invent a short human name for the worker (e.g. David, Mira). Independent same-response calls run in parallel automatically (no read-only tools list or depends_on needed); workers share one worktree, so give each parallel worker disjoint file ownership or chain dependent work with task_id/depends_on to avoid conflicting edits. For a dependency DAG, assign task_id and let later calls use depends_on; upstream handoffs are injected automatically. Dependencies must reference earlier calls in the same response. Capability is controlled by tools: omit it for the role default, or pass an explicit allow-list (e.g. Bash/run to grant shell) to override the role baseline. Subagents cannot call run_subagent/create_plan/create_spec. Avoid only truly atomic actions where delegation adds no useful evidence.",
+          "Delegate a bounded task to a clean-context subagent. Same-response independent calls run in parallel; use task_id/depends_on for dependencies and disjoint file ownership for parallel edits. Invent a short worker name such as David. Use fork_task instead when shared prompt prefix/state is more useful.",
         parameters: {
           type: "object",
           properties: {
             prompt: {
               type: "string",
               description:
-                "Optional scope, constraints, context, and handoff details. Use tasks for the concrete work items.",
+                "Scope, constraints, and known facts.",
             },
             tasks: {
               type: "array",
@@ -5250,55 +5220,46 @@ export function getBuiltinTools({
                   status: {
                     type: "string",
                     enum: ["pending", "in_progress", "completed"],
-                    description: "pending, in_progress, or completed",
                   },
                   activeForm: { type: "string" },
                 },
                 required: ["content"],
               },
-              description:
-                "Concrete structured task checklist assigned to this subagent. Prefer this over burying work items in prompt prose.",
+              description: "Concrete work items.",
             },
             summary: {
               type: "string",
-              description:
-                "One or two concise sentences describing the task for the collapsed Subagent card. Always provide this separately from prompt.",
+              description: "One or two sentences for the collapsed card.",
             },
             name: {
               type: "string",
-              description:
-                "Short invented persona name for this worker (e.g. David, Mira, Kai). Shown on the Subagent card. Does not affect the tool allow-list.",
+              description: "Short invented worker name, such as David or Mira.",
             },
             role: {
               type: "string",
-              description:
-                "Rarely needed: a plan-pipeline role (planner, explorer, coder, tester, ...) that preselects a default tool policy and behavior. In normal coding use, leave it unset and pass tools instead; an explicit tools list always overrides it.",
+              description: "Optional role preset; an explicit tools list overrides it.",
             },
             context: {
               type: "string",
-              description:
-                "Optional durable handoff packet (prior findings, paths, decisions). Keep it short and actionable.",
+              description: "Prior findings, paths, or decisions.",
             },
             goal: {
               type: "string",
-              description: "Optional short label for UI / logging.",
+              description: "Short UI label.",
             },
             task_id: {
               type: "string",
-              description:
-                "Optional stable ID for this task within the current response. Required when a later subagent should depend on this result. Use letters, numbers, underscores, or hyphens.",
+              description: "ID referenced by a later depends_on call.",
             },
             depends_on: {
               type: "array",
               items: { type: "string" },
-              description:
-                "Optional task_id list from earlier run_subagent calls in the same response. This worker waits for all of them and automatically receives their successful handoffs.",
+              description: "Earlier task IDs to await; their handoffs are injected.",
             },
             tools: {
               type: "array",
               items: { type: "string" },
-              description:
-                "Optional tool allow-list. When omitted, the worker gets its role's default baseline. When provided, it OVERRIDES that baseline (list Bash/run to grant shell execution even to a read-only role). On Linux/mac staged write and apply_patch are unavailable (prefer edit/write); glob/grep are part of the inspect baseline. run_subagent/create_plan/create_spec are always forbidden.",
+              description: "Optional allow-list overriding the role defaults.",
             },
           },
           required: [],
@@ -5312,14 +5273,13 @@ export function getBuiltinTools({
       function: {
         name: "fork_task",
         description:
-          "Fork parallel branches of the current agent: each branch inherits the full conversation prefix, system prompt, identity, model, and tools, and runs independently on its assigned task; only the structured result (findings, changes, usage) returns to the main loop. Prefer fork_task over run_subagent when branches should share the same state lineage and prompt prefix (cheap prefix-cache reuse on cached providers / vLLM) and the work is parallel investigation, option comparison, or bounded same-identity chunks. Issue several fork_task calls in the same response so branches run concurrently; give each branch a short label in name (e.g. frontend, backend, tests). Branches share one worktree, so assign each branch disjoint file ownership and prefer read-only investigation; treat branch findings as snapshot evidence the parent reconciles. Branches cannot call fork_task/run_subagent/request_user_input and cannot update the plan. When a clean context, a different role/model, or a role-specific tool policy is required, use run_subagent instead.",
+          "Run a bounded parallel branch that inherits this agent's prompt prefix, state, model, and tools. Same-response calls run concurrently; prefer read-only work or disjoint files. Use run_subagent for clean context, another role/model, or a different tool policy.",
         parameters: {
           type: "object",
           properties: {
             prompt: {
               type: "string",
-              description:
-                "Optional scope, constraints, and success criteria for this branch. Use tasks for the concrete work items.",
+              description: "Scope, constraints, and success criteria.",
             },
             tasks: {
               type: "array",
@@ -5330,24 +5290,20 @@ export function getBuiltinTools({
                   status: {
                     type: "string",
                     enum: ["pending", "in_progress", "completed"],
-                    description: "pending, in_progress, or completed",
                   },
                   activeForm: { type: "string" },
                 },
                 required: ["content"],
               },
-              description:
-                "Concrete structured task checklist assigned to this branch. Prefer this over burying work items in prompt prose.",
+              description: "Concrete work items.",
             },
             summary: {
               type: "string",
-              description:
-                "One or two concise sentences describing the branch for the collapsed Fork card. Always provide this separately from prompt.",
+              description: "One or two sentences for the collapsed card.",
             },
             name: {
               type: "string",
-              description:
-                "Short invented branch label (e.g. frontend, backend, tests). Shown on the Fork card.",
+              description: "Short branch label, such as frontend or tests.",
             },
           },
           required: [],
@@ -5866,16 +5822,11 @@ export function getBuiltinTools({
       ]
     : [...primaryDefinitions, ...workflowToolDefinitions, ...userInputToolDefinitions];
 
-  // Linux/mac: DSH-aligned CRUD — promote glob/grep; drop staged write + apply_patch entirely.
-  // Windows keeps the current always-on write toolkit (encoding-safe staged writes).
-  if (!isWin) {
-    const drop = new Set([
-      "begin_write",
-      "write_chunk",
-      "commit_write",
-      "abort_write",
-      "apply_patch",
-    ]);
+  // The search surface follows the effective command platform so a Windows host
+  // running a Linux microVM exposes the same always-on glob/grep promised by the
+  // system prompt. File mutation contracts still follow the host platform below
+  // to preserve Windows path and encoding behavior.
+  if (shellContext.commandPlatform !== "win32") {
     const promote = ["grep", "glob"];
     for (const name of promote) {
       const def = deferredToolCatalog[name];
@@ -5884,6 +5835,18 @@ export function getBuiltinTools({
       }
       delete deferredToolCatalog[name];
     }
+  }
+
+  // Native Linux/mac uses the DSH-aligned CRUD surface. Windows keeps the
+  // encoding-safe staged write toolkit even when shell commands run in a VM.
+  if (!isWin) {
+    const drop = new Set([
+      "begin_write",
+      "write_chunk",
+      "commit_write",
+      "abort_write",
+      "apply_patch",
+    ]);
     definitions = definitions.filter((d) => !drop.has(d?.function?.name));
     for (const name of drop) delete deferredToolCatalog[name];
   }

@@ -5356,7 +5356,9 @@ async function askModel({
   });
 
   const currentPlanStateForTools = normalizePlanState(session?.planState);
-  const exposeUpdatePlan = normalizedExecutionMode === 'plan' || Boolean(currentPlanStateForTools);
+  // update_plan only recovers/synchronizes an existing persistent plan. Ordinary
+  // coding turns use tasks and should not pay for this legacy schema.
+  const exposeUpdatePlan = Boolean(currentPlanStateForTools);
   const baseDefinitions = exposeUpdatePlan
     ? definitions
     : definitions.filter((t) => (t.function?.name || t.name) !== 'update_plan');

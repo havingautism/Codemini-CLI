@@ -116,3 +116,14 @@ test('execution-mode injections stay compact', () => {
   assert.ok(buildExecutionModePromptBlock('coding', 'win32').length < 3000);
   assert.ok(buildExecutionModePromptBlock('normal', 'win32').length < 1500);
 });
+
+test('coding mode does not expose legacy update_plan without existing plan state', () => {
+  assert.match(
+    chatRuntimeSource,
+    /const exposeUpdatePlan = Boolean\(currentPlanStateForTools\)/,
+  );
+  assert.doesNotMatch(
+    chatRuntimeSource,
+    /const exposeUpdatePlan = normalizedExecutionMode === 'plan'/,
+  );
+});

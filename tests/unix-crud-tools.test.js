@@ -144,7 +144,7 @@ test('OS confinement command tool keeps host paths', () => {
   );
 });
 
-test('Windows keeps staged writes while using Bash and sandbox escalation', () => {
+test('Windows Microsandbox keeps staged writes and promotes Linux search tools', () => {
   const bundle = getBuiltinTools({
     workspaceRoot: process.cwd(),
     config: { sandbox: { enabled: true, mode: 'workspace-write', backend: 'microsandbox' } },
@@ -156,10 +156,10 @@ test('Windows keeps staged writes while using Bash and sandbox escalation', () =
     assert.ok(active.has(name), `${name} should be active on win32`);
     assert.ok(!deferred.has(name), `${name} should not be deferred on win32`);
   }
-  assert.ok(deferred.has('grep'));
-  assert.ok(deferred.has('glob'));
-  assert.ok(!active.has('grep'));
-  assert.ok(!active.has('glob'));
+  assert.ok(active.has('grep'));
+  assert.ok(active.has('glob'));
+  assert.ok(!deferred.has('grep'));
+  assert.ok(!deferred.has('glob'));
   const edit = bundle.definitions.find((d) => d?.function?.name === 'edit');
   assert.deepEqual(edit?.function?.parameters?.required, ['path']);
   assert.ok(edit?.function?.parameters?.properties?.sandbox_permissions);

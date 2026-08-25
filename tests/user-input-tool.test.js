@@ -24,6 +24,13 @@ test('request_user_input is exposed only when the host installs a handler', asyn
     webTools.definitions.some((tool) => tool.function?.name === 'request_user_input'),
     true,
   );
+  const requestSchema = webTools.definitions.find(
+    (tool) => tool.function?.name === 'request_user_input',
+  )?.function?.parameters;
+  const questionProperties = requestSchema?.properties?.questions?.items?.properties || {};
+  assert.deepEqual(Object.keys(requestSchema?.properties || {}), ['questions']);
+  assert.deepEqual(Object.keys(questionProperties), ['id', 'question', 'multi_select', 'options']);
+  assert.deepEqual(questionProperties.options.items.required, ['label']);
 
   const result = await webTools.handlers.request_user_input({
     title: 'Choose',

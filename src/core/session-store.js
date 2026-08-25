@@ -4,7 +4,7 @@ import { getSessionsDir } from './paths.js';
 import { normalizePlanState } from './plan-state.js';
 import { normalizeSpecState } from './spec-state.js';
 import { normalizeTodos } from './todo-state.js';
-import { ensureSessionTitleEmoji } from './session-title.js';
+import { ensureSessionTitleEmoji, stripInternalTitleContext } from './session-title.js';
 import { sanitizeTiming } from './usage-timing.js';
 import {
   deleteSessionFromSqlite,
@@ -137,9 +137,11 @@ function formatSkillOnlyTitle(skillTitles = [], skillNames = []) {
 
 export function resolveTitleUserText(source = {}) {
   const message = source?.role ? source : null;
-  const content = String(message?.content ?? source?.content ?? source?.text ?? '').trim();
+  const content = stripInternalTitleContext(
+    message?.content ?? source?.content ?? source?.text ?? '',
+  );
   const modelContent = typeof (message?.model_content ?? source?.model_content ?? source?.modelText) === 'string'
-    ? (message?.model_content ?? source?.model_content ?? source?.modelText).trim()
+    ? stripInternalTitleContext(message?.model_content ?? source?.model_content ?? source?.modelText)
     : '';
   const skillTransport = content.match(/^skill:\[([^\]]+)\]$/i);
   const transportSkillNames = skillTransport?.[1]
