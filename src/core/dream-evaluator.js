@@ -1,6 +1,8 @@
 import { createChatCompletion } from './provider/index.js';
-import { normalizeMemoryKind, normalizeMemoryScope, buildDreamPromotionGraphBlock } from './memory-policy.js';
+import { inferMemoryFamily, normalizeMemoryKind, normalizeMemoryScope, buildDreamPromotionGraphBlock } from './memory-policy.js';
 import { appendStructuredOutputLanguageRule } from './reply-language.js';
+import { isMemoryStale } from './memory-lifecycle.js';
+import { retentionScore } from './memory-ranker.js';
 
 const EVAL_TIMEOUT_MS = 30000;
 
@@ -37,13 +39,13 @@ const MAINTENANCE_SYSTEM_PROMPT = `You are maintaining an existing persistent me
 Your job:
 1. Merge duplicates and near-duplicates.
 2. Summarize clusters into fewer, higher-signal memories.
-3. Remove stale, contradictory, trivial, or overly specific noise.
+3. Remove stale, contradictory, trivial, or overly specific noise. An item with "stale":true or an expired expected_valid_days should be archived (reason "stale") unless it is still clearly valid.
 4. Preserve important exact commands, file paths, preferences, and constraints.
 5. Keep memories scoped exactly to the bucket you receive.
 6. Use only these kinds: preference | convention | lesson | note.
 
-Respond with valid JSON only, no markdown fences:
-{"items":[{"kind":"preference|convention|lesson|note","content":"durable memory text","summary":"under 80 chars","semantic_key":"stable key when provided","confidence":0.5,"pinned":false,"lifecycle":"longterm|operational"}],"archives":[{"source_ids":["mem_..."],"reason":"merged|stale|duplicate|noise|contradiction"}]}
+Respond with valid JSON only, no markdown fences. Return all four arrays, even when empty:
+{"promotions":[],"staleness":[{"memory_id":"mem_...","action":"extend","extend_days":90}],"consolidations":[{"source_ids":["mem_...","mem_..."],"result":{"kind":"preference|convention|lesson|note","content":"durable memory text","summary":"under 80 chars","semantic_key":"stable key when provided","confidence":0.5,"pinned":false,"lifecycle":"longterm|operational"}}],"archives":[{"memory_id":"mem_...","reason":"superseded|stale|duplicate|noise|contradiction"}]}
 
 Rules:
 - Prefer fewer, clearer items, but do not collapse unrelated facts.
@@ -53,7 +55,10 @@ Rules:
 - Keep a newly learned lesson operational unless the input already marks it longterm or clearly records repeated verification.
 - Preserve a supplied semantic_key when retaining the same fact; use one stable key when merging duplicates.
 - If a pinned item is still valid, keep it.
-- Return at least one item if the input has useful durable content.`;
+- Do not return unchanged memories. Return actions only.
+- Use staleness action "extend" when an expired fact is still valid. extend_days must be between 1 and 3650.
+- Consolidations must cite at least two source_ids from the input. Archives and staleness must cite a memory_id from the input.
+- promotions is reserved for inbox candidates and must be [] for this existing-memory request.`;
 
 function buildEvalSystemPrompt(config = {}) {
   return appendStructuredOutputLanguageRule(SYSTEM_PROMPT, config, {
@@ -63,7 +68,7 @@ function buildEvalSystemPrompt(config = {}) {
 
 function buildMaintenanceSystemPrompt(config = {}) {
   return appendStructuredOutputLanguageRule(MAINTENANCE_SYSTEM_PROMPT, config, {
-    fields: 'content, summary, and archive reason'
+    fields: 'consolidation content, summary, and archive reason'
   });
 }
 
@@ -76,6 +81,13 @@ function parseResults(text) {
       action: r.action === 'keep' ? 'keep' : r.action === 'retry' ? 'retry' : 'discard',
       scope: normalizeMemoryScope(r.scope, { fallback: 'global' }),
       kind: normalizeMemoryKind(r.kind, 'note'),
+      family: inferMemoryFamily({
+        family: r.family,
+        scope: normalizeMemoryScope(r.scope, { fallback: 'global' }),
+        kind: normalizeMemoryKind(r.kind, 'note'),
+        content: String(r.content || ''),
+        summary: String(r.summary || '')
+      }),
       content: String(r.content || '').slice(0, 300),
       summary: String(r.summary || '').slice(0, 120),
       confidence: Math.min(1, Math.max(0.5, Number(r.confidence) || 0.7)),
@@ -147,36 +159,57 @@ export async function evaluateInboxBatch({ entries, config, workspaceRoot }) {
   }
 }
 
-function parseMaintenanceResult(text) {
+export function parseMaintenanceResult(text) {
   try {
     const json = JSON.parse(text);
-    const items = Array.isArray(json?.items) ? json.items : [];
+    const promotions = Array.isArray(json?.promotions) ? json.promotions : [];
+    const staleness = Array.isArray(json?.staleness) ? json.staleness : [];
+    const consolidations = Array.isArray(json?.consolidations) ? json.consolidations : [];
     const archives = Array.isArray(json?.archives) ? json.archives : [];
     return {
-      items: items
-        .map((item) => ({
-          kind: normalizeMemoryKind(item.kind, 'note'),
-          content: String(item.content || '').slice(0, 600),
-          summary: String(item.summary || item.content || '').slice(0, 120),
-          semanticKey: String(item.semantic_key || item.semanticKey || '').slice(0, 160),
-          confidence: Math.min(1, Math.max(0.5, Number(item.confidence) || 0.8)),
-          pinned: item.pinned === true,
-          lifecycle: ['longterm', 'operational'].includes(String(item.lifecycle || '')) ? String(item.lifecycle) : undefined
-        }))
-        .filter((item) => item.content.trim()),
+      promotions,
+      staleness: staleness.map((item) => {
+        const extendDays = Math.floor(Number(item.extend_days ?? item.extendDays));
+        return {
+          memoryId: String(item.memory_id || item.memoryId || ''),
+          action: String(item.action || '').toLowerCase() === 'extend' ? 'extend' : 'ignore',
+          extendDays: Number.isFinite(extendDays) ? Math.min(3650, Math.max(1, extendDays)) : 0
+        };
+      }).filter((item) => item.memoryId && item.action === 'extend' && item.extendDays > 0),
+      consolidations: consolidations.map((entry) => {
+        const result = entry?.result || {};
+        return {
+          sourceIds: Array.isArray(entry?.source_ids)
+            ? entry.source_ids.map((id) => String(id)).filter(Boolean)
+            : [],
+          result: {
+            kind: normalizeMemoryKind(result.kind, 'note'),
+            content: String(result.content || '').slice(0, 600),
+            summary: String(result.summary || result.content || '').slice(0, 120),
+            semanticKey: String(result.semantic_key || result.semanticKey || '').slice(0, 160),
+            confidence: Math.min(1, Math.max(0.5, Number(result.confidence) || 0.8)),
+            pinned: result.pinned === true,
+            lifecycle: ['longterm', 'operational'].includes(String(result.lifecycle || ''))
+              ? String(result.lifecycle)
+              : undefined
+          }
+        };
+      }).filter((entry) => entry.sourceIds.length >= 2 && entry.result.content.trim()),
       archives: archives.map((archive) => ({
-        source_ids: Array.isArray(archive.source_ids) ? archive.source_ids.map((id) => String(id)).filter(Boolean) : [],
+        memoryId: String(archive.memory_id || archive.memoryId || ''),
         reason: String(archive.reason || '').slice(0, 160)
-      }))
+      })).filter((archive) => archive.memoryId)
     };
   } catch {
-    return { items: [], archives: [] };
+    return { promotions: [], staleness: [], consolidations: [], archives: [] };
   }
 }
 
 export async function evaluateMemoryMaintenance({ scope, items, config, workspaceRoot }) {
   const sourceItems = Array.isArray(items) ? items : [];
-  if (sourceItems.length === 0) return { items: [], archives: [] };
+  if (sourceItems.length === 0) {
+    return { promotions: [], staleness: [], consolidations: [], archives: [] };
+  }
 
   const compactItems = sourceItems.map((item) => ({
     id: item.id,
@@ -186,7 +219,18 @@ export async function evaluateMemoryMaintenance({ scope, items, config, workspac
     semantic_key: String(item.semanticKey || '').slice(0, 160),
     confidence: item.confidence,
     pinned: item.pinned === true,
-    lifecycle: item.lifecycle || ''
+    lifecycle: item.lifecycle || '',
+    success_count: Number(item.successCount || 0),
+    failure_count: Number(item.failureCount || 0),
+    utility_score: Number(item.utilityScore || 0),
+    expected_valid_days: Number.isFinite(Number(item.expectedValidDays)) ? Number(item.expectedValidDays) : null,
+    stale: config?.memory?.lifecycle?.staleness_review !== false ? isMemoryStale(item, Date.now()) : false,
+    retention_score: retentionScore({
+      confidence: item.confidence,
+      lastConfirmedAt: item.lastConfirmedAt,
+      accessCount: item.accessCount,
+      now: Date.now()
+    })
   }));
 
   try {
@@ -208,7 +252,9 @@ export async function evaluateMemoryMaintenance({ scope, items, config, workspac
     return parseMaintenanceResult(result?.text || '');
   } catch (error) {
     return {
-      items: sourceItems,
+      promotions: [],
+      staleness: [],
+      consolidations: [],
       archives: [],
       error: String(error?.message || error || 'memory maintenance failed')
     };

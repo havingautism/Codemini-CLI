@@ -1,6 +1,9 @@
 import path from 'node:path';
 import { trimInline as _trimInline, normalizePath } from './string-utils.js';
 import { captureToInbox, listInbox } from './memory-store.js';
+import { createExperienceTracker } from './memory-experience-tracker.js';
+import { retrieveMemories, renderRecoveryMemory, buildFailureMemoryQuery, compactMemoryHit, budgetRecoveryMemoryItems } from './memory-retriever.js';
+import { isVerificationCommand, shouldSkipFailureRecall } from './memory-policy.js';
 import {
   isRoutineProjectCommand,
   requiresApprovalEvaluation,
@@ -210,7 +213,7 @@ const DREAM_AUTO_CAPTURE_COOLDOWN_MS = 60_000;
 const lastAutoCaptureByTool = new Map();
 
 function isAutoCaptureEnabled(config = {}) {
-  return config?.memory?.enabled !== false && config?.memory?.auto_capture !== false;
+  return config?.memory?.enabled !== false && config?.memory?.experience?.legacy_error_capture === true;
 }
 
 function shouldAutoCaptureError(toolName, message) {
@@ -251,6 +254,34 @@ async function captureToolFailure(toolName, message, args, config = {}) {
     details,
     source: 'auto-capture'
   });
+}
+
+async function attachRecoveryMemory(content, { toolName, args, error, config, workspaceRoot, experienceTracker, onEvent }) {
+  if (config?.memory?.enabled === false || config?.memory?.retrieval?.enabled === false) return content;
+  if (shouldSkipFailureRecall(error)) return content;
+  const query = buildFailureMemoryQuery({ tool: toolName, args, error });
+  const hits = await retrieveMemories({
+    query,
+    family: ['coding'],
+    workspaceRoot,
+    config,
+    mode: 'failure'
+  }).catch(() => []);
+  if (!hits.length) return content;
+  const visibleHits = budgetRecoveryMemoryItems(hits, config?.memory?.recovery?.max_tokens ?? 500);
+  if (!visibleHits.length) return content;
+  experienceTracker?.noteRecovery(visibleHits);
+  if (typeof onEvent === 'function') {
+    onEvent({
+      type: 'memory:retrieved',
+      mode: 'failure',
+      tool: toolName,
+      query,
+      retrieved: visibleHits.map(compactMemoryHit),
+      startedAt: new Date().toISOString()
+    });
+  }
+  return `${renderRecoveryMemory(visibleHits)}\n\n${content}`;
 }
 
 function shouldAutoCaptureRunFailure(message) {
@@ -701,8 +732,17 @@ export async function runAgentLoop({
   toolMetadata = {},
   shouldCheckpoint = null,
   getTasks = null,
-  workspaceRoot = config?.workspaceRoot || process.cwd()
+  onForkJoin = null,
+  workspaceRoot = config?.workspaceRoot || process.cwd(),
+  sessionId = ''
 }) {
+  const experienceTracker = config?.memory?.enabled === false || config?.memory?.experience?.enabled === false
+    ? null
+    : createExperienceTracker({ sessionId, workspaceRoot, config });
+  const settleLoop = async (payload) => {
+    if (experienceTracker) await experienceTracker.flush().catch(() => {});
+    return payload;
+  };
   const toolRuntime = providedToolRuntime || createToolRuntime({
     toolRegistry: providedToolRegistry,
     definitions: toolDefinitions,
@@ -921,7 +961,7 @@ export async function runAgentLoop({
       }
       void maybeRunAutoDream(step, { force: true });
       emitStepEnd('final');
-      return { text: finalText, messages, steps: step };
+      return settleLoop({ text: finalText, messages, steps: step });
     }
 
     pendingSummaryNudges = 0;
@@ -1441,12 +1481,17 @@ export async function runAgentLoop({
         if (onEvent) {
           onEvent({ type: 'tool:error', name: toolName, displayName, id: call.id, arguments: effectiveArgs, durationMs, summary });
         }
-        if (isAutoCaptureEnabled(config) && shouldAutoCaptureError(toolName, message)) {
+        experienceTracker?.recordAttempt({ tool: toolName, args: effectiveArgs, result: 'failure', error: message });
+        if (!experienceTracker && isAutoCaptureEnabled(config) && shouldAutoCaptureError(toolName, message)) {
           await captureToolFailure(toolName, message, effectiveArgs, config).catch(() => {});
         }
+        const content = await attachRecoveryMemory(
+          clipToolResult({ error: message }, toolResultMaxChars),
+          { toolName, args: effectiveArgs, error: message, config, workspaceRoot, experienceTracker, onEvent }
+        );
         return {
           callId: call.id,
-          content: clipToolResult({ error: message }, toolResultMaxChars),
+          content,
           error: true,
           durationMs,
           summary,
@@ -1468,15 +1513,30 @@ export async function runAgentLoop({
             summary
           });
         }
-        if (isAutoCaptureEnabled(config) && shouldAutoCaptureRunFailure(runFailureMessage)) {
+        if (!experienceTracker && isAutoCaptureEnabled(config) && shouldAutoCaptureRunFailure(runFailureMessage)) {
           await captureToolFailure(toolName, runFailureMessage, effectiveArgs, config).catch(() => {});
         }
+        experienceTracker?.recordAttempt({
+          tool: toolName,
+          args: effectiveArgs,
+          result: 'failure',
+          error: runFailureMessage
+        });
         let formatted = formatToolResult(toolResult, toolName, effectiveArgs, toolRuntime, toolResultMaxChars);
         if (!String(formatted || '').trim() || formatted === emptyToolResultMarker(toolName)) {
           formatted = runFailureMessage;
         } else if (!/^error:/im.test(formatted)) {
           formatted = `error: ${runFailureMessage}\n\n${formatted}`;
         }
+        formatted = await attachRecoveryMemory(formatted, {
+          toolName,
+          args: effectiveArgs,
+          error: runFailureMessage,
+          config,
+          workspaceRoot,
+          experienceTracker,
+          onEvent
+        });
         if (shouldPersistLargeToolResult(toolName)) {
           formatted = await activeToolResultStore.storeResultIfNeeded(call.id, formatted, toolResult);
         }
@@ -1557,8 +1617,14 @@ export async function runAgentLoop({
 
       if (toolResult && typeof toolResult === 'object' && toolResult.error) {
         const errMsg = String(toolResult.error).slice(0, 120);
-        if (isAutoCaptureEnabled(config) && shouldAutoCaptureError(toolName, errMsg)) {
+        experienceTracker?.recordAttempt({ tool: toolName, args: effectiveArgs, result: 'failure', error: errMsg });
+        if (!experienceTracker && isAutoCaptureEnabled(config) && shouldAutoCaptureError(toolName, errMsg)) {
           await captureToolFailure(toolName, errMsg, effectiveArgs, config).catch(() => {});
+        }
+      } else {
+        experienceTracker?.recordAttempt({ tool: toolName, args: effectiveArgs, result: 'success' });
+        if (typeof effectiveArgs?.command === 'string' && isVerificationCommand(effectiveArgs.command)) {
+          experienceTracker?.noteVerification({ type: 'test_exit_zero', tool: toolName });
         }
       }
 
@@ -1567,6 +1633,17 @@ export async function runAgentLoop({
       const hookContexts = [...preToolContexts, ...postToolContexts].filter(Boolean);
       if (hookContexts.length > 0) {
         formatted = `${formatted}\n\n[Hook context]\n${hookContexts.join('\n')}`;
+      }
+      if (toolResult && typeof toolResult === 'object' && toolResult.error) {
+        formatted = await attachRecoveryMemory(formatted, {
+          toolName,
+          args: effectiveArgs,
+          error: toolResult.error,
+          config,
+          workspaceRoot,
+          experienceTracker,
+          onEvent
+        });
       }
       noteAnalysisEvidence(analysisGuard, toolName, effectiveArgs, toolResult);
 
@@ -1590,6 +1667,9 @@ export async function runAgentLoop({
         fileChanges,
         resultMeta,
         toolWireName: toolResult?.toolWireName,
+        memoryCandidates: toolResult?.ok !== false && Array.isArray(toolResult?.memoryCandidates)
+          ? toolResult.memoryCandidates
+          : [],
         workflowComplete: Boolean(toolResult?.workflowComplete),
         workflowMessage: String(toolResult?.message || toolResult?.summary || '').trim()
       };
@@ -1600,6 +1680,19 @@ export async function runAgentLoop({
       execute: executeOne,
     });
     for (const result of orderedResults) resultEntries.set(result.callId, result);
+    if (typeof onForkJoin === 'function') {
+      const candidates = callsWithMeta
+        .filter(({ toolName }) => toolName === 'fork_task')
+        .flatMap(({ call }) => resultEntries.get(call.id)?.memoryCandidates || []);
+      if (candidates.length) {
+        await onForkJoin(candidates).catch((error) => {
+          onEvent?.({
+            type: 'memory:error',
+            summary: String(error?.message || error)
+          });
+        });
+      }
+    }
 
     // Write results to messages in original tool call order
     for (const { call, toolName, displayName, args } of callsWithMeta) {
@@ -1679,7 +1772,7 @@ export async function runAgentLoop({
       void maybeRunAutoDream(step, { force: true });
       await fireStopHooks(workflowCompleteText);
       emitStepEnd('workflow');
-      return { text: workflowCompleteText, messages, steps: step, workflowComplete: true };
+      return settleLoop({ text: workflowCompleteText, messages, steps: step, workflowComplete: true });
     }
     if (typeof shouldCheckpoint === 'function') {
       const checkpoint = await shouldCheckpoint({
@@ -1691,12 +1784,12 @@ export async function runAgentLoop({
         const checkpointText = lastAssistantText || '';
         if (onEvent) onEvent({ type: 'checkpoint', step });
         emitStepEnd('checkpoint');
-        return {
+        return settleLoop({
           text: checkpointText,
           messages,
           steps: step,
           checkpoint: true,
-        };
+        });
       }
     }
     emitStepEnd('tools');
@@ -1706,22 +1799,22 @@ export async function runAgentLoop({
   // 如果被用户中止，返回已有内容并标记
   if (signal?.aborted) {
     const fallback = lastAssistantText || '';
-    return {
+    return settleLoop({
       text: fallback,
       messages,
       steps: step,
       aborted: true
-    };
+    });
   }
 
   const fallback = lastAssistantText || 'Stopped before final response.';
   void maybeRunAutoDream(step, { force: true });
   await fireStopHooks(fallback);
-  return {
+  return settleLoop({
     text: fallback,
     messages,
     steps: step
-  };
+  });
 }
 
 function attachToolCallSessionMeta(assistantMessage, callId, meta = {}) {

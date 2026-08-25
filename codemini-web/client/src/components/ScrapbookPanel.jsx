@@ -4,7 +4,6 @@ import {
   ArrowsOutSimple,
   ArrowSquareOut,
   ArrowsClockwise,
-  CaretDown,
   CircleNotch,
   DotsThreeVertical,
   FileText,
@@ -36,6 +35,7 @@ import {
 } from "@/hooks/use-api.js";
 import { useApp } from "@/context/app-context.jsx";
 import { ConfirmDialog } from "@/components/ConfirmDialog.jsx";
+import { MarkdownPreview } from "@/components/MarkdownEditor.jsx";
 import { StreamdownRenderer } from "@/components/StreamdownRenderer.jsx";
 import {
   Dialog,
@@ -45,6 +45,13 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog.jsx";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import {
   Popover,
   PopoverContent,
@@ -130,55 +137,6 @@ function formatEntryDate(entry) {
     month: "short",
     day: "numeric",
   }).format(date);
-}
-
-function ScrapbookSummaryLoading() {
-  return (
-    <div
-      className="relative overflow-hidden rounded-2xl border border-(--message-edge) bg-(--bg-primary) px-5 py-6 shadow-[var(--shadow-sm)]"
-      role="status"
-      aria-live="polite"
-    >
-      <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-linear-to-r from-transparent via-primary/55 to-transparent" />
-      <div className="flex items-start gap-4">
-        <span className="flex size-11 shrink-0 items-center justify-center rounded-xl bg-primary/12 text-primary">
-          <CircleNotch size={23} weight="bold" className="animate-spin" />
-        </span>
-        <div className="min-w-0 flex-1">
-          <div className="text-[14px] font-semibold text-(--text-primary)">
-            {t("scrapbookPreparingSummary")}
-          </div>
-          <p className="mt-1 text-[12px] leading-5 text-(--text-muted)">
-            {t("scrapbookPreparingDescription")}
-          </p>
-          <div className="mt-5 h-1.5 overflow-hidden rounded-full bg-(--bg-hover)">
-            <div className="h-full w-2/5 animate-pulse rounded-full bg-primary/70" />
-          </div>
-          <div className="mt-4 grid gap-2 sm:grid-cols-3">
-            {[
-              t("scrapbookLoadingSource"),
-              t("scrapbookLoadingTitle"),
-              t("scrapbookLoadingSummary"),
-            ].map((label, index) => (
-              <div
-                key={label}
-                className="flex items-center gap-2 text-[11px] text-(--text-muted)"
-              >
-                <span
-                  className={`size-1.5 rounded-full ${
-                    index === 0
-                      ? "bg-primary animate-pulse"
-                      : "bg-(--border-strong)"
-                  }`}
-                />
-                <span>{label}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
-    </div>
-  );
 }
 
 function ScrapbookLibraryCard({
@@ -737,21 +695,21 @@ export function ScrapbookPanel() {
                 </button>
               </div>
 
-              <label className="relative">
-                <span className="sr-only">{t("scrapbookSortLabel")}</span>
-                <select
-                  value={sortMode}
-                  onChange={(event) => setSortMode(event.target.value)}
-                  className="h-10 appearance-none rounded-full border border-(--border-strong) bg-(--bg-primary) pl-4 pr-9 text-[12px] font-medium text-(--text-secondary) outline-none hover:bg-(--bg-hover)"
+              <Select
+                value={sortMode}
+                onValueChange={setSortMode}
+              >
+                <SelectTrigger
+                  aria-label={t("scrapbookSortLabel")}
+                  className="h-10 rounded-full border border-(--border-strong) bg-(--bg-primary) pl-4 pr-3 text-[12px] font-medium text-(--text-secondary) hover:bg-(--bg-hover)"
                 >
-                  <option value="recent">{t("scrapbookSortRecent")}</option>
-                  <option value="title">{t("scrapbookSortTitle")}</option>
-                </select>
-                <CaretDown
-                  size={12}
-                  className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-(--text-muted)"
-                />
-              </label>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent align="end">
+                  <SelectItem value="recent">{t("scrapbookSortRecent")}</SelectItem>
+                  <SelectItem value="title">{t("scrapbookSortTitle")}</SelectItem>
+                </SelectContent>
+              </Select>
 
               <button
                 type="button"
@@ -1087,50 +1045,62 @@ export function ScrapbookPanel() {
             </button>
 
             <main
-              className={`${detailPane === "summary" ? "flex" : "hidden"} min-h-0 flex-col bg-(--bg-secondary) lg:flex`}
+              className={`${detailPane === "summary" ? "flex" : "hidden"} min-h-0 flex-col lg:flex`}
             >
-              <div className="flex shrink-0 items-center gap-3 px-5 py-4 sm:px-7">
-                <div>
-                  <div className="text-[13px] font-semibold text-(--text-primary)">
-                    {t("scrapbookOverview")}
-                  </div>
-                  <div className="mt-0.5 text-[11px] text-(--text-muted)">
-                    {t("scrapbookAutoSummaryHint")}
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  onClick={handleSummarize}
-                  disabled={!selectedEntry || summaryBusy}
-                  aria-label={t("scrapbookResummarize")}
-                  className="ml-auto inline-flex size-8 shrink-0 items-center justify-center rounded-lg text-(--text-muted) hover:bg-(--bg-hover) hover:text-(--text-primary) disabled:opacity-40"
-                >
-                  <ArrowsClockwise
-                    size={15}
-                    className={summaryBusy ? "animate-spin" : ""}
-                  />
-                </button>
-              </div>
-              <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 pb-8 sm:px-7">
-                <div className="codemini-chat-session mx-auto max-w-3xl">
-                  {!selectedEntry ? (
-                    <div className="flex min-h-56 items-center justify-center text-[12px] text-(--text-muted)">
-                      <CircleNotch size={18} className="mr-2 animate-spin" />
-                      {t("scrapbookLoading")}
+              <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 py-5 sm:px-6">
+                <article className="mx-auto flex w-full max-w-[860px] flex-col pb-8">
+                  <header className="border-b border-(--border-default) pb-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="text-[10px] font-medium text-(--text-muted)">
+                          {t("scrapbookOverview")}
+                        </div>
+                        <div className="mt-1 text-[16px] font-semibold tracking-[-0.02em] text-(--text-primary)">
+                          {selectedEntry
+                            ? entryTitle(selectedEntry)
+                            : t("scrapbookLoading")}
+                        </div>
+                        <p className="mt-1 text-[11px] leading-5 text-(--text-muted)">
+                          {t("scrapbookAutoSummaryHint")}
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={handleSummarize}
+                        disabled={!selectedEntry || summaryBusy}
+                        aria-label={t("scrapbookResummarize")}
+                        className="inline-flex size-8 shrink-0 items-center justify-center rounded-lg text-(--text-muted) hover:bg-(--bg-hover) hover:text-(--text-primary) disabled:opacity-40"
+                      >
+                        <ArrowsClockwise
+                          size={15}
+                          className={summaryBusy ? "animate-spin" : ""}
+                        />
+                      </button>
                     </div>
-                  ) : summaryBusy && !summaryPartialText ? (
-                    <ScrapbookSummaryLoading />
-                  ) : (
-                    <article className="rounded-2xl border border-(--message-edge) bg-(--bg-primary) px-5 py-5 shadow-[var(--shadow-sm)] sm:px-6 sm:py-6">
-                      <StreamdownRenderer
-                        text={summaryText}
-                        streaming={summaryBusy}
-                        inlineEmbeds={false}
-                        className="codemini-assistant-markdown text-(--text-primary)"
+                  </header>
+                  <div className="pt-7">
+                    {!selectedEntry ? (
+                      <div className="flex items-center gap-2 text-[13px] text-(--text-secondary)">
+                        <CircleNotch size={16} className="animate-spin" />
+                        {t("scrapbookLoading")}
+                      </div>
+                    ) : summaryBusy && !summaryPartialText ? (
+                      <div className="flex items-center gap-2 text-[13px] text-(--text-secondary)">
+                        <CircleNotch size={16} className="animate-spin" />
+                        {t("scrapbookSummarizing")}
+                      </div>
+                    ) : summaryText ? (
+                      <MarkdownPreview
+                        value={summaryText}
+                        className="max-w-none overflow-visible [&_h1]:tracking-[-0.025em] [&_h2]:tracking-[-0.02em]"
                       />
-                    </article>
-                  )}
-                </div>
+                    ) : (
+                      <div className="text-[13px] text-(--text-muted)">
+                        {t("scrapbookNoSummary")}
+                      </div>
+                    )}
+                  </div>
+                </article>
               </div>
             </main>
 

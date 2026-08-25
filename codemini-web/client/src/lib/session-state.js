@@ -2,6 +2,7 @@ import {
   applyStreamEventToMessage,
   isTranscriptStreamEvent,
   routingGraphFromEvent,
+  memoryInjectFromEvent,
 } from "../../../shared/transcript-segments.js";
 import { stripPlanProgressText } from "../../../shared/plan-progress-text.js";
 import {
@@ -325,7 +326,7 @@ export function reduceSessionTranscriptEvent(state, event) {
   const messages = state.sessionMessagesById[sessionId] || [];
   const activePlanParent = findActivePlanParentMessage(messages);
   const messageId = (() => {
-    if (event.type === "routing:graph") {
+    if (event.type === "routing:graph" || event.type === "memory:retrieved") {
       const requested = String(event.messageId || "").trim();
       const userMessage = requested
         ? messages.find(
@@ -369,6 +370,15 @@ export function reduceSessionTranscriptEvent(state, event) {
       [sessionId]: messages.map((message) =>
         message.id === messageId
           ? { ...message, routingGraph: routingGraphFromEvent(event) }
+          : message,
+      ),
+    };
+  } else if (event.type === "memory:retrieved") {
+    sessionMessagesById = {
+      ...sessionMessagesById,
+      [sessionId]: messages.map((message) =>
+        message.id === messageId
+          ? { ...message, memoryInject: memoryInjectFromEvent(event, message.memoryInject) }
           : message,
       ),
     };

@@ -63,6 +63,15 @@ function renderReport(report) {
         lines.push(`- [${item.scope}] skipped: ${item.reason}`);
       } else {
         lines.push(`- [${item.scope}] ${item.before} -> ${item.after} item(s)${item.changed ? ' changed' : ' marked clean'}`);
+        for (const action of item.staleness || []) {
+          lines.push(`  - extended ${action.memoryId} by ${action.extendDays} day(s)`);
+        }
+        for (const action of item.consolidations || []) {
+          lines.push(`  - consolidated ${action.sourceIds.join(', ')} into ${action.result?.summary || 'memory'}`);
+        }
+        for (const action of item.archives || []) {
+          lines.push(`  - archived ${action.memoryId}: ${action.reason || 'archived'}`);
+        }
       }
     }
     lines.push('');

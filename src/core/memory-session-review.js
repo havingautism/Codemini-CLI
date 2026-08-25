@@ -4,6 +4,7 @@ import { listSessions, loadSession } from './session-store.js';
 import { captureToInbox } from './memory-store.js';
 import {
   assertSafeMemoryContent,
+  inferMemoryFamily,
   normalizeMemoryKind,
   normalizeMemoryScope,
   normalizeMemoryText,
@@ -36,7 +37,7 @@ Discard:
 - secrets or sensitive data
 
 Respond with JSON only:
-{"candidates":[{"scope":"user|project|global","kind":"preference|convention|lesson|note","content":"durable statement","summary":"under 80 chars","semantic_key":"stable namespace key","decision_state":"explicit|accepted|implemented|verified|repeated|proposed|brainstormed","durable_score":0,"confidence":0.0,"evidence_indices":[0],"reason":"short rationale"}]}
+{"candidates":[{"scope":"user|project|global","kind":"preference|convention|lesson|note","family":"personal|repo|coding|procedure","content":"durable statement","summary":"under 80 chars","semantic_key":"stable namespace key","decision_state":"explicit|accepted|implemented|verified|repeated|proposed|brainstormed","durable_score":0,"confidence":0.0,"evidence_indices":[0],"reason":"short rationale"}]}
 
 Use durable_score 0-10. A candidate needs at least 5. Project ideas must be accepted, implemented, verified, or repeated. Global knowledge needs explicit cross-project/environment evidence. If uncertain, return an empty candidates array.
 
@@ -126,6 +127,7 @@ export function normalizeSessionMemoryCandidate(candidate, sourceMessages = []) 
   return {
     scope,
     kind,
+    family: inferMemoryFamily({ family: candidate?.family, scope, kind, content, summary }),
     content,
     summary,
     semanticKey,
@@ -189,7 +191,11 @@ async function evaluateSession({ session, messages, config, maxInputChars }) {
 }
 
 export async function reviewSessionMemory({ sessionId, config }) {
-  if (config?.memory?.enabled === false || config?.memory?.background_review?.enabled === false) {
+  if (
+    config?.memory?.enabled === false ||
+    config?.memory?.writeback?.enabled === false ||
+    config?.memory?.background_review?.enabled === false
+  ) {
     return { skipped: true, reason: 'disabled' };
   }
   const session = await loadSession(sessionId);
@@ -210,6 +216,7 @@ export async function reviewSessionMemory({ sessionId, config }) {
       const entry = await captureToInbox({
         scope: candidate.scope,
         type: candidate.kind,
+        family: candidate.family,
         summary: candidate.summary,
         details: candidate.content,
         source: 'session-review',
@@ -252,8 +259,12 @@ function enqueueReview(sessionId, config) {
 }
 
 export function scheduleSessionMemoryReview({ sessionId, config, delayMs } = {}) {
-  if (!sessionId || config?.memory?.background_review?.enabled === false) return;
-  const delay = Math.max(0, Number(delayMs ?? config?.memory?.background_review?.idle_delay_ms ?? 1500));
+  if (
+    !sessionId ||
+    config?.memory?.writeback?.enabled === false ||
+    config?.memory?.background_review?.enabled === false
+  ) return false;
+  const delay = Math.max(0, Number(delayMs ?? config?.memory?.writeback?.idle_delay_ms ?? config?.memory?.background_review?.idle_delay_ms ?? 1500));
   const existing = scheduledSessions.get(sessionId);
   if (existing) clearTimeout(existing);
   const timer = setTimeout(() => {
@@ -262,14 +273,19 @@ export function scheduleSessionMemoryReview({ sessionId, config, delayMs } = {})
   }, delay);
   timer.unref?.();
   scheduledSessions.set(sessionId, timer);
+  return true;
 }
 
 export function scheduleMemoryReviewBacklog({ config, currentSessionId } = {}) {
-  if (config?.memory?.background_review?.enabled === false || config?.memory?.background_review?.on_start === false) return;
+  if (
+    config?.memory?.writeback?.enabled === false ||
+    config?.memory?.background_review?.enabled === false ||
+    config?.memory?.background_review?.on_start === false
+  ) return false;
   const now = Date.now();
-  if (backlogTimer || now - lastBacklogScheduledAt < 60000) return;
+  if (backlogTimer || now - lastBacklogScheduledAt < 60000) return false;
   lastBacklogScheduledAt = now;
-  const delay = Math.max(0, Number(config?.memory?.background_review?.idle_delay_ms || 1500));
+  const delay = Math.max(0, Number(config?.memory?.writeback?.idle_delay_ms ?? config?.memory?.background_review?.idle_delay_ms ?? 1500));
   backlogTimer = setTimeout(async () => {
     backlogTimer = null;
     try {
@@ -293,4 +309,5 @@ export function scheduleMemoryReviewBacklog({ config, currentSessionId } = {}) {
     }
   }, delay);
   backlogTimer.unref?.();
+  return true;
 }

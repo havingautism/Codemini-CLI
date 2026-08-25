@@ -34,6 +34,10 @@ import {
   deleteSession,
   saveSession,
 } from "../src/core/session-store.js";
+import {
+  forkIdleSession,
+  sessionForkBlockedReason,
+} from "../src/core/session-fork.js";
 import { buildDefaultSystemPrompt } from "../src/core/default-system-prompt.js";
 import {
   parseFrontmatter,
@@ -127,6 +131,7 @@ import {
   listMemories,
   searchMemories,
 } from "../src/core/memory-store.js";
+import { getMemoryMetrics } from "../src/core/memory-metrics.js";
 import { runDreamConsolidation } from "../src/core/dream-consolidate.js";
 import { getReplyLanguage } from "../src/core/reply-language.js";
 import { normalizeSkillContexts } from "../src/core/skill-contexts.js";
@@ -1080,6 +1085,42 @@ export function createWebRuntimeApi({
             error: true,
             message: error?.message || "Failed to create session",
           },
+          400,
+        );
+      }
+      return true;
+
+  }));
+  runtimeRoutes.post("/api/sessions/fork", nodeRoute(async (req, res) => {
+      const body = await readBody(req);
+      const sessionId = requireSessionId(res, body?.sessionId);
+      if (!sessionId) return true;
+      try {
+        const live = pool.entries.get(sessionId);
+        const state = pool.getSessionState(sessionId);
+        const blocked = sessionForkBlockedReason({
+          busy: live?.bridge?.busy === true || state?.busy === true,
+          status: state?.status,
+        });
+        if (blocked) {
+          jsonResponse(res, { error: true, code: "BUSY", message: blocked }, 409);
+          return true;
+        }
+        const messageId = String(body?.messageId || "").trim();
+        if (!messageId) {
+          jsonResponse(res, { error: true, message: "Missing messageId" }, 400);
+          return true;
+        }
+        const source = live?.bridge?.runtime?.getSession?.() || await loadSession(sessionId);
+        const uiMessages = live?.bridge
+          ? await live.bridge.getUiMessages(sessionId)
+          : loadPersistedUiMessages(sessionId) || [];
+        const created = await forkIdleSession(source, { uiMessages, messageId });
+        jsonResponse(res, { ok: true, sessionId: created.id });
+      } catch (error) {
+        jsonResponse(
+          res,
+          { error: true, message: error?.message || "Failed to fork session" },
           400,
         );
       }
@@ -3130,6 +3171,7 @@ async function main() {
           untracked: 0,
           linesAdded: 0,
           linesRemoved: 0,
+          files: [],
         });
       }
       return;
@@ -3661,6 +3703,17 @@ async function main() {
           fallbackDir: currentProjectDir,
         });
         jsonResponse(res, { scope, query, items });
+      } catch (err) {
+        jsonResponse(res, { error: true, message: err.message }, 500);
+      }
+      return;
+
+  }));
+  routes.get("/api/memory/metrics", nodeRoute(async (req, res, url) => {
+      const requestedScope = String(url.searchParams.get("scope") || "").trim().toLowerCase();
+      const scope = MEMORY_SCOPES.has(requestedScope) ? requestedScope : "all";
+      try {
+        jsonResponse(res, getMemoryMetrics({ scope, workspaceRoot: currentProjectDir }));
       } catch (err) {
         jsonResponse(res, { error: true, message: err.message }, 500);
       }

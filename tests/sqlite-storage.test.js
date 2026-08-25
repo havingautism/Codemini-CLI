@@ -67,7 +67,7 @@ async function withGlobalDir(task) {
     closeSqliteDatabasesForTests();
     if (previous === undefined) delete process.env.CODEMINI_GLOBAL_DIR;
     else process.env.CODEMINI_GLOBAL_DIR = previous;
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 50 });
   }
 }
 
@@ -95,12 +95,24 @@ test('session SQLite store round-trips incremental messages and UI transcript', 
 test('session SQLite store round-trips lastSystemPrompt for trajectory reuse', async () => {
   await withGlobalDir(async (dir) => {
     const session = await createSession(dir);
-    session.messages.push({ role: 'user', content: 'hello' });
+    session.messages.push({
+      role: 'user',
+      content: 'hello',
+      memoryInject: {
+        query: 'hello',
+        mode: 'turn',
+        profile: [{ id: 'p1', kind: 'preference', summary: 'PowerShell' }],
+        guaranteed: [],
+        retrieved: []
+      }
+    });
     session.lastSystemPrompt = 'You are Codemini.\nFollow AGENTS.md.';
     await saveSession(session);
 
     const loaded = await loadSession(session.id);
     assert.equal(loaded.lastSystemPrompt, 'You are Codemini.\nFollow AGENTS.md.');
+    assert.equal(loaded.messages[0].memoryInject.query, 'hello');
+    assert.equal(loaded.messages[0].memoryInject.profile[0].summary, 'PowerShell');
   });
 });
 

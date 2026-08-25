@@ -264,7 +264,7 @@ describe('user question bubbles keep URLs as text', () => {
       'utf8',
     );
     const userTextFn = source.match(
-      /function UserText\([\s\S]*?\n\}\n\nfunction UserSkillChips/,
+      /function UserText\([\s\S]*?\r?\n\}\r?\n\r?\nfunction UserSkillChips/,
     )?.[0];
     assert.ok(userTextFn, 'UserText should still exist in MessageBubble');
     const renderers = [...userTextFn.matchAll(/<StreamdownRenderer[\s\S]*?\/>/g)].map(

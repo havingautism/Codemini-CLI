@@ -609,6 +609,135 @@ test('completed fork branches settle their assigned checklist', () => {
   );
 });
 
+test('completed fork branches settle nested leftover tasks', () => {
+  let message = { id: 'parent', role: 'general', segments: [] };
+  message = applyStreamEventToPlanRun(message, {
+    type: 'tool:start',
+    id: 'fork-1',
+    name: 'fork_task',
+    arguments: { prompt: 'Inspect files', name: 'files' },
+  });
+  message = applyPlanEventToMessage(message, {
+    type: 'plan:step_start',
+    step: 1,
+    toolCallId: 'fork-1',
+    role: 'files',
+    title: 'Inspect files',
+  });
+  message = applyStreamEventToPlanRun(message, {
+    type: 'tool:start',
+    id: 'todo-1',
+    parentToolCallId: 'fork-1',
+    name: 'tasks',
+    arguments: {
+      tasks: [
+        { content: '搜索工作区所有 .py 文件', status: 'completed' },
+        { content: '读取其中一个文件的头部内容并摘要', status: 'completed' },
+        { content: '返回简短结论', status: 'in_progress' },
+      ],
+    },
+  });
+  message = applyPlanEventToMessage(message, {
+    type: 'plan:step_done',
+    step: 1,
+    toolCallId: 'fork-1',
+    role: 'files',
+    title: 'Inspect files',
+    status: 'done',
+    output: '并行分支任务完成',
+  });
+
+  const card = message.segments[0].cards[0];
+  const nested = card.planRun.steps[0].segments
+    .filter((segment) => segment.type === 'tools')
+    .flatMap((segment) => segment.cards)
+    .find((item) => item.name === 'tasks');
+  assert.equal(card.status, 'done');
+  assert.deepEqual(
+    nested.arguments.tasks.map((task) => task.status),
+    ['completed', 'completed', 'completed'],
+  );
+});
+
+test('failed fork branches leave nested leftover tasks incomplete', () => {
+  let message = { id: 'parent', role: 'general', segments: [] };
+  message = applyStreamEventToPlanRun(message, {
+    type: 'tool:start',
+    id: 'fork-1',
+    name: 'fork_task',
+    arguments: { prompt: 'Inspect files', name: 'files' },
+  });
+  message = applyPlanEventToMessage(message, {
+    type: 'plan:step_start',
+    step: 1,
+    toolCallId: 'fork-1',
+    role: 'files',
+    title: 'Inspect files',
+  });
+  message = applyStreamEventToPlanRun(message, {
+    type: 'tool:start',
+    id: 'todo-1',
+    parentToolCallId: 'fork-1',
+    name: 'tasks',
+    arguments: {
+      tasks: [{ content: '返回简短结论', status: 'in_progress' }],
+    },
+  });
+  message = applyPlanEventToMessage(message, {
+    type: 'plan:step_done',
+    step: 1,
+    toolCallId: 'fork-1',
+    role: 'files',
+    title: 'Inspect files',
+    status: 'failed',
+  });
+
+  const nested = message.segments[0].cards[0].planRun.steps[0].segments
+    .filter((segment) => segment.type === 'tools')
+    .flatMap((segment) => segment.cards)
+    .find((item) => item.name === 'tasks');
+  assert.equal(nested.arguments.tasks[0].status, 'in_progress');
+});
+
+test('successful parent completion settles leftover tasks on still-running forks', () => {
+  let message = { id: 'parent', role: 'general', segments: [] };
+  message = applyStreamEventToPlanRun(message, {
+    type: 'tool:start',
+    id: 'fork-1',
+    name: 'fork_task',
+    arguments: {
+      prompt: 'Inspect files',
+      name: 'files',
+      tasks: [{ content: 'List files', status: 'in_progress' }],
+    },
+  });
+  message = applyPlanEventToMessage(message, {
+    type: 'plan:step_start',
+    step: 1,
+    toolCallId: 'fork-1',
+    role: 'files',
+    title: 'Inspect files',
+  });
+  message = applyStreamEventToPlanRun(message, {
+    type: 'tool:start',
+    id: 'todo-1',
+    parentToolCallId: 'fork-1',
+    name: 'tasks',
+    arguments: {
+      tasks: [{ content: '返回简短结论', status: 'in_progress' }],
+    },
+  });
+
+  message = settleRunningCreatePlanCards(message, { reason: 'completed' });
+  const card = message.segments[0].cards[0];
+  const nested = card.planRun.steps[0].segments
+    .filter((segment) => segment.type === 'tools')
+    .flatMap((segment) => segment.cards)
+    .find((item) => item.name === 'tasks');
+  assert.equal(card.arguments.tasks[0].status, 'completed');
+  assert.equal(nested.arguments.tasks[0].status, 'completed');
+});
+
 test('fork cards render a Parallel task identity while subagent cards stay Subagent', () => {
   const runCard = (name) => {
     let message = { id: 'parent', role: 'general', segments: [] };

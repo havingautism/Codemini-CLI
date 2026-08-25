@@ -72,7 +72,7 @@ import {
 import { parseScrapbookEntryId } from "@/lib/message-context-parsers.js";
 import {
   collectFileChangePatch,
-  reconcileFileChangesWithGit,
+  canShowFileChangeUndo,
   resolveFileChangeSequenceAction,
   resolveFileChangePreviewLines,
 } from "@/lib/file-change-preview.js";
@@ -94,6 +94,7 @@ import {
   Copy,
   FileText,
   FolderOpen,
+  GitBranch,
   Hammer,
   Moon,
   Notebook,
@@ -1138,25 +1139,16 @@ function FileChangePreview({ change }) {
 function summarizeFileChanges(changes = []) {
   let totalAdded = 0;
   let totalRemoved = 0;
-  let edits = 0;
-  let creates = 0;
-  let deletes = 0;
 
   for (const change of changes) {
     totalAdded += Number(change?.linesAdded || 0);
     totalRemoved += Number(change?.linesRemoved || 0);
-    if (change?.action === "create") creates += 1;
-    else if (change?.action === "delete") deletes += 1;
-    else edits += 1;
   }
 
   return {
     fileCount: changes.length,
     totalAdded,
     totalRemoved,
-    edits,
-    creates,
-    deletes,
   };
 }
 
@@ -1164,41 +1156,6 @@ function FileChangesOverviewBar({ changes }) {
   const stats = summarizeFileChanges(changes);
   if (!stats.fileCount) return null;
 
-  const actionColors = {
-    edit: "bg-(--accent-blue-bg) text-(--accent-blue)",
-    create: "bg-(--accent-green-bg) text-(--accent-green)",
-    delete: "bg-(--accent-red-bg) text-(--accent-red)",
-  };
-
-  const breakdown = [
-    stats.edits > 0
-      ? {
-          key: "edit",
-          label: t("fileChangesOverviewEdits").replace(
-            "{{count}}",
-            stats.edits,
-          ),
-        }
-      : null,
-    stats.creates > 0
-      ? {
-          key: "create",
-          label: t("fileChangesOverviewCreates").replace(
-            "{{count}}",
-            stats.creates,
-          ),
-        }
-      : null,
-    stats.deletes > 0
-      ? {
-          key: "delete",
-          label: t("fileChangesOverviewDeletes").replace(
-            "{{count}}",
-            stats.deletes,
-          ),
-        }
-      : null,
-  ].filter(Boolean);
 
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-(--border-default) bg-(--bg-tertiary) px-3 py-2.5">
@@ -1213,21 +1170,6 @@ function FileChangesOverviewBar({ changes }) {
           <span className="text-(--accent-red)">−{stats.totalRemoved}</span>
         )}
       </span>
-      {/* {breakdown.length > 0 && (
-        <div className="ml-auto flex flex-wrap items-center gap-1.5">
-          {breakdown.map((item) => (
-            <span
-              key={item.key}
-              className={cn(
-                "rounded px-[5px] py-px text-[10px] font-semibold",
-                actionColors[item.key],
-              )}
-            >
-              {item.label}
-            </span>
-          ))}
-        </div>
-      )} */}
     </div>
   );
 }
@@ -1421,7 +1363,7 @@ function FileChangesSummary({ changes }) {
                     </button>
                   </div>
                 )}
-                {changeSetIds.length > 0 && (
+                {canShowFileChangeUndo(c) && (
                   <span
                     role="button"
                     tabIndex={0}
@@ -1811,6 +1753,63 @@ function MessageActionButton({
   );
 }
 
+function RetrievedMemoryButton({ memories = [] }) {
+  if (!memories.length) return null;
+  const countLabel = t("memoryRetrievedCount").replace("{n}", memories.length);
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          aria-label={countLabel}
+          className="inline-flex size-8 items-center justify-center rounded-md border-0 bg-transparent text-(--text-muted) transition-colors hover:bg-(--bg-hover) hover:text-(--text-primary) focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--border-strong)"
+        >
+          <Brain size={17} />
+        </button>
+      </TooltipTrigger>
+      <TooltipContent
+        side="bottom"
+        align="start"
+        sideOffset={6}
+        className="w-80 max-w-[calc(100vw-2rem)] p-0 text-left text-pretty"
+      >
+        <div className="border-b border-(--border-default) px-3 py-2 text-[11px] font-semibold text-(--text-secondary)">
+          {countLabel}
+        </div>
+        <div className="grid max-h-72 gap-0.5 overflow-y-auto p-1.5">
+          {memories.map((memory, index) => {
+            const score = Number(memory?.score);
+            const meta = [
+              memory?.scope,
+              memory?.kind,
+              memory?.family,
+              Number.isFinite(score) ? score.toFixed(3) : "",
+            ].filter(Boolean);
+            return (
+              <div key={memory?.id || index} className="rounded-md px-2 py-1.5">
+                <div className="text-[12px] leading-5 text-(--text-primary)">
+                  {memory?.summary || memory?.content || memory?.id}
+                </div>
+                {meta.length ? (
+                  <div className="mt-0.5 font-mono text-[10px] leading-4 text-(--text-muted)">
+                    {meta.join(" · ")}
+                  </div>
+                ) : null}
+                {memory?.recallReason ? (
+                  <div className="mt-0.5 text-[10px] leading-4 text-(--text-muted)">
+                    {memory.recallReason}
+                  </div>
+                ) : null}
+              </div>
+            );
+          })}
+        </div>
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
 function isMessageComplete(message, renderGroups = []) {
   if (message?.loading) return false;
   if (message?.isComplete === false) return false;
@@ -1861,13 +1860,7 @@ export function shouldShowPostCompletionExtras(
   return String(planStep.role || "").toLowerCase() === "summarizer";
 }
 
-function shouldShowFileChanges(
-  message,
-  messageComplete,
-  mergedFileChanges,
-  projectIsGit,
-) {
-  if (!projectIsGit) return false;
+function shouldShowFileChanges(message, messageComplete, mergedFileChanges) {
   return shouldShowPostCompletionExtras(
     message,
     messageComplete,
@@ -1884,6 +1877,10 @@ function MessageActions({
   retryPrompt = "",
   canRetry = false,
   canSaveToScrapbook = false,
+  retrievedMemories = [],
+  showFork = false,
+  canFork = false,
+  messageId = "",
   onSaveToScrapbook,
   onRetry,
   align = "left",
@@ -1893,6 +1890,7 @@ function MessageActions({
   const [copied, setCopied] = useState(false);
   const [saved, setSaved] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [forking, setForking] = useState(false);
   const [saveDialogOpen, setSaveDialogOpen] = useState(false);
 
   async function handleCopy() {
@@ -1930,6 +1928,23 @@ function MessageActions({
       >
         <Copy size={17} />
       </MessageActionButton>
+      {showFork && (
+        <MessageActionButton
+          label={canFork ? t("forkSession") : t("forkSessionBusy")}
+          disabled={!canFork || forking || !messageId}
+          onClick={async () => {
+            if (!canFork || forking || !messageId) return;
+            setForking(true);
+            try {
+              await actions.forkSession(messageId);
+            } finally {
+              setForking(false);
+            }
+          }}
+        >
+          <GitBranch size={17} />
+        </MessageActionButton>
+      )}
       {canSaveToScrapbook && (
         <MessageActionButton
           label={saving ? t("scrapbookSavingAnswer") : t("scrapbookSaveAnswer")}
@@ -1941,6 +1956,7 @@ function MessageActions({
           <Notebook size={17} />
         </MessageActionButton>
       )}
+      <RetrievedMemoryButton memories={retrievedMemories} />
       {canRetry && (
         <MessageActionButton
           label={t("retry")}
@@ -2087,9 +2103,8 @@ function AnswerProcessFold({ groups, durationMs }) {
 
 export const MessageBubble = memo(function MessageBubble({
   message,
+  retrievedMemories = [],
   onRetry,
-  projectIsGit = true,
-  gitFiles,
   dockTodo = false,
   turnActive = false,
 }) {
@@ -2163,10 +2178,10 @@ export const MessageBubble = memo(function MessageBubble({
   );
   const hasAnswerFold = answerLayout.hasFold;
   const preAnswerDuration = answerLayout.durationMs;
-  const mergedFileChanges = useMemo(() => {
-    const merged = mergeFileChanges(fileChanges || []);
-    return reconcileFileChangesWithGit(merged, gitFiles);
-  }, [fileChanges, gitFiles]);
+  const mergedFileChanges = useMemo(
+    () => mergeFileChanges(fileChanges || []),
+    [fileChanges],
+  );
 
   const rawMessageText = getMessageText(message) || legacyText || "";
   const rawResponseStatus = String(
@@ -2349,7 +2364,6 @@ export const MessageBubble = memo(function MessageBubble({
     message,
     messageComplete,
     mergedFileChanges,
-    projectIsGit,
   );
   const showRelatedLinks = shouldShowPostCompletionExtras(
     message,
@@ -2498,6 +2512,10 @@ export const MessageBubble = memo(function MessageBubble({
               retryPrompt={retryPrompt}
               canRetry={canRetry}
               canSaveToScrapbook={canSaveToScrapbook}
+              retrievedMemories={message.manualAborted ? [] : retrievedMemories}
+              showFork
+              canFork={!turnActive}
+              messageId={message.id}
               onSaveToScrapbook={() =>
                 actions.saveAssistantReplyToScrapbook({
                   messageId: message.id,

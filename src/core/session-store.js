@@ -4,7 +4,7 @@ import { getSessionsDir } from './paths.js';
 import { normalizePlanState } from './plan-state.js';
 import { normalizeSpecState } from './spec-state.js';
 import { normalizeTodos } from './todo-state.js';
-import { ensureSessionTitleEmoji } from './session-title.js';
+import { ensureSessionTitleEmoji, stripInternalTitleContext } from './session-title.js';
 import { sanitizeTiming } from './usage-timing.js';
 import {
   deleteSessionFromSqlite,
@@ -137,9 +137,11 @@ function formatSkillOnlyTitle(skillTitles = [], skillNames = []) {
 
 export function resolveTitleUserText(source = {}) {
   const message = source?.role ? source : null;
-  const content = String(message?.content ?? source?.content ?? source?.text ?? '').trim();
+  const content = stripInternalTitleContext(
+    message?.content ?? source?.content ?? source?.text ?? '',
+  );
   const modelContent = typeof (message?.model_content ?? source?.model_content ?? source?.modelText) === 'string'
-    ? (message?.model_content ?? source?.model_content ?? source?.modelText).trim()
+    ? stripInternalTitleContext(message?.model_content ?? source?.model_content ?? source?.modelText)
     : '';
   const skillTransport = content.match(/^skill:\[([^\]]+)\]$/i);
   const transportSkillNames = skillTransport?.[1]
@@ -234,6 +236,9 @@ function sanitizeMessage(msg) {
   }
   if (typeof msg?.retry_prompt === 'string' && msg.retry_prompt.trim()) {
     out.retry_prompt = msg.retry_prompt;
+  }
+  if (msg?.memoryInject && typeof msg.memoryInject === 'object' && !Array.isArray(msg.memoryInject)) {
+    out.memoryInject = { ...msg.memoryInject };
   }
   if (msg?.tool_call_id) out.tool_call_id = String(msg.tool_call_id);
   if (Number.isFinite(Number(msg?.tool_duration_ms))) out.tool_duration_ms = Number(msg.tool_duration_ms);
@@ -357,6 +362,9 @@ function sanitizeSession(session, fallbackId = '') {
 
   if (typeof session?.lastSystemPrompt === 'string' && session.lastSystemPrompt) {
     out.lastSystemPrompt = session.lastSystemPrompt;
+  }
+  if (typeof session?.memoryBootstrapSnapshot === 'string') {
+    out.memoryBootstrapSnapshot = session.memoryBootstrapSnapshot;
   }
 
   return out;
@@ -710,6 +718,9 @@ export async function createContinuationSession(source, { messages = [], compact
   if (source?.specState) created.specState = source.specState;
   if (typeof source?.lastSystemPrompt === 'string' && source.lastSystemPrompt) {
     created.lastSystemPrompt = source.lastSystemPrompt;
+  }
+  if (typeof source?.memoryBootstrapSnapshot === 'string') {
+    created.memoryBootstrapSnapshot = source.memoryBootstrapSnapshot;
   }
   if (Array.isArray(compactView) && compactView.length) {
     created.compact = {

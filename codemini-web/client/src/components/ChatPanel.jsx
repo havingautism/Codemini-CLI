@@ -14,6 +14,7 @@ import { cn } from "@/lib/utils";
 import { hasConversationContent, isSupersededWaitingResponse } from "@/lib/chat-empty-state.js";
 import { getActiveMessageIndex } from "@/lib/chat-navigation.js";
 import { t } from "../../i18n/index.js";
+import { useGitWorkspace } from "@/hooks/use-git-workspace.js";
 import { HomeEmptyVisual } from "./HomeEmptyVisual.jsx";
 import { HomeEmptyCaption } from "./HomeEmptyCaption.jsx";
 
@@ -169,12 +170,65 @@ function UserMessageNav({ userMessages, activeNavIndex, scrollToMessage }) {
   );
 }
 
+function GitWorkspaceHint() {
+  const git = useGitWorkspace();
+  if (git.isLoading) {
+    return (
+      <div className="mt-3 flex items-center justify-center gap-2 text-[12px] text-(--text-muted)">
+        <Spinner className="size-3.5" />
+        <span>{t("gitDiffLoading")}</span>
+      </div>
+    );
+  }
+  if (git.isError) {
+    return (
+      <p className="mt-3 text-center text-[12px] text-(--accent-red)">
+        {git.error || t("gitStatusLoadFailed")}
+      </p>
+    );
+  }
+  if (!git.isGit) return null;
+  return (
+    <div className="mt-3 flex flex-wrap items-center justify-center gap-x-3 gap-y-1.5 text-[12px] text-(--text-muted)">
+      <span className="inline-flex items-center gap-1.5">
+        <GitBranch size={13} />
+        <span>{git.branch}</span>
+      </span>
+      {git.dirty ? (
+        <>
+          {git.staged > 0 && (
+            <span className="inline-flex items-center gap-1 text-(--accent-green)">
+              <span className="size-1.5 rounded-full bg-current" />
+              {t("gitStaged")} {git.staged}
+            </span>
+          )}
+          {git.modified > 0 && (
+            <span className="inline-flex items-center gap-1 text-(--accent-orange)">
+              <span className="size-1.5 rounded-full bg-current" />
+              {t("gitModified")} {git.modified}
+            </span>
+          )}
+          {git.untracked > 0 && (
+            <span className="inline-flex items-center gap-1">
+              <span className="size-1.5 rounded-full bg-current" />
+              {t("gitUntracked")} {git.untracked}
+            </span>
+          )}
+        </>
+      ) : (
+        <span className="inline-flex items-center gap-1">
+          <span className="size-1.5 rounded-full bg-(--accent-green)" />
+          {t("gitClean")}
+        </span>
+      )}
+    </div>
+  );
+}
+
 function ChatPanelContent({
   messages,
   projectCwd,
   skills = [],
-  gitInfo,
-  projectIsGit = true,
   messagesLoading,
   isGeneral = false,
   targetMessageId = "",
@@ -214,6 +268,21 @@ function ChatPanelContent({
         })),
     [messages],
   );
+
+  const retrievedMemoriesByReplyId = useMemo(() => {
+    const byReplyId = new Map();
+    let current = [];
+    for (const message of messages) {
+      if (message?.role === "you") {
+        current = Array.isArray(message.memoryInject?.retrieved)
+          ? message.memoryInject.retrieved
+          : [];
+      } else if (current.length && message?.id) {
+        byReplyId.set(message.id, current);
+      }
+    }
+    return byReplyId;
+  }, [messages]);
 
   const scrollToMessage = useCallback((msgId, { behavior = "smooth" } = {}) => {
     const el = scrollRef.current?.querySelector(`[data-message-id="${msgId}"]`);
@@ -403,41 +472,7 @@ function ChatPanelContent({
                 vars={{ project: projectCwd || t("currentProject") }}
                 className="codemini-home-empty-title mx-auto max-w-[320px] sm:max-w-none text-[20px] sm:text-[26px] font-medium leading-tight tracking-normal text-(--text-primary) break-words"
               />
-              {gitInfo?.isGit && (
-                <div className="mt-3 flex flex-wrap items-center justify-center gap-x-3 gap-y-1.5 text-[12px] text-(--text-muted)">
-                  <span className="inline-flex items-center gap-1.5">
-                    <GitBranch size={13} />
-                    <span>{gitInfo.branch}</span>
-                  </span>
-                  {gitInfo.dirty ? (
-                    <>
-                      {gitInfo.staged > 0 && (
-                        <span className="inline-flex items-center gap-1 text-(--accent-green)">
-                          <span className="size-1.5 rounded-full bg-current" />
-                          {t("gitStaged")} {gitInfo.staged}
-                        </span>
-                      )}
-                      {gitInfo.modified > 0 && (
-                        <span className="inline-flex items-center gap-1 text-(--accent-orange)">
-                          <span className="size-1.5 rounded-full bg-current" />
-                          {t("gitModified")} {gitInfo.modified}
-                        </span>
-                      )}
-                      {gitInfo.untracked > 0 && (
-                        <span className="inline-flex items-center gap-1">
-                          <span className="size-1.5 rounded-full bg-current" />
-                          {t("gitUntracked")} {gitInfo.untracked}
-                        </span>
-                      )}
-                    </>
-                  ) : (
-                    <span className="inline-flex items-center gap-1">
-                      <span className="size-1.5 rounded-full bg-(--accent-green)" />
-                      {t("gitClean")}
-                    </span>
-                  )}
-                </div>
-              )}
+              <GitWorkspaceHint />
             </HomeEmptyVisual>
           )}
         </div>
@@ -457,9 +492,8 @@ function ChatPanelContent({
                     >
                       <MessageBubble
                         message={msg}
+                        retrievedMemories={retrievedMemoriesByReplyId.get(msg.id)}
                         onRetry={onRetryMessage}
-                        projectIsGit={projectIsGit}
-                        gitFiles={gitInfo?.files}
                         dockTodo={Boolean(dockedTodoMessageId) && msg.id === dockedTodoMessageId}
                         turnActive={busy}
                       />

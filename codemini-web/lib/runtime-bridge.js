@@ -9,6 +9,7 @@ import {
   finishStreamingTextSegments,
   normalizeUsage,
   routingGraphFromEvent,
+  memoryInjectFromEvent,
   settleIncompleteTranscriptMessage,
   updateSkillInSegments,
 } from '../shared/transcript-segments.js';
@@ -164,6 +165,9 @@ export function serializeSessionMessages(messages) {
         skillBadges: skillBadgesFromSessionMessage(message),
         ...(message.role === 'user' && typeof message.model_content === 'string' && message.model_content
           ? { model_content: message.model_content }
+          : {}),
+        ...(message.role === 'user' && message.memoryInject && typeof message.memoryInject === 'object'
+          ? { memoryInject: message.memoryInject }
           : {}),
         at: message.at || null,
       };
@@ -414,7 +418,11 @@ export class RuntimeBridge {
     this.#forkHandledFor = nextSessionId;
     this.#settleIncompleteUiMessages('aborted');
     this.#flushUiTranscriptTo(previousSessionId);
-    this.#uiMessages = [];
+    // The continuation intentionally drops the interrupted turn from model
+    // history, but the user should not see already-rendered UI disappear.
+    // Copy the settled transcript to the continuation as display-only state;
+    // its core session still contains only the clean model-visible prefix.
+    this.#flushUiTranscriptTo(nextSessionId);
     this.#uiActiveMsgId = null;
     this.#uiPlanStepIds = new Map();
     this.#uiPlanOverviewId = null;
@@ -753,6 +761,16 @@ export class RuntimeBridge {
         this.#updateUiMessage(userMsgId, (message) => ({
           ...message,
           routingGraph: routingGraphFromEvent(event),
+        }));
+        publishedMessageId = userMsgId;
+        break;
+      }
+      case 'memory:retrieved': {
+        const userMsgId = this.#lastUserMessageId();
+        if (!userMsgId) break;
+        this.#updateUiMessage(userMsgId, (message) => ({
+          ...message,
+          memoryInject: memoryInjectFromEvent(event, message.memoryInject),
         }));
         publishedMessageId = userMsgId;
         break;

@@ -43,6 +43,13 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog.jsx";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
   Popover,
   PopoverContent,
   PopoverTrigger,
@@ -2039,6 +2046,9 @@ function InvestigationBoard({
   );
 }
 
+const RESEARCH_BOARD_SCROLL =
+  "max-h-[min(40vh,20rem)] overflow-x-hidden overflow-y-auto overscroll-contain [scrollbar-gutter:stable]";
+
 function QuestionsBoard({ questions = [], liveScouts = {} }) {
   const liveByQuestion = useMemo(() => {
     const map = new Map();
@@ -2067,7 +2077,7 @@ function QuestionsBoard({ questions = [], liveScouts = {} }) {
       {!questions.length ? (
         <div className="text-[12px] text-(--text-muted)">—</div>
       ) : (
-        <div className="divide-y divide-(--separator) border-y border-(--border-default)">
+        <div className={`divide-y divide-(--separator) border-y border-(--border-default) ${RESEARCH_BOARD_SCROLL}`}>
           {questions.map((q, index) => {
             const live = liveByQuestion.get(q.id);
             const unresolved = unresolvedDependencyIds(q, questions);
@@ -2358,7 +2368,7 @@ function LimitationsBoard({ limitations = [], questions = [] }) {
           {t("deepResearchNoLimitations")}
         </div>
       ) : (
-        <div className="divide-y divide-(--separator) border-y border-(--border-default)">
+        <div className={`divide-y divide-(--separator) border-y border-(--border-default) ${RESEARCH_BOARD_SCROLL}`}>
           {limitations.map((item, index) => (
             <div
               key={`${item.questionId}-${item.criterionId}-${index}`}
@@ -3575,21 +3585,21 @@ export function ResearchPanel() {
                 </button>
               </div>
 
-              <label className="relative">
-                <select
-                  value={sortMode}
-                  onChange={(e) => setSortMode(e.target.value)}
+              <Select
+                value={sortMode}
+                onValueChange={setSortMode}
+              >
+                <SelectTrigger
                   aria-label={t("deepResearchSortLabel")}
-                  className="h-10 appearance-none rounded-full border border-(--border-strong) bg-(--bg-primary) pl-4 pr-9 text-[12px] font-medium text-(--text-secondary) outline-none hover:bg-(--bg-hover)"
+                  className="h-10 rounded-full border border-(--border-strong) bg-(--bg-primary) pl-4 pr-3 text-[12px] font-medium text-(--text-secondary) hover:bg-(--bg-hover)"
                 >
-                  <option value="recent">{t("deepResearchSortRecent")}</option>
-                  <option value="title">{t("deepResearchSortTitle")}</option>
-                </select>
-                <CaretDown
-                  size={12}
-                  className="pointer-events-none absolute top-1/2 right-3 -translate-y-1/2 text-(--text-muted)"
-                />
-              </label>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent align="end">
+                  <SelectItem value="recent">{t("deepResearchSortRecent")}</SelectItem>
+                  <SelectItem value="title">{t("deepResearchSortTitle")}</SelectItem>
+                </SelectContent>
+              </Select>
 
               <button
                 type="button"

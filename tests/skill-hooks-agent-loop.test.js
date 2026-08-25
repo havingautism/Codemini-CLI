@@ -5,13 +5,15 @@ import os from 'node:os';
 import path from 'node:path';
 import { runAgentLoop } from '../src/core/agent-loop.js';
 import { createSkillHooksSession, armSkillHooks } from '../src/core/skill-hooks-session.js';
+import { closeSqliteDatabasesForTests } from '../src/core/sqlite-database.js';
 
 async function withFixture(fn) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-agent-loop-hooks-'));
   try {
     return await fn(root);
   } finally {
-    await fs.rm(root, { recursive: true, force: true });
+    closeSqliteDatabasesForTests(root);
+    await fs.rm(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 40 });
   }
 }
 

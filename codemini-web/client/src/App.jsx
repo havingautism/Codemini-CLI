@@ -4,6 +4,7 @@ import React, {
   lazy,
   memo,
   useCallback,
+  useEffect,
   useMemo,
   useRef,
   useState,
@@ -12,6 +13,7 @@ import { createRoot } from "react-dom/client";
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { AppProvider, useApp } from "@/context/app-context.jsx";
+import { useGitWorkspace } from "@/hooks/use-git-workspace.js";
 import { t } from "../i18n/index.js";
 import { Sidebar } from "@/components/Sidebar.jsx";
 import { ChatPanel } from "@/components/ChatPanel.jsx";
@@ -220,7 +222,16 @@ function Shell() {
     }
   }, []);
   const rs = state.runtimeState || {};
+  const git = useGitWorkspace();
+  const projectIsGit = git.isLoading || git.isGit === true;
   const currentId = state.currentSessionId || rs.sessionId;
+
+  useEffect(() => {
+    if (git.isReady && !git.isGit && sideRailTab === "git") {
+      setSideRailTab("files");
+    }
+  }, [git.isReady, git.isGit, sideRailTab]);
+
   const reasoningSyncKey = useMemo(
     () =>
       `${rs.reasoningEnabled !== false ? "1" : "0"}:${rs.reasoningEffort || "auto"}`,
@@ -505,18 +516,17 @@ function Shell() {
                     ? t("generalChat")
                     : state.projectCwd || t("currentProject")}
                 </span>
-                {state.gitInfo?.isGit && (
+                {git.isReady && git.isGit && (
                   <span className="inline-flex items-center gap-1 text-[12px] text-(--text-muted) shrink-0">
                     <GitHubIcon size={13} />
-                    {state.gitInfo.branch ? (
-                      <span>{state.gitInfo.branch}</span>
-                    ) : null}
+                    {git.branch ? <span>{git.branch}</span> : null}
                   </span>
                 )}
-                {state.gitInfo?.isGit &&
-                  (state.gitInfo.dirty ||
-                    Number(state.gitInfo.linesAdded) > 0 ||
-                    Number(state.gitInfo.linesRemoved) > 0) && (
+                {git.isReady &&
+                  git.isGit &&
+                  (git.dirty ||
+                    Number(git.linesAdded) > 0 ||
+                    Number(git.linesRemoved) > 0) && (
                   <button
                     type="button"
                     onClick={() => {
@@ -527,17 +537,17 @@ function Shell() {
                     title={t("gitDiffTitle")}
                   >
                     <GitDiff size={13} />
-                    {(Number(state.gitInfo.linesAdded) > 0 ||
-                      Number(state.gitInfo.linesRemoved) > 0) && (
+                    {(Number(git.linesAdded) > 0 ||
+                      Number(git.linesRemoved) > 0) && (
                       <span className="inline-flex items-center gap-1 font-mono text-[11px]">
-                        {Number(state.gitInfo.linesAdded) > 0 && (
+                        {Number(git.linesAdded) > 0 && (
                           <span className="text-(--accent-green)">
-                            +{state.gitInfo.linesAdded}
+                            +{git.linesAdded}
                           </span>
                         )}
-                        {Number(state.gitInfo.linesRemoved) > 0 && (
+                        {Number(git.linesRemoved) > 0 && (
                           <span className="text-(--accent-red)">
-                            -{state.gitInfo.linesRemoved}
+                            -{git.linesRemoved}
                           </span>
                         )}
                       </span>
@@ -604,6 +614,7 @@ function Shell() {
                 >
                   <Terminal size={16} />
                 </button>
+                {projectIsGit ? (
                 <button
                   type="button"
                   className={
@@ -626,6 +637,7 @@ function Shell() {
                 >
                   <GitDiff size={16} />
                 </button>
+                ) : null}
               </div>
             </div>
 
@@ -645,8 +657,6 @@ function Shell() {
                 messages={state.messages}
                 projectCwd={state.projectCwd}
                 skills={state.skills}
-                gitInfo={state.gitInfo}
-                projectIsGit={state.runtimeState?.projectIsGit === true}
                 messagesLoading={state.messagesLoading}
                 isGeneral={state.isGeneral}
                 targetMessageId={state.targetMessageId}
@@ -740,6 +750,7 @@ function Shell() {
                   projectCwd={
                     state.runtimeState?.cwd || state.projectCwd || ""
                   }
+                  isGit={git.isReady ? git.isGit : false}
                   onClose={() => setSideRailOpen(false)}
                 />
               </Suspense>

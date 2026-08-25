@@ -3,6 +3,20 @@ import { getReplyLanguage, getReplyLanguageName } from './reply-language.js';
 const DEFAULT_SESSION_TITLE_ZH = '新会话';
 const DEFAULT_SESSION_TITLE_EN = 'New session';
 
+const INTERNAL_TITLE_BLOCK_RE = /<(relevant_memory|retrieved_memory|recovery_memory|memory_profile|guaranteed_memory|uploaded_attachments|scrapbook_context)\b[^>]*>[\s\S]*?<\/\1>/giu;
+const INTERNAL_TITLE_TAG_RE = /<\/?(?:relevant_memory|retrieved_memory|recovery_memory|memory_profile|guaranteed_memory|uploaded_attachments|scrapbook_context)\b[^>]*>/giu;
+const EXPANDED_FILE_BLOCK_RE = /\[FILE:[^\]\r\n]*\][\s\S]*?\[\/FILE\]/giu;
+const INLINE_BASE64_DATA_RE = /data:(?:image|application)\/[a-z0-9.+-]+;base64,[a-z0-9+/_=-]+/giu;
+
+export function stripInternalTitleContext(value) {
+  return String(value || '')
+    .replace(INTERNAL_TITLE_BLOCK_RE, ' ')
+    .replace(INTERNAL_TITLE_TAG_RE, ' ')
+    .replace(EXPANDED_FILE_BLOCK_RE, ' ')
+    .replace(INLINE_BASE64_DATA_RE, ' ')
+    .trim();
+}
+
 export function buildSessionTitleSystemPrompt(config = {}) {
   const replyLanguage = getReplyLanguage(config);
   const languageName = getReplyLanguageName(config);
@@ -116,7 +130,7 @@ export function normalizeGeneratedSessionTitle(value, fallback = '') {
 }
 
 function sanitizeAssistantFinal(value) {
-  return String(value || '')
+  return stripInternalTitleContext(value)
     .replace(/<(analysis|thinking|reasoning|tool_call|tool_calls)\b[^>]*>[\s\S]*?<\/\1>/giu, ' ')
     .replace(/<(?:analysis|thinking|reasoning|tool_call|tool_calls)\b[^>]*\/?\s*>/giu, ' ')
     .replace(/\s+/g, ' ')
@@ -125,7 +139,7 @@ function sanitizeAssistantFinal(value) {
 }
 
 export function buildSessionTitleInput({ userText, assistantText = '' } = {}) {
-  const user = String(userText || '').replace(/\s+/g, ' ').trim().slice(0, 800);
+  const user = stripInternalTitleContext(userText).replace(/\s+/g, ' ').trim().slice(0, 800);
   const assistant = sanitizeAssistantFinal(assistantText);
   return [
     `User request:\n${user}`,

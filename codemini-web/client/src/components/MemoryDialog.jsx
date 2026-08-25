@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowClockwise,
   CaretDown,
@@ -27,6 +27,7 @@ import { t } from "../../i18n/index.js";
 
 const SCOPES = ["user", "project", "global"];
 const INBOX_SCOPES = ["all", ...SCOPES];
+const FAMILIES = ["all", "personal", "repo", "coding", "procedure"];
 
 function formatMemoryTime(value) {
   const time = Date.parse(value || "");
@@ -59,9 +60,23 @@ const MEMORY_LIFECYCLE_LABEL_KEYS = {
   archived: "memoryLifecycleArchived",
 };
 
+const MEMORY_FAMILY_LABEL_KEYS = {
+  personal: "memoryFamilyPersonal",
+  repo: "memoryFamilyRepo",
+  coding: "memoryFamilyCoding",
+  procedure: "memoryFamilyProcedure",
+};
+
 function memoryKindLabel(kind) {
   const normalized = String(kind || "note").trim().toLowerCase() || "note";
   const key = MEMORY_KIND_LABEL_KEYS[normalized];
+  return key ? t(key) : capitalizeLabel(normalized);
+}
+
+function memoryFamilyLabel(family) {
+  const normalized = String(family || "").trim().toLowerCase();
+  if (!normalized || normalized === "all") return t("memoryFamilyAll");
+  const key = MEMORY_FAMILY_LABEL_KEYS[normalized];
   return key ? t(key) : capitalizeLabel(normalized);
 }
 
@@ -131,6 +146,16 @@ function MemoryCardSkeleton() {
   );
 }
 
+function percentLabel(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? `${Math.round(n * 100)}%` : "";
+}
+
+function countLabel(value) {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? String(n) : "";
+}
+
 function MemoryDetailPane({ memory, scope }) {
   if (!memory) {
     return (
@@ -143,9 +168,18 @@ function MemoryDetailPane({ memory, scope }) {
   const { title } = memoryDisplayParts(memory);
   const content = String(memory.content || "").trim() || t("noPreview");
   const updatedLabel = formatMemoryTime(memory.updatedAt);
-  const confidenceLabel = Number.isFinite(Number(memory.confidence))
-    ? `${Math.round(Number(memory.confidence) * 100)}%`
-    : "";
+  const confidenceLabel = percentLabel(memory.confidence);
+  const utilityLabel = percentLabel(memory.utilityScore ?? memory.utility_score);
+  const hitsLabel = countLabel(memory.hitCount ?? memory.hit_count);
+  const successLabel = countLabel(memory.successCount ?? memory.success_count);
+  const family = String(memory.family || "").trim();
+  const toolName = String(memory.toolName || memory.tool_name || "").trim();
+  const environmentKey = String(memory.environmentKey || memory.environment_key || "").trim();
+  const recallReason = String(memory.recallReason || "").trim();
+  const evidence = memory.evidence && typeof memory.evidence === "object" ? memory.evidence : {};
+  const failedApproach = String(evidence.failed_approach || "").trim();
+  const workingApproach = String(evidence.working_approach || "").trim();
+  const isCoding = family.toLowerCase() === "coding";
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -157,6 +191,11 @@ function MemoryDetailPane({ memory, scope }) {
           <Badge variant="outline" className="h-6 rounded-md px-2 text-[11px]">
             {memoryKindLabel(memory.kind || "note")}
           </Badge>
+          {family ? (
+            <Badge variant="secondary" className="h-6 rounded-md px-2 text-[11px]">
+              {memoryFamilyLabel(family)}
+            </Badge>
+          ) : null}
           {memory.pinned ? (
             <Badge variant="secondary" className="h-6 rounded-md px-2 text-[11px]">
               {t("pinned")}
@@ -168,12 +207,49 @@ function MemoryDetailPane({ memory, scope }) {
           {memory.lifecycle ? <span>{memoryLifecycleLabel(memory.lifecycle)}</span> : null}
           {updatedLabel ? <span>{updatedLabel}</span> : null}
           {confidenceLabel ? <span>{confidenceLabel}</span> : null}
+          {isCoding && utilityLabel ? <span>{t("memoryUtility")}: {utilityLabel}</span> : null}
+          {hitsLabel ? <span>{t("memoryHits")}: {hitsLabel}</span> : null}
+          {successLabel ? <span>{t("memoryVerified")}: {successLabel}</span> : null}
         </div>
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto scroll-smooth p-5">
-        <pre className="min-h-full whitespace-pre-wrap break-words font-sans text-[13px] leading-6 text-(--text-primary)">
-          {content}
-        </pre>
+        <div className="flex flex-col gap-5 text-[13px] leading-6 text-(--text-primary)">
+          <pre className="whitespace-pre-wrap break-words font-sans">{content}</pre>
+          {isCoding && (toolName || environmentKey) ? (
+            <section className="flex flex-col gap-1 text-[12px] text-(--text-muted)">
+              {toolName ? <span>{t("memoryTool")}: {toolName}</span> : null}
+              {environmentKey ? <span>{t("memoryEnvironment")}: {environmentKey}</span> : null}
+            </section>
+          ) : null}
+          {recallReason ? (
+            <section className="flex flex-col gap-1">
+              <h4 className="text-[11px] font-medium uppercase tracking-wide text-(--text-muted)">
+                {t("memoryWhyRecalled")}
+              </h4>
+              <p>{recallReason}</p>
+            </section>
+          ) : null}
+          {failedApproach || workingApproach ? (
+            <section className="flex flex-col gap-2">
+              {failedApproach ? (
+                <div className="flex flex-col gap-1">
+                  <h4 className="text-[11px] font-medium uppercase tracking-wide text-(--text-muted)">
+                    {t("memoryFailedApproach")}
+                  </h4>
+                  <p>{failedApproach}</p>
+                </div>
+              ) : null}
+              {workingApproach ? (
+                <div className="flex flex-col gap-1">
+                  <h4 className="text-[11px] font-medium uppercase tracking-wide text-(--text-muted)">
+                    {t("memoryWorkingApproach")}
+                  </h4>
+                  <p>{workingApproach}</p>
+                </div>
+              ) : null}
+            </section>
+          ) : null}
+        </div>
       </div>
     </div>
   );
@@ -210,6 +286,11 @@ function InboxDetailPane({ entry }) {
           <Badge variant="outline" className="h-6 rounded-md px-2 text-[11px]">
             {memoryKindLabel(entry.type || "note")}
           </Badge>
+          {entry.family ? (
+            <Badge variant="secondary" className="h-6 rounded-md px-2 text-[11px]">
+              {memoryFamilyLabel(entry.family)}
+            </Badge>
+          ) : null}
         </div>
         <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-(--text-muted)">
           <span>{scopeLabel(entry.scope)}</span>
@@ -238,6 +319,22 @@ function InboxDetailPane({ entry }) {
                 {t("inboxEvidence")}
               </h4>
               <p>{entry.evidence.reason}</p>
+            </section>
+          ) : null}
+          {entry.evidence?.failed_approach ? (
+            <section className="flex flex-col gap-1">
+              <h4 className="text-[11px] font-medium uppercase tracking-wide text-(--text-muted)">
+                {t("memoryFailedApproach")}
+              </h4>
+              <p>{entry.evidence.failed_approach}</p>
+            </section>
+          ) : null}
+          {entry.evidence?.working_approach ? (
+            <section className="flex flex-col gap-1">
+              <h4 className="text-[11px] font-medium uppercase tracking-wide text-(--text-muted)">
+                {t("memoryWorkingApproach")}
+              </h4>
+              <p>{entry.evidence.working_approach}</p>
             </section>
           ) : null}
           {Array.isArray(entry.tags) && entry.tags.length > 0 ? (
@@ -312,6 +409,11 @@ function MemoryCard({ memory, inbox = false, selected, deleting, onSelect, onDel
           <Badge variant="outline" className="h-5 rounded-md px-1.5 text-[11px]">
             {memoryKindLabel(itemKind(memory, inbox) || "note")}
           </Badge>
+          {memory.family ? (
+            <Badge variant="secondary" className="h-5 rounded-md px-1.5 text-[11px]">
+              {memoryFamilyLabel(memory.family)}
+            </Badge>
+          ) : null}
           {memory.lifecycle ? (
             <Badge variant="secondary" className="h-5 rounded-md px-1.5 text-[11px]">
               {memoryLifecycleLabel(memory.lifecycle)}
@@ -360,7 +462,9 @@ export function MemoryDialog({ open, onOpenChange, projectDirs = [] }) {
   const [view, setView] = useState("memory");
   const [memoryScope, setMemoryScope] = useState("user");
   const [inboxScope, setInboxScope] = useState("all");
+  const [memoryFamily, setMemoryFamily] = useState("all");
   const [query, setQuery] = useState("");
+  const [debouncedQuery, setDebouncedQuery] = useState("");
   const [items, setItems] = useState([]);
   const [inboxCount, setInboxCount] = useState(0);
   const [loading, setLoading] = useState(false);
@@ -371,12 +475,13 @@ export function MemoryDialog({ open, onOpenChange, projectDirs = [] }) {
   const [pendingDelete, setPendingDelete] = useState(null);
   const [selectedItem, setSelectedItem] = useState(null);
   const [collapsedProjects, setCollapsedProjects] = useState(() => new Set());
+  const loadSeq = useRef(0);
 
   const inbox = view === "inbox";
   const scope = inbox ? inboxScope : memoryScope;
   const setScope = inbox ? setInboxScope : setMemoryScope;
   const scopeOptions = inbox ? INBOX_SCOPES : SCOPES;
-  const trimmedQuery = query.trim();
+  const trimmedQuery = debouncedQuery;
   const projectKey = projectDirsKey(projectDirs);
   const requestProjectDirs = useMemo(
     () => (projectKey ? projectKey.split("\n") : []),
@@ -395,7 +500,13 @@ export function MemoryDialog({ open, onOpenChange, projectDirs = [] }) {
     }
   }, [requestProjectDirs]);
 
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebouncedQuery(query.trim()), 200);
+    return () => window.clearTimeout(timer);
+  }, [query]);
+
   const loadEntries = useCallback(async () => {
+    const requestId = ++loadSeq.current;
     setLoading(true);
     setError("");
     try {
@@ -410,15 +521,17 @@ export function MemoryDialog({ open, onOpenChange, projectDirs = [] }) {
             query: trimmedQuery,
             projectDirs: requestProjectDirs,
           });
+      if (requestId !== loadSeq.current) return;
       if (result?.error) throw new Error(result.message || t("memoryLoadFailed"));
       const nextItems = Array.isArray(result.items) ? result.items : [];
       setItems(nextItems);
       if (inbox && scope === "all" && !trimmedQuery) setInboxCount(nextItems.length);
     } catch (err) {
+      if (requestId !== loadSeq.current) return;
       setItems([]);
       setError(err.message || t("memoryLoadFailed"));
     } finally {
-      setLoading(false);
+      if (requestId === loadSeq.current) setLoading(false);
     }
   }, [inbox, scope, trimmedQuery, requestProjectDirs]);
 
@@ -432,20 +545,25 @@ export function MemoryDialog({ open, onOpenChange, projectDirs = [] }) {
     refreshInboxCount();
   }, [open, refreshInboxCount]);
 
+  const visibleItems = useMemo(() => {
+    if (memoryFamily === "all") return items;
+    return items.filter((item) => String(item.family || "").toLowerCase() === memoryFamily);
+  }, [items, memoryFamily]);
+
   const kindCounts = useMemo(() => {
-    const counts = items.reduce((acc, item) => {
+    const counts = visibleItems.reduce((acc, item) => {
       const kind = itemKind(item, inbox) || "note";
       acc[kind] = (acc[kind] || 0) + 1;
       return acc;
     }, {});
     return Object.entries(counts).sort(([a], [b]) => a.localeCompare(b));
-  }, [items, inbox]);
+  }, [visibleItems, inbox]);
 
   const groupedItems = useMemo(() => {
-    if (scope !== "project") return { regular: items, projectGroups: [] };
+    if (scope !== "project") return { regular: visibleItems, projectGroups: [] };
     const projectGroups = [];
     const groupIndex = new Map();
-    for (const item of items) {
+    for (const item of visibleItems) {
       const key = item.projectDir || "__current_project__";
       if (!groupIndex.has(key)) {
         const group = {
@@ -459,17 +577,17 @@ export function MemoryDialog({ open, onOpenChange, projectDirs = [] }) {
       groupIndex.get(key).items.push(item);
     }
     return { regular: [], projectGroups };
-  }, [items, scope]);
+  }, [visibleItems, scope]);
 
   useEffect(() => {
-    if (items.length === 0) {
+    if (visibleItems.length === 0) {
       setSelectedItem(null);
       return;
     }
-    if (!selectedItem || !items.some((item) => memoryKey(item, scope) === memoryKey(selectedItem, scope))) {
-      setSelectedItem(items[0]);
+    if (!selectedItem || !visibleItems.some((item) => memoryKey(item, scope) === memoryKey(selectedItem, scope))) {
+      setSelectedItem(visibleItems[0]);
     }
-  }, [items, scope, selectedItem]);
+  }, [visibleItems, scope, selectedItem]);
 
   const toggleProjectGroup = useCallback((key) => {
     setCollapsedProjects((prev) => {
@@ -483,6 +601,7 @@ export function MemoryDialog({ open, onOpenChange, projectDirs = [] }) {
   const handleViewChange = (nextView) => {
     setView(nextView);
     setQuery("");
+    setDebouncedQuery("");
     setItems([]);
     setSelectedItem(null);
     setError("");
@@ -577,10 +696,10 @@ export function MemoryDialog({ open, onOpenChange, projectDirs = [] }) {
             <div className="flex min-h-0 flex-col gap-3 border-b border-(--border-default) p-3 lg:border-b-0 lg:border-r">
               <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-                  {items.length > 0 ? (
+                  {visibleItems.length > 0 ? (
                     <>
                       <span className="text-[12px] text-(--text-muted)">
-                        {items.length} {t("items")}
+                        {visibleItems.length} {t("items")}
                       </span>
                       {kindCounts.map(([kind, count]) => (
                         <Badge key={kind} variant="outline" className="h-4 rounded-md px-1.5 py-0 text-[10px]">
@@ -634,6 +753,13 @@ export function MemoryDialog({ open, onOpenChange, projectDirs = [] }) {
                   options={scopeOptions.map((item) => ({ value: item, label: scopeLabel(item) }))}
                   className="w-full shrink-0 [&_button]:truncate [&_button]:text-[11px] sm:[&_button]:text-[12px]"
                 />
+                <SettingsSegmentedControl
+                  idPrefix={`${view}-family`}
+                  value={memoryFamily}
+                  onValueChange={setMemoryFamily}
+                  options={FAMILIES.map((item) => ({ value: item, label: memoryFamilyLabel(item) }))}
+                  className="w-full shrink-0 [&_button]:truncate [&_button]:text-[11px] sm:[&_button]:text-[12px]"
+                />
               </div>
 
               {error ? (
@@ -655,11 +781,11 @@ export function MemoryDialog({ open, onOpenChange, projectDirs = [] }) {
                     <MemoryCardSkeleton />
                     <MemoryCardSkeleton />
                   </div>
-                ) : items.length === 0 ? (
+                ) : visibleItems.length === 0 ? (
                   <Empty className="rounded-lg py-10">
                     <Tray size={28} className="mb-2 text-(--text-muted)" aria-hidden />
                     <EmptyDescription className="text-[13px] text-(--text-primary)">
-                      {trimmedQuery ? t("noMatches") : t(inbox ? "noInboxEntries" : "noMemories")}
+                      {trimmedQuery || memoryFamily !== "all" ? t("noMatches") : t(inbox ? "noInboxEntries" : "noMemories")}
                     </EmptyDescription>
                     <EmptyDescription className="text-[11px] text-(--text-muted)">
                       {t(inbox ? "noInboxEntriesHint" : "noMemoriesHint")}

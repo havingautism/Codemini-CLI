@@ -82,11 +82,11 @@ import { getReplyLanguage, getReplyLanguageName, stripReplyLanguageDirective, bu
 import { composeSystemPrompt } from './system-prompt-composer.js';
 import { buildTurnContextPrefix, buildTurnUserPrompt } from './turn-context.js';
 import { buildSubAgentShellRulesPrompt, buildSubAgentRuntimeNote, resolveShellContext } from './shell-profile.js';
-import { getMemoryDir, getProjectMemoryDir, getProjectPlansDir, getProjectSpecsDir, getProjectWorkspaceDir, getSessionsDir, getSkillsDir } from './paths.js';
-import { buildMemorySnapshot } from './memory-prompt.js';
+import { getBaseConfigDir, getProjectIndexDir, getProjectPlansDir, getProjectSpecsDir, getProjectWorkspaceDir, getSessionsDir, getSkillsDir } from './paths.js';
+import { composeMemorySnapshot } from './memory-prompt.js';
 import { buildProjectContextSnippet, initializeProjectIndex } from './project-index.js';
 import { queryProjectKnowledgeGraph } from './project-knowledge-graph.js';
-import { captureToInbox, listInbox } from './memory-store.js';
+import { captureToInbox, commitForkMemoryCandidates, listInbox } from './memory-store.js';
 import {
   classifyMemoryRoute,
   isSensitiveMemoryContent,
@@ -230,9 +230,6 @@ function modelContentForMessage(message, index, { currentTurnUserIndex = -1 } = 
     ];
   }
   if (!modelContent) return message?.content;
-  if (message?.model_content_scope === 'current_turn' && index !== currentTurnUserIndex) {
-    return message?.content;
-  }
   return modelContent;
 }
 
@@ -245,7 +242,7 @@ function findCurrentTurnUserIndex(messages = [], text = '', modelText = '') {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index];
     if (message?.role !== 'user') continue;
-    if (message.content === text && message.model_content === modelText) return index;
+    if (message.content === text) return index;
   }
   return -1;
 }
@@ -4058,7 +4055,6 @@ export function attachCurrentTurnModelContent(message, modelContent = '') {
   return {
     ...message,
     model_content: content,
-    model_content_scope: 'current_turn',
   };
 }
 
@@ -4720,6 +4716,8 @@ async function askModel({
   onContinuationSession = null,
   workspaceRoot = process.cwd(),
   selectedSkillNames = [],
+  memoryInject = null,
+  retrievedText = '',
   skillHooksSession = null,
   onSkillLoaded = null,
   initialMessagesOverride = null,
@@ -4860,10 +4858,21 @@ async function askModel({
   const turnStartMessageCount = session.messages.length;
   const turnStartCompactedCount = compacted ? compacted.length : 0;
   if (text) {
-    const modelExtra =
-      typeof modelText === 'string' && modelText && modelText !== text
-        ? { model_content: modelText, model_content_scope: 'current_turn' }
-        : {};
+    const hasFileMentions = typeof modelText === 'string' && modelText && modelText !== text;
+    const retrievedPart = typeof retrievedText === 'string' && retrievedText.trim() ? retrievedText.trim() : '';
+    let userContent = text;
+    let modelExtra = {};
+    if (hasFileMentions) {
+      // File mentions keep raw content (so findCurrentTurnUserIndex still
+      // matches) and fold retrieved memory into model_content.
+      modelExtra = {
+        model_content: retrievedPart ? `${retrievedPart}\n\n${modelText}` : modelText,
+      };
+    } else if (retrievedPart) {
+      // No file mentions: prepend retrieved memory to the user content so the
+      // stored history stays byte-stable (cache-friendly) across turns.
+      userContent = `${retrievedPart}\n\n${text}`;
+    }
     const imageExtra = Array.isArray(modelImages) && modelImages.length
       ? { model_images: modelImages }
       : {};
@@ -4873,7 +4882,8 @@ async function askModel({
           skill_badges: selectedSkillNamesForUi.map((name) => ({ name, status: 'selected' }))
         }
       : {};
-    const userMessage = stampedMessage('user', text, { ...modelExtra, ...imageExtra, ...selectedSkillExtra });
+    const memoryExtra = memoryInject && typeof memoryInject === 'object' ? { memoryInject } : {};
+    const userMessage = stampedMessage('user', userContent, { ...modelExtra, ...imageExtra, ...selectedSkillExtra, ...memoryExtra });
     session.messages.push(userMessage);
     if (compacted) {
       compacted.push({ ...userMessage });
@@ -5281,6 +5291,7 @@ async function askModel({
               }),
               workspaceRoot,
               parentToolCallId: callId,
+              agentRole: branchName,
               alwaysAllowTools: effectiveAlwaysAllowTools,
               executionMode: normalizedExecutionMode
             });
@@ -5306,6 +5317,7 @@ async function askModel({
               ok: !failed,
               workflowComplete: false,
               name: branchName,
+              memoryCandidates: output.memoryCandidates || [],
               text: output.text || '',
               ...(childUsage ? { usage: childUsage } : {}),
               ...(fileChanges.length ? { fileChanges } : {}),
@@ -5344,7 +5356,9 @@ async function askModel({
   });
 
   const currentPlanStateForTools = normalizePlanState(session?.planState);
-  const exposeUpdatePlan = normalizedExecutionMode === 'plan' || Boolean(currentPlanStateForTools);
+  // update_plan only recovers/synchronizes an existing persistent plan. Ordinary
+  // coding turns use tasks and should not pay for this legacy schema.
+  const exposeUpdatePlan = Boolean(currentPlanStateForTools);
   const baseDefinitions = exposeUpdatePlan
     ? definitions
     : definitions.filter((t) => (t.function?.name || t.name) !== 'update_plan');
@@ -5791,6 +5805,12 @@ async function askModel({
       skillHooksSession,
       onSkillLoaded,
       workspaceRoot,
+      sessionId: session.id,
+      onForkJoin: (candidates) => commitForkMemoryCandidates({
+        candidates,
+        sessionId: session.id,
+        workspaceRoot
+      }),
       changeTracker: changeTracker?.enabled
         ? {
             begin: (meta) => beginGitOplogCapture(changeTracker, meta),
@@ -6059,7 +6079,7 @@ export async function runSubAgentTask({
   const subResult = await askModel({
     text: scopedTask,
     session: subSession,
-    config,
+    config: withCandidateMemoryWrites(config),
     model: subAgentModel,
     systemPrompt: subSystemPrompt,
     onAgentEvent: wrappedOnAgentEvent,
@@ -6108,6 +6128,17 @@ function buildForkTaskInstruction(task, parentNote = '', tasks = []) {
   ].filter(Boolean).join('\n\n');
 }
 
+function withCandidateMemoryWrites(config = {}, candidateContext = {}) {
+  return {
+    ...config,
+    memory: {
+      ...(config.memory || {}),
+      candidate_writes: true,
+      candidate_context: candidateContext
+    }
+  };
+}
+
 /**
  * Runs one fork branch of the current agent turn.
  *
@@ -6138,6 +6169,7 @@ export async function runForkTask({
   projectIsGit,
   workspaceRoot,
   parentToolCallId = '',
+  agentRole = 'fork',
   alwaysAllowTools = [],
   executionMode = 'plan',
 }) {
@@ -6146,6 +6178,7 @@ export async function runForkTask({
     messages: [],
     todos: normalizeTodos(tasks),
   };
+  const memoryCandidates = [];
   // Deep-clone the prefix per branch: the branch loop splices/prunes its own
   // array and may mutate assistant message objects, so branches must never
   // share the parent's live messages.
@@ -6177,7 +6210,14 @@ export async function runForkTask({
   const result = await askModel({
     text: taskInstruction,
     session: branchSession,
-    config,
+    config: withCandidateMemoryWrites(config, {
+      branchId: branchSession.id,
+      agentRole,
+      sink: async (candidate) => {
+        memoryCandidates.push(candidate);
+        return { ...candidate, id: `branch-candidate-${memoryCandidates.length}` };
+      }
+    }),
     model,
     systemPrompt,
     onAgentEvent: wrappedOnAgentEvent,
@@ -6204,6 +6244,7 @@ export async function runForkTask({
   return {
     text,
     hasErrorLine,
+    memoryCandidates,
     messages: Array.isArray(branchSession.messages)
       ? structuredClone(branchSession.messages)
       : [],
@@ -8163,10 +8204,9 @@ export async function createChatRuntime({
   let commandsReloadedAt = Date.now();
   let commandsReloadPromise = null;
   let skillIndexPromptCache = null;
-  // Memoize the deterministic base prompt and the volatile memory snapshot so
-  // the composed system prompt is not re-read/re-rendered from disk every turn.
+  // Bootstrap memory is frozen on the session; turn recall stays in the user tail.
   let baseSystemPromptMemo = { configRef: null, root: '', value: '' };
-  let memorySnapshotMemo = null;
+  let turnMemorySnapshot = { retrievedText: '', inject: null };
   const getMemoizedBaseSystemPrompt = () => {
     if (baseSystemPromptMemo.configRef === config && baseSystemPromptMemo.root === root) {
       return baseSystemPromptMemo.value;
@@ -8175,35 +8215,14 @@ export async function createChatRuntime({
     baseSystemPromptMemo = { configRef: config, root, value };
     return value;
   };
-  const memoryFilesMtimeKey = async (workspaceRoot) => {
-    const paths = [
-      path.join(getMemoryDir(), 'user.json'),
-      path.join(getMemoryDir(), 'global.json'),
-    ];
-    try {
-      const dir = getProjectMemoryDir(workspaceRoot);
-      const entries = await fs.readdir(dir);
-      for (const entry of entries) {
-        if (String(entry).endsWith('.json')) paths.push(path.join(dir, entry));
-      }
-    } catch {}
-    const stamps = await Promise.all(paths.map((filePath) =>
-      fs.stat(filePath).then((stat) => `${filePath}:${stat.mtimeMs}`, () => `${filePath}:missing`),
-    ));
-    return stamps.join('|');
-  };
-  const getMemoizedMemorySnapshot = async () => {
-    const mtimeKey = await memoryFilesMtimeKey(root);
-    if (
-      memorySnapshotMemo
-      && memorySnapshotMemo.configRef === config
-      && memorySnapshotMemo.mtimeKey === mtimeKey
-    ) {
-      return memorySnapshotMemo.value;
+  const getSessionMemoryBootstrap = async () => {
+    if (typeof currentSession?.memoryBootstrapSnapshot === 'string') {
+      return currentSession.memoryBootstrapSnapshot;
     }
-    const value = await buildMemorySnapshot({ config, workspaceRoot: root }).catch(() => '');
-    memorySnapshotMemo = { configRef: config, mtimeKey, value };
-    return value;
+    const composed = await composeMemorySnapshot({ config, workspaceRoot: root, query: '' }).catch(() => ({ text: '' }));
+    currentSession.memoryBootstrapSnapshot = composed.text || '';
+    await saveSession(currentSession).catch(() => {});
+    return currentSession.memoryBootstrapSnapshot;
   };
   const reloadCommandsAndSkills = async ({ force = false } = {}) => {
     if (!force && Date.now() - commandsReloadedAt < COMMAND_RELOAD_TTL_MS) return false;
@@ -8596,14 +8615,22 @@ export async function createChatRuntime({
   const buildActiveSystemPrompt = async ({
     includeSkillIndex = true,
     includeMemoryGuide = true,
+    userQuery = '',
   } = {}) => {
     const memoryGuide = `Use save_memory only for explicit lasting preferences or stable project conventions; never store secrets or duplicates. Write it in ${getReplyLanguageName(config)}. Coding discoveries go through later Dream/session review.`;
+    const [skillsPrompt, memorySnapshot, recalled] = await Promise.all([
+      includeSkillIndex ? getSkillIndexPrompt() : Promise.resolve(''),
+      getSessionMemoryBootstrap(),
+      composeMemorySnapshot({ config, workspaceRoot: root, query: userQuery, includeBootstrap: false })
+        .catch(() => ({ retrievedText: '', inject: null })),
+    ]);
+    turnMemorySnapshot = recalled;
     return composeSystemPrompt({
       shellRulesPrompt: getMemoizedBaseSystemPrompt(),
       config,
       workspaceRoot: root,
-      skillsPrompt: includeSkillIndex ? getSkillIndexPrompt() : '',
-      memorySnapshot: await getMemoizedMemorySnapshot(),
+      skillsPrompt,
+      memorySnapshot,
       extraPrompts: includeMemoryGuide ? [memoryGuide] : [],
       soulContext: normalizeExecutionMode(executionMode) === 'plan' ? 'coding' : 'daily',
     });
@@ -8630,11 +8657,21 @@ export async function createChatRuntime({
     activeAbortController = new AbortController();
     const { signal } = activeAbortController;
     const codingRouteEnabled = normalizeExecutionMode(executionMode) === 'plan';
+    const inputText = String(line || '');
     const activeReplySystemPrompt = await buildActiveSystemPrompt({
       includeSkillIndex: !codingRouteEnabled,
       includeMemoryGuide: !codingRouteEnabled,
+      userQuery: inputText,
     });
-    const inputText = String(line || '');
+    const memoryInject = turnMemorySnapshot?.inject || null;
+    const retrievedText = turnMemorySnapshot?.retrievedText || '';
+    if (memoryInject && typeof onAgentEvent === 'function') {
+      onAgentEvent({
+        type: 'memory:retrieved',
+        startedAt: new Date().toISOString(),
+        ...memoryInject,
+      });
+    }
     const optionModelText = typeof options?.modelText === 'string' && options.modelText.trim()
       ? await expandFileMentions(options.modelText, root)
       : '';
@@ -9221,7 +9258,9 @@ export async function createChatRuntime({
         ...graphSelectedSkillNames,
       ],
       skillHooksSession,
-      onSkillLoaded: (skillName) => armSkillHooksByName(skillName, { onAgentEvent })
+      onSkillLoaded: (skillName) => armSkillHooksByName(skillName, { onAgentEvent }),
+      memoryInject,
+      retrievedText,
     });
     syncExecutionModeWithSession();
     void captureUserPromptForDream(expandedText);

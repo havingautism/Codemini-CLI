@@ -42,14 +42,13 @@ async function withGlobalDir(task) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-research-'));
   const previous = process.env.CODEMINI_GLOBAL_DIR;
   process.env.CODEMINI_GLOBAL_DIR = dir;
-  closeSqliteDatabasesForTests();
   try {
     return await task(dir);
   } finally {
-    closeSqliteDatabasesForTests();
+    closeSqliteDatabasesForTests(dir);
     if (previous === undefined) delete process.env.CODEMINI_GLOBAL_DIR;
     else process.env.CODEMINI_GLOBAL_DIR = previous;
-    await fs.rm(dir, { recursive: true, force: true });
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 50 });
   }
 }
 

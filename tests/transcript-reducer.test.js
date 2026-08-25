@@ -884,6 +884,70 @@ test('reduceSessionTranscriptEvent reuses matching plan step messageId', () => {
   assert.equal(messages[0].isComplete, false);
 });
 
+test('successful settle completes leftover tasks without rewriting other tools', () => {
+  const settled = settleIncompleteTranscriptMessage(
+    {
+      id: 'msg-complete',
+      role: 'general',
+      isComplete: false,
+      segments: [
+        {
+          type: 'tools',
+          cards: [
+            {
+              id: 'todo-1',
+              name: 'tasks',
+              status: 'done',
+              arguments: {
+                tasks: [
+                  { content: 'Inspect', status: 'completed' },
+                  { content: 'Return a summary', status: 'in_progress' },
+                ],
+              },
+            },
+            { id: 'read-1', name: 'read', status: 'done' },
+          ],
+        },
+      ],
+    },
+    { reason: 'completed' },
+  );
+
+  assert.deepEqual(
+    settled.segments[0].cards[0].arguments.tasks.map((task) => task.status),
+    ['completed', 'completed'],
+  );
+  assert.equal(settled.segments[0].cards[1].status, 'done');
+});
+
+test('aborted settle does not mark leftover tasks completed', () => {
+  const settled = settleIncompleteTranscriptMessage(
+    {
+      id: 'msg-abort-todos',
+      role: 'general',
+      isComplete: false,
+      segments: [
+        {
+          type: 'tools',
+          cards: [
+            {
+              id: 'todo-1',
+              name: 'tasks',
+              status: 'done',
+              arguments: {
+                tasks: [{ content: 'Return a summary', status: 'in_progress' }],
+              },
+            },
+          ],
+        },
+      ],
+    },
+    { reason: 'aborted' },
+  );
+
+  assert.equal(settled.segments[0].cards[0].arguments.tasks[0].status, 'in_progress');
+});
+
 test('abort settles running tools, thinking, and hooks so loaders do not stay open', () => {
   const settled = settleIncompleteTranscriptMessage(
     {
@@ -1038,4 +1102,42 @@ test('routing graph decisions attach to the routed user turn', () => {
       startedAt: '2026-08-21T00:00:01.000Z',
     },
   );
+});
+
+test('memory retrieve events attach to the user turn and merge recovery', () => {
+  const state = {
+    sessionMessagesById: {
+      'session-mem': [
+        { id: 'user-mem', role: 'you', text: 'list dir', timestamp: '2026-08-23T00:00:00.000Z' },
+      ],
+    },
+  };
+  const afterTurn = reduceSessionTranscriptEvent(state, {
+    type: 'memory:retrieved',
+    sessionId: 'session-mem',
+    messageId: 'user-mem',
+    query: 'list dir',
+    mode: 'turn',
+    profile: [{ id: 'p1', kind: 'preference', summary: 'PowerShell' }],
+    guaranteed: [],
+    retrieved: [],
+    startedAt: '2026-08-23T00:00:01.000Z',
+  });
+  const afterFail = reduceSessionTranscriptEvent(afterTurn, {
+    type: 'memory:retrieved',
+    sessionId: 'session-mem',
+    messageId: 'user-mem',
+    mode: 'failure',
+    tool: 'run',
+    query: 'run python error',
+    retrieved: [{ id: 'r1', kind: 'lesson', summary: 'use py -3' }],
+    startedAt: '2026-08-23T00:00:02.000Z',
+  });
+
+  const inject = afterFail.sessionMessagesById['session-mem'][0].memoryInject;
+  assert.equal(inject.query, 'list dir');
+  assert.equal(inject.profile[0].summary, 'PowerShell');
+  assert.equal(inject.recovery.length, 1);
+  assert.equal(inject.recovery[0].tool, 'run');
+  assert.equal(inject.recovery[0].hits[0].id, 'r1');
 });

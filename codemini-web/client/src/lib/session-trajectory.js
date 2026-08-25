@@ -467,6 +467,30 @@ function emitUserSkills(events, message, index, turn) {
   });
 }
 
+function emitMemoryInject(events, message, index, turn) {
+  const inject = message?.memoryInject;
+  if (!inject || typeof inject !== "object") return;
+  const retrieved = Array.isArray(inject.retrieved) ? inject.retrieved : [];
+  if (!retrieved.length) return;
+  const queryPreview = oneLinePreview(inject.query, 48);
+  events.push(
+    makeEvent({
+      id: `trajectory-memory-${message.id || index}`,
+      kind: "memory",
+      turn,
+      title: "memory inject",
+      body: [
+        queryPreview ? `query ${queryPreview}` : "",
+        `retrieved ${retrieved.length}`,
+      ]
+        .filter(Boolean)
+        .join(" · "),
+      input: stringifyTrajectoryValue({ query: inject.query || "", retrieved }),
+      startedAt: inject.startedAt || messageTime(message),
+    }),
+  );
+}
+
 export function buildTrajectory({
   messages = [],
   runtimeState = null,
@@ -512,6 +536,7 @@ export function buildTrajectory({
           startedAt: messageTime(message),
         }),
       );
+      emitMemoryInject(events, message, index, turn);
       if (message?.routingGraph) {
         const routing = message.routingGraph;
         const path = Array.isArray(routing.path) ? routing.path.join(" → ") : "";

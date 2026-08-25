@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises';
-import path from 'node:path';
 import { getConfigFilePath } from './paths.js';
+import { atomicWriteUtf8 } from './staged-write.js';
 import { normalizeReplyLanguage } from './reply-language.js';
 import { normalizeShellName, resolveShellContext } from './shell-profile.js';
 import {
@@ -98,6 +98,47 @@ const DEFAULT_CONFIG = {
     max_global_chars: 2200,
     max_project_chars: 2200,
     project_binding: 'path-or-alias',
+    retrieval: {
+      enabled: true,
+      adapter: 'fts5',
+      mode: 'fts',
+      turn_limit: 5,
+      tool_limit: 3,
+      turn_top_k: 5,
+      failure_top_k: 3,
+      min_score: 0.6,
+      max_tokens: 1000,
+      query_expansion: true
+    },
+    recovery: {
+      max_tokens: 500
+    },
+    experience: {
+      enabled: true,
+      capture_failures: true,
+      writeback_on_recovery: true,
+      require_recovery: true,
+      require_verification: true,
+      legacy_error_capture: false,
+      max_attempts_per_episode: 6
+    },
+    writeback: {
+      enabled: true,
+      idle_delay_ms: 1500
+    },
+    lifecycle: {
+      enabled: true,
+      staleness_review: true,
+      consolidation: true
+    },
+    bootstrap: {
+      enabled: true,
+      max_tokens: 600
+    },
+    index: {
+      rebuild_on_corruption: true,
+      substring_fallback: true
+    },
     background_review: {
       enabled: true,
       on_start: true,
@@ -154,10 +195,6 @@ const DEFAULT_CONFIG = {
     servers: []
   }
 };
-
-async function ensureDir(filePath) {
-  await fs.mkdir(path.dirname(filePath), { recursive: true });
-}
 
 function isObject(v) {
   return v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -260,6 +297,12 @@ function normalizePolicyLists(config) {
   next.memory.auto_write = next.memory.auto_write !== false;
   next.memory.auto_capture = next.memory.auto_capture !== false;
   next.memory.inject_on_session_start = next.memory.inject_on_session_start !== false;
+  next.memory.bootstrap = next.memory.bootstrap || {};
+  next.memory.bootstrap.enabled = next.memory.bootstrap.enabled == null
+    ? next.memory.inject_on_session_start
+    : next.memory.bootstrap.enabled !== false;
+  next.memory.inject_on_session_start = next.memory.bootstrap.enabled;
+  next.memory.bootstrap.max_tokens = normalizedNumber(next.memory.bootstrap.max_tokens, 600, 80, { integer: true });
   next.memory.max_items_per_scope = Math.max(1, Number(next.memory.max_items_per_scope || 12));
   next.memory.auto_dream_threshold = Number(next.memory.auto_dream_threshold ?? 10);
   next.memory.max_prompt_chars = Math.max(200, Number(next.memory.max_prompt_chars || 4000));
@@ -269,6 +312,44 @@ function normalizePolicyLists(config) {
   next.memory.project_binding = ['path', 'alias', 'path-or-alias'].includes(String(next.memory.project_binding || ''))
     ? String(next.memory.project_binding)
     : 'path-or-alias';
+  next.memory.retrieval = next.memory.retrieval || {};
+  next.memory.retrieval.enabled = next.memory.retrieval.enabled !== false;
+  next.memory.retrieval.adapter = ['fts5', 'fallback'].includes(String(next.memory.retrieval.adapter || ''))
+    ? String(next.memory.retrieval.adapter)
+    : 'fts5';
+  next.memory.retrieval.mode = 'fts';
+  next.memory.retrieval.turn_top_k = Math.max(1, Math.min(10, Number(
+    next.memory.retrieval.turn_top_k || next.memory.retrieval.turn_limit || 5
+  )));
+  next.memory.retrieval.failure_top_k = Math.max(1, Math.min(10, Number(
+    next.memory.retrieval.failure_top_k || next.memory.retrieval.tool_limit || 3
+  )));
+  next.memory.retrieval.turn_limit = next.memory.retrieval.turn_top_k;
+  next.memory.retrieval.tool_limit = next.memory.retrieval.failure_top_k;
+  next.memory.retrieval.min_score = Math.max(0, Math.min(1, Number(next.memory.retrieval.min_score ?? 0.6)));
+  next.memory.retrieval.max_tokens = normalizedNumber(next.memory.retrieval.max_tokens, 1000, 80, { integer: true });
+  next.memory.retrieval.query_expansion = next.memory.retrieval.query_expansion !== false;
+  next.memory.recovery = next.memory.recovery || {};
+  next.memory.recovery.max_tokens = normalizedNumber(next.memory.recovery.max_tokens, 500, 80, { integer: true });
+  next.memory.experience = next.memory.experience || {};
+  next.memory.experience.enabled = next.memory.experience.enabled !== false;
+  next.memory.experience.capture_failures = next.memory.experience.capture_failures !== false;
+  next.memory.experience.writeback_on_recovery = next.memory.experience.writeback_on_recovery !== false;
+  next.memory.experience.require_recovery = next.memory.experience.require_recovery !== false;
+  next.memory.experience.require_verification = next.memory.experience.require_verification !== false;
+  next.memory.experience.legacy_error_capture = next.memory.experience.legacy_error_capture === true;
+  next.memory.experience.max_attempts_per_episode = Math.max(1, Number(next.memory.experience.max_attempts_per_episode || 6));
+  next.memory.index = next.memory.index || {};
+  next.memory.index.rebuild_on_corruption = next.memory.index.rebuild_on_corruption !== false;
+  next.memory.index.substring_fallback = next.memory.index.substring_fallback !== false;
+  next.memory.writeback = next.memory.writeback || {};
+  next.memory.writeback.enabled = next.memory.writeback.enabled !== false;
+  next.memory.writeback.idle_delay_ms = Math.max(0, Number(next.memory.writeback.idle_delay_ms ?? next.memory.background_review?.idle_delay_ms ?? 1500));
+  next.memory.lifecycle = next.memory.lifecycle || {};
+  next.memory.lifecycle.enabled = next.memory.lifecycle.enabled !== false;
+  next.memory.lifecycle.staleness_review = next.memory.lifecycle.staleness_review !== false;
+  next.memory.lifecycle.consolidation = next.memory.lifecycle.consolidation !== false;
+  delete next.memory.embedding;
   next.memory.background_review = next.memory.background_review || {};
   next.memory.background_review.enabled = next.memory.background_review.enabled !== false;
   next.memory.background_review.on_start = next.memory.background_review.on_start !== false;
@@ -409,30 +490,55 @@ function migrateSoulConfig(parsed = {}) {
 
 export async function loadConfig() {
   const configPath = getConfigFilePath();
+  const stat = await fs.stat(configPath).catch(() => null);
+  const mtime = stat ? stat.mtimeMs : 0;
+  const size = stat ? stat.size : 0;
+  if (cachedConfig && cachedConfigStat && cachedConfigStat.mtime === mtime && cachedConfigStat.size === size) {
+    return structuredClone(cachedConfig);
+  }
+  let raw;
   try {
-    const stat = await fs.stat(configPath).catch(() => null);
-    const mtime = stat ? stat.mtimeMs : 0;
-    const size = stat ? stat.size : 0;
-    if (cachedConfig && cachedConfigStat && cachedConfigStat.mtime === mtime && cachedConfigStat.size === size) {
-      return structuredClone(cachedConfig);
+    raw = await fs.readFile(configPath, 'utf8');
+  } catch (error) {
+    if (error?.code !== 'ENOENT') {
+      throw new Error(`Failed to read configuration at ${configPath}; existing file was preserved.`, { cause: error });
     }
-    const raw = await fs.readFile(configPath, 'utf8');
-    const parsed = migrateSoulConfig(JSON.parse(raw));
-    const config = normalizePolicyLists(deepMerge(DEFAULT_CONFIG, parsed));
-    cachedConfig = config;
-    cachedConfigStat = { mtime, size };
-    return structuredClone(config);
-  } catch {
     const defaultConfig = normalizePolicyLists(structuredClone(DEFAULT_CONFIG));
     await saveConfig(defaultConfig);
     return defaultConfig;
   }
+  let parsed;
+  try {
+    parsed = migrateSoulConfig(JSON.parse(raw));
+  } catch (error) {
+    throw new Error(`Failed to parse configuration at ${configPath}; existing file was preserved.`, { cause: error });
+  }
+  const config = normalizePolicyLists(deepMerge(DEFAULT_CONFIG, parsed));
+  cachedConfig = config;
+  cachedConfigStat = { mtime, size };
+  return structuredClone(config);
+}
+
+async function backupValidConfig(configPath) {
+  let raw;
+  try {
+    raw = await fs.readFile(configPath, 'utf8');
+  } catch (error) {
+    if (error?.code === 'ENOENT') return;
+    throw error;
+  }
+  try {
+    JSON.parse(raw);
+  } catch {
+    return;
+  }
+  await atomicWriteUtf8(`${configPath}.bak`, raw);
 }
 
 export async function saveConfig(config) {
   const configPath = getConfigFilePath();
-  await ensureDir(configPath);
-  await fs.writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, 'utf8');
+  await backupValidConfig(configPath);
+  await atomicWriteUtf8(configPath, `${JSON.stringify(config, null, 2)}\n`);
   cachedConfig = normalizePolicyLists(structuredClone(config));
   const stat = await fs.stat(configPath).catch(() => null);
   cachedConfigStat = stat ? { mtime: stat.mtimeMs, size: stat.size } : null;
@@ -441,7 +547,7 @@ export async function saveConfig(config) {
 export async function setConfigValue(keyPath, value) {
   const config = await loadConfig();
   setNested(config, keyPath, value);
-  await saveConfig(config);
+  await saveConfig(normalizePolicyLists(config));
 }
 
 export async function getConfigValue(keyPath) {

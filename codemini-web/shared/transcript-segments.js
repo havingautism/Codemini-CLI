@@ -5,6 +5,7 @@ import {
 } from "./tool-segments.js";
 import { buildHookSegmentEvent } from "./hook-ui.js";
 import { formatToolLabel as coreFormatToolLabel } from "../../src/core/tool-display.js";
+import { settleTodoCardsInSegments } from "../../src/core/todo-state.js";
 import { mergeTiming, sanitizeTiming } from "../../src/core/usage-timing.js";
 
 const USAGE_KEYS = [
@@ -40,6 +41,45 @@ export function routingGraphFromEvent(event = {}) {
       ? event.decisions
       : {},
     startedAt: event.startedAt || new Date().toISOString(),
+  };
+}
+
+export function memoryInjectFromEvent(event = {}, current = null) {
+  const startedAt = event.startedAt || new Date().toISOString();
+  const retrieved = Array.isArray(event.retrieved)
+    ? event.retrieved
+    : Array.isArray(event.hits)
+      ? event.hits
+      : [];
+  if (event.mode === 'failure') {
+    const base = current && typeof current === 'object' ? { ...current } : {
+      query: '',
+      mode: 'turn',
+      profile: [],
+      guaranteed: [],
+      retrieved: [],
+    };
+    return {
+      ...base,
+      startedAt: base.startedAt || startedAt,
+      recovery: [
+        ...(Array.isArray(base.recovery) ? base.recovery : []),
+        {
+          tool: String(event.tool || event.toolName || ''),
+          query: String(event.query || ''),
+          hits: retrieved,
+        },
+      ],
+    };
+  }
+  return {
+    query: String(event.query || ''),
+    mode: 'turn',
+    profile: Array.isArray(event.profile) ? event.profile : [],
+    guaranteed: Array.isArray(event.guaranteed) ? event.guaranteed : [],
+    retrieved,
+    startedAt,
+    ...(Array.isArray(current?.recovery) ? { recovery: current.recovery } : {}),
   };
 }
 
@@ -388,7 +428,11 @@ export function settleIncompleteTranscriptMessage(message, { reason = "aborted" 
     isComplete: true,
     loading: false,
     ...(reason === "aborted" ? { manualAborted: true } : {}),
-    segments: settleOpenWorkInSegments(message.segments, { status, summary }),
+    segments: reason === "completed"
+      ? settleTodoCardsInSegments(
+          settleOpenWorkInSegments(message.segments, { status, summary }),
+        )
+      : settleOpenWorkInSegments(message.segments, { status, summary }),
     skillBadges,
     planStep,
   };

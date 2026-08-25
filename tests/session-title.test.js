@@ -8,7 +8,8 @@ import {
   ensureSessionTitleEmoji,
   normalizeGeneratedSessionTitle,
   retrySessionTitleRequest,
-  shouldReplaceSessionTitle
+  shouldReplaceSessionTitle,
+  stripInternalTitleContext
 } from '../src/core/session-title.js';
 import { createSessionTitleTaskCoordinator } from '../src/core/chat-runtime.js';
 import {
@@ -63,6 +64,75 @@ test('buildSessionTitleInput removes reasoning and tool-call blocks', () => {
   });
   assert.doesNotMatch(input, /检查密钥|read config|thinking|tool_call/);
   assert.match(input, /已修复 OAuth 回调地址/);
+});
+
+test('title inputs remove internal memory injection blocks', () => {
+  const injected = [
+    '<retrieved_memory>',
+    '- [coding] internal recalled detail',
+    '</retrieved_memory>',
+    '',
+    '修复中断后的侧边栏标题',
+  ].join('\n');
+
+  assert.equal(stripInternalTitleContext(injected), '修复中断后的侧边栏标题');
+  assert.equal(resolveTitleUserText({ role: 'user', content: injected }), '修复中断后的侧边栏标题');
+  assert.equal(deriveSessionTitle([{ role: 'user', content: injected }]), '💬 修复中断后的侧边栏标题');
+
+  const titleInput = buildSessionTitleInput({
+    userText: injected,
+    assistantText: '<recovery_memory>internal lesson</recovery_memory>已修复',
+  });
+  assert.doesNotMatch(titleInput, /memory|internal recalled|internal lesson/i);
+  assert.match(titleInput, /User request:\n修复中断后的侧边栏标题/);
+  assert.match(titleInput, /Assistant final answer:\n已修复/);
+});
+
+test('title inputs exclude attachment bodies, paths, scrapbook context, and image payloads', () => {
+  const modelContent = [
+    '[Explicit skill composition]',
+    '',
+    '[Executing skill: /inspect-assets]',
+    '',
+    '# 检查设计稿',
+    '',
+    '[User task]',
+    '检查这个登录页',
+    '',
+    '<uploaded_attachments>',
+    'Attachment 1: login.png',
+    'Path: C:\\Users\\secret\\login.png',
+    'Extracted text: private attachment body',
+    '</uploaded_attachments>',
+    '',
+    '<scrapbook_context>',
+    'Source URL: https://private.example/note',
+    'Summary: private scrapbook summary',
+    '</scrapbook_context>',
+  ].join('\n');
+  const message = {
+    role: 'user',
+    content: '检查这个登录页',
+    model_content: modelContent,
+    model_images: [{
+      name: 'login.png',
+      filename: 'C:\\Users\\secret\\login.png',
+      data: 'very-secret-base64',
+    }],
+  };
+
+  assert.equal(resolveTitleUserText(message), '检查这个登录页');
+  assert.equal(deriveSessionTitle([message]), '💬 检查这个登录页');
+
+  const titleInput = buildSessionTitleInput({
+    userText: `${modelContent}\n\n[FILE:secrets.txt]\nprivate file contents\n[/FILE]`,
+    assistantText: '已检查 ![](data:image/png;base64,c2VjcmV0LWltYWdl)',
+  });
+  assert.doesNotMatch(
+    titleInput,
+    /C:\\Users|private attachment|private scrapbook|private file|base64|c2VjcmV0|private\.example/i,
+  );
+  assert.match(titleInput, /检查这个登录页/);
 });
 
 test('title messages use few-shot labels before the real first exchange', () => {

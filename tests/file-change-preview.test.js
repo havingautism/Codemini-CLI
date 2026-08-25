@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  reconcileFileChangesWithGit,
+  canShowFileChangeUndo,
   resolveFileChangeSequenceAction,
   resolveFileChangePreviewLines,
   unifiedPatchToPreviewLines,
@@ -15,16 +15,22 @@ test('file change sequences collapse to their net action', () => {
   assert.equal(resolveFileChangeSequenceAction(['edit', 'delete']), 'delete');
 });
 
-test('file change summary follows the final git worktree state', () => {
-  const staleCreate = [{ path: 'workspace/tool-test.md', action: 'create', linesAdded: 5 }];
-  assert.deepEqual(reconcileFileChangesWithGit(staleCreate, undefined), []);
-  assert.deepEqual(reconcileFileChangesWithGit(staleCreate, []), []);
-
-  assert.deepEqual(
-    reconcileFileChangesWithGit(staleCreate, [
-      { path: 'workspace\\tool-test.md', status: 'D' },
-    ]),
-    [{ path: 'workspace/tool-test.md', action: 'delete', linesAdded: 5 }],
+test('canShowFileChangeUndo depends on tracked history, not git status', () => {
+  const dirty = {
+    path: 'src/a.ts',
+    changeSetId: 'cs-1',
+    workspace: { dirty: true },
+  };
+  const clean = {
+    path: 'src/a.ts',
+    changeSetId: 'cs-1',
+    workspace: { dirty: false },
+  };
+  assert.equal(canShowFileChangeUndo(dirty), true);
+  assert.equal(canShowFileChangeUndo(clean), true);
+  assert.equal(
+    canShowFileChangeUndo({ ...dirty, workspace: { dirty: undefined } }),
+    true,
   );
 });
 

@@ -38,8 +38,8 @@ async function createProject() {
 test('project knowledge graph persists evidence-backed nodes and supports path queries', async (t) => {
   const root = await createProject();
   t.after(async () => {
-    closeSqliteDatabasesForTests();
-    await fs.rm(root, { recursive: true, force: true });
+    closeSqliteDatabasesForTests(root);
+    await fs.rm(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 50 });
   });
 
   await initializeProjectIndex(root);
@@ -71,8 +71,8 @@ test('project knowledge graph persists evidence-backed nodes and supports path q
 test('project knowledge graph version changes after an indexed source edit', async (t) => {
   const root = await createProject();
   t.after(async () => {
-    closeSqliteDatabasesForTests();
-    await fs.rm(root, { recursive: true, force: true });
+    closeSqliteDatabasesForTests(root);
+    await fs.rm(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 50 });
   });
 
   await initializeProjectIndex(root);
@@ -90,8 +90,8 @@ test('project knowledge graph version changes after an indexed source edit', asy
 test('project knowledge graph version ignores index refresh timestamps', async (t) => {
   const root = await createProject();
   t.after(async () => {
-    closeSqliteDatabasesForTests();
-    await fs.rm(root, { recursive: true, force: true });
+    closeSqliteDatabasesForTests(root);
+    await fs.rm(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 50 });
   });
 
   await initializeProjectIndex(root);
@@ -105,8 +105,8 @@ test('project knowledge graph version ignores index refresh timestamps', async (
 test('project indexing keeps same-name symbols from different scopes distinct', async (t) => {
   const root = await createProject();
   t.after(async () => {
-    closeSqliteDatabasesForTests();
-    await fs.rm(root, { recursive: true, force: true });
+    closeSqliteDatabasesForTests(root);
+    await fs.rm(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 50 });
   });
   await fs.writeFile(
     path.join(root, 'src', 'scopes.js'),

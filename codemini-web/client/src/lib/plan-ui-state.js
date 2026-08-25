@@ -4,6 +4,10 @@ import {
   normalizeUsage,
 } from "../../../shared/transcript-segments.js";
 import { stripPlanProgressText } from "../../../shared/plan-progress-text.js";
+import {
+  settleTodoCardsInSegments,
+  settleTodosCompleted,
+} from "../../../../src/core/todo-state.js";
 
 const PLAN_NESTED_STREAM_EVENTS = new Set([
   "assistant:delta",
@@ -45,6 +49,32 @@ export function isCreatePlanCard(card) {
     name === "fork_task" ||
     Boolean(card?.planRun)
   );
+}
+
+function isDelegationCard(card) {
+  const name = String(card?.name || "")
+    .toLowerCase()
+    .replace(/\(.*$/, "");
+  return name === "fork_task" || name === "run_subagent";
+}
+
+function settleDelegationChecklists(card, { stepIndex = null } = {}) {
+  if (!isDelegationCard(card)) return card;
+  const assigned = Array.isArray(card.arguments?.tasks)
+    ? settleTodosCompleted(card.arguments.tasks)
+    : null;
+  const steps = Array.isArray(card.planRun?.steps)
+    ? card.planRun.steps.map((step, index) => (
+      stepIndex != null && index !== stepIndex
+        ? step
+        : { ...step, segments: settleTodoCardsInSegments(step.segments) }
+    ))
+    : card.planRun?.steps;
+  return {
+    ...card,
+    ...(assigned ? { arguments: { ...card.arguments, tasks: assigned } } : {}),
+    planRun: card.planRun ? { ...card.planRun, steps } : card.planRun,
+  };
 }
 
 export function planPhaseTitle(phase, { toolName = "" } = {}) {
@@ -610,18 +640,24 @@ export function applyPlanEventToMessage(message, event) {
           : anyWaiting
             ? "waiting"
             : "executing";
-        const completedForkTasks =
+        const shouldSettleChecklist =
           type === "plan:step_done" &&
           ["done", "completed"].includes(String(status || "").toLowerCase()) &&
-          String(card.name || "").toLowerCase().replace(/\(.*$/, "") === "fork_task" &&
-          Array.isArray(card.arguments?.tasks)
-            ? card.arguments.tasks.map((task) => ({ ...task, status: "completed" }))
-            : null;
+          isDelegationCard(card);
+        const nextCard = shouldSettleChecklist
+          ? settleDelegationChecklists(
+              {
+                ...card,
+                planRun: { ...current, steps },
+              },
+              { stepIndex },
+            )
+          : card;
 
         return {
           ...card,
-          ...(completedForkTasks
-            ? { arguments: { ...card.arguments, tasks: completedForkTasks } }
+          ...(shouldSettleChecklist
+            ? { arguments: nextCard.arguments, planRun: nextCard.planRun }
             : {}),
           status: allDone
             ? anyFailed
@@ -632,13 +668,13 @@ export function applyPlanEventToMessage(message, event) {
             : "running",
           displayName: planPhaseTitle(phase, { toolName: card.name }),
           planRun: {
-            ...current,
+            ...(shouldSettleChecklist ? nextCard.planRun : current),
             phase,
             goal:
               event.goal ||
               current.goal ||
               String(card.arguments?.goal || card.arguments?.prompt || "").trim(),
-            steps,
+            steps: shouldSettleChecklist ? nextCard.planRun.steps : steps,
           },
         };
       },
@@ -728,12 +764,15 @@ export function settleRunningCreatePlanCards(message, { reason = "aborted" } = {
               steps,
             }
           : currentRun;
-        return {
+        const nextCard = {
           ...card,
           status: planRun?.phase === "failed" ? "error" : "done",
           displayName: planPhaseTitle(planRun?.phase || terminalPhase, { toolName: card.name }),
           planRun,
         };
+        return terminalPhase === "completed"
+          ? settleDelegationChecklists(nextCard)
+          : nextCard;
       });
       if (!cardsChanged) return seg;
       changed = true;

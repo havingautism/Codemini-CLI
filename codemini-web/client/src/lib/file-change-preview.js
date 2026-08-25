@@ -32,30 +32,15 @@ export function resolveFileChangeSequenceAction(actions = []) {
   return existsAfter ? "edit" : "delete";
 }
 
-function normalizeGitPath(value) {
-  return String(value || "")
-    .replace(/\\/g, "/")
-    .replace(/^\.\//, "");
-}
-
-export function reconcileFileChangesWithGit(fileChanges = [], gitFiles) {
-  if (!Array.isArray(gitFiles)) return [];
-  const statusByPath = new Map(
-    gitFiles
-      .map((file) => [normalizeGitPath(file?.path), file])
-      .filter(([filePath]) => filePath),
-  );
-  return fileChanges.flatMap((change) => {
-    const gitFile = statusByPath.get(normalizeGitPath(change?.path));
-    if (!gitFile) return [];
-    const action =
-      gitFile.status === "?" || gitFile.status === "A"
-        ? "create"
-        : gitFile.status === "D"
-          ? "delete"
-          : "edit";
-    return [{ ...change, action }];
-  });
+export function canShowFileChangeUndo(change) {
+  const ids = Array.isArray(change?.changeSetIds)
+    ? change.changeSetIds
+    : change?.changeSetId
+      ? [change.changeSetId]
+      : [];
+  if (!ids.filter(Boolean).length) return false;
+  if (change?.revertedAt) return false;
+  return true;
 }
 
 export function buildFileChangePreviewLines(previewText, action = "edit") {

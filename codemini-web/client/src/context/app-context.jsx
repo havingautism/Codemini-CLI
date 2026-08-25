@@ -10,6 +10,11 @@ import React, {
 import { t } from "../../i18n/index.js";
 import * as api from "../hooks/use-api.js";
 import { extractReasoningRuntimePatch } from "../lib/reasoning-controls.js";
+import {
+  createGitWorkspaceError,
+  createGitWorkspaceLoading,
+  createGitWorkspaceReady,
+} from "../hooks/use-git-workspace.js";
 import { parseUserBannerAttachmentsFromModelContent, enrichUiMessagesWithScrapbookAttachments, pickScrapbookAttachments } from "../lib/message-attachments.js";
 import { CHAT_ACTION_NAMES, LOCAL_SPEC_REVIEW_ACTIONS } from "../lib/chat-action-names.js";
 import {
@@ -313,7 +318,7 @@ const initialState = {
   isGeneral: false,
   history: [],
   skills: [],
-  gitInfo: null,
+  gitWorkspace: { status: "loading", sessionId: "" },
   gitBatch: {},
   codewikiProjectPath: "",
   codewikiGeneration: { status: "idle", updatedAt: null, error: "" },
@@ -1371,31 +1376,43 @@ export function AppProvider({ children }) {
   const loadGitInfo = useCallback(async ({ isAlive = () => true, sessionId } = {}) => {
     const targetSessionId = sessionId || stateRef.current.currentSessionId || null;
     const requestId = ++gitInfoRequestRef.current;
-    if (isAlive()) update({ gitInfo: null });
+    if (isAlive()) {
+      update({
+        gitWorkspace: createGitWorkspaceLoading(targetSessionId || ""),
+      });
+    }
     try {
       const info = await api.fetchGitInfo(targetSessionId);
       if (!isAlive() || requestId !== gitInfoRequestRef.current) return;
+      const currentSessionId = stateRef.current.currentSessionId || "";
       if (
         targetSessionId &&
-        stateRef.current.currentSessionId &&
-        targetSessionId !== stateRef.current.currentSessionId
+        currentSessionId &&
+        targetSessionId !== currentSessionId
       ) {
         return;
       }
-      update({ gitInfo: info });
-    } catch {
-      if (!isAlive() || requestId !== gitInfoRequestRef.current) return;
       update({
-        gitInfo: {
-          isGit: false,
-          branch: null,
-          dirty: false,
-          staged: 0,
-          modified: 0,
-          untracked: 0,
-          linesAdded: 0,
-          linesRemoved: 0,
-        },
+        gitWorkspace: createGitWorkspaceReady(
+          info,
+          targetSessionId || currentSessionId,
+        ),
+      });
+    } catch (error) {
+      if (!isAlive() || requestId !== gitInfoRequestRef.current) return;
+      const currentSessionId = stateRef.current.currentSessionId || "";
+      if (
+        targetSessionId &&
+        currentSessionId &&
+        targetSessionId !== currentSessionId
+      ) {
+        return;
+      }
+      update({
+        gitWorkspace: createGitWorkspaceError(
+          String(error?.message || "Unable to load git status"),
+          targetSessionId || currentSessionId,
+        ),
       });
     }
   }, [update]);
@@ -1686,6 +1703,9 @@ export function AppProvider({ children }) {
               attachments: parseUserBannerAttachmentsFromModelContent(msg.model_content),
               skillBadges: skillBadgesFromSessionMessage(msg),
               fileChanges: [],
+              ...(msg.memoryInject && typeof msg.memoryInject === "object"
+                ? { memoryInject: msg.memoryInject }
+                : {}),
             });
           } else if (msg.role === "assistant") {
             const responseStatus = String(
@@ -2552,6 +2572,9 @@ export function AppProvider({ children }) {
               ...prev,
               messages: markMessagesChangesReverted(prev.messages, ids),
             }));
+          }
+          if (event.sessionId) {
+            void loadGitInfo({ sessionId: event.sessionId });
           }
           break;
         }
@@ -3930,7 +3953,7 @@ export function AppProvider({ children }) {
         const currentSessionId = stateRef.current.currentSessionId;
         if (!sessionId || sessionId === currentSessionId) return;
         const targetMessageId = String(options.targetMessageId || "").trim();
-        update({ currentView: "chat", messagesLoading: true, gitInfo: null });
+        update({ currentView: "chat", messagesLoading: true, gitWorkspace: createGitWorkspaceLoading(sessionId || "") });
         try {
           const result = await api.switchSession(sessionId);
           if (result.ok) {
@@ -4087,6 +4110,34 @@ export function AppProvider({ children }) {
         }
       },
 
+      forkSession: async (messageId) => {
+        const sessionId = String(stateRef.current.currentSessionId || "").trim();
+        const targetMessageId = String(messageId || "").trim();
+        if (!sessionId || !targetMessageId) {
+          return { error: true, message: "Missing session" };
+        }
+        if (
+          stateRef.current.busy ||
+          stateRef.current.live ||
+          isSessionBusyInState(stateRef.current, sessionId)
+        ) {
+          return { error: true, message: t("forkSessionBusy") };
+        }
+        update({ messagesLoading: true });
+        try {
+          const result = await api.forkSession(sessionId, targetMessageId);
+          if (!result?.ok || !result.sessionId) {
+            update({ messagesLoading: false });
+            return result || { error: true, message: "Failed to fork session" };
+          }
+          await switchSessionRef.current?.(result.sessionId);
+          return { ok: true, sessionId: result.sessionId };
+        } catch (err) {
+          update({ messagesLoading: false });
+          return { error: true, message: err?.message || "Failed to fork session" };
+        }
+      },
+
       newSession: async () => {
         update({ currentView: "chat", messagesLoading: true });
         try {
@@ -4113,7 +4164,7 @@ export function AppProvider({ children }) {
       },
 
       askScrapbookEntry: async (entryId) => {
-        update({ currentView: "chat", messagesLoading: true, gitInfo: null });
+        update({ currentView: "chat", messagesLoading: true, gitWorkspace: createGitWorkspaceLoading(sessionId || "") });
         try {
           const payloadResult = await api.buildScrapbookAskPayload(entryId);
           if (payloadResult?.error || !payloadResult?.payload) {
@@ -4220,7 +4271,7 @@ export function AppProvider({ children }) {
             }
             const cachedTargetMessages =
               stateRef.current.sessionMessagesById?.[targetSessionId] || [];
-            update({ currentView: "chat", messagesLoading: true, gitInfo: null });
+            update({ currentView: "chat", messagesLoading: true, gitWorkspace: createGitWorkspaceLoading(sessionId || "") });
             updateRoute("chat", targetSessionId, { messageId: targetMessageId });
             activateSessionView(targetSessionId);
             restoreActiveMsgRef(
@@ -4286,7 +4337,7 @@ export function AppProvider({ children }) {
           codewikiProjectPath: pendingCodeWikiProjectPath,
           isGeneral: openingGeneral,
           targetMessageId: null,
-          gitInfo: null,
+          gitWorkspace: createGitWorkspaceLoading(""),
         });
         try {
           const result = await api.openProject(projectPath, {
