@@ -68,6 +68,7 @@ import {
   searchMemories,
   captureToInbox,
 } from "./memory-store.js";
+import { getMemoryMetrics } from "./memory-metrics.js";
 import { runDreamConsolidation } from "./dream-consolidate.js";
 import { inferMemoryScope, normalizeMemoryKind } from "./memory-policy.js";
 import { getReplyLanguageName } from "./reply-language.js";
@@ -7160,6 +7161,7 @@ export function getBuiltinTools({
         lifecycle: args.lifecycle,
         workspaceRoot
       }),
+      metrics: getMemoryMetrics({ scope: args.scope, workspaceRoot }),
     }),
     search_memory: async (args = {}) => ({
       scope: String(args.scope || "all"),

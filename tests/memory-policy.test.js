@@ -175,8 +175,12 @@ test('rememberMemory keeps pinned items when trimming budget', async () => {
       workspaceRoot: tmp
     });
     const items = await listMemories({ scope: 'user', workspaceRoot: tmp });
-    assert.equal(items.length, 2);
+    assert.equal(items.filter((item) => item.lifecycle !== 'archived').length, 2);
+    assert.equal(items.filter((item) => item.lifecycle === 'archived').length, 1);
     assert.ok(items.some((item) => item.pinned && item.content.includes('keep me')));
+    const evicted = items.find((item) => item.content.includes('preference A'));
+    assert.equal(evicted.lifecycle, 'archived');
+    assert.equal(evicted.evidence.retentionEviction.reason, 'capacity');
   } finally {
     closeSqliteDatabasesForTests(tmp);
     if (prev === undefined) delete process.env.CODEMINI_GLOBAL_DIR;

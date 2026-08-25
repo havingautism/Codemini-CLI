@@ -2512,7 +2512,7 @@ export const MessageBubble = memo(function MessageBubble({
               retryPrompt={retryPrompt}
               canRetry={canRetry}
               canSaveToScrapbook={canSaveToScrapbook}
-              retrievedMemories={retrievedMemories}
+              retrievedMemories={message.manualAborted ? [] : retrievedMemories}
               showFork
               canFork={!turnActive}
               messageId={message.id}

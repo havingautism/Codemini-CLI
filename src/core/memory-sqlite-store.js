@@ -283,7 +283,7 @@ function queryTokens(query) {
   return segmented.split(/\s+/).filter(Boolean).slice(0, 12);
 }
 
-function searchSubstring(db, { query, scope, family, kind, limit = 30 } = {}) {
+export function searchSubstring(db, { query, scope, family, kind, limit = 30 } = {}) {
   const tokens = queryTokens(query).map((token) => token.toLowerCase());
   if (!tokens.length) return [];
   const clauses = [];
@@ -359,6 +359,7 @@ export function searchFts(db, options = {}) {
     if (rebuild) {
       try {
         rebuildMemoryIndex(db);
+        options.onRebuild?.();
         return queryFts(db, options);
       } catch {
         // fall through to substring
@@ -366,6 +367,7 @@ export function searchFts(db, options = {}) {
     }
     if (fallback) {
       try {
+        options.onFallback?.();
         return searchSubstring(db, options);
       } catch {
         return [];

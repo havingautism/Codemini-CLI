@@ -25,6 +25,16 @@ export function findStaleMemories(items = [], now = Date.now()) {
  * score (§24). Pinned/archived items are protected.
  */
 export function findLowUtilityMemories(items = [], now = Date.now(), threshold = 0.35) {
+  return rankMemoryRetentionCandidates(items, now)
+    .filter((entry) => entry.retentionScore < threshold)
+    .map((entry) => entry.item);
+}
+
+export function rankMemoryRetentionCandidates(items = [], now = Date.now()) {
+  const timestamp = (item) => {
+    const parsed = Date.parse(item?.updatedAt || item?.createdAt || '');
+    return Number.isFinite(parsed) ? parsed : 0;
+  };
   return (Array.isArray(items) ? items : [])
     .filter((item) => item?.lifecycle !== 'archived' && item?.pinned !== true)
     .map((item) => ({
@@ -36,7 +46,9 @@ export function findLowUtilityMemories(items = [], now = Date.now(), threshold =
         now
       })
     }))
-    .filter((entry) => entry.retentionScore < threshold)
-    .sort((a, b) => a.retentionScore - b.retentionScore)
-    .map((entry) => entry.item);
+    .sort((a, b) => (
+      a.retentionScore - b.retentionScore
+      || timestamp(a.item) - timestamp(b.item)
+      || String(a.item?.id || '').localeCompare(String(b.item?.id || ''))
+    ));
 }

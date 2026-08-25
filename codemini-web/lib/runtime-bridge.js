@@ -418,7 +418,11 @@ export class RuntimeBridge {
     this.#forkHandledFor = nextSessionId;
     this.#settleIncompleteUiMessages('aborted');
     this.#flushUiTranscriptTo(previousSessionId);
-    this.#uiMessages = [];
+    // The continuation intentionally drops the interrupted turn from model
+    // history, but the user should not see already-rendered UI disappear.
+    // Copy the settled transcript to the continuation as display-only state;
+    // its core session still contains only the clean model-visible prefix.
+    this.#flushUiTranscriptTo(nextSessionId);
     this.#uiActiveMsgId = null;
     this.#uiPlanStepIds = new Map();
     this.#uiPlanOverviewId = null;

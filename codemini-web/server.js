@@ -131,6 +131,7 @@ import {
   listMemories,
   searchMemories,
 } from "../src/core/memory-store.js";
+import { getMemoryMetrics } from "../src/core/memory-metrics.js";
 import { runDreamConsolidation } from "../src/core/dream-consolidate.js";
 import { getReplyLanguage } from "../src/core/reply-language.js";
 import { normalizeSkillContexts } from "../src/core/skill-contexts.js";
@@ -3702,6 +3703,17 @@ async function main() {
           fallbackDir: currentProjectDir,
         });
         jsonResponse(res, { scope, query, items });
+      } catch (err) {
+        jsonResponse(res, { error: true, message: err.message }, 500);
+      }
+      return;
+
+  }));
+  routes.get("/api/memory/metrics", nodeRoute(async (req, res, url) => {
+      const requestedScope = String(url.searchParams.get("scope") || "").trim().toLowerCase();
+      const scope = MEMORY_SCOPES.has(requestedScope) ? requestedScope : "all";
+      try {
+        jsonResponse(res, getMemoryMetrics({ scope, workspaceRoot: currentProjectDir }));
       } catch (err) {
         jsonResponse(res, { error: true, message: err.message }, 500);
       }

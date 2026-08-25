@@ -29,6 +29,8 @@ import {
   updateMemoryWithRevision
 } from './memory-sqlite-store.js';
 import { retrieveMemories } from './memory-retriever.js';
+import { rankMemoryRetentionCandidates } from './memory-lifecycle.js';
+import { incrementMemoryMetric } from './memory-metrics.js';
 import { transaction } from './sqlite-database.js';
 
 const ALLOWED_SCOPES = new Set(['user', 'global', 'project']);
@@ -323,27 +325,47 @@ async function rememberMemoryUnlocked({
     seen.add(key);
     deduped.push(item);
   }
-  const ranked = deduped.map((item, index) => ({ item, index }));
-  const pinnedRanked = ranked.filter((entry) => entry.item.pinned);
-  const unpinnedRanked = ranked.filter((entry) => !entry.item.pinned);
-  const capped = [...pinnedRanked, ...unpinnedRanked]
-    .slice(0, maxItems)
-    .sort((left, right) => left.index - right.index)
-    .map((entry) => entry.item);
-
-  let totalChars = capped.reduce((sum, item) => sum + measureMemoryChars(item), 0);
-  while (capped.length > 1 && totalChars > maxChars) {
-    let removeIdx = capped.length - 1;
-    while (removeIdx >= 0 && capped[removeIdx].pinned) removeIdx -= 1;
-    if (removeIdx < 0) break;
-    const [removed] = capped.splice(removeIdx, 1);
-    totalChars -= measureMemoryChars(removed);
+  const active = deduped.filter((item) => item.lifecycle !== 'archived');
+  const evictions = [];
+  let activeCount = active.length;
+  let activeChars = active.reduce((sum, item) => sum + measureMemoryChars(item), 0);
+  for (const entry of rankMemoryRetentionCandidates(active)) {
+    if (activeCount <= maxItems && activeChars <= maxChars) break;
+    evictions.push(entry);
+    activeCount -= 1;
+    activeChars -= measureMemoryChars(entry.item);
   }
-  transaction(db, () => replaceScopeMemories(db, normalizedScope, capped));
-  if (!capped.some((item) => item.id === saved.id)) {
-    const error = new Error('Memory was not saved because pinned items occupy the configured capacity');
-    error.code = 'MEMORY_CAPACITY_PINNED';
+  if (evictions.some((entry) => entry.item.id === saved.id)) {
+    const blockers = active.filter((item) => item.id !== saved.id && item.lifecycle !== 'archived');
+    const pinnedOnly = blockers.length > 0 && blockers.every((item) => item.pinned === true);
+    const error = new Error(pinnedOnly
+      ? 'Memory was not saved because pinned items occupy the configured capacity'
+      : 'Memory was not saved because it ranked below the configured retention capacity');
+    error.code = pinnedOnly ? 'MEMORY_CAPACITY_PINNED' : 'MEMORY_CAPACITY_LOW_RETENTION';
     throw error;
+  }
+  const evictionById = new Map(evictions.map((entry) => [entry.item.id, entry.retentionScore]));
+  const archivedAt = nowIso();
+  const retained = deduped.map((item) => evictionById.has(item.id)
+    ? {
+        ...item,
+        lifecycle: 'archived',
+        updatedAt: archivedAt,
+        evidence: {
+          ...(item.evidence && typeof item.evidence === 'object' ? item.evidence : {}),
+          retentionEviction: {
+            reason: 'capacity',
+            score: evictionById.get(item.id),
+            archivedAt
+          }
+        }
+      }
+    : item);
+  transaction(db, () => replaceScopeMemories(db, normalizedScope, retained));
+  if (evictions.length) {
+    incrementMemoryMetric({ name: 'eviction_count', scope: normalizedScope, workspaceRoot, delta: evictions.length });
+    incrementMemoryMetric({ name: 'archive_count', scope: normalizedScope, workspaceRoot, delta: evictions.length });
+    incrementMemoryMetric({ name: 'invalidated_memory_count', scope: normalizedScope, workspaceRoot, delta: evictions.length });
   }
   return saved;
 }
@@ -360,6 +382,9 @@ async function forgetMemoryUnlocked({ scope, id, workspaceRoot = process.cwd() }
   await ensurePersistentMemoryImported({ workspaceRoot, scope: normalizedScope });
   const db = dbForScope(normalizedScope, workspaceRoot);
   const removed = deleteMemory(db, id);
+  if (removed) {
+    incrementMemoryMetric({ name: 'invalidated_memory_count', scope: normalizedScope, workspaceRoot });
+  }
   return { removed };
 }
 
@@ -522,7 +547,13 @@ async function captureToInboxUnlocked({
     const existing = findInboxByIdempotencyKey(normalizedIdempotencyKey);
     if (existing) return { ...existing, duplicate: true };
   }
-  return saveMemoryQueueEntry('inbox', entry);
+  const saved = saveMemoryQueueEntry('inbox', entry);
+  incrementMemoryMetric({
+    name: 'candidate_count',
+    scope: entry.scope,
+    workspaceRoot: entry.scope === 'project' ? (entry.projectDir || process.cwd()) : process.cwd()
+  });
+  return saved;
 }
 
 export function forgetMemory(args = {}) {
@@ -622,7 +653,13 @@ async function archiveEntryUnlocked(entry, reason = '', auditNote = '') {
     archiveReason: normalizeMemoryText(reason),
     auditNote: normalizeMemoryText(auditNote)
   };
-  return archiveMemoryQueueEntry(entry, archived);
+  const saved = archiveMemoryQueueEntry(entry, archived);
+  incrementMemoryMetric({
+    name: 'archive_count',
+    scope: normalizeMemoryScope(entry?.scope, { fallback: 'project' }),
+    workspaceRoot: entry?.projectDir || process.cwd()
+  });
+  return saved;
 }
 
 export function archiveEntry(entry, reason = '', auditNote = '') {
@@ -666,5 +703,6 @@ export async function promoteMemory({
   });
   // Remove from inbox
   await removeInboxEntry(entry.id);
+  incrementMemoryMetric({ name: 'promotion_count', scope, workspaceRoot });
   return { promoted: saved, lifecycle: lc };
 }

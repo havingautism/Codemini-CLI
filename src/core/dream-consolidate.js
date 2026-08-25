@@ -9,6 +9,7 @@ import {
 import { writeDreamAuditReport } from './dream-audit.js';
 import { evaluateInboxBatch, evaluateMemoryMaintenance } from './dream-evaluator.js';
 import { chooseMemoryLifecycle, normalizeMemoryScope } from './memory-policy.js';
+import { incrementMemoryMetric } from './memory-metrics.js';
 
 let dreamConsolidationRunning = false;
 
@@ -28,6 +29,85 @@ function maintenanceScopes(scopeFilter) {
   const normalized = normalizeMemoryScope(scope, { fallback: '' });
   if (['user', 'global', 'project'].includes(normalized)) return [normalized];
   return ['user', 'global', 'project'];
+}
+
+function uniqueStrings(values = []) {
+  return [...new Set(values.map((value) => String(value || '').trim()).filter(Boolean))];
+}
+
+function mergeConsolidationEvidence(sourceItems) {
+  return {
+    type: 'dream-consolidation',
+    sourceMemoryIds: sourceItems.map((item) => item.id),
+    sourceEvidence: sourceItems.map((item) => ({
+      memoryId: item.id,
+      evidence: item.evidence && typeof item.evidence === 'object' ? item.evidence : {}
+    }))
+  };
+}
+
+export function applyMemoryMaintenancePlan(items = [], plan = {}) {
+  const sourceItems = Array.isArray(items) ? items : [];
+  const byId = new Map(sourceItems.map((item) => [String(item.id), item]));
+  const nextById = new Map(byId);
+  const applied = { promotions: [], staleness: [], consolidations: [], archives: [] };
+
+  for (const action of Array.isArray(plan?.staleness) ? plan.staleness : []) {
+    const memory = nextById.get(String(action?.memoryId || ''));
+    if (!memory || memory.pinned || action?.action !== 'extend') continue;
+    const extendDays = Math.min(3650, Math.max(1, Math.floor(Number(action.extendDays) || 0)));
+    const previousDays = Math.max(0, Math.floor(Number(memory.expectedValidDays) || 0));
+    nextById.set(memory.id, { ...memory, expectedValidDays: previousDays + extendDays });
+    applied.staleness.push({ memoryId: memory.id, action: 'extend', extendDays });
+  }
+
+  const consumed = new Set();
+  for (const action of Array.isArray(plan?.consolidations) ? plan.consolidations : []) {
+    const sourceIds = uniqueStrings(action?.sourceIds || []);
+    const sources = sourceIds.map((id) => nextById.get(id)).filter(Boolean);
+    if (sources.length < 2 || sources.length !== sourceIds.length || sources.some((item) => consumed.has(item.id))) continue;
+    const result = action?.result || {};
+    const content = String(result.content || '').trim();
+    if (!content) continue;
+    const first = sources[0];
+    const commonSemanticKey = sources.every((item) => item.semanticKey && item.semanticKey === first.semanticKey)
+      ? first.semanticKey
+      : '';
+    const consolidated = {
+      ...result,
+      content,
+      scope: first.scope,
+      family: first.family,
+      semanticKey: result.semanticKey || commonSemanticKey,
+      source: 'dream-consolidation',
+      pinned: result.pinned === true || sources.some((item) => item.pinned),
+      tags: uniqueStrings(sources.flatMap((item) => item.tags || [])),
+      evidence: mergeConsolidationEvidence(sources),
+      hitCount: sources.reduce((sum, item) => sum + Number(item.hitCount || 0), 0),
+      accessCount: sources.reduce((sum, item) => sum + Number(item.accessCount || 0), 0),
+      confirmationCount: sources.reduce((sum, item) => sum + Number(item.confirmationCount || 0), 0),
+      successCount: sources.reduce((sum, item) => sum + Number(item.successCount || 0), 0),
+      failureCount: sources.reduce((sum, item) => sum + Number(item.failureCount || 0), 0),
+      createdAt: sources.map((item) => item.createdAt).filter(Boolean).sort()[0],
+      updatedAt: new Date().toISOString()
+    };
+    for (const source of sources) {
+      consumed.add(source.id);
+      nextById.delete(source.id);
+    }
+    const resultId = `dream:${sourceIds.join('+')}`;
+    nextById.set(resultId, { ...consolidated, id: resultId });
+    applied.consolidations.push({ sourceIds, result: consolidated });
+  }
+
+  for (const action of Array.isArray(plan?.archives) ? plan.archives : []) {
+    const memory = nextById.get(String(action?.memoryId || ''));
+    if (!memory || memory.pinned) continue;
+    nextById.delete(memory.id);
+    applied.archives.push({ memoryId: memory.id, reason: String(action.reason || 'archived') });
+  }
+
+  return { items: [...nextById.values()], applied };
 }
 
 async function runMemoryMaintenance({
@@ -52,16 +132,16 @@ async function runMemoryMaintenance({
     }
 
     const evaluated = dryRun
-      ? { items, archives: [] }
+      ? { promotions: [], staleness: [], consolidations: [], archives: [] }
       : await evaluateMemoryMaintenance({ scope: memoryScope, items, config, workspaceRoot });
     if (evaluated.error) {
       reports.push({ scope: memoryScope, skipped: true, reason: `maintenance-error: ${evaluated.error}`, itemCount: items.length });
       continue;
     }
-    const nextItems = Array.isArray(evaluated.items) && evaluated.items.length > 0 ? evaluated.items : items;
+    const { items: nextItems, applied } = applyMemoryMaintenancePlan(items, evaluated);
     const changed =
-      JSON.stringify(nextItems.map((item) => [item.kind, item.content, item.summary, item.lifecycle || ''])) !==
-      JSON.stringify(items.map((item) => [item.kind, item.content, item.summary, item.lifecycle || '']));
+      JSON.stringify(nextItems.map((item) => [item.id, item.kind, item.content, item.summary, item.lifecycle || '', item.expectedValidDays || 0])) !==
+      JSON.stringify(items.map((item) => [item.id, item.kind, item.content, item.summary, item.lifecycle || '', item.expectedValidDays || 0]));
 
     if (!dryRun) {
       await replaceMemoryBucket({
@@ -76,6 +156,12 @@ async function runMemoryMaintenance({
           ? `LLM-maintained ${items.length} item(s) into ${nextItems.length} item(s)`
           : `Marked ${items.length} item(s) as maintained`
       });
+      const invalidatedCount = applied.archives.length
+        + applied.consolidations.reduce((sum, action) => sum + action.sourceIds.length, 0);
+      if (invalidatedCount) {
+        incrementMemoryMetric({ name: 'archive_count', scope: memoryScope, workspaceRoot, delta: invalidatedCount });
+        incrementMemoryMetric({ name: 'invalidated_memory_count', scope: memoryScope, workspaceRoot, delta: invalidatedCount });
+      }
     }
 
     reports.push({
@@ -84,7 +170,10 @@ async function runMemoryMaintenance({
       before: items.length,
       after: nextItems.length,
       changed,
-      archives: evaluated.archives || [],
+      promotions: applied.promotions,
+      staleness: applied.staleness,
+      consolidations: applied.consolidations,
+      archives: applied.archives,
       dryRun
     });
   }

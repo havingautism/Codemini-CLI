@@ -52,6 +52,10 @@ test('retrieved memories surface beside the reply notebook action', async () => 
   assert.match(chatPanel, /retrievedMemoriesByReplyId/);
   assert.match(chatPanel, /message\.memoryInject\?\.retrieved/);
   assert.match(messageBubble, /<RetrievedMemoryButton memories=\{retrievedMemories\} \/>/);
+  assert.match(
+    messageBubble,
+    /retrievedMemories=\{message\.manualAborted \? \[\] : retrievedMemories\}/,
+  );
   assert.match(messageBubble, /memoryRetrievedCount/);
   assert.match(messageBubble, /memory\?\.recallReason/);
 });

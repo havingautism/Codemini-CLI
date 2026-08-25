@@ -2,6 +2,7 @@ import { captureToInbox } from './memory-store.js';
 import { confirmRetrievedMemories } from './memory-retriever.js';
 import { classifyToolError } from './memory-policy.js';
 import { buildCodingLessonFromEpisode } from './memory-experience-extractor.js';
+import { incrementMemoryMetric } from './memory-metrics.js';
 
 function summarizeArgs(args) {
   if (!args || typeof args !== 'object') return '';
@@ -78,6 +79,14 @@ export function createExperienceTracker({
   return {
     noteRecovery(hits = []) {
       pendingRecovery = Array.isArray(hits) ? hits.filter((item) => item?.id) : [];
+      if (pendingRecovery.length) {
+        incrementMemoryMetric({
+          name: 'lesson_reused_count',
+          scope: 'project',
+          workspaceRoot,
+          delta: pendingRecovery.length
+        });
+      }
     },
 
     recordAttempt({ tool, args, result, error } = {}) {
@@ -99,6 +108,7 @@ export function createExperienceTracker({
       if (outcome === 'failure') {
         if (state === 'open') {
           state = 'failed';
+          incrementMemoryMetric({ name: 'experience_episode_count', scope: 'project', workspaceRoot });
           failedFingerprint = fingerprint;
           lastFailedApproach = {
             tool: toolName,
@@ -138,6 +148,7 @@ export function createExperienceTracker({
         && isCorrelatedStrategy(lastFailedApproach, toolName, args, fingerprint)
       ) {
         state = 'recovered';
+        incrementMemoryMetric({ name: 'experience_recovery_count', scope: 'project', workspaceRoot });
         workingApproach = { tool: toolName, argsSummary: summarizeArgs(args) };
       }
     },
@@ -145,6 +156,7 @@ export function createExperienceTracker({
     noteVerification({ type = 'test_exit_zero' } = {}) {
       if (state !== 'recovered') return;
       state = 'verified';
+      incrementMemoryMetric({ name: 'experience_verified_count', scope: 'project', workspaceRoot });
       verificationType = type;
       if (pendingRecovery.length) {
         try { confirmRetrievedMemories(pendingRecovery, workspaceRoot); } catch { /* best-effort */ }
@@ -186,6 +198,7 @@ export function createExperienceTracker({
         evidence: lesson.evidence,
         projectDir: workspaceRoot
       });
+      incrementMemoryMetric({ name: 'lesson_generated_count', scope: 'project', workspaceRoot });
       return { ok: true, entry, lesson };
     }
   };

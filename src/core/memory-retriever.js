@@ -5,8 +5,7 @@ import {
   listMemoriesFromDb,
   recordMemoryHits,
   recordMemoryOutcome,
-  recordMemoryConfirmation,
-  searchFts
+  recordMemoryConfirmation
 } from './memory-sqlite-store.js';
 import {
   lexicalFromBm25,
@@ -15,6 +14,10 @@ import {
   verificationSignal
 } from './memory-ranker.js';
 import { classifyToolError, normalizeMemoryFamily, normalizeMemoryScope, normalizeMemoryText } from './memory-policy.js';
+import { createMemoryRetrievalAdapter } from './memory-retrieval-adapter.js';
+import { expandMemoryQuery } from './memory-query-expansion.js';
+import { fitMemoryItemsToTokenBudget } from './memory-token-budget.js';
+import { incrementMemoryMetric } from './memory-metrics.js';
 
 function clamp(value, min, max, fallback) {
   const number = Number(value);
@@ -124,11 +127,13 @@ export async function retrieveMemories({
   const topK = clamp(limit, 1, 10, mode === 'failure' ? failureLimit : turnLimit);
   const minScore = Number(config?.memory?.retrieval?.min_score ?? 0.6);
   const needle = normalizeMemoryText(query);
+  const expandedNeedle = config?.memory?.retrieval?.query_expansion === false
+    ? needle
+    : expandMemoryQuery(needle);
   const root = path.resolve(workspaceRoot || process.cwd());
-  const indexOpts = {
-    rebuild: config?.memory?.index?.rebuild_on_corruption !== false,
-    fallback: config?.memory?.index?.substring_fallback !== false
-  };
+  const adapterName = config?.memory?.retrieval?.adapter || 'fts5';
+  const metricScope = scopes.includes('project') ? 'project' : (scopes[0] || 'global');
+  const onAdapterMetric = (name) => incrementMemoryMetric({ name, scope: metricScope, workspaceRoot: root });
 
   await Promise.all(scopes.map((itemScope) => ensurePersistentMemoryImported({
     workspaceRoot: root,
@@ -139,10 +144,11 @@ export async function retrieveMemories({
   if (scopes.includes('user') || scopes.includes('global')) {
     const globalDb = dbForScope('user', root, { create: false });
     if (globalDb) {
+      const adapter = createMemoryRetrievalAdapter({ name: adapterName, db: globalDb, index: config?.memory?.index, onMetric: onAdapterMetric });
       for (const itemScope of scopes.filter((value) => value === 'user' || value === 'global')) {
         const familyFilter = families.length === 1 ? families[0] : '';
         searchJobs.push(needle
-          ? searchFts(globalDb, { query: needle, scope: itemScope, family: familyFilter, kind, limit: 30, ...indexOpts })
+          ? adapter.search(expandedNeedle, { scope: itemScope, family: familyFilter, kind, limit: 30 })
           : listMemoriesFromDb(globalDb, { scope: itemScope, family: familyFilter }));
       }
     }
@@ -150,9 +156,10 @@ export async function retrieveMemories({
   if (scopes.includes('project')) {
     const projectDb = dbForScope('project', root, { create: false });
     if (projectDb) {
+      const adapter = createMemoryRetrievalAdapter({ name: adapterName, db: projectDb, index: config?.memory?.index, onMetric: onAdapterMetric });
       const familyFilter = families.length === 1 ? families[0] : '';
       searchJobs.push(needle
-        ? searchFts(projectDb, { query: needle, scope: 'project', family: familyFilter, kind, limit: 30, ...indexOpts })
+        ? adapter.search(expandedNeedle, { scope: 'project', family: familyFilter, kind, limit: 30 })
         : listMemoriesFromDb(projectDb, { scope: 'project', family: familyFilter }));
     }
   }
@@ -173,6 +180,11 @@ export async function retrieveMemories({
   const hits = ranked.filter((item) => !needle || item.score >= minScore).slice(0, topK);
 
   updateMemoryGroups(hits, root, recordMemoryHits, { create: true });
+  incrementMemoryMetric({
+    name: hits.length ? 'retrieval_hits' : 'retrieval_misses',
+    scope: metricScope,
+    workspaceRoot: root
+  });
 
   return hits;
 }
@@ -185,9 +197,17 @@ export function recordRetrievedOutcome(items = [], result = 'success', workspace
 export function confirmRetrievedMemories(items = [], workspaceRoot = process.cwd()) {
   const root = path.resolve(workspaceRoot || process.cwd());
   updateMemoryGroups(items, root, recordMemoryConfirmation);
+  const counts = new Map();
+  for (const item of Array.isArray(items) ? items : []) {
+    const scope = item?.scope === 'project' ? 'project' : normalizeMemoryScope(item?.scope, { fallback: 'global' });
+    counts.set(scope, (counts.get(scope) || 0) + 1);
+  }
+  for (const [scope, delta] of counts) {
+    incrementMemoryMetric({ name: 'confirmation_count', scope, workspaceRoot: root, delta });
+  }
 }
 
-export function renderRetrievedMemory(items = []) {
+function renderRetrievedMemoryRaw(items = []) {
   if (!Array.isArray(items) || items.length === 0) return '';
   const lines = items.map((item) => {
     const family = item.family ? ` family=${item.family}` : '';
@@ -200,7 +220,7 @@ export function renderRetrievedMemory(items = []) {
   return ['<retrieved_memory>', ...lines, '</retrieved_memory>'].join('\n');
 }
 
-export function renderRecoveryMemory(items = []) {
+function renderRecoveryMemoryRaw(items = []) {
   if (!Array.isArray(items) || items.length === 0) return '';
   const lines = items.map((item) => `- [${item.family || item.kind}] ${item.summary || item.content}`);
   return [
@@ -209,6 +229,24 @@ export function renderRecoveryMemory(items = []) {
     ...lines,
     '</recovery_memory>'
   ].join('\n');
+}
+
+export function budgetRetrievedMemoryItems(items = [], maxTokens) {
+  if (maxTokens == null) return Array.isArray(items) ? items : [];
+  return fitMemoryItemsToTokenBudget(items, { maxTokens, render: renderRetrievedMemoryRaw });
+}
+
+export function budgetRecoveryMemoryItems(items = [], maxTokens) {
+  if (maxTokens == null) return Array.isArray(items) ? items : [];
+  return fitMemoryItemsToTokenBudget(items, { maxTokens, render: renderRecoveryMemoryRaw });
+}
+
+export function renderRetrievedMemory(items = [], { maxTokens } = {}) {
+  return renderRetrievedMemoryRaw(budgetRetrievedMemoryItems(items, maxTokens));
+}
+
+export function renderRecoveryMemory(items = [], { maxTokens } = {}) {
+  return renderRecoveryMemoryRaw(budgetRecoveryMemoryItems(items, maxTokens));
 }
 
 export function buildFailureMemoryQuery({ tool, args, error } = {}) {

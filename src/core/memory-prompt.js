@@ -1,5 +1,6 @@
 import { listMemories } from './memory-store.js';
-import { compactMemoryHit, retrieveMemories, renderRetrievedMemory } from './memory-retriever.js';
+import { budgetRetrievedMemoryItems, compactMemoryHit, retrieveMemories, renderRetrievedMemory } from './memory-retriever.js';
+import { fitMemoryItemsToTokenBudget } from './memory-token-budget.js';
 
 function renderScope(title, items = []) {
   if (!Array.isArray(items) || items.length === 0) return '';
@@ -61,6 +62,32 @@ function bootstrapEnabled(config = {}) {
   return config?.memory?.inject_on_session_start !== false;
 }
 
+function renderBootstrapRecords(records = []) {
+  if (!records.length) return '';
+  const bucketItems = (bucket) => records.filter((entry) => entry.bucket === bucket).map((entry) => entry.item);
+  const user = bucketItems('user');
+  const globalItems = bucketItems('global');
+  const project = bucketItems('project');
+  const guaranteed = bucketItems('guaranteed');
+  const profileSections = [
+    renderScope('User Memory (preferences / interests / habits):', user),
+    renderScope('Global Memory (cross-project tools / environment):', globalItems),
+    renderScope('Project Memory (this repository only):', project)
+  ].filter(Boolean);
+  const guaranteedBlock = guaranteed.length
+    ? `<guaranteed_memory>\n${renderScope('Must follow:', guaranteed)}\n</guaranteed_memory>`
+    : '';
+  return [
+    '<relevant_memory>',
+    'Use these durable notes only as stable guidance. Prefer fresh reads when code or files can verify the answer.',
+    'When recalling memory, preserve command names, file paths, identifiers, and punctuation exactly. Do not rewrite exact_text values.',
+    'Actively notice lasting user preferences and interests; save them with save_memory(scope="user", kind="preference"). Write new memory content/summary in the active reply language from the system prompt.',
+    profileSections.length ? `<memory_profile>\n${profileSections.join('\n\n')}\n</memory_profile>` : '',
+    guaranteedBlock,
+    '</relevant_memory>'
+  ].filter(Boolean).join('\n\n');
+}
+
 export async function composeMemorySnapshot({
   config = {},
   workspaceRoot = process.cwd(),
@@ -100,41 +127,42 @@ export async function composeMemorySnapshot({
   const userProfile = pickProfile(user, { max: 6, personal: true, seen });
   const globalProfile = pickProfile(globalItems, { max: 4, conventions: true, seen });
   const projectProfile = pickProfile(project, { max: 6, conventions: true, seen });
-  const profileItems = [...userProfile, ...globalProfile, ...projectProfile];
-  const profileSections = [
-    renderScope('User Memory (preferences / interests / habits):', userProfile),
-    renderScope('Global Memory (cross-project tools / environment):', globalProfile),
-    renderScope('Project Memory (this repository only):', projectProfile)
-  ].filter(Boolean);
   const retrievedHits = retrieved.filter((item) => item?.id && !guaranteedIds.has(item.id) && !seen.has(item.id));
-  const retrievedBlock = renderRetrievedMemory(retrievedHits);
-  const guaranteedBlock = guaranteed.length
-    ? `<guaranteed_memory>\n${renderScope('Must follow:', guaranteed)}\n</guaranteed_memory>`
-    : '';
+  const visibleRetrievedHits = budgetRetrievedMemoryItems(
+    retrievedHits,
+    config?.memory?.retrieval?.max_tokens ?? 1000
+  );
+  const retrievedBlock = renderRetrievedMemory(visibleRetrievedHits);
+  const bootstrapRecords = [
+    ...guaranteed.map((item) => ({ bucket: 'guaranteed', item })),
+    ...userProfile.map((item) => ({ bucket: 'user', item })),
+    ...globalProfile.map((item) => ({ bucket: 'global', item })),
+    ...projectProfile.map((item) => ({ bucket: 'project', item }))
+  ];
+  const visibleBootstrapRecords = bootstrap
+    ? fitMemoryItemsToTokenBudget(bootstrapRecords, {
+        maxTokens: config?.memory?.bootstrap?.max_tokens ?? 600,
+        render: renderBootstrapRecords
+      })
+    : [];
+  const visibleGuaranteed = visibleBootstrapRecords
+    .filter((entry) => entry.bucket === 'guaranteed')
+    .map((entry) => entry.item);
+  const visibleProfile = visibleBootstrapRecords
+    .filter((entry) => entry.bucket !== 'guaranteed')
+    .map((entry) => entry.item);
   const inject = {
     ...emptyInject,
-    profile: profileItems.map(compactMemoryHit),
-    guaranteed: guaranteed.map(compactMemoryHit),
-    retrieved: retrievedHits.map(compactMemoryHit)
+    profile: visibleProfile.map(compactMemoryHit),
+    guaranteed: visibleGuaranteed.map(compactMemoryHit),
+    retrieved: visibleRetrievedHits.map(compactMemoryHit)
   };
 
-  if (profileSections.length === 0 && !retrievedBlock && !guaranteedBlock) {
+  if (visibleBootstrapRecords.length === 0 && !retrievedBlock) {
     return { text: '', retrievedText: '', inject };
   }
 
-  const snapshot = bootstrap ? [
-    '<relevant_memory>',
-    'Use these durable notes only as stable guidance. Prefer fresh reads when code or files can verify the answer.',
-    'When recalling memory, preserve command names, file paths, identifiers, and punctuation exactly. Do not rewrite exact_text values.',
-    'Actively notice lasting user preferences and interests; save them with save_memory(scope="user", kind="preference"). Write new memory content/summary in the active reply language from the system prompt.',
-    profileSections.length ? `<memory_profile>\n${profileSections.join('\n\n')}\n</memory_profile>` : '',
-    guaranteedBlock,
-    '</relevant_memory>'
-  ].filter(Boolean).join('\n\n') : '';
-
-  const maxChars = Math.max(200, Number(config?.memory?.max_prompt_chars || 4000));
-  const text = snapshot.length <= maxChars ? snapshot : `${snapshot.slice(0, maxChars - 3)}...`;
-  return { text, retrievedText: retrievedBlock, inject };
+  return { text: renderBootstrapRecords(visibleBootstrapRecords), retrievedText: retrievedBlock, inject };
 }
 
 export async function buildMemorySnapshot(opts = {}) {

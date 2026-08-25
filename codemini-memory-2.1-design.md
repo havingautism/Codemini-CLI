@@ -2886,7 +2886,7 @@ coding-oriented
 
 ## 77. 当前实现进度与遗留问题
 
-> 本节是暂存区代码相对本设计文档的实现核对与补齐记录。2026-08-24 复核后，缓存前缀、Experience 归因、Fork parent join 与 writeback 配置均已补齐；剩余项为不影响当前闭环的 P2/P3 演进项。
+> 本节是暂存区代码相对本设计文档的实现核对与补齐记录。2026-08-25 复核后，缓存前缀、Experience 归因、Fork parent join、writeback 配置、Dream 结构化维护、Retrieval Adapter、token budget、确定性 Query Expansion、Retention Capacity 与本地 Metrics 均已补齐；仅剩低收益的旧列兼容清理项。
 
 ### 77.1 已完成
 
@@ -2925,20 +2925,41 @@ coding-oriented
 - Guaranteed 扩为 pinned + `user_correction`/`critical_project_rule`/`security_constraint`/`critical` 标签（§62）；global profile 补 conventions（§11.1/§14）。
 - 配置补齐 `writeback` / `lifecycle` 块；`require_verification` 已被 tracker 真正消费；`agentRole` 可经 `save_memory` 或 Fork candidate provenance 写入。
 
+**Dream Maintenance（§28/§29/§32）**
+- 维护 evaluator 改为 `{promotions, staleness, consolidations, archives}` 四段动作协议，不再让 LLM 整桶覆盖 canonical memory。
+- `EXTEND` 会增加 `expected_valid_days`；consolidation 校验真实 source IDs、合并 source evidence / tags / reinforcement counts；archive 拒绝未知 ID 并保护 pinned memory。
+- Dream audit report 会逐项记录续期、合并与归档动作。
+
+**Retrieval Adapter / Query Expansion（§8/§47/§60）**
+- 新增 `memory-retrieval-adapter.js` facade，以及 FTS5 / substring fallback 两个实现；retriever 不再直接依赖 `searchFts`。
+- FTS5 adapter 统一承担 search / upsert / remove / rebuild，默认仍不启用 Embedding；配置可显式选择 `fallback`。
+- 新增不调用 LLM 的确定性中英文关键词扩展，覆盖 test/install/build/lint/Windows/sandbox/error/run/config 等工程词族，可用 `retrieval.query_expansion=false` 关闭。
+
+**Token-aware Memory Budget（§44/§45）**
+- `bootstrap.max_tokens=600`、`retrieval.max_tokens=1000`、`recovery.max_tokens=500` 已分别接入 system bootstrap、当前 user turn recall 与失败恢复注入。
+- 使用与主 context audit 相同的 token estimator，按完整 memory record 取舍，不再按字符从 `exact_text` 中间截断；trajectory inject 只记录模型实际可见的 bootstrap/retrieval items。
+
+**Retention Capacity（§24/§61）**
+- `max_items_per_scope` 与 scope 字符容量超过上限时，按 confidence 65% + confirmation freshness 25% + access heat 10% 的 retention score 选择最低项。
+- pinned 永不淘汰；被淘汰项保留在 canonical SQLite，标记 `lifecycle=archived`，并写入 `evidence.retentionEviction`，不再直接删除。
+- 容量只统计 active memory；若新候选自身低于已有记录则拒绝该写入，不破坏现有 bucket。
+
+**Metrics / Observability（§49/§51）**
+- 新增 SQLite `schema_meta` 本地计数器，按 user/global/project 分桶，可聚合读取；`memory_total` / active / archived 为实时 gauge。
+- 覆盖 retrieval hit/miss、FTS fallback/index rebuild、candidate/promotion/archive/eviction、Experience episode/recovery/verified、lesson generate/reuse、confirmation/invalidation。
+- `list_memory` 返回当前 scope metrics；Web API 新增 `GET /api/memory/metrics?scope=user|global|project|all`。不发送外部遥测。
+
 ### 77.2 仍遗留（P2/P3，未来项）
 
-1. **Retrieval Adapter 抽象（§8/§47）**：未建 `memory-retrieval-adapter.js`/`-fts5.js`/`-fallback.js`。retriever 直接调 `searchFts`/`searchSubstring`，已满足当前功能；Adapter 只在未来加 embedding 时才需要（§46 明确默认不做 embedding，按 YAGNI 暂缓）。
-2. **Consolidation / Contradiction 结构化输出（§28/§29/§32）**：Dream 维护提示词已能合并重复、归档矛盾/过期项，但输出仍是 `{items, archives}`，未实现 §32 的 `{promotions, staleness, consolidations, archives}` 四段结构（EXTEND 续期动作未单独建模）。
-3. **Memory Budget token-aware（§44）**：仍是 `max_prompt_chars` 按字符截断，`bootstrap.max_tokens` 未参与截断；`retrieval/recovery.max_tokens` 未实现。
-4. **Retention Capacity eviction（§61）**：`findLowUtilityMemories` 已提供 retention-score 排序原语，但未接入容量淘汰路径（现有 `max_items_per_scope` + 字符预算仍兜底）。
-5. **Query Expansion（§60）**：未实现 LLM/关键词扩展。
-6. **Metrics（§51）**：未采集 retrieval_hits 等指标。
-7. **`utility_score`/`hit_count`/`last_hit_at` 遗留列**：保留以兼容 WebUI 与旧数据，未从 schema 移除（SQLite STRICT 删列需重建表，收益低）。
+1. **`utility_score`/`hit_count`/`last_hit_at` 遗留列**：保留以兼容 WebUI 与旧数据，未从 schema 移除（SQLite STRICT 删列需重建表，收益低）。
 
 ### 77.3 测试覆盖
 
 - 新增/更新：`memory-ranking`（§10 公式）、`memory-experience-tracker`（verified gate）、`memory-experience-extractor`、`memory-lifecycle`（staleness/retention）。
 - 新增回归：`memory-cache-prefix`（bootstrap/system 前缀稳定 + file mentions 历史稳定）、`memory-fork-join`（parent dedupe/evidence merge）、`memory-session-review-config`（writeback gate）。
 - 已有且保持通过：`memory-policy` / `memory-sqlite-store` / `memory-retrieval` / `memory-reinforcement` / `sqlite-storage` / `session-trajectory` / `transcript-reducer` / `coding-route-visibility` / `web-memory-settings` / `web-trajectory-debug-route`。
-- 仍未覆盖端到端场景：Scenario G（staleness maintenance 全链路）。
-- 待补测试文件（§70）：`memory-fts5.test.js` / `memory-fork-snapshot.test.js` / `memory-index-rebuild.test.js`。
+- 已覆盖端到端 Scenario G：stale 信号进入 Dream 请求、结构化 EXTEND 动作解析并持久化回 SQLite。
+- 新增 `memory-dream-maintenance.test.js`：四段协议解析、source evidence 合并、pinned/unknown ID 保护和 Scenario G 全链路。
+- 新增 `memory-retrieval-adapter.test.js` / `memory-token-budget.test.js`：FTS5/fallback adapter 生命周期、中文 Query Expansion 与三类 prompt token budget。
+- 新增 `memory-retention-capacity.test.js` / `memory-metrics.test.js`：retention eviction、pinned protection、active/archive gauge、检索/index/Dream/Experience 指标持久化。
+- Adapter 测试已覆盖原计划 `memory-fts5.test.js` / `memory-index-rebuild.test.js` 的职责；仍待补 `memory-fork-snapshot.test.js`。

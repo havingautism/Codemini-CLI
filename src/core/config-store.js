@@ -106,7 +106,12 @@ const DEFAULT_CONFIG = {
       tool_limit: 3,
       turn_top_k: 5,
       failure_top_k: 3,
-      min_score: 0.6
+      min_score: 0.6,
+      max_tokens: 1000,
+      query_expansion: true
+    },
+    recovery: {
+      max_tokens: 500
     },
     experience: {
       enabled: true,
@@ -297,7 +302,7 @@ function normalizePolicyLists(config) {
     ? next.memory.inject_on_session_start
     : next.memory.bootstrap.enabled !== false;
   next.memory.inject_on_session_start = next.memory.bootstrap.enabled;
-  next.memory.bootstrap.max_tokens = Math.max(80, Number(next.memory.bootstrap.max_tokens || 600));
+  next.memory.bootstrap.max_tokens = normalizedNumber(next.memory.bootstrap.max_tokens, 600, 80, { integer: true });
   next.memory.max_items_per_scope = Math.max(1, Number(next.memory.max_items_per_scope || 12));
   next.memory.auto_dream_threshold = Number(next.memory.auto_dream_threshold ?? 10);
   next.memory.max_prompt_chars = Math.max(200, Number(next.memory.max_prompt_chars || 4000));
@@ -309,7 +314,9 @@ function normalizePolicyLists(config) {
     : 'path-or-alias';
   next.memory.retrieval = next.memory.retrieval || {};
   next.memory.retrieval.enabled = next.memory.retrieval.enabled !== false;
-  next.memory.retrieval.adapter = 'fts5';
+  next.memory.retrieval.adapter = ['fts5', 'fallback'].includes(String(next.memory.retrieval.adapter || ''))
+    ? String(next.memory.retrieval.adapter)
+    : 'fts5';
   next.memory.retrieval.mode = 'fts';
   next.memory.retrieval.turn_top_k = Math.max(1, Math.min(10, Number(
     next.memory.retrieval.turn_top_k || next.memory.retrieval.turn_limit || 5
@@ -320,6 +327,10 @@ function normalizePolicyLists(config) {
   next.memory.retrieval.turn_limit = next.memory.retrieval.turn_top_k;
   next.memory.retrieval.tool_limit = next.memory.retrieval.failure_top_k;
   next.memory.retrieval.min_score = Math.max(0, Math.min(1, Number(next.memory.retrieval.min_score ?? 0.6)));
+  next.memory.retrieval.max_tokens = normalizedNumber(next.memory.retrieval.max_tokens, 1000, 80, { integer: true });
+  next.memory.retrieval.query_expansion = next.memory.retrieval.query_expansion !== false;
+  next.memory.recovery = next.memory.recovery || {};
+  next.memory.recovery.max_tokens = normalizedNumber(next.memory.recovery.max_tokens, 500, 80, { integer: true });
   next.memory.experience = next.memory.experience || {};
   next.memory.experience.enabled = next.memory.experience.enabled !== false;
   next.memory.experience.capture_failures = next.memory.experience.capture_failures !== false;

@@ -2,7 +2,7 @@ import path from 'node:path';
 import { trimInline as _trimInline, normalizePath } from './string-utils.js';
 import { captureToInbox, listInbox } from './memory-store.js';
 import { createExperienceTracker } from './memory-experience-tracker.js';
-import { retrieveMemories, renderRecoveryMemory, buildFailureMemoryQuery, compactMemoryHit } from './memory-retriever.js';
+import { retrieveMemories, renderRecoveryMemory, buildFailureMemoryQuery, compactMemoryHit, budgetRecoveryMemoryItems } from './memory-retriever.js';
 import { isVerificationCommand, shouldSkipFailureRecall } from './memory-policy.js';
 import {
   isRoutineProjectCommand,
@@ -268,18 +268,20 @@ async function attachRecoveryMemory(content, { toolName, args, error, config, wo
     mode: 'failure'
   }).catch(() => []);
   if (!hits.length) return content;
-  experienceTracker?.noteRecovery(hits);
+  const visibleHits = budgetRecoveryMemoryItems(hits, config?.memory?.recovery?.max_tokens ?? 500);
+  if (!visibleHits.length) return content;
+  experienceTracker?.noteRecovery(visibleHits);
   if (typeof onEvent === 'function') {
     onEvent({
       type: 'memory:retrieved',
       mode: 'failure',
       tool: toolName,
       query,
-      retrieved: hits.map(compactMemoryHit),
+      retrieved: visibleHits.map(compactMemoryHit),
       startedAt: new Date().toISOString()
     });
   }
-  return `${renderRecoveryMemory(hits)}\n\n${content}`;
+  return `${renderRecoveryMemory(visibleHits)}\n\n${content}`;
 }
 
 function shouldAutoCaptureRunFailure(message) {

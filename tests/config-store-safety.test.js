@@ -23,6 +23,10 @@ test('new config defaults memory retrieval min score to 0.6', async () => {
   await withConfigDir(async () => {
     const config = await loadConfig();
     assert.equal(config.memory.retrieval.min_score, 0.6);
+    assert.equal(config.memory.bootstrap.max_tokens, 600);
+    assert.equal(config.memory.retrieval.max_tokens, 1000);
+    assert.equal(config.memory.recovery.max_tokens, 500);
+    assert.equal(config.memory.retrieval.query_expansion, true);
   });
 });
 
