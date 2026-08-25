@@ -288,7 +288,19 @@ export function reduceSessionRuntimeEvent(state, event) {
   } else if (event.type === "submit:start") {
     runtime = { ...previous, status: "running", busy: true, sessionId };
   } else if (event.type === "submit:done") {
-    if (previous.pendingApproval || previous.pendingUserInput) {
+    if (event.result?.aborted === true || event.result?.type === "aborted") {
+      // An abort means the agent behind any pending approval/user-input is
+      // gone, so the interaction dialog must close or the session stays stuck
+      // on the "waiting" state even though no turn is running.
+      runtime = {
+        ...previous,
+        status: "aborted",
+        busy: false,
+        pendingApproval: null,
+        pendingUserInput: null,
+        sessionId,
+      };
+    } else if (previous.pendingApproval || previous.pendingUserInput) {
       // Keep the interaction UI open. Pool may still be (or return to)
       // waiting_*; clearing here caused false "completed" + recovered clicks.
       runtime = {

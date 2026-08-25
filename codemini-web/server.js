@@ -34,6 +34,7 @@ import {
   deleteSession,
   saveSession,
 } from "../src/core/session-store.js";
+import { hasUiTranscriptInSqlite } from "../src/core/session-sqlite-store.js";
 import {
   forkIdleSession,
   sessionForkBlockedReason,
@@ -808,6 +809,7 @@ function createPooledEmptySessionAllocator(
     listSessions: listFn = listSessions,
     loadSession: loadFn = loadSession,
     createSession: createFn = createSession,
+    isSessionDisplayEmpty,
   } = {},
 ) {
   return createEmptySessionAllocator({
@@ -821,6 +823,7 @@ function createPooledEmptySessionAllocator(
     matchesProject: matchesEmptySessionProject,
     isBusy: (sessionId) =>
       ACTIVE_RUNTIME_STATUSES.has(pool.getSessionState(sessionId)?.status),
+    isSessionDisplayEmpty,
   });
 }
 
@@ -970,6 +973,7 @@ export function createWebRuntimeApi({
   loadConfig: loadRuntimeConfig = loadConfig,
   getConfigStatus: getRuntimeConfigStatus = getConfigStatus,
   allocateEmptySession = null,
+  isSessionDisplayEmpty = (sessionId) => !hasUiTranscriptInSqlite(sessionId),
 }) {
   const loadBridge = async (res, sessionId) => {
     const id = requireSessionId(res, sessionId);
@@ -1000,6 +1004,7 @@ export function createWebRuntimeApi({
       listSessions: listStoredSessions,
       loadSession: loadStoredSession,
       createSession: createStoredSession,
+      isSessionDisplayEmpty,
     });
   const submitOperation = (sessionId, invoke) =>
     pool.submit(sessionId, (bridge) =>
@@ -2784,13 +2789,17 @@ async function main() {
       else await runtimeStatusStore.set(session.id, "idle");
     },
   });
-  const allocateEmptySession = createPooledEmptySessionAllocator(pool);
+  const isSessionDisplayEmpty = (sessionId) => !hasUiTranscriptInSqlite(sessionId);
+  const allocateEmptySession = createPooledEmptySessionAllocator(pool, {
+    isSessionDisplayEmpty,
+  });
   const runtimeApi = createWebRuntimeApi({
     pool,
     eventBroker,
     ensureSession: ensurePooledSession,
     runtimeStatusStore,
     allocateEmptySession,
+    isSessionDisplayEmpty,
     getDefaultProjectDir: () => currentProjectDir,
     setDefaultProjectDir: (dir) => {
       const next = String(dir || "").trim();

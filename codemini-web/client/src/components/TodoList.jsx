@@ -19,14 +19,14 @@ function countTodosByStatus(todos = []) {
 function formatTodoStatusSummary(todos = []) {
   const { pending, inProgress, completed } = countTodosByStatus(todos);
   const parts = [];
+  if (completed > 0) {
+    parts.push(t("tasksCompletedCount").replace("{count}", String(completed)));
+  }
   if (inProgress > 0) {
     parts.push(t("tasksInProgress").replace("{count}", String(inProgress)));
   }
   if (pending > 0) {
     parts.push(t("tasksPending").replace("{count}", String(pending)));
-  }
-  if (parts.length === 0 && completed > 0) {
-    parts.push(t("tasksCompletedCount").replace("{count}", String(completed)));
   }
   return parts.join(" · ");
 }
