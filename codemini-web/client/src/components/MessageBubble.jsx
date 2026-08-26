@@ -8,7 +8,10 @@ import {
 import { ModelIdentityBadge } from "./ModelIdentityBadge.jsx";
 import { UsageBadge } from "./UsageBadge.jsx";
 import { isCreatePlanCard } from "@/lib/plan-ui-state.js";
-import { isRequestUserInputCard } from "@/lib/tool-card-display.js";
+import {
+  isHtmlArtifactCard,
+  isRequestUserInputCard,
+} from "@/lib/tool-card-display.js";
 import { formatToolGroupSummaryLabel } from "@/lib/tool-group-summary.js";
 import { StreamdownRenderer } from "./StreamdownRenderer";
 import { EmbedBanner } from "./EmbedBanner.jsx";
@@ -514,8 +517,12 @@ function ToolGroup({ cards }) {
   const [expanded, setExpanded] = useState(false);
   const planCards = cards.filter(isCreatePlanCard);
   const userInputCards = cards.filter(isRequestUserInputCard);
+  const htmlArtifactCards = cards.filter(isHtmlArtifactCard);
   const otherCards = cards.filter(
-    (card) => !isCreatePlanCard(card) && !isRequestUserInputCard(card),
+    (card) =>
+      !isCreatePlanCard(card) &&
+      !isRequestUserInputCard(card) &&
+      !isHtmlArtifactCard(card),
   );
   const total = otherCards.length;
   const hasRunningTool = otherCards.some((card) => card.status === "running");
@@ -535,11 +542,23 @@ function ToolGroup({ cards }) {
           ))}
         </div>
       )}
+      {htmlArtifactCards.length > 0 && (
+        <div
+          className={cn(
+            "flex flex-col gap-3",
+            (planCards.length > 0 || userInputCards.length > 0) && "mt-3",
+          )}
+        >
+          {htmlArtifactCards.map((card) => (
+            <ToolCard key={card.id} card={card} collapsible={false} />
+          ))}
+        </div>
+      )}
       {total > 0 && shouldUseSummaryHeader && (
         <DisclosureRowButton
           open={expanded}
           className={cn(
-            (planCards.length > 0 || userInputCards.length > 0) && "mt-4",
+            (planCards.length > 0 || userInputCards.length > 0 || htmlArtifactCards.length > 0) && "mt-4",
           )}
           onClick={() => setExpanded((value) => !value)}
           icon={<SkillStatusDot status={groupStatus} />}
@@ -554,7 +573,9 @@ function ToolGroup({ cards }) {
               ? "codemini-disclosure-tree"
               : "flex flex-col gap-2",
             planCards.length > 0 && !shouldUseSummaryHeader && "mt-4",
-            userInputCards.length > 0 && !shouldUseSummaryHeader && "mt-2",
+            (userInputCards.length > 0 || htmlArtifactCards.length > 0) &&
+              !shouldUseSummaryHeader &&
+              "mt-2",
           )}
         >
           {otherCards.map((card) => (

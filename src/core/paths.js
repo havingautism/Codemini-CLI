@@ -122,6 +122,10 @@ export function getFileIndexPath(cwd = process.cwd()) {
   return path.join(cwd, PROJECT_INDEX_DIR, 'file-index.json');
 }
 
+export function getSandboxCapabilitySnapshotPath() {
+  return path.join(getBaseConfigDir(), 'sandbox-capabilities.json');
+}
+
 export function getProjectIndexDir(cwd = process.cwd()) {
   return path.join(cwd, PROJECT_INDEX_DIR);
 }

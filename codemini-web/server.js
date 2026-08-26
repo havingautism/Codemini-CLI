@@ -70,6 +70,7 @@ import {
 import {
   listWorkspaceChildren,
   previewWorkspaceFile,
+  readWorkspaceHtmlArtifact,
   resolveWorkspacePath,
   isPreviewableImagePath,
 } from "./lib/workspace-files.js";
@@ -2168,6 +2169,37 @@ export async function serveStatic(res, filePath, req) {
   }
 }
 
+export const HTML_ARTIFACT_CSP = [
+  "sandbox allow-scripts",
+  "default-src 'none'",
+  "script-src 'unsafe-inline' blob:",
+  "style-src 'unsafe-inline'",
+  "img-src data: blob:",
+  "font-src data:",
+  "media-src data: blob:",
+  "connect-src 'none'",
+  "object-src 'none'",
+  "base-uri 'none'",
+  "form-action 'none'",
+  "frame-src 'none'",
+  "frame-ancestors 'self'",
+].join("; ");
+
+export async function serveHtmlArtifact(res, workspaceRoot, relativePath) {
+  const artifact = await readWorkspaceHtmlArtifact(workspaceRoot, relativePath);
+  const body = Buffer.from(artifact.content, "utf8");
+  res.writeHead(200, {
+    "Content-Type": "text/html; charset=utf-8",
+    "Content-Length": body.length,
+    "Cache-Control": "no-store",
+    "Content-Security-Policy": HTML_ARTIFACT_CSP,
+    "Referrer-Policy": "no-referrer",
+    "X-Content-Type-Options": "nosniff",
+  });
+  res.end(body);
+  return artifact;
+}
+
 function normalizeProjectPath(value) {
   const raw = String(value || "").trim();
   if (!raw) return "";
@@ -3216,6 +3248,25 @@ async function main() {
           )
             ? 400
             : 500;
+        jsonResponse(res, { error: true, message }, status);
+      }
+      return;
+
+  }));
+  routes.get("/api/artifacts/html", nodeRoute(async (req, res, url) => {
+      const cwd = await resolveTerminalCwd(url);
+      try {
+        const relativePath = String(url.searchParams.get("path") || "").trim();
+        if (!relativePath) {
+          jsonResponse(res, { error: true, message: "HTML artifact path required" }, 400);
+          return;
+        }
+        await serveHtmlArtifact(res, cwd, relativePath);
+      } catch (error) {
+        const message = String(error?.message || "Unable to load HTML artifact");
+        const status = /outside|does not exist|not a file|require|exceeds/i.test(message)
+          ? 400
+          : 500;
         jsonResponse(res, { error: true, message }, status);
       }
       return;

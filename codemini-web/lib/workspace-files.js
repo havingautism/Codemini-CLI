@@ -4,6 +4,7 @@ import { INDEX_SKIP_DIRS, TEXT_EXTENSIONS } from '../../src/core/constants.js';
 
 const PREVIEW_MAX_BYTES = 200 * 1024;
 const PREVIEW_MAX_LINES = 2000;
+export const HTML_ARTIFACT_MAX_BYTES = 2 * 1024 * 1024;
 
 const EXTRA_TEXT_EXTENSIONS = new Set([
   '.txt',
@@ -63,6 +64,32 @@ export async function resolveWorkspacePath(workspaceRoot, rawRelativePath = '') 
   }
   const relativeFromRoot = path.relative(root, target).split(path.sep).join('/');
   return { root, absolutePath: target, relativePath: relativeFromRoot };
+}
+
+export async function readWorkspaceHtmlArtifact(
+  workspaceRoot,
+  rawRelativePath = '',
+  { maxBytes = HTML_ARTIFACT_MAX_BYTES } = {},
+) {
+  const { root, absolutePath, relativePath } = await resolveWorkspacePath(
+    workspaceRoot,
+    rawRelativePath,
+  );
+  if (!/\.html?$/i.test(relativePath)) {
+    throw new Error('Interactive artifacts require an .html or .htm file');
+  }
+  const stat = await fs.stat(absolutePath);
+  if (!stat.isFile()) throw new Error('HTML artifact path is not a file');
+  if (stat.size > maxBytes) {
+    throw new Error(`HTML artifact exceeds the ${maxBytes} byte limit`);
+  }
+  return {
+    rootPath: root,
+    absolutePath,
+    path: relativePath,
+    byteLength: stat.size,
+    content: await fs.readFile(absolutePath, 'utf8'),
+  };
 }
 
 function shouldSkipEntryName(name) {

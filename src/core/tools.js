@@ -8,6 +8,10 @@ import { createRequire } from "node:module";
 import { createHash } from "node:crypto";
 import { rgPath } from "@vscode/ripgrep";
 import net from "node:net";
+import {
+  resolveSandboxCapabilitySummary,
+  SANDBOX_CAPABILITY_COMMANDS,
+} from "./sandbox-capabilities.js";
 import { escapeRegex, normalizePath } from "./string-utils.js";
 import {
   classifyCommandIntent,
@@ -2210,6 +2214,50 @@ async function deletePath(root, args, config = {}) {
   };
 }
 
+const HTML_ARTIFACT_MAX_BYTES = 2 * 1024 * 1024;
+
+async function previewHtmlArtifact(root, args, config = {}) {
+  const requestedPath = String(
+    args?.path || args?.file_path || args?.file || "",
+  ).trim();
+  if (!requestedPath) throw new Error("preview_html requires path");
+  const workspaceOnlyConfig = {
+    ...config,
+    policy: { ...(config?.policy || {}), allowed_paths: [] },
+  };
+  const target = await resolveInWorkspace(
+    root,
+    requestedPath,
+    workspaceOnlyConfig,
+  );
+  const stat = await fs.stat(target);
+  if (!stat.isFile()) throw new Error("HTML artifact path is not a file");
+  if (!/\.html?$/i.test(target)) {
+    throw new Error("preview_html requires an .html or .htm file");
+  }
+  if (stat.size > HTML_ARTIFACT_MAX_BYTES) {
+    throw new Error(
+      `HTML artifact exceeds the ${HTML_ARTIFACT_MAX_BYTES}-byte limit`,
+    );
+  }
+  const title = String(args?.title || path.basename(target))
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 100);
+  const requestedHeight = Number(args?.height);
+  const height = Number.isFinite(requestedHeight)
+    ? Math.min(900, Math.max(320, Math.round(requestedHeight)))
+    : 560;
+  return {
+    ok: true,
+    artifactType: "html",
+    path: toWorkspaceRelative(root, target),
+    title: title || path.basename(target),
+    height,
+    byteLength: stat.size,
+  };
+}
+
 async function runCommand(root, config, args, context = {}) {
   const command = args?.command || "";
   if (!command.trim()) {
@@ -2269,10 +2317,16 @@ async function runCommand(root, config, args, context = {}) {
     config,
     sandboxMode,
   });
+  // A danger-full-access Microsandbox escalation runs on host PowerShell. Do
+  // not start the guest again or label host output with guest capabilities.
+  const sandboxCapabilities = hostPowerShellEscalation
+    ? ""
+    : await resolveSandboxCapabilitySummary(config, { cwd: root }).catch(() => "");
   const payload = {
     ...result,
     command,
     shell: executionShell,
+    ...(sandboxCapabilities ? { sandboxCapabilities } : {}),
     ...(hostPowerShellEscalation
       ? {
           sandbox: {
@@ -4155,6 +4209,9 @@ export function getBuiltinTools({
   const vmSandbox = isVmSandbox(sandboxPolicy);
   const osSandbox = isOsSandbox(sandboxPolicy);
   const osKind = platform === "darwin" ? "Seatbelt" : "Landlock";
+  const sandboxCapabilityNote = vmSandbox || osSandbox
+    ? ` The sandbox command baseline (${SANDBOX_CAPABILITY_COMMANDS.join(", ")}) is probed once per image; the live manifest is shown as a \`sandbox commands:\` line in each output. Verify an uncommon tool with \`command -v <tool>\` before relying on it.`
+    : "";
   config = {
     ...(config || {}),
     shell: {
@@ -4777,6 +4834,34 @@ export function getBuiltinTools({
     {
       type: "function",
       function: {
+        name: "preview_html",
+        description:
+          "Present a self-contained interactive HTML artifact from the workspace in an isolated preview card. Create or edit the .html/.htm file first, then pass only its path. Inline CSS and JavaScript work; network requests, forms, nested frames, external assets, and access to the Codemini page are blocked. Prefer data: URLs for embedded images.",
+        parameters: {
+          type: "object",
+          properties: {
+            path: {
+              type: "string",
+              description: "Project-relative .html or .htm file path.",
+            },
+            title: {
+              type: "string",
+              description: "Short title shown on the artifact card.",
+            },
+            height: {
+              type: "integer",
+              minimum: 320,
+              maximum: 900,
+              description: "Preview height in pixels. Defaults to 560.",
+            },
+          },
+          required: ["path"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
         name: "begin_write",
         description:
           "Begin a transactional whole-file write for long content. This validates and snapshots the target but does not modify it. Follow with sequential write_chunk calls and exactly one commit_write. Use abort_write to discard the staging state.",
@@ -5074,13 +5159,13 @@ export function getBuiltinTools({
       type: "function",
       function: {
         name: commandToolName,
-        description: vmSandbox
+        description: `${vmSandbox
           ? platform === "win32"
             ? `Run a compact Bash command inside the Linux microVM sandbox (${sandboxPolicy.mode}) from the project root. If a build or test cannot use Windows-native dependencies because the guest is Linux, retry that exact verification command with sandbox_permissions="danger-full-access" and justification; the escalated command must be Windows PowerShell-compatible and runs on the host only after LLM risk advice and user approval. Do not escalate ordinary code failures, missing dependencies, or timeouts. Use project-relative paths and run_in_background=true only for long-running sandboxed commands. Put command last.`
             : `Run a compact Bash command inside the Linux microVM sandbox (${sandboxPolicy.mode}) from the project root with unrestricted outbound networking. Use project-relative paths. Ordinary Bash commands, including curl, are available; commands with destructive or external side effects may still require approval. On denial, stderr includes [sandbox: ...]; retry with a wider sandbox_permissions plus justification when needed. Use run_in_background=true for long-running commands. Put command last.`
           : osSandbox
             ? `Run a compact ${shellContext.shell === "powershell" ? "PowerShell" : "Bash"} command on the host under OS confinement (${osKind}, ${sandboxPolicy.mode}) with unrestricted outbound networking. Use host paths from the current working directory. Commands with destructive or external side effects may still require approval. On denial, stderr includes [sandbox: ...]; retry with a wider sandbox_permissions plus justification when needed. Use run_in_background=true for long-running commands. Put command last.`
-          : `Run a compact ${shellContext.shell === "powershell" ? "PowerShell" : "Bash"} command directly on the ${platform === "win32" ? "Windows" : "host"} system without microVM confinement. Use run_in_background=true for long-running commands. Put command last.`,
+            : `Run a compact ${shellContext.shell === "powershell" ? "PowerShell" : "Bash"} command directly on the ${platform === "win32" ? "Windows" : "host"} system without microVM confinement. Use run_in_background=true for long-running commands. Put command last.`}${sandboxCapabilityNote}`,
         parameters: {
           type: "object",
           properties: {
@@ -6330,6 +6415,8 @@ export function getBuiltinTools({
   }
 
   const handlers = {
+    preview_html: async (args) =>
+      previewHtmlArtifact(workspaceRoot, args, config),
     read: async (args) => {
       const inlineQuery = String(args?.query || "").trim();
       const directAstTarget = args?.ast_target;
@@ -7516,6 +7603,12 @@ export function getBuiltinTools({
       return `${header}\n${dirs.join("\n")}${dirs.length && files.length ? "\n" : ""}${files.join("\n")}`;
     },
 
+    preview_html(result) {
+      if (!result || typeof result !== "object") return String(result);
+      if (result.error) return String(result.error);
+      return `Interactive HTML artifact ready: ${result.path || "?"}`;
+    },
+
     tasks(result) {
       if (!result || typeof result !== "object") return String(result);
       if (result.ok === false && result.error) return String(result.error);
@@ -7788,6 +7881,21 @@ export function getBuiltinTools({
         return parts.join("\n");
       }
       const runSummary = summarizeRunOutput(result);
+      if (result.sandboxCapabilities) {
+        const capLine = String(result.sandboxCapabilities).trim();
+        if (runSummary) return `${execution}\n${capLine}\n${runSummary}`;
+        if (capLine) {
+          const command = String(result.command || "").slice(0, 200);
+          const stdout = String(result.stdout || "");
+          const stderr = String(result.stderr || "");
+          const code = result.code ?? 0;
+          const parts = [execution, `[exit: ${code}]`, capLine];
+          if (command) parts.push(`command: ${command}`);
+          if (stdout) parts.push(`stdout:\n${stdout}`);
+          if (stderr) parts.push(`stderr:\n${stderr}`);
+          return parts.join("\n");
+        }
+      }
       if (runSummary) return `${execution}\n${runSummary}`;
       const command = String(result.command || "").slice(0, 200);
       const stdout = String(result.stdout || "");

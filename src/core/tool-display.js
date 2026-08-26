@@ -18,6 +18,7 @@ export const TOOL_DISPLAY_LABELS = {
   read_ast_node: 'Read AST Node',
   web_fetch: 'Web Fetch',
   web_search: 'Web Search',
+  preview_html: 'HTML Artifact',
   list_background_tasks: 'List Background Tasks',
   get_background_task: 'Get Background Task',
   stop_background_task: 'Stop Background Task',

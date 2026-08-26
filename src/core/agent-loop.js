@@ -416,7 +416,7 @@ function normalizeFileChanges(changes) {
     .filter(Boolean);
 }
 
-function extractToolResultMeta(toolName, result) {
+export function extractToolResultMeta(toolName, result) {
   if (!result || typeof result !== 'object') return null;
   const name = String(toolName || '');
 
@@ -451,6 +451,18 @@ function extractToolResultMeta(toolName, result) {
         title: String(result.title || targetUrl).trim(),
         description: String(result.description || '').trim()
       }]
+    };
+  }
+
+  if (name === 'preview_html' && result.artifactType === 'html') {
+    const artifactPath = String(result.path || '').trim();
+    if (!artifactPath) return null;
+    return {
+      embedType: 'html_artifact',
+      path: artifactPath,
+      title: String(result.title || artifactPath).trim(),
+      height: Number(result.height || 560),
+      byteLength: Number(result.byteLength || 0),
     };
   }
 

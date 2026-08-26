@@ -1081,3 +1081,11 @@ export async function fetchWorkspacePreview(sessionId, relativePath = '') {
   const res = await api(`/api/workspace/preview?${params.toString()}`);
   return readJsonResponse(res);
 }
+
+export function buildHtmlArtifactUrl(sessionId, relativePath, revision = 0) {
+  const params = new URLSearchParams();
+  if (sessionId) params.set('sessionId', sessionId);
+  params.set('path', String(relativePath || '').trim());
+  if (revision) params.set('revision', String(revision));
+  return `/api/artifacts/html?${params.toString()}`;
+}

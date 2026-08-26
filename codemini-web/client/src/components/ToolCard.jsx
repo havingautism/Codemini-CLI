@@ -19,6 +19,7 @@ import {
   DisclosureLeading,
 } from "@/components/DisclosureLeading.jsx";
 import { TodoCard } from "@/components/TodoList.jsx";
+import { HtmlArtifactCard } from "@/components/HtmlArtifactCard.jsx";
 import {
   requestFromToolCard,
   resultFromToolCard,
@@ -34,6 +35,7 @@ import {
   getConversationToolOutput,
   getFileToolMeta,
   getTodoToolItems,
+  isHtmlArtifactCard,
   isRequestUserInputCard,
   isTodoToolCard,
   resolveToolHeaderParts,
@@ -362,6 +364,9 @@ export function ToolCard({
   }
   if (isRequestUserInputCard(card)) {
     return <UserInputToolCard card={card} />;
+  }
+  if (isHtmlArtifactCard(card)) {
+    return <HtmlArtifactCard card={card} />;
   }
   const fileMeta = getFileToolMeta(
     toolName,

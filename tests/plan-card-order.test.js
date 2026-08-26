@@ -174,6 +174,40 @@ test('layoutAnswerProcessWithPlans hoists create_plan out of nested process fold
   assert.equal(layout.items[2].group.type, 'text');
 });
 
+test('layout hoists preview_html out of the outer answer process fold', () => {
+  const layout = layoutAnswerProcessWithPlans([
+    {
+      type: 'process',
+      groups: [
+        { type: 'thinking', text: 'building the demo' },
+        {
+          type: 'tools',
+          cards: [
+            { id: 'w1', name: 'write', status: 'done' },
+            { id: 'h1', name: 'preview_html', status: 'done' },
+          ],
+        },
+      ],
+    },
+    { type: 'text', text: 'done' },
+  ]);
+
+  assert.equal(layout.hasFold, true);
+  const foldedCards = layout.items
+    .filter((item) => item.type === 'fold')
+    .flatMap((item) => item.groups || [])
+    .flatMap((group) => (group.type === 'process' ? group.groups : [group]))
+    .filter((group) => group.type === 'tools')
+    .flatMap((group) => group.cards || []);
+  assert.equal(foldedCards.some((card) => card.name === 'preview_html'), false);
+  assert.equal(foldedCards.some((card) => card.name === 'write'), true);
+
+  const visibleArtifact = layout.items.find(
+    (item) => item.type === 'group' && item.group?.cards?.[0]?.name === 'preview_html',
+  );
+  assert.ok(visibleArtifact);
+});
+
 test('layout keeps only the latest todo card outside the process fold', () => {
   const layout = layoutAnswerProcessWithPlans([
     { type: 'tools', cards: [
