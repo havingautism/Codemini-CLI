@@ -100,7 +100,12 @@ const EN = {
   help: 'Show keyboard shortcuts',
   tools: 'Toggle process details',
   codingMode: 'Switch to coding mode',
-  dailyMode: 'Switch to daily mode'
+  dailyMode: 'Switch to daily mode',
+  towerMode: 'Start or stop tower overlay',
+  towerOn: 'Tower on',
+  towerOff: 'Tower off',
+  towerFailed: 'Could not change tower mode',
+  towerBusy: 'Cannot switch tower while a request is running'
 };
 
 const ZH = {
@@ -206,7 +211,12 @@ const ZH = {
   help: '查看键盘快捷键',
   tools: '展开或折叠过程详情',
   codingMode: '切换到编码模式',
-  dailyMode: '切换到日常模式'
+  dailyMode: '切换到日常模式',
+  towerMode: '开启或关闭塔台',
+  towerOn: '塔台已开启',
+  towerOff: '塔台已关闭',
+  towerFailed: '无法切换塔台',
+  towerBusy: '请求进行中，无法切换塔台'
 };
 
 export function createTuiCopy(language = 'en') {

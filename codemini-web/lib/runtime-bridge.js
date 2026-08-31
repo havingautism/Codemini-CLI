@@ -325,6 +325,7 @@ export class RuntimeBridge {
   #runtime = null;
   #clients = new Set();
   #approval = new ApprovalManager();
+  #approvalRequests = new Map();
   #userInput = new UserInputManager();
   #busy = false;
   #codeWikiGenerating = false;
@@ -389,7 +390,9 @@ export class RuntimeBridge {
     this.#runtime.setRequestToolApproval((request) => {
       const { id, name, displayName, arguments: args, approvalDetails } = request;
       const pending = this.#approval.create(id);
-      this.#publish({ type: 'approval:request', id, toolName: name, displayName, arguments: args, details: approvalDetails });
+      const event = { type: 'approval:request', id, toolName: name, displayName, arguments: args, details: approvalDetails };
+      this.#approvalRequests.set(id, event);
+      this.#publish(event);
       return pending;
     });
     this.#runtime.setRequestUserInput?.((form) => {
@@ -1491,6 +1494,7 @@ export class RuntimeBridge {
     this.#activeStructuredOperationId = null;
     this.#userInput.resolveAll({ status: 'skipped', answers: {} });
     this.#approval.resolveAll({ approved: false, reason: 'aborted' });
+    this.#approvalRequests.clear();
     if (wasBusy) this.#invalidateSubmit();
     const aborted = this.#runtime.abort(options);
     if (wasBusy) {
@@ -1522,6 +1526,17 @@ export class RuntimeBridge {
     const ok = await this.#runtime.setExecutionMode(mode);
     if (ok) this.#publish({ type: 'mode:changed', mode, ...this.getState() });
     return ok;
+  }
+
+  async setTowerMode(active) {
+    if (this.#busy) {
+      return { ok: false, error: true, code: 'BUSY', message: 'Cannot switch tower while a request is running' };
+    }
+    const result = await this.#runtime.setTowerMode?.(active);
+    if (result?.ok) this.#publish({ type: 'tower:changed', ...this.getState() });
+    return result && typeof result === 'object'
+      ? { ...result, error: result.ok === false }
+      : { ok: false, error: true, message: 'Tower mode is unavailable' };
   }
 
   async setApprovalMode(mode) {
@@ -1598,8 +1613,11 @@ export class RuntimeBridge {
     });
     const resolved = bridgeResolved || runtimeResolved?.ok === true;
     if (!resolved) return false;
+    this.#approvalRequests.delete(requestId);
     this.#publish({ type: 'approval:resolved', id: requestId, approved: Boolean(approved) });
-    this.#publishLifecycle('running', requestId);
+    const next = this.#approvalRequests.values().next().value;
+    if (next) this.#publishLifecycle('waiting_approval', next.id);
+    else this.#publishLifecycle('running', requestId);
     this.#broadcastRuntimeState();
     return true;
   }

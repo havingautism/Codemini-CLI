@@ -74,3 +74,57 @@ test('non-aborted submit:done keeps the interaction open while a pending input e
   assert.equal(runtime.busy, true);
   assert.ok(runtime.pendingUserInput, 'pending user input should remain open');
 });
+
+test('approval requests queue instead of overwriting, then surface the next after resolve', () => {
+  const base = {
+    sessionRuntimeById: {
+      [sessionId]: { sessionId, busy: true, status: 'running' },
+    },
+    sessionMessagesById: {},
+  };
+  const first = reduceSessionEvent(base, {
+    type: 'approval:request',
+    sessionId,
+    id: 'approval-a',
+    toolName: 'write',
+  });
+  const both = reduceSessionEvent(first, {
+    type: 'approval:request',
+    sessionId,
+    id: 'approval-b',
+    toolName: 'write',
+  });
+  let runtime = both.sessionRuntimeById[sessionId];
+  assert.equal(runtime.pendingApproval.id, 'approval-a');
+  assert.equal(runtime.pendingApprovals.length, 2);
+  assert.equal(runtime.pendingApprovals[1].id, 'approval-b');
+
+  const afterRunning = reduceSessionEvent(both, {
+    type: 'runtime_pool_state',
+    sessionId,
+    state: { status: 'running', busy: true },
+  });
+  runtime = afterRunning.sessionRuntimeById[sessionId];
+  assert.equal(runtime.pendingApproval.id, 'approval-a');
+  assert.equal(runtime.pendingApprovals.length, 2);
+
+  const afterFirst = reduceSessionEvent(afterRunning, {
+    type: 'approval:resolved',
+    sessionId,
+    id: 'approval-a',
+    approved: true,
+  });
+  runtime = afterFirst.sessionRuntimeById[sessionId];
+  assert.equal(runtime.pendingApproval.id, 'approval-b');
+  assert.equal(runtime.pendingApprovals.length, 1);
+
+  const afterSecond = reduceSessionEvent(afterFirst, {
+    type: 'approval:resolved',
+    sessionId,
+    id: 'approval-b',
+    approved: true,
+  });
+  runtime = afterSecond.sessionRuntimeById[sessionId];
+  assert.equal(runtime.pendingApproval, null);
+  assert.deepEqual(runtime.pendingApprovals, []);
+});

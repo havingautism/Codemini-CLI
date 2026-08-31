@@ -133,6 +133,7 @@ export class Footer {
     const sandbox = String(state.sandboxMode || 'workspace-write');
     const shell = String(state.shell || 'bash').toUpperCase();
     const modeTag = mode === 'coding' ? `${color.accent('◆')} ${bold(color.accent('CODE'))}` : `${color.cyan('◆')} ${bold(color.cyan('DAILY'))}`;
+    const towerTag = state.towerActive ? `${color.warning('◆')} ${bold(color.warning('TOWER'))}` : '';
     const accessTag = approval === 'full_access'
       ? `${color.error('●')} ${color.error('OPEN')}`
       : approval === 'review'
@@ -152,7 +153,7 @@ export class Footer {
       ? `${Math.round(state.currentContextTokens / 1000)}k/${Math.round(state.maxContextTokens / 1000)}k`
       : `${pct}%`;
     const right = `${color.dim('CTX')} ${contextMeter(pct)} ${color.muted(tokenText)}`;
-    const environment = [modeTag, accessTag, ...(width >= 72 ? [sandboxTag] : []), ...(width >= 96 ? [`${color.dim('›')} ${color.muted(shell)}`] : [])].join(divider);
+    const environment = [modeTag, ...(towerTag ? [towerTag] : []), accessTag, ...(width >= 72 ? [sandboxTag] : []), ...(width >= 96 ? [`${color.dim('›')} ${color.muted(shell)}`] : [])].join(divider);
     const identity = `${color.purple('◆')} ${color.text(modelName)}${width >= 68 && session ? `${divider}${color.dim('#')} ${color.muted(session)}` : ''}`;
     const location = `${color.dim('⌂')} ${color.muted(cwd)}`;
     return [

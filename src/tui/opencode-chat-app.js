@@ -37,6 +37,7 @@ import {
 } from './components/messages.js';
 import { ModeHome } from './components/mode-home.js';
 import { createTuiCopy } from './copy.js';
+import { parseTowerSlashCommand } from '../core/tower-store.js';
 import { color, editorTheme } from './theme.js';
 
 /** Editor variant that paints every rendered line with the dark surface color. */
@@ -53,6 +54,7 @@ const TUI_COMMANDS = [
   { name: 'inbox', description: 'inbox', action: 'inbox' },
   { name: 'coding', description: 'codingMode', mode: 'coding' },
   { name: 'daily', description: 'dailyMode', mode: 'daily' },
+  { name: 'tower', description: 'towerMode' },
   { name: 'tools', description: 'tools', local: 'tools' },
   { name: 'history', description: 'history', local: 'history' },
   { name: 'help', description: 'help', local: 'help' }
@@ -169,7 +171,18 @@ export async function runOpenCodeTui({ runtime, sessionId, model, safeMode = tru
     approvalCancel = () => finish(false);
     requestRender();
   });
-  runtime.setRequestToolApproval?.(showApproval);
+  const enqueueApproval = (() => {
+    let chain = Promise.resolve();
+    return (request) => {
+      const next = chain.then(
+        () => showApproval(request),
+        () => showApproval(request),
+      );
+      chain = next.then(() => undefined, () => undefined);
+      return next;
+    };
+  })();
+  runtime.setRequestToolApproval?.(enqueueApproval);
 
   const ensureAssistant = () => {
     if (activeAssistant) return activeAssistant;
@@ -392,6 +405,27 @@ export async function runOpenCodeTui({ runtime, sessionId, model, safeMode = tru
         });
       }
       else toggleProcessDetails();
+      return;
+    }
+    const towerSlash = parseTowerSlashCommand(value);
+    if (towerSlash) {
+      if (busy) {
+        transcript.addChild(new SurfaceSpacer(1));
+        transcript.addChild(createSystemMessage(copy.towerBusy, color.error));
+        requestRender();
+        return;
+      }
+      const result = await runtime.setTowerMode?.(towerSlash.action === 'enter');
+      transcript.addChild(new SurfaceSpacer(1));
+      if (!result?.ok) {
+        transcript.addChild(createSystemMessage(result?.message || copy.towerFailed, color.error));
+      } else {
+        transcript.addChild(createSystemMessage(
+          towerSlash.action === 'enter' ? copy.towerOn : copy.towerOff,
+          color.accent
+        ));
+      }
+      requestRender();
       return;
     }
     if (!alreadyShown) {

@@ -117,7 +117,7 @@ export function activeSessionIds(runtimeById = {}) {
 export function interactiveRequestForSession(state, kind) {
   const runtime = state.sessionRuntimeById?.[state.currentSessionId];
   return kind === "approval"
-    ? runtime?.pendingApproval || null
+    ? runtime?.pendingApproval || runtime?.pendingApprovals?.[0] || null
     : runtime?.pendingUserInput || null;
 }
 
@@ -131,7 +131,7 @@ export function projectSessionRuntime(sessions = [], runtimeById = {}) {
       queuePosition: runtime.queuePosition,
       needsAttention:
         runtime.needsAttention === true ||
-        Boolean(runtime.pendingApproval || runtime.pendingUserInput),
+        Boolean(runtime.pendingApproval || runtime.pendingApprovals?.length || runtime.pendingUserInput),
       parallelWriteRisk: runtime.parallelWriteRisk === true,
     };
   });

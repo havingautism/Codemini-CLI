@@ -27,6 +27,7 @@ import {
   inspectOutsideWorkspaceMutation,
   toolRequiresUserApproval
 } from './approval-policy.js';
+import { remapTowerToolArguments } from './tower-worktree.js';
 import {
   resolveSandboxPolicy,
   validateSandboxEscalationArgs,
@@ -998,7 +999,7 @@ export async function runAgentLoop({
     for (const { call, toolName, displayName, args, isModelVisible } of callsWithMeta) {
       let approved = true;
       let approvalReason = '';
-      let approvalArgs = args;
+      let approvalArgs = remapTowerToolArguments(args, workspaceRoot);
       let preflightErrorContent = '';
       let outsideWorkspaceApproval = null;
       if (!isModelVisible) {
@@ -1061,7 +1062,7 @@ export async function runAgentLoop({
           outsideWorkspaceApproval = await inspectOutsideWorkspaceMutation({
             workspaceRoot,
             toolName,
-            arguments: args
+            arguments: approvalArgs
           });
         }
       } catch (error) {
@@ -1084,10 +1085,10 @@ export async function runAgentLoop({
         approved = false;
         if (toolName === 'delete') {
           try {
-            const approval = await toolRuntime.prepareApproval(toolName, args);
+            const approval = await toolRuntime.prepareApproval(toolName, approvalArgs);
             if (approval !== undefined) {
-              const normalizedApproval = buildDeleteApprovalDetails({ approval }, args?.path);
-              if (normalizedApproval) approvalArgs = { ...args, approval: normalizedApproval };
+              const normalizedApproval = buildDeleteApprovalDetails({ approval }, approvalArgs?.path);
+              if (normalizedApproval) approvalArgs = { ...approvalArgs, approval: normalizedApproval };
             }
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
@@ -1110,7 +1111,7 @@ export async function runAgentLoop({
                 evaluation = { ...evaluation, failureReason: 'evaluator_error' };
               }
               approvalArgs = {
-                ...args,
+                ...approvalArgs,
                 _risk: evaluation.failed
                   ? ''
                   : (isSafeModePolicyBlocked && evaluation.risk === 'low' ? 'medium' : evaluation.risk),
@@ -1147,7 +1148,7 @@ export async function runAgentLoop({
               }
             } catch (_) {
               approvalArgs = {
-                ...args,
+                ...approvalArgs,
                 _risk: '',
                 _evaluation: {
                   risk: 'high',

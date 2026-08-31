@@ -604,8 +604,9 @@ export async function evaluateCodingRouteGraph({
   };
 }
 
-export function isCodingRouteToolAllowed(result, toolName) {
+export function isCodingRouteToolAllowed(result, toolName, options = {}) {
   if (toolName === 'run_subagent') {
+    if (options.towerActive === true) return true;
     return result?.delegation_mode === 'subagent' || result?.delegation_mode === 'subagent_dag';
   }
   if (toolName === 'fork_task') {
@@ -617,7 +618,7 @@ export function isCodingRouteToolAllowed(result, toolName) {
   return true;
 }
 
-export function buildCodingRouteDecisionBlock(result) {
+export function buildCodingRouteDecisionBlock(result, options = {}) {
   if (!result?.active || !result.decisions) return '';
   const { clarification, memory, skills, subagents, forks, tasks } = result.decisions;
   const delegationMode = result.delegation_mode || 'direct';
@@ -655,13 +656,16 @@ export function buildCodingRouteDecisionBlock(result) {
     skills?.selected_names?.length > 0
       ? 'Apply selected skills as active workflows.'
       : '',
+    options.towerActive === true
+      ? 'Tower is on: isolate workers with run_subagent, not fork_task. Do not edit the main checkout.'
+      : '',
     delegationMode === 'subagent'
       ? 'Use run_subagent only for the routed bounded clean-context work; the parent owns integration and final verification.'
       : '',
     delegationMode === 'subagent_dag'
       ? 'Use run_subagent with task_id and depends_on for the routed dependency DAG; the parent owns integration and final verification.'
       : '',
-    delegationMode === 'parallel_task'
+    !options.towerActive && delegationMode === 'parallel_task'
       ? 'Use fork_task for the routed parallel work; do not call run_subagent. Keep branches read-only or assign disjoint files.'
       : '',
     tasks?.required

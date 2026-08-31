@@ -1537,6 +1537,15 @@ export function createWebRuntimeApi({
         },
       ],
       [
+        "/api/tower-mode",
+        async ({ bridge, body }) => {
+          const active = body.active === true || body.active === "on" || body.active === "true";
+          const result = await bridge.setTowerMode(active);
+          if (result && typeof result === "object") return result;
+          return { ok: Boolean(result), tower: result?.tower || null };
+        },
+      ],
+      [
         "/api/approval-mode",
         async ({ bridge, body }) => ({
           ok: await bridge.setApprovalMode(body.mode),
@@ -1594,7 +1603,7 @@ export function createWebRuntimeApi({
         body.mode = sandboxMode;
       }
       if (
-        ["/api/execution-mode", "/api/approval-mode", "/api/sandbox-mode"].includes(url.pathname) &&
+        ["/api/execution-mode", "/api/approval-mode", "/api/sandbox-mode", "/api/tower-mode"].includes(url.pathname) &&
         (ACTIVE_RUNTIME_STATUSES.has(
           pool.getSessionState(body.sessionId)?.status,
         ) ||
@@ -1605,6 +1614,8 @@ export function createWebRuntimeApi({
             ? "Cannot switch execution mode while a request is running"
             : url.pathname === "/api/sandbox-mode"
               ? "Cannot switch sandbox mode while a request is running"
+              : url.pathname === "/api/tower-mode"
+                ? "Cannot switch tower while a request is running"
             : "Cannot switch approval mode while a request is running";
         jsonResponse(res, { error: true, message }, 409);
         return true;

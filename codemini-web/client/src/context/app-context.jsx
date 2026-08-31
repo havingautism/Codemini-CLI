@@ -2773,6 +2773,20 @@ export function AppProvider({ children }) {
           break;
         }
 
+        case "tower:changed": {
+          const rs = event;
+          const towerActive = Boolean(rs.towerActive);
+          update({
+            runtimeState: {
+              ...stateRef.current.runtimeState,
+              ...rs,
+              towerActive,
+              towerBase: rs.towerBase || "",
+            },
+          });
+          break;
+        }
+
         case "approval-mode:changed": {
           const rs = event;
           update({
@@ -4482,6 +4496,33 @@ export function AppProvider({ children }) {
             ...patch,
           },
         });
+      },
+      setTowerMode: async (sessionId, active) => {
+        const sid = String(sessionId || stateRef.current.currentSessionId || "").trim();
+        const result = await api.setTowerMode(sid, active);
+        if (result?.error || result?.ok === false) return result;
+        const tower = result?.tower;
+        const towerActive = Boolean(tower?.active);
+        const towerBase = String(tower?.base || "");
+        setState((prev) => ({
+          ...prev,
+          runtimeState: {
+            ...(prev.runtimeState || {}),
+            towerActive,
+            towerBase,
+          },
+          sessionRuntimeById: sid
+            ? {
+                ...prev.sessionRuntimeById,
+                [sid]: {
+                  ...(prev.sessionRuntimeById[sid] || { sessionId: sid }),
+                  towerActive,
+                  towerBase,
+                },
+              }
+            : prev.sessionRuntimeById,
+        }));
+        return result;
       },
       setSandboxMode: async (sessionId, mode) => {
         const sid = String(sessionId || stateRef.current.currentSessionId || "").trim();

@@ -4,6 +4,7 @@ import { getSessionsDir } from './paths.js';
 import { normalizePlanState } from './plan-state.js';
 import { normalizeSpecState } from './spec-state.js';
 import { normalizeTodos } from './todo-state.js';
+import { normalizeTowerState } from './tower-store.js';
 import { ensureSessionTitleEmoji, stripInternalTitleContext } from './session-title.js';
 import { sanitizeTiming } from './usage-timing.js';
 import {
@@ -367,6 +368,9 @@ function sanitizeSession(session, fallbackId = '') {
     out.memoryBootstrapSnapshot = session.memoryBootstrapSnapshot;
   }
 
+  const tower = normalizeTowerState(session?.tower);
+  if (tower) out.tower = tower;
+
   return out;
 }
 
@@ -722,6 +726,8 @@ export async function createContinuationSession(source, { messages = [], compact
   if (typeof source?.memoryBootstrapSnapshot === 'string') {
     created.memoryBootstrapSnapshot = source.memoryBootstrapSnapshot;
   }
+  const tower = normalizeTowerState(source?.tower);
+  if (tower) created.tower = tower;
   if (Array.isArray(compactView) && compactView.length) {
     created.compact = {
       ...(source?.compact && typeof source.compact === 'object' ? source.compact : {}),

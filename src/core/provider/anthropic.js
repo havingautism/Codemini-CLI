@@ -435,16 +435,20 @@ export async function createChatCompletionStream({
   onToolCallDelta,
   timeoutMs = 1800000,
   maxTokens = 16384,
-  signal: externalSignal
+  signal: externalSignal,
 }) {
   // 合并超时信号与外部中止信号
   const timeoutSignal = AbortSignal.timeout(timeoutMs);
   const controller = new AbortController();
-  const onTimeoutAbort = () => controller.abort(
-    new Error(`Gateway request timed out after ${timeoutMs}ms`)
-  );
+  const onTimeoutAbort = () => {
+    controller.abort(
+      new Error(`Gateway request timed out after ${timeoutMs}ms`)
+    );
+  };
   timeoutSignal.addEventListener('abort', onTimeoutAbort, { once: true });
-  const onExternalAbort = () => controller.abort();
+  const onExternalAbort = () => {
+    controller.abort();
+  };
   if (externalSignal) {
     if (externalSignal.aborted) {
       controller.abort();

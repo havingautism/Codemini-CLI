@@ -23,6 +23,7 @@ const SESSION_SCOPED_RUNTIME_KEYS = new Set([
   "status",
   "queuePosition",
   "pendingApproval",
+  "pendingApprovals",
   "pendingUserInput",
   "pendingSpecApproval",
   "pendingReflectSkill",
@@ -30,6 +31,54 @@ const SESSION_SCOPED_RUNTIME_KEYS = new Set([
   "needsAttention",
   "parallelWriteRisk",
 ]);
+
+const KEEP_PENDING_APPROVAL_STATUSES = new Set([
+  "queued",
+  "running",
+  "waiting",
+  "waiting_approval",
+  "waiting_input",
+]);
+
+function approvalId(value) {
+  return String(value?.id || "").trim();
+}
+
+function normalizeApprovalQueue(runtime = {}) {
+  const queued = Array.isArray(runtime?.pendingApprovals)
+    ? runtime.pendingApprovals.filter((item) => approvalId(item))
+    : [];
+  if (queued.length) return queued;
+  const single = runtime?.pendingApproval;
+  return approvalId(single) ? [single] : [];
+}
+
+function upsertApprovalQueue(queue, event) {
+  const id = approvalId(event);
+  if (!id) return queue;
+  const index = queue.findIndex((item) => approvalId(item) === id);
+  if (index >= 0) {
+    const next = queue.slice();
+    next[index] = event;
+    return next;
+  }
+  return [...queue, event];
+}
+
+function removeApprovalFromQueue(queue, id) {
+  const requestId = String(id || "").trim();
+  if (!requestId) return queue;
+  return queue.filter((item) => approvalId(item) !== requestId);
+}
+
+function withApprovalQueue(runtime, queue) {
+  const next = Array.isArray(queue) ? queue : [];
+  return {
+    ...runtime,
+    pendingApprovals: next,
+    pendingApproval: next[0] || null,
+  };
+}
 
 function projectIdleRuntimeState(previous, sessionId) {
   const next = {
@@ -251,23 +300,28 @@ export function reduceSessionRuntimeEvent(state, event) {
   if (event.type === "runtime:state") {
     runtime = { ...previous, ...(event.state || {}), sessionId };
   } else if (event.type === "runtime_pool_state") {
-    runtime = {
+    const merged = {
       ...previous,
       ...(event.state || {}),
-      ...(previous.pendingApproval &&
-      event.state?.status !== "waiting_approval"
-        ? { pendingApproval: null }
-        : {}),
-      ...(previous.pendingUserInput &&
-      event.state?.status !== "waiting_input"
-        ? { pendingUserInput: null }
-        : {}),
       sessionId,
     };
+    const queue = normalizeApprovalQueue(previous);
+    runtime = KEEP_PENDING_APPROVAL_STATUSES.has(event.state?.status)
+      ? withApprovalQueue(merged, queue)
+      : withApprovalQueue(merged, []);
+    if (previous.pendingUserInput && event.state?.status !== "waiting_input") {
+      runtime = { ...runtime, pendingUserInput: null };
+    }
   } else if (event.type === "approval:request") {
-    runtime = { ...previous, pendingApproval: event, sessionId };
+    runtime = withApprovalQueue(
+      { ...previous, sessionId },
+      upsertApprovalQueue(normalizeApprovalQueue(previous), event),
+    );
   } else if (event.type === "approval:resolved") {
-    runtime = { ...previous, pendingApproval: null, sessionId };
+    runtime = withApprovalQueue(
+      { ...previous, sessionId },
+      removeApprovalFromQueue(normalizeApprovalQueue(previous), event.id),
+    );
   } else if (event.type === "user-input:request") {
     runtime = {
       ...previous,
@@ -297,10 +351,11 @@ export function reduceSessionRuntimeEvent(state, event) {
         status: "aborted",
         busy: false,
         pendingApproval: null,
+        pendingApprovals: [],
         pendingUserInput: null,
         sessionId,
       };
-    } else if (previous.pendingApproval || previous.pendingUserInput) {
+    } else if (previous.pendingApproval || previous.pendingApprovals?.length || previous.pendingUserInput) {
       // Keep the interaction UI open. Pool may still be (or return to)
       // waiting_*; clearing here caused false "completed" + recovered clicks.
       runtime = {
@@ -314,6 +369,7 @@ export function reduceSessionRuntimeEvent(state, event) {
         status: event.result?.type === "error" ? "failed" : "completed",
         busy: false,
         pendingApproval: null,
+        pendingApprovals: [],
         pendingUserInput: null,
         sessionId,
       };

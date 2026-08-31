@@ -83,6 +83,16 @@ import { composeSystemPrompt } from './system-prompt-composer.js';
 import { buildTurnContextPrefix, buildTurnUserPrompt } from './turn-context.js';
 import { buildSubAgentShellRulesPrompt, buildSubAgentRuntimeNote, resolveShellContext } from './shell-profile.js';
 import { getBaseConfigDir, getProjectIndexDir, getProjectPlansDir, getProjectSpecsDir, getProjectWorkspaceDir, getSessionsDir, getSkillsDir } from './paths.js';
+import {
+  buildTowerModePromptBlock,
+  enterTowerMode,
+  exitTowerMode,
+  listTowerWorkersFromState,
+  normalizeTowerState,
+  readTowerStateFile,
+  writeTowerStateFile,
+} from './tower-store.js';
+import { addTowerWorktree, removeTowerWorktrees } from './tower-worktree.js';
 import { composeMemorySnapshot } from './memory-prompt.js';
 import { buildProjectContextSnippet, initializeProjectIndex } from './project-index.js';
 import { queryProjectKnowledgeGraph } from './project-knowledge-graph.js';
@@ -158,21 +168,49 @@ import { CHAT_ACTIONS, validateChatAction } from './chat-action-dispatcher.js';
 
 const STREAM_SAVE_DEBOUNCE_MS = 120;
 
+function approvalMap(state) {
+  return state?.byId instanceof Map ? state.byId : null;
+}
+
+function firstPendingApproval(state) {
+  const map = approvalMap(state);
+  if (map) return map.size ? map.values().next().value || null : null;
+  return state?.current || null;
+}
+
+function syncApprovalCurrent(state) {
+  if (!state || typeof state !== 'object') return;
+  state.current = firstPendingApproval(state);
+}
+
 export function takePendingApproval(state, requestId) {
-  const request = state?.current;
-  if (!request || String(request.id || '') !== String(requestId || '')) {
+  const id = String(requestId || '');
+  const map = approvalMap(state);
+  const fromMap = map && id ? map.get(id) : null;
+  const fromCurrent = state?.current && String(state.current.id || '') === id ? state.current : null;
+  const request = fromMap || fromCurrent;
+  if (!request) {
+    const hasOther = Boolean(firstPendingApproval(state));
     const error = new Error('No matching approval request is pending');
-    error.code = request ? 'STALE_ACTION' : 'NO_PENDING_APPROVAL';
+    error.code = hasOther ? 'STALE_ACTION' : 'NO_PENDING_APPROVAL';
     throw error;
   }
-  state.current = null;
+  if (map) map.delete(id);
+  else if (state) state.current = null;
+  syncApprovalCurrent(state);
   return request;
 }
 
 export function peekPendingApproval(state, requestId = null) {
+  const idFilter = requestId != null && String(requestId) !== '' ? String(requestId) : null;
+  const map = approvalMap(state);
+  if (map) {
+    if (idFilter) return map.get(idFilter) || null;
+    return map.size ? map.values().next().value || null : null;
+  }
   const request = state?.current || null;
   if (!request) return null;
-  if (requestId != null && String(request.id || '') !== String(requestId || '')) return null;
+  if (idFilter && String(request.id || '') !== idFilter) return null;
   return request;
 }
 
@@ -4099,7 +4137,7 @@ export function resolveLatestContextMeasurement(messages = [], fallbackOverhead 
   return { tokens: 0, source: 'estimated' };
 }
 
-export function buildRuntimeStateSnapshot({ currentSession, config, model, executionMode, extraSession, workspaceRoot, alwaysSkillNames = [] }) {
+export function buildRuntimeStateSnapshot({ currentSession, config, model, executionMode, extraSession, workspaceRoot, alwaysSkillNames = [], towerState } = {}) {
   const activeMessages = extraSession
     ? extraSession.messages || []
     : Array.isArray(currentSession?.compact?.view) && currentSession.compact.view.length > 0
@@ -4116,6 +4154,9 @@ export function buildRuntimeStateSnapshot({ currentSession, config, model, execu
   const planState = currentSession?.planState;
   const specState = getPendingSpecState(currentSession);
   const resolvedMode = resolveRuntimeExecutionMode(executionMode, config, currentSession);
+  const tower = towerState !== undefined
+    ? normalizeTowerState(towerState)
+    : normalizeTowerState(currentSession?.tower);
   const soulCategory = soulContextFromExecutionMode(resolvedMode);
   const visibleAlwaysSkillNames = shouldInjectAlwaysSkills(resolvedMode)
     ? (Array.isArray(alwaysSkillNames) ? alwaysSkillNames : []).map((name) => String(name || '').trim()).filter(Boolean)
@@ -4153,7 +4194,9 @@ export function buildRuntimeStateSnapshot({ currentSession, config, model, execu
       : null,
     pendingReflectSkill: planState?.status === 'pending_reflect_skill'
       ? buildPendingReflectSkillSnapshot(planState)
-      : null
+      : null,
+    towerActive: Boolean(tower),
+    towerBase: tower?.base || '',
   };
   Object.defineProperties(snapshot, {
     currentContextTokens: {
@@ -4725,6 +4768,7 @@ async function askModel({
   skipSystemPromptInsert = false,
   toolDefinitionsOverride = null,
   forbiddenTools = [],
+  towerState = null,
 }) {
   let compacted = compactedInput;
   const modelInputText = typeof modelText === 'string' && modelText ? modelText : text;
@@ -4914,6 +4958,8 @@ async function askModel({
     executionShellContext.commandPlatform,
     executionShellContext.shell,
   );
+  const towerModePrompt = buildTowerModePromptBlock(towerState);
+  const modePromptBlocks = [executionModePrompt, towerModePrompt].filter(Boolean).join('\n\n');
   const projectContextSnippet = await projectContextPromise;
   // Compose effectiveSystemPrompt without redundant composeSystemPrompt wrapping:
   // systemPrompt already went through composeSystemPrompt in buildActiveSystemPrompt.
@@ -4931,11 +4977,11 @@ async function askModel({
         return directiveIndex >= 0
           ? [
               systemPromptText.slice(0, directiveIndex).trimEnd(),
-              executionModePrompt,
+              modePromptBlocks,
               systemPromptText.slice(directiveIndex),
             ].filter(Boolean).join('\n\n')
           : buildSystemPromptWithReplyLanguage(
-              [systemPromptText.trim(), executionModePrompt].filter(Boolean).join('\n\n'),
+              [systemPromptText.trim(), modePromptBlocks].filter(Boolean).join('\n\n'),
               config,
             );
       })();
@@ -5116,6 +5162,44 @@ async function askModel({
             : effectivePrompt;
               let childUsage = null;
           try {
+            let workerWorkspaceRoot = workspaceRoot;
+            let workerChangeTracker = changeTracker;
+            let workerBackupManager = backupManager;
+            if (towerState) {
+              const spawned = await addTowerWorktree({
+                cwd: workspaceRoot,
+                base: towerState.base,
+                taskId: dependencyTaskId,
+                name: persona,
+                callId,
+              });
+              if (!spawned.ok) {
+                const spawnError = spawned.error || 'Failed to spawn tower worktree.';
+                emit({
+                  type: 'plan:step_done',
+                  toolCallId: callId,
+                  step: 1,
+                  total: 1,
+                  role: persona,
+                  title,
+                  status: 'failed',
+                  taskId: dependencyTaskId,
+                  dependsOn: dependencyRegistration.dependencies,
+                  summary: spawnError,
+                  sdkProvider: stepSdkProvider,
+                  model: stepModel,
+                });
+                const spawnResult = { ok: false, error: spawnError, text: '' };
+                dependencyRegistration.settle(spawnResult);
+                return spawnResult;
+              }
+              workerWorkspaceRoot = spawned.worker.worktreePath;
+              workerChangeTracker = await createTowerWorkerChangeTracker(
+                workerWorkspaceRoot,
+                `${session.id}:${spawned.worker.id}`,
+              );
+              workerBackupManager = null;
+            }
             const output = await runSubAgentTask({
               role: taskRole,
               task: scopedTask,
@@ -5129,8 +5213,8 @@ async function askModel({
               onAgentEvent,
               requestToolApproval,
               signal,
-              changeTracker,
-              backupManager,
+              changeTracker: workerChangeTracker,
+              backupManager: workerBackupManager,
               parentToolCallId: callId,
               tools: toolAllowList,
               onUsage: (usage) => {
@@ -5138,10 +5222,10 @@ async function askModel({
               },
               projectIsGit: resolveApprovalProjectIsGit({
                 projectIsGit,
-                changeTrackerEnabled: changeTracker?.mode === 'git-oplog',
+                changeTrackerEnabled: workerChangeTracker?.mode === 'git-oplog',
                 workspaceHasGit: Boolean(config?.runtime?.project_is_git)
               }),
-              workspaceRoot
+              workspaceRoot: workerWorkspaceRoot
             });
             const failed = subAgentRunFailed(output, signal);
             const savedHandoff = failed
@@ -5942,6 +6026,27 @@ async function askModel({
   return { text: loopResult.text, aborted: !!loopResult.aborted };
 }
 
+function sameFsPath(left, right) {
+  const a = path.resolve(String(left || ''));
+  const b = path.resolve(String(right || ''));
+  if (a === b) return true;
+  return process.platform === 'win32' && a.toLowerCase() === b.toLowerCase();
+}
+
+function isTowerWorktreeRoot(root) {
+  return String(root || '').replace(/\\/g, '/').includes('/tower/worktrees/');
+}
+
+async function createTowerWorkerChangeTracker(worktreePath, sessionId) {
+  const tracker = await createGitOplogChangeTracker({
+    workspaceRoot: worktreePath,
+    sessionId,
+  }).catch(() => null);
+  if (!tracker?.enabled) return null;
+  if (!sameFsPath(tracker.workspaceRoot, worktreePath)) return null;
+  return tracker;
+}
+
 export async function runSubAgentTask({
   role,
   task,
@@ -6009,6 +6114,9 @@ export async function runSubAgentTask({
     rolePrompt,
     extraRolePrompt,
     runtimeNote,
+    isTowerWorktreeRoot(workspaceRoot)
+      ? 'Your cwd is this git worktree. Use paths relative to this directory. Do not write to the parent checkout with its absolute path.'
+      : '',
     handoffCatalogPrompt,
     contextPacket,
     goalRequirementPacket,
@@ -8093,20 +8201,26 @@ export async function createChatRuntime({
   const root = path.resolve(workspaceRoot || session?.projectDir || process.cwd());
   if (session && typeof session === 'object') session.projectDir = root;
   let requestToolApprovalObserver = typeof requestToolApproval === 'function' ? requestToolApproval : null;
-  const approvalRequestState = { current: null };
+  const approvalRequestState = { current: null, byId: new Map() };
   const activeRequestToolApproval = async (request) => {
     let resolveStructuredApproval;
     const structuredDecision = new Promise((resolve) => {
       resolveStructuredApproval = resolve;
     });
-    approvalRequestState.current = { ...request, resolve: resolveStructuredApproval };
+    const pending = { ...request, resolve: resolveStructuredApproval };
+    const id = String(request?.id || '');
+    if (id) approvalRequestState.byId.set(id, pending);
+    if (!approvalRequestState.current) approvalRequestState.current = pending;
     try {
       const observerDecision = requestToolApprovalObserver
         ? Promise.resolve(requestToolApprovalObserver(request))
         : new Promise(() => {});
       return await Promise.race([structuredDecision, observerDecision]);
     } finally {
-      approvalRequestState.current = null;
+      if (id) approvalRequestState.byId.delete(id);
+      if (approvalRequestState.current && String(approvalRequestState.current.id || '') === id) {
+        syncApprovalCurrent(approvalRequestState);
+      }
     }
   };
   let activeRequestUserInput = null;
@@ -8150,6 +8264,44 @@ export async function createChatRuntime({
       ? systemPromptFactory(config)
       : baseSystemPrompt;
   let executionMode = resolveRuntimeExecutionMode(config.execution?.mode || 'normal', config, currentSession);
+  let towerState = normalizeTowerState(currentSession?.tower);
+  const persistTowerState = async (next) => {
+    towerState = normalizeTowerState(next);
+    if (!currentSession || typeof currentSession !== 'object') return;
+    if (towerState) currentSession.tower = towerState;
+    else delete currentSession.tower;
+    await saveSession(currentSession).catch(() => {});
+    if (!towerState) return;
+    const disk = await readTowerStateFile(root);
+    await writeTowerStateFile(root, {
+      version: 1,
+      ...towerState,
+      sessionId: currentSession.id,
+      workers: listTowerWorkersFromState(disk),
+    }).catch(() => {});
+  };
+  const deactivateTower = async () => {
+    if (!towerState) return { ok: true, tower: null };
+    await removeTowerWorktrees({ cwd: root }).catch(() => ({ kept: [] }));
+    await exitTowerMode({
+      cwd: root,
+      sessionId: currentSession?.id,
+      previous: towerState,
+    });
+    await persistTowerState(null);
+    return { ok: true, tower: null };
+  };
+  if (towerState && normalizeExecutionMode(executionMode) !== 'plan') {
+    await deactivateTower();
+  } else if (towerState) {
+    const disk = await readTowerStateFile(root);
+    await writeTowerStateFile(root, {
+      version: 1,
+      ...towerState,
+      sessionId: currentSession?.id,
+      workers: listTowerWorkersFromState(disk),
+    }).catch(() => {});
+  }
   let compactState = null;
   const normalizeCompactThreshold = (value, fallback = 60) => {
     const num = Number(value);
@@ -8168,6 +8320,7 @@ export async function createChatRuntime({
         : [],
     );
     executionMode = resolveRuntimeExecutionMode(config.execution?.mode || 'normal', config, currentSession);
+    if (normalizeExecutionMode(executionMode) !== 'plan') await deactivateTower();
     syncCompactStateFromConfig();
 
     const resolvedModel = String(nextModel || '').trim();
@@ -8433,6 +8586,12 @@ export async function createChatRuntime({
     if (!next?.id || next.id === currentSession?.id) return;
     currentSession = next;
     compactedForModel = Array.isArray(next.compact?.view) ? next.compact.view : null;
+    if (towerState) {
+      currentSession.tower = towerState;
+      void persistTowerState(towerState);
+    } else {
+      towerState = normalizeTowerState(currentSession.tower);
+    }
   };
   const appendSessionMessage = (message) => {
     currentSession.messages.push(message);
@@ -9213,7 +9372,8 @@ export async function createChatRuntime({
       root,
     );
     const memoryHint = isCodingMode ? '' : buildMemoryRouteHintBlock(memoryRoute);
-    const codingRouteDecisionBlock = buildCodingRouteDecisionBlock(codingRoute);
+    const towerActive = Boolean(normalizeTowerState(towerState));
+    const codingRouteDecisionBlock = buildCodingRouteDecisionBlock(codingRoute, { towerActive });
     // Per-turn routing / skill / hook context belongs in the user turn, not the
     // system prompt, so the system prompt stays a stable, cacheable prefix.
     const turnRoutingContext = [
@@ -9226,7 +9386,7 @@ export async function createChatRuntime({
     ].filter(Boolean).join('\n\n');
     const codingRouteAllowedTools = isCodingMode
       ? EXECUTION_MODE_TOOL_POLICY.plan.filter((toolName) => (
-          isCodingRouteToolAllowed(codingRoute, toolName)
+          isCodingRouteToolAllowed(codingRoute, toolName, { towerActive })
         ))
       : undefined;
     await persistLastSystemPrompt(activeReplySystemPrompt);
@@ -9261,6 +9421,7 @@ export async function createChatRuntime({
       onSkillLoaded: (skillName) => armSkillHooksByName(skillName, { onAgentEvent }),
       memoryInject,
       retrievedText,
+      towerState,
     });
     syncExecutionModeWithSession();
     void captureUserPromptForDream(expandedText);
@@ -9451,12 +9612,37 @@ export async function createChatRuntime({
       if (normalized === normalizeExecutionMode(executionMode)) return true;
       const previouslyArmed = new Set([...skillHooksSession.activeSkills.keys()]);
       executionMode = normalized;
+      if (normalized === 'normal') await deactivateTower();
       await setConfigValue('execution.mode', normalized);
       config = attachRuntimeState(await loadConfig());
       await reloadWorkspaceHooks();
       // Drop coding SessionStart UI/context queued before the switch; rebuild for arms that still apply.
       await reconcileSessionStartForModeChange(previouslyArmed);
       return true;
+    },
+    setTowerMode: async (active) => {
+      const want = active === true || active === 'on' || String(active).toLowerCase() === 'true';
+      if (want) {
+        if (normalizeExecutionMode(executionMode) !== 'plan') {
+          return {
+            ok: false,
+            code: 'NOT_CODING',
+            message: 'Switch to coding mode before starting tower.',
+          };
+        }
+        if (towerState) {
+          await persistTowerState(towerState);
+          return { ok: true, tower: towerState };
+        }
+        const result = await enterTowerMode({
+          cwd: root,
+          sessionId: currentSession?.id,
+        });
+        if (!result.ok) return result;
+        await persistTowerState(result.tower);
+        return result;
+      }
+      return deactivateTower();
     },
     setApprovalMode: async (next) => {
       const normalized = String(next || '').toLowerCase().replace(/-/g, '_');
@@ -9617,7 +9803,8 @@ export async function createChatRuntime({
         executionMode,
         extraSession: activeSubSession,
         workspaceRoot: root,
-        alwaysSkillNames: getAlwaysSkillCommands(commands, config, null, executionMode).map((skill) => skill.name)
+        alwaysSkillNames: getAlwaysSkillCommands(commands, config, null, executionMode).map((skill) => skill.name),
+        towerState
       })
   };
 }

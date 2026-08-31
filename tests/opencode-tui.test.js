@@ -426,6 +426,20 @@ test('chat chrome keeps only the logo on top and runtime details at the bottom',
   const bottom = stripAnsi(new Footer({ runtime, model: 'fallback', sessionId: 'session-12345678', safeMode: true }).render(80).join('\n'));
   assert.match(bottom, /◆ CODE\s+│\s+● AUTO\s+│\s+◇ WORKSPACE.*◆ test-model\s+│\s+# 12345678/);
   assert.match(bottom, /⌂ E:\\repo.*CTX/);
+  assert.doesNotMatch(bottom, /TOWER/);
+
+  const towerBottom = stripAnsi(new Footer({
+    runtime: {
+      getRuntimeState: () => ({
+        ...runtime.getRuntimeState(),
+        towerActive: true
+      })
+    },
+    model: 'fallback',
+    sessionId: 'session-12345678',
+    safeMode: true
+  }).render(80).join('\n'));
+  assert.match(towerBottom, /◆ CODE\s+│\s+◆ TOWER\s+│\s+● AUTO/);
 
   const activity = new ActivityBar({ tui: { requestRender() {} }, copy: createTuiCopy('en') }).render(80).join('\n');
   assert.match(stripAnsi(activity), /● Ready.*\/ commands/);
@@ -1040,11 +1054,56 @@ test('slash commands share one catalog with skills', () => {
     getAvailableSkills: () => [{ name: 'review', description: 'Review changes' }]
   }, createTuiCopy('zh'));
   assert.deepEqual(commands.map(({ value }) => value), [
-    'compact', 'dream', 'reflect', 'inbox', 'coding', 'daily', 'tools', 'history', 'help', 'review'
+    'compact', 'dream', 'reflect', 'inbox', 'coding', 'daily', 'tower', 'tools', 'history', 'help', 'review'
   ]);
   assert.equal(commands.find(({ value }) => value === 'tools').description, '展开或折叠过程详情');
   assert.match(commands.find(({ value }) => value === 'tools').label, /^工具/);
   assert.match(commands.find(({ value }) => value === 'review').label, /^技能/);
+});
+
+test('/tower and /tower off toggle the overlay', async () => {
+  const terminal = new FakeTerminal();
+  const towerCalls = [];
+  const runtime = {
+    getSessionMessages: () => [],
+    getInputHistory: async () => [],
+    getAvailableSkills: () => [],
+    getRuntimeState: () => ({
+      mode: 'plan',
+      model: 'test-model',
+      workspaceRoot: 'E:\\repo',
+      towerActive: towerCalls.at(-1) === true
+    }),
+    setRequestToolApproval() {},
+    setExecutionMode: async () => {},
+    setTowerMode: async (active) => {
+      towerCalls.push(!!active);
+      return { ok: true, tower: active ? { active: true, base: 'main' } : null };
+    },
+    submitMessage: async () => ({ type: 'noop' })
+  };
+
+  const running = runOpenCodeTui({
+    runtime,
+    sessionId: 'tower-test',
+    model: 'test-model',
+    language: 'en',
+    terminal,
+    workspaceDir: 'E:\\repo'
+  });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  terminal.send('\r');
+  await waitFor(() => stripAnsi(terminal.output).includes('test-model'));
+  for (const key of '/tower') terminal.send(key);
+  terminal.send('\r');
+  await waitFor(() => towerCalls.length === 1 && stripAnsi(terminal.output).includes('Tower on'));
+  for (const key of '/tower off') terminal.send(key);
+  terminal.send('\r');
+  await waitFor(() => towerCalls.length === 2 && stripAnsi(terminal.output).includes('Tower off'));
+  assert.deepEqual(towerCalls, [true, false]);
+  terminal.send('\u0003');
+  terminal.send('\u0003');
+  await running;
 });
 
 test('/history opens session history and returns the selected session', async () => {

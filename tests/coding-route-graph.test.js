@@ -589,6 +589,32 @@ test('semantic judge can recommend fork branches with a capped count and focus',
   assert.match(block, /Use fork_task.*do not call run_subagent/);
 });
 
+test('tower overlay keeps run_subagent when the route prefers fork_task', async () => {
+  const result = await evaluateCodingRouteGraph({
+    executionMode: 'plan',
+    text: 'Check the module layout',
+    judge: async () => ({
+      memory: { leaf: 'ignore' },
+      skills: { selected_names: [] },
+      tasks: { required: false },
+      subagents: { enabled: false },
+      forks: {
+        enabled: true,
+        recommended_count: 2,
+        focus: ['frontend', 'backend'],
+        reason: 'disjoint areas can share the same conversation state',
+      },
+    }),
+  });
+
+  assert.equal(result.delegation_mode, 'parallel_task');
+  assert.equal(isCodingRouteToolAllowed(result, 'run_subagent'), false);
+  assert.equal(isCodingRouteToolAllowed(result, 'run_subagent', { towerActive: true }), true);
+  const block = buildCodingRouteDecisionBlock(result, { towerActive: true });
+  assert.match(block, /Tower is on: isolate workers with run_subagent/);
+  assert.doesNotMatch(block, /do not call run_subagent/);
+});
+
 test('hard context pressure recommends subagents while fork_task remains available', async () => {
   const result = await evaluateCodingRouteGraph({
     executionMode: 'plan',

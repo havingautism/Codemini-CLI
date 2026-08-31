@@ -181,6 +181,15 @@ export async function setExecutionMode(sessionId, mode) {
   return res.json();
 }
 
+export async function setTowerMode(sessionId, active) {
+  const res = await api('/api/tower-mode', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ sessionId, active: !!active })
+  });
+  return readJsonResponse(res);
+}
+
 export async function setApprovalMode(sessionId, mode) {
   const res = await api('/api/approval-mode', {
     method: 'POST',

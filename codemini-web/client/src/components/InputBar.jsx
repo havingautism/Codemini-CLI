@@ -25,6 +25,7 @@ import {
   Paperclip,
   Plus,
   Sparkle,
+  TreeStructure,
   X,
 } from "@/lib/icons";
 import { cn } from "@/lib/utils";
@@ -168,17 +169,24 @@ async function compressImageFile(file) {
   return compressed.size < file.size ? compressed : file;
 }
 
-function ModeSelector({ sessionId, current, disabled = false }) {
+function ModeSelector({ sessionId, current, towerActive = false, disabled = false }) {
+  const { actions } = useApp();
   const [open, setOpen] = useState(false);
   const [switching, setSwitching] = useState(false);
+  const [towerError, setTowerError] = useState("");
   const MODE_OPTIONS = getExecutionModeOptions();
   const active =
     MODE_OPTIONS.find((m) => m.value === current) || MODE_OPTIONS[0];
   const ActiveIcon = active.icon;
+  const isCoding = current === "plan" || current === "coding" || current === "code";
+  const triggerLabel = towerActive
+    ? `${active.label} · ${t("towerMode")}`
+    : active.label;
 
   const handleSelect = async (mode) => {
     if (mode === current || switching || disabled) return;
     setSwitching(true);
+    setTowerError("");
     try {
       const result = await api.setExecutionMode(sessionId, mode);
       if (result?.error)
@@ -190,21 +198,43 @@ function ModeSelector({ sessionId, current, disabled = false }) {
     setOpen(false);
   };
 
+  const handleTowerToggle = async (event) => {
+    event.stopPropagation();
+    if (switching || disabled || !isCoding) return;
+    setSwitching(true);
+    setTowerError("");
+    try {
+      const result = await actions.setTowerMode(sessionId, !towerActive);
+      if (result?.error || result?.ok === false) {
+        const code = String(result?.code || "");
+        const message =
+          code === "NOT_GIT" || code === "NO_COMMIT"
+            ? t("towerNeedsGit")
+            : code === "DETACHED"
+              ? t("towerNeedsBranch")
+              : code === "NOT_CODING"
+                ? t("towerNeedsCoding")
+                : result?.message || t("towerFailed");
+        setTowerError(message);
+      }
+    } catch (error) {
+      setTowerError(error?.message || t("towerFailed"));
+    } finally {
+      setSwitching(false);
+    }
+  };
+
   return (
     <Popover open={open} onOpenChange={(next) => !disabled && setOpen(next)}>
       <PopoverTrigger asChild>
         <button
           type="button"
-          className={cn(
-            INPUT_PILL_CLASS,
-            "px-2.5",
-            (switching || disabled) && "opacity-50 pointer-events-none",
-          )}
+          className={cn(INPUT_PILL_CLASS, "px-2.5", disabled && "opacity-50 pointer-events-none")}
           disabled={disabled}
           title={disabled ? t("switchModeDisabled") : t("switchMode")}
         >
           <ActiveIcon size={13} />
-          <span className="truncate">{active.label}</span>
+          <span className="truncate">{triggerLabel}</span>
           <CaretDown size={11} />
         </button>
       </PopoverTrigger>
@@ -244,6 +274,40 @@ function ModeSelector({ sessionId, current, disabled = false }) {
             );
           })}
         </ToggleGroup>
+        {isCoding ? (
+          <div className="mt-2 border-t border-border/60 pt-2">
+            <div className="px-0.5 pb-1.5 text-[11px] font-medium text-muted-foreground">
+              {t("towerMode")}
+            </div>
+            <button
+              type="button"
+              className={cn(
+                "flex w-full items-start gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-accent",
+                towerActive && "bg-accent",
+                disabled && "opacity-50 pointer-events-none",
+              )}
+              disabled={disabled}
+              aria-pressed={towerActive}
+              aria-busy={switching}
+              onClick={handleTowerToggle}
+            >
+              <TreeStructure size={16} className="mt-0.5 shrink-0" />
+              <span className="min-w-0 flex-1 overflow-hidden">
+                <span className="block truncate">
+                  {towerActive ? t("towerOn") : t("towerOff")}
+                </span>
+                <span className="block wrap-break-word text-[11px] font-normal leading-snug text-muted-foreground">
+                  {t("towerModeDesc")}
+                </span>
+              </span>
+            </button>
+            {towerError ? (
+              <p className="px-0.5 pt-1.5 text-[11px] leading-snug text-destructive">
+                {towerError}
+              </p>
+            ) : null}
+          </div>
+        ) : null}
       </PopoverContent>
     </Popover>
   );
@@ -1639,6 +1703,7 @@ export function InputBar({
             <ModeSelector
               sessionId={rs.sessionId}
               current={mode}
+              towerActive={!!rs.towerActive}
               disabled={inputLocked}
             />
             <ReasoningQuickControl

@@ -6708,7 +6708,7 @@ export function getBuiltinTools({
     },
     write: async (args) => {
       await ensureProjectIndex();
-      if (!isWin && !String(args?.file_path || "").trim()) {
+      if (!isWin && !String(args?.file_path || args?.path || "").trim()) {
         throw new Error("file_path must be a non-empty string");
       }
       const baseMutationConfig = configWithApprovedMutationPaths(config, args);
@@ -6734,7 +6734,7 @@ export function getBuiltinTools({
             workspaceRoot,
             isWin
               ? args
-              : { ...args, path: args?.file_path, overwrite: true },
+              : { ...args, path: args?.file_path || args?.path, overwrite: true },
             mutationConfig,
           ),
           backup,
