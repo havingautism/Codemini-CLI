@@ -1,3 +1,4 @@
+import fsSync from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
@@ -75,6 +76,145 @@ export function towerWorkerBranchName(workerId) {
   return `${BRANCH_PREFIX}${sanitizeTowerWorkerId(workerId)}`;
 }
 
+export function findTowerWorker(workers, { resume = '', name = '', taskId = '', callId = '' } = {}) {
+  const list = Array.isArray(workers) ? workers : [];
+  const resumeId = sanitizeTowerWorkerId(resume, '');
+  if (resumeId) {
+    const byId = list.find((item) => item.id === resumeId);
+    if (byId) return byId;
+    const byCall = list.filter((item) => {
+      const cid = sanitizeTowerWorkerId(item.callId, '');
+      return cid && cid === resumeId;
+    });
+    if (byCall.length === 1) return byCall[0];
+    return null;
+  }
+  const nameId = sanitizeTowerWorkerId(taskId, '')
+    || sanitizeTowerWorkerId(name, '')
+    || sanitizeTowerWorkerId(callId, '');
+  if (!nameId) return null;
+  return list.find((item) => item.id === nameId) || null;
+}
+
+export function formatIdleTowerWorkers(workers) {
+  const list = Array.isArray(workers) ? workers : [];
+  if (list.length === 0) return 'No idle tower workers. Spawn a new one with a unique name and paths.';
+  const ids = list.map((item) => `"${item.id}"`).join(', ');
+  return `Idle workers: ${ids}. Call back with resume set to that id (the short name, not a call/handoff id). Omit paths.`;
+}
+
+export function composeTowerResumeTask(task, handoffText) {
+  const next = String(task || '').trim();
+  const prior = String(handoffText || '').trim();
+  if (!prior) return next;
+  return [
+    next,
+    'Previous shift handoff (context from last run, not a new requirement):',
+    prior,
+  ].join('\n\n');
+}
+
+export async function towerWorktreeExists(worktreePath) {
+  return worktreePathExists(worktreePath);
+}
+
+function preferredTowerWorkerId({ taskId = '', name = '', callId = '' } = {}) {
+  return sanitizeTowerWorkerId(taskId, '')
+    || sanitizeTowerWorkerId(name, '')
+    || sanitizeTowerWorkerId(callId, 'worker');
+}
+
+function towerPathsEqual(left, right) {
+  const a = normalizeTowerPaths(left);
+  const b = normalizeTowerPaths(right);
+  if (a.length !== b.length) return false;
+  return a.every((item, index) => item === b[index]);
+}
+
+export async function resolveTowerSubagentWorkspace({
+  cwd = process.cwd(),
+  base,
+  resume = '',
+  taskId = '',
+  name = '',
+  callId = '',
+  paths = [],
+  dependsOn = [],
+} = {}) {
+  const root = path.resolve(cwd);
+  const resumeId = sanitizeTowerWorkerId(resume, '');
+  const existing = listTowerWorkersFromState(await readTowerStateFile(root));
+
+  if (resumeId) {
+    const worker = findTowerWorker(existing, { resume });
+    if (worker) {
+      if (!(await worktreePathExists(worker.worktreePath))) {
+        return {
+          ok: false,
+          code: 'WORKTREE_MISSING',
+          error: `Tower worker "${worker.id}" is on the roster but its worktree is gone. Spawn it again with paths.`,
+          workerId: worker.id,
+        };
+      }
+      const requested = normalizeTowerPaths(paths);
+      if (requested.length > 0 && !towerPathsEqual(requested, worker.paths)) {
+        return {
+          ok: false,
+          code: 'PATHS_MISMATCH',
+          error: `Tower resume "${worker.id}" keeps stored paths (${(worker.paths || []).join(', ') || 'none'}). Do not pass a different paths list.`,
+          workerId: worker.id,
+        };
+      }
+      return { ok: true, resume: true, worker };
+    }
+    const named = findTowerWorker(existing, { name, taskId });
+    if (named) {
+      return {
+        ok: false,
+        code: 'RESUME_UNKNOWN',
+        error: `Unknown resume "${resumeId}". Worker "${named.id}" is idle. Call run_subagent with resume: "${named.id}" and omit paths.`,
+        workerId: named.id,
+      };
+    }
+    if (existing.length > 0) {
+      return {
+        ok: false,
+        code: 'RESUME_UNKNOWN',
+        error: `Unknown resume "${resumeId}". ${formatIdleTowerWorkers(existing)}`,
+      };
+    }
+    return addTowerWorktree({
+      cwd: root,
+      base,
+      taskId: resumeId,
+      name: resumeId,
+      callId,
+      paths,
+      dependsOn,
+    });
+  }
+
+  const named = findTowerWorker(existing, { name, taskId });
+  if (named) {
+    return {
+      ok: false,
+      code: 'WORKER_EXISTS',
+      error: `Tower worker "${named.id}" already exists. Call run_subagent with resume: "${named.id}".`,
+      workerId: named.id,
+    };
+  }
+
+  return addTowerWorktree({
+    cwd: root,
+    base,
+    taskId,
+    name,
+    callId,
+    paths,
+    dependsOn,
+  });
+}
+
 function posixPath(value) {
   return String(value || '').replace(/\\/g, '/');
 }
@@ -95,6 +235,57 @@ export function resolveTowerParentRoot(worktreePath) {
   const index = normalized.toLowerCase().lastIndexOf(marker);
   if (index <= 0) return '';
   return path.resolve(normalized.slice(0, index));
+}
+
+function towerWorkerIdFromWorktreePath(worktreePath) {
+  const worktree = path.resolve(String(worktreePath || '').trim() || '.');
+  const parent = resolveTowerParentRoot(worktree);
+  if (!parent) return '';
+  const rel = posixPath(path.relative(path.join(parent, '.codemini', 'tower', 'worktrees'), worktree));
+  if (!rel || rel === '.' || rel.startsWith('..') || rel.includes('/') || path.isAbsolute(rel)) return '';
+  if (RESERVED_WORKER_IDS.has(rel)) return '';
+  const id = sanitizeTowerWorkerId(rel, '');
+  if (!id || id !== rel) return '';
+  return id;
+}
+
+function readTowerWorktreeGitDir(worktree, parent) {
+  try {
+    const gitFile = path.join(worktree, '.git');
+    if (!fsSync.statSync(gitFile).isFile()) return '';
+    const line = fsSync.readFileSync(gitFile, 'utf8')
+      .split(/\r?\n/)
+      .find((entry) => entry.toLowerCase().startsWith('gitdir:'));
+    if (!line) return '';
+    const gitDir = path.resolve(worktree, line.slice('gitdir:'.length).trim());
+    const allowed = path.join(parent, '.git', 'worktrees');
+    const rel = posixPath(path.relative(allowed, gitDir));
+    if (!rel || rel === '.' || rel.startsWith('..') || rel.includes('/') || path.isAbsolute(rel)) return '';
+    return gitDir;
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Narrow parent-repo git dirs a tower worker needs in order to `git commit`
+ * through the shared `.git`. Never includes the parent checkout, hooks, or
+ * config — only objects, this worktree's git dir, and the tower ref namespace.
+ */
+export function towerGitWritableRoots(workspaceRoot) {
+  const worktree = path.resolve(String(workspaceRoot || '').trim() || '.');
+  const parent = resolveTowerParentRoot(worktree);
+  const workerId = towerWorkerIdFromWorktreePath(worktree);
+  if (!parent || !workerId) return [];
+  const gitDir = path.join(parent, '.git');
+  const worktreeGitDir = readTowerWorktreeGitDir(worktree, parent)
+    || path.join(gitDir, 'worktrees', workerId);
+  return [
+    path.join(gitDir, 'objects'),
+    worktreeGitDir,
+    path.join(gitDir, 'refs', 'heads', 'codemini-tower'),
+    path.join(gitDir, 'logs', 'refs', 'heads', 'codemini-tower'),
+  ];
 }
 
 export function remapTowerParentPath(inputPath, worktreeRoot) {
@@ -204,6 +395,19 @@ async function addTowerWorktreeUnlocked({
       workerId,
       glob: overlap.glob,
       existing: overlap.existing,
+    };
+  }
+  const preferred = preferredTowerWorkerId({ taskId, name, callId });
+  if (
+    preferred
+    && !RESERVED_WORKER_IDS.has(preferred)
+    && existing.some((item) => item.id === preferred)
+  ) {
+    return {
+      ok: false,
+      code: 'WORKER_EXISTS',
+      error: `Tower worker "${preferred}" already exists. Call run_subagent with resume: "${preferred}".`,
+      workerId: preferred,
     };
   }
   const workerId = allocateTowerWorkerId({

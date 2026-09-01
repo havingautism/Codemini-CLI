@@ -5346,7 +5346,12 @@ export function getBuiltinTools({
         type: "array",
         items: { type: "string" },
         description:
-          "Required disjoint relative globs this worker may change, such as docs/** or src/foo.ts.",
+          "Disjoint relative globs this new worker may change, such as docs/** or src/foo.ts. Required unless resume is set.",
+      };
+      subagentProperties.resume = {
+        type: "string",
+        description:
+          "Roster worker id to call back, such as alisa. That is the short unique name, never a call id or handoff folder. Reuses that worktree, branch, and paths. Omit paths when resume is set.",
       };
     }
     workflowToolDefinitions.push({
@@ -5354,12 +5359,12 @@ export function getBuiltinTools({
       function: {
         name: "run_subagent",
         description: towerActive
-          ? "Delegate isolated work to a git-worktree subagent. Same-response independent calls run in parallel; use task_id/depends_on for dependencies. paths must be disjoint relative globs. Invent a short worker name such as David."
+          ? "Delegate isolated work to a git-worktree subagent. Same-response independent calls run in parallel; use task_id/depends_on for dependencies. New workers need disjoint paths and a unique short name (that name becomes the resume id). Call an idle worker back with resume set to that id; do not use call ids from handoff paths."
           : "Delegate a bounded task to a clean-context subagent. Same-response independent calls run in parallel; use task_id/depends_on for dependencies and disjoint file ownership for parallel edits. Invent a short worker name such as David. Use fork_task instead when shared prompt prefix/state is more useful.",
         parameters: {
           type: "object",
           properties: subagentProperties,
-          required: towerActive ? ["paths"] : [],
+          required: [],
         },
       },
     });
@@ -7110,6 +7115,7 @@ export function getBuiltinTools({
         dependsOn: Array.isArray(args?.depends_on) ? args.depends_on : [],
         tools: Array.isArray(args?.tools) ? args.tools : null,
         paths: Array.isArray(args?.paths) ? args.paths : [],
+        resume: String(args?.resume || "").trim(),
       });
     },
     fork_task: async (args = {}, ctx = {}) => {

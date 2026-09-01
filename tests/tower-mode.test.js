@@ -188,6 +188,12 @@ test('tower prompt is present only when the overlay is active', () => {
   assert.match(prompt, /run_subagent/);
   assert.match(prompt, /land_workers/);
   assert.match(prompt, /paths/);
+  assert.match(prompt, /No idle workers yet/);
+  const withRoster = buildTowerModePromptBlock({ active: true, base: 'main' }, [
+    { id: 'alisa', branch: 'codemini-tower/alisa', worktreePath: '/tmp/alisa', paths: ['notes.md'] },
+  ]);
+  assert.match(withRoster, /Idle workers: alisa \(notes.md\)/);
+  assert.match(withRoster, /resume: "<id>"/);
 });
 
 test('inspectTowerGit refuses missing repo and empty history, but allows a dirty worktree', async () => {
@@ -476,9 +482,11 @@ test('overlapping tower paths reject the second spawn', async () => {
     await runtime.setTowerMode(true);
     await runtime.submitMessage({ text: '使用子代理分别实现 frontend 和 backend' });
     const saved = JSON.parse(await fs.readFile(getProjectTowerStatePath(dir), 'utf8'));
-    assert.equal(listTowerWorkersFromState(saved).length, 1);
+    const workers = listTowerWorkersFromState(saved);
+    assert.equal(workers.length, 1);
+    assert.equal(['m1', 'm2'].includes(workers[0].id), true);
     const trees = await fs.readdir(getProjectTowerWorktreesDir(dir));
-    assert.deepEqual(trees.filter((name) => name !== '.DS_Store'), ['m1']);
+    assert.deepEqual(trees.filter((name) => name !== '.DS_Store'), [workers[0].id]);
   });
 });
 

@@ -1,5 +1,3 @@
-import os from 'node:os';
-import path from 'node:path';
 import { createRequire } from 'node:module';
 import { resolveSandboxPolicy, writableRootsForMode, normalizeSandboxNetwork } from './sandbox-policy.js';
 import { SandboxUnavailableError } from './sandbox-runtime.js';
@@ -67,7 +65,7 @@ function buildSrtConfig(policy, config = {}) {
   const allowWrite =
     policy.mode === 'read-only'
       ? []
-      : [policy.workspaceRoot, path.resolve(os.tmpdir())].filter(Boolean);
+      : (writableRootsForMode(policy) || []).filter(Boolean);
 
   // Mirror the VM backend's sandbox.network knob. The srt package filters by
   // domain; `deniedDomains: ['*']` is a best-effort deny-all mapping for the

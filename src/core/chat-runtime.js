@@ -89,10 +89,11 @@ import {
   exitTowerMode,
   listTowerWorkersFromState,
   normalizeTowerState,
+  patchTowerWorkerRecord,
   readTowerStateFile,
   writeTowerStateFile,
 } from './tower-store.js';
-import { addTowerWorktree, isTowerWorktreeDirty, removeTowerWorktrees } from './tower-worktree.js';
+import { composeTowerResumeTask, isTowerWorktreeDirty, removeTowerWorktrees, resolveTowerSubagentWorkspace } from './tower-worktree.js';
 import { landTowerWorkers } from './tower-land.js';
 import { composeMemorySnapshot } from './memory-prompt.js';
 import { buildProjectContextSnippet, initializeProjectIndex } from './project-index.js';
@@ -919,6 +920,7 @@ export function compactSubAgentResultForParent({
   handoffPath = '',
   artifactPaths = [],
   dirty,
+  workerId = '',
   maxChars = SUB_AGENT_PARENT_RESULT_MAX_CHARS,
 } = {}) {
   const artifacts = [...new Set(
@@ -932,6 +934,7 @@ export function compactSubAgentResultForParent({
   const clipped = body.length <= previewBudget
     ? body
     : `${body.slice(0, previewBudget).trimEnd()}\n\n[truncated]`;
+  const id = String(workerId || '').trim();
   const sealLine = dirty === true
     ? 'Worktree: dirty (not sealed). Do not land this worker.'
     : dirty === false
@@ -941,6 +944,7 @@ export function compactSubAgentResultForParent({
     'Subagent finished. Use this conclusion; read the handoff file only if you need details.',
     String(summary || '').trim() ? `Summary: ${String(summary).trim()}` : '',
     clipped || '(empty)',
+    id ? `Worker id: ${id}. Call back with resume: "${id}". Do not use a call id or handoff folder. Omit paths.` : '',
     pathLine ? `Handoff: ${pathLine}` : '',
     artifacts.length ? `Artifacts:\n${artifacts.map((item) => `- ${item}`).join('\n')}` : '',
     sealLine,
@@ -4791,6 +4795,7 @@ async function askModel({
   toolDefinitionsOverride = null,
   forbiddenTools = [],
   towerState = null,
+  towerWorkersInFlight = null,
 }) {
   let compacted = compactedInput;
   const modelInputText = typeof modelText === 'string' && modelText ? modelText : text;
@@ -4980,7 +4985,10 @@ async function askModel({
     executionShellContext.commandPlatform,
     executionShellContext.shell,
   );
-  const towerModePrompt = buildTowerModePromptBlock(towerState);
+  const towerWorkers = towerState
+    ? listTowerWorkersFromState(await readTowerStateFile(workspaceRoot))
+    : [];
+  const towerModePrompt = buildTowerModePromptBlock(towerState, towerWorkers);
   const modePromptBlocks = [executionModePrompt, towerModePrompt].filter(Boolean).join('\n\n');
   const projectContextSnippet = await projectContextPromise;
   // Compose effectiveSystemPrompt without redundant composeSystemPrompt wrapping:
@@ -5039,6 +5047,9 @@ async function askModel({
   });
 
   const subAgentDependencies = createSubAgentDependencyCoordinator();
+  const inFlightTowerWorkers = towerWorkersInFlight instanceof Set
+    ? towerWorkersInFlight
+    : new Set();
   const { definitions, handlers, formatters, deferredDefinitions, displayLabels, dispose: disposeTools } = getBuiltinTools({
     workspaceRoot,
     config: toolConfig,
@@ -5074,7 +5085,8 @@ async function askModel({
           taskId = '',
           dependsOn = [],
           tools = null,
-          paths = null
+          paths = null,
+          resume = ''
         } = {}) => {
           const { persona, policyKey, taskRole } = resolveSubAgentRolePolicy(name, role);
           const taskPrompt = String(prompt || '').trim();
@@ -5188,14 +5200,17 @@ async function askModel({
             ? `${contextSections.join('\n\n')}\n\nTask:\n${effectivePrompt}`
             : effectivePrompt;
               let childUsage = null;
+          let lockedTowerWorkerId = '';
           try {
             let workerWorkspaceRoot = workspaceRoot;
             let workerChangeTracker = changeTracker;
             let workerBackupManager = backupManager;
+            let workerTask = scopedTask;
             if (towerState) {
-              const spawned = await addTowerWorktree({
+              const spawned = await resolveTowerSubagentWorkspace({
                 cwd: workspaceRoot,
                 base: towerState.base,
+                resume,
                 taskId: dependencyTaskId,
                 name: persona,
                 callId,
@@ -5227,6 +5242,43 @@ async function askModel({
                 dependencyRegistration.settle(spawnResult);
                 return spawnResult;
               }
+              const workerId = String(spawned.worker?.id || '').trim();
+              if (workerId && inFlightTowerWorkers.has(workerId)) {
+                const busyError = `Tower worker "${workerId}" is still running. Wait for that shift to finish before resume.`;
+                emit({
+                  type: 'plan:step_done',
+                  toolCallId: callId,
+                  step: 1,
+                  total: 1,
+                  role: persona,
+                  title,
+                  status: 'failed',
+                  taskId: dependencyTaskId,
+                  dependsOn: dependencyRegistration.dependencies,
+                  summary: busyError,
+                  sdkProvider: stepSdkProvider,
+                  model: stepModel,
+                });
+                const busyResult = {
+                  ok: false,
+                  code: 'WORKER_BUSY',
+                  error: busyError,
+                  text: '',
+                };
+                dependencyRegistration.settle(busyResult);
+                return busyResult;
+              }
+              if (workerId) {
+                inFlightTowerWorkers.add(workerId);
+                lockedTowerWorkerId = workerId;
+              }
+              if (spawned.resume) {
+                const priorHandoff = await readTowerWorkerHandoff(
+                  workspaceRoot,
+                  spawned.worker?.lastHandoffPath,
+                );
+                workerTask = composeTowerResumeTask(scopedTask, priorHandoff);
+              }
               workerWorkspaceRoot = spawned.worker.worktreePath;
               workerChangeTracker = await createTowerWorkerChangeTracker(
                 workerWorkspaceRoot,
@@ -5236,7 +5288,7 @@ async function askModel({
             }
             const output = await runSubAgentTask({
               role: taskRole,
-              task: scopedTask,
+              task: workerTask,
               initialTasks: assignedTasks,
               goal: declaredGoal,
               priorSteps: [],
@@ -5278,6 +5330,11 @@ async function askModel({
                   text: output.text,
                   artifactPaths: output.artifactPaths,
                 }).catch(() => null);
+            if (savedHandoff?.path && lockedTowerWorkerId) {
+              await patchTowerWorkerRecord(workspaceRoot, lockedTowerWorkerId, {
+                lastHandoffPath: savedHandoff.path,
+              }).catch(() => null);
+            }
             emit({
               type: 'plan:step_done',
               toolCallId: callId,
@@ -5318,6 +5375,7 @@ async function askModel({
                 handoffPath: savedHandoff?.path,
                 artifactPaths: output.artifactPaths,
                 ...(towerDirty === undefined ? {} : { dirty: towerDirty }),
+                ...(lockedTowerWorkerId ? { workerId: lockedTowerWorkerId } : {}),
               }),
             };
             dependencyRegistration.settle(result);
@@ -5346,6 +5404,8 @@ async function askModel({
             };
             dependencyRegistration.settle(result);
             return result;
+          } finally {
+            if (lockedTowerWorkerId) inFlightTowerWorkers.delete(lockedTowerWorkerId);
           }
         }
       : undefined,
@@ -6075,6 +6135,16 @@ function sameFsPath(left, right) {
 
 function isTowerWorktreeRoot(root) {
   return String(root || '').replace(/\\/g, '/').includes('/tower/worktrees/');
+}
+
+async function readTowerWorkerHandoff(workspaceRoot, relativePath) {
+  const rel = String(relativePath || '').trim();
+  if (!rel) return '';
+  try {
+    return await fs.readFile(path.resolve(workspaceRoot, rel), 'utf8');
+  } catch {
+    return '';
+  }
 }
 
 async function createTowerWorkerChangeTracker(worktreePath, sessionId) {
@@ -8308,6 +8378,7 @@ export async function createChatRuntime({
       : baseSystemPrompt;
   let executionMode = resolveRuntimeExecutionMode(config.execution?.mode || 'normal', config, currentSession);
   let towerState = normalizeTowerState(currentSession?.tower);
+  const towerWorkersInFlight = new Set();
   const persistTowerState = async (next) => {
     towerState = normalizeTowerState(next);
     if (!currentSession || typeof currentSession !== 'object') return;
@@ -9468,6 +9539,7 @@ export async function createChatRuntime({
       memoryInject,
       retrievedText,
       towerState,
+      towerWorkersInFlight,
     });
     syncExecutionModeWithSession();
     void captureUserPromptForDream(expandedText);

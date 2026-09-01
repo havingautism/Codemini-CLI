@@ -39,6 +39,7 @@ export function normalizeTowerWorkerRecord(value) {
   const taskId = String(value.taskId || '').trim();
   const paths = normalizeTowerPaths(value.paths);
   const dependsOn = normalizeTowerDependsOn(value.dependsOn);
+  const lastHandoffPath = String(value.lastHandoffPath || '').trim();
   return {
     id,
     branch,
@@ -46,7 +47,8 @@ export function normalizeTowerWorkerRecord(value) {
     ...(callId ? { callId } : {}),
     ...(taskId ? { taskId } : {}),
     ...(paths.length ? { paths } : {}),
-    ...(dependsOn.length ? { dependsOn } : {})
+    ...(dependsOn.length ? { dependsOn } : {}),
+    ...(lastHandoffPath ? { lastHandoffPath } : {})
   };
 }
 
@@ -55,15 +57,23 @@ export function listTowerWorkersFromState(state) {
   return workers.map(normalizeTowerWorkerRecord).filter(Boolean);
 }
 
-export function buildTowerModePromptBlock(towerState) {
+export function buildTowerModePromptBlock(towerState, workers = []) {
   const state = normalizeTowerState(towerState);
   if (!state) return '';
+  const roster = listTowerWorkersFromState({ workers });
+  const rosterLine = roster.length
+    ? `Idle workers: ${roster.map((item) => {
+      const scope = Array.isArray(item.paths) && item.paths.length ? item.paths.join(', ') : 'no paths';
+      return `${item.id} (${scope})`;
+    }).join('; ')}. Call back with resume: "<id>". That id is the short worker name such as alisa, never a call id or handoff folder.`
+    : 'No idle workers yet. New workers need a unique short name and disjoint paths.';
   return [
     'Tower Mode: on',
     `Recorded git base branch: ${state.base}`,
     'You are the control tower for this session. Do not write product code or edit implementation files in the main checkout.',
     'Delegate isolated work with run_subagent. Isolation uses a git worktree per subagent; do not create worktrees, extra branches, or merge into the user branch yourself.',
-    'run_subagent requires paths: disjoint relative globs such as docs/** or src/foo.ts. Overlapping paths are rejected; change paths and retry.',
+    'New workers require paths: disjoint relative globs such as docs/** or src/foo.ts. Overlapping paths are rejected; change paths and retry.',
+    rosterLine,
     'When a worker finishes, read its tool result. dirty means it did not git commit — do not land that worker. sealed workers are landed with land_workers only. Successful land deletes worker branches; do not check them out.',
     'Do not git merge, git squash, or copy worker files into the main checkout yourself.',
     'Tell workers to use paths relative to their worktree cwd. Do not pass absolute paths from the parent checkout.'
@@ -143,6 +153,26 @@ export async function writeTowerWorkerRecords(cwd, workers) {
     .filter(Boolean);
   await writeTowerStateFile(cwd, { ...current, workers: next });
   return next;
+}
+
+export async function patchTowerWorkerRecord(cwd, id, patch = {}) {
+  const workerId = String(id || '').trim();
+  if (!workerId) return { ok: false, error: 'Missing tower worker id.' };
+  const current = (await readTowerStateFile(cwd)) || {};
+  const workers = listTowerWorkersFromState(current);
+  const index = workers.findIndex((item) => item.id === workerId);
+  if (index < 0) return { ok: false, error: `Unknown tower worker "${workerId}".` };
+  const next = normalizeTowerWorkerRecord({
+    ...workers[index],
+    ...(patch && typeof patch === 'object' && !Array.isArray(patch) ? patch : {}),
+    id: workers[index].id,
+    branch: workers[index].branch,
+    worktreePath: workers[index].worktreePath,
+  });
+  if (!next) return { ok: false, error: 'Invalid tower worker record.' };
+  workers[index] = next;
+  await writeTowerStateFile(cwd, { ...current, workers });
+  return { ok: true, worker: next, workers };
 }
 
 export async function enterTowerMode({ cwd = process.cwd(), sessionId = '' } = {}) {

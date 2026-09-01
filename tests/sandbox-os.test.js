@@ -68,6 +68,39 @@ test('workspace-write sandbox uses the npm Landlock launcher and leaves network 
   }
 });
 
+test('Landlock workspace-write grants tower git commit dirs but not the parent checkout', async () => {
+  let grants = null;
+  __setSandboxOsTestHooks({
+    Landlock: {
+      launcherPath: () => '/npm/bin/landlock-run',
+      probe: () => 'full',
+      grantArgs(value) {
+        grants = value;
+        return ['--grant-test'];
+      },
+    },
+  });
+  try {
+    const parent = '/tmp/codemini-landlock-tower-parent';
+    const worktree = `${parent}/.codemini/tower/worktrees/alisa`;
+    const out = await wrapShellCommandForSandbox({
+      command: 'git commit -m sealed',
+      config: { sandbox: { enabled: true, mode: 'workspace-write' } },
+      cwd: worktree,
+      platform: 'linux',
+      binShell: 'bash',
+    });
+    assert.equal(out.wrapped, true);
+    assert.ok(grants.readWrite.includes(out.policy.workspaceRoot));
+    assert.ok(grants.readWrite.includes(`${parent}/.git/objects`));
+    assert.ok(grants.readWrite.includes(`${parent}/.git/worktrees/alisa`));
+    assert.equal(grants.readWrite.includes(parent), false);
+    assert.equal(grants.readWrite.includes(`${parent}/.git/hooks`), false);
+  } finally {
+    __setSandboxOsTestHooks(null);
+  }
+});
+
 test('read-only Landlock grants only /dev/null for writes', async () => {
   let grants = null;
   __setSandboxOsTestHooks({
@@ -90,6 +123,42 @@ test('read-only Landlock grants only /dev/null for writes', async () => {
     });
     assert.deepEqual(grants, { readOnly: ['/'], readWrite: ['/dev/null'] });
     assert.equal(out.enforcement, 'partial');
+  } finally {
+    __setSandboxOsTestHooks(null);
+  }
+});
+
+test('macOS Seatbelt allowWrite includes tower git commit dirs', async () => {
+  let allowWrite = null;
+  __setSandboxOsTestHooks({
+    SandboxManager: {
+      async initialize() {},
+      isSandboxingEnabled: () => true,
+      isSupportedPlatform: () => true,
+      async wrapWithSandbox(_command, _shell, config) {
+        allowWrite = config?.filesystem?.allowWrite;
+        return 'sandbox-exec -- git commit';
+      },
+    },
+  });
+  try {
+    const parent = '/tmp/codemini-seatbelt-tower-parent';
+    const worktree = `${parent}/.codemini/tower/worktrees/alisa`;
+    const out = await wrapShellCommandForSandbox({
+      command: 'git commit -m sealed',
+      config: { sandbox: { enabled: true, mode: 'workspace-write' } },
+      cwd: worktree,
+      platform: 'darwin',
+      binShell: 'bash',
+    });
+    assert.equal(out.wrapped, true);
+    assert.ok(allowWrite.includes(out.policy.workspaceRoot));
+    assert.ok(allowWrite.includes(`${parent}/.git/objects`));
+    assert.ok(allowWrite.includes(`${parent}/.git/worktrees/alisa`));
+    assert.ok(allowWrite.includes(`${parent}/.git/refs/heads/codemini-tower`));
+    assert.equal(allowWrite.includes(parent), false);
+    assert.equal(allowWrite.includes(`${parent}/.git`), false);
+    assert.equal(allowWrite.includes(`${parent}/.git/hooks`), false);
   } finally {
     __setSandboxOsTestHooks(null);
   }

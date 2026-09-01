@@ -62,10 +62,11 @@ test('coding getBuiltinTools has no paths and no land_workers', () => {
   const sub = definitions.find((item) => item.function?.name === 'run_subagent');
   assert.equal(names.includes('land_workers'), false);
   assert.equal(Boolean(sub?.function?.parameters?.properties?.paths), false);
+  assert.equal(Boolean(sub?.function?.parameters?.properties?.resume), false);
   assert.deepEqual(sub?.function?.parameters?.required || [], []);
 });
 
-test('tower getBuiltinTools requires paths and registers land_workers', () => {
+test('tower getBuiltinTools exposes paths and resume, and registers land_workers', () => {
   const { definitions, handlers } = getBuiltinTools({
     towerActive: true,
     onRunSubAgent: async () => ({ ok: true }),
@@ -75,7 +76,9 @@ test('tower getBuiltinTools requires paths and registers land_workers', () => {
   const sub = definitions.find((item) => item.function?.name === 'run_subagent');
   assert.equal(names.includes('land_workers'), true);
   assert.equal(Boolean(sub?.function?.parameters?.properties?.paths), true);
-  assert.deepEqual(sub?.function?.parameters?.required, ['paths']);
+  assert.equal(Boolean(sub?.function?.parameters?.properties?.resume), true);
+  assert.deepEqual(sub?.function?.parameters?.required || [], []);
+  assert.match(String(sub?.function?.description || ''), /resume/i);
   assert.equal(typeof handlers.land_workers, 'function');
 });
 
@@ -100,6 +103,14 @@ test('compactSubAgentResultForParent reports dirty vs sealed worktrees', () => {
   );
   assert.equal(
     compactSubAgentResultForParent({ text: 'done' }).includes('Worktree:'),
+    false,
+  );
+  assert.match(
+    compactSubAgentResultForParent({ text: 'done', dirty: false, workerId: 'alisa' }),
+    /resume: "alisa"/,
+  );
+  assert.equal(
+    compactSubAgentResultForParent({ text: 'done', dirty: false }).includes('Worker id:'),
     false,
   );
 });

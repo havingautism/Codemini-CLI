@@ -9,6 +9,7 @@ import {
   remapTowerParentPath,
   remapTowerToolArguments,
   resolveTowerParentRoot,
+  towerGitWritableRoots,
 } from '../src/core/tower-worktree.js';
 
 async function withTowerLayout(task) {
@@ -85,5 +86,40 @@ test('remapped parent writes are not outside-workspace mutations', async () => {
     } finally {
       await fs.rm(elsewhere, { recursive: true, force: true });
     }
+  });
+});
+
+test('towerGitWritableRoots only grants parent git commit dirs', async () => {
+  await withTowerLayout(({ parent, worktree }) => {
+    const roots = towerGitWritableRoots(worktree);
+    assert.deepEqual(roots, [
+      path.join(parent, '.git', 'objects'),
+      path.join(parent, '.git', 'worktrees', 'alex'),
+      path.join(parent, '.git', 'refs', 'heads', 'codemini-tower'),
+      path.join(parent, '.git', 'logs', 'refs', 'heads', 'codemini-tower'),
+    ]);
+    assert.equal(towerGitWritableRoots(parent).length, 0);
+    assert.equal(towerGitWritableRoots(path.join(parent, '.codemini', 'tower', 'worktrees', 'tmp')).length, 0);
+  });
+});
+
+test('towerGitWritableRoots prefers the worktree gitdir file when it is under parent .git/worktrees', async () => {
+  await withTowerLayout(async ({ parent, worktree }) => {
+    await fs.writeFile(
+      path.join(worktree, '.git'),
+      `gitdir: ${path.join(parent, '.git', 'worktrees', 'alex')}\n`,
+    );
+    assert.equal(
+      towerGitWritableRoots(worktree)[1],
+      path.join(parent, '.git', 'worktrees', 'alex'),
+    );
+    await fs.writeFile(
+      path.join(worktree, '.git'),
+      `gitdir: ${path.join(parent, '.git')}\n`,
+    );
+    assert.equal(
+      towerGitWritableRoots(worktree)[1],
+      path.join(parent, '.git', 'worktrees', 'alex'),
+    );
   });
 });

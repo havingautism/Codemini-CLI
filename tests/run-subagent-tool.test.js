@@ -58,6 +58,7 @@ test('run_subagent forwards invented name to handler', async () => {
   assert.equal(Boolean(def?.function?.parameters?.properties?.task_id), true);
   assert.equal(Boolean(def?.function?.parameters?.properties?.depends_on), true);
   assert.equal(Boolean(def?.function?.parameters?.properties?.paths), false);
+  assert.equal(Boolean(def?.function?.parameters?.properties?.resume), false);
   assert.match(String(def?.function?.description || ''), /David|invent/i);
 
   await handlers.run_subagent(
@@ -79,4 +80,28 @@ test('run_subagent forwards invented name to handler', async () => {
   assert.equal(seen.taskId, 'implement');
   assert.deepEqual(seen.dependsOn, ['inspect']);
   assert.deepEqual(seen.tools, ['read']);
+});
+
+test('tower run_subagent forwards resume without requiring paths on the handler', async () => {
+  let seen = null;
+  const { handlers, definitions } = getBuiltinTools({
+    towerActive: true,
+    onRunSubAgent: async (args) => {
+      seen = args;
+      return { ok: true, text: 'done' };
+    },
+    onLandWorkers: async () => ({ ok: true }),
+  });
+  const def = definitions.find((item) => item.function?.name === 'run_subagent');
+  assert.equal(Boolean(def?.function?.parameters?.properties?.resume), true);
+  assert.equal(Boolean(def?.function?.parameters?.properties?.paths), true);
+  assert.deepEqual(def?.function?.parameters?.required || [], []);
+
+  await handlers.run_subagent({
+    prompt: 'Continue the slice',
+    resume: 'alisa',
+  });
+  assert.equal(seen.prompt, 'Continue the slice');
+  assert.equal(seen.resume, 'alisa');
+  assert.deepEqual(seen.paths, []);
 });

@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { getSkillsDir } from './paths.js';
 import { selectSandboxBackend } from './sandbox-probe.js';
+import { towerGitWritableRoots } from './tower-worktree.js';
 
 export const SANDBOX_MODES = Object.freeze([
   'read-only',
@@ -159,6 +160,12 @@ export function writableRootsForMode(policy) {
   // Also grant the unresolved tmpdir spelling for in-process file tools.
   const tmp = path.resolve(os.tmpdir());
   if (!roots.includes(tmp)) roots.push(tmp);
+  // Tower worktrees are not a separate git repo: commit writes the parent
+  // objects/worktree gitdir/tower refs. Do not grant the parent checkout,
+  // hooks, or config.
+  for (const extra of towerGitWritableRoots(policy.workspaceRoot)) {
+    if (extra && !roots.includes(extra)) roots.push(extra);
+  }
   return roots;
 }
 

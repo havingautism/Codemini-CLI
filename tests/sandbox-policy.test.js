@@ -194,6 +194,50 @@ test('assertSandboxWriteAllowed fences read-only and workspace-write', () => {
   }
 });
 
+test('workspace-write tower workers can commit via parent git dirs only', () => {
+  // Keep the fake parent outside os.tmpdir(); tmpdir is always writable.
+  const parent = path.resolve('/opt/codemini-sandbox-tower-parent');
+  const worktree = path.join(parent, '.codemini', 'tower', 'worktrees', 'alisa');
+  const policy = {
+    enabled: true,
+    mode: 'workspace-write',
+    workspaceRoot: worktree,
+    platform: 'darwin',
+  };
+  const roots = writableRootsForMode(policy);
+  assert.ok(roots.includes(path.resolve(worktree)));
+  assert.ok(roots.includes(path.join(parent, '.git', 'objects')));
+  assert.ok(roots.includes(path.join(parent, '.git', 'worktrees', 'alisa')));
+  assert.ok(roots.includes(path.join(parent, '.git', 'refs', 'heads', 'codemini-tower')));
+  assert.equal(roots.includes(parent), false);
+  assert.equal(roots.includes(path.join(parent, '.git')), false);
+
+  const allow = (target) => assertSandboxWriteAllowed(target, policy);
+  assert.equal(allow(path.join(worktree, 'notes.md')), null);
+  assert.equal(allow(path.join(parent, '.git', 'objects', 'ab', 'cdef')), null);
+  assert.equal(allow(path.join(parent, '.git', 'worktrees', 'alisa', 'index.lock')), null);
+  assert.equal(allow(path.join(parent, '.git', 'refs', 'heads', 'codemini-tower', 'alisa')), null);
+  assert.match(String(allow(path.join(parent, 'notes.md')) || ''), /sandbox: file access denied/);
+  assert.match(String(allow(path.join(parent, '.git', 'hooks', 'pre-commit')) || ''), /sandbox: file access denied/);
+  assert.match(String(allow(path.join(parent, '.git', 'config')) || ''), /sandbox: file access denied/);
+  assert.match(String(allow(path.join(parent, '.git', 'refs', 'heads', 'main')) || ''), /sandbox: file access denied/);
+
+  const codingRoots = writableRootsForMode({
+    mode: 'workspace-write',
+    workspaceRoot: parent,
+  });
+  assert.equal(codingRoots.includes(path.join(parent, '.git', 'objects')), false);
+  assert.match(
+    String(assertSandboxWriteAllowed(path.join(parent, '.git', 'objects', 'ab', 'cdef'), {
+      enabled: true,
+      mode: 'read-only',
+      workspaceRoot: worktree,
+      platform: 'darwin',
+    }) || ''),
+    /sandbox: file access denied under read-only mode/,
+  );
+});
+
 test('readonly sandbox roots expose global skills but not sessions or writes', () => {
   const previous = process.env.CODEMINI_GLOBAL_DIR;
   const globalDir = path.resolve('/opt/codemini-readonly-skills-global');
