@@ -57,6 +57,7 @@ test('run_subagent forwards invented name to handler', async () => {
   assert.equal(Boolean(def?.function?.parameters?.properties?.summary), true);
   assert.equal(Boolean(def?.function?.parameters?.properties?.task_id), true);
   assert.equal(Boolean(def?.function?.parameters?.properties?.depends_on), true);
+  assert.equal(Boolean(def?.function?.parameters?.properties?.paths), false);
   assert.match(String(def?.function?.description || ''), /David|invent/i);
 
   await handlers.run_subagent(

@@ -3,6 +3,7 @@ import path from 'node:path';
 
 import { getProjectTowerDir, getProjectTowerStatePath } from './paths.js';
 import { runGit } from './process-run.js';
+import { normalizeTowerDependsOn, normalizeTowerPaths } from './tower-scope.js';
 
 const TOWER_STATE_VERSION = 1;
 
@@ -35,11 +36,17 @@ export function normalizeTowerWorkerRecord(value) {
   const worktreePath = String(value.worktreePath || '').trim();
   if (!id || !branch || !worktreePath) return null;
   const callId = String(value.callId || '').trim();
+  const taskId = String(value.taskId || '').trim();
+  const paths = normalizeTowerPaths(value.paths);
+  const dependsOn = normalizeTowerDependsOn(value.dependsOn);
   return {
     id,
     branch,
     worktreePath,
-    ...(callId ? { callId } : {})
+    ...(callId ? { callId } : {}),
+    ...(taskId ? { taskId } : {}),
+    ...(paths.length ? { paths } : {}),
+    ...(dependsOn.length ? { dependsOn } : {})
   };
 }
 
@@ -56,6 +63,9 @@ export function buildTowerModePromptBlock(towerState) {
     `Recorded git base branch: ${state.base}`,
     'You are the control tower for this session. Do not write product code or edit implementation files in the main checkout.',
     'Delegate isolated work with run_subagent. Isolation uses a git worktree per subagent; do not create worktrees, extra branches, or merge into the user branch yourself.',
+    'run_subagent requires paths: disjoint relative globs such as docs/** or src/foo.ts. Overlapping paths are rejected; change paths and retry.',
+    'When a worker finishes, read its tool result. dirty means it did not git commit — do not land that worker. sealed workers are landed with land_workers only. Successful land deletes worker branches; do not check them out.',
+    'Do not git merge, git squash, or copy worker files into the main checkout yourself.',
     'Tell workers to use paths relative to their worktree cwd. Do not pass absolute paths from the parent checkout.'
   ].join('\n');
 }

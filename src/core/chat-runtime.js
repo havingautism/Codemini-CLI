@@ -92,7 +92,8 @@ import {
   readTowerStateFile,
   writeTowerStateFile,
 } from './tower-store.js';
-import { addTowerWorktree, removeTowerWorktrees } from './tower-worktree.js';
+import { addTowerWorktree, isTowerWorktreeDirty, removeTowerWorktrees } from './tower-worktree.js';
+import { landTowerWorkers } from './tower-land.js';
 import { composeMemorySnapshot } from './memory-prompt.js';
 import { buildProjectContextSnippet, initializeProjectIndex } from './project-index.js';
 import { queryProjectKnowledgeGraph } from './project-knowledge-graph.js';
@@ -690,7 +691,7 @@ export const EXECUTION_MODE_TOOL_POLICY = {
     'save_memory',
     'tasks',
     'edit', 'write', 'begin_write', 'write_chunk', 'commit_write', 'abort_write', 'apply_patch', 'delete', 'run',
-    'run_subagent', 'fork_task', 'request_user_input'
+    'run_subagent', 'fork_task', 'land_workers', 'request_user_input'
   ]
 };
 
@@ -724,6 +725,20 @@ function resolveExecutionModeAllowedTools(executionMode, callerAllowedTools, con
     );
   }
   return modePolicy;
+}
+
+const TOWER_PARENT_MUTATION_TOOLS = new Set([
+  'write', 'edit', 'delete', 'apply_patch', 'create',
+  'begin_write', 'write_chunk', 'commit_write', 'abort_write',
+]);
+
+export function applyTowerParentToolPolicy(allowedTools, { towerActive = false } = {}) {
+  if (!towerActive) return allowedTools;
+  const names = Array.isArray(allowedTools)
+    ? allowedTools.filter((name) => !TOWER_PARENT_MUTATION_TOOLS.has(String(name || '').trim()))
+    : [];
+  if (!names.includes('land_workers')) names.push('land_workers');
+  return names;
 }
 
 export function buildExecutionModePromptBlock(executionMode, platform = process.platform, shell = '') {
@@ -903,6 +918,7 @@ export function compactSubAgentResultForParent({
   summary = '',
   handoffPath = '',
   artifactPaths = [],
+  dirty,
   maxChars = SUB_AGENT_PARENT_RESULT_MAX_CHARS,
 } = {}) {
   const artifacts = [...new Set(
@@ -916,12 +932,18 @@ export function compactSubAgentResultForParent({
   const clipped = body.length <= previewBudget
     ? body
     : `${body.slice(0, previewBudget).trimEnd()}\n\n[truncated]`;
+  const sealLine = dirty === true
+    ? 'Worktree: dirty (not sealed). Do not land this worker.'
+    : dirty === false
+      ? 'Worktree: sealed.'
+      : '';
   return [
     'Subagent finished. Use this conclusion; read the handoff file only if you need details.',
     String(summary || '').trim() ? `Summary: ${String(summary).trim()}` : '',
     clipped || '(empty)',
     pathLine ? `Handoff: ${pathLine}` : '',
     artifacts.length ? `Artifacts:\n${artifacts.map((item) => `- ${item}`).join('\n')}` : '',
+    sealLine,
   ].filter(Boolean).join('\n');
 }
 
@@ -5024,6 +5046,10 @@ async function askModel({
     onSystemEvent: onAgentEvent,
     requestUserInput,
     toolResultStore,
+    towerActive: Boolean(towerState),
+    onLandWorkers: towerState
+      ? async () => landTowerWorkers({ cwd: workspaceRoot, base: towerState.base })
+      : undefined,
     getTodos: () => normalizeTodos(session.todos),
     onTodosUpdate: (todos) => {
       session.todos = normalizeTodos(todos);
@@ -5047,7 +5073,8 @@ async function askModel({
           orchestrationId = '',
           taskId = '',
           dependsOn = [],
-          tools = null
+          tools = null,
+          paths = null
         } = {}) => {
           const { persona, policyKey, taskRole } = resolveSubAgentRolePolicy(name, role);
           const taskPrompt = String(prompt || '').trim();
@@ -5172,6 +5199,8 @@ async function askModel({
                 taskId: dependencyTaskId,
                 name: persona,
                 callId,
+                paths,
+                dependsOn: dependencyRegistration.dependencies,
               });
               if (!spawned.ok) {
                 const spawnError = spawned.error || 'Failed to spawn tower worktree.';
@@ -5189,7 +5218,12 @@ async function askModel({
                   sdkProvider: stepSdkProvider,
                   model: stepModel,
                 });
-                const spawnResult = { ok: false, error: spawnError, text: '' };
+                const spawnResult = {
+                  ok: false,
+                  code: spawned.code,
+                  error: spawnError,
+                  text: '',
+                };
                 dependencyRegistration.settle(spawnResult);
                 return spawnResult;
               }
@@ -5228,6 +5262,10 @@ async function askModel({
               workspaceRoot: workerWorkspaceRoot
             });
             const failed = subAgentRunFailed(output, signal);
+            let towerDirty;
+            if (towerState && workerWorkspaceRoot !== workspaceRoot) {
+              towerDirty = await isTowerWorktreeDirty(workerWorkspaceRoot).catch(() => true);
+            }
             const savedHandoff = failed
               ? null
               : await saveSubAgentHandoff({
@@ -5273,11 +5311,13 @@ async function askModel({
               artifactPaths: output.artifactPaths || [],
               ...(savedHandoff ? { handoffPath: savedHandoff.path } : {}),
               ...(fileChanges.length ? { fileChanges } : {}),
+              ...(towerDirty === undefined ? {} : { dirty: towerDirty }),
               message: compactSubAgentResultForParent({
                 text: output.text,
                 summary,
                 handoffPath: savedHandoff?.path,
                 artifactPaths: output.artifactPaths,
+                ...(towerDirty === undefined ? {} : { dirty: towerDirty }),
               }),
             };
             dependencyRegistration.settle(result);
@@ -6115,7 +6155,10 @@ export async function runSubAgentTask({
     extraRolePrompt,
     runtimeNote,
     isTowerWorktreeRoot(workspaceRoot)
-      ? 'Your cwd is this git worktree. Use paths relative to this directory. Do not write to the parent checkout with its absolute path.'
+      ? [
+          'Your cwd is this git worktree. Use paths relative to this directory. Do not write to the parent checkout with its absolute path.',
+          'When the assigned slice is done, git commit on this worktree branch. If you cannot finish, do not commit. Your final message must state the outcome: done, blocked, or failed.',
+        ].join('\n')
       : '',
     handoffCatalogPrompt,
     contextPacket,
@@ -9385,9 +9428,12 @@ export async function createChatRuntime({
       ...hookContexts,
     ].filter(Boolean).join('\n\n');
     const codingRouteAllowedTools = isCodingMode
-      ? EXECUTION_MODE_TOOL_POLICY.plan.filter((toolName) => (
-          isCodingRouteToolAllowed(codingRoute, toolName, { towerActive })
-        ))
+      ? applyTowerParentToolPolicy(
+          EXECUTION_MODE_TOOL_POLICY.plan.filter((toolName) => (
+            isCodingRouteToolAllowed(codingRoute, toolName, { towerActive })
+          )),
+          { towerActive },
+        )
       : undefined;
     await persistLastSystemPrompt(activeReplySystemPrompt);
     const result = await askModel({

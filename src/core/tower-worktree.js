@@ -9,8 +9,10 @@ import {
   readTowerStateFile,
   writeTowerWorkerRecords,
 } from './tower-store.js';
+import { findOverlappingTowerWorker, normalizeTowerDependsOn, normalizeTowerPaths } from './tower-scope.js';
 
 const BRANCH_PREFIX = 'codemini-tower/';
+const RESERVED_WORKER_IDS = new Set(['tmp', '_merge-tmp', 'merge-tmp']);
 const GIT_TIMEOUT_MS = 30_000;
 const spawnLocks = new Map();
 
@@ -51,16 +53,17 @@ export function allocateTowerWorkerId({
   callId = '',
   existingIds = [],
 } = {}) {
-  const used = new Set(
-    (Array.isArray(existingIds) ? existingIds : [])
+  const used = new Set([
+    ...RESERVED_WORKER_IDS,
+    ...(Array.isArray(existingIds) ? existingIds : [])
       .map((id) => String(id || '').toLowerCase())
       .filter(Boolean),
-  );
+  ]);
   const preferred =
     sanitizeTowerWorkerId(taskId, '')
     || sanitizeTowerWorkerId(name, '')
     || sanitizeTowerWorkerId(callId, 'worker');
-  if (!used.has(preferred)) return preferred;
+  if (preferred && !used.has(preferred)) return preferred;
   for (let index = 2; index < 1000; index += 1) {
     const next = `${preferred}-${index}`.slice(0, 48);
     if (!used.has(next)) return next;
@@ -159,6 +162,10 @@ async function worktreePathExists(worktreePath) {
   }
 }
 
+export function withTowerGitLock(cwd, fn) {
+  return withSpawnLock(cwd, fn);
+}
+
 export async function addTowerWorktree(options = {}) {
   return withSpawnLock(options.cwd || process.cwd(), () => addTowerWorktreeUnlocked(options));
 }
@@ -169,14 +176,36 @@ async function addTowerWorktreeUnlocked({
   taskId = '',
   name = '',
   callId = '',
+  paths = [],
+  dependsOn = [],
 } = {}) {
   const root = path.resolve(cwd);
   const baseBranch = String(base || '').trim();
   if (!baseBranch || baseBranch === 'HEAD') {
     return { ok: false, code: 'NO_BASE', error: 'Tower spawn needs a recorded git base branch.' };
   }
+  const normalizedPaths = normalizeTowerPaths(paths);
+  if (normalizedPaths.length === 0) {
+    return {
+      ok: false,
+      code: 'PATHS_REQUIRED',
+      error: 'Tower run_subagent requires paths: an array of relative globs such as docs/** or src/foo.ts.',
+    };
+  }
   const current = await readTowerStateFile(root);
   const existing = listTowerWorkersFromState(current);
+  const overlap = findOverlappingTowerWorker(normalizedPaths, existing);
+  if (overlap) {
+    const workerId = String(overlap.worker?.id || 'worker').trim() || 'worker';
+    return {
+      ok: false,
+      code: 'SCOPE_OVERLAP',
+      error: `Tower scope overlaps worker "${workerId}" (${overlap.existing} vs ${overlap.glob}). Change paths and retry.`,
+      workerId,
+      glob: overlap.glob,
+      existing: overlap.existing,
+    };
+  }
   const workerId = allocateTowerWorkerId({
     taskId,
     name,
@@ -202,10 +231,15 @@ async function addTowerWorktreeUnlocked({
       error: String(added.stderr || added.stdout || '').trim() || `Failed to add worktree for ${workerId}.`,
     };
   }
+  const normalizedDependsOn = normalizeTowerDependsOn(dependsOn);
+  const normalizedTaskId = String(taskId || '').trim();
   const worker = {
     id: workerId,
     branch,
     worktreePath,
+    paths: normalizedPaths,
+    ...(normalizedTaskId ? { taskId: normalizedTaskId } : {}),
+    ...(normalizedDependsOn.length ? { dependsOn: normalizedDependsOn } : {}),
     ...(String(callId || '').trim() ? { callId: String(callId).trim() } : {}),
   };
   const saved = await appendTowerWorkerRecord(root, worker);
@@ -213,7 +247,7 @@ async function addTowerWorktreeUnlocked({
     await tryGit(root, ['worktree', 'remove', '--force', worktreePath]);
     return saved;
   }
-  return { ok: true, worker };
+  return { ok: true, worker: saved.worker || worker };
 }
 
 export async function removeTowerWorktree({
@@ -250,8 +284,8 @@ export async function removeTowerWorktree({
   return { ok: true, removed: true, worker };
 }
 
-export async function removeTowerWorktrees({ cwd = process.cwd(), force = false } = {}) {
-  return withSpawnLock(cwd, async () => {
+export async function removeTowerWorktrees({ cwd = process.cwd(), force = false, skipLock = false } = {}) {
+  const run = async () => {
     const root = path.resolve(cwd);
     const current = await readTowerStateFile(root);
     const workers = listTowerWorkersFromState(current);
@@ -264,5 +298,6 @@ export async function removeTowerWorktrees({ cwd = process.cwd(), force = false 
     }
     await writeTowerWorkerRecords(root, kept);
     return { ok: true, removed, kept };
-  });
+  };
+  return skipLock ? run() : withSpawnLock(cwd, run);
 }

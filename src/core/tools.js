@@ -4200,6 +4200,8 @@ export function getBuiltinTools({
   backupManager,
   toolResultStore,
   platform = process.platform,
+  towerActive = false,
+  onLandWorkers,
 }) {
   workspaceRoot = path.resolve(workspaceRoot);
   const isWin = platform === "win32";
@@ -5282,15 +5284,7 @@ export function getBuiltinTools({
 
   const workflowToolDefinitions = [];
   if (typeof onRunSubAgent === "function") {
-    workflowToolDefinitions.push({
-      type: "function",
-      function: {
-        name: "run_subagent",
-        description:
-          "Delegate a bounded task to a clean-context subagent. Same-response independent calls run in parallel; use task_id/depends_on for dependencies and disjoint file ownership for parallel edits. Invent a short worker name such as David. Use fork_task instead when shared prompt prefix/state is more useful.",
-        parameters: {
-          type: "object",
-          properties: {
+    const subagentProperties = {
             prompt: {
               type: "string",
               description:
@@ -5346,8 +5340,26 @@ export function getBuiltinTools({
               items: { type: "string" },
               description: "Optional allow-list overriding the role defaults.",
             },
-          },
-          required: [],
+    };
+    if (towerActive) {
+      subagentProperties.paths = {
+        type: "array",
+        items: { type: "string" },
+        description:
+          "Required disjoint relative globs this worker may change, such as docs/** or src/foo.ts.",
+      };
+    }
+    workflowToolDefinitions.push({
+      type: "function",
+      function: {
+        name: "run_subagent",
+        description: towerActive
+          ? "Delegate isolated work to a git-worktree subagent. Same-response independent calls run in parallel; use task_id/depends_on for dependencies. paths must be disjoint relative globs. Invent a short worker name such as David."
+          : "Delegate a bounded task to a clean-context subagent. Same-response independent calls run in parallel; use task_id/depends_on for dependencies and disjoint file ownership for parallel edits. Invent a short worker name such as David. Use fork_task instead when shared prompt prefix/state is more useful.",
+        parameters: {
+          type: "object",
+          properties: subagentProperties,
+          required: towerActive ? ["paths"] : [],
         },
       },
     });
@@ -5391,6 +5403,21 @@ export function getBuiltinTools({
               description: "Short branch label, such as frontend or tests.",
             },
           },
+          required: [],
+        },
+      },
+    });
+  }
+  if (typeof onLandWorkers === "function") {
+    workflowToolDefinitions.push({
+      type: "function",
+      function: {
+        name: "land_workers",
+        description:
+          "Squash sealed tower worker branches onto the current user branch without creating a commit, then delete those worker branches. Refuses dirty (uncommitted) worker worktrees. Do not merge or copy files yourself.",
+        parameters: {
+          type: "object",
+          properties: {},
           required: [],
         },
       },
@@ -7082,6 +7109,7 @@ export function getBuiltinTools({
         taskId: String(args?.task_id || "").trim(),
         dependsOn: Array.isArray(args?.depends_on) ? args.depends_on : [],
         tools: Array.isArray(args?.tools) ? args.tools : null,
+        paths: Array.isArray(args?.paths) ? args.paths : [],
       });
     },
     fork_task: async (args = {}, ctx = {}) => {
@@ -7105,6 +7133,15 @@ export function getBuiltinTools({
         orchestrationId: String(ctx?.orchestrationId || "").trim(),
         forkPoint: ctx?.forkPoint || null,
       });
+    },
+    land_workers: async () => {
+      if (typeof onLandWorkers !== "function") {
+        return {
+          ok: false,
+          error: "land_workers is only available in tower mode.",
+        };
+      }
+      return onLandWorkers();
     },
     create_spec: async (args = {}) => {
       if (typeof onCreateSpec !== "function") {
@@ -7686,6 +7723,18 @@ export function getBuiltinTools({
       if (result.error) return String(result.error);
       if (result.message) return String(result.message);
       if (result.text) return String(result.text);
+      return JSON.stringify(result);
+    },
+
+    land_workers(result) {
+      if (!result || typeof result !== "object") return String(result);
+      if (result.error) {
+        const files = Array.isArray(result.files) && result.files.length
+          ? `\nFiles: ${result.files.join(', ')}`
+          : '';
+        return `${result.error}${files}`;
+      }
+      if (result.message) return String(result.message);
       return JSON.stringify(result);
     },
 

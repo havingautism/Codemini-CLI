@@ -5,6 +5,7 @@ export const TOOL_DISPLAY_LABELS = {
   create_plan: 'Plan',
   create_spec: 'Create Spec',
   run_subagent: 'Subagent',
+  land_workers: 'Land',
   fork_task: 'Fork',
   tasks: 'Tasks',
   update_todos: 'Tasks',

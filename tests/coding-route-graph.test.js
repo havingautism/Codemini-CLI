@@ -610,6 +610,8 @@ test('tower overlay keeps run_subagent when the route prefers fork_task', async 
   assert.equal(result.delegation_mode, 'parallel_task');
   assert.equal(isCodingRouteToolAllowed(result, 'run_subagent'), false);
   assert.equal(isCodingRouteToolAllowed(result, 'run_subagent', { towerActive: true }), true);
+  assert.equal(isCodingRouteToolAllowed(result, 'land_workers'), false);
+  assert.equal(isCodingRouteToolAllowed(result, 'land_workers', { towerActive: true }), true);
   const block = buildCodingRouteDecisionBlock(result, { towerActive: true });
   assert.match(block, /Tower is on: isolate workers with run_subagent/);
   assert.doesNotMatch(block, /do not call run_subagent/);

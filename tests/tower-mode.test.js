@@ -186,6 +186,8 @@ test('tower prompt is present only when the overlay is active', () => {
   assert.match(prompt, /base branch: main/);
   assert.match(prompt, /Do not write product code/);
   assert.match(prompt, /run_subagent/);
+  assert.match(prompt, /land_workers/);
+  assert.match(prompt, /paths/);
 });
 
 test('inspectTowerGit refuses missing repo and empty history, but allows a dirty worktree', async () => {
@@ -308,14 +310,28 @@ test('sanitizeTowerWorkerId and allocateTowerWorkerId stay git-safe and unique',
   assert.equal(allocateTowerWorkerId({ taskId: 'm1', existingIds: [] }), 'm1');
   assert.equal(allocateTowerWorkerId({ taskId: 'm1', existingIds: ['m1'] }), 'm1-2');
   assert.equal(allocateTowerWorkerId({ name: 'Frontend', existingIds: [] }), 'frontend');
+  assert.equal(allocateTowerWorkerId({ taskId: 'tmp', existingIds: [] }), 'tmp-2');
+  assert.equal(allocateTowerWorkerId({ taskId: '_merge-tmp', existingIds: [] }), 'merge-tmp-2');
 });
 
 test('tower worktrees isolate workers, skip dirty remove, and keep parent handoffs', async () => {
   await withTempDir(async (dir) => {
     await initCleanGit(dir);
     await enterTowerMode({ cwd: dir, sessionId: 'sess-wt' });
-    const first = await addTowerWorktree({ cwd: dir, base: 'main', taskId: 'm1', callId: 'call-a' });
-    const second = await addTowerWorktree({ cwd: dir, base: 'main', taskId: 'm2', callId: 'call-b' });
+    const first = await addTowerWorktree({
+      cwd: dir,
+      base: 'main',
+      taskId: 'm1',
+      callId: 'call-a',
+      paths: ['worker-a.txt'],
+    });
+    const second = await addTowerWorktree({
+      cwd: dir,
+      base: 'main',
+      taskId: 'm2',
+      callId: 'call-b',
+      paths: ['worker-b.txt'],
+    });
     assert.equal(first.ok, true);
     assert.equal(second.ok, true);
     assert.notEqual(first.worker.worktreePath, second.worker.worktreePath);
@@ -366,6 +382,7 @@ const twoSubagentCompletion = sseToolCalls([
       task_id: 'm1',
       name: 'frontend',
       role: 'coder',
+      paths: ['frontend/**'],
     }),
   },
   {
@@ -376,6 +393,7 @@ const twoSubagentCompletion = sseToolCalls([
       task_id: 'm2',
       name: 'backend',
       role: 'coder',
+      paths: ['backend/**'],
     }),
   },
 ]);
@@ -426,6 +444,41 @@ test('without tower, run_subagent does not create worktrees', async () => {
     await runtime.submitMessage({ text: '使用子代理分别实现 frontend 和 backend' });
     const worktrees = getProjectTowerWorktreesDir(dir);
     assert.equal(await fs.access(worktrees).then(() => true, () => false), false);
+  });
+});
+
+test('overlapping tower paths reject the second spawn', async () => {
+  await withRuntime({
+    mode: 'plan',
+    firstCompletion: sseToolCalls([
+      {
+        id: 'call-m1',
+        name: 'run_subagent',
+        arguments: JSON.stringify({
+          prompt: 'Docs only',
+          task_id: 'm1',
+          name: 'docs',
+          paths: ['docs/**'],
+        }),
+      },
+      {
+        id: 'call-m2',
+        name: 'run_subagent',
+        arguments: JSON.stringify({
+          prompt: 'Docs again',
+          task_id: 'm2',
+          name: 'docs-two',
+          paths: ['docs/guide.md'],
+        }),
+      },
+    ]),
+  }, async ({ dir, runtime }) => {
+    await runtime.setTowerMode(true);
+    await runtime.submitMessage({ text: '使用子代理分别实现 frontend 和 backend' });
+    const saved = JSON.parse(await fs.readFile(getProjectTowerStatePath(dir), 'utf8'));
+    assert.equal(listTowerWorkersFromState(saved).length, 1);
+    const trees = await fs.readdir(getProjectTowerWorktreesDir(dir));
+    assert.deepEqual(trees.filter((name) => name !== '.DS_Store'), ['m1']);
   });
 });
 
