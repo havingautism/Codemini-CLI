@@ -40,6 +40,8 @@ export function normalizeTowerWorkerRecord(value) {
   const paths = normalizeTowerPaths(value.paths);
   const dependsOn = normalizeTowerDependsOn(value.dependsOn);
   const lastHandoffPath = String(value.lastHandoffPath || '').trim();
+  const reviewedCommit = String(value.reviewedCommit || '').trim();
+  const reviewText = String(value.reviewText || '').trim();
   return {
     id,
     branch,
@@ -48,8 +50,28 @@ export function normalizeTowerWorkerRecord(value) {
     ...(taskId ? { taskId } : {}),
     ...(paths.length ? { paths } : {}),
     ...(dependsOn.length ? { dependsOn } : {}),
-    ...(lastHandoffPath ? { lastHandoffPath } : {})
+    ...(lastHandoffPath ? { lastHandoffPath } : {}),
+    ...(reviewedCommit ? { reviewedCommit } : {}),
+    ...(value.reviewPassed === true || value.reviewPassed === false
+      ? { reviewPassed: value.reviewPassed === true }
+      : {}),
+    ...(reviewText ? { reviewText } : {}),
   };
+}
+
+export function towerReviewPassedFromText(text) {
+  const value = String(text || '');
+  const bulletMatch = value.match(/(?:^|\n)\s*Findings\s*:\s*(?:\n|\r\n?)+\s*-\s*([^\n\r]+)/i);
+  const inlineMatch = value.match(/(?:^|\n)\s*Findings\s*:\s*([^\n\r]+)/i);
+  const bullet = String(bulletMatch?.[1] || inlineMatch?.[1] || '').trim();
+  if (!bullet) return false;
+  return /^none\b/i.test(bullet);
+}
+
+export function workerReviewMatchesCommit(worker, commit) {
+  const sha = String(commit || '').trim();
+  if (!sha || !worker) return false;
+  return worker.reviewPassed === true && String(worker.reviewedCommit || '').trim() === sha;
 }
 
 export function listTowerWorkersFromState(state) {
@@ -74,7 +96,8 @@ export function buildTowerModePromptBlock(towerState, workers = []) {
     'Delegate isolated work with run_subagent. Isolation uses a git worktree per subagent; do not create worktrees, extra branches, or merge into the user branch yourself.',
     'New workers require paths: disjoint relative globs such as docs/** or src/foo.ts. Overlapping paths are rejected; change paths and retry.',
     rosterLine,
-    'When a worker finishes, read its tool result. dirty means it did not git commit — do not land that worker. sealed workers are landed with land_workers only. Successful land deletes worker branches; do not check them out.',
+    'When a worker finishes, read its tool result. dirty means it did not git commit — do not land that worker. After a worker is sealed, dispatch a separate run_subagent with role: "reviewer" and review set to that worker id. Do not resume the author to review themselves. The reviewer does not get paths or a new worktree.',
+    'land_workers only lands workers whose current commit already has a passing review. If review did not pass, resume that worker with the review text, then review the new commit. Successful land deletes worker branches; do not check them out.',
     'Do not git merge, git squash, or copy worker files into the main checkout yourself.',
     'Tell workers to use paths relative to their worktree cwd. Do not pass absolute paths from the parent checkout.'
   ].join('\n');

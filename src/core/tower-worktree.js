@@ -103,15 +103,105 @@ export function formatIdleTowerWorkers(workers) {
   return `Idle workers: ${ids}. Call back with resume set to that id (the short name, not a call/handoff id). Omit paths.`;
 }
 
-export function composeTowerResumeTask(task, handoffText) {
+export function composeTowerResumeTask(task, handoffText, reviewText = '') {
   const next = String(task || '').trim();
   const prior = String(handoffText || '').trim();
-  if (!prior) return next;
+  const review = String(reviewText || '').trim();
+  if (!prior && !review) return next;
   return [
     next,
-    'Previous shift handoff (context from last run, not a new requirement):',
+    prior ? 'Previous shift handoff (context from last run, not a new requirement):' : '',
     prior,
+    review ? 'Latest review (fix these findings, then git commit again):' : '',
+    review,
+  ].filter(Boolean).join('\n\n');
+}
+
+export function composeTowerReviewTask(task, {
+  workerId = '',
+  commit = '',
+  paths = [],
+  diff = '',
+  base = '',
+} = {}) {
+  const scope = Array.isArray(paths) && paths.length ? paths.join(', ') : 'none';
+  return [
+    String(task || '').trim() || `Review worker "${workerId}".`,
+    `You are reviewing tower worker "${workerId}" at commit ${commit} against base ${base}.`,
+    `Scope: ${scope}. Stay inside that scope.`,
+    'Do not edit files or git commit. If the current commit is clean to land, Findings must be none.',
+    diff ? `Diff vs base:\n${diff}` : 'No diff vs base was available; inspect the worktree.',
   ].join('\n\n');
+}
+
+export async function resolveTowerReviewTarget({
+  cwd = process.cwd(),
+  base = '',
+  review = '',
+  resume = '',
+} = {}) {
+  const root = path.resolve(cwd);
+  if (String(resume || '').trim()) {
+    return {
+      ok: false,
+      code: 'REVIEW_RESUME_CONFLICT',
+      error: 'role: "reviewer" cannot be combined with resume. Set review to the worker id, such as alisa.',
+    };
+  }
+  const workerId = sanitizeTowerWorkerId(review, '');
+  if (!workerId) {
+    return {
+      ok: false,
+      code: 'REVIEW_TARGET_REQUIRED',
+      error: 'role: "reviewer" requires review set to a roster worker id, such as alisa.',
+    };
+  }
+  const existing = listTowerWorkersFromState(await readTowerStateFile(root));
+  const worker = findTowerWorker(existing, { resume: workerId });
+  if (!worker) {
+    return {
+      ok: false,
+      code: 'REVIEW_UNKNOWN',
+      error: `Unknown review target "${workerId}". ${formatIdleTowerWorkers(existing)}`,
+    };
+  }
+  if (!(await worktreePathExists(worker.worktreePath))) {
+    return {
+      ok: false,
+      code: 'WORKTREE_MISSING',
+      error: `Tower worker "${worker.id}" is on the roster but its worktree is gone. Spawn it again with paths.`,
+      workerId: worker.id,
+    };
+  }
+  if (await isTowerWorktreeDirty(worker.worktreePath)) {
+    return {
+      ok: false,
+      code: 'DIRTY_WORKTREE',
+      error: `Worker "${worker.id}" is not sealed. Wait until it git commits before review.`,
+      workerId: worker.id,
+    };
+  }
+  const tip = await tryGit(worker.worktreePath, ['rev-parse', 'HEAD']);
+  const commit = String(tip.stdout || '').trim();
+  if (tip.code !== 0 || !commit) {
+    return {
+      ok: false,
+      code: 'REVIEW_COMMIT_MISSING',
+      error: `Could not read HEAD for worker "${worker.id}".`,
+      workerId: worker.id,
+    };
+  }
+  const baseRef = String(base || '').trim();
+  const diff = baseRef
+    ? await tryGit(worker.worktreePath, ['diff', `${baseRef}...HEAD`])
+    : { stdout: '' };
+  return {
+    ok: true,
+    review: true,
+    worker,
+    commit,
+    diff: String(diff.stdout || '').trim(),
+  };
 }
 
 export async function towerWorktreeExists(worktreePath) {

@@ -63,6 +63,7 @@ test('coding getBuiltinTools has no paths and no land_workers', () => {
   assert.equal(names.includes('land_workers'), false);
   assert.equal(Boolean(sub?.function?.parameters?.properties?.paths), false);
   assert.equal(Boolean(sub?.function?.parameters?.properties?.resume), false);
+  assert.equal(Boolean(sub?.function?.parameters?.properties?.review), false);
   assert.deepEqual(sub?.function?.parameters?.required || [], []);
 });
 
@@ -77,6 +78,7 @@ test('tower getBuiltinTools exposes paths and resume, and registers land_workers
   assert.equal(names.includes('land_workers'), true);
   assert.equal(Boolean(sub?.function?.parameters?.properties?.paths), true);
   assert.equal(Boolean(sub?.function?.parameters?.properties?.resume), true);
+  assert.equal(Boolean(sub?.function?.parameters?.properties?.review), true);
   assert.deepEqual(sub?.function?.parameters?.required || [], []);
   assert.match(String(sub?.function?.description || ''), /resume/i);
   assert.equal(typeof handlers.land_workers, 'function');
@@ -112,5 +114,13 @@ test('compactSubAgentResultForParent reports dirty vs sealed worktrees', () => {
   assert.equal(
     compactSubAgentResultForParent({ text: 'done', dirty: false }).includes('Worker id:'),
     false,
+  );
+  assert.match(
+    compactSubAgentResultForParent({ text: 'Findings:\n- none', reviewOf: 'alisa', reviewPassed: true }),
+    /Review of "alisa" passed/,
+  );
+  assert.match(
+    compactSubAgentResultForParent({ text: 'Findings:\n- missing tests', reviewOf: 'alisa', reviewPassed: false }),
+    /Resume "alisa"/,
   );
 });

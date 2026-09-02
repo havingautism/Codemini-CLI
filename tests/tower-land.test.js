@@ -7,7 +7,7 @@ import path from 'node:path';
 import { landTowerWorkers } from '../src/core/tower-land.js';
 import { runGit } from '../src/core/process-run.js';
 import { getProjectTowerStatePath } from '../src/core/paths.js';
-import { enterTowerMode, listTowerWorkersFromState } from '../src/core/tower-store.js';
+import { enterTowerMode, listTowerWorkersFromState, patchTowerWorkerRecord } from '../src/core/tower-store.js';
 import { addTowerWorktree } from '../src/core/tower-worktree.js';
 
 async function git(cwd, args) {
@@ -53,6 +53,15 @@ async function commitWorkerFile(worktreePath, relative, content) {
   await fs.writeFile(full, content);
   await git(worktreePath, ['add', relative]);
   await git(worktreePath, ['commit', '-m', `add ${relative}`]);
+}
+
+async function markCleanReview(dir, worker) {
+  const sha = String((await git(worker.worktreePath, ['rev-parse', 'HEAD'])).stdout || '').trim();
+  await patchTowerWorkerRecord(dir, worker.id, {
+    reviewedCommit: sha,
+    reviewPassed: true,
+    reviewText: 'Findings:\n- none',
+  });
 }
 
 async function commitCount(cwd) {
@@ -130,6 +139,7 @@ test('one sealed worker squashes onto the user branch without a merge commit', a
       paths: ['docs/**'],
     });
     await commitWorkerFile(spawned.worker.worktreePath, path.join('docs', 'a.md'), 'alpha\n');
+    await markCleanReview(dir, spawned.worker);
     const landed = await landTowerWorkers({ cwd: dir, base: 'main' });
     assert.equal(landed.ok, true, landed.error);
     assert.equal(await fs.readFile(path.join(dir, 'docs', 'a.md'), 'utf8'), 'alpha\n');
@@ -159,6 +169,8 @@ test('two sealed workers squash both files without a user merge commit', async (
     });
     await commitWorkerFile(docs.worker.worktreePath, path.join('docs', 'a.md'), 'alpha\n');
     await commitWorkerFile(src.worker.worktreePath, path.join('src', 'a.ts'), 'export {}\n');
+    await markCleanReview(dir, docs.worker);
+    await markCleanReview(dir, src.worker);
     const landed = await landTowerWorkers({ cwd: dir, base: 'main' });
     assert.equal(landed.ok, true, landed.error);
     assert.equal(await fs.readFile(path.join(dir, 'docs', 'a.md'), 'utf8'), 'alpha\n');
@@ -199,6 +211,7 @@ test('land_workers stops when the user worktree would overwrite uncommitted file
       paths: ['docs/**'],
     });
     await commitWorkerFile(spawned.worker.worktreePath, path.join('docs', 'a.md'), 'from-worker\n');
+    await markCleanReview(dir, spawned.worker);
     await fs.mkdir(path.join(dir, 'docs'), { recursive: true });
     await fs.writeFile(path.join(dir, 'docs', 'a.md'), 'local\n');
     const landed = await landTowerWorkers({ cwd: dir, base: 'main' });
@@ -226,6 +239,8 @@ test('failed two-worker squash keeps worker branches and deletes merge tmp', asy
     });
     await commitWorkerFile(docs.worker.worktreePath, path.join('docs', 'a.md'), 'from-worker\n');
     await commitWorkerFile(src.worker.worktreePath, path.join('src', 'a.ts'), 'export {}\n');
+    await markCleanReview(dir, docs.worker);
+    await markCleanReview(dir, src.worker);
     await fs.mkdir(path.join(dir, 'docs'), { recursive: true });
     await fs.writeFile(path.join(dir, 'docs', 'a.md'), 'local\n');
     const landed = await landTowerWorkers({ cwd: dir, base: 'main' });
@@ -238,5 +253,61 @@ test('failed two-worker squash keeps worker branches and deletes merge tmp', asy
     assert.equal(refs.some((name) => name.includes('merge-tmp') || name.endsWith('/tmp')), false);
     const saved = JSON.parse(await fs.readFile(getProjectTowerStatePath(dir), 'utf8'));
     assert.equal(listTowerWorkersFromState(saved).length, 2);
+  });
+});
+
+test('land_workers refuses a sealed worker with no passing review', async () => {
+  await withRepo(async (dir) => {
+    const spawned = await addTowerWorktree({
+      cwd: dir,
+      base: 'main',
+      taskId: 'docs',
+      paths: ['docs/**'],
+    });
+    await commitWorkerFile(spawned.worker.worktreePath, path.join('docs', 'a.md'), 'alpha\n');
+    const landed = await landTowerWorkers({ cwd: dir, base: 'main' });
+    assert.equal(landed.ok, false);
+    assert.equal(landed.code, 'REVIEW_REQUIRED');
+    assert.equal(await fs.access(path.join(dir, 'docs', 'a.md')).then(() => true, () => false), false);
+    const saved = JSON.parse(await fs.readFile(getProjectTowerStatePath(dir), 'utf8'));
+    assert.equal(listTowerWorkersFromState(saved).length, 1);
+  });
+});
+
+test('land_workers refuses a failed review of the current commit', async () => {
+  await withRepo(async (dir) => {
+    const spawned = await addTowerWorktree({
+      cwd: dir,
+      base: 'main',
+      taskId: 'docs',
+      paths: ['docs/**'],
+    });
+    await commitWorkerFile(spawned.worker.worktreePath, path.join('docs', 'a.md'), 'alpha\n');
+    const sha = String((await git(spawned.worker.worktreePath, ['rev-parse', 'HEAD'])).stdout || '').trim();
+    await patchTowerWorkerRecord(dir, spawned.worker.id, {
+      reviewedCommit: sha,
+      reviewPassed: false,
+      reviewText: 'Findings:\n- missing tests',
+    });
+    const landed = await landTowerWorkers({ cwd: dir, base: 'main' });
+    assert.equal(landed.ok, false);
+    assert.equal(landed.code, 'REVIEW_FAILED');
+  });
+});
+
+test('a new worker commit invalidates the previous passing review', async () => {
+  await withRepo(async (dir) => {
+    const spawned = await addTowerWorktree({
+      cwd: dir,
+      base: 'main',
+      taskId: 'docs',
+      paths: ['docs/**'],
+    });
+    await commitWorkerFile(spawned.worker.worktreePath, path.join('docs', 'a.md'), 'alpha\n');
+    await markCleanReview(dir, spawned.worker);
+    await commitWorkerFile(spawned.worker.worktreePath, path.join('docs', 'b.md'), 'beta\n');
+    const landed = await landTowerWorkers({ cwd: dir, base: 'main' });
+    assert.equal(landed.ok, false);
+    assert.equal(landed.code, 'REVIEW_REQUIRED');
   });
 });

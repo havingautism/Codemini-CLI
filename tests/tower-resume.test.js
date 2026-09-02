@@ -272,6 +272,12 @@ test('after land, the same name is a new worker and needs paths', async () => {
     await fs.writeFile(path.join(spawned.worker.worktreePath, 'notes.md'), 'hello\n');
     await git(spawned.worker.worktreePath, ['add', 'notes.md']);
     await git(spawned.worker.worktreePath, ['commit', '-m', 'notes']);
+    const sha = String((await git(spawned.worker.worktreePath, ['rev-parse', 'HEAD'])).stdout || '').trim();
+    await patchTowerWorkerRecord(dir, spawned.worker.id, {
+      reviewedCommit: sha,
+      reviewPassed: true,
+      reviewText: 'Findings:\n- none',
+    });
     const landed = await landTowerWorkers({ cwd: dir, base: 'main' });
     assert.equal(landed.ok, true, landed.error);
     const saved = JSON.parse(await fs.readFile(getProjectTowerStatePath(dir), 'utf8'));

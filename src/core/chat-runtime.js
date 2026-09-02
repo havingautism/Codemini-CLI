@@ -91,9 +91,10 @@ import {
   normalizeTowerState,
   patchTowerWorkerRecord,
   readTowerStateFile,
+  towerReviewPassedFromText,
   writeTowerStateFile,
 } from './tower-store.js';
-import { composeTowerResumeTask, isTowerWorktreeDirty, removeTowerWorktrees, resolveTowerSubagentWorkspace } from './tower-worktree.js';
+import { composeTowerResumeTask, composeTowerReviewTask, isTowerWorktreeDirty, removeTowerWorktrees, resolveTowerReviewTarget, resolveTowerSubagentWorkspace } from './tower-worktree.js';
 import { landTowerWorkers } from './tower-land.js';
 import { composeMemorySnapshot } from './memory-prompt.js';
 import { buildProjectContextSnippet, initializeProjectIndex } from './project-index.js';
@@ -921,6 +922,8 @@ export function compactSubAgentResultForParent({
   artifactPaths = [],
   dirty,
   workerId = '',
+  reviewOf = '',
+  reviewPassed,
   maxChars = SUB_AGENT_PARENT_RESULT_MAX_CHARS,
 } = {}) {
   const artifacts = [...new Set(
@@ -935,16 +938,23 @@ export function compactSubAgentResultForParent({
     ? body
     : `${body.slice(0, previewBudget).trimEnd()}\n\n[truncated]`;
   const id = String(workerId || '').trim();
+  const reviewed = String(reviewOf || '').trim();
   const sealLine = dirty === true
     ? 'Worktree: dirty (not sealed). Do not land this worker.'
     : dirty === false
       ? 'Worktree: sealed.'
       : '';
+  const reviewLine = reviewed
+    ? reviewPassed === true
+      ? `Review of "${reviewed}" passed. land_workers may include this worker.`
+      : `Review of "${reviewed}" did not pass. Resume "${reviewed}" with the review text. Do not land.`
+    : '';
   return [
     'Subagent finished. Use this conclusion; read the handoff file only if you need details.',
     String(summary || '').trim() ? `Summary: ${String(summary).trim()}` : '',
     clipped || '(empty)',
     id ? `Worker id: ${id}. Call back with resume: "${id}". Do not use a call id or handoff folder. Omit paths.` : '',
+    reviewLine,
     pathLine ? `Handoff: ${pathLine}` : '',
     artifacts.length ? `Artifacts:\n${artifacts.map((item) => `- ${item}`).join('\n')}` : '',
     sealLine,
@@ -5086,7 +5096,8 @@ async function askModel({
           dependsOn = [],
           tools = null,
           paths = null,
-          resume = ''
+          resume = '',
+          review = ''
         } = {}) => {
           const { persona, policyKey, taskRole } = resolveSubAgentRolePolicy(name, role);
           const taskPrompt = String(prompt || '').trim();
@@ -5199,26 +5210,19 @@ async function askModel({
           const scopedTask = contextSections.length
             ? `${contextSections.join('\n\n')}\n\nTask:\n${effectivePrompt}`
             : effectivePrompt;
-              let childUsage = null;
+          let childUsage = null;
           let lockedTowerWorkerId = '';
+          let reviewingWorkerId = '';
           try {
             let workerWorkspaceRoot = workspaceRoot;
             let workerChangeTracker = changeTracker;
             let workerBackupManager = backupManager;
             let workerTask = scopedTask;
+            let reviewCommit = '';
             if (towerState) {
-              const spawned = await resolveTowerSubagentWorkspace({
-                cwd: workspaceRoot,
-                base: towerState.base,
-                resume,
-                taskId: dependencyTaskId,
-                name: persona,
-                callId,
-                paths,
-                dependsOn: dependencyRegistration.dependencies,
-              });
-              if (!spawned.ok) {
-                const spawnError = spawned.error || 'Failed to spawn tower worktree.';
+              const isReviewer = String(role || '').trim().toLowerCase() === 'reviewer' || policyKey === 'reviewer';
+              if (String(review || '').trim() && !isReviewer) {
+                const reviewError = 'review is only valid with role: "reviewer".';
                 emit({
                   type: 'plan:step_done',
                   toolCallId: callId,
@@ -5229,62 +5233,171 @@ async function askModel({
                   status: 'failed',
                   taskId: dependencyTaskId,
                   dependsOn: dependencyRegistration.dependencies,
-                  summary: spawnError,
+                  summary: reviewError,
                   sdkProvider: stepSdkProvider,
                   model: stepModel,
                 });
-                const spawnResult = {
-                  ok: false,
-                  code: spawned.code,
-                  error: spawnError,
-                  text: '',
-                };
-                dependencyRegistration.settle(spawnResult);
-                return spawnResult;
+                const reviewResult = { ok: false, code: 'REVIEW_ROLE_REQUIRED', error: reviewError, text: '' };
+                dependencyRegistration.settle(reviewResult);
+                return reviewResult;
               }
-              const workerId = String(spawned.worker?.id || '').trim();
-              if (workerId && inFlightTowerWorkers.has(workerId)) {
-                const busyError = `Tower worker "${workerId}" is still running. Wait for that shift to finish before resume.`;
-                emit({
-                  type: 'plan:step_done',
-                  toolCallId: callId,
-                  step: 1,
-                  total: 1,
-                  role: persona,
-                  title,
-                  status: 'failed',
+              if (isReviewer) {
+                const reviewed = await resolveTowerReviewTarget({
+                  cwd: workspaceRoot,
+                  base: towerState.base,
+                  review,
+                  resume,
+                });
+                if (!reviewed.ok) {
+                  const spawnError = reviewed.error || 'Failed to start tower review.';
+                  emit({
+                    type: 'plan:step_done',
+                    toolCallId: callId,
+                    step: 1,
+                    total: 1,
+                    role: persona,
+                    title,
+                    status: 'failed',
+                    taskId: dependencyTaskId,
+                    dependsOn: dependencyRegistration.dependencies,
+                    summary: spawnError,
+                    sdkProvider: stepSdkProvider,
+                    model: stepModel,
+                  });
+                  const spawnResult = {
+                    ok: false,
+                    code: reviewed.code,
+                    error: spawnError,
+                    text: '',
+                  };
+                  dependencyRegistration.settle(spawnResult);
+                  return spawnResult;
+                }
+                const workerId = String(reviewed.worker?.id || '').trim();
+                if (workerId && inFlightTowerWorkers.has(workerId)) {
+                  const busyError = `Tower worker "${workerId}" is still running. Wait for that shift to finish before review.`;
+                  emit({
+                    type: 'plan:step_done',
+                    toolCallId: callId,
+                    step: 1,
+                    total: 1,
+                    role: persona,
+                    title,
+                    status: 'failed',
+                    taskId: dependencyTaskId,
+                    dependsOn: dependencyRegistration.dependencies,
+                    summary: busyError,
+                    sdkProvider: stepSdkProvider,
+                    model: stepModel,
+                  });
+                  const busyResult = {
+                    ok: false,
+                    code: 'WORKER_BUSY',
+                    error: busyError,
+                    text: '',
+                  };
+                  dependencyRegistration.settle(busyResult);
+                  return busyResult;
+                }
+                if (workerId) {
+                  inFlightTowerWorkers.add(workerId);
+                  lockedTowerWorkerId = workerId;
+                  reviewingWorkerId = workerId;
+                }
+                reviewCommit = reviewed.commit;
+                workerTask = composeTowerReviewTask(scopedTask, {
+                  workerId,
+                  commit: reviewed.commit,
+                  paths: reviewed.worker?.paths,
+                  diff: reviewed.diff,
+                  base: towerState.base,
+                });
+                workerWorkspaceRoot = reviewed.worker.worktreePath;
+                workerChangeTracker = null;
+                workerBackupManager = null;
+              } else {
+                const spawned = await resolveTowerSubagentWorkspace({
+                  cwd: workspaceRoot,
+                  base: towerState.base,
+                  resume,
                   taskId: dependencyTaskId,
+                  name: persona,
+                  callId,
+                  paths,
                   dependsOn: dependencyRegistration.dependencies,
-                  summary: busyError,
-                  sdkProvider: stepSdkProvider,
-                  model: stepModel,
                 });
-                const busyResult = {
-                  ok: false,
-                  code: 'WORKER_BUSY',
-                  error: busyError,
-                  text: '',
-                };
-                dependencyRegistration.settle(busyResult);
-                return busyResult;
-              }
-              if (workerId) {
-                inFlightTowerWorkers.add(workerId);
-                lockedTowerWorkerId = workerId;
-              }
-              if (spawned.resume) {
-                const priorHandoff = await readTowerWorkerHandoff(
-                  workspaceRoot,
-                  spawned.worker?.lastHandoffPath,
+                if (!spawned.ok) {
+                  const spawnError = spawned.error || 'Failed to spawn tower worktree.';
+                  emit({
+                    type: 'plan:step_done',
+                    toolCallId: callId,
+                    step: 1,
+                    total: 1,
+                    role: persona,
+                    title,
+                    status: 'failed',
+                    taskId: dependencyTaskId,
+                    dependsOn: dependencyRegistration.dependencies,
+                    summary: spawnError,
+                    sdkProvider: stepSdkProvider,
+                    model: stepModel,
+                  });
+                  const spawnResult = {
+                    ok: false,
+                    code: spawned.code,
+                    error: spawnError,
+                    text: '',
+                  };
+                  dependencyRegistration.settle(spawnResult);
+                  return spawnResult;
+                }
+                const workerId = String(spawned.worker?.id || '').trim();
+                if (workerId && inFlightTowerWorkers.has(workerId)) {
+                  const busyError = `Tower worker "${workerId}" is still running. Wait for that shift to finish before resume.`;
+                  emit({
+                    type: 'plan:step_done',
+                    toolCallId: callId,
+                    step: 1,
+                    total: 1,
+                    role: persona,
+                    title,
+                    status: 'failed',
+                    taskId: dependencyTaskId,
+                    dependsOn: dependencyRegistration.dependencies,
+                    summary: busyError,
+                    sdkProvider: stepSdkProvider,
+                    model: stepModel,
+                  });
+                  const busyResult = {
+                    ok: false,
+                    code: 'WORKER_BUSY',
+                    error: busyError,
+                    text: '',
+                  };
+                  dependencyRegistration.settle(busyResult);
+                  return busyResult;
+                }
+                if (workerId) {
+                  inFlightTowerWorkers.add(workerId);
+                  lockedTowerWorkerId = workerId;
+                }
+                if (spawned.resume) {
+                  const priorHandoff = await readTowerWorkerHandoff(
+                    workspaceRoot,
+                    spawned.worker?.lastHandoffPath,
+                  );
+                  const reviewText = spawned.worker?.reviewPassed === false
+                    ? spawned.worker?.reviewText
+                    : '';
+                  workerTask = composeTowerResumeTask(scopedTask, priorHandoff, reviewText);
+                }
+                workerWorkspaceRoot = spawned.worker.worktreePath;
+                workerChangeTracker = await createTowerWorkerChangeTracker(
+                  workerWorkspaceRoot,
+                  `${session.id}:${spawned.worker.id}`,
                 );
-                workerTask = composeTowerResumeTask(scopedTask, priorHandoff);
+                workerBackupManager = null;
               }
-              workerWorkspaceRoot = spawned.worker.worktreePath;
-              workerChangeTracker = await createTowerWorkerChangeTracker(
-                workerWorkspaceRoot,
-                `${session.id}:${spawned.worker.id}`,
-              );
-              workerBackupManager = null;
             }
             const output = await runSubAgentTask({
               role: taskRole,
@@ -5315,7 +5428,7 @@ async function askModel({
             });
             const failed = subAgentRunFailed(output, signal);
             let towerDirty;
-            if (towerState && workerWorkspaceRoot !== workspaceRoot) {
+            if (towerState && !reviewingWorkerId && workerWorkspaceRoot !== workspaceRoot) {
               towerDirty = await isTowerWorktreeDirty(workerWorkspaceRoot).catch(() => true);
             }
             const savedHandoff = failed
@@ -5330,9 +5443,18 @@ async function askModel({
                   text: output.text,
                   artifactPaths: output.artifactPaths,
                 }).catch(() => null);
-            if (savedHandoff?.path && lockedTowerWorkerId) {
+            if (savedHandoff?.path && lockedTowerWorkerId && !reviewingWorkerId) {
               await patchTowerWorkerRecord(workspaceRoot, lockedTowerWorkerId, {
                 lastHandoffPath: savedHandoff.path,
+              }).catch(() => null);
+            }
+            let reviewPassed;
+            if (!failed && reviewingWorkerId && reviewCommit) {
+              reviewPassed = towerReviewPassedFromText(output.text);
+              await patchTowerWorkerRecord(workspaceRoot, reviewingWorkerId, {
+                reviewedCommit: reviewCommit,
+                reviewPassed,
+                reviewText: String(output.text || '').trim(),
               }).catch(() => null);
             }
             emit({
@@ -5375,7 +5497,8 @@ async function askModel({
                 handoffPath: savedHandoff?.path,
                 artifactPaths: output.artifactPaths,
                 ...(towerDirty === undefined ? {} : { dirty: towerDirty }),
-                ...(lockedTowerWorkerId ? { workerId: lockedTowerWorkerId } : {}),
+                ...(lockedTowerWorkerId && !reviewingWorkerId ? { workerId: lockedTowerWorkerId } : {}),
+                ...(reviewingWorkerId ? { reviewOf: reviewingWorkerId, reviewPassed } : {}),
               }),
             };
             dependencyRegistration.settle(result);

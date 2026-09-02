@@ -187,6 +187,7 @@ test('tower prompt is present only when the overlay is active', () => {
   assert.match(prompt, /Do not write product code/);
   assert.match(prompt, /run_subagent/);
   assert.match(prompt, /land_workers/);
+  assert.match(prompt, /role: "reviewer"/);
   assert.match(prompt, /paths/);
   assert.match(prompt, /No idle workers yet/);
   const withRoster = buildTowerModePromptBlock({ active: true, base: 'main' }, [

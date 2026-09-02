@@ -5353,13 +5353,18 @@ export function getBuiltinTools({
         description:
           "Roster worker id to call back, such as alisa. That is the short unique name, never a call id or handoff folder. Reuses that worktree, branch, and paths. Omit paths when resume is set.",
       };
+      subagentProperties.review = {
+        type: "string",
+        description:
+          "Roster worker id to review, such as alisa. Use with role: \"reviewer\". Does not create a worktree. Omit paths and resume.",
+      };
     }
     workflowToolDefinitions.push({
       type: "function",
       function: {
         name: "run_subagent",
         description: towerActive
-          ? "Delegate isolated work to a git-worktree subagent. Same-response independent calls run in parallel; use task_id/depends_on for dependencies. New workers need disjoint paths and a unique short name (that name becomes the resume id). Call an idle worker back with resume set to that id; do not use call ids from handoff paths."
+          ? "Delegate isolated work to a git-worktree subagent. Same-response independent calls run in parallel; use task_id/depends_on for dependencies. New workers need disjoint paths and a unique short name (that name becomes the resume id). Call an idle worker back with resume set to that id; do not use call ids from handoff paths. After a worker commits, review that worker with role: \"reviewer\" and review set to its id before land_workers."
           : "Delegate a bounded task to a clean-context subagent. Same-response independent calls run in parallel; use task_id/depends_on for dependencies and disjoint file ownership for parallel edits. Invent a short worker name such as David. Use fork_task instead when shared prompt prefix/state is more useful.",
         parameters: {
           type: "object",
@@ -7116,6 +7121,7 @@ export function getBuiltinTools({
         tools: Array.isArray(args?.tools) ? args.tools : null,
         paths: Array.isArray(args?.paths) ? args.paths : [],
         resume: String(args?.resume || "").trim(),
+        review: String(args?.review || "").trim(),
       });
     },
     fork_task: async (args = {}, ctx = {}) => {

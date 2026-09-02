@@ -59,6 +59,7 @@ test('run_subagent forwards invented name to handler', async () => {
   assert.equal(Boolean(def?.function?.parameters?.properties?.depends_on), true);
   assert.equal(Boolean(def?.function?.parameters?.properties?.paths), false);
   assert.equal(Boolean(def?.function?.parameters?.properties?.resume), false);
+  assert.equal(Boolean(def?.function?.parameters?.properties?.review), false);
   assert.match(String(def?.function?.description || ''), /David|invent/i);
 
   await handlers.run_subagent(
@@ -95,6 +96,7 @@ test('tower run_subagent forwards resume without requiring paths on the handler'
   const def = definitions.find((item) => item.function?.name === 'run_subagent');
   assert.equal(Boolean(def?.function?.parameters?.properties?.resume), true);
   assert.equal(Boolean(def?.function?.parameters?.properties?.paths), true);
+  assert.equal(Boolean(def?.function?.parameters?.properties?.review), true);
   assert.deepEqual(def?.function?.parameters?.required || [], []);
 
   await handlers.run_subagent({
@@ -104,4 +106,24 @@ test('tower run_subagent forwards resume without requiring paths on the handler'
   assert.equal(seen.prompt, 'Continue the slice');
   assert.equal(seen.resume, 'alisa');
   assert.deepEqual(seen.paths, []);
+});
+
+test('tower run_subagent forwards review with role reviewer', async () => {
+  let seen = null;
+  const { handlers } = getBuiltinTools({
+    towerActive: true,
+    onRunSubAgent: async (args) => {
+      seen = args;
+      return { ok: true, text: 'done' };
+    },
+    onLandWorkers: async () => ({ ok: true }),
+  });
+  await handlers.run_subagent({
+    prompt: 'Review alisa',
+    role: 'reviewer',
+    review: 'alisa',
+  });
+  assert.equal(seen.role, 'reviewer');
+  assert.equal(seen.review, 'alisa');
+  assert.equal(seen.resume, '');
 });

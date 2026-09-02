@@ -4,7 +4,7 @@ import path from 'node:path';
 import { getProjectTowerWorktreesDir } from './paths.js';
 import { runGit } from './process-run.js';
 import { fileMatchesTowerPaths, orderTowerWorkersForLand } from './tower-scope.js';
-import { listTowerWorkersFromState, readTowerStateFile } from './tower-store.js';
+import { listTowerWorkersFromState, readTowerStateFile, workerReviewMatchesCommit } from './tower-store.js';
 import {
   isTowerWorktreeDirty,
   removeTowerWorktrees,
@@ -153,6 +153,30 @@ export async function landTowerWorkers({
       for (const worker of ordered) {
         const scope = await collectScopeEscape(root, baseBranch, worker);
         if (!scope.ok) return scope;
+      }
+      for (const worker of ordered) {
+        const tip = await tryGit(root, ['rev-parse', worker.branch]);
+        const commit = String(tip.stdout || '').trim();
+        if (tip.code !== 0 || !commit) {
+          return {
+            ok: false,
+            code: 'REVIEW_COMMIT_MISSING',
+            error: `Could not read the current commit for worker "${worker.id}".`,
+            workerId: worker.id,
+          };
+        }
+        if (!workerReviewMatchesCommit(worker, commit)) {
+          const sameCommit = String(worker.reviewedCommit || '').trim() === commit;
+          const failedReview = worker.reviewPassed === false && sameCommit;
+          return {
+            ok: false,
+            code: failedReview ? 'REVIEW_FAILED' : 'REVIEW_REQUIRED',
+            error: failedReview
+              ? `Worker "${worker.id}" review did not pass. Resume "${worker.id}" with the review text, then review the new commit.`
+              : `Worker "${worker.id}" has no passing review for the current commit. Call run_subagent with role: "reviewer" and review: "${worker.id}".`,
+            workerId: worker.id,
+          };
+        }
       }
 
       const useTmp = ordered.length > 1;
