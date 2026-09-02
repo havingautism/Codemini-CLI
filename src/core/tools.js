@@ -5424,7 +5424,7 @@ export function getBuiltinTools({
       function: {
         name: "land_workers",
         description:
-          "Squash sealed tower worker branches onto the current user branch without creating a commit, then delete those worker branches. Refuses dirty (uncommitted) worker worktrees. Do not merge or copy files yourself.",
+          "Squash sealed tower worker branches onto the current user branch without creating a commit, then delete those worker branches. Refuses dirty (uncommitted) worker worktrees. If a worker conflicts on the integration tip, resume that worker to rebase onto the returned commit, then review the new commit before landing again. Do not merge or copy files yourself.",
         parameters: {
           type: "object",
           properties: {},
@@ -7744,7 +7744,10 @@ export function getBuiltinTools({
         const files = Array.isArray(result.files) && result.files.length
           ? `\nFiles: ${result.files.join(', ')}`
           : '';
-        return `${result.error}${files}`;
+        const onto = String(result.onto || '').trim()
+          ? `\nRebase onto: ${String(result.onto).trim()}`
+          : '';
+        return `${result.error}${files}${onto}`;
       }
       if (result.message) return String(result.message);
       return JSON.stringify(result);

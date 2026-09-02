@@ -193,6 +193,12 @@ test('composeTowerResumeTask puts the new task before the previous handoff', () 
   assert.equal(composeTowerResumeTask('only', ''), 'only');
 });
 
+test('composeTowerResumeTask injects rebase onto a commit', () => {
+  const composed = composeTowerResumeTask('Fix the merge', '', '', 'abc111');
+  assert.match(composed, /git rebase abc111/);
+  assert.match(composed, /Do not merge into the user branch/);
+});
+
 test('findTowerWorker matches resume id first, then sanitized name', () => {
   const workers = [
     { id: 'alisa', branch: 'codemini-tower/alisa', worktreePath: '/tmp/alisa', callId: 'call_00_tWNGO08jqp3XgQaRowSz2051' },

@@ -4,8 +4,15 @@ import path from 'node:path';
 import { getProjectTowerWorktreesDir } from './paths.js';
 import { runGit } from './process-run.js';
 import { fileMatchesTowerPaths, orderTowerWorkersForLand } from './tower-scope.js';
-import { listTowerWorkersFromState, readTowerStateFile, workerReviewMatchesCommit } from './tower-store.js';
 import {
+  listTowerWorkersFromState,
+  patchTowerWorkerRecord,
+  readTowerStateFile,
+  workerLandBaseRef,
+  workerReviewMatchesCommit,
+} from './tower-store.js';
+import {
+  isTowerCommitAncestor,
   isTowerWorktreeDirty,
   removeTowerWorktrees,
   withTowerGitLock,
@@ -95,8 +102,22 @@ function buildLandMessage(ordered, kept) {
   return `${base} Could not delete: ${kept.join(', ')}. Do not check out those branches until you commit; they can absorb the staged files.`;
 }
 
+function buildRebaseRequired(worker, files = []) {
+  const onto = String(worker?.rebaseOnto || '').trim();
+  const names = Array.isArray(files) ? files.filter(Boolean) : [];
+  return {
+    ok: false,
+    code: 'REBASE_REQUIRED',
+    error: `Worker "${worker.id}" conflicts with the current integration tip. Resume "${worker.id}" to git rebase onto ${onto}, resolve, commit, then review the new commit. Do not land.`,
+    workerId: worker.id,
+    onto,
+    ...(names.length ? { files: names } : {}),
+  };
+}
+
 async function collectScopeEscape(root, base, worker) {
-  const diff = await tryGit(root, ['diff', '--name-only', String(base), worker.branch]);
+  const against = workerLandBaseRef(worker, base);
+  const diff = await tryGit(root, ['diff', '--name-only', String(against), worker.branch]);
   if (diff.code !== 0) {
     return {
       ok: false,
@@ -134,7 +155,25 @@ export async function landTowerWorkers({
       return { ok: false, code: 'NO_WORKERS', error: 'No tower workers to land.' };
     }
     const ordered = orderTowerWorkersForLand(workers);
+    let keepMergeTmp = false;
     try {
+      const pendingRebase = [];
+      for (const worker of ordered) {
+        const onto = String(worker.rebaseOnto || '').trim();
+        if (!onto) continue;
+        const done = await isTowerCommitAncestor(worker.worktreePath, onto);
+        if (!done) {
+          pendingRebase.push(worker);
+          continue;
+        }
+        worker.landBase = onto;
+        delete worker.rebaseOnto;
+        await patchTowerWorkerRecord(root, worker.id, { landBase: onto, rebaseOnto: '' }).catch(() => null);
+      }
+      if (pendingRebase.length) {
+        keepMergeTmp = true;
+        return buildRebaseRequired(pendingRebase[0]);
+      }
       await removeMergeTmp(root);
       const dirty = [];
       for (const worker of ordered) {
@@ -201,15 +240,23 @@ export async function landTowerWorkers({
             worker.branch,
           ]);
           if (merged.code !== 0) {
-            await abortMerge(mergeWorktree);
             const conflicted = splitNames((await tryGit(mergeWorktree, ['diff', '--name-only', '--diff-filter=U'])).stdout);
-            return {
-              ok: false,
-              code: 'GIT_MERGE',
-              error: String(merged.stderr || merged.stdout || '').trim() || `Failed to merge worker "${worker.id}".`,
-              workerId: worker.id,
-              files: conflicted,
-            };
+            await abortMerge(mergeWorktree);
+            const ontoResult = await tryGit(mergeWorktree, ['rev-parse', 'HEAD']);
+            const onto = String(ontoResult.stdout || '').trim();
+            if (!onto) {
+              return {
+                ok: false,
+                code: 'GIT_MERGE',
+                error: String(merged.stderr || merged.stdout || '').trim() || `Failed to merge worker "${worker.id}".`,
+                workerId: worker.id,
+                files: conflicted,
+              };
+            }
+            worker.rebaseOnto = onto;
+            await patchTowerWorkerRecord(root, worker.id, { rebaseOnto: onto }).catch(() => null);
+            keepMergeTmp = true;
+            return buildRebaseRequired(worker, conflicted);
           }
         }
       }
@@ -240,7 +287,7 @@ export async function landTowerWorkers({
         message: buildLandMessage(ordered, uniqueKept),
       };
     } finally {
-      await removeMergeTmp(root);
+      if (!keepMergeTmp) await removeMergeTmp(root);
     }
   });
 }

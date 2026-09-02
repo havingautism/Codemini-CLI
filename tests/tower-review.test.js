@@ -86,6 +86,12 @@ test('composeTowerResumeTask can append review findings after the handoff', () =
   assert.match(composed, /missing tests/);
 });
 
+test('composeTowerResumeTask injects rebase onto after a failed land', () => {
+  const composed = composeTowerResumeTask('Continue', '# handoff', '', 'aaa111');
+  assert.match(composed, /Previous shift handoff/);
+  assert.match(composed, /git rebase aaa111/);
+});
+
 test('composeTowerReviewTask names the worker and commit', () => {
   const text = composeTowerReviewTask('Check notes.md', {
     workerId: 'alisa',

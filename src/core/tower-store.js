@@ -42,6 +42,8 @@ export function normalizeTowerWorkerRecord(value) {
   const lastHandoffPath = String(value.lastHandoffPath || '').trim();
   const reviewedCommit = String(value.reviewedCommit || '').trim();
   const reviewText = String(value.reviewText || '').trim();
+  const rebaseOnto = String(value.rebaseOnto || '').trim();
+  const landBase = String(value.landBase || '').trim();
   return {
     id,
     branch,
@@ -56,7 +58,13 @@ export function normalizeTowerWorkerRecord(value) {
       ? { reviewPassed: value.reviewPassed === true }
       : {}),
     ...(reviewText ? { reviewText } : {}),
+    ...(rebaseOnto ? { rebaseOnto } : {}),
+    ...(landBase ? { landBase } : {}),
   };
+}
+
+export function workerLandBaseRef(worker, fallback = '') {
+  return String(worker?.landBase || '').trim() || String(fallback || '').trim();
 }
 
 export function towerReviewPassedFromText(text) {
@@ -97,7 +105,7 @@ export function buildTowerModePromptBlock(towerState, workers = []) {
     'New workers require paths: disjoint relative globs such as docs/** or src/foo.ts. Overlapping paths are rejected; change paths and retry.',
     rosterLine,
     'When a worker finishes, read its tool result. dirty means it did not git commit — do not land that worker. After a worker is sealed, dispatch a separate run_subagent with role: "reviewer" and review set to that worker id. Do not resume the author to review themselves. The reviewer does not get paths or a new worktree.',
-    'land_workers only lands workers whose current commit already has a passing review. If review did not pass, resume that worker with the review text, then review the new commit. Successful land deletes worker branches; do not check them out.',
+    'land_workers only lands workers whose current commit already has a passing review. If review did not pass, resume that worker with the review text, then review the new commit. If land returns REBASE_REQUIRED, resume that worker; the resume task already includes git rebase onto that commit. After it commits, review the new commit before landing again. Do not check out or delete the merge tmp branch. Successful land deletes worker branches; do not check them out.',
     'Do not git merge, git squash, or copy worker files into the main checkout yourself.',
     'Tell workers to use paths relative to their worktree cwd. Do not pass absolute paths from the parent checkout.'
   ].join('\n');

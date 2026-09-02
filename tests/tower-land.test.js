@@ -6,7 +6,7 @@ import path from 'node:path';
 
 import { landTowerWorkers } from '../src/core/tower-land.js';
 import { runGit } from '../src/core/process-run.js';
-import { getProjectTowerStatePath } from '../src/core/paths.js';
+import { getProjectTowerStatePath, getProjectTowerWorktreesDir } from '../src/core/paths.js';
 import { enterTowerMode, listTowerWorkersFromState, patchTowerWorkerRecord } from '../src/core/tower-store.js';
 import { addTowerWorktree } from '../src/core/tower-worktree.js';
 
@@ -309,5 +309,91 @@ test('a new worker commit invalidates the previous passing review', async () => 
     const landed = await landTowerWorkers({ cwd: dir, base: 'main' });
     assert.equal(landed.ok, false);
     assert.equal(landed.code, 'REVIEW_REQUIRED');
+  });
+});
+
+test('two-worker merge conflict keeps tmp and requires rebase onto that tip', async () => {
+  await withRepo(async (dir) => {
+    const mia = await addTowerWorktree({
+      cwd: dir,
+      base: 'main',
+      taskId: 'mia',
+      paths: ['docs/**'],
+    });
+    const noah = await addTowerWorktree({
+      cwd: dir,
+      base: 'main',
+      taskId: 'noah',
+      paths: ['src/**'],
+    });
+    await commitWorkerFile(mia.worker.worktreePath, path.join('docs', 'a.md'), 'mia\n');
+    await commitWorkerFile(noah.worker.worktreePath, path.join('src', 'a.ts'), 'export {}\n');
+    await commitWorkerFile(mia.worker.worktreePath, 'README.md', 'from-mia\n');
+    await commitWorkerFile(noah.worker.worktreePath, 'README.md', 'from-noah\n');
+    await patchTowerWorkerRecord(dir, mia.worker.id, { paths: ['docs/**', 'README.md'] });
+    await patchTowerWorkerRecord(dir, noah.worker.id, { paths: ['src/**', 'README.md'] });
+    const miaRecord = { ...mia.worker, id: 'mia' };
+    const noahRecord = { ...noah.worker, id: 'noah' };
+    await markCleanReview(dir, miaRecord);
+    await markCleanReview(dir, noahRecord);
+
+    const landed = await landTowerWorkers({ cwd: dir, base: 'main' });
+    assert.equal(landed.ok, false);
+    assert.equal(landed.code, 'REBASE_REQUIRED');
+    assert.equal(landed.workerId, 'noah');
+    assert.equal(Boolean(landed.onto), true);
+    const tmpTip = String((await git(dir, ['rev-parse', 'codemini-tower/_merge-tmp'])).stdout || '').trim();
+    assert.equal(landed.onto, tmpTip);
+    assert.equal((await fs.readdir(getProjectTowerWorktreesDir(dir))).includes('_merge-tmp'), true);
+
+    const afterConflict = JSON.parse(await fs.readFile(getProjectTowerStatePath(dir), 'utf8'));
+    const noahState = listTowerWorkersFromState(afterConflict).find((item) => item.id === 'noah');
+    assert.equal(noahState.rebaseOnto, tmpTip);
+
+    const again = await landTowerWorkers({ cwd: dir, base: 'main' });
+    assert.equal(again.code, 'REBASE_REQUIRED');
+    assert.equal(String((await git(dir, ['rev-parse', 'codemini-tower/_merge-tmp'])).stdout || '').trim(), tmpTip);
+
+    const rebase = await runGit(['rebase', tmpTip], {
+      cwd: noah.worker.worktreePath,
+      allowFailure: true,
+      timeoutMs: 15_000,
+      env: {
+        ...process.env,
+        GIT_AUTHOR_NAME: 'Codemini Test',
+        GIT_AUTHOR_EMAIL: 'tower@test.local',
+        GIT_COMMITTER_NAME: 'Codemini Test',
+        GIT_COMMITTER_EMAIL: 'tower@test.local',
+      },
+    });
+    assert.notEqual(rebase.code, 0);
+    await fs.writeFile(path.join(noah.worker.worktreePath, 'README.md'), 'from-noah\n');
+    await git(noah.worker.worktreePath, ['add', 'README.md']);
+    await runGit(['-c', 'core.editor=true', 'rebase', '--continue'], {
+      cwd: noah.worker.worktreePath,
+      allowFailure: false,
+      timeoutMs: 15_000,
+      env: {
+        ...process.env,
+        GIT_EDITOR: 'true',
+        GIT_AUTHOR_NAME: 'Codemini Test',
+        GIT_AUTHOR_EMAIL: 'tower@test.local',
+        GIT_COMMITTER_NAME: 'Codemini Test',
+        GIT_COMMITTER_EMAIL: 'tower@test.local',
+      },
+    });
+
+    await patchTowerWorkerRecord(dir, 'noah', { landBase: '', rebaseOnto: '' });
+    await markCleanReview(dir, noahRecord);
+    const escaped = await landTowerWorkers({ cwd: dir, base: 'main' });
+    assert.equal(escaped.code, 'SCOPE_ESCAPE');
+    assert.ok((escaped.files || []).includes('docs/a.md'));
+
+    await patchTowerWorkerRecord(dir, 'noah', { landBase: tmpTip, rebaseOnto: '' });
+    await markCleanReview(dir, noahRecord);
+    const finished = await landTowerWorkers({ cwd: dir, base: 'main' });
+    assert.equal(finished.ok, true, finished.error);
+    assert.equal((await fs.readdir(getProjectTowerWorktreesDir(dir))).includes('_merge-tmp'), false);
+    assert.deepEqual(await listTowerRefs(dir), []);
   });
 });

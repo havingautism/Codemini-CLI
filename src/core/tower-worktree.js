@@ -103,17 +103,21 @@ export function formatIdleTowerWorkers(workers) {
   return `Idle workers: ${ids}. Call back with resume set to that id (the short name, not a call/handoff id). Omit paths.`;
 }
 
-export function composeTowerResumeTask(task, handoffText, reviewText = '') {
+export function composeTowerResumeTask(task, handoffText, reviewText = '', rebaseOnto = '') {
   const next = String(task || '').trim();
   const prior = String(handoffText || '').trim();
   const review = String(reviewText || '').trim();
-  if (!prior && !review) return next;
+  const onto = String(rebaseOnto || '').trim();
+  if (!prior && !review && !onto) return next;
   return [
     next,
     prior ? 'Previous shift handoff (context from last run, not a new requirement):' : '',
     prior,
     review ? 'Latest review (fix these findings, then git commit again):' : '',
     review,
+    onto
+      ? `Rebase onto ${onto} in this worktree (git rebase ${onto}), resolve any conflicts, then git commit. Stay in your paths. Do not merge into the user branch.`
+      : '',
   ].filter(Boolean).join('\n\n');
 }
 
@@ -191,7 +195,7 @@ export async function resolveTowerReviewTarget({
       workerId: worker.id,
     };
   }
-  const baseRef = String(base || '').trim();
+  const baseRef = String(worker.landBase || '').trim() || String(base || '').trim();
   const diff = baseRef
     ? await tryGit(worker.worktreePath, ['diff', `${baseRef}...HEAD`])
     : { stdout: '' };
@@ -200,8 +204,17 @@ export async function resolveTowerReviewTarget({
     review: true,
     worker,
     commit,
+    base: baseRef,
     diff: String(diff.stdout || '').trim(),
   };
+}
+
+export async function isTowerCommitAncestor(cwd, ancestor, tip = 'HEAD') {
+  const sha = String(ancestor || '').trim();
+  const target = String(tip || 'HEAD').trim() || 'HEAD';
+  if (!sha || !cwd) return false;
+  const result = await tryGit(cwd, ['merge-base', '--is-ancestor', sha, target]);
+  return result.code === 0;
 }
 
 export async function towerWorktreeExists(worktreePath) {

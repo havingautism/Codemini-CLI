@@ -94,7 +94,7 @@ import {
   towerReviewPassedFromText,
   writeTowerStateFile,
 } from './tower-store.js';
-import { composeTowerResumeTask, composeTowerReviewTask, isTowerWorktreeDirty, removeTowerWorktrees, resolveTowerReviewTarget, resolveTowerSubagentWorkspace } from './tower-worktree.js';
+import { composeTowerResumeTask, composeTowerReviewTask, isTowerCommitAncestor, isTowerWorktreeDirty, removeTowerWorktrees, resolveTowerReviewTarget, resolveTowerSubagentWorkspace } from './tower-worktree.js';
 import { landTowerWorkers } from './tower-land.js';
 import { composeMemorySnapshot } from './memory-prompt.js';
 import { buildProjectContextSnippet, initializeProjectIndex } from './project-index.js';
@@ -5219,6 +5219,7 @@ async function askModel({
             let workerBackupManager = backupManager;
             let workerTask = scopedTask;
             let reviewCommit = '';
+            let pendingRebaseOnto = '';
             if (towerState) {
               const isReviewer = String(role || '').trim().toLowerCase() === 'reviewer' || policyKey === 'reviewer';
               if (String(review || '').trim() && !isReviewer) {
@@ -5310,7 +5311,7 @@ async function askModel({
                   commit: reviewed.commit,
                   paths: reviewed.worker?.paths,
                   diff: reviewed.diff,
-                  base: towerState.base,
+                  base: reviewed.base || reviewed.worker?.landBase || towerState.base,
                 });
                 workerWorkspaceRoot = reviewed.worker.worktreePath;
                 workerChangeTracker = null;
@@ -5389,7 +5390,8 @@ async function askModel({
                   const reviewText = spawned.worker?.reviewPassed === false
                     ? spawned.worker?.reviewText
                     : '';
-                  workerTask = composeTowerResumeTask(scopedTask, priorHandoff, reviewText);
+                  pendingRebaseOnto = String(spawned.worker?.rebaseOnto || '').trim();
+                  workerTask = composeTowerResumeTask(scopedTask, priorHandoff, reviewText, pendingRebaseOnto);
                 }
                 workerWorkspaceRoot = spawned.worker.worktreePath;
                 workerChangeTracker = await createTowerWorkerChangeTracker(
@@ -5447,6 +5449,24 @@ async function askModel({
               await patchTowerWorkerRecord(workspaceRoot, lockedTowerWorkerId, {
                 lastHandoffPath: savedHandoff.path,
               }).catch(() => null);
+            }
+            if (
+              !failed
+              && pendingRebaseOnto
+              && lockedTowerWorkerId
+              && !reviewingWorkerId
+              && towerDirty === false
+            ) {
+              const ontoDone = await isTowerCommitAncestor(
+                workerWorkspaceRoot,
+                pendingRebaseOnto,
+              ).catch(() => false);
+              if (ontoDone) {
+                await patchTowerWorkerRecord(workspaceRoot, lockedTowerWorkerId, {
+                  landBase: pendingRebaseOnto,
+                  rebaseOnto: '',
+                }).catch(() => null);
+              }
             }
             let reviewPassed;
             if (!failed && reviewingWorkerId && reviewCommit) {
