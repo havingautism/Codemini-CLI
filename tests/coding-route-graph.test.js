@@ -612,8 +612,29 @@ test('tower overlay keeps run_subagent even when the route prefers fork_task', a
   assert.equal(isCodingRouteToolAllowed(result, 'run_subagent', { towerActive: true }), true);
   assert.equal(isCodingRouteToolAllowed(result, 'land_workers'), false);
   assert.equal(isCodingRouteToolAllowed(result, 'land_workers', { towerActive: true }), true);
-  const block = buildCodingRouteDecisionBlock(result, { towerActive: true });
-  assert.match(block, /Tower is on: isolate workers with run_subagent/);
+  assert.equal(isCodingRouteToolAllowed(result, 'fork_task', { towerActive: true }), false);
+  assert.equal(isCodingRouteToolAllowed(result, 'fork_task'), true);
+  const towerForced = await evaluateCodingRouteGraph({
+    executionMode: 'plan',
+    text: 'Check the module layout',
+    towerActive: true,
+    judge: async () => ({
+      memory: { leaf: 'ignore' },
+      skills: { selected_names: [] },
+      tasks: { required: false },
+      subagents: { enabled: false },
+      forks: {
+        enabled: true,
+        recommended_count: 2,
+        focus: ['frontend', 'backend'],
+        reason: 'disjoint areas can share the same conversation state',
+      },
+    }),
+  });
+  assert.equal(towerForced.delegation_mode, 'subagent');
+  const block = buildCodingRouteDecisionBlock(towerForced, { towerActive: true });
+  assert.match(block, /Tower is on: every objective goes to run_subagent/);
+  assert.match(block, /fork_task is not available/);
   assert.doesNotMatch(block, /do not call run_subagent/);
 });
 

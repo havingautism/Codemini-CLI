@@ -7,6 +7,8 @@ import {
   normalizeTowerPaths,
   orderTowerWorkersForLand,
   towerGlobsOverlap,
+  towerWorkerBlocksSpawn,
+  workerHoldsTowerScope,
 } from '../src/core/tower-scope.js';
 import { applyTowerParentToolPolicy, compactSubAgentResultForParent } from '../src/core/chat-runtime.js';
 import { getBuiltinTools } from '../src/core/tools.js';
@@ -52,6 +54,18 @@ test('findOverlappingTowerWorker reports the colliding glob', () => {
     ], { exceptId: 'anna' }),
     null,
   );
+});
+
+test('integrated workers do not hold scope; active workers block overlapping spawn', () => {
+  const integrated = { id: 'anna', paths: ['docs/**'], integrated: true };
+  const active = { id: 'mira', paths: ['backend/**'] };
+  assert.equal(workerHoldsTowerScope(integrated), false);
+  assert.equal(towerWorkerBlocksSpawn(integrated), true);
+  assert.equal(workerHoldsTowerScope(active), true);
+  assert.equal(towerWorkerBlocksSpawn(active), true);
+  assert.equal(findOverlappingTowerWorker(['docs/**'], [integrated]), null);
+  assert.equal(findOverlappingTowerWorker(['backend/**'], [active])?.worker?.id, 'mira');
+  assert.ok(findOverlappingTowerWorker(['docs/**'], [{ id: 'busy', paths: ['docs/**'] }]));
 });
 
 test('orderTowerWorkersForLand follows dependsOn then spawn order', () => {
@@ -115,11 +129,13 @@ test('tower getBuiltinTools exposes paths and resume, and registers land_workers
   const { definitions, handlers } = getBuiltinTools({
     towerActive: true,
     onRunSubAgent: async () => ({ ok: true }),
+    onForkTask: async () => ({ ok: true }),
     onLandWorkers: async () => ({ ok: true, message: 'landed' }),
   });
   const names = definitions.map((item) => item.function?.name || item.name);
   const sub = definitions.find((item) => item.function?.name === 'run_subagent');
   assert.equal(names.includes('land_workers'), true);
+  assert.equal(names.includes('fork_task'), false);
   assert.equal(Boolean(sub?.function?.parameters?.properties?.paths), true);
   assert.equal(Boolean(sub?.function?.parameters?.properties?.resume), true);
   assert.equal(Boolean(sub?.function?.parameters?.properties?.review), true);
@@ -129,14 +145,48 @@ test('tower getBuiltinTools exposes paths and resume, and registers land_workers
 });
 
 test('applyTowerParentToolPolicy strips mutation tools only when tower is on', () => {
-  const coding = ['read', 'write', 'edit', 'run', 'run_subagent'];
+  const coding = ['read', 'write', 'edit', 'run', 'run_subagent', 'fork_task'];
   assert.deepEqual(applyTowerParentToolPolicy(coding, { towerActive: false }), coding);
   const tower = applyTowerParentToolPolicy(coding, { towerActive: true });
   assert.equal(tower.includes('write'), false);
   assert.equal(tower.includes('edit'), false);
+  assert.equal(tower.includes('fork_task'), false);
   assert.equal(tower.includes('run_subagent'), true);
   assert.equal(tower.includes('land_workers'), true);
   assert.equal(tower.includes('run'), true);
+});
+
+test('submit_tower_review is only exposed when a verdict callback is wired', async () => {
+  const hidden = getBuiltinTools({
+    towerActive: true,
+    onRunSubAgent: async () => ({ ok: true }),
+    onLandWorkers: async () => ({ ok: true }),
+  });
+  assert.equal(
+    hidden.definitions.some((item) => item.function?.name === 'submit_tower_review'),
+    false,
+  );
+
+  let seen = null;
+  const { definitions, handlers } = getBuiltinTools({
+    config: {
+      runtime: {
+        onTowerReviewVerdict: (verdict) => {
+          seen = verdict;
+        },
+      },
+    },
+  });
+  assert.equal(
+    definitions.some((item) => item.function?.name === 'submit_tower_review'),
+    true,
+  );
+  const ok = await handlers.submit_tower_review({ passed: true, findings: [] });
+  assert.equal(ok.ok, true);
+  assert.deepEqual(seen, { passed: true, findings: [] });
+  const rejected = await handlers.submit_tower_review({ passed: true, findings: ['none'] });
+  assert.equal(rejected.ok, false);
+  assert.deepEqual(seen, { passed: true, findings: [] });
 });
 
 test('compactSubAgentResultForParent reports dirty vs sealed worktrees', () => {

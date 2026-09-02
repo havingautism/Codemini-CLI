@@ -351,14 +351,21 @@ export class PlanProgress {
     step.status = event.type === 'plan:step_done' ? String(event.status || 'done') : String(event.status || 'running');
     if (event.title) step.title = String(event.title);
     if (event.role) step.role = String(event.role);
+    if (event.towerKind) step.towerKind = String(event.towerKind);
   }
 
   render(width) {
     const done = this.steps.filter((step) => step.status === 'done' || step.status === 'completed').length;
-    const header = surfaceLine(`${bold(color.accent(this.copy.plan))}  ${color.muted(`${done}/${this.steps.length}`)}${this.goal ? `  ${color.dim(oneLine(this.goal, 72))}` : ''}`, width, color.surfaceRaisedBg);
+    const headerLabel = this.steps.some((step) => /^Tower /i.test(String(step.title || '')) || step.towerKind)
+      ? 'Tower'
+      : this.copy.plan;
+    const header = surfaceLine(`${bold(color.accent(headerLabel))}  ${color.muted(`${done}/${this.steps.length}`)}${this.goal ? `  ${color.dim(oneLine(this.goal, 72))}` : ''}`, width, color.surfaceRaisedBg);
     const lines = this.steps.map((step) => {
       const icon = step.status === 'running' ? color.purple('●') : step.status === 'done' || step.status === 'completed' ? color.success('✓') : step.status === 'failed' || step.status === 'error' ? color.error('✗') : color.dim('○');
-      return ` ${icon} ${color.text(oneLine(step.title, Math.max(20, width - 18)))}${step.role ? color.dim(`  ${step.role}`) : ''}`;
+      const kind = String(step.towerKind || '').trim();
+      const kindTag = kind === 'review' ? 'review' : kind === 'survey' ? 'survey' : kind === 'worker' ? 'worker' : '';
+      const roleBit = kindTag || step.role;
+      return ` ${icon} ${color.text(oneLine(step.title, Math.max(20, width - 18)))}${roleBit ? color.dim(`  ${roleBit}`) : ''}`;
     });
     return [...header, ...lines.map((line) => paintBackground(line, width))];
   }

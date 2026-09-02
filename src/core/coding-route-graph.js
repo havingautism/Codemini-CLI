@@ -526,6 +526,7 @@ export async function evaluateCodingRouteGraph({
   sensitive = false,
   judge = null,
   toolTrace = {},
+  towerActive = false,
 } = {}) {
   if (String(executionMode || '').toLowerCase() !== 'plan') {
     const graph = executeGraph({ coding: false });
@@ -576,11 +577,14 @@ export async function evaluateCodingRouteGraph({
     contextUsage,
     raw,
   });
-  const delegationMode = resolveDelegationMode(raw, {
+  let delegationMode = resolveDelegationMode(raw, {
     text,
     contextUsage,
     taskRequired: fallback.tasks.required || raw?.tasks?.required === true,
   });
+  if (towerActive === true && delegationMode !== 'subagent' && delegationMode !== 'subagent_dag') {
+    delegationMode = 'subagent';
+  }
 
   const graph = executeGraph({
     coding: true,
@@ -610,7 +614,7 @@ export function isCodingRouteToolAllowed(result, toolName, options = {}) {
     return result?.delegation_mode === 'subagent' || result?.delegation_mode === 'subagent_dag';
   }
   if (toolName === 'fork_task') {
-    return true;
+    return options.towerActive !== true;
   }
   if (toolName === 'land_workers') {
     return options.towerActive === true;
@@ -660,7 +664,7 @@ export function buildCodingRouteDecisionBlock(result, options = {}) {
       ? 'Apply selected skills as active workflows.'
       : '',
     options.towerActive === true
-      ? 'Tower is on: isolate workers with run_subagent, not fork_task. Do not edit the main checkout.'
+      ? 'Tower is on: every objective goes to run_subagent workers in git worktrees, even a single task. Do not implement in the parent. fork_task is not available. Do not edit the main checkout.'
       : '',
     delegationMode === 'subagent'
       ? 'Use run_subagent only for the routed bounded clean-context work; the parent owns integration and final verification.'

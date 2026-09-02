@@ -1,9 +1,8 @@
-import fs from 'node:fs/promises';
 import path from 'node:path';
 
 import { getProjectTowerWorktreesDir } from './paths.js';
 import { runGit } from './process-run.js';
-import { fileMatchesTowerPaths, normalizeTowerDependsOn, orderTowerWorkersForLand } from './tower-scope.js';
+import { fileMatchesTowerPaths, isTowerLandableWorker, normalizeTowerDependsOn, orderTowerWorkersForLand } from './tower-scope.js';
 import {
   formatTowerReviewLoopStoppedError,
   listTowerWorkersFromState,
@@ -19,8 +18,8 @@ import {
   withTowerGitLock,
 } from './tower-worktree.js';
 
-const TMP_BRANCH = 'codemini-tower/_merge-tmp';
-const TMP_WORKTREE_ID = '_merge-tmp';
+const LEGACY_TMP_BRANCH = 'codemini-tower/_merge-tmp';
+const LEGACY_TMP_WORKTREE_ID = '_merge-tmp';
 const GIT_TIMEOUT_MS = 60_000;
 const GIT_IDENTITY = {
   GIT_AUTHOR_NAME: 'Codemini Tower',
@@ -52,11 +51,10 @@ async function abortMerge(cwd) {
   await tryGit(cwd, ['merge', '--abort']);
 }
 
-async function removeMergeTmp(root) {
-  const worktreePath = path.resolve(getProjectTowerWorktreesDir(root), TMP_WORKTREE_ID);
+async function removeLegacyMergeTmp(root) {
+  const worktreePath = path.resolve(getProjectTowerWorktreesDir(root), LEGACY_TMP_WORKTREE_ID);
   await tryGit(root, ['worktree', 'remove', '--force', worktreePath]);
-  await fs.rm(worktreePath, { recursive: true, force: true }).catch(() => {});
-  await tryGit(root, ['branch', '-D', TMP_BRANCH]);
+  await tryGit(root, ['branch', '-D', LEGACY_TMP_BRANCH]);
   await tryGit(root, ['worktree', 'prune']);
 }
 
@@ -78,7 +76,7 @@ async function listCheckedOutBranches(root) {
 
 async function deleteTowerWorkerBranch(root, branch, checkedOut) {
   const name = String(branch || '').trim();
-  if (!name.startsWith('codemini-tower/') || name === TMP_BRANCH) {
+  if (!name.startsWith('codemini-tower/') || name === LEGACY_TMP_BRANCH) {
     return { ok: false, skipped: true, reason: 'not-worker' };
   }
   if (checkedOut.has(name)) {
@@ -94,13 +92,16 @@ async function deleteTowerWorkerBranch(root, branch, checkedOut) {
   return { ok: true };
 }
 
-function buildLandMessage(ordered, kept) {
+function buildLandMessage(ordered, kept, commitSha = '') {
   const ids = ordered.map((worker) => worker.id).join(', ');
-  const base = `Landed ${ids} onto the current branch with git merge --squash. There is no new commit; the user keeps commit rights.`;
+  const sha = String(commitSha || '').trim();
+  const base = sha
+    ? `Landed ${ids} onto the current branch (tip ${sha.slice(0, 12)}). The user still controls push.`
+    : `Landed ${ids} onto the current branch. The user still controls push.`;
   if (!kept.length) {
     return `${base} Worker branches were deleted.`;
   }
-  return `${base} Could not delete: ${kept.join(', ')}. Do not check out those branches until you commit; they can absorb the staged files.`;
+  return `${base} Could not delete: ${kept.join(', ')}. Do not check out those branches until cleanup finishes.`;
 }
 
 function buildRebaseRequired(worker, files = []) {
@@ -109,7 +110,7 @@ function buildRebaseRequired(worker, files = []) {
   return {
     ok: false,
     code: 'REBASE_REQUIRED',
-    error: `Worker "${worker.id}" conflicts with the current integration tip. Resume "${worker.id}" to git rebase onto ${onto}, resolve, commit, then review the new commit. Do not land.`,
+    error: `Worker "${worker.id}" conflicts with the current base tip. Resume "${worker.id}" to git rebase onto ${onto}, resolve, commit, then review the new commit. Do not land.`,
     workerId: worker.id,
     onto,
     ...(names.length ? { files: names } : {}),
@@ -118,7 +119,17 @@ function buildRebaseRequired(worker, files = []) {
 
 async function collectScopeEscape(root, base, worker) {
   const against = workerLandBaseRef(worker, base);
-  const diff = await tryGit(root, ['diff', '--name-only', String(against), worker.branch]);
+  const mergeBase = await tryGit(root, ['merge-base', String(against), worker.branch]);
+  const baseSha = String(mergeBase.stdout || '').trim();
+  if (mergeBase.code !== 0 || !baseSha) {
+    return {
+      ok: false,
+      code: 'SCOPE_CHECK_FAILED',
+      error: String(mergeBase.stderr || mergeBase.stdout || '').trim() || `Failed to find merge-base for ${worker.id}.`,
+      workerId: worker.id,
+    };
+  }
+  const diff = await tryGit(root, ['diff', '--name-only', baseSha, worker.branch]);
   if (diff.code !== 0) {
     return {
       ok: false,
@@ -154,42 +165,10 @@ function depsReady(worker, byId, satisfied) {
   });
 }
 
-function buildPartialMessage(integrated, pending) {
+function buildPartialMessage(integrated, pending, baseBranch) {
   const done = integrated.map((worker) => worker.id).join(', ');
   const wait = pending.map((worker) => worker.id).join(', ');
-  return `Integrated ${done} onto the merge tmp. Waiting on ${wait}. Did not squash onto the user branch. Do not delete the merge tmp.`;
-}
-
-async function mergeTmpWorktreePath(root) {
-  return path.resolve(getProjectTowerWorktreesDir(root), TMP_WORKTREE_ID);
-}
-
-async function ensureMergeTmp(root, baseBranch) {
-  const mergeWorktree = await mergeTmpWorktreePath(root);
-  await fs.mkdir(path.dirname(mergeWorktree), { recursive: true });
-  const existing = await tryGit(mergeWorktree, ['rev-parse', 'HEAD']);
-  if (existing.code === 0) return { ok: true, mergeWorktree };
-  const branchExists = await tryGit(root, ['rev-parse', '--verify', TMP_BRANCH]);
-  if (branchExists.code === 0) {
-    const added = await tryGit(root, ['worktree', 'add', mergeWorktree, TMP_BRANCH]);
-    if (added.code !== 0) {
-      return {
-        ok: false,
-        code: 'TMP_WORKTREE_FAILED',
-        error: String(added.stderr || added.stdout || '').trim() || 'Failed to attach tower merge worktree.',
-      };
-    }
-    return { ok: true, mergeWorktree };
-  }
-  const added = await tryGit(root, ['worktree', 'add', '-b', TMP_BRANCH, mergeWorktree, baseBranch]);
-  if (added.code !== 0) {
-    return {
-      ok: false,
-      code: 'TMP_WORKTREE_FAILED',
-      error: String(added.stderr || added.stdout || '').trim() || 'Failed to create tower merge worktree.',
-    };
-  }
-  return { ok: true, mergeWorktree };
+  return `Merged ${done} onto ${baseBranch}. Waiting on ${wait}. Land again after the rest pass review.`;
 }
 
 async function classifyWorker(root, baseBranch, worker) {
@@ -235,6 +214,58 @@ async function classifyWorker(root, baseBranch, worker) {
   return { kind: 'ready', worker };
 }
 
+async function mergeWorkerOntoBase(root, worker) {
+  if (await isTowerCommitAncestor(root, worker.branch)) {
+    const head = String((await tryGit(root, ['rev-parse', 'HEAD'])).stdout || '').trim();
+    await patchTowerWorkerRecord(root, worker.id, { integrated: true, landBase: head, rebaseOnto: '' }).catch(() => null);
+    worker.integrated = true;
+    worker.landBase = head;
+    return { ok: true, alreadyMerged: true };
+  }
+  const merged = await tryGit(root, [
+    'merge',
+    '--no-ff',
+    '-m',
+    `codemini-tower merge ${worker.id}`,
+    worker.branch,
+  ]);
+  if (merged.code !== 0) {
+    const conflicted = splitNames((await tryGit(root, ['diff', '--name-only', '--diff-filter=U'])).stdout);
+    await abortMerge(root);
+    if (conflicted.length > 0) {
+      const onto = String((await tryGit(root, ['rev-parse', 'HEAD'])).stdout || '').trim();
+      if (!onto) {
+        return {
+          ok: false,
+          code: 'GIT_MERGE',
+          error: String(merged.stderr || merged.stdout || '').trim() || `Failed to merge worker "${worker.id}".`,
+          workerId: worker.id,
+          files: conflicted,
+        };
+      }
+      worker.rebaseOnto = onto;
+      await patchTowerWorkerRecord(root, worker.id, {
+        rebaseOnto: onto,
+        reviewedCommit: '',
+        reviewText: '',
+        reviewPassed: false,
+      }).catch(() => null);
+      return buildRebaseRequired(worker, conflicted);
+    }
+    return {
+      ok: false,
+      code: 'GIT_MERGE',
+      error: String(merged.stderr || merged.stdout || '').trim() || `Failed to merge worker "${worker.id}".`,
+      workerId: worker.id,
+    };
+  }
+  const head = String((await tryGit(root, ['rev-parse', 'HEAD'])).stdout || '').trim();
+  worker.integrated = true;
+  worker.landBase = head;
+  await patchTowerWorkerRecord(root, worker.id, { integrated: true, landBase: head, rebaseOnto: '' }).catch(() => null);
+  return { ok: true, alreadyMerged: false };
+}
+
 export async function landTowerWorkers({
   cwd = process.cwd(),
   base,
@@ -245,171 +276,116 @@ export async function landTowerWorkers({
     return { ok: false, code: 'NO_BASE', error: 'Tower land needs a recorded git base branch.' };
   }
   return withTowerGitLock(root, async () => {
-    const workers = listTowerWorkersFromState(await readTowerStateFile(root));
+    await removeLegacyMergeTmp(root).catch(() => null);
+
+    const workers = listTowerWorkersFromState(await readTowerStateFile(root))
+      .filter(isTowerLandableWorker);
     if (workers.length === 0) {
-      return { ok: false, code: 'NO_WORKERS', error: 'No tower workers to land.' };
+      return { ok: false, code: 'NO_WORKERS', error: 'No tower workers to land. Survey workers are not landed.' };
     }
     const ordered = orderTowerWorkersForLand(workers);
-    let keepMergeTmp = false;
-    let delivered = false;
-    try {
-      const pendingRebase = [];
-      for (const worker of ordered) {
-        const onto = String(worker.rebaseOnto || '').trim();
-        if (!onto) continue;
-        const done = await isTowerCommitAncestor(worker.worktreePath, onto);
-        if (!done) {
-          pendingRebase.push(worker);
-          continue;
-        }
-        worker.landBase = onto;
-        delete worker.rebaseOnto;
-        await patchTowerWorkerRecord(root, worker.id, { landBase: onto, rebaseOnto: '' }).catch(() => null);
-      }
-      if (pendingRebase.length) {
-        keepMergeTmp = true;
-        return buildRebaseRequired(pendingRebase[0]);
-      }
 
-      const already = ordered.filter((worker) => worker.integrated === true);
-      const rest = ordered.filter((worker) => worker.integrated !== true);
-      if (already.length === 0) await removeMergeTmp(root);
-
-      const classified = [];
-      for (const worker of rest) {
-        classified.push(await classifyWorker(root, baseBranch, worker));
+    const pendingRebase = [];
+    for (const worker of ordered) {
+      const onto = String(worker.rebaseOnto || '').trim();
+      if (!onto) continue;
+      const done = await isTowerCommitAncestor(worker.worktreePath, onto);
+      if (!done) {
+        pendingRebase.push(worker);
+        continue;
       }
-      const ready = classified.filter((item) => item.kind === 'ready').map((item) => item.worker);
-      const blocked = classified.filter((item) => item.kind === 'blocked');
+      worker.landBase = onto;
+      delete worker.rebaseOnto;
+      await patchTowerWorkerRecord(root, worker.id, { landBase: onto, rebaseOnto: '' }).catch(() => null);
+    }
+    if (pendingRebase.length) {
+      return buildRebaseRequired(pendingRebase[0]);
+    }
 
-      const byId = new Map();
-      for (const worker of ordered) {
-        for (const key of workerLookupKeys(worker)) {
-          if (!byId.has(key)) byId.set(key, worker);
-        }
-      }
-      const satisfied = new Set(already);
-      const toMerge = [];
-      for (const worker of orderTowerWorkersForLand(ready)) {
-        if (!depsReady(worker, byId, satisfied)) continue;
-        toMerge.push(worker);
-        satisfied.add(worker);
-      }
-      const merging = new Set(toMerge);
-      const pending = rest.filter((worker) => !merging.has(worker));
-      const needTmp = already.length > 0 || pending.length > 0 || toMerge.length > 1;
-      const reviewWait = new Set(['REVIEW_REQUIRED', 'REVIEW_FAILED']);
-      const hardBlocked = blocked.filter((item) => !reviewWait.has(item.code));
+    const already = ordered.filter((worker) => worker.integrated === true);
+    const rest = ordered.filter((worker) => worker.integrated !== true);
 
-      if (toMerge.length === 0) {
-        if (hardBlocked.length) {
-          keepMergeTmp = already.length > 0;
-          const { kind, worker, ...error } = hardBlocked[0];
-          return { ok: false, ...error };
-        }
-        if (already.length > 0 && pending.length > 0) {
-          keepMergeTmp = true;
-          return {
-            ok: true,
-            squashed: false,
-            integrated: already.map((worker) => worker.id),
-            pending: pending.map((worker) => worker.id),
-            message: buildPartialMessage(already, pending),
-          };
-        }
-        if (already.length === 0) {
-          const first = blocked[0];
-          if (first) {
-            const { kind, worker, ...error } = first;
-            return { ok: false, ...error };
-          }
-          return { ok: false, code: 'NO_WORKERS', error: 'No tower workers to land.' };
-        }
-      }
+    const classified = [];
+    for (const worker of rest) {
+      classified.push(await classifyWorker(root, baseBranch, worker));
+    }
+    const ready = classified.filter((item) => item.kind === 'ready').map((item) => item.worker);
+    const blocked = classified.filter((item) => item.kind === 'blocked');
 
-      if (needTmp) {
-        const tmp = await ensureMergeTmp(root, baseBranch);
-        if (!tmp.ok) return tmp;
-        keepMergeTmp = true;
-        for (const worker of toMerge) {
-          if (await isTowerCommitAncestor(tmp.mergeWorktree, worker.branch)) {
-            worker.integrated = true;
-            await patchTowerWorkerRecord(root, worker.id, { integrated: true }).catch(() => null);
-            continue;
-          }
-          const merged = await tryGit(tmp.mergeWorktree, [
-            'merge',
-            '--no-ff',
-            '-m',
-            `codemini-tower merge ${worker.id}`,
-            worker.branch,
-          ]);
-          if (merged.code !== 0) {
-            const conflicted = splitNames((await tryGit(tmp.mergeWorktree, ['diff', '--name-only', '--diff-filter=U'])).stdout);
-            await abortMerge(tmp.mergeWorktree);
-            const ontoResult = await tryGit(tmp.mergeWorktree, ['rev-parse', 'HEAD']);
-            const onto = String(ontoResult.stdout || '').trim();
-            if (!onto) {
-              return {
-                ok: false,
-                code: 'GIT_MERGE',
-                error: String(merged.stderr || merged.stdout || '').trim() || `Failed to merge worker "${worker.id}".`,
-                workerId: worker.id,
-                files: conflicted,
-              };
-            }
-            worker.rebaseOnto = onto;
-            await patchTowerWorkerRecord(root, worker.id, { rebaseOnto: onto }).catch(() => null);
-            return buildRebaseRequired(worker, conflicted);
-          }
-          worker.integrated = true;
-          await patchTowerWorkerRecord(root, worker.id, { integrated: true }).catch(() => null);
-        }
-        const stillPending = ordered.filter((worker) => worker.integrated !== true);
-        if (stillPending.length) {
-          const onTmp = ordered.filter((worker) => worker.integrated === true);
-          return {
-            ok: true,
-            squashed: false,
-            integrated: onTmp.map((worker) => worker.id),
-            pending: stillPending.map((worker) => worker.id),
-            message: buildPartialMessage(onTmp, stillPending),
-          };
-        }
+    const byId = new Map();
+    for (const worker of ordered) {
+      for (const key of workerLookupKeys(worker)) {
+        if (!byId.has(key)) byId.set(key, worker);
       }
+    }
+    const satisfied = new Set(already);
+    const toMerge = [];
+    for (const worker of orderTowerWorkersForLand(ready)) {
+      if (!depsReady(worker, byId, satisfied)) continue;
+      toMerge.push(worker);
+      satisfied.add(worker);
+    }
+    const merging = new Set(toMerge);
+    const pending = rest.filter((worker) => !merging.has(worker));
+    const reviewWait = new Set(['REVIEW_REQUIRED', 'REVIEW_FAILED']);
+    const hardBlocked = blocked.filter((item) => !reviewWait.has(item.code));
 
-      const squashTarget = needTmp || already.length > 0 ? TMP_BRANCH : toMerge[0].branch;
-      const squashed = await tryGit(root, ['merge', '--squash', squashTarget]);
-      if (squashed.code !== 0) {
-        await abortMerge(root);
-        if (needTmp) keepMergeTmp = true;
+    if (toMerge.length === 0) {
+      if (hardBlocked.length) {
+        const { kind, worker, ...error } = hardBlocked[0];
+        return { ok: false, ...error };
+      }
+      if (already.length > 0 && pending.length > 0) {
         return {
-          ok: false,
-          code: 'GIT_SQUASH',
-          error: String(squashed.stderr || squashed.stdout || '').trim() || 'git merge --squash failed.',
+          ok: true,
+          committed: true,
+          integrated: already.map((worker) => worker.id),
+          pending: pending.map((worker) => worker.id),
+          message: buildPartialMessage(already, pending, baseBranch),
         };
       }
-
-      const cleaned = await removeTowerWorktrees({ cwd: root, skipLock: true, force: true });
-      const checkedOut = await listCheckedOutBranches(root);
-      const kept = [];
-      for (const worker of cleaned.kept || []) kept.push(worker.id);
-      for (const worker of cleaned.removed || []) {
-        const deleted = await deleteTowerWorkerBranch(root, worker.branch, checkedOut);
-        if (!deleted.ok) kept.push(worker.id);
+      const first = blocked[0];
+      if (first) {
+        const { kind, worker, ...error } = first;
+        return { ok: false, ...error };
       }
-      const uniqueKept = [...new Set(kept)];
-      delivered = true;
-      keepMergeTmp = false;
+      return { ok: false, code: 'NO_WORKERS', error: 'No tower workers to land.' };
+    }
+
+    for (const worker of toMerge) {
+      const merged = await mergeWorkerOntoBase(root, worker);
+      if (!merged.ok) return merged;
+    }
+
+    const stillPending = ordered.filter((worker) => worker.integrated !== true);
+    if (stillPending.length > 0) {
+      const onBase = ordered.filter((worker) => worker.integrated === true);
       return {
         ok: true,
-        squashed: true,
-        landed: ordered.map((worker) => worker.id),
-        kept: uniqueKept,
-        message: buildLandMessage(ordered, uniqueKept),
+        committed: true,
+        integrated: onBase.map((worker) => worker.id),
+        pending: stillPending.map((worker) => worker.id),
+        message: buildPartialMessage(onBase, stillPending, baseBranch),
       };
-    } finally {
-      if (delivered || !keepMergeTmp) await removeMergeTmp(root);
     }
+
+    const commitSha = String((await tryGit(root, ['rev-parse', 'HEAD'])).stdout || '').trim();
+    const cleaned = await removeTowerWorktrees({ cwd: root, skipLock: true, force: true });
+    const checkedOut = await listCheckedOutBranches(root);
+    const kept = [];
+    for (const worker of cleaned.kept || []) kept.push(worker.id);
+    for (const worker of cleaned.removed || []) {
+      const deleted = await deleteTowerWorkerBranch(root, worker.branch, checkedOut);
+      if (!deleted.ok) kept.push(worker.id);
+    }
+    const uniqueKept = [...new Set(kept)];
+    return {
+      ok: true,
+      committed: true,
+      commit: commitSha,
+      landed: ordered.map((worker) => worker.id),
+      kept: uniqueKept,
+      message: buildLandMessage(ordered, uniqueKept, commitSha),
+    };
   });
 }

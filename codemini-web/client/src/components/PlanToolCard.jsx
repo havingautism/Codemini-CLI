@@ -21,6 +21,7 @@ import {
   shouldExpandPlanStep,
   stripDelegationTaskPrefix,
 } from "@/lib/plan-ui-state.js";
+import { describeTowerRunSubagent } from "../../../../src/core/tool-display.js";
 import { t } from "../../i18n/index.js";
 
 const SUBAGENT_AVATAR_STYLE = new Style(bottts);
@@ -280,6 +281,26 @@ function StepBody({ step }) {
   );
 }
 
+function TowerWorkerMeta({ args }) {
+  const tower = describeTowerRunSubagent(args);
+  if (!tower) return null;
+  const paths = Array.isArray(args?.paths)
+    ? args.paths.map((item) => String(item || "").trim()).filter(Boolean).join(", ")
+    : "";
+  const hint =
+    tower.kind === "review"
+      ? t("towerReviewHint")
+      : tower.kind === "survey"
+        ? t("towerSurveyHint")
+        : t("towerWorkerHint");
+  return (
+    <div className="mb-1 px-1 text-[11px] leading-snug text-(--text-muted)">
+      {hint}
+      {paths ? ` · ${paths}` : ""}
+    </div>
+  );
+}
+
 function SubagentTaskDetails({ task }) {
   const text = String(task || "").trim();
   if (!text) return null;
@@ -438,7 +459,7 @@ export function PlanToolCard({ card }) {
       : goal,
   );
   const title = isSubagent
-    ? persona || t("subagentWorker")
+    ? describeTowerRunSubagent(card?.arguments)?.label || persona || t("subagentWorker")
     : isFork
       ? t("forkBranch")
       : card?.displayName || planPhaseTitle(phase);
@@ -509,6 +530,9 @@ export function PlanToolCard({ card }) {
       {expanded ? (
         <div className="codemini-disclosure-tree">
           {isDelegationCard ? <SubagentTaskDetails task={goal} /> : null}
+          {isSubagent ? (
+            <TowerWorkerMeta args={card?.arguments} />
+          ) : null}
           {todoCard ? <ToolCard card={todoCard} embedded /> : null}
           {isSubagent ? (
             <SubagentDependencyDetails

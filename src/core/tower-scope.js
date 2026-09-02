@@ -112,8 +112,25 @@ export function towerGlobsOverlap(left, right) {
   return false;
 }
 
+export function isTowerSurveyWorker(worker) {
+  return String(worker?.kind || '').trim().toLowerCase() === 'survey';
+}
+
+export function isTowerLandableWorker(worker) {
+  return Boolean(worker) && !isTowerSurveyWorker(worker);
+}
+
 export function workerHoldsTowerScope(worker) {
-  return Boolean(worker) && worker.integrated !== true;
+  return Boolean(worker)
+    && worker.integrated !== true
+    && !isTowerSurveyWorker(worker);
+}
+
+export function towerWorkerBlocksSpawn(worker) {
+  if (!worker) return false;
+  if (worker.integrated === true && !String(worker.rebaseOnto || '').trim()) return true;
+  if (String(worker.runStatus || '').trim().toLowerCase() === 'running') return true;
+  return workerHoldsTowerScope(worker);
 }
 
 export function findOverlappingTowerWorker(paths, workers, { exceptId = '' } = {}) {

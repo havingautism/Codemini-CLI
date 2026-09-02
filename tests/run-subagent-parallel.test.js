@@ -45,7 +45,7 @@ test('explicit empty or forbidden-only allow-lists still grant tasks', () => {
 });
 
 test('every subagent role keeps tasks even with an explicit read-only allow-list', () => {
-  for (const role of ['explorer', 'architect', 'reviewer', 'tester', 'debugger', 'writer', 'summarizer']) {
+  for (const role of ['explorer', 'architect', 'reviewer', 'survey', 'tester', 'debugger', 'writer', 'summarizer']) {
     const defaults = resolveSubAgentToolAllowList({ role });
     const explicit = resolveSubAgentToolAllowList({ role, tools: ['read'] });
     assert.equal(defaults.includes('tasks'), true, `${role} defaults`);
@@ -110,6 +110,10 @@ test('unix subagent baselines drop staged write and promote glob/grep', () => {
   const explorer = resolveSubAgentToolAllowList({ role: 'explorer', platform: 'linux' });
   assert.ok(explorer.includes('glob'));
   assert.ok(explorer.includes('grep'));
+  const survey = resolveSubAgentToolAllowList({ role: 'survey', platform: 'linux' });
+  assert.equal(survey.includes('read'), true);
+  assert.equal(survey.includes('edit'), false);
+  assert.equal(survey.includes('write'), false);
   assert.equal(
     resolveSubAgentToolAllowList({
       role: 'coder',

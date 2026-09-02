@@ -747,6 +747,7 @@ export async function runAgentLoop({
   shouldCheckpoint = null,
   getTasks = null,
   onForkJoin = null,
+  shouldContinueAfterText = null,
   workspaceRoot = config?.workspaceRoot || process.cwd(),
   sessionId = ''
 }) {
@@ -972,6 +973,15 @@ export async function runAgentLoop({
         });
         emitStepEnd('stop_hook');
         continue;
+      }
+      if (typeof shouldContinueAfterText === 'function') {
+        const sealNudge = await shouldContinueAfterText(assistantText);
+        const content = typeof sealNudge === 'string' ? sealNudge.trim() : String(sealNudge?.content || '').trim();
+        if (content) {
+          messages.push({ role: 'user', content });
+          emitStepEnd('nudge');
+          continue;
+        }
       }
       void maybeRunAutoDream(step, { force: true });
       emitStepEnd('final');

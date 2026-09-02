@@ -111,6 +111,25 @@ function formatToolWithArg(label, arg, { quoted = false } = {}) {
   return `${label} (${quoted ? `"${payload}"` : payload})`;
 }
 
+export function describeTowerRunSubagent(args = {}) {
+  const review = String(args?.review || '').trim();
+  const role = String(args?.role || '').trim().toLowerCase();
+  const name = trimInlineText(args?.name || role || 'Alex', 24);
+  if (review) {
+    return { kind: 'review', label: `Tower review · ${review}`, persona: name };
+  }
+  if (role === 'survey') {
+    return { kind: 'survey', label: `Tower survey · ${name || 'Survey'}`, persona: name };
+  }
+  const resume = String(args?.resume || '').trim();
+  const hasPaths = Array.isArray(args?.paths) && args.paths.length > 0;
+  if (resume || hasPaths) {
+    const id = resume || name || 'Worker';
+    return { kind: 'worker', label: `Tower worker · ${id}`, persona: name };
+  }
+  return null;
+}
+
 function appendPrimaryToolArg(label, args = {}) {
   if (!args || typeof args !== 'object' || Array.isArray(args)) return label;
   const trimInline = (value, max) => trimInlineText(value, max);
@@ -236,7 +255,8 @@ export function formatToolDisplayName(name, args = {}, options = {}) {
   if (toolName === 'run_subagent') {
     const goal = trimInline(args?.goal || args?.prompt || '', 96);
     const persona = trimInline(args?.name || args?.role || 'Alex', 24);
-    const label = `Subagent · ${persona || 'Alex'}`;
+    const tower = describeTowerRunSubagent(args);
+    const label = tower?.label || `Subagent · ${persona || 'Alex'}`;
     return goal ? formatToolWithArg(label, goal) : label;
   }
   if (toolName === 'fork_task') {

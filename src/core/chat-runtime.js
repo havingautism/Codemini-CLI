@@ -91,11 +91,11 @@ import {
   normalizeTowerState,
   patchTowerWorkerRecord,
   readTowerStateFile,
+  formatTowerReviewText,
   nextTowerReviewLoopState,
-  towerReviewPassedFromText,
   writeTowerStateFile,
 } from './tower-store.js';
-import { composeTowerResumeTask, composeTowerReviewTask, isTowerCommitAncestor, isTowerWorktreeDirty, removeTowerWorktrees, resolveTowerReviewTarget, resolveTowerSubagentWorkspace } from './tower-worktree.js';
+import { composeTowerResumeTask, composeTowerReviewTask, isTowerCommitAncestor, isTowerWorktreeDirty, removeTowerWorktrees, resolveTowerReviewTarget, resolveTowerSubagentWorkspace, shouldContinueTowerWorkerSeal, teardownTowerWorker } from './tower-worktree.js';
 import { landTowerWorkers } from './tower-land.js';
 import { composeMemorySnapshot } from './memory-prompt.js';
 import { buildProjectContextSnippet, initializeProjectIndex } from './project-index.js';
@@ -738,7 +738,10 @@ const TOWER_PARENT_MUTATION_TOOLS = new Set([
 export function applyTowerParentToolPolicy(allowedTools, { towerActive = false } = {}) {
   if (!towerActive) return allowedTools;
   const names = Array.isArray(allowedTools)
-    ? allowedTools.filter((name) => !TOWER_PARENT_MUTATION_TOOLS.has(String(name || '').trim()))
+    ? allowedTools.filter((name) => {
+        const toolName = String(name || '').trim();
+        return !TOWER_PARENT_MUTATION_TOOLS.has(toolName) && toolName !== 'fork_task';
+      })
     : [];
   if (!names.includes('land_workers')) names.push('land_workers');
   return names;
@@ -814,6 +817,7 @@ export const ROLE_TOOL_POLICY = {
   coder: [...SUBAGENT_READ_TOOLS, ...SUBAGENT_EDIT_TOOLS, 'run', 'web_fetch', 'web_search'],
   refactorer: [...SUBAGENT_READ_TOOLS, ...SUBAGENT_EDIT_TOOLS, 'run'],
   reviewer: [...SUBAGENT_READ_TOOLS],
+  survey: [...SUBAGENT_READ_TOOLS, 'web_fetch', 'web_search'],
   tester: [...SUBAGENT_READ_TOOLS, 'run'],
   debugger: [...SUBAGENT_READ_TOOLS, 'run', 'web_search'],
   writer: [...SUBAGENT_READ_TOOLS, 'web_fetch', 'web_search'],
@@ -927,6 +931,7 @@ export function compactSubAgentResultForParent({
   reviewPassed,
   reviewLoopStopped,
   reviewRound,
+  workerKind = '',
   maxChars = SUB_AGENT_PARENT_RESULT_MAX_CHARS,
 } = {}) {
   const artifacts = [...new Set(
@@ -942,11 +947,15 @@ export function compactSubAgentResultForParent({
     : `${body.slice(0, previewBudget).trimEnd()}\n\n[truncated]`;
   const id = String(workerId || '').trim();
   const reviewed = String(reviewOf || '').trim();
-  const sealLine = dirty === true
-    ? 'Worktree: dirty (not sealed). Do not land this worker.'
-    : dirty === false
-      ? 'Worktree: sealed.'
-      : '';
+  const sealLine = String(workerKind || '').trim().toLowerCase() === 'survey'
+    ? (dirty === true
+      ? 'Survey worker still has a dirty worktree. Do not review or land it.'
+      : 'Survey worker. Do not review or land it.')
+    : dirty === true
+      ? 'Worktree: dirty (not sealed). Do not land this worker.'
+      : dirty === false
+        ? 'Worktree: sealed.'
+        : '';
   const reviewLine = reviewed
     ? reviewLoopStopped === true
       ? `Review of "${reviewed}" loop stopped${Number(reviewRound) > 0 ? ` after ${Number(reviewRound)} rounds` : ''}. Tell the user. Resume "${reviewed}" with a new task or paths, or spawn a new worker. Do not keep fixing the same findings. Do not land this worker until a new commit passes review.`
@@ -1297,6 +1306,13 @@ export function getSubAgentRolePrompt(role) {
       'Coverage:',
       '- <what is documented and what gaps remain>',
       'Do not add a closing summary — the pipeline handles what comes next.'
+    ].join('\n');
+  }
+  if (role === 'survey') {
+    return [
+      'You are a tower survey worker.',
+      'Inspect the repository snapshot in this worktree. Do not edit files, git commit, or change product code.',
+      'Return findings with file evidence, then stop. The parent will not review or land this worker.',
     ].join('\n');
   }
   if (role === 'reviewer') {
@@ -4790,6 +4806,7 @@ async function askModel({
   allowedTools,
   requestUserInput,
   skipAnalysisNudge = false,
+  shouldContinueAfterText = null,
   compactedForModel: compactedInput = null,
   onCompactedUpdate = null,
   changeTracker = null,
@@ -5110,6 +5127,7 @@ async function askModel({
           review = ''
         } = {}) => {
           const { persona, policyKey, taskRole } = resolveSubAgentRolePolicy(name, role);
+          const isTowerSurvey = Boolean(towerState) && policyKey === 'survey';
           const taskPrompt = String(prompt || '').trim();
           const assignedTasks = normalizeTodos(tasks);
           if (!taskPrompt && assignedTasks.length === 0) {
@@ -5118,10 +5136,24 @@ async function askModel({
           const effectivePrompt = taskPrompt || 'Complete the assigned tasks.';
           const handoff = String(context || '').trim();
           const declaredGoal = String(goal || '').trim();
-          const title = trimInline(assignedTasks[0]?.content || effectivePrompt, 72) || persona;
+          const reviewTarget = String(review || '').trim();
+          const title = towerState
+            ? reviewTarget
+              ? `Tower review · ${reviewTarget}`
+              : isTowerSurvey
+                ? `Tower survey · ${persona}`
+                : `Tower worker · ${persona}`
+            : trimInline(assignedTasks[0]?.content || effectivePrompt, 72) || persona;
+          const towerKind = towerState
+            ? (reviewTarget ? 'review' : isTowerSurvey ? 'survey' : 'worker')
+            : '';
           const callId = String(toolCallId || `sub-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`).trim();
           const emit = (evt) => {
-            if (onAgentEvent) onAgentEvent({ ...evt, toolCallId: callId });
+            if (onAgentEvent) onAgentEvent({
+              ...evt,
+              toolCallId: callId,
+              ...(towerKind ? { towerKind } : {}),
+            });
           };
           const dependencyTaskId = String(taskId || '').trim();
           const dependencyRegistration = subAgentDependencies.register({
@@ -5361,6 +5393,7 @@ async function askModel({
                   callId,
                   paths,
                   dependsOn: dependencyRegistration.dependencies,
+                  kind: isTowerSurvey ? 'survey' : '',
                 });
                 if (!spawned.ok) {
                   const spawnError = spawned.error || 'Failed to spawn tower worktree.';
@@ -5442,6 +5475,7 @@ async function askModel({
                 workerBackupManager = null;
               }
             }
+            const reviewBox = { verdict: null };
             const output = await runSubAgentTask({
               role: taskRole,
               task: workerTask,
@@ -5449,7 +5483,17 @@ async function askModel({
               goal: declaredGoal,
               priorSteps: [],
               parentSession: session,
-              config,
+              config: reviewingWorkerId
+                ? {
+                    ...config,
+                    runtime: {
+                      ...(config.runtime || {}),
+                      onTowerReviewVerdict: (verdict) => {
+                        reviewBox.verdict = verdict;
+                      },
+                    },
+                  }
+                : config,
               model: stepModel,
               systemPrompt,
               onAgentEvent,
@@ -5458,7 +5502,9 @@ async function askModel({
               changeTracker: workerChangeTracker,
               backupManager: workerBackupManager,
               parentToolCallId: callId,
-              tools: toolAllowList,
+              tools: reviewingWorkerId
+                ? [...resolvedTools, 'submit_tower_review']
+                : toolAllowList,
               onUsage: (usage) => {
                 childUsage = mergeModelUsage(childUsage, usage);
               },
@@ -5469,7 +5515,9 @@ async function askModel({
               }),
               workspaceRoot: workerWorkspaceRoot
             });
-            const failed = subAgentRunFailed(output, signal);
+            const failed = reviewingWorkerId
+              ? Boolean(signal?.aborted || output?.hasErrorLine)
+              : subAgentRunFailed(output, signal);
             let towerDirty;
             if (towerState && !reviewingWorkerId && workerWorkspaceRoot !== workspaceRoot) {
               towerDirty = await isTowerWorktreeDirty(workerWorkspaceRoot).catch(() => true);
@@ -5486,19 +5534,19 @@ async function askModel({
                   text: output.text,
                   artifactPaths: output.artifactPaths,
                 }).catch(() => null);
-            if (savedHandoff?.path && lockedTowerWorkerId && !reviewingWorkerId) {
-              await patchTowerWorkerRecord(workspaceRoot, lockedTowerWorkerId, {
-                lastHandoffPath: savedHandoff.path,
-                runStatus: failed ? 'failed' : 'completed',
-                dirty: towerDirty === true,
-                runError: failed ? String(output?.error || output?.text || '').trim().slice(0, 400) : '',
-              }).catch(() => null);
-            } else if (lockedTowerWorkerId && !reviewingWorkerId) {
-              await patchTowerWorkerRecord(workspaceRoot, lockedTowerWorkerId, {
-                runStatus: failed ? 'failed' : 'completed',
-                dirty: towerDirty === true,
-                runError: failed ? String(output?.error || output?.text || '').trim().slice(0, 400) : '',
-              }).catch(() => null);
+            if (lockedTowerWorkerId && !reviewingWorkerId) {
+              const aborted = Boolean(signal?.aborted);
+              if (aborted) {
+                await teardownTowerWorker({ cwd: workspaceRoot, id: lockedTowerWorkerId, force: true }).catch(() => null);
+              } else {
+                const patch = {
+                  runStatus: failed ? 'failed' : 'completed',
+                  dirty: towerDirty === true,
+                  runError: failed ? String(output?.error || output?.text || '').trim().slice(0, 400) : '',
+                };
+                if (savedHandoff?.path) patch.lastHandoffPath = savedHandoff.path;
+                await patchTowerWorkerRecord(workspaceRoot, lockedTowerWorkerId, patch).catch(() => null);
+              }
             }
             if (
               !failed
@@ -5522,17 +5570,20 @@ async function askModel({
             let reviewLoopStopped;
             let reviewRound;
             if (!failed && reviewingWorkerId && reviewCommit) {
-              reviewPassed = towerReviewPassedFromText(output.text);
+              const verdict = reviewBox.verdict;
+              reviewPassed = verdict?.passed === true;
               const loop = nextTowerReviewLoopState(reviewingWorkerRecord, {
                 passed: reviewPassed,
-                text: output.text,
+                findings: verdict?.findings || [],
               });
               reviewLoopStopped = loop.reviewLoopStopped;
               reviewRound = loop.reviewRound;
               await patchTowerWorkerRecord(workspaceRoot, reviewingWorkerId, {
                 reviewedCommit: reviewCommit,
                 reviewPassed,
-                reviewText: String(output.text || '').trim(),
+                reviewText: verdict
+                  ? formatTowerReviewText(verdict)
+                  : String(output.text || '').trim(),
                 ...loop,
               }).catch(() => null);
             }
@@ -5576,6 +5627,7 @@ async function askModel({
                 handoffPath: savedHandoff?.path,
                 artifactPaths: output.artifactPaths,
                 ...(towerDirty === undefined ? {} : { dirty: towerDirty }),
+                ...(isTowerSurvey ? { workerKind: 'survey' } : {}),
                 ...(lockedTowerWorkerId && !reviewingWorkerId ? { workerId: lockedTowerWorkerId } : {}),
                 ...(reviewingWorkerId ? {
                   reviewOf: reviewingWorkerId,
@@ -5609,10 +5661,15 @@ async function askModel({
               ...(childUsage ? { usage: childUsage } : {})
             };
             if (lockedTowerWorkerId && !reviewingWorkerId) {
-              await patchTowerWorkerRecord(workspaceRoot, lockedTowerWorkerId, {
-                runStatus: 'failed',
-                runError: String(err?.message || err).slice(0, 400),
-              }).catch(() => null);
+              const aborted = signal?.aborted || err?.name === 'AbortError';
+              if (aborted) {
+                await teardownTowerWorker({ cwd: workspaceRoot, id: lockedTowerWorkerId, force: true }).catch(() => null);
+              } else {
+                await patchTowerWorkerRecord(workspaceRoot, lockedTowerWorkerId, {
+                  runStatus: 'failed',
+                  runError: String(err?.message || err).slice(0, 400),
+                }).catch(() => null);
+              }
             }
             dependencyRegistration.settle(result);
             return result;
@@ -5621,7 +5678,7 @@ async function askModel({
           }
         }
       : undefined,
-    onForkTask: normalizedExecutionMode === 'plan'
+    onForkTask: normalizedExecutionMode === 'plan' && !towerState
       ? async ({
           prompt,
           tasks = [],
@@ -6197,6 +6254,7 @@ async function askModel({
       requestToolApproval,
       signal,
       skipAnalysisNudge,
+      shouldContinueAfterText,
       config: toolConfig,
       skillHooksSession,
       onSkillLoaded,
@@ -6431,17 +6489,24 @@ export async function runSubAgentTask({
       sessionId: parentSession?.id,
     }).catch(() => []),
   );
+  const towerWorktree = isTowerWorktreeRoot(workspaceRoot) && role !== 'reviewer';
+  const towerWorktreeNote = !towerWorktree
+    ? ''
+    : role === 'survey'
+      ? [
+          'Your cwd is this git worktree snapshot. Use paths relative to this directory.',
+          'Inspect only. Do not edit files or git commit. Stop with zero diff.',
+        ].join('\n')
+      : [
+          'Your cwd is this git worktree. Use paths relative to this directory. Do not write to the parent checkout with its absolute path.',
+          'When the assigned slice is done, git commit on this worktree branch. If you cannot finish, do not commit. Your final message must state the outcome: done, blocked, or failed.',
+        ].join('\n');
   const scopedTask = [
     'Role:',
     rolePrompt,
     extraRolePrompt,
     runtimeNote,
-    isTowerWorktreeRoot(workspaceRoot)
-      ? [
-          'Your cwd is this git worktree. Use paths relative to this directory. Do not write to the parent checkout with its absolute path.',
-          'When the assigned slice is done, git commit on this worktree branch. If you cannot finish, do not commit. Your final message must state the outcome: done, blocked, or failed.',
-        ].join('\n')
-      : '',
+    towerWorktreeNote,
     handoffCatalogPrompt,
     contextPacket,
     goalRequirementPacket,
@@ -6502,6 +6567,20 @@ export async function runSubAgentTask({
     config
   });
   if (onSessionActive) onSessionActive(subSession);
+  let sealNudges = 0;
+  const shouldContinueAfterText = towerWorktree
+    ? async (assistantText) => {
+        const decision = await shouldContinueTowerWorkerSeal({
+          worktreePath: workspaceRoot,
+          kind: role === 'survey' ? 'survey' : 'coder',
+          text: assistantText,
+          nudgeCount: sealNudges,
+        });
+        if (!decision.continue) return null;
+        sealNudges += 1;
+        return decision.content;
+      }
+    : null;
   const subSystemPrompt = await composeSystemPrompt({
     shellRulesPrompt: subShellRulesPrompt,
     config,
@@ -6522,6 +6601,7 @@ export async function runSubAgentTask({
     allowedTools: approvalOptions.allowedTools,
     alwaysAllowTools: approvalOptions.alwaysAllowTools,
     skipAnalysisNudge: true,
+    shouldContinueAfterText,
     signal,
     changeTracker,
     backupManager,
@@ -9576,6 +9656,7 @@ export async function createChatRuntime({
             ? (request) => judgeCodingRouteNodes({ request, config, model, signal })
             : null,
           toolTrace,
+          towerActive: Boolean(towerState),
         }),
       };
     })();
@@ -9956,22 +10037,35 @@ export async function createChatRuntime({
     setTowerMode: async (active) => {
       const want = active === true || active === 'on' || String(active).toLowerCase() === 'true';
       if (want) {
-        if (normalizeExecutionMode(executionMode) !== 'plan') {
-          return {
-            ok: false,
-            code: 'NOT_CODING',
-            message: 'Switch to coding mode before starting tower.',
-          };
-        }
         if (towerState) {
           await persistTowerState(towerState);
           return { ok: true, tower: towerState };
+        }
+        const previousMode = normalizeExecutionMode(executionMode);
+        const switchedFromDaily = previousMode !== 'plan';
+        if (switchedFromDaily) {
+          const previouslyArmed = new Set([...skillHooksSession.activeSkills.keys()]);
+          executionMode = 'plan';
+          await setConfigValue('execution.mode', 'plan');
+          config = attachRuntimeState(await loadConfig());
+          await reloadWorkspaceHooks();
+          await reconcileSessionStartForModeChange(previouslyArmed);
         }
         const result = await enterTowerMode({
           cwd: root,
           sessionId: currentSession?.id,
         });
-        if (!result.ok) return result;
+        if (!result.ok) {
+          if (switchedFromDaily) {
+            const previouslyArmed = new Set([...skillHooksSession.activeSkills.keys()]);
+            executionMode = 'normal';
+            await setConfigValue('execution.mode', 'normal');
+            config = attachRuntimeState(await loadConfig());
+            await reloadWorkspaceHooks();
+            await reconcileSessionStartForModeChange(previouslyArmed);
+          }
+          return result;
+        }
         await persistTowerState(result.tower);
         return result;
       }

@@ -25,6 +25,7 @@ import {
 } from "./shell.js";
 import { evaluateCommandPolicy } from "./command-policy.js";
 import { evaluateTowerParentCommand } from "./tower-shell.js";
+import { normalizeTowerReviewVerdict } from "./tower-store.js";
 import { classifyCommandRisk, hasShellWriteSyntax } from "./command-risk.js";
 import { createWriteCoordinator } from "./write-coordinator.js";
 import {
@@ -5347,7 +5348,7 @@ export function getBuiltinTools({
         type: "array",
         items: { type: "string" },
         description:
-          "Disjoint relative globs this new worker may change, such as docs/** or src/foo.ts. Required for a new worker. On resume, omit to keep stored paths, or pass a new disjoint list to change that worker's scope.",
+          "Disjoint relative globs this new coder worker may change, such as docs/** or src/foo.ts. Required for a new coder worker. Not required for role: \"survey\". On resume, omit to keep stored paths, or pass a new disjoint list to change that worker's scope.",
       };
       subagentProperties.resume = {
         type: "string",
@@ -5357,15 +5358,17 @@ export function getBuiltinTools({
       subagentProperties.review = {
         type: "string",
         description:
-          "Roster worker id to review, such as alisa. Use with role: \"reviewer\". Does not create a worktree. Omit paths and resume.",
+          "Roster worker id to review, such as alisa. Use with role: \"reviewer\". Does not create a worktree. Omit paths and resume. Do not review survey workers.",
       };
+      subagentProperties.role.description =
+        'Optional role preset. Use "survey" for read-only investigation (no exclusive paths, no review, no land). Use "reviewer" with review set to a coder worker id.';
     }
     workflowToolDefinitions.push({
       type: "function",
       function: {
         name: "run_subagent",
         description: towerActive
-          ? "Delegate isolated work to a git-worktree subagent. Same-response independent calls run in parallel; use task_id/depends_on for dependencies. New workers need disjoint paths and a unique short name (that name becomes the resume id). Call an idle worker back with resume set to that id; do not use call ids from handoff paths. After a worker commits, review that worker with role: \"reviewer\" and review set to its id before land_workers. If a review loop stops, tell the user; resume with a new task or paths, or spawn a new worker; do not keep fixing the same findings."
+          ? "Delegate isolated work to a git-worktree subagent. Same-response independent calls run in parallel; use task_id/depends_on for dependencies. Every objective, including a single task, must go to a worker. New coder workers need disjoint paths and a unique short name (that name becomes the resume id). Read-only investigation uses role: \"survey\" (no exclusive paths, no review, no land). Call an idle worker back with resume set to that id. After a coder commits, review that worker with role: \"reviewer\" and review set to its id before land_workers."
           : "Delegate a bounded task to a clean-context subagent. Same-response independent calls run in parallel; use task_id/depends_on for dependencies and disjoint file ownership for parallel edits. Invent a short worker name such as David. Use fork_task instead when shared prompt prefix/state is more useful.",
         parameters: {
           type: "object",
@@ -5375,7 +5378,7 @@ export function getBuiltinTools({
       },
     });
   }
-  if (typeof onForkTask === "function") {
+  if (typeof onForkTask === "function" && !towerActive) {
     workflowToolDefinitions.push({
       type: "function",
       function: {
@@ -5425,11 +5428,36 @@ export function getBuiltinTools({
       function: {
         name: "land_workers",
         description:
-          "Squash sealed tower worker branches onto the current user branch without creating a commit, then delete those worker branches. Merges each passing worker onto the merge tmp first; workers still in review stay off tmp. Squash happens when everyone still on the roster is on tmp. If a worker conflicts on the integration tip, resume that worker to rebase onto the returned commit, then review the new commit before landing again. If a review loop stops, resume with a new task or paths, or spawn a new worker; do not keep fixing the same findings. Do not merge or copy files yourself.",
+          "Merge sealed tower worker branches directly onto the current user branch with git merge --no-ff, then delete those worker branches when everyone on the roster is integrated. Workers still in review stay on their worktrees until they pass. If a worker conflicts on the base tip, resume that worker to rebase onto the returned commit, then review the new commit before landing again. If a review loop stops, resume with a new task or paths, or spawn a new worker; do not keep fixing the same findings. Do not merge or copy files yourself.",
         parameters: {
           type: "object",
           properties: {},
           required: [],
+        },
+      },
+    });
+  }
+  if (typeof config?.runtime?.onTowerReviewVerdict === "function") {
+    workflowToolDefinitions.push({
+      type: "function",
+      function: {
+        name: "submit_tower_review",
+        description:
+          "Submit the tower review verdict. passed true means the current commit may land; passed false requires findings. Call this once before stopping.",
+        parameters: {
+          type: "object",
+          properties: {
+            passed: {
+              type: "boolean",
+              description: "true if this commit is clean to land.",
+            },
+            findings: {
+              type: "array",
+              items: { type: "string" },
+              description: "Empty when passed is true. One item per blocking issue when passed is false.",
+            },
+          },
+          required: ["passed", "findings"],
         },
       },
     });
@@ -7126,6 +7154,12 @@ export function getBuiltinTools({
       });
     },
     fork_task: async (args = {}, ctx = {}) => {
+      if (towerActive) {
+        return {
+          ok: false,
+          error: "fork_task is not available in tower mode. Use run_subagent.",
+        };
+      }
       if (typeof onForkTask !== "function") {
         return {
           ok: false,
@@ -7155,6 +7189,15 @@ export function getBuiltinTools({
         };
       }
       return onLandWorkers();
+    },
+    submit_tower_review: async (args = {}) => {
+      const submit = config?.runtime?.onTowerReviewVerdict;
+      const verdict = normalizeTowerReviewVerdict(args);
+      if (!verdict.ok) return verdict;
+      if (typeof submit === "function") {
+        submit({ passed: verdict.passed, findings: verdict.findings });
+      }
+      return { ok: true, passed: verdict.passed, findings: verdict.findings };
     },
     create_spec: async (args = {}) => {
       if (typeof onCreateSpec !== "function") {
@@ -7760,6 +7803,15 @@ export function getBuiltinTools({
       }
       if (result.message) return String(result.message);
       return JSON.stringify(result);
+    },
+
+    submit_tower_review(result) {
+      if (!result || typeof result !== "object") return String(result);
+      if (result.error) return String(result.error);
+      if (result.passed === true) return "Review passed.";
+      const findings = Array.isArray(result.findings) ? result.findings.filter(Boolean) : [];
+      if (findings.length) return `Review did not pass:\n${findings.map((item) => `- ${item}`).join("\n")}`;
+      return "Review did not pass.";
     },
 
 

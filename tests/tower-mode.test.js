@@ -17,13 +17,15 @@ import {
   inspectTowerGit,
   listTowerWorkersFromState,
   parseTowerSlashCommand,
-  normalizeTowerState
+  normalizeTowerState,
+  patchTowerWorkerRecord,
 } from '../src/core/tower-store.js';
 import {
   addTowerWorktree,
   allocateTowerWorkerId,
   removeTowerWorktrees,
   sanitizeTowerWorkerId,
+  teardownTowerWorker,
 } from '../src/core/tower-worktree.js';
 import { withCodeminiGlobalDir } from './helpers/codemini-global-dir.js';
 
@@ -199,13 +201,15 @@ test('tower prompt is present only when the overlay is active', () => {
   const prompt = buildTowerModePromptBlock({ active: true, base: 'main' });
   assert.match(prompt, /Tower Mode: on/);
   assert.match(prompt, /base branch: main/);
-  assert.match(prompt, /Do not write product code/);
+  assert.match(prompt, /Any user objective/);
+  assert.match(prompt, /role: "survey"/);
   assert.match(prompt, /run_subagent/);
   assert.match(prompt, /land_workers/);
   assert.match(prompt, /REBASE_REQUIRED/);
-  assert.match(prompt, /merge tmp/);
+  assert.match(prompt, /git merge --no-ff/);
   assert.match(prompt, /review set to that worker id/);
   assert.match(prompt, /inspect-only/);
+  assert.match(prompt, /fork_task is not available/);
   assert.match(prompt, /land_workers is the only merge path/);
   assert.match(prompt, /No idle workers yet/);
   const withRoster = buildTowerModePromptBlock({ active: true, base: 'main' }, [
@@ -218,7 +222,7 @@ test('tower prompt is present only when the overlay is active', () => {
     { id: 'mia', branch: 'codemini-tower/mia', worktreePath: '/tmp/mia', paths: ['src/**'], integrated: true },
   ]);
   assert.match(withTmp, /Idle workers: alisa \(notes.md\)/);
-  assert.match(withTmp, /On merge tmp: mia \(src\/\*\*\)/);
+  assert.match(withTmp, /On base: mia \(src\/\*\*\)/);
   assert.equal(withTmp.includes('Idle workers: alisa (notes.md); mia'), false);
 });
 
@@ -287,11 +291,13 @@ test('sanitizeSession keeps tower overlay state', async () => {
   }
 });
 
-test('setTowerMode refuses daily mode and allows a dirty coding worktree', async () => {
+test('setTowerMode from daily switches into coding and allows a dirty worktree', async () => {
   await withRuntime({ mode: 'normal' }, async ({ runtime }) => {
-    const refused = await runtime.setTowerMode(true);
-    assert.equal(refused.ok, false);
-    assert.equal(refused.code, 'NOT_CODING');
+    const entered = await runtime.setTowerMode(true);
+    assert.equal(entered.ok, true);
+    assert.equal(entered.tower.base, 'main');
+    assert.equal(runtime.getRuntimeState().towerActive, true);
+    assert.equal(runtime.getRuntimeState().mode, 'plan');
   });
 
   await withRuntime({ mode: 'plan' }, async ({ dir, runtime }) => {
@@ -514,16 +520,48 @@ test('overlapping tower paths reject the second spawn', async () => {
   });
 });
 
-test('fork_task does not spawn tower worktrees while tower is on', async () => {
+test('teardown after abort frees scope for a new worker on the same paths', async () => {
+  await withTempDir(async (dir) => {
+    await initCleanGit(dir);
+    await enterTowerMode({ cwd: dir, sessionId: 'abort-teardown' });
+    const first = await addTowerWorktree({
+      cwd: dir,
+      base: 'main',
+      name: 'noa',
+      paths: ['docs/**'],
+    });
+    assert.equal(first.ok, true, first.error);
+    const torn = await teardownTowerWorker({ cwd: dir, id: first.worker.id, force: true });
+    assert.equal(torn.ok, true, torn.error);
+    const second = await addTowerWorktree({
+      cwd: dir,
+      base: 'main',
+      name: 'nina',
+      paths: ['docs/**'],
+    });
+    assert.equal(second.ok, true, second.error);
+    const saved = JSON.parse(await fs.readFile(getProjectTowerStatePath(dir), 'utf8'));
+    const workers = listTowerWorkersFromState(saved);
+    assert.equal(workers.length, 1);
+    assert.equal(workers[0].id, 'nina');
+    const trees = await fs.readdir(getProjectTowerWorktreesDir(dir));
+    assert.equal(trees.includes('noa'), false);
+    assert.equal(trees.includes('nina'), true);
+  });
+});
+
+test('fork_task is unavailable while tower is on', async () => {
   await withRuntime({
     mode: 'plan',
     firstCompletion: forkTaskCompletion,
-  }, async ({ dir, runtime }) => {
+  }, async ({ dir, runtime, session }) => {
     await runtime.setTowerMode(true);
     await runtime.submitMessage({ text: '使用并行任务检查 README' });
     const saved = JSON.parse(await fs.readFile(getProjectTowerStatePath(dir), 'utf8'));
     assert.equal(listTowerWorkersFromState(saved).length, 0);
     const worktrees = getProjectTowerWorktreesDir(dir);
     assert.equal(await fs.access(worktrees).then(() => true, () => false), false);
+    const forkResult = session.messages.find((message) => message.tool_call_id === 'call-fork');
+    assert.match(String(forkResult?.content || ''), /not available in this model turn/);
   });
 });

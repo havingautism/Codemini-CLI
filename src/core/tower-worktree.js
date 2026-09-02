@@ -11,11 +11,12 @@ import {
   readTowerStateFile,
   writeTowerWorkerRecords,
 } from './tower-store.js';
-import { findOverlappingTowerWorker, normalizeTowerDependsOn, normalizeTowerPaths } from './tower-scope.js';
+import { findOverlappingTowerWorker, isTowerSurveyWorker, normalizeTowerDependsOn, normalizeTowerPaths, towerWorkerBlocksSpawn } from './tower-scope.js';
 
 const BRANCH_PREFIX = 'codemini-tower/';
 const RESERVED_WORKER_IDS = new Set(['tmp', '_merge-tmp', 'merge-tmp']);
 const GIT_TIMEOUT_MS = 30_000;
+const TOWER_WORKER_SEAL_MAX_NUDGES = 2;
 const spawnLocks = new Map();
 
 async function tryGit(cwd, args) {
@@ -134,7 +135,7 @@ export function composeTowerReviewTask(task, {
     String(task || '').trim() || `Review worker "${workerId}".`,
     `You are reviewing tower worker "${workerId}" at commit ${commit} against base ${base}.`,
     `Scope: ${scope}. Stay inside that scope.`,
-    'Do not edit files or git commit. If the current commit is clean to land, Findings must be none.',
+    'Do not edit files or git commit. Finish by calling submit_tower_review with passed true or false and findings. passed true requires empty findings; passed false requires at least one finding.',
     diff ? `Diff vs base:\n${diff}` : 'No diff vs base was available; inspect the worktree.',
   ].join('\n\n');
 }
@@ -178,11 +179,19 @@ export async function resolveTowerReviewTarget({
       workerId: worker.id,
     };
   }
+  if (isTowerSurveyWorker(worker)) {
+    return {
+      ok: false,
+      code: 'SURVEY_NO_REVIEW',
+      error: `Worker "${worker.id}" is a survey worker. Do not review or land it.`,
+      workerId: worker.id,
+    };
+  }
   if (worker.integrated === true) {
     return {
       ok: false,
       code: 'WORKER_INTEGRATED',
-      error: `Worker "${worker.id}" is already on the merge tmp. Do not review it again. Wait for the rest of the roster, then land_workers.`,
+      error: `Worker "${worker.id}" is already integrated onto the base branch. Do not review it again. Wait for the rest of the roster, then land_workers.`,
       workerId: worker.id,
     };
   }
@@ -252,6 +261,7 @@ export async function resolveTowerSubagentWorkspace({
   callId = '',
   paths = [],
   dependsOn = [],
+  kind = '',
 } = {}) {
   const root = path.resolve(cwd);
   const resumeId = sanitizeTowerWorkerId(resume, '');
@@ -264,7 +274,7 @@ export async function resolveTowerSubagentWorkspace({
         return {
           ok: false,
           code: 'WORKER_INTEGRATED',
-          error: `Tower worker "${worker.id}" is already on the merge tmp. Wait for the rest of the roster, then land_workers. Do not resume.`,
+          error: `Tower worker "${worker.id}" is already integrated onto the base branch. Wait for the rest of the roster, then land_workers. Do not resume.`,
           workerId: worker.id,
         };
       }
@@ -335,11 +345,12 @@ export async function resolveTowerSubagentWorkspace({
       callId,
       paths,
       dependsOn,
+      kind,
     });
   }
 
   const named = findTowerWorker(existing, { name, taskId });
-  if (named) {
+  if (named && towerWorkerBlocksSpawn(named)) {
     return {
       ok: false,
       code: 'WORKER_EXISTS',
@@ -356,6 +367,7 @@ export async function resolveTowerSubagentWorkspace({
     callId,
     paths,
     dependsOn,
+    kind,
   });
 }
 
@@ -488,6 +500,42 @@ export async function isTowerWorktreeDirty(worktreePath) {
   return Boolean(String(status.stdout || '').trim());
 }
 
+export function towerWorkerClaimedBlocked(text) {
+  return /\b(blocked|failed|cannot finish|can't finish|can’t finish)\b/i.test(String(text || ''));
+}
+
+export function composeTowerWorkerSealNudge(kind = 'coder') {
+  if (kind === 'survey') {
+    return 'Survey workers must not change files. Revert any edits in this worktree and stop. Do not git commit product code.';
+  }
+  return 'Worktree is still dirty (not sealed). If the slice is done, git add the files in your paths and git commit on this branch now. If you cannot finish, do not commit; reply with blocked or failed and stop.';
+}
+
+export function decideTowerWorkerSeal({
+  dirty = false,
+  kind = 'coder',
+  text = '',
+  nudgeCount = 0,
+} = {}) {
+  if (nudgeCount >= TOWER_WORKER_SEAL_MAX_NUDGES) return { continue: false };
+  if (!dirty) return { continue: false };
+  if (kind === 'survey') {
+    return { continue: true, content: composeTowerWorkerSealNudge('survey') };
+  }
+  if (towerWorkerClaimedBlocked(text)) return { continue: false };
+  return { continue: true, content: composeTowerWorkerSealNudge('coder') };
+}
+
+export async function shouldContinueTowerWorkerSeal({
+  worktreePath,
+  kind = 'coder',
+  text = '',
+  nudgeCount = 0,
+} = {}) {
+  const dirty = await isTowerWorktreeDirty(worktreePath).catch(() => true);
+  return decideTowerWorkerSeal({ dirty, kind, text, nudgeCount });
+}
+
 async function worktreePathExists(worktreePath) {
   try {
     const stat = await fs.stat(worktreePath);
@@ -513,14 +561,16 @@ async function addTowerWorktreeUnlocked({
   callId = '',
   paths = [],
   dependsOn = [],
+  kind = '',
 } = {}) {
   const root = path.resolve(cwd);
   const baseBranch = String(base || '').trim();
   if (!baseBranch || baseBranch === 'HEAD') {
     return { ok: false, code: 'NO_BASE', error: 'Tower spawn needs a recorded git base branch.' };
   }
+  const survey = String(kind || '').trim().toLowerCase() === 'survey';
   const normalizedPaths = normalizeTowerPaths(paths);
-  if (normalizedPaths.length === 0) {
+  if (!survey && normalizedPaths.length === 0) {
     return {
       ok: false,
       code: 'PATHS_REQUIRED',
@@ -529,23 +579,25 @@ async function addTowerWorktreeUnlocked({
   }
   const current = await readTowerStateFile(root);
   const existing = listTowerWorkersFromState(current);
-  const overlap = findOverlappingTowerWorker(normalizedPaths, existing);
-  if (overlap) {
-    const workerId = String(overlap.worker?.id || 'worker').trim() || 'worker';
-    return {
-      ok: false,
-      code: 'SCOPE_OVERLAP',
-      error: `Tower scope overlaps worker "${workerId}" (${overlap.existing} vs ${overlap.glob}). Change paths and retry.`,
-      workerId,
-      glob: overlap.glob,
-      existing: overlap.existing,
-    };
+  if (!survey) {
+    const overlap = findOverlappingTowerWorker(normalizedPaths, existing);
+    if (overlap) {
+      const workerId = String(overlap.worker?.id || 'worker').trim() || 'worker';
+      return {
+        ok: false,
+        code: 'SCOPE_OVERLAP',
+        error: `Tower scope overlaps worker "${workerId}" (${overlap.existing} vs ${overlap.glob}). Change paths and retry.`,
+        workerId,
+        glob: overlap.glob,
+        existing: overlap.existing,
+      };
+    }
   }
   const preferred = preferredTowerWorkerId({ taskId, name, callId });
   if (
     preferred
     && !RESERVED_WORKER_IDS.has(preferred)
-    && existing.some((item) => item.id === preferred)
+    && existing.some((item) => item.id === preferred && towerWorkerBlocksSpawn(item))
   ) {
     return {
       ok: false,
@@ -585,7 +637,8 @@ async function addTowerWorktreeUnlocked({
     id: workerId,
     branch,
     worktreePath,
-    paths: normalizedPaths,
+    ...(normalizedPaths.length ? { paths: normalizedPaths } : {}),
+    ...(survey ? { kind: 'survey' } : {}),
     ...(normalizedTaskId ? { taskId: normalizedTaskId } : {}),
     ...(normalizedDependsOn.length ? { dependsOn: normalizedDependsOn } : {}),
     ...(String(callId || '').trim() ? { callId: String(callId).trim() } : {}),
@@ -630,6 +683,33 @@ export async function removeTowerWorktree({
     };
   }
   return { ok: true, removed: true, worker };
+}
+
+export async function teardownTowerWorker({
+  cwd = process.cwd(),
+  id = '',
+  force = true,
+} = {}) {
+  const workerId = String(id || '').trim();
+  if (!workerId) return { ok: false, error: 'Missing tower worker id.' };
+  return withSpawnLock(cwd, async () => {
+    const root = path.resolve(cwd);
+    const workers = listTowerWorkersFromState(await readTowerStateFile(root));
+    const worker = workers.find((item) => item.id === workerId);
+    if (!worker) return { ok: false, code: 'NOT_FOUND', error: `Unknown tower worker "${workerId}".` };
+    const worktree = await removeTowerWorktree({ cwd: root, worker, force });
+    const branch = String(worker.branch || '').trim();
+    if (branch.startsWith(BRANCH_PREFIX) && !RESERVED_WORKER_IDS.has(worker.id)) {
+      await tryGit(root, ['branch', '-D', branch]);
+    }
+    await writeTowerWorkerRecords(root, workers.filter((item) => item.id !== workerId));
+    await tryGit(root, ['worktree', 'prune']);
+    return {
+      ok: true,
+      worker,
+      worktreeRemoved: worktree.removed === true || worktree.missing === true,
+    };
+  });
 }
 
 export async function removeTowerWorktrees({ cwd = process.cwd(), force = false, skipLock = false } = {}) {

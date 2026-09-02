@@ -439,7 +439,8 @@ test('chat chrome keeps only the logo on top and runtime details at the bottom',
     sessionId: 'session-12345678',
     safeMode: true
   }).render(80).join('\n'));
-  assert.match(towerBottom, /◆ CODE\s+│\s+◆ TOWER\s+│\s+● AUTO/);
+  assert.match(towerBottom, /◆ TOWER\s+│\s+● AUTO/);
+  assert.doesNotMatch(towerBottom, /◆ CODE/);
 
   const activity = new ActivityBar({ tui: { requestRender() {} }, copy: createTuiCopy('en') }).render(80).join('\n');
   assert.match(stripAnsi(activity), /● Ready.*\/ commands/);

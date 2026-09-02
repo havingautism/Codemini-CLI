@@ -73,6 +73,7 @@ export function normalizeTowerWorkerRecord(value) {
       : {}),
     ...(runError ? { runError } : {}),
     ...(value.dirty === true || value.dirty === false ? { dirty: value.dirty === true } : {}),
+    ...(String(value.kind || '').trim().toLowerCase() === 'survey' ? { kind: 'survey' } : {}),
   };
 }
 
@@ -82,42 +83,42 @@ export function workerLandBaseRef(worker, fallback = '') {
 
 export const TOWER_REVIEW_MAX_ROUNDS = 5;
 
-export function towerReviewPassedFromText(text) {
-  const value = String(text || '');
-  const bulletMatch = value.match(/(?:^|\n)\s*Findings\s*:\s*(?:\n|\r\n?)+\s*-\s*([^\n\r]+)/i);
-  const inlineMatch = value.match(/(?:^|\n)\s*Findings\s*:\s*([^\n\r]+)/i);
-  const bullet = String(bulletMatch?.[1] || inlineMatch?.[1] || '').trim();
-  if (!bullet) return false;
-  return /^none\b/i.test(bullet);
+export function normalizeTowerReviewVerdict(value = {}) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return { ok: false, error: 'submit_tower_review requires passed and findings.' };
+  }
+  if (value.passed !== true && value.passed !== false) {
+    return { ok: false, error: 'passed must be true or false.' };
+  }
+  const findings = Array.isArray(value.findings)
+    ? [...new Set(value.findings.map((item) => String(item || '').trim()).filter(Boolean))]
+    : [];
+  if (value.passed === true && findings.length > 0) {
+    return { ok: false, error: 'passed:true requires findings to be empty.' };
+  }
+  if (value.passed === false && findings.length === 0) {
+    return { ok: false, error: 'passed:false requires at least one finding.' };
+  }
+  return { ok: true, passed: value.passed === true, findings };
 }
 
 function normalizeFindingsBullet(value) {
   return String(value || '').trim().toLowerCase().replace(/\s+/g, ' ');
 }
 
-export function towerReviewFindingsKey(text) {
-  const value = String(text || '');
-  const start = value.search(/(?:^|\n)\s*Findings\s*:/i);
-  if (start < 0) return '';
-  const afterLabel = value.slice(start).replace(/^(?:\n)?\s*Findings\s*:/i, '');
-  const bullets = [];
-  const firstLineMatch = afterLabel.match(/^[^\n\r]*/);
-  const firstLine = String(firstLineMatch?.[0] || '').trim();
-  if (firstLine) bullets.push(normalizeFindingsBullet(firstLine));
-  const rest = afterLabel.slice(firstLineMatch?.[0]?.length || 0);
-  for (const line of rest.split(/\r?\n/)) {
-    const bullet = line.match(/^\s*-\s+(.+)$/);
-    if (bullet) {
-      bullets.push(normalizeFindingsBullet(bullet[1]));
-      continue;
-    }
-    if (!line.trim()) continue;
-    break;
-  }
-  return bullets.filter(Boolean).join('\n');
+export function towerReviewFindingsKey(findings = []) {
+  const list = Array.isArray(findings) ? findings : [];
+  return list.map(normalizeFindingsBullet).filter(Boolean).join('\n');
 }
 
-export function nextTowerReviewLoopState(worker, { passed = false, text = '' } = {}) {
+export function formatTowerReviewText(verdict) {
+  if (!verdict || typeof verdict !== 'object') return '';
+  if (verdict.passed === true) return '';
+  const findings = Array.isArray(verdict.findings) ? verdict.findings : [];
+  return findings.map((item) => `- ${String(item || '').trim()}`).filter((item) => item !== '-').join('\n');
+}
+
+export function nextTowerReviewLoopState(worker, { passed = false, findings = [] } = {}) {
   if (passed === true) {
     return {
       reviewRound: 0,
@@ -127,7 +128,7 @@ export function nextTowerReviewLoopState(worker, { passed = false, text = '' } =
   }
   const prevRound = Number.parseInt(String(worker?.reviewRound ?? ''), 10);
   const reviewRound = (Number.isInteger(prevRound) && prevRound > 0 ? prevRound : 0) + 1;
-  const lastFindingsKey = towerReviewFindingsKey(text);
+  const lastFindingsKey = towerReviewFindingsKey(findings);
   const prevKey = String(worker?.lastFindingsKey || '').trim();
   const sameFindings = Boolean(prevKey && lastFindingsKey && prevKey === lastFindingsKey);
   const reviewLoopStopped = worker?.reviewLoopStopped === true
@@ -164,28 +165,29 @@ export function buildTowerModePromptBlock(towerState, workers = []) {
     return status ? `${item.id} (${scope}, ${status})` : `${item.id} (${scope})`;
   }).join('; ');
   const idle = roster.filter((item) => item.integrated !== true);
-  const onTmp = roster.filter((item) => item.integrated === true);
+  const onBase = roster.filter((item) => item.integrated === true);
   const rosterParts = [];
   if (idle.length) {
     rosterParts.push(`Idle workers: ${formatRoster(idle)}. Call back with resume: "<id>". That id is the short worker name such as alisa, never a call id or handoff folder.`);
-  } else if (onTmp.length) {
-    rosterParts.push('No idle workers. Everyone still on the roster is on the merge tmp.');
+  } else if (onBase.length) {
+    rosterParts.push('No idle workers. Everyone still on the roster is already merged onto the base branch.');
   } else {
     rosterParts.push('No idle workers yet. New workers need a unique short name and disjoint paths.');
   }
-  if (onTmp.length) {
-    rosterParts.push(`On merge tmp: ${formatRoster(onTmp)}. Do not resume or review those workers. Wait for the rest of the roster, then land_workers.`);
+  if (onBase.length) {
+    rosterParts.push(`On base: ${formatRoster(onBase)}. Do not resume or review those workers. Wait for the rest of the roster, then land_workers.`);
   }
   const rosterLine = rosterParts.join(' ');
   return [
     'Tower Mode: on',
     `Recorded git base branch: ${state.base}`,
-    'You are the control tower for this session. Do not write product code or edit implementation files in the main checkout.',
-    'Delegate isolated work with run_subagent. Isolation uses a git worktree per subagent; do not create worktrees, extra branches, or merge into the user branch yourself.',
-    'New workers require paths: disjoint relative globs such as docs/** or src/foo.ts. Overlapping paths are rejected unless that other worker is already on the merge tmp. Resume with resume set to that id; omit paths to keep the stored list, or pass a new disjoint list to change it.',
+    'You are the control tower for this session. Any user objective — including a single task — must be dispatched with run_subagent. One worker is enough; do not invent extra missions. Do not implement, answer the coding question yourself, or edit the main checkout.',
+    'Coder workers get a git worktree each. Do not create worktrees, extra branches, or merge into the user branch yourself.',
+    'New coder workers require paths: disjoint relative globs such as docs/** or src/foo.ts. Overlapping paths are rejected unless that other worker is already integrated onto the base branch. Resume with resume set to that id; omit paths to keep the stored list, or pass a new disjoint list to change it.',
+    'Read-only investigation uses role: "survey". Survey workers still get a worktree, do not take exclusive paths, must not edit or commit, and are not reviewed or landed.',
     rosterLine,
-    'When a worker finishes, read its tool result. dirty means it did not git commit — do not land that worker. After a worker is sealed, dispatch a separate run_subagent with role: "reviewer" and review set to that worker id. Do not resume the author to review themselves. The reviewer is not a roster worker and does not get paths or a new worktree.',
-    'land_workers merges each passing worker onto the merge tmp. Workers still in review stay off tmp. When everyone still on the roster is on tmp, it squashes onto the user branch without a commit and deletes worker branches. If review did not pass, resume that worker with the review text, then review the new commit. If a review loop stops (5 rounds still failing, or two consecutive identical failed findings), tell the user; resume with a new task or paths, or spawn a new worker; do not keep fixing the same findings. If land returns REBASE_REQUIRED, resume that worker; the resume task already includes git rebase onto that commit. After it commits, review the new commit before landing again. Do not check out or delete the merge tmp branch until squash succeeds.',
+    'When a coder worker finishes, read its tool result. dirty means it did not git commit — do not review or land that worker. After a coder is sealed, dispatch a separate run_subagent with role: "reviewer" and review set to that worker id. Do not resume the author to review themselves. The reviewer is not a roster worker and does not get paths or a new worktree. Do not review survey workers. fork_task is not available; do not use it.',
+    'land_workers merges each passing worker directly onto the recorded base branch with git merge --no-ff (one merge commit per worker). Workers still in review stay on their worktrees until they pass. When everyone on the roster is integrated, worker branches and worktrees are deleted. The user still controls push. If review did not pass, resume that worker with the review text, then review the new commit. If a review loop stops (5 rounds still failing, or two consecutive identical failed findings), tell the user; resume with a new task or paths, or spawn a new worker; do not keep fixing the same findings. If land returns REBASE_REQUIRED, resume that worker; the resume task already includes git rebase onto that commit. After it commits, review the new commit before landing again.',
     'Parent run is inspect-only: git status, log, diff, and other read-only commands. Do not git merge, checkout, worktree, or copy into the main checkout; land_workers is the only merge path.',
     'Tell workers to use paths relative to their worktree cwd. Do not pass absolute paths from the parent checkout.'
   ].join('\n');
@@ -273,13 +275,18 @@ export async function patchTowerWorkerRecord(cwd, id, patch = {}) {
   const workers = listTowerWorkersFromState(current);
   const index = workers.findIndex((item) => item.id === workerId);
   if (index < 0) return { ok: false, error: `Unknown tower worker "${workerId}".` };
-  const next = normalizeTowerWorkerRecord({
+  const raw = {
     ...workers[index],
     ...(patch && typeof patch === 'object' && !Array.isArray(patch) ? patch : {}),
     id: workers[index].id,
     branch: workers[index].branch,
     worktreePath: workers[index].worktreePath,
-  });
+  };
+  if (patch?.scopeReleased === false) delete raw.scopeReleased;
+  if (patch?.reviewedCommit === '') delete raw.reviewedCommit;
+  if (patch?.reviewText === '') delete raw.reviewText;
+  if (patch?.reviewPassed === false && patch?.reviewedCommit === '') delete raw.reviewPassed;
+  const next = normalizeTowerWorkerRecord(raw);
   if (!next) return { ok: false, error: 'Invalid tower worker record.' };
   workers[index] = next;
   await writeTowerStateFile(cwd, { ...current, workers });

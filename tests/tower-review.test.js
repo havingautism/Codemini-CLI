@@ -14,12 +14,13 @@ import { createSession } from '../src/core/session-store.js';
 import { withCodeminiGlobalDir } from './helpers/codemini-global-dir.js';
 import {
   enterTowerMode,
+  formatTowerReviewText,
   listTowerWorkersFromState,
   nextTowerReviewLoopState,
+  normalizeTowerReviewVerdict,
   patchTowerWorkerRecord,
   readTowerStateFile,
   towerReviewFindingsKey,
-  towerReviewPassedFromText,
   workerReviewMatchesCommit,
 } from '../src/core/tower-store.js';
 import {
@@ -67,22 +68,33 @@ async function withRepo(task) {
   }
 }
 
-test('towerReviewPassedFromText requires Findings: none', () => {
-  assert.equal(towerReviewPassedFromText('Findings:\n- none'), true);
-  assert.equal(towerReviewPassedFromText('Findings: none'), true);
-  assert.equal(towerReviewPassedFromText('Findings:\n- missing tests'), false);
-  assert.equal(towerReviewPassedFromText('looks good'), false);
-  assert.equal(towerReviewPassedFromText(''), false);
+test('normalizeTowerReviewVerdict is the review gate, not free text', () => {
+  assert.deepEqual(normalizeTowerReviewVerdict({ passed: true, findings: [] }), {
+    ok: true,
+    passed: true,
+    findings: [],
+  });
+  assert.equal(normalizeTowerReviewVerdict({ passed: true, findings: ['none'] }).ok, false);
+  assert.equal(normalizeTowerReviewVerdict({ passed: false, findings: [] }).ok, false);
+  assert.deepEqual(normalizeTowerReviewVerdict({ passed: false, findings: ['missing tests'] }), {
+    ok: true,
+    passed: false,
+    findings: ['missing tests'],
+  });
+  assert.equal(normalizeTowerReviewVerdict({}).ok, false);
+  assert.equal(normalizeTowerReviewVerdict({ passed: 'yes' }).ok, false);
+  assert.equal(formatTowerReviewText({ passed: true, findings: [] }), '');
+  assert.equal(formatTowerReviewText({ passed: false, findings: ['missing tests'] }), '- missing tests');
 });
 
-test('towerReviewFindingsKey fingerprints Findings bullets', () => {
-  assert.equal(towerReviewFindingsKey('Findings:\n- missing tests'), 'missing tests');
+test('towerReviewFindingsKey fingerprints finding items', () => {
+  assert.equal(towerReviewFindingsKey(['missing tests']), 'missing tests');
   assert.equal(
-    towerReviewFindingsKey('Findings:\n- Missing   Tests\n- no changelog'),
+    towerReviewFindingsKey(['Missing   Tests', 'no changelog']),
     'missing tests\nno changelog',
   );
-  assert.equal(towerReviewFindingsKey('Findings: none'), 'none');
-  assert.equal(towerReviewFindingsKey('looks good'), '');
+  assert.equal(towerReviewFindingsKey([]), '');
+  assert.equal(towerReviewFindingsKey(undefined), '');
 });
 
 test('nextTowerReviewLoopState stops after five failed rounds or two identical findings', () => {
@@ -90,24 +102,24 @@ test('nextTowerReviewLoopState stops after five failed rounds or two identical f
   for (let index = 0; index < 4; index += 1) {
     state = nextTowerReviewLoopState(state, {
       passed: false,
-      text: `Findings:\n- issue ${index}`,
+      findings: [`issue ${index}`],
     });
   }
   assert.equal(state.reviewRound, 4);
   assert.equal(state.reviewLoopStopped, false);
 
-  state = nextTowerReviewLoopState(state, { passed: false, text: 'Findings:\n- issue 4' });
+  state = nextTowerReviewLoopState(state, { passed: false, findings: ['issue 4'] });
   assert.equal(state.reviewRound, 5);
   assert.equal(state.reviewLoopStopped, true);
 
-  const first = nextTowerReviewLoopState({}, { passed: false, text: 'Findings:\n- missing tests' });
+  const first = nextTowerReviewLoopState({}, { passed: false, findings: ['missing tests'] });
   assert.equal(first.reviewRound, 1);
   assert.equal(first.reviewLoopStopped, false);
-  const second = nextTowerReviewLoopState(first, { passed: false, text: 'Findings:\n- Missing Tests' });
+  const second = nextTowerReviewLoopState(first, { passed: false, findings: ['Missing Tests'] });
   assert.equal(second.reviewRound, 2);
   assert.equal(second.reviewLoopStopped, true);
 
-  const reset = nextTowerReviewLoopState(second, { passed: true, text: 'Findings:\n- none' });
+  const reset = nextTowerReviewLoopState(second, { passed: true, findings: [] });
   assert.equal(reset.reviewRound, 0);
   assert.equal(reset.reviewLoopStopped, false);
   assert.equal(reset.lastFindingsKey, '');
@@ -146,6 +158,7 @@ test('composeTowerReviewTask names the worker and commit', () => {
   assert.match(text, /alisa/);
   assert.match(text, /abc123/);
   assert.match(text, /notes\.md/);
+  assert.match(text, /submit_tower_review/);
   assert.match(text, /diff --git/);
 });
 
@@ -286,6 +299,17 @@ function sseToolCalls(calls) {
   chunks.push(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: 'tool_calls' }] })}\n\n`);
   chunks.push('data: [DONE]\n\n');
   return chunks.join('');
+}
+
+function reviewerVerdict(body, blob, verdict) {
+  if (!blob.includes('You are reviewing tower worker')) return null;
+  const messages = Array.isArray(body?.messages) ? body.messages : [];
+  if (messages.some((message) => message?.role === 'tool')) return sseText('reviewed');
+  return sseToolCalls([{
+    id: 'call-verdict',
+    name: 'submit_tower_review',
+    arguments: JSON.stringify(verdict),
+  }]);
 }
 
 function messageBlob(body) {
@@ -463,9 +487,8 @@ test('tower reviewer reuses the author worktree, stays off the roster, and recor
         }),
       }]);
     }
-    if (blob.includes('You are reviewing tower worker')) {
-      return sseText('Findings:\n- none');
-    }
+    const submitted = reviewerVerdict(body, blob, { passed: true, findings: [] });
+    if (submitted) return submitted;
     return sseText('FIRST_SHIFT_BODY');
   }, async ({ dir, bodies, runtime, session }) => {
     await runtime.submitMessage({ text: 'SPAWN_ALISA' });
@@ -483,7 +506,7 @@ test('tower reviewer reuses the author worktree, stays off the roster, and recor
     assert.equal(reviewed.reviewPassed, true);
     assert.equal(reviewed.reviewLoopStopped, undefined);
     assert.equal(reviewed.reviewRound, undefined);
-    assert.match(String(reviewed.reviewText || ''), /Findings:\n- none/);
+    assert.equal(String(reviewed.reviewText || ''), '');
     assert.deepEqual(await fs.readdir(getProjectTowerWorktreesDir(dir)), ['alisa']);
 
     const reviewPrompt = bodies.map((item) => messageBlob(item)).find((text) => text.includes('You are reviewing tower worker'));
@@ -500,6 +523,47 @@ test('tower reviewer reuses the author worktree, stays off the roster, and recor
 
     const landed = await landTowerWorkers({ cwd: dir, base: 'main' });
     assert.equal(landed.ok, true, landed.error);
+  });
+});
+
+test('tower review free text without submit_tower_review does not pass', async () => {
+  await withReviewRuntime({}, async (body, blob) => {
+    if (isParentUserTurn(body, /SPAWN_ALISA/)) {
+      return sseToolCalls([{
+        id: 'call-spawn',
+        name: 'run_subagent',
+        arguments: JSON.stringify({
+          prompt: 'First shift on notes.md',
+          name: 'Alisa',
+          paths: ['notes.md'],
+        }),
+      }]);
+    }
+    if (isParentUserTurn(body, /REVIEW_ALISA/)) {
+      return sseToolCalls([{
+        id: 'call-review',
+        name: 'run_subagent',
+        arguments: JSON.stringify({
+          prompt: 'Review alisa',
+          role: 'reviewer',
+          review: 'alisa',
+        }),
+      }]);
+    }
+    if (blob.includes('You are reviewing tower worker')) {
+      return sseText('Findings:\n- none');
+    }
+    return sseText('FIRST_SHIFT_BODY');
+  }, async ({ dir, runtime }) => {
+    await runtime.submitMessage({ text: 'SPAWN_ALISA' });
+    await waitForWorkerStatus(dir, 'alisa', 'completed');
+    await sealWorkerNotes(dir);
+    await runtime.submitMessage({ text: 'REVIEW_ALISA' });
+    const reviewed = await waitForWorkerField(dir, 'alisa', (item) => item.reviewPassed === false);
+    assert.equal(reviewed.reviewPassed, false);
+    const landed = await landTowerWorkers({ cwd: dir, base: 'main' });
+    assert.equal(landed.ok, false);
+    assert.equal(landed.code, 'REVIEW_FAILED');
   });
 });
 
@@ -537,9 +601,8 @@ test('failed review stays bound to that commit; resume injects the findings', as
         }),
       }]);
     }
-    if (blob.includes('You are reviewing tower worker')) {
-      return sseText('Findings:\n- missing tests');
-    }
+    const submitted = reviewerVerdict(body, blob, { passed: false, findings: ['missing tests'] });
+    if (submitted) return submitted;
     if (blob.includes('Latest review')) return sseText('fixed-ok');
     return sseText('FIRST_SHIFT_BODY');
   }, async ({ dir, bodies, runtime, session }) => {
@@ -613,9 +676,8 @@ test('identical failed reviews stop the loop and allow a redirected resume', asy
         }),
       }]);
     }
-    if (blob.includes('You are reviewing tower worker')) {
-      return sseText('Findings:\n- missing tests');
-    }
+    const submitted = reviewerVerdict(body, blob, { passed: false, findings: ['missing tests'] });
+    if (submitted) return submitted;
     if (blob.includes('Latest review')) return sseText('should-not-inject-findings');
     return sseText('REDIRECTED_SHIFT');
   }, async ({ dir, bodies, runtime, session }) => {

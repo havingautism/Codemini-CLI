@@ -174,54 +174,65 @@ function ModeSelector({ sessionId, current, towerActive = false, disabled = fals
   const [open, setOpen] = useState(false);
   const [switching, setSwitching] = useState(false);
   const [towerError, setTowerError] = useState("");
-  const MODE_OPTIONS = getExecutionModeOptions();
+  const MODE_OPTIONS = [
+    ...getExecutionModeOptions(),
+    {
+      value: "tower",
+      label: t("towerMode"),
+      description: t("towerModeDesc"),
+      icon: TreeStructure,
+    },
+  ];
+  const selectedValue = towerActive
+    ? "tower"
+    : current === "plan" || current === "coding" || current === "code"
+      ? "plan"
+      : "normal";
   const active =
-    MODE_OPTIONS.find((m) => m.value === current) || MODE_OPTIONS[0];
+    MODE_OPTIONS.find((m) => m.value === selectedValue) || MODE_OPTIONS[0];
   const ActiveIcon = active.icon;
-  const isCoding = current === "plan" || current === "coding" || current === "code";
-  const triggerLabel = towerActive
-    ? `${active.label} · ${t("towerMode")}`
-    : active.label;
 
   const handleSelect = async (mode) => {
-    if (mode === current || switching || disabled) return;
+    if (!mode || mode === selectedValue || switching || disabled) return;
     setSwitching(true);
     setTowerError("");
+    let failed = false;
     try {
-      const result = await api.setExecutionMode(sessionId, mode);
-      if (result?.error)
-        throw new Error(result.message || "Failed to switch mode");
-    } catch {
-    } finally {
-      setSwitching(false);
-    }
-    setOpen(false);
-  };
-
-  const handleTowerToggle = async (event) => {
-    event.stopPropagation();
-    if (switching || disabled || !isCoding) return;
-    setSwitching(true);
-    setTowerError("");
-    try {
-      const result = await actions.setTowerMode(sessionId, !towerActive);
-      if (result?.error || result?.ok === false) {
-        const code = String(result?.code || "");
-        const message =
-          code === "NOT_GIT" || code === "NO_COMMIT"
-            ? t("towerNeedsGit")
-            : code === "DETACHED"
-              ? t("towerNeedsBranch")
-              : code === "NOT_CODING"
-                ? t("towerNeedsCoding")
+      if (mode === "tower") {
+        const result = await actions.setTowerMode(sessionId, true);
+        if (result?.error || result?.ok === false) {
+          failed = true;
+          const code = String(result?.code || "");
+          const message =
+            code === "NOT_GIT" || code === "NO_COMMIT"
+              ? t("towerNeedsGit")
+              : code === "DETACHED"
+                ? t("towerNeedsBranch")
                 : result?.message || t("towerFailed");
-        setTowerError(message);
+          setTowerError(message);
+        }
+      } else {
+        if (towerActive) {
+          const off = await actions.setTowerMode(sessionId, false);
+          if (off?.error || off?.ok === false) {
+            failed = true;
+            setTowerError(off?.message || t("towerFailed"));
+          }
+        }
+        if (!failed && mode !== "tower") {
+          const result = await api.setExecutionMode(sessionId, mode);
+          if (result?.error) {
+            failed = true;
+            throw new Error(result.message || "Failed to switch mode");
+          }
+        }
       }
-    } catch (error) {
-      setTowerError(error?.message || t("towerFailed"));
+    } catch {
+      failed = true;
     } finally {
       setSwitching(false);
     }
+    if (!failed) setOpen(false);
   };
 
   return (
@@ -234,7 +245,7 @@ function ModeSelector({ sessionId, current, towerActive = false, disabled = fals
           title={disabled ? t("switchModeDisabled") : t("switchMode")}
         >
           <ActiveIcon size={13} />
-          <span className="truncate">{triggerLabel}</span>
+          <span className="truncate">{active.label}</span>
           <CaretDown size={11} />
         </button>
       </PopoverTrigger>
@@ -249,7 +260,7 @@ function ModeSelector({ sessionId, current, towerActive = false, disabled = fals
         </div>
         <ToggleGroup
           type="single"
-          value={current}
+          value={selectedValue}
           onValueChange={handleSelect}
           disabled={disabled || switching}
           size="auto"
@@ -274,39 +285,10 @@ function ModeSelector({ sessionId, current, towerActive = false, disabled = fals
             );
           })}
         </ToggleGroup>
-        {isCoding ? (
-          <div className="mt-2 border-t border-border/60 pt-2">
-            <div className="px-0.5 pb-1.5 text-[11px] font-medium text-muted-foreground">
-              {t("towerMode")}
-            </div>
-            <button
-              type="button"
-              className={cn(
-                "flex w-full items-start gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-accent",
-                towerActive && "bg-accent",
-                disabled && "opacity-50 pointer-events-none",
-              )}
-              disabled={disabled}
-              aria-pressed={towerActive}
-              aria-busy={switching}
-              onClick={handleTowerToggle}
-            >
-              <TreeStructure size={16} className="mt-0.5 shrink-0" />
-              <span className="min-w-0 flex-1 overflow-hidden">
-                <span className="block truncate">
-                  {towerActive ? t("towerOn") : t("towerOff")}
-                </span>
-                <span className="block wrap-break-word text-[11px] font-normal leading-snug text-muted-foreground">
-                  {t("towerModeDesc")}
-                </span>
-              </span>
-            </button>
-            {towerError ? (
-              <p className="px-0.5 pt-1.5 text-[11px] leading-snug text-destructive">
-                {towerError}
-              </p>
-            ) : null}
-          </div>
+        {towerError ? (
+          <p className="px-0.5 pt-1.5 text-[11px] leading-snug text-destructive">
+            {towerError}
+          </p>
         ) : null}
       </PopoverContent>
     </Popover>

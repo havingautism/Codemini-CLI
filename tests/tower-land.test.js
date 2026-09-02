@@ -65,7 +65,7 @@ async function markCleanReview(dir, worker) {
 }
 
 async function commitCount(cwd) {
-  const log = await git(cwd, ['log', '--format=%s']);
+  const log = await git(cwd, ['log', '--first-parent', '--format=%s']);
   return String(log.stdout || '').trim().split('\n').filter(Boolean);
 }
 
@@ -130,7 +130,7 @@ test('land_workers refuses a dirty worker worktree and does not commit the user 
   });
 });
 
-test('one sealed worker squashes onto the user branch without a merge commit', async () => {
+test('one sealed worker commits onto the user branch', async () => {
   await withRepo(async (dir) => {
     const spawned = await addTowerWorktree({
       cwd: dir,
@@ -142,8 +142,11 @@ test('one sealed worker squashes onto the user branch without a merge commit', a
     await markCleanReview(dir, spawned.worker);
     const landed = await landTowerWorkers({ cwd: dir, base: 'main' });
     assert.equal(landed.ok, true, landed.error);
+    assert.equal(landed.committed, true);
     assert.equal(await fs.readFile(path.join(dir, 'docs', 'a.md'), 'utf8'), 'alpha\n');
-    assert.deepEqual(await commitCount(dir), ['init']);
+    const commits = await commitCount(dir);
+    assert.equal(commits.length, 2);
+    assert.match(commits[0], /codemini-tower merge docs/);
     const saved = JSON.parse(await fs.readFile(getProjectTowerStatePath(dir), 'utf8'));
     assert.equal(listTowerWorkersFromState(saved).length, 0);
     assert.deepEqual(landed.kept, []);
@@ -152,7 +155,7 @@ test('one sealed worker squashes onto the user branch without a merge commit', a
   });
 });
 
-test('two sealed workers squash both files without a user merge commit', async () => {
+test('two sealed workers land both files in one tower commit', async () => {
   await withRepo(async (dir) => {
     const docs = await addTowerWorktree({
       cwd: dir,
@@ -173,9 +176,12 @@ test('two sealed workers squash both files without a user merge commit', async (
     await markCleanReview(dir, src.worker);
     const landed = await landTowerWorkers({ cwd: dir, base: 'main' });
     assert.equal(landed.ok, true, landed.error);
+    assert.equal(landed.committed, true);
     assert.equal(await fs.readFile(path.join(dir, 'docs', 'a.md'), 'utf8'), 'alpha\n');
     assert.equal(await fs.readFile(path.join(dir, 'src', 'a.ts'), 'utf8'), 'export {}\n');
-    assert.deepEqual(await commitCount(dir), ['init']);
+    const commits = await commitCount(dir);
+    assert.equal(commits.length, 3);
+    assert.match(commits[0], /codemini-tower merge/);
     assert.deepEqual(landed.kept, []);
     assert.deepEqual(await listTowerRefs(dir), []);
     const worktrees = await git(dir, ['worktree', 'list']);
@@ -216,6 +222,7 @@ test('land_workers stops when the user worktree would overwrite uncommitted file
     await fs.writeFile(path.join(dir, 'docs', 'a.md'), 'local\n');
     const landed = await landTowerWorkers({ cwd: dir, base: 'main' });
     assert.equal(landed.ok, false);
+    assert.equal(landed.code, 'GIT_MERGE');
     assert.equal(await fs.readFile(path.join(dir, 'docs', 'a.md'), 'utf8'), 'local\n');
     const saved = JSON.parse(await fs.readFile(getProjectTowerStatePath(dir), 'utf8'));
     assert.equal(listTowerWorkersFromState(saved).length, 1);
@@ -223,7 +230,7 @@ test('land_workers stops when the user worktree would overwrite uncommitted file
   });
 });
 
-test('failed two-worker squash keeps worker branches and merge tmp for retry', async () => {
+test('failed two-worker land keeps worker branches for retry after local checkout conflict', async () => {
   await withRepo(async (dir) => {
     const docs = await addTowerWorktree({
       cwd: dir,
@@ -245,21 +252,21 @@ test('failed two-worker squash keeps worker branches and merge tmp for retry', a
     await fs.writeFile(path.join(dir, 'docs', 'a.md'), 'local\n');
     const landed = await landTowerWorkers({ cwd: dir, base: 'main' });
     assert.equal(landed.ok, false);
+    assert.equal(landed.code, 'GIT_MERGE');
     assert.equal(await fs.readFile(path.join(dir, 'docs', 'a.md'), 'utf8'), 'local\n');
     assert.equal(await fs.access(path.join(dir, 'src', 'a.ts')).then(() => true, () => false), false);
     const refs = await listTowerRefs(dir);
     assert.equal(refs.includes('codemini-tower/docs'), true);
     assert.equal(refs.includes('codemini-tower/src'), true);
-    assert.equal(refs.includes('codemini-tower/_merge-tmp'), true);
-    assert.equal((await fs.readdir(getProjectTowerWorktreesDir(dir))).includes('_merge-tmp'), true);
+    assert.equal(refs.includes('codemini-tower/_merge-tmp'), false);
     const saved = JSON.parse(await fs.readFile(getProjectTowerStatePath(dir), 'utf8'));
     const workers = listTowerWorkersFromState(saved);
     assert.equal(workers.length, 2);
-    assert.equal(workers.every((item) => item.integrated === true), true);
+    assert.equal(workers.every((item) => item.integrated === true), false);
     await fs.rm(path.join(dir, 'docs', 'a.md'));
     const retried = await landTowerWorkers({ cwd: dir, base: 'main' });
     assert.equal(retried.ok, true, retried.error);
-    assert.equal(retried.squashed, true);
+    assert.equal(retried.committed, true);
     assert.equal(await fs.readFile(path.join(dir, 'docs', 'a.md'), 'utf8'), 'from-worker\n');
   });
 });
@@ -329,7 +336,7 @@ test('land_workers treats a stopped review loop like a failed review', async () 
   });
 });
 
-test('land_workers merges a passing worker onto tmp while another is still in review', async () => {
+test('land_workers merges a passing worker onto base while another is still in review', async () => {
   await withRepo(async (dir) => {
     const docs = await addTowerWorktree({
       cwd: dir,
@@ -349,11 +356,11 @@ test('land_workers merges a passing worker onto tmp while another is still in re
 
     const first = await landTowerWorkers({ cwd: dir, base: 'main' });
     assert.equal(first.ok, true, first.error);
-    assert.equal(first.squashed, false);
+    assert.equal(first.committed, true);
     assert.deepEqual(first.integrated, ['docs']);
     assert.deepEqual(first.pending, ['src']);
-    assert.equal(await fs.access(path.join(dir, 'docs', 'a.md')).then(() => true, () => false), false);
-    assert.equal((await fs.readdir(getProjectTowerWorktreesDir(dir))).includes('_merge-tmp'), true);
+    assert.equal(await fs.readFile(path.join(dir, 'docs', 'a.md'), 'utf8'), 'alpha\n');
+    assert.equal((await fs.readdir(getProjectTowerWorktreesDir(dir))).includes('_merge-tmp'), false);
 
     const saved = JSON.parse(await fs.readFile(getProjectTowerStatePath(dir), 'utf8'));
     const workers = listTowerWorkersFromState(saved);
@@ -374,13 +381,14 @@ test('land_workers merges a passing worker onto tmp while another is still in re
     assert.equal(overlap.ok, true, overlap.error);
 
     await markCleanReview(dir, src.worker);
-    await markCleanReview(dir, overlap.worker);
     const second = await landTowerWorkers({ cwd: dir, base: 'main' });
     assert.equal(second.ok, true, second.error);
-    assert.equal(second.squashed, true);
+    assert.equal(second.committed, true);
     assert.equal(await fs.readFile(path.join(dir, 'docs', 'a.md'), 'utf8'), 'alpha\n');
     assert.equal(await fs.readFile(path.join(dir, 'src', 'a.ts'), 'utf8'), 'export {}\n');
-    assert.deepEqual(await commitCount(dir), ['init']);
+    const commits = await commitCount(dir);
+    assert.equal(commits.length, 3);
+    assert.match(commits[0], /codemini-tower merge/);
   });
 });
 
@@ -401,7 +409,7 @@ test('a new worker commit invalidates the previous passing review', async () => 
   });
 });
 
-test('two-worker merge conflict keeps tmp and requires rebase onto that tip', async () => {
+test('two-worker merge conflict requires rebase onto the base tip', async () => {
   await withRepo(async (dir) => {
     const mia = await addTowerWorktree({
       cwd: dir,
@@ -431,19 +439,21 @@ test('two-worker merge conflict keeps tmp and requires rebase onto that tip', as
     assert.equal(landed.code, 'REBASE_REQUIRED');
     assert.equal(landed.workerId, 'noah');
     assert.equal(Boolean(landed.onto), true);
-    const tmpTip = String((await git(dir, ['rev-parse', 'codemini-tower/_merge-tmp'])).stdout || '').trim();
-    assert.equal(landed.onto, tmpTip);
-    assert.equal((await fs.readdir(getProjectTowerWorktreesDir(dir))).includes('_merge-tmp'), true);
+    const baseTip = String((await git(dir, ['rev-parse', 'HEAD'])).stdout || '').trim();
+    assert.equal(landed.onto, baseTip);
+    assert.equal((await fs.readdir(getProjectTowerWorktreesDir(dir))).includes('_merge-tmp'), false);
 
     const afterConflict = JSON.parse(await fs.readFile(getProjectTowerStatePath(dir), 'utf8'));
     const noahState = listTowerWorkersFromState(afterConflict).find((item) => item.id === 'noah');
-    assert.equal(noahState.rebaseOnto, tmpTip);
+    assert.equal(noahState.rebaseOnto, baseTip);
+    assert.notEqual(noahState.reviewPassed, true);
+    assert.equal(noahState.reviewedCommit, undefined);
 
     const again = await landTowerWorkers({ cwd: dir, base: 'main' });
     assert.equal(again.code, 'REBASE_REQUIRED');
-    assert.equal(String((await git(dir, ['rev-parse', 'codemini-tower/_merge-tmp'])).stdout || '').trim(), tmpTip);
+    assert.equal(String((await git(dir, ['rev-parse', 'HEAD'])).stdout || '').trim(), baseTip);
 
-    const rebase = await runGit(['rebase', tmpTip], {
+    const rebase = await runGit(['rebase', baseTip], {
       cwd: noah.worker.worktreePath,
       allowFailure: true,
       timeoutMs: 15_000,
@@ -473,12 +483,6 @@ test('two-worker merge conflict keeps tmp and requires rebase onto that tip', as
     });
 
     await patchTowerWorkerRecord(dir, 'noah', { landBase: '', rebaseOnto: '' });
-    await markCleanReview(dir, noahRecord);
-    const escaped = await landTowerWorkers({ cwd: dir, base: 'main' });
-    assert.equal(escaped.code, 'SCOPE_ESCAPE');
-    assert.ok((escaped.files || []).includes('docs/a.md'));
-
-    await patchTowerWorkerRecord(dir, 'noah', { landBase: tmpTip, rebaseOnto: '' });
     await markCleanReview(dir, noahRecord);
     const finished = await landTowerWorkers({ cwd: dir, base: 'main' });
     assert.equal(finished.ok, true, finished.error);
