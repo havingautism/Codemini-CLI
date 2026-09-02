@@ -3,8 +3,9 @@ import path from 'node:path';
 
 import { getProjectTowerWorktreesDir } from './paths.js';
 import { runGit } from './process-run.js';
-import { fileMatchesTowerPaths, orderTowerWorkersForLand } from './tower-scope.js';
+import { fileMatchesTowerPaths, normalizeTowerDependsOn, orderTowerWorkersForLand } from './tower-scope.js';
 import {
+  formatTowerReviewLoopStoppedError,
   listTowerWorkersFromState,
   patchTowerWorkerRecord,
   readTowerStateFile,
@@ -140,6 +141,100 @@ async function collectScopeEscape(root, base, worker) {
   return { ok: true, files };
 }
 
+function workerLookupKeys(worker) {
+  return [worker?.id, worker?.taskId]
+    .map((value) => String(value || '').trim())
+    .filter(Boolean);
+}
+
+function depsReady(worker, byId, satisfied) {
+  return normalizeTowerDependsOn(worker.dependsOn).every((dep) => {
+    const target = byId.get(dep);
+    return !target || satisfied.has(target);
+  });
+}
+
+function buildPartialMessage(integrated, pending) {
+  const done = integrated.map((worker) => worker.id).join(', ');
+  const wait = pending.map((worker) => worker.id).join(', ');
+  return `Integrated ${done} onto the merge tmp. Waiting on ${wait}. Did not squash onto the user branch. Do not delete the merge tmp.`;
+}
+
+async function mergeTmpWorktreePath(root) {
+  return path.resolve(getProjectTowerWorktreesDir(root), TMP_WORKTREE_ID);
+}
+
+async function ensureMergeTmp(root, baseBranch) {
+  const mergeWorktree = await mergeTmpWorktreePath(root);
+  await fs.mkdir(path.dirname(mergeWorktree), { recursive: true });
+  const existing = await tryGit(mergeWorktree, ['rev-parse', 'HEAD']);
+  if (existing.code === 0) return { ok: true, mergeWorktree };
+  const branchExists = await tryGit(root, ['rev-parse', '--verify', TMP_BRANCH]);
+  if (branchExists.code === 0) {
+    const added = await tryGit(root, ['worktree', 'add', mergeWorktree, TMP_BRANCH]);
+    if (added.code !== 0) {
+      return {
+        ok: false,
+        code: 'TMP_WORKTREE_FAILED',
+        error: String(added.stderr || added.stdout || '').trim() || 'Failed to attach tower merge worktree.',
+      };
+    }
+    return { ok: true, mergeWorktree };
+  }
+  const added = await tryGit(root, ['worktree', 'add', '-b', TMP_BRANCH, mergeWorktree, baseBranch]);
+  if (added.code !== 0) {
+    return {
+      ok: false,
+      code: 'TMP_WORKTREE_FAILED',
+      error: String(added.stderr || added.stdout || '').trim() || 'Failed to create tower merge worktree.',
+    };
+  }
+  return { ok: true, mergeWorktree };
+}
+
+async function classifyWorker(root, baseBranch, worker) {
+  if (await isTowerWorktreeDirty(worker.worktreePath)) {
+    return {
+      kind: 'blocked',
+      code: 'DIRTY_WORKTREE',
+      error: `Worker worktree still dirty (not sealed): ${worker.id}. Do not land until that worker git commits.`,
+      workerId: worker.id,
+      workers: [worker.id],
+      worker,
+    };
+  }
+  const scope = await collectScopeEscape(root, baseBranch, worker);
+  if (!scope.ok) return { kind: 'blocked', ...scope, worker };
+  const tip = await tryGit(root, ['rev-parse', worker.branch]);
+  const commit = String(tip.stdout || '').trim();
+  if (tip.code !== 0 || !commit) {
+    return {
+      kind: 'blocked',
+      code: 'REVIEW_COMMIT_MISSING',
+      error: `Could not read the current commit for worker "${worker.id}".`,
+      workerId: worker.id,
+      worker,
+    };
+  }
+  if (!workerReviewMatchesCommit(worker, commit)) {
+    const sameCommit = String(worker.reviewedCommit || '').trim() === commit;
+    const failedReview = worker.reviewPassed === false && sameCommit;
+    const loopStopped = failedReview && worker.reviewLoopStopped === true;
+    return {
+      kind: 'blocked',
+      code: failedReview ? 'REVIEW_FAILED' : 'REVIEW_REQUIRED',
+      error: loopStopped
+        ? formatTowerReviewLoopStoppedError(worker)
+        : failedReview
+          ? `Worker "${worker.id}" review did not pass. Resume "${worker.id}" with the review text, then review the new commit.`
+          : `Worker "${worker.id}" has no passing review for the current commit. Call run_subagent with role: "reviewer" and review: "${worker.id}".`,
+      workerId: worker.id,
+      worker,
+    };
+  }
+  return { kind: 'ready', worker };
+}
+
 export async function landTowerWorkers({
   cwd = process.cwd(),
   base,
@@ -156,6 +251,7 @@ export async function landTowerWorkers({
     }
     const ordered = orderTowerWorkersForLand(workers);
     let keepMergeTmp = false;
+    let delivered = false;
     try {
       const pendingRebase = [];
       for (const worker of ordered) {
@@ -174,65 +270,74 @@ export async function landTowerWorkers({
         keepMergeTmp = true;
         return buildRebaseRequired(pendingRebase[0]);
       }
-      await removeMergeTmp(root);
-      const dirty = [];
+
+      const already = ordered.filter((worker) => worker.integrated === true);
+      const rest = ordered.filter((worker) => worker.integrated !== true);
+      if (already.length === 0) await removeMergeTmp(root);
+
+      const classified = [];
+      for (const worker of rest) {
+        classified.push(await classifyWorker(root, baseBranch, worker));
+      }
+      const ready = classified.filter((item) => item.kind === 'ready').map((item) => item.worker);
+      const blocked = classified.filter((item) => item.kind === 'blocked');
+
+      const byId = new Map();
       for (const worker of ordered) {
-        if (await isTowerWorktreeDirty(worker.worktreePath)) {
-          dirty.push(worker.id);
+        for (const key of workerLookupKeys(worker)) {
+          if (!byId.has(key)) byId.set(key, worker);
         }
       }
-      if (dirty.length) {
-        return {
-          ok: false,
-          code: 'DIRTY_WORKTREE',
-          error: `Worker worktree still dirty (not sealed): ${dirty.join(', ')}. Do not land until that worker git commits.`,
-          workers: dirty,
-        };
+      const satisfied = new Set(already);
+      const toMerge = [];
+      for (const worker of orderTowerWorkersForLand(ready)) {
+        if (!depsReady(worker, byId, satisfied)) continue;
+        toMerge.push(worker);
+        satisfied.add(worker);
       }
-      for (const worker of ordered) {
-        const scope = await collectScopeEscape(root, baseBranch, worker);
-        if (!scope.ok) return scope;
-      }
-      for (const worker of ordered) {
-        const tip = await tryGit(root, ['rev-parse', worker.branch]);
-        const commit = String(tip.stdout || '').trim();
-        if (tip.code !== 0 || !commit) {
+      const merging = new Set(toMerge);
+      const pending = rest.filter((worker) => !merging.has(worker));
+      const needTmp = already.length > 0 || pending.length > 0 || toMerge.length > 1;
+      const reviewWait = new Set(['REVIEW_REQUIRED', 'REVIEW_FAILED']);
+      const hardBlocked = blocked.filter((item) => !reviewWait.has(item.code));
+
+      if (toMerge.length === 0) {
+        if (hardBlocked.length) {
+          keepMergeTmp = already.length > 0;
+          const { kind, worker, ...error } = hardBlocked[0];
+          return { ok: false, ...error };
+        }
+        if (already.length > 0 && pending.length > 0) {
+          keepMergeTmp = true;
           return {
-            ok: false,
-            code: 'REVIEW_COMMIT_MISSING',
-            error: `Could not read the current commit for worker "${worker.id}".`,
-            workerId: worker.id,
+            ok: true,
+            squashed: false,
+            integrated: already.map((worker) => worker.id),
+            pending: pending.map((worker) => worker.id),
+            message: buildPartialMessage(already, pending),
           };
         }
-        if (!workerReviewMatchesCommit(worker, commit)) {
-          const sameCommit = String(worker.reviewedCommit || '').trim() === commit;
-          const failedReview = worker.reviewPassed === false && sameCommit;
-          return {
-            ok: false,
-            code: failedReview ? 'REVIEW_FAILED' : 'REVIEW_REQUIRED',
-            error: failedReview
-              ? `Worker "${worker.id}" review did not pass. Resume "${worker.id}" with the review text, then review the new commit.`
-              : `Worker "${worker.id}" has no passing review for the current commit. Call run_subagent with role: "reviewer" and review: "${worker.id}".`,
-            workerId: worker.id,
-          };
+        if (already.length === 0) {
+          const first = blocked[0];
+          if (first) {
+            const { kind, worker, ...error } = first;
+            return { ok: false, ...error };
+          }
+          return { ok: false, code: 'NO_WORKERS', error: 'No tower workers to land.' };
         }
       }
 
-      const useTmp = ordered.length > 1;
-      const squashTarget = useTmp ? TMP_BRANCH : ordered[0].branch;
-      if (useTmp) {
-        const mergeWorktree = path.resolve(getProjectTowerWorktreesDir(root), TMP_WORKTREE_ID);
-        await fs.mkdir(path.dirname(mergeWorktree), { recursive: true });
-        const added = await tryGit(root, ['worktree', 'add', '-b', TMP_BRANCH, mergeWorktree, baseBranch]);
-        if (added.code !== 0) {
-          return {
-            ok: false,
-            code: 'TMP_WORKTREE_FAILED',
-            error: String(added.stderr || added.stdout || '').trim() || 'Failed to create tower merge worktree.',
-          };
-        }
-        for (const worker of ordered) {
-          const merged = await tryGit(mergeWorktree, [
+      if (needTmp) {
+        const tmp = await ensureMergeTmp(root, baseBranch);
+        if (!tmp.ok) return tmp;
+        keepMergeTmp = true;
+        for (const worker of toMerge) {
+          if (await isTowerCommitAncestor(tmp.mergeWorktree, worker.branch)) {
+            worker.integrated = true;
+            await patchTowerWorkerRecord(root, worker.id, { integrated: true }).catch(() => null);
+            continue;
+          }
+          const merged = await tryGit(tmp.mergeWorktree, [
             'merge',
             '--no-ff',
             '-m',
@@ -240,9 +345,9 @@ export async function landTowerWorkers({
             worker.branch,
           ]);
           if (merged.code !== 0) {
-            const conflicted = splitNames((await tryGit(mergeWorktree, ['diff', '--name-only', '--diff-filter=U'])).stdout);
-            await abortMerge(mergeWorktree);
-            const ontoResult = await tryGit(mergeWorktree, ['rev-parse', 'HEAD']);
+            const conflicted = splitNames((await tryGit(tmp.mergeWorktree, ['diff', '--name-only', '--diff-filter=U'])).stdout);
+            await abortMerge(tmp.mergeWorktree);
+            const ontoResult = await tryGit(tmp.mergeWorktree, ['rev-parse', 'HEAD']);
             const onto = String(ontoResult.stdout || '').trim();
             if (!onto) {
               return {
@@ -255,15 +360,29 @@ export async function landTowerWorkers({
             }
             worker.rebaseOnto = onto;
             await patchTowerWorkerRecord(root, worker.id, { rebaseOnto: onto }).catch(() => null);
-            keepMergeTmp = true;
             return buildRebaseRequired(worker, conflicted);
           }
+          worker.integrated = true;
+          await patchTowerWorkerRecord(root, worker.id, { integrated: true }).catch(() => null);
+        }
+        const stillPending = ordered.filter((worker) => worker.integrated !== true);
+        if (stillPending.length) {
+          const onTmp = ordered.filter((worker) => worker.integrated === true);
+          return {
+            ok: true,
+            squashed: false,
+            integrated: onTmp.map((worker) => worker.id),
+            pending: stillPending.map((worker) => worker.id),
+            message: buildPartialMessage(onTmp, stillPending),
+          };
         }
       }
 
+      const squashTarget = needTmp || already.length > 0 ? TMP_BRANCH : toMerge[0].branch;
       const squashed = await tryGit(root, ['merge', '--squash', squashTarget]);
       if (squashed.code !== 0) {
         await abortMerge(root);
+        if (needTmp) keepMergeTmp = true;
         return {
           ok: false,
           code: 'GIT_SQUASH',
@@ -280,14 +399,17 @@ export async function landTowerWorkers({
         if (!deleted.ok) kept.push(worker.id);
       }
       const uniqueKept = [...new Set(kept)];
+      delivered = true;
+      keepMergeTmp = false;
       return {
         ok: true,
+        squashed: true,
         landed: ordered.map((worker) => worker.id),
         kept: uniqueKept,
         message: buildLandMessage(ordered, uniqueKept),
       };
     } finally {
-      if (!keepMergeTmp) await removeMergeTmp(root);
+      if (delivered || !keepMergeTmp) await removeMergeTmp(root);
     }
   });
 }

@@ -10,6 +10,7 @@ import {
   requiresDeterministicCommandApproval,
 } from './command-risk.js';
 import { evaluateCommandPolicy } from './command-policy.js';
+import { evaluateTowerParentCommand } from './tower-shell.js';
 import { buildRunFailureMessage, getToolOutputSanitizeOptions, sanitizeTextForModel } from './tool-output.js';
 import { createToolRuntime, buildInvalidToolArgumentsResult } from './tool-runtime.js';
 import { createToolResultStore, summarizeToolResult } from './tool-result-store.js';
@@ -1020,6 +1021,17 @@ export async function runAgentLoop({
           errorContent: clipToolResult(buildInvalidToolArgumentsResult(toolName, args), toolResultMaxChars)
         });
         continue;
+      }
+      if (isShellToolName(toolName) && config?.runtime?.tower_parent_shell === true) {
+        const towerShell = evaluateTowerParentCommand(String(approvalArgs?.command || args?.command || ''));
+        if (!towerShell.allowed) {
+          approvalResults.set(call.id, {
+            approved: false,
+            args: approvalArgs,
+            errorContent: clipToolResult({ error: towerShell.reason }, toolResultMaxChars),
+          });
+          continue;
+        }
       }
       let sandboxEscalation = null;
       try {

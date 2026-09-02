@@ -11,6 +11,7 @@ import { runGit } from '../src/core/process-run.js';
 import { getProjectTowerStatePath, getProjectTowerWorktreesDir } from '../src/core/paths.js';
 import { closeSqliteDatabasesForTests } from '../src/core/sqlite-database.js';
 import { createSession } from '../src/core/session-store.js';
+import { withCodeminiGlobalDir } from './helpers/codemini-global-dir.js';
 import {
   enterTowerMode,
   listTowerWorkersFromState,
@@ -124,43 +125,44 @@ function baseConfig(port) {
 
 async function withResumeRuntime(respond, task) {
   closeSqliteDatabasesForTests();
-  const previous = process.env.CODEMINI_GLOBAL_DIR;
   const globalDir = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-tower-resume-rt-'));
   const dir = path.join(globalDir, 'workspace');
   await fs.mkdir(dir, { recursive: true });
-  process.env.CODEMINI_GLOBAL_DIR = globalDir;
-  const bodies = [];
-  const server = http.createServer(async (req, res) => {
-    let raw = '';
-    for await (const chunk of req) raw += chunk;
-    let body = null;
-    try { body = JSON.parse(raw); } catch { body = null; }
-    bodies.push(body);
-    res.writeHead(200, { 'content-type': 'text/event-stream' });
-    const payload = await respond(body, messageBlob(body));
-    res.end(payload || sseText('ok'));
-  });
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   try {
-    await initCleanGit(dir);
-    const port = server.address().port;
-    const session = await createSession(dir);
-    const runtime = await createChatRuntime({
-      session,
-      config: baseConfig(port),
-      model: 'test-model',
-      systemPrompt: 'stable',
-      workspaceRoot: dir,
+    return await withCodeminiGlobalDir(globalDir, async () => {
+      const bodies = [];
+      const server = http.createServer(async (req, res) => {
+        let raw = '';
+        for await (const chunk of req) raw += chunk;
+        let body = null;
+        try { body = JSON.parse(raw); } catch { body = null; }
+        bodies.push(body);
+        res.writeHead(200, { 'content-type': 'text/event-stream' });
+        const payload = await respond(body, messageBlob(body));
+        res.end(payload || sseText('ok'));
+      });
+      await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+      try {
+        await initCleanGit(dir);
+        const port = server.address().port;
+        const session = await createSession(dir);
+        const runtime = await createChatRuntime({
+          session,
+          config: baseConfig(port),
+          model: 'test-model',
+          systemPrompt: 'stable',
+          workspaceRoot: dir,
+        });
+        await runtime.setTowerMode(true);
+        await task({ dir, bodies, runtime, session });
+        await runtime.dispose?.();
+      } finally {
+        server.closeAllConnections?.();
+        await new Promise((resolve) => server.close(resolve));
+        closeSqliteDatabasesForTests();
+      }
     });
-    await runtime.setTowerMode(true);
-    await task({ dir, bodies, runtime, session });
-    await runtime.dispose?.();
   } finally {
-    server.closeAllConnections?.();
-    await new Promise((resolve) => server.close(resolve));
-    closeSqliteDatabasesForTests();
-    if (previous === undefined) delete process.env.CODEMINI_GLOBAL_DIR;
-    else process.env.CODEMINI_GLOBAL_DIR = previous;
     await fs.rm(globalDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 50 });
   }
 }
@@ -175,12 +177,34 @@ function lastUserText(body) {
   return '';
 }
 
+async function waitForWorkerStatus(dir, workerId, status, timeoutMs = 8000) {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    const raw = await fs.readFile(getProjectTowerStatePath(dir), 'utf8').catch(() => '');
+    if (raw) {
+      const worker = listTowerWorkersFromState(JSON.parse(raw)).find((item) => item.id === workerId);
+      if (worker?.runStatus === status) return worker;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 40));
+  }
+  throw new Error(`timed out waiting for ${workerId} status=${status}`);
+}
+
+async function waitUntil(predicate, timeoutMs = 8000) {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    if (await predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 40));
+  }
+  throw new Error('timed out waiting');
+}
+
 function isParentUserTurn(body, needle) {
   const messages = Array.isArray(body?.messages) ? body.messages : [];
   if (messages[messages.length - 1]?.role !== 'user') return false;
   const text = lastUserText(body);
   if (!needle.test(text)) return false;
-  if (text.includes('\nTask:') || text.includes('Previous shift handoff')) return false;
+  if (text.includes('\nTask:') || text.includes('Previous shift handoff') || /<task>\s*\[tower\]/.test(text) || text.trimStart().startsWith('[tower]')) return false;
   return true;
 }
 
@@ -239,8 +263,9 @@ test('resume reuses the same worktree; same name without resume is rejected', as
       resume: 'alisa',
       paths: ['other.md'],
     });
-    assert.equal(mismatch.ok, false);
-    assert.equal(mismatch.code, 'PATHS_MISMATCH');
+    assert.equal(mismatch.ok, true, mismatch.error);
+    assert.equal(mismatch.pathsChanged, true);
+    assert.deepEqual(mismatch.worker.paths, ['other.md']);
 
     const dup = await resolveTowerSubagentWorkspace({
       cwd: dir,
@@ -336,12 +361,14 @@ test('spawn then resume injects the last handoff into the new prompt', async () 
     return sseText('FIRST_SHIFT_BODY');
   }, async ({ dir, bodies, runtime }) => {
     await runtime.submitMessage({ text: 'SPAWN_ALISA' });
+    await waitForWorkerStatus(dir, 'alisa', 'completed');
     const afterSpawn = JSON.parse(await fs.readFile(getProjectTowerStatePath(dir), 'utf8'));
     const [worker] = listTowerWorkersFromState(afterSpawn);
     assert.equal(worker.id, 'alisa');
     assert.match(String(worker.lastHandoffPath || ''), /handoffs/);
 
     await runtime.submitMessage({ text: 'RESUME_ALISA' });
+    await waitUntil(() => bodies.some((item) => messageBlob(item).includes('Previous shift handoff')));
     const afterResume = JSON.parse(await fs.readFile(getProjectTowerStatePath(dir), 'utf8'));
     assert.equal(listTowerWorkersFromState(afterResume).length, 1);
     assert.deepEqual(await fs.readdir(getProjectTowerWorktreesDir(dir)), ['alisa']);
@@ -395,11 +422,13 @@ test('in-flight resume of the same worker is rejected', async () => {
     return sseText('FIRST_SHIFT_BODY');
   }, async ({ dir, runtime, session }) => {
     await runtime.submitMessage({ text: 'SPAWN_ALISA' });
+    await waitForWorkerStatus(dir, 'alisa', 'completed');
     await runtime.submitMessage({ text: 'DOUBLE_RESUME' });
     const transcript = JSON.stringify(session.messages);
     assert.match(transcript, /still running/);
     const trees = await fs.readdir(getProjectTowerWorktreesDir(dir));
     assert.deepEqual(trees, ['alisa']);
+    await waitForWorkerStatus(dir, 'alisa', 'completed');
   });
 });
 

@@ -24,6 +24,7 @@ import {
   terminateChild,
 } from "./shell.js";
 import { evaluateCommandPolicy } from "./command-policy.js";
+import { evaluateTowerParentCommand } from "./tower-shell.js";
 import { classifyCommandRisk, hasShellWriteSyntax } from "./command-risk.js";
 import { createWriteCoordinator } from "./write-coordinator.js";
 import {
@@ -5161,7 +5162,7 @@ export function getBuiltinTools({
       type: "function",
       function: {
         name: commandToolName,
-        description: `${vmSandbox
+        description: `${towerActive ? "Tower parent inspect-only: git status/log/diff and other read-only commands. Do not merge, checkout, worktree, or copy into the main checkout; use land_workers. " : ""}${vmSandbox
           ? platform === "win32"
             ? `Run a compact Bash command inside the Linux microVM sandbox (${sandboxPolicy.mode}) from the project root. If a build or test cannot use Windows-native dependencies because the guest is Linux, retry that exact verification command with sandbox_permissions="danger-full-access" and justification; the escalated command must be Windows PowerShell-compatible and runs on the host only after LLM risk advice and user approval. Do not escalate ordinary code failures, missing dependencies, or timeouts. Use project-relative paths and run_in_background=true only for long-running sandboxed commands. Put command last.`
             : `Run a compact Bash command inside the Linux microVM sandbox (${sandboxPolicy.mode}) from the project root with unrestricted outbound networking. Use project-relative paths. Ordinary Bash commands, including curl, are available; commands with destructive or external side effects may still require approval. On denial, stderr includes [sandbox: ...]; retry with a wider sandbox_permissions plus justification when needed. Use run_in_background=true for long-running commands. Put command last.`
@@ -5346,12 +5347,12 @@ export function getBuiltinTools({
         type: "array",
         items: { type: "string" },
         description:
-          "Disjoint relative globs this new worker may change, such as docs/** or src/foo.ts. Required unless resume is set.",
+          "Disjoint relative globs this new worker may change, such as docs/** or src/foo.ts. Required for a new worker. On resume, omit to keep stored paths, or pass a new disjoint list to change that worker's scope.",
       };
       subagentProperties.resume = {
         type: "string",
         description:
-          "Roster worker id to call back, such as alisa. That is the short unique name, never a call id or handoff folder. Reuses that worktree, branch, and paths. Omit paths when resume is set.",
+          "Roster worker id to call back, such as alisa. That is the short unique name, never a call id or handoff folder. Reuses that worktree and branch. Omit paths to keep the stored scope, or pass new disjoint paths to change it.",
       };
       subagentProperties.review = {
         type: "string",
@@ -5364,7 +5365,7 @@ export function getBuiltinTools({
       function: {
         name: "run_subagent",
         description: towerActive
-          ? "Delegate isolated work to a git-worktree subagent. Same-response independent calls run in parallel; use task_id/depends_on for dependencies. New workers need disjoint paths and a unique short name (that name becomes the resume id). Call an idle worker back with resume set to that id; do not use call ids from handoff paths. After a worker commits, review that worker with role: \"reviewer\" and review set to its id before land_workers."
+          ? "Delegate isolated work to a git-worktree subagent. Same-response independent calls run in parallel; use task_id/depends_on for dependencies. New workers need disjoint paths and a unique short name (that name becomes the resume id). Call an idle worker back with resume set to that id; do not use call ids from handoff paths. After a worker commits, review that worker with role: \"reviewer\" and review set to its id before land_workers. If a review loop stops, tell the user; resume with a new task or paths, or spawn a new worker; do not keep fixing the same findings."
           : "Delegate a bounded task to a clean-context subagent. Same-response independent calls run in parallel; use task_id/depends_on for dependencies and disjoint file ownership for parallel edits. Invent a short worker name such as David. Use fork_task instead when shared prompt prefix/state is more useful.",
         parameters: {
           type: "object",
@@ -5424,7 +5425,7 @@ export function getBuiltinTools({
       function: {
         name: "land_workers",
         description:
-          "Squash sealed tower worker branches onto the current user branch without creating a commit, then delete those worker branches. Refuses dirty (uncommitted) worker worktrees. If a worker conflicts on the integration tip, resume that worker to rebase onto the returned commit, then review the new commit before landing again. Do not merge or copy files yourself.",
+          "Squash sealed tower worker branches onto the current user branch without creating a commit, then delete those worker branches. Merges each passing worker onto the merge tmp first; workers still in review stay off tmp. Squash happens when everyone still on the roster is on tmp. If a worker conflicts on the integration tip, resume that worker to rebase onto the returned commit, then review the new commit before landing again. If a review loop stops, resume with a new task or paths, or spawn a new worker; do not keep fixing the same findings. Do not merge or copy files yourself.",
         parameters: {
           type: "object",
           properties: {},
@@ -7197,7 +7198,15 @@ export function getBuiltinTools({
         sections,
       });
     },
-    run: Object.assign((args, context) => runCommand(workspaceRoot, config, args, context), {
+    run: Object.assign((args, context) => {
+      if (towerActive) {
+        const towerCheck = evaluateTowerParentCommand(args?.command, platform);
+        if (!towerCheck.allowed) {
+          throw new Error(towerCheck.reason);
+        }
+      }
+      return runCommand(workspaceRoot, config, args, context);
+    }, {
       prepareApproval: async (args) => {
         const evaluation = args?._evaluation || null;
         const risk = String(args?._risk || "").trim() ||
@@ -7752,6 +7761,7 @@ export function getBuiltinTools({
       if (result.message) return String(result.message);
       return JSON.stringify(result);
     },
+
 
     fork_task(result) {
       if (!result || typeof result !== "object") return String(result);

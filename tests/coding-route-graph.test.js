@@ -589,7 +589,7 @@ test('semantic judge can recommend fork branches with a capped count and focus',
   assert.match(block, /Use fork_task.*do not call run_subagent/);
 });
 
-test('tower overlay keeps run_subagent when the route prefers fork_task', async () => {
+test('tower overlay keeps run_subagent even when the route prefers fork_task', async () => {
   const result = await evaluateCodingRouteGraph({
     executionMode: 'plan',
     text: 'Check the module layout',

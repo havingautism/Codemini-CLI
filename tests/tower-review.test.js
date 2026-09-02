@@ -11,10 +11,14 @@ import { runGit } from '../src/core/process-run.js';
 import { getProjectTowerStatePath, getProjectTowerWorktreesDir } from '../src/core/paths.js';
 import { closeSqliteDatabasesForTests } from '../src/core/sqlite-database.js';
 import { createSession } from '../src/core/session-store.js';
+import { withCodeminiGlobalDir } from './helpers/codemini-global-dir.js';
 import {
   enterTowerMode,
   listTowerWorkersFromState,
+  nextTowerReviewLoopState,
+  patchTowerWorkerRecord,
   readTowerStateFile,
+  towerReviewFindingsKey,
   towerReviewPassedFromText,
   workerReviewMatchesCommit,
 } from '../src/core/tower-store.js';
@@ -23,6 +27,7 @@ import {
   composeTowerResumeTask,
   composeTowerReviewTask,
   resolveTowerReviewTarget,
+  resolveTowerSubagentWorkspace,
 } from '../src/core/tower-worktree.js';
 
 async function git(cwd, args) {
@@ -68,6 +73,44 @@ test('towerReviewPassedFromText requires Findings: none', () => {
   assert.equal(towerReviewPassedFromText('Findings:\n- missing tests'), false);
   assert.equal(towerReviewPassedFromText('looks good'), false);
   assert.equal(towerReviewPassedFromText(''), false);
+});
+
+test('towerReviewFindingsKey fingerprints Findings bullets', () => {
+  assert.equal(towerReviewFindingsKey('Findings:\n- missing tests'), 'missing tests');
+  assert.equal(
+    towerReviewFindingsKey('Findings:\n- Missing   Tests\n- no changelog'),
+    'missing tests\nno changelog',
+  );
+  assert.equal(towerReviewFindingsKey('Findings: none'), 'none');
+  assert.equal(towerReviewFindingsKey('looks good'), '');
+});
+
+test('nextTowerReviewLoopState stops after five failed rounds or two identical findings', () => {
+  let state = {};
+  for (let index = 0; index < 4; index += 1) {
+    state = nextTowerReviewLoopState(state, {
+      passed: false,
+      text: `Findings:\n- issue ${index}`,
+    });
+  }
+  assert.equal(state.reviewRound, 4);
+  assert.equal(state.reviewLoopStopped, false);
+
+  state = nextTowerReviewLoopState(state, { passed: false, text: 'Findings:\n- issue 4' });
+  assert.equal(state.reviewRound, 5);
+  assert.equal(state.reviewLoopStopped, true);
+
+  const first = nextTowerReviewLoopState({}, { passed: false, text: 'Findings:\n- missing tests' });
+  assert.equal(first.reviewRound, 1);
+  assert.equal(first.reviewLoopStopped, false);
+  const second = nextTowerReviewLoopState(first, { passed: false, text: 'Findings:\n- Missing Tests' });
+  assert.equal(second.reviewRound, 2);
+  assert.equal(second.reviewLoopStopped, true);
+
+  const reset = nextTowerReviewLoopState(second, { passed: true, text: 'Findings:\n- none' });
+  assert.equal(reset.reviewRound, 0);
+  assert.equal(reset.reviewLoopStopped, false);
+  assert.equal(reset.lastFindingsKey, '');
 });
 
 test('workerReviewMatchesCommit requires the same commit and a pass', () => {
@@ -149,6 +192,61 @@ test('resolveTowerReviewTarget reuses the author worktree and does not add a wor
   });
 });
 
+test('resolveTowerSubagentWorkspace still resumes after the review loop stops', async () => {
+  await withRepo(async (dir) => {
+    const spawned = await addTowerWorktree({
+      cwd: dir,
+      base: 'main',
+      name: 'Alisa',
+      paths: ['notes.md'],
+    });
+    await patchTowerWorkerRecord(dir, spawned.worker.id, {
+      reviewPassed: false,
+      reviewText: 'Findings:\n- missing tests',
+      reviewRound: 2,
+      lastFindingsKey: 'missing tests',
+      reviewLoopStopped: true,
+    });
+    const resumed = await resolveTowerSubagentWorkspace({
+      cwd: dir,
+      base: 'main',
+      resume: 'alisa',
+    });
+    assert.equal(resumed.ok, true, resumed.error);
+    assert.equal(resumed.resume, true);
+    assert.equal(resumed.worker.reviewLoopStopped, true);
+
+    const narrowed = await resolveTowerSubagentWorkspace({
+      cwd: dir,
+      base: 'main',
+      resume: 'alisa',
+      paths: ['notes.md', 'extra.md'],
+    });
+    assert.equal(narrowed.ok, true, narrowed.error);
+    assert.equal(narrowed.pathsChanged, true);
+    assert.deepEqual(narrowed.worker.paths, ['notes.md', 'extra.md']);
+    assert.equal(narrowed.worker.reviewLoopStopped, undefined);
+  });
+});
+
+test('resolveTowerReviewTarget refuses a worker already on the merge tmp', async () => {
+  await withRepo(async (dir) => {
+    const spawned = await addTowerWorktree({
+      cwd: dir,
+      base: 'main',
+      name: 'Alisa',
+      paths: ['notes.md'],
+    });
+    await fs.writeFile(path.join(spawned.worker.worktreePath, 'notes.md'), 'hello\n');
+    await git(spawned.worker.worktreePath, ['add', 'notes.md']);
+    await git(spawned.worker.worktreePath, ['commit', '-m', 'notes']);
+    await patchTowerWorkerRecord(dir, spawned.worker.id, { integrated: true });
+    const reviewed = await resolveTowerReviewTarget({ cwd: dir, base: 'main', review: 'alisa' });
+    assert.equal(reviewed.ok, false);
+    assert.equal(reviewed.code, 'WORKER_INTEGRATED');
+  });
+});
+
 test('resolveTowerReviewTarget refuses a dirty author worktree', async () => {
   await withRepo(async (dir) => {
     const spawned = await addTowerWorktree({
@@ -213,7 +311,7 @@ function isParentUserTurn(body, needle) {
   if (messages[messages.length - 1]?.role !== 'user') return false;
   const text = lastUserText(body);
   if (!needle.test(text)) return false;
-  if (text.includes('\nTask:') || text.includes('Previous shift handoff') || text.includes('You are reviewing tower worker')) {
+  if (text.includes('\nTask:') || text.includes('Previous shift handoff') || text.includes('You are reviewing tower worker') || /<task>\s*\[tower\]/.test(text) || text.trimStart().startsWith('[tower]')) {
     return false;
   }
   return true;
@@ -241,45 +339,94 @@ function baseConfig(port) {
 
 async function withReviewRuntime({ tower = true } = {}, respond, task) {
   closeSqliteDatabasesForTests();
-  const previous = process.env.CODEMINI_GLOBAL_DIR;
   const globalDir = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-tower-review-rt-'));
   const dir = path.join(globalDir, 'workspace');
   await fs.mkdir(dir, { recursive: true });
-  process.env.CODEMINI_GLOBAL_DIR = globalDir;
-  const bodies = [];
-  const server = http.createServer(async (req, res) => {
-    let raw = '';
-    for await (const chunk of req) raw += chunk;
-    let body = null;
-    try { body = JSON.parse(raw); } catch { body = null; }
-    bodies.push(body);
-    res.writeHead(200, { 'content-type': 'text/event-stream' });
-    const payload = await respond(body, messageBlob(body));
-    res.end(payload || sseText('ok'));
-  });
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   try {
-    await initCleanGit(dir);
-    const port = server.address().port;
-    const session = await createSession(dir);
-    const runtime = await createChatRuntime({
-      session,
-      config: baseConfig(port),
-      model: 'test-model',
-      systemPrompt: 'stable',
-      workspaceRoot: dir,
+    return await withCodeminiGlobalDir(globalDir, async () => {
+      const bodies = [];
+      const server = http.createServer(async (req, res) => {
+        let raw = '';
+        for await (const chunk of req) raw += chunk;
+        let body = null;
+        try { body = JSON.parse(raw); } catch { body = null; }
+        bodies.push(body);
+        res.writeHead(200, { 'content-type': 'text/event-stream' });
+        const payload = await respond(body, messageBlob(body));
+        res.end(payload || sseText('ok'));
+      });
+      await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+      try {
+        await initCleanGit(dir);
+        const port = server.address().port;
+        const session = await createSession(dir);
+        const runtime = await createChatRuntime({
+          session,
+          config: baseConfig(port),
+          model: 'test-model',
+          systemPrompt: 'stable',
+          workspaceRoot: dir,
+        });
+        if (tower) await runtime.setTowerMode(true);
+        await task({ dir, bodies, runtime, session });
+        await runtime.dispose?.();
+      } finally {
+        server.closeAllConnections?.();
+        await new Promise((resolve) => server.close(resolve));
+        closeSqliteDatabasesForTests();
+      }
     });
-    if (tower) await runtime.setTowerMode(true);
-    await task({ dir, bodies, runtime, session });
-    await runtime.dispose?.();
   } finally {
-    server.closeAllConnections?.();
-    await new Promise((resolve) => server.close(resolve));
-    closeSqliteDatabasesForTests();
-    if (previous === undefined) delete process.env.CODEMINI_GLOBAL_DIR;
-    else process.env.CODEMINI_GLOBAL_DIR = previous;
     await fs.rm(globalDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 50 });
   }
+}
+
+async function waitForWorkerStatus(dir, workerId, status, timeoutMs = 8000) {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    const raw = await fs.readFile(getProjectTowerStatePath(dir), 'utf8').catch(() => '');
+    if (raw) {
+      const worker = listTowerWorkersFromState(JSON.parse(raw)).find((item) => item.id === workerId);
+      if (worker?.runStatus === status) return worker;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 40));
+  }
+  throw new Error(`timed out waiting for ${workerId} status=${status}`);
+}
+
+async function waitForWorkerField(dir, workerId, predicate, timeoutMs = 8000) {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    const raw = await fs.readFile(getProjectTowerStatePath(dir), 'utf8').catch(() => '');
+    if (raw) {
+      const worker = listTowerWorkersFromState(JSON.parse(raw)).find((item) => item.id === workerId);
+      if (worker && predicate(worker)) return worker;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 40));
+  }
+  throw new Error(`timed out waiting for ${workerId} field`);
+}
+
+async function waitForSessionMatch(session, needle, timeoutMs = 8000) {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    const blob = (session.messages || []).map((message) => (
+      typeof message?.content === 'string' ? message.content : JSON.stringify(message?.content || '')
+    )).join('\n');
+    if (needle.test(blob)) return blob;
+    await new Promise((resolve) => setTimeout(resolve, 40));
+  }
+  const preview = (session.messages || []).map((message) => String(message?.content || '')).join('\n---\n');
+  throw new Error(`timed out waiting for session ${needle}\n${preview}`);
+}
+
+async function waitUntilBodies(bodies, predicate, timeoutMs = 8000) {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    if (bodies.some((item) => predicate(messageBlob(item)))) return;
+    await new Promise((resolve) => setTimeout(resolve, 40));
+  }
+  throw new Error('timed out waiting for model body');
 }
 
 async function sealWorkerNotes(dir) {
@@ -322,17 +469,21 @@ test('tower reviewer reuses the author worktree, stays off the roster, and recor
     return sseText('FIRST_SHIFT_BODY');
   }, async ({ dir, bodies, runtime, session }) => {
     await runtime.submitMessage({ text: 'SPAWN_ALISA' });
+    await waitForWorkerStatus(dir, 'alisa', 'completed');
     const { worker, sha } = await sealWorkerNotes(dir);
     await runtime.submitMessage({ text: 'REVIEW_ALISA' });
+    const reviewed = await waitForWorkerField(dir, 'alisa', (item) => item.reviewPassed === true);
 
     const saved = JSON.parse(await fs.readFile(getProjectTowerStatePath(dir), 'utf8'));
     const workers = listTowerWorkersFromState(saved);
     assert.equal(workers.length, 1);
     assert.equal(workers[0].id, 'alisa');
     assert.equal(workers[0].worktreePath, worker.worktreePath);
-    assert.equal(workers[0].reviewedCommit, sha);
-    assert.equal(workers[0].reviewPassed, true);
-    assert.match(String(workers[0].reviewText || ''), /Findings:\n- none/);
+    assert.equal(reviewed.reviewedCommit, sha);
+    assert.equal(reviewed.reviewPassed, true);
+    assert.equal(reviewed.reviewLoopStopped, undefined);
+    assert.equal(reviewed.reviewRound, undefined);
+    assert.match(String(reviewed.reviewText || ''), /Findings:\n- none/);
     assert.deepEqual(await fs.readdir(getProjectTowerWorktreesDir(dir)), ['alisa']);
 
     const reviewPrompt = bodies.map((item) => messageBlob(item)).find((text) => text.includes('You are reviewing tower worker'));
@@ -345,7 +496,7 @@ test('tower reviewer reuses the author worktree, stays off the roster, and recor
     assert.match(String(reviewResult?.content || ''), /Review of "alisa" passed/);
     assert.equal(String(reviewResult?.content || '').includes('Worker id:'), false);
     const spawnResult = session.messages.find((message) => message.tool_call_id === 'call-spawn');
-    assert.match(String(spawnResult?.content || ''), /Worker id: alisa/);
+    assert.match(String(spawnResult?.content || ''), /alisa/);
 
     const landed = await landTowerWorkers({ cwd: dir, base: 'main' });
     assert.equal(landed.ok, true, landed.error);
@@ -393,13 +544,15 @@ test('failed review stays bound to that commit; resume injects the findings', as
     return sseText('FIRST_SHIFT_BODY');
   }, async ({ dir, bodies, runtime, session }) => {
     await runtime.submitMessage({ text: 'SPAWN_ALISA' });
+    await waitForWorkerStatus(dir, 'alisa', 'completed');
     const { sha } = await sealWorkerNotes(dir);
     await runtime.submitMessage({ text: 'REVIEW_ALISA' });
+    const reviewed = await waitForWorkerField(dir, 'alisa', (item) => item.reviewPassed === false && item.reviewRound === 1);
 
-    const afterReview = JSON.parse(await fs.readFile(getProjectTowerStatePath(dir), 'utf8'));
-    const [reviewed] = listTowerWorkersFromState(afterReview);
     assert.equal(reviewed.reviewedCommit, sha);
     assert.equal(reviewed.reviewPassed, false);
+    assert.equal(reviewed.reviewRound, 1);
+    assert.equal(reviewed.reviewLoopStopped, undefined);
     assert.deepEqual(await fs.readdir(getProjectTowerWorktreesDir(dir)), ['alisa']);
 
     const landed = await landTowerWorkers({ cwd: dir, base: 'main' });
@@ -407,15 +560,95 @@ test('failed review stays bound to that commit; resume injects the findings', as
     assert.equal(landed.code, 'REVIEW_FAILED');
 
     await runtime.submitMessage({ text: 'RESUME_ALISA' });
+    await waitUntilBodies(bodies, (text) => text.includes('Latest review'));
     const resumePrompt = bodies.map((item) => messageBlob(item)).find((text) => text.includes('Latest review'));
     assert.ok(resumePrompt);
     assert.match(resumePrompt, /missing tests/);
-    const reviewResult = session.messages.find((message) => message.tool_call_id === 'call-review');
-    assert.match(String(reviewResult?.content || ''), /Resume "alisa"/);
+    await waitForSessionMatch(session, /Resume "alisa"/);
   });
 });
 
-test('review without role reviewer is rejected; coding reviewer still runs without a tower roster', async () => {
+test('identical failed reviews stop the loop and allow a redirected resume', async () => {
+  await withReviewRuntime({}, async (body, blob) => {
+    if (isParentUserTurn(body, /SPAWN_ALISA/)) {
+      return sseToolCalls([{
+        id: 'call-spawn',
+        name: 'run_subagent',
+        arguments: JSON.stringify({
+          prompt: 'First shift on notes.md',
+          name: 'Alisa',
+          paths: ['notes.md'],
+        }),
+      }]);
+    }
+    if (isParentUserTurn(body, /REVIEW_ONCE/)) {
+      return sseToolCalls([{
+        id: 'call-review-1',
+        name: 'run_subagent',
+        arguments: JSON.stringify({
+          prompt: 'Review alisa',
+          role: 'reviewer',
+          review: 'alisa',
+        }),
+      }]);
+    }
+    if (isParentUserTurn(body, /REVIEW_AGAIN/)) {
+      return sseToolCalls([{
+        id: 'call-review-2',
+        name: 'run_subagent',
+        arguments: JSON.stringify({
+          prompt: 'Review alisa again',
+          role: 'reviewer',
+          review: 'alisa',
+        }),
+      }]);
+    }
+    if (isParentUserTurn(body, /RESUME_ALISA/)) {
+      return sseToolCalls([{
+        id: 'call-resume',
+        name: 'run_subagent',
+        arguments: JSON.stringify({
+          prompt: 'Fix the review',
+          resume: 'alisa',
+        }),
+      }]);
+    }
+    if (blob.includes('You are reviewing tower worker')) {
+      return sseText('Findings:\n- missing tests');
+    }
+    if (blob.includes('Latest review')) return sseText('should-not-inject-findings');
+    return sseText('REDIRECTED_SHIFT');
+  }, async ({ dir, bodies, runtime, session }) => {
+    await runtime.submitMessage({ text: 'SPAWN_ALISA' });
+    await waitForWorkerStatus(dir, 'alisa', 'completed');
+    await sealWorkerNotes(dir);
+    await runtime.submitMessage({ text: 'REVIEW_ONCE' });
+    await waitForWorkerField(dir, 'alisa', (item) => item.reviewRound === 1);
+    await runtime.submitMessage({ text: 'REVIEW_AGAIN' });
+    const worker = await waitForWorkerField(dir, 'alisa', (item) => item.reviewLoopStopped === true);
+
+    assert.equal(worker.reviewPassed, false);
+    assert.equal(worker.reviewRound, 2);
+    assert.equal(worker.reviewLoopStopped, true);
+    assert.equal(worker.lastFindingsKey, 'missing tests');
+
+    const landed = await landTowerWorkers({ cwd: dir, base: 'main' });
+    assert.equal(landed.ok, false);
+    assert.equal(landed.code, 'REVIEW_FAILED');
+
+    await waitForSessionMatch(session, /Resume "alisa"/);
+    await waitForSessionMatch(session, /loop stopped/);
+
+    await runtime.submitMessage({ text: 'RESUME_ALISA' });
+    await waitUntilBodies(bodies, (text) => text.includes('Fix the review'));
+    const resumePrompt = bodies.map((item) => messageBlob(item)).find((text) => text.includes('Fix the review'));
+    assert.ok(resumePrompt);
+    assert.equal(resumePrompt.includes('Latest review'), false);
+    await waitForSessionMatch(session, /REDIRECTED_SHIFT/);
+  });
+});
+
+test('review with paths is rejected; coding reviewer still runs without a tower roster', async () => {
   await withReviewRuntime({}, async (body) => {
     if (isParentUserTurn(body, /BAD_REVIEW/)) {
       return sseToolCalls([{
@@ -423,8 +656,9 @@ test('review without role reviewer is rejected; coding reviewer still runs witho
         name: 'run_subagent',
         arguments: JSON.stringify({
           prompt: 'Review alisa',
-          name: 'Alisa',
+          role: 'reviewer',
           review: 'alisa',
+          paths: ['notes.md'],
         }),
       }]);
     }
@@ -432,7 +666,7 @@ test('review without role reviewer is rejected; coding reviewer still runs witho
   }, async ({ runtime, session }) => {
     await runtime.submitMessage({ text: 'BAD_REVIEW' });
     const badResult = session.messages.find((message) => message.tool_call_id === 'call-bad');
-    assert.match(String(badResult?.content || ''), /review is only valid with role: "reviewer"/);
+    assert.match(String(badResult?.content || ''), /review does not take paths/);
   });
 
   await withReviewRuntime({ tower: false }, async (body, blob) => {

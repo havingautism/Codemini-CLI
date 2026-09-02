@@ -7,6 +7,7 @@ import { runGit } from './process-run.js';
 import {
   appendTowerWorkerRecord,
   listTowerWorkersFromState,
+  patchTowerWorkerRecord,
   readTowerStateFile,
   writeTowerWorkerRecords,
 } from './tower-store.js';
@@ -97,10 +98,10 @@ export function findTowerWorker(workers, { resume = '', name = '', taskId = '', 
 }
 
 export function formatIdleTowerWorkers(workers) {
-  const list = Array.isArray(workers) ? workers : [];
+  const list = (Array.isArray(workers) ? workers : []).filter((item) => item?.integrated !== true);
   if (list.length === 0) return 'No idle tower workers. Spawn a new one with a unique name and paths.';
   const ids = list.map((item) => `"${item.id}"`).join(', ');
-  return `Idle workers: ${ids}. Call back with resume set to that id (the short name, not a call/handoff id). Omit paths.`;
+  return `Idle workers: ${ids}. Call back with resume set to that id (the short name, not a call/handoff id). Omit paths to keep the stored scope, or pass new disjoint paths.`;
 }
 
 export function composeTowerResumeTask(task, handoffText, reviewText = '', rebaseOnto = '') {
@@ -149,7 +150,7 @@ export async function resolveTowerReviewTarget({
     return {
       ok: false,
       code: 'REVIEW_RESUME_CONFLICT',
-      error: 'role: "reviewer" cannot be combined with resume. Set review to the worker id, such as alisa.',
+      error: 'review cannot be combined with resume. Set review to the worker id, such as alisa.',
     };
   }
   const workerId = sanitizeTowerWorkerId(review, '');
@@ -157,7 +158,7 @@ export async function resolveTowerReviewTarget({
     return {
       ok: false,
       code: 'REVIEW_TARGET_REQUIRED',
-      error: 'role: "reviewer" requires review set to a roster worker id, such as alisa.',
+      error: 'review requires a roster worker id, such as alisa.',
     };
   }
   const existing = listTowerWorkersFromState(await readTowerStateFile(root));
@@ -174,6 +175,14 @@ export async function resolveTowerReviewTarget({
       ok: false,
       code: 'WORKTREE_MISSING',
       error: `Tower worker "${worker.id}" is on the roster but its worktree is gone. Spawn it again with paths.`,
+      workerId: worker.id,
+    };
+  }
+  if (worker.integrated === true) {
+    return {
+      ok: false,
+      code: 'WORKER_INTEGRATED',
+      error: `Worker "${worker.id}" is already on the merge tmp. Do not review it again. Wait for the rest of the roster, then land_workers.`,
       workerId: worker.id,
     };
   }
@@ -251,6 +260,14 @@ export async function resolveTowerSubagentWorkspace({
   if (resumeId) {
     const worker = findTowerWorker(existing, { resume });
     if (worker) {
+      if (worker.integrated === true && !String(worker.rebaseOnto || '').trim()) {
+        return {
+          ok: false,
+          code: 'WORKER_INTEGRATED',
+          error: `Tower worker "${worker.id}" is already on the merge tmp. Wait for the rest of the roster, then land_workers. Do not resume.`,
+          workerId: worker.id,
+        };
+      }
       if (!(await worktreePathExists(worker.worktreePath))) {
         return {
           ok: false,
@@ -261,11 +278,35 @@ export async function resolveTowerSubagentWorkspace({
       }
       const requested = normalizeTowerPaths(paths);
       if (requested.length > 0 && !towerPathsEqual(requested, worker.paths)) {
+        const overlap = findOverlappingTowerWorker(requested, existing, { exceptId: worker.id });
+        if (overlap) {
+          const otherId = String(overlap.worker?.id || 'worker').trim() || 'worker';
+          return {
+            ok: false,
+            code: 'SCOPE_OVERLAP',
+            error: `Tower resume "${worker.id}" paths overlap worker "${otherId}" (${overlap.existing} vs ${overlap.glob}). Change paths and retry.`,
+            workerId: worker.id,
+          };
+        }
+        const patched = await patchTowerWorkerRecord(root, worker.id, {
+          paths: requested,
+          reviewLoopStopped: false,
+          reviewRound: 0,
+          lastFindingsKey: '',
+        });
+        if (!patched.ok) {
+          return {
+            ok: false,
+            code: 'PATHS_PATCH_FAILED',
+            error: patched.error || `Failed to update paths for "${worker.id}".`,
+            workerId: worker.id,
+          };
+        }
         return {
-          ok: false,
-          code: 'PATHS_MISMATCH',
-          error: `Tower resume "${worker.id}" keeps stored paths (${(worker.paths || []).join(', ') || 'none'}). Do not pass a different paths list.`,
-          workerId: worker.id,
+          ok: true,
+          resume: true,
+          worker: patched.worker || { ...worker, paths: requested },
+          pathsChanged: true,
         };
       }
       return { ok: true, resume: true, worker };

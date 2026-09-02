@@ -25,6 +25,7 @@ import {
   removeTowerWorktrees,
   sanitizeTowerWorkerId,
 } from '../src/core/tower-worktree.js';
+import { withCodeminiGlobalDir } from './helpers/codemini-global-dir.js';
 
 async function withTempDir(task) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-tower-'));
@@ -85,6 +86,19 @@ function baseConfig(port, mode = 'plan') {
   };
 }
 
+async function waitForWorkerStatus(dir, workerId, status, timeoutMs = 8000) {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    const raw = await fs.readFile(getProjectTowerStatePath(dir), 'utf8').catch(() => '');
+    if (raw) {
+      const worker = listTowerWorkersFromState(JSON.parse(raw)).find((item) => item.id === workerId);
+      if (worker?.runStatus === status) return worker;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 40));
+  }
+  throw new Error(`timed out waiting for ${workerId} status=${status}`);
+}
+
 function sseText(content = 'ok') {
   return [
     `data: ${JSON.stringify({ choices: [{ delta: { content }, finish_reason: null }] })}\n\n`,
@@ -113,48 +127,49 @@ function sseToolCalls(calls) {
 
 async function withRuntime({ mode = 'plan', gitRepo = true, firstCompletion } = {}, task) {
   closeSqliteDatabasesForTests();
-  const previous = process.env.CODEMINI_GLOBAL_DIR;
   const globalDir = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-tower-rt-'));
   const dir = path.join(globalDir, 'workspace');
   await fs.mkdir(dir, { recursive: true });
-  process.env.CODEMINI_GLOBAL_DIR = globalDir;
-  const bodies = [];
-  const server = http.createServer(async (req, res) => {
-    let raw = '';
-    for await (const chunk of req) raw += chunk;
-    let body = null;
-    try { body = JSON.parse(raw); } catch { body = null; }
-    bodies.push(body);
-    res.writeHead(200, { 'content-type': 'text/event-stream' });
-    const messages = Array.isArray(body?.messages) ? body.messages : [];
-    const hasToolResult = messages.some((message) => message?.role === 'tool');
-    const transcript = JSON.stringify(messages);
-    if (firstCompletion && !hasToolResult && /使用子代理|使用并行任务/.test(transcript)) {
-      res.end(firstCompletion);
-      return;
-    }
-    res.end(sseText('ok'));
-  });
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   try {
-    if (gitRepo) await initCleanGit(dir);
-    const port = server.address().port;
-    const session = await createSession(dir);
-    const runtime = await createChatRuntime({
-      session,
-      config: baseConfig(port, mode),
-      model: 'test-model',
-      systemPrompt: 'stable',
-      workspaceRoot: dir
+    return await withCodeminiGlobalDir(globalDir, async () => {
+      const bodies = [];
+      const server = http.createServer(async (req, res) => {
+        let raw = '';
+        for await (const chunk of req) raw += chunk;
+        let body = null;
+        try { body = JSON.parse(raw); } catch { body = null; }
+        bodies.push(body);
+        res.writeHead(200, { 'content-type': 'text/event-stream' });
+        const messages = Array.isArray(body?.messages) ? body.messages : [];
+        const hasToolResult = messages.some((message) => message?.role === 'tool');
+        const transcript = JSON.stringify(messages);
+        if (firstCompletion && !hasToolResult && /使用子代理|使用并行任务/.test(transcript)) {
+          res.end(firstCompletion);
+          return;
+        }
+        res.end(sseText('ok'));
+      });
+      await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+      try {
+        if (gitRepo) await initCleanGit(dir);
+        const port = server.address().port;
+        const session = await createSession(dir);
+        const runtime = await createChatRuntime({
+          session,
+          config: baseConfig(port, mode),
+          model: 'test-model',
+          systemPrompt: 'stable',
+          workspaceRoot: dir
+        });
+        await task({ dir, bodies, runtime, session });
+        await runtime.dispose?.();
+      } finally {
+        server.closeAllConnections?.();
+        await new Promise((resolve) => server.close(resolve));
+        closeSqliteDatabasesForTests();
+      }
     });
-    await task({ dir, bodies, runtime, session });
-    await runtime.dispose?.();
   } finally {
-    server.closeAllConnections?.();
-    await new Promise((resolve) => server.close(resolve));
-    closeSqliteDatabasesForTests();
-    if (previous === undefined) delete process.env.CODEMINI_GLOBAL_DIR;
-    else process.env.CODEMINI_GLOBAL_DIR = previous;
     await fs.rm(globalDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 50 });
   }
 }
@@ -188,14 +203,23 @@ test('tower prompt is present only when the overlay is active', () => {
   assert.match(prompt, /run_subagent/);
   assert.match(prompt, /land_workers/);
   assert.match(prompt, /REBASE_REQUIRED/);
-  assert.match(prompt, /role: "reviewer"/);
-  assert.match(prompt, /paths/);
+  assert.match(prompt, /merge tmp/);
+  assert.match(prompt, /review set to that worker id/);
+  assert.match(prompt, /inspect-only/);
+  assert.match(prompt, /land_workers is the only merge path/);
   assert.match(prompt, /No idle workers yet/);
   const withRoster = buildTowerModePromptBlock({ active: true, base: 'main' }, [
     { id: 'alisa', branch: 'codemini-tower/alisa', worktreePath: '/tmp/alisa', paths: ['notes.md'] },
   ]);
   assert.match(withRoster, /Idle workers: alisa \(notes.md\)/);
   assert.match(withRoster, /resume: "<id>"/);
+  const withTmp = buildTowerModePromptBlock({ active: true, base: 'main' }, [
+    { id: 'alisa', branch: 'codemini-tower/alisa', worktreePath: '/tmp/alisa', paths: ['notes.md'] },
+    { id: 'mia', branch: 'codemini-tower/mia', worktreePath: '/tmp/mia', paths: ['src/**'], integrated: true },
+  ]);
+  assert.match(withTmp, /Idle workers: alisa \(notes.md\)/);
+  assert.match(withTmp, /On merge tmp: mia \(src\/\*\*\)/);
+  assert.equal(withTmp.includes('Idle workers: alisa (notes.md); mia'), false);
 });
 
 test('inspectTowerGit refuses missing repo and empty history, but allows a dirty worktree', async () => {
@@ -239,25 +263,26 @@ test('enterTowerMode writes .codemini/tower/state.json', async () => {
 
 test('sanitizeSession keeps tower overlay state', async () => {
   closeSqliteDatabasesForTests();
-  const previous = process.env.CODEMINI_GLOBAL_DIR;
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-tower-sess-'));
-  process.env.CODEMINI_GLOBAL_DIR = dir;
   try {
-    const session = await createSession(dir);
-    session.tower = { active: true, base: 'main', enteredAt: '2026-08-31T00:00:00.000Z' };
-    await saveSession(session);
-    const loaded = await loadSession(session.id);
-    assert.equal(loaded.tower.active, true);
-    assert.equal(loaded.tower.base, 'main');
+    await withCodeminiGlobalDir(dir, async () => {
+      try {
+        const session = await createSession(dir);
+        session.tower = { active: true, base: 'main', enteredAt: '2026-08-31T00:00:00.000Z' };
+        await saveSession(session);
+        const loaded = await loadSession(session.id);
+        assert.equal(loaded.tower.active, true);
+        assert.equal(loaded.tower.base, 'main');
 
-    const continuation = await createContinuationSession(loaded, { messages: loaded.messages || [] });
-    assert.notEqual(continuation.id, loaded.id);
-    assert.equal(continuation.tower.active, true);
-    assert.equal(continuation.tower.base, 'main');
+        const continuation = await createContinuationSession(loaded, { messages: loaded.messages || [] });
+        assert.notEqual(continuation.id, loaded.id);
+        assert.equal(continuation.tower.active, true);
+        assert.equal(continuation.tower.base, 'main');
+      } finally {
+        closeSqliteDatabasesForTests();
+      }
+    });
   } finally {
-    closeSqliteDatabasesForTests();
-    if (previous === undefined) delete process.env.CODEMINI_GLOBAL_DIR;
-    else process.env.CODEMINI_GLOBAL_DIR = previous;
     await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 50 });
   }
 });
@@ -387,9 +412,7 @@ const twoSubagentCompletion = sseToolCalls([
     name: 'run_subagent',
     arguments: JSON.stringify({
       prompt: 'Implement frontend in isolation',
-      task_id: 'm1',
-      name: 'frontend',
-      role: 'coder',
+      name: 'm1',
       paths: ['frontend/**'],
     }),
   },
@@ -398,9 +421,7 @@ const twoSubagentCompletion = sseToolCalls([
     name: 'run_subagent',
     arguments: JSON.stringify({
       prompt: 'Implement backend in isolation',
-      task_id: 'm2',
-      name: 'backend',
-      role: 'coder',
+      name: 'm2',
       paths: ['backend/**'],
     }),
   },
@@ -424,6 +445,8 @@ test('tower-on run_subagent creates two worktrees; session overlay has no worker
   }, async ({ dir, runtime, session }) => {
     await runtime.setTowerMode(true);
     await runtime.submitMessage({ text: '使用子代理分别实现 frontend 和 backend' });
+    await waitForWorkerStatus(dir, 'm1', 'completed');
+    await waitForWorkerStatus(dir, 'm2', 'completed');
     const saved = JSON.parse(await fs.readFile(getProjectTowerStatePath(dir), 'utf8'));
     assert.equal(listTowerWorkersFromState(saved).length, 2);
     const trees = await fs.readdir(getProjectTowerWorktreesDir(dir));
@@ -464,7 +487,6 @@ test('overlapping tower paths reject the second spawn', async () => {
         name: 'run_subagent',
         arguments: JSON.stringify({
           prompt: 'Docs only',
-          task_id: 'm1',
           name: 'docs',
           paths: ['docs/**'],
         }),
@@ -474,7 +496,6 @@ test('overlapping tower paths reject the second spawn', async () => {
         name: 'run_subagent',
         arguments: JSON.stringify({
           prompt: 'Docs again',
-          task_id: 'm2',
           name: 'docs-two',
           paths: ['docs/guide.md'],
         }),
@@ -486,7 +507,8 @@ test('overlapping tower paths reject the second spawn', async () => {
     const saved = JSON.parse(await fs.readFile(getProjectTowerStatePath(dir), 'utf8'));
     const workers = listTowerWorkersFromState(saved);
     assert.equal(workers.length, 1);
-    assert.equal(['m1', 'm2'].includes(workers[0].id), true);
+    assert.equal(['docs', 'docs-two'].includes(workers[0].id), true);
+    await waitForWorkerStatus(dir, workers[0].id, 'completed');
     const trees = await fs.readdir(getProjectTowerWorktreesDir(dir));
     assert.deepEqual(trees.filter((name) => name !== '.DS_Store'), [workers[0].id]);
   });

@@ -40,6 +40,18 @@ test('findOverlappingTowerWorker reports the colliding glob', () => {
   assert.equal(hit.worker.id, 'anna');
   assert.equal(hit.existing, 'docs/**');
   assert.equal(findOverlappingTowerWorker(['backend/**'], [{ id: 'anna', paths: ['docs/**'] }]), null);
+  assert.equal(
+    findOverlappingTowerWorker(['docs/guide.md'], [
+      { id: 'anna', paths: ['docs/**'], integrated: true },
+    ]),
+    null,
+  );
+  assert.equal(
+    findOverlappingTowerWorker(['other.md'], [
+      { id: 'anna', paths: ['notes.md'] },
+    ], { exceptId: 'anna' }),
+    null,
+  );
 });
 
 test('orderTowerWorkersForLand follows dependsOn then spawn order', () => {
@@ -67,6 +79,38 @@ test('coding getBuiltinTools has no paths and no land_workers', () => {
   assert.deepEqual(sub?.function?.parameters?.required || [], []);
 });
 
+function shellTool(bundle) {
+  const def = bundle.definitions.find((item) => ['run', 'Bash', 'Powershell'].includes(item.function?.name));
+  const name = def?.function?.name;
+  return { name, def, handler: name ? bundle.handlers[name] : undefined };
+}
+
+test('tower parent run is inspect-only; coding run is unchanged', async () => {
+  const tower = getBuiltinTools({
+    towerActive: true,
+    onRunSubAgent: async () => ({ ok: true }),
+    onLandWorkers: async () => ({ ok: true }),
+  });
+  const towerRun = shellTool(tower);
+  assert.match(String(towerRun.def?.function?.description || ''), /inspect-only/i);
+  assert.equal(typeof towerRun.handler, 'function');
+  await assert.rejects(
+    () => towerRun.handler({ command: 'git merge feature' }),
+    /inspect-only/,
+  );
+  await assert.rejects(
+    () => towerRun.handler({ command: 'cp notes.md /tmp/notes.md' }),
+    /inspect-only/,
+  );
+
+  const coding = getBuiltinTools({
+    onRunSubAgent: async () => ({ ok: true }),
+  });
+  const codingRun = shellTool(coding);
+  assert.equal(String(codingRun.def?.function?.description || '').includes('inspect-only'), false);
+  assert.equal(typeof codingRun.handler, 'function');
+});
+
 test('tower getBuiltinTools exposes paths and resume, and registers land_workers', () => {
   const { definitions, handlers } = getBuiltinTools({
     towerActive: true,
@@ -85,13 +129,14 @@ test('tower getBuiltinTools exposes paths and resume, and registers land_workers
 });
 
 test('applyTowerParentToolPolicy strips mutation tools only when tower is on', () => {
-  const coding = ['read', 'write', 'edit', 'run_subagent'];
+  const coding = ['read', 'write', 'edit', 'run', 'run_subagent'];
   assert.deepEqual(applyTowerParentToolPolicy(coding, { towerActive: false }), coding);
   const tower = applyTowerParentToolPolicy(coding, { towerActive: true });
   assert.equal(tower.includes('write'), false);
   assert.equal(tower.includes('edit'), false);
   assert.equal(tower.includes('run_subagent'), true);
   assert.equal(tower.includes('land_workers'), true);
+  assert.equal(tower.includes('run'), true);
 });
 
 test('compactSubAgentResultForParent reports dirty vs sealed worktrees', () => {
@@ -111,6 +156,10 @@ test('compactSubAgentResultForParent reports dirty vs sealed worktrees', () => {
     compactSubAgentResultForParent({ text: 'done', dirty: false, workerId: 'alisa' }),
     /resume: "alisa"/,
   );
+  assert.match(
+    compactSubAgentResultForParent({ text: 'done', dirty: false, workerId: 'alisa' }),
+    /Omit paths to keep the stored scope/,
+  );
   assert.equal(
     compactSubAgentResultForParent({ text: 'done', dirty: false }).includes('Worker id:'),
     false,
@@ -122,5 +171,25 @@ test('compactSubAgentResultForParent reports dirty vs sealed worktrees', () => {
   assert.match(
     compactSubAgentResultForParent({ text: 'Findings:\n- missing tests', reviewOf: 'alisa', reviewPassed: false }),
     /Resume "alisa"/,
+  );
+  assert.match(
+    compactSubAgentResultForParent({
+      text: 'Findings:\n- missing tests',
+      reviewOf: 'alisa',
+      reviewPassed: false,
+      reviewLoopStopped: true,
+      reviewRound: 2,
+    }),
+    /loop stopped after 2 rounds/,
+  );
+  assert.match(
+    compactSubAgentResultForParent({
+      text: 'Findings:\n- missing tests',
+      reviewOf: 'alisa',
+      reviewPassed: false,
+      reviewLoopStopped: true,
+      reviewRound: 2,
+    }),
+    /Resume "alisa" with a new task or paths/,
   );
 });

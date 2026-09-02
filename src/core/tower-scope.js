@@ -112,10 +112,17 @@ export function towerGlobsOverlap(left, right) {
   return false;
 }
 
-export function findOverlappingTowerWorker(paths, workers) {
+export function workerHoldsTowerScope(worker) {
+  return Boolean(worker) && worker.integrated !== true;
+}
+
+export function findOverlappingTowerWorker(paths, workers, { exceptId = '' } = {}) {
   const next = normalizeTowerPaths(paths);
   const list = Array.isArray(workers) ? workers : [];
+  const skipId = String(exceptId || '').trim();
   for (const worker of list) {
+    if (!workerHoldsTowerScope(worker)) continue;
+    if (skipId && String(worker?.id || '').trim() === skipId) continue;
     const existing = normalizeTowerPaths(worker?.paths);
     if (existing.length === 0) {
       return {
