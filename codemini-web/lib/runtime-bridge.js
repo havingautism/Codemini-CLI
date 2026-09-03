@@ -33,6 +33,7 @@ import {
   saveUiTranscriptToSqlite
 } from '../../src/core/session-sqlite-store.js';
 import { CHAT_ACTIONS } from '../../src/core/chat-action-dispatcher.js';
+import { parseTowerWakeHeadline } from '../../src/core/tower-snapshot.js';
 
 const CODEWIKI_GENERATE_TIMEOUT_MS = 35 * 60 * 1000;
 
@@ -384,6 +385,8 @@ export class RuntimeBridge {
     runtime.setOnTitleStatus?.((sessionId, generating) => {
       this.#publish({ type: 'session:title_status', sessionId, generating });
     });
+    runtime.setTowerEventSink?.((event) => this.#forwardTowerBackgroundEvent(event));
+    runtime.setTowerWakeSubmit?.((wakeText) => this.#handleTowerWake(wakeText));
   }
 
   #installApprovalHandler() {
@@ -459,6 +462,136 @@ export class RuntimeBridge {
     }
   }
 
+  #findPlanParentMessageId(toolCallId = '') {
+    const id = String(toolCallId || '').trim();
+    if (!id) return this.#uiPlanParentMsgId || this.#uiActiveMsgId || null;
+    for (let index = 0; index < this.#uiMessages.length; index += 1) {
+      const message = this.#uiMessages[index];
+      const segments = Array.isArray(message?.segments) ? message.segments : [];
+      for (const segment of segments) {
+        if (segment?.type !== 'tools') continue;
+        for (const card of Array.isArray(segment.cards) ? segment.cards : []) {
+          if (String(card?.id || '') === id) return message.id;
+        }
+      }
+    }
+    for (let index = this.#uiMessages.length - 1; index >= 0; index -= 1) {
+      const message = this.#uiMessages[index];
+      const segments = Array.isArray(message?.segments) ? message.segments : [];
+      for (const segment of segments) {
+        if (segment?.type !== 'tools') continue;
+        for (const card of Array.isArray(segment.cards) ? segment.cards : []) {
+          const steps = Array.isArray(card?.planRun?.steps) ? card.planRun.steps : [];
+          if (steps.some((step) => String(step.toolCallId || '') === id)) return message.id;
+        }
+      }
+    }
+    return this.#uiPlanParentMsgId || this.#uiActiveMsgId || null;
+  }
+
+  #forwardTowerBackgroundEvent(event) {
+    if (!event?.type) return;
+    if (event.type === 'tower:workers_changed') {
+      this.#publish(event);
+      this.#broadcastRuntimeState();
+      return;
+    }
+    if (event.type !== 'plan:step_start' && event.type !== 'plan:progress' && event.type !== 'plan:step_done') {
+      return;
+    }
+    this.#ensureUiTranscriptLoaded();
+    const parentId = this.#findPlanParentMessageId(event.toolCallId);
+    let messageId = null;
+    if (parentId) {
+      this.#updateUiMessage(parentId, (message) => applyPlanEventToMessage(message, event));
+      messageId = parentId;
+      this.#persistUiTranscriptSoon();
+    }
+    this.#publish(messageId ? { ...event, messageId } : event);
+    if (event.type === 'plan:step_done') {
+      this.#broadcastRuntimeState();
+    }
+  }
+
+  #settleTowerWakeTurn(submitToken, result) {
+    if (!this.#isSubmitActive(submitToken)) return;
+    if (this.#uiActiveMsgId) {
+      this.#updateUiMessage(this.#uiActiveMsgId, (message) =>
+        settleIncompleteTranscriptMessage(
+          {
+            ...message,
+            segments: finishStreamingTextSegments(
+              finishThinkingSegments(message.segments)
+            )
+          },
+          { reason: result?.aborted ? 'aborted' : 'completed' },
+        ),
+      );
+    }
+    this.#uiActiveMsgId = null;
+    this.#uiPlanStepIds = new Map();
+    this.#uiPlanParentMsgId = null;
+    this.#settleCreatePlanToolCard(undefined, result?.aborted ? 'aborted' : 'completed');
+    this.#publish({
+      type: 'submit:done',
+      result: {
+        type: result?.type || 'assistant',
+        aborted: !!result?.aborted,
+        text: result?.text || '',
+        towerWake: true,
+      },
+    });
+    this.#publishLifecycle(result?.aborted ? 'aborted' : 'completed');
+  }
+
+  #handleTowerWake(wakeText) {
+    const text = String(wakeText || '').trim();
+    if (!text) return Promise.resolve({ type: 'noop' });
+    if (!this.#claimSessionTurn()) {
+      return Promise.reject(new Error('Tower wake blocked while another turn is active'));
+    }
+    this.#ensureUiTranscriptLoaded();
+    this.#resetActiveAssistantTarget();
+    const headline = parseTowerWakeHeadline(text);
+    const timestamp = new Date().toISOString();
+    const wakeMessageId = this.#addUiMessage({
+      role: 'divider',
+      dividerType: 'tower-wake',
+      text: headline,
+      timestamp,
+    });
+    this.#publish({ type: 'tower:wake', headline, messageId: wakeMessageId, timestamp });
+    this.#publishLifecycle('running');
+    this.#uiPendingSkillBadges = [];
+    this.#uiPendingSkillSegments = [];
+    const submitToken = this.#invalidateSubmit();
+    return this.#runtime.submit(text, (event) => {
+      this.#forwardRuntimeEvent(event, submitToken);
+    }, { towerWake: true }).then((result) => {
+      this.#settleTowerWakeTurn(submitToken, result);
+      return result;
+    }).catch(async (err) => {
+      if (!this.#isSubmitActive(submitToken)) throw err;
+      if (isAbortLikeError(err)) {
+        this.#settleTowerWakeTurn(submitToken, { type: 'aborted', aborted: true, text: 'Request aborted.' });
+        return { type: 'aborted', aborted: true, text: 'Request aborted.' };
+      }
+      const message = String(err?.message || err);
+      await this.#recordRunStatus(`Failed: ${message}`, { status: 'error' });
+      this.#publish({
+        type: 'submit:done',
+        result: { type: 'error', text: message, towerWake: true },
+      });
+      this.#publishLifecycle('failed');
+      throw err;
+    }).finally(() => {
+      if (!this.#isSubmitActive(submitToken)) return;
+      this.#busy = false;
+      this.#broadcastRuntimeState();
+      this.#drainTowerPendingWakes();
+    });
+  }
+
   #publish(event) {
     const incomingSessionId = String(event?.sessionId || '').trim();
     const tagged = {
@@ -506,13 +639,29 @@ export class RuntimeBridge {
     }
   }
 
+  #sessionTurnActive() {
+    return this.#busy === true || this.#runtime.isTurnActive?.() === true;
+  }
+
+  #claimSessionTurn() {
+    if (this.#sessionTurnActive()) return false;
+    this.#busy = true;
+    return true;
+  }
+
+  #drainTowerPendingWakes() {
+    void this.#runtime.drainTowerPendingWakes?.().catch(() => {});
+  }
+
   #buildRuntimeStatePayload() {
     const state = this.#runtime.getRuntimeState();
     const serializableState = typeof state?.toJSON === 'function' ? state.toJSON() : state;
+    const turnActive = this.#sessionTurnActive();
     return {
       ...serializableState,
-      busy: this.#busy,
+      busy: turnActive,
       requestInFlight: this.#busy,
+      towerWorkersInFlight: this.#runtime.getTowerWorkersInFlight?.() ?? 0,
       codeWikiGenerating: this.#codeWikiGenerating,
       pendingReflectSkill: serializableState.pendingReflectSkill,
       pendingSpecApproval: serializableState.pendingSpecApproval,
@@ -779,6 +928,9 @@ export class RuntimeBridge {
         break;
       }
       case 'assistant:start': {
+        if (String(event.parentToolCallId || '').trim()) {
+          break;
+        }
         this.#removeUiTransientWaiting();
         const pendingSkillBadges = this.#uiPendingSkillBadges;
         const pendingSkillSegments = this.#uiPendingSkillSegments;
@@ -825,6 +977,9 @@ export class RuntimeBridge {
         const toolName = String(event.name || event.toolName || '').trim();
         if (event.type === 'tool:start' && isPlanCardToolName(toolName) && this.#uiActiveMsgId) {
           this.#uiPlanParentMsgId = this.#uiActiveMsgId;
+        }
+        if (String(event.parentToolCallId || '').trim()) {
+          break;
         }
         const createPlanTargetId =
           ['tool:end', 'tool:result', 'tool:error', 'tool:blocked'].includes(event.type) &&
@@ -926,7 +1081,9 @@ export class RuntimeBridge {
       case 'plan:step_start':
       case 'plan:progress':
       case 'plan:step_done': {
-        const parentId = this.#uiPlanParentMsgId || this.#uiActiveMsgId;
+        const parentId = this.#findPlanParentMessageId(event.toolCallId)
+          || this.#uiPlanParentMsgId
+          || this.#uiActiveMsgId;
         if (parentId) {
           this.#updateUiMessage(parentId, (message) =>
             applyPlanEventToMessage(message, event)
@@ -1145,7 +1302,7 @@ export class RuntimeBridge {
   }
 
   handleSubmit(line, options = {}) {
-    if (this.#busy) return { error: true, message: 'A request is already in progress' };
+    if (!this.#claimSessionTurn()) return { error: true, message: 'A request is already in progress' };
     this.#ensureUiTranscriptLoaded();
     this.#resetActiveAssistantTarget();
     const trimmed = String(line || '').trim();
@@ -1157,7 +1314,6 @@ export class RuntimeBridge {
         timestamp: new Date().toISOString()
       });
     }
-    this.#busy = true;
     this.#publishLifecycle('running');
     this.#uiPendingSkillBadges = [];
     this.#uiPendingSkillSegments = [];
@@ -1223,12 +1379,13 @@ export class RuntimeBridge {
       this.#busy = false;
       this.#activeSubmitLine = '';
       this.#broadcastRuntimeState();
+      this.#drainTowerPendingWakes();
     });
     return { accepted: true };
   }
 
   #handleStructuredRun(run, { userMessage = null, retryPrompt = '', selectedSkillNames = [] } = {}) {
-    if (this.#busy) {
+    if (!this.#claimSessionTurn()) {
       return { accepted: false, error: true, code: 'BUSY', message: 'A request is already in progress' };
     }
     this.#ensureUiTranscriptLoaded();
@@ -1252,7 +1409,6 @@ export class RuntimeBridge {
         timestamp: new Date().toISOString()
       });
     }
-    this.#busy = true;
     this.#publishLifecycle('running');
     this.#uiPendingSkillBadges = [];
     this.#uiPendingSkillSegments = [];
@@ -1309,6 +1465,7 @@ export class RuntimeBridge {
       }
       this.#busy = false;
       this.#broadcastRuntimeState();
+      this.#drainTowerPendingWakes();
     });
     this.#broadcastRuntimeState();
     return { accepted: true, operationId };
@@ -1363,7 +1520,7 @@ export class RuntimeBridge {
   }
 
   handleCodeWikiGenerate(line, { operationId = '' } = {}) {
-    if (this.#busy) return { error: true, message: 'A request is already in progress' };
+    if (this.#sessionTurnActive()) return { error: true, message: 'A request is already in progress' };
     const operationMeta = operationId ? { operationId } : {};
     this.#busy = true;
     this.#publishLifecycle('running');
@@ -1455,7 +1612,7 @@ export class RuntimeBridge {
   }
 
   async handleCodeWikiAsk(line, onEvent = null) {
-    if (this.#busy) return { error: true, message: 'A request is already in progress' };
+    if (this.#sessionTurnActive()) return { error: true, message: 'A request is already in progress' };
     this.#busy = true;
     const submitToken = this.#invalidateSubmit();
     const emit = (event) => {
@@ -1692,14 +1849,14 @@ export class RuntimeBridge {
   }
 
   async undoChangeSet(id) {
-    if (this.#busy) return { error: true, message: 'A request is already in progress' };
+    if (this.#sessionTurnActive()) return { error: true, message: 'A request is already in progress' };
     const result = await this.#runtime.undoChangeSet?.(id);
     this.#publish({ type: 'change:undone', result });
     return result || { error: true, message: 'File change checkpoint is not available' };
   }
 
   async undoChangeSets(ids) {
-    if (this.#busy) return { error: true, message: 'A request is already in progress' };
+    if (this.#sessionTurnActive()) return { error: true, message: 'A request is already in progress' };
     const result = await this.#runtime.undoChangeSets?.(ids);
     this.#publish({ type: 'change:undone', result });
     return result || { error: true, message: 'File change checkpoint is not available' };

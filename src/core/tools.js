@@ -26,6 +26,11 @@ import {
 import { evaluateCommandPolicy } from "./command-policy.js";
 import { evaluateTowerParentCommand } from "./tower-shell.js";
 import { normalizeTowerReviewVerdict } from "./tower-store.js";
+import {
+  formatTowerStatusSummary,
+  readTowerStatusPayload,
+  resolveTowerProjectRoot,
+} from "./tower-snapshot.js";
 import { classifyCommandRisk, hasShellWriteSyntax } from "./command-risk.js";
 import { createWriteCoordinator } from "./write-coordinator.js";
 import {
@@ -5437,6 +5442,21 @@ export function getBuiltinTools({
       },
     });
   }
+  if (towerActive || config?.runtime?.tower_session) {
+    workflowToolDefinitions.push({
+      type: "function",
+      function: {
+        name: "tower_status",
+        description:
+          "Read the latest tower roster and workflow state from disk. Call before dispatching, reviewing, landing, or answering progress when state may have changed since the last message.",
+        parameters: {
+          type: "object",
+          properties: {},
+          required: [],
+        },
+      },
+    });
+  }
   if (typeof config?.runtime?.onTowerReviewVerdict === "function") {
     workflowToolDefinitions.push({
       type: "function",
@@ -7190,6 +7210,24 @@ export function getBuiltinTools({
       }
       return onLandWorkers();
     },
+    tower_status: async () => {
+      if (!towerActive && !config?.runtime?.tower_session) {
+        return {
+          ok: false,
+          error: "tower_status is only available in tower mode.",
+        };
+      }
+      const projectRoot = resolveTowerProjectRoot(
+        config?.runtime?.tower_project_root || workspaceRoot,
+      );
+      const inFlight = typeof config?.runtime?.getTowerInFlightWorkers === "function"
+        ? config.runtime.getTowerInFlightWorkers()
+        : [];
+      const pendingWakes = typeof config?.runtime?.getTowerPendingWakes === "function"
+        ? config.runtime.getTowerPendingWakes()
+        : 0;
+      return readTowerStatusPayload(projectRoot, { inFlight, pendingWakes });
+    },
     submit_tower_review: async (args = {}) => {
       const submit = config?.runtime?.onTowerReviewVerdict;
       const verdict = normalizeTowerReviewVerdict(args);
@@ -7515,6 +7553,17 @@ export function getBuiltinTools({
       const query = String(args?.query || "")
         .trim()
         .toLowerCase();
+      const already = definitions.find((item) => {
+        const name = String(item?.function?.name || item?.name || "").toLowerCase();
+        return name === query;
+      });
+      if (already) {
+        return {
+          loaded: [query],
+          schemas: [already],
+          message: `"${query}" is already in your current tool list. Call it directly; do not tool_search for it.`,
+        };
+      }
       if (query === "all") {
         const all = Object.values(deferredToolCatalog);
         return {
@@ -7803,6 +7852,10 @@ export function getBuiltinTools({
       }
       if (result.message) return String(result.message);
       return JSON.stringify(result);
+    },
+
+    tower_status(result) {
+      return formatTowerStatusSummary(result);
     },
 
     submit_tower_review(result) {

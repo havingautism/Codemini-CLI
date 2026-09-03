@@ -393,6 +393,7 @@ async function withReviewRuntime({ tower = true } = {}, respond, task) {
         });
         if (tower) await runtime.setTowerMode(true);
         await task({ dir, bodies, runtime, session });
+        await runtime.waitForTowerIdle?.().catch(() => {});
         await runtime.dispose?.();
       } finally {
         server.closeAllConnections?.();
@@ -516,10 +517,10 @@ test('tower reviewer reuses the author worktree, stays off the roster, and recor
     assert.equal(reviewPrompt.includes('Worker id:'), false);
 
     const reviewResult = session.messages.find((message) => message.tool_call_id === 'call-review');
-    assert.match(String(reviewResult?.content || ''), /Review of "alisa" passed/);
+    assert.match(String(reviewResult?.content || ''), /Tower review of "alisa" started \(running\)/);
     assert.equal(String(reviewResult?.content || '').includes('Worker id:'), false);
     const spawnResult = session.messages.find((message) => message.tool_call_id === 'call-spawn');
-    assert.match(String(spawnResult?.content || ''), /alisa/);
+    assert.match(String(spawnResult?.content || ''), /spawned \(running\)|background/i);
 
     const landed = await landTowerWorkers({ cwd: dir, base: 'main' });
     assert.equal(landed.ok, true, landed.error);

@@ -24,6 +24,7 @@ import { ReflectApprovalDialog } from "@/components/ReflectApprovalDialog.jsx";
 import { DreamDialog } from "@/components/DreamDialog.jsx";
 import { SpecApprovalDialog } from "@/components/SpecApprovalDialog.jsx";
 import { RuntimeActivityStrip } from "@/components/RuntimeActivityStrip.jsx";
+import { TowerProgressDock } from "@/components/TowerProgressDock.jsx";
 import { SessionPanel } from "@/components/SessionPanel.jsx";
 import { TodoCard } from "@/components/TodoList.jsx";
 import { findLiveTodoDock } from "@/lib/live-todo-dock.js";
@@ -281,8 +282,9 @@ function Shell() {
       findLiveTodoDock(state.messages, {
         busy: state.busy,
         previous: liveTodoDockRef.current,
+        towerActive: Boolean(state.runtimeState?.towerActive),
       }),
-    [state.busy, state.messages],
+    [state.busy, state.messages, state.runtimeState?.towerActive],
   );
   liveTodoDockRef.current = liveTodoDock;
 
@@ -672,6 +674,7 @@ function Shell() {
               <RuntimeActivityStrip
                 activities={state.runtimeActivities}
               />
+              <TowerProgressDock runtimeState={state.runtimeState} />
               {liveTodoDock ? (
                 <div className="mb-2">
                   <TodoCard

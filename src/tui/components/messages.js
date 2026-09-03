@@ -338,7 +338,8 @@ export class PlanProgress {
       index: Number(step.index || index + 1),
       title: String(step.title || step.role || `Step ${index + 1}`),
       role: String(step.role || ''),
-      status: String(step.status || 'pending')
+      status: String(step.status || 'pending'),
+      towerKind: String(step.towerKind || '')
     }));
   }
 

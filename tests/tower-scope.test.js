@@ -153,7 +153,64 @@ test('applyTowerParentToolPolicy strips mutation tools only when tower is on', (
   assert.equal(tower.includes('fork_task'), false);
   assert.equal(tower.includes('run_subagent'), true);
   assert.equal(tower.includes('land_workers'), true);
+  assert.equal(tower.includes('tower_status'), true);
   assert.equal(tower.includes('run'), true);
+});
+
+test('tower workers keep tower_status without parent inspect-only shell', async () => {
+  const bundle = getBuiltinTools({
+    towerActive: false,
+    onRunSubAgent: async () => ({ ok: true }),
+    config: { runtime: { tower_session: true } },
+  });
+  const names = bundle.definitions.map((item) => item.function?.name || item.name);
+  assert.equal(names.includes('tower_status'), true);
+  const run = shellTool(bundle);
+  assert.equal(String(run.def?.function?.description || '').includes('inspect-only'), false);
+});
+
+test('tool_search for tower_status says the tool is already available', async () => {
+  const { handlers } = getBuiltinTools({
+    towerActive: true,
+    onRunSubAgent: async () => ({ ok: true }),
+    onLandWorkers: async () => ({ ok: true }),
+  });
+  const result = handlers.tool_search({ query: 'tower_status' });
+  assert.equal(result.error, undefined);
+  assert.deepEqual(result.loaded, ['tower_status']);
+  assert.match(String(result.message || ''), /already in your current tool list/i);
+});
+
+test('tower_status is exposed for tower sessions and reads fresh state', async () => {
+  const hidden = getBuiltinTools({
+    towerActive: false,
+    onRunSubAgent: async () => ({ ok: true }),
+  });
+  assert.equal(
+    hidden.definitions.some((item) => item.function?.name === 'tower_status'),
+    false,
+  );
+
+  const { definitions, handlers } = getBuiltinTools({
+    towerActive: true,
+    onRunSubAgent: async () => ({ ok: true }),
+    onLandWorkers: async () => ({ ok: true }),
+    config: {
+      runtime: {
+        tower_session: true,
+        tower_project_root: process.cwd(),
+        getTowerInFlightWorkers: () => ['worker-a'],
+        getTowerPendingWakes: () => 2,
+      },
+    },
+  });
+  assert.equal(
+    definitions.some((item) => item.function?.name === 'tower_status'),
+    true,
+  );
+  const result = await handlers.tower_status();
+  assert.equal(result.ok, false);
+  assert.match(String(result.error || ''), /not active/i);
 });
 
 test('submit_tower_review is only exposed when a verdict callback is wired', async () => {

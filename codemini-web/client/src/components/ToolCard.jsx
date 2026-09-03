@@ -27,7 +27,7 @@ import {
 } from "@/components/UserInputDialog.jsx";
 import { useApp } from "@/context/app-context.jsx";
 import { openWorkspaceFile } from "@/hooks/use-api.js";
-import { cn } from "@/lib/utils";
+import { shouldSuppressTowerTaskTodos } from "@/lib/tower-ui-state.js";
 import { interactiveRequestForSession } from "@/lib/session-ui-state.js";
 import {
   extractToolName,
@@ -41,6 +41,7 @@ import {
   resolveToolHeaderParts,
 } from "@/lib/tool-card-display.js";
 import { t } from "../../i18n/index.js";
+import { cn } from "@/lib/utils";
 import { PatchDiff } from "@pierre/diffs/react";
 
 const TOOL_ICONS = {
@@ -51,6 +52,8 @@ const TOOL_ICONS = {
   apply_patch: PencilLine,
   create_plan: ListChecks,
   run_subagent: ListChecks,
+  tower_status: ListChecks,
+  land_workers: ListChecks,
   fork_task: ListChecks,
   tasks: ListChecks,
   create_spec: FileText,
@@ -347,6 +350,10 @@ export function ToolCard({
   defaultOpen = false,
   collapsible = true,
 }) {
+  const { state } = useApp();
+  const suppressTowerTodos = shouldSuppressTowerTaskTodos({
+    towerActive: Boolean(state.runtimeState?.towerActive),
+  });
   const [open, setOpen] = useState(defaultOpen);
   const [fileAction, setFileAction] = useState("");
   const [fileActionError, setFileActionError] = useState("");
@@ -358,6 +365,7 @@ export function ToolCard({
     ? getTodoToolItems(card.arguments, card.result)
     : [];
   if (isTasksTool) {
+    if (suppressTowerTodos) return null;
     return (
       <TodoCard todos={todoItems} persistKey={card?.id || ""} />
     );

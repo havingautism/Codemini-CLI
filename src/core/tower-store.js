@@ -155,38 +155,21 @@ export function listTowerWorkersFromState(state) {
   return workers.map(normalizeTowerWorkerRecord).filter(Boolean);
 }
 
-export function buildTowerModePromptBlock(towerState, workers = []) {
+export function buildTowerModePromptBlock(towerState) {
   const state = normalizeTowerState(towerState);
   if (!state) return '';
-  const roster = listTowerWorkersFromState({ workers });
-  const formatRoster = (items) => items.map((item) => {
-    const scope = Array.isArray(item.paths) && item.paths.length ? item.paths.join(', ') : 'no paths';
-    const status = String(item.runStatus || '').trim();
-    return status ? `${item.id} (${scope}, ${status})` : `${item.id} (${scope})`;
-  }).join('; ');
-  const idle = roster.filter((item) => item.integrated !== true);
-  const onBase = roster.filter((item) => item.integrated === true);
-  const rosterParts = [];
-  if (idle.length) {
-    rosterParts.push(`Idle workers: ${formatRoster(idle)}. Call back with resume: "<id>". That id is the short worker name such as alisa, never a call id or handoff folder.`);
-  } else if (onBase.length) {
-    rosterParts.push('No idle workers. Everyone still on the roster is already merged onto the base branch.');
-  } else {
-    rosterParts.push('No idle workers yet. New workers need a unique short name and disjoint paths.');
-  }
-  if (onBase.length) {
-    rosterParts.push(`On base: ${formatRoster(onBase)}. Do not resume or review those workers. Wait for the rest of the roster, then land_workers.`);
-  }
-  const rosterLine = rosterParts.join(' ');
   return [
     'Tower Mode: on',
     `Recorded git base branch: ${state.base}`,
-    'You are the control tower for this session. Any user objective — including a single task — must be dispatched with run_subagent. One worker is enough; do not invent extra missions. Do not implement, answer the coding question yourself, or edit the main checkout.',
+    'You are the control tower for this session. Dispatch implementation work with run_subagent. One worker is enough; do not invent extra missions. Do not implement, answer the coding question yourself, or edit the main checkout.',
+    'Call tower_status for the live roster before dispatching, reviewing, landing, or answering progress. Do not infer progress from this prompt, memory, or an earlier tool result.',
+    'User progress or status questions (for example "做到哪了", "进展如何", "还要多久") are not new missions. Call tower_status, then answer in plain language. Do not spawn workers, reviewers, or survey runs, and do not call land_workers, just to answer a status question.',
+    'If tower_status shows pending wakes, wait for that notification turn. Do not land or dispatch while a wake is queued.',
+    'When a turn includes both a user message and a tower notification, handle the notification workflow first (review sealed coders, land when ready), then answer any user status question in the same reply.',
     'Coder workers get a git worktree each. Do not create worktrees, extra branches, or merge into the user branch yourself.',
-    'New coder workers require paths: disjoint relative globs such as docs/** or src/foo.ts. Overlapping paths are rejected unless that other worker is already integrated onto the base branch. Resume with resume set to that id; omit paths to keep the stored list, or pass a new disjoint list to change it.',
+    'New coder workers require paths: disjoint relative globs such as docs/** or src/foo.ts. Overlapping paths are rejected unless that other worker is already integrated onto the base branch. Resume with resume set to that id from tower_status; omit paths to keep the stored list, or pass a new disjoint list to change it.',
     'Read-only investigation uses role: "survey". Survey workers still get a worktree, do not take exclusive paths, must not edit or commit, and are not reviewed or landed.',
-    rosterLine,
-    'When a coder worker finishes, read its tool result. dirty means it did not git commit — do not review or land that worker. After a coder is sealed, dispatch a separate run_subagent with role: "reviewer" and review set to that worker id. Do not resume the author to review themselves. The reviewer is not a roster worker and does not get paths or a new worktree. Do not review survey workers. fork_task is not available; do not use it.',
+    'Tower workers run in the background. run_subagent returns immediately with status running; completion wakes you in a new turn via a tower notification. Use tower_status and the wake notification — not the original tool result — to decide the next step. dirty means the worker did not git commit — do not review or land that worker. After a coder is sealed, dispatch a separate run_subagent with role: "reviewer" and review set to that worker id. Reviewers also run in the background. Do not resume the author to review themselves. The reviewer is not a roster worker and does not get paths or a new worktree. Do not review survey workers. fork_task is not available; do not use it.',
     'land_workers merges each passing worker directly onto the recorded base branch with git merge --no-ff (one merge commit per worker). Workers still in review stay on their worktrees until they pass. When everyone on the roster is integrated, worker branches and worktrees are deleted. The user still controls push. If review did not pass, resume that worker with the review text, then review the new commit. If a review loop stops (5 rounds still failing, or two consecutive identical failed findings), tell the user; resume with a new task or paths, or spawn a new worker; do not keep fixing the same findings. If land returns REBASE_REQUIRED, resume that worker; the resume task already includes git rebase onto that commit. After it commits, review the new commit before landing again.',
     'Parent run is inspect-only: git status, log, diff, and other read-only commands. Do not git merge, checkout, worktree, or copy into the main checkout; land_workers is the only merge path.',
     'Tell workers to use paths relative to their worktree cwd. Do not pass absolute paths from the parent checkout.'

@@ -97,6 +97,9 @@ import {
 } from './tower-store.js';
 import { composeTowerResumeTask, composeTowerReviewTask, isTowerCommitAncestor, isTowerWorktreeDirty, removeTowerWorktrees, resolveTowerReviewTarget, resolveTowerSubagentWorkspace, shouldContinueTowerWorkerSeal, teardownTowerWorker } from './tower-worktree.js';
 import { landTowerWorkers } from './tower-land.js';
+import { createTowerCoordinator } from './tower-coordinator.js';
+import { runTowerWorkerJob } from './tower-worker-run.js';
+import { compactTowerSpawnResultForParent, resolveTowerProjectRoot, buildTowerWorkerStatusRecord } from './tower-snapshot.js';
 import { composeMemorySnapshot } from './memory-prompt.js';
 import { buildProjectContextSnippet, initializeProjectIndex } from './project-index.js';
 import { queryProjectKnowledgeGraph } from './project-knowledge-graph.js';
@@ -694,7 +697,7 @@ export const EXECUTION_MODE_TOOL_POLICY = {
     'save_memory',
     'tasks',
     'edit', 'write', 'begin_write', 'write_chunk', 'commit_write', 'abort_write', 'apply_patch', 'delete', 'run',
-    'run_subagent', 'fork_task', 'land_workers', 'request_user_input'
+    'run_subagent', 'fork_task', 'land_workers', 'tower_status', 'request_user_input'
   ]
 };
 
@@ -744,6 +747,7 @@ export function applyTowerParentToolPolicy(allowedTools, { towerActive = false }
       })
     : [];
   if (!names.includes('land_workers')) names.push('land_workers');
+  if (!names.includes('tower_status')) names.push('tower_status');
   return names;
 }
 
@@ -1017,6 +1021,7 @@ export function resolveSubAgentToolAllowList({
   tools = null,
   config,
   platform = process.platform,
+  towerSession = false,
 } = {}) {
   const key = String(role || '').trim().toLowerCase();
   const basePolicy = ROLE_TOOL_POLICY[key] || ROLE_TOOL_POLICY.coder;
@@ -1027,6 +1032,7 @@ export function resolveSubAgentToolAllowList({
     platform,
   );
   if (!roleTools.includes('tasks')) roleTools.push('tasks');
+  if (towerSession && !roleTools.includes('tower_status')) roleTools.push('tower_status');
   if (!Array.isArray(tools)) return roleTools;
   const requested = adaptToolNamesForPlatform(
     normalizeToolPolicy(tools, config).map(canonicalShellToolName).filter(
@@ -1043,6 +1049,7 @@ export function resolveSubAgentToolAllowList({
     granted.push('tool_search');
   }
   if (!granted.includes('tasks')) granted.push('tasks');
+  if (towerSession && !granted.includes('tower_status')) granted.push('tower_status');
   return granted;
 }
 
@@ -1067,9 +1074,10 @@ export function resolvePlanSubAgentApprovalOptions({
   projectIsGit = false,
   changeTrackerEnabled = false,
   workspaceHasGit = false,
-  tools = null
+  tools = null,
+  towerSession = false,
 } = {}) {
-  const roleAllowedTools = resolveSubAgentToolAllowList({ role, tools, config });
+  const roleAllowedTools = resolveSubAgentToolAllowList({ role, tools, config, towerSession });
   return {
     projectIsGit: resolveApprovalProjectIsGit({
       projectIsGit,
@@ -4194,7 +4202,7 @@ export function resolveLatestContextMeasurement(messages = [], fallbackOverhead 
   return { tokens: 0, source: 'estimated' };
 }
 
-export function buildRuntimeStateSnapshot({ currentSession, config, model, executionMode, extraSession, workspaceRoot, alwaysSkillNames = [], towerState } = {}) {
+export function buildRuntimeStateSnapshot({ currentSession, config, model, executionMode, extraSession, workspaceRoot, alwaysSkillNames = [], towerState, towerWorkers = [], towerInFlightIds = [] } = {}) {
   const activeMessages = extraSession
     ? extraSession.messages || []
     : Array.isArray(currentSession?.compact?.view) && currentSession.compact.view.length > 0
@@ -4254,6 +4262,9 @@ export function buildRuntimeStateSnapshot({ currentSession, config, model, execu
       : null,
     towerActive: Boolean(tower),
     towerBase: tower?.base || '',
+    towerWorkers: Array.isArray(towerWorkers) ? towerWorkers : [],
+    towerInFlightIds: Array.isArray(towerInFlightIds) ? towerInFlightIds : [],
+    towerWorkersInFlight: Array.isArray(towerInFlightIds) ? towerInFlightIds.length : 0,
   };
   Object.defineProperties(snapshot, {
     currentContextTokens: {
@@ -4828,6 +4839,9 @@ async function askModel({
   forbiddenTools = [],
   towerState = null,
   towerWorkersInFlight = null,
+  towerCoordinator = null,
+  towerEventSink = null,
+  publishTowerWorkersChanged = () => {},
 }) {
   let compacted = compactedInput;
   const modelInputText = typeof modelText === 'string' && modelText ? modelText : text;
@@ -5059,6 +5073,9 @@ async function askModel({
     userText: modelInputText
   });
 
+  const inFlightTowerWorkers = towerWorkersInFlight instanceof Set
+    ? towerWorkersInFlight
+    : new Set();
   const toolConfig = {
     ...config,
     runtime: {
@@ -5068,6 +5085,14 @@ async function askModel({
         allowedTools.includes('update_code_comment')
       ),
       tower_parent_shell: Boolean(towerState),
+      tower_session: Boolean(towerState) || Boolean(config?.runtime?.tower_session),
+      tower_project_root: resolveTowerProjectRoot(workspaceRoot),
+      getTowerInFlightWorkers: () => [...inFlightTowerWorkers],
+      getTowerPendingWakes: () => (
+        Number.isFinite(towerCoordinator?.pendingWakeCount)
+          ? towerCoordinator.pendingWakeCount
+          : Number(config?.runtime?.getTowerPendingWakes?.() || 0)
+      ),
     },
     workspaceRoot,
     policy: {
@@ -5084,9 +5109,6 @@ async function askModel({
   });
 
   const subAgentDependencies = createSubAgentDependencyCoordinator();
-  const inFlightTowerWorkers = towerWorkersInFlight instanceof Set
-    ? towerWorkersInFlight
-    : new Set();
   const { definitions, handlers, formatters, deferredDefinitions, displayLabels, dispose: disposeTools } = getBuiltinTools({
     workspaceRoot,
     config: toolConfig,
@@ -5096,7 +5118,13 @@ async function askModel({
     toolResultStore,
     towerActive: Boolean(towerState),
     onLandWorkers: towerState
-      ? async () => landTowerWorkers({ cwd: workspaceRoot, base: towerState.base })
+      ? async () => {
+          const result = await landTowerWorkers({ cwd: workspaceRoot, base: towerState.base });
+          if (result?.ok) {
+            publishTowerWorkersChanged();
+          }
+          return result;
+        }
       : undefined,
     getTodos: () => normalizeTodos(session.todos),
     onTodosUpdate: (todos) => {
@@ -5149,11 +5177,13 @@ async function askModel({
             : '';
           const callId = String(toolCallId || `sub-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`).trim();
           const emit = (evt) => {
-            if (onAgentEvent) onAgentEvent({
+            const tagged = {
               ...evt,
               toolCallId: callId,
               ...(towerKind ? { towerKind } : {}),
-            });
+            };
+            if (onAgentEvent) onAgentEvent(tagged);
+            towerEventSink?.(tagged);
           };
           const dependencyTaskId = String(taskId || '').trim();
           const dependencyRegistration = subAgentDependencies.register({
@@ -5187,7 +5217,8 @@ async function askModel({
           const resolvedTools = resolveSubAgentToolAllowList({
             role: policyKey,
             tools: toolAllowList,
-            config
+            config,
+            towerSession: Boolean(towerState),
           });
           const stepModel = resolveSubAgentModel(config, model);
           const stepSdkProvider = config.sdk?.provider || '';
@@ -5263,6 +5294,7 @@ async function askModel({
             let workerTask = scopedTask;
             let reviewCommit = '';
             let pendingRebaseOnto = '';
+            let spawnedTowerWorker = null;
             if (towerState) {
               const isReviewer = String(role || '').trim().toLowerCase() === 'reviewer' || policyKey === 'reviewer';
               if (String(review || '').trim() && !isReviewer) {
@@ -5368,9 +5400,11 @@ async function askModel({
                 }
                 if (workerId) {
                   inFlightTowerWorkers.add(workerId);
+                  publishTowerWorkersChanged();
                   lockedTowerWorkerId = workerId;
                   reviewingWorkerId = workerId;
                   reviewingWorkerRecord = reviewed.worker || null;
+                  spawnedTowerWorker = reviewed.worker || null;
                 }
                 reviewCommit = reviewed.commit;
                 workerTask = composeTowerReviewTask(scopedTask, {
@@ -5448,7 +5482,9 @@ async function askModel({
                 }
                 if (workerId) {
                   inFlightTowerWorkers.add(workerId);
+                  publishTowerWorkersChanged();
                   lockedTowerWorkerId = workerId;
+                  spawnedTowerWorker = spawned.worker || null;
                   await patchTowerWorkerRecord(workspaceRoot, workerId, {
                     runStatus: 'running',
                     runError: '',
@@ -5474,6 +5510,78 @@ async function askModel({
                 );
                 workerBackupManager = null;
               }
+            }
+            if (towerState) {
+              const spawnMessage = compactTowerSpawnResultForParent({
+                workerId: lockedTowerWorkerId,
+                taskId: dependencyTaskId,
+                status: 'running',
+                branch: spawnedTowerWorker?.branch || '',
+                worktreePath: spawnedTowerWorker?.worktreePath || workerWorkspaceRoot,
+                reviewOf: reviewingWorkerId,
+                role: persona,
+              });
+              const runningResult = {
+                ok: true,
+                status: 'running',
+                workflowComplete: true,
+                workflowMessage: spawnMessage,
+                name: persona,
+                role: persona,
+                tools: resolvedTools,
+                text: '',
+                ...(lockedTowerWorkerId ? { workerId: lockedTowerWorkerId } : {}),
+                ...(reviewingWorkerId ? { reviewOf: reviewingWorkerId } : {}),
+                ...(dependencyTaskId ? { taskId: dependencyTaskId } : {}),
+                message: spawnMessage,
+              };
+              dependencyRegistration.settle(runningResult);
+              void runTowerWorkerJob({
+                runSubAgentTask,
+                subAgentRunFailed,
+                compactSubAgentResultForParent,
+                collectPlanImplementationFileChanges,
+                subAgentAllowListMayMutate,
+                mergeModelUsage,
+                emit,
+                onWake: (wakeText) => towerCoordinator?.enqueueWake(wakeText),
+                releaseInFlight: (workerId) => {
+                  if (workerId) inFlightTowerWorkers.delete(workerId);
+                  publishTowerWorkersChanged();
+                },
+                callId,
+                persona,
+                policyKey,
+                taskRole,
+                title,
+                dependencyTaskId,
+                dependencyDependencies: dependencyRegistration.dependencies,
+                workerTask,
+                workerWorkspaceRoot,
+                workerChangeTracker,
+                workerBackupManager,
+                session,
+                workspaceRoot,
+                config,
+                stepModel,
+                systemPrompt,
+                onAgentEvent,
+                requestToolApproval,
+                resolvedTools,
+                toolAllowList,
+                assignedTasks,
+                declaredGoal,
+                taskPrompt,
+                summary,
+                stepSdkProvider,
+                lockedTowerWorkerId,
+                reviewingWorkerId,
+                reviewingWorkerRecord,
+                reviewCommit,
+                pendingRebaseOnto,
+                isTowerSurvey,
+              });
+              return runningResult;
             }
             const reviewBox = { verdict: null };
             const output = await runSubAgentTask({
@@ -5504,7 +5612,7 @@ async function askModel({
               parentToolCallId: callId,
               tools: reviewingWorkerId
                 ? [...resolvedTools, 'submit_tower_review']
-                : toolAllowList,
+                : (towerState ? resolvedTools : toolAllowList),
               onUsage: (usage) => {
                 childUsage = mergeModelUsage(childUsage, usage);
               },
@@ -5660,21 +5768,8 @@ async function askModel({
               text: '',
               ...(childUsage ? { usage: childUsage } : {})
             };
-            if (lockedTowerWorkerId && !reviewingWorkerId) {
-              const aborted = signal?.aborted || err?.name === 'AbortError';
-              if (aborted) {
-                await teardownTowerWorker({ cwd: workspaceRoot, id: lockedTowerWorkerId, force: true }).catch(() => null);
-              } else {
-                await patchTowerWorkerRecord(workspaceRoot, lockedTowerWorkerId, {
-                  runStatus: 'failed',
-                  runError: String(err?.message || err).slice(0, 400),
-                }).catch(() => null);
-              }
-            }
             dependencyRegistration.settle(result);
             return result;
-          } finally {
-            if (lockedTowerWorkerId) inFlightTowerWorkers.delete(lockedTowerWorkerId);
           }
         }
       : undefined,
@@ -6476,7 +6571,12 @@ export async function runSubAgentTask({
       ? `Accumulated plan ledger (clean-context; no executor transcripts):\n${planFileContext}`
       : `Accumulated plan file context (results from prior steps):\n${planFileContext}`
     : '';
-  const roleAllowedTools = resolveSubAgentToolAllowList({ role, tools, config });
+  const roleAllowedTools = resolveSubAgentToolAllowList({
+    role,
+    tools,
+    config,
+    towerSession: isTowerWorktreeRoot(workspaceRoot) || Boolean(config?.runtime?.tower_session),
+  });
   const runtimeNote = buildSubAgentRuntimeNote(roleAllowedTools, {
     shell: config?.shell?.default,
     workspaceRoot,
@@ -6553,13 +6653,15 @@ export async function runSubAgentTask({
     }
   };
   const workspaceHasGit = Boolean(config?.runtime?.project_is_git) || changeTracker?.mode === 'git-oplog';
+  const towerSessionActive = isTowerWorktreeRoot(workspaceRoot) || Boolean(config?.runtime?.tower_session);
   const approvalOptions = resolvePlanSubAgentApprovalOptions({
     role,
     config,
     projectIsGit,
     changeTrackerEnabled: changeTracker?.mode === 'git-oplog',
     workspaceHasGit,
-    tools
+    tools,
+    towerSession: towerSessionActive,
   });
   const subShellRulesPrompt = buildSubAgentShellRulesPrompt(roleAllowedTools, {
     shell: config?.shell?.default,
@@ -6591,7 +6693,15 @@ export async function runSubAgentTask({
   const subResult = await askModel({
     text: scopedTask,
     session: subSession,
-    config: withCandidateMemoryWrites(config),
+    config: withCandidateMemoryWrites({
+      ...config,
+      runtime: {
+        ...(config.runtime || {}),
+        tower_session: towerSessionActive || Boolean(config?.runtime?.tower_session),
+        tower_project_root: resolveTowerProjectRoot(workspaceRoot),
+        tower_parent_shell: false,
+      },
+    }),
     model: subAgentModel,
     systemPrompt: subSystemPrompt,
     onAgentEvent: wrappedOnAgentEvent,
@@ -6606,7 +6716,8 @@ export async function runSubAgentTask({
     changeTracker,
     backupManager,
     workspaceRoot,
-    projectIsGit: approvalOptions.projectIsGit
+    projectIsGit: approvalOptions.projectIsGit,
+    towerState: null,
   });
   collectSubAgentArtifactsFromMessages(subSession.messages, artifactPaths, seenArtifactPaths);
   const text = subResult.text || '';
@@ -8671,6 +8782,59 @@ export async function createChatRuntime({
   let executionMode = resolveRuntimeExecutionMode(config.execution?.mode || 'normal', config, currentSession);
   let towerState = normalizeTowerState(currentSession?.tower);
   const towerWorkersInFlight = new Set();
+  let activeTurnCount = 0;
+  let towerEventSink = null;
+  let towerWakeExternalSubmit = null;
+  let lastTowerProgress = { workers: [], inFlightIds: [] };
+  const refreshTowerProgressCache = async () => {
+    const disk = towerState ? await readTowerStateFile(root).catch(() => null) : null;
+    lastTowerProgress = {
+      workers: towerState
+        ? listTowerWorkersFromState(disk).map(buildTowerWorkerStatusRecord)
+        : [],
+      inFlightIds: [...towerWorkersInFlight],
+    };
+    return lastTowerProgress;
+  };
+  const publishTowerWorkersChanged = () => {
+    lastTowerProgress = {
+      ...lastTowerProgress,
+      inFlightIds: [...towerWorkersInFlight],
+    };
+    towerEventSink?.({
+      type: 'tower:workers_changed',
+      inFlight: lastTowerProgress.inFlightIds.length,
+      inFlightIds: lastTowerProgress.inFlightIds,
+      workers: lastTowerProgress.workers,
+    });
+    void refreshTowerProgressCache().then((progress) => {
+      towerEventSink?.({
+        type: 'tower:workers_changed',
+        inFlight: progress.inFlightIds.length,
+        inFlightIds: progress.inFlightIds,
+        workers: progress.workers,
+      });
+    }).catch(() => {});
+  };
+  const towerWakeBridge = { submit: async () => {} };
+  const towerCoordinator = createTowerCoordinator({
+    inFlightWorkers: towerWorkersInFlight,
+    isTurnActive: () => activeTurnCount > 0,
+    submitWake: (text) => towerWakeBridge.submit(text),
+  });
+  const markStaleTowerWorkers = async () => {
+    if (!towerState) return;
+    const disk = await readTowerStateFile(root);
+    const workers = listTowerWorkersFromState(disk);
+    for (const worker of workers) {
+      if (worker.runStatus !== 'running') continue;
+      towerWorkersInFlight.delete(worker.id);
+      await patchTowerWorkerRecord(root, worker.id, {
+        runStatus: 'failed',
+        runError: 'Interrupted (session restored).',
+      }).catch(() => null);
+    }
+  };
   const persistTowerState = async (next) => {
     towerState = normalizeTowerState(next);
     if (!currentSession || typeof currentSession !== 'object') return;
@@ -8695,6 +8859,8 @@ export async function createChatRuntime({
       previous: towerState,
     });
     await persistTowerState(null);
+    lastTowerProgress = { workers: [], inFlightIds: [] };
+    publishTowerWorkersChanged();
     return { ok: true, tower: null };
   };
   if (towerState && normalizeExecutionMode(executionMode) !== 'plan') {
@@ -8707,6 +8873,8 @@ export async function createChatRuntime({
       sessionId: currentSession?.id,
       workers: listTowerWorkersFromState(disk),
     }).catch(() => {});
+    await markStaleTowerWorkers();
+    await refreshTowerProgressCache();
   }
   let compactState = null;
   const normalizeCompactThreshold = (value, fallback = 60) => {
@@ -9218,6 +9386,8 @@ export async function createChatRuntime({
   };
 
   const executeSubmissionTurn = async (line, onAgentEvent, options = {}) => {
+    activeTurnCount += 1;
+    try {
     // 每次提交创建新的 AbortController，替代旧的
     activeAbortController = new AbortController();
     const { signal } = activeAbortController;
@@ -9833,14 +10003,38 @@ export async function createChatRuntime({
       retrievedText,
       towerState,
       towerWorkersInFlight,
+      towerCoordinator,
+      towerEventSink,
+      publishTowerWorkersChanged,
     });
     syncExecutionModeWithSession();
     void captureUserPromptForDream(expandedText);
     return { type: 'assistant', text: result.text, aborted: !!result.aborted };
+    } finally {
+      activeTurnCount -= 1;
+      if (!towerWakeExternalSubmit) {
+        void towerCoordinator.drainPendingWakes();
+      }
+    }
   };
-  const executeSubmission = async (line, onAgentEvent, options = {}) => (
-    executeSubmissionTurn(line, onAgentEvent, options)
-  );
+  towerWakeBridge.submit = (wakeText) => {
+    if (typeof towerWakeExternalSubmit === 'function') {
+      return towerWakeExternalSubmit(wakeText);
+    }
+    return executeSubmissionTurn(wakeText, undefined, { towerWake: true });
+  };
+  const submit = async (line, onAgentEvent, options = {}) => {
+    const text = String(line || '');
+    if (!text.trim()) return { type: 'noop' };
+    if (text.trimStart().startsWith('!')) {
+      const shell = await handleShellInput(text.trimStart().slice(1), config, root);
+      return { type: 'shell', text: shell.text };
+    }
+    if (options?.towerWake === true) {
+      return executeSubmissionTurn(text, onAgentEvent, options);
+    }
+    return submitMessage({ text }, onAgentEvent);
+  };
   const getAvailableSkills = () =>
     Array.from(commands.values())
       .filter((command) => isUserInvocableSkill(command))
@@ -9896,15 +10090,9 @@ export async function createChatRuntime({
     return result;
   };
 
-  const submit = async (line, onAgentEvent) => {
-    const text = String(line || '');
-    if (!text.trim()) return { type: 'noop' };
-    if (text.trimStart().startsWith('!')) {
-      const shell = await handleShellInput(text.trimStart().slice(1), config, root);
-      return { type: 'shell', text: shell.text };
-    }
-    return submitMessage({ text }, onAgentEvent);
-  };
+  const executeSubmission = async (line, onAgentEvent, options = {}) => (
+    executeSubmissionTurn(line, onAgentEvent, options)
+  );
 
   const dispatchAction = async (action, options = {}) => {
     const onAgentEvent = typeof options.onAgentEvent === 'function'
@@ -9978,6 +10166,22 @@ export async function createChatRuntime({
   return {
     submit,
     submitMessage,
+    isTurnActive: () => activeTurnCount > 0,
+    drainTowerPendingWakes: () => towerCoordinator.drainPendingWakes(),
+    getTowerWorkersInFlight: () => towerWorkersInFlight.size,
+    waitForTowerIdle: async ({ timeoutMs = 10_000 } = {}) => {
+      const started = Date.now();
+      while (Date.now() - started < timeoutMs) {
+        if (activeTurnCount === 0 && towerCoordinator.pendingWakeCount === 0 && towerWorkersInFlight.size === 0) {
+          return true;
+        }
+        if (activeTurnCount === 0 && towerCoordinator.pendingWakeCount > 0) {
+          await towerCoordinator.drainPendingWakes();
+        }
+        await new Promise((resolve) => setTimeout(resolve, 40));
+      }
+      throw new Error('Timed out waiting for tower idle.');
+    },
     submitCodeWiki: (line, onAgentEvent, options = {}) => executeSubmission(line, onAgentEvent, options),
     dispatchAction,
     getSession: () => currentSession,
@@ -10115,6 +10319,14 @@ export async function createChatRuntime({
       requestToolApprovalObserver = typeof handler === 'function' ? handler : null;
       return true;
     },
+    setTowerEventSink: (handler) => {
+      towerEventSink = typeof handler === 'function' ? handler : null;
+      return true;
+    },
+    setTowerWakeSubmit: (handler) => {
+      towerWakeExternalSubmit = typeof handler === 'function' ? handler : null;
+      return true;
+    },
     resolveToolApproval: (requestId, decision = {}) => {
       const pending = peekPendingApproval(approvalRequestState, requestId);
       if (!pending) return { ok: false, code: 'NO_PENDING_APPROVAL' };
@@ -10231,7 +10443,9 @@ export async function createChatRuntime({
         extraSession: activeSubSession,
         workspaceRoot: root,
         alwaysSkillNames: getAlwaysSkillCommands(commands, config, null, executionMode).map((skill) => skill.name),
-        towerState
+        towerState,
+        towerWorkers: lastTowerProgress.workers,
+        towerInFlightIds: lastTowerProgress.inFlightIds,
       })
   };
 }

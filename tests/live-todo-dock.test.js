@@ -27,6 +27,13 @@ test('findLiveTodoDock is idle when the session is not busy', () => {
   assert.equal(findLiveTodoDock([liveTodoMessage], { busy: false }), null);
 });
 
+test('findLiveTodoDock is idle in tower mode even while busy', () => {
+  assert.equal(
+    findLiveTodoDock([liveTodoMessage], { busy: true, towerActive: true }),
+    null,
+  );
+});
+
 test('findLiveTodoDock pins the latest assistant todo while busy', () => {
   const dock = findLiveTodoDock([
     { id: 'u1', role: 'you', segments: [] },

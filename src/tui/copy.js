@@ -105,7 +105,18 @@ const EN = {
   towerOn: 'Tower on',
   towerOff: 'Tower off',
   towerFailed: 'Could not change tower mode',
-  towerBusy: 'Cannot switch tower while a request is running'
+  towerBusy: 'Cannot switch tower while a request is running',
+  towerWake: 'Tower update',
+  towerProgress: 'Tower',
+  towerPhaseRunning: 'running',
+  towerPhaseReviewing: 'reviewing',
+  towerPhaseAwaitingReview: 'awaiting review',
+  towerPhaseReady: 'ready to land',
+  towerPhaseDirty: 'uncommitted',
+  towerPhaseMerged: 'merged',
+  towerPhaseFailed: 'failed',
+  towerPhaseSurveyDone: 'survey done',
+  towerPhaseIdle: 'idle'
 };
 
 const ZH = {
@@ -216,7 +227,18 @@ const ZH = {
   towerOn: '塔台已开启',
   towerOff: '塔台已关闭',
   towerFailed: '无法切换塔台',
-  towerBusy: '请求进行中，无法切换塔台'
+  towerBusy: '请求进行中，无法切换塔台',
+  towerWake: '塔台通知',
+  towerProgress: '塔台',
+  towerPhaseRunning: '运行中',
+  towerPhaseReviewing: '审查中',
+  towerPhaseAwaitingReview: '待审查',
+  towerPhaseReady: '可合回',
+  towerPhaseDirty: '未提交',
+  towerPhaseMerged: '已合回',
+  towerPhaseFailed: '失败',
+  towerPhaseSurveyDone: '调研完成',
+  towerPhaseIdle: '空闲'
 };
 
 export function createTuiCopy(language = 'en') {

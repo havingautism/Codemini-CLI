@@ -2,6 +2,11 @@ import { SelectList, matchesKey, truncateToWidth, visibleWidth } from '@earendil
 
 import { bold, color, sealAnsi, selectTheme, TEXT_FG } from '../theme.js';
 import { oneLine } from './messages.js';
+import {
+  buildTowerProgressItems,
+  formatTowerProgressLine,
+  shouldShowTowerProgressDock,
+} from '../../core/tower-progress.js';
 
 const SPINNER = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 const LIVE_STATES = new Set(['thinking', 'generating', 'tool', 'sending', 'stopping']);
@@ -113,6 +118,38 @@ export class QueuePanel {
     const more = this.items.length > 2 ? `  +${this.items.length - 2}` : '';
     const hint = this.copy.queueJump ? `  ${color.dim(this.copy.queueJump)}` : '';
     return [fill(`${color.dim(this.copy.queueTitle)}  ${color.muted(previews)}${color.dim(more)}${hint}`, width, color.surfaceBg)];
+  }
+}
+
+export class TowerProgressPanel {
+  constructor({ runtime, copy }) {
+    this.runtime = runtime;
+    this.copy = copy;
+  }
+
+  invalidate() {}
+
+  render(width) {
+    const state = this.runtime.getRuntimeState?.() || {};
+    if (!state.towerActive) return [];
+    const workers = Array.isArray(state.towerWorkers) ? state.towerWorkers : [];
+    const inFlightIds = Array.isArray(state.towerInFlightIds) ? state.towerInFlightIds : [];
+    if (!shouldShowTowerProgressDock({ towerActive: true, workers, inFlightIds })) return [];
+    const items = buildTowerProgressItems({ workers, inFlightIds });
+    const labels = {
+      running: this.copy.towerPhaseRunning,
+      reviewing: this.copy.towerPhaseReviewing,
+      awaiting_review: this.copy.towerPhaseAwaitingReview,
+      ready: this.copy.towerPhaseReady,
+      dirty: this.copy.towerPhaseDirty,
+      merged: this.copy.towerPhaseMerged,
+      failed: this.copy.towerPhaseFailed,
+      survey_done: this.copy.towerPhaseSurveyDone,
+      idle: this.copy.towerPhaseIdle,
+    };
+    const line = formatTowerProgressLine(items, labels);
+    if (!line) return [];
+    return [fill(`${color.warning(this.copy.towerProgress)}  ${color.muted(line)}`, width, color.surfaceBg)];
   }
 }
 

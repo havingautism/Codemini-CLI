@@ -616,7 +616,7 @@ export function isCodingRouteToolAllowed(result, toolName, options = {}) {
   if (toolName === 'fork_task') {
     return options.towerActive !== true;
   }
-  if (toolName === 'land_workers') {
+  if (toolName === 'land_workers' || toolName === 'tower_status') {
     return options.towerActive === true;
   }
   if (toolName === 'save_memory') {

@@ -22,6 +22,10 @@ import {
 import { collectMessageEmbeds } from "@/lib/message-embeds.js";
 import { buildRenderGroups } from "@/lib/message-render-groups.js";
 import { layoutAnswerProcessWithPlans } from "@/lib/answer-process.js";
+import {
+  shouldShowTowerModeFileChanges,
+  shouldSuppressTowerTaskTodos,
+} from "@/lib/tower-ui-state.js";
 import { TodoList } from "./TodoList";
 import { ConfirmDialog } from "@/components/ConfirmDialog.jsx";
 import { FileTypeIcon } from "@/components/FileTypeIcon.jsx";
@@ -68,6 +72,7 @@ import * as api from "@/hooks/use-api.js";
 import { useRotatingLabel } from "@/hooks/use-rotating-label.js";
 import { executionModeSkillContext } from "@/lib/skill-visibility.js";
 import {
+  useApp,
   useAppActions,
   useCurrentSessionId,
   useRuntimeMode,
@@ -1881,7 +1886,18 @@ export function shouldShowPostCompletionExtras(
   return String(planStep.role || "").toLowerCase() === "summarizer";
 }
 
-function shouldShowFileChanges(message, messageComplete, mergedFileChanges) {
+function shouldShowFileChanges(
+  message,
+  messageComplete,
+  mergedFileChanges,
+  { towerActive = false } = {},
+) {
+  if (
+    !shouldShowTowerModeFileChanges(message, { towerActive }) ||
+    mergedFileChanges.length === 0
+  ) {
+    return false;
+  }
   return shouldShowPostCompletionExtras(
     message,
     messageComplete,
@@ -2129,6 +2145,9 @@ export const MessageBubble = memo(function MessageBubble({
   dockTodo = false,
   turnActive = false,
 }) {
+  const { state } = useApp();
+  const towerActive = Boolean(state.runtimeState?.towerActive);
+  const suppressTowerTodos = shouldSuppressTowerTaskTodos({ towerActive });
   const actions = useAppActions();
   const {
     role,
@@ -2193,7 +2212,7 @@ export const MessageBubble = memo(function MessageBubble({
       layoutAnswerProcessWithPlans(
         renderGroups,
         message?.timestamp || message?.createdAt,
-        { fold: messageComplete, omitTodo: dockTodo },
+        { fold: messageComplete, omitTodo: dockTodo || suppressTowerTodos },
       ),
     [dockTodo, message?.createdAt, message?.timestamp, messageComplete, renderGroups],
   );
@@ -2229,6 +2248,9 @@ export const MessageBubble = memo(function MessageBubble({
   }
 
   if (role === "divider") {
+    if (message.dividerType === "tower-wake") {
+      return renderDivider(rawMessageText || legacyText || t("towerWakeDivider"));
+    }
     return renderDivider(legacyText || "以上内容已压缩");
   }
 
@@ -2385,6 +2407,7 @@ export const MessageBubble = memo(function MessageBubble({
     message,
     messageComplete,
     mergedFileChanges,
+    { towerActive },
   );
   const showRelatedLinks = shouldShowPostCompletionExtras(
     message,

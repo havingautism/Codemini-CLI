@@ -164,6 +164,7 @@ async function withRuntime({ mode = 'plan', gitRepo = true, firstCompletion } = 
           workspaceRoot: dir
         });
         await task({ dir, bodies, runtime, session });
+        await runtime.waitForTowerIdle?.().catch(() => {});
         await runtime.dispose?.();
       } finally {
         server.closeAllConnections?.();
@@ -201,7 +202,9 @@ test('tower prompt is present only when the overlay is active', () => {
   const prompt = buildTowerModePromptBlock({ active: true, base: 'main' });
   assert.match(prompt, /Tower Mode: on/);
   assert.match(prompt, /base branch: main/);
-  assert.match(prompt, /Any user objective/);
+  assert.match(prompt, /Dispatch implementation work with run_subagent/);
+  assert.match(prompt, /status questions/);
+  assert.match(prompt, /tower notification/);
   assert.match(prompt, /role: "survey"/);
   assert.match(prompt, /run_subagent/);
   assert.match(prompt, /land_workers/);
@@ -211,18 +214,19 @@ test('tower prompt is present only when the overlay is active', () => {
   assert.match(prompt, /inspect-only/);
   assert.match(prompt, /fork_task is not available/);
   assert.match(prompt, /land_workers is the only merge path/);
-  assert.match(prompt, /No idle workers yet/);
+  assert.match(prompt, /Call tower_status/);
+  assert.match(prompt, /pending wakes/);
+  assert.match(prompt, /Do not infer progress from this prompt/);
   const withRoster = buildTowerModePromptBlock({ active: true, base: 'main' }, [
     { id: 'alisa', branch: 'codemini-tower/alisa', worktreePath: '/tmp/alisa', paths: ['notes.md'] },
   ]);
-  assert.match(withRoster, /Idle workers: alisa \(notes.md\)/);
-  assert.match(withRoster, /resume: "<id>"/);
+  assert.equal(withRoster.includes('Tower roster snapshot'), false);
+  assert.equal(withRoster.includes('alisa'), false);
   const withTmp = buildTowerModePromptBlock({ active: true, base: 'main' }, [
     { id: 'alisa', branch: 'codemini-tower/alisa', worktreePath: '/tmp/alisa', paths: ['notes.md'] },
     { id: 'mia', branch: 'codemini-tower/mia', worktreePath: '/tmp/mia', paths: ['src/**'], integrated: true },
   ]);
-  assert.match(withTmp, /Idle workers: alisa \(notes.md\)/);
-  assert.match(withTmp, /On base: mia \(src\/\*\*\)/);
+  assert.equal(withTmp.includes('On base: mia'), false);
   assert.equal(withTmp.includes('Idle workers: alisa (notes.md); mia'), false);
 });
 

@@ -9,6 +9,8 @@ import {
   applyPlanEventToMessage,
   applyStreamEventToPlanRun,
   findActivePlanParentMessage,
+  findCreatePlanCard,
+  findMessageOwningPlanCard,
   isCreatePlanToolEvent,
   isLegacyFinalPlanStep,
   isPlanTranscriptEvent,
@@ -16,6 +18,21 @@ import {
   settleCompletedPlanToolCards,
 } from "./plan-ui-state.js";
 import { sessionRuntimeIsBusy } from "./session-ui-state.js";
+import {
+  isTowerBackgroundWorkerToolEvent,
+  sanitizeTowerMessageFileChanges,
+  settleLingeringTowerDispatchCards,
+  settleTowerReviewDispatchCards,
+} from "./tower-ui-state.js";
+import { parseTowerReviewCompletedWake } from "../../../../src/core/tower-snapshot.js";
+
+function sessionTowerActive(state, sessionId) {
+  const runtime = state.runtimeState || {};
+  if (String(runtime.sessionId || "") === sessionId) {
+    return Boolean(runtime.towerActive);
+  }
+  return Boolean(state.sessionRuntimeById?.[sessionId]?.towerActive);
+}
 
 const SESSION_SCOPED_RUNTIME_KEYS = new Set([
   "sessionId",
@@ -386,14 +403,67 @@ export function reduceSessionRuntimeEvent(state, event) {
   };
 }
 
+function findTowerWorkerOwnerMessage(messages, event) {
+  const parentId = String(event?.parentToolCallId || "").trim();
+  if (!parentId) return null;
+  return (Array.isArray(messages) ? messages : []).find((message) =>
+    findCreatePlanCard(message, parentId),
+  );
+}
+
 export function reduceSessionTranscriptEvent(state, event) {
   const sessionId = String(event?.sessionId || "").trim();
   if (!sessionId) return state;
 
   let sessionMessagesById = state.sessionMessagesById;
   const messages = state.sessionMessagesById[sessionId] || [];
+  if (event.type === "tower:wake") {
+    const headline = String(event.headline || event.text || "").trim();
+    if (!headline) return state;
+    const wakeId = String(event.messageId || "").trim() || `tower-wake-${Date.now()}`;
+    if (messages.some((message) => message.id === wakeId)) return state;
+    const reviewOf = parseTowerReviewCompletedWake(headline);
+    const nextMessages = reviewOf
+      ? settleTowerReviewDispatchCards(messages, reviewOf)
+      : messages;
+    return {
+      ...state,
+      sessionMessagesById: {
+        ...sessionMessagesById,
+        [sessionId]: [
+          ...nextMessages,
+          {
+            id: wakeId,
+            role: "divider",
+            dividerType: "tower-wake",
+            text: headline,
+            segments: [{ type: "text", text: headline, isStreaming: false }],
+            skillBadges: [],
+            fileChanges: [],
+            isComplete: true,
+            timestamp: event.timestamp || new Date().toISOString(),
+          },
+        ],
+      },
+    };
+  }
+  const towerActive = sessionTowerActive(state, sessionId);
+  const planOwner = isPlanTranscriptEvent(event.type)
+    ? findMessageOwningPlanCard(messages, event.toolCallId)
+    : null;
+  const workerOwner = isTowerBackgroundWorkerToolEvent(event, { towerActive })
+    ? findTowerWorkerOwnerMessage(messages, event)
+    : null;
+  if (
+    isTowerBackgroundWorkerToolEvent(event, { towerActive }) &&
+    !workerOwner
+  ) {
+    return state;
+  }
   const activePlanParent = findActivePlanParentMessage(messages);
   const messageId = (() => {
+    if (planOwner?.id) return planOwner.id;
+    if (workerOwner?.id) return workerOwner.id;
     if (event.type === "routing:graph" || event.type === "memory:retrieved") {
       const requested = String(event.messageId || "").trim();
       const userMessage = requested
@@ -573,16 +643,41 @@ export function reduceSessionTranscriptEvent(state, event) {
       ...sessionMessagesById,
       [sessionId]: nextMessages.map((message) => {
         if (message.id !== messageId) return message;
+        const towerActive = sessionTowerActive(state, sessionId);
+        let nextMessage = message;
         if (isCreatePlanToolEvent(event) || shouldNestStreamEventInPlan(message, event)) {
-          return applyStreamEventToPlanRun(message, event, {
+          nextMessage = applyStreamEventToPlanRun(message, event, {
+            stripText: stripPlanProgressText,
+          });
+        } else {
+          nextMessage = applyStreamEventToMessage(message, event, {
             stripText: stripPlanProgressText,
           });
         }
-        return applyStreamEventToMessage(message, event, {
-          stripText: stripPlanProgressText,
-        });
+        if (
+          towerActive &&
+          (isTowerBackgroundWorkerToolEvent(event, { towerActive }) ||
+            event.type === "tool:end")
+        ) {
+          nextMessage = sanitizeTowerMessageFileChanges(nextMessage, {
+            towerActive,
+          });
+        }
+        return nextMessage;
       }),
     };
+    if (
+      towerActive &&
+      (event.type === "tool:end" || event.type === "tool:result") &&
+      String(event.name || event.toolName || "").toLowerCase().replace(/\(.*$/, "") === "land_workers"
+    ) {
+      sessionMessagesById = {
+        ...sessionMessagesById,
+        [sessionId]: settleLingeringTowerDispatchCards(
+          sessionMessagesById[sessionId] || [],
+        ),
+      };
+    }
   }
 
   if (sessionMessagesById === state.sessionMessagesById) return state;

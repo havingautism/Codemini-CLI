@@ -4,7 +4,7 @@ import stripAnsi from 'strip-ansi';
 import { Container, getCapabilities, setCapabilities } from '@earendil-works/pi-tui';
 
 import { buildSlashCommands, runOpenCodeTui } from '../src/tui/opencode-chat-app.js';
-import { ActivityBar, ApprovalDialog, Footer, TopBar } from '../src/tui/components/chrome.js';
+import { ActivityBar, ApprovalDialog, Footer, TopBar, TowerProgressPanel } from '../src/tui/components/chrome.js';
 import { PlanProgress, ProcessedFold, ReasoningBlock, TodoProgress, ToolCall, ToolCallGroup, appendHistory, createAssistantMessage, createSystemMessage, createUserMessage, linkMarkdownImages, paintBackground } from '../src/tui/components/messages.js';
 import { ModeHome } from '../src/tui/components/mode-home.js';
 import { createTuiCopy } from '../src/tui/copy.js';
@@ -441,6 +441,19 @@ test('chat chrome keeps only the logo on top and runtime details at the bottom',
   }).render(80).join('\n'));
   assert.match(towerBottom, /◆ TOWER\s+│\s+● AUTO/);
   assert.doesNotMatch(towerBottom, /◆ CODE/);
+
+  const towerDock = stripAnsi(new TowerProgressPanel({
+    runtime: {
+      getRuntimeState: () => ({
+        towerActive: true,
+        towerWorkers: [{ id: 'lena', kind: 'coder', sealed: true, runStatus: 'completed' }],
+        towerInFlightIds: ['lena'],
+      })
+    },
+    copy: createTuiCopy('en')
+  }).render(80).join('\n'));
+  assert.match(towerDock, /Tower/);
+  assert.match(towerDock, /lena reviewing/);
 
   const activity = new ActivityBar({ tui: { requestRender() {} }, copy: createTuiCopy('en') }).render(80).join('\n');
   assert.match(stripAnsi(activity), /● Ready.*\/ commands/);
@@ -1233,6 +1246,23 @@ test('plan progress keeps every step visible with real status', () => {
   assert.match(rendered, /Plan  1\/2/);
   assert.match(rendered, /✓ Inspect/);
   assert.match(rendered, /● Build/);
+});
+
+test('plan progress can start from a tower reviewer step_start', () => {
+  const plan = new PlanProgress(createTuiCopy('en'), {
+    goal: 'Review lena',
+    steps: [{
+      index: 1,
+      role: 'reviewer',
+      title: 'Tower review · lena',
+      status: 'running',
+      towerKind: 'review'
+    }]
+  });
+  const rendered = stripAnsi(plan.render(80).join('\n'));
+  assert.match(rendered, /Tower/);
+  assert.match(rendered, /Tower review · lena/);
+  assert.match(rendered, /review/);
 });
 
 test('compact terminals use the full-name compact logo and still enter chat', async () => {

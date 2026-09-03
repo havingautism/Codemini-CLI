@@ -237,8 +237,18 @@ export function listCreatePlanCards(message) {
   return cards;
 }
 
+function isDelegationToolCard(card) {
+  const name = String(card?.name || "")
+    .toLowerCase()
+    .replace(/\(.*$/, "");
+  return name === "run_subagent" || name === "fork_task";
+}
+
 export function messageHasActivePlanRun(message) {
   return listCreatePlanCards(message).some((card) => {
+    // Background tower/delegation cards stay "running" after the parent turn
+    // ends. They must not swallow later user or wake turns.
+    if (isDelegationToolCard(card)) return false;
     if (String(card.status || "").toLowerCase() === "running") return true;
     const phase = String(card?.planRun?.phase || "").toLowerCase();
     return phase === "planning" || phase === "executing";
@@ -249,6 +259,17 @@ export function findActivePlanParentMessage(messages = []) {
   return [...(Array.isArray(messages) ? messages : [])]
     .reverse()
     .find((message) => messageHasActivePlanRun(message));
+}
+
+/** Prefer the original spawn card (`card.id`) over a later leaked duplicate. */
+export function findMessageOwningPlanCard(messages, toolCallId = "") {
+  const id = String(toolCallId || "").trim();
+  if (!id) return null;
+  const list = Array.isArray(messages) ? messages : [];
+  for (const message of list) {
+    if (findCreatePlanCard(message, id)) return message;
+  }
+  return null;
 }
 
 export function isPlanTranscriptEvent(type) {
@@ -685,7 +706,7 @@ export function applyPlanEventToMessage(message, event) {
   return message;
 }
 
-export function settleRunningCreatePlanCards(message, { reason = "aborted" } = {}) {
+export function settleRunningCreatePlanCards(message, { reason = "aborted", match } = {}) {
   let changed = false;
   const terminalPhase =
     reason === "completed"
@@ -700,6 +721,7 @@ export function settleRunningCreatePlanCards(message, { reason = "aborted" } = {
       let cardsChanged = false;
       const cards = seg.cards.map((card) => {
         if (!isCreatePlanCard(card)) return card;
+        if (typeof match === "function" && !match(card)) return card;
         const currentPhase = String(card?.planRun?.phase || "").toLowerCase();
         const isActive =
           String(card.status || "").toLowerCase() === "running" ||

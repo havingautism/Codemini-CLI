@@ -155,6 +155,7 @@ async function withResumeRuntime(respond, task) {
         });
         await runtime.setTowerMode(true);
         await task({ dir, bodies, runtime, session });
+        await runtime.waitForTowerIdle?.().catch(() => {});
         await runtime.dispose?.();
       } finally {
         server.closeAllConnections?.();

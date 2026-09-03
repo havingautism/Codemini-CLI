@@ -5,6 +5,7 @@ import {
   applyPlanEventToMessage,
   applyStreamEventToPlanRun,
   findPlanStepMessageId,
+  findActivePlanParentMessage,
   isLegacyFinalPlanStep,
   planPhaseTitle,
   planRunFromTranscript,
@@ -773,4 +774,34 @@ test('fork cards render a Parallel task identity while subagent cards stay Subag
   const subagentCard = runCard('run_subagent');
   assert.equal(subagentCard.name, 'run_subagent');
   assert.equal(subagentCard.displayName, 'Subagent · 完成');
+});
+
+test('findActivePlanParentMessage ignores background run_subagent cards', () => {
+  const dispatch = {
+    id: 'dispatch',
+    segments: [{
+      type: 'tools',
+      cards: [{
+        id: 'sub-1',
+        name: 'run_subagent',
+        status: 'running',
+        arguments: { name: 'mira', paths: ['docs/a.md'] },
+        planRun: { phase: 'executing', steps: [{ status: 'running' }] },
+      }],
+    }],
+  };
+  const plan = {
+    id: 'plan',
+    segments: [{
+      type: 'tools',
+      cards: [{
+        id: 'plan-1',
+        name: 'create_plan',
+        status: 'running',
+        planRun: { phase: 'executing', steps: [{ status: 'running' }] },
+      }],
+    }],
+  };
+  assert.equal(findActivePlanParentMessage([dispatch]), undefined);
+  assert.equal(findActivePlanParentMessage([dispatch, plan])?.id, 'plan');
 });

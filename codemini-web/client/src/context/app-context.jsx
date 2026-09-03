@@ -73,6 +73,10 @@ import {
 } from "../../../shared/transcript-segments.js";
 import { buildHookSegmentEvent } from "../../../shared/hook-ui.js";
 import { skillBadgesFromSessionMessage } from "../lib/user-skill-prompt.js";
+import {
+  isTowerBackgroundWorkerToolEvent,
+  shouldShowTowerModeFileChanges,
+} from "../lib/tower-ui-state.js";
 
 const AppContext = createContext(null);
 const AppActionsContext = createContext(null);
@@ -2161,6 +2165,7 @@ export function AppProvider({ children }) {
             });
             break;
           }
+          planParentMsgRef.current = null;
           const requestedId = event.messageId || activeId;
           const requested = (s.messages || []).find(
             (message) => message.id === requestedId,
@@ -2237,6 +2242,10 @@ export function AppProvider({ children }) {
         }
 
         case "tool:end": {
+          const towerActive = Boolean(stateRef.current.runtimeState?.towerActive);
+          if (isTowerBackgroundWorkerToolEvent(event, { towerActive })) {
+            break;
+          }
           const eventChanges =
             Array.isArray(event.fileChanges) && event.fileChanges.length
               ? event.fileChanges
@@ -2268,6 +2277,9 @@ export function AppProvider({ children }) {
         }
 
         case "plan:steps": {
+          if (String(event.parentToolCallId || "").trim()) {
+            break;
+          }
           const steps = (event.steps || []).map((s, i) => ({
             index: s.index ?? i,
             title: s.title,
@@ -2294,6 +2306,9 @@ export function AppProvider({ children }) {
         case "plan:progress":
         case "plan:step_start":
         case "plan:step_done": {
+          if (String(event.parentToolCallId || "").trim()) {
+            break;
+          }
           planRunPendingRef.current = true;
           const parentId =
             planParentMsgRef.current ||
@@ -2319,12 +2334,18 @@ export function AppProvider({ children }) {
                 : step,
             ),
           }));
-          if (event.type === "plan:step_start") {
+          if (event.type === "plan:step_start" && stateRef.current.busy) {
             update({
               stage: "tooling",
               busy: true,
               live: true,
               stageLabel: `${event.role || "agent"}: ${event.title || ""}`.trim(),
+            });
+          }
+          if (event.type === "plan:step_done" && !stateRef.current.busy) {
+            update({
+              stage: "idle",
+              stageLabel: "",
             });
           }
           break;
@@ -2581,21 +2602,30 @@ export function AppProvider({ children }) {
 
         case "submit:done": {
           const result = event.result || {};
+          const towerActive = Boolean(stateRef.current.runtimeState?.towerActive);
           if (activeId && pendingChangesRef.current.length) {
-            setState((prev) => ({
-              ...prev,
-              messages: prev.messages.map((m) =>
-                m.id === activeId
-                  ? {
-                      ...m,
-                      fileChanges: appendUniqueFileChanges(
-                        m.fileChanges,
-                        pendingChangesRef.current,
-                      ),
-                    }
-                  : m,
-              ),
-            }));
+            const activeMessage = stateRef.current.messages.find(
+              (message) => message.id === activeId,
+            );
+            const shouldAttachPendingChanges =
+              !towerActive ||
+              shouldShowTowerModeFileChanges(activeMessage, { towerActive });
+            if (shouldAttachPendingChanges) {
+              setState((prev) => ({
+                ...prev,
+                messages: prev.messages.map((m) =>
+                  m.id === activeId
+                    ? {
+                        ...m,
+                        fileChanges: appendUniqueFileChanges(
+                          m.fileChanges,
+                          pendingChangesRef.current,
+                        ),
+                      }
+                    : m,
+                ),
+              }));
+            }
             pendingChangesRef.current = [];
           }
           if (activeId) {
@@ -2768,6 +2798,35 @@ export function AppProvider({ children }) {
               ...stateRef.current.runtimeState,
               mode: rs.mode,
               ...rs,
+            },
+          });
+          break;
+        }
+
+        case "tower:wake": {
+          planParentMsgRef.current = null;
+          planRunPendingRef.current = false;
+          setActiveMsg(null);
+          update({
+            stage: "thinking",
+            busy: true,
+            live: true,
+            stageLabel: t("thinking"),
+          });
+          break;
+        }
+
+        case "tower:workers_changed": {
+          update({
+            runtimeState: {
+              ...stateRef.current.runtimeState,
+              towerWorkersInFlight: Number(event.inFlight || 0),
+              towerInFlightIds: Array.isArray(event.inFlightIds)
+                ? event.inFlightIds
+                : stateRef.current.runtimeState?.towerInFlightIds || [],
+              towerWorkers: Array.isArray(event.workers)
+                ? event.workers
+                : stateRef.current.runtimeState?.towerWorkers || [],
             },
           });
           break;
@@ -3240,6 +3299,9 @@ export function AppProvider({ children }) {
         ].map((name) => ({ name, status: "selected" }));
         if (stateRef.current.currentView !== "chat" && !options.stayInView)
           update({ currentView: "chat" });
+        // A new user turn must not stream into the prior plan/subagent card.
+        planParentMsgRef.current = null;
+        planRunPendingRef.current = false;
         const userMessageId = addMessage({
               role: "you",
               text: line,

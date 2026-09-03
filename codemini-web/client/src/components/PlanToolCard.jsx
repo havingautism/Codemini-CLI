@@ -22,6 +22,8 @@ import {
   stripDelegationTaskPrefix,
 } from "@/lib/plan-ui-state.js";
 import { describeTowerRunSubagent } from "../../../../src/core/tool-display.js";
+import { shouldSuppressTowerTaskTodos } from "@/lib/tower-ui-state.js";
+import { useApp } from "@/context/app-context.jsx";
 import { t } from "../../i18n/index.js";
 
 const SUBAGENT_AVATAR_STYLE = new Style(bottts);
@@ -408,6 +410,10 @@ function SubagentStepRow({ step, index }) {
 }
 
 export function PlanToolCard({ card }) {
+  const { state } = useApp();
+  const suppressTowerTodos = shouldSuppressTowerTaskTodos({
+    towerActive: Boolean(state.runtimeState?.towerActive),
+  });
   const planRun = card?.planRun || null;
   const phase =
     planRun?.phase || (card?.status === "done" ? "completed" : "planning");
@@ -519,7 +525,7 @@ export function PlanToolCard({ card }) {
                 ? statusLabel(phase, "fork")
                 : planPhaseTitle(phase)}
           </span>
-          {isDelegationCard && todoItems.length ? (
+          {isDelegationCard && todoItems.length && !suppressTowerTodos ? (
             <span className="tabular-nums text-(--text-muted)">
               {todoCompleted}/{todoItems.length}
             </span>
@@ -533,7 +539,9 @@ export function PlanToolCard({ card }) {
           {isSubagent ? (
             <TowerWorkerMeta args={card?.arguments} />
           ) : null}
-          {todoCard ? <ToolCard card={todoCard} embedded /> : null}
+          {todoCard && !suppressTowerTodos ? (
+            <ToolCard card={todoCard} embedded />
+          ) : null}
           {isSubagent ? (
             <SubagentDependencyDetails
               step={primary}

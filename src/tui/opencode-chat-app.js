@@ -17,7 +17,8 @@ import {
   QueuePanel,
   SessionPicker,
   SettingsDialog,
-  TopBar
+  TopBar,
+  TowerProgressPanel
 } from './components/chrome.js';
 import {
   PlanProgress,
@@ -38,6 +39,7 @@ import {
 import { ModeHome } from './components/mode-home.js';
 import { createTuiCopy } from './copy.js';
 import { parseTowerSlashCommand } from '../core/tower-store.js';
+import { parseTowerWakeHeadline } from '../core/tower-snapshot.js';
 import { color, editorTheme } from './theme.js';
 
 /** Editor variant that paints every rendered line with the dark surface color. */
@@ -95,7 +97,8 @@ export async function runOpenCodeTui({ runtime, sessionId, model, safeMode = tru
   const activity = new ActivityBar({ tui, copy });
   const queuePanel = new QueuePanel(copy);
   const footer = new Footer({ runtime, model, sessionId: activeSessionId, safeMode });
-  const bottom = new VStack([queuePanel, editor, activity, footer], { gap: 0 });
+  const towerDock = new TowerProgressPanel({ runtime, copy });
+  const bottom = new VStack([towerDock, queuePanel, editor, activity, footer], { gap: 0 });
   const chatLayout = new VStack([
     { component: header, basis: 'auto', shrink: 0, minSize: 1 },
     { component: scroll, basis: 0, grow: 1, minSize: 1 },
@@ -125,6 +128,7 @@ export async function runOpenCodeTui({ runtime, sessionId, model, safeMode = tru
   const toolGroups = [];
   const reasoningBlocks = [];
   const processFolds = [];
+  const planByToolCallId = new Map();
   let helpHandle = null;
   let historyHandle = null;
   let historyPicker = null;
@@ -149,6 +153,8 @@ export async function runOpenCodeTui({ runtime, sessionId, model, safeMode = tru
     if (stopped) return;
     stopped = true;
     runtime.setRequestToolApproval?.(null);
+    runtime.setTowerWakeSubmit?.(null);
+    runtime.setTowerEventSink?.(null);
     activity.dispose();
     void (async () => {
       await terminal.drainInput?.(200, 20).catch?.(() => {});
@@ -249,6 +255,14 @@ export async function runOpenCodeTui({ runtime, sessionId, model, safeMode = tru
 
   const handleEvent = (event) => {
     const type = String(event?.type || '');
+    if (
+      String(event?.parentToolCallId || '').trim() &&
+      runtime.getRuntimeState?.()?.towerActive &&
+      !type.startsWith('plan:')
+    ) {
+      requestRender();
+      return;
+    }
     if (type === 'assistant:start') {
       moveAssistantIntoProcess();
       finishReasoning();
@@ -324,11 +338,32 @@ export async function runOpenCodeTui({ runtime, sessionId, model, safeMode = tru
     } else if (type === 'plan:steps') {
       finishReasoning();
       activePlan = new PlanProgress(copy, event);
+      const planId = String(event.toolCallId || '').trim();
+      if (planId) planByToolCallId.set(planId, activePlan);
       ensureProcessFold().addChild(new SurfaceSpacer(1));
       ensureProcessFold().addChild(activePlan);
       setActivity('tool', copy.working);
     } else if (type === 'plan:step_start' || type === 'plan:progress' || type === 'plan:step_done') {
-      activePlan?.update(event);
+      const planId = String(event.toolCallId || '').trim();
+      let plan = (planId && planByToolCallId.get(planId)) || null;
+      if (!plan) {
+        plan = new PlanProgress(copy, {
+          goal: event.goal || '',
+          steps: [{
+            index: Number(event.step || 1) || 1,
+            title: event.title || event.role || '',
+            role: event.role || '',
+            status: event.status || 'running',
+            towerKind: event.towerKind || '',
+          }],
+        });
+        if (planId) planByToolCallId.set(planId, plan);
+        ensureProcessFold().addChild(new SurfaceSpacer(1));
+        ensureProcessFold().addChild(plan);
+      } else {
+        plan.update(event);
+      }
+      activePlan = plan;
       setActivity(type === 'plan:step_done' ? 'tool' : 'thinking', event.title || copy.working);
     } else if (type === 'compact:auto' || type === 'dream:auto' || type === 'dream:complete') {
       transcript.addChild(createSystemMessage(event.summary || type.replace(':', ' '), color.warning));
@@ -365,6 +400,7 @@ export async function runOpenCodeTui({ runtime, sessionId, model, safeMode = tru
     reasoningBlocks.length = 0;
     toolGroups.length = 0;
     toolRows.clear();
+    planByToolCallId.clear();
     activeAssistant = null;
     activeAssistantSpacer = null;
     activeReasoning = null;
@@ -487,10 +523,25 @@ export async function runOpenCodeTui({ runtime, sessionId, model, safeMode = tru
         // After a fork the queued prompt was painted on the old transcript, so
         // show it again on the continuation session.
         submit(next, !continuedInNewSession);
+      } else {
+        void runtime.drainTowerPendingWakes?.().catch(() => {});
       }
     }
   };
   editor.onSubmit = submit;
+  runtime.setTowerEventSink?.((event) => {
+    if (event?.type === 'tower:workers_changed') requestRender();
+  });
+  runtime.setTowerWakeSubmit?.(async (wakeText) => {
+    const text = String(wakeText || '').trim();
+    if (!text) return { type: 'noop' };
+    if (busy) throw new Error('Tower wake blocked while another turn is active');
+    const headline = parseTowerWakeHeadline(text);
+    transcript.addChild(new SurfaceSpacer(1));
+    transcript.addChild(createSystemMessage(`${copy.towerWake} · ${headline}`, color.warning));
+    requestRender();
+    return submit(text, true);
+  });
 
   const closeHelp = () => {
     helpHandle?.hide();
