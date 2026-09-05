@@ -59,6 +59,25 @@ export function replaceComposerMentionToken(value, replacement, cursor) {
   return `${text.slice(0, token.start)}${nextReplacement}${suffix}`;
 }
 
+export function removeComposerMentionToken(value, cursor) {
+  const text = String(value || '');
+  const token = findComposerMentionToken(text, cursor ?? text.length);
+  if (!token) {
+    return {
+      text,
+      cursor: Math.max(0, Math.min(text.length, Number(cursor) || 0)),
+    };
+  }
+  const prefix = text.slice(0, token.start);
+  let suffix = text.slice(token.end);
+  if (/\s$/.test(prefix) && /^[ \t]/.test(suffix)) suffix = suffix.slice(1);
+  if (!prefix && /^[ \t]/.test(suffix)) suffix = suffix.slice(1);
+  return {
+    text: `${prefix}${suffix}`,
+    cursor: prefix.length,
+  };
+}
+
 export function toggleComposerSkill(state, skill) {
   const selected = state.selectedSkills.some((item) => item.name === skill.name);
   return {

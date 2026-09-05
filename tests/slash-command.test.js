@@ -10,6 +10,7 @@ import {
   formatComposerFileMention,
   parseComposerMentionQuery,
   parseComposerSlashQuery,
+  removeComposerMentionToken,
   replaceComposerMentionToken,
 } from '../codemini-web/client/src/lib/chat-composer-state.js';
 import { searchWorkspaceFiles } from '../codemini-web/lib/workspace-files.js';
@@ -66,6 +67,21 @@ test('mention selection replaces only the trailing @ token', () => {
   );
   assert.equal(formatComposerFileMention('my folder/a.js'), '@"my folder/a.js"');
   assert.equal(formatComposerFileMention('文档/说明.md'), '@"文档/说明.md"');
+});
+
+test('selected file mentions collapse out of composer text without damaging spacing', () => {
+  assert.deepEqual(removeComposerMentionToken('before @src/ap after', 14), {
+    text: 'before after',
+    cursor: 7,
+  });
+  assert.deepEqual(removeComposerMentionToken('@README.md ', 10), {
+    text: '',
+    cursor: 0,
+  });
+  assert.deepEqual(removeComposerMentionToken('inspect @"my folder/a.js"', 16), {
+    text: 'inspect ',
+    cursor: 8,
+  });
 });
 
 test('searchWorkspaceFiles ranks name matches and skips ignore dirs', async () => {

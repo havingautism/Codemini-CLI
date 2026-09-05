@@ -219,10 +219,12 @@ function scoreFileMatch(relativePath, name, needle) {
 async function buildWorkspaceFileCatalog(root) {
   const files = [];
   const pendingDirectories = [{ absolute: root, relative: '' }];
+  let directoryCursor = 0;
   let visited = 0;
 
-  while (pendingDirectories.length > 0 && visited < FILE_SEARCH_MAX_FILES) {
-    const directory = pendingDirectories.shift();
+  while (directoryCursor < pendingDirectories.length && visited < FILE_SEARCH_MAX_FILES) {
+    const directory = pendingDirectories[directoryCursor];
+    directoryCursor += 1;
     let entries;
     try {
       entries = await fs.readdir(directory.absolute, { withFileTypes: true });

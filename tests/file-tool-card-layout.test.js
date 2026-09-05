@@ -13,6 +13,10 @@ test('file read and mutation tool cards share a compact file disclosure row', as
   assert.match(source, /fileDisplayMeta && collapsible/);
   assert.match(source, /codemini-file-tool-row/);
   assert.match(source, /function FileToolHeaderMeta/);
+  assert.match(
+    source,
+    /codemini-file-tool-row[\s\S]*?<DisclosureLeading open=\{open\}>[\s\S]*?<ToolCardIcon Icon=\{Icon\} \/>[\s\S]*?<\/DisclosureLeading>/,
+  );
   assert.match(source, /<FileTypeIcon[\s\S]*?\{name \|\| "file"\}[\s\S]*?\{dir \?/);
   assert.match(source, /codemini-file-tool-caret/);
   assert.match(source, /text-\(--text-process-hover\)/);

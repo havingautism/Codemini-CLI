@@ -13,6 +13,8 @@ export const zh = {
   noMatchingCommands: "没有匹配的命令",
   noMatchingFiles: "没有匹配的文件",
   workspaceFiles: "文件",
+  fileReferenceFallbackPrompt: "查看引用的文件。",
+  removeReferencedFile: "移除引用文件",
   workspaceFileSearching: "正在搜索工作区文件…",
   workspaceFileSearchFailed: "无法搜索工作区文件",
   workspaceFilePickerHint: "↑↓ 选择 · Enter 插入 · Esc 关闭",

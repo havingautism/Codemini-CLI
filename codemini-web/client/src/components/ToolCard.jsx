@@ -478,7 +478,9 @@ export function ToolCard({
             onClick={() => setOpen((current) => !current)}
             aria-expanded={open}
           >
-            <ToolCardIcon Icon={Icon} />
+            <DisclosureLeading open={open}>
+              <ToolCardIcon Icon={Icon} />
+            </DisclosureLeading>
             <FileToolHeaderMeta
               fileMeta={fileDisplayMeta}
               open={open}

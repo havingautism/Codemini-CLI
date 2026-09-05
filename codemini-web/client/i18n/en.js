@@ -11,6 +11,8 @@ export const en = {
   noMatchingCommands: "No matching commands",
   noMatchingFiles: "No matching files",
   workspaceFiles: "Files",
+  fileReferenceFallbackPrompt: "Review the referenced file.",
+  removeReferencedFile: "Remove referenced file",
   workspaceFileSearching: "Searching workspace files...",
   workspaceFileSearchFailed: "Unable to search workspace files",
   workspaceFilePickerHint: "Up/Down to navigate · Enter to insert · Esc to close",

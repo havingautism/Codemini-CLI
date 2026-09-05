@@ -55,7 +55,7 @@ import {
   formatComposerFileMention,
   parseComposerMentionQuery,
   parseComposerSlashQuery,
-  replaceComposerMentionToken,
+  removeComposerMentionToken,
   runComposerAction,
   toggleComposerSkill,
 } from "@/lib/chat-composer-state.js";
@@ -837,6 +837,8 @@ function ActionSkillPalette({
               <button
                 key={item.key}
                 type="button"
+                role="option"
+                aria-selected={isHovered}
                 disabled={item.disabled}
                 title={
                   item.disabled ? t("actionRequiresConversation") : undefined
@@ -891,31 +893,36 @@ function ActionSkillPalette({
                   </span>
                 )}
                 {!isFile ? (
-                <span
-                  className="text-(--text-muted) text-[11px] leading-5 overflow-hidden"
-                  style={{
-                    display: "-webkit-box",
-                    WebkitLineClamp: 2,
-                    WebkitBoxOrient: "vertical",
-                  }}
-                >
-                  {item.description}
-                </span>
+                  <span
+                    className="text-(--text-muted) text-[11px] leading-5 overflow-hidden"
+                    style={{
+                      display: "-webkit-box",
+                      WebkitLineClamp: 2,
+                      WebkitBoxOrient: "vertical",
+                    }}
+                  >
+                    {item.description}
+                  </span>
                 ) : null}
                 {isFile ? (
-                  <kbd className="rounded border border-(--border-default) bg-(--bg-secondary) px-1.5 py-0.5 font-sans text-[9px] leading-none text-(--text-muted)">
+                  <kbd
+                    className={cn(
+                      "rounded border border-(--border-default) bg-(--bg-secondary) px-1.5 py-0.5 font-sans text-[9px] leading-none text-(--text-muted) transition-opacity",
+                      !isHovered && "opacity-0",
+                    )}
+                  >
                     Enter
                   </kbd>
                 ) : (
                   <span
-                  className={cn(
-                    "mt-0.5 rounded-full border px-1.5 py-0.5 text-[10px] uppercase leading-none",
-                    item.kind === "action"
-                      ? "border-(--accent-cyan)/25 text-(--accent-cyan)"
-                      : "border-(--accent-purple)/25 text-(--accent-purple)",
-                  )}
-                >
-                  {item.kind}
+                    className={cn(
+                      "mt-0.5 rounded-full border px-1.5 py-0.5 text-[10px] uppercase leading-none",
+                      item.kind === "action"
+                        ? "border-(--accent-cyan)/25 text-(--accent-cyan)"
+                        : "border-(--accent-purple)/25 text-(--accent-purple)",
+                    )}
+                  >
+                    {item.kind}
                   </span>
                 )}
               </button>
@@ -929,6 +936,9 @@ function ActionSkillPalette({
   return (
     <div
       ref={containerRef}
+      role="listbox"
+      aria-label={mentionMode ? t("workspaceFiles") : t("searchActionsAndSkills")}
+      aria-busy={mentionMode && workspaceFilesLoading}
       className="absolute bottom-full left-0 right-0 mb-1.5 max-h-[360px] overflow-y-auto rounded-lg border border-(--border-default) bg-(--bg-primary) shadow-[var(--shadow-default)] z-50 animate-in fade-in-0 zoom-in-95 slide-in-from-bottom-2 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95"
       style={{ scrollbarWidth: "thin" }}
     >
@@ -1026,6 +1036,7 @@ export function InputBar({
     createComposerState(),
   );
   const [attachments, setAttachments] = useState([]);
+  const [referencedFiles, setReferencedFiles] = useState([]);
   const [selectedSkills, setSelectedSkills] = useState([]);
   const [scrapbookContext, setScrapbookContext] = useState(null);
   const [scrapbookPickerOpen, setScrapbookPickerOpen] = useState(false);
@@ -1100,6 +1111,13 @@ export function InputBar({
   // queued; only hard blockers lock it.
   const composerLocked = disabled || uploadingAttachments;
   const isGeneralChat = projectCwd === "__codemini_general__";
+  const hasComposerContent = Boolean(
+    value.trim() ||
+      attachments.length > 0 ||
+      referencedFiles.length > 0 ||
+      scrapbookContext ||
+      selectedSkills.length > 0,
+  );
 
   useEffect(() => {
     setSelectedSkills((current) =>
@@ -1134,18 +1152,35 @@ export function InputBar({
       const val = value.trim();
       const hasText = val.length > 0;
       const hasAttachments = attachments.length > 0;
+      const hasFileReferences = referencedFiles.length > 0;
       const hasScrapbookContext = Boolean(scrapbookContext);
       const hasSkills = selectedSkills.length > 0;
       if (
-        (!hasText && !hasAttachments && !hasScrapbookContext && !hasSkills) ||
+        (!hasText &&
+          !hasAttachments &&
+          !hasFileReferences &&
+          !hasScrapbookContext &&
+          !hasSkills) ||
         composerLocked
       )
         return;
 
       let fallbackText = val;
-      if (!hasText && (hasAttachments || hasScrapbookContext)) {
-        fallbackText = t("attachmentFallbackPrompt");
+      if (
+        !hasText &&
+        (hasAttachments || hasScrapbookContext || hasFileReferences)
+      ) {
+        fallbackText = hasFileReferences
+          ? t("fileReferenceFallbackPrompt")
+          : t("attachmentFallbackPrompt");
       }
+
+      const fileReferenceText = referencedFiles
+        .map((item) => formatComposerFileMention(item.path))
+        .join("\n");
+      const modelContext = [scrapbookContext?.modelText, fileReferenceText]
+        .filter(Boolean)
+        .join("\n\n");
 
       const dismissedSkills = [...dismissedDefaultSkills];
       try {
@@ -1158,8 +1193,8 @@ export function InputBar({
               ? [...attachments, scrapbookContext.attachment]
               : attachments,
             dismissedAlwaysSkills: dismissedSkills,
-            ...(scrapbookContext?.modelText
-              ? { modelText: scrapbookContext.modelText }
+            ...(modelContext
+              ? { modelText: modelContext }
               : {}),
           },
           { priority },
@@ -1169,6 +1204,7 @@ export function InputBar({
       }
       setValue("");
       setAttachments([]);
+      setReferencedFiles([]);
       setScrapbookContext(null);
       setSelectedSkills([]);
       setDismissedDefaultSkills(new Set());
@@ -1182,6 +1218,7 @@ export function InputBar({
     [
       value,
       attachments,
+      referencedFiles,
       scrapbookContext,
       selectedSkills,
       selectedSkillNames,
@@ -1314,20 +1351,23 @@ export function InputBar({
   const handleCommandSelect = useCallback(
     async (item) => {
       if (item?.kind === "file") {
-        const mention = `${formatComposerFileMention(item.path)} `;
         let nextCursor = mentionCursorRef.current;
         setValue((current) => {
-          const token = findComposerMentionToken(
+          const result = removeComposerMentionToken(
             current,
             mentionCursorRef.current,
           );
-          if (token) nextCursor = token.start + mention.length;
-          return replaceComposerMentionToken(
-            current,
-            mention,
-            mentionCursorRef.current,
-          );
+          nextCursor = result.cursor;
+          return result.text;
         });
+        setReferencedFiles((current) =>
+          current.some((entry) => entry.path === item.path)
+            ? current
+            : [
+                ...current,
+                { path: item.path, ...splitWorkspaceFilePath(item.path) },
+              ],
+        );
         setPaletteOpen(false);
         setPaletteMentionMode(false);
         requestAnimationFrame(() => {
@@ -1409,6 +1449,12 @@ export function InputBar({
   const removeSelectedSkill = useCallback((name) => {
     setSelectedSkills((current) =>
       current.filter((skill) => skill.name !== name),
+    );
+  }, []);
+
+  const removeReferencedFile = useCallback((path) => {
+    setReferencedFiles((current) =>
+      current.filter((item) => item.path !== path),
     );
   }, []);
 
@@ -1622,13 +1668,41 @@ export function InputBar({
             </div>
           </div>
         )}
-        {(selectedSkills.length > 0 ||
+        {(referencedFiles.length > 0 ||
+          selectedSkills.length > 0 ||
           visibleDefaultSkillNames.length > 0 ||
           attachments.length > 0 ||
           scrapbookContext ||
           attachmentError ||
           uploadingAttachments) && (
           <div className="flex flex-wrap items-center gap-1.5">
+            {referencedFiles.map((item) => (
+              <span
+                key={item.path}
+                className="codemini-input-chip inline-flex max-w-full items-center gap-1.5 px-2 py-1 text-[12px] text-(--text-secondary)"
+                title={formatComposerFileMention(item.path)}
+              >
+                <FileTypeIcon path={item.path} size="sm" />
+                <span className="max-w-[180px] truncate font-mono text-(--text-primary)">
+                  {item.name}
+                </span>
+                {item.dir ? (
+                  <span className="max-w-[180px] truncate font-mono text-[11px] text-(--text-muted)">
+                    ({item.dir})
+                  </span>
+                ) : null}
+                <button
+                  type="button"
+                  className="ml-0.5 inline-flex size-4 items-center justify-center rounded hover:bg-(--bg-hover) hover:text-(--text-primary)"
+                  onClick={() => removeReferencedFile(item.path)}
+                  title={t("removeReferencedFile")}
+                  aria-label={`${t("removeReferencedFile")}: ${item.path}`}
+                  disabled={inputLocked}
+                >
+                  <X size={11} />
+                </button>
+              </span>
+            ))}
             {visibleDefaultSkillNames.map((name) => (
               <span
                 key={`default-${name}`}
@@ -2014,20 +2088,12 @@ export function InputBar({
                 type="button"
                 className={cn(
                   "border-0 min-w-8 w-8 h-8 rounded-md inline-flex items-center justify-center shrink-0 cursor-pointer transition-all",
-                  (value.trim() ||
-                    attachments.length > 0 ||
-                    selectedSkills.length > 0) &&
-                    !inputLocked
+                  hasComposerContent && !inputLocked
                     ? "bg-(--text-primary) text-(--bg-primary) hover:opacity-85"
                     : "bg-(--text-muted)/25 text-(--text-muted) cursor-not-allowed",
                 )}
                 onClick={() => submitCurrent(false)}
-                disabled={
-                  (!value.trim() &&
-                    attachments.length === 0 &&
-                    selectedSkills.length === 0) ||
-                  inputLocked
-                }
+                disabled={!hasComposerContent || inputLocked}
                 title={t("sending")}
               >
                 <ArrowUp size={16} />
