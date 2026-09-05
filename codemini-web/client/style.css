@@ -1933,6 +1933,36 @@ body {
   background: var(--fold-surface);
 }
 
+/* File mutations stay scan-friendly in the transcript and reveal their diff in place. */
+.codemini-file-tool-row {
+  gap: 6px;
+  padding-block: 4px;
+}
+
+.codemini-file-tool-caret.is-open {
+  transform: rotate(180deg);
+}
+
+.codemini-file-tool-caret {
+  transition: transform 140ms var(--ease-out, ease);
+}
+
+.codemini-file-tool-body {
+  margin: 2px 4px 6px 32px;
+  min-width: 0;
+}
+
+.codemini-file-tool-diff {
+  margin-top: 6px;
+  border-radius: 14px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .codemini-file-tool-caret {
+    transition: none;
+  }
+}
+
 .codemini-task-spinner {
   width: 14px;
   height: 14px;

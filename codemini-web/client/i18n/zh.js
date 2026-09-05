@@ -9,7 +9,14 @@ export const zh = {
   tooling: "工具执行中",
 
   // Input
-  inputPlaceholder: "输入消息或 / 命令...",
+  inputPlaceholder: "输入消息、/ 命令或 @ 文件...",
+  noMatchingCommands: "没有匹配的命令",
+  noMatchingFiles: "没有匹配的文件",
+  workspaceFiles: "文件",
+  workspaceFileSearching: "正在搜索工作区文件…",
+  workspaceFileSearchFailed: "无法搜索工作区文件",
+  workspaceFilePickerHint: "↑↓ 选择 · Enter 插入 · Esc 关闭",
+  workspaceFileResultsLimited: "仅显示最佳匹配",
   inputDisabled: "等待当前请求完成...",
   queueWhileBusy: "Enter 排队",
   queueTitle: "待发送",

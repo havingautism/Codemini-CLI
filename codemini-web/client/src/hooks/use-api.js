@@ -1091,6 +1091,14 @@ export async function fetchWorkspaceTree(sessionId, relativePath = '') {
   return readJsonResponse(res);
 }
 
+export async function searchWorkspaceFiles(sessionId, query = '') {
+  const params = new URLSearchParams();
+  if (sessionId) params.set('sessionId', sessionId);
+  params.set('q', String(query || '').trim());
+  const res = await api(`/api/workspace/search?${params.toString()}`);
+  return readJsonResponse(res);
+}
+
 export async function fetchWorkspacePreview(sessionId, relativePath = '') {
   const params = new URLSearchParams();
   if (sessionId) params.set('sessionId', sessionId);

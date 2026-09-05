@@ -6,6 +6,7 @@ import React, {
   useMemo,
 } from "react";
 import { Separator } from "@/components/ui/separator";
+import { FileTypeIcon } from "@/components/FileTypeIcon.jsx";
 import {
   Archive,
   ArrowSquareOut,
@@ -50,7 +51,11 @@ import {
   beginActionParameter,
   cancelActionParameter,
   createComposerState,
+  findComposerMentionToken,
+  formatComposerFileMention,
+  parseComposerMentionQuery,
   parseComposerSlashQuery,
+  replaceComposerMentionToken,
   runComposerAction,
   toggleComposerSkill,
 } from "@/lib/chat-composer-state.js";
@@ -111,6 +116,16 @@ function isImageFile(file) {
 function extensionFromName(name = "") {
   const match = String(name || "").match(/\.([^.]+)$/);
   return match ? match[1].toLowerCase() : "";
+}
+
+function splitWorkspaceFilePath(pathText = "") {
+  const value = String(pathText || "").replace(/\\/g, "/");
+  const slashIndex = value.lastIndexOf("/");
+  if (slashIndex < 0) return { dir: "", name: value };
+  return {
+    dir: value.slice(0, slashIndex + 1),
+    name: value.slice(slashIndex + 1),
+  };
 }
 
 function compactBytes(bytes = 0) {
@@ -602,12 +617,18 @@ function ActionSkillPalette({
   hasConversation = false,
   sessionId = "",
   slashMode = false,
+  mentionMode = false,
   onClose,
 }) {
   const [catalog, setCatalog] = useState([]);
+  const [workspaceFiles, setWorkspaceFiles] = useState([]);
+  const [workspaceFilesLoading, setWorkspaceFilesLoading] = useState(false);
+  const [workspaceFilesError, setWorkspaceFilesError] = useState("");
+  const [workspaceFilesTruncated, setWorkspaceFilesTruncated] = useState(false);
   const [hoveredItem, setHoveredItem] = useState(null);
   const searchRef = useRef(null);
   const containerRef = useRef(null);
+  const workspaceSearchRequestRef = useRef(0);
 
   useEffect(() => {
     if (!visible) return;
@@ -622,7 +643,7 @@ function ActionSkillPalette({
 
   useEffect(() => {
     let cancelled = false;
-    if (visible) {
+    if (visible && !mentionMode) {
       api
         .fetchCommands(sessionId)
         .then((list) => {
@@ -643,11 +664,48 @@ function ActionSkillPalette({
     return () => {
       cancelled = true;
     };
-  }, [visible, projectDirs, mode, sessionId]);
+  }, [visible, mentionMode, projectDirs, mode, sessionId]);
 
   useEffect(() => {
-    if (visible && !slashMode) searchRef.current?.focus();
-  }, [visible, slashMode]);
+    if (!visible || !mentionMode) return undefined;
+    const requestId = workspaceSearchRequestRef.current + 1;
+    workspaceSearchRequestRef.current = requestId;
+    setWorkspaceFilesLoading(true);
+    setWorkspaceFilesError("");
+    setWorkspaceFiles([]);
+    setWorkspaceFilesTruncated(false);
+    const timer = setTimeout(() => {
+      api
+        .searchWorkspaceFiles(sessionId, query)
+        .then((result) => {
+          if (workspaceSearchRequestRef.current !== requestId) return;
+          setWorkspaceFiles(
+            Array.isArray(result?.files) ? result.files : [],
+          );
+          setWorkspaceFilesTruncated(result?.truncated === true);
+        })
+        .catch((requestError) => {
+          if (workspaceSearchRequestRef.current !== requestId) return;
+          setWorkspaceFiles([]);
+          setWorkspaceFilesTruncated(false);
+          setWorkspaceFilesError(
+            String(requestError?.message || t("workspaceFileSearchFailed")),
+          );
+        })
+        .finally(() => {
+          if (workspaceSearchRequestRef.current === requestId) {
+            setWorkspaceFilesLoading(false);
+          }
+        });
+    }, 100);
+    return () => {
+      clearTimeout(timer);
+    };
+  }, [visible, mentionMode, query, sessionId]);
+
+  useEffect(() => {
+    if (visible && !slashMode && !mentionMode) searchRef.current?.focus();
+  }, [visible, slashMode, mentionMode]);
 
   const needle = query.trim().toLowerCase();
   const actionItems = useMemo(
@@ -707,10 +765,34 @@ function ActionSkillPalette({
     [catalog, needle],
   );
 
-  const allItems = useMemo(
-    () => [...actionItems, ...commandItems, ...skillItems],
-    [actionItems, commandItems, skillItems],
+  const fileItems = useMemo(
+    () =>
+      workspaceFiles.map((file) => {
+        const { dir, name } = splitWorkspaceFilePath(file.path);
+        return {
+          name: name || file.name || file.path,
+          path: file.path,
+          dir,
+          description: "",
+          kind: "file",
+          key: `file-${file.path}`,
+        };
+      }),
+    [workspaceFiles],
   );
+
+  const allItems = useMemo(
+    () =>
+      mentionMode
+        ? fileItems
+        : [...actionItems, ...commandItems, ...skillItems],
+    [mentionMode, fileItems, actionItems, commandItems, skillItems],
+  );
+
+  useEffect(() => {
+    if (!visible) return;
+    setHoveredItem(allItems[0]?.key || null);
+  }, [visible, query, allItems]);
 
   useEffect(() => {
     if (!visible || allItems.length === 0) return undefined;
@@ -750,6 +832,7 @@ function ActionSkillPalette({
           {items.map((item) => {
             const Icon = item.icon;
             const isHovered = hoveredItem === item.key;
+            const isFile = item.kind === "file";
             return (
               <button
                 key={item.key}
@@ -759,7 +842,10 @@ function ActionSkillPalette({
                   item.disabled ? t("actionRequiresConversation") : undefined
                 }
                 className={cn(
-                  "action-skill-palette-item w-full border-0 rounded-md px-2.5 py-2 text-left cursor-pointer grid grid-cols-[22px_minmax(96px,180px)_minmax(0,1fr)_auto] items-start gap-2 text-[12px] transition-colors outline-none shadow-none focus:outline-none focus:shadow-none focus-visible:outline-none focus-visible:shadow-none",
+                  "action-skill-palette-item w-full border-0 rounded-md px-2.5 py-2 text-left cursor-pointer grid items-center gap-2 text-[12px] transition-colors outline-none shadow-none focus:outline-none focus:shadow-none focus-visible:outline-none focus-visible:shadow-none",
+                  isFile
+                    ? "grid-cols-[22px_minmax(0,1fr)_auto]"
+                    : "grid-cols-[22px_minmax(96px,180px)_minmax(0,1fr)_auto] items-start",
                   item.disabled
                     ? "cursor-not-allowed bg-transparent text-(--text-muted) opacity-45"
                     : isHovered
@@ -770,20 +856,41 @@ function ActionSkillPalette({
                 onMouseEnter={() => setHoveredItem(item.key)}
                 onMouseLeave={() => setHoveredItem(null)}
               >
-                <span
-                  className={cn(
-                    "mt-0.5 inline-flex size-5 items-center justify-center rounded-md transition-colors",
-                    item.kind === "action"
-                      ? "bg-(--accent-cyan-bg) text-(--accent-cyan)"
-                      : "bg-(--accent-purple-bg) text-(--accent-purple)",
-                    !isHovered && "opacity-80",
-                  )}
-                >
-                  <Icon size={12} />
-                </span>
-                <span className="truncate font-medium leading-5 font-mono">
-                  /{item.name}
-                </span>
+                {isFile ? (
+                  <span className="inline-flex size-5 items-center justify-center">
+                    <FileTypeIcon path={item.path} size="sm" />
+                  </span>
+                ) : (
+                  <span
+                    className={cn(
+                      "mt-0.5 inline-flex size-5 items-center justify-center rounded-md transition-colors",
+                      item.kind === "action"
+                        ? "bg-(--accent-cyan-bg) text-(--accent-cyan)"
+                        : "bg-(--accent-purple-bg) text-(--accent-purple)",
+                      !isHovered && "opacity-80",
+                    )}
+                  >
+                    <Icon size={12} />
+                  </span>
+                )}
+                {isFile ? (
+                  <span
+                    className="flex min-w-0 items-center gap-1.5 font-mono leading-5"
+                    title={`@${item.path}`}
+                  >
+                    <span className="shrink-0 text-(--text-primary)">{item.name}</span>
+                    {item.dir ? (
+                      <span className="min-w-0 truncate text-[11px] text-(--text-muted)">
+                        ({item.dir})
+                      </span>
+                    ) : null}
+                  </span>
+                ) : (
+                  <span className="truncate font-medium leading-5 font-mono">
+                    /{item.name}
+                  </span>
+                )}
+                {!isFile ? (
                 <span
                   className="text-(--text-muted) text-[11px] leading-5 overflow-hidden"
                   style={{
@@ -794,7 +901,13 @@ function ActionSkillPalette({
                 >
                   {item.description}
                 </span>
-                <span
+                ) : null}
+                {isFile ? (
+                  <kbd className="rounded border border-(--border-default) bg-(--bg-secondary) px-1.5 py-0.5 font-sans text-[9px] leading-none text-(--text-muted)">
+                    Enter
+                  </kbd>
+                ) : (
+                  <span
                   className={cn(
                     "mt-0.5 rounded-full border px-1.5 py-0.5 text-[10px] uppercase leading-none",
                     item.kind === "action"
@@ -803,7 +916,8 @@ function ActionSkillPalette({
                   )}
                 >
                   {item.kind}
-                </span>
+                  </span>
+                )}
               </button>
             );
           })}
@@ -818,7 +932,7 @@ function ActionSkillPalette({
       className="absolute bottom-full left-0 right-0 mb-1.5 max-h-[360px] overflow-y-auto rounded-lg border border-(--border-default) bg-(--bg-primary) shadow-[var(--shadow-default)] z-50 animate-in fade-in-0 zoom-in-95 slide-in-from-bottom-2 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95"
       style={{ scrollbarWidth: "thin" }}
     >
-      {!slashMode ? <div className="sticky top-0 z-10 border-b border-(--border-default) bg-(--bg-primary) px-2 pt-2 pb-1.5">
+      {!slashMode && !mentionMode ? <div className="sticky top-0 z-10 border-b border-(--border-default) bg-(--bg-primary) px-2 pt-2 pb-1.5">
         <label className="action-skill-palette-search-shell flex items-center gap-2 rounded-md px-2">
           <MagnifyingGlass size={14} className="text-(--text-muted)" />
           <input
@@ -844,20 +958,41 @@ function ActionSkillPalette({
         Commands
       </div>
       <Separator className="my-2 bg-(--border-default)" /> */}
-      {!hasItems && (
+      {mentionMode && workspaceFilesLoading && !hasItems ? (
+        <div className="flex items-center justify-center gap-2 px-2.5 py-5 text-[12px] text-(--text-muted)">
+          <CircleNotch size={14} className="animate-spin" />
+          <span>{t("workspaceFileSearching")}</span>
+        </div>
+      ) : null}
+      {mentionMode && workspaceFilesError ? (
+        <div role="alert" className="px-2.5 py-4 text-center text-[12px] text-(--accent-red)">
+          {workspaceFilesError}
+        </div>
+      ) : null}
+      {!hasItems && !workspaceFilesLoading && !workspaceFilesError && (
         <div className="px-2.5 py-5 text-[12px] text-(--text-muted) text-center">
-          No matching commands
+          {mentionMode ? t("noMatchingFiles") : t("noMatchingCommands")}
         </div>
       )}
-      {renderSection("Actions", actionItems)}
-      {actionItems.length > 0 && (commandItems.length > 0 || skillItems.length > 0) && (
+      {renderSection(
+        mentionMode ? t("workspaceFiles") : "Actions",
+        mentionMode ? fileItems : actionItems,
+      )}
+      {!mentionMode &&
+        actionItems.length > 0 && (commandItems.length > 0 || skillItems.length > 0) && (
         <Separator className=" my-1 bg-(--border-default)" />
       )}
-      {renderSection("Commands", commandItems)}
-      {commandItems.length > 0 && skillItems.length > 0 && (
+      {!mentionMode && renderSection("Commands", commandItems)}
+      {!mentionMode && commandItems.length > 0 && skillItems.length > 0 && (
         <Separator className=" my-1 bg-(--border-default)" />
       )}
-      {renderSection("Skills", skillItems)}
+      {!mentionMode && renderSection("Skills", skillItems)}
+      {mentionMode && hasItems ? (
+        <div className="sticky bottom-0 flex items-center justify-between gap-3 border-t border-(--border-default) bg-(--bg-primary)/95 px-2.5 py-1.5 text-[10px] text-(--text-muted) backdrop-blur-sm">
+          <span>{t("workspaceFilePickerHint")}</span>
+          {workspaceFilesTruncated ? <span>{t("workspaceFileResultsLimited")}</span> : null}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -884,6 +1019,7 @@ export function InputBar({
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [paletteQuery, setPaletteQuery] = useState("");
   const [paletteSlashMode, setPaletteSlashMode] = useState(false);
+  const [paletteMentionMode, setPaletteMentionMode] = useState(false);
   const [paletteError, setPaletteError] = useState("");
   const [actionSubmitting, setActionSubmitting] = useState(false);
   const [actionParameter, setActionParameter] = useState(() =>
@@ -908,6 +1044,7 @@ export function InputBar({
   const fileInputRef = useRef(null);
   const actionSubmissionRef = useRef(false);
   const imeComposingRef = useRef(false);
+  const mentionCursorRef = useRef(0);
 
   const rs = runtimeState || {};
   const pendingQueueItems =
@@ -1037,6 +1174,8 @@ export function InputBar({
       setDismissedDefaultSkills(new Set());
       setAttachmentError("");
       setPaletteOpen(false);
+      setPaletteSlashMode(false);
+      setPaletteMentionMode(false);
       setHistoryIndex(-1);
       if (textareaRef.current) textareaRef.current.style.height = "auto";
     },
@@ -1144,22 +1283,60 @@ export function InputBar({
 
   const handleInput = useCallback((e) => {
     const val = e.target.value;
+    const cursor = e.target.selectionStart ?? val.length;
+    mentionCursorRef.current = cursor;
     setValue(val);
     const slashQuery = parseComposerSlashQuery(val);
     if (slashQuery !== null) {
       setPaletteQuery(slashQuery);
       setPaletteSlashMode(true);
+      setPaletteMentionMode(false);
       setPaletteOpen(true);
-    } else if (paletteSlashMode) {
-      setPaletteOpen(false);
-      setPaletteSlashMode(false);
+    } else {
+      if (paletteSlashMode) {
+        setPaletteSlashMode(false);
+        setPaletteMentionMode(false);
+      }
+      const mentionQuery = parseComposerMentionQuery(val, cursor);
+      if (mentionQuery !== null) {
+        setPaletteQuery(mentionQuery);
+        setPaletteMentionMode(true);
+        setPaletteOpen(true);
+      } else if (paletteMentionMode) {
+        setPaletteOpen(false);
+        setPaletteMentionMode(false);
+      }
     }
     e.target.style.height = "auto";
     e.target.style.height = Math.min(e.target.scrollHeight, 160) + "px";
-  }, [paletteSlashMode]);
+  }, [paletteSlashMode, paletteMentionMode]);
 
   const handleCommandSelect = useCallback(
     async (item) => {
+      if (item?.kind === "file") {
+        const mention = `${formatComposerFileMention(item.path)} `;
+        let nextCursor = mentionCursorRef.current;
+        setValue((current) => {
+          const token = findComposerMentionToken(
+            current,
+            mentionCursorRef.current,
+          );
+          if (token) nextCursor = token.start + mention.length;
+          return replaceComposerMentionToken(
+            current,
+            mention,
+            mentionCursorRef.current,
+          );
+        });
+        setPaletteOpen(false);
+        setPaletteMentionMode(false);
+        requestAnimationFrame(() => {
+          textareaRef.current?.focus();
+          textareaRef.current?.setSelectionRange(nextCursor, nextCursor);
+        });
+        return;
+      }
+
       if (item?.kind === "skill") {
         if (defaultSkillNames.includes(item.name)) {
           setValue("");
@@ -1181,6 +1358,7 @@ export function InputBar({
         if (paletteSlashMode) setValue("");
         setPaletteOpen(false);
         setPaletteSlashMode(false);
+        setPaletteMentionMode(false);
         textareaRef.current?.focus();
         return;
       }
@@ -1189,6 +1367,7 @@ export function InputBar({
         setValue(`/${item.name} `);
         setPaletteOpen(false);
         setPaletteSlashMode(false);
+        setPaletteMentionMode(false);
         requestAnimationFrame(() => textareaRef.current?.focus());
         return;
       }
@@ -1209,6 +1388,7 @@ export function InputBar({
         setActionSubmitting(true);
         setPaletteOpen(false);
         setPaletteSlashMode(false);
+        setPaletteMentionMode(false);
         try {
           onActionStart?.(item.name);
           await new Promise((resolve) => requestAnimationFrame(resolve));
@@ -1354,9 +1534,11 @@ export function InputBar({
         hasConversation={hasConversation}
         sessionId={state?.currentSessionId || ""}
         slashMode={paletteSlashMode}
+        mentionMode={paletteMentionMode}
         onClose={() => {
           setPaletteOpen(false);
           setPaletteSlashMode(false);
+          setPaletteMentionMode(false);
         }}
       />
       <div
@@ -1609,6 +1791,7 @@ export function InputBar({
               onClick={() => {
                 setPaletteQuery("");
                 setPaletteSlashMode(false);
+                setPaletteMentionMode(false);
                 setPaletteOpen((open) => !open);
               }}
             >

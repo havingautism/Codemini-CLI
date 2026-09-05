@@ -72,6 +72,7 @@ import {
   previewWorkspaceFile,
   readWorkspaceHtmlArtifact,
   resolveWorkspacePath,
+  searchWorkspaceFiles,
   isPreviewableImagePath,
 } from "./lib/workspace-files.js";
 import {
@@ -3237,6 +3238,22 @@ async function main() {
         jsonResponse(res, result);
       } catch (err) {
         const message = String(err?.message || "Unable to list workspace");
+        const status = /outside|does not exist|not a directory/i.test(message)
+          ? 400
+          : 500;
+        jsonResponse(res, { error: true, message }, status);
+      }
+      return;
+
+  }));
+  routes.get("/api/workspace/search", nodeRoute(async (req, res, url) => {
+      const cwd = await resolveTerminalCwd(url);
+      try {
+        const query = String(url.searchParams.get("q") || "").trim();
+        const result = await searchWorkspaceFiles(cwd, query);
+        jsonResponse(res, result);
+      } catch (err) {
+        const message = String(err?.message || "Unable to search workspace");
         const status = /outside|does not exist|not a directory/i.test(message)
           ? 400
           : 500;

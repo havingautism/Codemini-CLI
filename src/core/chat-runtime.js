@@ -4770,20 +4770,22 @@ async function resolveSpecPath(rawArg = '', sessionId = '', workspaceRoot = proc
   return '';
 }
 
-async function expandFileMentions(rawText, workspaceRoot = process.cwd()) {
+export async function expandFileMentions(rawText, workspaceRoot = process.cwd()) {
   const text = String(rawText || '');
-  const mentionRegex = /@([A-Za-z0-9_./\\-]+)(?::(\d+)-(\d+))?/g;
+  const mentionRegex = /@(?:"([^"\r\n]+)"|([A-Za-z0-9_./\\-]+))(?::(\d+)-(\d+))?/g;
   const matches = Array.from(text.matchAll(mentionRegex));
   if (matches.length === 0) return text;
 
   let out = text;
-  for (const m of matches) {
+  const root = path.resolve(workspaceRoot);
+  for (const m of matches.reverse()) {
     const full = m[0];
-    const relPath = m[1];
-    const a = m[2] ? Number(m[2]) : null;
-    const b = m[3] ? Number(m[3]) : null;
-    const abs = path.resolve(workspaceRoot, relPath);
-    if (!abs.startsWith(path.resolve(workspaceRoot))) continue;
+    const relPath = m[1] || m[2];
+    const a = m[3] ? Number(m[3]) : null;
+    const b = m[4] ? Number(m[4]) : null;
+    const abs = path.resolve(root, relPath);
+    const relative = path.relative(root, abs);
+    if (relative.startsWith('..') || path.isAbsolute(relative)) continue;
     try {
       const content = await fs.readFile(abs, 'utf8');
       let snippet = content;
@@ -4793,7 +4795,7 @@ async function expandFileMentions(rawText, workspaceRoot = process.cwd()) {
         snippet = lines.slice(s - 1, e).join('\n');
       }
       const replacement = `\n[FILE:${relPath}${a && b ? `:${a}-${b}` : ''}]\n${snippet}\n[/FILE]\n`;
-      out = out.replace(full, replacement);
+      out = `${out.slice(0, m.index)}${replacement}${out.slice(m.index + full.length)}`;
     } catch {
       continue;
     }

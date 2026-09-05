@@ -14,6 +14,51 @@ export function parseComposerSlashQuery(value) {
   return match ? match[1] : null;
 }
 
+export function findComposerMentionToken(value, cursor = String(value || '').length) {
+  const text = String(value || '');
+  const safeCursor = Math.max(0, Math.min(text.length, Number(cursor) || 0));
+  const beforeCursor = text.slice(0, safeCursor);
+  const match = beforeCursor.match(/(?:^|\s)@(?:"([^"]*)|([^\s]*))$/);
+  if (!match) return null;
+  const tokenText = match[0];
+  const whitespacePrefix = tokenText.match(/^\s/)?.[0] || '';
+  const quoted = match[1] != null;
+  let end = safeCursor;
+  if (quoted) {
+    const closingQuote = text.indexOf('"', safeCursor);
+    if (closingQuote >= 0) end = closingQuote + 1;
+  } else {
+    while (end < text.length && !/\s/.test(text[end])) end += 1;
+  }
+  return {
+    start: safeCursor - tokenText.length + whitespacePrefix.length,
+    end,
+    query: match[1] ?? match[2] ?? '',
+    quoted,
+  };
+}
+
+export function parseComposerMentionQuery(value, cursor) {
+  return findComposerMentionToken(value, cursor)?.query ?? null;
+}
+
+export function formatComposerFileMention(path) {
+  const value = String(path || '').trim().replace(/\\/g, '/');
+  if (!value) return '@';
+  return /^[A-Za-z0-9_./-]+$/.test(value) ? `@${value}` : `@"${value}"`;
+}
+
+export function replaceComposerMentionToken(value, replacement, cursor) {
+  const text = String(value || '');
+  const token = findComposerMentionToken(text, cursor ?? text.length);
+  if (!token) return text;
+  const suffix = text.slice(token.end);
+  const nextReplacement = /\s$/.test(replacement) && /^\s/.test(suffix)
+    ? replacement.trimEnd()
+    : replacement;
+  return `${text.slice(0, token.start)}${nextReplacement}${suffix}`;
+}
+
 export function toggleComposerSkill(state, skill) {
   const selected = state.selectedSkills.some((item) => item.name === skill.name);
   return {

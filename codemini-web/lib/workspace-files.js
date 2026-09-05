@@ -170,6 +170,137 @@ export async function listWorkspaceChildren(workspaceRoot, rawRelativePath = '')
   };
 }
 
+const FILE_SEARCH_MAX_RESULTS = 40;
+const FILE_SEARCH_MAX_FILES = 4000;
+const FILE_SEARCH_CACHE_TTL_MS = 2500;
+const FILE_SEARCH_CACHE_MAX_ROOTS = 8;
+const fileSearchCatalogCache = new Map();
+
+function subsequencePenalty(value, needle) {
+  let cursor = 0;
+  let first = -1;
+  let last = -1;
+  for (const char of needle) {
+    const found = value.indexOf(char, cursor);
+    if (found < 0) return null;
+    if (first < 0) first = found;
+    last = found;
+    cursor = found + 1;
+  }
+  return first + Math.max(0, last - first - needle.length + 1);
+}
+
+function scoreFileMatch(relativePath, name, needle) {
+  let score = 0;
+  if (!needle) {
+    const depth = relativePath.split('/').length - 1;
+    score = depth + (depth === 0 ? -2 : 0);
+  } else {
+    const lowerName = name.toLowerCase();
+    const lowerPath = relativePath.toLowerCase();
+    const namePenalty = subsequencePenalty(lowerName, needle);
+    const pathPenalty = subsequencePenalty(lowerPath, needle);
+    if (lowerPath === needle) score = 0;
+    else if (lowerName === needle) score = 1;
+    else if (lowerName.startsWith(needle)) score = 2;
+    else if (lowerPath.startsWith(needle)) score = 3;
+    else if (lowerName.includes(needle)) score = 4;
+    else if (lowerPath.includes(needle)) score = 5;
+    else if (namePenalty != null) score = 10 + namePenalty;
+    else if (pathPenalty != null) score = 30 + pathPenalty;
+    else return null;
+  }
+  if (relativePath.split('/').some((segment) => segment.startsWith('.'))) {
+    score += 20;
+  }
+  return score;
+}
+
+async function buildWorkspaceFileCatalog(root) {
+  const files = [];
+  const pendingDirectories = [{ absolute: root, relative: '' }];
+  let visited = 0;
+
+  while (pendingDirectories.length > 0 && visited < FILE_SEARCH_MAX_FILES) {
+    const directory = pendingDirectories.shift();
+    let entries;
+    try {
+      entries = await fs.readdir(directory.absolute, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (visited >= FILE_SEARCH_MAX_FILES) break;
+      if (!entry.name || INDEX_SKIP_DIRS.has(entry.name) || entry.isSymbolicLink()) continue;
+      const relativePath = directory.relative
+        ? `${directory.relative}/${entry.name}`
+        : entry.name;
+      if (entry.isDirectory()) {
+        pendingDirectories.push({
+          absolute: path.join(directory.absolute, entry.name),
+          relative: relativePath,
+        });
+      } else if (entry.isFile()) {
+        visited += 1;
+        files.push({ path: relativePath, name: entry.name });
+      }
+    }
+  }
+  return { files, truncated: visited >= FILE_SEARCH_MAX_FILES };
+}
+
+async function getWorkspaceFileCatalog(root) {
+  const now = Date.now();
+  const cached = fileSearchCatalogCache.get(root);
+  if (cached && cached.expiresAt > now) return cached.promise;
+  const entry = {
+    expiresAt: Number.POSITIVE_INFINITY,
+    promise: null,
+  };
+  const promise = buildWorkspaceFileCatalog(root).finally(() => {
+    entry.expiresAt = Date.now() + FILE_SEARCH_CACHE_TTL_MS;
+  });
+  entry.promise = promise;
+  fileSearchCatalogCache.delete(root);
+  fileSearchCatalogCache.set(root, entry);
+  while (fileSearchCatalogCache.size > FILE_SEARCH_CACHE_MAX_ROOTS) {
+    fileSearchCatalogCache.delete(fileSearchCatalogCache.keys().next().value);
+  }
+  return promise;
+}
+
+export async function searchWorkspaceFiles(
+  workspaceRoot,
+  rawQuery = '',
+  { limit = FILE_SEARCH_MAX_RESULTS } = {},
+) {
+  const root = await fs.realpath(path.resolve(workspaceRoot));
+  const needle = String(rawQuery || '')
+    .trim()
+    .toLowerCase()
+    .replace(/\\/g, '/')
+    .replace(/^\.\//, '');
+  const catalog = await getWorkspaceFileCatalog(root);
+  const matches = catalog.files.flatMap((file) => {
+    const score = scoreFileMatch(file.path, file.name, needle);
+    return score == null ? [] : [{ ...file, score }];
+  });
+  matches.sort(
+    (left, right) =>
+      left.score - right.score ||
+      left.path.localeCompare(right.path, undefined, { sensitivity: 'base' }),
+  );
+  return {
+    rootPath: root,
+    query: needle,
+    scanned: catalog.files.length,
+    truncated: catalog.truncated,
+    files: matches
+      .slice(0, limit)
+      .map(({ path: relativePath, name }) => ({ path: relativePath, name })),
+  };
+}
+
 export function isPreviewableTextPath(filePath) {
   const base = path.basename(String(filePath || ''));
   const ext = path.extname(base).toLowerCase();
