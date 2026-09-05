@@ -1014,7 +1014,7 @@ export const en = {
   towerOff: "Crew off",
   towerFailed: "Could not change Crew mode",
   towerNeedsGit: "Crew needs a Git repository and an initial commit",
-  towerNeedsCommit: "Create the initial commit first; Codemini will not commit automatically",
+  towerNeedsCommit: "Create the initial Git commit manually; Codemini will not create it for you when enabling Crew",
   towerNeedsBranch: "Check out a named branch before starting Crew",
   towerNeedsCoding: "Switch to coding mode before starting Crew",
   towerDirtyWarning: "Workers use HEAD and ignore {count} local uncommitted changes",

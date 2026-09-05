@@ -989,7 +989,7 @@ export const zh = {
   towerOff: "协作组已关闭",
   towerFailed: "无法切换协作组模式",
   towerNeedsGit: "协作组需要 Git 仓库和首次提交",
-  towerNeedsCommit: "请先创建首次提交；Codemini 不会自动提交",
+  towerNeedsCommit: "请先手动创建首次 Git 提交；开启协作组时 Codemini 不会自动帮你做初始 commit",
   towerNeedsBranch: "请先切换到有名称的分支",
   towerNeedsCoding: "请先切换到编码模式再开启协作组",
   towerDirtyWarning: "工人只读取 HEAD，将忽略 {count} 项本地未提交改动",
