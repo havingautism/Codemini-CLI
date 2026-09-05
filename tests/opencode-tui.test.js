@@ -439,7 +439,7 @@ test('chat chrome keeps only the logo on top and runtime details at the bottom',
     sessionId: 'session-12345678',
     safeMode: true
   }).render(80).join('\n'));
-  assert.match(towerBottom, /◆ TOWER\s+│\s+● AUTO/);
+  assert.match(towerBottom, /◆ CREW\s+│\s+● AUTO/);
   assert.doesNotMatch(towerBottom, /◆ CODE/);
 
   const towerDock = stripAnsi(new TowerProgressPanel({
@@ -452,7 +452,7 @@ test('chat chrome keeps only the logo on top and runtime details at the bottom',
     },
     copy: createTuiCopy('en')
   }).render(80).join('\n'));
-  assert.match(towerDock, /Tower/);
+  assert.match(towerDock, /Crew/);
   assert.match(towerDock, /lena reviewing/);
 
   const activity = new ActivityBar({ tui: { requestRender() {} }, copy: createTuiCopy('en') }).render(80).join('\n');
@@ -1068,14 +1068,25 @@ test('slash commands share one catalog with skills', () => {
     getAvailableSkills: () => [{ name: 'review', description: 'Review changes' }]
   }, createTuiCopy('zh'));
   assert.deepEqual(commands.map(({ value }) => value), [
-    'compact', 'dream', 'reflect', 'inbox', 'coding', 'daily', 'tower', 'tools', 'history', 'help', 'review'
+    'compact', 'dream', 'reflect', 'inbox', 'coding', 'daily', 'tools', 'history', 'help', 'review'
   ]);
   assert.equal(commands.find(({ value }) => value === 'tools').description, '展开或折叠过程详情');
   assert.match(commands.find(({ value }) => value === 'tools').label, /^工具/);
   assert.match(commands.find(({ value }) => value === 'review').label, /^技能/);
 });
 
-test('/tower and /tower off toggle the overlay', async () => {
+test('slash commands include runtime project commands and skills', () => {
+  const commands = buildSlashCommands({
+    getCommandCatalog: () => [
+      { name: 'release', kind: 'command', description: 'Prepare release' },
+      { name: 'review', kind: 'skill', description: 'Review changes' },
+    ],
+  }, createTuiCopy('en'));
+  assert.match(commands.find(({ value }) => value === 'release').label, /^TOOL/);
+  assert.match(commands.find(({ value }) => value === 'review').label, /^SKILL/);
+});
+
+test('Crew starts from the TUI mode selector and is absent from slash commands', async () => {
   const terminal = new FakeTerminal();
   const towerCalls = [];
   const runtime = {
@@ -1089,10 +1100,10 @@ test('/tower and /tower off toggle the overlay', async () => {
       towerActive: towerCalls.at(-1) === true
     }),
     setRequestToolApproval() {},
-    setExecutionMode: async () => {},
+    setExecutionMode: async () => { throw new Error('Crew must not use the ordinary execution-mode setter'); },
     setTowerMode: async (active) => {
       towerCalls.push(!!active);
-      return { ok: true, tower: active ? { active: true, base: 'main' } : null };
+      return { ok: true, tower: { active: true, base: 'main' }, warning: 'Git · 2 uncommitted changes' };
     },
     submitMessage: async () => ({ type: 'noop' })
   };
@@ -1106,15 +1117,23 @@ test('/tower and /tower off toggle the overlay', async () => {
     workspaceDir: 'E:\\repo'
   });
   await new Promise((resolve) => setTimeout(resolve, 20));
+  terminal.send('\u001b[B');
+  terminal.send('\u001b[B');
+  terminal.send('\u001b[B');
   terminal.send('\r');
-  await waitFor(() => stripAnsi(terminal.output).includes('test-model'));
-  for (const key of '/tower') terminal.send(key);
+  await waitFor(() => stripAnsi(terminal.output).includes('Work mode'));
+  terminal.send('\u001b[C');
+  terminal.send('\u001b[C');
+  await waitFor(() => stripAnsi(terminal.output).includes('Crew'));
+  terminal.send('\u001b');
+  terminal.send('\u001b[A');
+  terminal.send('\u001b[A');
+  terminal.send('\u001b[A');
   terminal.send('\r');
-  await waitFor(() => towerCalls.length === 1 && stripAnsi(terminal.output).includes('Tower on'));
-  for (const key of '/tower off') terminal.send(key);
-  terminal.send('\r');
-  await waitFor(() => towerCalls.length === 2 && stripAnsi(terminal.output).includes('Tower off'));
-  assert.deepEqual(towerCalls, [true, false]);
+  await waitFor(() => towerCalls.length === 1);
+  await waitFor(() => stripAnsi(terminal.output).includes('Git · 2 uncommitted changes'));
+  assert.deepEqual(towerCalls, [true]);
+  assert.equal(buildSlashCommands(runtime, createTuiCopy('en')).some(({ value }) => value === 'crew'), false);
   terminal.send('\u0003');
   terminal.send('\u0003');
   await running;
@@ -1248,20 +1267,20 @@ test('plan progress keeps every step visible with real status', () => {
   assert.match(rendered, /● Build/);
 });
 
-test('plan progress can start from a tower reviewer step_start', () => {
+test('plan progress can start from a Crew reviewer step_start', () => {
   const plan = new PlanProgress(createTuiCopy('en'), {
     goal: 'Review lena',
     steps: [{
       index: 1,
       role: 'reviewer',
-      title: 'Tower review · lena',
+      title: 'Crew review · lena',
       status: 'running',
       towerKind: 'review'
     }]
   });
   const rendered = stripAnsi(plan.render(80).join('\n'));
-  assert.match(rendered, /Tower/);
-  assert.match(rendered, /Tower review · lena/);
+  assert.match(rendered, /Crew/);
+  assert.match(rendered, /Crew review · lena/);
   assert.match(rendered, /review/);
 });
 

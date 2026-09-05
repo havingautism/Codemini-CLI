@@ -7,6 +7,7 @@ import {
 } from "../../../../src/core/tower-progress.js";
 
 const PHASE_LABEL_KEY = {
+  queued: "towerPhaseQueued",
   running: "towerPhaseRunning",
   reviewing: "towerPhaseReviewing",
   awaiting_review: "towerPhaseAwaitingReview",

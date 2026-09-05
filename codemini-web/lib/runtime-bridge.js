@@ -1893,7 +1893,9 @@ export class RuntimeBridge {
   }
 
   getCommands() {
-    return this.#runtime.listCommandNames();
+    return this.#runtime.getCommandCatalog?.()
+      || this.#runtime.listCommandNames?.()
+      || [];
   }
 
   getSessionId() {

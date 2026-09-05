@@ -635,7 +635,7 @@ test('tower overlay keeps run_subagent even when the route prefers fork_task', a
   });
   assert.equal(towerForced.delegation_mode, 'subagent');
   const block = buildCodingRouteDecisionBlock(towerForced, { towerActive: true });
-  assert.match(block, /Tower is on: every objective goes to run_subagent/);
+  assert.match(block, /Crew is on: every objective goes to run_subagent/);
   assert.match(block, /fork_task is not available/);
   assert.doesNotMatch(block, /do not call run_subagent/);
 });

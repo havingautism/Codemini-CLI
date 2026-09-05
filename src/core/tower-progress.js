@@ -6,6 +6,7 @@ export function describeTowerWorkerProgress(worker = {}, { inFlightIds = [] } = 
   let phase = 'idle';
   if (worker.integrated === true) phase = 'merged';
   else if (String(worker.runStatus || '').toLowerCase() === 'failed' && !flying) phase = 'failed';
+  else if (String(worker.runStatus || '').toLowerCase() === 'queued') phase = 'queued';
   else if (flying && (worker.sealed || String(worker.runStatus || '').toLowerCase() === 'completed')) phase = 'reviewing';
   else if (flying || String(worker.runStatus || '').toLowerCase() === 'running') phase = 'running';
   else if (worker.dirty === true) phase = 'dirty';

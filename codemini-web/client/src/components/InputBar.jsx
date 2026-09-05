@@ -15,6 +15,7 @@ import {
   CaretUp,
   CircleNotch,
   FileText,
+  GitLogo,
   Hammer,
   ImageSquare,
   MaskHappy,
@@ -49,6 +50,7 @@ import {
   beginActionParameter,
   cancelActionParameter,
   createComposerState,
+  parseComposerSlashQuery,
   runComposerAction,
   toggleComposerSkill,
 } from "@/lib/chat-composer-state.js";
@@ -174,6 +176,7 @@ function ModeSelector({ sessionId, current, towerActive = false, disabled = fals
   const [open, setOpen] = useState(false);
   const [switching, setSwitching] = useState(false);
   const [towerError, setTowerError] = useState("");
+  const [towerNotice, setTowerNotice] = useState("");
   const MODE_OPTIONS = [
     ...getExecutionModeOptions(),
     {
@@ -196,7 +199,9 @@ function ModeSelector({ sessionId, current, towerActive = false, disabled = fals
     if (!mode || mode === selectedValue || switching || disabled) return;
     setSwitching(true);
     setTowerError("");
+    setTowerNotice("");
     let failed = false;
+    let keepOpen = false;
     try {
       if (mode === "tower") {
         const result = await actions.setTowerMode(sessionId, true);
@@ -204,12 +209,17 @@ function ModeSelector({ sessionId, current, towerActive = false, disabled = fals
           failed = true;
           const code = String(result?.code || "");
           const message =
-            code === "NOT_GIT" || code === "NO_COMMIT"
+            code === "NOT_GIT"
               ? t("towerNeedsGit")
+              : code === "NO_COMMIT"
+                ? t("towerNeedsCommit")
               : code === "DETACHED"
                 ? t("towerNeedsBranch")
                 : result?.message || t("towerFailed");
           setTowerError(message);
+        } else if (result?.warning) {
+          keepOpen = true;
+          setTowerNotice(t("towerDirtyWarning", { count: result?.dirtyCount || 1 }));
         }
       } else {
         if (towerActive) {
@@ -232,7 +242,7 @@ function ModeSelector({ sessionId, current, towerActive = false, disabled = fals
     } finally {
       setSwitching(false);
     }
-    if (!failed) setOpen(false);
+    if (!failed && !keepOpen) setOpen(false);
   };
 
   return (
@@ -286,9 +296,16 @@ function ModeSelector({ sessionId, current, towerActive = false, disabled = fals
           })}
         </ToggleGroup>
         {towerError ? (
-          <p className="px-0.5 pt-1.5 text-[11px] leading-snug text-destructive">
-            {towerError}
-          </p>
+          <div className="flex items-center gap-1.5 px-0.5 pt-1.5 text-[11px] leading-snug text-destructive">
+            <GitLogo size={13} className="shrink-0" />
+            <span>{towerError}</span>
+          </div>
+        ) : null}
+        {towerNotice ? (
+          <div className="flex items-center gap-1.5 px-0.5 pt-1.5 text-[11px] leading-snug text-amber-600 dark:text-amber-400">
+            <GitLogo size={13} className="shrink-0" />
+            <span>{towerNotice}</span>
+          </div>
         ) : null}
       </PopoverContent>
     </Popover>
@@ -583,9 +600,11 @@ function ActionSkillPalette({
   defaultSkillNames = [],
   mode = "normal",
   hasConversation = false,
+  sessionId = "",
+  slashMode = false,
   onClose,
 }) {
-  const [skills, setSkills] = useState([]);
+  const [catalog, setCatalog] = useState([]);
   const [hoveredItem, setHoveredItem] = useState(null);
   const searchRef = useRef(null);
   const containerRef = useRef(null);
@@ -605,28 +624,30 @@ function ActionSkillPalette({
     let cancelled = false;
     if (visible) {
       api
-        .fetchSkills()
+        .fetchCommands(sessionId)
         .then((list) => {
           if (cancelled) return;
-          setSkills(
-            filterSkillsForExecutionMode(list, mode).filter(
-              (s) =>
-                !IMPLICIT_SKILLS.has(s.name) &&
-                !INTERNAL_SKILLS.has(s.name) &&
-                !USER_ACTION_COMMAND_NAMES.has(s.name),
-            ),
-          );
+          setCatalog((Array.isArray(list) ? list : []).map((item) => (
+            typeof item === "string" ? { name: item, kind: "command" } : item
+          )));
         })
-        .catch(() => {});
+        .catch(() => {
+          api.fetchSkills().then((list) => {
+            if (cancelled) return;
+            setCatalog(
+              (Array.isArray(list) ? list : []).map((skill) => ({ ...skill, kind: "skill" })),
+            );
+          }).catch(() => {});
+        });
     }
     return () => {
       cancelled = true;
     };
-  }, [visible, projectDirs, mode]);
+  }, [visible, projectDirs, mode, sessionId]);
 
   useEffect(() => {
-    if (visible) searchRef.current?.focus();
-  }, [visible]);
+    if (visible && !slashMode) searchRef.current?.focus();
+  }, [visible, slashMode]);
 
   const needle = query.trim().toLowerCase();
   const actionItems = useMemo(
@@ -647,7 +668,10 @@ function ActionSkillPalette({
 
   const skillItems = useMemo(
     () =>
-      skills
+      filterSkillsForExecutionMode(
+        catalog.filter((item) => item.kind === "skill"),
+        mode,
+      )
         .filter(
           (skill) =>
             !defaultSkillNames.includes(skill.name) &&
@@ -663,11 +687,57 @@ function ActionSkillPalette({
           kind: "skill",
           key: `skill-${skill.name}`,
         })),
-    [skills, needle, defaultSkillNames],
+    [catalog, mode, needle, defaultSkillNames],
   );
 
+  const commandItems = useMemo(
+    () => catalog
+      .filter((item) => item.kind === "command")
+      .filter((item, index, items) => items.findIndex((candidate) => candidate.name === item.name) === index)
+      .filter((item) => !needle
+        || item.name.toLowerCase().includes(needle)
+        || (item.description || "").toLowerCase().includes(needle))
+      .map((item) => ({
+        ...item,
+        icon: TreeStructure,
+        description: item.description || "Project command",
+        kind: "command",
+        key: `command-${item.name}`,
+      })),
+    [catalog, needle],
+  );
+
+  const allItems = useMemo(
+    () => [...actionItems, ...commandItems, ...skillItems],
+    [actionItems, commandItems, skillItems],
+  );
+
+  useEffect(() => {
+    if (!visible || allItems.length === 0) return undefined;
+    const handleKeyDown = (event) => {
+      if (!["ArrowDown", "ArrowUp", "Enter", "Escape"].includes(event.key)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.key === "Escape") {
+        onClose?.();
+        return;
+      }
+      const currentIndex = Math.max(0, allItems.findIndex((item) => item.key === hoveredItem));
+      if (event.key === "Enter") {
+        const item = allItems[currentIndex] || allItems[0];
+        if (!item.disabled) onSelect(item);
+        return;
+      }
+      const direction = event.key === "ArrowDown" ? 1 : -1;
+      const next = (currentIndex + direction + allItems.length) % allItems.length;
+      setHoveredItem(allItems[next].key);
+    };
+    document.addEventListener("keydown", handleKeyDown, true);
+    return () => document.removeEventListener("keydown", handleKeyDown, true);
+  }, [visible, allItems, hoveredItem, onClose, onSelect]);
+
   if (!visible) return null;
-  const hasItems = actionItems.length > 0 || skillItems.length > 0;
+  const hasItems = allItems.length > 0;
 
   const renderSection = (title, items) => {
     if (!items.length) return null;
@@ -748,7 +818,7 @@ function ActionSkillPalette({
       className="absolute bottom-full left-0 right-0 mb-1.5 max-h-[360px] overflow-y-auto rounded-lg border border-(--border-default) bg-(--bg-primary) shadow-[var(--shadow-default)] z-50 animate-in fade-in-0 zoom-in-95 slide-in-from-bottom-2 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95"
       style={{ scrollbarWidth: "thin" }}
     >
-      <div className="sticky top-0 z-10 border-b border-(--border-default) bg-(--bg-primary) px-2 pt-2 pb-1.5">
+      {!slashMode ? <div className="sticky top-0 z-10 border-b border-(--border-default) bg-(--bg-primary) px-2 pt-2 pb-1.5">
         <label className="action-skill-palette-search-shell flex items-center gap-2 rounded-md px-2">
           <MagnifyingGlass size={14} className="text-(--text-muted)" />
           <input
@@ -769,7 +839,7 @@ function ActionSkillPalette({
             {error}
           </div>
         ) : null}
-      </div>
+      </div> : null}
       {/* <div className="px-2.5 py-1.5 text-[11px] text-(--text-muted) font-medium flex items-center gap-1.5 uppercase tracking-[0.45px]">
         Commands
       </div>
@@ -780,7 +850,11 @@ function ActionSkillPalette({
         </div>
       )}
       {renderSection("Actions", actionItems)}
-      {actionItems.length > 0 && skillItems.length > 0 && (
+      {actionItems.length > 0 && (commandItems.length > 0 || skillItems.length > 0) && (
+        <Separator className=" my-1 bg-(--border-default)" />
+      )}
+      {renderSection("Commands", commandItems)}
+      {commandItems.length > 0 && skillItems.length > 0 && (
         <Separator className=" my-1 bg-(--border-default)" />
       )}
       {renderSection("Skills", skillItems)}
@@ -809,6 +883,7 @@ export function InputBar({
   const [draftBeforeHistory, setDraftBeforeHistory] = useState("");
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [paletteQuery, setPaletteQuery] = useState("");
+  const [paletteSlashMode, setPaletteSlashMode] = useState(false);
   const [paletteError, setPaletteError] = useState("");
   const [actionSubmitting, setActionSubmitting] = useState(false);
   const [actionParameter, setActionParameter] = useState(() =>
@@ -1070,9 +1145,18 @@ export function InputBar({
   const handleInput = useCallback((e) => {
     const val = e.target.value;
     setValue(val);
+    const slashQuery = parseComposerSlashQuery(val);
+    if (slashQuery !== null) {
+      setPaletteQuery(slashQuery);
+      setPaletteSlashMode(true);
+      setPaletteOpen(true);
+    } else if (paletteSlashMode) {
+      setPaletteOpen(false);
+      setPaletteSlashMode(false);
+    }
     e.target.style.height = "auto";
     e.target.style.height = Math.min(e.target.scrollHeight, 160) + "px";
-  }, []);
+  }, [paletteSlashMode]);
 
   const handleCommandSelect = useCallback(
     async (item) => {
@@ -1094,8 +1178,18 @@ export function InputBar({
               },
             ).selectedSkills,
         );
+        if (paletteSlashMode) setValue("");
         setPaletteOpen(false);
+        setPaletteSlashMode(false);
         textareaRef.current?.focus();
+        return;
+      }
+
+      if (item?.kind === "command") {
+        setValue(`/${item.name} `);
+        setPaletteOpen(false);
+        setPaletteSlashMode(false);
+        requestAnimationFrame(() => textareaRef.current?.focus());
         return;
       }
 
@@ -1114,6 +1208,7 @@ export function InputBar({
         setPaletteError("");
         setActionSubmitting(true);
         setPaletteOpen(false);
+        setPaletteSlashMode(false);
         try {
           onActionStart?.(item.name);
           await new Promise((resolve) => requestAnimationFrame(resolve));
@@ -1128,7 +1223,7 @@ export function InputBar({
         return;
       }
     },
-    [defaultSkillNames, inputLocked, onAction, onActionStart],
+    [defaultSkillNames, inputLocked, onAction, onActionStart, paletteSlashMode],
   );
 
   const removeSelectedSkill = useCallback((name) => {
@@ -1257,7 +1352,12 @@ export function InputBar({
         defaultSkillNames={defaultSkillNames}
         mode={mode}
         hasConversation={hasConversation}
-        onClose={() => setPaletteOpen(false)}
+        sessionId={state?.currentSessionId || ""}
+        slashMode={paletteSlashMode}
+        onClose={() => {
+          setPaletteOpen(false);
+          setPaletteSlashMode(false);
+        }}
       />
       <div
         className={cn(
@@ -1508,6 +1608,7 @@ export function InputBar({
               disabled={inputLocked}
               onClick={() => {
                 setPaletteQuery("");
+                setPaletteSlashMode(false);
                 setPaletteOpen((open) => !open);
               }}
             >

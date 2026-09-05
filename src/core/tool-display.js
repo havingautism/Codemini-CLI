@@ -117,7 +117,7 @@ export function describeTowerRunSubagent(args = {}) {
   const role = String(args?.role || '').trim().toLowerCase();
   const name = trimInlineText(args?.name || role || 'Alex', 24);
   if (review) {
-    return { kind: 'review', label: `Tower review · ${review}`, persona: name };
+    return { kind: 'review', label: `Crew review · ${review}`, persona: name };
   }
   if (role === 'survey') {
     return { kind: 'survey', label: `Tower survey · ${name || 'Survey'}`, persona: name };
@@ -126,7 +126,7 @@ export function describeTowerRunSubagent(args = {}) {
   const hasPaths = Array.isArray(args?.paths) && args.paths.length > 0;
   if (resume || hasPaths) {
     const id = resume || name || 'Worker';
-    return { kind: 'worker', label: `Tower worker · ${id}`, persona: name };
+    return { kind: 'worker', label: `Crew worker · ${id}`, persona: name };
   }
   return null;
 }

@@ -9,6 +9,11 @@ export function createComposerState(seed = {}) {
   };
 }
 
+export function parseComposerSlashQuery(value) {
+  const match = String(value || '').match(/^\/([^\s]*)$/);
+  return match ? match[1] : null;
+}
+
 export function toggleComposerSkill(state, skill) {
   const selected = state.selectedSkills.some((item) => item.name === skill.name);
   return {

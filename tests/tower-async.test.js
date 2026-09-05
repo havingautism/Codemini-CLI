@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import path from 'node:path';
 
 import { createTowerCoordinator } from '../src/core/tower-coordinator.js';
 import { resolveSubAgentToolAllowList } from '../src/core/chat-runtime.js';
@@ -46,7 +47,7 @@ test('parseTowerWakeHeadline extracts notification headline', () => {
     dirty: false,
     summary: 'Docs updated.',
   });
-  assert.match(parseTowerWakeHeadline(wake), /Tower worker "bob" completed\./);
+  assert.match(parseTowerWakeHeadline(wake), /Crew worker "bob" completed\./);
 });
 
 test('parseTowerReviewCompletedWake extracts the reviewed worker id', () => {
@@ -147,7 +148,7 @@ test('tower coordinator keeps wakes queued when submitWake fails transiently', a
 
 test('resolveTowerProjectRoot maps worktree cwd back to project root', () => {
   const root = resolveTowerProjectRoot('/tmp/project/.codemini/tower/worktrees/workera');
-  assert.equal(root, '/tmp/project');
+  assert.equal(root, path.resolve('/tmp/project').replace(/\\/g, '/'));
 });
 
 test('suggestTowerNextAction prefers review for sealed workers', () => {

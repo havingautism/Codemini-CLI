@@ -38,7 +38,6 @@ import {
 } from './components/messages.js';
 import { ModeHome } from './components/mode-home.js';
 import { createTuiCopy } from './copy.js';
-import { parseTowerSlashCommand } from '../core/tower-store.js';
 import { parseTowerWakeHeadline } from '../core/tower-snapshot.js';
 import { color, editorTheme } from './theme.js';
 
@@ -56,25 +55,35 @@ const TUI_COMMANDS = [
   { name: 'inbox', description: 'inbox', action: 'inbox' },
   { name: 'coding', description: 'codingMode', mode: 'coding' },
   { name: 'daily', description: 'dailyMode', mode: 'daily' },
-  { name: 'tower', description: 'towerMode' },
   { name: 'tools', description: 'tools', local: 'tools' },
   { name: 'history', description: 'history', local: 'history' },
   { name: 'help', description: 'help', local: 'help' }
 ];
 
 export function buildSlashCommands(runtime, copy = createTuiCopy('en')) {
-  const skills = (runtime.getAvailableSkills?.() || []).map((skill) => ({
-    value: String(skill?.name || skill),
-    label: `${copy.skillGroup}  ${String(skill?.name || skill)}`,
-    description: String(skill?.description || 'Use skill')
-  }));
+  const runtimeCatalog = runtime.getCommandCatalog?.();
+  const catalog = Array.isArray(runtimeCatalog)
+    ? runtimeCatalog
+    : (runtime.getAvailableSkills?.() || []).map((skill) => ({ ...skill, kind: 'skill' }));
+  const builtins = new Set(TUI_COMMANDS.map((command) => command.name));
+  const extensions = catalog
+    .filter((item) => !builtins.has(String(item?.name || item)))
+    .map((item) => {
+      const name = String(item?.name || item);
+      const skill = item?.kind !== 'command';
+      return {
+        value: name,
+        label: `${skill ? copy.skillGroup : copy.commandGroup}  ${name}`,
+        description: String(item?.description || (skill ? 'Use skill' : 'Run command'))
+      };
+    });
   return [
     ...TUI_COMMANDS.map(({ name, description }) => ({
       value: name,
       label: `${copy.commandGroup}  ${name}`,
       description: copy[description]
     })),
-    ...skills
+    ...extensions
   ];
 }
 
@@ -443,27 +452,6 @@ export async function runOpenCodeTui({ runtime, sessionId, model, safeMode = tru
       else toggleProcessDetails();
       return;
     }
-    const towerSlash = parseTowerSlashCommand(value);
-    if (towerSlash) {
-      if (busy) {
-        transcript.addChild(new SurfaceSpacer(1));
-        transcript.addChild(createSystemMessage(copy.towerBusy, color.error));
-        requestRender();
-        return;
-      }
-      const result = await runtime.setTowerMode?.(towerSlash.action === 'enter');
-      transcript.addChild(new SurfaceSpacer(1));
-      if (!result?.ok) {
-        transcript.addChild(createSystemMessage(result?.message || copy.towerFailed, color.error));
-      } else {
-        transcript.addChild(createSystemMessage(
-          towerSlash.action === 'enter' ? copy.towerOn : copy.towerOff,
-          color.accent
-        ));
-      }
-      requestRender();
-      return;
-    }
     if (!alreadyShown) {
       transcript.addChild(new SurfaceSpacer(1));
       transcript.addChild(createUserMessage(value));
@@ -535,7 +523,7 @@ export async function runOpenCodeTui({ runtime, sessionId, model, safeMode = tru
   runtime.setTowerWakeSubmit?.(async (wakeText) => {
     const text = String(wakeText || '').trim();
     if (!text) return { type: 'noop' };
-    if (busy) throw new Error('Tower wake blocked while another turn is active');
+    if (busy) throw new Error('Crew wake blocked while another turn is active');
     const headline = parseTowerWakeHeadline(text);
     transcript.addChild(new SurfaceSpacer(1));
     transcript.addChild(createSystemMessage(`${copy.towerWake} · ${headline}`, color.warning));
@@ -593,14 +581,15 @@ export async function runOpenCodeTui({ runtime, sessionId, model, safeMode = tru
   const showSettingsDialog = async () => {
     const state = runtime.getRuntimeState?.() || {};
     const souls = await runtime.getAvailableSouls?.() || [];
+    const soulCategory = home.mode === 'daily' ? 'daily' : 'coding';
     const dialog = new SettingsDialog({
       copy,
       values: {
-        mode: home.mode,
+        mode: state.towerActive ? 'crew' : home.mode,
         reasoning: state.reasoningEnabled === false ? 'off' : state.reasoningEffort || 'auto',
         approval: state.approvalMode || 'auto',
         sandbox: state.sandboxMode || 'workspace-write',
-        soul: state.activeSoul || souls.find((soul) => soul.category === home.mode && soul.active)?.name || '-'
+        soul: state.activeSoul || souls.find((soul) => soul.category === soulCategory && soul.active)?.name || '-'
       },
       souls,
       onChange: async (key, value) => {
@@ -668,7 +657,17 @@ export async function runOpenCodeTui({ runtime, sessionId, model, safeMode = tru
     tui.setFocus(editor);
     requestRender();
     try {
-      await runtime.setExecutionMode?.(mode);
+      let crewResult = null;
+      if (mode === 'crew') {
+        crewResult = await runtime.setTowerMode?.(true);
+        if (!crewResult?.ok) throw new Error(crewResult?.message || copy.towerFailed);
+      } else {
+        if (runtime.getRuntimeState?.()?.towerActive) {
+          const stopped = await runtime.setTowerMode?.(false);
+          if (!stopped?.ok) throw new Error(stopped?.message || copy.towerFailed);
+        }
+        await runtime.setExecutionMode?.(mode);
+      }
       if (!chatInitialized) {
         const history = runtime.getSessionMessages?.() || [];
         const restored = appendHistory(transcript, history, copy, {
@@ -686,6 +685,7 @@ export async function runOpenCodeTui({ runtime, sessionId, model, safeMode = tru
         for (const item of inputHistory) editor.addToHistory(String(item));
         chatInitialized = true;
       }
+      if (crewResult?.warning) transcript.addChild(createSystemMessage(crewResult.warning, color.warning));
     } catch (error) {
       transcript.addChild(createSystemMessage(error?.message || String(error), color.error));
     }

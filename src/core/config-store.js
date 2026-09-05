@@ -168,6 +168,9 @@ const DEFAULT_CONFIG = {
       active_project_dirs: []
     }
   },
+  tower: {
+    max_workers: 4
+  },
   policy: {
     safe_mode: true,
     allow_dangerous_commands: false,

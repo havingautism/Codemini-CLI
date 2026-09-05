@@ -145,7 +145,7 @@ test('describeTowerRunSubagent labels review, survey, and worktree cards', () =>
   assert.equal(describeTowerRunSubagent({}), null);
   assert.equal(describeTowerRunSubagent({ name: 'Mira' }), null);
   assert.equal(describeTowerRunSubagent({ review: 'alisa', role: 'reviewer' }).kind, 'review');
-  assert.match(describeTowerRunSubagent({ review: 'alisa', role: 'reviewer' }).label, /Tower review/);
+  assert.match(describeTowerRunSubagent({ review: 'alisa', role: 'reviewer' }).label, /Crew review/);
   assert.equal(describeTowerRunSubagent({ role: 'survey', name: 'Scout' }).kind, 'survey');
   assert.equal(describeTowerRunSubagent({ name: 'Alisa', paths: ['notes.md'] }).kind, 'worker');
 });

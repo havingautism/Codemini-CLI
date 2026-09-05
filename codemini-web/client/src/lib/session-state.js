@@ -24,7 +24,7 @@ import {
   settleLingeringTowerDispatchCards,
   settleTowerReviewDispatchCards,
 } from "./tower-ui-state.js";
-import { parseTowerReviewCompletedWake } from "../../../../src/core/tower-snapshot.js";
+import { parseTowerReviewCompletedWake } from "../../../../src/core/tower-notification.js";
 
 function sessionTowerActive(state, sessionId) {
   const runtime = state.runtimeState || {};

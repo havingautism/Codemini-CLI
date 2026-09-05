@@ -6,6 +6,7 @@ import {
   isSkillIndexEligible,
   isSkillModelInvocationDisabled,
   isUserInvocableSkill,
+  parseSlashCommandInvocation,
   renderCommandPrompt,
   appendSkillSandboxMountHint,
 } from './command-loader.js';
@@ -98,6 +99,7 @@ import {
 import { composeTowerResumeTask, composeTowerReviewTask, isTowerCommitAncestor, isTowerWorktreeDirty, removeTowerWorktrees, resolveTowerReviewTarget, resolveTowerSubagentWorkspace, shouldContinueTowerWorkerSeal, teardownTowerWorker } from './tower-worktree.js';
 import { landTowerWorkers } from './tower-land.js';
 import { createTowerCoordinator } from './tower-coordinator.js';
+import { createTowerWorkerScheduler } from './tower-scheduler.js';
 import { runTowerWorkerJob } from './tower-worker-run.js';
 import { compactTowerSpawnResultForParent, resolveTowerProjectRoot, buildTowerWorkerStatusRecord } from './tower-snapshot.js';
 import { composeMemorySnapshot } from './memory-prompt.js';
@@ -4840,6 +4842,7 @@ async function askModel({
   towerState = null,
   towerWorkersInFlight = null,
   towerCoordinator = null,
+  towerWorkerScheduler = null,
   towerEventSink = null,
   publishTowerWorkersChanged = () => {},
 }) {
@@ -5167,10 +5170,10 @@ async function askModel({
           const reviewTarget = String(review || '').trim();
           const title = towerState
             ? reviewTarget
-              ? `Tower review · ${reviewTarget}`
+              ? `Crew review · ${reviewTarget}`
               : isTowerSurvey
                 ? `Tower survey · ${persona}`
-                : `Tower worker · ${persona}`
+                : `Crew worker · ${persona}`
             : trimInline(assignedTasks[0]?.content || effectivePrompt, 72) || persona;
           const towerKind = towerState
             ? (reviewTarget ? 'review' : isTowerSurvey ? 'survey' : 'worker')
@@ -5374,7 +5377,7 @@ async function askModel({
                 }
                 const workerId = String(reviewed.worker?.id || '').trim();
                 if (workerId && inFlightTowerWorkers.has(workerId)) {
-                  const busyError = `Tower worker "${workerId}" is still running. Wait for that shift to finish before review.`;
+                  const busyError = `Crew worker "${workerId}" is still running. Wait for that shift to finish before review.`;
                   emit({
                     type: 'plan:step_done',
                     toolCallId: callId,
@@ -5456,7 +5459,7 @@ async function askModel({
                 }
                 const workerId = String(spawned.worker?.id || '').trim();
                 if (workerId && inFlightTowerWorkers.has(workerId)) {
-                  const busyError = `Tower worker "${workerId}" is still running. Wait for that shift to finish before resume.`;
+                  const busyError = `Crew worker "${workerId}" is still running. Wait for that shift to finish before resume.`;
                   emit({
                     type: 'plan:step_done',
                     toolCallId: callId,
@@ -5504,10 +5507,6 @@ async function askModel({
                   workerTask = composeTowerResumeTask(scopedTask, priorHandoff, reviewText, pendingRebaseOnto);
                 }
                 workerWorkspaceRoot = spawned.worker.worktreePath;
-                workerChangeTracker = await createTowerWorkerChangeTracker(
-                  workerWorkspaceRoot,
-                  `${session.id}:${spawned.worker.id}`,
-                );
                 workerBackupManager = null;
               }
             }
@@ -5535,8 +5534,14 @@ async function askModel({
                 ...(dependencyTaskId ? { taskId: dependencyTaskId } : {}),
                 message: spawnMessage,
               };
-              dependencyRegistration.settle(runningResult);
-              void runTowerWorkerJob({
+              const runWorkerJob = async () => {
+                if (!reviewingWorkerId && workerWorkspaceRoot !== workspaceRoot) {
+                  workerChangeTracker = await createTowerWorkerChangeTracker(
+                    workerWorkspaceRoot,
+                    `${session.id}:${lockedTowerWorkerId}`,
+                  );
+                }
+                return runTowerWorkerJob({
                 runSubAgentTask,
                 subAgentRunFailed,
                 compactSubAgentResultForParent,
@@ -5579,8 +5584,28 @@ async function askModel({
                 reviewingWorkerRecord,
                 reviewCommit,
                 pendingRebaseOnto,
-                isTowerSurvey,
+                  isTowerSurvey,
+                });
+              };
+              const markWorkerStatus = (runStatus) => {
+                if (!lockedTowerWorkerId) return;
+                void patchTowerWorkerRecord(workspaceRoot, lockedTowerWorkerId, {
+                  runStatus,
+                  runError: '',
+                }).then(() => refreshTowerProgressCache()).then(publishTowerWorkersChanged).catch(() => {});
+              };
+              const workerJob = towerWorkerScheduler.run(runWorkerJob, {
+                onQueued: () => markWorkerStatus('queued'),
+                onStart: () => markWorkerStatus('running'),
               });
+              void workerJob.then(
+                (result) => dependencyRegistration.settle(result),
+                (error) => dependencyRegistration.settle({
+                  ok: false,
+                  error: String(error?.message || error),
+                  text: '',
+                }),
+              );
               return runningResult;
             }
             const reviewBox = { verdict: null };
@@ -5747,6 +5772,10 @@ async function askModel({
             dependencyRegistration.settle(result);
             return result;
           } catch (err) {
+            if (lockedTowerWorkerId && inFlightTowerWorkers.has(lockedTowerWorkerId)) {
+              inFlightTowerWorkers.delete(lockedTowerWorkerId);
+              publishTowerWorkersChanged();
+            }
             emit({
               type: 'plan:step_done',
               toolCallId: callId,
@@ -8822,6 +8851,9 @@ export async function createChatRuntime({
     isTurnActive: () => activeTurnCount > 0,
     submitWake: (text) => towerWakeBridge.submit(text),
   });
+  const towerWorkerScheduler = createTowerWorkerScheduler({
+    getLimit: () => config?.tower?.max_workers ?? 4,
+  });
   const markStaleTowerWorkers = async () => {
     if (!towerState) return;
     const disk = await readTowerStateFile(root);
@@ -8852,6 +8884,18 @@ export async function createChatRuntime({
   };
   const deactivateTower = async () => {
     if (!towerState) return { ok: true, tower: null };
+    const inFlightIds = [...towerWorkersInFlight];
+    if (inFlightIds.length > 0) {
+      const message = `Crew still has running workers: ${inFlightIds.join(', ')}. Wait for completion before turning Crew off.`;
+      return {
+        ok: false,
+        code: 'WORKERS_IN_FLIGHT',
+        error: message,
+        message,
+        workers: inFlightIds,
+        tower: towerState,
+      };
+    }
     await removeTowerWorktrees({ cwd: root }).catch(() => ({ kept: [] }));
     await exitTowerMode({
       cwd: root,
@@ -8862,6 +8906,41 @@ export async function createChatRuntime({
     lastTowerProgress = { workers: [], inFlightIds: [] };
     publishTowerWorkersChanged();
     return { ok: true, tower: null };
+  };
+  const setTowerMode = async (active) => {
+    const want = active === true || active === 'on' || String(active).toLowerCase() === 'true';
+    if (!want) return deactivateTower();
+    if (towerState) {
+      await persistTowerState(towerState);
+      return { ok: true, tower: towerState };
+    }
+    const previousMode = normalizeExecutionMode(executionMode);
+    const switchedFromDaily = previousMode !== 'plan';
+    if (switchedFromDaily) {
+      const previouslyArmed = new Set([...skillHooksSession.activeSkills.keys()]);
+      executionMode = 'plan';
+      await setConfigValue('execution.mode', 'plan');
+      config = attachRuntimeState(await loadConfig());
+      await reloadWorkspaceHooks();
+      await reconcileSessionStartForModeChange(previouslyArmed);
+    }
+    const result = await enterTowerMode({
+      cwd: root,
+      sessionId: currentSession?.id,
+    });
+    if (!result.ok) {
+      if (switchedFromDaily) {
+        const previouslyArmed = new Set([...skillHooksSession.activeSkills.keys()]);
+        executionMode = 'normal';
+        await setConfigValue('execution.mode', 'normal');
+        config = attachRuntimeState(await loadConfig());
+        await reloadWorkspaceHooks();
+        await reconcileSessionStartForModeChange(previouslyArmed);
+      }
+      return result;
+    }
+    await persistTowerState(result.tower);
+    return result;
   };
   if (towerState && normalizeExecutionMode(executionMode) !== 'plan') {
     await deactivateTower();
@@ -10004,6 +10083,7 @@ export async function createChatRuntime({
       towerState,
       towerWorkersInFlight,
       towerCoordinator,
+      towerWorkerScheduler,
       towerEventSink,
       publishTowerWorkersChanged,
     });
@@ -10056,9 +10136,55 @@ export async function createChatRuntime({
       })
       .sort((a, b) => a.name.localeCompare(b.name));
 
+  const getCommandCatalog = () => Array.from(commands.values())
+    .filter((command) => {
+      if (command?.metadata?.type !== 'skill') return true;
+      return isUserInvocableSkill(command)
+        && isSkillEnabled(config, command.name, command, executionMode);
+    })
+    .map((command) => {
+      const source = String(command.source || '');
+      const contexts = config?.skills?.contexts?.[command.name]
+        || (source.startsWith('bundled') || source.startsWith('project') ? ['coding'] : ['coding', 'daily']);
+      const scope = source === 'project' || source.startsWith('project-')
+        ? 'project'
+        : source === 'global' || source.startsWith('global-') || source.startsWith('registry-')
+          ? 'global'
+          : source.startsWith('bundled-')
+            ? 'builtin'
+            : '';
+      return {
+        name: String(command.name || ''),
+        description: String(command.metadata?.description || '').trim(),
+        kind: command.metadata?.type === 'skill' ? 'skill' : 'command',
+        ...(command.metadata?.type === 'skill' ? { contexts } : {}),
+        ...(scope ? { scope } : {}),
+      };
+    })
+    .filter((command) => command.name)
+    .sort((a, b) => a.name.localeCompare(b.name));
+
   const submitMessage = async (submission, onAgentEvent) => {
-    const normalized = normalizeChatSubmission(submission);
+    let normalized = normalizeChatSubmission(submission);
+    const displayText = normalized.text;
     await reloadCommandsAndSkills();
+    const invocation = parseSlashCommandInvocation(normalized.text);
+    const invoked = invocation ? commands.get(invocation.name) : null;
+    if (invoked?.metadata?.type === 'skill') {
+      if (!isUserInvocableSkill(invoked) || !isSkillEnabled(config, invoked.name, invoked, executionMode)) {
+        throw new Error(`Skill is disabled or unavailable: ${invocation.name}`);
+      }
+      normalized = {
+        ...normalized,
+        text: invocation.argLine,
+        skillNames: [...new Set([...normalized.skillNames, invoked.name])],
+      };
+    } else if (invoked) {
+      normalized = {
+        ...normalized,
+        text: renderCommandPrompt(invoked, invocation.args, { config, cwd: root }),
+      };
+    }
     const composed = composeSelectedSkills(commands, normalized, {
       isEnabled: (command) => isSkillEnabled(config, command.name, command, executionMode),
       config,
@@ -10077,7 +10203,7 @@ export async function createChatRuntime({
         });
       }
     }
-    const result = await executeSubmission(composed.text, onAgentEvent, {
+    const result = await executeSubmission(displayText || composed.text, onAgentEvent, {
       modelText: appendAttachmentContext(composed.modelText, submission?.modelText),
       modelImages: Array.isArray(submission?.modelImages) ? submission.modelImages : [],
       attachmentIds: normalized.attachmentIds,
@@ -10207,6 +10333,8 @@ export async function createChatRuntime({
     })),
     getSessionCompact: () => currentSession.compact || null,
     getAvailableSkills,
+    getCommandCatalog,
+    listCommandNames: () => getCommandCatalog().map(({ name }) => name),
     getLastSystemPrompt: () => String(currentSession?.lastSystemPrompt || ''),
     persistRunStatus,
     getChangeSets: () => listGitOplogChanges(changeTracker),
@@ -10228,9 +10356,12 @@ export async function createChatRuntime({
       const normalized = normalizeExecutionMode(next);
       if (!['normal', 'plan'].includes(normalized)) return false;
       if (normalized === normalizeExecutionMode(executionMode)) return true;
+      if (normalized === 'normal') {
+        const deactivated = await deactivateTower();
+        if (!deactivated.ok) return false;
+      }
       const previouslyArmed = new Set([...skillHooksSession.activeSkills.keys()]);
       executionMode = normalized;
-      if (normalized === 'normal') await deactivateTower();
       await setConfigValue('execution.mode', normalized);
       config = attachRuntimeState(await loadConfig());
       await reloadWorkspaceHooks();
@@ -10238,43 +10369,7 @@ export async function createChatRuntime({
       await reconcileSessionStartForModeChange(previouslyArmed);
       return true;
     },
-    setTowerMode: async (active) => {
-      const want = active === true || active === 'on' || String(active).toLowerCase() === 'true';
-      if (want) {
-        if (towerState) {
-          await persistTowerState(towerState);
-          return { ok: true, tower: towerState };
-        }
-        const previousMode = normalizeExecutionMode(executionMode);
-        const switchedFromDaily = previousMode !== 'plan';
-        if (switchedFromDaily) {
-          const previouslyArmed = new Set([...skillHooksSession.activeSkills.keys()]);
-          executionMode = 'plan';
-          await setConfigValue('execution.mode', 'plan');
-          config = attachRuntimeState(await loadConfig());
-          await reloadWorkspaceHooks();
-          await reconcileSessionStartForModeChange(previouslyArmed);
-        }
-        const result = await enterTowerMode({
-          cwd: root,
-          sessionId: currentSession?.id,
-        });
-        if (!result.ok) {
-          if (switchedFromDaily) {
-            const previouslyArmed = new Set([...skillHooksSession.activeSkills.keys()]);
-            executionMode = 'normal';
-            await setConfigValue('execution.mode', 'normal');
-            config = attachRuntimeState(await loadConfig());
-            await reloadWorkspaceHooks();
-            await reconcileSessionStartForModeChange(previouslyArmed);
-          }
-          return result;
-        }
-        await persistTowerState(result.tower);
-        return result;
-      }
-      return deactivateTower();
-    },
+    setTowerMode,
     setApprovalMode: async (next) => {
       const normalized = String(next || '').toLowerCase().replace(/-/g, '_');
       if (!['review', 'auto', 'full_access'].includes(normalized)) return false;

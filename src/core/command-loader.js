@@ -403,6 +403,23 @@ export async function loadCommandsAndSkills(cwd = process.cwd()) {
   return commands;
 }
 
+export function parseSlashCommandInvocation(text) {
+  const value = String(text || '').trim();
+  const match = value.match(/^\/([A-Za-z0-9][A-Za-z0-9_.-]*)(?:\s+([\s\S]*))?$/);
+  if (!match) return null;
+  const argLine = String(match[2] || '').trim();
+  const args = argLine.match(/"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\S+/g) || [];
+  return {
+    name: match[1],
+    argLine,
+    args: args.map((arg) => {
+      const quoted = (arg.startsWith('"') && arg.endsWith('"'))
+        || (arg.startsWith("'") && arg.endsWith("'"));
+      return quoted ? arg.slice(1, -1).replace(/\\([\\"'])/g, '$1') : arg;
+    }),
+  };
+}
+
 export async function loadIndexedSkills(cwd = process.cwd()) {
   const commands = new Map();
 

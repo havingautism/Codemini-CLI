@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import path from 'node:path';
 import {
   __setSandboxOsTestHooks,
   wrapShellCommandForSandbox,
@@ -81,8 +82,8 @@ test('Landlock workspace-write grants tower git commit dirs but not the parent c
     },
   });
   try {
-    const parent = '/tmp/codemini-landlock-tower-parent';
-    const worktree = `${parent}/.codemini/tower/worktrees/alisa`;
+    const parent = path.resolve('/tmp/codemini-landlock-tower-parent');
+    const worktree = path.join(parent, '.codemini', 'tower', 'worktrees', 'alisa');
     const out = await wrapShellCommandForSandbox({
       command: 'git commit -m sealed',
       config: { sandbox: { enabled: true, mode: 'workspace-write' } },
@@ -92,10 +93,10 @@ test('Landlock workspace-write grants tower git commit dirs but not the parent c
     });
     assert.equal(out.wrapped, true);
     assert.ok(grants.readWrite.includes(out.policy.workspaceRoot));
-    assert.ok(grants.readWrite.includes(`${parent}/.git/objects`));
-    assert.ok(grants.readWrite.includes(`${parent}/.git/worktrees/alisa`));
+    assert.ok(grants.readWrite.includes(path.join(parent, '.git', 'objects')));
+    assert.ok(grants.readWrite.includes(path.join(parent, '.git', 'worktrees', 'alisa')));
     assert.equal(grants.readWrite.includes(parent), false);
-    assert.equal(grants.readWrite.includes(`${parent}/.git/hooks`), false);
+    assert.equal(grants.readWrite.includes(path.join(parent, '.git', 'hooks')), false);
   } finally {
     __setSandboxOsTestHooks(null);
   }
@@ -142,8 +143,8 @@ test('macOS Seatbelt allowWrite includes tower git commit dirs', async () => {
     },
   });
   try {
-    const parent = '/tmp/codemini-seatbelt-tower-parent';
-    const worktree = `${parent}/.codemini/tower/worktrees/alisa`;
+    const parent = path.resolve('/tmp/codemini-seatbelt-tower-parent');
+    const worktree = path.join(parent, '.codemini', 'tower', 'worktrees', 'alisa');
     const out = await wrapShellCommandForSandbox({
       command: 'git commit -m sealed',
       config: { sandbox: { enabled: true, mode: 'workspace-write' } },
@@ -153,12 +154,12 @@ test('macOS Seatbelt allowWrite includes tower git commit dirs', async () => {
     });
     assert.equal(out.wrapped, true);
     assert.ok(allowWrite.includes(out.policy.workspaceRoot));
-    assert.ok(allowWrite.includes(`${parent}/.git/objects`));
-    assert.ok(allowWrite.includes(`${parent}/.git/worktrees/alisa`));
-    assert.ok(allowWrite.includes(`${parent}/.git/refs/heads/codemini-tower`));
+    assert.ok(allowWrite.includes(path.join(parent, '.git', 'objects')));
+    assert.ok(allowWrite.includes(path.join(parent, '.git', 'worktrees', 'alisa')));
+    assert.ok(allowWrite.includes(path.join(parent, '.git', 'refs', 'heads', 'codemini-tower')));
     assert.equal(allowWrite.includes(parent), false);
-    assert.equal(allowWrite.includes(`${parent}/.git`), false);
-    assert.equal(allowWrite.includes(`${parent}/.git/hooks`), false);
+    assert.equal(allowWrite.includes(path.join(parent, '.git')), false);
+    assert.equal(allowWrite.includes(path.join(parent, '.git', 'hooks')), false);
   } finally {
     __setSandboxOsTestHooks(null);
   }

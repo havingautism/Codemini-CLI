@@ -138,6 +138,7 @@ export class TowerProgressPanel {
     const items = buildTowerProgressItems({ workers, inFlightIds });
     const labels = {
       running: this.copy.towerPhaseRunning,
+      queued: this.copy.towerPhaseQueued,
       reviewing: this.copy.towerPhaseReviewing,
       awaiting_review: this.copy.towerPhaseAwaitingReview,
       ready: this.copy.towerPhaseReady,
@@ -170,7 +171,7 @@ export class Footer {
     const sandbox = String(state.sandboxMode || 'workspace-write');
     const shell = String(state.shell || 'bash').toUpperCase();
     const modeTag = state.towerActive
-      ? `${color.warning('◆')} ${bold(color.warning('TOWER'))}`
+      ? `${color.warning('◆')} ${bold(color.warning('CREW'))}`
       : mode === 'coding'
         ? `${color.accent('◆')} ${bold(color.accent('CODE'))}`
         : `${color.cyan('◆')} ${bold(color.cyan('DAILY'))}`;
@@ -336,7 +337,7 @@ export class SettingsDialog {
     const category = this.values.mode === 'daily' ? 'daily' : 'coding';
     const souls = this.souls.filter((soul) => soul.category === category).map((soul) => soul.name);
     return [
-      { key: 'mode', label: `🧭 ${this.copy.settingMode}`, options: ['coding', 'daily'] },
+      { key: 'mode', label: `🧭 ${this.copy.settingMode}`, options: ['coding', 'daily', 'crew'] },
       { key: 'reasoning', label: `🧠 ${this.copy.settingReasoning}`, options: ['off', 'auto', 'low', 'medium', 'high'] },
       { key: 'approval', label: `✅ ${this.copy.settingApproval}`, options: ['review', 'auto', 'full_access'] },
       { key: 'sandbox', label: `🔒 ${this.copy.settingSandbox}`, options: ['read-only', 'workspace-write', 'danger-full-access'] },

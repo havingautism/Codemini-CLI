@@ -664,7 +664,7 @@ export function buildCodingRouteDecisionBlock(result, options = {}) {
       ? 'Apply selected skills as active workflows.'
       : '',
     options.towerActive === true
-      ? 'Tower is on: every objective goes to run_subagent workers in git worktrees, even a single task. Do not implement in the parent. fork_task is not available. Do not edit the main checkout.'
+      ? 'Crew is on: every objective goes to run_subagent workers in git worktrees, even a single task. Do not implement in the parent. fork_task is not available. Do not edit the main checkout.'
       : '',
     delegationMode === 'subagent'
       ? 'Use run_subagent only for the routed bounded clean-context work; the parent owns integration and final verification.'

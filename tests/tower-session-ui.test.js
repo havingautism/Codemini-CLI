@@ -86,7 +86,7 @@ test('reviewer plan:step_done settles the dispatch card even if a leaked bubble 
         arguments: { role: 'reviewer', review: 'workera' },
         planRun: {
           phase: 'executing',
-          steps: [{ toolCallId: 'review-workera', title: 'Tower review · workera', status: 'running' }],
+          steps: [{ toolCallId: 'review-workera', title: 'Crew review · workera', status: 'running' }],
         },
       }],
     }],
@@ -103,7 +103,7 @@ test('reviewer plan:step_done settles the dispatch card even if a leaked bubble 
         status: 'running',
         planRun: {
           phase: 'executing',
-          steps: [{ toolCallId: 'review-workera', title: 'Tower review · workera', status: 'running' }],
+          steps: [{ toolCallId: 'review-workera', title: 'Crew review · workera', status: 'running' }],
         },
       }],
     }],
@@ -114,7 +114,7 @@ test('reviewer plan:step_done settles the dispatch card even if a leaked bubble 
       type: 'plan:step_done',
       sessionId,
       toolCallId: 'review-workera',
-      title: 'Tower review · workera',
+      title: 'Crew review · workera',
       step: 1,
       status: 'done',
     },
@@ -138,7 +138,7 @@ test('tower review wake settles a stuck running reviewer card', () => {
         arguments: { role: 'reviewer', review: 'workera' },
         planRun: {
           phase: 'executing',
-          steps: [{ title: 'Tower review · workera', status: 'running' }],
+          steps: [{ title: 'Crew review · workera', status: 'running' }],
         },
       }],
     }],
@@ -148,7 +148,7 @@ test('tower review wake settles a stuck running reviewer card', () => {
     {
       type: 'tower:wake',
       sessionId,
-      headline: 'Tower review of "workera" finished (completed).',
+      headline: 'Crew review of "workera" finished (completed).',
       messageId: 'wake-review',
     },
   );
@@ -211,12 +211,12 @@ test('reviewer plan:step_start updates the live spawn card instead of waiting fo
       messageId: 'wake-reply',
       toolCallId: 'review-lena',
       towerKind: 'review',
-      title: 'Tower review · lena',
+      title: 'Crew review · lena',
       step: 1,
       status: 'running',
     },
   );
   const card = next.sessionMessagesById[sessionId][0].segments[0].cards[0];
-  assert.equal(card.planRun?.steps?.[0]?.title, 'Tower review · lena');
+  assert.equal(card.planRun?.steps?.[0]?.title, 'Crew review · lena');
   assert.equal(card.planRun?.steps?.[0]?.status, 'running');
 });

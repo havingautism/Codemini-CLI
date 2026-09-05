@@ -302,7 +302,7 @@ function sseToolCalls(calls) {
 }
 
 function reviewerVerdict(body, blob, verdict) {
-  if (!blob.includes('You are reviewing tower worker')) return null;
+  if (!blob.includes('You are reviewing Crew worker')) return null;
   const messages = Array.isArray(body?.messages) ? body.messages : [];
   if (messages.some((message) => message?.role === 'tool')) return sseText('reviewed');
   return sseToolCalls([{
@@ -335,7 +335,7 @@ function isParentUserTurn(body, needle) {
   if (messages[messages.length - 1]?.role !== 'user') return false;
   const text = lastUserText(body);
   if (!needle.test(text)) return false;
-  if (text.includes('\nTask:') || text.includes('Previous shift handoff') || text.includes('You are reviewing tower worker') || /<task>\s*\[tower\]/.test(text) || text.trimStart().startsWith('[tower]')) {
+  if (text.includes('\nTask:') || text.includes('Previous shift handoff') || text.includes('You are reviewing Crew worker') || /<task>\s*\[tower\]/.test(text) || text.trimStart().startsWith('[tower]')) {
     return false;
   }
   return true;
@@ -510,14 +510,14 @@ test('tower reviewer reuses the author worktree, stays off the roster, and recor
     assert.equal(String(reviewed.reviewText || ''), '');
     assert.deepEqual(await fs.readdir(getProjectTowerWorktreesDir(dir)), ['alisa']);
 
-    const reviewPrompt = bodies.map((item) => messageBlob(item)).find((text) => text.includes('You are reviewing tower worker'));
+    const reviewPrompt = bodies.map((item) => messageBlob(item)).find((text) => text.includes('You are reviewing Crew worker'));
     assert.ok(reviewPrompt);
     assert.match(reviewPrompt, /alisa/);
     assert.match(reviewPrompt, /Do not edit files/);
     assert.equal(reviewPrompt.includes('Worker id:'), false);
 
     const reviewResult = session.messages.find((message) => message.tool_call_id === 'call-review');
-    assert.match(String(reviewResult?.content || ''), /Tower review of "alisa" started \(running\)/);
+    assert.match(String(reviewResult?.content || ''), /Crew review of "alisa" started \(running\)/);
     assert.equal(String(reviewResult?.content || '').includes('Worker id:'), false);
     const spawnResult = session.messages.find((message) => message.tool_call_id === 'call-spawn');
     assert.match(String(spawnResult?.content || ''), /spawned \(running\)|background/i);
@@ -551,7 +551,7 @@ test('tower review free text without submit_tower_review does not pass', async (
         }),
       }]);
     }
-    if (blob.includes('You are reviewing tower worker')) {
+    if (blob.includes('You are reviewing Crew worker')) {
       return sseText('Findings:\n- none');
     }
     return sseText('FIRST_SHIFT_BODY');

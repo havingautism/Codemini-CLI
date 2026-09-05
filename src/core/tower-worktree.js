@@ -100,7 +100,7 @@ export function findTowerWorker(workers, { resume = '', name = '', taskId = '', 
 
 export function formatIdleTowerWorkers(workers) {
   const list = (Array.isArray(workers) ? workers : []).filter((item) => item?.integrated !== true);
-  if (list.length === 0) return 'No idle tower workers. Spawn a new one with a unique name and paths.';
+  if (list.length === 0) return 'No idle Crew workers. Spawn a new one with a unique name and paths.';
   const ids = list.map((item) => `"${item.id}"`).join(', ');
   return `Idle workers: ${ids}. Call back with resume set to that id (the short name, not a call/handoff id). Omit paths to keep the stored scope, or pass new disjoint paths.`;
 }
@@ -133,7 +133,7 @@ export function composeTowerReviewTask(task, {
   const scope = Array.isArray(paths) && paths.length ? paths.join(', ') : 'none';
   return [
     String(task || '').trim() || `Review worker "${workerId}".`,
-    `You are reviewing tower worker "${workerId}" at commit ${commit} against base ${base}.`,
+    `You are reviewing Crew worker "${workerId}" at commit ${commit} against base ${base}.`,
     `Scope: ${scope}. Stay inside that scope.`,
     'Do not edit files or git commit. Finish by calling submit_tower_review with passed true or false and findings. passed true requires empty findings; passed false requires at least one finding.',
     diff ? `Diff vs base:\n${diff}` : 'No diff vs base was available; inspect the worktree.',
@@ -175,7 +175,7 @@ export async function resolveTowerReviewTarget({
     return {
       ok: false,
       code: 'WORKTREE_MISSING',
-      error: `Tower worker "${worker.id}" is on the roster but its worktree is gone. Spawn it again with paths.`,
+      error: `Crew worker "${worker.id}" is on the roster but its worktree is gone. Spawn it again with paths.`,
       workerId: worker.id,
     };
   }
@@ -274,7 +274,7 @@ export async function resolveTowerSubagentWorkspace({
         return {
           ok: false,
           code: 'WORKER_INTEGRATED',
-          error: `Tower worker "${worker.id}" is already integrated onto the base branch. Wait for the rest of the roster, then land_workers. Do not resume.`,
+          error: `Crew worker "${worker.id}" is already integrated onto the base branch. Wait for the rest of the roster, then land_workers. Do not resume.`,
           workerId: worker.id,
         };
       }
@@ -282,7 +282,7 @@ export async function resolveTowerSubagentWorkspace({
         return {
           ok: false,
           code: 'WORKTREE_MISSING',
-          error: `Tower worker "${worker.id}" is on the roster but its worktree is gone. Spawn it again with paths.`,
+          error: `Crew worker "${worker.id}" is on the roster but its worktree is gone. Spawn it again with paths.`,
           workerId: worker.id,
         };
       }
@@ -354,7 +354,7 @@ export async function resolveTowerSubagentWorkspace({
     return {
       ok: false,
       code: 'WORKER_EXISTS',
-      error: `Tower worker "${named.id}" already exists. Call run_subagent with resume: "${named.id}".`,
+      error: `Crew worker "${named.id}" already exists. Call run_subagent with resume: "${named.id}".`,
       workerId: named.id,
     };
   }
@@ -602,7 +602,7 @@ async function addTowerWorktreeUnlocked({
     return {
       ok: false,
       code: 'WORKER_EXISTS',
-      error: `Tower worker "${preferred}" already exists. Call run_subagent with resume: "${preferred}".`,
+      error: `Crew worker "${preferred}" already exists. Call run_subagent with resume: "${preferred}".`,
       workerId: preferred,
     };
   }
@@ -691,12 +691,12 @@ export async function teardownTowerWorker({
   force = true,
 } = {}) {
   const workerId = String(id || '').trim();
-  if (!workerId) return { ok: false, error: 'Missing tower worker id.' };
+  if (!workerId) return { ok: false, error: 'Missing Crew worker id.' };
   return withSpawnLock(cwd, async () => {
     const root = path.resolve(cwd);
     const workers = listTowerWorkersFromState(await readTowerStateFile(root));
     const worker = workers.find((item) => item.id === workerId);
-    if (!worker) return { ok: false, code: 'NOT_FOUND', error: `Unknown tower worker "${workerId}".` };
+    if (!worker) return { ok: false, code: 'NOT_FOUND', error: `Unknown Crew worker "${workerId}".` };
     const worktree = await removeTowerWorktree({ cwd: root, worker, force });
     const branch = String(worker.branch || '').trim();
     if (branch.startsWith(BRANCH_PREFIX) && !RESERVED_WORKER_IDS.has(worker.id)) {

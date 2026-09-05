@@ -276,12 +276,25 @@ export async function landTowerWorkers({
     return { ok: false, code: 'NO_BASE', error: 'Tower land needs a recorded git base branch.' };
   }
   return withTowerGitLock(root, async () => {
+    const currentBranchResult = await tryGit(root, ['branch', '--show-current']);
+    const currentBranch = String(currentBranchResult.stdout || '').trim();
+    if (currentBranchResult.code !== 0 || currentBranch !== baseBranch) {
+      return {
+        ok: false,
+        code: 'BASE_BRANCH_MISMATCH',
+        error: currentBranch
+          ? `Tower started on "${baseBranch}", but the current branch is "${currentBranch}". Switch back before landing.`
+          : `Tower started on "${baseBranch}", but the current checkout is detached. Switch back before landing.`,
+        base: baseBranch,
+        currentBranch,
+      };
+    }
     await removeLegacyMergeTmp(root).catch(() => null);
 
     const workers = listTowerWorkersFromState(await readTowerStateFile(root))
       .filter(isTowerLandableWorker);
     if (workers.length === 0) {
-      return { ok: false, code: 'NO_WORKERS', error: 'No tower workers to land. Survey workers are not landed.' };
+      return { ok: false, code: 'NO_WORKERS', error: 'No Crew workers to land. Survey workers are not landed.' };
     }
     const ordered = orderTowerWorkersForLand(workers);
 
@@ -349,7 +362,7 @@ export async function landTowerWorkers({
         const { kind, worker, ...error } = first;
         return { ok: false, ...error };
       }
-      return { ok: false, code: 'NO_WORKERS', error: 'No tower workers to land.' };
+      return { ok: false, code: 'NO_WORKERS', error: 'No Crew workers to land.' };
     }
 
     for (const worker of toMerge) {

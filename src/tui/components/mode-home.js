@@ -38,7 +38,7 @@ function codingMode(mode) {
 export class ModeHome {
   constructor({ state = {}, model = '', version = '', safeMode = true, location = 'workspace', locationPath = '', copy, getHeight, onAction }) {
     this.index = 0;
-    this.mode = codingMode(state.mode) ? 'coding' : 'daily';
+    this.mode = state.towerActive ? 'crew' : codingMode(state.mode) ? 'coding' : 'daily';
     this.state = state;
     this.model = model;
     this.version = version;
@@ -60,7 +60,7 @@ export class ModeHome {
       ...current,
       { value: 'location', icon: color.warning('📍'), label: this.copy.settingLocation, description: this.copy.settingValues[this.location] },
       { value: 'sessions', icon: color.purple('◷'), label: this.copy.sessionHistory, description: this.copy.historyDescription },
-      { value: 'settings', icon: color.warning('⚙️'), label: this.copy.startupSettings, description: this.mode === 'coding' ? this.copy.modeCoding : this.copy.modeDaily },
+      { value: 'settings', icon: color.warning('⚙️'), label: this.copy.startupSettings, description: this.mode === 'crew' ? this.copy.modeCrew : this.mode === 'coding' ? this.copy.modeCoding : this.copy.modeDaily },
       { value: 'help', icon: color.cyan('?'), label: this.copy.helpTitle, description: this.copy.shortcutsDescription }
     ];
   }

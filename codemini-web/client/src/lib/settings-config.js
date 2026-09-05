@@ -89,6 +89,15 @@ export function buildSettingsFields() {
       help: t("sandboxModeHelp"),
     },
     {
+      tab: "execution",
+      path: "tower.max_workers",
+      control: "number",
+      label: t("towerMaxWorkers"),
+      help: t("towerMaxWorkersHelp"),
+      min: 1,
+      max: 32,
+    },
+    {
       tab: "model",
       path: "ui.reply_language",
       control: "segmented",

@@ -471,6 +471,14 @@ export async function fetchSkills() {
   return res.json();
 }
 
+export async function fetchCommands(sessionId) {
+  const params = new URLSearchParams();
+  if (sessionId) params.set('sessionId', sessionId);
+  const suffix = params.toString();
+  const res = await api(`/api/commands${suffix ? `?${suffix}` : ''}`);
+  return readJsonResponse(res);
+}
+
 export async function fetchSkillIndex(projectDir) {
   const res = await api(withProjectDirQuery('/api/skills/index', projectDir));
   return readJsonResponse(res);

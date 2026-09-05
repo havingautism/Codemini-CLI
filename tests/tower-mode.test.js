@@ -16,9 +16,10 @@ import {
   enterTowerMode,
   inspectTowerGit,
   listTowerWorkersFromState,
-  parseTowerSlashCommand,
   normalizeTowerState,
   patchTowerWorkerRecord,
+  readTowerStateFile,
+  writeTowerStateFile,
 } from '../src/core/tower-store.js';
 import {
   addTowerWorktree,
@@ -68,13 +69,14 @@ async function initCleanGit(dir) {
   await git(dir, ['branch', '-M', 'main']);
 }
 
-function baseConfig(port, mode = 'plan') {
+function baseConfig(port, mode = 'plan', towerMaxWorkers = 4) {
   return {
     sdk: { provider: 'openai-compatible' },
     gateway: { base_url: `http://127.0.0.1:${port}/v1`, api_key: 'test', max_retries: 0 },
     model: { name: 'test-model', reasoning_enabled: false, reasoning_effort: 'off' },
     context: { project_context_enabled: false, project_instructions_enabled: false, preflight_trigger_pct: 99 },
     execution: { mode, approval_mode: 'auto' },
+    tower: { max_workers: towerMaxWorkers },
     memory: {
       enabled: false,
       bootstrap: { enabled: false },
@@ -98,7 +100,8 @@ async function waitForWorkerStatus(dir, workerId, status, timeoutMs = 8000) {
     }
     await new Promise((resolve) => setTimeout(resolve, 40));
   }
-  throw new Error(`timed out waiting for ${workerId} status=${status}`);
+  const finalRaw = await fs.readFile(getProjectTowerStatePath(dir), 'utf8').catch(() => '');
+  throw new Error(`timed out waiting for ${workerId} status=${status}; state=${finalRaw}`);
 }
 
 function sseText(content = 'ok') {
@@ -127,7 +130,7 @@ function sseToolCalls(calls) {
   return chunks.join('');
 }
 
-async function withRuntime({ mode = 'plan', gitRepo = true, firstCompletion } = {}, task) {
+async function withRuntime({ mode = 'plan', gitRepo = true, firstCompletion, workerDelays = {}, towerMaxWorkers = 4 } = {}, task) {
   closeSqliteDatabasesForTests();
   const globalDir = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-tower-rt-'));
   const dir = path.join(globalDir, 'workspace');
@@ -149,6 +152,16 @@ async function withRuntime({ mode = 'plan', gitRepo = true, firstCompletion } = 
           res.end(firstCompletion);
           return;
         }
+        for (const [marker, delayMs] of Object.entries(workerDelays)) {
+          const userText = messages
+            .filter((message) => message?.role === 'user')
+            .map((message) => typeof message.content === 'string' ? message.content : JSON.stringify(message.content))
+            .join('\n');
+          if (userText.includes(marker)) {
+            await new Promise((resolve) => setTimeout(resolve, Number(delayMs) || 0));
+            break;
+          }
+        }
         res.end(sseText('ok'));
       });
       await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -158,7 +171,7 @@ async function withRuntime({ mode = 'plan', gitRepo = true, firstCompletion } = 
         const session = await createSession(dir);
         const runtime = await createChatRuntime({
           session,
-          config: baseConfig(port, mode),
+          config: baseConfig(port, mode, towerMaxWorkers),
           model: 'test-model',
           systemPrompt: 'stable',
           workspaceRoot: dir
@@ -177,15 +190,6 @@ async function withRuntime({ mode = 'plan', gitRepo = true, firstCompletion } = 
   }
 }
 
-test('parseTowerSlashCommand maps on/off variants', () => {
-  assert.equal(parseTowerSlashCommand('/help'), null);
-  assert.deepEqual(parseTowerSlashCommand('/tower'), { action: 'enter' });
-  assert.deepEqual(parseTowerSlashCommand('/tower on'), { action: 'enter' });
-  assert.deepEqual(parseTowerSlashCommand('/TOWER'), { action: 'enter' });
-  assert.deepEqual(parseTowerSlashCommand('/tower off'), { action: 'exit' });
-  assert.deepEqual(parseTowerSlashCommand('/tower teardown'), { action: 'exit' });
-});
-
 test('normalizeTowerState keeps only an active overlay with a base branch', () => {
   assert.equal(normalizeTowerState(null), null);
   assert.equal(normalizeTowerState({ active: false, base: 'main' }), null);
@@ -200,11 +204,11 @@ test('normalizeTowerState keeps only an active overlay with a base branch', () =
 test('tower prompt is present only when the overlay is active', () => {
   assert.equal(buildTowerModePromptBlock(null), '');
   const prompt = buildTowerModePromptBlock({ active: true, base: 'main' });
-  assert.match(prompt, /Tower Mode: on/);
+  assert.match(prompt, /Crew Mode: on/);
   assert.match(prompt, /base branch: main/);
   assert.match(prompt, /Dispatch implementation work with run_subagent/);
   assert.match(prompt, /status questions/);
-  assert.match(prompt, /tower notification/);
+  assert.match(prompt, /Crew notification/);
   assert.match(prompt, /role: "survey"/);
   assert.match(prompt, /run_subagent/);
   assert.match(prompt, /land_workers/);
@@ -220,7 +224,7 @@ test('tower prompt is present only when the overlay is active', () => {
   const withRoster = buildTowerModePromptBlock({ active: true, base: 'main' }, [
     { id: 'alisa', branch: 'codemini-tower/alisa', worktreePath: '/tmp/alisa', paths: ['notes.md'] },
   ]);
-  assert.equal(withRoster.includes('Tower roster snapshot'), false);
+  assert.equal(withRoster.includes('Crew roster snapshot'), false);
   assert.equal(withRoster.includes('alisa'), false);
   const withTmp = buildTowerModePromptBlock({ active: true, base: 'main' }, [
     { id: 'alisa', branch: 'codemini-tower/alisa', worktreePath: '/tmp/alisa', paths: ['notes.md'] },
@@ -253,6 +257,9 @@ test('inspectTowerGit refuses missing repo and empty history, but allows a dirty
     const dirty = await inspectTowerGit(dir);
     assert.equal(dirty.ok, true);
     assert.equal(dirty.base, 'main');
+    assert.equal(dirty.dirty, true);
+    assert.equal(dirty.dirtyCount, 1);
+    assert.match(dirty.warning, /^Git · Crew workers use HEAD/);
   });
 });
 
@@ -266,6 +273,25 @@ test('enterTowerMode writes .codemini/tower/state.json', async () => {
     assert.equal(saved.active, true);
     assert.equal(saved.base, 'main');
     assert.equal(saved.sessionId, 'sess-1');
+  });
+});
+
+test('concurrent Tower worker patches preserve every worker update', async () => {
+  await withTempDir(async (dir) => {
+    const workers = [
+      { id: 'a', branch: 'codemini-tower/a', worktreePath: path.join(dir, 'a') },
+      { id: 'b', branch: 'codemini-tower/b', worktreePath: path.join(dir, 'b') },
+    ];
+    await writeTowerStateFile(dir, { active: true, base: 'main', workers });
+
+    await Promise.all([
+      patchTowerWorkerRecord(dir, 'a', { runStatus: 'completed' }),
+      patchTowerWorkerRecord(dir, 'b', { runStatus: 'failed' }),
+    ]);
+
+    const saved = await readTowerStateFile(dir);
+    assert.equal(saved.workers.find((worker) => worker.id === 'a').runStatus, 'completed');
+    assert.equal(saved.workers.find((worker) => worker.id === 'b').runStatus, 'failed');
   });
 });
 
@@ -335,7 +361,7 @@ test('coding mode can enter tower, persist it, and daily mode closes it', async 
 
     await runtime.submitMessage({ text: 'hello tower' });
     const system = bodies.at(-1)?.messages?.[0]?.content || '';
-    assert.match(system, /Tower Mode: on/);
+    assert.match(system, /Crew Mode: on/);
 
     const switched = await runtime.setExecutionMode('normal');
     assert.equal(switched, true);
@@ -448,6 +474,118 @@ const forkTaskCompletion = sseToolCalls([
   },
 ]);
 
+const dependentTowerCompletion = sseToolCalls([
+  {
+    id: 'call-upstream',
+    name: 'run_subagent',
+    arguments: JSON.stringify({
+      prompt: 'Tower upstream marker',
+      name: 'upstream',
+      task_id: 'upstream',
+      paths: ['frontend/**'],
+    }),
+  },
+  {
+    id: 'call-downstream',
+    name: 'run_subagent',
+    arguments: JSON.stringify({
+      prompt: 'Tower downstream marker',
+      name: 'downstream',
+      task_id: 'downstream',
+      depends_on: ['upstream'],
+      paths: ['backend/**'],
+    }),
+  },
+]);
+
+function requestHasUserMarker(body, marker) {
+  return (body?.messages || []).some((message) => (
+    message?.role === 'user'
+    && (typeof message.content === 'string' ? message.content : JSON.stringify(message.content)).includes(marker)
+  ));
+}
+
+async function waitForCondition(predicate, timeoutMs = 3000) {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    if (await predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error('Timed out waiting for condition.');
+}
+
+test('tower depends_on waits for the upstream background worker to finish', async () => {
+  await withRuntime({
+    mode: 'plan',
+    firstCompletion: dependentTowerCompletion,
+    workerDelays: { 'Tower upstream marker': 300 },
+  }, async ({ bodies, runtime }) => {
+    await runtime.setTowerMode(true);
+    const submitted = runtime.submitMessage({ text: '使用子代理实现有依赖的前后端任务' });
+    await waitForCondition(() => bodies.some((body) => requestHasUserMarker(body, 'Tower upstream marker')));
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    assert.equal(bodies.some((body) => requestHasUserMarker(body, 'Tower downstream marker')), false);
+    await submitted;
+    await waitForCondition(() => bodies.some((body) => requestHasUserMarker(body, 'Tower downstream marker')));
+  });
+});
+
+test('/crew is ordinary prompt text and does not enter Crew mode', async () => {
+  await withRuntime({ mode: 'plan' }, async ({ runtime, bodies }) => {
+    const result = await runtime.submitMessage({ text: '/crew 修复登录并补测试' });
+    assert.equal(result.type, 'assistant');
+    assert.equal(runtime.getRuntimeState().towerActive, false);
+    const transcript = JSON.stringify(bodies.at(-1)?.messages || []);
+    assert.match(transcript, /\/crew 修复登录并补测试/);
+    assert.doesNotMatch(transcript, /Crew Mode: on/);
+  });
+});
+
+test('runtime expands a project slash command but keeps the typed command in session history', async () => {
+  await withRuntime({ mode: 'plan' }, async ({ dir, runtime, bodies }) => {
+    const commandDir = path.join(dir, '.codemini', 'commands');
+    await fs.mkdir(commandDir, { recursive: true });
+    await fs.writeFile(path.join(commandDir, 'release.md'), 'Prepare {{1}} safely.\n');
+    await runtime.reloadCommandsAndSkills();
+    const catalog = runtime.getCommandCatalog();
+    assert.equal(catalog.some((item) => item.name === 'release' && item.kind === 'command'), true);
+
+    await runtime.submitMessage({ text: '/release web' });
+    const transcript = JSON.stringify(bodies.at(-1)?.messages || []);
+    assert.match(transcript, /Executing command: \/release/);
+    assert.match(transcript, /Prepare web safely/);
+    const visibleUser = runtime.getSessionMessages().findLast((message) => message.role === 'user');
+    assert.equal(visibleUser.content, '/release web');
+  });
+});
+
+test('Tower refuses to turn off while a background worker is running', async () => {
+  await withRuntime({
+    mode: 'plan',
+    firstCompletion: sseToolCalls([{
+      id: 'call-slow',
+      name: 'run_subagent',
+      arguments: JSON.stringify({
+        prompt: 'Tower slow worker marker',
+        name: 'slow',
+        paths: ['slow/**'],
+      }),
+    }]),
+    workerDelays: { 'Tower slow worker marker': 300 },
+  }, async ({ dir, runtime }) => {
+    await runtime.setTowerMode(true);
+    await runtime.submitMessage({ text: '使用子代理执行慢任务' });
+    const stoppedEarly = await runtime.setTowerMode(false);
+    assert.equal(stoppedEarly.ok, false);
+    assert.equal(stoppedEarly.code, 'WORKERS_IN_FLIGHT');
+    await fs.access(path.join(getProjectTowerWorktreesDir(dir), 'slow'));
+
+    await runtime.waitForTowerIdle();
+    const stopped = await runtime.setTowerMode(false);
+    assert.equal(stopped.ok, true);
+  });
+});
+
 test('tower-on run_subagent creates two worktrees; session overlay has no workers', async () => {
   await withRuntime({
     mode: 'plan',
@@ -474,6 +612,26 @@ test('tower-on run_subagent creates two worktrees; session overlay has no worker
     await runtime.setTowerMode(false);
     assert.equal(await fs.access(path.join(getProjectTowerWorktreesDir(dir), 'm1')).then(() => true, () => false), false);
     assert.equal(await fs.access(path.join(getProjectTowerWorktreesDir(dir), 'm2')).then(() => true, () => false), false);
+  });
+});
+
+test('tower queues workers beyond tower.max_workers and exposes queued status', async () => {
+  await withRuntime({
+    mode: 'plan',
+    firstCompletion: twoSubagentCompletion,
+    towerMaxWorkers: 1,
+    workerDelays: { 'Implement frontend in isolation': 250, 'Implement backend in isolation': 250 },
+  }, async ({ dir, runtime }) => {
+    await runtime.setTowerMode(true);
+    await runtime.submitMessage({ text: '使用子代理分别实现 frontend 和 backend' });
+    await waitForCondition(async () => {
+      const state = await readTowerStateFile(dir);
+      const statuses = listTowerWorkersFromState(state).map((worker) => worker.runStatus);
+      return statuses.includes('running') && statuses.includes('queued');
+    });
+    await runtime.waitForTowerIdle();
+    const completed = listTowerWorkersFromState(await readTowerStateFile(dir));
+    assert.equal(completed.every((worker) => worker.runStatus === 'completed'), true);
   });
 });
 

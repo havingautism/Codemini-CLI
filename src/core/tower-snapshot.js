@@ -11,12 +11,18 @@ import {
   formatTowerProgressLine,
   shouldShowTowerProgressDock,
 } from './tower-progress.js';
+import {
+  parseTowerReviewCompletedWake,
+  parseTowerWakeHeadline,
+} from './tower-notification.js';
 
 export {
   buildTowerProgressItems,
   describeTowerWorkerProgress,
   formatTowerProgressLine,
   shouldShowTowerProgressDock,
+  parseTowerReviewCompletedWake,
+  parseTowerWakeHeadline,
 };
 
 export function resolveTowerProjectRoot(cwd = process.cwd()) {
@@ -53,7 +59,7 @@ export function buildTowerWorkerStatusRecord(worker = {}) {
 export function suggestTowerNextAction({ workers = [], inFlight = [], pendingWakes = 0 } = {}) {
   const pending = Number(pendingWakes) || 0;
   if (pending > 0) {
-    return 'A tower notification is queued. Do not land or dispatch; wait for that wake turn.';
+    return 'A Crew notification is queued. Do not land or dispatch; wait for that wake turn.';
   }
   const roster = (Array.isArray(workers) ? workers : []).filter((item) => item.integrated !== true);
   const inFlightIds = [...new Set((Array.isArray(inFlight) ? inFlight : []).map((item) => String(item || '').trim()).filter(Boolean))];
@@ -82,7 +88,7 @@ export function suggestTowerNextAction({ workers = [], inFlight = [], pendingWak
     return 'Call land_workers when the roster is ready.';
   }
   if (!roster.length) {
-    return 'Tower roster is empty. Dispatch workers with run_subagent.';
+    return 'Crew roster is empty. Dispatch workers with run_subagent.';
   }
   return 'Review tower_status and recent notifications before the next action.';
 }
@@ -176,7 +182,7 @@ function sealLabel({ dirty, workerKind = '', status = '' } = {}) {
 
 export function formatTowerRosterSnapshot(workers = []) {
   const roster = listTowerWorkersFromState({ workers });
-  if (!roster.length) return 'Tower roster: (empty)';
+  if (!roster.length) return 'Crew roster: (empty)';
   const lines = roster.map((item) => {
     const scope = Array.isArray(item.paths) && item.paths.length ? item.paths.join(', ') : 'no paths';
     const parts = [
@@ -194,22 +200,7 @@ export function formatTowerRosterSnapshot(workers = []) {
     ].filter(Boolean);
     return `- ${parts.join(' | ')}`;
   });
-  return ['Tower roster snapshot:', ...lines].join('\n');
-}
-
-export function parseTowerWakeHeadline(wakeText = '') {
-  const lines = String(wakeText || '')
-    .split('\n')
-    .map((line) => line.trim())
-    .filter(Boolean);
-  const headline = lines.find((line) => !line.startsWith('<') && !line.startsWith('</'));
-  return headline || 'Tower notification';
-}
-
-export function parseTowerReviewCompletedWake(wakeText = '') {
-  const headline = parseTowerWakeHeadline(wakeText);
-  const match = String(headline || '').match(/Tower review of "([^"]+)" finished/i);
-  return match ? String(match[1] || '').trim() : '';
+  return ['Crew roster snapshot:', ...lines].join('\n');
 }
 
 export function buildTowerWorkerCompletedWake({
@@ -230,8 +221,8 @@ export function buildTowerWorkerCompletedWake({
     ? 'tower.review.completed'
     : 'tower.worker.completed';
   const headline = String(reviewOf || '').trim()
-    ? `Tower review of "${reviewOf}" finished (${status}).`
-    : `Tower worker "${id}" ${status}.`;
+    ? `Crew review of "${reviewOf}" finished (${status}).`
+    : `Crew worker "${id}" ${status}.`;
   const reviewLine = String(reviewOf || '').trim()
     ? reviewLoopStopped === true
       ? `Review loop stopped${Number(reviewRound) > 0 ? ` after ${Number(reviewRound)} rounds` : ''}.`
@@ -266,12 +257,12 @@ export function compactTowerSpawnResultForParent({
   const reviewed = String(reviewOf || '').trim();
   const lines = [
     reviewed
-      ? `Tower review of "${reviewed}" started (${status}).`
-      : `Tower worker "${id || role || 'worker'}" spawned (${status}).`,
+      ? `Crew review of "${reviewed}" started (${status}).`
+      : `Crew worker "${id || role || 'worker'}" spawned (${status}).`,
     String(taskId || '').trim() ? `Task id: ${String(taskId).trim()}.` : '',
     String(branch || '').trim() ? `Branch: ${String(branch).trim()}.` : '',
     String(worktreePath || '').trim() ? `Worktree: ${String(worktreePath).trim()}.` : '',
-    'The worker runs in the background; completion wakes the tower in a new turn.',
+    'The worker runs in the background; completion wakes Crew in a new turn.',
     id && !reviewed ? `Resume later with resume: "${id}".` : '',
   ].filter(Boolean);
   return lines.join('\n');

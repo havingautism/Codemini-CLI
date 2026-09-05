@@ -29,6 +29,7 @@ async function initCleanGit(dir) {
   const template = path.join(dir, '.git-template');
   await fs.mkdir(template, { recursive: true });
   await git(dir, ['init', `--template=${template}`]);
+  await git(dir, ['config', 'core.autocrlf', 'false']);
   await fs.writeFile(path.join(dir, '.gitignore'), '.codemini/\n');
   await fs.writeFile(path.join(dir, 'README.md'), 'hello\n');
   await git(dir, ['add', '.']);
@@ -152,6 +153,29 @@ test('one sealed worker commits onto the user branch', async () => {
     assert.deepEqual(landed.kept, []);
     assert.match(String(landed.message || ''), /Worker branches were deleted/);
     assert.deepEqual(await listTowerRefs(dir), []);
+  });
+});
+
+test('land_workers refuses to merge after the user switches away from the recorded base branch', async () => {
+  await withRepo(async (dir) => {
+    const spawned = await addTowerWorktree({
+      cwd: dir,
+      base: 'main',
+      taskId: 'docs',
+      paths: ['docs/**'],
+    });
+    await commitWorkerFile(spawned.worker.worktreePath, path.join('docs', 'a.md'), 'alpha\n');
+    await markCleanReview(dir, spawned.worker);
+    await git(dir, ['switch', '-c', 'unrelated']);
+
+    const landed = await landTowerWorkers({ cwd: dir, base: 'main' });
+
+    assert.equal(landed.ok, false);
+    assert.equal(landed.code, 'BASE_BRANCH_MISMATCH');
+    assert.equal(landed.base, 'main');
+    assert.equal(landed.currentBranch, 'unrelated');
+    assert.equal(await fs.access(path.join(dir, 'docs', 'a.md')).then(() => true, () => false), false);
+    assert.deepEqual(await listTowerRefs(dir), ['codemini-tower/docs']);
   });
 });
 
