@@ -203,7 +203,7 @@ export async function inspectTowerGit(cwd = process.cwd()) {
     return {
       ok: false,
       code: 'NO_COMMIT',
-      message: 'Git · Create the initial commit, then select Crew again. Codemini will not commit automatically.'
+      message: 'Git · Create the initial commit manually, then select Crew again. Codemini will not create the first commit for you.'
     };
   }
   const branchResult = await tryGit(root, ['rev-parse', '--abbrev-ref', 'HEAD']);
