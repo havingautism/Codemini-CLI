@@ -186,12 +186,25 @@ async function compressImageFile(file) {
   return compressed.size < file.size ? compressed : file;
 }
 
-function ModeSelector({ sessionId, current, towerActive = false, disabled = false }) {
+function formatTowerDirtyWarning(count = 1) {
+  return t("towerDirtyWarning").replace("{count}", String(count || 1));
+}
+
+function ModeSelector({
+  sessionId,
+  current,
+  towerActive = false,
+  towerDirtyCount = 0,
+  disabled = false,
+}) {
   const { actions } = useApp();
   const [open, setOpen] = useState(false);
   const [switching, setSwitching] = useState(false);
   const [towerError, setTowerError] = useState("");
   const [towerNotice, setTowerNotice] = useState("");
+  const dirtyCount = Math.max(0, Number(towerDirtyCount) || 0);
+  const dirtyWarning =
+    towerActive && dirtyCount > 0 ? formatTowerDirtyWarning(dirtyCount) : "";
   const MODE_OPTIONS = [
     ...getExecutionModeOptions(),
     {
@@ -234,7 +247,7 @@ function ModeSelector({ sessionId, current, towerActive = false, disabled = fals
           setTowerError(message);
         } else if (result?.warning) {
           keepOpen = true;
-          setTowerNotice(t("towerDirtyWarning", { count: result?.dirtyCount || 1 }));
+          setTowerNotice(formatTowerDirtyWarning(result?.dirtyCount || 1));
         }
       } else {
         if (towerActive) {
@@ -260,17 +273,54 @@ function ModeSelector({ sessionId, current, towerActive = false, disabled = fals
     if (!failed && !keepOpen) setOpen(false);
   };
 
+  const refreshTowerDirtyNotice = useCallback(async () => {
+    if (!towerActive || !sessionId) {
+      setTowerNotice("");
+      return;
+    }
+    try {
+      const result = await actions.setTowerMode(sessionId, true);
+      if (result?.warning) {
+        setTowerNotice(formatTowerDirtyWarning(result?.dirtyCount || 1));
+      } else {
+        setTowerNotice("");
+      }
+    } catch {
+      setTowerNotice("");
+    }
+  }, [actions, sessionId, towerActive]);
+
+  useEffect(() => {
+    if (dirtyWarning) setTowerNotice(dirtyWarning);
+    else if (!open) setTowerNotice("");
+  }, [dirtyWarning, open]);
+
+  const handleOpenChange = (next) => {
+    if (disabled) return;
+    setOpen(next);
+    if (next) void refreshTowerDirtyNotice();
+  };
+
   return (
-    <Popover open={open} onOpenChange={(next) => !disabled && setOpen(next)}>
+    <Popover open={open} onOpenChange={handleOpenChange}>
       <PopoverTrigger asChild>
         <button
           type="button"
-          className={cn(INPUT_PILL_CLASS, "px-2.5", disabled && "opacity-50 pointer-events-none")}
+          className={cn(
+            INPUT_PILL_CLASS,
+            "px-2.5",
+            dirtyWarning && "text-amber-700 dark:text-amber-400",
+            disabled && "opacity-50 pointer-events-none",
+          )}
           disabled={disabled}
-          title={disabled ? t("switchModeDisabled") : t("switchMode")}
+          title={
+            dirtyWarning ||
+            (disabled ? t("switchModeDisabled") : t("switchMode"))
+          }
         >
           <ActiveIcon size={13} />
           <span className="truncate">{active.label}</span>
+          {dirtyWarning ? <GitLogo size={12} className="shrink-0" /> : null}
           <CaretDown size={11} />
         </button>
       </PopoverTrigger>
@@ -316,10 +366,10 @@ function ModeSelector({ sessionId, current, towerActive = false, disabled = fals
             <span>{towerError}</span>
           </div>
         ) : null}
-        {towerNotice ? (
+        {towerNotice || dirtyWarning ? (
           <div className="flex items-center gap-1.5 px-0.5 pt-1.5 text-[11px] leading-snug text-amber-600 dark:text-amber-400">
             <GitLogo size={13} className="shrink-0" />
-            <span>{towerNotice}</span>
+            <span>{towerNotice || dirtyWarning}</span>
           </div>
         ) : null}
       </PopoverContent>
@@ -2044,6 +2094,7 @@ export function InputBar({
               sessionId={rs.sessionId}
               current={mode}
               towerActive={!!rs.towerActive}
+              towerDirtyCount={rs.towerDirtyCount || 0}
               disabled={inputLocked}
             />
             <ReasoningQuickControl

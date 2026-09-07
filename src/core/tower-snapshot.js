@@ -64,7 +64,7 @@ export function suggestTowerNextAction({ workers = [], inFlight = [], pendingWak
   const roster = (Array.isArray(workers) ? workers : []).filter((item) => item.integrated !== true);
   const inFlightIds = [...new Set((Array.isArray(inFlight) ? inFlight : []).map((item) => String(item || '').trim()).filter(Boolean))];
   if (inFlightIds.length) {
-    return `Wait for in-flight workers (${inFlightIds.join(', ')}) or call tower_status again before dispatching.`;
+    return `Wait for in-flight workers (${inFlightIds.join(', ')}) or call crew_status again before dispatching.`;
   }
   const dirty = roster.filter((item) => item.dirty === true);
   if (dirty.length) {
@@ -90,7 +90,7 @@ export function suggestTowerNextAction({ workers = [], inFlight = [], pendingWak
   if (!roster.length) {
     return 'Crew roster is empty. Dispatch workers with run_subagent.';
   }
-  return 'Review tower_status and recent notifications before the next action.';
+  return 'Review crew_status and recent notifications before the next action.';
 }
 
 export async function readTowerStatusPayload(cwd = process.cwd(), {
@@ -101,7 +101,7 @@ export async function readTowerStatusPayload(cwd = process.cwd(), {
   const raw = await readTowerStateFile(projectRoot);
   const towerState = normalizeTowerState(raw);
   if (!towerState) {
-    return { ok: false, active: false, error: 'Tower mode is not active.' };
+    return { ok: false, active: false, error: 'Crew mode is not active.' };
   }
   const workers = listTowerWorkersFromState(raw).map(buildTowerWorkerStatusRecord);
   const inFlightIds = [...new Set((Array.isArray(inFlight) ? inFlight : []).map((item) => String(item || '').trim()).filter(Boolean))];
@@ -142,9 +142,9 @@ export async function readTowerStatusPayload(cwd = process.cwd(), {
 
 export function formatTowerStatusSummary(result = {}) {
   if (!result || typeof result !== 'object') return String(result ?? '');
-  if (!result.ok) return String(result.error || 'Tower status unavailable.');
+  if (!result.ok) return String(result.error || 'Crew status unavailable.');
   const lines = [
-    `Tower base: ${result.base} · fetched ${result.fetchedAt}`,
+    `Crew base: ${result.base} · fetched ${result.fetchedAt}`,
     `Roster: ${result.counts?.roster ?? 0} · running ${result.counts?.running ?? 0} · sealed ${result.counts?.sealed ?? 0} · integrated ${result.counts?.integrated ?? 0}`,
   ];
   if (result.inFlight?.length) lines.push(`In flight: ${result.inFlight.join(', ')}`);
@@ -239,7 +239,7 @@ export function buildTowerWorkerCompletedWake({
     String(summary || '').trim() ? `Summary: ${String(summary).trim()}` : '',
     String(handoffPath || '').trim() ? `Handoff: ${String(handoffPath).trim()}` : '',
     reviewLine,
-    'Worker completion is asynchronous. Call tower_status or use this notification for the latest roster; do not wait on the original run_subagent tool result.',
+    'Worker completion is asynchronous. Call crew_status or use this notification for the latest roster; do not wait on the original run_subagent tool result.',
     '</notification>',
   ].filter(Boolean).join('\n');
 }

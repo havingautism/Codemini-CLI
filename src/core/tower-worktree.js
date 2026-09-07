@@ -135,7 +135,7 @@ export function composeTowerReviewTask(task, {
     String(task || '').trim() || `Review worker "${workerId}".`,
     `You are reviewing Crew worker "${workerId}" at commit ${commit} against base ${base}.`,
     `Scope: ${scope}. Stay inside that scope.`,
-    'Do not edit files or git commit. Finish by calling submit_tower_review with passed true or false and findings. passed true requires empty findings; passed false requires at least one finding.',
+    'Do not edit files or git commit. Finish by calling submit_crew_review with passed true or false and findings. passed true requires empty findings; passed false requires at least one finding.',
     diff ? `Diff vs base:\n${diff}` : 'No diff vs base was available; inspect the worktree.',
   ].join('\n\n');
 }
@@ -294,7 +294,7 @@ export async function resolveTowerSubagentWorkspace({
           return {
             ok: false,
             code: 'SCOPE_OVERLAP',
-            error: `Tower resume "${worker.id}" paths overlap worker "${otherId}" (${overlap.existing} vs ${overlap.glob}). Change paths and retry.`,
+            error: `Crew resume "${worker.id}" paths overlap worker "${otherId}" (${overlap.existing} vs ${overlap.glob}). Change paths and retry.`,
             workerId: worker.id,
           };
         }
@@ -566,7 +566,7 @@ async function addTowerWorktreeUnlocked({
   const root = path.resolve(cwd);
   const baseBranch = String(base || '').trim();
   if (!baseBranch || baseBranch === 'HEAD') {
-    return { ok: false, code: 'NO_BASE', error: 'Tower spawn needs a recorded git base branch.' };
+    return { ok: false, code: 'NO_BASE', error: 'Crew spawn needs a recorded git base branch.' };
   }
   const survey = String(kind || '').trim().toLowerCase() === 'survey';
   const normalizedPaths = normalizeTowerPaths(paths);
@@ -574,7 +574,7 @@ async function addTowerWorktreeUnlocked({
     return {
       ok: false,
       code: 'PATHS_REQUIRED',
-      error: 'Tower run_subagent requires paths: an array of relative globs such as docs/** or src/foo.ts.',
+      error: 'Crew run_subagent requires paths: an array of relative globs such as docs/** or src/foo.ts.',
     };
   }
   const current = await readTowerStateFile(root);
@@ -586,7 +586,7 @@ async function addTowerWorktreeUnlocked({
       return {
         ok: false,
         code: 'SCOPE_OVERLAP',
-        error: `Tower scope overlaps worker "${workerId}" (${overlap.existing} vs ${overlap.glob}). Change paths and retry.`,
+        error: `Crew scope overlaps worker "${workerId}" (${overlap.existing} vs ${overlap.glob}). Change paths and retry.`,
         workerId,
         glob: overlap.glob,
         existing: overlap.existing,
@@ -619,7 +619,7 @@ async function addTowerWorktreeUnlocked({
     return {
       ok: false,
       code: 'WORKTREE_EXISTS',
-      error: `Tower worktree already exists: ${worktreePath}`,
+      error: `Crew worktree already exists: ${worktreePath}`,
     };
   }
   const added = await tryGit(root, ['worktree', 'add', '-b', branch, worktreePath, baseBranch]);

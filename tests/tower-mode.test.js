@@ -130,7 +130,7 @@ function sseToolCalls(calls) {
   return chunks.join('');
 }
 
-async function withRuntime({ mode = 'plan', gitRepo = true, firstCompletion, workerDelays = {}, towerMaxWorkers = 4 } = {}, task) {
+async function withRuntime({ mode = 'plan', gitRepo = true, firstCompletion, followUpCompletion, workerDelays = {}, towerMaxWorkers = 4 } = {}, task) {
   closeSqliteDatabasesForTests();
   const globalDir = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-tower-rt-'));
   const dir = path.join(globalDir, 'workspace');
@@ -144,12 +144,34 @@ async function withRuntime({ mode = 'plan', gitRepo = true, firstCompletion, wor
         let body = null;
         try { body = JSON.parse(raw); } catch { body = null; }
         bodies.push(body);
+        res.on('error', () => {});
         res.writeHead(200, { 'content-type': 'text/event-stream' });
         const messages = Array.isArray(body?.messages) ? body.messages : [];
-        const hasToolResult = messages.some((message) => message?.role === 'tool');
-        const transcript = JSON.stringify(messages);
-        if (firstCompletion && !hasToolResult && /使用子代理|使用并行任务/.test(transcript)) {
+        let lastUser = '';
+        for (let index = messages.length - 1; index >= 0; index -= 1) {
+          if (messages[index]?.role !== 'user') continue;
+          const content = messages[index].content;
+          lastUser = typeof content === 'string' ? content : JSON.stringify(content || '');
+          break;
+        }
+        const toolNames = (Array.isArray(body?.tools) ? body.tools : [])
+          .map((item) => item?.function?.name || item?.name)
+          .filter(Boolean);
+        const lastRole = messages[messages.length - 1]?.role;
+        const isParentUserTurn = lastRole === 'user'
+          && !/\nTask:|Previous shift handoff|You are reviewing Crew worker|<task>\s*\[tower\]/.test(lastUser)
+          && !lastUser.trimStart().startsWith('[tower]');
+        if (firstCompletion && isParentUserTurn && /使用子代理|使用并行任务/.test(lastUser)) {
           res.end(firstCompletion);
+          return;
+        }
+        if (
+          followUpCompletion
+          && isParentUserTurn
+          && toolNames.includes('cancel_worker')
+          && followUpCompletion.test.test(lastUser)
+        ) {
+          res.end(followUpCompletion.sse);
           return;
         }
         for (const [marker, delayMs] of Object.entries(workerDelays)) {
@@ -218,7 +240,8 @@ test('tower prompt is present only when the overlay is active', () => {
   assert.match(prompt, /inspect-only/);
   assert.match(prompt, /fork_task is not available/);
   assert.match(prompt, /land_workers is the only merge path/);
-  assert.match(prompt, /Call tower_status/);
+  assert.match(prompt, /cancel_worker/);
+  assert.match(prompt, /Call crew_status/);
   assert.match(prompt, /pending wakes/);
   assert.match(prompt, /Do not infer progress from this prompt/);
   const withRoster = buildTowerModePromptBlock({ active: true, base: 'main' }, [
@@ -351,6 +374,14 @@ test('coding mode can enter tower, persist it, and daily mode closes it', async 
 
     const again = await runtime.setTowerMode(true);
     assert.equal(again.ok, true);
+    assert.equal(again.dirtyCount, 0);
+
+    await fs.writeFile(path.join(dir, 'dirty-again.txt'), 'y\n');
+    const stillActive = await runtime.setTowerMode(true);
+    assert.equal(stillActive.ok, true);
+    assert.equal(stillActive.dirtyCount, 1);
+    assert.match(String(stillActive.warning || ''), /1 uncommitted/);
+    assert.equal(runtime.getRuntimeState().towerDirtyCount, 1);
 
     delete session.tower;
     assert.equal(runtime.getRuntimeState().towerActive, true);
@@ -725,5 +756,146 @@ test('fork_task is unavailable while tower is on', async () => {
     assert.equal(await fs.access(worktrees).then(() => true, () => false), false);
     const forkResult = session.messages.find((message) => message.tool_call_id === 'call-fork');
     assert.match(String(forkResult?.content || ''), /not available in this model turn/);
+  });
+});
+
+test('cancel_worker aborts a running Crew worker and removes its worktree', async () => {
+  await withRuntime({
+    mode: 'plan',
+    firstCompletion: sseToolCalls([{
+      id: 'call-slow',
+      name: 'run_subagent',
+      arguments: JSON.stringify({
+        prompt: 'Tower slow worker marker',
+        name: 'slow',
+        paths: ['slow/**'],
+      }),
+    }]),
+    followUpCompletion: {
+      test: /取消工人/,
+      sse: sseToolCalls([{
+        id: 'call-cancel',
+        name: 'cancel_worker',
+        arguments: JSON.stringify({ worker_id: 'slow' }),
+      }]),
+    },
+    workerDelays: { 'Tower slow worker marker': 800 },
+  }, async ({ dir, runtime, session }) => {
+    await runtime.setTowerMode(true);
+    await runtime.submitMessage({ text: '使用子代理执行慢任务' });
+    await fs.access(path.join(getProjectTowerWorktreesDir(dir), 'slow'));
+    await runtime.submitMessage({ text: '取消工人 slow' });
+    const cancelResult = session.messages.find((message) => message.tool_call_id === 'call-cancel');
+    assert.ok(cancelResult, `missing cancel_worker result; ids=${session.messages.map((m) => m.tool_call_id).filter(Boolean).join(',')}`);
+    assert.match(String(cancelResult.content || ''), /Cancelled Crew worker "slow"/);
+    const workers = listTowerWorkersFromState(await readTowerStateFile(dir));
+    assert.equal(workers.some((item) => item.id === 'slow'), false);
+    assert.equal(await fs.access(path.join(getProjectTowerWorktreesDir(dir), 'slow')).then(() => true, () => false), false);
+    const reused = await addTowerWorktree({
+      cwd: dir,
+      base: 'main',
+      name: 'slow',
+      paths: ['slow/**'],
+    });
+    assert.equal(reused.ok, true, reused.error);
+    const stopped = await runtime.setTowerMode(false);
+    assert.equal(stopped.ok, true, stopped.error || stopped.message);
+  });
+});
+
+test('cancel_worker removes a queued Crew worker without starting it', async () => {
+  await withRuntime({
+    mode: 'plan',
+    firstCompletion: twoSubagentCompletion,
+    followUpCompletion: {
+      test: /取消工人/,
+      sse: sseToolCalls([{
+        id: 'call-cancel-queued',
+        name: 'cancel_worker',
+        arguments: JSON.stringify({ worker_id: 'm2' }),
+      }]),
+    },
+    towerMaxWorkers: 1,
+    workerDelays: { 'Implement frontend in isolation': 600, 'Implement backend in isolation': 600 },
+  }, async ({ dir, runtime, session }) => {
+    await runtime.setTowerMode(true);
+    await runtime.submitMessage({ text: '使用子代理分别实现 frontend 和 backend' });
+    await waitForCondition(async () => {
+      const state = await readTowerStateFile(dir);
+      const statuses = Object.fromEntries(
+        listTowerWorkersFromState(state).map((worker) => [worker.id, worker.runStatus]),
+      );
+      return statuses.m1 === 'running' && statuses.m2 === 'queued';
+    });
+    await runtime.submitMessage({ text: '取消工人 m2' });
+    const cancelResult = session.messages.find((message) => message.tool_call_id === 'call-cancel-queued');
+    assert.ok(cancelResult, `missing cancel_worker result; ids=${session.messages.map((m) => m.tool_call_id).filter(Boolean).join(',')}`);
+    assert.match(String(cancelResult.content || ''), /Cancelled Crew worker "m2"/);
+    const workers = listTowerWorkersFromState(await readTowerStateFile(dir));
+    assert.equal(workers.some((item) => item.id === 'm2'), false);
+    assert.equal(workers.some((item) => item.id === 'm1'), true);
+    assert.equal(await fs.access(path.join(getProjectTowerWorktreesDir(dir), 'm2')).then(() => true, () => false), false);
+    await waitForWorkerStatus(dir, 'm1', 'completed');
+  });
+});
+
+test('cancel_worker removes an idle Crew worker after it finishes', async () => {
+  await withRuntime({
+    mode: 'plan',
+    firstCompletion: sseToolCalls([{
+      id: 'call-idle',
+      name: 'run_subagent',
+      arguments: JSON.stringify({
+        prompt: 'Idle worker marker',
+        name: 'idle',
+        paths: ['idle/**'],
+      }),
+    }]),
+    followUpCompletion: {
+      test: /取消工人/,
+      sse: sseToolCalls([{
+        id: 'call-cancel-idle',
+        name: 'cancel_worker',
+        arguments: JSON.stringify({ worker_id: 'idle' }),
+      }]),
+    },
+  }, async ({ dir, runtime, session }) => {
+    await runtime.setTowerMode(true);
+    await runtime.submitMessage({ text: '使用子代理执行任务' });
+    await waitForWorkerStatus(dir, 'idle', 'completed');
+    await runtime.submitMessage({ text: '取消工人 idle' });
+    const cancelResult = session.messages.find((message) => message.tool_call_id === 'call-cancel-idle');
+    assert.ok(cancelResult, `missing cancel_worker result; ids=${session.messages.map((m) => m.tool_call_id).filter(Boolean).join(',')}`);
+    assert.match(String(cancelResult.content || ''), /Cancelled Crew worker "idle"/);
+    const workers = listTowerWorkersFromState(await readTowerStateFile(dir));
+    assert.equal(workers.some((item) => item.id === 'idle'), false);
+    assert.equal(await fs.access(path.join(getProjectTowerWorktreesDir(dir), 'idle')).then(() => true, () => false), false);
+  });
+});
+
+test('parent Stop does not abort a running Crew worker', async () => {
+  await withRuntime({
+    mode: 'plan',
+    firstCompletion: sseToolCalls([{
+      id: 'call-keep',
+      name: 'run_subagent',
+      arguments: JSON.stringify({
+        prompt: 'Tower slow worker marker',
+        name: 'keep',
+        paths: ['keep/**'],
+      }),
+    }]),
+    workerDelays: { 'Tower slow worker marker': 500, 'status please': 300 },
+  }, async ({ dir, runtime }) => {
+    await runtime.setTowerMode(true);
+    await runtime.submitMessage({ text: '使用子代理执行慢任务' });
+    await waitForWorkerStatus(dir, 'keep', 'running');
+    const follow = runtime.submitMessage({ text: 'status please' });
+    runtime.abort();
+    await follow.catch(() => null);
+    await waitForWorkerStatus(dir, 'keep', 'completed');
+    assert.equal(await fs.access(path.join(getProjectTowerWorktreesDir(dir), 'keep')).then(() => true, () => false), true);
+    const workers = listTowerWorkersFromState(await readTowerStateFile(dir));
+    assert.equal(workers.some((item) => item.id === 'keep'), true);
   });
 });

@@ -135,6 +135,7 @@ test('tower getBuiltinTools exposes paths and resume, and registers land_workers
   const names = definitions.map((item) => item.function?.name || item.name);
   const sub = definitions.find((item) => item.function?.name === 'run_subagent');
   assert.equal(names.includes('land_workers'), true);
+  assert.equal(names.includes('cancel_worker'), false);
   assert.equal(names.includes('fork_task'), false);
   assert.equal(Boolean(sub?.function?.parameters?.properties?.paths), true);
   assert.equal(Boolean(sub?.function?.parameters?.properties?.resume), true);
@@ -143,6 +144,45 @@ test('tower getBuiltinTools exposes paths and resume, and registers land_workers
   assert.match(String(sub?.function?.description || ''), /resume/i);
   assert.equal(typeof handlers.land_workers, 'function');
 });
+
+test('cancel_worker is Crew-only and removes via the wired callback', async () => {
+  const hidden = getBuiltinTools({
+    towerActive: true,
+    onRunSubAgent: async () => ({ ok: true }),
+    onLandWorkers: async () => ({ ok: true }),
+  });
+  assert.equal(
+    hidden.definitions.some((item) => item.function?.name === 'cancel_worker'),
+    false,
+  );
+  const missing = getBuiltinTools({
+    onRunSubAgent: async () => ({ ok: true }),
+  });
+  assert.equal(
+    missing.definitions.some((item) => item.function?.name === 'cancel_worker'),
+    false,
+  );
+
+  let seen = '';
+  const { definitions, handlers } = getBuiltinTools({
+    towerActive: true,
+    onRunSubAgent: async () => ({ ok: true }),
+    onLandWorkers: async () => ({ ok: true }),
+    onCancelWorker: async ({ workerId }) => {
+      seen = workerId;
+      return { ok: true, cancelled: 'worker', workerId, message: `Cancelled Crew worker "${workerId}" and removed its worktree.` };
+    },
+  });
+  assert.equal(definitions.some((item) => item.function?.name === 'cancel_worker'), true);
+  const result = await handlers.cancel_worker({ worker_id: 'alice' });
+  assert.equal(seen, 'alice');
+  assert.equal(result.ok, true);
+  assert.match(String(result.message || ''), /alice/);
+  const missingId = await handlers.cancel_worker({});
+  assert.equal(missingId.ok, false);
+  assert.equal(missingId.code, 'MISSING_ID');
+});
+
 
 test('applyTowerParentToolPolicy strips mutation tools only when tower is on', () => {
   const coding = ['read', 'write', 'edit', 'run', 'run_subagent', 'fork_task'];
@@ -153,41 +193,42 @@ test('applyTowerParentToolPolicy strips mutation tools only when tower is on', (
   assert.equal(tower.includes('fork_task'), false);
   assert.equal(tower.includes('run_subagent'), true);
   assert.equal(tower.includes('land_workers'), true);
-  assert.equal(tower.includes('tower_status'), true);
+  assert.equal(tower.includes('cancel_worker'), true);
+  assert.equal(tower.includes('crew_status'), true);
   assert.equal(tower.includes('run'), true);
 });
 
-test('tower workers keep tower_status without parent inspect-only shell', async () => {
+test('tower workers keep crew_status without parent inspect-only shell', async () => {
   const bundle = getBuiltinTools({
     towerActive: false,
     onRunSubAgent: async () => ({ ok: true }),
     config: { runtime: { tower_session: true } },
   });
   const names = bundle.definitions.map((item) => item.function?.name || item.name);
-  assert.equal(names.includes('tower_status'), true);
+  assert.equal(names.includes('crew_status'), true);
   const run = shellTool(bundle);
   assert.equal(String(run.def?.function?.description || '').includes('inspect-only'), false);
 });
 
-test('tool_search for tower_status says the tool is already available', async () => {
+test('tool_search for crew_status says the tool is already available', async () => {
   const { handlers } = getBuiltinTools({
     towerActive: true,
     onRunSubAgent: async () => ({ ok: true }),
     onLandWorkers: async () => ({ ok: true }),
   });
-  const result = handlers.tool_search({ query: 'tower_status' });
+  const result = handlers.tool_search({ query: 'crew_status' });
   assert.equal(result.error, undefined);
-  assert.deepEqual(result.loaded, ['tower_status']);
+  assert.deepEqual(result.loaded, ['crew_status']);
   assert.match(String(result.message || ''), /already in your current tool list/i);
 });
 
-test('tower_status is exposed for tower sessions and reads fresh state', async () => {
+test('crew_status is exposed for Crew sessions and reads fresh state', async () => {
   const hidden = getBuiltinTools({
     towerActive: false,
     onRunSubAgent: async () => ({ ok: true }),
   });
   assert.equal(
-    hidden.definitions.some((item) => item.function?.name === 'tower_status'),
+    hidden.definitions.some((item) => item.function?.name === 'crew_status'),
     false,
   );
 
@@ -205,22 +246,22 @@ test('tower_status is exposed for tower sessions and reads fresh state', async (
     },
   });
   assert.equal(
-    definitions.some((item) => item.function?.name === 'tower_status'),
+    definitions.some((item) => item.function?.name === 'crew_status'),
     true,
   );
-  const result = await handlers.tower_status();
+  const result = await handlers.crew_status();
   assert.equal(result.ok, false);
   assert.match(String(result.error || ''), /not active/i);
 });
 
-test('submit_tower_review is only exposed when a verdict callback is wired', async () => {
+test('submit_crew_review is only exposed when a verdict callback is wired', async () => {
   const hidden = getBuiltinTools({
     towerActive: true,
     onRunSubAgent: async () => ({ ok: true }),
     onLandWorkers: async () => ({ ok: true }),
   });
   assert.equal(
-    hidden.definitions.some((item) => item.function?.name === 'submit_tower_review'),
+    hidden.definitions.some((item) => item.function?.name === 'submit_crew_review'),
     false,
   );
 
@@ -235,13 +276,13 @@ test('submit_tower_review is only exposed when a verdict callback is wired', asy
     },
   });
   assert.equal(
-    definitions.some((item) => item.function?.name === 'submit_tower_review'),
+    definitions.some((item) => item.function?.name === 'submit_crew_review'),
     true,
   );
-  const ok = await handlers.submit_tower_review({ passed: true, findings: [] });
+  const ok = await handlers.submit_crew_review({ passed: true, findings: [] });
   assert.equal(ok.ok, true);
   assert.deepEqual(seen, { passed: true, findings: [] });
-  const rejected = await handlers.submit_tower_review({ passed: true, findings: ['none'] });
+  const rejected = await handlers.submit_crew_review({ passed: true, findings: ['none'] });
   assert.equal(rejected.ok, false);
   assert.deepEqual(seen, { passed: true, findings: [] });
 });

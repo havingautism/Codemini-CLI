@@ -612,8 +612,10 @@ test('tower overlay keeps run_subagent even when the route prefers fork_task', a
   assert.equal(isCodingRouteToolAllowed(result, 'run_subagent', { towerActive: true }), true);
   assert.equal(isCodingRouteToolAllowed(result, 'land_workers'), false);
   assert.equal(isCodingRouteToolAllowed(result, 'land_workers', { towerActive: true }), true);
-  assert.equal(isCodingRouteToolAllowed(result, 'tower_status'), false);
-  assert.equal(isCodingRouteToolAllowed(result, 'tower_status', { towerActive: true }), true);
+  assert.equal(isCodingRouteToolAllowed(result, 'crew_status'), false);
+  assert.equal(isCodingRouteToolAllowed(result, 'crew_status', { towerActive: true }), true);
+  assert.equal(isCodingRouteToolAllowed(result, 'cancel_worker'), false);
+  assert.equal(isCodingRouteToolAllowed(result, 'cancel_worker', { towerActive: true }), true);
   assert.equal(isCodingRouteToolAllowed(result, 'fork_task', { towerActive: true }), false);
   assert.equal(isCodingRouteToolAllowed(result, 'fork_task'), true);
   const towerForced = await evaluateCodingRouteGraph({

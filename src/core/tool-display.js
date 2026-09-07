@@ -6,7 +6,9 @@ export const TOOL_DISPLAY_LABELS = {
   create_spec: 'Create Spec',
   run_subagent: 'Subagent',
   land_workers: 'Land',
-  tower_status: 'Tower Status',
+  cancel_worker: 'Cancel Worker',
+  crew_status: 'Crew Status',
+  tower_status: 'Crew Status',
   fork_task: 'Fork',
   tasks: 'Tasks',
   update_todos: 'Tasks',
@@ -120,7 +122,7 @@ export function describeTowerRunSubagent(args = {}) {
     return { kind: 'review', label: `Crew review · ${review}`, persona: name };
   }
   if (role === 'survey') {
-    return { kind: 'survey', label: `Tower survey · ${name || 'Survey'}`, persona: name };
+    return { kind: 'survey', label: `Crew survey · ${name || 'Survey'}`, persona: name };
   }
   const resume = String(args?.resume || '').trim();
   const hasPaths = Array.isArray(args?.paths) && args.paths.length > 0;

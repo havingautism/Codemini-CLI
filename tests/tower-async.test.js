@@ -204,9 +204,10 @@ test('tower progress dock describes reviewing and hides after full merge', () =>
   }), false);
 });
 
-test('resolveSubAgentToolAllowList adds tower_status in tower sessions', () => {
+test('resolveSubAgentToolAllowList adds crew_status in tower sessions', () => {
   const tools = resolveSubAgentToolAllowList({ role: 'reviewer', towerSession: true });
-  assert.equal(tools.includes('tower_status'), true);
+  assert.equal(tools.includes('crew_status'), true);
+  assert.equal(tools.includes('cancel_worker'), false);
 });
 
 test('readTowerStatusPayload returns live roster fields', async () => {
@@ -228,7 +229,7 @@ test('readTowerStatusPayload returns live roster fields', async () => {
     assert.equal(payload.base, 'main');
     assert.deepEqual(payload.inFlight, ['worker-a']);
     assert.equal(payload.pendingWakes, 1);
-    assert.match(formatTowerStatusSummary(payload), /Tower base: main/);
+    assert.match(formatTowerStatusSummary(payload), /Crew base: main/);
   } finally {
     await fs.rm(dir, { recursive: true, force: true });
   }
