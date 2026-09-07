@@ -152,6 +152,7 @@ test('describeTowerRunSubagent labels review, survey, and worktree cards', () =>
 
 test('agent loop keeps going when shouldContinueAfterText returns a nudge', async () => {
   let calls = 0;
+  const events = [];
   const result = await runAgentLoop({
     systemPrompt: 'sys',
     userPrompt: 'finish the slice',
@@ -163,7 +164,19 @@ test('agent loop keeps going when shouldContinueAfterText returns a nudge', asyn
     skipAnalysisNudge: true,
     approvalMode: 'full_access',
     shouldContinueAfterText: async (text) => (String(text) === 'done' ? 'git commit now' : null),
+    onEvent: (event) => events.push(event),
   });
   assert.equal(calls, 2);
   assert.equal(result.text, 'committed');
+  assert.deepEqual(
+    events.find((event) => event.type === 'model:context')?.message,
+    {
+      role: 'user',
+      content: 'git commit now',
+      model_context: true,
+      model_context_source: 'runtime',
+      model_context_reason: 'continue-after-text',
+    },
+  );
+  assert.equal(result.messages.at(-2)?.content, 'git commit now');
 });

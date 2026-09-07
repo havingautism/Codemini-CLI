@@ -1302,6 +1302,7 @@ export function createWebRuntimeApi({
             skillNames: body.skillNames,
             attachmentIds: body.attachmentIds,
             dismissedAlwaysSkills: body.dismissedAlwaysSkills,
+            fileReferences: body.fileReferences,
             attachments,
             modelImages: attachmentData.modelImages,
             ...(mergedModelText ? { modelText: mergedModelText } : {}),
@@ -1806,6 +1807,7 @@ export async function handleStructuredChatRequest(req, res, bridge) {
           skillNames: body?.skillNames,
           attachmentIds: body?.attachmentIds,
           dismissedAlwaysSkills: body?.dismissedAlwaysSkills,
+          fileReferences: body?.fileReferences,
           ...attachmentData,
         }),
       );

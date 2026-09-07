@@ -45,6 +45,7 @@ const DEFAULT_CONFIG = {
     read_file_default_lines: 120,
     read_file_max_chars: 12000,
     prompt_budget_audit: false,
+    prompt_request_audit: false,
     microcompact_enabled: true,
     microcompact_keep_recent: 5,
     aggressive_tool_prune_beta: false,
@@ -364,6 +365,7 @@ function normalizePolicyLists(config) {
   next.memory.background_review.lease_ms = Math.max(30000, Number(next.memory.background_review.lease_ms || 120000));
   next.context = next.context || {};
   next.context.prompt_budget_audit = next.context.prompt_budget_audit === true;
+  next.context.prompt_request_audit = next.context.prompt_request_audit === true;
   next.context.aggressive_tool_prune_beta = next.context.aggressive_tool_prune_beta === true;
   next.context.aggressive_tool_prune_keep_recent = normalizedNumber(
     next.context.aggressive_tool_prune_keep_recent,

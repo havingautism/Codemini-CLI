@@ -402,11 +402,13 @@ export async function createChatCompletion({
   tools,
   toolChoice,
   reasoningEffort,
+  onPayloadPrepared,
   timeoutMs = 1800000,
   maxTokens = 16384,
   signal: externalSignal
 }) {
   const payload = buildPayload({ model, temperature, messages, tools, maxTokens, toolChoice, reasoningEffort });
+  onPayloadPrepared?.(payload);
   const timeoutSignal = AbortSignal.timeout(timeoutMs);
   const signal = externalSignal
     ? AbortSignal.any([timeoutSignal, externalSignal])
@@ -430,6 +432,7 @@ export async function createChatCompletionStream({
   tools,
   toolChoice,
   reasoningEffort,
+  onPayloadPrepared,
   onTextDelta,
   onReasoningDelta,
   onToolCallDelta,
@@ -458,6 +461,7 @@ export async function createChatCompletionStream({
   }
   try {
     const payload = buildPayload({ model, temperature, messages, tools, stream: true, maxTokens, toolChoice, reasoningEffort });
+    onPayloadPrepared?.(payload);
     const response = await fetch(buildMessagesUrl(baseUrl), {
       method: 'POST',
       headers: createHeaders(apiKey),

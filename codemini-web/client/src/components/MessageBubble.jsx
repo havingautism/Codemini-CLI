@@ -1580,6 +1580,44 @@ function ScrapbookUserAttachment({ item }) {
   );
 }
 
+function UserFileReferenceChips({ references = [], className }) {
+  const items = Array.isArray(references) ? references : [];
+  if (!items.length) return null;
+
+  return (
+    <div className={cn("flex max-w-full flex-wrap gap-1.5", className)}>
+      {items.map((item) => {
+        const pathText = String(item?.path || "").trim();
+        if (!pathText) return null;
+        const normalizedPath = pathText.replace(/\\/g, "/");
+        const fallbackName = basename(normalizedPath);
+        const fallbackDir = normalizedPath.includes("/")
+          ? normalizedPath.slice(0, normalizedPath.lastIndexOf("/"))
+          : "";
+        const name = String(item?.name || fallbackName).trim() || fallbackName;
+        const dir = String(item?.dir || fallbackDir).trim();
+        return (
+          <span
+            key={pathText}
+            className="codemini-status-chip inline-flex max-w-full items-center gap-1.5 px-2 py-1 text-[12px] text-(--text-secondary)"
+            title={`@${pathText}`}
+          >
+            <FileTypeIcon path={pathText} size="sm" />
+            <span className="max-w-[220px] truncate font-mono text-(--text-primary)">
+              {name}
+            </span>
+            {dir ? (
+              <span className="max-w-[220px] truncate font-mono text-[11px] text-(--text-muted)">
+                ({dir})
+              </span>
+            ) : null}
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
 function UserAttachments({ attachments = [], className }) {
   const items = Array.isArray(attachments) ? attachments : [];
   if (!items.length) return null;
@@ -2162,6 +2200,7 @@ export const MessageBubble = memo(function MessageBubble({
     sdkProvider,
     model,
     attachments = [],
+    fileReferences = [],
   } = message;
   const ts = timestamp ? formatTimestamp(timestamp) : "";
 
@@ -2437,7 +2476,9 @@ export const MessageBubble = memo(function MessageBubble({
             <SpecExecutionCard details={specExecutionDetails} />
           ) : (
             <div className="codemini-message-surface codemini-user-bubble w-fit max-w-full rounded-2xl px-4 py-2">
-              {(userSkillChips.length > 0 || attachments.length > 0) && (
+              {(userSkillChips.length > 0 ||
+                fileReferences.length > 0 ||
+                attachments.length > 0) && (
                 <div
                   className={cn(
                     "flex max-w-full flex-col gap-2",
@@ -2447,6 +2488,7 @@ export const MessageBubble = memo(function MessageBubble({
                   {userSkillChips.length > 0 && (
                     <UserSkillChips badges={userSkillChips} />
                   )}
+                  <UserFileReferenceChips references={fileReferences} />
                   <UserAttachments attachments={attachments} />
                 </div>
               )}

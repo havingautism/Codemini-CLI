@@ -116,14 +116,34 @@ export function buildUsagePanelModel(usage) {
   const output = Math.max(0, Math.round(Number(usage.outputTokens || 0)));
   const cached = Math.max(0, Math.round(Number(usage.cachedInputTokens || 0)));
   const reportedCacheMiss = Math.max(0, Math.round(Number(usage.cacheMissInputTokens || 0)));
-  const cacheMiss = input > 0 ? Math.max(0, input - cached) : reportedCacheMiss;
   const cacheWrite = Math.max(0, Math.round(Number(usage.cacheWriteInputTokens || 0)));
+  const cacheUsageStatus = ['reported', 'unreported', 'partial'].includes(usage.cacheUsageStatus)
+    ? usage.cacheUsageStatus
+    : cached > 0 || reportedCacheMiss > 0 || cacheWrite > 0
+      ? 'reported'
+      : 'unreported';
+  const cacheReported = cacheUsageStatus === 'reported';
+  const cacheMiss = cacheReported
+    ? input > 0 ? Math.max(0, input - cached) : reportedCacheMiss
+    : 0;
   const reasoning = Math.max(0, Math.round(Number(usage.reasoningOutputTokens || 0)));
   const requests = Math.max(0, Math.round(Number(usage.requests || 0)));
   const total = Math.max(0, Math.round(Number(usage.totalTokens || 0))) || input + output;
-  const barInput = cacheMiss > 0 ? cacheMiss : Math.max(0, input - cached);
-  const cacheHitRate = input > 0 ? Math.min(1, cached / input) : 0;
-  const tokens = { input, output, cached, cacheMiss, cacheWrite, reasoning, requests, total, barInput, cacheHitRate };
+  const barInput = cacheReported ? Math.max(0, input - cached) : input;
+  const cacheHitRate = cacheReported && input > 0 ? Math.min(1, cached / input) : null;
+  const tokens = {
+    input,
+    output,
+    cached,
+    cacheMiss,
+    cacheWrite,
+    cacheUsageStatus,
+    reasoning,
+    requests,
+    total,
+    barInput,
+    cacheHitRate,
+  };
 
   const timing = sanitizeTiming(usage.timing);
   if (!timing?.requestSentAt || !timing.firstTokenAt || !timing.completedAt) {

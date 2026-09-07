@@ -101,6 +101,22 @@ function selectedSkillBadgesFromNames(names = []) {
   )].map((name) => ({ name, status: 'selected' }));
 }
 
+export function normalizeFileReferences(references = []) {
+  const normalized = [];
+  const seen = new Set();
+  for (const reference of Array.isArray(references) ? references.slice(0, 20) : []) {
+    const filePath = String(reference?.path || '').trim().slice(0, 2048);
+    if (!filePath || seen.has(filePath)) continue;
+    seen.add(filePath);
+    normalized.push({
+      path: filePath,
+      name: String(reference?.name || '').trim().slice(0, 255),
+      dir: String(reference?.dir || '').trim().slice(0, 2048)
+    });
+  }
+  return normalized;
+}
+
 function skillBadgesFromSessionMessage(message = {}) {
   const explicit = Array.isArray(message.skillBadges)
     ? message.skillBadges
@@ -128,7 +144,7 @@ function skillBadgesFromSessionMessage(message = {}) {
 export function serializeSessionMessages(messages) {
   if (!Array.isArray(messages)) return [];
   return messages
-    .filter((message) => message.role !== 'system')
+    .filter((message) => message.role !== 'system' && message.model_context !== true)
     .map((message) => {
       const selectedSkillNames = Array.isArray(message.selectedSkillNames)
         ? message.selectedSkillNames
@@ -810,6 +826,7 @@ export class RuntimeBridge {
         ? message.segments
         : (message.text ? [{ type: 'text', text: message.text, isStreaming: false }] : []),
       skillBadges: Array.isArray(message.skillBadges) ? message.skillBadges : [],
+      fileReferences: normalizeFileReferences(message.fileReferences),
       fileChanges: Array.isArray(message.fileChanges) ? message.fileChanges : []
     };
     this.#uiMessages = [...this.#uiMessages, next];
@@ -1405,6 +1422,7 @@ export class RuntimeBridge {
         role: 'you',
         text: userMessage.text,
         attachments: userMessage.attachments || [],
+        fileReferences: normalizeFileReferences(userMessage.fileReferences),
         skillBadges: selectedBadges,
         timestamp: new Date().toISOString()
       });
@@ -1479,7 +1497,8 @@ export class RuntimeBridge {
         userMessage: {
           id: message.messageId,
           text,
-          attachments: Array.isArray(message.attachments) ? message.attachments : []
+          attachments: Array.isArray(message.attachments) ? message.attachments : [],
+          fileReferences: normalizeFileReferences(message.fileReferences)
         },
         selectedSkillNames: message.skillNames,
         retryPrompt: text

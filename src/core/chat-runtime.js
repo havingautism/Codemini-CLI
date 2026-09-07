@@ -3,8 +3,6 @@ import {
   loadCommandsAndSkills,
   loadIndexedSkills,
   buildSkillIndexPromptBlock,
-  isSkillIndexEligible,
-  isSkillModelInvocationDisabled,
   isUserInvocableSkill,
   parseSlashCommandInvocation,
   renderCommandPrompt,
@@ -52,6 +50,7 @@ import { isDangerousCommand, runShellCommand } from './shell.js';
 import { getBuiltinTools } from './tools.js';
 import { canonicalShellToolName, shellToolName, toolNameAllowed } from './shell-tool-name.js';
 import { createToolRuntime } from './tool-runtime.js';
+import { buildPromptRequestAudit } from './prompt-request-audit.js';
 import {
   createContinuationSession,
   deriveSessionTitle,
@@ -113,10 +112,10 @@ import {
   buildMemoryRouteHintBlock
 } from './memory-policy.js';
 import {
-  buildCodingRouteDecisionBlock,
-  evaluateCodingRouteGraph,
-  isCodingRouteToolAllowed,
-} from './coding-route-graph.js';
+  buildCodingTurnPolicyBlock,
+  createCodingTurnPolicy,
+  isCodingTurnToolAllowed,
+} from './coding-turn-policy.js';
 import {
   buildCleanContextHandoff
 } from './workflow-gates.js';
@@ -131,6 +130,7 @@ import {
 } from './subagent-handoff-store.js';
 import { runDreamConsolidation } from './dream-consolidate.js';
 import {
+  beginSessionMemoryActivity,
   scheduleMemoryReviewBacklog,
   scheduleSessionMemoryReview
 } from './memory-session-review.js';
@@ -257,12 +257,12 @@ export function isModelVisibleMessage(message) {
   return message?.model_visible !== false && message?.local_only !== true;
 }
 
-function modelContentForMessage(message, index, { currentTurnUserIndex = -1 } = {}) {
+function modelContentForMessage(message) {
   const modelContent = typeof message?.model_content === 'string' && message.model_content
     ? message.model_content
     : '';
   const baseContent = modelContent || message?.content;
-  const images = index === currentTurnUserIndex && Array.isArray(message?.model_images)
+  const images = Array.isArray(message?.model_images)
     ? message.model_images
     : [];
   if (images.length) {
@@ -532,6 +532,12 @@ export function normalizeModelUsage(usage) {
     ['usage', 'cache_creation', 'ephemeral_5m_input_tokens'],
     ['usage', 'cache_creation', 'ephemeral_1h_input_tokens']
   ]);
+  const cacheUsageStatus = cachedInputTokens != null
+    || explicitCacheMissInputTokens != null
+    || cacheReadInputTokens != null
+    || cacheWriteInputTokens != null
+    ? 'reported'
+    : 'unreported';
   const hasAnthropicSplitCacheInput = explicitInputTokens != null
     && (cacheReadInputTokens != null || cacheWriteInputTokens != null)
     && promptCacheHitTokens == null;
@@ -582,6 +588,7 @@ export function normalizeModelUsage(usage) {
     cachedInputTokens: Math.round(cachedInputTokens || 0),
     cacheMissInputTokens: Math.round(cacheMissInputTokens || 0),
     cacheWriteInputTokens: Math.round(cacheWriteInputTokens || 0),
+    cacheUsageStatus,
     reasoningOutputTokens: Math.round(reasoningOutputTokens || 0),
     requests: 1,
     raw: collectRawUsage(usage)
@@ -596,6 +603,13 @@ function withTiming(base, ...sources) {
 
 function cloneModelUsage(usage) {
   if (!usage || typeof usage !== 'object') return null;
+  const cacheUsageStatus = ['reported', 'unreported', 'partial'].includes(usage.cacheUsageStatus)
+    ? usage.cacheUsageStatus
+    : Object.prototype.hasOwnProperty.call(usage, 'cachedInputTokens')
+      || Object.prototype.hasOwnProperty.call(usage, 'cacheMissInputTokens')
+      || Object.prototype.hasOwnProperty.call(usage, 'cacheWriteInputTokens')
+      ? 'reported'
+      : 'unreported';
   return withTiming({
     inputTokens: Math.max(0, Math.round(Number(usage.inputTokens || 0))),
     outputTokens: Math.max(0, Math.round(Number(usage.outputTokens || 0))),
@@ -603,6 +617,7 @@ function cloneModelUsage(usage) {
     cachedInputTokens: Math.max(0, Math.round(Number(usage.cachedInputTokens || 0))),
     cacheMissInputTokens: Math.max(0, Math.round(Number(usage.cacheMissInputTokens || 0))),
     cacheWriteInputTokens: Math.max(0, Math.round(Number(usage.cacheWriteInputTokens || 0))),
+    cacheUsageStatus,
     reasoningOutputTokens: Math.max(0, Math.round(Number(usage.reasoningOutputTokens || 0))),
     requests: Math.max(0, Math.round(Number(usage.requests || 0))),
     raw: Array.isArray(usage.raw) ? usage.raw.map((item) => ({ ...item })) : []
@@ -614,6 +629,9 @@ function mergeModelUsage(left, right) {
   const b = cloneModelUsage(right);
   if (!a) return b;
   if (!b) return a;
+  const cacheUsageStatus = a.cacheUsageStatus === b.cacheUsageStatus
+    ? a.cacheUsageStatus
+    : 'partial';
   return withTiming({
     inputTokens: a.inputTokens + b.inputTokens,
     outputTokens: a.outputTokens + b.outputTokens,
@@ -621,6 +639,7 @@ function mergeModelUsage(left, right) {
     cachedInputTokens: a.cachedInputTokens + b.cachedInputTokens,
     cacheMissInputTokens: a.cacheMissInputTokens + b.cacheMissInputTokens,
     cacheWriteInputTokens: a.cacheWriteInputTokens + b.cacheWriteInputTokens,
+    cacheUsageStatus,
     reasoningOutputTokens: a.reasoningOutputTokens + b.reasoningOutputTokens,
     requests: a.requests + b.requests,
     raw: [...a.raw, ...b.raw]
@@ -762,7 +781,7 @@ export function buildExecutionModePromptBlock(executionMode, platform = process.
       'Implement only when requested. Preserve public contracts, project conventions, unrelated user changes, and platform compatibility.',
       '',
       'Workflow: inspect relevant source and callers → clarify only material choices → make the smallest complete change → run focused verification → inspect the diff.',
-      'The injected <coding_harness> route is authoritative for memory capability, and directive for tasks, skills, clarification, and bounded delegation.',
+      'Choose skills, planning, and delegation from inspected context; respect user restrictions and tool permissions.',
       'For bugs, establish a failing signal and fix the shared root cause. Never claim completion without fresh evidence.',
       '',
       'Subagent tool (run_subagent):',
@@ -2603,23 +2622,6 @@ export function buildAlwaysSkillPromptBlock(commands, config, dismissedSkills = 
   )).join('\n\n');
 }
 
-function buildSelectedSkillPromptBlock(commands, names = [], config = {}, executionMode = 'code', cwd = process.cwd()) {
-  const selected = [];
-  for (const name of names) {
-    const skill = commands?.get?.(name);
-    if (
-      !skill
-      || !isSkillIndexEligible(skill)
-      || isSkillModelInvocationDisabled(skill)
-      || !isSkillEnabled(config, name, skill, executionMode)
-    ) continue;
-    selected.push(
-      `[Lite-selected skill: ${skill.name}]\n${appendSkillSandboxMountHint(skill, skill.content, { config, cwd })}`,
-    );
-  }
-  return selected.join('\n\n');
-}
-
 export function shouldInjectAlwaysSkills(executionMode) {
   return ['normal', 'plan'].includes(normalizeExecutionMode(executionMode));
 }
@@ -4094,7 +4096,11 @@ function buildPromptBudgetAudit({
   }));
   const components = [
     makePromptBudgetComponent('system_prompt', 'system', systemPrompt),
-    makePromptBudgetComponent('project_context', 'user', projectContextPrompt),
+    {
+      ...makePromptBudgetComponent('project_context', 'user', projectContextPrompt),
+      included_in_total: false,
+      note: 'breakdown_only_already_in_messages',
+    },
     {
       name: 'message_history',
       chars: messageTexts.reduce((total, message) => total + String(message.content || '').length, 0),
@@ -4102,8 +4108,9 @@ function buildPromptBudgetAudit({
     },
     makePromptBudgetComponent('tool_schemas', 'system', toolSchemaText)
   ];
-  const totalChars = components.reduce((total, component) => total + component.chars, 0);
-  const totalTokens = components.reduce((total, component) => total + component.estimated_tokens, 0);
+  const totalComponents = components.filter((component) => component.included_in_total !== false);
+  const totalChars = totalComponents.reduce((total, component) => total + component.chars, 0);
+  const totalTokens = totalComponents.reduce((total, component) => total + component.estimated_tokens, 0);
   const maxContextTokens = effectiveMaxContextTokens(config);
   const contextUsagePct =
     maxContextTokens > 0 ? Math.min(100, Math.max(0, (totalTokens / maxContextTokens) * 100)) : 0;
@@ -4169,7 +4176,7 @@ function summarizePromptBudgetAudit(audit) {
   const pct = Number(audit?.context_usage_pct || 0).toFixed(1);
   const components = (audit?.components || [])
     .filter((component) => component.estimated_tokens > 0)
-    .map((component) => `${component.name}=${component.estimated_tokens}`)
+    .map((component) => `${component.name}=${component.estimated_tokens}${component.included_in_total === false ? '(breakdown)' : ''}`)
     .join(', ');
   return `prompt budget: ${totalTokens}/${maxContextTokens} est tokens (${pct}%)${components ? `; ${components}` : ''}`;
 }
@@ -4319,32 +4326,6 @@ function resolveDefaultModel(config) {
 
 function resolveFastModel(config) {
   return String(config?.model?.fast_name || config?.model?.lite_name || config?.model?.name || '').trim();
-}
-
-const CODING_ROUTE_JUDGE_TIMEOUT_MS = 3000;
-
-async function judgeCodingRouteNodes({ request, config, model, signal }) {
-  const routeModel = resolveFastModel(config) || model || config?.model?.name;
-  if (!routeModel) return null;
-  const result = await createChatCompletion({
-    sdkProvider: config?.sdk?.provider,
-    baseUrl: config?.gateway?.base_url,
-    apiKey: config?.gateway?.api_key,
-    model: routeModel,
-    messages: [
-      { role: 'system', content: request.systemPrompt },
-      { role: 'user', content: request.userPrompt },
-    ],
-    tools: [],
-    temperature: 0,
-    reasoningEffort: 'off',
-    maxTokens: 480,
-    payloadExtras: { max_tokens: 480 },
-    timeoutMs: Math.min(Number(config?.gateway?.timeout_ms || CODING_ROUTE_JUDGE_TIMEOUT_MS), CODING_ROUTE_JUDGE_TIMEOUT_MS),
-    maxRetries: 0,
-    signal,
-  });
-  return result?.text || '';
 }
 
 const ROUTE_TRACE_EDIT_TOOLS = new Set(['edit', 'write', 'begin_write', 'write_chunk', 'commit_write', 'apply_patch', 'delete']);
@@ -4971,7 +4952,8 @@ async function askModel({
   const shouldGenerateTitle = text
     ? !session.messages.some((msg) => msg?.role === 'user')
     : false;
-  const projectContextPromise = (config.context?.project_context_enabled !== false)
+  const projectContextPromise = (config.context?.project_context_enabled !== false
+    && !session.messages?.some((message) => message.role === 'user' && message.model_content))
     ? buildProjectContextSnippet(workspaceRoot, modelInputText).catch(() => '')
     : Promise.resolve('');
   // Snapshot lengths before this turn appends anything. Compacted is often
@@ -6241,6 +6223,15 @@ async function askModel({
       );
       pendingToolMeta.delete(toolId);
       if (persistSession) scheduleSessionSave();
+    } else if (event?.type === 'model:context' && event.message?.role === 'user') {
+      session.messages.push(stampedMessage('user', event.message.content || '', {
+        model_context: true,
+        model_context_source: String(event.message.model_context_source || 'runtime'),
+        ...(event.message.model_context_reason
+          ? { model_context_reason: String(event.message.model_context_reason) }
+          : {}),
+      }));
+      if (persistSession) scheduleSessionSave();
     }
 
     if (onAgentEvent) onAgentEvent(event);
@@ -6345,7 +6336,16 @@ async function askModel({
     formatters,
     deferredDefinitions: nonDuplicateFilteredDeferred,
     displayLabels: displayLabels || {},
-    maxParallelCalls: toolConfig.tools?.max_parallel_calls
+    maxParallelCalls: toolConfig.tools?.max_parallel_calls,
+    activeDeferredNames: session.activatedToolNames,
+    onSchemasActivated: (activated) => {
+      const nextNames = [
+        ...(Array.isArray(session.activatedToolNames) ? session.activatedToolNames : []),
+        ...activated.map((definition) => String(definition?.function?.name || '').trim()),
+      ].filter(Boolean);
+      session.activatedToolNames = [...new Set(nextNames)];
+      if (persistSession) scheduleSessionSave();
+    },
   });
   let loopResult;
   try {
@@ -6447,6 +6447,20 @@ async function askModel({
               if (Number.isFinite(configured) && configured > 0) return Math.floor(configured);
               return config.sdk?.provider === 'anthropic' ? 16384 : undefined;
             })(),
+            onPayloadPrepared: config.context?.prompt_request_audit === true ? (payload) => {
+              const { audit, snapshot } = buildPromptRequestAudit(
+                payload,
+                session.promptRequestSnapshot,
+                { requestPurpose: persistSession ? 'main' : initialMessagesOverride ? 'fork' : 'auxiliary' },
+              );
+              session.promptRequestSnapshot = snapshot;
+              if (persistSession) scheduleSessionSave();
+              wrappedAgentEvent({
+                type: 'prompt:request_audit',
+                summary: `${audit.firstChangedSection}: ${audit.changeReason}`,
+                details: audit,
+              });
+            } : undefined,
             signal,
             onTextDelta: (delta) => {
               tracker.noteTextDelta(delta);
@@ -9467,16 +9481,16 @@ export async function createChatRuntime({
   };
 
   const executeSubmissionTurn = async (line, onAgentEvent, options = {}) => {
+    const endMemoryActivity = beginSessionMemoryActivity(currentSession.id);
     activeTurnCount += 1;
     try {
     // 每次提交创建新的 AbortController，替代旧的
     activeAbortController = new AbortController();
     const { signal } = activeAbortController;
-    const codingRouteEnabled = normalizeExecutionMode(executionMode) === 'plan';
     const inputText = String(line || '');
     const activeReplySystemPrompt = await buildActiveSystemPrompt({
-      includeSkillIndex: !codingRouteEnabled,
-      includeMemoryGuide: !codingRouteEnabled,
+      includeSkillIndex: true,
+      includeMemoryGuide: true,
       userQuery: inputText,
     });
     const memoryInject = turnMemorySnapshot?.inject || null;
@@ -9529,38 +9543,6 @@ export async function createChatRuntime({
         .map((name) => String(name || '').trim())
         .filter(Boolean)
     );
-    const maybeAutoDreamFromRuntime = async () => {
-      const threshold = Number(config?.memory?.auto_dream_threshold ?? 10);
-      if (!(threshold > 0)) return null;
-      let entries = [];
-      try {
-        entries = await listInbox();
-      } catch {
-        return null;
-      }
-      if (entries.length < threshold) return null;
-      if (onAgentEvent) onAgentEvent({ type: 'dream:auto', message: 'inbox threshold reached' });
-      try {
-        const report = await runDreamConsolidation({
-          dryRun: false,
-          workspaceRoot: root,
-          config,
-          writeAudit: true
-        });
-        if (onAgentEvent) {
-          onAgentEvent({ type: 'dream:complete', report });
-        }
-        return report;
-      } catch (error) {
-        if (onAgentEvent) {
-          onAgentEvent({
-            type: 'dream:complete',
-            report: { ok: false, error: String(error?.message || error || 'unknown dream error') }
-          });
-        }
-        return null;
-      }
-    };
     const approvePendingSpec = async ({ executeImmediately = false, saveOnly = false } = {}) => {
       if (!hasPendingSpecApproval(currentSession)) {
         return { type: 'system', text: 'No pending spec approval.' };
@@ -9869,48 +9851,10 @@ export async function createChatRuntime({
       return { type: 'assistant', text: result.text, aborted: !!result.aborted };
     }
     const expandedText = await expandFileMentions(inputText, root);
-    const autoRoute = classifyAutoRoute(expandedText);
     const isCodingMode = normalizeExecutionMode(executionMode) === 'plan';
     const memoryRoute = classifyMemoryRoute(expandedText);
-    const routingRuntimeState = isCodingMode
-      ? buildRuntimeStateSnapshot({
-          currentSession,
-          config,
-          model,
-          executionMode,
-          extraSession: null,
-          workspaceRoot: root,
-        })
-      : null;
-    const contextUsage = routingRuntimeState
-      ? {
-          estimated_tokens: routingRuntimeState.currentContextTokens,
-          max_tokens: routingRuntimeState.maxContextTokens,
-          usage_pct: routingRuntimeState.contextUsagePct,
-        }
-      : {};
-    const toolTrace = isCodingMode ? buildPreviousTurnToolTrace(currentSession) : {};
-    const useSemanticJudge = isCodingMode;
-    const codingRoutePromise = (async () => {
-      const codingSkillIndexPrompt = useSemanticJudge ? await getSkillIndexPrompt() : '';
-      return {
-        codingSkillIndexPrompt,
-        codingRoute: await evaluateCodingRouteGraph({
-          executionMode: normalizeExecutionMode(executionMode),
-          text: expandedText,
-          autoRoute,
-          memoryRoute,
-          skillIndexPrompt: codingSkillIndexPrompt,
-          contextUsage,
-          sensitive: isSensitiveMemoryContent(expandedText),
-          judge: useSemanticJudge
-            ? (request) => judgeCodingRouteNodes({ request, config, model, signal })
-            : null,
-          toolTrace,
-          towerActive: Boolean(towerState),
-        }),
-      };
-    })();
+    const towerActive = Boolean(normalizeTowerState(towerState));
+    const codingPolicy = createCodingTurnPolicy({ text: expandedText, towerActive });
 
     // Refresh workspace + package profiles every turn so installs/toggles take
     // effect without restarting the runtime. SessionStart only re-fires for
@@ -9972,40 +9916,6 @@ export async function createChatRuntime({
       ...(Array.isArray(skillHooksSession.sessionStartContexts) ? skillHooksSession.sessionStartContexts : []),
       ...formatHookContextLines(userPromptHookResult, 'UserPromptSubmit'),
     ];
-    const { codingSkillIndexPrompt, codingRoute } = await codingRoutePromise;
-    if (codingRoute.active) {
-      onAgentEvent?.({
-        type: 'routing:graph',
-        startedAt: new Date().toISOString(),
-        graphVersion: codingRoute.graph_version,
-        path: codingRoute.path,
-        source: codingRoute.source,
-        delegationMode: codingRoute.delegation_mode,
-        decisions: codingRoute.decisions,
-      });
-    }
-    const graphSelectedSkillNames = (
-      codingRoute?.decisions?.skills?.selected_names || []
-    ).filter((name) => {
-      const skill = commands?.get?.(name);
-      return Boolean(
-        skill
-        && isSkillIndexEligible(skill)
-        && !isSkillModelInvocationDisabled(skill)
-        && isSkillEnabled(config, name, skill, executionMode)
-      );
-    });
-    if (graphSelectedSkillNames.length > 0) {
-      onAgentEvent?.({
-        type: 'skill:auto-selected',
-        names: graphSelectedSkillNames,
-        source: 'coding-route-graph',
-      });
-      await Promise.all(
-        graphSelectedSkillNames.map((skillName) =>
-          armSkillHooksByName(skillName, { onAgentEvent })),
-      );
-    }
     const injectAlwaysSkills = shouldInjectAlwaysSkills(executionMode);
     const alwaysSkills = injectAlwaysSkills
       ? getAlwaysSkillCommands(commands, config, dismissedAlwaysSkills, executionMode)
@@ -10019,33 +9929,20 @@ export async function createChatRuntime({
     const alwaysSkillPrompt = injectAlwaysSkills
       ? buildAlwaysSkillPromptBlock(commands, config, dismissedAlwaysSkills, executionMode, root)
       : '';
-    const routedSkillIndexPrompt = codingRoute?.decisions?.skills?.inject_index
-      ? codingSkillIndexPrompt
-      : '';
-    const routedSelectedSkillPrompt = buildSelectedSkillPromptBlock(
-      commands,
-      graphSelectedSkillNames,
-      config,
-      executionMode,
-      root,
-    );
-    const memoryHint = isCodingMode ? '' : buildMemoryRouteHintBlock(memoryRoute);
-    const towerActive = Boolean(normalizeTowerState(towerState));
-    const codingRouteDecisionBlock = buildCodingRouteDecisionBlock(codingRoute, { towerActive });
+    const memoryHint = buildMemoryRouteHintBlock(memoryRoute);
+    const codingPolicyBlock = isCodingMode ? buildCodingTurnPolicyBlock(codingPolicy) : '';
     // Per-turn routing / skill / hook context belongs in the user turn, not the
     // system prompt, so the system prompt stays a stable, cacheable prefix.
     const turnRoutingContext = [
-      routedSkillIndexPrompt,
-      routedSelectedSkillPrompt,
       alwaysSkillPrompt,
       memoryHint,
-      codingRouteDecisionBlock,
+      codingPolicyBlock,
       ...hookContexts,
     ].filter(Boolean).join('\n\n');
     const codingRouteAllowedTools = isCodingMode
       ? applyTowerParentToolPolicy(
           EXECUTION_MODE_TOOL_POLICY.plan.filter((toolName) => (
-            isCodingRouteToolAllowed(codingRoute, toolName, { towerActive })
+            isCodingTurnToolAllowed(codingPolicy, toolName)
           )),
           { towerActive },
         )
@@ -10076,7 +9973,6 @@ export async function createChatRuntime({
       workspaceRoot: root,
       selectedSkillNames: [
         ...(Array.isArray(options?.selectedSkillNames) ? options.selectedSkillNames : []),
-        ...graphSelectedSkillNames,
       ],
       skillHooksSession,
       onSkillLoaded: (skillName) => armSkillHooksByName(skillName, { onAgentEvent }),
@@ -10094,6 +9990,10 @@ export async function createChatRuntime({
     return { type: 'assistant', text: result.text, aborted: !!result.aborted };
     } finally {
       activeTurnCount -= 1;
+      endMemoryActivity();
+      if (config?.memory?.background_review?.after_turn !== false) {
+        scheduleSessionMemoryReview({ sessionId: currentSession.id, config });
+      }
       if (!towerWakeExternalSubmit) {
         void towerCoordinator.drainPendingWakes();
       }
@@ -10167,6 +10067,8 @@ export async function createChatRuntime({
     .sort((a, b) => a.name.localeCompare(b.name));
 
   const submitMessage = async (submission, onAgentEvent) => {
+    const endMemoryInput = beginSessionMemoryActivity(currentSession.id);
+    try {
     let normalized = normalizeChatSubmission(submission);
     const displayText = normalized.text;
     await reloadCommandsAndSkills();
@@ -10216,6 +10118,7 @@ export async function createChatRuntime({
       scheduleSessionMemoryReview({ sessionId: currentSession.id, config });
     }
     return result;
+    } finally { endMemoryInput(); }
   };
 
   const executeSubmission = async (line, onAgentEvent, options = {}) => (

@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { trimInline as _trimInline, normalizePath } from './string-utils.js';
+import { trimInline as _trimInline } from './string-utils.js';
 import { captureToInbox, listInbox } from './memory-store.js';
 import { createExperienceTracker } from './memory-experience-tracker.js';
 import { retrieveMemories, renderRecoveryMemory, buildFailureMemoryQuery, compactMemoryHit, budgetRecoveryMemoryItems } from './memory-retriever.js';
@@ -577,117 +577,6 @@ function shouldAskForConcreteFinalAnswer(text, messages = []) {
   return isGenericCompletionText(normalized);
 }
 
-function isBroadRepositoryAnalysisTask(text) {
-  const normalized = String(text || '').trim().toLowerCase();
-  if (!normalized) return false;
-  return (
-    /optimi|improve|analy[sz]e|audit|review|overview|architecture|codebase|repository|repo/.test(normalized) ||
-    /项目.*优化|项目.*问题|可优化|分析这个项目|看看.*项目|代码库|仓库/.test(String(text || ''))
-  );
-}
-
-function parseProjectIndexSummary(text) {
-  const sourceRoots = [];
-  const entryCandidates = [];
-  const candidateFiles = [];
-  for (const line of String(text || '').split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (trimmed.startsWith('source_roots:')) {
-      sourceRoots.push(
-        ...String(trimmed.slice('source_roots:'.length))
-          .split(',')
-          .map((value) => value.trim())
-          .filter(Boolean)
-      );
-    } else if (trimmed.startsWith('entry_candidates:')) {
-      entryCandidates.push(
-        ...String(trimmed.slice('entry_candidates:'.length))
-          .split(',')
-          .map((value) => value.trim())
-          .filter(Boolean)
-      );
-    } else if (trimmed.startsWith('- ')) {
-      const match = trimmed.match(/^- ([^ ]+)/);
-      if (match?.[1]) candidateFiles.push(match[1].trim());
-    }
-  }
-  return { sourceRoots, entryCandidates, candidateFiles };
-}
-
-function createAnalysisGuardState(userPrompt) {
-  return {
-    active: isBroadRepositoryAnalysisTask(userPrompt),
-    indexQueried: false,
-    sourceRoots: new Set(),
-    entryCandidates: new Set(),
-    candidateFiles: new Set(),
-    relevantSourceReads: new Set(),
-    blockedExplorations: 0
-  };
-}
-
-function topLevelPath(value) {
-  const normalized = normalizePath(value).trim();
-  return normalized.split('/')[0] || '';
-}
-
-function isRelevantSourcePath(filePath, state) {
-  const normalized = normalizePath(filePath).trim();
-  if (!normalized) return false;
-  if (state.candidateFiles.has(normalized) || state.entryCandidates.has(normalized)) return true;
-  for (const root of state.sourceRoots) {
-    if (normalized === root || normalized.startsWith(`${root}/`)) return true;
-  }
-  return false;
-}
-
-function blockedExplorationReason(toolName, args, state) {
-  if (!state.active) return '';
-
-  // Always note when query_project_index is used, but never force it
-  if (toolName === 'query_project_index') return '';
-
-  const target = normalizePath(String(args?.path || args?.pattern || args?.query || '')).trim();
-  const top = topLevelPath(target);
-  if (!top) return '';
-
-  if (['skills', 'souls', 'templates', '.codemini', '.codemini-global'].includes(top)) {
-    return `Skip ${top}/ for broad repository analysis unless the user explicitly asks for it. Inspect relevant source files first.`;
-  }
-  return '';
-}
-
-function noteAnalysisEvidence(state, toolName, args, toolResult) {
-  if (!state.active) return;
-  if (toolName === 'query_project_index') {
-    state.indexQueried = true;
-    const summary = parseProjectIndexSummary(JSON.stringify(toolResult));
-    for (const root of summary.sourceRoots) state.sourceRoots.add(root);
-    for (const entry of summary.entryCandidates) state.entryCandidates.add(entry);
-    for (const file of summary.candidateFiles) state.candidateFiles.add(file);
-    const projectMap = toolResult?.project_map || {};
-    for (const root of projectMap.source_roots || []) state.sourceRoots.add(String(root));
-    for (const entry of projectMap.entry_candidates || []) state.entryCandidates.add(String(entry));
-    for (const match of toolResult?.matches || []) {
-      if (match?.file) state.candidateFiles.add(String(match.file));
-    }
-    return;
-  }
-
-  if (toolName === 'read') {
-    const filePath = String(toolResult?.path || args?.path || '').split(':')[0];
-    if (isRelevantSourcePath(filePath, state)) {
-      state.relevantSourceReads.add(filePath);
-    }
-  }
-}
-
-function needsMoreAnalysisEvidence(state) {
-  if (!state.active) return false;
-  if (!state.indexQueried) return true;
-  return state.relevantSourceReads.size < 2;
-}
-
 function normalizeToolCallName(name) {
   return String(name || '').trim();
 }
@@ -780,12 +669,25 @@ export async function runAgentLoop({
   if (userPrompt) {
     messages.push({ role: 'user', content: userPrompt });
   }
+  const appendModelContextMessage = (content, {
+    source = 'runtime',
+    reason = '',
+  } = {}) => {
+    const message = {
+      role: 'user',
+      content: String(content || ''),
+      model_context: true,
+      model_context_source: source,
+      ...(reason ? { model_context_reason: reason } : {}),
+    };
+    messages.push(message);
+    onEvent?.({ type: 'model:context', message });
+    return message;
+  };
 
   let finalText = '';
   let lastAssistantText = '';
   let pendingSummaryNudges = 0;
-  let toolBatchesSinceTaskUpdate = 0;
-  const analysisGuard = createAnalysisGuardState(userPrompt);
   const alwaysAllowSet = new Set([
     ...MEMORY_ALWAYS_ALLOW_TOOLS,
     ...STAGED_WRITE_ALWAYS_ALLOW_TOOLS,
@@ -824,9 +726,9 @@ export async function runAgentLoop({
     if (!force && lastAutoDreamCheckStep > 0 && normalizedStep - lastAutoDreamCheckStep < interval) return;
     if (force && lastAutoDreamCheckStep === normalizedStep) return;
     lastAutoDreamCheckStep = normalizedStep;
+    if (!toolRuntime.has('dream_consolidate') || config?.memory?.enabled === false) return;
     const autoDreamResult = await checkAutoDreamThreshold(config);
     if (!autoDreamResult) return;
-    if (!toolRuntime.has('dream_consolidate')) return;
     if (onEvent) onEvent({ type: 'dream:auto', message: 'inbox threshold reached' });
     try {
       const report = await toolRuntime.execute('dream_consolidate', {}, {
@@ -944,33 +846,22 @@ export async function runAgentLoop({
     }
 
     if (toolCalls.length === 0) {
-      if (!skipAnalysisNudge && needsMoreAnalysisEvidence(analysisGuard) && pendingSummaryNudges < 2) {
-        pendingSummaryNudges += 1;
-        messages.push({
-          role: 'user',
-          content:
-            'You have not inspected enough relevant source files yet. Query the project index if needed, then inspect the next relevant source files before concluding. Do not stop after unrelated directories, tests, skills, souls, or templates.'
-        });
-        emitStepEnd('nudge');
-        continue;
-      }
       if (!skipAnalysisNudge && shouldAskForConcreteFinalAnswer(assistantText, messages.slice(0, -1)) && pendingSummaryNudges < 2) {
         pendingSummaryNudges += 1;
-        messages.push({
-          role: 'user',
-          content:
-            'You have already inspected tool results. Before stopping, check whether the task is actually complete. If it is, provide a concise final answer with specific findings or concrete next steps. If it is not, continue with the next tool call.'
-        });
+        appendModelContextMessage(
+          'You have already inspected tool results. Before stopping, check whether the task is actually complete. If it is, provide a concise final answer with specific findings or concrete next steps. If it is not, continue with the next tool call.',
+          { reason: 'completion-check-nudge' },
+        );
         emitStepEnd('nudge');
         continue;
       }
       finalText = assistantText;
       const stopResult = await fireStopHooks(assistantText);
       if (stopResult?.denied) {
-        messages.push({
-          role: 'user',
-          content: stopResult.reason || 'A Stop hook requires more work before this turn can finish.'
-        });
+        appendModelContextMessage(
+          stopResult.reason || 'A Stop hook requires more work before this turn can finish.',
+          { source: 'hook', reason: 'stop-hook' },
+        );
         emitStepEnd('stop_hook');
         continue;
       }
@@ -978,7 +869,7 @@ export async function runAgentLoop({
         const sealNudge = await shouldContinueAfterText(assistantText);
         const content = typeof sealNudge === 'string' ? sealNudge.trim() : String(sealNudge?.content || '').trim();
         if (content) {
-          messages.push({ role: 'user', content });
+          appendModelContextMessage(content, { reason: 'continue-after-text' });
           emitStepEnd('nudge');
           continue;
         }
@@ -1336,24 +1227,6 @@ export async function runAgentLoop({
         };
       }
 
-      const blockedReason = blockedExplorationReason(toolName, effectiveArgs, analysisGuard);
-      if (blockedReason) {
-        analysisGuard.blockedExplorations += 1;
-        const content = clipToolResult({ error: blockedReason }, toolResultMaxChars);
-        const summary = trimInline(blockedReason, 120);
-        if (onEvent) {
-          onEvent({ type: 'tool:error', name: toolName, displayName, id: call.id, arguments: effectiveArgs, durationMs: 0, summary });
-        }
-        return {
-          callId: call.id,
-          content,
-          error: true,
-          durationMs: 0,
-          summary,
-          status: 'error'
-        };
-      }
-
       // PreToolUse must run (and appear in the UI) before tool:start.
       let preToolContexts = [];
       if (skillHooksSession) {
@@ -1680,7 +1553,6 @@ export async function runAgentLoop({
           onEvent
         });
       }
-      noteAnalysisEvidence(analysisGuard, toolName, effectiveArgs, toolResult);
 
       // A loaded deferred schema becomes visible on the next model response.
       if (toolName === 'tool_search' && toolResult && Array.isArray(toolResult.schemas)) {
@@ -1767,31 +1639,6 @@ export async function runAgentLoop({
       });
       if (onEvent) {
         onEvent({ type: 'tool:result', name: toolName, displayName, id: call.id, arguments: args, content: entry.content });
-      }
-    }
-
-    const calledTasks = callsWithMeta.some(({ toolName }) =>
-      ["tasks", "update_todos"].includes(String(toolName || "").toLowerCase()),
-    );
-    if (calledTasks) {
-      toolBatchesSinceTaskUpdate = 0;
-    } else {
-      const completedWork = callsWithMeta.some(({ call }) => {
-        const entry = resultEntries.get(call.id);
-        return entry && !entry.blocked && !entry.error;
-      });
-      const currentTasks = typeof getTasks === "function" ? getTasks() : [];
-      const hasActiveTask = Array.isArray(currentTasks)
-        && currentTasks.some((task) => task?.status === "in_progress");
-      toolBatchesSinceTaskUpdate = completedWork && hasActiveTask
-        ? toolBatchesSinceTaskUpdate + 1
-        : 0;
-      if (toolBatchesSinceTaskUpdate >= 2) {
-        messages.push({
-          role: "user",
-          content: "Progress checkpoint: update the tasks checklist now to reflect completed work and the next active item, then continue.",
-        });
-        toolBatchesSinceTaskUpdate = 0;
       }
     }
 

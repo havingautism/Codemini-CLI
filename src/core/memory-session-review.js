@@ -1,3 +1,4 @@
+import { createIdleMaintenanceScheduler } from './idle-maintenance.js';
 import { sha256 } from './crypto-utils.js';
 import { createChatCompletion } from './provider/index.js';
 import { listSessions, loadSession } from './session-store.js';
@@ -53,7 +54,8 @@ const REJECTED_DECISION_STATES = new Set(['proposed', 'brainstormed', 'rejected'
 let reviewQueue = Promise.resolve();
 let backlogTimer = null;
 let lastBacklogScheduledAt = 0;
-const scheduledSessions = new Map();
+const idleMaintenance = createIdleMaintenanceScheduler((sessionId, config, isCurrent) => enqueueReview(sessionId, config, isCurrent));
+export const beginSessionMemoryActivity = (sessionId) => idleMaintenance.begin(sessionId);
 
 function visibleConversationMessages(session) {
   return (Array.isArray(session?.messages) ? session.messages : [])
@@ -252,8 +254,15 @@ export async function reviewSessionMemory({ sessionId, config }) {
   }
 }
 
-function enqueueReview(sessionId, config) {
-  const run = reviewQueue.then(() => reviewSessionMemory({ sessionId, config }));
+function enqueueReview(sessionId, config, isCurrent = () => true) {
+  const run = reviewQueue.then(() => {
+    if (!isCurrent()) return { skipped: true, reason: 'superseded' };
+    if (!idleMaintenance.isIdle(sessionId, 30000)) {
+      scheduleSessionMemoryReview({ sessionId, config });
+      return { skipped: true, reason: 'session-active' };
+    }
+    return reviewSessionMemory({ sessionId, config });
+  });
   reviewQueue = run.catch(() => {});
   return run;
 }
@@ -264,15 +273,9 @@ export function scheduleSessionMemoryReview({ sessionId, config, delayMs } = {})
     config?.memory?.writeback?.enabled === false ||
     config?.memory?.background_review?.enabled === false
   ) return false;
-  const delay = Math.max(0, Number(delayMs ?? config?.memory?.writeback?.idle_delay_ms ?? config?.memory?.background_review?.idle_delay_ms ?? 1500));
-  const existing = scheduledSessions.get(sessionId);
-  if (existing) clearTimeout(existing);
-  const timer = setTimeout(() => {
-    scheduledSessions.delete(sessionId);
-    void enqueueReview(sessionId, config).catch(() => {});
-  }, delay);
-  timer.unref?.();
-  scheduledSessions.set(sessionId, timer);
+  const configuredDelay = Number(delayMs ?? config?.memory?.writeback?.idle_delay_ms ?? config?.memory?.background_review?.idle_delay_ms ?? 30000);
+  const delay = Math.max(30000, Number.isFinite(configuredDelay) ? configuredDelay : 30000);
+  idleMaintenance.schedule(sessionId, config, delay);
   return true;
 }
 
@@ -293,7 +296,7 @@ export function scheduleMemoryReviewBacklog({ config, currentSessionId } = {}) {
       const minIdleMs = Math.max(0, Number(config?.memory?.background_review?.min_session_idle_ms || 30000));
       const sessions = await listSessions(Math.max(100, limit * 20), { includeEmpty: false });
       const eligible = sessions
-        .filter((session) => session.id !== currentSessionId)
+        .filter((session) => session.id !== currentSessionId && idleMaintenance.isIdle(session.id, minIdleMs))
         .filter((session) => !session.updatedAt || Date.now() - Date.parse(session.updatedAt) >= minIdleMs);
       let attempted = 0;
       for (const session of eligible) {

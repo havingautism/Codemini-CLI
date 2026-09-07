@@ -779,7 +779,7 @@ function SkillDetailPane({
             ) : null}
             <MarkdownPreview
               value={content}
-              className="skill-md-preview min-h-0 flex-1"
+              className="codemini-resource-detail-prose skill-md-preview min-h-0 flex-1"
             />
           </div>
         )}

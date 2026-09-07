@@ -107,6 +107,9 @@ function sanitizeUsage(usage) {
   copyNumber('cacheWriteInputTokens');
   copyNumber('reasoningOutputTokens');
   copyNumber('requests');
+  if (['reported', 'unreported', 'partial'].includes(usage?.cacheUsageStatus)) {
+    out.cacheUsageStatus = usage.cacheUsageStatus;
+  }
   if (Array.isArray(usage.raw) && usage.raw.length > 0) {
     out.raw = usage.raw.filter((item) => item && typeof item === 'object').map((item) => ({ ...item }));
   } else if (usage.raw && typeof usage.raw === 'object') {
@@ -190,7 +193,7 @@ export function resolveTitleUserText(source = {}) {
 
 export function deriveSessionTitle(messages = []) {
   const firstUser = Array.isArray(messages)
-    ? messages.find((msg) => msg?.role === 'user' && normalizeWhitespace(msg?.content))
+    ? messages.find((msg) => msg?.role === 'user' && msg?.model_context !== true && normalizeWhitespace(msg?.content))
     : null;
   const text = stripMarkdown(resolveTitleUserText(firstUser || {}));
   if (!text) return `💬 ${DEFAULT_SESSION_TITLE}`;
@@ -209,7 +212,7 @@ export function resolveLatestTitleExchange(messages = []) {
     if (!assistantText.trim()) continue;
     for (let userIndex = assistantIndex - 1; userIndex >= 0; userIndex--) {
       const user = list[userIndex];
-      if (user?.role !== 'user') continue;
+      if (user?.role !== 'user' || user?.model_context === true) continue;
       const userText = resolveTitleUserText(user);
       if (userText) return { userText, assistantText: assistantText.trim() };
     }
@@ -230,6 +233,21 @@ function sanitizeMessage(msg) {
 
   if (typeof msg?.model_content === 'string' && msg.model_content) out.model_content = msg.model_content;
   if (msg?.model_content_scope === 'current_turn') out.model_content_scope = 'current_turn';
+  if (Array.isArray(msg?.model_images) && msg.model_images.length > 0) {
+    out.model_images = msg.model_images
+      .filter((image) => image && typeof image === 'object' && typeof image.data === 'string' && image.data)
+      .map((image) => ({
+        mime: String(image.mime || 'image/jpeg'),
+        data: image.data,
+      }));
+  }
+  if (msg?.model_context === true) out.model_context = true;
+  if (typeof msg?.model_context_source === 'string' && msg.model_context_source.trim()) {
+    out.model_context_source = msg.model_context_source.trim();
+  }
+  if (typeof msg?.model_context_reason === 'string' && msg.model_context_reason.trim()) {
+    out.model_context_reason = msg.model_context_reason.trim();
+  }
   if (msg?.model_visible === false) out.model_visible = false;
   if (msg?.local_only === true) out.local_only = true;
   if (typeof msg?.response_status === 'string' && msg.response_status.trim()) {
@@ -366,6 +384,24 @@ function sanitizeSession(session, fallbackId = '') {
   }
   if (typeof session?.memoryBootstrapSnapshot === 'string') {
     out.memoryBootstrapSnapshot = session.memoryBootstrapSnapshot;
+  }
+  if (Array.isArray(session?.activatedToolNames)) {
+    out.activatedToolNames = [...new Set(
+      session.activatedToolNames.map((name) => String(name || '').trim()).filter(Boolean),
+    )];
+  }
+  if (session?.promptRequestSnapshot && typeof session.promptRequestSnapshot === 'object') {
+    const snapshot = session.promptRequestSnapshot;
+    const messageHashes = Array.isArray(snapshot.messageHashes)
+      ? snapshot.messageHashes.map((hash) => String(hash || '')).filter(Boolean)
+      : [];
+    out.promptRequestSnapshot = {
+      promptRevision: Math.max(1, Math.round(Number(snapshot.promptRevision || 1))),
+      systemHash: String(snapshot.systemHash || ''),
+      toolsHash: String(snapshot.toolsHash || ''),
+      toolCount: Math.max(0, Math.round(Number(snapshot.toolCount || 0))),
+      messageHashes,
+    };
   }
 
   const tower = normalizeTowerState(session?.tower);
@@ -725,6 +761,17 @@ export async function createContinuationSession(source, { messages = [], compact
   }
   if (typeof source?.memoryBootstrapSnapshot === 'string') {
     created.memoryBootstrapSnapshot = source.memoryBootstrapSnapshot;
+  }
+  if (Array.isArray(source?.activatedToolNames)) {
+    created.activatedToolNames = [...source.activatedToolNames];
+  }
+  if (source?.promptRequestSnapshot && typeof source.promptRequestSnapshot === 'object') {
+    created.promptRequestSnapshot = {
+      ...source.promptRequestSnapshot,
+      messageHashes: Array.isArray(source.promptRequestSnapshot.messageHashes)
+        ? [...source.promptRequestSnapshot.messageHashes]
+        : [],
+    };
   }
   const tower = normalizeTowerState(source?.tower);
   if (tower) created.tower = tower;

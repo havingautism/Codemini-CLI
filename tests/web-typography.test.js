@@ -44,6 +44,22 @@ test('inline terms use the UI face while real code blocks remain monospaced', ()
   );
 });
 
+test('resource library detail prose shares one readable UI type scale', async () => {
+  const components = await Promise.all([
+    fs.promises.readFile(path.join(root, 'codemini-web', 'client', 'src', 'components', 'MemoryDialog.jsx'), 'utf8'),
+    fs.promises.readFile(path.join(root, 'codemini-web', 'client', 'src', 'components', 'SkillPanel.jsx'), 'utf8'),
+    fs.promises.readFile(path.join(root, 'codemini-web', 'client', 'src', 'components', 'SoulPanel.jsx'), 'utf8'),
+  ]);
+
+  assert.match(
+    style,
+    /\.codemini-resource-detail-prose,\s*\.codemini-resource-detail-prose \.wmde-markdown\s*\{[^}]*font-family:\s*var\(--font-sans\);[^}]*font-size:\s*14px;[^}]*line-height:\s*1\.65;/s,
+  );
+  for (const component of components) {
+    assert.match(component, /codemini-resource-detail-prose/);
+  }
+});
+
 test('UI locale updates the document language for typography and accessibility', () => {
   assert.match(i18n, /document\.documentElement\.lang\s*=\s*locale === 'zh' \? 'zh-CN' : 'en'/);
   assert.match(i18n, /syncDocumentLocale\(current\)/);

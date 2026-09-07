@@ -3289,7 +3289,12 @@ export function AppProvider({ children }) {
         ? { text: input, skillNames: [], attachmentIds: [], dismissedAlwaysSkills: [] }
         : input || {};
       const line = String(message.text || "");
-      if (!line.trim() && !(message.attachmentIds || []).length && !(message.skillNames || []).length) return;
+      if (
+        !line.trim() &&
+        !(message.attachmentIds || []).length &&
+        !(message.skillNames || []).length &&
+        !(message.fileReferences || []).length
+      ) return;
         const selectedSkillBadges = [
           ...new Set(
             (Array.isArray(message.skillNames) ? message.skillNames : [])
@@ -3306,6 +3311,9 @@ export function AppProvider({ children }) {
               role: "you",
               text: line,
               skillBadges: selectedSkillBadges,
+              fileReferences: Array.isArray(message.fileReferences)
+                ? message.fileReferences
+                : [],
               attachments: Array.isArray(options.attachments)
                 ? options.attachments
                 : Array.isArray(message.attachments)
@@ -3377,6 +3385,9 @@ export function AppProvider({ children }) {
               : [],
             dismissedAlwaysSkills: Array.isArray(message.dismissedAlwaysSkills)
               ? message.dismissedAlwaysSkills
+              : [],
+            fileReferences: Array.isArray(message.fileReferences)
+              ? message.fileReferences
               : [],
             attachments: pickScrapbookAttachments(
               Array.isArray(options.attachments)
@@ -3454,7 +3465,12 @@ export function AppProvider({ children }) {
           ? { text: input, skillNames: [], attachmentIds: [], dismissedAlwaysSkills: [] }
           : input || {};
         const line = String(message.text || "");
-        if (!line.trim() && !(message.attachmentIds || []).length && !(message.skillNames || []).length) return;
+        if (
+          !line.trim() &&
+          !(message.attachmentIds || []).length &&
+          !(message.skillNames || []).length &&
+          !(message.fileReferences || []).length
+        ) return;
         const queued = options.__queued === true;
         const priority = options.priority === true || message.priority === true;
         const sessionBusy =

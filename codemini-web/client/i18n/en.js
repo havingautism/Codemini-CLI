@@ -310,6 +310,7 @@ export const en = {
   processedDetails: "{{thoughts}} thoughts, {{tools}} tools",
   usageTokens: "tokens",
   usageCache: "cache",
+  usageNotReported: "not reported",
   usageInput: "input",
   usageOutput: "output",
   usageTotal: "total",

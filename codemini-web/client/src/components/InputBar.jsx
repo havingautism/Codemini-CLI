@@ -1188,6 +1188,11 @@ export function InputBar({
           {
             text: fallbackText,
             skillNames: selectedSkillNames,
+            fileReferences: referencedFiles.map(({ path, name, dir }) => ({
+              path,
+              name,
+              dir,
+            })),
             attachmentIds: attachments.map((item) => item.id).filter(Boolean),
             attachments: scrapbookContext
               ? [...attachments, scrapbookContext.attachment]

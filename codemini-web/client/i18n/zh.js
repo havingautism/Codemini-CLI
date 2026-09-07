@@ -306,6 +306,7 @@ export const zh = {
   processedDetails: "{{thoughts}} 段思考，{{tools}} 个工具",
   usageTokens: "tokens",
   usageCache: "缓存",
+  usageNotReported: "未报告",
   usageInput: "输入",
   usageOutput: "输出",
   usageTotal: "总计",

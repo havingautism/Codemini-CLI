@@ -368,11 +368,13 @@ export async function createChatCompletion({
   tools,
   toolChoice,
   payloadExtras,
+  onPayloadPrepared,
   reasoningEffort,
   timeoutMs = 1800000,
   maxRetries = 2
 }) {
   const payload = buildPayload({ model, temperature, messages, tools, toolChoice, payloadExtras, reasoningEffort });
+  onPayloadPrepared?.(payload);
   const response = await fetchWithRetry(buildChatCompletionsUrl(baseUrl), {
     method: 'POST',
     headers: createHeaders(apiKey),
@@ -427,6 +429,7 @@ export async function createChatCompletionStream({
   tools,
   toolChoice,
   payloadExtras,
+  onPayloadPrepared,
   reasoningEffort,
   onTextDelta,
   onReasoningDelta,
@@ -452,6 +455,7 @@ export async function createChatCompletionStream({
   }
   const url = buildChatCompletionsUrl(baseUrl);
   const payload = buildPayload({ model, temperature, messages, tools, stream: true, toolChoice, payloadExtras, reasoningEffort });
+  onPayloadPrepared?.(payload);
   const buildRequest = (bodyPayload) => ({
     method: 'POST',
     headers: createHeaders(apiKey),

@@ -226,6 +226,7 @@ test('parent turn usage accumulator merges parallel subagents exactly once', () 
     cachedInputTokens: 40,
     cacheMissInputTokens: 0,
     cacheWriteInputTokens: 0,
+    cacheUsageStatus: 'reported',
     reasoningOutputTokens: 0,
     requests: 2,
     raw: [],

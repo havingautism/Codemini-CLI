@@ -131,6 +131,13 @@
   line-height: 1.75;
 }
 
+.codemini-resource-detail-prose,
+.codemini-resource-detail-prose .wmde-markdown {
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.65;
+}
+
 .codemini-md-preview .wmde-markdown {
   min-height: 100%;
   padding: 0;
@@ -2349,7 +2356,7 @@ samp {
   --scrollbar-size: 6px;
   --scrollbar-thumb: color-mix(in srgb, var(--text-muted) 55%, transparent);
   --scrollbar-thumb-hover: color-mix(in srgb, var(--text-muted) 75%, transparent);
-  --scrollbar-track: color-mix(in srgb, var(--text-muted) 16%, var(--bg-secondary));
+  --scrollbar-track: transparent;
 }
 
 * {
@@ -2382,7 +2389,7 @@ samp {
 /* Chat horizontal scroll (native fallback for markdown tables / code blocks) */
 .codemini-embed-banner-scroll {
   --scrollbar-thumb: color-mix(in srgb, var(--text-muted) 68%, transparent);
-  --scrollbar-track: color-mix(in srgb, var(--text-muted) 30%, var(--bg-secondary));
+  --scrollbar-track: transparent;
   overflow-x: auto;
   overflow-y: hidden;
   overscroll-behavior-x: contain;
@@ -2411,7 +2418,7 @@ samp {
 .codemini-md-preview .wmde-markdown pre>code::-webkit-scrollbar-track,
 .codemini-md-editor .wmde-markdown pre>code::-webkit-scrollbar-track {
   border-radius: 4px;
-  background: var(--scrollbar-track, color-mix(in srgb, var(--text-muted) 16%, var(--bg-secondary)));
+  background: var(--scrollbar-track, transparent);
 }
 
 .codemini-embed-banner-scroll::-webkit-scrollbar-thumb,
