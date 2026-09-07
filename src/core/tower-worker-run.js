@@ -9,6 +9,7 @@ import {
   isTowerWorktreeDirty,
 } from './tower-worktree.js';
 import { saveSubAgentHandoff } from './subagent-handoff-store.js';
+import { isTowerCancelSignal } from './tower-cancel.js';
 import { buildTowerWorkerCompletedWake } from './tower-snapshot.js';
 
 function formatPlanStepOutputForDisplay(text = '', maxChars = 6000) {
@@ -59,6 +60,7 @@ export async function runTowerWorkerJob({
   pendingRebaseOnto,
   isTowerSurvey,
   towerDirty: initialTowerDirty,
+  signal,
 } = {}) {
   let childUsage = null;
   let towerDirty = initialTowerDirty;
@@ -86,12 +88,12 @@ export async function runTowerWorkerJob({
       systemPrompt,
       onAgentEvent,
       requestToolApproval,
-      signal: undefined,
+      signal,
       changeTracker: workerChangeTracker,
       backupManager: workerBackupManager,
       parentToolCallId: callId,
       tools: reviewingWorkerId
-        ? [...resolvedTools, 'submit_tower_review']
+        ? [...resolvedTools, 'submit_crew_review']
         : resolvedTools,
       onUsage: (usage) => {
         childUsage = mergeModelUsage(childUsage, usage);
@@ -99,10 +101,11 @@ export async function runTowerWorkerJob({
       projectIsGit: Boolean(config?.runtime?.project_is_git),
       workspaceRoot: workerWorkspaceRoot,
     });
+    const cancelled = isTowerCancelSignal(signal) || Boolean(output?.aborted && isTowerCancelSignal(signal));
     const failed = reviewingWorkerId
-      ? Boolean(output?.hasErrorLine)
-      : subAgentRunFailed(output, null);
-    if (!reviewingWorkerId && workerWorkspaceRoot !== workspaceRoot) {
+      ? Boolean(output?.hasErrorLine || cancelled)
+      : subAgentRunFailed(output, cancelled ? signal : null);
+    if (!cancelled && !reviewingWorkerId && workerWorkspaceRoot !== workspaceRoot) {
       towerDirty = await isTowerWorktreeDirty(workerWorkspaceRoot).catch(() => true);
     }
     const savedHandoff = failed
@@ -117,7 +120,7 @@ export async function runTowerWorkerJob({
           text: output.text,
           artifactPaths: output.artifactPaths,
         }).catch(() => null);
-    if (lockedTowerWorkerId && !reviewingWorkerId) {
+    if (lockedTowerWorkerId && !reviewingWorkerId && !cancelled) {
       if (failed) {
         await patchTowerWorkerRecord(workspaceRoot, lockedTowerWorkerId, {
           runStatus: 'failed',
@@ -135,7 +138,8 @@ export async function runTowerWorkerJob({
       }
     }
     if (
-      !failed
+      !cancelled
+      && !failed
       && pendingRebaseOnto
       && lockedTowerWorkerId
       && !reviewingWorkerId
@@ -155,7 +159,7 @@ export async function runTowerWorkerJob({
     let reviewPassed;
     let reviewLoopStopped;
     let reviewRound;
-    if (!failed && reviewingWorkerId && reviewCommit) {
+    if (!cancelled && !failed && reviewingWorkerId && reviewCommit) {
       const verdict = reviewBox.verdict;
       reviewPassed = verdict?.passed === true;
       const loop = nextTowerReviewLoopState(reviewingWorkerRecord, {
@@ -196,7 +200,7 @@ export async function runTowerWorkerJob({
         ])
       : [];
     const completionSummary = trimInline(output.text || '', 200);
-    if (typeof onWake === 'function') {
+    if (!cancelled && typeof onWake === 'function') {
       onWake(buildTowerWorkerCompletedWake({
         workerId: lockedTowerWorkerId,
         reviewOf: reviewingWorkerId,
@@ -211,7 +215,8 @@ export async function runTowerWorkerJob({
       }));
     }
     return {
-      ok: !failed,
+      ok: !failed && !cancelled,
+      cancelled,
       workflowComplete: false,
       name: persona,
       role: persona,
@@ -238,6 +243,7 @@ export async function runTowerWorkerJob({
       }),
     };
   } catch (err) {
+    const cancelled = isTowerCancelSignal(signal) || err?.towerCancel === true || err?.name === 'AbortError';
     emit({
       type: 'plan:step_done',
       toolCallId: callId,
@@ -245,7 +251,7 @@ export async function runTowerWorkerJob({
       total: 1,
       role: persona,
       title,
-      status: 'failed',
+      status: cancelled && isTowerCancelSignal(signal) ? 'cancelled' : 'failed',
       taskId: dependencyTaskId,
       dependsOn: dependencyDependencies,
       summary: String(err?.message || err),
@@ -253,13 +259,13 @@ export async function runTowerWorkerJob({
       model: stepModel,
       ...(childUsage ? { usage: childUsage, usageScope: 'subagent' } : {}),
     });
-    if (lockedTowerWorkerId && !reviewingWorkerId) {
+    if (!isTowerCancelSignal(signal) && lockedTowerWorkerId && !reviewingWorkerId) {
       await patchTowerWorkerRecord(workspaceRoot, lockedTowerWorkerId, {
         runStatus: 'failed',
         runError: String(err?.message || err).slice(0, 400),
       }).catch(() => null);
     }
-    if (typeof onWake === 'function') {
+    if (!isTowerCancelSignal(signal) && typeof onWake === 'function') {
       onWake(buildTowerWorkerCompletedWake({
         workerId: lockedTowerWorkerId,
         reviewOf: reviewingWorkerId,
@@ -269,6 +275,7 @@ export async function runTowerWorkerJob({
     }
     return {
       ok: false,
+      cancelled: isTowerCancelSignal(signal),
       error: String(err?.message || err),
       text: '',
       ...(childUsage ? { usage: childUsage } : {}),

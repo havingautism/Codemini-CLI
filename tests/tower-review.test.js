@@ -158,7 +158,7 @@ test('composeTowerReviewTask names the worker and commit', () => {
   assert.match(text, /alisa/);
   assert.match(text, /abc123/);
   assert.match(text, /notes\.md/);
-  assert.match(text, /submit_tower_review/);
+  assert.match(text, /submit_crew_review/);
   assert.match(text, /diff --git/);
 });
 
@@ -307,7 +307,7 @@ function reviewerVerdict(body, blob, verdict) {
   if (messages.some((message) => message?.role === 'tool')) return sseText('reviewed');
   return sseToolCalls([{
     id: 'call-verdict',
-    name: 'submit_tower_review',
+    name: 'submit_crew_review',
     arguments: JSON.stringify(verdict),
   }]);
 }
@@ -375,9 +375,16 @@ async function withReviewRuntime({ tower = true } = {}, respond, task) {
         let body = null;
         try { body = JSON.parse(raw); } catch { body = null; }
         bodies.push(body);
+        res.on('error', () => {});
         res.writeHead(200, { 'content-type': 'text/event-stream' });
-        const payload = await respond(body, messageBlob(body));
-        res.end(payload || sseText('ok'));
+        try {
+          const payload = await respond(body, messageBlob(body));
+          if (!res.writableEnded) res.end(payload || sseText('ok'));
+        } catch {
+          if (!res.writableEnded) {
+            try { res.end(); } catch { /* connection already closed */ }
+          }
+        }
       });
       await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
       try {
@@ -527,7 +534,7 @@ test('tower reviewer reuses the author worktree, stays off the roster, and recor
   });
 });
 
-test('tower review free text without submit_tower_review does not pass', async () => {
+test('tower review free text without submit_crew_review does not pass', async () => {
   await withReviewRuntime({}, async (body, blob) => {
     if (isParentUserTurn(body, /SPAWN_ALISA/)) {
       return sseToolCalls([{
@@ -752,5 +759,80 @@ test('review with paths is rejected; coding reviewer still runs without a tower 
     assert.equal(String(codingResult?.content || '').includes('REVIEW_TARGET'), false);
     assert.equal(String(codingResult?.content || '').includes('review is only valid'), false);
     assert.equal(await fs.access(getProjectTowerWorktreesDir(dir)).then(() => true, () => false), false);
+  });
+});
+
+test('cancel_worker aborts an in-flight review and keeps the author worktree', async () => {
+  await withReviewRuntime({}, async (body, blob) => {
+    if (isParentUserTurn(body, /SPAWN_ALISA/)) {
+      return sseToolCalls([{
+        id: 'call-spawn',
+        name: 'run_subagent',
+        arguments: JSON.stringify({
+          prompt: 'First shift on notes.md',
+          name: 'Alisa',
+          paths: ['notes.md'],
+        }),
+      }]);
+    }
+    if (isParentUserTurn(body, /REVIEW_ALISA/)) {
+      return sseToolCalls([{
+        id: 'call-review',
+        name: 'run_subagent',
+        arguments: JSON.stringify({
+          prompt: 'Review alisa',
+          role: 'reviewer',
+          review: 'alisa',
+        }),
+      }]);
+    }
+    if (isParentUserTurn(body, /CANCEL_REVIEW/)) {
+      return sseToolCalls([{
+        id: 'call-cancel-review',
+        name: 'cancel_worker',
+        arguments: JSON.stringify({ worker_id: 'alisa' }),
+      }]);
+    }
+    if (isParentUserTurn(body, /REMOVE_ALISA/)) {
+      return sseToolCalls([{
+        id: 'call-cancel-author',
+        name: 'cancel_worker',
+        arguments: JSON.stringify({ worker_id: 'alisa' }),
+      }]);
+    }
+    if (blob.includes('You are reviewing Crew worker')) {
+      await new Promise((resolve) => setTimeout(resolve, 800));
+      const submitted = reviewerVerdict(body, blob, { passed: true, findings: [] });
+      if (submitted) return submitted;
+      return sseText('reviewed');
+    }
+    return sseText('FIRST_SHIFT_BODY');
+  }, async ({ dir, runtime, session }) => {
+    await runtime.submitMessage({ text: 'SPAWN_ALISA' });
+    await waitForWorkerStatus(dir, 'alisa', 'completed');
+    await sealWorkerNotes(dir);
+    await runtime.submitMessage({ text: 'REVIEW_ALISA' });
+    const started = Date.now();
+    while (Date.now() - started < 3000 && runtime.getTowerWorkersInFlight() === 0) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    assert.ok(runtime.getTowerWorkersInFlight() > 0, 'reviewer should be in flight');
+    await runtime.submitMessage({ text: 'CANCEL_REVIEW' });
+    const cancelResult = session.messages.find((message) => message.tool_call_id === 'call-cancel-review');
+    assert.ok(cancelResult, `missing cancel_worker result; ids=${session.messages.map((m) => m.tool_call_id).filter(Boolean).join(',')}`);
+    assert.match(String(cancelResult.content || ''), /in-flight review of "alisa"/);
+    assert.match(String(cancelResult.content || ''), /worktree was kept/);
+    const afterReview = listTowerWorkersFromState(JSON.parse(await fs.readFile(getProjectTowerStatePath(dir), 'utf8')));
+    assert.equal(afterReview.some((item) => item.id === 'alisa'), true);
+    assert.equal(await fs.access(path.join(getProjectTowerWorktreesDir(dir), 'alisa')).then(() => true, () => false), true);
+    assert.equal(runtime.getTowerWorkersInFlight(), 0);
+
+    await runtime.submitMessage({ text: 'REMOVE_ALISA' });
+    const removeResult = session.messages.find((message) => message.tool_call_id === 'call-cancel-author');
+    assert.ok(removeResult, `missing second cancel_worker result; ids=${session.messages.map((m) => m.tool_call_id).filter(Boolean).join(',')}`);
+    assert.match(String(removeResult.content || ''), /Cancelled Crew worker "alisa"/);
+    const afterRemove = listTowerWorkersFromState(JSON.parse(await fs.readFile(getProjectTowerStatePath(dir), 'utf8')));
+    assert.equal(afterRemove.some((item) => item.id === 'alisa'), false);
+    assert.equal(await fs.access(path.join(getProjectTowerWorktreesDir(dir), 'alisa')).then(() => true, () => false), false);
   });
 });

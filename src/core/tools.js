@@ -4209,6 +4209,7 @@ export function getBuiltinTools({
   platform = process.platform,
   towerActive = false,
   onLandWorkers,
+  onCancelWorker,
 }) {
   workspaceRoot = path.resolve(workspaceRoot);
   const isWin = platform === "win32";
@@ -5168,7 +5169,7 @@ export function getBuiltinTools({
       type: "function",
       function: {
         name: commandToolName,
-        description: `${towerActive ? "Tower parent inspect-only: git status/log/diff and other read-only commands. Do not merge, checkout, worktree, or copy into the main checkout; use land_workers. " : ""}${vmSandbox
+        description: `${towerActive ? "Crew parent inspect-only: git status/log/diff and other read-only commands. Do not merge, checkout, worktree, or copy into the main checkout; use land_workers. " : ""}${vmSandbox
           ? platform === "win32"
             ? `Run a compact Bash command inside the Linux microVM sandbox (${sandboxPolicy.mode}) from the project root. If a build or test cannot use Windows-native dependencies because the guest is Linux, retry that exact verification command with sandbox_permissions="danger-full-access" and justification; the escalated command must be Windows PowerShell-compatible and runs on the host only after LLM risk advice and user approval. Do not escalate ordinary code failures, missing dependencies, or timeouts. Use project-relative paths and run_in_background=true only for long-running sandboxed commands. Put command last.`
             : `Run a compact Bash command inside the Linux microVM sandbox (${sandboxPolicy.mode}) from the project root with unrestricted outbound networking. Use project-relative paths. Ordinary Bash commands, including curl, are available; commands with destructive or external side effects may still require approval. On denial, stderr includes [sandbox: ...]; retry with a wider sandbox_permissions plus justification when needed. Use run_in_background=true for long-running commands. Put command last.`
@@ -5433,7 +5434,7 @@ export function getBuiltinTools({
       function: {
         name: "land_workers",
         description:
-          "Merge sealed tower worker branches directly onto the current user branch with git merge --no-ff, then delete those worker branches when everyone on the roster is integrated. Workers still in review stay on their worktrees until they pass. If a worker conflicts on the base tip, resume that worker to rebase onto the returned commit, then review the new commit before landing again. If a review loop stops, resume with a new task or paths, or spawn a new worker; do not keep fixing the same findings. Do not merge or copy files yourself.",
+          "Merge sealed Crew worker branches directly onto the current user branch with git merge --no-ff, then delete those worker branches when everyone on the roster is integrated. Workers still in review stay on their worktrees until they pass. If a worker conflicts on the base tip, resume that worker to rebase onto the returned commit, then review the new commit before landing again. If a review loop stops, resume with a new task or paths, or spawn a new worker; do not keep fixing the same findings. Do not merge or copy files yourself.",
         parameters: {
           type: "object",
           properties: {},
@@ -5442,13 +5443,33 @@ export function getBuiltinTools({
       },
     });
   }
+  if (typeof onCancelWorker === "function") {
+    workflowToolDefinitions.push({
+      type: "function",
+      function: {
+        name: "cancel_worker",
+        description:
+          "Abort a Crew worker or its in-flight reviewer. Cancelling a coder removes its worktree, branch, and roster slot. Cancelling while a review is running only stops that reviewer and keeps the author worktree. Use the worker id from crew_status.",
+        parameters: {
+          type: "object",
+          properties: {
+            worker_id: {
+              type: "string",
+              description: "Roster worker id to cancel (the same id used with resume / review).",
+            },
+          },
+          required: ["worker_id"],
+        },
+      },
+    });
+  }
   if (towerActive || config?.runtime?.tower_session) {
     workflowToolDefinitions.push({
       type: "function",
       function: {
-        name: "tower_status",
+        name: "crew_status",
         description:
-          "Read the latest tower roster and workflow state from disk. Call before dispatching, reviewing, landing, or answering progress when state may have changed since the last message.",
+          "Read the latest Crew roster and workflow state from disk. Call before dispatching, reviewing, landing, or answering progress when state may have changed since the last message.",
         parameters: {
           type: "object",
           properties: {},
@@ -5461,9 +5482,9 @@ export function getBuiltinTools({
     workflowToolDefinitions.push({
       type: "function",
       function: {
-        name: "submit_tower_review",
+        name: "submit_crew_review",
         description:
-          "Submit the tower review verdict. passed true means the current commit may land; passed false requires findings. Call this once before stopping.",
+          "Submit the Crew review verdict. passed true means the current commit may land; passed false requires findings. Call this once before stopping.",
         parameters: {
           type: "object",
           properties: {
@@ -7177,7 +7198,7 @@ export function getBuiltinTools({
       if (towerActive) {
         return {
           ok: false,
-          error: "fork_task is not available in tower mode. Use run_subagent.",
+          error: "fork_task is not available in Crew mode. Use run_subagent.",
         };
       }
       if (typeof onForkTask !== "function") {
@@ -7205,16 +7226,29 @@ export function getBuiltinTools({
       if (typeof onLandWorkers !== "function") {
         return {
           ok: false,
-          error: "land_workers is only available in tower mode.",
+          error: "land_workers is only available in Crew mode.",
         };
       }
       return onLandWorkers();
     },
-    tower_status: async () => {
+    cancel_worker: async (args = {}) => {
+      if (typeof onCancelWorker !== "function") {
+        return {
+          ok: false,
+          error: "cancel_worker is only available in Crew mode.",
+        };
+      }
+      const workerId = String(args?.worker_id || args?.id || args?.resume || "").trim();
+      if (!workerId) {
+        return { ok: false, code: "MISSING_ID", error: "worker_id is required." };
+      }
+      return onCancelWorker({ workerId });
+    },
+    crew_status: async () => {
       if (!towerActive && !config?.runtime?.tower_session) {
         return {
           ok: false,
-          error: "tower_status is only available in tower mode.",
+          error: "crew_status is only available in Crew mode.",
         };
       }
       const projectRoot = resolveTowerProjectRoot(
@@ -7228,7 +7262,8 @@ export function getBuiltinTools({
         : 0;
       return readTowerStatusPayload(projectRoot, { inFlight, pendingWakes });
     },
-    submit_tower_review: async (args = {}) => {
+    tower_status: async (...args) => handlers.crew_status(...args),
+    submit_crew_review: async (args = {}) => {
       const submit = config?.runtime?.onTowerReviewVerdict;
       const verdict = normalizeTowerReviewVerdict(args);
       if (!verdict.ok) return verdict;
@@ -7237,6 +7272,7 @@ export function getBuiltinTools({
       }
       return { ok: true, passed: verdict.passed, findings: verdict.findings };
     },
+    submit_tower_review: async (...args) => handlers.submit_crew_review(...args),
     create_spec: async (args = {}) => {
       if (typeof onCreateSpec !== "function") {
         return {
@@ -7854,8 +7890,28 @@ export function getBuiltinTools({
       return JSON.stringify(result);
     },
 
+    cancel_worker(result) {
+      if (!result || typeof result !== "object") return String(result);
+      if (result.error) return String(result.error);
+      if (result.message) return String(result.message);
+      return JSON.stringify(result);
+    },
+
+    crew_status(result) {
+      return formatTowerStatusSummary(result);
+    },
+
     tower_status(result) {
       return formatTowerStatusSummary(result);
+    },
+
+    submit_crew_review(result) {
+      if (!result || typeof result !== "object") return String(result);
+      if (result.error) return String(result.error);
+      if (result.passed === true) return "Review passed.";
+      const findings = Array.isArray(result.findings) ? result.findings.filter(Boolean) : [];
+      if (findings.length) return `Review did not pass:\n${findings.map((item) => `- ${item}`).join("\n")}`;
+      return "Review did not pass.";
     },
 
     submit_tower_review(result) {

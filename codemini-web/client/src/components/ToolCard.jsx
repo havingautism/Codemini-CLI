@@ -53,6 +53,7 @@ const TOOL_ICONS = {
   apply_patch: PencilLine,
   create_plan: ListChecks,
   run_subagent: ListChecks,
+  crew_status: ListChecks,
   tower_status: ListChecks,
   land_workers: ListChecks,
   fork_task: ListChecks,

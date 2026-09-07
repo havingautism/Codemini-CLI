@@ -1712,7 +1712,7 @@ export class RuntimeBridge {
     if (result?.ok) this.#publish({ type: 'tower:changed', ...this.getState() });
     return result && typeof result === 'object'
       ? { ...result, error: result.ok === false }
-      : { ok: false, error: true, message: 'Tower mode is unavailable' };
+      : { ok: false, error: true, message: 'Crew mode is unavailable' };
   }
 
   async setApprovalMode(mode) {

@@ -273,7 +273,7 @@ export async function landTowerWorkers({
   const root = path.resolve(cwd);
   const baseBranch = String(base || '').trim();
   if (!baseBranch || baseBranch === 'HEAD') {
-    return { ok: false, code: 'NO_BASE', error: 'Tower land needs a recorded git base branch.' };
+    return { ok: false, code: 'NO_BASE', error: 'Crew land needs a recorded git base branch.' };
   }
   return withTowerGitLock(root, async () => {
     const currentBranchResult = await tryGit(root, ['branch', '--show-current']);
@@ -283,8 +283,8 @@ export async function landTowerWorkers({
         ok: false,
         code: 'BASE_BRANCH_MISMATCH',
         error: currentBranch
-          ? `Tower started on "${baseBranch}", but the current branch is "${currentBranch}". Switch back before landing.`
-          : `Tower started on "${baseBranch}", but the current checkout is detached. Switch back before landing.`,
+          ? `Crew started on "${baseBranch}", but the current branch is "${currentBranch}". Switch back before landing.`
+          : `Crew started on "${baseBranch}", but the current checkout is detached. Switch back before landing.`,
         base: baseBranch,
         currentBranch,
       };

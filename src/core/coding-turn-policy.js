@@ -19,7 +19,12 @@ export function createCodingTurnPolicy({ text = '', towerActive = false } = {}) 
 export function isCodingTurnToolAllowed(policy, toolName) {
   if (toolName === 'run_subagent') return policy.allowSubagent;
   if (toolName === 'fork_task') return policy.allowFork;
-  if (toolName === 'land_workers' || toolName === 'tower_status') return policy.towerActive;
+  if (
+    toolName === 'land_workers'
+    || toolName === 'crew_status'
+    || toolName === 'tower_status'
+    || toolName === 'cancel_worker'
+  ) return policy.towerActive;
   if (toolName === 'save_memory') return policy.allowSaveMemory;
   return true;
 }

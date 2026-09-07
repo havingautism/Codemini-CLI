@@ -4582,12 +4582,16 @@ export function AppProvider({ children }) {
         const tower = result?.tower;
         const towerActive = Boolean(tower?.active);
         const towerBase = String(tower?.base || "");
+        const towerDirtyCount = towerActive
+          ? Math.max(0, Number(result?.dirtyCount) || 0)
+          : 0;
         setState((prev) => ({
           ...prev,
           runtimeState: {
             ...(prev.runtimeState || {}),
             towerActive,
             towerBase,
+            towerDirtyCount,
           },
           sessionRuntimeById: sid
             ? {
@@ -4596,6 +4600,7 @@ export function AppProvider({ children }) {
                   ...(prev.sessionRuntimeById[sid] || { sessionId: sid }),
                   towerActive,
                   towerBase,
+                  towerDirtyCount,
                 },
               }
             : prev.sessionRuntimeById,

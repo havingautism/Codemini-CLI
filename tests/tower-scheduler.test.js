@@ -29,3 +29,23 @@ test('tower scheduler caps active workers and starts queued work in order', asyn
   assert.deepEqual(await Promise.all(results), ['a', 'b', 'c']);
   assert.deepEqual(scheduler.snapshot(), { active: 0, queued: 0, limit: 2 });
 });
+
+test('tower scheduler drops aborted queued work without starting it', async () => {
+  const scheduler = createTowerWorkerScheduler({ getLimit: () => 1 });
+  const controller = new AbortController();
+  let started = false;
+  const first = scheduler.run(() => new Promise(() => {}));
+  const queued = scheduler.run(
+    () => {
+      started = true;
+      return Promise.resolve('ran');
+    },
+    { signal: controller.signal },
+  );
+  assert.deepEqual(scheduler.snapshot(), { active: 1, queued: 1, limit: 1 });
+  controller.abort({ towerCancel: true });
+  await assert.rejects(queued, (error) => error?.name === 'AbortError' || error?.towerCancel === true);
+  assert.equal(started, false);
+  assert.deepEqual(scheduler.snapshot(), { active: 1, queued: 0, limit: 1 });
+  void first;
+});

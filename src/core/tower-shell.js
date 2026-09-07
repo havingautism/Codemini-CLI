@@ -1,7 +1,7 @@
 import { classifyCommandRisk, hasShellWriteSyntax } from './command-risk.js';
 
 export const TOWER_PARENT_SHELL_BLOCK =
-  'Tower parent run is inspect-only. Use land_workers to merge. Do not git merge, checkout, worktree, or copy into the main checkout.';
+  'Crew parent run is inspect-only. Use land_workers to merge. Do not git merge, checkout, worktree, or copy into the main checkout.';
 
 export function evaluateTowerParentCommand(command, platform = process.platform) {
   const cmd = String(command || '').trim();
