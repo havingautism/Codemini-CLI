@@ -836,3 +836,155 @@ test('cancel_worker aborts an in-flight review and keeps the author worktree', a
     assert.equal(await fs.access(path.join(getProjectTowerWorktreesDir(dir), 'alisa')).then(() => true, () => false), false);
   });
 });
+
+async function commitWorkerFile(worktreePath, relative, content) {
+  const full = path.join(worktreePath, relative);
+  await fs.mkdir(path.dirname(full), { recursive: true });
+  await fs.writeFile(full, content);
+  await git(worktreePath, ['add', relative]);
+  await git(worktreePath, ['commit', '-m', `add ${relative}`]);
+}
+
+async function markCleanReview(dir, worker) {
+  const sha = String((await git(worker.worktreePath, ['rev-parse', 'HEAD'])).stdout || '').trim();
+  await patchTowerWorkerRecord(dir, worker.id, {
+    reviewedCommit: sha,
+    reviewPassed: true,
+    reviewText: 'Findings:\n- none',
+  });
+}
+
+async function rebaseNoahWorktree(worktreePath, onto) {
+  const rebase = await runGit(['rebase', onto], {
+    cwd: worktreePath,
+    allowFailure: true,
+    timeoutMs: 15_000,
+    env: {
+      ...process.env,
+      GIT_AUTHOR_NAME: 'Codemini Test',
+      GIT_AUTHOR_EMAIL: 'tower@test.local',
+      GIT_COMMITTER_NAME: 'Codemini Test',
+      GIT_COMMITTER_EMAIL: 'tower@test.local',
+    },
+  });
+  assert.notEqual(rebase.code, 0);
+  await fs.writeFile(path.join(worktreePath, 'README.md'), 'from-noah-rebased\n');
+  await git(worktreePath, ['add', 'README.md']);
+  await runGit(['-c', 'core.editor=true', 'rebase', '--continue'], {
+    cwd: worktreePath,
+    allowFailure: false,
+    timeoutMs: 15_000,
+    env: {
+      ...process.env,
+      GIT_EDITOR: 'true',
+      GIT_AUTHOR_NAME: 'Codemini Test',
+      GIT_AUTHOR_EMAIL: 'tower@test.local',
+      GIT_COMMITTER_NAME: 'Codemini Test',
+      GIT_COMMITTER_EMAIL: 'tower@test.local',
+    },
+  });
+}
+
+test('runtime resumes a conflicted worker, then reviews and lands after rebase', async () => {
+  await withReviewRuntime({}, async (body, blob) => {
+    if (isParentUserTurn(body, /SPAWN_PAIR/)) {
+      return sseToolCalls([
+        {
+          id: 'call-mia',
+          name: 'run_subagent',
+          arguments: JSON.stringify({
+            prompt: 'Docs worker',
+            name: 'Mia',
+            paths: ['docs/**'],
+          }),
+        },
+        {
+          id: 'call-noah',
+          name: 'run_subagent',
+          arguments: JSON.stringify({
+            prompt: 'Src worker',
+            name: 'Noah',
+            paths: ['src/**'],
+          }),
+        },
+      ]);
+    }
+    if (isParentUserTurn(body, /LAND_NOW|LAND_AGAIN/)) {
+      return sseToolCalls([{
+        id: /LAND_AGAIN/.test(lastUserText(body)) ? 'call-land-2' : 'call-land-1',
+        name: 'land_workers',
+        arguments: '{}',
+      }]);
+    }
+    if (isParentUserTurn(body, /RESUME_NOAH/)) {
+      return sseToolCalls([{
+        id: 'call-resume-noah',
+        name: 'run_subagent',
+        arguments: JSON.stringify({
+          prompt: 'Resolve the README conflict after mia landed',
+          resume: 'noah',
+        }),
+      }]);
+    }
+    if (isParentUserTurn(body, /REVIEW_NOAH/)) {
+      return sseToolCalls([{
+        id: 'call-review-noah',
+        name: 'run_subagent',
+        arguments: JSON.stringify({
+          prompt: 'Review noah after rebase',
+          role: 'reviewer',
+          review: 'noah',
+        }),
+      }]);
+    }
+    const submitted = reviewerVerdict(body, blob, { passed: true, findings: [] });
+    if (submitted) return submitted;
+    return sseText('WORKER_BODY');
+  }, async ({ dir, bodies, runtime, session }) => {
+    await runtime.submitMessage({ text: 'SPAWN_PAIR' });
+    await waitForWorkerStatus(dir, 'mia', 'completed');
+    await waitForWorkerStatus(dir, 'noah', 'completed');
+    const spawned = listTowerWorkersFromState(JSON.parse(await fs.readFile(getProjectTowerStatePath(dir), 'utf8')));
+    const mia = spawned.find((item) => item.id === 'mia');
+    const noah = spawned.find((item) => item.id === 'noah');
+    await commitWorkerFile(mia.worktreePath, path.join('docs', 'a.md'), 'mia\n');
+    await commitWorkerFile(noah.worktreePath, path.join('src', 'a.ts'), 'export {}\n');
+    await commitWorkerFile(mia.worktreePath, 'README.md', 'from-mia\n');
+    await commitWorkerFile(noah.worktreePath, 'README.md', 'from-noah\n');
+    await patchTowerWorkerRecord(dir, 'mia', { paths: ['docs/**', 'README.md'] });
+    await patchTowerWorkerRecord(dir, 'noah', { paths: ['src/**', 'README.md'] });
+    await markCleanReview(dir, mia);
+    await markCleanReview(dir, noah);
+
+    await runtime.submitMessage({ text: 'LAND_NOW' });
+    const landFail = session.messages.find((message) => message.tool_call_id === 'call-land-1');
+    assert.ok(landFail, `missing first land_workers result; ids=${session.messages.map((m) => m.tool_call_id).filter(Boolean).join(',')}`);
+    assert.match(String(landFail.content || ''), /REBASE_REQUIRED|conflicts with the current base tip/);
+    const afterConflict = listTowerWorkersFromState(JSON.parse(await fs.readFile(getProjectTowerStatePath(dir), 'utf8')));
+    const noahState = afterConflict.find((item) => item.id === 'noah');
+    assert.equal(afterConflict.find((item) => item.id === 'mia')?.integrated, true);
+    assert.ok(String(noahState.rebaseOnto || '').trim());
+    assert.notEqual(noahState.reviewPassed, true);
+
+    await runtime.submitMessage({ text: 'RESUME_NOAH' });
+    await waitUntilBodies(bodies, (text) => text.includes('Do not merge into the user branch') && text.includes(noahState.rebaseOnto));
+    const resumePrompt = bodies
+      .map((item) => messageBlob(item))
+      .find((text) => text.includes('Do not merge into the user branch'));
+    assert.ok(resumePrompt);
+    assert.match(resumePrompt, new RegExp(noahState.rebaseOnto));
+    await waitForWorkerStatus(dir, 'noah', 'completed');
+    await rebaseNoahWorktree(noah.worktreePath, noahState.rebaseOnto);
+
+    await runtime.submitMessage({ text: 'REVIEW_NOAH' });
+    await waitForWorkerField(dir, 'noah', (item) => item.reviewPassed === true);
+
+    await runtime.submitMessage({ text: 'LAND_AGAIN' });
+    const landOk = session.messages.find((message) => message.tool_call_id === 'call-land-2');
+    assert.ok(landOk, `missing second land_workers result; ids=${session.messages.map((m) => m.tool_call_id).filter(Boolean).join(',')}`);
+    assert.match(String(landOk.content || ''), /Landed|onto the current branch/);
+    assert.equal(await fs.readFile(path.join(dir, 'README.md'), 'utf8'), 'from-noah-rebased\n');
+    const saved = listTowerWorkersFromState(JSON.parse(await fs.readFile(getProjectTowerStatePath(dir), 'utf8')));
+    assert.equal(saved.length, 0);
+  });
+});

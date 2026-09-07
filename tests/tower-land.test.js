@@ -8,7 +8,13 @@ import { landTowerWorkers } from '../src/core/tower-land.js';
 import { runGit } from '../src/core/process-run.js';
 import { getProjectTowerStatePath, getProjectTowerWorktreesDir } from '../src/core/paths.js';
 import { enterTowerMode, listTowerWorkersFromState, patchTowerWorkerRecord } from '../src/core/tower-store.js';
-import { addTowerWorktree, resolveTowerSubagentWorkspace } from '../src/core/tower-worktree.js';
+import {
+  addTowerWorktree,
+  composeTowerResumeTask,
+  composeTowerReviewTask,
+  resolveTowerReviewTarget,
+  resolveTowerSubagentWorkspace,
+} from '../src/core/tower-worktree.js';
 
 async function git(cwd, args) {
   return runGit(args, {
@@ -512,5 +518,117 @@ test('two-worker merge conflict requires rebase onto the base tip', async () => 
     assert.equal(finished.ok, true, finished.error);
     assert.equal((await fs.readdir(getProjectTowerWorktreesDir(dir))).includes('_merge-tmp'), false);
     assert.deepEqual(await listTowerRefs(dir), []);
+  });
+});
+
+test('rebase conflict loops through resume, worker fix, review, and land', async () => {
+  await withRepo(async (dir) => {
+    const mia = await addTowerWorktree({
+      cwd: dir,
+      base: 'main',
+      taskId: 'mia',
+      paths: ['docs/**'],
+    });
+    const noah = await addTowerWorktree({
+      cwd: dir,
+      base: 'main',
+      taskId: 'noah',
+      paths: ['src/**'],
+    });
+    await commitWorkerFile(mia.worker.worktreePath, path.join('docs', 'a.md'), 'mia\n');
+    await commitWorkerFile(noah.worker.worktreePath, path.join('src', 'a.ts'), 'export {}\n');
+    await commitWorkerFile(mia.worker.worktreePath, 'README.md', 'from-mia\n');
+    await commitWorkerFile(noah.worker.worktreePath, 'README.md', 'from-noah\n');
+    await patchTowerWorkerRecord(dir, mia.worker.id, { paths: ['docs/**', 'README.md'] });
+    await patchTowerWorkerRecord(dir, noah.worker.id, { paths: ['src/**', 'README.md'] });
+    await markCleanReview(dir, { ...mia.worker, id: 'mia' });
+    await markCleanReview(dir, { ...noah.worker, id: 'noah' });
+
+    const conflictLand = await landTowerWorkers({ cwd: dir, base: 'main' });
+    assert.equal(conflictLand.ok, false);
+    assert.equal(conflictLand.code, 'REBASE_REQUIRED');
+    assert.equal(conflictLand.workerId, 'noah');
+    const baseTip = String((await git(dir, ['rev-parse', 'HEAD'])).stdout || '').trim();
+
+    const afterPartial = JSON.parse(await fs.readFile(getProjectTowerStatePath(dir), 'utf8'));
+    const miaState = listTowerWorkersFromState(afterPartial).find((item) => item.id === 'mia');
+    const noahState = listTowerWorkersFromState(afterPartial).find((item) => item.id === 'noah');
+    assert.equal(miaState.integrated, true);
+    assert.equal(noahState.rebaseOnto, baseTip);
+    assert.notEqual(noahState.reviewPassed, true);
+
+    const resumed = await resolveTowerSubagentWorkspace({
+      cwd: dir,
+      base: 'main',
+      resume: 'noah',
+    });
+    assert.equal(resumed.ok, true, resumed.error);
+    assert.equal(resumed.resume, true);
+    assert.equal(resumed.worker.worktreePath, noah.worker.worktreePath);
+    const resumePrompt = composeTowerResumeTask(
+      'Resolve the README conflict after mia landed',
+      '# prior handoff',
+      '',
+      noahState.rebaseOnto,
+    );
+    assert.match(resumePrompt, /git rebase/);
+    assert.match(resumePrompt, new RegExp(noahState.rebaseOnto));
+
+    const rebase = await runGit(['rebase', baseTip], {
+      cwd: noah.worker.worktreePath,
+      allowFailure: true,
+      timeoutMs: 15_000,
+      env: {
+        ...process.env,
+        GIT_AUTHOR_NAME: 'Codemini Test',
+        GIT_AUTHOR_EMAIL: 'tower@test.local',
+        GIT_COMMITTER_NAME: 'Codemini Test',
+        GIT_COMMITTER_EMAIL: 'tower@test.local',
+      },
+    });
+    assert.notEqual(rebase.code, 0);
+    await fs.writeFile(path.join(noah.worker.worktreePath, 'README.md'), 'from-noah-rebased\n');
+    await git(noah.worker.worktreePath, ['add', 'README.md']);
+    await runGit(['-c', 'core.editor=true', 'rebase', '--continue'], {
+      cwd: noah.worker.worktreePath,
+      allowFailure: false,
+      timeoutMs: 15_000,
+      env: {
+        ...process.env,
+        GIT_EDITOR: 'true',
+        GIT_AUTHOR_NAME: 'Codemini Test',
+        GIT_AUTHOR_EMAIL: 'tower@test.local',
+        GIT_COMMITTER_NAME: 'Codemini Test',
+        GIT_COMMITTER_EMAIL: 'tower@test.local',
+      },
+    });
+
+    const reviewTarget = await resolveTowerReviewTarget({
+      cwd: dir,
+      base: 'main',
+      review: 'noah',
+    });
+    assert.equal(reviewTarget.ok, true, reviewTarget.error);
+    assert.equal(reviewTarget.review, true);
+    assert.equal(reviewTarget.worker.id, 'noah');
+    const reviewPrompt = composeTowerReviewTask('Review the rebased README fix', {
+      workerId: reviewTarget.worker.id,
+      commit: reviewTarget.commit,
+      paths: reviewTarget.worker.paths,
+      diff: String(reviewTarget.diff || '').trim(),
+      base: 'main',
+    });
+    assert.match(reviewPrompt, /submit_crew_review/);
+    assert.match(reviewPrompt, /Review the rebased README fix/);
+
+    await markCleanReview(dir, reviewTarget.worker);
+    const finished = await landTowerWorkers({ cwd: dir, base: 'main' });
+    assert.equal(finished.ok, true, finished.error);
+    const readme = await fs.readFile(path.join(dir, 'README.md'), 'utf8');
+    assert.equal(readme, 'from-noah-rebased\n');
+    assert.equal((await fs.readdir(getProjectTowerWorktreesDir(dir))).includes('_merge-tmp'), false);
+    assert.deepEqual(await listTowerRefs(dir), []);
+    const saved = JSON.parse(await fs.readFile(getProjectTowerStatePath(dir), 'utf8'));
+    assert.equal(listTowerWorkersFromState(saved).length, 0);
   });
 });
