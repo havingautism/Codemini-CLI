@@ -3,6 +3,7 @@ import path from 'node:path';
 import {
   listUnreadCrewEvents,
   listCrewWorkersFromState,
+  markCrewEventsDelivered,
   normalizeCrewState,
   readCrewStateFile,
 } from './crew-store.js';
@@ -77,8 +78,12 @@ export function suggestCrewNextAction({ workers = [], inFlight = [], pendingWake
     && item.reviewPassed !== true
     && item.reviewLoopStopped !== true
   ));
+  const needRebase = awaitingReview.filter((item) => String(item.rebaseOnto || '').trim());
+  if (needRebase.length) {
+    return `Resume and rebase onto the current base: ${needRebase.map((item) => item.id).join(', ')}. Then dispatch reviewer for the new commit.`;
+  }
   if (awaitingReview.length) {
-    return `Dispatch reviewer for: ${awaitingReview.map((item) => item.id).join(', ')}`;
+    return `Dispatch reviewer for: ${awaitingReview.map((item) => item.id).join(', ')}. If another worker already landed, resume and rebase first, then review.`;
   }
   const reviewFailed = roster.filter((item) => item.reviewPassed === false && item.reviewLoopStopped !== true);
   if (reviewFailed.length) {
@@ -119,6 +124,11 @@ export async function readCrewStatusPayload(cwd = process.cwd(), {
     && !item.integrated
   )).length;
   const events = listUnreadCrewEvents(raw);
+  if (events.length) {
+    await markCrewEventsDelivered(projectRoot, {
+      eventIds: events.map((item) => item.id),
+    }).catch(() => null);
+  }
   return {
     ok: true,
     active: true,
@@ -220,6 +230,11 @@ export function formatCrewRosterSnapshot(workers = []) {
   return ['Crew roster snapshot:', ...lines].join('\n');
 }
 
+export function formatCrewReviewIncompleteGuidance(workerId = '') {
+  const id = String(workerId || 'worker').trim() || 'worker';
+  return `Review of "${id}" incomplete — not a failed review. Reviewer did not call submit_crew_review. If crew_status shows another worker already landed or the base moved, resume "${id}" and rebase onto the current base, then review the new commit. Otherwise dispatch reviewer again with review: "${id}". Do not land until a passing review is recorded.`;
+}
+
 export function buildCrewWorkerCompletedWake({
   workerId = '',
   reviewOf = '',
@@ -231,6 +246,7 @@ export function buildCrewWorkerCompletedWake({
   reviewPassed,
   reviewLoopStopped,
   reviewRound,
+  reviewIncomplete,
 } = {}) {
   const id = String(workerId || reviewOf || '').trim();
   const seal = sealLabel({ dirty, workerKind, status });
@@ -243,6 +259,8 @@ export function buildCrewWorkerCompletedWake({
   const reviewLine = String(reviewOf || '').trim()
     ? reviewLoopStopped === true
       ? `Review loop stopped${Number(reviewRound) > 0 ? ` after ${Number(reviewRound)} rounds` : ''}.`
+      : reviewIncomplete === true
+        ? formatCrewReviewIncompleteGuidance(reviewOf)
       : reviewPassed === true
         ? 'Review passed. land_workers may include this worker when ready.'
         : reviewPassed === false

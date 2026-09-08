@@ -6,6 +6,7 @@ import { getProjectCrewWorktreesDir } from './paths.js';
 import { runGit } from './process-run.js';
 import {
   appendCrewWorkerRecord,
+  buildCrewReviewVerdictPrompt,
   listCrewWorkersFromState,
   patchCrewWorkerRecord,
   readCrewStateFile,
@@ -135,7 +136,8 @@ export function composeCrewReviewTask(task, {
     String(task || '').trim() || `Review worker "${workerId}".`,
     `You are reviewing Crew worker "${workerId}" at commit ${commit} against base ${base}.`,
     `Scope: ${scope}. Stay inside that scope.`,
-    'Do not edit files or git commit. Finish by calling submit_crew_review with passed true or false and findings. passed true requires empty findings; passed false requires at least one finding.',
+    'Do not edit files or git commit.',
+    buildCrewReviewVerdictPrompt(),
     diff ? `Diff vs base:\n${diff}` : 'No diff vs base was available; inspect the worktree.',
   ].join('\n\n');
 }

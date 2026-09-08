@@ -74,7 +74,11 @@ test('normalizeCrewReviewVerdict is the review gate, not free text', () => {
     passed: true,
     findings: [],
   });
-  assert.equal(normalizeCrewReviewVerdict({ passed: true, findings: ['none'] }).ok, false);
+  assert.deepEqual(normalizeCrewReviewVerdict({ passed: true, findings: ['none'] }), {
+    ok: true,
+    passed: true,
+    findings: [],
+  });
   assert.equal(normalizeCrewReviewVerdict({ passed: false, findings: [] }).ok, false);
   assert.deepEqual(normalizeCrewReviewVerdict({ passed: false, findings: ['missing tests'] }), {
     ok: true,
@@ -159,6 +163,7 @@ test('composeCrewReviewTask names the worker and commit', () => {
   assert.match(text, /abc123/);
   assert.match(text, /notes\.md/);
   assert.match(text, /submit_crew_review/);
+  assert.match(text, /Prose under Findings:/);
   assert.match(text, /diff --git/);
 });
 
@@ -512,6 +517,7 @@ test('crew reviewer reuses the author worktree, stays off the roster, and record
     assert.equal(workers[0].worktreePath, worker.worktreePath);
     assert.equal(reviewed.reviewedCommit, sha);
     assert.equal(reviewed.reviewPassed, true);
+    assert.equal(reviewed.runStatus, 'completed');
     assert.equal(reviewed.reviewLoopStopped, undefined);
     assert.equal(reviewed.reviewRound, undefined);
     assert.equal(String(reviewed.reviewText || ''), '');
@@ -534,7 +540,7 @@ test('crew reviewer reuses the author worktree, stays off the roster, and record
   });
 });
 
-test('crew review free text without submit_crew_review does not pass', async () => {
+test('crew review prose with no findings and pass language infers pass without submit_crew_review', async () => {
   await withReviewRuntime({}, async (body, blob) => {
     if (isParentUserTurn(body, /SPAWN_ALISA/)) {
       return sseToolCalls([{
@@ -559,7 +565,16 @@ test('crew review free text without submit_crew_review does not pass', async () 
       }]);
     }
     if (blob.includes('You are reviewing Crew worker')) {
-      return sseText('Findings:\n- none');
+      return sseText([
+        'Findings:',
+        '- none',
+        '',
+        'Verified:',
+        '- notes.md matches the diff.',
+        '',
+        'Handoff:',
+        '- clean to land; pass.',
+      ].join('\n'));
     }
     return sseText('FIRST_SHIFT_BODY');
   }, async ({ dir, runtime }) => {
@@ -567,11 +582,51 @@ test('crew review free text without submit_crew_review does not pass', async () 
     await waitForWorkerStatus(dir, 'alisa', 'completed');
     await sealWorkerNotes(dir);
     await runtime.submitMessage({ text: 'REVIEW_ALISA' });
-    const reviewed = await waitForWorkerField(dir, 'alisa', (item) => item.reviewPassed === false);
-    assert.equal(reviewed.reviewPassed, false);
+    const reviewed = await waitForWorkerField(dir, 'alisa', (item) => item.reviewPassed === true);
+    assert.equal(reviewed.reviewPassed, true);
+    const landed = await landCrewWorkers({ cwd: dir, base: 'main' });
+    assert.equal(landed.ok, true, landed.error);
+  });
+});
+
+test('crew review without submit_crew_review or pass prose stays incomplete', async () => {
+  await withReviewRuntime({}, async (body, blob) => {
+    if (isParentUserTurn(body, /SPAWN_ALISA/)) {
+      return sseToolCalls([{
+        id: 'call-spawn',
+        name: 'run_subagent',
+        arguments: JSON.stringify({
+          prompt: 'First shift on notes.md',
+          name: 'Alisa',
+          paths: ['notes.md'],
+        }),
+      }]);
+    }
+    if (isParentUserTurn(body, /REVIEW_ALISA/)) {
+      return sseToolCalls([{
+        id: 'call-review',
+        name: 'run_subagent',
+        arguments: JSON.stringify({
+          prompt: 'Review alisa',
+          role: 'reviewer',
+          review: 'alisa',
+        }),
+      }]);
+    }
+    if (blob.includes('You are reviewing Crew worker')) {
+      return sseText('Still checking the diff.');
+    }
+    return sseText('FIRST_SHIFT_BODY');
+  }, async ({ dir, runtime }) => {
+    await runtime.submitMessage({ text: 'SPAWN_ALISA' });
+    await waitForWorkerStatus(dir, 'alisa', 'completed');
+    await sealWorkerNotes(dir);
+    await runtime.submitMessage({ text: 'REVIEW_ALISA' });
+    const worker = await waitForWorkerField(dir, 'alisa', (item) => String(item.reviewText || '').includes('Still checking'));
+    assert.equal(worker.reviewPassed, undefined);
     const landed = await landCrewWorkers({ cwd: dir, base: 'main' });
     assert.equal(landed.ok, false);
-    assert.equal(landed.code, 'REVIEW_FAILED');
+    assert.equal(landed.code, 'REVIEW_REQUIRED');
   });
 });
 

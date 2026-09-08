@@ -151,7 +151,7 @@ test('crew_status lists unread completion events without treating them as pendin
     const summary = formatCrewStatusSummary(payload);
     assert.match(summary, /Unread events: 1/);
     assert.match(summary, /worker\.completed/);
-    assert.equal(listUnreadCrewEvents(await readCrewStateFile(dir)).length, 1);
+    assert.equal(listUnreadCrewEvents(await readCrewStateFile(dir)).length, 0);
   });
 });
 

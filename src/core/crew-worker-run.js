@@ -1,9 +1,9 @@
 import { trimInline } from './string-utils.js';
 import {
   appendCrewEvent,
+  applyCrewReviewOutcome,
   buildCrewCompletionEvent,
-  formatCrewReviewText,
-  nextCrewReviewLoopState,
+  buildCrewReviewVerdictPrompt,
   patchCrewWorkerRecord,
 } from './crew-store.js';
 import {
@@ -81,6 +81,7 @@ export async function runCrewWorkerJob({
       goal: declaredGoal,
       priorSteps: [],
       parentSession: session,
+      extraRolePrompt: reviewingWorkerId ? buildCrewReviewVerdictPrompt() : '',
       config: reviewingWorkerId
         ? {
             ...config,
@@ -167,23 +168,20 @@ export async function runCrewWorkerJob({
     let reviewPassed;
     let reviewLoopStopped;
     let reviewRound;
+    let reviewIncomplete;
     if (!cancelled && !failed && reviewingWorkerId && reviewCommit) {
-      const verdict = reviewBox.verdict;
-      reviewPassed = verdict?.passed === true;
-      const loop = nextCrewReviewLoopState(reviewingWorkerRecord, {
-        passed: reviewPassed,
-        findings: verdict?.findings || [],
+      const applied = await applyCrewReviewOutcome({
+        cwd: workspaceRoot,
+        workerId: reviewingWorkerId,
+        workerRecord: reviewingWorkerRecord,
+        reviewCommit,
+        verdict: reviewBox.verdict,
+        outputText: output.text,
       });
-      reviewLoopStopped = loop.reviewLoopStopped;
-      reviewRound = loop.reviewRound;
-      await patchCrewWorkerRecord(workspaceRoot, reviewingWorkerId, {
-        reviewedCommit: reviewCommit,
-        reviewPassed,
-        reviewText: verdict
-          ? formatCrewReviewText(verdict)
-          : String(output.text || '').trim(),
-        ...loop,
-      }).catch(() => null);
+      reviewPassed = applied.reviewPassed;
+      reviewLoopStopped = applied.reviewLoopStopped;
+      reviewRound = applied.reviewRound;
+      reviewIncomplete = applied.reviewIncomplete === true;
     }
     emit({
       type: 'plan:step_done',
@@ -220,6 +218,7 @@ export async function runCrewWorkerJob({
         reviewPassed,
         reviewLoopStopped,
         reviewRound,
+        reviewIncomplete,
       });
     }
     if (!cancelled && typeof onWake === 'function') {
@@ -234,10 +233,11 @@ export async function runCrewWorkerJob({
         reviewPassed,
         reviewLoopStopped,
         reviewRound,
+        reviewIncomplete,
       }));
     }
     return {
-      ok: !failed && !cancelled,
+      ok: !failed && !cancelled && reviewIncomplete !== true,
       cancelled,
       workflowComplete: false,
       name: persona,
@@ -260,6 +260,7 @@ export async function runCrewWorkerJob({
         ...(reviewingWorkerId ? {
           reviewOf: reviewingWorkerId,
           reviewPassed,
+          ...(reviewIncomplete === true ? { reviewIncomplete: true } : {}),
           ...(reviewLoopStopped === true ? { reviewLoopStopped: true, reviewRound } : {}),
         } : {}),
       }),

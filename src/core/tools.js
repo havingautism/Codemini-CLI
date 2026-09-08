@@ -5484,7 +5484,7 @@ export function getBuiltinTools({
       function: {
         name: "submit_crew_review",
         description:
-          "Submit the Crew review verdict. passed true means the current commit may land; passed false requires findings. Call this once before stopping.",
+          "Submit the Crew review verdict before stopping. passed true means the commit may land (findings must be []); passed false requires one string per blocking issue. Example pass: { passed: true, findings: [] }. Example fail: { passed: false, findings: [\"missing test for edge case\"] }. Prose Findings: in your message does not count — call this tool once.",
         parameters: {
           type: "object",
           properties: {

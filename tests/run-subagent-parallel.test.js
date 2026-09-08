@@ -541,4 +541,10 @@ test('subagent system shell rules stay isomorphic across roles and allow-lists',
   assert.match(coderNote, /Own implementation/);
   assert.doesNotMatch(explorerNote, /Own implementation/);
   assert.notEqual(coderNote, explorerNote);
+
+  const reviewerNote = buildSubAgentRuntimeNote(['read', 'submit_crew_review'], {
+    role: 'reviewer',
+    workspaceRoot,
+  });
+  assert.match(reviewerNote, /Mandatory: call submit_crew_review/);
 });

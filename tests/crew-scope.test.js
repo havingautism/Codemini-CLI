@@ -282,7 +282,10 @@ test('submit_crew_review is only exposed when a verdict callback is wired', asyn
   const ok = await handlers.submit_crew_review({ passed: true, findings: [] });
   assert.equal(ok.ok, true);
   assert.deepEqual(seen, { passed: true, findings: [] });
-  const rejected = await handlers.submit_crew_review({ passed: true, findings: ['none'] });
+  const stripped = await handlers.submit_crew_review({ passed: true, findings: ['none'] });
+  assert.equal(stripped.ok, true);
+  assert.deepEqual(seen, { passed: true, findings: [] });
+  const rejected = await handlers.submit_crew_review({ passed: true, findings: ['real issue'] });
   assert.equal(rejected.ok, false);
   assert.deepEqual(seen, { passed: true, findings: [] });
 });
@@ -319,6 +322,22 @@ test('compactSubAgentResultForParent reports dirty vs sealed worktrees', () => {
   assert.match(
     compactSubAgentResultForParent({ text: 'Findings:\n- missing tests', reviewOf: 'alisa', reviewPassed: false }),
     /Resume "alisa"/,
+  );
+  assert.match(
+    compactSubAgentResultForParent({
+      text: 'Still checking the diff.',
+      reviewOf: 'alisa',
+      reviewIncomplete: true,
+    }),
+    /incomplete — not a failed review/,
+  );
+  assert.match(
+    compactSubAgentResultForParent({
+      text: 'Still checking the diff.',
+      reviewOf: 'alisa',
+      reviewIncomplete: true,
+    }),
+    /resume "alisa" and rebase/,
   );
   assert.match(
     compactSubAgentResultForParent({

@@ -1,23 +1,13 @@
 import { SessionOrb } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
+import {
+  CREW_PHASE_LABEL_KEY,
+} from "@/lib/crew-progress-ui.js";
 import { t } from "../../i18n/index.js";
 import {
   buildCrewProgressItems,
   shouldShowCrewProgressDock,
 } from "../../../../src/core/crew-progress.js";
-
-const PHASE_LABEL_KEY = {
-  queued: "crewPhaseQueued",
-  running: "crewPhaseRunning",
-  reviewing: "crewPhaseReviewing",
-  awaiting_review: "crewPhaseAwaitingReview",
-  ready: "crewPhaseReady",
-  dirty: "crewPhaseDirty",
-  merged: "crewPhaseMerged",
-  failed: "crewPhaseFailed",
-  survey_done: "crewPhaseSurveyDone",
-  idle: "crewPhaseIdle",
-};
 
 const KIND_LABEL_KEY = {
   survey: "crewKindSurvey",
@@ -38,7 +28,7 @@ function phaseDotClass(phase) {
 }
 
 function phaseLabel(phase) {
-  return t(PHASE_LABEL_KEY[phase] || "crewPhaseIdle");
+  return t(CREW_PHASE_LABEL_KEY[phase] || "crewPhaseIdle");
 }
 
 export function CrewProgressDock({ runtimeState }) {

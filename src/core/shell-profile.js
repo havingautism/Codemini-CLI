@@ -255,5 +255,8 @@ export function buildSubAgentRuntimeNote(allowedTools = [], { shell, workspaceRo
   } else if (role === 'tester') {
     lines.push('You own verification. Run the narrowest relevant checks when the environment supports them, and say clearly when checks could not run.');
   }
+  if (allowed.includes('submit_crew_review')) {
+    lines.push('Mandatory: call submit_crew_review once before stopping. Prose Findings alone do not count as a formal verdict.');
+  }
   return lines.join('\n');
 }

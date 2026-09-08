@@ -92,8 +92,9 @@ import {
   normalizeCrewState,
   patchCrewWorkerRecord,
   readCrewStateFile,
-  formatCrewReviewText,
-  nextCrewReviewLoopState,
+  applyCrewReviewOutcome,
+  buildCrewReviewVerdictPrompt,
+  markCrewEventsDeliveredForWake,
   writeCrewStateFile,
   appendCrewEvent,
   buildCrewCompletionEvent,
@@ -104,7 +105,7 @@ import { createCrewCoordinator } from './crew-coordinator.js';
 import { createCrewWorkerScheduler } from './crew-scheduler.js';
 import { createCrewCancelReason } from './crew-cancel.js';
 import { runCrewWorkerJob } from './crew-worker-run.js';
-import { compactCrewSpawnResultForParent, resolveCrewProjectRoot, buildCrewWorkerStatusRecord } from './crew-snapshot.js';
+import { compactCrewSpawnResultForParent, formatCrewReviewIncompleteGuidance, resolveCrewProjectRoot, buildCrewWorkerStatusRecord } from './crew-snapshot.js';
 import { composeMemorySnapshot } from './memory-prompt.js';
 import { buildProjectContextSnippet, initializeProjectIndex } from './project-index.js';
 import { queryProjectKnowledgeGraph } from './project-knowledge-graph.js';
@@ -961,6 +962,7 @@ export function compactSubAgentResultForParent({
   reviewPassed,
   reviewLoopStopped,
   reviewRound,
+  reviewIncomplete,
   workerKind = '',
   maxChars = SUB_AGENT_PARENT_RESULT_MAX_CHARS,
 } = {}) {
@@ -989,9 +991,13 @@ export function compactSubAgentResultForParent({
   const reviewLine = reviewed
     ? reviewLoopStopped === true
       ? `Review of "${reviewed}" loop stopped${Number(reviewRound) > 0 ? ` after ${Number(reviewRound)} rounds` : ''}. Tell the user. Resume "${reviewed}" with a new task or paths, or spawn a new worker. Do not keep fixing the same findings. Do not land this worker until a new commit passes review.`
+      : reviewIncomplete === true
+        ? formatCrewReviewIncompleteGuidance(reviewed)
       : reviewPassed === true
       ? `Review of "${reviewed}" passed. land_workers may include this worker.`
-      : `Review of "${reviewed}" did not pass. Resume "${reviewed}" with the review text. Do not land.`
+      : reviewPassed === false
+      ? `Review of "${reviewed}" did not pass. Resume "${reviewed}" with the review text. Do not land.`
+      : ''
     : '';
   return [
     'Subagent finished. Use this conclusion; read the handoff file only if you need details.',
@@ -5594,7 +5600,7 @@ async function askModel({
                 });
               };
               const markWorkerStatus = (runStatus) => {
-                if (!lockedCrewWorkerId) return;
+                if (!lockedCrewWorkerId || reviewingWorkerId) return;
                 void patchCrewWorkerRecord(workspaceRoot, lockedCrewWorkerId, {
                   runStatus,
                   runError: '',
@@ -5636,6 +5642,7 @@ async function askModel({
               goal: declaredGoal,
               priorSteps: [],
               parentSession: session,
+              extraRolePrompt: reviewingWorkerId ? buildCrewReviewVerdictPrompt() : '',
               config: reviewingWorkerId
                 ? {
                     ...config,
@@ -5722,23 +5729,20 @@ async function askModel({
             let reviewPassed;
             let reviewLoopStopped;
             let reviewRound;
+            let reviewIncomplete;
             if (!failed && reviewingWorkerId && reviewCommit) {
-              const verdict = reviewBox.verdict;
-              reviewPassed = verdict?.passed === true;
-              const loop = nextCrewReviewLoopState(reviewingWorkerRecord, {
-                passed: reviewPassed,
-                findings: verdict?.findings || [],
+              const applied = await applyCrewReviewOutcome({
+                cwd: workspaceRoot,
+                workerId: reviewingWorkerId,
+                workerRecord: reviewingWorkerRecord,
+                reviewCommit,
+                verdict: reviewBox.verdict,
+                outputText: output.text,
               });
-              reviewLoopStopped = loop.reviewLoopStopped;
-              reviewRound = loop.reviewRound;
-              await patchCrewWorkerRecord(workspaceRoot, reviewingWorkerId, {
-                reviewedCommit: reviewCommit,
-                reviewPassed,
-                reviewText: verdict
-                  ? formatCrewReviewText(verdict)
-                  : String(output.text || '').trim(),
-                ...loop,
-              }).catch(() => null);
+              reviewPassed = applied.reviewPassed;
+              reviewLoopStopped = applied.reviewLoopStopped;
+              reviewRound = applied.reviewRound;
+              reviewIncomplete = applied.reviewIncomplete === true;
             }
             emit({
               type: 'plan:step_done',
@@ -5763,7 +5767,7 @@ async function askModel({
                 ])
               : [];
             const result = {
-              ok: !failed,
+              ok: !failed && reviewIncomplete !== true,
               workflowComplete: false,
               name: persona,
               role: persona,
@@ -5785,6 +5789,7 @@ async function askModel({
                 ...(reviewingWorkerId ? {
                   reviewOf: reviewingWorkerId,
                   reviewPassed,
+                  ...(reviewIncomplete === true ? { reviewIncomplete: true } : {}),
                   ...(reviewLoopStopped === true ? { reviewLoopStopped: true, reviewRound } : {}),
                 } : {}),
               }),
@@ -10139,6 +10144,7 @@ export async function createChatRuntime({
     }
   };
   crewWakeBridge.submit = (wakeText) => {
+    void markCrewEventsDeliveredForWake(root, wakeText).catch(() => null);
     if (typeof crewWakeExternalSubmit === 'function') {
       return crewWakeExternalSubmit(wakeText);
     }

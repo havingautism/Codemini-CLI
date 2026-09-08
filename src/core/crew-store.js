@@ -98,6 +98,41 @@ export function workerLandBaseRef(worker, fallback = '') {
 
 export const CREW_REVIEW_MAX_ROUNDS = 5;
 
+export function buildCrewReviewVerdictPrompt() {
+  return [
+    'Crew review verdict (required before you stop):',
+    'Call submit_crew_review exactly once. Prose under Findings: does not record the verdict for landing.',
+    'Clean to land: submit_crew_review with passed true and findings [].',
+    'Blocking issues: submit_crew_review with passed false and one findings item per issue.',
+    'Do not pass placeholder findings like "none" when passed is true — use an empty array.',
+    'You may still write Findings:/Verified: for the handoff, but the tool call is mandatory.',
+  ].join('\n');
+}
+
+const NO_FINDING_SENTINELS = new Set([
+  'none',
+  'n/a',
+  'na',
+  'no findings',
+  'no issues',
+  'no issue',
+  'nothing',
+  '-',
+  '—',
+]);
+
+export function isNoFindingSentinel(value = '') {
+  const key = normalizeFindingsBullet(String(value || '').replace(/^[-–—]\s*/, ''));
+  return !key || NO_FINDING_SENTINELS.has(key);
+}
+
+export function sanitizeCrewReviewFindings(findings = [], { passed } = {}) {
+  const list = Array.isArray(findings) ? findings : [];
+  const cleaned = [...new Set(list.map((item) => String(item || '').trim()).filter(Boolean))];
+  if (passed !== true) return cleaned;
+  return cleaned.filter((item) => !isNoFindingSentinel(item));
+}
+
 export function normalizeCrewReviewVerdict(value = {}) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     return { ok: false, error: 'submit_crew_review requires passed and findings.' };
@@ -105,9 +140,7 @@ export function normalizeCrewReviewVerdict(value = {}) {
   if (value.passed !== true && value.passed !== false) {
     return { ok: false, error: 'passed must be true or false.' };
   }
-  const findings = Array.isArray(value.findings)
-    ? [...new Set(value.findings.map((item) => String(item || '').trim()).filter(Boolean))]
-    : [];
+  const findings = sanitizeCrewReviewFindings(value.findings, { passed: value.passed });
   if (value.passed === true && findings.length > 0) {
     return { ok: false, error: 'passed:true requires findings to be empty.' };
   }
@@ -115,6 +148,115 @@ export function normalizeCrewReviewVerdict(value = {}) {
     return { ok: false, error: 'passed:false requires at least one finding.' };
   }
   return { ok: true, passed: value.passed === true, findings };
+}
+
+export function inferCrewReviewVerdictFromOutput(text = '') {
+  const body = String(text || '').trim();
+  if (!body) return null;
+  const findingsMatch = body.match(/findings:\s*([\s\S]*?)(?:\n\s*(?:verified|not verified|handoff|summary):|\n\n|$)/i);
+  const findingsBlock = findingsMatch ? findingsMatch[1] : '';
+  const findingLines = findingsBlock
+    .split(/\r?\n/)
+    .map((line) => line.replace(/^[-*•]\s*/, '').trim())
+    .filter(Boolean);
+  const onlyNone = findingLines.length === 0
+    || findingLines.every((item) => isNoFindingSentinel(item));
+  const passHints = /\b(pass(?:ed)?|approve(?:d)?|clean to land|may land|可合入|审查通过|复审结论[:：]\s*\*\*pass\*\*|干净可合入)\b/i.test(body);
+  const failHints = /\b(fail(?:ed|ure)?|reject(?:ed)?|block(?:ed|ing)?|cannot land|不通过|未通过)\b/i.test(body);
+  if (onlyNone && passHints && !failHints) {
+    return { status: 'passed', passed: true, findings: [] };
+  }
+  return null;
+}
+
+export function resolveCrewReviewOutcome({ verdict, outputText = '' } = {}) {
+  if (verdict && typeof verdict === 'object' && verdict.passed === true) {
+    return {
+      status: 'passed',
+      passed: true,
+      findings: sanitizeCrewReviewFindings(verdict.findings, { passed: true }),
+      source: 'tool',
+    };
+  }
+  if (verdict && typeof verdict === 'object' && verdict.passed === false) {
+    return {
+      status: 'failed',
+      passed: false,
+      findings: sanitizeCrewReviewFindings(verdict.findings, { passed: false }),
+      source: 'tool',
+    };
+  }
+  const inferred = inferCrewReviewVerdictFromOutput(outputText);
+  if (inferred) return { ...inferred, source: 'inferred' };
+  return { status: 'incomplete', passed: undefined, findings: [], source: 'none' };
+}
+
+export async function applyCrewReviewOutcome({
+  cwd,
+  workerId,
+  workerRecord,
+  reviewCommit,
+  verdict,
+  outputText = '',
+} = {}) {
+  const id = String(workerId || '').trim();
+  const commit = String(reviewCommit || '').trim();
+  if (!id || !commit) {
+    return {
+      outcome: { status: 'incomplete', passed: undefined, findings: [], source: 'none' },
+      reviewPassed: undefined,
+      reviewIncomplete: true,
+      reviewLoopStopped: false,
+      reviewRound: 0,
+    };
+  }
+  const outcome = resolveCrewReviewOutcome({ verdict, outputText });
+  if (outcome.status === 'passed') {
+    const loop = nextCrewReviewLoopState(workerRecord, { passed: true, findings: [] });
+    await patchCrewWorkerRecord(cwd, id, {
+      reviewedCommit: commit,
+      reviewPassed: true,
+      reviewText: '',
+      ...loop,
+    }).catch(() => null);
+    return {
+      outcome,
+      reviewPassed: true,
+      reviewIncomplete: false,
+      reviewLoopStopped: loop.reviewLoopStopped,
+      reviewRound: loop.reviewRound,
+    };
+  }
+  if (outcome.status === 'failed') {
+    const loop = nextCrewReviewLoopState(workerRecord, {
+      passed: false,
+      findings: outcome.findings,
+    });
+    await patchCrewWorkerRecord(cwd, id, {
+      reviewedCommit: commit,
+      reviewPassed: false,
+      reviewText: formatCrewReviewText({ passed: false, findings: outcome.findings }),
+      ...loop,
+    }).catch(() => null);
+    return {
+      outcome,
+      reviewPassed: false,
+      reviewIncomplete: false,
+      reviewLoopStopped: loop.reviewLoopStopped,
+      reviewRound: loop.reviewRound,
+    };
+  }
+  const reviewText = String(outputText || '').trim();
+  await patchCrewWorkerRecord(cwd, id, {
+    ...(reviewText ? { reviewText: reviewText.slice(0, 4000) } : {}),
+  }).catch(() => null);
+  return {
+    outcome,
+    reviewPassed: undefined,
+    reviewIncomplete: true,
+    reviewLoopStopped: false,
+    reviewRound: 0,
+  };
 }
 
 function normalizeFindingsBullet(value) {
@@ -205,6 +347,61 @@ export function listUnreadCrewEvents(state, { to = 'coordinator', limit = 12 } =
   return unread.slice(-cap);
 }
 
+export function parseCrewWakeNotification(wakeText = '') {
+  const text = String(wakeText || '');
+  const match = text.match(/<notification type="([^"]+)" workerId="([^"]+)"/);
+  if (!match) return null;
+  const type = String(match[1] || '').trim();
+  const workerId = String(match[2] || '').trim();
+  if (!workerId) return null;
+  let kind = '';
+  if (type === 'crew.review.completed') kind = 'review.completed';
+  else if (type === 'crew.worker.completed') kind = 'worker.completed';
+  else if (type === 'crew.worker.failed') kind = 'worker.failed';
+  else if (type === 'crew.worker.interrupted') kind = 'worker.interrupted';
+  return { type, workerId, kind: kind || undefined };
+}
+
+export function markCrewEventsDeliveredInState(state, { eventIds = [], from = '', kind = '' } = {}) {
+  const idSet = new Set(
+    (Array.isArray(eventIds) ? eventIds : [])
+      .map((item) => String(item || '').trim())
+      .filter(Boolean),
+  );
+  const fromId = String(from || '').trim();
+  const eventKind = String(kind || '').trim();
+  let marked = 0;
+  const events = listCrewEventsFromState(state).map((event) => {
+    if (event.delivered === true) return event;
+    const byId = idSet.size > 0 && idSet.has(event.id);
+    const byWake = fromId
+      && event.from === fromId
+      && (!eventKind || event.kind === eventKind);
+    if (byId || byWake) {
+      marked += 1;
+      return { ...event, delivered: true };
+    }
+    return event;
+  });
+  return { events, marked };
+}
+
+export function markCrewEventsDelivered(cwd, options = {}) {
+  return withCrewStateLock(cwd, async () => {
+    const current = (await readCrewStateFile(cwd)) || {};
+    const { events, marked } = markCrewEventsDeliveredInState(current, options);
+    if (!marked) return { ok: true, marked: 0 };
+    await writeCrewStateFileUnlocked(cwd, composeCrewStateDocument(current, { events }));
+    return { ok: true, marked };
+  });
+}
+
+export function markCrewEventsDeliveredForWake(cwd, wakeText = '') {
+  const note = parseCrewWakeNotification(wakeText);
+  if (!note) return markCrewEventsDelivered(cwd, { eventIds: [] });
+  return markCrewEventsDelivered(cwd, { from: note.workerId, kind: note.kind });
+}
+
 function capCrewEvents(events) {
   const list = Array.isArray(events) ? events : [];
   if (list.length <= CREW_EVENTS_LIMIT) return list;
@@ -252,6 +449,7 @@ export function buildCrewCompletionEvent(input = {}) {
   if (input.reviewPassed === true || input.reviewPassed === false) {
     payload.reviewPassed = input.reviewPassed === true;
   }
+  if (input.reviewIncomplete === true) payload.reviewIncomplete = true;
   if (input.reviewLoopStopped === true) payload.reviewLoopStopped = true;
   const reviewRound = Number.parseInt(String(input.reviewRound ?? ''), 10);
   if (Number.isInteger(reviewRound) && reviewRound > 0) payload.reviewRound = reviewRound;

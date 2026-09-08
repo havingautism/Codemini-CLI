@@ -2232,7 +2232,18 @@ export function AppProvider({ children }) {
 
         case "assistant:tool_call_delta":
         case "tool:start": {
-          update({ stage: "tooling", live: true, stageLabel: t("tooling") });
+          const toolName = String(event.name || event.toolName || "")
+            .toLowerCase()
+            .replace(/\(.*$/, "");
+          const crewActive = Boolean(stateRef.current.runtimeState?.crewActive);
+          update({
+            stage: "tooling",
+            live: true,
+            stageLabel:
+              crewActive && toolName === "land_workers"
+                ? t("crewPhaseMerging")
+                : t("tooling"),
+          });
           break;
         }
 

@@ -164,6 +164,24 @@ test('suggestCrewNextAction prefers review for sealed workers', () => {
   });
   assert.match(suggestion, /reviewer/i);
   assert.match(suggestion, /workera/);
+  assert.match(suggestion, /rebase/i);
+});
+
+test('suggestCrewNextAction prefers rebase when the base already moved', () => {
+  const suggestion = suggestCrewNextAction({
+    workers: [{
+      id: 'noah',
+      sealed: true,
+      kind: 'coder',
+      reviewPassed: undefined,
+      rebaseOnto: 'abc123',
+      integrated: false,
+    }],
+    inFlight: [],
+  });
+  assert.match(suggestion, /Resume and rebase/);
+  assert.match(suggestion, /noah/);
+  assert.match(suggestion, /reviewer/);
 });
 
 test('suggestCrewNextAction waits for queued wakes instead of landing', () => {
@@ -188,6 +206,11 @@ test('crew progress dock describes reviewing and hides after full merge', () => 
     { inFlightIds: ['lena'] },
   );
   assert.equal(reviewing.phase, 'reviewing');
+  const overwritten = describeCrewWorkerProgress(
+    { id: 'lena', kind: 'coder', dirty: false, runStatus: 'running' },
+    { inFlightIds: ['lena'] },
+  );
+  assert.equal(overwritten.phase, 'reviewing');
   const items = buildCrewProgressItems({
     workers: [
       { id: 'lena', kind: 'coder', sealed: true, runStatus: 'completed', reviewPassed: true },
