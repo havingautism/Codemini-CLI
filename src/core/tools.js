@@ -5449,7 +5449,7 @@ export function getBuiltinTools({
       function: {
         name: "cancel_worker",
         description:
-          "Abort a Crew worker or its in-flight reviewer. Cancelling a coder removes its worktree, branch, and roster slot. Cancelling while a review is running only stops that reviewer and keeps the author worktree. Use the worker id from crew_status.",
+          "Abort a Crew worker or its in-flight reviewer. Use when the user changes or revokes that worker's task (path, file type, scope) while running, queued, or sealed before review/land: cancel, then run_subagent with the new task. Cancelling a coder removes its worktree, branch, and roster slot. Cancelling while a review is running only stops that reviewer and keeps the author worktree. Use the worker id from crew_status.",
         parameters: {
           type: "object",
           properties: {

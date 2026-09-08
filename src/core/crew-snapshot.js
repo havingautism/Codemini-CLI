@@ -66,7 +66,7 @@ export function suggestCrewNextAction({ workers = [], inFlight = [], pendingWake
   const roster = (Array.isArray(workers) ? workers : []).filter((item) => item.integrated !== true);
   const inFlightIds = [...new Set((Array.isArray(inFlight) ? inFlight : []).map((item) => String(item || '').trim()).filter(Boolean))];
   if (inFlightIds.length) {
-    return `Wait for in-flight workers (${inFlightIds.join(', ')}) or call crew_status again before dispatching.`;
+    return `Wait for in-flight workers (${inFlightIds.join(', ')}) or call crew_status again before dispatching. If the user changed a worker's assignment, cancel_worker that id then run_subagent — do not only explain that workers cannot be interrupted.`;
   }
   const dirty = roster.filter((item) => item.dirty === true);
   if (dirty.length) {
