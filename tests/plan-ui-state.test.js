@@ -942,3 +942,29 @@ test('cancelled plan:step_done settles the card as cancelled not completed', () 
   assert.equal(card.planRun.phase, 'cancelled');
   assert.equal(card.planRun.steps[0].status, 'cancelled');
 });
+
+test('tool:end preserves a cancelled planRun phase after plan:step_done', () => {
+  let message = { id: 'parent', role: 'general', segments: [] };
+  message = applyStreamEventToPlanRun(message, {
+    type: 'tool:start',
+    id: 'call-html',
+    name: 'run_subagent',
+    arguments: { name: 'doc-html', paths: ['docs/test.html'], prompt: 'write html' },
+  });
+  message = applyPlanEventToMessage(message, {
+    type: 'plan:step_done',
+    toolCallId: 'call-html',
+    step: 1,
+    status: 'cancelled',
+    role: 'doc-html',
+    title: 'Crew worker · doc-html',
+  });
+  message = applyStreamEventToPlanRun(message, {
+    type: 'tool:end',
+    id: 'call-html',
+    name: 'run_subagent',
+  });
+  const card = message.segments[0].cards[0];
+  assert.equal(card.planRun.phase, 'cancelled');
+  assert.equal(card.displayName, planPhaseTitle('cancelled'));
+});

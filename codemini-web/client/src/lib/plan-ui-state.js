@@ -568,13 +568,16 @@ export function applyStreamEventToPlanRun(message, event, options = {}) {
         }
         if (type === "tool:end") {
           const complete = isPlanRunComplete(card.planRun);
+          const preservedPhase = String(card.planRun?.phase || "").toLowerCase();
           const planRun = card.planRun
             ? {
                 ...card.planRun,
                 phase:
-                  card.planRun.phase === "failed" ||
-                  card.planRun.phase === "aborted" ||
-                  card.planRun.phase === "blocked"
+                  preservedPhase === "failed" ||
+                  preservedPhase === "aborted" ||
+                  preservedPhase === "blocked" ||
+                  preservedPhase === "cancelled" ||
+                  preservedPhase === "canceled"
                     ? card.planRun.phase
                     : complete
                       ? "completed"
