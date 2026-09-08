@@ -32,6 +32,7 @@ const STATUS_DOT = {
   completed: "bg-[var(--accent-green)]",
   failed: "bg-[var(--accent-red)]",
   aborted: "bg-[var(--accent-orange)]",
+  cancelled: "bg-[var(--accent-orange)]",
   waiting: "bg-[var(--accent-orange)]",
   blocked: "bg-[var(--accent-orange)]",
 };
@@ -44,6 +45,7 @@ const STATUS_LABEL_KEY = {
   blocked: "subagentStatusBlocked",
   failed: "subagentStatusFailed",
   aborted: "subagentStatusAborted",
+  cancelled: "subagentStatusCancelled",
 };
 
 const FORK_STATUS_LABEL_KEY = {
@@ -54,6 +56,7 @@ const FORK_STATUS_LABEL_KEY = {
   blocked: "forkStatusBlocked",
   failed: "forkStatusFailed",
   aborted: "forkStatusAborted",
+  cancelled: "forkStatusCancelled",
 };
 
 function statusLabel(phase, kind = "subagent") {
@@ -380,6 +383,8 @@ function SubagentStepRow({ step, index }) {
                   ? STATUS_DOT.completed
                   : status === "failed"
                     ? STATUS_DOT.failed
+                    : status === "cancelled" || status === "canceled" || status === "aborted"
+                      ? STATUS_DOT.cancelled
                     : status === "waiting" || status === "blocked"
                       ? STATUS_DOT[status]
                       : "bg-[var(--muted)]",
@@ -415,9 +420,14 @@ export function PlanToolCard({ card }) {
     crewActive: Boolean(state.runtimeState?.crewActive),
   });
   const planRun = card?.planRun || null;
+  const status = String(card?.status || "").toLowerCase();
+  const rawPhase = String(planRun?.phase || "").toLowerCase();
   const phase =
-    planRun?.phase || (card?.status === "done" ? "completed" : "planning");
-  const running = String(card?.status || "").toLowerCase() === "running";
+    rawPhase === "canceled"
+      ? "cancelled"
+      : rawPhase || (status === "done" ? "completed" : status === "running" ? "executing" : "planning");
+  const live = phase === "planning" || phase === "executing";
+  const running = live && phase !== "waiting";
   const isSubagent = isRunSubagentCard(card);
   const isFork = isForkCard(card);
   const isDelegationCard = isSubagent || isFork;

@@ -14,6 +14,7 @@ import {
   isCreatePlanToolEvent,
   isLegacyFinalPlanStep,
   isPlanTranscriptEvent,
+  reconcileLeakedPlanDispatchCards,
   shouldNestStreamEventInPlan,
   settleCompletedPlanToolCards,
 } from "./plan-ui-state.js";
@@ -23,8 +24,10 @@ import {
   sanitizeCrewMessageFileChanges,
   settleLingeringCrewDispatchCards,
   settleCrewReviewDispatchCards,
+  settleCrewCancelledWorkerCards,
 } from "./crew-ui-state.js";
 import { parseCrewReviewCompletedWake } from "../../../../src/core/crew-notification.js";
+import { cancelWorkerIdFromPayload } from "../../../../src/core/crew-progress.js";
 
 function sessionCrewActive(state, sessionId) {
   const runtime = state.runtimeState || {};
@@ -613,11 +616,12 @@ export function reduceSessionTranscriptEvent(state, event) {
       if (message.id !== messageId) return message;
       return applyPlanEventToMessage(message, event);
     });
+    const settled = isLegacyFinalPlanStep(event)
+      ? settleCompletedPlanToolCards(nextMessages)
+      : nextMessages;
     sessionMessagesById = {
       ...sessionMessagesById,
-      [sessionId]: isLegacyFinalPlanStep(event)
-        ? settleCompletedPlanToolCards(nextMessages)
-        : nextMessages,
+      [sessionId]: reconcileLeakedPlanDispatchCards(settled),
     };
   } else if (isTranscriptStreamEvent(event.type)) {
     let nextMessages = messages;
@@ -677,6 +681,22 @@ export function reduceSessionTranscriptEvent(state, event) {
           sessionMessagesById[sessionId] || [],
         ),
       };
+    }
+    if (
+      crewActive &&
+      (event.type === "tool:end" || event.type === "tool:result") &&
+      String(event.name || event.toolName || "").toLowerCase().replace(/\(.*$/, "") === "cancel_worker"
+    ) {
+      const workerId = cancelWorkerIdFromPayload(event);
+      if (workerId) {
+        sessionMessagesById = {
+          ...sessionMessagesById,
+          [sessionId]: settleCrewCancelledWorkerCards(
+            sessionMessagesById[sessionId] || [],
+            workerId,
+          ),
+        };
+      }
     }
   }
 

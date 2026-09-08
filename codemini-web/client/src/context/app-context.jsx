@@ -61,6 +61,7 @@ import {
   updatePlanOverviewStepStatus,
   planRunFromTranscript,
 } from "../lib/plan-ui-state.js";
+import { repairCrewSessionMessages } from "../lib/crew-ui-state.js";
 import {
   addSkillToSegments,
   finishStreamingTextSegments,
@@ -1647,7 +1648,7 @@ export function AppProvider({ children }) {
           const restored = sanitizeManualAbortMessages(
             repairSettledTranscriptMessages(
               enrichUiMessagesWithScrapbookAttachments(
-                settleCompletedPlanToolCards(uiMessages),
+                settleCompletedPlanToolCards(repairCrewSessionMessages(uiMessages)),
                 messages,
               ),
             ),
@@ -1998,18 +1999,20 @@ export function AppProvider({ children }) {
         const restored = sanitizeManualAbortMessages(
           repairSettledTranscriptMessages(
             settleCompletedPlanToolCards(
-              mergeAlignedAssistantSkillContext(
-                alignSessionAssistantMessages(
-                  mergeAlignedUserContext(
-                    alignSessionUserMessages(
-                      mergeStructuredUiPlans(processed, uiMessages),
+              repairCrewSessionMessages(
+                mergeAlignedAssistantSkillContext(
+                  alignSessionAssistantMessages(
+                    mergeAlignedUserContext(
+                      alignSessionUserMessages(
+                        mergeStructuredUiPlans(processed, uiMessages),
+                        uiMessages,
+                      ),
                       uiMessages,
                     ),
                     uiMessages,
                   ),
                   uiMessages,
                 ),
-                uiMessages,
               ),
             ),
           ),

@@ -39,6 +39,7 @@ import {
 import { ModeHome } from './components/mode-home.js';
 import { createTuiCopy } from './copy.js';
 import { parseCrewWakeHeadline } from '../core/crew-snapshot.js';
+import { cancelWorkerIdFromPayload } from '../core/crew-progress.js';
 import { color, editorTheme } from './theme.js';
 
 /** Editor variant that paints every rendered line with the dark surface color. */
@@ -318,6 +319,15 @@ export async function runOpenCodeTui({ runtime, sessionId, model, safeMode = tru
       setActivity('tool', `${event.displayName || event.name || 'tool'}…`);
     } else if (type === 'tool:end' || type === 'system_tool:end' || type === 'skill:end') {
       toolRows.get(toolEventKey(event, type))?.update(event, 'success');
+      const toolName = String(event.name || event.toolName || '').toLowerCase().replace(/\(.*$/, '');
+      if (toolName === 'cancel_worker') {
+        const workerId = cancelWorkerIdFromPayload(event);
+        if (workerId) {
+          for (const plan of planByToolCallId.values()) {
+            plan.markWorkerCancelled?.(workerId);
+          }
+        }
+      }
       setActivity('tool', copy.working);
     } else if (type === 'tool:result' || type === 'system_tool:result') {
       const row = toolRows.get(toolEventKey(event, type));

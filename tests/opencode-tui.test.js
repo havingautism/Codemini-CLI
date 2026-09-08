@@ -1284,6 +1284,23 @@ test('plan progress can start from a Crew reviewer step_start', () => {
   assert.match(rendered, /review/);
 });
 
+test('plan progress shows cancelled crew workers instead of done', () => {
+  const plan = new PlanProgress(createTuiCopy('zh'), {
+    goal: 'Write docs',
+    steps: [{
+      index: 1,
+      role: 'doc-html',
+      title: 'Crew worker · doc-html',
+      status: 'running',
+      crewKind: 'worker'
+    }]
+  });
+  assert.equal(plan.markWorkerCancelled('doc-html'), true);
+  const rendered = stripAnsi(plan.render(80).join('\n'));
+  assert.match(rendered, /已取消/);
+  assert.doesNotMatch(rendered, /✓ Crew worker · doc-html/);
+});
+
 test('compact terminals use the full-name compact logo and still enter chat', async () => {
   const terminal = new FakeTerminal();
   terminal.columns = 48;

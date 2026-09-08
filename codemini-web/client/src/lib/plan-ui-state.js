@@ -24,7 +24,20 @@ const PLAN_NESTED_STREAM_EVENTS = new Set([
 ]);
 
 export function isCompletedStatus(status) {
-  return ["done", "failed", "error", "blocked", "completed"].includes(
+  return [
+    "done",
+    "failed",
+    "error",
+    "blocked",
+    "completed",
+    "cancelled",
+    "canceled",
+    "aborted",
+  ].includes(String(status || "").toLowerCase());
+}
+
+export function isCancelledStatus(status) {
+  return ["cancelled", "canceled", "aborted"].includes(
     String(status || "").toLowerCase(),
   );
 }
@@ -96,6 +109,9 @@ export function planPhaseTitle(phase, { toolName = "" } = {}) {
       return `${kind} · 失败`;
     case "aborted":
       return `${kind} · 已中止`;
+    case "cancelled":
+    case "canceled":
+      return `${kind} · 已取消`;
     default:
       return `${kind} · 任务`;
   }
@@ -164,7 +180,7 @@ export function shouldExpandPlanStep(step, { userExpanded } = {}) {
   return false;
 }
 
-function upsertCreatePlanCard(message, updater, { cardId = "" } = {}) {
+function upsertCreatePlanCard(message, updater, { cardId = "", createIfMissing = true } = {}) {
   const targetId = String(cardId || "").trim();
   let found = false;
   const segments = [];
@@ -199,6 +215,7 @@ function upsertCreatePlanCard(message, updater, { cardId = "" } = {}) {
     if (cards.length) segments.push({ ...segment, cards });
   }
   if (!found) {
+    if (!createIfMissing) return message;
     const card = updater({
       id: targetId || `run_subagent-${Date.now()}`,
       name: "run_subagent",
@@ -261,15 +278,175 @@ export function findActivePlanParentMessage(messages = []) {
     .find((message) => messageHasActivePlanRun(message));
 }
 
-/** Prefer the original spawn card (`card.id`) over a later leaked duplicate. */
+function planCardHasSpawnArguments(card) {
+  const args = card?.arguments && typeof card.arguments === "object" ? card.arguments : {};
+  return Boolean(
+    String(args.name || "").trim()
+    || String(args.prompt || "").trim()
+    || String(args.review || "").trim()
+    || String(args.resume || "").trim()
+    || String(args.role || "").trim()
+    || String(args.goal || "").trim()
+    || (Array.isArray(args.paths) && args.paths.length)
+    || (Array.isArray(args.tasks) && args.tasks.length),
+  );
+}
+
+function planCardSpawnScore(card) {
+  if (!card) return -1;
+  const args = card?.arguments && typeof card.arguments === "object" ? card.arguments : {};
+  let score = 0;
+  if (String(args.name || "").trim()) score += 4;
+  if (String(args.prompt || "").trim()) score += 4;
+  if (String(args.review || "").trim()) score += 4;
+  if (String(args.resume || "").trim()) score += 4;
+  if (String(args.role || "").trim()) score += 2;
+  if (Array.isArray(args.paths) && args.paths.length) score += 4;
+  if (Array.isArray(args.tasks) && args.tasks.length) score += 2;
+  const steps = Array.isArray(card.planRun?.steps) ? card.planRun.steps : [];
+  if (steps.length) score += 1;
+  const first = steps[0];
+  if (first?.title || (first?.role && first.role !== "general")) score += 1;
+  if (Array.isArray(first?.segments) && first.segments.length) score += 2;
+  return score;
+}
+
+function mergePlanSteps(primary, extra) {
+  if (!extra) return primary;
+  if (!primary) return extra;
+  const extraSegments = Array.isArray(extra.segments) ? extra.segments : [];
+  const primarySegments = Array.isArray(primary.segments) ? primary.segments : [];
+  const extraDone = isCompletedStatus(extra.status);
+  const primaryDone = isCompletedStatus(primary.status);
+  return {
+    ...primary,
+    role: primary.role && primary.role !== "general" ? primary.role : extra.role || primary.role,
+    title: primary.title || extra.title,
+    status: extraDone && !primaryDone ? extra.status : primary.status,
+    summary: primary.summary || extra.summary,
+    segments: extraSegments.length > primarySegments.length ? extraSegments : primarySegments,
+    toolCallId: primary.toolCallId || extra.toolCallId,
+    model: primary.model || extra.model,
+    sdkProvider: primary.sdkProvider || extra.sdkProvider,
+    taskId: primary.taskId || extra.taskId,
+  };
+}
+
+function mergePlanCards(owner, leak) {
+  if (!owner) return leak;
+  if (!leak?.planRun) return owner;
+  if (!owner.planRun?.steps?.length) {
+    return {
+      ...owner,
+      status: leak.status || owner.status,
+      displayName: owner.displayName || leak.displayName,
+      planRun: leak.planRun,
+    };
+  }
+  const ownerSteps = Array.isArray(owner.planRun.steps) ? owner.planRun.steps : [];
+  const leakSteps = Array.isArray(leak.planRun.steps) ? leak.planRun.steps : [];
+  const length = Math.max(ownerSteps.length, leakSteps.length);
+  const steps = Array.from({ length }, (_, index) => mergePlanSteps(ownerSteps[index], leakSteps[index]));
+  const leakPhase = String(leak.planRun.phase || "").toLowerCase();
+  const ownerPhase = String(owner.planRun.phase || "").toLowerCase();
+  const terminal = new Set(["cancelled", "canceled", "aborted", "failed", "completed", "blocked"]);
+  let phase = terminal.has(leakPhase) && !terminal.has(ownerPhase)
+    ? leak.planRun.phase
+    : owner.planRun.phase;
+  const allDone = steps.length > 0 && steps.every((step) => isCompletedStatus(step.status));
+  const anyCancelled = steps.some((step) => isCancelledStatus(step.status));
+  const anyFailed = steps.some((step) => String(step.status || "").toLowerCase() === "failed");
+  if (allDone && !terminal.has(String(phase || "").toLowerCase())) {
+    phase = anyFailed ? "failed" : anyCancelled ? "cancelled" : "completed";
+  }
+  return {
+    ...owner,
+    status: allDone ? (String(phase).toLowerCase() === "failed" ? "error" : "done") : owner.status,
+    displayName: planPhaseTitle(phase, { toolName: owner.name }),
+    planRun: {
+      ...owner.planRun,
+      phase,
+      goal: owner.planRun.goal || leak.planRun.goal,
+      steps,
+    },
+  };
+}
+
+export function removeCreatePlanCard(message, cardId) {
+  const targetId = String(cardId || "").trim();
+  if (!targetId || !message) return message;
+  let changed = false;
+  const segments = (Array.isArray(message.segments) ? message.segments : [])
+    .map((segment) => {
+      if (segment?.type !== "tools" || !Array.isArray(segment.cards)) return segment;
+      const cards = segment.cards.filter((card) => {
+        if (isCreatePlanCard(card) && String(card.id || "") === targetId) {
+          changed = true;
+          return false;
+        }
+        return true;
+      });
+      if (!changed) return segment;
+      return cards.length ? { ...segment, cards } : null;
+    })
+    .filter(Boolean);
+  return changed ? { ...message, segments } : message;
+}
+
+/** Prefer the original spawn card (`card.id` with arguments) over a leaked empty duplicate. */
 export function findMessageOwningPlanCard(messages, toolCallId = "") {
   const id = String(toolCallId || "").trim();
   if (!id) return null;
   const list = Array.isArray(messages) ? messages : [];
+  let best = null;
+  let bestScore = -1;
   for (const message of list) {
-    if (findCreatePlanCard(message, id)) return message;
+    const card = findCreatePlanCard(message, id);
+    if (!card) continue;
+    const score = planCardSpawnScore(card);
+    if (score > bestScore) {
+      best = message;
+      bestScore = score;
+    }
   }
-  return null;
+  return best;
+}
+
+export function reconcileLeakedPlanDispatchCards(messages) {
+  const list = Array.isArray(messages) ? messages : [];
+  const ids = new Set();
+  for (const message of list) {
+    for (const card of listCreatePlanCards(message)) {
+      if (card?.id) ids.add(String(card.id));
+    }
+  }
+  if (!ids.size) return list;
+
+  let next = list;
+  for (const cardId of ids) {
+    const owner = findMessageOwningPlanCard(next, cardId);
+    if (!owner) continue;
+    const ownerCard = findCreatePlanCard(owner, cardId);
+    if (!ownerCard) continue;
+    let merged = ownerCard;
+    for (const message of next) {
+      if (message.id === owner.id) continue;
+      const duplicate = findCreatePlanCard(message, cardId);
+      if (!duplicate) continue;
+      merged = mergePlanCards(merged, duplicate);
+    }
+    next = next.map((message) => {
+      if (message.id === owner.id) {
+        if (merged === ownerCard) return message;
+        return upsertCreatePlanCard(message, () => merged, { cardId, createIfMissing: false });
+      }
+      const duplicate = findCreatePlanCard(message, cardId);
+      if (!duplicate) return message;
+      if (planCardHasSpawnArguments(duplicate)) return message;
+      return removeCreatePlanCard(message, cardId);
+    });
+  }
+  return next;
 }
 
 export function isPlanTranscriptEvent(type) {
@@ -646,6 +823,7 @@ export function applyPlanEventToMessage(message, event) {
         const anyFailed = steps.some(
           (step) => String(step.status || "").toLowerCase() === "failed",
         );
+        const anyCancelled = steps.some((step) => isCancelledStatus(step.status));
         const anyBlocked = steps.some(
           (step) => String(step.status || "").toLowerCase() === "blocked",
         );
@@ -655,9 +833,11 @@ export function applyPlanEventToMessage(message, event) {
         const phase = allDone
           ? anyFailed
             ? "failed"
-            : anyBlocked
-              ? "blocked"
-              : "completed"
+            : anyCancelled
+              ? "cancelled"
+              : anyBlocked
+                ? "blocked"
+                : "completed"
           : anyWaiting
             ? "waiting"
             : "executing";
@@ -699,7 +879,7 @@ export function applyPlanEventToMessage(message, event) {
           },
         };
       },
-      { cardId },
+      { cardId, createIfMissing: false },
     );
   }
 
@@ -713,8 +893,24 @@ export function settleRunningCreatePlanCards(message, { reason = "aborted", matc
       ? "completed"
       : reason === "failed"
         ? "failed"
-        : "aborted";
-  const settleStatus = terminalPhase === "completed" ? "done" : "failed";
+        : reason === "cancelled"
+          ? "cancelled"
+          : "aborted";
+  const settleStatus =
+    terminalPhase === "completed"
+      ? "done"
+      : terminalPhase === "cancelled"
+        ? "cancelled"
+        : "failed";
+  const nestedToolStatus = terminalPhase === "completed" ? "done" : "error";
+  const nestedSummary =
+    terminalPhase === "failed"
+      ? "Failed"
+      : terminalPhase === "aborted"
+        ? "Aborted"
+        : terminalPhase === "cancelled"
+          ? "Cancelled"
+          : "";
   const segments = (Array.isArray(message?.segments) ? message.segments : []).map(
     (seg) => {
       if (seg?.type !== "tools" || !Array.isArray(seg.cards)) return seg;
@@ -727,13 +923,16 @@ export function settleRunningCreatePlanCards(message, { reason = "aborted", matc
           String(card.status || "").toLowerCase() === "running" ||
           currentPhase === "planning" ||
           currentPhase === "executing";
-        if (!isActive) return card;
+        const forceCancel = terminalPhase === "cancelled";
+        if (!isActive && !forceCancel) return card;
+        if (forceCancel && currentPhase === "cancelled") return card;
         cardsChanged = true;
         const currentRun = card.planRun;
         const steps = Array.isArray(currentRun?.steps)
           ? currentRun.steps.map((step) => {
               const status = String(step?.status || "").toLowerCase();
-              if (isCompletedStatus(status)) return step;
+              if (isCompletedStatus(status) && !forceCancel) return step;
+              if (forceCancel && isCancelledStatus(status)) return step;
               const stepSegments = (Array.isArray(step.segments) ? step.segments : []).map(
                 (segment) => {
                   if (segment?.type === "thinking" && segment.isStreaming) {
@@ -748,14 +947,8 @@ export function settleRunningCreatePlanCards(message, { reason = "aborted", matc
                       toolCard?.status === "running"
                         ? {
                             ...toolCard,
-                            status: terminalPhase === "completed" ? "done" : "error",
-                            summary:
-                              toolCard.summary ||
-                              (terminalPhase === "failed"
-                                ? "Failed"
-                                : terminalPhase === "aborted"
-                                  ? "Aborted"
-                                  : ""),
+                            status: nestedToolStatus,
+                            summary: toolCard.summary || nestedSummary,
                           }
                         : toolCard,
                     ),
@@ -765,13 +958,7 @@ export function settleRunningCreatePlanCards(message, { reason = "aborted", matc
               return {
                 ...step,
                 status: settleStatus,
-                summary:
-                  step.summary ||
-                  (terminalPhase === "failed"
-                    ? "Failed"
-                    : terminalPhase === "aborted"
-                      ? "Aborted"
-                      : ""),
+                summary: step.summary || nestedSummary,
                 segments: stepSegments,
               };
             })
@@ -780,7 +967,7 @@ export function settleRunningCreatePlanCards(message, { reason = "aborted", matc
           ? {
               ...currentRun,
               phase:
-                currentRun.phase === "failed" || currentRun.phase === "aborted"
+                !forceCancel && (currentRun.phase === "failed" || currentRun.phase === "aborted")
                   ? currentRun.phase
                   : terminalPhase,
               steps,
@@ -859,7 +1046,7 @@ function reconcileDuplicatedPlanToolCards(message) {
 }
 
 export function settleCompletedPlanToolCards(messages) {
-  const list = Array.isArray(messages) ? messages : [];
+  const list = reconcileLeakedPlanDispatchCards(Array.isArray(messages) ? messages : []);
   if (!list.length) return list;
 
   return list.map((message) => {

@@ -18,12 +18,20 @@ import { stripPlanProgressText } from '../shared/plan-progress-text.js';
 import {
   applyPlanEventToMessage,
   applyStreamEventToPlanRun,
+  findMessageOwningPlanCard,
   isCreatePlanToolEvent,
   isLegacyFinalPlanStep,
   messageHasActivePlanRun,
+  reconcileLeakedPlanDispatchCards,
   shouldNestStreamEventInPlan,
   settleRunningCreatePlanCards,
 } from '../client/src/lib/plan-ui-state.js';
+import {
+  isCrewDispatchCard,
+  repairCrewSessionMessages,
+  settleCrewCancelledWorkerCards,
+} from '../client/src/lib/crew-ui-state.js';
+import { cancelWorkerIdFromPayload } from '../../src/core/crew-progress.js';
 import fs from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
@@ -194,12 +202,14 @@ export function serializeSessionMessages(messages) {
 export function loadPersistedUiMessages(sessionId) {
   try {
     const messages = loadUiTranscriptFromSqlite(sessionId);
-    if (Array.isArray(messages) && messages.length > 0) return messages;
+    if (Array.isArray(messages) && messages.length > 0) {
+      return repairCrewSessionMessages(messages);
+    }
   } catch {}
   try {
     const raw = readFileSync(webTranscriptPath(sessionId), 'utf8');
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed?.messages) ? parsed.messages : [];
+    return repairCrewSessionMessages(Array.isArray(parsed?.messages) ? parsed.messages : []);
   } catch {
     return [];
   }
@@ -481,16 +491,8 @@ export class RuntimeBridge {
   #findPlanParentMessageId(toolCallId = '') {
     const id = String(toolCallId || '').trim();
     if (!id) return this.#uiPlanParentMsgId || this.#uiActiveMsgId || null;
-    for (let index = 0; index < this.#uiMessages.length; index += 1) {
-      const message = this.#uiMessages[index];
-      const segments = Array.isArray(message?.segments) ? message.segments : [];
-      for (const segment of segments) {
-        if (segment?.type !== 'tools') continue;
-        for (const card of Array.isArray(segment.cards) ? segment.cards : []) {
-          if (String(card?.id || '') === id) return message.id;
-        }
-      }
-    }
+    const owner = findMessageOwningPlanCard(this.#uiMessages, id);
+    if (owner?.id) return owner.id;
     for (let index = this.#uiMessages.length - 1; index >= 0; index -= 1) {
       const message = this.#uiMessages[index];
       const segments = Array.isArray(message?.segments) ? message.segments : [];
@@ -520,6 +522,7 @@ export class RuntimeBridge {
     let messageId = null;
     if (parentId) {
       this.#updateUiMessage(parentId, (message) => applyPlanEventToMessage(message, event));
+      this.#uiMessages = reconcileLeakedPlanDispatchCards(this.#uiMessages);
       messageId = parentId;
       this.#persistUiTranscriptSoon();
     }
@@ -796,7 +799,10 @@ export class RuntimeBridge {
         )?.id;
     if (!targetId) return;
     this.#updateUiMessage(targetId, (message) =>
-      settleRunningCreatePlanCards(message, { reason })
+      settleRunningCreatePlanCards(message, {
+        reason,
+        match: (card) => !isCrewDispatchCard(card),
+      })
     );
     this.#uiPlanParentMsgId = null;
   }
@@ -1292,6 +1298,19 @@ export class RuntimeBridge {
       }
       default:
         break;
+    }
+    if (
+      (event.type === 'tool:end' || event.type === 'tool:result') &&
+      String(event.name || event.toolName || '').toLowerCase().replace(/\(.*$/, '') === 'cancel_worker'
+    ) {
+      const workerId = cancelWorkerIdFromPayload(event);
+      if (workerId) {
+        this.#uiMessages = settleCrewCancelledWorkerCards(this.#uiMessages, workerId);
+        this.#persistUiTranscriptSoon();
+      }
+    }
+    if (event.type === 'plan:step_start' || event.type === 'plan:progress' || event.type === 'plan:step_done') {
+      this.#uiMessages = reconcileLeakedPlanDispatchCards(this.#uiMessages);
     }
     return publishedMessageId;
   }

@@ -1,5 +1,13 @@
 import { describeCrewRunSubagent } from "../../../../src/core/tool-display.js";
-import { settleRunningCreatePlanCards } from "./plan-ui-state.js";
+import {
+  cancelWorkerIdFromPayload,
+  crewIdentityMatchesWorker,
+} from "../../../../src/core/crew-progress.js";
+import {
+  isCreatePlanCard,
+  reconcileLeakedPlanDispatchCards,
+  settleRunningCreatePlanCards,
+} from "./plan-ui-state.js";
 
 function* iterateToolCards(segments = []) {
   for (const segment of Array.isArray(segments) ? segments : []) {
@@ -55,9 +63,59 @@ export function isCrewBackgroundWorkerToolEvent(event, { crewActive } = {}) {
   return Boolean(String(event.parentToolCallId || "").trim());
 }
 
-function isCrewDispatchCard(card) {
+export function isCrewDispatchCard(card) {
   return normalizeToolName(card?.name) === "run_subagent"
     && Boolean(describeCrewRunSubagent(card?.arguments || {}));
+}
+
+export function crewCardMatchesWorker(card, workerId) {
+  const id = String(workerId || "").trim();
+  if (!id || !isCreatePlanCard(card)) return false;
+  if (crewIdentityMatchesWorker(card?.arguments || {}, id)) return true;
+  const described = describeCrewRunSubagent(card?.arguments || {});
+  if (described && crewIdentityMatchesWorker(described, id)) return true;
+  const steps = Array.isArray(card?.planRun?.steps) ? card.planRun.steps : [];
+  return steps.some((step) => crewIdentityMatchesWorker(step, id));
+}
+
+export function settleCrewCancelledWorkerCards(messages, workerId) {
+  const id = String(workerId || "").trim();
+  if (!id) return messages;
+  return (Array.isArray(messages) ? messages : []).map((message) =>
+    settleRunningCreatePlanCards(message, {
+      reason: "cancelled",
+      match: (card) => crewCardMatchesWorker(card, id),
+    }),
+  );
+}
+
+export function settleCancelledWorkersFromTranscript(messages) {
+  const list = Array.isArray(messages) ? messages : [];
+  let next = list;
+  for (let index = 0; index < next.length; index += 1) {
+    const message = next[index];
+    const workerIds = [];
+    for (const card of iterateToolCards(message?.segments)) {
+      if (normalizeToolName(card?.name) !== "cancel_worker") continue;
+      if (!["done", "error"].includes(String(card?.status || "").toLowerCase())) continue;
+      const workerId = cancelWorkerIdFromPayload(card);
+      if (workerId) workerIds.push(workerId);
+    }
+    if (!workerIds.length) continue;
+    let prefix = next.slice(0, index + 1);
+    const suffix = next.slice(index + 1);
+    for (const workerId of workerIds) {
+      prefix = settleCrewCancelledWorkerCards(prefix, workerId);
+    }
+    next = [...prefix, ...suffix];
+  }
+  return next;
+}
+
+export function repairCrewSessionMessages(messages) {
+  return settleCancelledWorkersFromTranscript(
+    reconcileLeakedPlanDispatchCards(messages),
+  );
 }
 
 export function settleCrewReviewDispatchCards(messages, reviewOf = "") {

@@ -4,11 +4,13 @@ import assert from 'node:assert/strict';
 import {
   applyPlanEventToMessage,
   applyStreamEventToPlanRun,
+  findMessageOwningPlanCard,
   findPlanStepMessageId,
   findActivePlanParentMessage,
   isLegacyFinalPlanStep,
   planPhaseTitle,
   planRunFromTranscript,
+  reconcileLeakedPlanDispatchCards,
   settleCompletedPlanToolCards,
   settleRunningCreatePlanCards,
   shouldNestStreamEventInPlan,
@@ -29,6 +31,7 @@ test('planPhaseTitle maps phases', () => {
   assert.equal(planPhaseTitle('completed'), 'Subagent · 完成');
   assert.equal(planPhaseTitle('failed'), 'Subagent · 失败');
   assert.equal(planPhaseTitle('aborted'), 'Subagent · 已中止');
+  assert.equal(planPhaseTitle('cancelled'), 'Subagent · 已取消');
 });
 
 test('applyPlanEventToMessage keeps plan progress on create_plan card', () => {
@@ -804,4 +807,138 @@ test('findActivePlanParentMessage ignores background run_subagent cards', () => 
   };
   assert.equal(findActivePlanParentMessage([dispatch]), undefined);
   assert.equal(findActivePlanParentMessage([dispatch, plan])?.id, 'plan');
+});
+
+test('plan:step_done does not create an empty run_subagent card', () => {
+  let message = { id: 'parent', role: 'general', segments: [] };
+  message = applyPlanEventToMessage(message, {
+    type: 'plan:step_done',
+    toolCallId: 'missing',
+    step: 1,
+    status: 'done',
+  });
+  assert.equal((message.segments || []).length, 0);
+});
+
+test('findMessageOwningPlanCard prefers spawn arguments over an earlier leak', () => {
+  const leaked = {
+    id: 'first',
+    segments: [{
+      type: 'tools',
+      cards: [{
+        id: 'call-txt',
+        name: 'run_subagent',
+        arguments: {},
+        planRun: { phase: 'executing', steps: [{ role: 'Doc-txt', status: 'running' }] },
+      }],
+    }],
+  };
+  const spawn = {
+    id: 'second',
+    segments: [{
+      type: 'tools',
+      cards: [{
+        id: 'call-txt',
+        name: 'run_subagent',
+        arguments: { name: 'doc-txt', paths: ['docs/test.txt'], prompt: 'write txt' },
+        planRun: { phase: 'executing', steps: [] },
+      }],
+    }],
+  };
+  assert.equal(findMessageOwningPlanCard([leaked, spawn], 'call-txt')?.id, 'second');
+  assert.equal(findMessageOwningPlanCard([spawn, leaked], 'call-txt')?.id, 'second');
+});
+
+test('reconcileLeakedPlanDispatchCards drops empty-arg duplicates and keeps spawn args', () => {
+  const leaked = {
+    id: 'first',
+    segments: [{
+      type: 'tools',
+      cards: [{
+        id: 'call-txt',
+        name: 'run_subagent',
+        status: 'done',
+        arguments: {},
+        planRun: {
+          phase: 'completed',
+          steps: [{ toolCallId: 'call-txt', role: 'Doc-txt', status: 'done', segments: [{ type: 'handoff', text: 'wrote txt' }] }],
+        },
+      }],
+    }],
+  };
+  const spawn = {
+    id: 'second',
+    segments: [{
+      type: 'tools',
+      cards: [{
+        id: 'call-txt',
+        name: 'run_subagent',
+        status: 'running',
+        arguments: { name: 'doc-txt', paths: ['docs/test.txt'] },
+        planRun: { phase: 'executing', steps: [] },
+      }],
+    }],
+  };
+  const next = reconcileLeakedPlanDispatchCards([leaked, spawn]);
+  assert.equal(next[0].segments.length, 0);
+  const card = next[1].segments[0].cards[0];
+  assert.equal(card.arguments.name, 'doc-txt');
+  assert.equal(card.planRun.phase, 'completed');
+  assert.equal(card.planRun.steps[0].status, 'done');
+});
+
+test('settleRunningCreatePlanCards can mark a completed crew card cancelled', () => {
+  const message = {
+    id: 'parent',
+    segments: [{
+      type: 'tools',
+      cards: [{
+        id: 'call-html',
+        name: 'run_subagent',
+        status: 'done',
+        arguments: { name: 'doc-html', paths: ['docs/test.html'] },
+        planRun: {
+          phase: 'completed',
+          steps: [{ status: 'done', role: 'doc-html' }],
+        },
+      }],
+    }],
+  };
+  const next = settleRunningCreatePlanCards(message, {
+    reason: 'cancelled',
+    match: (card) => card.id === 'call-html',
+  });
+  const card = next.segments[0].cards[0];
+  assert.equal(card.status, 'done');
+  assert.equal(card.planRun.phase, 'cancelled');
+  assert.equal(card.planRun.steps[0].status, 'cancelled');
+});
+
+test('cancelled plan:step_done settles the card as cancelled not completed', () => {
+  let message = { id: 'parent', role: 'general', segments: [] };
+  message = applyStreamEventToPlanRun(message, {
+    type: 'tool:start',
+    id: 'call-html',
+    name: 'run_subagent',
+    arguments: { name: 'doc-html', paths: ['docs/test.html'], prompt: 'write html' },
+  });
+  message = applyPlanEventToMessage(message, {
+    type: 'plan:step_start',
+    toolCallId: 'call-html',
+    step: 1,
+    role: 'doc-html',
+    title: 'Crew worker · doc-html',
+  });
+  message = applyPlanEventToMessage(message, {
+    type: 'plan:step_done',
+    toolCallId: 'call-html',
+    step: 1,
+    status: 'cancelled',
+    role: 'doc-html',
+    title: 'Crew worker · doc-html',
+  });
+  const card = message.segments[0].cards[0];
+  assert.equal(card.status, 'done');
+  assert.equal(card.planRun.phase, 'cancelled');
+  assert.equal(card.planRun.steps[0].status, 'cancelled');
 });

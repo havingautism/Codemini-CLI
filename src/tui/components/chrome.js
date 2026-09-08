@@ -145,6 +145,7 @@ export class CrewProgressPanel {
       dirty: this.copy.crewPhaseDirty,
       merged: this.copy.crewPhaseMerged,
       failed: this.copy.crewPhaseFailed,
+      cancelled: this.copy.crewPhaseCancelled,
       survey_done: this.copy.crewPhaseSurveyDone,
       idle: this.copy.crewPhaseIdle,
     };

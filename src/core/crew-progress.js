@@ -1,3 +1,40 @@
+export function crewIdentityMatchesWorker(target = {}, workerId = '') {
+  const id = String(workerId || '').trim().toLowerCase();
+  if (!id) return false;
+  const values = [
+    target.name,
+    target.resume,
+    target.review,
+    target.role,
+    target.id,
+    target.workerId,
+    target.worker_id,
+    target.persona,
+  ]
+    .map((value) => String(value || '').trim().toLowerCase())
+    .filter(Boolean);
+  if (values.includes(id)) return true;
+  const title = String(target.title || target.label || '').trim().toLowerCase();
+  if (!title) return false;
+  if (title === id) return true;
+  return (
+    title === `crew worker · ${id}`
+    || title === `crew review · ${id}`
+    || title === `crew survey · ${id}`
+    || title.endsWith(`· ${id}`)
+    || title.endsWith(`: ${id}`)
+  );
+}
+
+export function cancelWorkerIdFromPayload(payload = {}) {
+  const args = payload.arguments || payload.toolCall?.arguments || payload;
+  const direct = String(args?.worker_id || args?.id || args?.resume || '').trim();
+  if (direct) return direct;
+  const label = String(payload.displayName || payload.name || payload.toolName || '').trim();
+  const match = label.match(/cancel\s*worker\s*\(([^)]+)\)/i);
+  return match ? String(match[1] || '').trim() : '';
+}
+
 export function describeCrewWorkerProgress(worker = {}, { inFlightIds = [] } = {}) {
   const id = String(worker.id || '').trim();
   if (!id) return null;

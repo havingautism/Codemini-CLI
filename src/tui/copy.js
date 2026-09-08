@@ -113,6 +113,7 @@ const EN = {
   crewPhaseDirty: 'uncommitted',
   crewPhaseMerged: 'merged',
   crewPhaseFailed: 'failed',
+  crewPhaseCancelled: 'cancelled',
   crewPhaseSurveyDone: 'survey done',
   crewPhaseIdle: 'idle'
 };
@@ -233,6 +234,7 @@ const ZH = {
   crewPhaseDirty: '未提交',
   crewPhaseMerged: '已合回',
   crewPhaseFailed: '失败',
+  crewPhaseCancelled: '已取消',
   crewPhaseSurveyDone: '调研完成',
   crewPhaseIdle: '空闲'
 };

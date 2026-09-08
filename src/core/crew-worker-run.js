@@ -192,7 +192,7 @@ export async function runCrewWorkerJob({
       total: 1,
       role: persona,
       title,
-      status: failed ? 'failed' : 'done',
+      status: cancelled ? 'cancelled' : failed ? 'failed' : 'done',
       taskId: dependencyTaskId,
       dependsOn: dependencyDependencies,
       summary: trimInline(output.text || '', 160),

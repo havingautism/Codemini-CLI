@@ -220,3 +220,118 @@ test('reviewer plan:step_start updates the live spawn card instead of waiting fo
   assert.equal(card.planRun?.steps?.[0]?.title, 'Crew review · lena');
   assert.equal(card.planRun?.steps?.[0]?.status, 'running');
 });
+
+test('plan:step_done updates the spawn bubble when an earlier leak exists', () => {
+  const leaked = {
+    id: 'first-turn',
+    role: 'general',
+    isComplete: true,
+    segments: [{
+      type: 'tools',
+      cards: [
+        {
+          id: 'call-md',
+          name: 'run_subagent',
+          status: 'done',
+          arguments: { name: 'doc-md', paths: ['docs/test.md'] },
+          planRun: { phase: 'completed', steps: [{ status: 'done' }] },
+        },
+        {
+          id: 'call-txt',
+          name: 'run_subagent',
+          status: 'running',
+          arguments: {},
+          planRun: {
+            phase: 'executing',
+            steps: [{ toolCallId: 'call-txt', role: 'Doc-txt', title: 'write txt', status: 'running' }],
+          },
+        },
+      ],
+    }],
+  };
+  const spawn = {
+    id: 'second-turn',
+    role: 'general',
+    isComplete: true,
+    segments: [{
+      type: 'tools',
+      cards: [{
+        id: 'call-txt',
+        name: 'run_subagent',
+        status: 'running',
+        arguments: { name: 'doc-txt', paths: ['docs/test.txt'], prompt: 'write txt' },
+        planRun: { phase: 'executing', steps: [] },
+      }],
+    }],
+  };
+  const next = reduceSessionTranscriptEvent(
+    stateWithMessages([leaked, spawn]),
+    {
+      type: 'plan:step_done',
+      sessionId,
+      toolCallId: 'call-txt',
+      title: 'Crew worker · doc-txt',
+      step: 1,
+      status: 'done',
+    },
+  );
+  const messages = next.sessionMessagesById[sessionId];
+  const spawnCard = messages
+    .find((message) => message.id === 'second-turn')
+    .segments[0].cards.find((card) => card.id === 'call-txt');
+  assert.equal(spawnCard.status, 'done');
+  assert.equal(spawnCard.planRun.phase, 'completed');
+  const firstCards = messages.find((message) => message.id === 'first-turn').segments[0].cards;
+  assert.equal(firstCards.some((card) => card.id === 'call-txt'), false);
+  assert.equal(firstCards.some((card) => card.id === 'call-md'), true);
+});
+
+test('cancel_worker settles the matching crew card as cancelled not completed', () => {
+  const dispatch = {
+    id: 'first-turn',
+    role: 'general',
+    isComplete: true,
+    segments: [{
+      type: 'tools',
+      cards: [{
+        id: 'call-html',
+        name: 'run_subagent',
+        status: 'done',
+        arguments: { name: 'doc-html', paths: ['docs/test.html'], prompt: 'write html' },
+        planRun: {
+          phase: 'completed',
+          steps: [{ role: 'doc-html', title: 'Crew worker · doc-html', status: 'done' }],
+        },
+      }],
+    }],
+  };
+  const cancelTurn = {
+    id: 'second-turn',
+    role: 'general',
+    isComplete: false,
+    segments: [],
+  };
+  const started = reduceSessionTranscriptEvent(
+    stateWithMessages([dispatch, cancelTurn]),
+    {
+      type: 'tool:start',
+      sessionId,
+      messageId: 'second-turn',
+      id: 'call-cancel',
+      name: 'cancel_worker',
+      arguments: { worker_id: 'doc-html' },
+    },
+  );
+  const next = reduceSessionTranscriptEvent(started, {
+    type: 'tool:end',
+    sessionId,
+    messageId: 'second-turn',
+    id: 'call-cancel',
+    name: 'cancel_worker',
+    arguments: { worker_id: 'doc-html' },
+  });
+  const html = next.sessionMessagesById[sessionId][0].segments[0].cards[0];
+  assert.equal(html.planRun.phase, 'cancelled');
+  assert.equal(html.planRun.steps[0].status, 'cancelled');
+  assert.equal(html.status, 'done');
+});
