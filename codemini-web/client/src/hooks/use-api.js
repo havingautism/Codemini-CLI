@@ -181,8 +181,8 @@ export async function setExecutionMode(sessionId, mode) {
   return res.json();
 }
 
-export async function setTowerMode(sessionId, active) {
-  const res = await api('/api/tower-mode', {
+export async function setCrewMode(sessionId, active) {
+  const res = await api('/api/crew-mode', {
     method: 'POST',
     headers: JSON_HEADERS,
     body: JSON.stringify({ sessionId, active: !!active })

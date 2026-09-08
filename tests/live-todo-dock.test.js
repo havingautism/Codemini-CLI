@@ -27,9 +27,9 @@ test('findLiveTodoDock is idle when the session is not busy', () => {
   assert.equal(findLiveTodoDock([liveTodoMessage], { busy: false }), null);
 });
 
-test('findLiveTodoDock is idle in tower mode even while busy', () => {
+test('findLiveTodoDock is idle in crew mode even while busy', () => {
   assert.equal(
-    findLiveTodoDock([liveTodoMessage], { busy: true, towerActive: true }),
+    findLiveTodoDock([liveTodoMessage], { busy: true, crewActive: true }),
     null,
   );
 });

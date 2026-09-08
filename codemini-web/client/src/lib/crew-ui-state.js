@@ -1,4 +1,4 @@
-import { describeTowerRunSubagent } from "../../../../src/core/tool-display.js";
+import { describeCrewRunSubagent } from "../../../../src/core/tool-display.js";
 import { settleRunningCreatePlanCards } from "./plan-ui-state.js";
 
 function* iterateToolCards(segments = []) {
@@ -20,10 +20,10 @@ function normalizeToolName(name = "") {
     .replace(/\(.*$/, "");
 }
 
-export function messageHasTowerDispatchCards(message) {
+export function messageHasCrewDispatchCards(message) {
   for (const card of iterateToolCards(message?.segments)) {
     if (normalizeToolName(card?.name) !== "run_subagent") continue;
-    if (describeTowerRunSubagent(card?.arguments || {})) return true;
+    if (describeCrewRunSubagent(card?.arguments || {})) return true;
   }
   return false;
 }
@@ -36,41 +36,41 @@ export function messageHasLandWorkersTool(message) {
   return false;
 }
 
-/** Tower parent should not mirror worker worktree edits on dispatch/status bubbles. */
-export function shouldShowTowerModeFileChanges(message, { towerActive } = {}) {
-  if (!towerActive) return true;
+/** Crew parent should not mirror worker worktree edits on dispatch/status bubbles. */
+export function shouldShowCrewModeFileChanges(message, { crewActive } = {}) {
+  if (!crewActive) return true;
   if (messageHasLandWorkersTool(message)) return true;
-  if (messageHasTowerDispatchCards(message)) return false;
+  if (messageHasCrewDispatchCards(message)) return false;
   return false;
 }
 
-/** Agent todo panels are misleading in tower mode — workers run asynchronously. */
-export function shouldSuppressTowerTaskTodos({ towerActive } = {}) {
-  return Boolean(towerActive);
+/** Agent todo panels are misleading in crew mode — workers run asynchronously. */
+export function shouldSuppressCrewTaskTodos({ crewActive } = {}) {
+  return Boolean(crewActive);
 }
 
 /** Nested worker tools (not the parent spawn/review card) belong on the owner card. */
-export function isTowerBackgroundWorkerToolEvent(event, { towerActive } = {}) {
-  if (!towerActive || !event) return false;
+export function isCrewBackgroundWorkerToolEvent(event, { crewActive } = {}) {
+  if (!crewActive || !event) return false;
   return Boolean(String(event.parentToolCallId || "").trim());
 }
 
-function isTowerDispatchCard(card) {
+function isCrewDispatchCard(card) {
   return normalizeToolName(card?.name) === "run_subagent"
-    && Boolean(describeTowerRunSubagent(card?.arguments || {}));
+    && Boolean(describeCrewRunSubagent(card?.arguments || {}));
 }
 
-export function settleTowerReviewDispatchCards(messages, reviewOf = "") {
+export function settleCrewReviewDispatchCards(messages, reviewOf = "") {
   const target = String(reviewOf || "").trim().toLowerCase();
   if (!target) return messages;
   return (Array.isArray(messages) ? messages : []).map((message) =>
     settleRunningCreatePlanCards(message, {
       reason: "completed",
       match: (card) => {
-        if (!isTowerDispatchCard(card)) return false;
+        if (!isCrewDispatchCard(card)) return false;
         const review = String(card?.arguments?.review || "").trim().toLowerCase();
         if (review) return review === target;
-        const described = describeTowerRunSubagent(card?.arguments || {});
+        const described = describeCrewRunSubagent(card?.arguments || {});
         return String(described?.kind || "") === "review"
           && String(described?.label || "").toLowerCase().includes(target);
       },
@@ -78,18 +78,18 @@ export function settleTowerReviewDispatchCards(messages, reviewOf = "") {
   );
 }
 
-export function settleLingeringTowerDispatchCards(messages = []) {
+export function settleLingeringCrewDispatchCards(messages = []) {
   return (Array.isArray(messages) ? messages : []).map((message) =>
     settleRunningCreatePlanCards(message, {
       reason: "completed",
-      match: isTowerDispatchCard,
+      match: isCrewDispatchCard,
     })
   );
 }
 
-export function sanitizeTowerMessageFileChanges(message, { towerActive } = {}) {
-  if (!message || !towerActive) return message;
-  if (shouldShowTowerModeFileChanges(message, { towerActive })) return message;
+export function sanitizeCrewMessageFileChanges(message, { crewActive } = {}) {
+  if (!message || !crewActive) return message;
+  if (shouldShowCrewModeFileChanges(message, { crewActive })) return message;
   if (!Array.isArray(message.fileChanges) || message.fileChanges.length === 0) {
     return message;
   }

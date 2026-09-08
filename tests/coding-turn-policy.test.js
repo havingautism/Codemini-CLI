@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createCodingTurnPolicy, isCodingTurnToolAllowed, buildCodingTurnPolicyBlock } from '../src/core/coding-turn-policy.js';
-import { applyTowerParentToolPolicy } from '../src/core/chat-runtime.js';
+import { applyCrewParentToolPolicy } from '../src/core/chat-runtime.js';
 
 test('ordinary coding leaves planning and delegation available without permitting memory writes', () => {
   for (const text of ['继续', '改一个按钮文案', '解释刚才的结果', '修复多个文件并验证']) {
@@ -26,11 +26,11 @@ test('explicit delegation restrictions apply independently of task difficulty', 
 
 test('Crew keeps parent restrictions even when the user disables delegation', () => {
   for (const text of ['修复问题', '不要子代理']) {
-    const policy = createCodingTurnPolicy({ text, towerActive: true });
-    const tools = applyTowerParentToolPolicy(
-      ['read', 'edit', 'write', 'run', 'run_subagent', 'fork_task', 'tower_status', 'land_workers']
+    const policy = createCodingTurnPolicy({ text, crewActive: true });
+    const tools = applyCrewParentToolPolicy(
+      ['read', 'edit', 'write', 'run', 'run_subagent', 'fork_task', 'crew_status', 'land_workers']
         .filter((tool) => isCodingTurnToolAllowed(policy, tool)),
-      { towerActive: true },
+      { crewActive: true },
     );
     for (const tool of ['edit', 'write', 'fork_task']) assert.equal(tools.includes(tool), false);
     assert.equal(tools.includes('run_subagent'), text !== '不要子代理');

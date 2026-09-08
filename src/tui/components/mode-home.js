@@ -38,7 +38,7 @@ function codingMode(mode) {
 export class ModeHome {
   constructor({ state = {}, model = '', version = '', safeMode = true, location = 'workspace', locationPath = '', copy, getHeight, onAction }) {
     this.index = 0;
-    this.mode = state.towerActive ? 'crew' : codingMode(state.mode) ? 'coding' : 'daily';
+    this.mode = state.crewActive ? 'crew' : codingMode(state.mode) ? 'coding' : 'daily';
     this.state = state;
     this.model = model;
     this.version = version;

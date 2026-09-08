@@ -83,10 +83,10 @@ test('run_subagent forwards invented name to handler', async () => {
   assert.deepEqual(seen.tools, ['read']);
 });
 
-test('tower run_subagent forwards resume without requiring paths on the handler', async () => {
+test('crew run_subagent forwards resume without requiring paths on the handler', async () => {
   let seen = null;
   const { handlers, definitions } = getBuiltinTools({
-    towerActive: true,
+    crewActive: true,
     onRunSubAgent: async (args) => {
       seen = args;
       return { ok: true, text: 'done' };
@@ -108,10 +108,10 @@ test('tower run_subagent forwards resume without requiring paths on the handler'
   assert.deepEqual(seen.paths, []);
 });
 
-test('tower run_subagent forwards review with role reviewer', async () => {
+test('crew run_subagent forwards review with role reviewer', async () => {
   let seen = null;
   const { handlers } = getBuiltinTools({
-    towerActive: true,
+    crewActive: true,
     onRunSubAgent: async (args) => {
       seen = args;
       return { ok: true, text: 'done' };

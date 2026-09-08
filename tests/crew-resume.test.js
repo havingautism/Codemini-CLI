@@ -6,23 +6,23 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { createChatRuntime } from '../src/core/chat-runtime.js';
-import { landTowerWorkers } from '../src/core/tower-land.js';
+import { landCrewWorkers } from '../src/core/crew-land.js';
 import { runGit } from '../src/core/process-run.js';
-import { getProjectTowerStatePath, getProjectTowerWorktreesDir } from '../src/core/paths.js';
+import { getProjectCrewStatePath, getProjectCrewWorktreesDir } from '../src/core/paths.js';
 import { closeSqliteDatabasesForTests } from '../src/core/sqlite-database.js';
 import { createSession } from '../src/core/session-store.js';
 import { withCodeminiGlobalDir } from './helpers/codemini-global-dir.js';
 import {
-  enterTowerMode,
-  listTowerWorkersFromState,
-  patchTowerWorkerRecord,
-} from '../src/core/tower-store.js';
+  enterCrewMode,
+  listCrewWorkersFromState,
+  patchCrewWorkerRecord,
+} from '../src/core/crew-store.js';
 import {
-  addTowerWorktree,
-  composeTowerResumeTask,
-  findTowerWorker,
-  resolveTowerSubagentWorkspace,
-} from '../src/core/tower-worktree.js';
+  addCrewWorktree,
+  composeCrewResumeTask,
+  findCrewWorker,
+  resolveCrewSubagentWorkspace,
+} from '../src/core/crew-worktree.js';
 
 async function git(cwd, args) {
   return runGit(args, {
@@ -32,9 +32,9 @@ async function git(cwd, args) {
     env: {
       ...process.env,
       GIT_AUTHOR_NAME: 'Codemini Test',
-      GIT_AUTHOR_EMAIL: 'tower@test.local',
+      GIT_AUTHOR_EMAIL: 'crew@test.local',
       GIT_COMMITTER_NAME: 'Codemini Test',
-      GIT_COMMITTER_EMAIL: 'tower@test.local',
+      GIT_COMMITTER_EMAIL: 'crew@test.local',
     },
   });
 }
@@ -51,18 +51,18 @@ async function initCleanGit(dir) {
 }
 
 async function withRepo(task) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-tower-resume-'));
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-crew-resume-'));
   try {
     await initCleanGit(dir);
-    await enterTowerMode({ cwd: dir, sessionId: 'resume' });
+    await enterCrewMode({ cwd: dir, sessionId: 'resume' });
     return await task(dir);
   } finally {
     await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 50 });
   }
 }
 
-async function listTowerBranches(cwd) {
-  const result = await git(cwd, ['branch', '--list', 'codemini-tower/*']);
+async function listCrewBranches(cwd) {
+  const result = await git(cwd, ['branch', '--list', 'codemini-crew/*']);
   return String(result.stdout || '')
     .split('\n')
     .map((line) => line.replace(/^[+*]?\s+/, '').trim())
@@ -125,7 +125,7 @@ function baseConfig(port) {
 
 async function withResumeRuntime(respond, task) {
   closeSqliteDatabasesForTests();
-  const globalDir = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-tower-resume-rt-'));
+  const globalDir = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-crew-resume-rt-'));
   const dir = path.join(globalDir, 'workspace');
   await fs.mkdir(dir, { recursive: true });
   try {
@@ -153,9 +153,9 @@ async function withResumeRuntime(respond, task) {
           systemPrompt: 'stable',
           workspaceRoot: dir,
         });
-        await runtime.setTowerMode(true);
+        await runtime.setCrewMode(true);
         await task({ dir, bodies, runtime, session });
-        await runtime.waitForTowerIdle?.().catch(() => {});
+        await runtime.waitForCrewIdle?.().catch(() => {});
         await runtime.dispose?.();
       } finally {
         server.closeAllConnections?.();
@@ -181,9 +181,9 @@ function lastUserText(body) {
 async function waitForWorkerStatus(dir, workerId, status, timeoutMs = 8000) {
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
-    const raw = await fs.readFile(getProjectTowerStatePath(dir), 'utf8').catch(() => '');
+    const raw = await fs.readFile(getProjectCrewStatePath(dir), 'utf8').catch(() => '');
     if (raw) {
-      const worker = listTowerWorkersFromState(JSON.parse(raw)).find((item) => item.id === workerId);
+      const worker = listCrewWorkersFromState(JSON.parse(raw)).find((item) => item.id === workerId);
       if (worker?.runStatus === status) return worker;
     }
     await new Promise((resolve) => setTimeout(resolve, 40));
@@ -205,49 +205,49 @@ function isParentUserTurn(body, needle) {
   if (messages[messages.length - 1]?.role !== 'user') return false;
   const text = lastUserText(body);
   if (!needle.test(text)) return false;
-  if (text.includes('\nTask:') || text.includes('Previous shift handoff') || /<task>\s*\[tower\]/.test(text) || text.trimStart().startsWith('[tower]')) return false;
+  if (text.includes('\nTask:') || text.includes('Previous shift handoff') || /<task>\s*\[crew\]/.test(text) || text.trimStart().startsWith('[crew]')) return false;
   return true;
 }
 
-test('composeTowerResumeTask puts the new task before the previous handoff', () => {
-  const composed = composeTowerResumeTask('Fix the types', '# Alisa handoff\n\nshipped notes.md');
+test('composeCrewResumeTask puts the new task before the previous handoff', () => {
+  const composed = composeCrewResumeTask('Fix the types', '# Alisa handoff\n\nshipped notes.md');
   assert.ok(composed.startsWith('Fix the types'));
   assert.match(composed, /Previous shift handoff/);
   assert.match(composed, /shipped notes\.md/);
   assert.ok(composed.indexOf('Fix the types') < composed.indexOf('Previous shift handoff'));
-  assert.equal(composeTowerResumeTask('only', ''), 'only');
+  assert.equal(composeCrewResumeTask('only', ''), 'only');
 });
 
-test('composeTowerResumeTask injects rebase onto a commit', () => {
-  const composed = composeTowerResumeTask('Fix the merge', '', '', 'abc111');
+test('composeCrewResumeTask injects rebase onto a commit', () => {
+  const composed = composeCrewResumeTask('Fix the merge', '', '', 'abc111');
   assert.match(composed, /git rebase abc111/);
   assert.match(composed, /Do not merge into the user branch/);
 });
 
-test('findTowerWorker matches resume id first, then sanitized name', () => {
+test('findCrewWorker matches resume id first, then sanitized name', () => {
   const workers = [
-    { id: 'alisa', branch: 'codemini-tower/alisa', worktreePath: '/tmp/alisa', callId: 'call_00_tWNGO08jqp3XgQaRowSz2051' },
-    { id: 'ben', branch: 'codemini-tower/ben', worktreePath: '/tmp/ben' },
+    { id: 'alisa', branch: 'codemini-crew/alisa', worktreePath: '/tmp/alisa', callId: 'call_00_tWNGO08jqp3XgQaRowSz2051' },
+    { id: 'ben', branch: 'codemini-crew/ben', worktreePath: '/tmp/ben' },
   ];
-  assert.equal(findTowerWorker(workers, { resume: 'Alisa' }).id, 'alisa');
-  assert.equal(findTowerWorker(workers, { name: 'Ben' }).id, 'ben');
-  assert.equal(findTowerWorker(workers, { resume: 'missing' }), null);
+  assert.equal(findCrewWorker(workers, { resume: 'Alisa' }).id, 'alisa');
+  assert.equal(findCrewWorker(workers, { name: 'Ben' }).id, 'ben');
+  assert.equal(findCrewWorker(workers, { resume: 'missing' }), null);
   assert.equal(
-    findTowerWorker(workers, { resume: 'call_00_tWNGO08jqp3XgQaRowSz2051' }).id,
+    findCrewWorker(workers, { resume: 'call_00_tWNGO08jqp3XgQaRowSz2051' }).id,
     'alisa',
   );
 });
 
 test('resume reuses the same worktree; same name without resume is rejected', async () => {
   await withRepo(async (dir) => {
-    const spawned = await addTowerWorktree({
+    const spawned = await addCrewWorktree({
       cwd: dir,
       base: 'main',
       name: 'Alisa',
       paths: ['notes.md'],
     });
     assert.equal(spawned.ok, true);
-    const resumed = await resolveTowerSubagentWorkspace({
+    const resumed = await resolveCrewSubagentWorkspace({
       cwd: dir,
       base: 'main',
       resume: 'alisa',
@@ -258,7 +258,7 @@ test('resume reuses the same worktree; same name without resume is rejected', as
     assert.equal(resumed.worker.branch, spawned.worker.branch);
     assert.deepEqual(resumed.worker.paths, ['notes.md']);
 
-    const mismatch = await resolveTowerSubagentWorkspace({
+    const mismatch = await resolveCrewSubagentWorkspace({
       cwd: dir,
       base: 'main',
       resume: 'alisa',
@@ -268,7 +268,7 @@ test('resume reuses the same worktree; same name without resume is rejected', as
     assert.equal(mismatch.pathsChanged, true);
     assert.deepEqual(mismatch.worker.paths, ['other.md']);
 
-    const dup = await resolveTowerSubagentWorkspace({
+    const dup = await resolveCrewSubagentWorkspace({
       cwd: dir,
       base: 'main',
       name: 'Alisa',
@@ -276,11 +276,11 @@ test('resume reuses the same worktree; same name without resume is rejected', as
     });
     assert.equal(dup.ok, false);
     assert.equal(dup.code, 'WORKER_EXISTS');
-    assert.deepEqual(await listTowerBranches(dir), ['codemini-tower/alisa']);
-    const trees = await fs.readdir(getProjectTowerWorktreesDir(dir));
+    assert.deepEqual(await listCrewBranches(dir), ['codemini-crew/alisa']);
+    const trees = await fs.readdir(getProjectCrewWorktreesDir(dir));
     assert.deepEqual(trees, ['alisa']);
 
-    const wrongResume = await resolveTowerSubagentWorkspace({
+    const wrongResume = await resolveCrewSubagentWorkspace({
       cwd: dir,
       base: 'main',
       resume: 'twngo08jqp3xgqarowsz2051',
@@ -289,13 +289,13 @@ test('resume reuses the same worktree; same name without resume is rejected', as
     assert.equal(wrongResume.ok, false);
     assert.equal(wrongResume.code, 'RESUME_UNKNOWN');
     assert.match(wrongResume.error, /resume: "alisa"/);
-    assert.deepEqual(await fs.readdir(getProjectTowerWorktreesDir(dir)), ['alisa']);
+    assert.deepEqual(await fs.readdir(getProjectCrewWorktreesDir(dir)), ['alisa']);
   });
 });
 
 test('after land, the same name is a new worker and needs paths', async () => {
   await withRepo(async (dir) => {
-    const spawned = await addTowerWorktree({
+    const spawned = await addCrewWorktree({
       cwd: dir,
       base: 'main',
       name: 'Alisa',
@@ -305,17 +305,17 @@ test('after land, the same name is a new worker and needs paths', async () => {
     await git(spawned.worker.worktreePath, ['add', 'notes.md']);
     await git(spawned.worker.worktreePath, ['commit', '-m', 'notes']);
     const sha = String((await git(spawned.worker.worktreePath, ['rev-parse', 'HEAD'])).stdout || '').trim();
-    await patchTowerWorkerRecord(dir, spawned.worker.id, {
+    await patchCrewWorkerRecord(dir, spawned.worker.id, {
       reviewedCommit: sha,
       reviewPassed: true,
       reviewText: 'Findings:\n- none',
     });
-    const landed = await landTowerWorkers({ cwd: dir, base: 'main' });
+    const landed = await landCrewWorkers({ cwd: dir, base: 'main' });
     assert.equal(landed.ok, true, landed.error);
-    const saved = JSON.parse(await fs.readFile(getProjectTowerStatePath(dir), 'utf8'));
-    assert.equal(listTowerWorkersFromState(saved).length, 0);
+    const saved = JSON.parse(await fs.readFile(getProjectCrewStatePath(dir), 'utf8'));
+    assert.equal(listCrewWorkersFromState(saved).length, 0);
 
-    const missingPaths = await resolveTowerSubagentWorkspace({
+    const missingPaths = await resolveCrewSubagentWorkspace({
       cwd: dir,
       base: 'main',
       name: 'Alisa',
@@ -323,7 +323,7 @@ test('after land, the same name is a new worker and needs paths', async () => {
     assert.equal(missingPaths.ok, false);
     assert.equal(missingPaths.code, 'PATHS_REQUIRED');
 
-    const again = await resolveTowerSubagentWorkspace({
+    const again = await resolveCrewSubagentWorkspace({
       cwd: dir,
       base: 'main',
       name: 'Alisa',
@@ -363,17 +363,17 @@ test('spawn then resume injects the last handoff into the new prompt', async () 
   }, async ({ dir, bodies, runtime }) => {
     await runtime.submitMessage({ text: 'SPAWN_ALISA' });
     await waitForWorkerStatus(dir, 'alisa', 'completed');
-    const afterSpawn = JSON.parse(await fs.readFile(getProjectTowerStatePath(dir), 'utf8'));
-    const [worker] = listTowerWorkersFromState(afterSpawn);
+    const afterSpawn = JSON.parse(await fs.readFile(getProjectCrewStatePath(dir), 'utf8'));
+    const [worker] = listCrewWorkersFromState(afterSpawn);
     assert.equal(worker.id, 'alisa');
     assert.match(String(worker.lastHandoffPath || ''), /handoffs/);
 
     await runtime.submitMessage({ text: 'RESUME_ALISA' });
     await waitUntil(() => bodies.some((item) => messageBlob(item).includes('Previous shift handoff')));
-    const afterResume = JSON.parse(await fs.readFile(getProjectTowerStatePath(dir), 'utf8'));
-    assert.equal(listTowerWorkersFromState(afterResume).length, 1);
-    assert.deepEqual(await fs.readdir(getProjectTowerWorktreesDir(dir)), ['alisa']);
-    assert.deepEqual(await listTowerBranches(dir), ['codemini-tower/alisa']);
+    const afterResume = JSON.parse(await fs.readFile(getProjectCrewStatePath(dir), 'utf8'));
+    assert.equal(listCrewWorkersFromState(afterResume).length, 1);
+    assert.deepEqual(await fs.readdir(getProjectCrewWorktreesDir(dir)), ['alisa']);
+    assert.deepEqual(await listCrewBranches(dir), ['codemini-crew/alisa']);
 
     const resumePrompt = bodies
       .map((item) => messageBlob(item))
@@ -427,21 +427,21 @@ test('in-flight resume of the same worker is rejected', async () => {
     await runtime.submitMessage({ text: 'DOUBLE_RESUME' });
     const transcript = JSON.stringify(session.messages);
     assert.match(transcript, /still running/);
-    const trees = await fs.readdir(getProjectTowerWorktreesDir(dir));
+    const trees = await fs.readdir(getProjectCrewWorktreesDir(dir));
     assert.deepEqual(trees, ['alisa']);
     await waitForWorkerStatus(dir, 'alisa', 'completed');
   });
 });
 
-test('patchTowerWorkerRecord stores lastHandoffPath', async () => {
+test('patchCrewWorkerRecord stores lastHandoffPath', async () => {
   await withRepo(async (dir) => {
-    const spawned = await addTowerWorktree({
+    const spawned = await addCrewWorktree({
       cwd: dir,
       base: 'main',
       name: 'Alisa',
       paths: ['notes.md'],
     });
-    const patched = await patchTowerWorkerRecord(dir, spawned.worker.id, {
+    const patched = await patchCrewWorkerRecord(dir, spawned.worker.id, {
       lastHandoffPath: '.codemini/handoffs/sess/call-a/handoff.md',
     });
     assert.equal(patched.ok, true);

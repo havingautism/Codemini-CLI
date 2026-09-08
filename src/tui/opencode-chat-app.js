@@ -18,7 +18,7 @@ import {
   SessionPicker,
   SettingsDialog,
   TopBar,
-  TowerProgressPanel
+  CrewProgressPanel
 } from './components/chrome.js';
 import {
   PlanProgress,
@@ -38,7 +38,7 @@ import {
 } from './components/messages.js';
 import { ModeHome } from './components/mode-home.js';
 import { createTuiCopy } from './copy.js';
-import { parseTowerWakeHeadline } from '../core/tower-snapshot.js';
+import { parseCrewWakeHeadline } from '../core/crew-snapshot.js';
 import { color, editorTheme } from './theme.js';
 
 /** Editor variant that paints every rendered line with the dark surface color. */
@@ -106,8 +106,8 @@ export async function runOpenCodeTui({ runtime, sessionId, model, safeMode = tru
   const activity = new ActivityBar({ tui, copy });
   const queuePanel = new QueuePanel(copy);
   const footer = new Footer({ runtime, model, sessionId: activeSessionId, safeMode });
-  const towerDock = new TowerProgressPanel({ runtime, copy });
-  const bottom = new VStack([towerDock, queuePanel, editor, activity, footer], { gap: 0 });
+  const crewDock = new CrewProgressPanel({ runtime, copy });
+  const bottom = new VStack([crewDock, queuePanel, editor, activity, footer], { gap: 0 });
   const chatLayout = new VStack([
     { component: header, basis: 'auto', shrink: 0, minSize: 1 },
     { component: scroll, basis: 0, grow: 1, minSize: 1 },
@@ -162,8 +162,8 @@ export async function runOpenCodeTui({ runtime, sessionId, model, safeMode = tru
     if (stopped) return;
     stopped = true;
     runtime.setRequestToolApproval?.(null);
-    runtime.setTowerWakeSubmit?.(null);
-    runtime.setTowerEventSink?.(null);
+    runtime.setCrewWakeSubmit?.(null);
+    runtime.setCrewEventSink?.(null);
     activity.dispose();
     void (async () => {
       await terminal.drainInput?.(200, 20).catch?.(() => {});
@@ -266,7 +266,7 @@ export async function runOpenCodeTui({ runtime, sessionId, model, safeMode = tru
     const type = String(event?.type || '');
     if (
       String(event?.parentToolCallId || '').trim() &&
-      runtime.getRuntimeState?.()?.towerActive &&
+      runtime.getRuntimeState?.()?.crewActive &&
       !type.startsWith('plan:')
     ) {
       requestRender();
@@ -363,7 +363,7 @@ export async function runOpenCodeTui({ runtime, sessionId, model, safeMode = tru
             title: event.title || event.role || '',
             role: event.role || '',
             status: event.status || 'running',
-            towerKind: event.towerKind || '',
+            crewKind: event.crewKind || '',
           }],
         });
         if (planId) planByToolCallId.set(planId, plan);
@@ -512,21 +512,21 @@ export async function runOpenCodeTui({ runtime, sessionId, model, safeMode = tru
         // show it again on the continuation session.
         submit(next, !continuedInNewSession);
       } else {
-        void runtime.drainTowerPendingWakes?.().catch(() => {});
+        void runtime.drainCrewPendingWakes?.().catch(() => {});
       }
     }
   };
   editor.onSubmit = submit;
-  runtime.setTowerEventSink?.((event) => {
-    if (event?.type === 'tower:workers_changed') requestRender();
+  runtime.setCrewEventSink?.((event) => {
+    if (event?.type === 'crew:workers_changed') requestRender();
   });
-  runtime.setTowerWakeSubmit?.(async (wakeText) => {
+  runtime.setCrewWakeSubmit?.(async (wakeText) => {
     const text = String(wakeText || '').trim();
     if (!text) return { type: 'noop' };
     if (busy) throw new Error('Crew wake blocked while another turn is active');
-    const headline = parseTowerWakeHeadline(text);
+    const headline = parseCrewWakeHeadline(text);
     transcript.addChild(new SurfaceSpacer(1));
-    transcript.addChild(createSystemMessage(`${copy.towerWake} · ${headline}`, color.warning));
+    transcript.addChild(createSystemMessage(`${copy.crewWake} · ${headline}`, color.warning));
     requestRender();
     return submit(text, true);
   });
@@ -585,7 +585,7 @@ export async function runOpenCodeTui({ runtime, sessionId, model, safeMode = tru
     const dialog = new SettingsDialog({
       copy,
       values: {
-        mode: state.towerActive ? 'crew' : home.mode,
+        mode: state.crewActive ? 'crew' : home.mode,
         reasoning: state.reasoningEnabled === false ? 'off' : state.reasoningEffort || 'auto',
         approval: state.approvalMode || 'auto',
         sandbox: state.sandboxMode || 'workspace-write',
@@ -659,12 +659,12 @@ export async function runOpenCodeTui({ runtime, sessionId, model, safeMode = tru
     try {
       let crewResult = null;
       if (mode === 'crew') {
-        crewResult = await runtime.setTowerMode?.(true);
-        if (!crewResult?.ok) throw new Error(crewResult?.message || copy.towerFailed);
+        crewResult = await runtime.setCrewMode?.(true);
+        if (!crewResult?.ok) throw new Error(crewResult?.message || copy.crewFailed);
       } else {
-        if (runtime.getRuntimeState?.()?.towerActive) {
-          const stopped = await runtime.setTowerMode?.(false);
-          if (!stopped?.ok) throw new Error(stopped?.message || copy.towerFailed);
+        if (runtime.getRuntimeState?.()?.crewActive) {
+          const stopped = await runtime.setCrewMode?.(false);
+          if (!stopped?.ok) throw new Error(stopped?.message || copy.crewFailed);
         }
         await runtime.setExecutionMode?.(mode);
       }

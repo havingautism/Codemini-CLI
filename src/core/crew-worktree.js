@@ -2,21 +2,21 @@ import fsSync from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
-import { getProjectTowerWorktreesDir } from './paths.js';
+import { getProjectCrewWorktreesDir } from './paths.js';
 import { runGit } from './process-run.js';
 import {
-  appendTowerWorkerRecord,
-  listTowerWorkersFromState,
-  patchTowerWorkerRecord,
-  readTowerStateFile,
-  writeTowerWorkerRecords,
-} from './tower-store.js';
-import { findOverlappingTowerWorker, isTowerSurveyWorker, normalizeTowerDependsOn, normalizeTowerPaths, towerWorkerBlocksSpawn } from './tower-scope.js';
+  appendCrewWorkerRecord,
+  listCrewWorkersFromState,
+  patchCrewWorkerRecord,
+  readCrewStateFile,
+  writeCrewWorkerRecords,
+} from './crew-store.js';
+import { findOverlappingCrewWorker, isCrewSurveyWorker, normalizeCrewDependsOn, normalizeCrewPaths, crewWorkerBlocksSpawn } from './crew-scope.js';
 
-const BRANCH_PREFIX = 'codemini-tower/';
+const BRANCH_PREFIX = 'codemini-crew/';
 const RESERVED_WORKER_IDS = new Set(['tmp', '_merge-tmp', 'merge-tmp']);
 const GIT_TIMEOUT_MS = 30_000;
-const TOWER_WORKER_SEAL_MAX_NUDGES = 2;
+const CREW_WORKER_SEAL_MAX_NUDGES = 2;
 const spawnLocks = new Map();
 
 async function tryGit(cwd, args) {
@@ -40,7 +40,7 @@ function withSpawnLock(cwd, fn) {
   });
 }
 
-export function sanitizeTowerWorkerId(value, fallback = 'worker') {
+export function sanitizeCrewWorkerId(value, fallback = 'worker') {
   const cleaned = String(value || '')
     .trim()
     .toLowerCase()
@@ -50,7 +50,7 @@ export function sanitizeTowerWorkerId(value, fallback = 'worker') {
   return cleaned || fallback;
 }
 
-export function allocateTowerWorkerId({
+export function allocateCrewWorkerId({
   taskId = '',
   name = '',
   callId = '',
@@ -63,9 +63,9 @@ export function allocateTowerWorkerId({
       .filter(Boolean),
   ]);
   const preferred =
-    sanitizeTowerWorkerId(taskId, '')
-    || sanitizeTowerWorkerId(name, '')
-    || sanitizeTowerWorkerId(callId, 'worker');
+    sanitizeCrewWorkerId(taskId, '')
+    || sanitizeCrewWorkerId(name, '')
+    || sanitizeCrewWorkerId(callId, 'worker');
   if (preferred && !used.has(preferred)) return preferred;
   for (let index = 2; index < 1000; index += 1) {
     const next = `${preferred}-${index}`.slice(0, 48);
@@ -74,38 +74,38 @@ export function allocateTowerWorkerId({
   return `${preferred}-${Date.now().toString(36)}`.slice(0, 48);
 }
 
-export function towerWorkerBranchName(workerId) {
-  return `${BRANCH_PREFIX}${sanitizeTowerWorkerId(workerId)}`;
+export function crewWorkerBranchName(workerId) {
+  return `${BRANCH_PREFIX}${sanitizeCrewWorkerId(workerId)}`;
 }
 
-export function findTowerWorker(workers, { resume = '', name = '', taskId = '', callId = '' } = {}) {
+export function findCrewWorker(workers, { resume = '', name = '', taskId = '', callId = '' } = {}) {
   const list = Array.isArray(workers) ? workers : [];
-  const resumeId = sanitizeTowerWorkerId(resume, '');
+  const resumeId = sanitizeCrewWorkerId(resume, '');
   if (resumeId) {
     const byId = list.find((item) => item.id === resumeId);
     if (byId) return byId;
     const byCall = list.filter((item) => {
-      const cid = sanitizeTowerWorkerId(item.callId, '');
+      const cid = sanitizeCrewWorkerId(item.callId, '');
       return cid && cid === resumeId;
     });
     if (byCall.length === 1) return byCall[0];
     return null;
   }
-  const nameId = sanitizeTowerWorkerId(taskId, '')
-    || sanitizeTowerWorkerId(name, '')
-    || sanitizeTowerWorkerId(callId, '');
+  const nameId = sanitizeCrewWorkerId(taskId, '')
+    || sanitizeCrewWorkerId(name, '')
+    || sanitizeCrewWorkerId(callId, '');
   if (!nameId) return null;
   return list.find((item) => item.id === nameId) || null;
 }
 
-export function formatIdleTowerWorkers(workers) {
+export function formatIdleCrewWorkers(workers) {
   const list = (Array.isArray(workers) ? workers : []).filter((item) => item?.integrated !== true);
   if (list.length === 0) return 'No idle Crew workers. Spawn a new one with a unique name and paths.';
   const ids = list.map((item) => `"${item.id}"`).join(', ');
   return `Idle workers: ${ids}. Call back with resume set to that id (the short name, not a call/handoff id). Omit paths to keep the stored scope, or pass new disjoint paths.`;
 }
 
-export function composeTowerResumeTask(task, handoffText, reviewText = '', rebaseOnto = '') {
+export function composeCrewResumeTask(task, handoffText, reviewText = '', rebaseOnto = '') {
   const next = String(task || '').trim();
   const prior = String(handoffText || '').trim();
   const review = String(reviewText || '').trim();
@@ -123,7 +123,7 @@ export function composeTowerResumeTask(task, handoffText, reviewText = '', rebas
   ].filter(Boolean).join('\n\n');
 }
 
-export function composeTowerReviewTask(task, {
+export function composeCrewReviewTask(task, {
   workerId = '',
   commit = '',
   paths = [],
@@ -140,7 +140,7 @@ export function composeTowerReviewTask(task, {
   ].join('\n\n');
 }
 
-export async function resolveTowerReviewTarget({
+export async function resolveCrewReviewTarget({
   cwd = process.cwd(),
   base = '',
   review = '',
@@ -154,7 +154,7 @@ export async function resolveTowerReviewTarget({
       error: 'review cannot be combined with resume. Set review to the worker id, such as alisa.',
     };
   }
-  const workerId = sanitizeTowerWorkerId(review, '');
+  const workerId = sanitizeCrewWorkerId(review, '');
   if (!workerId) {
     return {
       ok: false,
@@ -162,13 +162,13 @@ export async function resolveTowerReviewTarget({
       error: 'review requires a roster worker id, such as alisa.',
     };
   }
-  const existing = listTowerWorkersFromState(await readTowerStateFile(root));
-  const worker = findTowerWorker(existing, { resume: workerId });
+  const existing = listCrewWorkersFromState(await readCrewStateFile(root));
+  const worker = findCrewWorker(existing, { resume: workerId });
   if (!worker) {
     return {
       ok: false,
       code: 'REVIEW_UNKNOWN',
-      error: `Unknown review target "${workerId}". ${formatIdleTowerWorkers(existing)}`,
+      error: `Unknown review target "${workerId}". ${formatIdleCrewWorkers(existing)}`,
     };
   }
   if (!(await worktreePathExists(worker.worktreePath))) {
@@ -179,7 +179,7 @@ export async function resolveTowerReviewTarget({
       workerId: worker.id,
     };
   }
-  if (isTowerSurveyWorker(worker)) {
+  if (isCrewSurveyWorker(worker)) {
     return {
       ok: false,
       code: 'SURVEY_NO_REVIEW',
@@ -195,7 +195,7 @@ export async function resolveTowerReviewTarget({
       workerId: worker.id,
     };
   }
-  if (await isTowerWorktreeDirty(worker.worktreePath)) {
+  if (await isCrewWorktreeDirty(worker.worktreePath)) {
     return {
       ok: false,
       code: 'DIRTY_WORKTREE',
@@ -227,7 +227,7 @@ export async function resolveTowerReviewTarget({
   };
 }
 
-export async function isTowerCommitAncestor(cwd, ancestor, tip = 'HEAD') {
+export async function isCrewCommitAncestor(cwd, ancestor, tip = 'HEAD') {
   const sha = String(ancestor || '').trim();
   const target = String(tip || 'HEAD').trim() || 'HEAD';
   if (!sha || !cwd) return false;
@@ -235,24 +235,24 @@ export async function isTowerCommitAncestor(cwd, ancestor, tip = 'HEAD') {
   return result.code === 0;
 }
 
-export async function towerWorktreeExists(worktreePath) {
+export async function crewWorktreeExists(worktreePath) {
   return worktreePathExists(worktreePath);
 }
 
-function preferredTowerWorkerId({ taskId = '', name = '', callId = '' } = {}) {
-  return sanitizeTowerWorkerId(taskId, '')
-    || sanitizeTowerWorkerId(name, '')
-    || sanitizeTowerWorkerId(callId, 'worker');
+function preferredCrewWorkerId({ taskId = '', name = '', callId = '' } = {}) {
+  return sanitizeCrewWorkerId(taskId, '')
+    || sanitizeCrewWorkerId(name, '')
+    || sanitizeCrewWorkerId(callId, 'worker');
 }
 
-function towerPathsEqual(left, right) {
-  const a = normalizeTowerPaths(left);
-  const b = normalizeTowerPaths(right);
+function crewPathsEqual(left, right) {
+  const a = normalizeCrewPaths(left);
+  const b = normalizeCrewPaths(right);
   if (a.length !== b.length) return false;
   return a.every((item, index) => item === b[index]);
 }
 
-export async function resolveTowerSubagentWorkspace({
+export async function resolveCrewSubagentWorkspace({
   cwd = process.cwd(),
   base,
   resume = '',
@@ -264,11 +264,11 @@ export async function resolveTowerSubagentWorkspace({
   kind = '',
 } = {}) {
   const root = path.resolve(cwd);
-  const resumeId = sanitizeTowerWorkerId(resume, '');
-  const existing = listTowerWorkersFromState(await readTowerStateFile(root));
+  const resumeId = sanitizeCrewWorkerId(resume, '');
+  const existing = listCrewWorkersFromState(await readCrewStateFile(root));
 
   if (resumeId) {
-    const worker = findTowerWorker(existing, { resume });
+    const worker = findCrewWorker(existing, { resume });
     if (worker) {
       if (worker.integrated === true && !String(worker.rebaseOnto || '').trim()) {
         return {
@@ -286,9 +286,9 @@ export async function resolveTowerSubagentWorkspace({
           workerId: worker.id,
         };
       }
-      const requested = normalizeTowerPaths(paths);
-      if (requested.length > 0 && !towerPathsEqual(requested, worker.paths)) {
-        const overlap = findOverlappingTowerWorker(requested, existing, { exceptId: worker.id });
+      const requested = normalizeCrewPaths(paths);
+      if (requested.length > 0 && !crewPathsEqual(requested, worker.paths)) {
+        const overlap = findOverlappingCrewWorker(requested, existing, { exceptId: worker.id });
         if (overlap) {
           const otherId = String(overlap.worker?.id || 'worker').trim() || 'worker';
           return {
@@ -298,7 +298,7 @@ export async function resolveTowerSubagentWorkspace({
             workerId: worker.id,
           };
         }
-        const patched = await patchTowerWorkerRecord(root, worker.id, {
+        const patched = await patchCrewWorkerRecord(root, worker.id, {
           paths: requested,
           reviewLoopStopped: false,
           reviewRound: 0,
@@ -321,7 +321,7 @@ export async function resolveTowerSubagentWorkspace({
       }
       return { ok: true, resume: true, worker };
     }
-    const named = findTowerWorker(existing, { name, taskId });
+    const named = findCrewWorker(existing, { name, taskId });
     if (named) {
       return {
         ok: false,
@@ -334,10 +334,10 @@ export async function resolveTowerSubagentWorkspace({
       return {
         ok: false,
         code: 'RESUME_UNKNOWN',
-        error: `Unknown resume "${resumeId}". ${formatIdleTowerWorkers(existing)}`,
+        error: `Unknown resume "${resumeId}". ${formatIdleCrewWorkers(existing)}`,
       };
     }
-    return addTowerWorktree({
+    return addCrewWorktree({
       cwd: root,
       base,
       taskId: resumeId,
@@ -349,8 +349,8 @@ export async function resolveTowerSubagentWorkspace({
     });
   }
 
-  const named = findTowerWorker(existing, { name, taskId });
-  if (named && towerWorkerBlocksSpawn(named)) {
+  const named = findCrewWorker(existing, { name, taskId });
+  if (named && crewWorkerBlocksSpawn(named)) {
     return {
       ok: false,
       code: 'WORKER_EXISTS',
@@ -359,7 +359,7 @@ export async function resolveTowerSubagentWorkspace({
     };
   }
 
-  return addTowerWorktree({
+  return addCrewWorktree({
     cwd: root,
     base,
     taskId,
@@ -380,32 +380,32 @@ function pathIsWithinRoot(root, candidate) {
   return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
 }
 
-export function isTowerWorktreePath(root) {
-  return posixPath(root).includes('/.codemini/tower/worktrees/');
+export function isCrewWorktreePath(root) {
+  return posixPath(root).includes('/.codemini/crew/worktrees/');
 }
 
-export function resolveTowerParentRoot(worktreePath) {
+export function resolveCrewParentRoot(worktreePath) {
   const resolved = path.resolve(String(worktreePath || '').trim() || '.');
   const normalized = posixPath(resolved);
-  const marker = '/.codemini/tower/worktrees/';
+  const marker = '/.codemini/crew/worktrees/';
   const index = normalized.toLowerCase().lastIndexOf(marker);
   if (index <= 0) return '';
   return path.resolve(normalized.slice(0, index));
 }
 
-function towerWorkerIdFromWorktreePath(worktreePath) {
+function crewWorkerIdFromWorktreePath(worktreePath) {
   const worktree = path.resolve(String(worktreePath || '').trim() || '.');
-  const parent = resolveTowerParentRoot(worktree);
+  const parent = resolveCrewParentRoot(worktree);
   if (!parent) return '';
-  const rel = posixPath(path.relative(path.join(parent, '.codemini', 'tower', 'worktrees'), worktree));
+  const rel = posixPath(path.relative(path.join(parent, '.codemini', 'crew', 'worktrees'), worktree));
   if (!rel || rel === '.' || rel.startsWith('..') || rel.includes('/') || path.isAbsolute(rel)) return '';
   if (RESERVED_WORKER_IDS.has(rel)) return '';
-  const id = sanitizeTowerWorkerId(rel, '');
+  const id = sanitizeCrewWorkerId(rel, '');
   if (!id || id !== rel) return '';
   return id;
 }
 
-function readTowerWorktreeGitDir(worktree, parent) {
+function readCrewWorktreeGitDir(worktree, parent) {
   try {
     const gitFile = path.join(worktree, '.git');
     if (!fsSync.statSync(gitFile).isFile()) return '';
@@ -424,51 +424,51 @@ function readTowerWorktreeGitDir(worktree, parent) {
 }
 
 /**
- * Narrow parent-repo git dirs a tower worker needs in order to `git commit`
+ * Narrow parent-repo git dirs a crew worker needs in order to `git commit`
  * through the shared `.git`. Never includes the parent checkout, hooks, or
- * config — only objects, this worktree's git dir, and the tower ref namespace.
+ * config — only objects, this worktree's git dir, and the crew ref namespace.
  */
-export function towerGitWritableRoots(workspaceRoot) {
+export function crewGitWritableRoots(workspaceRoot) {
   const worktree = path.resolve(String(workspaceRoot || '').trim() || '.');
-  const parent = resolveTowerParentRoot(worktree);
-  const workerId = towerWorkerIdFromWorktreePath(worktree);
+  const parent = resolveCrewParentRoot(worktree);
+  const workerId = crewWorkerIdFromWorktreePath(worktree);
   if (!parent || !workerId) return [];
   const gitDir = path.join(parent, '.git');
-  const worktreeGitDir = readTowerWorktreeGitDir(worktree, parent)
+  const worktreeGitDir = readCrewWorktreeGitDir(worktree, parent)
     || path.join(gitDir, 'worktrees', workerId);
   return [
     path.join(gitDir, 'objects'),
     worktreeGitDir,
-    path.join(gitDir, 'refs', 'heads', 'codemini-tower'),
-    path.join(gitDir, 'logs', 'refs', 'heads', 'codemini-tower'),
+    path.join(gitDir, 'refs', 'heads', 'codemini-crew'),
+    path.join(gitDir, 'logs', 'refs', 'heads', 'codemini-crew'),
   ];
 }
 
-export function remapTowerParentPath(inputPath, worktreeRoot) {
+export function remapCrewParentPath(inputPath, worktreeRoot) {
   const raw = String(inputPath || '').trim();
   const worktree = path.resolve(String(worktreeRoot || '').trim() || '.');
-  const parent = resolveTowerParentRoot(worktree);
+  const parent = resolveCrewParentRoot(worktree);
   if (!raw || !parent) return raw;
   const absolute = path.resolve(worktree, raw);
   if (pathIsWithinRoot(worktree, absolute)) return raw;
   if (!pathIsWithinRoot(parent, absolute)) return raw;
   const relative = path.relative(parent, absolute);
   const relPosix = posixPath(relative);
-  if (relPosix === '.codemini/tower' || relPosix.startsWith('.codemini/tower/')) return raw;
+  if (relPosix === '.codemini/crew' || relPosix.startsWith('.codemini/crew/')) return raw;
   return path.join(worktree, relative);
 }
 
-const TOWER_PATH_KEYS = ['path', 'file', 'file_path', 'target', 'notebook_path'];
+const CREW_PATH_KEYS = ['path', 'file', 'file_path', 'target', 'notebook_path'];
 
-export function remapTowerToolArguments(args, worktreeRoot) {
+export function remapCrewToolArguments(args, worktreeRoot) {
   if (!args || typeof args !== 'object' || Array.isArray(args)) return args;
-  const parent = resolveTowerParentRoot(worktreeRoot);
+  const parent = resolveCrewParentRoot(worktreeRoot);
   if (!parent) return args;
   const next = { ...args };
   let changed = false;
-  for (const key of TOWER_PATH_KEYS) {
+  for (const key of CREW_PATH_KEYS) {
     if (typeof next[key] !== 'string' || !next[key].trim()) continue;
-    const remapped = remapTowerParentPath(next[key], worktreeRoot);
+    const remapped = remapCrewParentPath(next[key], worktreeRoot);
     if (remapped !== next[key]) {
       next[key] = remapped;
       changed = true;
@@ -477,7 +477,7 @@ export function remapTowerToolArguments(args, worktreeRoot) {
   if (next.ast_target && typeof next.ast_target === 'object' && !Array.isArray(next.ast_target)) {
     const nestedPath = next.ast_target.path;
     if (typeof nestedPath === 'string' && nestedPath.trim()) {
-      const remapped = remapTowerParentPath(nestedPath, worktreeRoot);
+      const remapped = remapCrewParentPath(nestedPath, worktreeRoot);
       if (remapped !== nestedPath) {
         next.ast_target = { ...next.ast_target, path: remapped };
         changed = true;
@@ -494,46 +494,46 @@ export function remapTowerToolArguments(args, worktreeRoot) {
   return changed ? next : args;
 }
 
-export async function isTowerWorktreeDirty(worktreePath) {
+export async function isCrewWorktreeDirty(worktreePath) {
   const cwd = path.resolve(worktreePath);
   const status = await tryGit(cwd, ['status', '--porcelain']);
   return Boolean(String(status.stdout || '').trim());
 }
 
-export function towerWorkerClaimedBlocked(text) {
+export function crewWorkerClaimedBlocked(text) {
   return /\b(blocked|failed|cannot finish|can't finish|can’t finish)\b/i.test(String(text || ''));
 }
 
-export function composeTowerWorkerSealNudge(kind = 'coder') {
+export function composeCrewWorkerSealNudge(kind = 'coder') {
   if (kind === 'survey') {
     return 'Survey workers must not change files. Revert any edits in this worktree and stop. Do not git commit product code.';
   }
   return 'Worktree is still dirty (not sealed). If the slice is done, git add the files in your paths and git commit on this branch now. If you cannot finish, do not commit; reply with blocked or failed and stop.';
 }
 
-export function decideTowerWorkerSeal({
+export function decideCrewWorkerSeal({
   dirty = false,
   kind = 'coder',
   text = '',
   nudgeCount = 0,
 } = {}) {
-  if (nudgeCount >= TOWER_WORKER_SEAL_MAX_NUDGES) return { continue: false };
+  if (nudgeCount >= CREW_WORKER_SEAL_MAX_NUDGES) return { continue: false };
   if (!dirty) return { continue: false };
   if (kind === 'survey') {
-    return { continue: true, content: composeTowerWorkerSealNudge('survey') };
+    return { continue: true, content: composeCrewWorkerSealNudge('survey') };
   }
-  if (towerWorkerClaimedBlocked(text)) return { continue: false };
-  return { continue: true, content: composeTowerWorkerSealNudge('coder') };
+  if (crewWorkerClaimedBlocked(text)) return { continue: false };
+  return { continue: true, content: composeCrewWorkerSealNudge('coder') };
 }
 
-export async function shouldContinueTowerWorkerSeal({
+export async function shouldContinueCrewWorkerSeal({
   worktreePath,
   kind = 'coder',
   text = '',
   nudgeCount = 0,
 } = {}) {
-  const dirty = await isTowerWorktreeDirty(worktreePath).catch(() => true);
-  return decideTowerWorkerSeal({ dirty, kind, text, nudgeCount });
+  const dirty = await isCrewWorktreeDirty(worktreePath).catch(() => true);
+  return decideCrewWorkerSeal({ dirty, kind, text, nudgeCount });
 }
 
 async function worktreePathExists(worktreePath) {
@@ -545,15 +545,15 @@ async function worktreePathExists(worktreePath) {
   }
 }
 
-export function withTowerGitLock(cwd, fn) {
+export function withCrewGitLock(cwd, fn) {
   return withSpawnLock(cwd, fn);
 }
 
-export async function addTowerWorktree(options = {}) {
-  return withSpawnLock(options.cwd || process.cwd(), () => addTowerWorktreeUnlocked(options));
+export async function addCrewWorktree(options = {}) {
+  return withSpawnLock(options.cwd || process.cwd(), () => addCrewWorktreeUnlocked(options));
 }
 
-async function addTowerWorktreeUnlocked({
+async function addCrewWorktreeUnlocked({
   cwd = process.cwd(),
   base,
   taskId = '',
@@ -569,7 +569,7 @@ async function addTowerWorktreeUnlocked({
     return { ok: false, code: 'NO_BASE', error: 'Crew spawn needs a recorded git base branch.' };
   }
   const survey = String(kind || '').trim().toLowerCase() === 'survey';
-  const normalizedPaths = normalizeTowerPaths(paths);
+  const normalizedPaths = normalizeCrewPaths(paths);
   if (!survey && normalizedPaths.length === 0) {
     return {
       ok: false,
@@ -577,10 +577,10 @@ async function addTowerWorktreeUnlocked({
       error: 'Crew run_subagent requires paths: an array of relative globs such as docs/** or src/foo.ts.',
     };
   }
-  const current = await readTowerStateFile(root);
-  const existing = listTowerWorkersFromState(current);
+  const current = await readCrewStateFile(root);
+  const existing = listCrewWorkersFromState(current);
   if (!survey) {
-    const overlap = findOverlappingTowerWorker(normalizedPaths, existing);
+    const overlap = findOverlappingCrewWorker(normalizedPaths, existing);
     if (overlap) {
       const workerId = String(overlap.worker?.id || 'worker').trim() || 'worker';
       return {
@@ -593,11 +593,11 @@ async function addTowerWorktreeUnlocked({
       };
     }
   }
-  const preferred = preferredTowerWorkerId({ taskId, name, callId });
+  const preferred = preferredCrewWorkerId({ taskId, name, callId });
   if (
     preferred
     && !RESERVED_WORKER_IDS.has(preferred)
-    && existing.some((item) => item.id === preferred && towerWorkerBlocksSpawn(item))
+    && existing.some((item) => item.id === preferred && crewWorkerBlocksSpawn(item))
   ) {
     return {
       ok: false,
@@ -606,14 +606,14 @@ async function addTowerWorktreeUnlocked({
       workerId: preferred,
     };
   }
-  const workerId = allocateTowerWorkerId({
+  const workerId = allocateCrewWorkerId({
     taskId,
     name,
     callId,
     existingIds: existing.map((item) => item.id),
   });
-  const branch = towerWorkerBranchName(workerId);
-  const worktreePath = path.resolve(getProjectTowerWorktreesDir(root), workerId);
+  const branch = crewWorkerBranchName(workerId);
+  const worktreePath = path.resolve(getProjectCrewWorktreesDir(root), workerId);
   await fs.mkdir(path.dirname(worktreePath), { recursive: true });
   if (await worktreePathExists(worktreePath)) {
     return {
@@ -631,7 +631,7 @@ async function addTowerWorktreeUnlocked({
       error: String(added.stderr || added.stdout || '').trim() || `Failed to add worktree for ${workerId}.`,
     };
   }
-  const normalizedDependsOn = normalizeTowerDependsOn(dependsOn);
+  const normalizedDependsOn = normalizeCrewDependsOn(dependsOn);
   const normalizedTaskId = String(taskId || '').trim();
   const worker = {
     id: workerId,
@@ -643,7 +643,7 @@ async function addTowerWorktreeUnlocked({
     ...(normalizedDependsOn.length ? { dependsOn: normalizedDependsOn } : {}),
     ...(String(callId || '').trim() ? { callId: String(callId).trim() } : {}),
   };
-  const saved = await appendTowerWorkerRecord(root, worker);
+  const saved = await appendCrewWorkerRecord(root, worker);
   if (!saved.ok) {
     await tryGit(root, ['worktree', 'remove', '--force', worktreePath]);
     return saved;
@@ -651,7 +651,7 @@ async function addTowerWorktreeUnlocked({
   return { ok: true, worker: saved.worker || worker };
 }
 
-export async function removeTowerWorktree({
+export async function removeCrewWorktree({
   cwd = process.cwd(),
   worker,
   force = false,
@@ -664,7 +664,7 @@ export async function removeTowerWorktree({
     await tryGit(root, ['worktree', 'prune']);
     return { ok: true, removed: false, missing: true };
   }
-  if (!force && await isTowerWorktreeDirty(worktreePath)) {
+  if (!force && await isCrewWorktreeDirty(worktreePath)) {
     return { ok: false, skipped: true, dirty: true, worker };
   }
   const removed = await tryGit(root, [
@@ -674,7 +674,7 @@ export async function removeTowerWorktree({
     worktreePath,
   ]);
   if (removed.code !== 0) {
-    const dirty = await isTowerWorktreeDirty(worktreePath);
+    const dirty = await isCrewWorktreeDirty(worktreePath);
     if (dirty && !force) return { ok: false, skipped: true, dirty: true, worker };
     return {
       ok: false,
@@ -685,7 +685,7 @@ export async function removeTowerWorktree({
   return { ok: true, removed: true, worker };
 }
 
-export async function teardownTowerWorker({
+export async function teardownCrewWorker({
   cwd = process.cwd(),
   id = '',
   force = true,
@@ -694,15 +694,15 @@ export async function teardownTowerWorker({
   if (!workerId) return { ok: false, error: 'Missing Crew worker id.' };
   return withSpawnLock(cwd, async () => {
     const root = path.resolve(cwd);
-    const workers = listTowerWorkersFromState(await readTowerStateFile(root));
+    const workers = listCrewWorkersFromState(await readCrewStateFile(root));
     const worker = workers.find((item) => item.id === workerId);
     if (!worker) return { ok: false, code: 'NOT_FOUND', error: `Unknown Crew worker "${workerId}".` };
-    const worktree = await removeTowerWorktree({ cwd: root, worker, force });
+    const worktree = await removeCrewWorktree({ cwd: root, worker, force });
     const branch = String(worker.branch || '').trim();
     if (branch.startsWith(BRANCH_PREFIX) && !RESERVED_WORKER_IDS.has(worker.id)) {
       await tryGit(root, ['branch', '-D', branch]);
     }
-    await writeTowerWorkerRecords(root, workers.filter((item) => item.id !== workerId));
+    await writeCrewWorkerRecords(root, workers.filter((item) => item.id !== workerId));
     await tryGit(root, ['worktree', 'prune']);
     return {
       ok: true,
@@ -712,19 +712,19 @@ export async function teardownTowerWorker({
   });
 }
 
-export async function removeTowerWorktrees({ cwd = process.cwd(), force = false, skipLock = false } = {}) {
+export async function removeCrewWorktrees({ cwd = process.cwd(), force = false, skipLock = false } = {}) {
   const run = async () => {
     const root = path.resolve(cwd);
-    const current = await readTowerStateFile(root);
-    const workers = listTowerWorkersFromState(current);
+    const current = await readCrewStateFile(root);
+    const workers = listCrewWorkersFromState(current);
     const kept = [];
     const removed = [];
     for (const worker of workers) {
-      const result = await removeTowerWorktree({ cwd: root, worker, force });
+      const result = await removeCrewWorktree({ cwd: root, worker, force });
       if (result.ok && (result.removed || result.missing)) removed.push(worker);
       else kept.push(worker);
     }
-    await writeTowerWorkerRecords(root, kept);
+    await writeCrewWorkerRecords(root, kept);
     return { ok: true, removed, kept };
   };
   return skipLock ? run() : withSpawnLock(cwd, run);

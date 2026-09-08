@@ -8,7 +8,6 @@ export const TOOL_DISPLAY_LABELS = {
   land_workers: 'Land',
   cancel_worker: 'Cancel Worker',
   crew_status: 'Crew Status',
-  tower_status: 'Crew Status',
   fork_task: 'Fork',
   tasks: 'Tasks',
   update_todos: 'Tasks',
@@ -114,7 +113,7 @@ function formatToolWithArg(label, arg, { quoted = false } = {}) {
   return `${label} (${quoted ? `"${payload}"` : payload})`;
 }
 
-export function describeTowerRunSubagent(args = {}) {
+export function describeCrewRunSubagent(args = {}) {
   const review = String(args?.review || '').trim();
   const role = String(args?.role || '').trim().toLowerCase();
   const name = trimInlineText(args?.name || role || 'Alex', 24);
@@ -258,8 +257,8 @@ export function formatToolDisplayName(name, args = {}, options = {}) {
   if (toolName === 'run_subagent') {
     const goal = trimInline(args?.goal || args?.prompt || '', 96);
     const persona = trimInline(args?.name || args?.role || 'Alex', 24);
-    const tower = describeTowerRunSubagent(args);
-    const label = tower?.label || `Subagent · ${persona || 'Alex'}`;
+    const crew = describeCrewRunSubagent(args);
+    const label = crew?.label || `Subagent · ${persona || 'Alex'}`;
     return goal ? formatToolWithArg(label, goal) : label;
   }
   if (toolName === 'fork_task') {

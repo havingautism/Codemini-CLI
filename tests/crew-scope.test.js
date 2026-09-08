@@ -2,54 +2,54 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  fileMatchesTowerGlob,
-  findOverlappingTowerWorker,
-  normalizeTowerPaths,
-  orderTowerWorkersForLand,
-  towerGlobsOverlap,
-  towerWorkerBlocksSpawn,
-  workerHoldsTowerScope,
-} from '../src/core/tower-scope.js';
-import { applyTowerParentToolPolicy, compactSubAgentResultForParent } from '../src/core/chat-runtime.js';
+  fileMatchesCrewGlob,
+  findOverlappingCrewWorker,
+  normalizeCrewPaths,
+  orderCrewWorkersForLand,
+  crewGlobsOverlap,
+  crewWorkerBlocksSpawn,
+  workerHoldsCrewScope,
+} from '../src/core/crew-scope.js';
+import { applyCrewParentToolPolicy, compactSubAgentResultForParent } from '../src/core/chat-runtime.js';
 import { getBuiltinTools } from '../src/core/tools.js';
 
-test('normalizeTowerPaths drops empties, dots, and absolute globs', () => {
-  assert.deepEqual(normalizeTowerPaths(['docs/**', './src/foo.ts', 'docs/**', '/etc/passwd', '../secret']), [
+test('normalizeCrewPaths drops empties, dots, and absolute globs', () => {
+  assert.deepEqual(normalizeCrewPaths(['docs/**', './src/foo.ts', 'docs/**', '/etc/passwd', '../secret']), [
     'docs/**',
     'src/foo.ts',
   ]);
 });
 
-test('tower globs overlap on nested and identical scopes, not sibling dirs', () => {
-  assert.equal(towerGlobsOverlap('docs/**', 'docs/api/**'), true);
-  assert.equal(towerGlobsOverlap('src/foo.ts', 'src/foo.ts'), true);
-  assert.equal(towerGlobsOverlap('src/**', 'src/a.ts'), true);
-  assert.equal(towerGlobsOverlap('frontend/**', 'backend/**'), false);
-  assert.equal(towerGlobsOverlap('src/a.ts', 'src/b.ts'), false);
+test('crew globs overlap on nested and identical scopes, not sibling dirs', () => {
+  assert.equal(crewGlobsOverlap('docs/**', 'docs/api/**'), true);
+  assert.equal(crewGlobsOverlap('src/foo.ts', 'src/foo.ts'), true);
+  assert.equal(crewGlobsOverlap('src/**', 'src/a.ts'), true);
+  assert.equal(crewGlobsOverlap('frontend/**', 'backend/**'), false);
+  assert.equal(crewGlobsOverlap('src/a.ts', 'src/b.ts'), false);
 });
 
-test('fileMatchesTowerGlob understands ** and exact files', () => {
-  assert.equal(fileMatchesTowerGlob('docs/a.md', 'docs/**'), true);
-  assert.equal(fileMatchesTowerGlob('src/foo.ts', 'src/foo.ts'), true);
-  assert.equal(fileMatchesTowerGlob('src/bar.ts', 'src/foo.ts'), false);
-  assert.equal(fileMatchesTowerGlob('backend/x.ts', 'frontend/**'), false);
+test('fileMatchesCrewGlob understands ** and exact files', () => {
+  assert.equal(fileMatchesCrewGlob('docs/a.md', 'docs/**'), true);
+  assert.equal(fileMatchesCrewGlob('src/foo.ts', 'src/foo.ts'), true);
+  assert.equal(fileMatchesCrewGlob('src/bar.ts', 'src/foo.ts'), false);
+  assert.equal(fileMatchesCrewGlob('backend/x.ts', 'frontend/**'), false);
 });
 
-test('findOverlappingTowerWorker reports the colliding glob', () => {
-  const hit = findOverlappingTowerWorker(['docs/guide.md'], [
+test('findOverlappingCrewWorker reports the colliding glob', () => {
+  const hit = findOverlappingCrewWorker(['docs/guide.md'], [
     { id: 'anna', paths: ['docs/**'] },
   ]);
   assert.equal(hit.worker.id, 'anna');
   assert.equal(hit.existing, 'docs/**');
-  assert.equal(findOverlappingTowerWorker(['backend/**'], [{ id: 'anna', paths: ['docs/**'] }]), null);
+  assert.equal(findOverlappingCrewWorker(['backend/**'], [{ id: 'anna', paths: ['docs/**'] }]), null);
   assert.equal(
-    findOverlappingTowerWorker(['docs/guide.md'], [
+    findOverlappingCrewWorker(['docs/guide.md'], [
       { id: 'anna', paths: ['docs/**'], integrated: true },
     ]),
     null,
   );
   assert.equal(
-    findOverlappingTowerWorker(['other.md'], [
+    findOverlappingCrewWorker(['other.md'], [
       { id: 'anna', paths: ['notes.md'] },
     ], { exceptId: 'anna' }),
     null,
@@ -59,17 +59,17 @@ test('findOverlappingTowerWorker reports the colliding glob', () => {
 test('integrated workers do not hold scope; active workers block overlapping spawn', () => {
   const integrated = { id: 'anna', paths: ['docs/**'], integrated: true };
   const active = { id: 'mira', paths: ['backend/**'] };
-  assert.equal(workerHoldsTowerScope(integrated), false);
-  assert.equal(towerWorkerBlocksSpawn(integrated), true);
-  assert.equal(workerHoldsTowerScope(active), true);
-  assert.equal(towerWorkerBlocksSpawn(active), true);
-  assert.equal(findOverlappingTowerWorker(['docs/**'], [integrated]), null);
-  assert.equal(findOverlappingTowerWorker(['backend/**'], [active])?.worker?.id, 'mira');
-  assert.ok(findOverlappingTowerWorker(['docs/**'], [{ id: 'busy', paths: ['docs/**'] }]));
+  assert.equal(workerHoldsCrewScope(integrated), false);
+  assert.equal(crewWorkerBlocksSpawn(integrated), true);
+  assert.equal(workerHoldsCrewScope(active), true);
+  assert.equal(crewWorkerBlocksSpawn(active), true);
+  assert.equal(findOverlappingCrewWorker(['docs/**'], [integrated]), null);
+  assert.equal(findOverlappingCrewWorker(['backend/**'], [active])?.worker?.id, 'mira');
+  assert.ok(findOverlappingCrewWorker(['docs/**'], [{ id: 'busy', paths: ['docs/**'] }]));
 });
 
-test('orderTowerWorkersForLand follows dependsOn then spawn order', () => {
-  const ordered = orderTowerWorkersForLand([
+test('orderCrewWorkersForLand follows dependsOn then spawn order', () => {
+  const ordered = orderCrewWorkersForLand([
     { id: 'b', taskId: 'b', dependsOn: ['a'] },
     { id: 'a', taskId: 'a', dependsOn: [] },
     { id: 'c', taskId: 'c' },
@@ -99,21 +99,21 @@ function shellTool(bundle) {
   return { name, def, handler: name ? bundle.handlers[name] : undefined };
 }
 
-test('tower parent run is inspect-only; coding run is unchanged', async () => {
-  const tower = getBuiltinTools({
-    towerActive: true,
+test('crew parent run is inspect-only; coding run is unchanged', async () => {
+  const crew = getBuiltinTools({
+    crewActive: true,
     onRunSubAgent: async () => ({ ok: true }),
     onLandWorkers: async () => ({ ok: true }),
   });
-  const towerRun = shellTool(tower);
-  assert.match(String(towerRun.def?.function?.description || ''), /inspect-only/i);
-  assert.equal(typeof towerRun.handler, 'function');
+  const crewRun = shellTool(crew);
+  assert.match(String(crewRun.def?.function?.description || ''), /inspect-only/i);
+  assert.equal(typeof crewRun.handler, 'function');
   await assert.rejects(
-    () => towerRun.handler({ command: 'git merge feature' }),
+    () => crewRun.handler({ command: 'git merge feature' }),
     /inspect-only/,
   );
   await assert.rejects(
-    () => towerRun.handler({ command: 'cp notes.md /tmp/notes.md' }),
+    () => crewRun.handler({ command: 'cp notes.md /tmp/notes.md' }),
     /inspect-only/,
   );
 
@@ -125,9 +125,9 @@ test('tower parent run is inspect-only; coding run is unchanged', async () => {
   assert.equal(typeof codingRun.handler, 'function');
 });
 
-test('tower getBuiltinTools exposes paths and resume, and registers land_workers', () => {
+test('crew getBuiltinTools exposes paths and resume, and registers land_workers', () => {
   const { definitions, handlers } = getBuiltinTools({
-    towerActive: true,
+    crewActive: true,
     onRunSubAgent: async () => ({ ok: true }),
     onForkTask: async () => ({ ok: true }),
     onLandWorkers: async () => ({ ok: true, message: 'landed' }),
@@ -147,7 +147,7 @@ test('tower getBuiltinTools exposes paths and resume, and registers land_workers
 
 test('cancel_worker is Crew-only and removes via the wired callback', async () => {
   const hidden = getBuiltinTools({
-    towerActive: true,
+    crewActive: true,
     onRunSubAgent: async () => ({ ok: true }),
     onLandWorkers: async () => ({ ok: true }),
   });
@@ -165,7 +165,7 @@ test('cancel_worker is Crew-only and removes via the wired callback', async () =
 
   let seen = '';
   const { definitions, handlers } = getBuiltinTools({
-    towerActive: true,
+    crewActive: true,
     onRunSubAgent: async () => ({ ok: true }),
     onLandWorkers: async () => ({ ok: true }),
     onCancelWorker: async ({ workerId }) => {
@@ -184,25 +184,25 @@ test('cancel_worker is Crew-only and removes via the wired callback', async () =
 });
 
 
-test('applyTowerParentToolPolicy strips mutation tools only when tower is on', () => {
+test('applyCrewParentToolPolicy strips mutation tools only when crew is on', () => {
   const coding = ['read', 'write', 'edit', 'run', 'run_subagent', 'fork_task'];
-  assert.deepEqual(applyTowerParentToolPolicy(coding, { towerActive: false }), coding);
-  const tower = applyTowerParentToolPolicy(coding, { towerActive: true });
-  assert.equal(tower.includes('write'), false);
-  assert.equal(tower.includes('edit'), false);
-  assert.equal(tower.includes('fork_task'), false);
-  assert.equal(tower.includes('run_subagent'), true);
-  assert.equal(tower.includes('land_workers'), true);
-  assert.equal(tower.includes('cancel_worker'), true);
-  assert.equal(tower.includes('crew_status'), true);
-  assert.equal(tower.includes('run'), true);
+  assert.deepEqual(applyCrewParentToolPolicy(coding, { crewActive: false }), coding);
+  const crew = applyCrewParentToolPolicy(coding, { crewActive: true });
+  assert.equal(crew.includes('write'), false);
+  assert.equal(crew.includes('edit'), false);
+  assert.equal(crew.includes('fork_task'), false);
+  assert.equal(crew.includes('run_subagent'), true);
+  assert.equal(crew.includes('land_workers'), true);
+  assert.equal(crew.includes('cancel_worker'), true);
+  assert.equal(crew.includes('crew_status'), true);
+  assert.equal(crew.includes('run'), true);
 });
 
-test('tower workers keep crew_status without parent inspect-only shell', async () => {
+test('crew workers keep crew_status without parent inspect-only shell', async () => {
   const bundle = getBuiltinTools({
-    towerActive: false,
+    crewActive: false,
     onRunSubAgent: async () => ({ ok: true }),
-    config: { runtime: { tower_session: true } },
+    config: { runtime: { crew_session: true } },
   });
   const names = bundle.definitions.map((item) => item.function?.name || item.name);
   assert.equal(names.includes('crew_status'), true);
@@ -212,7 +212,7 @@ test('tower workers keep crew_status without parent inspect-only shell', async (
 
 test('tool_search for crew_status says the tool is already available', async () => {
   const { handlers } = getBuiltinTools({
-    towerActive: true,
+    crewActive: true,
     onRunSubAgent: async () => ({ ok: true }),
     onLandWorkers: async () => ({ ok: true }),
   });
@@ -224,7 +224,7 @@ test('tool_search for crew_status says the tool is already available', async () 
 
 test('crew_status is exposed for Crew sessions and reads fresh state', async () => {
   const hidden = getBuiltinTools({
-    towerActive: false,
+    crewActive: false,
     onRunSubAgent: async () => ({ ok: true }),
   });
   assert.equal(
@@ -233,15 +233,15 @@ test('crew_status is exposed for Crew sessions and reads fresh state', async () 
   );
 
   const { definitions, handlers } = getBuiltinTools({
-    towerActive: true,
+    crewActive: true,
     onRunSubAgent: async () => ({ ok: true }),
     onLandWorkers: async () => ({ ok: true }),
     config: {
       runtime: {
-        tower_session: true,
-        tower_project_root: process.cwd(),
-        getTowerInFlightWorkers: () => ['worker-a'],
-        getTowerPendingWakes: () => 2,
+        crew_session: true,
+        crew_project_root: process.cwd(),
+        getCrewInFlightWorkers: () => ['worker-a'],
+        getCrewPendingWakes: () => 2,
       },
     },
   });
@@ -256,7 +256,7 @@ test('crew_status is exposed for Crew sessions and reads fresh state', async () 
 
 test('submit_crew_review is only exposed when a verdict callback is wired', async () => {
   const hidden = getBuiltinTools({
-    towerActive: true,
+    crewActive: true,
     onRunSubAgent: async () => ({ ok: true }),
     onLandWorkers: async () => ({ ok: true }),
   });
@@ -269,7 +269,7 @@ test('submit_crew_review is only exposed when a verdict callback is wired', asyn
   const { definitions, handlers } = getBuiltinTools({
     config: {
       runtime: {
-        onTowerReviewVerdict: (verdict) => {
+        onCrewReviewVerdict: (verdict) => {
           seen = verdict;
         },
       },

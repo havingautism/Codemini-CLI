@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { createTowerWorkerScheduler } from '../src/core/tower-scheduler.js';
+import { createCrewWorkerScheduler } from '../src/core/crew-scheduler.js';
 
-test('tower scheduler caps active workers and starts queued work in order', async () => {
-  const scheduler = createTowerWorkerScheduler({ getLimit: () => 2 });
+test('crew scheduler caps active workers and starts queued work in order', async () => {
+  const scheduler = createCrewWorkerScheduler({ getLimit: () => 2 });
   const releases = [];
   const events = [];
   const task = (id) => scheduler.run(
@@ -30,8 +30,8 @@ test('tower scheduler caps active workers and starts queued work in order', asyn
   assert.deepEqual(scheduler.snapshot(), { active: 0, queued: 0, limit: 2 });
 });
 
-test('tower scheduler drops aborted queued work without starting it', async () => {
-  const scheduler = createTowerWorkerScheduler({ getLimit: () => 1 });
+test('crew scheduler drops aborted queued work without starting it', async () => {
+  const scheduler = createCrewWorkerScheduler({ getLimit: () => 1 });
   const controller = new AbortController();
   let started = false;
   const first = scheduler.run(() => new Promise(() => {}));
@@ -43,8 +43,8 @@ test('tower scheduler drops aborted queued work without starting it', async () =
     { signal: controller.signal },
   );
   assert.deepEqual(scheduler.snapshot(), { active: 1, queued: 1, limit: 1 });
-  controller.abort({ towerCancel: true });
-  await assert.rejects(queued, (error) => error?.name === 'AbortError' || error?.towerCancel === true);
+  controller.abort({ crewCancel: true });
+  await assert.rejects(queued, (error) => error?.name === 'AbortError' || error?.crewCancel === true);
   assert.equal(started, false);
   assert.deepEqual(scheduler.snapshot(), { active: 1, queued: 0, limit: 1 });
   void first;

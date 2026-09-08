@@ -4,7 +4,7 @@ import stripAnsi from 'strip-ansi';
 import { Container, getCapabilities, setCapabilities } from '@earendil-works/pi-tui';
 
 import { buildSlashCommands, runOpenCodeTui } from '../src/tui/opencode-chat-app.js';
-import { ActivityBar, ApprovalDialog, Footer, TopBar, TowerProgressPanel } from '../src/tui/components/chrome.js';
+import { ActivityBar, ApprovalDialog, Footer, TopBar, CrewProgressPanel } from '../src/tui/components/chrome.js';
 import { PlanProgress, ProcessedFold, ReasoningBlock, TodoProgress, ToolCall, ToolCallGroup, appendHistory, createAssistantMessage, createSystemMessage, createUserMessage, linkMarkdownImages, paintBackground } from '../src/tui/components/messages.js';
 import { ModeHome } from '../src/tui/components/mode-home.js';
 import { createTuiCopy } from '../src/tui/copy.js';
@@ -426,34 +426,34 @@ test('chat chrome keeps only the logo on top and runtime details at the bottom',
   const bottom = stripAnsi(new Footer({ runtime, model: 'fallback', sessionId: 'session-12345678', safeMode: true }).render(80).join('\n'));
   assert.match(bottom, /◆ CODE\s+│\s+● AUTO\s+│\s+◇ WORKSPACE.*◆ test-model\s+│\s+# 12345678/);
   assert.match(bottom, /⌂ E:\\repo.*CTX/);
-  assert.doesNotMatch(bottom, /TOWER/);
+  assert.doesNotMatch(bottom, /CREW/);
 
-  const towerBottom = stripAnsi(new Footer({
+  const crewBottom = stripAnsi(new Footer({
     runtime: {
       getRuntimeState: () => ({
         ...runtime.getRuntimeState(),
-        towerActive: true
+        crewActive: true
       })
     },
     model: 'fallback',
     sessionId: 'session-12345678',
     safeMode: true
   }).render(80).join('\n'));
-  assert.match(towerBottom, /◆ CREW\s+│\s+● AUTO/);
-  assert.doesNotMatch(towerBottom, /◆ CODE/);
+  assert.match(crewBottom, /◆ CREW\s+│\s+● AUTO/);
+  assert.doesNotMatch(crewBottom, /◆ CODE/);
 
-  const towerDock = stripAnsi(new TowerProgressPanel({
+  const crewDock = stripAnsi(new CrewProgressPanel({
     runtime: {
       getRuntimeState: () => ({
-        towerActive: true,
-        towerWorkers: [{ id: 'lena', kind: 'coder', sealed: true, runStatus: 'completed' }],
-        towerInFlightIds: ['lena'],
+        crewActive: true,
+        crewWorkers: [{ id: 'lena', kind: 'coder', sealed: true, runStatus: 'completed' }],
+        crewInFlightIds: ['lena'],
       })
     },
     copy: createTuiCopy('en')
   }).render(80).join('\n'));
-  assert.match(towerDock, /Crew/);
-  assert.match(towerDock, /lena reviewing/);
+  assert.match(crewDock, /Crew/);
+  assert.match(crewDock, /lena reviewing/);
 
   const activity = new ActivityBar({ tui: { requestRender() {} }, copy: createTuiCopy('en') }).render(80).join('\n');
   assert.match(stripAnsi(activity), /● Ready.*\/ commands/);
@@ -1088,7 +1088,7 @@ test('slash commands include runtime project commands and skills', () => {
 
 test('Crew starts from the TUI mode selector and is absent from slash commands', async () => {
   const terminal = new FakeTerminal();
-  const towerCalls = [];
+  const crewCalls = [];
   const runtime = {
     getSessionMessages: () => [],
     getInputHistory: async () => [],
@@ -1097,20 +1097,20 @@ test('Crew starts from the TUI mode selector and is absent from slash commands',
       mode: 'plan',
       model: 'test-model',
       workspaceRoot: 'E:\\repo',
-      towerActive: towerCalls.at(-1) === true
+      crewActive: crewCalls.at(-1) === true
     }),
     setRequestToolApproval() {},
     setExecutionMode: async () => { throw new Error('Crew must not use the ordinary execution-mode setter'); },
-    setTowerMode: async (active) => {
-      towerCalls.push(!!active);
-      return { ok: true, tower: { active: true, base: 'main' }, warning: 'Git · 2 uncommitted changes' };
+    setCrewMode: async (active) => {
+      crewCalls.push(!!active);
+      return { ok: true, crew: { active: true, base: 'main' }, warning: 'Git · 2 uncommitted changes' };
     },
     submitMessage: async () => ({ type: 'noop' })
   };
 
   const running = runOpenCodeTui({
     runtime,
-    sessionId: 'tower-test',
+    sessionId: 'crew-test',
     model: 'test-model',
     language: 'en',
     terminal,
@@ -1130,9 +1130,9 @@ test('Crew starts from the TUI mode selector and is absent from slash commands',
   terminal.send('\u001b[A');
   terminal.send('\u001b[A');
   terminal.send('\r');
-  await waitFor(() => towerCalls.length === 1);
+  await waitFor(() => crewCalls.length === 1);
   await waitFor(() => stripAnsi(terminal.output).includes('Git · 2 uncommitted changes'));
-  assert.deepEqual(towerCalls, [true]);
+  assert.deepEqual(crewCalls, [true]);
   assert.equal(buildSlashCommands(runtime, createTuiCopy('en')).some(({ value }) => value === 'crew'), false);
   terminal.send('\u0003');
   terminal.send('\u0003');
@@ -1275,7 +1275,7 @@ test('plan progress can start from a Crew reviewer step_start', () => {
       role: 'reviewer',
       title: 'Crew review · lena',
       status: 'running',
-      towerKind: 'review'
+      crewKind: 'review'
     }]
   });
   const rendered = stripAnsi(plan.render(80).join('\n'));

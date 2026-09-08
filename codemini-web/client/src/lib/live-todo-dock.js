@@ -10,9 +10,9 @@ function isLiveAssistantMessage(message) {
 /** Latest in-progress assistant todo, docked above the composer while busy. */
 export function findLiveTodoDock(
   messages = [],
-  { busy = false, previous = null, towerActive = false } = {},
+  { busy = false, previous = null, crewActive = false } = {},
 ) {
-  if (!busy || towerActive) return null;
+  if (!busy || crewActive) return null;
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index];
     if (!isLiveAssistantMessage(message)) continue;

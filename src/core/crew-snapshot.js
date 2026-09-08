@@ -1,39 +1,40 @@
 import path from 'node:path';
 
 import {
-  listTowerWorkersFromState,
-  normalizeTowerState,
-  readTowerStateFile,
-} from './tower-store.js';
+  listUnreadCrewEvents,
+  listCrewWorkersFromState,
+  normalizeCrewState,
+  readCrewStateFile,
+} from './crew-store.js';
 import {
-  buildTowerProgressItems,
-  describeTowerWorkerProgress,
-  formatTowerProgressLine,
-  shouldShowTowerProgressDock,
-} from './tower-progress.js';
+  buildCrewProgressItems,
+  describeCrewWorkerProgress,
+  formatCrewProgressLine,
+  shouldShowCrewProgressDock,
+} from './crew-progress.js';
 import {
-  parseTowerReviewCompletedWake,
-  parseTowerWakeHeadline,
-} from './tower-notification.js';
+  parseCrewReviewCompletedWake,
+  parseCrewWakeHeadline,
+} from './crew-notification.js';
 
 export {
-  buildTowerProgressItems,
-  describeTowerWorkerProgress,
-  formatTowerProgressLine,
-  shouldShowTowerProgressDock,
-  parseTowerReviewCompletedWake,
-  parseTowerWakeHeadline,
+  buildCrewProgressItems,
+  describeCrewWorkerProgress,
+  formatCrewProgressLine,
+  shouldShowCrewProgressDock,
+  parseCrewReviewCompletedWake,
+  parseCrewWakeHeadline,
 };
 
-export function resolveTowerProjectRoot(cwd = process.cwd()) {
+export function resolveCrewProjectRoot(cwd = process.cwd()) {
   const normalized = path.resolve(cwd).replace(/\\/g, '/');
-  const marker = '/.codemini/tower/worktrees/';
+  const marker = '/.codemini/crew/worktrees/';
   const idx = normalized.indexOf(marker);
   if (idx >= 0) return normalized.slice(0, idx);
   return normalized;
 }
 
-export function buildTowerWorkerStatusRecord(worker = {}) {
+export function buildCrewWorkerStatusRecord(worker = {}) {
   const kind = String(worker.kind || '').trim().toLowerCase() || 'coder';
   const runStatus = String(worker.runStatus || '').trim().toLowerCase();
   return {
@@ -56,7 +57,7 @@ export function buildTowerWorkerStatusRecord(worker = {}) {
   };
 }
 
-export function suggestTowerNextAction({ workers = [], inFlight = [], pendingWakes = 0 } = {}) {
+export function suggestCrewNextAction({ workers = [], inFlight = [], pendingWakes = 0 } = {}) {
   const pending = Number(pendingWakes) || 0;
   if (pending > 0) {
     return 'A Crew notification is queued. Do not land or dispatch; wait for that wake turn.';
@@ -93,17 +94,17 @@ export function suggestTowerNextAction({ workers = [], inFlight = [], pendingWak
   return 'Review crew_status and recent notifications before the next action.';
 }
 
-export async function readTowerStatusPayload(cwd = process.cwd(), {
+export async function readCrewStatusPayload(cwd = process.cwd(), {
   inFlight = [],
   pendingWakes = 0,
 } = {}) {
-  const projectRoot = resolveTowerProjectRoot(cwd);
-  const raw = await readTowerStateFile(projectRoot);
-  const towerState = normalizeTowerState(raw);
-  if (!towerState) {
+  const projectRoot = resolveCrewProjectRoot(cwd);
+  const raw = await readCrewStateFile(projectRoot);
+  const crewState = normalizeCrewState(raw);
+  if (!crewState) {
     return { ok: false, active: false, error: 'Crew mode is not active.' };
   }
-  const workers = listTowerWorkersFromState(raw).map(buildTowerWorkerStatusRecord);
+  const workers = listCrewWorkersFromState(raw).map(buildCrewWorkerStatusRecord);
   const inFlightIds = [...new Set((Array.isArray(inFlight) ? inFlight : []).map((item) => String(item || '').trim()).filter(Boolean))];
   const running = workers.filter((item) => (
     item.runStatus === 'running' || inFlightIds.includes(item.id)
@@ -117,11 +118,12 @@ export async function readTowerStatusPayload(cwd = process.cwd(), {
     && item.reviewLoopStopped !== true
     && !item.integrated
   )).length;
+  const events = listUnreadCrewEvents(raw);
   return {
     ok: true,
     active: true,
     fetchedAt: new Date().toISOString(),
-    base: towerState.base,
+    base: crewState.base,
     inFlight: inFlightIds,
     pendingWakes: Number(pendingWakes) || 0,
     counts: {
@@ -130,9 +132,11 @@ export async function readTowerStatusPayload(cwd = process.cwd(), {
       sealed,
       integrated,
       awaitingReview,
+      unreadEvents: events.length,
     },
     workers,
-    suggestedNext: suggestTowerNextAction({
+    events,
+    suggestedNext: suggestCrewNextAction({
       workers,
       inFlight: inFlightIds,
       pendingWakes: Number(pendingWakes) || 0,
@@ -140,7 +144,7 @@ export async function readTowerStatusPayload(cwd = process.cwd(), {
   };
 }
 
-export function formatTowerStatusSummary(result = {}) {
+export function formatCrewStatusSummary(result = {}) {
   if (!result || typeof result !== 'object') return String(result ?? '');
   if (!result.ok) return String(result.error || 'Crew status unavailable.');
   const lines = [
@@ -149,6 +153,19 @@ export function formatTowerStatusSummary(result = {}) {
   ];
   if (result.inFlight?.length) lines.push(`In flight: ${result.inFlight.join(', ')}`);
   if (result.pendingWakes) lines.push(`Pending wakes: ${result.pendingWakes}`);
+  if (result.events?.length) {
+    lines.push(`Unread events: ${result.events.length}`);
+    for (const event of result.events) {
+      const summary = String(event.payload?.summary || '').trim();
+      const parts = [
+        event.kind,
+        event.from,
+        event.payload?.status || '',
+        summary ? summary.slice(0, 80) : '',
+      ].filter(Boolean);
+      lines.push(`  - ${parts.join(' | ')}`);
+    }
+  }
   if (result.suggestedNext) lines.push(`Next: ${result.suggestedNext}`);
   for (const worker of result.workers || []) {
     const review = worker.reviewPassed === true
@@ -180,8 +197,8 @@ function sealLabel({ dirty, workerKind = '', status = '' } = {}) {
   return normalized === 'completed' ? 'completed' : 'unknown';
 }
 
-export function formatTowerRosterSnapshot(workers = []) {
-  const roster = listTowerWorkersFromState({ workers });
+export function formatCrewRosterSnapshot(workers = []) {
+  const roster = listCrewWorkersFromState({ workers });
   if (!roster.length) return 'Crew roster: (empty)';
   const lines = roster.map((item) => {
     const scope = Array.isArray(item.paths) && item.paths.length ? item.paths.join(', ') : 'no paths';
@@ -203,7 +220,7 @@ export function formatTowerRosterSnapshot(workers = []) {
   return ['Crew roster snapshot:', ...lines].join('\n');
 }
 
-export function buildTowerWorkerCompletedWake({
+export function buildCrewWorkerCompletedWake({
   workerId = '',
   reviewOf = '',
   status = 'completed',
@@ -218,8 +235,8 @@ export function buildTowerWorkerCompletedWake({
   const id = String(workerId || reviewOf || '').trim();
   const seal = sealLabel({ dirty, workerKind, status });
   const notificationType = String(reviewOf || '').trim()
-    ? 'tower.review.completed'
-    : 'tower.worker.completed';
+    ? 'crew.review.completed'
+    : 'crew.worker.completed';
   const headline = String(reviewOf || '').trim()
     ? `Crew review of "${reviewOf}" finished (${status}).`
     : `Crew worker "${id}" ${status}.`;
@@ -244,7 +261,7 @@ export function buildTowerWorkerCompletedWake({
   ].filter(Boolean).join('\n');
 }
 
-export function compactTowerSpawnResultForParent({
+export function compactCrewSpawnResultForParent({
   workerId = '',
   taskId = '',
   status = 'running',

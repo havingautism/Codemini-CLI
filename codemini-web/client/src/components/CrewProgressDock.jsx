@@ -2,27 +2,27 @@ import { SessionOrb } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 import { t } from "../../i18n/index.js";
 import {
-  buildTowerProgressItems,
-  shouldShowTowerProgressDock,
-} from "../../../../src/core/tower-progress.js";
+  buildCrewProgressItems,
+  shouldShowCrewProgressDock,
+} from "../../../../src/core/crew-progress.js";
 
 const PHASE_LABEL_KEY = {
-  queued: "towerPhaseQueued",
-  running: "towerPhaseRunning",
-  reviewing: "towerPhaseReviewing",
-  awaiting_review: "towerPhaseAwaitingReview",
-  ready: "towerPhaseReady",
-  dirty: "towerPhaseDirty",
-  merged: "towerPhaseMerged",
-  failed: "towerPhaseFailed",
-  survey_done: "towerPhaseSurveyDone",
-  idle: "towerPhaseIdle",
+  queued: "crewPhaseQueued",
+  running: "crewPhaseRunning",
+  reviewing: "crewPhaseReviewing",
+  awaiting_review: "crewPhaseAwaitingReview",
+  ready: "crewPhaseReady",
+  dirty: "crewPhaseDirty",
+  merged: "crewPhaseMerged",
+  failed: "crewPhaseFailed",
+  survey_done: "crewPhaseSurveyDone",
+  idle: "crewPhaseIdle",
 };
 
 const KIND_LABEL_KEY = {
-  survey: "towerKindSurvey",
-  reviewer: "towerKindReviewer",
-  coder: "towerKindCoder",
+  survey: "crewKindSurvey",
+  reviewer: "crewKindReviewer",
+  coder: "crewKindCoder",
 };
 
 function phaseDotClass(phase) {
@@ -38,29 +38,29 @@ function phaseDotClass(phase) {
 }
 
 function phaseLabel(phase) {
-  return t(PHASE_LABEL_KEY[phase] || "towerPhaseIdle");
+  return t(PHASE_LABEL_KEY[phase] || "crewPhaseIdle");
 }
 
-export function TowerProgressDock({ runtimeState }) {
-  const towerActive = Boolean(runtimeState?.towerActive);
-  const workers = Array.isArray(runtimeState?.towerWorkers)
-    ? runtimeState.towerWorkers
+export function CrewProgressDock({ runtimeState }) {
+  const crewActive = Boolean(runtimeState?.crewActive);
+  const workers = Array.isArray(runtimeState?.crewWorkers)
+    ? runtimeState.crewWorkers
     : [];
-  const inFlightIds = Array.isArray(runtimeState?.towerInFlightIds)
-    ? runtimeState.towerInFlightIds
+  const inFlightIds = Array.isArray(runtimeState?.crewInFlightIds)
+    ? runtimeState.crewInFlightIds
     : [];
-  if (!shouldShowTowerProgressDock({ towerActive, workers, inFlightIds })) {
+  if (!shouldShowCrewProgressDock({ crewActive, workers, inFlightIds })) {
     return null;
   }
-  const items = buildTowerProgressItems({ workers, inFlightIds });
+  const items = buildCrewProgressItems({ workers, inFlightIds });
 
   return (
     <section
       className="codemini-message-surface mb-2 overflow-hidden rounded-xl px-3 py-2.5"
-      aria-label={t("towerProgressTitle")}
+      aria-label={t("crewProgressTitle")}
     >
       <div className="mb-1.5 text-[12px] font-medium text-(--text-secondary)">
-        {t("towerProgressTitle")}
+        {t("crewProgressTitle")}
       </div>
       <ul className="flex flex-col gap-1">
         {items.map((item) => {

@@ -1,30 +1,37 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
-import { getProjectTowerDir, getProjectTowerStatePath } from './paths.js';
+import { getProjectCrewDir, getProjectCrewStatePath } from './paths.js';
 import { runGit } from './process-run.js';
 import { atomicWriteUtf8 } from './staged-write.js';
-import { normalizeTowerDependsOn, normalizeTowerPaths } from './tower-scope.js';
+import { normalizeCrewDependsOn, normalizeCrewPaths } from './crew-scope.js';
 
-const TOWER_STATE_VERSION = 1;
-const towerStateLocks = new Map();
+const CREW_STATE_VERSION = 1;
+const CREW_EVENTS_LIMIT = 50;
+const CREW_EVENT_KINDS = new Set([
+  'worker.completed',
+  'worker.failed',
+  'worker.interrupted',
+  'review.completed',
+]);
+const crewStateLocks = new Map();
 
-function towerStateLockKey(cwd) {
-  const key = path.resolve(getProjectTowerStatePath(cwd));
+function crewStateLockKey(cwd) {
+  const key = path.resolve(getProjectCrewStatePath(cwd));
   return process.platform === 'win32' ? key.toLowerCase() : key;
 }
 
-function withTowerStateLock(cwd, task) {
-  const key = towerStateLockKey(cwd);
-  const previous = towerStateLocks.get(key) || Promise.resolve();
+function withCrewStateLock(cwd, task) {
+  const key = crewStateLockKey(cwd);
+  const previous = crewStateLocks.get(key) || Promise.resolve();
   const run = previous.catch(() => {}).then(task);
-  towerStateLocks.set(key, run);
+  crewStateLocks.set(key, run);
   return run.finally(() => {
-    if (towerStateLocks.get(key) === run) towerStateLocks.delete(key);
+    if (crewStateLocks.get(key) === run) crewStateLocks.delete(key);
   });
 }
 
-export function normalizeTowerState(value) {
+export function normalizeCrewState(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   if (value.active !== true) return null;
   const base = String(value.base || '').trim();
@@ -37,7 +44,7 @@ export function normalizeTowerState(value) {
   };
 }
 
-export function normalizeTowerWorkerRecord(value) {
+export function normalizeCrewWorkerRecord(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const id = String(value.id || '').trim();
   const branch = String(value.branch || '').trim();
@@ -45,8 +52,8 @@ export function normalizeTowerWorkerRecord(value) {
   if (!id || !branch || !worktreePath) return null;
   const callId = String(value.callId || '').trim();
   const taskId = String(value.taskId || '').trim();
-  const paths = normalizeTowerPaths(value.paths);
-  const dependsOn = normalizeTowerDependsOn(value.dependsOn);
+  const paths = normalizeCrewPaths(value.paths);
+  const dependsOn = normalizeCrewDependsOn(value.dependsOn);
   const lastHandoffPath = String(value.lastHandoffPath || '').trim();
   const reviewedCommit = String(value.reviewedCommit || '').trim();
   const reviewText = String(value.reviewText || '').trim();
@@ -89,9 +96,9 @@ export function workerLandBaseRef(worker, fallback = '') {
   return String(worker?.landBase || '').trim() || String(fallback || '').trim();
 }
 
-export const TOWER_REVIEW_MAX_ROUNDS = 5;
+export const CREW_REVIEW_MAX_ROUNDS = 5;
 
-export function normalizeTowerReviewVerdict(value = {}) {
+export function normalizeCrewReviewVerdict(value = {}) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     return { ok: false, error: 'submit_crew_review requires passed and findings.' };
   }
@@ -114,19 +121,19 @@ function normalizeFindingsBullet(value) {
   return String(value || '').trim().toLowerCase().replace(/\s+/g, ' ');
 }
 
-export function towerReviewFindingsKey(findings = []) {
+export function crewReviewFindingsKey(findings = []) {
   const list = Array.isArray(findings) ? findings : [];
   return list.map(normalizeFindingsBullet).filter(Boolean).join('\n');
 }
 
-export function formatTowerReviewText(verdict) {
+export function formatCrewReviewText(verdict) {
   if (!verdict || typeof verdict !== 'object') return '';
   if (verdict.passed === true) return '';
   const findings = Array.isArray(verdict.findings) ? verdict.findings : [];
   return findings.map((item) => `- ${String(item || '').trim()}`).filter((item) => item !== '-').join('\n');
 }
 
-export function nextTowerReviewLoopState(worker, { passed = false, findings = [] } = {}) {
+export function nextCrewReviewLoopState(worker, { passed = false, findings = [] } = {}) {
   if (passed === true) {
     return {
       reviewRound: 0,
@@ -136,16 +143,16 @@ export function nextTowerReviewLoopState(worker, { passed = false, findings = []
   }
   const prevRound = Number.parseInt(String(worker?.reviewRound ?? ''), 10);
   const reviewRound = (Number.isInteger(prevRound) && prevRound > 0 ? prevRound : 0) + 1;
-  const lastFindingsKey = towerReviewFindingsKey(findings);
+  const lastFindingsKey = crewReviewFindingsKey(findings);
   const prevKey = String(worker?.lastFindingsKey || '').trim();
   const sameFindings = Boolean(prevKey && lastFindingsKey && prevKey === lastFindingsKey);
   const reviewLoopStopped = worker?.reviewLoopStopped === true
-    || reviewRound >= TOWER_REVIEW_MAX_ROUNDS
+    || reviewRound >= CREW_REVIEW_MAX_ROUNDS
     || sameFindings;
   return { reviewRound, lastFindingsKey, reviewLoopStopped };
 }
 
-export function formatTowerReviewLoopStoppedError(worker) {
+export function formatCrewReviewLoopStoppedError(worker) {
   const id = String(worker?.id || 'worker').trim() || 'worker';
   const round = Number.parseInt(String(worker?.reviewRound ?? ''), 10);
   const rounds = Number.isInteger(round) && round > 0 ? ` after ${round} review rounds` : '';
@@ -158,19 +165,126 @@ export function workerReviewMatchesCommit(worker, commit) {
   return worker.reviewPassed === true && String(worker.reviewedCommit || '').trim() === sha;
 }
 
-export function listTowerWorkersFromState(state) {
+export function listCrewWorkersFromState(state) {
   const workers = Array.isArray(state?.workers) ? state.workers : [];
-  return workers.map(normalizeTowerWorkerRecord).filter(Boolean);
+  return workers.map(normalizeCrewWorkerRecord).filter(Boolean);
 }
 
-export function buildTowerModePromptBlock(towerState) {
-  const state = normalizeTowerState(towerState);
+export function normalizeCrewEvent(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const id = String(value.id || '').trim();
+  const kind = String(value.kind || '').trim();
+  const from = String(value.from || '').trim();
+  const to = String(value.to || '').trim() || 'coordinator';
+  const at = String(value.at || '').trim();
+  if (!id || !CREW_EVENT_KINDS.has(kind) || !from || !at) return null;
+  const payload = value.payload && typeof value.payload === 'object' && !Array.isArray(value.payload)
+    ? value.payload
+    : {};
+  return {
+    id,
+    kind,
+    from,
+    to,
+    at,
+    delivered: value.delivered === true,
+    payload,
+  };
+}
+
+export function listCrewEventsFromState(state) {
+  const events = Array.isArray(state?.events) ? state.events : [];
+  return events.map(normalizeCrewEvent).filter(Boolean);
+}
+
+export function listUnreadCrewEvents(state, { to = 'coordinator', limit = 12 } = {}) {
+  const unread = listCrewEventsFromState(state).filter((item) => (
+    item.delivered !== true && item.to === (String(to || '').trim() || 'coordinator')
+  ));
+  const cap = Number.isInteger(limit) && limit > 0 ? limit : 12;
+  return unread.slice(-cap);
+}
+
+function capCrewEvents(events) {
+  const list = Array.isArray(events) ? events : [];
+  if (list.length <= CREW_EVENTS_LIMIT) return list;
+  return list.slice(list.length - CREW_EVENTS_LIMIT);
+}
+
+export function composeCrewStateDocument(current = {}, patch = {}) {
+  const base = current && typeof current === 'object' && !Array.isArray(current) ? current : {};
+  const overlay = patch && typeof patch === 'object' && !Array.isArray(patch) ? patch : {};
+  const workers = overlay.workers !== undefined
+    ? (Array.isArray(overlay.workers) ? overlay.workers : [])
+      .map(normalizeCrewWorkerRecord)
+      .filter(Boolean)
+    : listCrewWorkersFromState(base);
+  const events = overlay.events !== undefined
+    ? capCrewEvents(listCrewEventsFromState({ events: overlay.events }))
+    : listCrewEventsFromState(base);
+  return { ...base, ...overlay, workers, events };
+}
+
+export function buildCrewCompletionEvent(input = {}) {
+  const workerId = String(input.workerId || '').trim();
+  const reviewOf = String(input.reviewOf || '').trim();
+  const status = String(input.status || 'completed').trim().toLowerCase() || 'completed';
+  const from = reviewOf || workerId;
+  if (!from) return null;
+  const failed = status === 'failed';
+  const interrupted = status === 'interrupted';
+  const isReview = Boolean(reviewOf);
+  let kind = 'worker.completed';
+  if (interrupted) kind = 'worker.interrupted';
+  else if (isReview) kind = 'review.completed';
+  else if (failed) kind = 'worker.failed';
+  const payload = {
+    workerId: from,
+    status: interrupted ? 'interrupted' : (failed ? 'failed' : 'completed'),
+  };
+  if (input.dirty === true || input.dirty === false) payload.dirty = input.dirty === true;
+  const workerKind = String(input.workerKind || '').trim();
+  if (workerKind) payload.workerKind = workerKind;
+  const summary = String(input.summary || '').trim();
+  if (summary) payload.summary = summary.slice(0, 200);
+  const handoffPath = String(input.handoffPath || '').trim();
+  if (handoffPath) payload.handoffPath = handoffPath;
+  if (input.reviewPassed === true || input.reviewPassed === false) {
+    payload.reviewPassed = input.reviewPassed === true;
+  }
+  if (input.reviewLoopStopped === true) payload.reviewLoopStopped = true;
+  const reviewRound = Number.parseInt(String(input.reviewRound ?? ''), 10);
+  if (Number.isInteger(reviewRound) && reviewRound > 0) payload.reviewRound = reviewRound;
+  return {
+    id: `evt_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
+    kind,
+    from,
+    to: 'coordinator',
+    at: new Date().toISOString(),
+    delivered: false,
+    payload,
+  };
+}
+
+export function appendCrewEvent(cwd, event) {
+  return withCrewStateLock(cwd, async () => {
+    const record = normalizeCrewEvent(event);
+    if (!record) return { ok: false, error: 'Invalid Crew event.' };
+    const current = (await readCrewStateFile(cwd)) || {};
+    const events = capCrewEvents([...listCrewEventsFromState(current), record]);
+    await writeCrewStateFileUnlocked(cwd, composeCrewStateDocument(current, { events }));
+    return { ok: true, event: record, events };
+  });
+}
+
+export function buildCrewModePromptBlock(crewState) {
+  const state = normalizeCrewState(crewState);
   if (!state) return '';
   return [
     'Crew Mode: on',
     `Recorded git base branch: ${state.base}`,
     'You are the Crew coordinator for this session. Dispatch implementation work with run_subagent. One worker is enough; do not invent extra missions. Do not implement, answer the coding question yourself, or edit the main checkout.',
-    'Call crew_status for the live roster before dispatching, reviewing, landing, or answering progress. Do not infer progress from this prompt, memory, or an earlier tool result.',
+    'Call crew_status for the live roster before dispatching, reviewing, landing, or answering progress. Do not infer progress from this prompt, memory, or an earlier tool result. crew_status also lists recent completion events; after a restart a wake may be missing — use those events and the roster.',
     'User progress or status questions (for example "做到哪了", "进展如何", "还要多久") are not new missions. Call crew_status, then answer in plain language. Do not spawn workers, reviewers, or survey runs, and do not call land_workers, just to answer a status question.',
     'If crew_status shows pending wakes, wait for that notification turn. Do not land or dispatch while a wake is queued.',
     'When a turn includes both a user message and a Crew notification, handle the notification workflow first (review sealed coders, land when ready), then answer any user status question in the same reply.',
@@ -189,7 +303,7 @@ async function tryGit(cwd, args) {
   return runGit(args, { cwd, allowFailure: true, timeoutMs: 15_000 });
 }
 
-export async function inspectTowerGit(cwd = process.cwd()) {
+export async function inspectCrewGit(cwd = process.cwd()) {
   const root = path.resolve(cwd);
   const inside = await tryGit(root, ['rev-parse', '--is-inside-work-tree']);
   if (String(inside.stdout || '').trim() !== 'true') {
@@ -232,59 +346,62 @@ export async function inspectTowerGit(cwd = process.cwd()) {
   };
 }
 
-export async function readTowerStateFile(cwd = process.cwd()) {
+export async function readCrewStateFile(cwd = process.cwd()) {
   try {
-    const raw = await fs.readFile(getProjectTowerStatePath(cwd), 'utf8');
+    const raw = await fs.readFile(getProjectCrewStatePath(cwd), 'utf8');
     return JSON.parse(raw);
   } catch {
     return null;
   }
 }
 
-async function writeTowerStateFileUnlocked(cwd, state) {
-  const dir = getProjectTowerDir(cwd);
+async function writeCrewStateFileUnlocked(cwd, state) {
+  const dir = getProjectCrewDir(cwd);
   await fs.mkdir(dir, { recursive: true });
-  const file = getProjectTowerStatePath(cwd);
+  const file = getProjectCrewStatePath(cwd);
   await atomicWriteUtf8(file, `${JSON.stringify(state, null, 2)}\n`);
   return file;
 }
 
-export function writeTowerStateFile(cwd, state) {
-  return withTowerStateLock(cwd, () => writeTowerStateFileUnlocked(cwd, state));
+export function writeCrewStateFile(cwd, state) {
+  return withCrewStateLock(cwd, async () => {
+    const current = (await readCrewStateFile(cwd)) || {};
+    return writeCrewStateFileUnlocked(cwd, composeCrewStateDocument(current, state));
+  });
 }
 
-export function appendTowerWorkerRecord(cwd, worker) {
-  return withTowerStateLock(cwd, async () => {
-    const record = normalizeTowerWorkerRecord(worker);
+export function appendCrewWorkerRecord(cwd, worker) {
+  return withCrewStateLock(cwd, async () => {
+    const record = normalizeCrewWorkerRecord(worker);
     if (!record) return { ok: false, error: 'Invalid Crew worker record.' };
-    const current = (await readTowerStateFile(cwd)) || {};
-    const workers = listTowerWorkersFromState(current);
+    const current = (await readCrewStateFile(cwd)) || {};
+    const workers = listCrewWorkersFromState(current);
     if (workers.some((item) => item.id === record.id || item.worktreePath === record.worktreePath)) {
       return { ok: false, error: `Duplicate Crew worker "${record.id}".` };
     }
     workers.push(record);
-    await writeTowerStateFileUnlocked(cwd, { ...current, workers });
+    await writeCrewStateFileUnlocked(cwd, composeCrewStateDocument(current, { workers }));
     return { ok: true, worker: record, workers };
   });
 }
 
-export function writeTowerWorkerRecords(cwd, workers) {
-  return withTowerStateLock(cwd, async () => {
-    const current = (await readTowerStateFile(cwd)) || {};
+export function writeCrewWorkerRecords(cwd, workers) {
+  return withCrewStateLock(cwd, async () => {
+    const current = (await readCrewStateFile(cwd)) || {};
     const next = (Array.isArray(workers) ? workers : [])
-      .map(normalizeTowerWorkerRecord)
+      .map(normalizeCrewWorkerRecord)
       .filter(Boolean);
-    await writeTowerStateFileUnlocked(cwd, { ...current, workers: next });
+    await writeCrewStateFileUnlocked(cwd, composeCrewStateDocument(current, { workers: next }));
     return next;
   });
 }
 
-export function patchTowerWorkerRecord(cwd, id, patch = {}) {
-  return withTowerStateLock(cwd, async () => {
+export function patchCrewWorkerRecord(cwd, id, patch = {}) {
+  return withCrewStateLock(cwd, async () => {
     const workerId = String(id || '').trim();
     if (!workerId) return { ok: false, error: 'Missing Crew worker id.' };
-    const current = (await readTowerStateFile(cwd)) || {};
-    const workers = listTowerWorkersFromState(current);
+    const current = (await readCrewStateFile(cwd)) || {};
+    const workers = listCrewWorkersFromState(current);
     const index = workers.findIndex((item) => item.id === workerId);
     if (index < 0) return { ok: false, error: `Unknown Crew worker "${workerId}".` };
     const raw = {
@@ -298,54 +415,52 @@ export function patchTowerWorkerRecord(cwd, id, patch = {}) {
     if (patch?.reviewedCommit === '') delete raw.reviewedCommit;
     if (patch?.reviewText === '') delete raw.reviewText;
     if (patch?.reviewPassed === false && patch?.reviewedCommit === '') delete raw.reviewPassed;
-    const next = normalizeTowerWorkerRecord(raw);
+    const next = normalizeCrewWorkerRecord(raw);
     if (!next) return { ok: false, error: 'Invalid Crew worker record.' };
     workers[index] = next;
-    await writeTowerStateFileUnlocked(cwd, { ...current, workers });
+    await writeCrewStateFileUnlocked(cwd, composeCrewStateDocument(current, { workers }));
     return { ok: true, worker: next, workers };
   });
 }
 
-export async function enterTowerMode({ cwd = process.cwd(), sessionId = '' } = {}) {
-  const inspect = await inspectTowerGit(cwd);
+export async function enterCrewMode({ cwd = process.cwd(), sessionId = '' } = {}) {
+  const inspect = await inspectCrewGit(cwd);
   if (!inspect.ok) return inspect;
   const now = new Date().toISOString();
-  const tower = {
+  const crew = {
     active: true,
     base: inspect.base,
     enteredAt: now
   };
-  await withTowerStateLock(cwd, async () => {
-    const priorWorkers = listTowerWorkersFromState(await readTowerStateFile(cwd));
-    await writeTowerStateFileUnlocked(cwd, {
-      version: TOWER_STATE_VERSION,
-      ...tower,
+  await withCrewStateLock(cwd, async () => {
+    const disk = await readCrewStateFile(cwd);
+    await writeCrewStateFileUnlocked(cwd, composeCrewStateDocument(disk, {
+      version: CREW_STATE_VERSION,
+      ...crew,
       sessionId: String(sessionId || '').trim() || undefined,
-      workers: priorWorkers
-    });
+    }));
   });
   return {
     ok: true,
-    tower,
+    crew,
     dirtyCount: inspect.dirtyCount || 0,
     ...(inspect.warning ? { warning: inspect.warning } : {}),
   };
 }
 
-export async function exitTowerMode({ cwd = process.cwd(), sessionId = '', previous } = {}) {
-  await withTowerStateLock(cwd, async () => {
-    const disk = await readTowerStateFile(cwd);
-    const prior = normalizeTowerState(previous) || normalizeTowerState(disk);
+export async function exitCrewMode({ cwd = process.cwd(), sessionId = '', previous } = {}) {
+  await withCrewStateLock(cwd, async () => {
+    const disk = await readCrewStateFile(cwd);
+    const prior = normalizeCrewState(previous) || normalizeCrewState(disk);
     const now = new Date().toISOString();
-    await writeTowerStateFileUnlocked(cwd, {
-      version: TOWER_STATE_VERSION,
+    await writeCrewStateFileUnlocked(cwd, composeCrewStateDocument(disk, {
+      version: CREW_STATE_VERSION,
       active: false,
       base: prior?.base || '',
       enteredAt: prior?.enteredAt,
       exitedAt: now,
       sessionId: String(sessionId || '').trim() || undefined,
-      workers: listTowerWorkersFromState(disk)
-    }).catch(() => null);
+    })).catch(() => null);
   });
-  return { ok: true, tower: null };
+  return { ok: true, crew: null };
 }

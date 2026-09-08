@@ -6,15 +6,15 @@ import path from 'node:path';
 
 import { inspectOutsideWorkspaceMutation } from '../src/core/approval-policy.js';
 import {
-  remapTowerParentPath,
-  remapTowerToolArguments,
-  resolveTowerParentRoot,
-  towerGitWritableRoots,
-} from '../src/core/tower-worktree.js';
+  remapCrewParentPath,
+  remapCrewToolArguments,
+  resolveCrewParentRoot,
+  crewGitWritableRoots,
+} from '../src/core/crew-worktree.js';
 
-async function withTowerLayout(task) {
-  const parent = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-tower-parent-'));
-  const worktree = path.join(parent, '.codemini', 'tower', 'worktrees', 'alex');
+async function withCrewLayout(task) {
+  const parent = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-crew-parent-'));
+  const worktree = path.join(parent, '.codemini', 'crew', 'worktrees', 'alex');
   try {
     await fs.mkdir(worktree, { recursive: true });
     await fs.mkdir(path.join(parent, 'docs'), { recursive: true });
@@ -24,49 +24,49 @@ async function withTowerLayout(task) {
   }
 }
 
-test('resolveTowerParentRoot walks out of the worker checkout', async () => {
-  await withTowerLayout(({ parent, worktree }) => {
-    assert.equal(resolveTowerParentRoot(worktree), path.resolve(parent));
-    assert.equal(resolveTowerParentRoot(parent), '');
+test('resolveCrewParentRoot walks out of the worker checkout', async () => {
+  await withCrewLayout(({ parent, worktree }) => {
+    assert.equal(resolveCrewParentRoot(worktree), path.resolve(parent));
+    assert.equal(resolveCrewParentRoot(parent), '');
   });
 });
 
 test('parent checkout absolute paths remap into the worker worktree', async () => {
-  await withTowerLayout(({ parent, worktree }) => {
-    const mainFile = path.join(parent, 'docs', 'tower-a.md');
-    const remapped = remapTowerParentPath(mainFile, worktree);
-    assert.equal(remapped, path.join(worktree, 'docs', 'tower-a.md'));
-    assert.equal(remapTowerParentPath('docs/tower-a.md', worktree), 'docs/tower-a.md');
+  await withCrewLayout(({ parent, worktree }) => {
+    const mainFile = path.join(parent, 'docs', 'crew-a.md');
+    const remapped = remapCrewParentPath(mainFile, worktree);
+    assert.equal(remapped, path.join(worktree, 'docs', 'crew-a.md'));
+    assert.equal(remapCrewParentPath('docs/crew-a.md', worktree), 'docs/crew-a.md');
   });
 });
 
 test('paths already in the worktree or outside the parent repo stay put', async () => {
-  await withTowerLayout(({ parent, worktree }) => {
+  await withCrewLayout(({ parent, worktree }) => {
     const inside = path.join(worktree, 'src', 'app.js');
-    assert.equal(remapTowerParentPath(inside, worktree), inside);
+    assert.equal(remapCrewParentPath(inside, worktree), inside);
     const outside = path.join(os.tmpdir(), 'other-project', 'file.txt');
-    assert.equal(remapTowerParentPath(outside, worktree), outside);
-    const sibling = path.join(parent, '.codemini', 'tower', 'worktrees', 'bella', 'docs', 'b.md');
-    assert.equal(remapTowerParentPath(sibling, worktree), sibling);
+    assert.equal(remapCrewParentPath(outside, worktree), outside);
+    const sibling = path.join(parent, '.codemini', 'crew', 'worktrees', 'bella', 'docs', 'b.md');
+    assert.equal(remapCrewParentPath(sibling, worktree), sibling);
   });
 });
 
-test('remapTowerToolArguments rewrites write paths and leaves coding roots alone', async () => {
-  await withTowerLayout(({ parent, worktree }) => {
+test('remapCrewToolArguments rewrites write paths and leaves coding roots alone', async () => {
+  await withCrewLayout(({ parent, worktree }) => {
     const mainFile = path.join(parent, 'README.md');
-    const remapped = remapTowerToolArguments({ path: mainFile, content: 'hi' }, worktree);
+    const remapped = remapCrewToolArguments({ path: mainFile, content: 'hi' }, worktree);
     assert.equal(remapped.path, path.join(worktree, 'README.md'));
     assert.equal(remapped.content, 'hi');
 
-    const coding = remapTowerToolArguments({ path: mainFile }, parent);
+    const coding = remapCrewToolArguments({ path: mainFile }, parent);
     assert.equal(coding.path, mainFile);
   });
 });
 
 test('remapped parent writes are not outside-workspace mutations', async () => {
-  await withTowerLayout(async ({ parent, worktree }) => {
-    const mainFile = path.join(parent, 'docs', 'tower-a.md');
-    const remapped = remapTowerToolArguments({ path: mainFile, content: 'hi' }, worktree);
+  await withCrewLayout(async ({ parent, worktree }) => {
+    const mainFile = path.join(parent, 'docs', 'crew-a.md');
+    const remapped = remapCrewToolArguments({ path: mainFile, content: 'hi' }, worktree);
     assert.equal(
       await inspectOutsideWorkspaceMutation({
         workspaceRoot: worktree,
@@ -75,7 +75,7 @@ test('remapped parent writes are not outside-workspace mutations', async () => {
       }),
       null,
     );
-    const elsewhere = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-tower-outside-'));
+    const elsewhere = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-crew-outside-'));
     try {
       const stillOutside = await inspectOutsideWorkspaceMutation({
         workspaceRoot: worktree,
@@ -89,28 +89,28 @@ test('remapped parent writes are not outside-workspace mutations', async () => {
   });
 });
 
-test('towerGitWritableRoots only grants parent git commit dirs', async () => {
-  await withTowerLayout(({ parent, worktree }) => {
-    const roots = towerGitWritableRoots(worktree);
+test('crewGitWritableRoots only grants parent git commit dirs', async () => {
+  await withCrewLayout(({ parent, worktree }) => {
+    const roots = crewGitWritableRoots(worktree);
     assert.deepEqual(roots, [
       path.join(parent, '.git', 'objects'),
       path.join(parent, '.git', 'worktrees', 'alex'),
-      path.join(parent, '.git', 'refs', 'heads', 'codemini-tower'),
-      path.join(parent, '.git', 'logs', 'refs', 'heads', 'codemini-tower'),
+      path.join(parent, '.git', 'refs', 'heads', 'codemini-crew'),
+      path.join(parent, '.git', 'logs', 'refs', 'heads', 'codemini-crew'),
     ]);
-    assert.equal(towerGitWritableRoots(parent).length, 0);
-    assert.equal(towerGitWritableRoots(path.join(parent, '.codemini', 'tower', 'worktrees', 'tmp')).length, 0);
+    assert.equal(crewGitWritableRoots(parent).length, 0);
+    assert.equal(crewGitWritableRoots(path.join(parent, '.codemini', 'crew', 'worktrees', 'tmp')).length, 0);
   });
 });
 
-test('towerGitWritableRoots prefers the worktree gitdir file when it is under parent .git/worktrees', async () => {
-  await withTowerLayout(async ({ parent, worktree }) => {
+test('crewGitWritableRoots prefers the worktree gitdir file when it is under parent .git/worktrees', async () => {
+  await withCrewLayout(async ({ parent, worktree }) => {
     await fs.writeFile(
       path.join(worktree, '.git'),
       `gitdir: ${path.join(parent, '.git', 'worktrees', 'alex')}\n`,
     );
     assert.equal(
-      towerGitWritableRoots(worktree)[1],
+      crewGitWritableRoots(worktree)[1],
       path.join(parent, '.git', 'worktrees', 'alex'),
     );
     await fs.writeFile(
@@ -118,7 +118,7 @@ test('towerGitWritableRoots prefers the worktree gitdir file when it is under pa
       `gitdir: ${path.join(parent, '.git')}\n`,
     );
     assert.equal(
-      towerGitWritableRoots(worktree)[1],
+      crewGitWritableRoots(worktree)[1],
       path.join(parent, '.git', 'worktrees', 'alex'),
     );
   });

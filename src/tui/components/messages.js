@@ -339,7 +339,7 @@ export class PlanProgress {
       title: String(step.title || step.role || `Step ${index + 1}`),
       role: String(step.role || ''),
       status: String(step.status || 'pending'),
-      towerKind: String(step.towerKind || '')
+      crewKind: String(step.crewKind || '')
     }));
   }
 
@@ -352,18 +352,18 @@ export class PlanProgress {
     step.status = event.type === 'plan:step_done' ? String(event.status || 'done') : String(event.status || 'running');
     if (event.title) step.title = String(event.title);
     if (event.role) step.role = String(event.role);
-    if (event.towerKind) step.towerKind = String(event.towerKind);
+    if (event.crewKind) step.crewKind = String(event.crewKind);
   }
 
   render(width) {
     const done = this.steps.filter((step) => step.status === 'done' || step.status === 'completed').length;
-    const headerLabel = this.steps.some((step) => /^(?:Crew|Tower) /i.test(String(step.title || '')) || step.towerKind)
+    const headerLabel = this.steps.some((step) => /^(?:Crew|Crew) /i.test(String(step.title || '')) || step.crewKind)
       ? 'Crew'
       : this.copy.plan;
     const header = surfaceLine(`${bold(color.accent(headerLabel))}  ${color.muted(`${done}/${this.steps.length}`)}${this.goal ? `  ${color.dim(oneLine(this.goal, 72))}` : ''}`, width, color.surfaceRaisedBg);
     const lines = this.steps.map((step) => {
       const icon = step.status === 'running' ? color.purple('●') : step.status === 'done' || step.status === 'completed' ? color.success('✓') : step.status === 'failed' || step.status === 'error' ? color.error('✗') : color.dim('○');
-      const kind = String(step.towerKind || '').trim();
+      const kind = String(step.crewKind || '').trim();
       const kindTag = kind === 'review' ? 'review' : kind === 'survey' ? 'survey' : kind === 'worker' ? 'worker' : '';
       const roleBit = kindTag || step.role;
       return ` ${icon} ${color.text(oneLine(step.title, Math.max(20, width - 18)))}${roleBit ? color.dim(`  ${roleBit}`) : ''}`;

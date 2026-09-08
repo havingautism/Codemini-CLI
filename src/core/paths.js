@@ -106,16 +106,16 @@ export function getProjectCheckpointsDir(cwd = process.cwd()) {
   return path.join(getProjectWorkspaceDir(cwd), 'checkpoints');
 }
 
-export function getProjectTowerDir(cwd = process.cwd()) {
-  return path.join(getProjectWorkspaceDir(cwd), 'tower');
+export function getProjectCrewDir(cwd = process.cwd()) {
+  return path.join(getProjectWorkspaceDir(cwd), 'crew');
 }
 
-export function getProjectTowerStatePath(cwd = process.cwd()) {
-  return path.join(getProjectTowerDir(cwd), 'state.json');
+export function getProjectCrewStatePath(cwd = process.cwd()) {
+  return path.join(getProjectCrewDir(cwd), 'state.json');
 }
 
-export function getProjectTowerWorktreesDir(cwd = process.cwd()) {
-  return path.join(getProjectTowerDir(cwd), 'worktrees');
+export function getProjectCrewWorktreesDir(cwd = process.cwd()) {
+  return path.join(getProjectCrewDir(cwd), 'worktrees');
 }
 
 export function getProjectTasksDir(cwd = process.cwd()) {

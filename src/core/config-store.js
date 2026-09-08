@@ -169,7 +169,7 @@ const DEFAULT_CONFIG = {
       active_project_dirs: []
     }
   },
-  tower: {
+  crew: {
     max_workers: 4
   },
   policy: {
@@ -440,6 +440,11 @@ function normalizePolicyLists(config) {
   next.sandbox.image = String(next.sandbox.image || DEFAULT_CONFIG.sandbox.image).trim() || DEFAULT_CONFIG.sandbox.image;
   next.sandbox.cpus = normalizedNumber(next.sandbox.cpus, DEFAULT_CONFIG.sandbox.cpus, 1, { integer: true });
   next.sandbox.memory_mb = normalizedNumber(next.sandbox.memory_mb, DEFAULT_CONFIG.sandbox.memory_mb, 128, { integer: true });
+  next.crew = next.crew || {};
+  next.crew.max_workers = Math.min(
+    32,
+    normalizedNumber(next.crew.max_workers, DEFAULT_CONFIG.crew.max_workers, 1, { integer: true }),
+  );
   next.shell.default = resolveShellContext(next, { platform: process.platform }).shell;
   return next;
 }

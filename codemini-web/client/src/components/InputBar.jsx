@@ -186,36 +186,36 @@ async function compressImageFile(file) {
   return compressed.size < file.size ? compressed : file;
 }
 
-function formatTowerDirtyWarning(count = 1) {
-  return t("towerDirtyWarning").replace("{count}", String(count || 1));
+function formatCrewDirtyWarning(count = 1) {
+  return t("crewDirtyWarning").replace("{count}", String(count || 1));
 }
 
 function ModeSelector({
   sessionId,
   current,
-  towerActive = false,
-  towerDirtyCount = 0,
+  crewActive = false,
+  crewDirtyCount = 0,
   disabled = false,
 }) {
   const { actions } = useApp();
   const [open, setOpen] = useState(false);
   const [switching, setSwitching] = useState(false);
-  const [towerError, setTowerError] = useState("");
-  const [towerNotice, setTowerNotice] = useState("");
-  const dirtyCount = Math.max(0, Number(towerDirtyCount) || 0);
+  const [crewError, setCrewError] = useState("");
+  const [crewNotice, setCrewNotice] = useState("");
+  const dirtyCount = Math.max(0, Number(crewDirtyCount) || 0);
   const dirtyWarning =
-    towerActive && dirtyCount > 0 ? formatTowerDirtyWarning(dirtyCount) : "";
+    crewActive && dirtyCount > 0 ? formatCrewDirtyWarning(dirtyCount) : "";
   const MODE_OPTIONS = [
     ...getExecutionModeOptions(),
     {
-      value: "tower",
-      label: t("towerMode"),
-      description: t("towerModeDesc"),
+      value: "crew",
+      label: t("crewMode"),
+      description: t("crewModeDesc"),
       icon: TreeStructure,
     },
   ];
-  const selectedValue = towerActive
-    ? "tower"
+  const selectedValue = crewActive
+    ? "crew"
     : current === "plan" || current === "coding" || current === "code"
       ? "plan"
       : "normal";
@@ -226,38 +226,38 @@ function ModeSelector({
   const handleSelect = async (mode) => {
     if (!mode || mode === selectedValue || switching || disabled) return;
     setSwitching(true);
-    setTowerError("");
-    setTowerNotice("");
+    setCrewError("");
+    setCrewNotice("");
     let failed = false;
     let keepOpen = false;
     try {
-      if (mode === "tower") {
-        const result = await actions.setTowerMode(sessionId, true);
+      if (mode === "crew") {
+        const result = await actions.setCrewMode(sessionId, true);
         if (result?.error || result?.ok === false) {
           failed = true;
           const code = String(result?.code || "");
           const message =
             code === "NOT_GIT"
-              ? t("towerNeedsGit")
+              ? t("crewNeedsGit")
               : code === "NO_COMMIT"
-                ? t("towerNeedsCommit")
+                ? t("crewNeedsCommit")
               : code === "DETACHED"
-                ? t("towerNeedsBranch")
-                : result?.message || t("towerFailed");
-          setTowerError(message);
+                ? t("crewNeedsBranch")
+                : result?.message || t("crewFailed");
+          setCrewError(message);
         } else if (result?.warning) {
           keepOpen = true;
-          setTowerNotice(formatTowerDirtyWarning(result?.dirtyCount || 1));
+          setCrewNotice(formatCrewDirtyWarning(result?.dirtyCount || 1));
         }
       } else {
-        if (towerActive) {
-          const off = await actions.setTowerMode(sessionId, false);
+        if (crewActive) {
+          const off = await actions.setCrewMode(sessionId, false);
           if (off?.error || off?.ok === false) {
             failed = true;
-            setTowerError(off?.message || t("towerFailed"));
+            setCrewError(off?.message || t("crewFailed"));
           }
         }
-        if (!failed && mode !== "tower") {
+        if (!failed && mode !== "crew") {
           const result = await api.setExecutionMode(sessionId, mode);
           if (result?.error) {
             failed = true;
@@ -273,32 +273,32 @@ function ModeSelector({
     if (!failed && !keepOpen) setOpen(false);
   };
 
-  const refreshTowerDirtyNotice = useCallback(async () => {
-    if (!towerActive || !sessionId) {
-      setTowerNotice("");
+  const refreshCrewDirtyNotice = useCallback(async () => {
+    if (!crewActive || !sessionId) {
+      setCrewNotice("");
       return;
     }
     try {
-      const result = await actions.setTowerMode(sessionId, true);
+      const result = await actions.setCrewMode(sessionId, true);
       if (result?.warning) {
-        setTowerNotice(formatTowerDirtyWarning(result?.dirtyCount || 1));
+        setCrewNotice(formatCrewDirtyWarning(result?.dirtyCount || 1));
       } else {
-        setTowerNotice("");
+        setCrewNotice("");
       }
     } catch {
-      setTowerNotice("");
+      setCrewNotice("");
     }
-  }, [actions, sessionId, towerActive]);
+  }, [actions, sessionId, crewActive]);
 
   useEffect(() => {
-    if (dirtyWarning) setTowerNotice(dirtyWarning);
-    else if (!open) setTowerNotice("");
+    if (dirtyWarning) setCrewNotice(dirtyWarning);
+    else if (!open) setCrewNotice("");
   }, [dirtyWarning, open]);
 
   const handleOpenChange = (next) => {
     if (disabled) return;
     setOpen(next);
-    if (next) void refreshTowerDirtyNotice();
+    if (next) void refreshCrewDirtyNotice();
   };
 
   return (
@@ -360,16 +360,16 @@ function ModeSelector({
             );
           })}
         </ToggleGroup>
-        {towerError ? (
+        {crewError ? (
           <div className="flex items-center gap-1.5 px-0.5 pt-1.5 text-[11px] leading-snug text-destructive">
             <GitLogo size={13} className="shrink-0" />
-            <span>{towerError}</span>
+            <span>{crewError}</span>
           </div>
         ) : null}
-        {towerNotice || dirtyWarning ? (
+        {crewNotice || dirtyWarning ? (
           <div className="flex items-center gap-1.5 px-0.5 pt-1.5 text-[11px] leading-snug text-amber-600 dark:text-amber-400">
             <GitLogo size={13} className="shrink-0" />
-            <span>{towerNotice || dirtyWarning}</span>
+            <span>{crewNotice || dirtyWarning}</span>
           </div>
         ) : null}
       </PopoverContent>
@@ -2098,8 +2098,8 @@ export function InputBar({
             <ModeSelector
               sessionId={rs.sessionId}
               current={mode}
-              towerActive={!!rs.towerActive}
-              towerDirtyCount={rs.towerDirtyCount || 0}
+              crewActive={!!rs.crewActive}
+              crewDirtyCount={rs.crewDirtyCount || 0}
               disabled={inputLocked}
             />
             <ReasoningQuickControl

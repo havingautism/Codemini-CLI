@@ -1,16 +1,16 @@
-export function createTowerCancelReason() {
-  return { towerCancel: true };
+export function createCrewCancelReason() {
+  return { crewCancel: true };
 }
 
-export function isTowerCancelSignal(signal) {
+export function isCrewCancelSignal(signal) {
   const reason = signal?.reason;
-  return Boolean(signal?.aborted && reason && typeof reason === 'object' && reason.towerCancel === true);
+  return Boolean(signal?.aborted && reason && typeof reason === 'object' && reason.crewCancel === true);
 }
 
 export function abortErrorFromSignal(signal) {
   if (signal?.reason instanceof Error) return signal.reason;
   const error = new Error('Aborted');
   error.name = 'AbortError';
-  if (isTowerCancelSignal(signal)) error.towerCancel = true;
+  if (isCrewCancelSignal(signal)) error.crewCancel = true;
   return error;
 }

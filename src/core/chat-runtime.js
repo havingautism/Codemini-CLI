@@ -84,25 +84,27 @@ import { buildTurnContextPrefix, buildTurnUserPrompt } from './turn-context.js';
 import { buildSubAgentShellRulesPrompt, buildSubAgentRuntimeNote, resolveShellContext } from './shell-profile.js';
 import { getBaseConfigDir, getProjectIndexDir, getProjectPlansDir, getProjectSpecsDir, getProjectWorkspaceDir, getSessionsDir, getSkillsDir } from './paths.js';
 import {
-  buildTowerModePromptBlock,
-  enterTowerMode,
-  exitTowerMode,
-  inspectTowerGit,
-  listTowerWorkersFromState,
-  normalizeTowerState,
-  patchTowerWorkerRecord,
-  readTowerStateFile,
-  formatTowerReviewText,
-  nextTowerReviewLoopState,
-  writeTowerStateFile,
-} from './tower-store.js';
-import { composeTowerResumeTask, composeTowerReviewTask, isTowerCommitAncestor, isTowerWorktreeDirty, removeTowerWorktrees, resolveTowerReviewTarget, resolveTowerSubagentWorkspace, shouldContinueTowerWorkerSeal, teardownTowerWorker } from './tower-worktree.js';
-import { landTowerWorkers } from './tower-land.js';
-import { createTowerCoordinator } from './tower-coordinator.js';
-import { createTowerWorkerScheduler } from './tower-scheduler.js';
-import { createTowerCancelReason } from './tower-cancel.js';
-import { runTowerWorkerJob } from './tower-worker-run.js';
-import { compactTowerSpawnResultForParent, resolveTowerProjectRoot, buildTowerWorkerStatusRecord } from './tower-snapshot.js';
+  buildCrewModePromptBlock,
+  enterCrewMode,
+  exitCrewMode,
+  inspectCrewGit,
+  listCrewWorkersFromState,
+  normalizeCrewState,
+  patchCrewWorkerRecord,
+  readCrewStateFile,
+  formatCrewReviewText,
+  nextCrewReviewLoopState,
+  writeCrewStateFile,
+  appendCrewEvent,
+  buildCrewCompletionEvent,
+} from './crew-store.js';
+import { composeCrewResumeTask, composeCrewReviewTask, isCrewCommitAncestor, isCrewWorktreeDirty, removeCrewWorktrees, resolveCrewReviewTarget, resolveCrewSubagentWorkspace, shouldContinueCrewWorkerSeal, teardownCrewWorker } from './crew-worktree.js';
+import { landCrewWorkers } from './crew-land.js';
+import { createCrewCoordinator } from './crew-coordinator.js';
+import { createCrewWorkerScheduler } from './crew-scheduler.js';
+import { createCrewCancelReason } from './crew-cancel.js';
+import { runCrewWorkerJob } from './crew-worker-run.js';
+import { compactCrewSpawnResultForParent, resolveCrewProjectRoot, buildCrewWorkerStatusRecord } from './crew-snapshot.js';
 import { composeMemorySnapshot } from './memory-prompt.js';
 import { buildProjectContextSnippet, initializeProjectIndex } from './project-index.js';
 import { queryProjectKnowledgeGraph } from './project-knowledge-graph.js';
@@ -756,17 +758,17 @@ function resolveExecutionModeAllowedTools(executionMode, callerAllowedTools, con
   return modePolicy;
 }
 
-const TOWER_PARENT_MUTATION_TOOLS = new Set([
+const CREW_PARENT_MUTATION_TOOLS = new Set([
   'write', 'edit', 'delete', 'apply_patch', 'create',
   'begin_write', 'write_chunk', 'commit_write', 'abort_write',
 ]);
 
-export function applyTowerParentToolPolicy(allowedTools, { towerActive = false } = {}) {
-  if (!towerActive) return allowedTools;
+export function applyCrewParentToolPolicy(allowedTools, { crewActive = false } = {}) {
+  if (!crewActive) return allowedTools;
   const names = Array.isArray(allowedTools)
     ? allowedTools.filter((name) => {
         const toolName = String(name || '').trim();
-        return !TOWER_PARENT_MUTATION_TOOLS.has(toolName) && toolName !== 'fork_task';
+        return !CREW_PARENT_MUTATION_TOOLS.has(toolName) && toolName !== 'fork_task';
       })
     : [];
   if (!names.includes('land_workers')) names.push('land_workers');
@@ -1045,7 +1047,7 @@ export function resolveSubAgentToolAllowList({
   tools = null,
   config,
   platform = process.platform,
-  towerSession = false,
+  crewSession = false,
 } = {}) {
   const key = String(role || '').trim().toLowerCase();
   const basePolicy = ROLE_TOOL_POLICY[key] || ROLE_TOOL_POLICY.coder;
@@ -1056,7 +1058,7 @@ export function resolveSubAgentToolAllowList({
     platform,
   );
   if (!roleTools.includes('tasks')) roleTools.push('tasks');
-  if (towerSession && !roleTools.includes('crew_status')) roleTools.push('crew_status');
+  if (crewSession && !roleTools.includes('crew_status')) roleTools.push('crew_status');
   if (!Array.isArray(tools)) return roleTools;
   const requested = adaptToolNamesForPlatform(
     normalizeToolPolicy(tools, config).map(canonicalShellToolName).filter(
@@ -1073,7 +1075,7 @@ export function resolveSubAgentToolAllowList({
     granted.push('tool_search');
   }
   if (!granted.includes('tasks')) granted.push('tasks');
-  if (towerSession && !granted.includes('crew_status')) granted.push('crew_status');
+  if (crewSession && !granted.includes('crew_status')) granted.push('crew_status');
   return granted;
 }
 
@@ -1099,9 +1101,9 @@ export function resolvePlanSubAgentApprovalOptions({
   changeTrackerEnabled = false,
   workspaceHasGit = false,
   tools = null,
-  towerSession = false,
+  crewSession = false,
 } = {}) {
-  const roleAllowedTools = resolveSubAgentToolAllowList({ role, tools, config, towerSession });
+  const roleAllowedTools = resolveSubAgentToolAllowList({ role, tools, config, crewSession });
   return {
     projectIsGit: resolveApprovalProjectIsGit({
       projectIsGit,
@@ -1342,7 +1344,7 @@ export function getSubAgentRolePrompt(role) {
   }
   if (role === 'survey') {
     return [
-      'You are a tower survey worker.',
+      'You are a crew survey worker.',
       'Inspect the repository snapshot in this worktree. Do not edit files, git commit, or change product code.',
       'Return findings with file evidence, then stop. The parent will not review or land this worker.',
     ].join('\n');
@@ -4214,7 +4216,7 @@ export function resolveLatestContextMeasurement(messages = [], fallbackOverhead 
   return { tokens: 0, source: 'estimated' };
 }
 
-export function buildRuntimeStateSnapshot({ currentSession, config, model, executionMode, extraSession, workspaceRoot, alwaysSkillNames = [], towerState, towerWorkers = [], towerInFlightIds = [], towerDirtyCount = 0 } = {}) {
+export function buildRuntimeStateSnapshot({ currentSession, config, model, executionMode, extraSession, workspaceRoot, alwaysSkillNames = [], crewState, crewWorkers = [], crewInFlightIds = [], crewDirtyCount = 0 } = {}) {
   const activeMessages = extraSession
     ? extraSession.messages || []
     : Array.isArray(currentSession?.compact?.view) && currentSession.compact.view.length > 0
@@ -4231,9 +4233,9 @@ export function buildRuntimeStateSnapshot({ currentSession, config, model, execu
   const planState = currentSession?.planState;
   const specState = getPendingSpecState(currentSession);
   const resolvedMode = resolveRuntimeExecutionMode(executionMode, config, currentSession);
-  const tower = towerState !== undefined
-    ? normalizeTowerState(towerState)
-    : normalizeTowerState(currentSession?.tower);
+  const crew = crewState !== undefined
+    ? normalizeCrewState(crewState)
+    : normalizeCrewState(currentSession?.crew);
   const soulCategory = soulContextFromExecutionMode(resolvedMode);
   const visibleAlwaysSkillNames = shouldInjectAlwaysSkills(resolvedMode)
     ? (Array.isArray(alwaysSkillNames) ? alwaysSkillNames : []).map((name) => String(name || '').trim()).filter(Boolean)
@@ -4272,12 +4274,12 @@ export function buildRuntimeStateSnapshot({ currentSession, config, model, execu
     pendingReflectSkill: planState?.status === 'pending_reflect_skill'
       ? buildPendingReflectSkillSnapshot(planState)
       : null,
-    towerActive: Boolean(tower),
-    towerBase: tower?.base || '',
-    towerDirtyCount: tower ? Math.max(0, Number(towerDirtyCount) || 0) : 0,
-    towerWorkers: Array.isArray(towerWorkers) ? towerWorkers : [],
-    towerInFlightIds: Array.isArray(towerInFlightIds) ? towerInFlightIds : [],
-    towerWorkersInFlight: Array.isArray(towerInFlightIds) ? towerInFlightIds.length : 0,
+    crewActive: Boolean(crew),
+    crewBase: crew?.base || '',
+    crewDirtyCount: crew ? Math.max(0, Number(crewDirtyCount) || 0) : 0,
+    crewWorkers: Array.isArray(crewWorkers) ? crewWorkers : [],
+    crewInFlightIds: Array.isArray(crewInFlightIds) ? crewInFlightIds : [],
+    crewWorkersInFlight: Array.isArray(crewInFlightIds) ? crewInFlightIds.length : 0,
   };
   Object.defineProperties(snapshot, {
     currentContextTokens: {
@@ -4826,14 +4828,14 @@ async function askModel({
   skipSystemPromptInsert = false,
   toolDefinitionsOverride = null,
   forbiddenTools = [],
-  towerState = null,
-  towerWorkersInFlight = null,
-  towerCoordinator = null,
-  towerWorkerScheduler = null,
-  towerJobRegistry = null,
+  crewState = null,
+  crewWorkersInFlight = null,
+  crewCoordinator = null,
+  crewWorkerScheduler = null,
+  crewJobRegistry = null,
   onCancelWorker = null,
-  towerEventSink = null,
-  publishTowerWorkersChanged = () => {},
+  crewEventSink = null,
+  publishCrewWorkersChanged = () => {},
 }) {
   let compacted = compactedInput;
   const modelInputText = typeof modelText === 'string' && modelText ? modelText : text;
@@ -5028,11 +5030,11 @@ async function askModel({
     executionShellContext.commandPlatform,
     executionShellContext.shell,
   );
-  const towerWorkers = towerState
-    ? listTowerWorkersFromState(await readTowerStateFile(workspaceRoot))
+  const crewWorkers = crewState
+    ? listCrewWorkersFromState(await readCrewStateFile(workspaceRoot))
     : [];
-  const towerModePrompt = buildTowerModePromptBlock(towerState, towerWorkers);
-  const modePromptBlocks = [executionModePrompt, towerModePrompt].filter(Boolean).join('\n\n');
+  const crewModePrompt = buildCrewModePromptBlock(crewState, crewWorkers);
+  const modePromptBlocks = [executionModePrompt, crewModePrompt].filter(Boolean).join('\n\n');
   const projectContextSnippet = await projectContextPromise;
   // Compose effectiveSystemPrompt without redundant composeSystemPrompt wrapping:
   // systemPrompt already went through composeSystemPrompt in buildActiveSystemPrompt.
@@ -5066,8 +5068,8 @@ async function askModel({
     userText: modelInputText
   });
 
-  const inFlightTowerWorkers = towerWorkersInFlight instanceof Set
-    ? towerWorkersInFlight
+  const inFlightCrewWorkers = crewWorkersInFlight instanceof Set
+    ? crewWorkersInFlight
     : new Set();
   const toolConfig = {
     ...config,
@@ -5077,14 +5079,14 @@ async function askModel({
         allowedTools.includes('add_code_comment') ||
         allowedTools.includes('update_code_comment')
       ),
-      tower_parent_shell: Boolean(towerState),
-      tower_session: Boolean(towerState) || Boolean(config?.runtime?.tower_session),
-      tower_project_root: resolveTowerProjectRoot(workspaceRoot),
-      getTowerInFlightWorkers: () => [...inFlightTowerWorkers],
-      getTowerPendingWakes: () => (
-        Number.isFinite(towerCoordinator?.pendingWakeCount)
-          ? towerCoordinator.pendingWakeCount
-          : Number(config?.runtime?.getTowerPendingWakes?.() || 0)
+      crew_parent_shell: Boolean(crewState),
+      crew_session: Boolean(crewState) || Boolean(config?.runtime?.crew_session),
+      crew_project_root: resolveCrewProjectRoot(workspaceRoot),
+      getCrewInFlightWorkers: () => [...inFlightCrewWorkers],
+      getCrewPendingWakes: () => (
+        Number.isFinite(crewCoordinator?.pendingWakeCount)
+          ? crewCoordinator.pendingWakeCount
+          : Number(config?.runtime?.getCrewPendingWakes?.() || 0)
       ),
     },
     workspaceRoot,
@@ -5109,17 +5111,17 @@ async function askModel({
     onSystemEvent: onAgentEvent,
     requestUserInput,
     toolResultStore,
-    towerActive: Boolean(towerState),
-    onLandWorkers: towerState
+    crewActive: Boolean(crewState),
+    onLandWorkers: crewState
       ? async () => {
-          const result = await landTowerWorkers({ cwd: workspaceRoot, base: towerState.base });
+          const result = await landCrewWorkers({ cwd: workspaceRoot, base: crewState.base });
           if (result?.ok) {
-            publishTowerWorkersChanged();
+            publishCrewWorkersChanged();
           }
           return result;
         }
       : undefined,
-    onCancelWorker: towerState && typeof onCancelWorker === 'function'
+    onCancelWorker: crewState && typeof onCancelWorker === 'function'
       ? onCancelWorker
       : undefined,
     getTodos: () => normalizeTodos(session.todos),
@@ -5151,7 +5153,7 @@ async function askModel({
           review = ''
         } = {}) => {
           const { persona, policyKey, taskRole } = resolveSubAgentRolePolicy(name, role);
-          const isTowerSurvey = Boolean(towerState) && policyKey === 'survey';
+          const isCrewSurvey = Boolean(crewState) && policyKey === 'survey';
           const taskPrompt = String(prompt || '').trim();
           const assignedTasks = normalizeTodos(tasks);
           if (!taskPrompt && assignedTasks.length === 0) {
@@ -5161,25 +5163,25 @@ async function askModel({
           const handoff = String(context || '').trim();
           const declaredGoal = String(goal || '').trim();
           const reviewTarget = String(review || '').trim();
-          const title = towerState
+          const title = crewState
             ? reviewTarget
               ? `Crew review · ${reviewTarget}`
-              : isTowerSurvey
+              : isCrewSurvey
                 ? `Crew survey · ${persona}`
                 : `Crew worker · ${persona}`
             : trimInline(assignedTasks[0]?.content || effectivePrompt, 72) || persona;
-          const towerKind = towerState
-            ? (reviewTarget ? 'review' : isTowerSurvey ? 'survey' : 'worker')
+          const crewKind = crewState
+            ? (reviewTarget ? 'review' : isCrewSurvey ? 'survey' : 'worker')
             : '';
           const callId = String(toolCallId || `sub-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`).trim();
           const emit = (evt) => {
             const tagged = {
               ...evt,
               toolCallId: callId,
-              ...(towerKind ? { towerKind } : {}),
+              ...(crewKind ? { crewKind } : {}),
             };
             if (onAgentEvent) onAgentEvent(tagged);
-            towerEventSink?.(tagged);
+            crewEventSink?.(tagged);
           };
           const dependencyTaskId = String(taskId || '').trim();
           const dependencyRegistration = subAgentDependencies.register({
@@ -5214,7 +5216,7 @@ async function askModel({
             role: policyKey,
             tools: toolAllowList,
             config,
-            towerSession: Boolean(towerState),
+            crewSession: Boolean(crewState),
           });
           const stepModel = resolveSubAgentModel(config, model);
           const stepSdkProvider = config.sdk?.provider || '';
@@ -5280,7 +5282,7 @@ async function askModel({
             ? `${contextSections.join('\n\n')}\n\nTask:\n${effectivePrompt}`
             : effectivePrompt;
           let childUsage = null;
-          let lockedTowerWorkerId = '';
+          let lockedCrewWorkerId = '';
           let reviewingWorkerId = '';
           let reviewingWorkerRecord = null;
           try {
@@ -5290,8 +5292,8 @@ async function askModel({
             let workerTask = scopedTask;
             let reviewCommit = '';
             let pendingRebaseOnto = '';
-            let spawnedTowerWorker = null;
-            if (towerState) {
+            let spawnedCrewWorker = null;
+            if (crewState) {
               const isReviewer = String(role || '').trim().toLowerCase() === 'reviewer' || policyKey === 'reviewer';
               if (String(review || '').trim() && !isReviewer) {
                 const reviewError = 'review is only valid with role: "reviewer".';
@@ -5337,9 +5339,9 @@ async function askModel({
                   dependencyRegistration.settle(pathsResult);
                   return pathsResult;
                 }
-                const reviewed = await resolveTowerReviewTarget({
+                const reviewed = await resolveCrewReviewTarget({
                   cwd: workspaceRoot,
-                  base: towerState.base,
+                  base: crewState.base,
                   review,
                   resume,
                 });
@@ -5369,7 +5371,7 @@ async function askModel({
                   return spawnResult;
                 }
                 const workerId = String(reviewed.worker?.id || '').trim();
-                if (workerId && inFlightTowerWorkers.has(workerId)) {
+                if (workerId && inFlightCrewWorkers.has(workerId)) {
                   const busyError = `Crew worker "${workerId}" is still running. Wait for that shift to finish before review.`;
                   emit({
                     type: 'plan:step_done',
@@ -5395,35 +5397,35 @@ async function askModel({
                   return busyResult;
                 }
                 if (workerId) {
-                  inFlightTowerWorkers.add(workerId);
-                  publishTowerWorkersChanged();
-                  lockedTowerWorkerId = workerId;
+                  inFlightCrewWorkers.add(workerId);
+                  publishCrewWorkersChanged();
+                  lockedCrewWorkerId = workerId;
                   reviewingWorkerId = workerId;
                   reviewingWorkerRecord = reviewed.worker || null;
-                  spawnedTowerWorker = reviewed.worker || null;
+                  spawnedCrewWorker = reviewed.worker || null;
                 }
                 reviewCommit = reviewed.commit;
-                workerTask = composeTowerReviewTask(scopedTask, {
+                workerTask = composeCrewReviewTask(scopedTask, {
                   workerId,
                   commit: reviewed.commit,
                   paths: reviewed.worker?.paths,
                   diff: reviewed.diff,
-                  base: reviewed.base || reviewed.worker?.landBase || towerState.base,
+                  base: reviewed.base || reviewed.worker?.landBase || crewState.base,
                 });
                 workerWorkspaceRoot = reviewed.worker.worktreePath;
                 workerChangeTracker = null;
                 workerBackupManager = null;
               } else {
-                const spawned = await resolveTowerSubagentWorkspace({
+                const spawned = await resolveCrewSubagentWorkspace({
                   cwd: workspaceRoot,
-                  base: towerState.base,
+                  base: crewState.base,
                   resume,
                   taskId: dependencyTaskId,
                   name: persona,
                   callId,
                   paths,
                   dependsOn: dependencyRegistration.dependencies,
-                  kind: isTowerSurvey ? 'survey' : '',
+                  kind: isCrewSurvey ? 'survey' : '',
                 });
                 if (!spawned.ok) {
                   const spawnError = spawned.error || 'Failed to spawn Crew worktree.';
@@ -5451,7 +5453,7 @@ async function askModel({
                   return spawnResult;
                 }
                 const workerId = String(spawned.worker?.id || '').trim();
-                if (workerId && inFlightTowerWorkers.has(workerId)) {
+                if (workerId && inFlightCrewWorkers.has(workerId)) {
                   const busyError = `Crew worker "${workerId}" is still running. Wait for that shift to finish before resume.`;
                   emit({
                     type: 'plan:step_done',
@@ -5477,17 +5479,17 @@ async function askModel({
                   return busyResult;
                 }
                 if (workerId) {
-                  inFlightTowerWorkers.add(workerId);
-                  publishTowerWorkersChanged();
-                  lockedTowerWorkerId = workerId;
-                  spawnedTowerWorker = spawned.worker || null;
-                  await patchTowerWorkerRecord(workspaceRoot, workerId, {
+                  inFlightCrewWorkers.add(workerId);
+                  publishCrewWorkersChanged();
+                  lockedCrewWorkerId = workerId;
+                  spawnedCrewWorker = spawned.worker || null;
+                  await patchCrewWorkerRecord(workspaceRoot, workerId, {
                     runStatus: 'running',
                     runError: '',
                   }).catch(() => null);
                 }
                 if (spawned.resume) {
-                  const priorHandoff = await readTowerWorkerHandoff(
+                  const priorHandoff = await readCrewWorkerHandoff(
                     workspaceRoot,
                     spawned.worker?.lastHandoffPath,
                   );
@@ -5497,19 +5499,19 @@ async function askModel({
                     ? spawned.worker?.reviewText
                     : '';
                   pendingRebaseOnto = String(spawned.worker?.rebaseOnto || '').trim();
-                  workerTask = composeTowerResumeTask(scopedTask, priorHandoff, reviewText, pendingRebaseOnto);
+                  workerTask = composeCrewResumeTask(scopedTask, priorHandoff, reviewText, pendingRebaseOnto);
                 }
                 workerWorkspaceRoot = spawned.worker.worktreePath;
                 workerBackupManager = null;
               }
             }
-            if (towerState) {
-              const spawnMessage = compactTowerSpawnResultForParent({
-                workerId: lockedTowerWorkerId,
+            if (crewState) {
+              const spawnMessage = compactCrewSpawnResultForParent({
+                workerId: lockedCrewWorkerId,
                 taskId: dependencyTaskId,
                 status: 'running',
-                branch: spawnedTowerWorker?.branch || '',
-                worktreePath: spawnedTowerWorker?.worktreePath || workerWorkspaceRoot,
+                branch: spawnedCrewWorker?.branch || '',
+                worktreePath: spawnedCrewWorker?.worktreePath || workerWorkspaceRoot,
                 reviewOf: reviewingWorkerId,
                 role: persona,
               });
@@ -5522,29 +5524,29 @@ async function askModel({
                 role: persona,
                 tools: resolvedTools,
                 text: '',
-                ...(lockedTowerWorkerId ? { workerId: lockedTowerWorkerId } : {}),
+                ...(lockedCrewWorkerId ? { workerId: lockedCrewWorkerId } : {}),
                 ...(reviewingWorkerId ? { reviewOf: reviewingWorkerId } : {}),
                 ...(dependencyTaskId ? { taskId: dependencyTaskId } : {}),
                 message: spawnMessage,
               };
               const jobController = new AbortController();
-              const jobId = lockedTowerWorkerId || reviewingWorkerId;
+              const jobId = lockedCrewWorkerId || reviewingWorkerId;
               const job = {
                 controller: jobController,
                 kind: reviewingWorkerId ? 'reviewer' : 'worker',
               };
-              if (jobId && towerJobRegistry) towerJobRegistry.set(jobId, job);
+              if (jobId && crewJobRegistry) crewJobRegistry.set(jobId, job);
               const runWorkerJob = async () => {
                 if (jobController.signal.aborted) {
-                  throw Object.assign(new Error('Aborted'), { name: 'AbortError', towerCancel: true });
+                  throw Object.assign(new Error('Aborted'), { name: 'AbortError', crewCancel: true });
                 }
                 if (!reviewingWorkerId && workerWorkspaceRoot !== workspaceRoot) {
-                  workerChangeTracker = await createTowerWorkerChangeTracker(
+                  workerChangeTracker = await createCrewWorkerChangeTracker(
                     workerWorkspaceRoot,
-                    `${session.id}:${lockedTowerWorkerId}`,
+                    `${session.id}:${lockedCrewWorkerId}`,
                   );
                 }
-                return runTowerWorkerJob({
+                return runCrewWorkerJob({
                 runSubAgentTask,
                 subAgentRunFailed,
                 compactSubAgentResultForParent,
@@ -5552,10 +5554,10 @@ async function askModel({
                 subAgentAllowListMayMutate,
                 mergeModelUsage,
                 emit,
-                onWake: (wakeText) => towerCoordinator?.enqueueWake(wakeText),
+                onWake: (wakeText) => crewCoordinator?.enqueueWake(wakeText),
                 releaseInFlight: (workerId) => {
-                  if (workerId) inFlightTowerWorkers.delete(workerId);
-                  publishTowerWorkersChanged();
+                  if (workerId) inFlightCrewWorkers.delete(workerId);
+                  publishCrewWorkersChanged();
                 },
                 callId,
                 persona,
@@ -5582,23 +5584,23 @@ async function askModel({
                 taskPrompt,
                 summary,
                 stepSdkProvider,
-                lockedTowerWorkerId,
+                lockedCrewWorkerId,
                 reviewingWorkerId,
                 reviewingWorkerRecord,
                 reviewCommit,
                 pendingRebaseOnto,
-                  isTowerSurvey,
+                isCrewSurvey,
                 signal: jobController.signal,
                 });
               };
               const markWorkerStatus = (runStatus) => {
-                if (!lockedTowerWorkerId) return;
-                void patchTowerWorkerRecord(workspaceRoot, lockedTowerWorkerId, {
+                if (!lockedCrewWorkerId) return;
+                void patchCrewWorkerRecord(workspaceRoot, lockedCrewWorkerId, {
                   runStatus,
                   runError: '',
-                }).then(() => publishTowerWorkersChanged()).catch(() => {});
+                }).then(() => publishCrewWorkersChanged()).catch(() => {});
               };
-              const workerJob = towerWorkerScheduler.run(runWorkerJob, {
+              const workerJob = crewWorkerScheduler.run(runWorkerJob, {
                 signal: jobController.signal,
                 onQueued: () => markWorkerStatus('queued'),
                 onStart: () => markWorkerStatus('running'),
@@ -5607,21 +5609,21 @@ async function askModel({
               void workerJob
                 .then(
                   (result) => {
-                    if (jobId) inFlightTowerWorkers.delete(jobId);
+                    if (jobId) inFlightCrewWorkers.delete(jobId);
                     dependencyRegistration.settle(result);
                   },
                   (error) => {
-                    if (jobId) inFlightTowerWorkers.delete(jobId);
+                    if (jobId) inFlightCrewWorkers.delete(jobId);
                     dependencyRegistration.settle({
                       ok: false,
-                      cancelled: Boolean(error?.towerCancel),
+                      cancelled: Boolean(error?.crewCancel),
                       error: String(error?.message || error),
                       text: '',
                     });
                   },
                 )
                 .finally(() => {
-                  if (towerJobRegistry?.get(jobId) === job) towerJobRegistry.delete(jobId);
+                  if (crewJobRegistry?.get(jobId) === job) crewJobRegistry.delete(jobId);
                 })
                 .catch(() => {});
               return runningResult;
@@ -5639,7 +5641,7 @@ async function askModel({
                     ...config,
                     runtime: {
                       ...(config.runtime || {}),
-                      onTowerReviewVerdict: (verdict) => {
+                      onCrewReviewVerdict: (verdict) => {
                         reviewBox.verdict = verdict;
                       },
                     },
@@ -5655,7 +5657,7 @@ async function askModel({
               parentToolCallId: callId,
               tools: reviewingWorkerId
                 ? [...resolvedTools, 'submit_crew_review']
-                : (towerState ? resolvedTools : toolAllowList),
+                : (crewState ? resolvedTools : toolAllowList),
               onUsage: (usage) => {
                 childUsage = mergeModelUsage(childUsage, usage);
               },
@@ -5669,9 +5671,9 @@ async function askModel({
             const failed = reviewingWorkerId
               ? Boolean(signal?.aborted || output?.hasErrorLine)
               : subAgentRunFailed(output, signal);
-            let towerDirty;
-            if (towerState && !reviewingWorkerId && workerWorkspaceRoot !== workspaceRoot) {
-              towerDirty = await isTowerWorktreeDirty(workerWorkspaceRoot).catch(() => true);
+            let crewDirty;
+            if (crewState && !reviewingWorkerId && workerWorkspaceRoot !== workspaceRoot) {
+              crewDirty = await isCrewWorktreeDirty(workerWorkspaceRoot).catch(() => true);
             }
             const savedHandoff = failed
               ? null
@@ -5685,33 +5687,33 @@ async function askModel({
                   text: output.text,
                   artifactPaths: output.artifactPaths,
                 }).catch(() => null);
-            if (lockedTowerWorkerId && !reviewingWorkerId) {
+            if (lockedCrewWorkerId && !reviewingWorkerId) {
               const aborted = Boolean(signal?.aborted);
               if (aborted) {
-                await teardownTowerWorker({ cwd: workspaceRoot, id: lockedTowerWorkerId, force: true }).catch(() => null);
+                await teardownCrewWorker({ cwd: workspaceRoot, id: lockedCrewWorkerId, force: true }).catch(() => null);
               } else {
                 const patch = {
                   runStatus: failed ? 'failed' : 'completed',
-                  dirty: towerDirty === true,
+                  dirty: crewDirty === true,
                   runError: failed ? String(output?.error || output?.text || '').trim().slice(0, 400) : '',
                 };
                 if (savedHandoff?.path) patch.lastHandoffPath = savedHandoff.path;
-                await patchTowerWorkerRecord(workspaceRoot, lockedTowerWorkerId, patch).catch(() => null);
+                await patchCrewWorkerRecord(workspaceRoot, lockedCrewWorkerId, patch).catch(() => null);
               }
             }
             if (
               !failed
               && pendingRebaseOnto
-              && lockedTowerWorkerId
+              && lockedCrewWorkerId
               && !reviewingWorkerId
-              && towerDirty === false
+              && crewDirty === false
             ) {
-              const ontoDone = await isTowerCommitAncestor(
+              const ontoDone = await isCrewCommitAncestor(
                 workerWorkspaceRoot,
                 pendingRebaseOnto,
               ).catch(() => false);
               if (ontoDone) {
-                await patchTowerWorkerRecord(workspaceRoot, lockedTowerWorkerId, {
+                await patchCrewWorkerRecord(workspaceRoot, lockedCrewWorkerId, {
                   landBase: pendingRebaseOnto,
                   rebaseOnto: '',
                 }).catch(() => null);
@@ -5723,17 +5725,17 @@ async function askModel({
             if (!failed && reviewingWorkerId && reviewCommit) {
               const verdict = reviewBox.verdict;
               reviewPassed = verdict?.passed === true;
-              const loop = nextTowerReviewLoopState(reviewingWorkerRecord, {
+              const loop = nextCrewReviewLoopState(reviewingWorkerRecord, {
                 passed: reviewPassed,
                 findings: verdict?.findings || [],
               });
               reviewLoopStopped = loop.reviewLoopStopped;
               reviewRound = loop.reviewRound;
-              await patchTowerWorkerRecord(workspaceRoot, reviewingWorkerId, {
+              await patchCrewWorkerRecord(workspaceRoot, reviewingWorkerId, {
                 reviewedCommit: reviewCommit,
                 reviewPassed,
                 reviewText: verdict
-                  ? formatTowerReviewText(verdict)
+                  ? formatCrewReviewText(verdict)
                   : String(output.text || '').trim(),
                 ...loop,
               }).catch(() => null);
@@ -5771,15 +5773,15 @@ async function askModel({
               artifactPaths: output.artifactPaths || [],
               ...(savedHandoff ? { handoffPath: savedHandoff.path } : {}),
               ...(fileChanges.length ? { fileChanges } : {}),
-              ...(towerDirty === undefined ? {} : { dirty: towerDirty }),
+              ...(crewDirty === undefined ? {} : { dirty: crewDirty }),
               message: compactSubAgentResultForParent({
                 text: output.text,
                 summary,
                 handoffPath: savedHandoff?.path,
                 artifactPaths: output.artifactPaths,
-                ...(towerDirty === undefined ? {} : { dirty: towerDirty }),
-                ...(isTowerSurvey ? { workerKind: 'survey' } : {}),
-                ...(lockedTowerWorkerId && !reviewingWorkerId ? { workerId: lockedTowerWorkerId } : {}),
+                ...(crewDirty === undefined ? {} : { dirty: crewDirty }),
+                ...(isCrewSurvey ? { workerKind: 'survey' } : {}),
+                ...(lockedCrewWorkerId && !reviewingWorkerId ? { workerId: lockedCrewWorkerId } : {}),
                 ...(reviewingWorkerId ? {
                   reviewOf: reviewingWorkerId,
                   reviewPassed,
@@ -5790,9 +5792,9 @@ async function askModel({
             dependencyRegistration.settle(result);
             return result;
           } catch (err) {
-            if (lockedTowerWorkerId && inFlightTowerWorkers.has(lockedTowerWorkerId)) {
-              inFlightTowerWorkers.delete(lockedTowerWorkerId);
-              publishTowerWorkersChanged();
+            if (lockedCrewWorkerId && inFlightCrewWorkers.has(lockedCrewWorkerId)) {
+              inFlightCrewWorkers.delete(lockedCrewWorkerId);
+              publishCrewWorkersChanged();
             }
             emit({
               type: 'plan:step_done',
@@ -5820,7 +5822,7 @@ async function askModel({
           }
         }
       : undefined,
-    onForkTask: normalizedExecutionMode === 'plan' && !towerState
+    onForkTask: normalizedExecutionMode === 'plan' && !crewState
       ? async ({
           prompt,
           tasks = [],
@@ -6577,11 +6579,11 @@ function sameFsPath(left, right) {
   return process.platform === 'win32' && a.toLowerCase() === b.toLowerCase();
 }
 
-function isTowerWorktreeRoot(root) {
-  return String(root || '').replace(/\\/g, '/').includes('/tower/worktrees/');
+function isCrewWorktreeRoot(root) {
+  return String(root || '').replace(/\\/g, '/').includes('/crew/worktrees/');
 }
 
-async function readTowerWorkerHandoff(workspaceRoot, relativePath) {
+async function readCrewWorkerHandoff(workspaceRoot, relativePath) {
   const rel = String(relativePath || '').trim();
   if (!rel) return '';
   try {
@@ -6591,7 +6593,7 @@ async function readTowerWorkerHandoff(workspaceRoot, relativePath) {
   }
 }
 
-async function createTowerWorkerChangeTracker(worktreePath, sessionId) {
+async function createCrewWorkerChangeTracker(worktreePath, sessionId) {
   const tracker = await createGitOplogChangeTracker({
     workspaceRoot: worktreePath,
     sessionId,
@@ -6654,7 +6656,7 @@ export async function runSubAgentTask({
     role,
     tools,
     config,
-    towerSession: isTowerWorktreeRoot(workspaceRoot) || Boolean(config?.runtime?.tower_session),
+    crewSession: isCrewWorktreeRoot(workspaceRoot) || Boolean(config?.runtime?.crew_session),
   });
   const runtimeNote = buildSubAgentRuntimeNote(roleAllowedTools, {
     shell: config?.shell?.default,
@@ -6668,8 +6670,8 @@ export async function runSubAgentTask({
       sessionId: parentSession?.id,
     }).catch(() => []),
   );
-  const towerWorktree = isTowerWorktreeRoot(workspaceRoot) && role !== 'reviewer';
-  const towerWorktreeNote = !towerWorktree
+  const crewWorktree = isCrewWorktreeRoot(workspaceRoot) && role !== 'reviewer';
+  const crewWorktreeNote = !crewWorktree
     ? ''
     : role === 'survey'
       ? [
@@ -6685,7 +6687,7 @@ export async function runSubAgentTask({
     rolePrompt,
     extraRolePrompt,
     runtimeNote,
-    towerWorktreeNote,
+    crewWorktreeNote,
     handoffCatalogPrompt,
     contextPacket,
     goalRequirementPacket,
@@ -6732,7 +6734,7 @@ export async function runSubAgentTask({
     }
   };
   const workspaceHasGit = Boolean(config?.runtime?.project_is_git) || changeTracker?.mode === 'git-oplog';
-  const towerSessionActive = isTowerWorktreeRoot(workspaceRoot) || Boolean(config?.runtime?.tower_session);
+  const crewSessionActive = isCrewWorktreeRoot(workspaceRoot) || Boolean(config?.runtime?.crew_session);
   const approvalOptions = resolvePlanSubAgentApprovalOptions({
     role,
     config,
@@ -6740,7 +6742,7 @@ export async function runSubAgentTask({
     changeTrackerEnabled: changeTracker?.mode === 'git-oplog',
     workspaceHasGit,
     tools,
-    towerSession: towerSessionActive,
+    crewSession: crewSessionActive,
   });
   const subShellRulesPrompt = buildSubAgentShellRulesPrompt(roleAllowedTools, {
     shell: config?.shell?.default,
@@ -6749,9 +6751,9 @@ export async function runSubAgentTask({
   });
   if (onSessionActive) onSessionActive(subSession);
   let sealNudges = 0;
-  const shouldContinueAfterText = towerWorktree
+  const shouldContinueAfterText = crewWorktree
     ? async (assistantText) => {
-        const decision = await shouldContinueTowerWorkerSeal({
+        const decision = await shouldContinueCrewWorkerSeal({
           worktreePath: workspaceRoot,
           kind: role === 'survey' ? 'survey' : 'coder',
           text: assistantText,
@@ -6776,9 +6778,9 @@ export async function runSubAgentTask({
       ...config,
       runtime: {
         ...(config.runtime || {}),
-        tower_session: towerSessionActive || Boolean(config?.runtime?.tower_session),
-        tower_project_root: resolveTowerProjectRoot(workspaceRoot),
-        tower_parent_shell: false,
+        crew_session: crewSessionActive || Boolean(config?.runtime?.crew_session),
+        crew_project_root: resolveCrewProjectRoot(workspaceRoot),
+        crew_parent_shell: false,
       },
     }),
     model: subAgentModel,
@@ -6796,7 +6798,7 @@ export async function runSubAgentTask({
     backupManager,
     workspaceRoot,
     projectIsGit: approvalOptions.projectIsGit,
-    towerState: null,
+    crewState: null,
   });
   collectSubAgentArtifactsFromMessages(subSession.messages, artifactPaths, seenArtifactPaths);
   const text = subResult.text || '';
@@ -8859,66 +8861,66 @@ export async function createChatRuntime({
       ? systemPromptFactory(config)
       : baseSystemPrompt;
   let executionMode = resolveRuntimeExecutionMode(config.execution?.mode || 'normal', config, currentSession);
-  let towerState = normalizeTowerState(currentSession?.tower);
-  let lastTowerGitInspect = { dirtyCount: 0, warning: '' };
-  const refreshTowerGitInspect = async () => {
-    if (!towerState) {
-      lastTowerGitInspect = { dirtyCount: 0, warning: '' };
-      return lastTowerGitInspect;
+  let crewState = normalizeCrewState(currentSession?.crew);
+  let lastCrewGitInspect = { dirtyCount: 0, warning: '' };
+  const refreshCrewGitInspect = async () => {
+    if (!crewState) {
+      lastCrewGitInspect = { dirtyCount: 0, warning: '' };
+      return lastCrewGitInspect;
     }
-    const inspect = await inspectTowerGit(root);
-    lastTowerGitInspect = {
+    const inspect = await inspectCrewGit(root);
+    lastCrewGitInspect = {
       dirtyCount: inspect.dirtyCount || 0,
       ...(inspect.warning ? { warning: inspect.warning } : {}),
     };
-    return lastTowerGitInspect;
+    return lastCrewGitInspect;
   };
-  const towerWorkersInFlight = new Set();
+  const crewWorkersInFlight = new Set();
   let activeTurnCount = 0;
-  let towerEventSink = null;
-  let towerWakeExternalSubmit = null;
-  let lastTowerProgress = { workers: [], inFlightIds: [] };
-  const refreshTowerProgressCache = async () => {
-    const disk = towerState ? await readTowerStateFile(root).catch(() => null) : null;
-    lastTowerProgress = {
-      workers: towerState
-        ? listTowerWorkersFromState(disk).map(buildTowerWorkerStatusRecord)
+  let crewEventSink = null;
+  let crewWakeExternalSubmit = null;
+  let lastCrewProgress = { workers: [], inFlightIds: [] };
+  const refreshCrewProgressCache = async () => {
+    const disk = crewState ? await readCrewStateFile(root).catch(() => null) : null;
+    lastCrewProgress = {
+      workers: crewState
+        ? listCrewWorkersFromState(disk).map(buildCrewWorkerStatusRecord)
         : [],
-      inFlightIds: [...towerWorkersInFlight],
+      inFlightIds: [...crewWorkersInFlight],
     };
-    return lastTowerProgress;
+    return lastCrewProgress;
   };
-  const publishTowerWorkersChanged = () => {
-    lastTowerProgress = {
-      ...lastTowerProgress,
-      inFlightIds: [...towerWorkersInFlight],
+  const publishCrewWorkersChanged = () => {
+    lastCrewProgress = {
+      ...lastCrewProgress,
+      inFlightIds: [...crewWorkersInFlight],
     };
-    towerEventSink?.({
-      type: 'tower:workers_changed',
-      inFlight: lastTowerProgress.inFlightIds.length,
-      inFlightIds: lastTowerProgress.inFlightIds,
-      workers: lastTowerProgress.workers,
+    crewEventSink?.({
+      type: 'crew:workers_changed',
+      inFlight: lastCrewProgress.inFlightIds.length,
+      inFlightIds: lastCrewProgress.inFlightIds,
+      workers: lastCrewProgress.workers,
     });
-    void refreshTowerProgressCache().then((progress) => {
-      towerEventSink?.({
-        type: 'tower:workers_changed',
+    void refreshCrewProgressCache().then((progress) => {
+      crewEventSink?.({
+        type: 'crew:workers_changed',
         inFlight: progress.inFlightIds.length,
         inFlightIds: progress.inFlightIds,
         workers: progress.workers,
       });
     }).catch(() => {});
   };
-  const towerWakeBridge = { submit: async () => {} };
-  const towerCoordinator = createTowerCoordinator({
-    inFlightWorkers: towerWorkersInFlight,
+  const crewWakeBridge = { submit: async () => {} };
+  const crewCoordinator = createCrewCoordinator({
+    inFlightWorkers: crewWorkersInFlight,
     isTurnActive: () => activeTurnCount > 0,
-    submitWake: (text) => towerWakeBridge.submit(text),
+    submitWake: (text) => crewWakeBridge.submit(text),
   });
-  const towerWorkerScheduler = createTowerWorkerScheduler({
-    getLimit: () => config?.tower?.max_workers ?? 4,
+  const crewWorkerScheduler = createCrewWorkerScheduler({
+    getLimit: () => config?.crew?.max_workers ?? 4,
   });
-  const towerJobRegistry = new Map();
-  const waitForTowerJob = async (job, timeoutMs = 15_000) => {
+  const crewJobRegistry = new Map();
+  const waitForCrewJob = async (job, timeoutMs = 15_000) => {
     if (!job?.promise) return;
     let timer;
     try {
@@ -8937,15 +8939,15 @@ export async function createChatRuntime({
     if (!id) {
       return { ok: false, code: 'MISSING_ID', error: 'worker_id is required.' };
     }
-    const job = towerJobRegistry.get(id);
+    const job = crewJobRegistry.get(id);
     if (job?.controller && !job.controller.signal.aborted) {
-      job.controller.abort(createTowerCancelReason());
+      job.controller.abort(createCrewCancelReason());
     }
-    await waitForTowerJob(job);
-    if (towerJobRegistry.get(id) === job) towerJobRegistry.delete(id);
-    towerWorkersInFlight.delete(id);
+    await waitForCrewJob(job);
+    if (crewJobRegistry.get(id) === job) crewJobRegistry.delete(id);
+    crewWorkersInFlight.delete(id);
     if (job?.kind === 'reviewer') {
-      publishTowerWorkersChanged();
+      publishCrewWorkersChanged();
       return {
         ok: true,
         cancelled: 'review',
@@ -8954,8 +8956,8 @@ export async function createChatRuntime({
         message: `Cancelled the in-flight review of "${id}". The worker worktree was kept. Call cancel_worker again to remove that worker.`,
       };
     }
-    const disk = await readTowerStateFile(root).catch(() => null);
-    const worker = listTowerWorkersFromState(disk).find((item) => item.id === id);
+    const disk = await readCrewStateFile(root).catch(() => null);
+    const worker = listCrewWorkersFromState(disk).find((item) => item.id === id);
     if (!worker && !job) {
       return { ok: false, code: 'NOT_FOUND', error: `Unknown Crew worker "${id}".` };
     }
@@ -8967,12 +8969,12 @@ export async function createChatRuntime({
       };
     }
     if (worker) {
-      const removed = await teardownTowerWorker({ cwd: root, id, force: true }).catch((error) => ({
+      const removed = await teardownCrewWorker({ cwd: root, id, force: true }).catch((error) => ({
         ok: false,
         error: String(error?.message || error),
       }));
       if (!removed?.ok && removed?.code !== 'NOT_FOUND') {
-        publishTowerWorkersChanged();
+        publishCrewWorkersChanged();
         return {
           ok: false,
           code: removed?.code || 'TEARDOWN_FAILED',
@@ -8980,7 +8982,7 @@ export async function createChatRuntime({
         };
       }
     }
-    publishTowerWorkersChanged();
+    publishCrewWorkersChanged();
     return {
       ok: true,
       cancelled: 'worker',
@@ -8989,37 +8991,43 @@ export async function createChatRuntime({
       message: `Cancelled Crew worker "${id}" and removed its worktree.`,
     };
   };
-  const markStaleTowerWorkers = async () => {
-    if (!towerState) return;
-    const disk = await readTowerStateFile(root);
-    const workers = listTowerWorkersFromState(disk);
+  const markStaleCrewWorkers = async () => {
+    if (!crewState) return;
+    const disk = await readCrewStateFile(root);
+    const workers = listCrewWorkersFromState(disk);
     for (const worker of workers) {
       if (worker.runStatus !== 'running') continue;
-      towerWorkersInFlight.delete(worker.id);
-      await patchTowerWorkerRecord(root, worker.id, {
+      crewWorkersInFlight.delete(worker.id);
+      await patchCrewWorkerRecord(root, worker.id, {
         runStatus: 'failed',
         runError: 'Interrupted (session restored).',
       }).catch(() => null);
+      const interrupted = buildCrewCompletionEvent({
+        workerId: worker.id,
+        status: 'interrupted',
+        summary: 'Interrupted (session restored).',
+      });
+      if (interrupted) {
+        await appendCrewEvent(root, interrupted).catch(() => null);
+      }
     }
   };
-  const persistTowerState = async (next) => {
-    towerState = normalizeTowerState(next);
+  const persistCrewState = async (next) => {
+    crewState = normalizeCrewState(next);
     if (!currentSession || typeof currentSession !== 'object') return;
-    if (towerState) currentSession.tower = towerState;
-    else delete currentSession.tower;
+    if (crewState) currentSession.crew = crewState;
+    else delete currentSession.crew;
     await saveSession(currentSession).catch(() => {});
-    if (!towerState) return;
-    const disk = await readTowerStateFile(root);
-    await writeTowerStateFile(root, {
+    if (!crewState) return;
+    await writeCrewStateFile(root, {
       version: 1,
-      ...towerState,
+      ...crewState,
       sessionId: currentSession.id,
-      workers: listTowerWorkersFromState(disk),
     }).catch(() => {});
   };
-  const deactivateTower = async () => {
-    if (!towerState) return { ok: true, tower: null };
-    const inFlightIds = [...towerWorkersInFlight];
+  const deactivateCrew = async () => {
+    if (!crewState) return { ok: true, crew: null };
+    const inFlightIds = [...crewWorkersInFlight];
     if (inFlightIds.length > 0) {
       const message = `Crew still has running workers: ${inFlightIds.join(', ')}. Wait for completion before turning Crew off.`;
       return {
@@ -9028,30 +9036,30 @@ export async function createChatRuntime({
         error: message,
         message,
         workers: inFlightIds,
-        tower: towerState,
+        crew: crewState,
       };
     }
-    await removeTowerWorktrees({ cwd: root }).catch(() => ({ kept: [] }));
-    await exitTowerMode({
+    await removeCrewWorktrees({ cwd: root }).catch(() => ({ kept: [] }));
+    await exitCrewMode({
       cwd: root,
       sessionId: currentSession?.id,
-      previous: towerState,
+      previous: crewState,
     });
-    await persistTowerState(null);
-    lastTowerProgress = { workers: [], inFlightIds: [] };
-    await refreshTowerGitInspect();
-    publishTowerWorkersChanged();
-    return { ok: true, tower: null };
+    await persistCrewState(null);
+    lastCrewProgress = { workers: [], inFlightIds: [] };
+    await refreshCrewGitInspect();
+    publishCrewWorkersChanged();
+    return { ok: true, crew: null };
   };
-  const setTowerMode = async (active) => {
+  const setCrewMode = async (active) => {
     const want = active === true || active === 'on' || String(active).toLowerCase() === 'true';
-    if (!want) return deactivateTower();
-    if (towerState) {
-      await persistTowerState(towerState);
-      const inspect = await refreshTowerGitInspect();
+    if (!want) return deactivateCrew();
+    if (crewState) {
+      await persistCrewState(crewState);
+      const inspect = await refreshCrewGitInspect();
       return {
         ok: true,
-        tower: towerState,
+        crew: crewState,
         dirtyCount: inspect.dirtyCount || 0,
         ...(inspect.warning ? { warning: inspect.warning } : {}),
       };
@@ -9066,7 +9074,7 @@ export async function createChatRuntime({
       await reloadWorkspaceHooks();
       await reconcileSessionStartForModeChange(previouslyArmed);
     }
-    const result = await enterTowerMode({
+    const result = await enterCrewMode({
       cwd: root,
       sessionId: currentSession?.id,
     });
@@ -9081,26 +9089,24 @@ export async function createChatRuntime({
       }
       return result;
     }
-    await persistTowerState(result.tower);
-    lastTowerGitInspect = {
+    await persistCrewState(result.crew);
+    lastCrewGitInspect = {
       dirtyCount: result.dirtyCount || 0,
       ...(result.warning ? { warning: result.warning } : {}),
     };
     return result;
   };
-  if (towerState && normalizeExecutionMode(executionMode) !== 'plan') {
-    await deactivateTower();
-  } else if (towerState) {
-    const disk = await readTowerStateFile(root);
-    await writeTowerStateFile(root, {
+  if (crewState && normalizeExecutionMode(executionMode) !== 'plan') {
+    await deactivateCrew();
+  } else if (crewState) {
+    await writeCrewStateFile(root, {
       version: 1,
-      ...towerState,
+      ...crewState,
       sessionId: currentSession?.id,
-      workers: listTowerWorkersFromState(disk),
     }).catch(() => {});
-    await markStaleTowerWorkers();
-    await refreshTowerProgressCache();
-    await refreshTowerGitInspect();
+    await markStaleCrewWorkers();
+    await refreshCrewProgressCache();
+    await refreshCrewGitInspect();
   }
   let compactState = null;
   const normalizeCompactThreshold = (value, fallback = 60) => {
@@ -9120,7 +9126,7 @@ export async function createChatRuntime({
         : [],
     );
     executionMode = resolveRuntimeExecutionMode(config.execution?.mode || 'normal', config, currentSession);
-    if (normalizeExecutionMode(executionMode) !== 'plan') await deactivateTower();
+    if (normalizeExecutionMode(executionMode) !== 'plan') await deactivateCrew();
     syncCompactStateFromConfig();
 
     const resolvedModel = String(nextModel || '').trim();
@@ -9386,11 +9392,11 @@ export async function createChatRuntime({
     if (!next?.id || next.id === currentSession?.id) return;
     currentSession = next;
     compactedForModel = Array.isArray(next.compact?.view) ? next.compact.view : null;
-    if (towerState) {
-      currentSession.tower = towerState;
-      void persistTowerState(towerState);
+    if (crewState) {
+      currentSession.crew = crewState;
+      void persistCrewState(crewState);
     } else {
-      towerState = normalizeTowerState(currentSession.tower);
+      crewState = normalizeCrewState(currentSession.crew);
     }
   };
   const appendSessionMessage = (message) => {
@@ -9984,8 +9990,8 @@ export async function createChatRuntime({
     const expandedText = await expandFileMentions(inputText, root);
     const isCodingMode = normalizeExecutionMode(executionMode) === 'plan';
     const memoryRoute = classifyMemoryRoute(expandedText);
-    const towerActive = Boolean(normalizeTowerState(towerState));
-    const codingPolicy = createCodingTurnPolicy({ text: expandedText, towerActive });
+    const crewActive = Boolean(normalizeCrewState(crewState));
+    const codingPolicy = createCodingTurnPolicy({ text: expandedText, crewActive });
 
     // Refresh workspace + package profiles every turn so installs/toggles take
     // effect without restarting the runtime. SessionStart only re-fires for
@@ -10071,11 +10077,11 @@ export async function createChatRuntime({
       ...hookContexts,
     ].filter(Boolean).join('\n\n');
     const codingRouteAllowedTools = isCodingMode
-      ? applyTowerParentToolPolicy(
+      ? applyCrewParentToolPolicy(
           EXECUTION_MODE_TOOL_POLICY.plan.filter((toolName) => (
             isCodingTurnToolAllowed(codingPolicy, toolName)
           )),
-          { towerActive },
+          { crewActive },
         )
       : undefined;
     await persistLastSystemPrompt(activeReplySystemPrompt);
@@ -10109,14 +10115,14 @@ export async function createChatRuntime({
       onSkillLoaded: (skillName) => armSkillHooksByName(skillName, { onAgentEvent }),
       memoryInject,
       retrievedText,
-      towerState,
-      towerWorkersInFlight,
-      towerCoordinator,
-      towerWorkerScheduler,
-      towerJobRegistry,
+      crewState,
+      crewWorkersInFlight,
+      crewCoordinator,
+      crewWorkerScheduler,
+      crewJobRegistry,
       onCancelWorker: cancelCrewWorker,
-      towerEventSink,
-      publishTowerWorkersChanged,
+      crewEventSink,
+      publishCrewWorkersChanged,
     });
     syncExecutionModeWithSession();
     void captureUserPromptForDream(expandedText);
@@ -10127,16 +10133,16 @@ export async function createChatRuntime({
       if (config?.memory?.background_review?.after_turn !== false) {
         scheduleSessionMemoryReview({ sessionId: currentSession.id, config });
       }
-      if (!towerWakeExternalSubmit) {
-        void towerCoordinator.drainPendingWakes();
+      if (!crewWakeExternalSubmit) {
+        void crewCoordinator.drainPendingWakes();
       }
     }
   };
-  towerWakeBridge.submit = (wakeText) => {
-    if (typeof towerWakeExternalSubmit === 'function') {
-      return towerWakeExternalSubmit(wakeText);
+  crewWakeBridge.submit = (wakeText) => {
+    if (typeof crewWakeExternalSubmit === 'function') {
+      return crewWakeExternalSubmit(wakeText);
     }
-    return executeSubmissionTurn(wakeText, undefined, { towerWake: true });
+    return executeSubmissionTurn(wakeText, undefined, { crewWake: true });
   };
   const submit = async (line, onAgentEvent, options = {}) => {
     const text = String(line || '');
@@ -10145,7 +10151,7 @@ export async function createChatRuntime({
       const shell = await handleShellInput(text.trimStart().slice(1), config, root);
       return { type: 'shell', text: shell.text };
     }
-    if (options?.towerWake === true) {
+    if (options?.crewWake === true) {
       return executeSubmissionTurn(text, onAgentEvent, options);
     }
     return submitMessage({ text }, onAgentEvent);
@@ -10331,20 +10337,20 @@ export async function createChatRuntime({
     submit,
     submitMessage,
     isTurnActive: () => activeTurnCount > 0,
-    drainTowerPendingWakes: () => towerCoordinator.drainPendingWakes(),
-    getTowerWorkersInFlight: () => towerWorkersInFlight.size,
-    waitForTowerIdle: async ({ timeoutMs = 10_000 } = {}) => {
+    drainCrewPendingWakes: () => crewCoordinator.drainPendingWakes(),
+    getCrewWorkersInFlight: () => crewWorkersInFlight.size,
+    waitForCrewIdle: async ({ timeoutMs = 10_000 } = {}) => {
       const started = Date.now();
       while (Date.now() - started < timeoutMs) {
-        if (activeTurnCount === 0 && towerCoordinator.pendingWakeCount === 0 && towerWorkersInFlight.size === 0) {
+        if (activeTurnCount === 0 && crewCoordinator.pendingWakeCount === 0 && crewWorkersInFlight.size === 0) {
           return true;
         }
-        if (activeTurnCount === 0 && towerCoordinator.pendingWakeCount > 0) {
-          await towerCoordinator.drainPendingWakes();
+        if (activeTurnCount === 0 && crewCoordinator.pendingWakeCount > 0) {
+          await crewCoordinator.drainPendingWakes();
         }
         await new Promise((resolve) => setTimeout(resolve, 40));
       }
-      throw new Error('Timed out waiting for tower idle.');
+      throw new Error('Timed out waiting for crew idle.');
     },
     submitCodeWiki: (line, onAgentEvent, options = {}) => executeSubmission(line, onAgentEvent, options),
     dispatchAction,
@@ -10395,7 +10401,7 @@ export async function createChatRuntime({
       if (!['normal', 'plan'].includes(normalized)) return false;
       if (normalized === normalizeExecutionMode(executionMode)) return true;
       if (normalized === 'normal') {
-        const deactivated = await deactivateTower();
+        const deactivated = await deactivateCrew();
         if (!deactivated.ok) return false;
       }
       const previouslyArmed = new Set([...skillHooksSession.activeSkills.keys()]);
@@ -10407,7 +10413,7 @@ export async function createChatRuntime({
       await reconcileSessionStartForModeChange(previouslyArmed);
       return true;
     },
-    setTowerMode,
+    setCrewMode,
     setApprovalMode: async (next) => {
       const normalized = String(next || '').toLowerCase().replace(/-/g, '_');
       if (!['review', 'auto', 'full_access'].includes(normalized)) return false;
@@ -10452,12 +10458,12 @@ export async function createChatRuntime({
       requestToolApprovalObserver = typeof handler === 'function' ? handler : null;
       return true;
     },
-    setTowerEventSink: (handler) => {
-      towerEventSink = typeof handler === 'function' ? handler : null;
+    setCrewEventSink: (handler) => {
+      crewEventSink = typeof handler === 'function' ? handler : null;
       return true;
     },
-    setTowerWakeSubmit: (handler) => {
-      towerWakeExternalSubmit = typeof handler === 'function' ? handler : null;
+    setCrewWakeSubmit: (handler) => {
+      crewWakeExternalSubmit = typeof handler === 'function' ? handler : null;
       return true;
     },
     resolveToolApproval: (requestId, decision = {}) => {
@@ -10576,10 +10582,10 @@ export async function createChatRuntime({
         extraSession: activeSubSession,
         workspaceRoot: root,
         alwaysSkillNames: getAlwaysSkillCommands(commands, config, null, executionMode).map((skill) => skill.name),
-        towerState,
-        towerWorkers: lastTowerProgress.workers,
-        towerInFlightIds: lastTowerProgress.inFlightIds,
-        towerDirtyCount: lastTowerGitInspect.dirtyCount || 0,
+        crewState,
+        crewWorkers: lastCrewProgress.workers,
+        crewInFlightIds: lastCrewProgress.inFlightIds,
+        crewDirtyCount: lastCrewGitInspect.dirtyCount || 0,
       })
   };
 }

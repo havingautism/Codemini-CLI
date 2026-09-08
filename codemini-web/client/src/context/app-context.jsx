@@ -74,9 +74,9 @@ import {
 import { buildHookSegmentEvent } from "../../../shared/hook-ui.js";
 import { skillBadgesFromSessionMessage } from "../lib/user-skill-prompt.js";
 import {
-  isTowerBackgroundWorkerToolEvent,
-  shouldShowTowerModeFileChanges,
-} from "../lib/tower-ui-state.js";
+  isCrewBackgroundWorkerToolEvent,
+  shouldShowCrewModeFileChanges,
+} from "../lib/crew-ui-state.js";
 
 const AppContext = createContext(null);
 const AppActionsContext = createContext(null);
@@ -2242,8 +2242,8 @@ export function AppProvider({ children }) {
         }
 
         case "tool:end": {
-          const towerActive = Boolean(stateRef.current.runtimeState?.towerActive);
-          if (isTowerBackgroundWorkerToolEvent(event, { towerActive })) {
+          const crewActive = Boolean(stateRef.current.runtimeState?.crewActive);
+          if (isCrewBackgroundWorkerToolEvent(event, { crewActive })) {
             break;
           }
           const eventChanges =
@@ -2602,14 +2602,14 @@ export function AppProvider({ children }) {
 
         case "submit:done": {
           const result = event.result || {};
-          const towerActive = Boolean(stateRef.current.runtimeState?.towerActive);
+          const crewActive = Boolean(stateRef.current.runtimeState?.crewActive);
           if (activeId && pendingChangesRef.current.length) {
             const activeMessage = stateRef.current.messages.find(
               (message) => message.id === activeId,
             );
             const shouldAttachPendingChanges =
-              !towerActive ||
-              shouldShowTowerModeFileChanges(activeMessage, { towerActive });
+              !crewActive ||
+              shouldShowCrewModeFileChanges(activeMessage, { crewActive });
             if (shouldAttachPendingChanges) {
               setState((prev) => ({
                 ...prev,
@@ -2803,7 +2803,7 @@ export function AppProvider({ children }) {
           break;
         }
 
-        case "tower:wake": {
+        case "crew:wake": {
           planParentMsgRef.current = null;
           planRunPendingRef.current = false;
           setActiveMsg(null);
@@ -2816,31 +2816,31 @@ export function AppProvider({ children }) {
           break;
         }
 
-        case "tower:workers_changed": {
+        case "crew:workers_changed": {
           update({
             runtimeState: {
               ...stateRef.current.runtimeState,
-              towerWorkersInFlight: Number(event.inFlight || 0),
-              towerInFlightIds: Array.isArray(event.inFlightIds)
+              crewWorkersInFlight: Number(event.inFlight || 0),
+              crewInFlightIds: Array.isArray(event.inFlightIds)
                 ? event.inFlightIds
-                : stateRef.current.runtimeState?.towerInFlightIds || [],
-              towerWorkers: Array.isArray(event.workers)
+                : stateRef.current.runtimeState?.crewInFlightIds || [],
+              crewWorkers: Array.isArray(event.workers)
                 ? event.workers
-                : stateRef.current.runtimeState?.towerWorkers || [],
+                : stateRef.current.runtimeState?.crewWorkers || [],
             },
           });
           break;
         }
 
-        case "tower:changed": {
+        case "crew:changed": {
           const rs = event;
-          const towerActive = Boolean(rs.towerActive);
+          const crewActive = Boolean(rs.crewActive);
           update({
             runtimeState: {
               ...stateRef.current.runtimeState,
               ...rs,
-              towerActive,
-              towerBase: rs.towerBase || "",
+              crewActive,
+              crewBase: rs.crewBase || "",
             },
           });
           break;
@@ -4575,32 +4575,32 @@ export function AppProvider({ children }) {
           },
         });
       },
-      setTowerMode: async (sessionId, active) => {
+      setCrewMode: async (sessionId, active) => {
         const sid = String(sessionId || stateRef.current.currentSessionId || "").trim();
-        const result = await api.setTowerMode(sid, active);
+        const result = await api.setCrewMode(sid, active);
         if (result?.error || result?.ok === false) return result;
-        const tower = result?.tower;
-        const towerActive = Boolean(tower?.active);
-        const towerBase = String(tower?.base || "");
-        const towerDirtyCount = towerActive
+        const crew = result?.crew;
+        const crewActive = Boolean(crew?.active);
+        const crewBase = String(crew?.base || "");
+        const crewDirtyCount = crewActive
           ? Math.max(0, Number(result?.dirtyCount) || 0)
           : 0;
         setState((prev) => ({
           ...prev,
           runtimeState: {
             ...(prev.runtimeState || {}),
-            towerActive,
-            towerBase,
-            towerDirtyCount,
+            crewActive,
+            crewBase,
+            crewDirtyCount,
           },
           sessionRuntimeById: sid
             ? {
                 ...prev.sessionRuntimeById,
                 [sid]: {
                   ...(prev.sessionRuntimeById[sid] || { sessionId: sid }),
-                  towerActive,
-                  towerBase,
-                  towerDirtyCount,
+                  crewActive,
+                  crewBase,
+                  crewDirtyCount,
                 },
               }
             : prev.sessionRuntimeById,

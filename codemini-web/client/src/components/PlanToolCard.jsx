@@ -21,8 +21,8 @@ import {
   shouldExpandPlanStep,
   stripDelegationTaskPrefix,
 } from "@/lib/plan-ui-state.js";
-import { describeTowerRunSubagent } from "../../../../src/core/tool-display.js";
-import { shouldSuppressTowerTaskTodos } from "@/lib/tower-ui-state.js";
+import { describeCrewRunSubagent } from "../../../../src/core/tool-display.js";
+import { shouldSuppressCrewTaskTodos } from "@/lib/crew-ui-state.js";
 import { useApp } from "@/context/app-context.jsx";
 import { t } from "../../i18n/index.js";
 
@@ -283,18 +283,18 @@ function StepBody({ step }) {
   );
 }
 
-function TowerWorkerMeta({ args }) {
-  const tower = describeTowerRunSubagent(args);
-  if (!tower) return null;
+function CrewWorkerMeta({ args }) {
+  const crew = describeCrewRunSubagent(args);
+  if (!crew) return null;
   const paths = Array.isArray(args?.paths)
     ? args.paths.map((item) => String(item || "").trim()).filter(Boolean).join(", ")
     : "";
   const hint =
-    tower.kind === "review"
-      ? t("towerReviewHint")
-      : tower.kind === "survey"
-        ? t("towerSurveyHint")
-        : t("towerWorkerHint");
+    crew.kind === "review"
+      ? t("crewReviewHint")
+      : crew.kind === "survey"
+        ? t("crewSurveyHint")
+        : t("crewWorkerHint");
   return (
     <div className="mb-1 px-1 text-[11px] leading-snug text-(--text-muted)">
       {hint}
@@ -411,8 +411,8 @@ function SubagentStepRow({ step, index }) {
 
 export function PlanToolCard({ card }) {
   const { state } = useApp();
-  const suppressTowerTodos = shouldSuppressTowerTaskTodos({
-    towerActive: Boolean(state.runtimeState?.towerActive),
+  const suppressCrewTodos = shouldSuppressCrewTaskTodos({
+    crewActive: Boolean(state.runtimeState?.crewActive),
   });
   const planRun = card?.planRun || null;
   const phase =
@@ -465,7 +465,7 @@ export function PlanToolCard({ card }) {
       : goal,
   );
   const title = isSubagent
-    ? describeTowerRunSubagent(card?.arguments)?.label || persona || t("subagentWorker")
+    ? describeCrewRunSubagent(card?.arguments)?.label || persona || t("subagentWorker")
     : isFork
       ? t("forkBranch")
       : card?.displayName || planPhaseTitle(phase);
@@ -525,7 +525,7 @@ export function PlanToolCard({ card }) {
                 ? statusLabel(phase, "fork")
                 : planPhaseTitle(phase)}
           </span>
-          {isDelegationCard && todoItems.length && !suppressTowerTodos ? (
+          {isDelegationCard && todoItems.length && !suppressCrewTodos ? (
             <span className="tabular-nums text-(--text-muted)">
               {todoCompleted}/{todoItems.length}
             </span>
@@ -537,9 +537,9 @@ export function PlanToolCard({ card }) {
         <div className="codemini-disclosure-tree">
           {isDelegationCard ? <SubagentTaskDetails task={goal} /> : null}
           {isSubagent ? (
-            <TowerWorkerMeta args={card?.arguments} />
+            <CrewWorkerMeta args={card?.arguments} />
           ) : null}
-          {todoCard && !suppressTowerTodos ? (
+          {todoCard && !suppressCrewTodos ? (
             <ToolCard card={todoCard} embedded />
           ) : null}
           {isSubagent ? (

@@ -2,30 +2,30 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 
-import { createTowerCoordinator } from '../src/core/tower-coordinator.js';
+import { createCrewCoordinator } from '../src/core/crew-coordinator.js';
 import { resolveSubAgentToolAllowList } from '../src/core/chat-runtime.js';
 import {
-  buildTowerProgressItems,
-  describeTowerWorkerProgress,
-  shouldShowTowerProgressDock,
-} from '../src/core/tower-progress.js';
+  buildCrewProgressItems,
+  describeCrewWorkerProgress,
+  shouldShowCrewProgressDock,
+} from '../src/core/crew-progress.js';
 import {
-  buildTowerWorkerCompletedWake,
-  compactTowerSpawnResultForParent,
-  formatTowerRosterSnapshot,
-  formatTowerStatusSummary,
-  parseTowerReviewCompletedWake,
-  parseTowerWakeHeadline,
-  readTowerStatusPayload,
-  resolveTowerProjectRoot,
-  suggestTowerNextAction,
-} from '../src/core/tower-snapshot.js';
+  buildCrewWorkerCompletedWake,
+  compactCrewSpawnResultForParent,
+  formatCrewRosterSnapshot,
+  formatCrewStatusSummary,
+  parseCrewReviewCompletedWake,
+  parseCrewWakeHeadline,
+  readCrewStatusPayload,
+  resolveCrewProjectRoot,
+  suggestCrewNextAction,
+} from '../src/core/crew-snapshot.js';
 
-test('formatTowerRosterSnapshot includes run and review fields', () => {
-  const snapshot = formatTowerRosterSnapshot([
+test('formatCrewRosterSnapshot includes run and review fields', () => {
+  const snapshot = formatCrewRosterSnapshot([
     {
       id: 'smoke-a',
-      branch: 'codemini-tower/smoke-a',
+      branch: 'codemini-crew/smoke-a',
       worktreePath: '/tmp/smoke-a',
       paths: ['docs/**'],
       runStatus: 'running',
@@ -40,33 +40,33 @@ test('formatTowerRosterSnapshot includes run and review fields', () => {
   assert.match(snapshot, /handoff=/);
 });
 
-test('parseTowerWakeHeadline extracts notification headline', () => {
-  const wake = buildTowerWorkerCompletedWake({
+test('parseCrewWakeHeadline extracts notification headline', () => {
+  const wake = buildCrewWorkerCompletedWake({
     workerId: 'bob',
     status: 'completed',
     dirty: false,
     summary: 'Docs updated.',
   });
-  assert.match(parseTowerWakeHeadline(wake), /Crew worker "bob" completed\./);
+  assert.match(parseCrewWakeHeadline(wake), /Crew worker "bob" completed\./);
 });
 
-test('parseTowerReviewCompletedWake extracts the reviewed worker id', () => {
-  const wake = buildTowerWorkerCompletedWake({
+test('parseCrewReviewCompletedWake extracts the reviewed worker id', () => {
+  const wake = buildCrewWorkerCompletedWake({
     workerId: 'workera',
     reviewOf: 'workera',
     status: 'completed',
     reviewPassed: true,
   });
-  assert.equal(parseTowerReviewCompletedWake(wake), 'workera');
-  assert.equal(parseTowerReviewCompletedWake('Tower worker "workera" completed.'), '');
+  assert.equal(parseCrewReviewCompletedWake(wake), 'workera');
+  assert.equal(parseCrewReviewCompletedWake('Crew worker "workera" completed.'), '');
 });
 
-test('compactTowerSpawnResultForParent reports background running state', () => {
-  const message = compactTowerSpawnResultForParent({
+test('compactCrewSpawnResultForParent reports background running state', () => {
+  const message = compactCrewSpawnResultForParent({
     workerId: 'smoke-a',
     taskId: 'smoke-a',
     status: 'running',
-    branch: 'codemini-tower/smoke-a',
+    branch: 'codemini-crew/smoke-a',
     worktreePath: '/tmp/smoke-a',
   });
   assert.match(message, /spawned \(running\)/i);
@@ -74,24 +74,24 @@ test('compactTowerSpawnResultForParent reports background running state', () => 
   assert.match(message, /smoke-a/);
 });
 
-test('buildTowerWorkerCompletedWake uses notification envelope', () => {
-  const wake = buildTowerWorkerCompletedWake({
+test('buildCrewWorkerCompletedWake uses notification envelope', () => {
+  const wake = buildCrewWorkerCompletedWake({
     workerId: 'smoke-a',
     status: 'completed',
     dirty: false,
     summary: 'Docs updated.',
     handoffPath: '.codemini/handoffs/s1/h1.md',
   });
-  assert.match(wake, /tower\.worker\.completed/);
+  assert.match(wake, /crew\.worker\.completed/);
   assert.match(wake, /Seal: sealed/);
   assert.match(wake, /Docs updated\./);
 });
 
-test('tower coordinator drains queued wakes after turn ends', async () => {
+test('crew coordinator drains queued wakes after turn ends', async () => {
   const inFlight = new Set();
   let turnActive = true;
   const submitted = [];
-  const coordinator = createTowerCoordinator({
+  const coordinator = createCrewCoordinator({
     inFlightWorkers: inFlight,
     isTurnActive: () => turnActive,
     submitWake: async (text) => {
@@ -106,15 +106,15 @@ test('tower coordinator drains queued wakes after turn ends', async () => {
   assert.deepEqual(submitted, ['wake-one', 'wake-two']);
 });
 
-test('tower coordinator does not drop a wake that lost the session claim', async () => {
+test('crew coordinator does not drop a wake that lost the session claim', async () => {
   let turnActive = false;
   let busy = false;
   const submitted = [];
-  const coordinator = createTowerCoordinator({
+  const coordinator = createCrewCoordinator({
     inFlightWorkers: new Set(),
     isTurnActive: () => turnActive || busy,
     submitWake: async (text) => {
-      if (busy) throw new Error('Tower wake blocked while another turn is active');
+      if (busy) throw new Error('Crew wake blocked while another turn is active');
       busy = true;
       submitted.push(text);
       busy = false;
@@ -129,15 +129,15 @@ test('tower coordinator does not drop a wake that lost the session claim', async
   assert.deepEqual(submitted, ['wake-during-user-turn']);
 });
 
-test('tower coordinator keeps wakes queued when submitWake fails transiently', async () => {
+test('crew coordinator keeps wakes queued when submitWake fails transiently', async () => {
   let turnActive = false;
   let attempts = 0;
-  const coordinator = createTowerCoordinator({
+  const coordinator = createCrewCoordinator({
     inFlightWorkers: new Set(),
     isTurnActive: () => turnActive,
     submitWake: async () => {
       attempts += 1;
-      throw new Error('Tower wake blocked while another turn is active');
+      throw new Error('Crew wake blocked while another turn is active');
     },
   });
   coordinator.enqueueWake('wake-one');
@@ -146,13 +146,13 @@ test('tower coordinator keeps wakes queued when submitWake fails transiently', a
   assert.equal(coordinator.pendingWakeCount, 1);
 });
 
-test('resolveTowerProjectRoot maps worktree cwd back to project root', () => {
-  const root = resolveTowerProjectRoot('/tmp/project/.codemini/tower/worktrees/workera');
+test('resolveCrewProjectRoot maps worktree cwd back to project root', () => {
+  const root = resolveCrewProjectRoot('/tmp/project/.codemini/crew/worktrees/workera');
   assert.equal(root, path.resolve('/tmp/project').replace(/\\/g, '/'));
 });
 
-test('suggestTowerNextAction prefers review for sealed workers', () => {
-  const suggestion = suggestTowerNextAction({
+test('suggestCrewNextAction prefers review for sealed workers', () => {
+  const suggestion = suggestCrewNextAction({
     workers: [{
       id: 'workera',
       sealed: true,
@@ -166,8 +166,8 @@ test('suggestTowerNextAction prefers review for sealed workers', () => {
   assert.match(suggestion, /workera/);
 });
 
-test('suggestTowerNextAction waits for queued wakes instead of landing', () => {
-  const suggestion = suggestTowerNextAction({
+test('suggestCrewNextAction waits for queued wakes instead of landing', () => {
+  const suggestion = suggestCrewNextAction({
     workers: [{
       id: 'lena',
       sealed: true,
@@ -182,13 +182,13 @@ test('suggestTowerNextAction waits for queued wakes instead of landing', () => {
   assert.doesNotMatch(suggestion, /land_workers/i);
 });
 
-test('tower progress dock describes reviewing and hides after full merge', () => {
-  const reviewing = describeTowerWorkerProgress(
+test('crew progress dock describes reviewing and hides after full merge', () => {
+  const reviewing = describeCrewWorkerProgress(
     { id: 'lena', kind: 'coder', sealed: true, runStatus: 'completed', reviewPassed: undefined },
     { inFlightIds: ['lena'] },
   );
   assert.equal(reviewing.phase, 'reviewing');
-  const items = buildTowerProgressItems({
+  const items = buildCrewProgressItems({
     workers: [
       { id: 'lena', kind: 'coder', sealed: true, runStatus: 'completed', reviewPassed: true },
       { id: 'marco', kind: 'coder', runStatus: 'running' },
@@ -197,39 +197,39 @@ test('tower progress dock describes reviewing and hides after full merge', () =>
   });
   assert.equal(items.find((item) => item.id === 'lena').phase, 'ready');
   assert.equal(items.find((item) => item.id === 'marco').phase, 'running');
-  assert.equal(shouldShowTowerProgressDock({
-    towerActive: true,
+  assert.equal(shouldShowCrewProgressDock({
+    crewActive: true,
     workers: [{ id: 'lena', integrated: true, kind: 'coder' }],
     inFlightIds: [],
   }), false);
 });
 
-test('resolveSubAgentToolAllowList adds crew_status in tower sessions', () => {
-  const tools = resolveSubAgentToolAllowList({ role: 'reviewer', towerSession: true });
+test('resolveSubAgentToolAllowList adds crew_status in crew sessions', () => {
+  const tools = resolveSubAgentToolAllowList({ role: 'reviewer', crewSession: true });
   assert.equal(tools.includes('crew_status'), true);
   assert.equal(tools.includes('cancel_worker'), false);
 });
 
-test('readTowerStatusPayload returns live roster fields', async () => {
+test('readCrewStatusPayload returns live roster fields', async () => {
   const fs = await import('node:fs/promises');
   const os = await import('node:os');
   const path = await import('node:path');
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-tower-status-'));
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-crew-status-'));
   try {
-    const towerDir = path.join(dir, '.codemini', 'tower');
-    await fs.mkdir(towerDir, { recursive: true });
-    await fs.writeFile(path.join(towerDir, 'state.json'), JSON.stringify({
+    const crewDir = path.join(dir, '.codemini', 'crew');
+    await fs.mkdir(crewDir, { recursive: true });
+    await fs.writeFile(path.join(crewDir, 'state.json'), JSON.stringify({
       version: 1,
       active: true,
       base: 'main',
       workers: [],
     }));
-    const payload = await readTowerStatusPayload(dir, { inFlight: ['worker-a'], pendingWakes: 1 });
+    const payload = await readCrewStatusPayload(dir, { inFlight: ['worker-a'], pendingWakes: 1 });
     assert.equal(payload.ok, true);
     assert.equal(payload.base, 'main');
     assert.deepEqual(payload.inFlight, ['worker-a']);
     assert.equal(payload.pendingWakes, 1);
-    assert.match(formatTowerStatusSummary(payload), /Crew base: main/);
+    assert.match(formatCrewStatusSummary(payload), /Crew base: main/);
   } finally {
     await fs.rm(dir, { recursive: true, force: true });
   }

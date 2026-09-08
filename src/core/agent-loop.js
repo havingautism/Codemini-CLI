@@ -10,7 +10,7 @@ import {
   requiresDeterministicCommandApproval,
 } from './command-risk.js';
 import { evaluateCommandPolicy } from './command-policy.js';
-import { evaluateTowerParentCommand } from './tower-shell.js';
+import { evaluateCrewParentCommand } from './crew-shell.js';
 import { buildRunFailureMessage, getToolOutputSanitizeOptions, sanitizeTextForModel } from './tool-output.js';
 import { createToolRuntime, buildInvalidToolArgumentsResult } from './tool-runtime.js';
 import { createToolResultStore, summarizeToolResult } from './tool-result-store.js';
@@ -28,7 +28,7 @@ import {
   inspectOutsideWorkspaceMutation,
   toolRequiresUserApproval
 } from './approval-policy.js';
-import { remapTowerToolArguments } from './tower-worktree.js';
+import { remapCrewToolArguments } from './crew-worktree.js';
 import {
   resolveSandboxPolicy,
   validateSandboxEscalationArgs,
@@ -901,7 +901,7 @@ export async function runAgentLoop({
     for (const { call, toolName, displayName, args, isModelVisible } of callsWithMeta) {
       let approved = true;
       let approvalReason = '';
-      let approvalArgs = remapTowerToolArguments(args, workspaceRoot);
+      let approvalArgs = remapCrewToolArguments(args, workspaceRoot);
       let preflightErrorContent = '';
       let outsideWorkspaceApproval = null;
       if (!isModelVisible) {
@@ -923,13 +923,13 @@ export async function runAgentLoop({
         });
         continue;
       }
-      if (isShellToolName(toolName) && config?.runtime?.tower_parent_shell === true) {
-        const towerShell = evaluateTowerParentCommand(String(approvalArgs?.command || args?.command || ''));
-        if (!towerShell.allowed) {
+      if (isShellToolName(toolName) && config?.runtime?.crew_parent_shell === true) {
+        const crewShell = evaluateCrewParentCommand(String(approvalArgs?.command || args?.command || ''));
+        if (!crewShell.allowed) {
           approvalResults.set(call.id, {
             approved: false,
             args: approvalArgs,
-            errorContent: clipToolResult({ error: towerShell.reason }, toolResultMaxChars),
+            errorContent: clipToolResult({ error: crewShell.reason }, toolResultMaxChars),
           });
           continue;
         }

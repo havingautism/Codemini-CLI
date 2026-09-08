@@ -5,15 +5,15 @@ import { reduceSessionTranscriptEvent } from '../codemini-web/client/src/lib/ses
 
 const sessionId = 'sess-1';
 
-function stateWithMessages(messages, { towerActive = true } = {}) {
+function stateWithMessages(messages, { crewActive = true } = {}) {
   return {
-    runtimeState: { sessionId, towerActive },
-    sessionRuntimeById: { [sessionId]: { sessionId, towerActive } },
+    runtimeState: { sessionId, crewActive },
+    sessionRuntimeById: { [sessionId]: { sessionId, crewActive } },
     sessionMessagesById: { [sessionId]: messages },
   };
 }
 
-test('tower:wake inserts a live divider instead of merging into the dispatch bubble', () => {
+test('crew:wake inserts a live divider instead of merging into the dispatch bubble', () => {
   const dispatch = {
     id: 'dispatch',
     role: 'general',
@@ -31,20 +31,20 @@ test('tower:wake inserts a live divider instead of merging into the dispatch bub
   const next = reduceSessionTranscriptEvent(
     stateWithMessages([dispatch]),
     {
-      type: 'tower:wake',
+      type: 'crew:wake',
       sessionId,
-      headline: 'Tower worker "mira" completed.',
+      headline: 'Crew worker "mira" completed.',
       messageId: 'wake-1',
     },
   );
   const messages = next.sessionMessagesById[sessionId];
   assert.equal(messages.length, 2);
   assert.equal(messages[1].role, 'divider');
-  assert.equal(messages[1].dividerType, 'tower-wake');
+  assert.equal(messages[1].dividerType, 'crew-wake');
   assert.match(messages[1].text, /mira/);
 });
 
-test('later assistant:start after a running tower dispatch creates a new bubble', () => {
+test('later assistant:start after a running crew dispatch creates a new bubble', () => {
   const dispatch = {
     id: 'dispatch',
     role: 'general',
@@ -124,7 +124,7 @@ test('reviewer plan:step_done settles the dispatch card even if a leaked bubble 
   assert.equal(cards.status, 'done');
 });
 
-test('tower review wake settles a stuck running reviewer card', () => {
+test('crew review wake settles a stuck running reviewer card', () => {
   const dispatch = {
     id: 'wake-reply',
     role: 'general',
@@ -146,7 +146,7 @@ test('tower review wake settles a stuck running reviewer card', () => {
   const next = reduceSessionTranscriptEvent(
     stateWithMessages([dispatch]),
     {
-      type: 'tower:wake',
+      type: 'crew:wake',
       sessionId,
       headline: 'Crew review of "workera" finished (completed).',
       messageId: 'wake-review',
@@ -155,7 +155,7 @@ test('tower review wake settles a stuck running reviewer card', () => {
   const card = next.sessionMessagesById[sessionId][0].segments[0].cards[0];
   assert.equal(card.status, 'done');
   assert.equal(card.planRun.phase, 'completed');
-  assert.equal(next.sessionMessagesById[sessionId][1].dividerType, 'tower-wake');
+  assert.equal(next.sessionMessagesById[sessionId][1].dividerType, 'crew-wake');
 });
 
 test('nested worker assistant:start does not open a sibling bubble', () => {
@@ -188,7 +188,7 @@ test('nested worker assistant:start does not open a sibling bubble', () => {
   assert.equal(messages[0].id, 'dispatch');
 });
 
-test('reviewer plan:step_start updates the live spawn card instead of waiting for tower idle', () => {
+test('reviewer plan:step_start updates the live spawn card instead of waiting for crew idle', () => {
   const reply = {
     id: 'wake-reply',
     role: 'general',
@@ -210,7 +210,7 @@ test('reviewer plan:step_start updates the live spawn card instead of waiting fo
       sessionId,
       messageId: 'wake-reply',
       toolCallId: 'review-lena',
-      towerKind: 'review',
+      crewKind: 'review',
       title: 'Crew review · lena',
       step: 1,
       status: 'running',

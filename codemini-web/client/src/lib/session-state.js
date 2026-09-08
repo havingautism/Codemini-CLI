@@ -19,19 +19,19 @@ import {
 } from "./plan-ui-state.js";
 import { sessionRuntimeIsBusy } from "./session-ui-state.js";
 import {
-  isTowerBackgroundWorkerToolEvent,
-  sanitizeTowerMessageFileChanges,
-  settleLingeringTowerDispatchCards,
-  settleTowerReviewDispatchCards,
-} from "./tower-ui-state.js";
-import { parseTowerReviewCompletedWake } from "../../../../src/core/tower-notification.js";
+  isCrewBackgroundWorkerToolEvent,
+  sanitizeCrewMessageFileChanges,
+  settleLingeringCrewDispatchCards,
+  settleCrewReviewDispatchCards,
+} from "./crew-ui-state.js";
+import { parseCrewReviewCompletedWake } from "../../../../src/core/crew-notification.js";
 
-function sessionTowerActive(state, sessionId) {
+function sessionCrewActive(state, sessionId) {
   const runtime = state.runtimeState || {};
   if (String(runtime.sessionId || "") === sessionId) {
-    return Boolean(runtime.towerActive);
+    return Boolean(runtime.crewActive);
   }
-  return Boolean(state.sessionRuntimeById?.[sessionId]?.towerActive);
+  return Boolean(state.sessionRuntimeById?.[sessionId]?.crewActive);
 }
 
 const SESSION_SCOPED_RUNTIME_KEYS = new Set([
@@ -403,7 +403,7 @@ export function reduceSessionRuntimeEvent(state, event) {
   };
 }
 
-function findTowerWorkerOwnerMessage(messages, event) {
+function findCrewWorkerOwnerMessage(messages, event) {
   const parentId = String(event?.parentToolCallId || "").trim();
   if (!parentId) return null;
   return (Array.isArray(messages) ? messages : []).find((message) =>
@@ -417,14 +417,14 @@ export function reduceSessionTranscriptEvent(state, event) {
 
   let sessionMessagesById = state.sessionMessagesById;
   const messages = state.sessionMessagesById[sessionId] || [];
-  if (event.type === "tower:wake") {
+  if (event.type === "crew:wake") {
     const headline = String(event.headline || event.text || "").trim();
     if (!headline) return state;
-    const wakeId = String(event.messageId || "").trim() || `tower-wake-${Date.now()}`;
+    const wakeId = String(event.messageId || "").trim() || `crew-wake-${Date.now()}`;
     if (messages.some((message) => message.id === wakeId)) return state;
-    const reviewOf = parseTowerReviewCompletedWake(headline);
+    const reviewOf = parseCrewReviewCompletedWake(headline);
     const nextMessages = reviewOf
-      ? settleTowerReviewDispatchCards(messages, reviewOf)
+      ? settleCrewReviewDispatchCards(messages, reviewOf)
       : messages;
     return {
       ...state,
@@ -435,7 +435,7 @@ export function reduceSessionTranscriptEvent(state, event) {
           {
             id: wakeId,
             role: "divider",
-            dividerType: "tower-wake",
+            dividerType: "crew-wake",
             text: headline,
             segments: [{ type: "text", text: headline, isStreaming: false }],
             skillBadges: [],
@@ -447,15 +447,15 @@ export function reduceSessionTranscriptEvent(state, event) {
       },
     };
   }
-  const towerActive = sessionTowerActive(state, sessionId);
+  const crewActive = sessionCrewActive(state, sessionId);
   const planOwner = isPlanTranscriptEvent(event.type)
     ? findMessageOwningPlanCard(messages, event.toolCallId)
     : null;
-  const workerOwner = isTowerBackgroundWorkerToolEvent(event, { towerActive })
-    ? findTowerWorkerOwnerMessage(messages, event)
+  const workerOwner = isCrewBackgroundWorkerToolEvent(event, { crewActive })
+    ? findCrewWorkerOwnerMessage(messages, event)
     : null;
   if (
-    isTowerBackgroundWorkerToolEvent(event, { towerActive }) &&
+    isCrewBackgroundWorkerToolEvent(event, { crewActive }) &&
     !workerOwner
   ) {
     return state;
@@ -643,7 +643,7 @@ export function reduceSessionTranscriptEvent(state, event) {
       ...sessionMessagesById,
       [sessionId]: nextMessages.map((message) => {
         if (message.id !== messageId) return message;
-        const towerActive = sessionTowerActive(state, sessionId);
+        const crewActive = sessionCrewActive(state, sessionId);
         let nextMessage = message;
         if (isCreatePlanToolEvent(event) || shouldNestStreamEventInPlan(message, event)) {
           nextMessage = applyStreamEventToPlanRun(message, event, {
@@ -655,25 +655,25 @@ export function reduceSessionTranscriptEvent(state, event) {
           });
         }
         if (
-          towerActive &&
-          (isTowerBackgroundWorkerToolEvent(event, { towerActive }) ||
+          crewActive &&
+          (isCrewBackgroundWorkerToolEvent(event, { crewActive }) ||
             event.type === "tool:end")
         ) {
-          nextMessage = sanitizeTowerMessageFileChanges(nextMessage, {
-            towerActive,
+          nextMessage = sanitizeCrewMessageFileChanges(nextMessage, {
+            crewActive,
           });
         }
         return nextMessage;
       }),
     };
     if (
-      towerActive &&
+      crewActive &&
       (event.type === "tool:end" || event.type === "tool:result") &&
       String(event.name || event.toolName || "").toLowerCase().replace(/\(.*$/, "") === "land_workers"
     ) {
       sessionMessagesById = {
         ...sessionMessagesById,
-        [sessionId]: settleLingeringTowerDispatchCards(
+        [sessionId]: settleLingeringCrewDispatchCards(
           sessionMessagesById[sessionId] || [],
         ),
       };

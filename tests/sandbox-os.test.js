@@ -69,7 +69,7 @@ test('workspace-write sandbox uses the npm Landlock launcher and leaves network 
   }
 });
 
-test('Landlock workspace-write grants tower git commit dirs but not the parent checkout', async () => {
+test('Landlock workspace-write grants crew git commit dirs but not the parent checkout', async () => {
   let grants = null;
   __setSandboxOsTestHooks({
     Landlock: {
@@ -82,8 +82,8 @@ test('Landlock workspace-write grants tower git commit dirs but not the parent c
     },
   });
   try {
-    const parent = path.resolve('/tmp/codemini-landlock-tower-parent');
-    const worktree = path.join(parent, '.codemini', 'tower', 'worktrees', 'alisa');
+    const parent = path.resolve('/tmp/codemini-landlock-crew-parent');
+    const worktree = path.join(parent, '.codemini', 'crew', 'worktrees', 'alisa');
     const out = await wrapShellCommandForSandbox({
       command: 'git commit -m sealed',
       config: { sandbox: { enabled: true, mode: 'workspace-write' } },
@@ -129,7 +129,7 @@ test('read-only Landlock grants only /dev/null for writes', async () => {
   }
 });
 
-test('macOS Seatbelt allowWrite includes tower git commit dirs', async () => {
+test('macOS Seatbelt allowWrite includes crew git commit dirs', async () => {
   let allowWrite = null;
   __setSandboxOsTestHooks({
     SandboxManager: {
@@ -143,8 +143,8 @@ test('macOS Seatbelt allowWrite includes tower git commit dirs', async () => {
     },
   });
   try {
-    const parent = path.resolve('/tmp/codemini-seatbelt-tower-parent');
-    const worktree = path.join(parent, '.codemini', 'tower', 'worktrees', 'alisa');
+    const parent = path.resolve('/tmp/codemini-seatbelt-crew-parent');
+    const worktree = path.join(parent, '.codemini', 'crew', 'worktrees', 'alisa');
     const out = await wrapShellCommandForSandbox({
       command: 'git commit -m sealed',
       config: { sandbox: { enabled: true, mode: 'workspace-write' } },
@@ -156,7 +156,7 @@ test('macOS Seatbelt allowWrite includes tower git commit dirs', async () => {
     assert.ok(allowWrite.includes(out.policy.workspaceRoot));
     assert.ok(allowWrite.includes(path.join(parent, '.git', 'objects')));
     assert.ok(allowWrite.includes(path.join(parent, '.git', 'worktrees', 'alisa')));
-    assert.ok(allowWrite.includes(path.join(parent, '.git', 'refs', 'heads', 'codemini-tower')));
+    assert.ok(allowWrite.includes(path.join(parent, '.git', 'refs', 'heads', 'codemini-crew')));
     assert.equal(allowWrite.includes(parent), false);
     assert.equal(allowWrite.includes(path.join(parent, '.git')), false);
     assert.equal(allowWrite.includes(path.join(parent, '.git', 'hooks')), false);

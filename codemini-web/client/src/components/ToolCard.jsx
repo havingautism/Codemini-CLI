@@ -28,7 +28,7 @@ import {
 } from "@/components/UserInputDialog.jsx";
 import { useApp } from "@/context/app-context.jsx";
 import { openWorkspaceFile } from "@/hooks/use-api.js";
-import { shouldSuppressTowerTaskTodos } from "@/lib/tower-ui-state.js";
+import { shouldSuppressCrewTaskTodos } from "@/lib/crew-ui-state.js";
 import { interactiveRequestForSession } from "@/lib/session-ui-state.js";
 import {
   extractToolName,
@@ -54,7 +54,6 @@ const TOOL_ICONS = {
   create_plan: ListChecks,
   run_subagent: ListChecks,
   crew_status: ListChecks,
-  tower_status: ListChecks,
   land_workers: ListChecks,
   fork_task: ListChecks,
   tasks: ListChecks,
@@ -396,8 +395,8 @@ export function ToolCard({
   collapsible = true,
 }) {
   const { state } = useApp();
-  const suppressTowerTodos = shouldSuppressTowerTaskTodos({
-    towerActive: Boolean(state.runtimeState?.towerActive),
+  const suppressCrewTodos = shouldSuppressCrewTaskTodos({
+    crewActive: Boolean(state.runtimeState?.crewActive),
   });
   const [open, setOpen] = useState(defaultOpen);
   const [fileAction, setFileAction] = useState("");
@@ -410,7 +409,7 @@ export function ToolCard({
     ? getTodoToolItems(card.arguments, card.result)
     : [];
   if (isTasksTool) {
-    if (suppressTowerTodos) return null;
+    if (suppressCrewTodos) return null;
     return (
       <TodoCard todos={todoItems} persistKey={card?.id || ""} />
     );

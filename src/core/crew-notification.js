@@ -1,4 +1,4 @@
-export function parseTowerWakeHeadline(wakeText = '') {
+export function parseCrewWakeHeadline(wakeText = '') {
   const lines = String(wakeText || '')
     .split('\n')
     .map((line) => line.trim())
@@ -7,8 +7,8 @@ export function parseTowerWakeHeadline(wakeText = '') {
   return headline || 'Crew notification';
 }
 
-export function parseTowerReviewCompletedWake(wakeText = '') {
-  const headline = parseTowerWakeHeadline(wakeText);
-  const match = String(headline || '').match(/(?:Crew|Tower) review of "([^"]+)" finished/i);
+export function parseCrewReviewCompletedWake(wakeText = '') {
+  const headline = parseCrewWakeHeadline(wakeText);
+  const match = String(headline || '').match(/(?:Crew|Crew) review of "([^"]+)" finished/i);
   return match ? String(match[1] || '').trim() : '';
 }

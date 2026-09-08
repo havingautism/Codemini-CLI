@@ -90,10 +90,10 @@ export function buildSettingsFields() {
     },
     {
       tab: "execution",
-      path: "tower.max_workers",
+      path: "crew.max_workers",
       control: "number",
-      label: t("towerMaxWorkers"),
-      help: t("towerMaxWorkersHelp"),
+      label: t("crewMaxWorkers"),
+      help: t("crewMaxWorkersHelp"),
       min: 1,
       max: 32,
     },

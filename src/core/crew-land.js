@@ -1,31 +1,31 @@
 import path from 'node:path';
 
-import { getProjectTowerWorktreesDir } from './paths.js';
+import { getProjectCrewWorktreesDir } from './paths.js';
 import { runGit } from './process-run.js';
-import { fileMatchesTowerPaths, isTowerLandableWorker, normalizeTowerDependsOn, orderTowerWorkersForLand } from './tower-scope.js';
+import { fileMatchesCrewPaths, isCrewLandableWorker, normalizeCrewDependsOn, orderCrewWorkersForLand } from './crew-scope.js';
 import {
-  formatTowerReviewLoopStoppedError,
-  listTowerWorkersFromState,
-  patchTowerWorkerRecord,
-  readTowerStateFile,
+  formatCrewReviewLoopStoppedError,
+  listCrewWorkersFromState,
+  patchCrewWorkerRecord,
+  readCrewStateFile,
   workerLandBaseRef,
   workerReviewMatchesCommit,
-} from './tower-store.js';
+} from './crew-store.js';
 import {
-  isTowerCommitAncestor,
-  isTowerWorktreeDirty,
-  removeTowerWorktrees,
-  withTowerGitLock,
-} from './tower-worktree.js';
+  isCrewCommitAncestor,
+  isCrewWorktreeDirty,
+  removeCrewWorktrees,
+  withCrewGitLock,
+} from './crew-worktree.js';
 
-const LEGACY_TMP_BRANCH = 'codemini-tower/_merge-tmp';
+const LEGACY_TMP_BRANCH = 'codemini-crew/_merge-tmp';
 const LEGACY_TMP_WORKTREE_ID = '_merge-tmp';
 const GIT_TIMEOUT_MS = 60_000;
 const GIT_IDENTITY = {
-  GIT_AUTHOR_NAME: 'Codemini Tower',
-  GIT_AUTHOR_EMAIL: 'tower@codemini.local',
-  GIT_COMMITTER_NAME: 'Codemini Tower',
-  GIT_COMMITTER_EMAIL: 'tower@codemini.local',
+  GIT_AUTHOR_NAME: 'Codemini Crew',
+  GIT_AUTHOR_EMAIL: 'crew@codemini.local',
+  GIT_COMMITTER_NAME: 'Codemini Crew',
+  GIT_COMMITTER_EMAIL: 'crew@codemini.local',
 };
 
 async function tryGit(cwd, args) {
@@ -52,7 +52,7 @@ async function abortMerge(cwd) {
 }
 
 async function removeLegacyMergeTmp(root) {
-  const worktreePath = path.resolve(getProjectTowerWorktreesDir(root), LEGACY_TMP_WORKTREE_ID);
+  const worktreePath = path.resolve(getProjectCrewWorktreesDir(root), LEGACY_TMP_WORKTREE_ID);
   await tryGit(root, ['worktree', 'remove', '--force', worktreePath]);
   await tryGit(root, ['branch', '-D', LEGACY_TMP_BRANCH]);
   await tryGit(root, ['worktree', 'prune']);
@@ -74,9 +74,9 @@ async function listCheckedOutBranches(root) {
   return parseCheckedOutBranches(listed.stdout);
 }
 
-async function deleteTowerWorkerBranch(root, branch, checkedOut) {
+async function deleteCrewWorkerBranch(root, branch, checkedOut) {
   const name = String(branch || '').trim();
-  if (!name.startsWith('codemini-tower/') || name === LEGACY_TMP_BRANCH) {
+  if (!name.startsWith('codemini-crew/') || name === LEGACY_TMP_BRANCH) {
     return { ok: false, skipped: true, reason: 'not-worker' };
   }
   if (checkedOut.has(name)) {
@@ -139,7 +139,7 @@ async function collectScopeEscape(root, base, worker) {
     };
   }
   const files = splitNames(diff.stdout);
-  const escaped = files.filter((file) => !fileMatchesTowerPaths(file, worker.paths));
+  const escaped = files.filter((file) => !fileMatchesCrewPaths(file, worker.paths));
   if (escaped.length) {
     return {
       ok: false,
@@ -159,7 +159,7 @@ function workerLookupKeys(worker) {
 }
 
 function depsReady(worker, byId, satisfied) {
-  return normalizeTowerDependsOn(worker.dependsOn).every((dep) => {
+  return normalizeCrewDependsOn(worker.dependsOn).every((dep) => {
     const target = byId.get(dep);
     return !target || satisfied.has(target);
   });
@@ -172,7 +172,7 @@ function buildPartialMessage(integrated, pending, baseBranch) {
 }
 
 async function classifyWorker(root, baseBranch, worker) {
-  if (await isTowerWorktreeDirty(worker.worktreePath)) {
+  if (await isCrewWorktreeDirty(worker.worktreePath)) {
     return {
       kind: 'blocked',
       code: 'DIRTY_WORKTREE',
@@ -203,7 +203,7 @@ async function classifyWorker(root, baseBranch, worker) {
       kind: 'blocked',
       code: failedReview ? 'REVIEW_FAILED' : 'REVIEW_REQUIRED',
       error: loopStopped
-        ? formatTowerReviewLoopStoppedError(worker)
+        ? formatCrewReviewLoopStoppedError(worker)
         : failedReview
           ? `Worker "${worker.id}" review did not pass. Resume "${worker.id}" with the review text, then review the new commit.`
           : `Worker "${worker.id}" has no passing review for the current commit. Call run_subagent with role: "reviewer" and review: "${worker.id}".`,
@@ -215,9 +215,9 @@ async function classifyWorker(root, baseBranch, worker) {
 }
 
 async function mergeWorkerOntoBase(root, worker) {
-  if (await isTowerCommitAncestor(root, worker.branch)) {
+  if (await isCrewCommitAncestor(root, worker.branch)) {
     const head = String((await tryGit(root, ['rev-parse', 'HEAD'])).stdout || '').trim();
-    await patchTowerWorkerRecord(root, worker.id, { integrated: true, landBase: head, rebaseOnto: '' }).catch(() => null);
+    await patchCrewWorkerRecord(root, worker.id, { integrated: true, landBase: head, rebaseOnto: '' }).catch(() => null);
     worker.integrated = true;
     worker.landBase = head;
     return { ok: true, alreadyMerged: true };
@@ -226,7 +226,7 @@ async function mergeWorkerOntoBase(root, worker) {
     'merge',
     '--no-ff',
     '-m',
-    `codemini-tower merge ${worker.id}`,
+    `codemini-crew merge ${worker.id}`,
     worker.branch,
   ]);
   if (merged.code !== 0) {
@@ -244,7 +244,7 @@ async function mergeWorkerOntoBase(root, worker) {
         };
       }
       worker.rebaseOnto = onto;
-      await patchTowerWorkerRecord(root, worker.id, {
+      await patchCrewWorkerRecord(root, worker.id, {
         rebaseOnto: onto,
         reviewedCommit: '',
         reviewText: '',
@@ -262,11 +262,11 @@ async function mergeWorkerOntoBase(root, worker) {
   const head = String((await tryGit(root, ['rev-parse', 'HEAD'])).stdout || '').trim();
   worker.integrated = true;
   worker.landBase = head;
-  await patchTowerWorkerRecord(root, worker.id, { integrated: true, landBase: head, rebaseOnto: '' }).catch(() => null);
+  await patchCrewWorkerRecord(root, worker.id, { integrated: true, landBase: head, rebaseOnto: '' }).catch(() => null);
   return { ok: true, alreadyMerged: false };
 }
 
-export async function landTowerWorkers({
+export async function landCrewWorkers({
   cwd = process.cwd(),
   base,
 } = {}) {
@@ -275,7 +275,7 @@ export async function landTowerWorkers({
   if (!baseBranch || baseBranch === 'HEAD') {
     return { ok: false, code: 'NO_BASE', error: 'Crew land needs a recorded git base branch.' };
   }
-  return withTowerGitLock(root, async () => {
+  return withCrewGitLock(root, async () => {
     const currentBranchResult = await tryGit(root, ['branch', '--show-current']);
     const currentBranch = String(currentBranchResult.stdout || '').trim();
     if (currentBranchResult.code !== 0 || currentBranch !== baseBranch) {
@@ -291,25 +291,25 @@ export async function landTowerWorkers({
     }
     await removeLegacyMergeTmp(root).catch(() => null);
 
-    const workers = listTowerWorkersFromState(await readTowerStateFile(root))
-      .filter(isTowerLandableWorker);
+    const workers = listCrewWorkersFromState(await readCrewStateFile(root))
+      .filter(isCrewLandableWorker);
     if (workers.length === 0) {
       return { ok: false, code: 'NO_WORKERS', error: 'No Crew workers to land. Survey workers are not landed.' };
     }
-    const ordered = orderTowerWorkersForLand(workers);
+    const ordered = orderCrewWorkersForLand(workers);
 
     const pendingRebase = [];
     for (const worker of ordered) {
       const onto = String(worker.rebaseOnto || '').trim();
       if (!onto) continue;
-      const done = await isTowerCommitAncestor(worker.worktreePath, onto);
+      const done = await isCrewCommitAncestor(worker.worktreePath, onto);
       if (!done) {
         pendingRebase.push(worker);
         continue;
       }
       worker.landBase = onto;
       delete worker.rebaseOnto;
-      await patchTowerWorkerRecord(root, worker.id, { landBase: onto, rebaseOnto: '' }).catch(() => null);
+      await patchCrewWorkerRecord(root, worker.id, { landBase: onto, rebaseOnto: '' }).catch(() => null);
     }
     if (pendingRebase.length) {
       return buildRebaseRequired(pendingRebase[0]);
@@ -333,7 +333,7 @@ export async function landTowerWorkers({
     }
     const satisfied = new Set(already);
     const toMerge = [];
-    for (const worker of orderTowerWorkersForLand(ready)) {
+    for (const worker of orderCrewWorkersForLand(ready)) {
       if (!depsReady(worker, byId, satisfied)) continue;
       toMerge.push(worker);
       satisfied.add(worker);
@@ -383,12 +383,12 @@ export async function landTowerWorkers({
     }
 
     const commitSha = String((await tryGit(root, ['rev-parse', 'HEAD'])).stdout || '').trim();
-    const cleaned = await removeTowerWorktrees({ cwd: root, skipLock: true, force: true });
+    const cleaned = await removeCrewWorktrees({ cwd: root, skipLock: true, force: true });
     const checkedOut = await listCheckedOutBranches(root);
     const kept = [];
     for (const worker of cleaned.kept || []) kept.push(worker.id);
     for (const worker of cleaned.removed || []) {
-      const deleted = await deleteTowerWorkerBranch(root, worker.branch, checkedOut);
+      const deleted = await deleteCrewWorkerBranch(root, worker.branch, checkedOut);
       if (!deleted.ok) kept.push(worker.id);
     }
     const uniqueKept = [...new Set(kept)];

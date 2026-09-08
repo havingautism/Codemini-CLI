@@ -1,8 +1,8 @@
 /**
- * Tower wake queue and in-flight worker tracking for async tower workers.
+ * Crew wake queue and in-flight worker tracking for async crew workers.
  * Parent turns enqueue worker-completion wakes; drain runs after each turn ends.
  */
-export function createTowerCoordinator({
+export function createCrewCoordinator({
   inFlightWorkers,
   isTurnActive,
   submitWake,

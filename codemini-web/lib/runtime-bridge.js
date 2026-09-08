@@ -33,7 +33,7 @@ import {
   saveUiTranscriptToSqlite
 } from '../../src/core/session-sqlite-store.js';
 import { CHAT_ACTIONS } from '../../src/core/chat-action-dispatcher.js';
-import { parseTowerWakeHeadline } from '../../src/core/tower-snapshot.js';
+import { parseCrewWakeHeadline } from '../../src/core/crew-snapshot.js';
 
 const CODEWIKI_GENERATE_TIMEOUT_MS = 35 * 60 * 1000;
 
@@ -401,8 +401,8 @@ export class RuntimeBridge {
     runtime.setOnTitleStatus?.((sessionId, generating) => {
       this.#publish({ type: 'session:title_status', sessionId, generating });
     });
-    runtime.setTowerEventSink?.((event) => this.#forwardTowerBackgroundEvent(event));
-    runtime.setTowerWakeSubmit?.((wakeText) => this.#handleTowerWake(wakeText));
+    runtime.setCrewEventSink?.((event) => this.#forwardCrewBackgroundEvent(event));
+    runtime.setCrewWakeSubmit?.((wakeText) => this.#handleCrewWake(wakeText));
   }
 
   #installApprovalHandler() {
@@ -505,9 +505,9 @@ export class RuntimeBridge {
     return this.#uiPlanParentMsgId || this.#uiActiveMsgId || null;
   }
 
-  #forwardTowerBackgroundEvent(event) {
+  #forwardCrewBackgroundEvent(event) {
     if (!event?.type) return;
-    if (event.type === 'tower:workers_changed') {
+    if (event.type === 'crew:workers_changed') {
       this.#publish(event);
       this.#broadcastRuntimeState();
       return;
@@ -529,7 +529,7 @@ export class RuntimeBridge {
     }
   }
 
-  #settleTowerWakeTurn(submitToken, result) {
+  #settleCrewWakeTurn(submitToken, result) {
     if (!this.#isSubmitActive(submitToken)) return;
     if (this.#uiActiveMsgId) {
       this.#updateUiMessage(this.#uiActiveMsgId, (message) =>
@@ -554,49 +554,49 @@ export class RuntimeBridge {
         type: result?.type || 'assistant',
         aborted: !!result?.aborted,
         text: result?.text || '',
-        towerWake: true,
+        crewWake: true,
       },
     });
     this.#publishLifecycle(result?.aborted ? 'aborted' : 'completed');
   }
 
-  #handleTowerWake(wakeText) {
+  #handleCrewWake(wakeText) {
     const text = String(wakeText || '').trim();
     if (!text) return Promise.resolve({ type: 'noop' });
     if (!this.#claimSessionTurn()) {
-      return Promise.reject(new Error('Tower wake blocked while another turn is active'));
+      return Promise.reject(new Error('Crew wake blocked while another turn is active'));
     }
     this.#ensureUiTranscriptLoaded();
     this.#resetActiveAssistantTarget();
-    const headline = parseTowerWakeHeadline(text);
+    const headline = parseCrewWakeHeadline(text);
     const timestamp = new Date().toISOString();
     const wakeMessageId = this.#addUiMessage({
       role: 'divider',
-      dividerType: 'tower-wake',
+      dividerType: 'crew-wake',
       text: headline,
       timestamp,
     });
-    this.#publish({ type: 'tower:wake', headline, messageId: wakeMessageId, timestamp });
+    this.#publish({ type: 'crew:wake', headline, messageId: wakeMessageId, timestamp });
     this.#publishLifecycle('running');
     this.#uiPendingSkillBadges = [];
     this.#uiPendingSkillSegments = [];
     const submitToken = this.#invalidateSubmit();
     return this.#runtime.submit(text, (event) => {
       this.#forwardRuntimeEvent(event, submitToken);
-    }, { towerWake: true }).then((result) => {
-      this.#settleTowerWakeTurn(submitToken, result);
+    }, { crewWake: true }).then((result) => {
+      this.#settleCrewWakeTurn(submitToken, result);
       return result;
     }).catch(async (err) => {
       if (!this.#isSubmitActive(submitToken)) throw err;
       if (isAbortLikeError(err)) {
-        this.#settleTowerWakeTurn(submitToken, { type: 'aborted', aborted: true, text: 'Request aborted.' });
+        this.#settleCrewWakeTurn(submitToken, { type: 'aborted', aborted: true, text: 'Request aborted.' });
         return { type: 'aborted', aborted: true, text: 'Request aborted.' };
       }
       const message = String(err?.message || err);
       await this.#recordRunStatus(`Failed: ${message}`, { status: 'error' });
       this.#publish({
         type: 'submit:done',
-        result: { type: 'error', text: message, towerWake: true },
+        result: { type: 'error', text: message, crewWake: true },
       });
       this.#publishLifecycle('failed');
       throw err;
@@ -604,7 +604,7 @@ export class RuntimeBridge {
       if (!this.#isSubmitActive(submitToken)) return;
       this.#busy = false;
       this.#broadcastRuntimeState();
-      this.#drainTowerPendingWakes();
+      this.#drainCrewPendingWakes();
     });
   }
 
@@ -665,8 +665,8 @@ export class RuntimeBridge {
     return true;
   }
 
-  #drainTowerPendingWakes() {
-    void this.#runtime.drainTowerPendingWakes?.().catch(() => {});
+  #drainCrewPendingWakes() {
+    void this.#runtime.drainCrewPendingWakes?.().catch(() => {});
   }
 
   #buildRuntimeStatePayload() {
@@ -677,7 +677,7 @@ export class RuntimeBridge {
       ...serializableState,
       busy: turnActive,
       requestInFlight: this.#busy,
-      towerWorkersInFlight: this.#runtime.getTowerWorkersInFlight?.() ?? 0,
+      crewWorkersInFlight: this.#runtime.getCrewWorkersInFlight?.() ?? 0,
       codeWikiGenerating: this.#codeWikiGenerating,
       pendingReflectSkill: serializableState.pendingReflectSkill,
       pendingSpecApproval: serializableState.pendingSpecApproval,
@@ -1396,7 +1396,7 @@ export class RuntimeBridge {
       this.#busy = false;
       this.#activeSubmitLine = '';
       this.#broadcastRuntimeState();
-      this.#drainTowerPendingWakes();
+      this.#drainCrewPendingWakes();
     });
     return { accepted: true };
   }
@@ -1483,7 +1483,7 @@ export class RuntimeBridge {
       }
       this.#busy = false;
       this.#broadcastRuntimeState();
-      this.#drainTowerPendingWakes();
+      this.#drainCrewPendingWakes();
     });
     this.#broadcastRuntimeState();
     return { accepted: true, operationId };
@@ -1704,12 +1704,12 @@ export class RuntimeBridge {
     return ok;
   }
 
-  async setTowerMode(active) {
+  async setCrewMode(active) {
     if (this.#busy) {
-      return { ok: false, error: true, code: 'BUSY', message: 'Cannot switch tower while a request is running' };
+      return { ok: false, error: true, code: 'BUSY', message: 'Cannot switch crew while a request is running' };
     }
-    const result = await this.#runtime.setTowerMode?.(active);
-    if (result?.ok) this.#publish({ type: 'tower:changed', ...this.getState() });
+    const result = await this.#runtime.setCrewMode?.(active);
+    if (result?.ok) this.#publish({ type: 'crew:changed', ...this.getState() });
     return result && typeof result === 'object'
       ? { ...result, error: result.ok === false }
       : { ok: false, error: true, message: 'Crew mode is unavailable' };

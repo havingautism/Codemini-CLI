@@ -3,10 +3,10 @@ import { SelectList, matchesKey, truncateToWidth, visibleWidth } from '@earendil
 import { bold, color, sealAnsi, selectTheme, TEXT_FG } from '../theme.js';
 import { oneLine } from './messages.js';
 import {
-  buildTowerProgressItems,
-  formatTowerProgressLine,
-  shouldShowTowerProgressDock,
-} from '../../core/tower-progress.js';
+  buildCrewProgressItems,
+  formatCrewProgressLine,
+  shouldShowCrewProgressDock,
+} from '../../core/crew-progress.js';
 
 const SPINNER = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 const LIVE_STATES = new Set(['thinking', 'generating', 'tool', 'sending', 'stopping']);
@@ -121,7 +121,7 @@ export class QueuePanel {
   }
 }
 
-export class TowerProgressPanel {
+export class CrewProgressPanel {
   constructor({ runtime, copy }) {
     this.runtime = runtime;
     this.copy = copy;
@@ -131,26 +131,26 @@ export class TowerProgressPanel {
 
   render(width) {
     const state = this.runtime.getRuntimeState?.() || {};
-    if (!state.towerActive) return [];
-    const workers = Array.isArray(state.towerWorkers) ? state.towerWorkers : [];
-    const inFlightIds = Array.isArray(state.towerInFlightIds) ? state.towerInFlightIds : [];
-    if (!shouldShowTowerProgressDock({ towerActive: true, workers, inFlightIds })) return [];
-    const items = buildTowerProgressItems({ workers, inFlightIds });
+    if (!state.crewActive) return [];
+    const workers = Array.isArray(state.crewWorkers) ? state.crewWorkers : [];
+    const inFlightIds = Array.isArray(state.crewInFlightIds) ? state.crewInFlightIds : [];
+    if (!shouldShowCrewProgressDock({ crewActive: true, workers, inFlightIds })) return [];
+    const items = buildCrewProgressItems({ workers, inFlightIds });
     const labels = {
-      running: this.copy.towerPhaseRunning,
-      queued: this.copy.towerPhaseQueued,
-      reviewing: this.copy.towerPhaseReviewing,
-      awaiting_review: this.copy.towerPhaseAwaitingReview,
-      ready: this.copy.towerPhaseReady,
-      dirty: this.copy.towerPhaseDirty,
-      merged: this.copy.towerPhaseMerged,
-      failed: this.copy.towerPhaseFailed,
-      survey_done: this.copy.towerPhaseSurveyDone,
-      idle: this.copy.towerPhaseIdle,
+      running: this.copy.crewPhaseRunning,
+      queued: this.copy.crewPhaseQueued,
+      reviewing: this.copy.crewPhaseReviewing,
+      awaiting_review: this.copy.crewPhaseAwaitingReview,
+      ready: this.copy.crewPhaseReady,
+      dirty: this.copy.crewPhaseDirty,
+      merged: this.copy.crewPhaseMerged,
+      failed: this.copy.crewPhaseFailed,
+      survey_done: this.copy.crewPhaseSurveyDone,
+      idle: this.copy.crewPhaseIdle,
     };
-    const line = formatTowerProgressLine(items, labels);
+    const line = formatCrewProgressLine(items, labels);
     if (!line) return [];
-    return [fill(`${color.warning(this.copy.towerProgress)}  ${color.muted(line)}`, width, color.surfaceBg)];
+    return [fill(`${color.warning(this.copy.crewProgress)}  ${color.muted(line)}`, width, color.surfaceBg)];
   }
 }
 
@@ -170,7 +170,7 @@ export class Footer {
     const approval = String(state.approvalMode || (this.safeMode ? 'auto' : 'full_access'));
     const sandbox = String(state.sandboxMode || 'workspace-write');
     const shell = String(state.shell || 'bash').toUpperCase();
-    const modeTag = state.towerActive
+    const modeTag = state.crewActive
       ? `${color.warning('◆')} ${bold(color.warning('CREW'))}`
       : mode === 'coding'
         ? `${color.accent('◆')} ${bold(color.accent('CODE'))}`

@@ -23,9 +23,9 @@ import { collectMessageEmbeds } from "@/lib/message-embeds.js";
 import { buildRenderGroups } from "@/lib/message-render-groups.js";
 import { layoutAnswerProcessWithPlans } from "@/lib/answer-process.js";
 import {
-  shouldShowTowerModeFileChanges,
-  shouldSuppressTowerTaskTodos,
-} from "@/lib/tower-ui-state.js";
+  shouldShowCrewModeFileChanges,
+  shouldSuppressCrewTaskTodos,
+} from "@/lib/crew-ui-state.js";
 import { TodoList } from "./TodoList";
 import { ConfirmDialog } from "@/components/ConfirmDialog.jsx";
 import { FileTypeIcon } from "@/components/FileTypeIcon.jsx";
@@ -1928,10 +1928,10 @@ function shouldShowFileChanges(
   message,
   messageComplete,
   mergedFileChanges,
-  { towerActive = false } = {},
+  { crewActive = false } = {},
 ) {
   if (
-    !shouldShowTowerModeFileChanges(message, { towerActive }) ||
+    !shouldShowCrewModeFileChanges(message, { crewActive }) ||
     mergedFileChanges.length === 0
   ) {
     return false;
@@ -2184,8 +2184,8 @@ export const MessageBubble = memo(function MessageBubble({
   turnActive = false,
 }) {
   const { state } = useApp();
-  const towerActive = Boolean(state.runtimeState?.towerActive);
-  const suppressTowerTodos = shouldSuppressTowerTaskTodos({ towerActive });
+  const crewActive = Boolean(state.runtimeState?.crewActive);
+  const suppressCrewTodos = shouldSuppressCrewTaskTodos({ crewActive });
   const actions = useAppActions();
   const {
     role,
@@ -2251,7 +2251,7 @@ export const MessageBubble = memo(function MessageBubble({
       layoutAnswerProcessWithPlans(
         renderGroups,
         message?.timestamp || message?.createdAt,
-        { fold: messageComplete, omitTodo: dockTodo || suppressTowerTodos },
+        { fold: messageComplete, omitTodo: dockTodo || suppressCrewTodos },
       ),
     [dockTodo, message?.createdAt, message?.timestamp, messageComplete, renderGroups],
   );
@@ -2287,8 +2287,8 @@ export const MessageBubble = memo(function MessageBubble({
   }
 
   if (role === "divider") {
-    if (message.dividerType === "tower-wake") {
-      return renderDivider(rawMessageText || legacyText || t("towerWakeDivider"));
+    if (message.dividerType === "crew-wake") {
+      return renderDivider(rawMessageText || legacyText || t("crewWakeDivider"));
     }
     return renderDivider(legacyText || "以上内容已压缩");
   }
@@ -2446,7 +2446,7 @@ export const MessageBubble = memo(function MessageBubble({
     message,
     messageComplete,
     mergedFileChanges,
-    { towerActive },
+    { crewActive },
   );
   const showRelatedLinks = shouldShowPostCompletionExtras(
     message,

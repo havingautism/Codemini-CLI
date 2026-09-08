@@ -2,7 +2,7 @@ function posixPath(value) {
   return String(value || '').replace(/\\/g, '/').trim();
 }
 
-export function normalizeTowerGlob(value) {
+export function normalizeCrewGlob(value) {
   let glob = posixPath(value);
   if (!glob) return '';
   glob = glob.replace(/^\.\//, '');
@@ -18,12 +18,12 @@ function pathIsAbsoluteGlob(glob) {
   return /^[A-Za-z]:\//.test(glob);
 }
 
-export function normalizeTowerPaths(value) {
+export function normalizeCrewPaths(value) {
   if (!Array.isArray(value)) return [];
   const seen = new Set();
   const out = [];
   for (const item of value) {
-    const glob = normalizeTowerGlob(item);
+    const glob = normalizeCrewGlob(item);
     if (!glob || seen.has(glob)) continue;
     seen.add(glob);
     out.push(glob);
@@ -31,7 +31,7 @@ export function normalizeTowerPaths(value) {
   return out;
 }
 
-export function normalizeTowerDependsOn(value) {
+export function normalizeCrewDependsOn(value) {
   if (!Array.isArray(value)) return [];
   return [...new Set(value.map((item) => String(item || '').trim()).filter(Boolean))];
 }
@@ -67,80 +67,80 @@ function globToRegExp(glob) {
   return new RegExp(`^${source}$`);
 }
 
-export function fileMatchesTowerGlob(file, glob) {
+export function fileMatchesCrewGlob(file, glob) {
   const relative = posixPath(file).replace(/^\.\//, '');
-  const pattern = normalizeTowerGlob(glob);
+  const pattern = normalizeCrewGlob(glob);
   if (!relative || !pattern) return false;
   return globToRegExp(pattern).test(relative);
 }
 
-export function fileMatchesTowerPaths(file, paths) {
-  const globs = normalizeTowerPaths(paths);
+export function fileMatchesCrewPaths(file, paths) {
+  const globs = normalizeCrewPaths(paths);
   if (globs.length === 0) return false;
-  return globs.some((glob) => fileMatchesTowerGlob(file, glob));
+  return globs.some((glob) => fileMatchesCrewGlob(file, glob));
 }
 
 function staticPrefix(glob) {
-  const pattern = normalizeTowerGlob(glob);
+  const pattern = normalizeCrewGlob(glob);
   const star = pattern.search(/[*?[]/);
   const cut = star === -1 ? pattern : pattern.slice(0, star);
   return cut.replace(/\/$/, '');
 }
 
-export function towerGlobsOverlap(left, right) {
-  const a = normalizeTowerGlob(left);
-  const b = normalizeTowerGlob(right);
+export function crewGlobsOverlap(left, right) {
+  const a = normalizeCrewGlob(left);
+  const b = normalizeCrewGlob(right);
   if (!a || !b) return false;
   if (a === b) return true;
   const aPrefix = staticPrefix(a);
   const bPrefix = staticPrefix(b);
-  if (fileMatchesTowerGlob(aPrefix || a, b) || fileMatchesTowerGlob(bPrefix || b, a)) return true;
-  if (aPrefix && fileMatchesTowerGlob(aPrefix, b)) return true;
-  if (bPrefix && fileMatchesTowerGlob(bPrefix, a)) return true;
-  if (aPrefix && fileMatchesTowerGlob(`${aPrefix}/file`, b)) return true;
-  if (bPrefix && fileMatchesTowerGlob(`${bPrefix}/file`, a)) return true;
+  if (fileMatchesCrewGlob(aPrefix || a, b) || fileMatchesCrewGlob(bPrefix || b, a)) return true;
+  if (aPrefix && fileMatchesCrewGlob(aPrefix, b)) return true;
+  if (bPrefix && fileMatchesCrewGlob(bPrefix, a)) return true;
+  if (aPrefix && fileMatchesCrewGlob(`${aPrefix}/file`, b)) return true;
+  if (bPrefix && fileMatchesCrewGlob(`${bPrefix}/file`, a)) return true;
   if (aPrefix && bPrefix) {
     if (aPrefix === bPrefix) return true;
     if (aPrefix.startsWith(`${bPrefix}/`) || bPrefix.startsWith(`${aPrefix}/`)) {
       const shorter = aPrefix.length <= bPrefix.length ? a : b;
       const longerPrefix = aPrefix.length <= bPrefix.length ? bPrefix : aPrefix;
-      return fileMatchesTowerGlob(longerPrefix, shorter)
-        || fileMatchesTowerGlob(`${longerPrefix}/file`, shorter);
+      return fileMatchesCrewGlob(longerPrefix, shorter)
+        || fileMatchesCrewGlob(`${longerPrefix}/file`, shorter);
     }
   }
   if (!aPrefix || !bPrefix) return true;
   return false;
 }
 
-export function isTowerSurveyWorker(worker) {
+export function isCrewSurveyWorker(worker) {
   return String(worker?.kind || '').trim().toLowerCase() === 'survey';
 }
 
-export function isTowerLandableWorker(worker) {
-  return Boolean(worker) && !isTowerSurveyWorker(worker);
+export function isCrewLandableWorker(worker) {
+  return Boolean(worker) && !isCrewSurveyWorker(worker);
 }
 
-export function workerHoldsTowerScope(worker) {
+export function workerHoldsCrewScope(worker) {
   return Boolean(worker)
     && worker.integrated !== true
-    && !isTowerSurveyWorker(worker);
+    && !isCrewSurveyWorker(worker);
 }
 
-export function towerWorkerBlocksSpawn(worker) {
+export function crewWorkerBlocksSpawn(worker) {
   if (!worker) return false;
   if (worker.integrated === true && !String(worker.rebaseOnto || '').trim()) return true;
   if (String(worker.runStatus || '').trim().toLowerCase() === 'running') return true;
-  return workerHoldsTowerScope(worker);
+  return workerHoldsCrewScope(worker);
 }
 
-export function findOverlappingTowerWorker(paths, workers, { exceptId = '' } = {}) {
-  const next = normalizeTowerPaths(paths);
+export function findOverlappingCrewWorker(paths, workers, { exceptId = '' } = {}) {
+  const next = normalizeCrewPaths(paths);
   const list = Array.isArray(workers) ? workers : [];
   const skipId = String(exceptId || '').trim();
   for (const worker of list) {
-    if (!workerHoldsTowerScope(worker)) continue;
+    if (!workerHoldsCrewScope(worker)) continue;
     if (skipId && String(worker?.id || '').trim() === skipId) continue;
-    const existing = normalizeTowerPaths(worker?.paths);
+    const existing = normalizeCrewPaths(worker?.paths);
     if (existing.length === 0) {
       return {
         worker,
@@ -150,7 +150,7 @@ export function findOverlappingTowerWorker(paths, workers, { exceptId = '' } = {
     }
     for (const glob of next) {
       for (const other of existing) {
-        if (towerGlobsOverlap(glob, other)) {
+        if (crewGlobsOverlap(glob, other)) {
           return { worker, glob, existing: other };
         }
       }
@@ -165,7 +165,7 @@ function workerKeys(worker) {
     .filter(Boolean);
 }
 
-export function orderTowerWorkersForLand(workers) {
+export function orderCrewWorkersForLand(workers) {
   const list = (Array.isArray(workers) ? workers : []).filter(Boolean);
   const byId = new Map();
   for (const worker of list) {
@@ -178,7 +178,7 @@ export function orderTowerWorkersForLand(workers) {
   const placed = new Set();
   while (remaining.length) {
     const index = remaining.findIndex((worker) => {
-      const deps = normalizeTowerDependsOn(worker.dependsOn);
+      const deps = normalizeCrewDependsOn(worker.dependsOn);
       return deps.every((dep) => {
         const target = byId.get(dep);
         return !target || placed.has(target);

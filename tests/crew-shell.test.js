@@ -2,11 +2,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  evaluateTowerParentCommand,
-  TOWER_PARENT_SHELL_BLOCK,
-} from '../src/core/tower-shell.js';
+  evaluateCrewParentCommand,
+  CREW_PARENT_SHELL_BLOCK,
+} from '../src/core/crew-shell.js';
 
-test('tower parent shell allows inspect commands', () => {
+test('crew parent shell allows inspect commands', () => {
   for (const command of [
     'git status',
     'git log -1 --oneline',
@@ -14,15 +14,15 @@ test('tower parent shell allows inspect commands', () => {
     'git show HEAD',
     'git rev-parse HEAD',
     'ls',
-    'rg Tower src',
+    'rg Crew src',
     'pwd',
   ]) {
-    const result = evaluateTowerParentCommand(command);
+    const result = evaluateCrewParentCommand(command);
     assert.equal(result.allowed, true, command);
   }
 });
 
-test('tower parent shell denies merge, checkout, worktree, and copy', () => {
+test('crew parent shell denies merge, checkout, worktree, and copy', () => {
   for (const command of [
     'git merge feature',
     'git merge --squash other',
@@ -38,14 +38,14 @@ test('tower parent shell denies merge, checkout, worktree, and copy', () => {
     'echo hi > out.txt',
     'git status && git merge feature',
   ]) {
-    const result = evaluateTowerParentCommand(command);
+    const result = evaluateCrewParentCommand(command);
     assert.equal(result.allowed, false, command);
-    assert.equal(result.reason, TOWER_PARENT_SHELL_BLOCK, command);
+    assert.equal(result.reason, CREW_PARENT_SHELL_BLOCK, command);
   }
 });
 
-test('tower parent shell denies Windows redirections even when risk is not write-high-risk', () => {
-  const result = evaluateTowerParentCommand('echo hi > out.txt', 'win32');
+test('crew parent shell denies Windows redirections even when risk is not write-high-risk', () => {
+  const result = evaluateCrewParentCommand('echo hi > out.txt', 'win32');
   assert.equal(result.allowed, false);
-  assert.equal(result.reason, TOWER_PARENT_SHELL_BLOCK);
+  assert.equal(result.reason, CREW_PARENT_SHELL_BLOCK);
 });

@@ -24,13 +24,13 @@ import {
   terminateChild,
 } from "./shell.js";
 import { evaluateCommandPolicy } from "./command-policy.js";
-import { evaluateTowerParentCommand } from "./tower-shell.js";
-import { normalizeTowerReviewVerdict } from "./tower-store.js";
+import { evaluateCrewParentCommand } from "./crew-shell.js";
+import { normalizeCrewReviewVerdict } from "./crew-store.js";
 import {
-  formatTowerStatusSummary,
-  readTowerStatusPayload,
-  resolveTowerProjectRoot,
-} from "./tower-snapshot.js";
+  formatCrewStatusSummary,
+  readCrewStatusPayload,
+  resolveCrewProjectRoot,
+} from "./crew-snapshot.js";
 import { classifyCommandRisk, hasShellWriteSyntax } from "./command-risk.js";
 import { createWriteCoordinator } from "./write-coordinator.js";
 import {
@@ -4207,7 +4207,7 @@ export function getBuiltinTools({
   backupManager,
   toolResultStore,
   platform = process.platform,
-  towerActive = false,
+  crewActive = false,
   onLandWorkers,
   onCancelWorker,
 }) {
@@ -5169,7 +5169,7 @@ export function getBuiltinTools({
       type: "function",
       function: {
         name: commandToolName,
-        description: `${towerActive ? "Crew parent inspect-only: git status/log/diff and other read-only commands. Do not merge, checkout, worktree, or copy into the main checkout; use land_workers. " : ""}${vmSandbox
+        description: `${crewActive ? "Crew parent inspect-only: git status/log/diff and other read-only commands. Do not merge, checkout, worktree, or copy into the main checkout; use land_workers. " : ""}${vmSandbox
           ? platform === "win32"
             ? `Run a compact Bash command inside the Linux microVM sandbox (${sandboxPolicy.mode}) from the project root. If a build or test cannot use Windows-native dependencies because the guest is Linux, retry that exact verification command with sandbox_permissions="danger-full-access" and justification; the escalated command must be Windows PowerShell-compatible and runs on the host only after LLM risk advice and user approval. Do not escalate ordinary code failures, missing dependencies, or timeouts. Use project-relative paths and run_in_background=true only for long-running sandboxed commands. Put command last.`
             : `Run a compact Bash command inside the Linux microVM sandbox (${sandboxPolicy.mode}) from the project root with unrestricted outbound networking. Use project-relative paths. Ordinary Bash commands, including curl, are available; commands with destructive or external side effects may still require approval. On denial, stderr includes [sandbox: ...]; retry with a wider sandbox_permissions plus justification when needed. Use run_in_background=true for long-running commands. Put command last.`
@@ -5349,7 +5349,7 @@ export function getBuiltinTools({
               description: "Optional allow-list overriding the role defaults.",
             },
     };
-    if (towerActive) {
+    if (crewActive) {
       subagentProperties.paths = {
         type: "array",
         items: { type: "string" },
@@ -5373,7 +5373,7 @@ export function getBuiltinTools({
       type: "function",
       function: {
         name: "run_subagent",
-        description: towerActive
+        description: crewActive
           ? "Delegate isolated work to a git-worktree subagent. Same-response independent calls run in parallel; use task_id/depends_on for dependencies. Every objective, including a single task, must go to a worker. New coder workers need disjoint paths and a unique short name (that name becomes the resume id). Read-only investigation uses role: \"survey\" (no exclusive paths, no review, no land). Call an idle worker back with resume set to that id. After a coder commits, review that worker with role: \"reviewer\" and review set to its id before land_workers."
           : "Delegate a bounded task to a clean-context subagent. Same-response independent calls run in parallel; use task_id/depends_on for dependencies and disjoint file ownership for parallel edits. Invent a short worker name such as David. Use fork_task instead when shared prompt prefix/state is more useful.",
         parameters: {
@@ -5384,7 +5384,7 @@ export function getBuiltinTools({
       },
     });
   }
-  if (typeof onForkTask === "function" && !towerActive) {
+  if (typeof onForkTask === "function" && !crewActive) {
     workflowToolDefinitions.push({
       type: "function",
       function: {
@@ -5463,13 +5463,13 @@ export function getBuiltinTools({
       },
     });
   }
-  if (towerActive || config?.runtime?.tower_session) {
+  if (crewActive || config?.runtime?.crew_session) {
     workflowToolDefinitions.push({
       type: "function",
       function: {
         name: "crew_status",
         description:
-          "Read the latest Crew roster and workflow state from disk. Call before dispatching, reviewing, landing, or answering progress when state may have changed since the last message.",
+          "Read the latest Crew roster, unread completion events, and workflow state from disk. Call before dispatching, reviewing, landing, or answering progress — including after a restart, when a wake may be missing.",
         parameters: {
           type: "object",
           properties: {},
@@ -5478,7 +5478,7 @@ export function getBuiltinTools({
       },
     });
   }
-  if (typeof config?.runtime?.onTowerReviewVerdict === "function") {
+  if (typeof config?.runtime?.onCrewReviewVerdict === "function") {
     workflowToolDefinitions.push({
       type: "function",
       function: {
@@ -7195,7 +7195,7 @@ export function getBuiltinTools({
       });
     },
     fork_task: async (args = {}, ctx = {}) => {
-      if (towerActive) {
+      if (crewActive) {
         return {
           ok: false,
           error: "fork_task is not available in Crew mode. Use run_subagent.",
@@ -7245,34 +7245,32 @@ export function getBuiltinTools({
       return onCancelWorker({ workerId });
     },
     crew_status: async () => {
-      if (!towerActive && !config?.runtime?.tower_session) {
+      if (!crewActive && !config?.runtime?.crew_session) {
         return {
           ok: false,
           error: "crew_status is only available in Crew mode.",
         };
       }
-      const projectRoot = resolveTowerProjectRoot(
-        config?.runtime?.tower_project_root || workspaceRoot,
+      const projectRoot = resolveCrewProjectRoot(
+        config?.runtime?.crew_project_root || workspaceRoot,
       );
-      const inFlight = typeof config?.runtime?.getTowerInFlightWorkers === "function"
-        ? config.runtime.getTowerInFlightWorkers()
+      const inFlight = typeof config?.runtime?.getCrewInFlightWorkers === "function"
+        ? config.runtime.getCrewInFlightWorkers()
         : [];
-      const pendingWakes = typeof config?.runtime?.getTowerPendingWakes === "function"
-        ? config.runtime.getTowerPendingWakes()
+      const pendingWakes = typeof config?.runtime?.getCrewPendingWakes === "function"
+        ? config.runtime.getCrewPendingWakes()
         : 0;
-      return readTowerStatusPayload(projectRoot, { inFlight, pendingWakes });
+      return readCrewStatusPayload(projectRoot, { inFlight, pendingWakes });
     },
-    tower_status: async (...args) => handlers.crew_status(...args),
     submit_crew_review: async (args = {}) => {
-      const submit = config?.runtime?.onTowerReviewVerdict;
-      const verdict = normalizeTowerReviewVerdict(args);
+      const submit = config?.runtime?.onCrewReviewVerdict;
+      const verdict = normalizeCrewReviewVerdict(args);
       if (!verdict.ok) return verdict;
       if (typeof submit === "function") {
         submit({ passed: verdict.passed, findings: verdict.findings });
       }
       return { ok: true, passed: verdict.passed, findings: verdict.findings };
     },
-    submit_tower_review: async (...args) => handlers.submit_crew_review(...args),
     create_spec: async (args = {}) => {
       if (typeof onCreateSpec !== "function") {
         return {
@@ -7316,10 +7314,10 @@ export function getBuiltinTools({
       });
     },
     run: Object.assign((args, context) => {
-      if (towerActive) {
-        const towerCheck = evaluateTowerParentCommand(args?.command, platform);
-        if (!towerCheck.allowed) {
-          throw new Error(towerCheck.reason);
+      if (crewActive) {
+        const crewCheck = evaluateCrewParentCommand(args?.command, platform);
+        if (!crewCheck.allowed) {
+          throw new Error(crewCheck.reason);
         }
       }
       return runCommand(workspaceRoot, config, args, context);
@@ -7898,11 +7896,7 @@ export function getBuiltinTools({
     },
 
     crew_status(result) {
-      return formatTowerStatusSummary(result);
-    },
-
-    tower_status(result) {
-      return formatTowerStatusSummary(result);
+      return formatCrewStatusSummary(result);
     },
 
     submit_crew_review(result) {
@@ -7913,16 +7907,6 @@ export function getBuiltinTools({
       if (findings.length) return `Review did not pass:\n${findings.map((item) => `- ${item}`).join("\n")}`;
       return "Review did not pass.";
     },
-
-    submit_tower_review(result) {
-      if (!result || typeof result !== "object") return String(result);
-      if (result.error) return String(result.error);
-      if (result.passed === true) return "Review passed.";
-      const findings = Array.isArray(result.findings) ? result.findings.filter(Boolean) : [];
-      if (findings.length) return `Review did not pass:\n${findings.map((item) => `- ${item}`).join("\n")}`;
-      return "Review did not pass.";
-    },
-
 
     fork_task(result) {
       if (!result || typeof result !== "object") return String(result);

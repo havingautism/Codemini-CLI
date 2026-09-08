@@ -1,11 +1,11 @@
-import { abortErrorFromSignal } from './tower-cancel.js';
+import { abortErrorFromSignal } from './crew-cancel.js';
 
 function normalizeLimit(value, fallback = 4) {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
 }
 
-export function createTowerWorkerScheduler({ getLimit = () => 4 } = {}) {
+export function createCrewWorkerScheduler({ getLimit = () => 4 } = {}) {
   let active = 0;
   const queue = [];
 
@@ -48,9 +48,9 @@ export function createTowerWorkerScheduler({ getLimit = () => 4 } = {}) {
           reject(abortErrorFromSignal(signal));
         };
         signal?.addEventListener?.('abort', entry.onAbortQueued, { once: true });
-        if (active >= normalizeLimit(getLimit())) onQueued?.();
         queue.push(entry);
         pump();
+        if (queue.includes(entry)) onQueued?.();
       });
     },
     snapshot() {

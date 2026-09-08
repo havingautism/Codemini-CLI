@@ -1,16 +1,18 @@
 import { trimInline } from './string-utils.js';
 import {
-  formatTowerReviewText,
-  nextTowerReviewLoopState,
-  patchTowerWorkerRecord,
-} from './tower-store.js';
+  appendCrewEvent,
+  buildCrewCompletionEvent,
+  formatCrewReviewText,
+  nextCrewReviewLoopState,
+  patchCrewWorkerRecord,
+} from './crew-store.js';
 import {
-  isTowerCommitAncestor,
-  isTowerWorktreeDirty,
-} from './tower-worktree.js';
+  isCrewCommitAncestor,
+  isCrewWorktreeDirty,
+} from './crew-worktree.js';
 import { saveSubAgentHandoff } from './subagent-handoff-store.js';
-import { isTowerCancelSignal } from './tower-cancel.js';
-import { buildTowerWorkerCompletedWake } from './tower-snapshot.js';
+import { isCrewCancelSignal } from './crew-cancel.js';
+import { buildCrewWorkerCompletedWake } from './crew-snapshot.js';
 
 function formatPlanStepOutputForDisplay(text = '', maxChars = 6000) {
   const body = String(text || '').trim();
@@ -18,7 +20,13 @@ function formatPlanStepOutputForDisplay(text = '', maxChars = 6000) {
   return `${body.slice(0, maxChars).trimEnd()}\n\n[truncated]`;
 }
 
-export async function runTowerWorkerJob({
+async function persistCrewCompletionEvent(workspaceRoot, input) {
+  const event = buildCrewCompletionEvent(input);
+  if (!event || !workspaceRoot) return;
+  await appendCrewEvent(workspaceRoot, event).catch(() => null);
+}
+
+export async function runCrewWorkerJob({
   runSubAgentTask,
   subAgentRunFailed,
   compactSubAgentResultForParent,
@@ -53,17 +61,17 @@ export async function runTowerWorkerJob({
   taskPrompt,
   summary,
   stepSdkProvider,
-  lockedTowerWorkerId,
+  lockedCrewWorkerId,
   reviewingWorkerId,
   reviewingWorkerRecord,
   reviewCommit,
   pendingRebaseOnto,
-  isTowerSurvey,
-  towerDirty: initialTowerDirty,
+  isCrewSurvey,
+  crewDirty: initialCrewDirty,
   signal,
 } = {}) {
   let childUsage = null;
-  let towerDirty = initialTowerDirty;
+  let crewDirty = initialCrewDirty;
   try {
     const reviewBox = { verdict: null };
     const output = await runSubAgentTask({
@@ -78,7 +86,7 @@ export async function runTowerWorkerJob({
             ...config,
             runtime: {
               ...(config.runtime || {}),
-              onTowerReviewVerdict: (verdict) => {
+              onCrewReviewVerdict: (verdict) => {
                 reviewBox.verdict = verdict;
               },
             },
@@ -101,12 +109,12 @@ export async function runTowerWorkerJob({
       projectIsGit: Boolean(config?.runtime?.project_is_git),
       workspaceRoot: workerWorkspaceRoot,
     });
-    const cancelled = isTowerCancelSignal(signal) || Boolean(output?.aborted && isTowerCancelSignal(signal));
+    const cancelled = isCrewCancelSignal(signal) || Boolean(output?.aborted && isCrewCancelSignal(signal));
     const failed = reviewingWorkerId
       ? Boolean(output?.hasErrorLine || cancelled)
       : subAgentRunFailed(output, cancelled ? signal : null);
     if (!cancelled && !reviewingWorkerId && workerWorkspaceRoot !== workspaceRoot) {
-      towerDirty = await isTowerWorktreeDirty(workerWorkspaceRoot).catch(() => true);
+      crewDirty = await isCrewWorktreeDirty(workerWorkspaceRoot).catch(() => true);
     }
     const savedHandoff = failed
       ? null
@@ -120,37 +128,37 @@ export async function runTowerWorkerJob({
           text: output.text,
           artifactPaths: output.artifactPaths,
         }).catch(() => null);
-    if (lockedTowerWorkerId && !reviewingWorkerId && !cancelled) {
+    if (lockedCrewWorkerId && !reviewingWorkerId && !cancelled) {
       if (failed) {
-        await patchTowerWorkerRecord(workspaceRoot, lockedTowerWorkerId, {
+        await patchCrewWorkerRecord(workspaceRoot, lockedCrewWorkerId, {
           runStatus: 'failed',
-          dirty: towerDirty === true,
+          dirty: crewDirty === true,
           runError: String(output?.error || output?.text || '').trim().slice(0, 400),
         }).catch(() => null);
       } else {
         const patch = {
           runStatus: 'completed',
-          dirty: towerDirty === true,
+          dirty: crewDirty === true,
           runError: '',
         };
         if (savedHandoff?.path) patch.lastHandoffPath = savedHandoff.path;
-        await patchTowerWorkerRecord(workspaceRoot, lockedTowerWorkerId, patch).catch(() => null);
+        await patchCrewWorkerRecord(workspaceRoot, lockedCrewWorkerId, patch).catch(() => null);
       }
     }
     if (
       !cancelled
       && !failed
       && pendingRebaseOnto
-      && lockedTowerWorkerId
+      && lockedCrewWorkerId
       && !reviewingWorkerId
-      && towerDirty === false
+      && crewDirty === false
     ) {
-      const ontoDone = await isTowerCommitAncestor(
+      const ontoDone = await isCrewCommitAncestor(
         workerWorkspaceRoot,
         pendingRebaseOnto,
       ).catch(() => false);
       if (ontoDone) {
-        await patchTowerWorkerRecord(workspaceRoot, lockedTowerWorkerId, {
+        await patchCrewWorkerRecord(workspaceRoot, lockedCrewWorkerId, {
           landBase: pendingRebaseOnto,
           rebaseOnto: '',
         }).catch(() => null);
@@ -162,17 +170,17 @@ export async function runTowerWorkerJob({
     if (!cancelled && !failed && reviewingWorkerId && reviewCommit) {
       const verdict = reviewBox.verdict;
       reviewPassed = verdict?.passed === true;
-      const loop = nextTowerReviewLoopState(reviewingWorkerRecord, {
+      const loop = nextCrewReviewLoopState(reviewingWorkerRecord, {
         passed: reviewPassed,
         findings: verdict?.findings || [],
       });
       reviewLoopStopped = loop.reviewLoopStopped;
       reviewRound = loop.reviewRound;
-      await patchTowerWorkerRecord(workspaceRoot, reviewingWorkerId, {
+      await patchCrewWorkerRecord(workspaceRoot, reviewingWorkerId, {
         reviewedCommit: reviewCommit,
         reviewPassed,
         reviewText: verdict
-          ? formatTowerReviewText(verdict)
+          ? formatCrewReviewText(verdict)
           : String(output.text || '').trim(),
         ...loop,
       }).catch(() => null);
@@ -200,13 +208,27 @@ export async function runTowerWorkerJob({
         ])
       : [];
     const completionSummary = trimInline(output.text || '', 200);
-    if (!cancelled && typeof onWake === 'function') {
-      onWake(buildTowerWorkerCompletedWake({
-        workerId: lockedTowerWorkerId,
+    if (!cancelled) {
+      await persistCrewCompletionEvent(workspaceRoot, {
+        workerId: lockedCrewWorkerId,
         reviewOf: reviewingWorkerId,
         status: failed ? 'failed' : 'completed',
-        dirty: towerDirty,
-        workerKind: isTowerSurvey ? 'survey' : '',
+        dirty: crewDirty,
+        workerKind: isCrewSurvey ? 'survey' : '',
+        summary: completionSummary,
+        handoffPath: savedHandoff?.path,
+        reviewPassed,
+        reviewLoopStopped,
+        reviewRound,
+      });
+    }
+    if (!cancelled && typeof onWake === 'function') {
+      onWake(buildCrewWorkerCompletedWake({
+        workerId: lockedCrewWorkerId,
+        reviewOf: reviewingWorkerId,
+        status: failed ? 'failed' : 'completed',
+        dirty: crewDirty,
+        workerKind: isCrewSurvey ? 'survey' : '',
         summary: completionSummary,
         handoffPath: savedHandoff?.path,
         reviewPassed,
@@ -226,15 +248,15 @@ export async function runTowerWorkerJob({
       artifactPaths: output.artifactPaths || [],
       ...(savedHandoff ? { handoffPath: savedHandoff.path } : {}),
       ...(fileChanges.length ? { fileChanges } : {}),
-      ...(towerDirty === undefined ? {} : { dirty: towerDirty }),
+      ...(crewDirty === undefined ? {} : { dirty: crewDirty }),
       message: compactSubAgentResultForParent({
         text: output.text,
         summary,
         handoffPath: savedHandoff?.path,
         artifactPaths: output.artifactPaths,
-        ...(towerDirty === undefined ? {} : { dirty: towerDirty }),
-        ...(isTowerSurvey ? { workerKind: 'survey' } : {}),
-        ...(lockedTowerWorkerId && !reviewingWorkerId ? { workerId: lockedTowerWorkerId } : {}),
+        ...(crewDirty === undefined ? {} : { dirty: crewDirty }),
+        ...(isCrewSurvey ? { workerKind: 'survey' } : {}),
+        ...(lockedCrewWorkerId && !reviewingWorkerId ? { workerId: lockedCrewWorkerId } : {}),
         ...(reviewingWorkerId ? {
           reviewOf: reviewingWorkerId,
           reviewPassed,
@@ -243,7 +265,7 @@ export async function runTowerWorkerJob({
       }),
     };
   } catch (err) {
-    const cancelled = isTowerCancelSignal(signal) || err?.towerCancel === true || err?.name === 'AbortError';
+    const cancelled = isCrewCancelSignal(signal) || err?.crewCancel === true || err?.name === 'AbortError';
     emit({
       type: 'plan:step_done',
       toolCallId: callId,
@@ -251,7 +273,7 @@ export async function runTowerWorkerJob({
       total: 1,
       role: persona,
       title,
-      status: cancelled && isTowerCancelSignal(signal) ? 'cancelled' : 'failed',
+      status: cancelled && isCrewCancelSignal(signal) ? 'cancelled' : 'failed',
       taskId: dependencyTaskId,
       dependsOn: dependencyDependencies,
       summary: String(err?.message || err),
@@ -259,15 +281,23 @@ export async function runTowerWorkerJob({
       model: stepModel,
       ...(childUsage ? { usage: childUsage, usageScope: 'subagent' } : {}),
     });
-    if (!isTowerCancelSignal(signal) && lockedTowerWorkerId && !reviewingWorkerId) {
-      await patchTowerWorkerRecord(workspaceRoot, lockedTowerWorkerId, {
+    if (!isCrewCancelSignal(signal) && lockedCrewWorkerId && !reviewingWorkerId) {
+      await patchCrewWorkerRecord(workspaceRoot, lockedCrewWorkerId, {
         runStatus: 'failed',
         runError: String(err?.message || err).slice(0, 400),
       }).catch(() => null);
     }
-    if (!isTowerCancelSignal(signal) && typeof onWake === 'function') {
-      onWake(buildTowerWorkerCompletedWake({
-        workerId: lockedTowerWorkerId,
+    if (!isCrewCancelSignal(signal)) {
+      await persistCrewCompletionEvent(workspaceRoot, {
+        workerId: lockedCrewWorkerId,
+        reviewOf: reviewingWorkerId,
+        status: 'failed',
+        summary: String(err?.message || err).slice(0, 200),
+      });
+    }
+    if (!isCrewCancelSignal(signal) && typeof onWake === 'function') {
+      onWake(buildCrewWorkerCompletedWake({
+        workerId: lockedCrewWorkerId,
         reviewOf: reviewingWorkerId,
         status: 'failed',
         summary: String(err?.message || err).slice(0, 200),
@@ -275,14 +305,14 @@ export async function runTowerWorkerJob({
     }
     return {
       ok: false,
-      cancelled: isTowerCancelSignal(signal),
+      cancelled: isCrewCancelSignal(signal),
       error: String(err?.message || err),
       text: '',
       ...(childUsage ? { usage: childUsage } : {}),
     };
   } finally {
     if (typeof releaseInFlight === 'function') {
-      releaseInFlight(lockedTowerWorkerId || reviewingWorkerId);
+      releaseInFlight(lockedCrewWorkerId || reviewingWorkerId);
     }
   }
 }

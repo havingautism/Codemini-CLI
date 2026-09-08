@@ -246,7 +246,7 @@ function isDelegationToolCard(card) {
 
 export function messageHasActivePlanRun(message) {
   return listCreatePlanCards(message).some((card) => {
-    // Background tower/delegation cards stay "running" after the parent turn
+    // Background crew/delegation cards stay "running" after the parent turn
     // ends. They must not swallow later user or wake turns.
     if (isDelegationToolCard(card)) return false;
     if (String(card.status || "").toLowerCase() === "running") return true;

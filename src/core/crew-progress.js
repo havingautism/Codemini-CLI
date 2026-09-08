@@ -1,4 +1,4 @@
-export function describeTowerWorkerProgress(worker = {}, { inFlightIds = [] } = {}) {
+export function describeCrewWorkerProgress(worker = {}, { inFlightIds = [] } = {}) {
   const id = String(worker.id || '').trim();
   if (!id) return null;
   const flying = (Array.isArray(inFlightIds) ? inFlightIds : []).includes(id);
@@ -17,12 +17,12 @@ export function describeTowerWorkerProgress(worker = {}, { inFlightIds = [] } = 
   return { id, kind, phase };
 }
 
-export function buildTowerProgressItems({ workers = [], inFlightIds = [] } = {}) {
+export function buildCrewProgressItems({ workers = [], inFlightIds = [] } = {}) {
   const ids = [...new Set((Array.isArray(inFlightIds) ? inFlightIds : []).map((item) => String(item || '').trim()).filter(Boolean))];
   const seen = new Set();
   const items = [];
   for (const worker of Array.isArray(workers) ? workers : []) {
-    const item = describeTowerWorkerProgress(worker, { inFlightIds: ids });
+    const item = describeCrewWorkerProgress(worker, { inFlightIds: ids });
     if (!item) continue;
     seen.add(item.id);
     items.push(item);
@@ -34,14 +34,14 @@ export function buildTowerProgressItems({ workers = [], inFlightIds = [] } = {})
   return items;
 }
 
-export function shouldShowTowerProgressDock({ towerActive, workers = [], inFlightIds = [] } = {}) {
-  if (!towerActive) return false;
-  const items = buildTowerProgressItems({ workers, inFlightIds });
+export function shouldShowCrewProgressDock({ crewActive, workers = [], inFlightIds = [] } = {}) {
+  if (!crewActive) return false;
+  const items = buildCrewProgressItems({ workers, inFlightIds });
   if (!items.length) return false;
   return items.some((item) => item.phase !== 'merged');
 }
 
-export function formatTowerProgressLine(items = [], labels = {}) {
+export function formatCrewProgressLine(items = [], labels = {}) {
   return (Array.isArray(items) ? items : [])
     .map((item) => `${item.id} ${labels[item.phase] || item.phase}`)
     .join(' · ');
