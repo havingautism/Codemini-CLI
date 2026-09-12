@@ -17,6 +17,19 @@ function safeSegment(value, fallback) {
   return cleaned || fallback;
 }
 
+/**
+ * 会话目录名要与 getProjectHandoffsDir(cwd, sessionId) 和磁盘上的会话 ID 保持一致，
+ * 所以这里只做路径安全处理，不做大小写折叠（safeSegment 的小写化只适合文件名与调用 ID）。
+ */
+function sessionSegment(value) {
+  const cleaned = String(value || '')
+    .trim()
+    .replace(/[^A-Za-z0-9_-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 64);
+  return cleaned || 'session';
+}
+
 function relativePath(workspaceRoot, filePath) {
   return path.relative(workspaceRoot, filePath).replace(/\\/g, '/');
 }
@@ -64,7 +77,7 @@ export async function saveSubAgentHandoff({
     `${createdAt.replace(/\D/g, '').slice(0, 17)}-${safeSegment(persona, 'subagent')}`,
   );
   const dir = path.join(
-    getProjectHandoffsDir(workspaceRoot, safeSegment(sessionId, 'session')),
+    getProjectHandoffsDir(workspaceRoot, sessionSegment(sessionId)),
     id,
   );
   const filePath = path.join(dir, handoffFilename(summary));
@@ -104,16 +117,28 @@ export async function saveSubAgentHandoff({
   return { id, name: persona, summary: compactSummary, path: displayPath, createdAt };
 }
 
+/**
+ * 读取时优先使用保留大小写的会话目录；旧版本会把它小写化，因此再回退一次，
+ * 避免升级后看不到已有会话的 handoff 目录。
+ */
+async function resolveHandoffRoot(workspaceRoot, sessionId) {
+  const segments = [...new Set([sessionSegment(sessionId), safeSegment(sessionId, 'session')])];
+  for (const segment of segments) {
+    const root = getProjectHandoffsDir(workspaceRoot, segment);
+    try {
+      return { root, entries: await fs.readdir(root, { withFileTypes: true }) };
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error;
+    }
+  }
+  return null;
+}
+
 export async function listSubAgentHandoffs({ workspaceRoot, sessionId } = {}) {
   if (!workspaceRoot || !sessionId) return [];
-  const root = getProjectHandoffsDir(workspaceRoot, safeSegment(sessionId, 'session'));
-  let entries;
-  try {
-    entries = await fs.readdir(root, { withFileTypes: true });
-  } catch (error) {
-    if (error?.code === 'ENOENT') return [];
-    throw error;
-  }
+  const resolved = await resolveHandoffRoot(workspaceRoot, sessionId);
+  if (!resolved) return [];
+  const { root, entries } = resolved;
   const handoffs = await Promise.all(
     entries
       .filter((entry) => entry.isDirectory())
