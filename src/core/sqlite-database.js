@@ -4,7 +4,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { getBaseConfigDir, getProjectIndexDir } from './paths.js';
 import { insertMemoryFtsRow, MEMORY_FTS_DDL } from './memory-fts.js';
 
-const GLOBAL_SCHEMA_VERSION = 14;
+const GLOBAL_SCHEMA_VERSION = 15;
 const PROJECT_SCHEMA_VERSION = 6;
 const databases = new Map();
 
@@ -42,14 +42,13 @@ function openDatabase(filePath, schema, version) {
       INSERT INTO schema_meta(key, value) VALUES ('schema_version', ?)
       ON CONFLICT(key) DO UPDATE SET value = excluded.value
     `).run(String(version));
+    ensureMemoriesSchema(db);
     db.exec('COMMIT');
   } catch (error) {
     db.exec('ROLLBACK');
     db.close();
     throw error;
   }
-  // FTS5 virtual tables cannot be created inside the schema transaction.
-  ensureMemoriesSchema(db);
   databases.set(resolved, db);
   return db;
 }
@@ -331,11 +330,24 @@ function createGlobalSchema(db, currentVersion = 0) {
   if (currentVersion < 13) {
     db.exec('CREATE INDEX IF NOT EXISTS research_scout_runs_session_idx ON research_scout_runs(session_id, created_at);');
   }
-  db.exec(`
-    CREATE UNIQUE INDEX IF NOT EXISTS research_evidence_candidate_idx
-      ON research_evidence(session_id, origin_candidate_id)
-      WHERE origin_candidate_id <> '';
-  `);
+  if (currentVersion < 15) {
+    // Preserve duplicate evidence and its provenance before releasing the conflicting link.
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS research_evidence_candidate_conflicts (
+        evidence_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, origin_candidate_id TEXT NOT NULL
+      );
+      INSERT OR IGNORE INTO research_evidence_candidate_conflicts
+        SELECT id, session_id, origin_candidate_id FROM research_evidence
+        WHERE origin_candidate_id <> '' AND rowid NOT IN (
+          SELECT MIN(rowid) FROM research_evidence WHERE origin_candidate_id <> ''
+          GROUP BY session_id, origin_candidate_id
+        );
+      UPDATE research_evidence SET origin_candidate_id = ''
+        WHERE id IN (SELECT evidence_id FROM research_evidence_candidate_conflicts);
+      CREATE UNIQUE INDEX IF NOT EXISTS research_evidence_candidate_idx
+        ON research_evidence(session_id, origin_candidate_id) WHERE origin_candidate_id <> '';
+    `);
+  }
   if (currentVersion < 2) {
     db.exec(`
       DROP INDEX IF EXISTS sessions_project_updated_idx;
@@ -553,7 +565,9 @@ function ensureMemoriesSchema(db) {
     db.exec('DROP TABLE IF EXISTS memory_fts');
   }
   db.exec(MEMORY_FTS_DDL);
-  if (ftsNeedsMigration) {
+  const ftsIncomplete = db.prepare('SELECT COUNT(*) AS n FROM memories').get().n !== db.prepare('SELECT COUNT(*) AS n FROM memory_fts').get().n;
+  if (ftsNeedsMigration || ftsColumns.size === 0 || ftsIncomplete) {
+    db.exec('DELETE FROM memory_fts');
     const insert = db.prepare('INSERT INTO memory_fts(id, search_text, raw_content, tool_name) VALUES (?, ?, ?, ?)');
     for (const row of db.prepare('SELECT id, summary, content, tool_name FROM memories').all()) {
       insertMemoryFtsRow(insert, row);

@@ -1,3 +1,4 @@
+import { WEB_CONFIG_INTEGER_LIMITS } from '../../../shared/web-config-policy.js';
 import { t } from "../../i18n/index.js";
 
 export function buildSettingsFields() {
@@ -79,6 +80,43 @@ export function buildSettingsFields() {
       optionsKey: "approvalMode",
       label: t("approvalMode"),
       help: t("approvalModeHelp"),
+    },
+    {
+      tab: "execution",
+      path: "execution.max_steps",
+      control: "number",
+      label: t("agentMaxSteps"),
+      help: t("agentMaxStepsHelp"),
+      ...WEB_CONFIG_INTEGER_LIMITS["execution.max_steps"],
+      step: 1,
+      placeholder: "500",
+    },
+    {
+      tab: "execution",
+      path: "execution.incomplete_retries",
+      control: "number",
+      label: t("incompleteRetries"),
+      help: t("incompleteRetriesHelp"),
+      ...WEB_CONFIG_INTEGER_LIMITS["execution.incomplete_retries"],
+      step: 1,
+      placeholder: "3",
+    },
+    {
+      tab: "execution",
+      path: "sandbox.network",
+      control: "input",
+      label: t("sandboxNetwork"),
+      help: t("sandboxNetworkHelp"),
+      valueLabels: { none: t("sandboxNetworkNone"), "allow-all": t("sandboxNetworkAll") },
+      cliExample: "codemini config set sandbox.network none",
+    },
+    {
+      tab: "execution",
+      path: "webui.terminal_enabled",
+      control: "switch",
+      label: t("reviewedTerminalEnabled"),
+      help: t("reviewedTerminalEnabledHelp"),
+      cliExample: "codemini config set webui.terminal_enabled true",
     },
     {
       tab: "execution",

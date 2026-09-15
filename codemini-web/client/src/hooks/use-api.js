@@ -2,6 +2,9 @@ const JSON_HEADERS = { 'Content-Type': 'application/json' };
 
 async function api(path, opts = {}) {
   const res = await fetch(path, opts);
+  if (res.status === 401 && typeof window !== 'undefined' && window.location.pathname !== '/login') {
+    window.location.replace('/login');
+  }
   return res;
 }
 
@@ -1032,6 +1035,14 @@ export async function runTerminalCommand(sessionId, command) {
     method: 'POST',
     headers: JSON_HEADERS,
     body: JSON.stringify({ sessionId, command }),
+  });
+  return readJsonResponse(res);
+}
+
+export async function resolveTerminalApproval(sessionId, id, approved) {
+  const res = await api('/api/terminal/approve', {
+    method: 'POST', headers: JSON_HEADERS,
+    body: JSON.stringify({ sessionId, id, approved }),
   });
   return readJsonResponse(res);
 }

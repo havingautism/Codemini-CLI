@@ -1,3 +1,5 @@
+import { validateWebConfigValue } from './shared/web-config-policy.js';
+import { createWebSecurity, publicConfig, isSecretConfigKey, assertConfigPath, assertWebConfigWritable } from './lib/web-security.js';
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -63,6 +65,7 @@ import {
   resizeTerminal,
   restartTerminal,
   runTerminalCommand,
+  disposeTerminals,
   stopTerminal,
   subscribeTerminal,
   writeTerminalInput,
@@ -887,12 +890,14 @@ export function createServerCleanup({
   runtimeStatusStore,
   server,
   exit = () => process.exit(0),
+  disposeTerminals = async () => {},
 }) {
   let cleanupPromise = null;
   return () => {
     if (cleanupPromise) return cleanupPromise;
     cleanupPromise = (async () => {
       runtimeEvictionTimer.stop();
+      await disposeTerminals();
       await Promise.allSettled(
         [...pool.entries.values()].map((entry) => entry.bridge?.dispose?.()),
       );
@@ -2670,6 +2675,8 @@ export async function buildRuntimeForSession({ sessionId, model, projectDir }) {
 
 async function main() {
   const args = parseArgs(process.argv);
+  const startupConfig = await loadConfig();
+  const webSecurity = await createWebSecurity({ directory: getBaseConfigDir(), host: args.host, port: args.port, terminalEnabled: startupConfig.webui?.terminal_enabled === true, devOrigin: process.env.CODEMINI_DEV_ORIGIN || "" });
   const readGitInfoAsync = createGitInfoReader();
 
   // Ensure general workspace directory exists
@@ -3632,7 +3639,7 @@ async function main() {
   }));
   routes.get("/api/config", nodeRoute(async (req, res, url) => {
       const config = await loadConfig();
-      jsonResponse(res, config);
+      jsonResponse(res, publicConfig(config));
       return;
 
   }));
@@ -3642,13 +3649,21 @@ async function main() {
         jsonResponse(res, { error: true, message: "Missing key" }, 400);
         return;
       }
+      try { assertWebConfigWritable(key); } catch (err) {
+        jsonResponse(res, { error: true, message: err.message }, 403);
+        return;
+      }
+      try { validateWebConfigValue(key, value); } catch (err) {
+        jsonResponse(res, { error: true, message: err.message }, 400);
+        return;
+      }
       try {
         await setConfigValue(key, value);
         const config = await loadConfig();
         await pool.reloadConfig(
           key === "model.name" ? { model: config.model?.name } : {},
         );
-        jsonResponse(res, { ok: true, config });
+        jsonResponse(res, { ok: true, config: publicConfig(config) });
       } catch (err) {
         jsonResponse(res, { error: true, message: err.message }, 500);
       }
@@ -4486,14 +4501,7 @@ async function main() {
   const handleRequest = async (req, res) => {
     const url = new URL(req.url, `http://localhost:${args.port}`);
 
-    res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-    if (req.method === "OPTIONS") {
-      res.writeHead(204);
-      res.end();
-      return;
-    }
+    if (await webSecurity.handle(req, res, url)) return;
 
     if (await runtimeApi(req, res)) return;
     if (await dispatchNodeRouter(routes, req, res)) return;
@@ -4699,7 +4707,16 @@ async function main() {
 
     if (req.method === "GET" && url.pathname.startsWith("/api/config/get/")) {
       const key = url.pathname.slice("/api/config/get/".length);
-      const value = await getConfigValue(key);
+      try { assertConfigPath(key); } catch (err) {
+        jsonResponse(res, { error: true, message: err.message }, 400);
+        return;
+      }
+      if (isSecretConfigKey(key.split(".").at(-1))) {
+        jsonResponse(res, { key, hasApiKey: Boolean(await getConfigValue(key)) });
+        return;
+      }
+      const safeConfig = publicConfig(await loadConfig());
+      const value = key.split(".").reduce((obj, part) => obj && Object.hasOwn(obj, part) ? obj[part] : undefined, safeConfig);
       jsonResponse(res, { key, value });
       return;
     }
@@ -5719,8 +5736,12 @@ async function main() {
     () => {
     const displayHost = args.host === "0.0.0.0" ? "localhost" : args.host;
     console.log(
-      `\n  Codemini Web UI\n  http://${displayHost}:${args.port}\n  Project: ${currentProjectDir}\n`,
+      `\n  Codemini Web UI\n  http://${displayHost}:${args.port}\n  Project: ${currentProjectDir}\n  Login token file: ${webSecurity.tokenPath}\n`,
     );
+    if (!process.env.CODEMINI_DEV_ORIGIN) {
+      console.log(webSecurity.loginInstructions(`http://${displayHost}:${args.port}`) + "\n");
+    }
+    process.send?.({ type: "web:ready", tokenPath: webSecurity.tokenPath });
     if (!args.open) return;
     const openCmd =
       process.platform === "darwin"
@@ -5738,6 +5759,7 @@ async function main() {
 
   const cleanup = createServerCleanup({
     runtimeEvictionTimer,
+    disposeTerminals,
     pool,
     runtimeStatusStore,
     server,

@@ -234,8 +234,10 @@ function commandTail(raw = '') {
  * These go straight to human approval; ordinary workspace writes rely on the sandbox.
  */
 export function requiresDeterministicCommandApproval(command) {
+  if (/[`]|\$\(|[<>]\(/.test(command)) return true;
   return collectCommandTokens(command).some(({ token, raw }) => {
     const tail = commandTail(raw);
+    if (['bash', 'sh', 'zsh', 'dash', 'ksh', 'powershell', 'pwsh', 'cmd'].includes(token)) return true;
     if (['sudo', 'doas', 'su', 'systemctl', 'service', 'launchctl', 'shutdown', 'reboot', 'halt', 'poweroff', 'kill', 'pkill', 'killall', 'ssh', 'scp'].includes(token)) return true;
     if (token === 'git') {
       return /^(?:(?:-[cC])\s+\S+\s+)*(?:push\b|reset\s+--hard\b|clean\b.*(?:--force|-[^\s]*f)|branch\s+-D\b|checkout\s+--\b)/i.test(tail);

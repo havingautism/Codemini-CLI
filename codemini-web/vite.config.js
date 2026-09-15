@@ -29,7 +29,9 @@ export default defineConfig({
   },
   server: {
     proxy: {
-      '/api': `http://127.0.0.1:${apiPort}`
+      '/api': { target: `http://127.0.0.1:${apiPort}`, changeOrigin: false },
+      '/auth': { target: `http://127.0.0.1:${apiPort}`, changeOrigin: false },
+      '/login': { target: `http://127.0.0.1:${apiPort}`, changeOrigin: false }
     }
   }
 });

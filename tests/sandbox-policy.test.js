@@ -24,12 +24,12 @@ test('normalizeSandboxMode defaults to workspace-write on every platform', () =>
   assert.equal(normalizeSandboxMode('read_only'), 'read-only');
 });
 
-test('normalizeSandboxNetwork defaults to allow-all and maps deny aliases', () => {
-  assert.equal(normalizeSandboxNetwork(undefined), 'allow-all');
-  assert.equal(normalizeSandboxNetwork(''), 'allow-all');
+test('normalizeSandboxNetwork defaults to deny-all and maps deny aliases', () => {
+  assert.equal(normalizeSandboxNetwork(undefined), 'none');
+  assert.equal(normalizeSandboxNetwork(''), 'none');
   assert.equal(normalizeSandboxNetwork('allow-all'), 'allow-all');
-  assert.equal(normalizeSandboxNetwork('ALL_ALL'), 'allow-all');
-  assert.equal(normalizeSandboxNetwork('bogus'), 'allow-all');
+  assert.equal(normalizeSandboxNetwork('ALL_ALL'), 'none');
+  assert.equal(normalizeSandboxNetwork('bogus'), 'none');
   assert.equal(normalizeSandboxNetwork('none'), 'none');
   assert.equal(normalizeSandboxNetwork('deny-all'), 'none');
   assert.equal(normalizeSandboxNetwork('deny_all'), 'none');

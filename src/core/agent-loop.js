@@ -1,3 +1,4 @@
+import { reviewCommandAccess } from './command-access-review.js';
 import path from 'node:path';
 import { trimInline as _trimInline } from './string-utils.js';
 import { captureToInbox, listInbox } from './memory-store.js';
@@ -510,7 +511,7 @@ export function resolveShellApprovalStrategy({
   const policyCheck = evaluateCommandPolicy(command, config, workspaceRoot, platform);
   const policyHardGate = !policyCheck.allowed && /^(?:absolute path outside|relative path escapes|cd escapes|blocked protected system path|blocked command:)/i.test(policyCheck.reason || '');
   const deterministicGate = policyHardGate || requiresDeterministicCommandApproval(command);
-  const sandboxFirst = Boolean(osSandboxConfining && approvalMode !== 'review' && !deterministicGate);
+  const sandboxFirst = Boolean(osSandboxConfining && approvalMode !== 'review' && !deterministicGate && policyCheck.allowed);
   const windowsFastLane = Boolean(
     platform === 'win32'
     && projectIsGit
@@ -634,6 +635,8 @@ export async function runAgentLoop({
   toolDisplayLabels = {},
   toolMetadata = {},
   shouldCheckpoint = null,
+  maxSteps = config?.execution?.max_steps ?? 500,
+  maxIncompleteRetries = config?.execution?.incomplete_retries ?? 3,
   getTasks = null,
   onForkJoin = null,
   shouldContinueAfterText = null,
@@ -778,7 +781,16 @@ export async function runAgentLoop({
     }
   };
 
+  const stepLimit = Number.isFinite(Number(maxSteps)) ? Math.max(1, Math.min(1000, Math.floor(Number(maxSteps)))) : 500;
+  const retryLimit = Number.isFinite(Number(maxIncompleteRetries)) ? Math.max(0, Math.min(10, Math.floor(Number(maxIncompleteRetries)))) : 3;
+  let incompleteRetries = 0;
   while (true) {
+    if (step >= stepLimit) {
+      const text = 'Step limit reached. Continue in a new turn to resume.';
+      if (onEvent) onEvent({ type: 'checkpoint', step, reason: 'max_steps' });
+      await fireStopHooks(text);
+      return settleLoop({ text, messages, steps: step, checkpoint: true, stopReason: 'max_steps' });
+    }
     step += 1;
     // 检查是否已被用户中止
     if (signal?.aborted) {
@@ -812,9 +824,11 @@ export async function runAgentLoop({
 
     if (completion?.incomplete) {
       emitStepEnd('incomplete');
+      if (++incompleteRetries > retryLimit) return settleLoop({ text: 'Completion retry limit reached.', messages, steps: step, checkpoint: true, stopReason: 'incomplete_retries' });
       continue;
     }
 
+    incompleteRetries = 0;
     const toolCalls = Array.isArray(completion.toolCalls) ? completion.toolCalls : [];
     const assistantText = completion.text || '';
     lastAssistantText = assistantText || lastAssistantText;
@@ -966,9 +980,6 @@ export async function runAgentLoop({
       const isSafeModePolicyBlocked = shellApproval?.policyBlocked === true;
       const isSafeModeRun = shellApproval?.needsLlmReview === true;
       const isDeterministicCommandGate = shellApproval?.deterministicGate === true;
-      if (shellApproval?.sandboxFirst && isSafeModePolicyBlocked) {
-        approvalArgs = markRunCommandSafeModeApproved(approvalArgs);
-      }
       try {
         // OS sandbox already fences outside writes; skip the soft outside-dir review.
         if (!osSandboxConfining) {
@@ -983,7 +994,8 @@ export async function runAgentLoop({
           error: `Could not inspect file mutation target: ${error instanceof Error ? error.message : String(error)}`
         }, toolResultMaxChars);
       }
-      const needsApproval = Boolean(preflightErrorContent) || toolRequiresUserApproval({
+      const deferredNetworkReview = isShellToolName(toolName) && args?.network_access === true && !isSandboxEscalation && !outsideWorkspaceApproval;
+      const needsApproval = Boolean(preflightErrorContent) || !deferredNetworkReview && toolRequiresUserApproval({
         approvalMode: normalizedApprovalMode,
         projectIsGit,
         toolName,
@@ -1281,9 +1293,6 @@ export async function runAgentLoop({
               status: 'blocked'
             };
           }
-          if (updatedShellApproval?.sandboxFirst && updatedShellApproval.policyBlocked) {
-            effectiveArgs = markRunCommandSafeModeApproved(effectiveArgs);
-          }
           hookRequiresApproval = hookRequiresApproval || toolRequiresUserApproval({
             approvalMode: normalizedApprovalMode,
             projectIsGit,
@@ -1361,6 +1370,22 @@ export async function runAgentLoop({
         };
       }
 
+      let networkAccessApproved = false;
+      if (isShellToolName(toolName) && effectiveArgs?.network_access === true) {
+        const decision = await reviewCommandAccess({
+          command: effectiveArgs.command, config, workspaceRoot,
+          capability: 'Network access for this command and its child processes only',
+          requestApproval: requestToolApproval, evaluate: evaluateCommand, signal,
+          onReview: details => onEvent?.({ type: 'access:review', ...details }),
+        });
+        if (!decision.approved) {
+          return { callId: call.id, content: clipToolResult({ error: decision.reason || 'Network access denied' }, toolResultMaxChars), blocked: true, status: 'blocked' };
+        }
+        networkAccessApproved = true;
+        // The gate reviewed the final command after any hook rewrites.
+        effectiveArgs = markRunCommandSafeModeApproved(effectiveArgs);
+      }
+
       if (onEvent) onEvent({ type: 'tool:start', name: toolName, displayName, id: call.id, arguments: effectiveArgs });
 
       let captureScope = null;
@@ -1380,6 +1405,7 @@ export async function runAgentLoop({
           workspaceRoot,
           executionMode,
           approvalMode: normalizedApprovalMode,
+          networkAccessApproved,
           ...(toolName === 'fork_task' ? { forkPoint: getStepForkPoint() } : {}),
         });
       } catch (error) {

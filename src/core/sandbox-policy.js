@@ -11,15 +11,9 @@ export const SANDBOX_MODES = Object.freeze([
   'danger-full-access',
 ]);
 
-/**
- * VM network confinement knob. `'none'` (aliases: `deny-all`, `deny`) denies
- * all egress from the microVM; anything else keeps the default allow-all
- * behavior so network-dependent tools (npm, pip, git, curl) keep working.
- */
+/** Network access must be explicitly enabled. */
 export function normalizeSandboxNetwork(value) {
-  const raw = String(value || 'allow-all').trim().toLowerCase().replace(/_/g, '-');
-  if (raw === 'none' || raw === 'deny-all' || raw === 'deny') return 'none';
-  return 'allow-all';
+  return String(value || '').trim().toLowerCase().replace(/_/g, '-') === 'allow-all' ? 'allow-all' : 'none';
 }
 
 export function normalizeSandboxMode(value, { platform = process.platform } = {}) {

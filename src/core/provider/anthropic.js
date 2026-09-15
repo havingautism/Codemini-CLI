@@ -1,3 +1,4 @@
+import { fetchWithRetry } from './fetch-with-retry.js';
 import { resolveAnthropicReasoning } from './reasoning-effort.js';
 import { isCompletionTruncated } from './completion-status.js';
 import { stringifyGatewayJson } from './json-body.js';
@@ -405,6 +406,7 @@ export async function createChatCompletion({
   onPayloadPrepared,
   timeoutMs = 1800000,
   maxTokens = 16384,
+  maxRetries = 2,
   signal: externalSignal
 }) {
   const payload = buildPayload({ model, temperature, messages, tools, maxTokens, toolChoice, reasoningEffort });
@@ -413,12 +415,12 @@ export async function createChatCompletion({
   const signal = externalSignal
     ? AbortSignal.any([timeoutSignal, externalSignal])
     : timeoutSignal;
-  const response = await fetch(buildMessagesUrl(baseUrl), {
+  const response = await fetchWithRetry(buildMessagesUrl(baseUrl), {
     method: 'POST',
     headers: createHeaders(apiKey),
     body: stringifyGatewayJson(payload),
     signal
-  });
+  }, { maxRetries });
   const data = await parseJsonResponse(response);
   return extractAssistantResult(data, messages);
 }
@@ -438,6 +440,7 @@ export async function createChatCompletionStream({
   onToolCallDelta,
   timeoutMs = 1800000,
   maxTokens = 16384,
+  maxRetries = 2,
   signal: externalSignal,
 }) {
   // 合并超时信号与外部中止信号
@@ -462,12 +465,12 @@ export async function createChatCompletionStream({
   try {
     const payload = buildPayload({ model, temperature, messages, tools, stream: true, maxTokens, toolChoice, reasoningEffort });
     onPayloadPrepared?.(payload);
-    const response = await fetch(buildMessagesUrl(baseUrl), {
+    const response = await fetchWithRetry(buildMessagesUrl(baseUrl), {
       method: 'POST',
       headers: createHeaders(apiKey),
       body: stringifyGatewayJson(payload),
       signal: controller.signal
-    });
+    }, { maxRetries });
 
     if (!response.ok || !response.body) {
       const text = await response.text().catch(() => '');

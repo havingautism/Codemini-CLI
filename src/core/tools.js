@@ -140,7 +140,7 @@ let backgroundTaskCounter = 0;
 let backgroundTaskLogCursorCounter = 0;
 
 export function markRunCommandSafeModeApproved(args = {}) {
-  const next = { ...(args && typeof args === "object" ? args : {}) };
+  const next = Object.defineProperties({}, Object.getOwnPropertyDescriptors(args && typeof args === "object" ? args : {}));
   Object.defineProperty(next, RUN_COMMAND_SAFE_MODE_APPROVED, {
     value: true,
     enumerable: false,
@@ -153,7 +153,7 @@ export function hasRunCommandSafeModeApproval(args = {}) {
 }
 
 export function markSandboxEscalationApproved(args = {}) {
-  const next = { ...(args && typeof args === "object" ? args : {}) };
+  const next = Object.defineProperties({}, Object.getOwnPropertyDescriptors(args && typeof args === "object" ? args : {}));
   Object.defineProperty(next, SANDBOX_ESCALATION_APPROVED, {
     value: true,
     enumerable: false,
@@ -166,7 +166,7 @@ export function hasSandboxEscalationApproval(args = {}) {
 }
 
 export function markOutsideWorkspaceMutationApproved(args = {}, approval = {}) {
-  const next = { ...(args && typeof args === "object" ? args : {}) };
+  const next = Object.defineProperties({}, Object.getOwnPropertyDescriptors(args && typeof args === "object" ? args : {}));
   const paths = Array.isArray(approval?.paths)
     ? approval.paths.map((item) => String(item || "").trim()).filter(Boolean).map((item) => path.resolve(item))
     : [];
@@ -2266,6 +2266,10 @@ async function previewHtmlArtifact(root, args, config = {}) {
 }
 
 async function runCommand(root, config, args, context = {}) {
+  if (args?.network_access === true) {
+    if (context.networkAccessApproved !== true) throw new Error("Network access requires command review");
+    config = { ...config, sandbox: { ...config.sandbox, network: "allow-all", network_isolated: true } };
+  }
   const command = args?.command || "";
   if (!command.trim()) {
     throw new Error("shell command is required");
@@ -2304,10 +2308,9 @@ async function runCommand(root, config, args, context = {}) {
     return startBackgroundTask(root, {
       ...config,
       shell: { ...(config?.shell || {}), default: executionShell },
-    }, {
-      ...args,
+    }, Object.assign(Object.defineProperties({}, Object.getOwnPropertyDescriptors(args)), {
       sandbox_mode: sandboxMode,
-    });
+    }));
   }
 
   const result = await runShellCommand({
@@ -2353,7 +2356,7 @@ async function runCommand(root, config, args, context = {}) {
   if (payload?.sandbox?.denied) {
     payload.error = [
       payload.error,
-      `[sandbox: escalation available — retry with sandbox_permissions (workspace-write|danger-full-access) + justification, or set sandbox.mode in config]`,
+      `[sandbox: if network is required, retry with network_access=true for lite review and user fallback. Request wider filesystem access with sandbox_permissions + justification only when needed]`,
     ]
       .filter(Boolean)
       .join("\n");
@@ -4220,7 +4223,7 @@ export function getBuiltinTools({
   const osSandbox = isOsSandbox(sandboxPolicy);
   const osKind = platform === "darwin" ? "Seatbelt" : "Landlock";
   const sandboxCapabilityNote = vmSandbox || osSandbox
-    ? ` The sandbox command baseline (${SANDBOX_CAPABILITY_COMMANDS.join(", ")}) is probed once per image; the live manifest is shown as a \`sandbox commands:\` line in each output. Verify an uncommon tool with \`command -v <tool>\` before relying on it.`
+    ? ` Network access can be requested with network_access=true for this command only (lite review, then user fallback). The sandbox command baseline (${SANDBOX_CAPABILITY_COMMANDS.join(", ")}) is probed once per image; the live manifest is shown as a \`sandbox commands:\` line in each output. Verify an uncommon tool with \`command -v <tool>\` before relying on it.`
     : "";
   config = {
     ...(config || {}),
@@ -5172,13 +5175,14 @@ export function getBuiltinTools({
         description: `${crewActive ? "Crew parent inspect-only: git status/log/diff and other read-only commands. Do not merge, checkout, worktree, or copy into the main checkout; use land_workers. " : ""}${vmSandbox
           ? platform === "win32"
             ? `Run a compact Bash command inside the Linux microVM sandbox (${sandboxPolicy.mode}) from the project root. If a build or test cannot use Windows-native dependencies because the guest is Linux, retry that exact verification command with sandbox_permissions="danger-full-access" and justification; the escalated command must be Windows PowerShell-compatible and runs on the host only after LLM risk advice and user approval. Do not escalate ordinary code failures, missing dependencies, or timeouts. Use project-relative paths and run_in_background=true only for long-running sandboxed commands. Put command last.`
-            : `Run a compact Bash command inside the Linux microVM sandbox (${sandboxPolicy.mode}) from the project root with unrestricted outbound networking. Use project-relative paths. Ordinary Bash commands, including curl, are available; commands with destructive or external side effects may still require approval. On denial, stderr includes [sandbox: ...]; retry with a wider sandbox_permissions plus justification when needed. Use run_in_background=true for long-running commands. Put command last.`
+            : `Run a compact Bash command inside the Linux microVM sandbox (${sandboxPolicy.mode}) from the project root with network disabled unless explicitly configured or network_access=true is approved for this command. Use project-relative paths. Ordinary Bash commands, including curl, are available; commands with destructive or external side effects may still require approval. On denial, stderr includes [sandbox: ...]; retry with a wider sandbox_permissions plus justification when needed. Use run_in_background=true for long-running commands. Put command last.`
           : osSandbox
-            ? `Run a compact ${shellContext.shell === "powershell" ? "PowerShell" : "Bash"} command on the host under OS confinement (${osKind}, ${sandboxPolicy.mode}) with unrestricted outbound networking. Use host paths from the current working directory. Commands with destructive or external side effects may still require approval. On denial, stderr includes [sandbox: ...]; retry with a wider sandbox_permissions plus justification when needed. Use run_in_background=true for long-running commands. Put command last.`
+            ? `Run a compact ${shellContext.shell === "powershell" ? "PowerShell" : "Bash"} command on the host under OS confinement (${osKind}, ${sandboxPolicy.mode}) with network disabled unless explicitly configured or network_access=true is approved for this command. Use host paths from the current working directory. Commands with destructive or external side effects may still require approval. On denial, stderr includes [sandbox: ...]; retry with a wider sandbox_permissions plus justification when needed. Use run_in_background=true for long-running commands. Put command last.`
             : `Run a compact ${shellContext.shell === "powershell" ? "PowerShell" : "Bash"} command directly on the ${platform === "win32" ? "Windows" : "host"} system without microVM confinement. Use run_in_background=true for long-running commands. Put command last.`}${sandboxCapabilityNote}`,
         parameters: {
           type: "object",
           properties: {
+            network_access: { type: "boolean", description: "Request outbound network for this command only. Lite model reviews the exact command; uncertain or high-risk operations require user approval. Omit for offline execution. Never broaden sandbox_permissions just to get network access." },
             timeout: { type: "number", description: "Timeout in milliseconds" },
             run_in_background: {
               type: "boolean",

@@ -59,8 +59,10 @@ const DEFAULT_CONFIG = {
   },
   execution: {
     mode: 'normal',
-    // Auto: run recoverable workspace mutations and explicit routine commands; keep hard gates.
-    approval_mode: 'auto',
+    // Review is the default; auto and full_access require explicit configuration.
+    approval_mode: 'review',
+    max_steps: 500,
+    incomplete_retries: 3,
     always_allow_tools: [
       'read',
       'search_code',
@@ -165,6 +167,7 @@ const DEFAULT_CONFIG = {
     firecrawl_api_key: ''
   },
   webui: {
+    terminal_enabled: true,
     sidebar: {
       active_project_dirs: []
     }
@@ -179,10 +182,11 @@ const DEFAULT_CONFIG = {
     command_allowlist: [],
     blocked_commands: [],
     blocked_path_patterns: [],
-    blocked_command_patterns: ['rm -rf /', 'format c:', 'del /f /s /q C:\\\\']
+    blocked_command_patterns: ['rm -rf /', 'format c:', 'del /f /s /q C:\\']
   },
   // Cross-platform Linux microVM when available; Linux/macOS fall back to OS confinement.
   sandbox: {
+    network: 'none',
     enabled: 'auto',
     backend: 'auto',
     mode: 'workspace-write',
@@ -204,7 +208,16 @@ function isObject(v) {
   return v !== null && typeof v === 'object' && !Array.isArray(v);
 }
 
+function validateConfigObject(value) {
+  if (!value || typeof value !== 'object') return;
+  for (const [key, item] of Object.entries(value)) {
+    if (['__proto__', 'constructor', 'prototype'].includes(key)) throw new Error('Invalid configuration key');
+    validateConfigObject(item);
+  }
+}
+
 function deepMerge(base, extra) {
+  validateConfigObject(extra);
   if (!isObject(base) || !isObject(extra)) {
     return extra;
   }
@@ -265,7 +278,7 @@ function normalizePolicyLists(config) {
     : (['normal', 'plan'].includes(rawExecutionMode) ? rawExecutionMode : 'normal');
   next.execution.approval_mode = ['review', 'auto', 'full_access'].includes(rawApprovalMode)
     ? rawApprovalMode
-    : 'auto';
+    : 'review';
   delete next.execution.plan_execution_model;
   const rawTools = Array.isArray(next.execution.always_allow_tools)
     ? next.execution.always_allow_tools
@@ -450,7 +463,7 @@ function normalizePolicyLists(config) {
 }
 
 function getNested(obj, keyPath) {
-  return keyPath.split('.').reduce((acc, k) => (acc && k in acc ? acc[k] : undefined), obj);
+  return keyPath.split('.').reduce((acc, k) => (acc && Object.hasOwn(acc, k) ? acc[k] : undefined), obj);
 }
 
 function parseValue(input) {
@@ -471,7 +484,9 @@ function parseValue(input) {
 
 function setNested(obj, keyPath, rawValue) {
   const value = parseValue(rawValue);
-  const parts = keyPath.split('.');
+  const parts = String(keyPath).split('.');
+  if (parts.some(p => !p || ['__proto__', 'constructor', 'prototype'].includes(p))) throw new Error('Invalid configuration path');
+  validateConfigObject(value);
   let cursor = obj;
   for (let i = 0; i < parts.length - 1; i += 1) {
     const p = parts[i];
