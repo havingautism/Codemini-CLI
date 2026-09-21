@@ -39,6 +39,7 @@ import {
   rollbackOptimisticSandboxMode,
   runSessionOperation,
 } from "../lib/session-state.js";
+import { isSessionTurnBusyResult } from "../lib/session-turn-busy.js";
 import { buildMcpToolDisplayLabels } from "../../../../src/core/mcp-tool-display.js";
 import { setMcpToolDisplayLabels } from "../../../../src/core/tool-display.js";
 import {
@@ -2790,17 +2791,32 @@ export function AppProvider({ children }) {
           // HTTP 202 returns before the turn finishes, so queued prompts wait
           // here. Skip aborted turns: stop/fork drains after session:forked,
           // and jump drains itself after continue-in-place abort.
-          if (!isAbortRelatedResult(result)) {
-            stateRef.current = {
-              ...stateRef.current,
-              busy: false,
-              live: false,
-              stage: "idle",
-              stageLabel: "",
-            };
-            drainQueueRef.current?.(
-              event.sessionId || s.currentSessionId,
-            );
+          if (isAbortRelatedResult(result)) {
+            if (result.crewWake) {
+              void api.drainCrewPendingWakes?.(
+                event.sessionId || s.currentSessionId,
+              );
+            }
+            break;
+          }
+          const doneSessionId = event.sessionId || s.currentSessionId;
+          // reduceSessionEvent already ran in setState, but stateRef still
+          // has the pre-render snapshot (status=running). Drain against the
+          // reduced runtime or the queued follow-up thinks the turn is busy.
+          const reduced = reduceSessionEvent(stateRef.current, event);
+          const turnBusy = isSessionBusyInState(reduced, doneSessionId);
+          stateRef.current = {
+            ...reduced,
+            busy: turnBusy,
+            live: turnBusy,
+            stage: turnBusy ? stateRef.current.stage : "idle",
+            stageLabel: turnBusy ? stateRef.current.stageLabel : "",
+          };
+          const queued = pendingQueueRef.current.get(doneSessionId) || [];
+          if (queued.length) {
+            drainQueueRef.current?.(doneSessionId);
+          } else {
+            void api.drainCrewPendingWakes?.(doneSessionId);
           }
           break;
         }
@@ -2818,15 +2834,10 @@ export function AppProvider({ children }) {
         }
 
         case "crew:wake": {
+          if (event.pending) break;
           planParentMsgRef.current = null;
           planRunPendingRef.current = false;
           setActiveMsg(null);
-          update({
-            stage: "thinking",
-            busy: true,
-            live: true,
-            stageLabel: t("thinking"),
-          });
           break;
         }
 
@@ -3321,58 +3332,22 @@ export function AppProvider({ children }) {
         // A new user turn must not stream into the prior plan/subagent card.
         planParentMsgRef.current = null;
         planRunPendingRef.current = false;
-        const userMessageId = addMessage({
-              role: "you",
-              text: line,
-              skillBadges: selectedSkillBadges,
-              fileReferences: Array.isArray(message.fileReferences)
-                ? message.fileReferences
-                : [],
-              attachments: Array.isArray(options.attachments)
-                ? options.attachments
-                : Array.isArray(message.attachments)
-                  ? message.attachments
-                  : [],
-              timestamp: new Date().toISOString(),
-            });
-        // Sidebar bubbles appear when the conversation starts, not when the
-        // empty draft is created/reused.
-        setState((prev) => {
-          const existing = prev.sessions.find((s) => s.id === sessionId);
-          if (existing && Number(existing.messageCount || 0) > 0) {
-            return {
-              ...prev,
-              sessions: upsertSidebarSession(prev.sessions, {
-                id: sessionId,
-                updatedAt: new Date().toISOString(),
-                messageCount: Number(existing.messageCount || 0) + 1,
-              }),
-            };
-          }
-          const rs = prev.runtimeState || {};
-          const isGeneral = Boolean(rs.isGeneral);
-          const projectDir = isGeneral ? null : rs.cwd || rs.projectDir || null;
-          const entry = buildConversationStartSidebarEntry({
-            sessionId,
-            text: line,
-            isGeneral,
-            projectDir,
-            projectKey: projectDir
-              ? normalizeProjectDirKey(projectDir) || projectDir
-              : null,
-          });
-          if (!entry) return prev;
-          return {
-            ...prev,
-            sessions: upsertSidebarSession(prev.sessions, entry),
-          };
-        });
-        const waitingId = addMessage({
-          role: "system",
-          text: t("waitingResponse"),
+        const userMessageId = `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        const youMessage = {
+          id: userMessageId,
+          role: "you",
+          text: line,
+          skillBadges: selectedSkillBadges,
+          fileReferences: Array.isArray(message.fileReferences)
+            ? message.fileReferences
+            : [],
+          attachments: Array.isArray(options.attachments)
+            ? options.attachments
+            : Array.isArray(message.attachments)
+              ? message.attachments
+              : [],
           timestamp: new Date().toISOString(),
-          transientKey: "waiting-response",
-        });
+        };
         setState((prev) => ({
           ...prev,
           busy: true,
@@ -3421,20 +3396,66 @@ export function AppProvider({ children }) {
             });
             throw new Error(t("configRequired"));
           }
+          if (isSessionTurnBusyResult(result)) {
+            update({ busy: false, live: false, stage: "idle", stageLabel: "" });
+            return { type: "busy", sessionBusy: true };
+          }
           if (result?.error)
             throw new Error(result.message || "Request failed");
-          return await waitForAcceptedOperation(result, {
-            sessionId,
-            waiters: operationWaitersRef.current,
-            earlyResults: earlyOperationResultsRef.current,
-            fallbackError: t("actionFailed"),
+          addMessage(youMessage);
+          // Sidebar bubbles appear when the conversation starts, not when the
+          // empty draft is created/reused.
+          setState((prev) => {
+            const existing = prev.sessions.find((s) => s.id === sessionId);
+            if (existing && Number(existing.messageCount || 0) > 0) {
+              return {
+                ...prev,
+                sessions: upsertSidebarSession(prev.sessions, {
+                  id: sessionId,
+                  updatedAt: new Date().toISOString(),
+                  messageCount: Number(existing.messageCount || 0) + 1,
+                }),
+              };
+            }
+            const rs = prev.runtimeState || {};
+            const isGeneral = Boolean(rs.isGeneral);
+            const projectDir = isGeneral ? null : rs.cwd || rs.projectDir || null;
+            const entry = buildConversationStartSidebarEntry({
+              sessionId,
+              text: line,
+              isGeneral,
+              projectDir,
+              projectKey: projectDir
+                ? normalizeProjectDirKey(projectDir) || projectDir
+                : null,
+            });
+            if (!entry) return prev;
+            return {
+              ...prev,
+              sessions: upsertSidebarSession(prev.sessions, entry),
+            };
           });
-        } catch (err) {
-          if (waitingId)
+          const waitingId = addMessage({
+            role: "system",
+            text: t("waitingResponse"),
+            timestamp: new Date().toISOString(),
+            transientKey: "waiting-response",
+          });
+          try {
+            return await waitForAcceptedOperation(result, {
+              sessionId,
+              waiters: operationWaitersRef.current,
+              earlyResults: earlyOperationResultsRef.current,
+              fallbackError: t("actionFailed"),
+            });
+          } catch (err) {
             setState((prev) => ({
               ...prev,
               messages: prev.messages.filter((m) => m.id !== waitingId),
             }));
+            throw err;
+          }
+        } catch (err) {
           if (
             !isAbortRelatedText(err.message) &&
             err?.name !== "AbortError"
@@ -3490,10 +3511,7 @@ export function AppProvider({ children }) {
         const sessionBusy =
           sessionOperationsRef.current.has(sessionId) ||
           isSessionBusyInState(stateRef.current, sessionId);
-        // While a turn is already running for this session, keep the prompt in
-        // the composer queue (Cursor-style) instead of sending it into the
-        // transcript. Enter appends; jump aborts the current turn and drains.
-        if (!queued && sessionBusy) {
+        const enqueueComposer = (front = false) => {
           if (stateRef.current.currentView !== "chat" && !options.stayInView) {
             update({ currentView: "chat" });
           }
@@ -3502,11 +3520,17 @@ export function AppProvider({ children }) {
             message,
             options: { ...options, __queued: true, priority: false },
           };
-          if (priority) queue.unshift(queuedItem);
+          if (front || priority) queue.unshift(queuedItem);
           else queue.push(queuedItem);
           pendingQueueRef.current.set(sessionId, queue);
           update({ pendingQueues: snapshotPendingQueues() });
-          return;
+        };
+        // While a turn is already running for this session, keep the prompt in
+        // the composer queue (Cursor-style) instead of sending it into the
+        // transcript. Enter appends; jump aborts the current turn and drains.
+        if (sessionBusy) {
+          enqueueComposer(queued);
+          return queued ? { type: "busy", sessionBusy: true } : undefined;
         }
         let skipDrain = false;
         try {
@@ -3515,6 +3539,11 @@ export function AppProvider({ children }) {
             sessionId,
             () => runSubmitPrompt(input, options),
           );
+          if (result?.type === "busy") {
+            enqueueComposer(true);
+            skipDrain = true;
+            return result;
+          }
           if (
             isAbortRelatedResult(result) &&
             abortContinueInPlaceRef.current !== true

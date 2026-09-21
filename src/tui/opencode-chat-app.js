@@ -527,17 +527,29 @@ export async function runOpenCodeTui({ runtime, sessionId, model, safeMode = tru
     }
   };
   editor.onSubmit = submit;
+  const paintedCrewWakeIds = new Set();
+  const paintCrewWake = (headline, messageId) => {
+    const id = String(messageId || '').trim();
+    const label = String(headline || '').trim();
+    if ((id && paintedCrewWakeIds.has(id)) || (label && paintedCrewWakeIds.has(`h:${label}`))) return;
+    if (id) paintedCrewWakeIds.add(id);
+    if (label) paintedCrewWakeIds.add(`h:${label}`);
+    transcript.addChild(new SurfaceSpacer(1));
+    transcript.addChild(createSystemMessage(`${copy.crewWake} · ${headline}`, color.warning));
+    requestRender();
+  };
   runtime.setCrewEventSink?.((event) => {
     if (event?.type === 'crew:workers_changed') requestRender();
+    if (event?.type === 'crew:wake') {
+      paintCrewWake(event.headline || parseCrewWakeHeadline(event.text || ''), event.messageId);
+    }
   });
-  runtime.setCrewWakeSubmit?.(async (wakeText) => {
+  runtime.setCrewWakeSubmit?.(async (wakeText, item = {}) => {
     const text = String(wakeText || '').trim();
     if (!text) return { type: 'noop' };
     if (busy) throw new Error('Crew wake blocked while another turn is active');
     const headline = parseCrewWakeHeadline(text);
-    transcript.addChild(new SurfaceSpacer(1));
-    transcript.addChild(createSystemMessage(`${copy.crewWake} · ${headline}`, color.warning));
-    requestRender();
+    paintCrewWake(headline, item.messageId);
     return submit(text, true);
   });
 

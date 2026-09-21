@@ -44,6 +44,31 @@ test('crew:wake inserts a live divider instead of merging into the dispatch bubb
   assert.match(messages[1].text, /mira/);
 });
 
+test('crew:wake with the same messageId does not insert a second divider', () => {
+  const first = reduceSessionTranscriptEvent(
+    stateWithMessages([]),
+    {
+      type: 'crew:wake',
+      sessionId,
+      headline: 'Crew worker "mira" completed.',
+      messageId: 'wake-1',
+      pending: true,
+    },
+  );
+  const second = reduceSessionTranscriptEvent(
+    first,
+    {
+      type: 'crew:wake',
+      sessionId,
+      headline: 'Crew worker "mira" completed.',
+      messageId: 'wake-1',
+      pending: false,
+    },
+  );
+  const messages = second.sessionMessagesById[sessionId];
+  assert.equal(messages.filter((message) => message.dividerType === 'crew-wake').length, 1);
+});
+
 test('later assistant:start after a running crew dispatch creates a new bubble', () => {
   const dispatch = {
     id: 'dispatch',

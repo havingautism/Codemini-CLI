@@ -1,20 +1,35 @@
 /**
  * Crew wake queue and in-flight worker tracking for async crew workers.
  * Parent turns enqueue worker-completion wakes; drain runs after each turn ends.
+ * Each drain call starts at most one wake so a queued user prompt can claim the
+ * next idle slot instead of being starved by a wake chain.
+ * onWakeQueued fires immediately so the UI can paint a divider before submit.
  */
 export function createCrewCoordinator({
   inFlightWorkers,
   isTurnActive,
   submitWake,
+  onWakeQueued,
 } = {}) {
   const inFlight = inFlightWorkers instanceof Set ? inFlightWorkers : new Set();
   const pendingWakes = [];
   let draining = false;
+  let wakeSeq = 0;
 
   const enqueueWake = (wakeText) => {
     const text = String(wakeText || '').trim();
     if (!text) return;
-    pendingWakes.push(text);
+    const item = {
+      text,
+      messageId: `crew-wake-${Date.now().toString(36)}-${(wakeSeq += 1).toString(36)}`,
+      timestamp: new Date().toISOString(),
+    };
+    pendingWakes.push(item);
+    try {
+      onWakeQueued?.(item);
+    } catch {
+      // UI notification must not block wake queueing.
+    }
     if (!isTurnActive?.() && !draining) {
       void drainPendingWakes();
     }
@@ -25,15 +40,12 @@ export function createCrewCoordinator({
     if (isTurnActive?.()) return;
     draining = true;
     try {
-      while (pendingWakes.length && !isTurnActive?.()) {
-        const next = pendingWakes.shift();
-        if (!next) continue;
-        try {
-          await submitWake(next);
-        } catch {
-          pendingWakes.unshift(next);
-          break;
-        }
+      const next = pendingWakes.shift();
+      if (!next) return;
+      try {
+        await submitWake(next.text, next);
+      } catch {
+        pendingWakes.unshift(next);
       }
     } finally {
       draining = false;

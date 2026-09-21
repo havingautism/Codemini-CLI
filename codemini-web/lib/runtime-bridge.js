@@ -412,7 +412,7 @@ export class RuntimeBridge {
       this.#publish({ type: 'session:title_status', sessionId, generating });
     });
     runtime.setCrewEventSink?.((event) => this.#forwardCrewBackgroundEvent(event));
-    runtime.setCrewWakeSubmit?.((wakeText) => this.#handleCrewWake(wakeText));
+    runtime.setCrewWakeSubmit?.((wakeText, item) => this.#handleCrewWake(wakeText, item));
   }
 
   #installApprovalHandler() {
@@ -514,6 +514,11 @@ export class RuntimeBridge {
       this.#broadcastRuntimeState();
       return;
     }
+    if (event.type === 'crew:wake') {
+      this.#ensureCrewWakeDivider(event);
+      this.#publish(event);
+      return;
+    }
     if (event.type !== 'plan:step_start' && event.type !== 'plan:progress' && event.type !== 'plan:step_done') {
       return;
     }
@@ -563,7 +568,25 @@ export class RuntimeBridge {
     this.#publishLifecycle(result?.aborted ? 'aborted' : 'completed');
   }
 
-  #handleCrewWake(wakeText) {
+  #ensureCrewWakeDivider(event = {}) {
+    const headline = String(event.headline || parseCrewWakeHeadline(event.text || '')).trim();
+    if (!headline) return '';
+    this.#ensureUiTranscriptLoaded();
+    const messageId = String(event.messageId || '').trim();
+    if (messageId && this.#uiMessages.some((message) => message.id === messageId)) {
+      return messageId;
+    }
+    const timestamp = event.timestamp || new Date().toISOString();
+    return this.#addUiMessage({
+      id: messageId || undefined,
+      role: 'divider',
+      dividerType: 'crew-wake',
+      text: headline,
+      timestamp,
+    });
+  }
+
+  #handleCrewWake(wakeText, item = {}) {
     const text = String(wakeText || '').trim();
     if (!text) return Promise.resolve({ type: 'noop' });
     if (!this.#claimSessionTurn()) {
@@ -572,14 +595,20 @@ export class RuntimeBridge {
     this.#ensureUiTranscriptLoaded();
     this.#resetActiveAssistantTarget();
     const headline = parseCrewWakeHeadline(text);
-    const timestamp = new Date().toISOString();
-    const wakeMessageId = this.#addUiMessage({
-      role: 'divider',
-      dividerType: 'crew-wake',
-      text: headline,
+    const timestamp = item.timestamp || new Date().toISOString();
+    const wakeMessageId = this.#ensureCrewWakeDivider({
+      headline,
+      messageId: item.messageId,
       timestamp,
+      text,
     });
-    this.#publish({ type: 'crew:wake', headline, messageId: wakeMessageId, timestamp });
+    this.#publish({
+      type: 'crew:wake',
+      headline,
+      messageId: wakeMessageId,
+      timestamp,
+      pending: false,
+    });
     this.#publishLifecycle('running');
     this.#uiPendingSkillBadges = [];
     this.#uiPendingSkillSegments = [];
@@ -607,7 +636,9 @@ export class RuntimeBridge {
       if (!this.#isSubmitActive(submitToken)) return;
       this.#busy = false;
       this.#broadcastRuntimeState();
-      this.#drainCrewPendingWakes();
+      // After a wake, do not chain the next wake here. The Web composer may
+      // have a queued follow-up that should occupy the next idle slot.
+      // submit:done lets the UI drain that queue or ask for the next wake.
     });
   }
 
@@ -668,8 +699,8 @@ export class RuntimeBridge {
     return true;
   }
 
-  #drainCrewPendingWakes() {
-    void this.#runtime.drainCrewPendingWakes?.().catch(() => {});
+  drainCrewPendingWakes() {
+    return this.#runtime.drainCrewPendingWakes?.() || Promise.resolve();
   }
 
   #buildRuntimeStatePayload() {
@@ -1415,7 +1446,8 @@ export class RuntimeBridge {
       this.#busy = false;
       this.#activeSubmitLine = '';
       this.#broadcastRuntimeState();
-      this.#drainCrewPendingWakes();
+      // Do not drain wakes here. The Web composer may have a queued follow-up
+      // that should occupy this idle slot; submit:done decides user vs wake.
     });
     return { accepted: true };
   }
@@ -1502,7 +1534,7 @@ export class RuntimeBridge {
       }
       this.#busy = false;
       this.#broadcastRuntimeState();
-      this.#drainCrewPendingWakes();
+      // Same as #handleSubmit: leave the next idle slot to submit:done.
     });
     this.#broadcastRuntimeState();
     return { accepted: true, operationId };

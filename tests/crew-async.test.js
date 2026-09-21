@@ -87,7 +87,7 @@ test('buildCrewWorkerCompletedWake uses notification envelope', () => {
   assert.match(wake, /Docs updated\./);
 });
 
-test('crew coordinator drains queued wakes after turn ends', async () => {
+test('crew coordinator drains one queued wake per call so a user prompt can claim the next slot', async () => {
   const inFlight = new Set();
   let turnActive = true;
   const submitted = [];
@@ -103,7 +103,31 @@ test('crew coordinator drains queued wakes after turn ends', async () => {
   assert.equal(submitted.length, 0);
   turnActive = false;
   await coordinator.drainPendingWakes();
+  assert.deepEqual(submitted, ['wake-one']);
+  assert.equal(coordinator.pendingWakeCount, 1);
+  await coordinator.drainPendingWakes();
   assert.deepEqual(submitted, ['wake-one', 'wake-two']);
+  assert.equal(coordinator.pendingWakeCount, 0);
+});
+
+test('crew coordinator notifies the UI when a wake is queued during a user turn', async () => {
+  const queued = [];
+  const submitted = [];
+  const coordinator = createCrewCoordinator({
+    inFlightWorkers: new Set(),
+    isTurnActive: () => true,
+    submitWake: async (text) => {
+      submitted.push(text);
+    },
+    onWakeQueued: (item) => {
+      queued.push(item);
+    },
+  });
+  coordinator.enqueueWake('wake-while-busy');
+  assert.equal(submitted.length, 0);
+  assert.equal(queued.length, 1);
+  assert.equal(queued[0].text, 'wake-while-busy');
+  assert.match(queued[0].messageId, /^crew-wake-/);
 });
 
 test('crew coordinator does not drop a wake that lost the session claim', async () => {

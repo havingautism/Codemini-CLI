@@ -1320,6 +1320,26 @@ export function createWebRuntimeApi({
       return true;
 
   }));
+  runtimeRoutes.post("/api/chat/crew-wakes/drain", nodeRoute(async (req, res) => {
+      const body = await readBody(req);
+      const bridge = await loadBridge(res, body?.sessionId);
+      if (!bridge) return true;
+      try {
+        await bridge.drainCrewPendingWakes();
+        jsonResponse(res, { ok: true });
+      } catch (error) {
+        jsonResponse(
+          res,
+          {
+            error: true,
+            message: error?.message || "Failed to drain crew wakes",
+          },
+          500,
+        );
+      }
+      return true;
+
+  }));
   runtimeRoutes.post("/api/submit", nodeRoute(async (req, res, url) => {
       const body = await readBody(req);
       const bridge = await loadBridge(res, body?.sessionId);

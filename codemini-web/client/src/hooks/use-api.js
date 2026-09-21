@@ -131,6 +131,15 @@ export async function submitMessage(sessionId, body = {}) {
   });
 }
 
+export async function drainCrewPendingWakes(sessionId) {
+  const res = await api('/api/chat/crew-wakes/drain', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ sessionId })
+  });
+  return readJsonResponse(res);
+}
+
 export async function submitChatAction(sessionId, name, payload = {}) {
   const res = await api('/api/chat/action', {
     method: 'POST',

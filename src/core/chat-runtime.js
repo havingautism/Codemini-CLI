@@ -105,7 +105,7 @@ import { createCrewCoordinator } from './crew-coordinator.js';
 import { createCrewWorkerScheduler } from './crew-scheduler.js';
 import { createCrewCancelReason } from './crew-cancel.js';
 import { runCrewWorkerJob } from './crew-worker-run.js';
-import { compactCrewSpawnResultForParent, formatCrewReviewIncompleteGuidance, resolveCrewProjectRoot, buildCrewWorkerStatusRecord } from './crew-snapshot.js';
+import { compactCrewSpawnResultForParent, formatCrewReviewIncompleteGuidance, resolveCrewProjectRoot, buildCrewWorkerStatusRecord, parseCrewWakeHeadline } from './crew-snapshot.js';
 import { composeMemorySnapshot } from './memory-prompt.js';
 import { buildProjectContextSnippet, initializeProjectIndex } from './project-index.js';
 import { queryProjectKnowledgeGraph } from './project-knowledge-graph.js';
@@ -8919,7 +8919,16 @@ export async function createChatRuntime({
   const crewCoordinator = createCrewCoordinator({
     inFlightWorkers: crewWorkersInFlight,
     isTurnActive: () => activeTurnCount > 0,
-    submitWake: (text) => crewWakeBridge.submit(text),
+    submitWake: (text, item) => crewWakeBridge.submit(text, item),
+    onWakeQueued: (item) => {
+      crewEventSink?.({
+        type: 'crew:wake',
+        headline: parseCrewWakeHeadline(item.text),
+        messageId: item.messageId,
+        timestamp: item.timestamp,
+        pending: true,
+      });
+    },
   });
   const crewWorkerScheduler = createCrewWorkerScheduler({
     getLimit: () => config?.crew?.max_workers ?? 4,
@@ -10143,10 +10152,10 @@ export async function createChatRuntime({
       }
     }
   };
-  crewWakeBridge.submit = (wakeText) => {
+  crewWakeBridge.submit = (wakeText, item) => {
     void markCrewEventsDeliveredForWake(root, wakeText).catch(() => null);
     if (typeof crewWakeExternalSubmit === 'function') {
-      return crewWakeExternalSubmit(wakeText);
+      return crewWakeExternalSubmit(wakeText, item);
     }
     return executeSubmissionTurn(wakeText, undefined, { crewWake: true });
   };
