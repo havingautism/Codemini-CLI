@@ -4267,6 +4267,8 @@ export function buildRuntimeStateSnapshot({ currentSession, config, model, execu
     model: model || config.model?.name || '',
     mainModel: config.model?.name || '',
     fastModel: config.model?.fast_name || config.model?.name || '',
+    jevReviewEnabled: config.jev?.enabled === true,
+    jevReviewHasKey: Boolean(String(config.jev?.api_key || '').trim()),
     maxContextTokens,
     alwaysSkillNames: visibleAlwaysSkillNames,
     reasoningEnabled: config.model?.reasoning_enabled !== false,
@@ -10433,6 +10435,17 @@ export async function createChatRuntime({
       const normalized = String(next || '').toLowerCase().replace(/-/g, '_');
       if (!['review', 'auto', 'full_access'].includes(normalized)) return false;
       await setConfigValue('execution.approval_mode', normalized);
+      config = attachRuntimeState(await loadConfig());
+      return true;
+    },
+    setJevReviewEnabled: async (next) => {
+      const enabled = next === true || String(next || '').toLowerCase() === 'on' || String(next || '').toLowerCase() === 'true';
+      await setConfigValue('jev.enabled', enabled);
+      config = attachRuntimeState(await loadConfig());
+      return true;
+    },
+    setJevApiKey: async (next) => {
+      await setConfigValue('jev.api_key', String(next || '').trim());
       config = attachRuntimeState(await loadConfig());
       return true;
     },

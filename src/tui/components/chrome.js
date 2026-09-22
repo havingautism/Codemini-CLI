@@ -327,7 +327,8 @@ export class SettingsDialog {
   constructor({ copy, values, souls = [], onChange, onClose }) {
     this.copy = copy;
     this.index = 0;
-    this.values = { ...values };
+    this.values = { ...values, jevKey: '' };
+    this.jevHasKey = values.jevHasKey === true;
     this.souls = souls;
     this.onChange = onChange;
     this.onClose = onClose;
@@ -343,6 +344,8 @@ export class SettingsDialog {
       { key: 'reasoning', label: `🧠 ${this.copy.settingReasoning}`, options: ['off', 'auto', 'low', 'medium', 'high'] },
       { key: 'approval', label: `✅ ${this.copy.settingApproval}`, options: ['review', 'auto', 'full_access'] },
       { key: 'sandbox', label: `🔒 ${this.copy.settingSandbox}`, options: ['read-only', 'workspace-write', 'danger-full-access'] },
+      { key: 'jev', label: `⚡ ${this.copy.settingJev}`, options: ['off', 'on'] },
+      { key: 'jevKey', label: `🔑 ${this.copy.settingJevKey}`, text: true },
       { key: 'soul', label: `🎭 ${this.copy.settingSoul}`, options: souls.length ? souls : [this.values.soul || '-'] }
     ];
   }
@@ -362,6 +365,34 @@ export class SettingsDialog {
   }
 
   handleInput(data) {
+    const field = this.fields[this.index];
+    if (field?.text) {
+      if (matchesKey(data, 'escape') || matchesKey(data, 'ctrl+g')) return this.onClose();
+      if (matchesKey(data, 'up') || matchesKey(data, 'shift+tab')) {
+        this.index = (this.index + this.fields.length - 1) % this.fields.length;
+        return;
+      }
+      if (matchesKey(data, 'down') || matchesKey(data, 'tab')) {
+        this.index = (this.index + 1) % this.fields.length;
+        return;
+      }
+      if (matchesKey(data, 'return')) {
+        const draft = String(this.values.jevKey || '').trim();
+        if (!draft) return;
+        this.jevHasKey = true;
+        this.values.jevKey = '';
+        void Promise.resolve(this.onChange('jevKey', draft)).catch(() => {});
+        return;
+      }
+      if (matchesKey(data, 'backspace') || data === '\x7f' || data === '\b') {
+        this.values.jevKey = String(this.values.jevKey || '').slice(0, -1);
+        return;
+      }
+      if (typeof data === 'string' && data.length === 1 && data >= ' ') {
+        this.values.jevKey = `${this.values.jevKey || ''}${data}`;
+      }
+      return;
+    }
     if (matchesKey(data, 'escape') || matchesKey(data, 'ctrl+g')) return this.onClose();
     const count = this.fields.length;
     if (matchesKey(data, 'up') || matchesKey(data, 'shift+tab')) this.index = (this.index + count - 1) % count;
@@ -372,7 +403,13 @@ export class SettingsDialog {
 
   render(width) {
     const innerWidth = Math.max(1, width - 2);
-    const rows = this.fields.map((field) => joinSides(field.label, this.copy.settingValues[this.values[field.key]] || this.values[field.key], innerWidth - 4));
+    const rows = this.fields.map((field) => {
+      const draft = String(this.values.jevKey || '');
+      const value = field.text
+        ? (draft ? '•'.repeat(Math.min(draft.length, 12)) : (this.jevHasKey ? this.copy.settingJevKeySet : this.copy.settingJevKeyEmpty))
+        : (this.copy.settingValues[this.values[field.key]] || this.values[field.key]);
+      return joinSides(field.label, value, innerWidth - 4);
+    });
     return modalFrame([
       fill(bold(color.accent(this.copy.startupSettings)), innerWidth, color.overlayBg),
       color.overlayBg(' '.repeat(innerWidth)),

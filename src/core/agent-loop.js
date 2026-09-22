@@ -1062,6 +1062,7 @@ export async function runAgentLoop({
                 !isSandboxEscalation
                 && projectIsGit
                 && normalizedApprovalMode !== 'review'
+                && evaluation.uncertain !== true
                 && evaluation.recommendation === 'allow'
                 && evaluation.risk !== 'high'
               ) {

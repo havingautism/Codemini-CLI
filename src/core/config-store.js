@@ -175,6 +175,11 @@ const DEFAULT_CONFIG = {
   crew: {
     max_workers: 4
   },
+  jev: {
+    enabled: false,
+    api_key: '',
+    model: 'jev-latest'
+  },
   policy: {
     safe_mode: true,
     allow_dangerous_commands: false,
@@ -458,6 +463,10 @@ function normalizePolicyLists(config) {
     32,
     normalizedNumber(next.crew.max_workers, DEFAULT_CONFIG.crew.max_workers, 1, { integer: true }),
   );
+  next.jev = next.jev && typeof next.jev === 'object' ? next.jev : {};
+  next.jev.enabled = next.jev.enabled === true || String(next.jev.enabled || '').toLowerCase() === 'true';
+  next.jev.api_key = String(next.jev.api_key || '').trim();
+  next.jev.model = String(next.jev.model || DEFAULT_CONFIG.jev.model).trim() || DEFAULT_CONFIG.jev.model;
   next.shell.default = resolveShellContext(next, { platform: process.platform }).shell;
   return next;
 }

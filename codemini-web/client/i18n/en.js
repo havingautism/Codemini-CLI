@@ -669,6 +669,11 @@ export const en = {
   fastModelHelp:
     "Cheaper or faster model for titles, compaction summaries, Plan execution steps (when Plan Execution Model is Fast or By Role), and other lightweight tasks. Falls back to Default Model when empty.",
   fastModelPlaceholder: "Fallback to Default Model when empty",
+  jevReview: "Jev command review",
+  jevReviewHelp:
+    "When on, command-review risk and allow/deny come from your own Jev key. Off or missing key keeps the fast model. A Jev failure falls back to the fast model. Confidence below 0.8 makes auto mode ask you instead of running.",
+  jevApiKey: "Jev API key",
+  jevApiKeyHelp: "Jev key from the TypeSafe console. Stored only in the local config. An empty field does not clear a saved key.",
   reasoningEnabled: "Thinking Mode",
   reasoningEnabledHelp:
     "Turn off to avoid requesting additional reasoning from the model. Turn on to choose a reasoning effort.",

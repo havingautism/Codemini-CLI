@@ -663,6 +663,11 @@ export const zh = {
   fastModelHelp:
     "用于标题生成、压缩摘要、Plan 执行步骤（当「Plan 执行模型」为 Fast 或按角色时）等轻量任务的更快/更便宜模型。留空则回退到默认模型。",
   fastModelPlaceholder: "留空则回退到默认模型",
+  jevReview: "Jev 命令审阅",
+  jevReviewHelp:
+    "开启后，命令审阅的风险和建议改由你自己的 Jev key 判断。不开启或没有 key 时仍用快速模型。Jev 失败会退回快速模型；置信度低于 0.8 时自动模式改为弹窗确认。",
+  jevApiKey: "Jev API 密钥",
+  jevApiKeyHelp: "TypeSafe 控制台里的 Jev key，只保存在本机配置。留空不会覆盖已保存的密钥。",
   reasoningEnabled: "思考模式",
   reasoningEnabledHelp:
     "关闭后不向模型请求额外思考；开启后可继续选择思考强度。",

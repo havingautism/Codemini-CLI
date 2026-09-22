@@ -270,6 +270,22 @@ export function buildSettingsFields() {
     },
     {
       tab: "policy",
+      path: "jev.enabled",
+      control: "switch",
+      label: t("jevReview"),
+      help: t("jevReviewHelp"),
+    },
+    {
+      tab: "policy",
+      path: "jev.api_key",
+      control: "input",
+      type: "password",
+      label: t("jevApiKey"),
+      placeholder: "ts_...",
+      help: t("jevApiKeyHelp"),
+    },
+    {
+      tab: "policy",
       path: "policy.allowed_paths",
       control: "textarea",
       label: t("allowedPaths"),

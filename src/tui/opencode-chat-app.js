@@ -611,6 +611,8 @@ export async function runOpenCodeTui({ runtime, sessionId, model, safeMode = tru
         reasoning: state.reasoningEnabled === false ? 'off' : state.reasoningEffort || 'auto',
         approval: state.approvalMode || 'auto',
         sandbox: state.sandboxMode || 'workspace-write',
+        jev: state.jevReviewEnabled ? 'on' : 'off',
+        jevHasKey: state.jevReviewHasKey === true,
         soul: state.activeSoul || souls.find((soul) => soul.category === soulCategory && soul.active)?.name || '-'
       },
       souls,
@@ -619,13 +621,15 @@ export async function runOpenCodeTui({ runtime, sessionId, model, safeMode = tru
         else if (key === 'reasoning') await runtime.setReasoningEffort?.(value);
         else if (key === 'approval') await runtime.setApprovalMode?.(value);
         else if (key === 'sandbox') await runtime.setSandboxMode?.(value);
+        else if (key === 'jev') await runtime.setJevReviewEnabled?.(value);
+        else if (key === 'jevKey') await runtime.setJevApiKey?.(value);
         else if (key === 'soul') await runtime.setSoul?.(value, home.mode);
         home.syncSession(runtime.getRuntimeState?.());
         requestRender();
       },
       onClose: closeSettingsDialog
     });
-    settingsHandle = tui.showOverlay(dialog, { width: '70%', minWidth: 48, maxHeight: 11, anchor: 'center', margin: 2 });
+    settingsHandle = tui.showOverlay(dialog, { width: '70%', minWidth: 48, maxHeight: 16, anchor: 'center', margin: 2 });
     requestRender();
   };
 

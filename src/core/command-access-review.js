@@ -22,7 +22,7 @@ export async function reviewCommandAccess({ command, config, workspaceRoot, capa
   }
   signal?.throwIfAborted();
   onReview?.({ capability, command, evaluation, humanRequired });
-  if (!humanRequired && evaluation?.failed !== true
+  if (!humanRequired && evaluation?.failed !== true && evaluation?.uncertain !== true
       && ['low', 'medium'].includes(evaluation?.risk) && evaluation?.recommendation === 'allow') {
     return { approved: true, source: 'lite', evaluation };
   }
