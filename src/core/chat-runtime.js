@@ -99,7 +99,7 @@ import {
   appendCrewEvent,
   buildCrewCompletionEvent,
 } from './crew-store.js';
-import { composeCrewResumeTask, composeCrewReviewTask, isCrewCommitAncestor, isCrewWorktreeDirty, removeCrewWorktrees, resolveCrewReviewTarget, resolveCrewSubagentWorkspace, shouldContinueCrewWorkerSeal, teardownCrewWorker } from './crew-worktree.js';
+import { composeCrewResumeTask, composeCrewReviewTask, isCrewCommitAncestor, isCrewWorktreeDirty, resolveCrewReviewTarget, resolveCrewSubagentWorkspace, shouldContinueCrewWorkerSeal, teardownCrewWorker } from './crew-worktree.js';
 import { landCrewWorkers } from './crew-land.js';
 import { createCrewCoordinator } from './crew-coordinator.js';
 import { createCrewWorkerScheduler } from './crew-scheduler.js';
@@ -9055,7 +9055,8 @@ export async function createChatRuntime({
         crew: crewState,
       };
     }
-    await removeCrewWorktrees({ cwd: root }).catch(() => ({ kept: [] }));
+    // Leaving Crew pauses the bench. Worktrees, roster, and branches stay until
+    // every worker lands, or the user cancels a worker. Same as stop / process exit.
     await exitCrewMode({
       cwd: root,
       sessionId: currentSession?.id,
@@ -9106,6 +9107,8 @@ export async function createChatRuntime({
       return result;
     }
     await persistCrewState(result.crew);
+    await refreshCrewProgressCache();
+    publishCrewWorkersChanged();
     lastCrewGitInspect = {
       dirtyCount: result.dirtyCount || 0,
       ...(result.warning ? { warning: result.warning } : {}),
