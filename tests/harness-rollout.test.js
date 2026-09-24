@@ -8,3 +8,10 @@ test('rollout defaults closed and supports deterministic 100 percent matching', 
   assert.equal(shouldRollout({ rollout: config, sessionId: 's', projectDir: 'p', riskTier: 'low' }), true);
   assert.equal(shouldRollout({ rollout: config, sessionId: 's', projectDir: 'p', riskTier: 'high' }), false);
 });
+
+test('rollout bucket is stable across Windows path casing and separators', () => {
+  const config = { enabled: true, percentage: 51, risk_tiers: ['low'], salt: 'stable-path' };
+  const upper = shouldRollout({ rollout: config, sessionId: 'same-session', projectDir: 'C:\\Users\\Demo\\Project', riskTier: 'low' });
+  const lower = shouldRollout({ rollout: config, sessionId: 'same-session', projectDir: 'c:/users/demo/project', riskTier: 'low' });
+  assert.equal(upper, lower);
+});
