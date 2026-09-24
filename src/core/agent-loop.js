@@ -649,7 +649,9 @@ export async function runAgentLoop({
   onDecision = null,
   toolReliabilityStore = null,
   toolGuard = null,
-  completionReview = null
+  completionReview = null,
+  skillRoute = null,
+  contextSelector = null
 }) {
   const experienceTracker = config?.memory?.enabled === false || config?.memory?.experience?.enabled === false
     ? null
@@ -847,6 +849,10 @@ export async function runAgentLoop({
         });
       }
     }
+    if (typeof contextSelector === 'function') {
+      const selected = await contextSelector({ messages, step }).catch(() => null);
+      if (Array.isArray(selected) && selected.length > 0) messages.splice(0, messages.length, ...selected);
+    }
     const completion = await requestCompletion({
       model,
       messages,
@@ -965,6 +971,13 @@ export async function runAgentLoop({
       let approvalArgs = remapCrewToolArguments(args, workspaceRoot);
       let preflightErrorContent = '';
       let outsideWorkspaceApproval = null;
+      if (toolName === 'skill' && typeof skillRoute === 'function') {
+        const route = await skillRoute({ skillName: args?.name || '', args, step }).catch(() => ({ choice: args?.name || '', reason: 'route_error' }));
+        if (route?.choice && route.choice !== args?.name && route.choice !== 'none') {
+          approvalResults.set(call.id, { approved: false, args: approvalArgs, errorContent: clipToolResult({ error: `Skill route selected ${route.choice}; requested skill was not selected.`, selected_skill: route.choice }, toolResultMaxChars) });
+          continue;
+        }
+      }
       if (!isModelVisible) {
         approvalResults.set(call.id, {
           approved: false,

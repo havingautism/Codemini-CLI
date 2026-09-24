@@ -5,6 +5,7 @@ import { createInitialBelief, updateBelief } from './belief/discrete-dbn.js';
 import { mapStateToEvidence } from './belief/evidence.js';
 import { checkHardGuards } from './policy/hard-guards.js';
 import { decideInfluencePolicy } from './policy/influence-policy.js';
+import { createDecisionOrchestrator } from './decision-orchestrator.js';
 
 export function createDecisionController({
   enabled = false,
@@ -23,8 +24,12 @@ export function createDecisionController({
     shadowProviders,
   });
   let belief = createInitialBelief();
+  const orchestrator = typeof decisionAdapter.ask === 'function'
+    ? createDecisionOrchestrator({ adapter: decisionAdapter, provider, policy: providerConfig.policy || {}, onDecision })
+    : null;
   return {
     enabled: enabled === true,
+    orchestrate: orchestrator?.decide || null,
     mode: mode === 'shadow' ? 'shadow' : 'shadow',
     async evaluate({ episodeId = '', step = 0, state = {}, questions = HARNESS_QUESTION_SET, signal = null, onDecision: callback = null } = {}) {
       if (enabled !== true) return null;

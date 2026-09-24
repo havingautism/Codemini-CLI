@@ -40,6 +40,8 @@ import { createHarnessSqliteStore } from './harness/audit/harness-sqlite-store.j
 import { createToolReliabilityStore } from './harness/tool-reliability.js';
 import { TOOL_GUARD_QUESTIONS, resolveToolGuard } from './harness/tool-guard.js';
 import { COMPLETION_REVIEW_QUESTIONS, resolveCompletionReview } from './harness/completion-review.js';
+import { buildSkillCandidates } from './harness/skill-router.js';
+import { selectContextBlocks } from './harness/context-selector.js';
 import { stableHash } from './harness/normalize.js';
 import { shouldRollout } from './harness/rollout.js';
 import { createToolResultStore } from './tool-result-store.js';
@@ -6483,6 +6485,13 @@ async function askModel({
         onDecision: (event) => wrappedAgentEvent({ type: 'harness:decision', ...event }),
       })
     : null;
+  if (decisionController?.orchestrate) {
+    await decisionController.orchestrate({
+      kind: 'task_route', episodeId: harnessEpisodeId, step: 0,
+      state: { objective: loopUserPrompt, stage: 'task_start', riskTier: 'low' },
+      candidates: ['proceed_fast', 'deep_review', 'split_task', 'ask_user', 'block'].map((id) => ({ id, type: 'route', allowed: true })),
+    }).then((event) => wrappedAgentEvent({ type: 'harness:route', stage: 'task_start', ...event })).catch(() => {});
+  }
   try {
     loopResult = await runAgentLoop({
       systemPrompt: skipSystemPromptInsert ? '' : effectiveSystemPrompt,
@@ -6548,6 +6557,23 @@ async function askModel({
           const probability = event?.decision?.answers?.find((answer) => answer.id === 'completion_probability')?.pTrue;
           if (!choice) return { choice: 'complete' };
           return resolveCompletionReview({ choice, probability, deterministicVerified: Boolean(event?.state?.verificationPassed) });
+        }
+        : null,
+      skillRoute: decisionController && harnessConfig.provider !== 'rules'
+        ? async ({ skillName, args, step }) => {
+          const candidates = buildSkillCandidates([{ name: skillName, description: '当前模型请求的 Skill' }, { name: 'none', description: '不加载额外 Skill' }]);
+          const event = await decisionController.orchestrate({ kind: 'skill_route', episodeId: harnessEpisodeId, step, state: { stage: 'skill_route', requestedSkill: skillName }, candidates, questions: [{ id: 'selected_skill', type: 'choice', options: candidates.map((item) => item.id) }] });
+          wrappedAgentEvent({ type: 'harness:route', stage: 'skill_route', ...event });
+          return { choice: event.selected || skillName, reason: event.policy?.reason };
+        }
+        : null,
+      contextSelector: decisionController && harnessConfig.provider !== 'rules'
+        ? async ({ messages, step }) => {
+          const blocks = messages.map((message, index) => ({ id: `message-${index}`, score: message.role === 'system' || message.role === 'user' ? 1 : 0.4, required: message.role === 'system' || index === messages.length - 1 }));
+          const selected = selectContextBlocks(blocks, { requiredIds: ['message-0'], maxBlocks: 40 });
+          wrappedAgentEvent({ type: 'harness:context', stage: 'context_keep', step, decisions: selected.decisions });
+          const keep = new Set(selected.kept.map((item) => item.id));
+          return messages.filter((_, index) => keep.has(`message-${index}`));
         }
         : null,
       onForkJoin: (candidates) => commitForkMemoryCandidates({
