@@ -6172,7 +6172,7 @@ async function askModel({
     return new Set([
       'step:start', 'step:end', 'assistant:response', 'tool:start', 'tool:end',
       'tool:error', 'tool:blocked', 'tool:result', 'model:context', 'checkpoint',
-      'aborted', 'harness:decision'
+      'aborted', 'harness:decision', 'harness:route', 'harness:context'
     ]).has(value) || value.startsWith('approval:');
   };
   const finishHarnessEpisode = (status, outcome = '') => {

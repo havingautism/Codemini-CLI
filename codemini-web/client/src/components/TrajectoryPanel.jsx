@@ -310,6 +310,7 @@ export function TrajectoryPanel({
   messages = [],
   runtimeState = null,
   sessionId = "",
+  harnessRevision = 0,
 }) {
   const [showDuration, setShowDuration] = useState(true);
   const [showTurns, setShowTurns] = useState(true);
@@ -335,7 +336,7 @@ export function TrajectoryPanel({
       })
       .catch(() => { if (active) setHarnessEpisodes([]); });
     return () => { active = false; };
-  }, [sessionId]);
+  }, [sessionId, harnessRevision]);
 
   useEffect(() => {
     let active = true;
@@ -370,9 +371,13 @@ export function TrajectoryPanel({
   }, [built.events]);
 
   const harnessSummary = useMemo(() => {
-    const decisions = harnessEpisodes.flatMap((episode) => (episode.events || [])
-      .filter((event) => event.type === "harness:decision")
+    const harnessEvents = harnessEpisodes.flatMap((episode) => (episode.events || [])
+      .filter((event) => ["harness:decision", "harness:route", "harness:context"].includes(event.type))
       .map((event) => ({ ...event, episode })));
+    const decisions = harnessEvents.filter((event) => event.type === "harness:decision");
+    const routes = harnessEvents.filter((event) => event.type === "harness:route");
+    const contexts = harnessEvents.filter((event) => event.type === "harness:context");
+    const contextBlocks = contexts.reduce((total, event) => total + (Array.isArray(event.payload?.decisions) ? event.payload.decisions.length : 0), 0);
     const actions = {};
     for (const item of decisions) {
       const action = item.payload?.policy?.action || item.payload?.advisory?.action || "unknown";
@@ -383,7 +388,7 @@ export function TrajectoryPanel({
       const value = Number(last?.belief?.[node]?.true);
       return Number.isFinite(value) ? `${Math.round(value * 100)}%` : "—";
     };
-    return { decisions, actions, last, probability };
+    return { decisions, routes, contexts, contextBlocks, actions, last, probability };
   }, [harnessEpisodes]);
 
   const activeTurn = turnOptions.includes(Number(turnFilter))
@@ -542,13 +547,15 @@ export function TrajectoryPanel({
         <div className="flex flex-wrap items-center gap-2">
           <strong className="text-(--text-primary)">任务决策助手实际效果</strong>
           <span className="text-[11px] text-(--text-muted)">
-            {harnessSummary.decisions.length ? `${harnessSummary.decisions.length} 次判断` : "当前会话还没有决策记录"}
+            {harnessSummary.decisions.length
+              ? `${harnessSummary.decisions.length} 次判断 · ${harnessSummary.routes.length} 次路由 · ${harnessSummary.contextBlocks} 个上下文块`
+              : "当前会话还没有决策记录"}
           </span>
           <span className="ml-auto text-[11px] text-(--text-muted)">
             {harnessEpisodes.length ? `${harnessEpisodes.length} 个 episode` : "仅显示当前会话"}
           </span>
         </div>
-        {harnessSummary.decisions.length ? (
+        {harnessSummary.decisions.length || harnessSummary.routes.length || harnessSummary.contexts.length ? (
           <>
             <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-5">
               {[["完成概率", "TaskComplete"], ["测试通过", "TestPass"], ["重试收益", "RetryBenefit"], ["需求遗漏", "RequirementsMiss"], ["工具可靠", "ToolReliability"]].map(([label, node]) => (
