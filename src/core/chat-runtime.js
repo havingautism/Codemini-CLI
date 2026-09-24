@@ -41,7 +41,6 @@ import { createToolReliabilityStore } from './harness/tool-reliability.js';
 import { TOOL_GUARD_QUESTIONS, resolveToolGuard } from './harness/tool-guard.js';
 import { COMPLETION_REVIEW_QUESTIONS, resolveCompletionReview } from './harness/completion-review.js';
 import { buildSkillCandidates } from './harness/skill-router.js';
-import { selectContextBlocks } from './harness/context-selector.js';
 import { stableHash } from './harness/normalize.js';
 import { shouldRollout } from './harness/rollout.js';
 import { createToolResultStore } from './tool-result-store.js';
@@ -6569,10 +6568,20 @@ async function askModel({
         : null,
       contextSelector: decisionController && harnessConfig.provider !== 'rules'
         ? async ({ messages, step }) => {
-          const blocks = messages.map((message, index) => ({ id: `message-${index}`, score: message.role === 'system' || message.role === 'user' ? 1 : 0.4, required: message.role === 'system' || index === messages.length - 1 }));
-          const selected = selectContextBlocks(blocks, { requiredIds: ['message-0'], maxBlocks: 40 });
-          wrappedAgentEvent({ type: 'harness:context', stage: 'context_keep', step, decisions: selected.decisions });
-          const keep = new Set(selected.kept.map((item) => item.id));
+          const blocks = messages.map((message, index) => ({ id: `message-${index}`, score: message.role === 'system' || message.role === 'user' ? 1 : 0.4, required: message.role === 'system' || message.role === 'user' && index === messages.length - 1, message }));
+          const optional = blocks.filter((block) => !block.required);
+          const judged = await Promise.all(optional.map(async (block) => {
+            const event = await decisionController.orchestrate({
+              kind: 'context_keep', episodeId: harnessEpisodeId, step,
+              state: { stage: 'context_keep', objective: loopUserPrompt, contextBlock: block.message.content },
+              candidates: [{ id: block.id, type: 'context', allowed: true }],
+              questions: [{ id: 'keep_context', type: 'noul', statement: 'This context block is still relevant to the current task and should be kept.' }],
+            });
+            return { ...block, keep: event.selected === true, probability: event.probability, reason: event.policy?.reason };
+          }));
+          const decisions = blocks.filter((block) => block.required).map((block) => ({ id: block.id, kept: true, probability: 1, reason: 'required' })).concat(judged.map((block) => ({ id: block.id, kept: block.keep, probability: block.probability, reason: block.reason })));
+          wrappedAgentEvent({ type: 'harness:context', stage: 'context_keep', step, decisions });
+          const keep = new Set(decisions.filter((item) => item.kept).map((item) => item.id));
           return messages.filter((_, index) => keep.has(`message-${index}`));
         }
         : null,

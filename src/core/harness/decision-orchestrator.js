@@ -29,6 +29,12 @@ export function createDecisionOrchestrator({ adapter, provider = 'rules', policy
         const answer = decision?.answers?.find((item) => item.id === 'completion_status');
         event.selected = answer?.choice || null;
         event.policy = resolveCompletionReview({ choice: answer?.choice, probability: answer?.pTrue ?? answer?.confidence ?? 0, deterministicVerified: state.verificationPassed === true, threshold: policy.completion_probability });
+      } else if (kind === 'context_keep') {
+        const answer = decision?.answers?.find((item) => item.id === 'keep_context');
+        const probability = Number(answer?.pTrue ?? answer?.probability ?? 0);
+        event.selected = probability >= Number(policy.context_keep_probability ?? 0.5);
+        event.probability = probability;
+        event.policy = { choice: event.selected ? 'keep' : 'drop', reason: event.selected ? 'context_relevant' : 'context_low_relevance', probability };
       } else {
         event.selected = selectedChoice(decision, kind === 'skill_route' ? 'selected_skill' : kind === 'tool_route' ? 'selected_tool' : 'selected_agent');
         event.policy = event.selected ? { choice: event.selected, reason: 'provider_choice' } : { choice: 'ask_user', reason: 'provider_abstain' };
@@ -40,4 +46,3 @@ export function createDecisionOrchestrator({ adapter, provider = 'rules', policy
 }
 
 export { QUESTIONS as DECISION_QUESTIONS };
-

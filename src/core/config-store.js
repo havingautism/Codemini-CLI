@@ -189,8 +189,12 @@ const DEFAULT_CONFIG = {
       finish_probability: 0.98,
       retry_probability: 0.70,
       missing_info_probability: 0.55,
-      abstain_max_probability: 0.60,
-      abstain_margin: 0.15
+    abstain_max_probability: 0.60,
+    abstain_margin: 0.15,
+    context_keep_probability: 0.70,
+    completion_probability: 0.90,
+    route_min_probability: 0.55,
+    route_min_margin: 0.12
     },
     rollout: {
       enabled: false,
@@ -519,6 +523,10 @@ function normalizePolicyLists(config) {
     missing_info_probability: 0.55,
     abstain_max_probability: 0.60,
     abstain_margin: 0.15,
+    context_keep_probability: 0.70,
+    completion_probability: 0.90,
+    route_min_probability: 0.55,
+    route_min_margin: 0.12,
   })) {
     next.harness.policy[key] = Math.max(0, Math.min(1, Number(next.harness.policy[key] ?? fallback)));
   }
