@@ -6568,7 +6568,9 @@ async function askModel({
         : null,
       contextSelector: decisionController && harnessConfig.provider !== 'rules'
         ? async ({ messages, step }) => {
-          const blocks = messages.map((message, index) => ({ id: `message-${index}`, score: message.role === 'system' || message.role === 'user' ? 1 : 0.4, required: message.role === 'system' || message.role === 'user' && index === messages.length - 1, message }));
+          // 系统消息和所有用户消息都是任务证据，不能因为它们不是最后一条
+          // 消息就被上下文概率判断删除；否则工具调用后会丢失原始需求。
+          const blocks = messages.map((message, index) => ({ id: `message-${index}`, score: message.role === 'system' || message.role === 'user' ? 1 : 0.4, required: message.role === 'system' || message.role === 'user', message }));
           const optional = blocks.filter((block) => !block.required);
           const judged = await Promise.all(optional.map(async (block) => {
             const event = await decisionController.orchestrate({

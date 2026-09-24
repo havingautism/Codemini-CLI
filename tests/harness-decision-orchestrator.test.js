@@ -29,3 +29,24 @@ test('decision orchestrator uses provider probability for context retention', as
   assert.equal(event.probability, 0.82);
   assert.equal(event.policy.reason, 'context_relevant');
 });
+
+test('decision orchestrator keeps context when provider abstains or fails', async () => {
+  const orchestrator = createDecisionOrchestrator({
+    provider: 'jev',
+    adapter: {
+      ask: async () => ({
+        provider: 'jev',
+        errors: ['provider unavailable'],
+        answers: [{ id: 'keep_context', type: 'noul', abstain: true }],
+      }),
+    },
+  });
+  const event = await orchestrator.decide({
+    kind: 'context_keep',
+    state: { contextBlock: '原始任务' },
+    candidates: [{ id: 'message-1', type: 'context', allowed: true }],
+  });
+  assert.equal(event.selected, true);
+  assert.equal(event.probability, null);
+  assert.equal(event.policy.reason, 'provider_unavailable_keep');
+});

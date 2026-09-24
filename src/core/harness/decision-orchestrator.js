@@ -31,10 +31,24 @@ export function createDecisionOrchestrator({ adapter, provider = 'rules', policy
         event.policy = resolveCompletionReview({ choice: answer?.choice, probability: answer?.pTrue ?? answer?.confidence ?? 0, deterministicVerified: state.verificationPassed === true, threshold: policy.completion_probability });
       } else if (kind === 'context_keep') {
         const answer = decision?.answers?.find((item) => item.id === 'keep_context');
-        const probability = Number(answer?.pTrue ?? answer?.probability ?? 0);
-        event.selected = probability >= Number(policy.context_keep_probability ?? 0.5);
-        event.probability = probability;
-        event.policy = { choice: event.selected ? 'keep' : 'drop', reason: event.selected ? 'context_relevant' : 'context_low_relevance', probability };
+        const rawProbability = Number(answer?.pTrue ?? answer?.probability);
+        const providerUnavailable = Boolean(
+          decision?.errors?.length
+          || !answer
+          || answer.abstain === true,
+        );
+        // 上下文判断属于保守策略：服务不可用或弃权时保留上下文，
+        // 不能把“没有判断结果”误当成“概率为 0”而删除任务信息。
+        if (providerUnavailable) {
+          event.selected = true;
+          event.probability = null;
+          event.policy = { choice: 'keep', reason: 'provider_unavailable_keep', probability: null };
+        } else {
+          const probability = Number.isFinite(rawProbability) ? rawProbability : 0;
+          event.selected = probability >= Number(policy.context_keep_probability ?? 0.5);
+          event.probability = probability;
+          event.policy = { choice: event.selected ? 'keep' : 'drop', reason: event.selected ? 'context_relevant' : 'context_low_relevance', probability };
+        }
       } else {
         event.selected = selectedChoice(decision, kind === 'skill_route' ? 'selected_skill' : kind === 'tool_route' ? 'selected_tool' : 'selected_agent');
         event.policy = event.selected ? { choice: event.selected, reason: 'provider_choice' } : { choice: 'ask_user', reason: 'provider_abstain' };
