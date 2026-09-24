@@ -22,6 +22,8 @@ export function createHttpDecisionProvider({
   model = '',
   timeoutMs = 1500,
   path = '/decide',
+  requestBuilder = null,
+  responseParser = null,
   fetchImpl = globalThis.fetch,
 } = {}) {
   return {
@@ -41,16 +43,14 @@ export function createHttpDecisionProvider({
       try {
         const base = String(baseUrl).replace(/\/+$/, '');
         const requestPath = String(path || '').trim();
-        const endpoint = /^https?:\/\//i.test(requestPath)
+        const endpoint = !requestPath
+          ? new URL(baseUrl)
+          : /^https?:\/\//i.test(requestPath)
           ? new URL(requestPath)
           : new URL(`${base}/${requestPath.replace(/^\/+/, '')}`);
-        const response = await fetchImpl(endpoint, {
-          method: 'POST',
-          headers: {
-            'content-type': 'application/json',
-            ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}),
-          },
-          body: JSON.stringify({
+        const body = typeof requestBuilder === 'function'
+          ? requestBuilder({ name, model, request, normalized, questions })
+          : {
             provider: name,
             model,
             episodeId: request.episodeId,
@@ -59,19 +59,29 @@ export function createHttpDecisionProvider({
             questions,
             inputHash: normalized.inputHash,
             optionsHash: normalized.optionsHash,
-          }),
+          };
+        const response = await fetchImpl(endpoint, {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}),
+          },
+          body: JSON.stringify(body),
           signal: controller.signal,
         });
         if (!response.ok) throw new Error(`provider HTTP ${response.status}`);
         const payload = await response.json();
-        const answers = Array.isArray(payload?.answers) ? payload.answers : [];
+        const parsed = typeof responseParser === 'function'
+          ? responseParser({ payload, name, model, questions, normalized })
+          : { answers: Array.isArray(payload?.answers) ? payload.answers : [], modelVersion: payload.modelVersion, calibrationId: payload.calibrationId };
+        const answers = Array.isArray(parsed?.answers) ? parsed.answers : [];
         if (answers.length !== questions.length || questions.some((question, index) => !validateAnswer(answers[index], question))) {
           return createDecisionResponse({ provider: name, answers: abstainAnswers(questions, 'invalid_schema'), errors: ['provider response schema mismatch'] });
         }
         return createDecisionResponse({
           provider: name,
-          modelVersion: payload.modelVersion || `${name}-unknown`,
-          calibrationId: payload.calibrationId || '',
+          modelVersion: parsed.modelVersion || payload.modelVersion || `${name}-unknown`,
+          calibrationId: parsed.calibrationId || payload.calibrationId || '',
           answers,
           inputHash: normalized.inputHash,
           optionsHash: normalized.optionsHash,
