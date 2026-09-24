@@ -11,7 +11,7 @@ if (savedLocale && locales[savedLocale]) {
 }
 
 function syncDocumentLocale(locale) {
-  document.documentElement.lang = locale === 'zh' ? 'zh-CN' : 'en';
+  if (typeof document !== 'undefined') document.documentElement.lang = locale === 'zh' ? 'zh-CN' : 'en';
 }
 
 syncDocumentLocale(current);

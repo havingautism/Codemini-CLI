@@ -205,6 +205,11 @@ const DEFAULT_CONFIG = {
       salt: 'harness-v1'
     }
   },
+  jev: {
+    enabled: false,
+    api_key: '',
+    model: 'jev-latest'
+  },
   policy: {
     safe_mode: true,
     allow_dangerous_commands: false,
@@ -539,6 +544,10 @@ function normalizePolicyLists(config) {
   next.harness.rollout.projects = Array.isArray(next.harness.rollout.projects) ? next.harness.rollout.projects.map(String) : [];
   next.harness.rollout.sessions = Array.isArray(next.harness.rollout.sessions) ? next.harness.rollout.sessions.map(String) : [];
   next.harness.rollout.salt = String(next.harness.rollout.salt || 'harness-v1');
+  next.jev = next.jev && typeof next.jev === 'object' ? next.jev : {};
+  next.jev.enabled = next.jev.enabled === true || String(next.jev.enabled || '').toLowerCase() === 'true';
+  next.jev.api_key = String(next.jev.api_key || '').trim();
+  next.jev.model = String(next.jev.model || DEFAULT_CONFIG.jev.model).trim() || DEFAULT_CONFIG.jev.model;
   next.shell.default = resolveShellContext(next, { platform: process.platform }).shell;
   return next;
 }

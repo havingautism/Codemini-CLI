@@ -578,7 +578,7 @@ test('settings modal updates reasoning, approval, sandbox and persona', async ()
   terminal.send('\u001b[B');
   terminal.send('\r');
   await waitFor(() => stripAnsi(terminal.output).includes('Reasoning effort'));
-  assert.match(stripAnsi(terminal.output), /🧭 Work mode.*🧠 Reasoning effort.*✅ Approval mode.*🔒 Sandbox access.*🎭 Persona/s);
+  assert.match(stripAnsi(terminal.output), /🧭 Work mode.*🧠 Reasoning effort.*✅ Approval mode.*🔒 Sandbox access.*⚡ Jev review.*🔑 Jev API key.*🎭 Persona/s);
   assert.doesNotMatch(stripAnsi(terminal.output), /📍 Location/);
   assert.doesNotMatch(stripAnsi(terminal.output), /🛡️ Sandbox/, 'sandbox icon must not use ambiguous variation-selector width');
   terminal.send('\u001b[B');
@@ -587,6 +587,8 @@ test('settings modal updates reasoning, approval, sandbox and persona', async ()
   terminal.send('\u001b[C');
   terminal.send('\u001b[B');
   terminal.send('\u001b[C');
+  terminal.send('\u001b[B');
+  terminal.send('\u001b[B');
   terminal.send('\u001b[B');
   terminal.send('\u001b[C');
   await waitFor(() => changes.length === 4);

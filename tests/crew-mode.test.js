@@ -643,8 +643,23 @@ test('crew-on run_subagent creates two worktrees; session overlay has no workers
     assert.ok(handoffEntries.length >= 2);
 
     await runtime.setCrewMode(false);
-    assert.equal(await fs.access(path.join(getProjectCrewWorktreesDir(dir), 'm1')).then(() => true, () => false), false);
-    assert.equal(await fs.access(path.join(getProjectCrewWorktreesDir(dir), 'm2')).then(() => true, () => false), false);
+    assert.equal(runtime.getRuntimeState().crewActive, false);
+    const paused = JSON.parse(await fs.readFile(getProjectCrewStatePath(dir), 'utf8'));
+    assert.equal(paused.active, false);
+    const pausedWorkers = listCrewWorkersFromState(paused);
+    assert.equal(pausedWorkers.length, 2);
+    assert.equal(await fs.access(path.join(getProjectCrewWorktreesDir(dir), 'm1')).then(() => true, () => false), true);
+    assert.equal(await fs.access(path.join(getProjectCrewWorktreesDir(dir), 'm2')).then(() => true, () => false), true);
+    for (const worker of pausedWorkers) {
+      const listed = await git(dir, ['branch', '--list', worker.branch]);
+      assert.match(String(listed.stdout || ''), new RegExp(worker.branch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    }
+
+    await runtime.setCrewMode(true);
+    const resumed = JSON.parse(await fs.readFile(getProjectCrewStatePath(dir), 'utf8'));
+    assert.equal(resumed.active, true);
+    assert.equal(listCrewWorkersFromState(resumed).length, 2);
+    assert.equal(runtime.getRuntimeState().crewActive, true);
   });
 });
 

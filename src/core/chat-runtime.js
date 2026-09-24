@@ -107,7 +107,7 @@ import {
   appendCrewEvent,
   buildCrewCompletionEvent,
 } from './crew-store.js';
-import { composeCrewResumeTask, composeCrewReviewTask, isCrewCommitAncestor, isCrewWorktreeDirty, removeCrewWorktrees, resolveCrewReviewTarget, resolveCrewSubagentWorkspace, shouldContinueCrewWorkerSeal, teardownCrewWorker } from './crew-worktree.js';
+import { composeCrewResumeTask, composeCrewReviewTask, isCrewCommitAncestor, isCrewWorktreeDirty, resolveCrewReviewTarget, resolveCrewSubagentWorkspace, shouldContinueCrewWorkerSeal, teardownCrewWorker } from './crew-worktree.js';
 import { landCrewWorkers } from './crew-land.js';
 import { createCrewCoordinator } from './crew-coordinator.js';
 import { createCrewWorkerScheduler } from './crew-scheduler.js';
@@ -4275,6 +4275,8 @@ export function buildRuntimeStateSnapshot({ currentSession, config, model, execu
     model: model || config.model?.name || '',
     mainModel: config.model?.name || '',
     fastModel: config.model?.fast_name || config.model?.name || '',
+    jevReviewEnabled: config.jev?.enabled === true,
+    jevReviewHasKey: Boolean(String(config.jev?.api_key || '').trim()),
     maxContextTokens,
     alwaysSkillNames: visibleAlwaysSkillNames,
     reasoningEnabled: config.model?.reasoning_enabled !== false,
@@ -9230,7 +9232,8 @@ export async function createChatRuntime({
         crew: crewState,
       };
     }
-    await removeCrewWorktrees({ cwd: root }).catch(() => ({ kept: [] }));
+    // Leaving Crew pauses the bench. Worktrees, roster, and branches stay until
+    // every worker lands, or the user cancels a worker. Same as stop / process exit.
     await exitCrewMode({
       cwd: root,
       sessionId: currentSession?.id,
@@ -9281,6 +9284,8 @@ export async function createChatRuntime({
       return result;
     }
     await persistCrewState(result.crew);
+    await refreshCrewProgressCache();
+    publishCrewWorkersChanged();
     lastCrewGitInspect = {
       dirtyCount: result.dirtyCount || 0,
       ...(result.warning ? { warning: result.warning } : {}),
@@ -10610,6 +10615,17 @@ export async function createChatRuntime({
       const normalized = String(next || '').toLowerCase().replace(/-/g, '_');
       if (!['review', 'auto', 'full_access'].includes(normalized)) return false;
       await setConfigValue('execution.approval_mode', normalized);
+      config = attachRuntimeState(await loadConfig());
+      return true;
+    },
+    setJevReviewEnabled: async (next) => {
+      const enabled = next === true || String(next || '').toLowerCase() === 'on' || String(next || '').toLowerCase() === 'true';
+      await setConfigValue('jev.enabled', enabled);
+      config = attachRuntimeState(await loadConfig());
+      return true;
+    },
+    setJevApiKey: async (next) => {
+      await setConfigValue('jev.api_key', String(next || '').trim());
       config = attachRuntimeState(await loadConfig());
       return true;
     },

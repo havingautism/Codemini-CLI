@@ -20,10 +20,15 @@ const EN = {
   settingReasoning: 'Reasoning effort',
   settingApproval: 'Approval mode',
   settingSandbox: 'Sandbox access',
+  settingJev: 'Jev review',
+  settingJevKey: 'Jev API key',
+  settingJevKeyEmpty: 'Type + Enter',
+  settingJevKeySet: 'Saved',
   settingSoul: 'Persona',
   settingValues: {
     coding: 'Coding', daily: 'Daily', crew: 'Crew', workspace: 'Default workspace', cwd: 'Current directory', off: 'Off', auto: 'Auto', low: 'Low', medium: 'Medium', high: 'High',
-    review: 'Review', full_access: 'Full access', 'read-only': 'Read only', 'workspace-write': 'Workspace write', 'danger-full-access': 'Full system access'
+    review: 'Review', full_access: 'Full access', 'read-only': 'Read only', 'workspace-write': 'Workspace write', 'danger-full-access': 'Full system access',
+    on: 'On'
   },
   modelLabel: 'MODEL',
   accessLabel: 'ACCESS',
@@ -142,10 +147,15 @@ const ZH = {
   settingReasoning: '思考强度',
   settingApproval: '审批模式',
   settingSandbox: '沙箱权限',
+  settingJev: 'Jev 审阅',
+  settingJevKey: 'Jev API 密钥',
+  settingJevKeyEmpty: '输入后回车',
+  settingJevKeySet: '已保存',
   settingSoul: '人格',
   settingValues: {
     coding: '编码', daily: '日常', crew: '协作组', workspace: '默认 Workspace', cwd: '当前目录', off: '关闭', auto: '自动', low: '低', medium: '中', high: '高',
-    review: '逐项审批', full_access: '完全放行', 'read-only': '只读', 'workspace-write': '工作区写入', 'danger-full-access': '完整系统权限'
+    review: '逐项审批', full_access: '完全放行', 'read-only': '只读', 'workspace-write': '工作区写入', 'danger-full-access': '完整系统权限',
+    on: '开启'
   },
   modelLabel: '模型',
   accessLabel: '权限',

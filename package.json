@@ -43,6 +43,7 @@
     "codemini-web/lib",
     "codemini-web/shared",
     "codemini-web/client/src/lib/plan-ui-state.js",
+    "codemini-web/client/src/lib/crew-ui-state.js",
     "codemini-web/client/src/lib/message-context-parsers.js",
     "codemini-web/dist",
     "codemini-web/codemini_logo.png",
