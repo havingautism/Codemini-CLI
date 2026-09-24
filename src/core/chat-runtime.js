@@ -35,6 +35,11 @@ import {
   packageProfileArmEntry,
 } from './hook-profiles.js';
 import { runAgentLoop } from './agent-loop.js';
+import { createDecisionController } from './harness/decision-controller.js';
+import { createHarnessSqliteStore } from './harness/audit/harness-sqlite-store.js';
+import { createToolReliabilityStore } from './harness/tool-reliability.js';
+import { stableHash } from './harness/normalize.js';
+import { shouldRollout } from './harness/rollout.js';
 import { createToolResultStore } from './tool-result-store.js';
 import { parseModelJsonObject } from './model-json.js';
 import { trimInline, normalizePath } from './string-utils.js';
@@ -6130,6 +6135,47 @@ async function askModel({
     }
     return false;
   };
+  const harnessConfig = toolConfig?.harness || {};
+  const harnessEpisodeId = `${session.id}:${turnStartMessageCount}`;
+  const harnessActive = harnessConfig.enabled === true && shouldRollout({
+    rollout: harnessConfig.rollout,
+    sessionId: session.id,
+    projectDir: workspaceRoot,
+    riskTier: 'low',
+  });
+  let harnessStore = null;
+  let toolReliabilityStore = null;
+  if (harnessActive) {
+    try {
+      harnessStore = createHarnessSqliteStore();
+      toolReliabilityStore = createToolReliabilityStore();
+    } catch { harnessStore = null; toolReliabilityStore = null; }
+  }
+  if (harnessStore) {
+    try {
+      harnessStore.createEpisode({
+        id: harnessEpisodeId,
+        sessionId: session.id,
+        projectDir: workspaceRoot,
+        mode: harnessConfig.mode,
+        decisionMode: harnessConfig.decision_mode,
+        provider: harnessConfig.provider,
+        configHash: stableHash({ mode: harnessConfig.mode, provider: harnessConfig.provider }),
+      });
+    } catch { harnessStore = null; }
+  }
+  const harnessEventType = (type) => {
+    const value = String(type || '');
+    return new Set([
+      'step:start', 'step:end', 'assistant:response', 'tool:start', 'tool:end',
+      'tool:error', 'tool:blocked', 'tool:result', 'model:context', 'checkpoint',
+      'aborted', 'harness:decision'
+    ]).has(value) || value.startsWith('approval:');
+  };
+  const finishHarnessEpisode = (status, outcome = '') => {
+    if (!harnessStore) return;
+    try { harnessStore.finishEpisode(harnessEpisodeId, { status, outcome }); } catch { /* 审计失败不影响主任务 */ }
+  };
   const wrappedAgentEvent = (event) => {
     // Always accumulate messages in session (for token tracking), only save when persisting
     if (event?.type === 'assistant:start') {
@@ -6275,6 +6321,28 @@ async function askModel({
       if (persistSession) scheduleSessionSave();
     }
 
+    if (harnessStore && harnessEventType(event?.type)) {
+      try {
+        harnessStore.appendEvent({
+          episodeId: harnessEpisodeId,
+          step: event?.step || 0,
+          type: event?.type,
+          source: event?.type === 'harness:decision' ? 'harness' : 'runtime',
+          parentId: event?.parentId || event?.toolCallId || '',
+          payload: event,
+        });
+      } catch { /* 审计失败不影响主任务 */ }
+    }
+    if (toolReliabilityStore && (event?.type === 'tool:end' || event?.type === 'tool:error')) {
+      try {
+        const failed = event.type === 'tool:error' || event.error === true || event.resultMeta?.ok === false;
+        toolReliabilityStore.record({
+          toolName: event.name,
+          ok: !failed,
+          error: event.summary || event.error || event.content || '',
+        });
+      } catch { /* 统计失败不影响主任务 */ }
+    }
     if (onAgentEvent) onAgentEvent(event);
   };
 
@@ -6389,6 +6457,30 @@ async function askModel({
     },
   });
   let loopResult;
+  const decisionController = harnessActive
+      ? createDecisionController({
+        enabled: true,
+        mode: harnessConfig.mode,
+        provider: harnessConfig.provider,
+        providerConfig: {
+          timeoutMs: harnessConfig.timeout_ms,
+          jev: harnessConfig.providers?.jev ? {
+            enabled: harnessConfig.providers.jev.enabled,
+            baseUrl: harnessConfig.providers.jev.base_url,
+            apiKey: harnessConfig.providers.jev.api_key,
+            model: harnessConfig.providers.jev.model,
+          } : {},
+          laya: harnessConfig.providers?.laya ? {
+            enabled: harnessConfig.providers.laya.enabled,
+            baseUrl: harnessConfig.providers.laya.base_url,
+            model: harnessConfig.providers.laya.model,
+          } : {},
+          policy: harnessConfig.policy || {},
+        },
+        shadowProviders: ['jev', 'laya'].filter((name) => name !== harnessConfig.provider && harnessConfig.providers?.[name]?.enabled === true),
+        onDecision: (event) => wrappedAgentEvent({ type: 'harness:decision', ...event }),
+      })
+    : null;
   try {
     loopResult = await runAgentLoop({
       systemPrompt: skipSystemPromptInsert ? '' : effectiveSystemPrompt,
@@ -6427,6 +6519,9 @@ async function askModel({
       onSkillLoaded,
       workspaceRoot,
       sessionId: session.id,
+      decisionController,
+      episodeId: harnessEpisodeId,
+      toolReliabilityStore,
       onForkJoin: (candidates) => commitForkMemoryCandidates({
         candidates,
         sessionId: session.id,
@@ -6532,12 +6627,14 @@ async function askModel({
       }
     });
   } catch (error) {
+    finishHarnessEpisode(signal?.aborted || error?.name === 'AbortError' ? 'aborted' : 'failed', error?.message || String(error));
     if (signal?.aborted || error?.name === 'AbortError') {
       await handleAbortAftermath();
     }
     throw error;
   }
   if (signal?.aborted || loopResult?.aborted) {
+    finishHarnessEpisode('aborted', 'signal');
     await handleAbortAftermath();
     return { text: '', aborted: true };
   }
@@ -6574,6 +6671,7 @@ async function askModel({
       // keep chat usable even if pruning fails
     });
   }
+  finishHarnessEpisode('completed', loopResult.text || '');
   return { text: loopResult.text, aborted: !!loopResult.aborted };
 }
 
