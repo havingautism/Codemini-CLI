@@ -29,6 +29,23 @@ test('HTTP provider sends bearer auth and validates typed decisions', async () =
   assert.equal(request.init.headers.authorization, 'Bearer secret');
 });
 
+test('HTTP provider appends the decision path to a base URL that already has a path', async () => {
+  let requestUrl = '';
+  const provider = createHttpDecisionProvider({
+    name: 'jev', baseUrl: 'https://openrouter.ai/api/alpha/decisions',
+    fetchImpl: async (url) => {
+      requestUrl = String(url);
+      return { ok: true, async json() { return { answers: questions.map((question) => ({
+        id: question.id,
+        type: question.type,
+        ...(question.type === 'choice' ? { choice: 'continue' } : question.type === 'score' ? { score: 'low' } : { pTrue: 0.5 }),
+      })) }; } };
+    },
+  });
+  await provider.ask({ state: {}, questions });
+  assert.equal(requestUrl, 'https://openrouter.ai/api/alpha/decisions/decide');
+});
+
 test('HTTP provider fail-closes on unknown choice', async () => {
   const provider = createHttpDecisionProvider({
     name: 'laya', baseUrl: 'http://example.test',

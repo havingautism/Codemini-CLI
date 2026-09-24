@@ -6148,6 +6148,8 @@ async function askModel({
   });
   let harnessStore = null;
   let toolReliabilityStore = null;
+  const contextDecisionCache = new Map();
+  const contextDecisionLimit = 32;
   if (harnessActive) {
     try {
       harnessStore = createHarnessSqliteStore();
@@ -6572,14 +6574,26 @@ async function askModel({
           // 消息就被上下文概率判断删除；否则工具调用后会丢失原始需求。
           const blocks = messages.map((message, index) => ({ id: `message-${index}`, score: message.role === 'system' || message.role === 'user' ? 1 : 0.4, required: message.role === 'system' || message.role === 'user', message }));
           const optional = blocks.filter((block) => !block.required);
+          let newJudgements = 0;
           const judged = await Promise.all(optional.map(async (block) => {
+            const cacheKey = stableHash({ role: block.message?.role || '', content: block.message?.content || '' });
+            const cached = contextDecisionCache.get(cacheKey);
+            if (cached) return { ...block, ...cached };
+            if (newJudgements >= contextDecisionLimit) {
+              const bounded = { keep: true, probability: null, reason: 'judgement_budget_keep' };
+              contextDecisionCache.set(cacheKey, bounded);
+              return { ...block, ...bounded };
+            }
+            newJudgements += 1;
             const event = await decisionController.orchestrate({
               kind: 'context_keep', episodeId: harnessEpisodeId, step,
               state: { stage: 'context_keep', objective: loopUserPrompt, contextBlock: block.message.content },
               candidates: [{ id: block.id, type: 'context', allowed: true }],
               questions: [{ id: 'keep_context', type: 'noul', statement: 'This context block is still relevant to the current task and should be kept.' }],
             });
-            return { ...block, keep: event.selected === true, probability: event.probability, reason: event.policy?.reason };
+            const result = { keep: event.selected === true, probability: event.probability, reason: event.policy?.reason };
+            contextDecisionCache.set(cacheKey, result);
+            return { ...block, ...result };
           }));
           const decisions = blocks.filter((block) => block.required).map((block) => ({ id: block.id, kept: true, probability: 1, reason: 'required' })).concat(judged.map((block) => ({ id: block.id, kept: block.keep, probability: block.probability, reason: block.reason })));
           wrappedAgentEvent({ type: 'harness:context', stage: 'context_keep', step, decisions });

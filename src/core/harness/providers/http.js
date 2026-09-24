@@ -39,7 +39,12 @@ export function createHttpDecisionProvider({
         else request.signal.addEventListener('abort', () => controller.abort(), { once: true });
       }
       try {
-        const response = await fetchImpl(new URL(path, baseUrl), {
+        const base = String(baseUrl).replace(/\/+$/, '');
+        const requestPath = String(path || '').trim();
+        const endpoint = /^https?:\/\//i.test(requestPath)
+          ? new URL(requestPath)
+          : new URL(`${base}/${requestPath.replace(/^\/+/, '')}`);
+        const response = await fetchImpl(endpoint, {
           method: 'POST',
           headers: {
             'content-type': 'application/json',
