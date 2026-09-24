@@ -648,7 +648,8 @@ export async function runAgentLoop({
   episodeId = '',
   onDecision = null,
   toolReliabilityStore = null,
-  toolGuard = null
+  toolGuard = null,
+  completionReview = null
 }) {
   const experienceTracker = config?.memory?.enabled === false || config?.memory?.experience?.enabled === false
     ? null
@@ -923,6 +924,14 @@ export async function runAgentLoop({
         if (content) {
           appendModelContextMessage(content, { reason: 'continue-after-text' });
           emitStepEnd('nudge');
+          continue;
+        }
+      }
+      if (typeof completionReview === 'function') {
+        const review = await completionReview({ objective: userPrompt, completedWork: messages.slice(-8), step, assistantText }).catch(() => ({ choice: 'complete' }));
+        if (review?.choice === 'verify_more') {
+          appendModelContextMessage(review.reason || '完成度复核要求继续验证任务结果。', { reason: 'completion-review' });
+          emitStepEnd('completion_review');
           continue;
         }
       }

@@ -39,6 +39,7 @@ import { createDecisionController } from './harness/decision-controller.js';
 import { createHarnessSqliteStore } from './harness/audit/harness-sqlite-store.js';
 import { createToolReliabilityStore } from './harness/tool-reliability.js';
 import { TOOL_GUARD_QUESTIONS, resolveToolGuard } from './harness/tool-guard.js';
+import { COMPLETION_REVIEW_QUESTIONS, resolveCompletionReview } from './harness/completion-review.js';
 import { stableHash } from './harness/normalize.js';
 import { shouldRollout } from './harness/rollout.js';
 import { createToolResultStore } from './tool-result-store.js';
@@ -6535,6 +6536,18 @@ async function askModel({
             return { action: 'allow', reason: 'provider_unavailable_fallback' };
           }
           return resolveToolGuard({ decision: event?.decision, hardGuard: event?.guards, thresholds: harnessConfig.policy || {} });
+        }
+        : null,
+      completionReview: decisionController && harnessConfig.provider !== 'rules'
+        ? async ({ objective, completedWork, step, assistantText }) => {
+          const event = await decisionController.evaluate({ episodeId: harnessEpisodeId, step, state: {
+            stage: 'completion_review', objective, completedWork, assistantText,
+            verificationPassed: session.messages.some((message) => message?.tool_status === 'done'),
+          }, questions: COMPLETION_REVIEW_QUESTIONS });
+          const choice = event?.decision?.answers?.find((answer) => answer.id === 'completion_status')?.choice;
+          const probability = event?.decision?.answers?.find((answer) => answer.id === 'completion_probability')?.pTrue;
+          if (!choice) return { choice: 'complete' };
+          return resolveCompletionReview({ choice, probability, deterministicVerified: Boolean(event?.state?.verificationPassed) });
         }
         : null,
       onForkJoin: (candidates) => commitForkMemoryCandidates({
