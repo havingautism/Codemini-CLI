@@ -38,6 +38,7 @@ import { runAgentLoop } from './agent-loop.js';
 import { createDecisionController } from './harness/decision-controller.js';
 import { createHarnessSqliteStore } from './harness/audit/harness-sqlite-store.js';
 import { createToolReliabilityStore } from './harness/tool-reliability.js';
+import { TOOL_GUARD_QUESTIONS, resolveToolGuard } from './harness/tool-guard.js';
 import { stableHash } from './harness/normalize.js';
 import { shouldRollout } from './harness/rollout.js';
 import { createToolResultStore } from './tool-result-store.js';
@@ -6522,6 +6523,20 @@ async function askModel({
       decisionController,
       episodeId: harnessEpisodeId,
       toolReliabilityStore,
+      toolGuard: decisionController && harnessConfig.provider !== 'rules'
+        ? async ({ toolName, args, step }) => {
+          const event = await decisionController.evaluate({
+            episodeId: harnessEpisodeId,
+            step,
+            state: { stage: 'tool_guard', tool: toolName, argumentsSummary: Object.keys(args || {}), riskTier: 'low' },
+            questions: TOOL_GUARD_QUESTIONS,
+          });
+          if (!event?.decision?.answers?.some((answer) => answer.id === 'guard_action' && answer.abstain !== true)) {
+            return { action: 'allow', reason: 'provider_unavailable_fallback' };
+          }
+          return resolveToolGuard({ decision: event?.decision, hardGuard: event?.guards, thresholds: harnessConfig.policy || {} });
+        }
+        : null,
       onForkJoin: (candidates) => commitForkMemoryCandidates({
         candidates,
         sessionId: session.id,

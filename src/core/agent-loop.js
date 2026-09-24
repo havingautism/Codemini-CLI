@@ -647,7 +647,8 @@ export async function runAgentLoop({
   decisionController = null,
   episodeId = '',
   onDecision = null,
-  toolReliabilityStore = null
+  toolReliabilityStore = null,
+  toolGuard = null
 }) {
   const experienceTracker = config?.memory?.enabled === false || config?.memory?.experience?.enabled === false
     ? null
@@ -1173,6 +1174,13 @@ export async function runAgentLoop({
           if (approved && isSandboxEscalation) {
             approvalArgs = markSandboxEscalationApproved(approvalArgs);
           }
+        }
+      }
+      if (approved && typeof toolGuard === 'function') {
+        const guard = await toolGuard({ toolName, displayName, args: approvalArgs, callId: call.id, step }).catch(() => ({ action: 'review', reason: 'guard_error' }));
+        if (guard?.action === 'deny' || guard?.action === 'review' || guard?.action === 'confirm') {
+          approved = false;
+          approvalReason = String(guard.reason || guard.action);
         }
       }
       approvalResults.set(call.id, { approved, args: approvalArgs, reason: approvalReason });
