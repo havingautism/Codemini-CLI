@@ -364,7 +364,10 @@ export function ConfigDialog({
           idPrefix={idPrefix}
           value={value}
           options={getSettingsOptions(field.optionsKey, { sandboxMode })}
-          onValueChange={(next) => handleChange(field.path, next)}
+          onValueChange={(next) => {
+            if (field.warning && next === "external_authority" && !window.confirm(field.warning)) return;
+            handleChange(field.path, next);
+          }}
         />
       );
     }

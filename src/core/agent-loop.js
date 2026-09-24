@@ -15,6 +15,7 @@ import { evaluateCrewParentCommand } from './crew-shell.js';
 import { buildRunFailureMessage, getToolOutputSanitizeOptions, sanitizeTextForModel } from './tool-output.js';
 import { createToolRuntime, buildInvalidToolArgumentsResult } from './tool-runtime.js';
 import { createToolResultStore, summarizeToolResult } from './tool-result-store.js';
+import { rankToolDefinitions } from './harness/tool-reliability.js';
 import { applyAggressiveToolPruneBeta } from './context-compact.js';
 import {
   markOutsideWorkspaceMutationApproved,
@@ -39,6 +40,7 @@ import {
   isCompletionTruncated,
 } from './provider/completion-status.js';
 import { isShellToolName } from './shell-tool-name.js';
+import { normalizeDecisionState } from './harness/normalize.js';
 
 export { buildInvalidToolArgumentsResult } from './tool-runtime.js';
 
@@ -641,7 +643,15 @@ export async function runAgentLoop({
   onForkJoin = null,
   shouldContinueAfterText = null,
   workspaceRoot = config?.workspaceRoot || process.cwd(),
-  sessionId = ''
+  sessionId = '',
+  decisionController = null,
+  episodeId = '',
+  onDecision = null,
+  toolReliabilityStore = null,
+  toolGuard = null,
+  completionReview = null,
+  skillRoute = null,
+  contextSelector = null
 }) {
   const experienceTracker = config?.memory?.enabled === false || config?.memory?.experience?.enabled === false
     ? null
@@ -662,6 +672,10 @@ export async function runAgentLoop({
   });
   const activeToolResultStore = toolResultStore || createToolResultStore();
   const formatDisplayName = (toolName, args) => toolRuntime.displayName(toolName, args);
+  const toolDefinitionsForModel = () => rankToolDefinitions(
+    toolRuntime.definitions(),
+    toolReliabilityStore?.list?.() || [],
+  );
   const messages = [];
   if (systemPrompt) {
     messages.push({ role: 'system', content: systemPrompt });
@@ -784,6 +798,11 @@ export async function runAgentLoop({
   const stepLimit = Number.isFinite(Number(maxSteps)) ? Math.max(1, Math.min(1000, Math.floor(Number(maxSteps)))) : 500;
   const retryLimit = Number.isFinite(Number(maxIncompleteRetries)) ? Math.max(0, Math.min(10, Math.floor(Number(maxIncompleteRetries)))) : 3;
   let incompleteRetries = 0;
+  let lastToolError = false;
+  let lastToolName = '';
+  let lastFailureReason = '';
+  let retries = 0;
+  let retrySucceeded = null;
   while (true) {
     if (step >= stepLimit) {
       const text = 'Step limit reached. Continue in a new turn to resume.';
@@ -798,6 +817,28 @@ export async function runAgentLoop({
       break;
     }
     emitStepStart();
+    if (decisionController?.enabled) {
+      await decisionController.evaluate({
+        episodeId,
+        step,
+        state: normalizeDecisionState({
+          stage: 'act',
+          executionMode,
+          stepsLeft: Math.max(0, stepLimit - step),
+          budget: { stepsLeft: Math.max(0, stepLimit - step) },
+          riskTier: 'low',
+          toolError: lastToolError,
+          lastToolError: lastFailureReason,
+          lastToolName,
+          retries,
+          retrySucceeded,
+          retryBenefit: lastToolError && !/permission|access denied|invalid.*schema|权限/i.test(lastFailureReason),
+          retryLimit,
+        }),
+        signal,
+        onDecision,
+      }).catch(() => {});
+    }
     const pruneResult = applyAggressiveToolPruneBeta(messages, config);
     if (pruneResult.changed) {
       messages.splice(0, messages.length, ...pruneResult.messages);
@@ -808,10 +849,14 @@ export async function runAgentLoop({
         });
       }
     }
+    if (typeof contextSelector === 'function') {
+      const selected = await contextSelector({ messages, step }).catch(() => null);
+      if (Array.isArray(selected) && selected.length > 0) messages.splice(0, messages.length, ...selected);
+    }
     const completion = await requestCompletion({
       model,
       messages,
-      tools: toolRuntime.definitions(),
+      tools: toolDefinitionsForModel(),
       signal
     });
 
@@ -888,6 +933,14 @@ export async function runAgentLoop({
           continue;
         }
       }
+      if (typeof completionReview === 'function') {
+        const review = await completionReview({ objective: userPrompt, completedWork: messages.slice(-8), step, assistantText }).catch(() => ({ choice: 'complete' }));
+        if (review?.choice === 'verify_more') {
+          appendModelContextMessage(review.reason || '完成度复核要求继续验证任务结果。', { reason: 'completion-review' });
+          emitStepEnd('completion_review');
+          continue;
+        }
+      }
       void maybeRunAutoDream(step, { force: true });
       emitStepEnd('final');
       return settleLoop({ text: finalText, messages, steps: step });
@@ -918,6 +971,13 @@ export async function runAgentLoop({
       let approvalArgs = remapCrewToolArguments(args, workspaceRoot);
       let preflightErrorContent = '';
       let outsideWorkspaceApproval = null;
+      if (toolName === 'skill' && typeof skillRoute === 'function') {
+        const route = await skillRoute({ skillName: args?.name || '', args, step }).catch(() => ({ choice: args?.name || '', reason: 'route_error' }));
+        if (route?.choice && route.choice !== args?.name && route.choice !== 'none') {
+          approvalResults.set(call.id, { approved: false, args: approvalArgs, errorContent: clipToolResult({ error: `Skill route selected ${route.choice}; requested skill was not selected.`, selected_skill: route.choice }, toolResultMaxChars) });
+          continue;
+        }
+      }
       if (!isModelVisible) {
         approvalResults.set(call.id, {
           approved: false,
@@ -1138,6 +1198,13 @@ export async function runAgentLoop({
           }
         }
       }
+      if (approved && typeof toolGuard === 'function') {
+        const guard = await toolGuard({ toolName, displayName, args: approvalArgs, callId: call.id, step }).catch(() => ({ action: 'review', reason: 'guard_error' }));
+        if (guard?.action === 'deny' || guard?.action === 'review' || guard?.action === 'confirm') {
+          approved = false;
+          approvalReason = String(guard.reason || guard.action);
+        }
+      }
       approvalResults.set(call.id, { approved, args: approvalArgs, reason: approvalReason });
     }
 
@@ -1155,7 +1222,7 @@ export async function runAgentLoop({
         const lastAssistant = messages[messages.length - 1];
         stepForkPoint = {
           messages: structuredClone(messages.slice(0, -1)),
-          toolDefinitions: toolRuntime.definitions(),
+          toolDefinitions: toolDefinitionsForModel(),
           parentNote: String(lastAssistant?.content || '').trim().slice(0, 600),
         };
       }
@@ -1613,6 +1680,22 @@ export async function runAgentLoop({
       execute: executeOne,
     });
     for (const result of orderedResults) resultEntries.set(result.callId, result);
+    const failedCall = callsWithMeta.find(({ call }) => resultEntries.get(call.id)?.error);
+    const successfulCall = callsWithMeta.find(({ call }) => !resultEntries.get(call.id)?.error && !resultEntries.get(call.id)?.blocked);
+    const previousFailedTool = lastToolName;
+    const previousHadError = lastToolError;
+    lastToolError = Boolean(failedCall);
+    lastToolName = failedCall?.toolName || successfulCall?.toolName || '';
+    lastFailureReason = failedCall ? String(resultEntries.get(failedCall.call.id)?.summary || '') : '';
+    if (previousHadError && successfulCall?.toolName === previousFailedTool) {
+      retries += 1;
+      retrySucceeded = true;
+    } else if (failedCall && failedCall.toolName === previousFailedTool) {
+      retries += 1;
+      retrySucceeded = false;
+    } else {
+      retrySucceeded = null;
+    }
     if (typeof onForkJoin === 'function') {
       const candidates = callsWithMeta
         .filter(({ toolName }) => toolName === 'fork_task')

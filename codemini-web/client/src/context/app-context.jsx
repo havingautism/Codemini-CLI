@@ -286,6 +286,8 @@ const initialState = {
   targetMessageId: null,
   pendingScrapbookContext: null,
   runtimeState: null,
+  // 每次任务决策助手事件到达时递增，驱动轨迹面板实时刷新审计记录。
+  harnessRevision: 0,
   currentSessionId: null,
   sessionRuntimeById: {},
   sessionMessagesById: {},
@@ -2249,6 +2251,16 @@ export function AppProvider({ children }) {
         }
 
         case "assistant:response": {
+          break;
+        }
+
+        case "harness:decision":
+        case "harness:route":
+        case "harness:context": {
+          setState((prev) => ({
+            ...prev,
+            harnessRevision: Number(prev.harnessRevision || 0) + 1,
+          }));
           break;
         }
 

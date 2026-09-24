@@ -4,7 +4,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { getBaseConfigDir, getProjectIndexDir } from './paths.js';
 import { insertMemoryFtsRow, MEMORY_FTS_DDL } from './memory-fts.js';
 
-const GLOBAL_SCHEMA_VERSION = 15;
+const GLOBAL_SCHEMA_VERSION = 16;
 const PROJECT_SCHEMA_VERSION = 6;
 const databases = new Map();
 
@@ -89,6 +89,46 @@ function createGlobalSchema(db, currentVersion = 0) {
     CREATE TABLE IF NOT EXISTS runtime_status (
       session_id TEXT PRIMARY KEY,
       status TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    ) STRICT;
+
+    CREATE TABLE IF NOT EXISTS harness_episodes (
+      id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      project_dir TEXT NOT NULL DEFAULT '',
+      started_at TEXT NOT NULL,
+      ended_at TEXT,
+      mode TEXT NOT NULL DEFAULT 'shadow',
+      provider TEXT NOT NULL DEFAULT 'rules',
+      status TEXT NOT NULL DEFAULT 'running',
+      outcome TEXT NOT NULL DEFAULT '',
+      config_hash TEXT NOT NULL DEFAULT '',
+      schema_version TEXT NOT NULL DEFAULT 'harness-v1'
+    ) STRICT;
+    CREATE INDEX IF NOT EXISTS harness_episodes_session_idx
+      ON harness_episodes(session_id, started_at DESC);
+
+    CREATE TABLE IF NOT EXISTS harness_events (
+      id TEXT PRIMARY KEY,
+      episode_id TEXT NOT NULL REFERENCES harness_episodes(id) ON DELETE CASCADE,
+      step INTEGER NOT NULL,
+      created_at TEXT NOT NULL,
+      type TEXT NOT NULL,
+      source TEXT NOT NULL DEFAULT 'runtime',
+      parent_id TEXT NOT NULL DEFAULT '',
+      payload_json TEXT NOT NULL,
+      input_hash TEXT NOT NULL DEFAULT ''
+    ) STRICT;
+    CREATE INDEX IF NOT EXISTS harness_events_episode_idx
+      ON harness_events(episode_id, step, created_at, id);
+
+    CREATE TABLE IF NOT EXISTS harness_tool_reliability (
+      tool_name TEXT PRIMARY KEY,
+      successes INTEGER NOT NULL DEFAULT 0,
+      failures INTEGER NOT NULL DEFAULT 0,
+      timeouts INTEGER NOT NULL DEFAULT 0,
+      permission_errors INTEGER NOT NULL DEFAULT 0,
+      last_error TEXT NOT NULL DEFAULT '',
       updated_at TEXT NOT NULL
     ) STRICT;
 

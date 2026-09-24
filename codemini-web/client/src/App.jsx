@@ -652,6 +652,7 @@ function Shell() {
                 messages={state.messages}
                 runtimeState={state.runtimeState}
                 sessionId={currentId}
+                harnessRevision={state.harnessRevision}
               />
             ) : (
               <ChatPanel

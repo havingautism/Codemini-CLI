@@ -175,6 +175,36 @@ const DEFAULT_CONFIG = {
   crew: {
     max_workers: 4
   },
+  harness: {
+    enabled: false,
+    mode: 'shadow',
+    decision_mode: 'advisory',
+    provider: 'rules',
+    timeout_ms: 1500,
+    providers: {
+      jev: { enabled: false, base_url: '', api_key: '', model: '' },
+      laya: { enabled: false, base_url: 'http://127.0.0.1:8765', model: '' }
+    },
+    policy: {
+      finish_probability: 0.98,
+      retry_probability: 0.70,
+      missing_info_probability: 0.55,
+    abstain_max_probability: 0.60,
+    abstain_margin: 0.15,
+    context_keep_probability: 0.70,
+    completion_probability: 0.90,
+    route_min_probability: 0.55,
+    route_min_margin: 0.12
+    },
+    rollout: {
+      enabled: false,
+      percentage: 0,
+      risk_tiers: ['low'],
+      projects: [],
+      sessions: [],
+      salt: 'harness-v1'
+    }
+  },
   policy: {
     safe_mode: true,
     allow_dangerous_commands: false,
@@ -458,6 +488,57 @@ function normalizePolicyLists(config) {
     32,
     normalizedNumber(next.crew.max_workers, DEFAULT_CONFIG.crew.max_workers, 1, { integer: true }),
   );
+  next.harness = next.harness || {};
+  next.harness.enabled = next.harness.enabled === true;
+  next.harness.mode = String(next.harness.mode || 'shadow').trim().toLowerCase() === 'shadow'
+    ? 'shadow'
+    : 'shadow';
+  const harnessProvider = String(next.harness.provider || 'rules').trim().toLowerCase();
+  next.harness.provider = ['rules', 'jev', 'laya'].includes(harnessProvider) ? harnessProvider : 'rules';
+  next.harness.decision_mode = String(next.harness.decision_mode || 'advisory').trim().toLowerCase() === 'external_authority'
+    ? 'external_authority' : 'advisory';
+  if (next.harness.decision_mode === 'external_authority' && !['jev', 'laya'].includes(next.harness.provider)) {
+    next.harness.decision_mode = 'advisory';
+  }
+  next.harness.timeout_ms = normalizedNumber(next.harness.timeout_ms, 1500, 50, { integer: true });
+  next.harness.providers = next.harness.providers && typeof next.harness.providers === 'object'
+    ? next.harness.providers
+    : {};
+  for (const name of ['jev', 'laya']) {
+    const provider = next.harness.providers[name] && typeof next.harness.providers[name] === 'object'
+      ? next.harness.providers[name]
+      : {};
+    provider.enabled = provider.enabled === true;
+    provider.base_url = String(provider.base_url || (name === 'laya' ? 'http://127.0.0.1:8765' : '')).trim();
+    provider.api_key = String(provider.api_key || '').trim();
+    provider.model = String(provider.model || '').trim();
+    next.harness.providers[name] = provider;
+  }
+  next.harness.policy = next.harness.policy && typeof next.harness.policy === 'object'
+    ? next.harness.policy
+    : {};
+  for (const [key, fallback] of Object.entries({
+    finish_probability: 0.98,
+    retry_probability: 0.70,
+    missing_info_probability: 0.55,
+    abstain_max_probability: 0.60,
+    abstain_margin: 0.15,
+    context_keep_probability: 0.70,
+    completion_probability: 0.90,
+    route_min_probability: 0.55,
+    route_min_margin: 0.12,
+  })) {
+    next.harness.policy[key] = Math.max(0, Math.min(1, Number(next.harness.policy[key] ?? fallback)));
+  }
+  next.harness.rollout = next.harness.rollout && typeof next.harness.rollout === 'object' ? next.harness.rollout : {};
+  next.harness.rollout.enabled = next.harness.rollout.enabled === true;
+  next.harness.rollout.percentage = Math.max(0, Math.min(100, Number(next.harness.rollout.percentage ?? 0)));
+  next.harness.rollout.risk_tiers = Array.isArray(next.harness.rollout.risk_tiers)
+    ? next.harness.rollout.risk_tiers.map((item) => String(item).toLowerCase()).filter(Boolean)
+    : ['low'];
+  next.harness.rollout.projects = Array.isArray(next.harness.rollout.projects) ? next.harness.rollout.projects.map(String) : [];
+  next.harness.rollout.sessions = Array.isArray(next.harness.rollout.sessions) ? next.harness.rollout.sessions.map(String) : [];
+  next.harness.rollout.salt = String(next.harness.rollout.salt || 'harness-v1');
   next.shell.default = resolveShellContext(next, { platform: process.platform }).shell;
   return next;
 }

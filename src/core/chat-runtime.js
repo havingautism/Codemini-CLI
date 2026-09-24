@@ -35,6 +35,14 @@ import {
   packageProfileArmEntry,
 } from './hook-profiles.js';
 import { runAgentLoop } from './agent-loop.js';
+import { createDecisionController } from './harness/decision-controller.js';
+import { createHarnessSqliteStore } from './harness/audit/harness-sqlite-store.js';
+import { createToolReliabilityStore } from './harness/tool-reliability.js';
+import { TOOL_GUARD_QUESTIONS, resolveToolGuard } from './harness/tool-guard.js';
+import { COMPLETION_REVIEW_QUESTIONS, resolveCompletionReview } from './harness/completion-review.js';
+import { buildSkillCandidates } from './harness/skill-router.js';
+import { stableHash } from './harness/normalize.js';
+import { shouldRollout } from './harness/rollout.js';
 import { createToolResultStore } from './tool-result-store.js';
 import { parseModelJsonObject } from './model-json.js';
 import { trimInline, normalizePath } from './string-utils.js';
@@ -6130,6 +6138,49 @@ async function askModel({
     }
     return false;
   };
+  const harnessConfig = toolConfig?.harness || {};
+  const harnessEpisodeId = `${session.id}:${turnStartMessageCount}`;
+  const harnessActive = harnessConfig.enabled === true && shouldRollout({
+    rollout: harnessConfig.rollout,
+    sessionId: session.id,
+    projectDir: workspaceRoot,
+    riskTier: 'low',
+  });
+  let harnessStore = null;
+  let toolReliabilityStore = null;
+  const contextDecisionCache = new Map();
+  const contextDecisionLimit = 32;
+  if (harnessActive) {
+    try {
+      harnessStore = createHarnessSqliteStore();
+      toolReliabilityStore = createToolReliabilityStore();
+    } catch { harnessStore = null; toolReliabilityStore = null; }
+  }
+  if (harnessStore) {
+    try {
+      harnessStore.createEpisode({
+        id: harnessEpisodeId,
+        sessionId: session.id,
+        projectDir: workspaceRoot,
+        mode: harnessConfig.mode,
+        decisionMode: harnessConfig.decision_mode,
+        provider: harnessConfig.provider,
+        configHash: stableHash({ mode: harnessConfig.mode, provider: harnessConfig.provider }),
+      });
+    } catch { harnessStore = null; }
+  }
+  const harnessEventType = (type) => {
+    const value = String(type || '');
+    return new Set([
+      'step:start', 'step:end', 'assistant:response', 'tool:start', 'tool:end',
+      'tool:error', 'tool:blocked', 'tool:result', 'model:context', 'checkpoint',
+      'aborted', 'harness:decision', 'harness:route', 'harness:context'
+    ]).has(value) || value.startsWith('approval:');
+  };
+  const finishHarnessEpisode = (status, outcome = '') => {
+    if (!harnessStore) return;
+    try { harnessStore.finishEpisode(harnessEpisodeId, { status, outcome }); } catch { /* 审计失败不影响主任务 */ }
+  };
   const wrappedAgentEvent = (event) => {
     // Always accumulate messages in session (for token tracking), only save when persisting
     if (event?.type === 'assistant:start') {
@@ -6275,6 +6326,28 @@ async function askModel({
       if (persistSession) scheduleSessionSave();
     }
 
+    if (harnessStore && harnessEventType(event?.type)) {
+      try {
+        harnessStore.appendEvent({
+          episodeId: harnessEpisodeId,
+          step: event?.step || 0,
+          type: event?.type,
+          source: event?.type === 'harness:decision' ? 'harness' : 'runtime',
+          parentId: event?.parentId || event?.toolCallId || '',
+          payload: event,
+        });
+      } catch { /* 审计失败不影响主任务 */ }
+    }
+    if (toolReliabilityStore && (event?.type === 'tool:end' || event?.type === 'tool:error')) {
+      try {
+        const failed = event.type === 'tool:error' || event.error === true || event.resultMeta?.ok === false;
+        toolReliabilityStore.record({
+          toolName: event.name,
+          ok: !failed,
+          error: event.summary || event.error || event.content || '',
+        });
+      } catch { /* 统计失败不影响主任务 */ }
+    }
     if (onAgentEvent) onAgentEvent(event);
   };
 
@@ -6389,6 +6462,37 @@ async function askModel({
     },
   });
   let loopResult;
+  const decisionController = harnessActive
+      ? createDecisionController({
+        enabled: true,
+        mode: harnessConfig.mode,
+        provider: harnessConfig.provider,
+        providerConfig: {
+          timeoutMs: harnessConfig.timeout_ms,
+          jev: harnessConfig.providers?.jev ? {
+            enabled: harnessConfig.providers.jev.enabled,
+            baseUrl: harnessConfig.providers.jev.base_url,
+            apiKey: harnessConfig.providers.jev.api_key,
+            model: harnessConfig.providers.jev.model,
+          } : {},
+          laya: harnessConfig.providers?.laya ? {
+            enabled: harnessConfig.providers.laya.enabled,
+            baseUrl: harnessConfig.providers.laya.base_url,
+            model: harnessConfig.providers.laya.model,
+          } : {},
+          policy: harnessConfig.policy || {},
+        },
+        shadowProviders: ['jev', 'laya'].filter((name) => name !== harnessConfig.provider && harnessConfig.providers?.[name]?.enabled === true),
+        onDecision: (event) => wrappedAgentEvent({ type: 'harness:decision', ...event }),
+      })
+    : null;
+  if (decisionController?.orchestrate) {
+    await decisionController.orchestrate({
+      kind: 'task_route', episodeId: harnessEpisodeId, step: 0,
+      state: { objective: loopUserPrompt, stage: 'task_start', riskTier: 'low' },
+      candidates: ['proceed_fast', 'deep_review', 'split_task', 'ask_user', 'block'].map((id) => ({ id, type: 'route', allowed: true })),
+    }).then((event) => wrappedAgentEvent({ type: 'harness:route', stage: 'task_start', ...event })).catch(() => {});
+  }
   try {
     loopResult = await runAgentLoop({
       systemPrompt: skipSystemPromptInsert ? '' : effectiveSystemPrompt,
@@ -6427,6 +6531,76 @@ async function askModel({
       onSkillLoaded,
       workspaceRoot,
       sessionId: session.id,
+      decisionController,
+      episodeId: harnessEpisodeId,
+      toolReliabilityStore,
+      toolGuard: decisionController && harnessConfig.provider !== 'rules'
+        ? async ({ toolName, args, step }) => {
+          const event = await decisionController.evaluate({
+            episodeId: harnessEpisodeId,
+            step,
+            state: { stage: 'tool_guard', tool: toolName, argumentsSummary: Object.keys(args || {}), riskTier: 'low' },
+            questions: TOOL_GUARD_QUESTIONS,
+          });
+          if (!event?.decision?.answers?.some((answer) => answer.id === 'guard_action' && answer.abstain !== true)) {
+            return { action: 'allow', reason: 'provider_unavailable_fallback' };
+          }
+          return resolveToolGuard({ decision: event?.decision, hardGuard: event?.guards, thresholds: harnessConfig.policy || {} });
+        }
+        : null,
+      completionReview: decisionController && harnessConfig.provider !== 'rules'
+        ? async ({ objective, completedWork, step, assistantText }) => {
+          const event = await decisionController.evaluate({ episodeId: harnessEpisodeId, step, state: {
+            stage: 'completion_review', objective, completedWork, assistantText,
+            verificationPassed: session.messages.some((message) => message?.tool_status === 'done'),
+          }, questions: COMPLETION_REVIEW_QUESTIONS });
+          const choice = event?.decision?.answers?.find((answer) => answer.id === 'completion_status')?.choice;
+          const probability = event?.decision?.answers?.find((answer) => answer.id === 'completion_probability')?.pTrue;
+          if (!choice) return { choice: 'complete' };
+          return resolveCompletionReview({ choice, probability, deterministicVerified: Boolean(event?.state?.verificationPassed) });
+        }
+        : null,
+      skillRoute: decisionController && harnessConfig.provider !== 'rules'
+        ? async ({ skillName, args, step }) => {
+          const candidates = buildSkillCandidates([{ name: skillName, description: '当前模型请求的 Skill' }, { name: 'none', description: '不加载额外 Skill' }]);
+          const event = await decisionController.orchestrate({ kind: 'skill_route', episodeId: harnessEpisodeId, step, state: { stage: 'skill_route', requestedSkill: skillName }, candidates, questions: [{ id: 'selected_skill', type: 'choice', options: candidates.map((item) => item.id) }] });
+          wrappedAgentEvent({ type: 'harness:route', stage: 'skill_route', ...event });
+          return { choice: event.selected || skillName, reason: event.policy?.reason };
+        }
+        : null,
+      contextSelector: decisionController && harnessConfig.provider !== 'rules'
+        ? async ({ messages, step }) => {
+          // 系统消息和所有用户消息都是任务证据，不能因为它们不是最后一条
+          // 消息就被上下文概率判断删除；否则工具调用后会丢失原始需求。
+          const blocks = messages.map((message, index) => ({ id: `message-${index}`, score: message.role === 'system' || message.role === 'user' ? 1 : 0.4, required: message.role === 'system' || message.role === 'user', message }));
+          const optional = blocks.filter((block) => !block.required);
+          let newJudgements = 0;
+          const judged = await Promise.all(optional.map(async (block) => {
+            const cacheKey = stableHash({ role: block.message?.role || '', content: block.message?.content || '' });
+            const cached = contextDecisionCache.get(cacheKey);
+            if (cached) return { ...block, ...cached };
+            if (newJudgements >= contextDecisionLimit) {
+              const bounded = { keep: true, probability: null, reason: 'judgement_budget_keep' };
+              contextDecisionCache.set(cacheKey, bounded);
+              return { ...block, ...bounded };
+            }
+            newJudgements += 1;
+            const event = await decisionController.orchestrate({
+              kind: 'context_keep', episodeId: harnessEpisodeId, step,
+              state: { stage: 'context_keep', objective: loopUserPrompt, contextBlock: block.message.content },
+              candidates: [{ id: block.id, type: 'context', allowed: true }],
+              questions: [{ id: 'keep_context', type: 'noul', statement: 'This context block is still relevant to the current task and should be kept.' }],
+            });
+            const result = { keep: event.selected === true, probability: event.probability, reason: event.policy?.reason };
+            contextDecisionCache.set(cacheKey, result);
+            return { ...block, ...result };
+          }));
+          const decisions = blocks.filter((block) => block.required).map((block) => ({ id: block.id, kept: true, probability: 1, reason: 'required' })).concat(judged.map((block) => ({ id: block.id, kept: block.keep, probability: block.probability, reason: block.reason })));
+          wrappedAgentEvent({ type: 'harness:context', stage: 'context_keep', step, decisions });
+          const keep = new Set(decisions.filter((item) => item.kept).map((item) => item.id));
+          return messages.filter((_, index) => keep.has(`message-${index}`));
+        }
+        : null,
       onForkJoin: (candidates) => commitForkMemoryCandidates({
         candidates,
         sessionId: session.id,
@@ -6532,12 +6706,14 @@ async function askModel({
       }
     });
   } catch (error) {
+    finishHarnessEpisode(signal?.aborted || error?.name === 'AbortError' ? 'aborted' : 'failed', error?.message || String(error));
     if (signal?.aborted || error?.name === 'AbortError') {
       await handleAbortAftermath();
     }
     throw error;
   }
   if (signal?.aborted || loopResult?.aborted) {
+    finishHarnessEpisode('aborted', 'signal');
     await handleAbortAftermath();
     return { text: '', aborted: true };
   }
@@ -6574,6 +6750,7 @@ async function askModel({
       // keep chat usable even if pruning fails
     });
   }
+  finishHarnessEpisode('completed', loopResult.text || '');
   return { text: loopResult.text, aborted: !!loopResult.aborted };
 }
 

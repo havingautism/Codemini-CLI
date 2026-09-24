@@ -170,6 +170,15 @@ const OPTION_GETTERS = {
   searchProvider: getSearchProviderOptions,
   shell: getShellOptions,
   replyLanguage: getReplyLanguageOptions,
+  harnessProvider: () => [
+    { value: "rules", label: "Rules" },
+    { value: "jev", label: "Jev" },
+    { value: "laya", label: "Laya" },
+  ],
+  harnessDecisionMode: () => [
+    { value: "advisory", label: "建议模式" },
+    { value: "external_authority", label: "外部决策接管（高风险）" },
+  ],
 };
 
 export function getSettingsOptions(key, context) {
@@ -186,4 +195,5 @@ export const SETTINGS_TABS = [
   { id: "shell", labelKey: "shell" },
   { id: "storage", labelKey: "storage" },
   { id: "policy", labelKey: "policy" },
+  { id: "harness", labelKey: "harness" },
 ];

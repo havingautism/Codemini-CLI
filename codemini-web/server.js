@@ -37,6 +37,8 @@ import {
   saveSession,
 } from "../src/core/session-store.js";
 import { hasUiTranscriptInSqlite } from "../src/core/session-sqlite-store.js";
+import { createHarnessSqliteStore } from "../src/core/harness/audit/harness-sqlite-store.js";
+import { createToolReliabilityStore } from "../src/core/harness/tool-reliability.js";
 import {
   forkIdleSession,
   sessionForkBlockedReason,
@@ -1046,6 +1048,22 @@ export function createWebRuntimeApi({
       });
       return true;
 
+  }));
+  runtimeRoutes.get("/api/harness/episodes", nodeRoute(async (req, res, url) => {
+      const sessionId = String(url.searchParams.get("session_id") || "").trim();
+      const store = createHarnessSqliteStore();
+      const episodes = store.listEpisodes({ sessionId, limit: 100 });
+      const payload = episodes.map((episode) => ({
+        ...episode,
+        events: store.listEpisodeEvents(episode.id),
+      }));
+      jsonResponse(res, { episodes: payload });
+      return true;
+  }));
+  runtimeRoutes.get("/api/harness/tool-reliability", nodeRoute(async (req, res) => {
+      const store = createToolReliabilityStore();
+      jsonResponse(res, { tools: store.list() });
+      return true;
   }));
   runtimeRoutes.get("/api/sessions", nodeRoute(async (req, res, url) => {
       const requestedLimit = Number(url.searchParams.get("limit") || 200);
