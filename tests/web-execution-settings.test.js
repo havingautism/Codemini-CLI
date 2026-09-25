@@ -41,11 +41,15 @@ test('settings show new limits and security status with matching defaults and ra
     }
     assert.ok(fields.some(f => f.path === 'model.fast_name'));
     for (const key of [
+      'harness.provider',
       'harness.providers.jev.enabled', 'harness.providers.jev.base_url',
       'harness.providers.jev.api_key', 'harness.providers.jev.model',
       'harness.providers.laya.enabled', 'harness.providers.laya.base_url', 'harness.providers.laya.model',
       'jev.enabled', 'jev.api_key', 'jev.model',
     ]) {
+      assert.equal(fields.find(f => f.path === key)?.tab, 'model', key);
+    }
+    for (const key of ['harness.enabled', 'harness.decision_mode', 'harness.rollout.enabled']) {
       assert.equal(fields.find(f => f.path === key)?.tab, 'harness', key);
     }
     assert.notEqual(fields.find(f => f.path === 'harness.providers.jev.api_key')?.label, fields.find(f => f.path === 'jev.api_key')?.label);
