@@ -2,11 +2,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { shouldActivateHarness, shouldRollout } from '../src/core/harness/rollout.js';
 
-test('enabled assistant runs rules without requiring shadow rollout', () => {
+test('assistant requires an external provider but not shadow rollout', () => {
   assert.equal(shouldActivateHarness({ harness: { enabled: false, rollout: { enabled: false } } }), false);
-  assert.equal(shouldActivateHarness({ harness: { enabled: true, provider: 'rules', rollout: { enabled: false, percentage: 0 } } }), true);
-  assert.equal(shouldActivateHarness({ harness: { enabled: true, rollout: { enabled: true, percentage: 0 } } }), false);
-  assert.equal(shouldActivateHarness({ harness: { enabled: true, rollout: { enabled: true, percentage: 100, risk_tiers: ['low'] } }, riskTier: 'low' }), true);
+  assert.equal(shouldActivateHarness({ harness: { enabled: true, provider: 'rules', rollout: { enabled: false, percentage: 0 } } }), false);
+  assert.equal(shouldActivateHarness({ harness: { enabled: true, provider: 'jev', rollout: { enabled: false, percentage: 0 } } }), true);
+  assert.equal(shouldActivateHarness({ harness: { enabled: true, provider: 'laya', rollout: { enabled: true, percentage: 0 } } }), false);
+  assert.equal(shouldActivateHarness({ harness: { enabled: true, provider: 'laya', rollout: { enabled: true, percentage: 100, risk_tiers: ['low'] } }, riskTier: 'low' }), true);
 });
 
 test('rollout defaults closed and supports deterministic 100 percent matching', () => {

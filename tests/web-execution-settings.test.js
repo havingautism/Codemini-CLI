@@ -5,7 +5,7 @@ import { assertWebConfigWritable } from '../codemini-web/lib/web-security.js';
 import { getDecisionProviderStatus } from '../codemini-web/client/src/lib/decision-provider-status.js';
 
 test('task decisions require the selected external provider to be configured', () => {
-  assert.equal(getDecisionProviderStatus({ provider: 'rules' }).ready, true);
+  assert.deepEqual(getDecisionProviderStatus({ provider: 'rules' }), { ready: false, reason: 'rules_provider' });
   assert.deepEqual(getDecisionProviderStatus({ provider: 'jev' }), { ready: false, reason: 'missing_url' });
   assert.deepEqual(getDecisionProviderStatus({ provider: 'jev', baseUrl: 'https://example.test/decisions' }), { ready: false, reason: 'missing_key' });
   assert.equal(getDecisionProviderStatus({ provider: 'jev', baseUrl: 'https://example.test/decisions', hasApiKey: true }).ready, true);

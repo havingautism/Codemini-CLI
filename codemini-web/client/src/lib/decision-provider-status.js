@@ -1,5 +1,5 @@
 export function getDecisionProviderStatus({ provider, baseUrl, hasApiKey = false } = {}) {
-  if (provider === 'rules') return { ready: true, reason: '' };
+  if (provider === 'rules') return { ready: false, reason: 'rules_provider' };
   if (provider !== 'jev' && provider !== 'laya') return { ready: false, reason: 'select_provider' };
 
   const url = String(baseUrl || '').trim();

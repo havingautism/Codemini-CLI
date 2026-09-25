@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 
 export function shouldActivateHarness({ harness = {}, sessionId = '', projectDir = '', riskTier = 'low' } = {}) {
   if (harness.enabled !== true) return false;
+  if (harness.provider !== 'jev' && harness.provider !== 'laya') return false;
   if (harness.rollout?.enabled !== true) return true;
   return shouldRollout({ rollout: harness.rollout, sessionId, projectDir, riskTier });
 }
