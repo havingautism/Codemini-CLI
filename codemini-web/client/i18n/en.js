@@ -726,7 +726,7 @@ export const en = {
   harnessDecisionModeHelp: "Advisory mode records evaluations while the task assistant still influences execution. External authority also applies decisions from Jev or Laya.",
   harnessDecisionModeWarning: "High-risk mode: Jev/Laya will participate in all task decisions, including continue, retry, tool changes, questions, and finish. The model still executes and summarizes, and safety gates remain active. Enable it?",
   harnessRolloutEnabled: "Enable Shadow Rollout",
-  harnessRolloutEnabledHelp: "Record task decision results only for sessions that match the rollout rules. Off by default.",
+  harnessRolloutEnabledHelp: "When off, the task assistant runs for every session. When on, it runs only for sessions matching the rollout rules.",
   harnessRolloutPercentage: "Rollout Percentage",
   harnessRolloutPercentageHelp: "0 to 100. The same session stays in the same bucket.",
   harnessRiskTiers: "Rollout Risk Tiers",

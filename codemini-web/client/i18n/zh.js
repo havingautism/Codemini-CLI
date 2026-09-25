@@ -720,7 +720,7 @@ export const zh = {
   harnessDecisionModeHelp: "建议模式会记录评估结果；任务决策助手仍参与执行过程。外部决策接管会进一步采纳 Jev 或 Laya 的决策建议。",
   harnessDecisionModeWarning: "这是高风险模式：Jev/Laya 将参与所有任务决策，可能影响继续、重试、换工具、询问和结束。执行与总结仍由模型完成，安全硬门禁仍然有效。确定要开启吗？",
   harnessRolloutEnabled: "启用灰度观察",
-  harnessRolloutEnabledHelp: "只让符合灰度条件的会话记录任务决策结果。默认关闭。",
+  harnessRolloutEnabledHelp: "关闭时任务决策助手对所有会话生效；开启后只对符合灰度条件的会话生效。",
   harnessRolloutPercentage: "灰度比例",
   harnessRolloutPercentageHelp: "0 到 100。相同会话会稳定地落在同一个分组。",
   harnessRiskTiers: "灰度风险层级",

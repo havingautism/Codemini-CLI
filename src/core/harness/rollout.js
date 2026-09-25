@@ -1,5 +1,11 @@
 import crypto from 'node:crypto';
 
+export function shouldActivateHarness({ harness = {}, sessionId = '', projectDir = '', riskTier = 'low' } = {}) {
+  if (harness.enabled !== true) return false;
+  if (harness.rollout?.enabled !== true) return true;
+  return shouldRollout({ rollout: harness.rollout, sessionId, projectDir, riskTier });
+}
+
 export function shouldRollout({ rollout = {}, sessionId = '', projectDir = '', riskTier = 'low' } = {}) {
   if (rollout.enabled !== true) return false;
   if (!Array.isArray(rollout.risk_tiers) || !rollout.risk_tiers.includes(String(riskTier).toLowerCase())) return false;

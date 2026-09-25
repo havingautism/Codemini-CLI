@@ -43,7 +43,7 @@ import { TOOL_GUARD_QUESTIONS, resolveToolGuard } from './harness/tool-guard.js'
 import { COMPLETION_REVIEW_QUESTIONS, resolveCompletionReview } from './harness/completion-review.js';
 import { buildSkillCandidates } from './harness/skill-router.js';
 import { stableHash } from './harness/normalize.js';
-import { shouldRollout } from './harness/rollout.js';
+import { shouldActivateHarness } from './harness/rollout.js';
 import { createToolResultStore } from './tool-result-store.js';
 import { parseModelJsonObject } from './model-json.js';
 import { trimInline, normalizePath } from './string-utils.js';
@@ -6143,8 +6143,8 @@ async function askModel({
   };
   const harnessConfig = toolConfig?.harness || {};
   const harnessEpisodeId = `${session.id}:${turnStartMessageCount}`;
-  const harnessActive = harnessConfig.enabled === true && shouldRollout({
-    rollout: harnessConfig.rollout,
+  const harnessActive = shouldActivateHarness({
+    harness: harnessConfig,
     sessionId: session.id,
     projectDir: workspaceRoot,
     riskTier: 'low',

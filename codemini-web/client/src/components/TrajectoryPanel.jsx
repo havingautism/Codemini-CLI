@@ -604,7 +604,7 @@ export function TrajectoryPanel({
             </details>
           </>
         ) : (
-          <div className="mt-2 text-[11px] text-(--text-muted)">请在设置中开启任务决策助手，并让当前会话实际运行一步后，这里会显示概率、动作和触发原因。</div>
+          <div className="mt-2 text-[11px] text-(--text-muted)">选择“规则”不会自动开启助手。请在决策设置中启用任务决策助手；若已启用却仍无记录，请检查主模型连接及灰度范围。</div>
         )}
       </section>
       <div className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto">
