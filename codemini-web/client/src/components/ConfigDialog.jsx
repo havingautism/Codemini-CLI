@@ -43,6 +43,7 @@ import { SettingsChoiceList } from "@/components/settings/SettingsChoiceList.jsx
 import { SettingsProviderCards } from "@/components/settings/SettingsProviderCards.jsx";
 import { SettingsPercentField } from "@/components/settings/SettingsPercentField.jsx";
 import { SettingsStorage } from "@/components/settings/SettingsStorage.jsx";
+import { ConfirmDialog } from "@/components/ConfirmDialog.jsx";
 
 function getNestedValue(obj, path) {
   return path.split(".").reduce((o, k) => o?.[k], obj);
@@ -145,6 +146,7 @@ export function ConfigDialog({
   const [configLoading, setConfigLoading] = useState(false);
   const [playwrightStatus, setPlaywrightStatus] = useState(null);
   const [playwrightLoading, setPlaywrightLoading] = useState(false);
+  const [pendingWarning, setPendingWarning] = useState(null);
 
   useEffect(() => {
     if (!open) return;
@@ -153,6 +155,7 @@ export function ConfigDialog({
     setPlaywrightLoading(true);
     setPlaywrightStatus(null);
     setChanges({});
+    setPendingWarning(null);
     setSaveError("");
     setActiveTab("connection");
     api
@@ -407,7 +410,10 @@ export function ConfigDialog({
           options={getSettingsOptions(field.optionsKey, { sandboxMode })}
           disabled={disabled}
           onValueChange={(next) => {
-            if (field.warning && next === "external_authority" && !window.confirm(field.warning)) return;
+            if (field.warning && next === "external_authority") {
+              setPendingWarning({ path: field.path, value: next, title: field.label, description: field.warning });
+              return;
+            }
             handleChange(field.path, next);
           }}
         />
@@ -636,6 +642,19 @@ export function ConfigDialog({
           </Button>
         </DialogFooter>
       </DialogContent>
+      <ConfirmDialog
+        open={!!pendingWarning}
+        title={pendingWarning?.title}
+        description={pendingWarning?.description}
+        confirmLabel={t("enable")}
+        confirmVariant="default"
+        onOpenChange={(nextOpen) => !nextOpen && setPendingWarning(null)}
+        onConfirm={() => {
+          if (!pendingWarning) return;
+          handleChange(pendingWarning.path, pendingWarning.value);
+          setPendingWarning(null);
+        }}
+      />
     </Dialog>
   );
 }
