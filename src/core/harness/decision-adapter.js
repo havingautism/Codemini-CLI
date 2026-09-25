@@ -32,12 +32,12 @@ export function createDecisionAdapter({ providers = {}, provider = 'rules', shad
   };
 }
 
-export function createConfiguredDecisionProviders(config = {}) {
+export function createConfiguredDecisionProviders(config = {}, selectedProvider = 'rules') {
   const timeoutMs = config.timeoutMs || 1500;
-  const jev = config.jev?.enabled && config.jev.baseUrl
+  const jev = (selectedProvider === 'jev' || config.jev?.enabled) && config.jev?.baseUrl
     ? createJevProvider({ baseUrl: config.jev.baseUrl, apiKey: config.jev.apiKey, model: config.jev.model, timeoutMs })
     : null;
-  const laya = config.laya?.enabled && config.laya.baseUrl
+  const laya = (selectedProvider === 'laya' || config.laya?.enabled) && config.laya?.baseUrl
     ? createLayaProvider({ baseUrl: config.laya.baseUrl, model: config.laya.model, timeoutMs })
     : null;
   return { jev, laya };

@@ -1,5 +1,6 @@
 import { SettingsSecretField } from '@/components/settings/SettingsSecretField.jsx';
 import { hasConfiguredSecret, secretSettingWrite } from '@/lib/secret-settings.js';
+import { getDecisionProviderStatus } from '@/lib/decision-provider-status.js';
 import { isWebConfigReadOnly, validateWebConfigValue } from '../../../shared/web-config-policy.js';
 import { useState, useEffect, useMemo } from "react";
 import {
@@ -14,6 +15,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Switch } from "@/components/ui/switch";
+import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   CheckCircle,
@@ -219,6 +221,17 @@ export function ConfigDialog({
     return value === true || value === "true";
   };
 
+  const jevKeyDraft = changes["harness.providers.jev.api_key"];
+  const hasJevKey = jevKeyDraft === null
+    ? false
+    : Boolean(secretSettingWrite(jevKeyDraft)) || hasConfiguredSecret(config, "harness.providers.jev.api_key");
+  const decisionProvider = getValue("harness.provider");
+  const decisionProviderStatus = getDecisionProviderStatus({
+    provider: decisionProvider,
+    baseUrl: getValue(`harness.providers.${decisionProvider}.base_url`),
+    hasApiKey: hasJevKey,
+  });
+
   const getReasoningEnabled = () => {
     if ("model.reasoning_enabled" in changes) {
       return normalizeReasoningEnabled(changes["model.reasoning_enabled"]);
@@ -277,7 +290,10 @@ export function ConfigDialog({
     setSaveError("");
     try {
       let savedConfig = config;
-      for (const [path, value] of Object.entries(changes)) {
+      const pendingChanges = !decisionProviderStatus.ready && getBooleanValue("harness.enabled")
+        ? { ...changes, "harness.enabled": false }
+        : changes;
+      for (const [path, value] of Object.entries(pendingChanges)) {
         let normalizedValue = value;
         if (path === "model.reasoning_enabled") {
           normalizedValue = value === true || value === "true";
@@ -324,9 +340,10 @@ export function ConfigDialog({
         {field.cliExample ? <code className="mt-1 block break-all text-xs">{field.cliExample}</code> : null}
       </div>;
     }
+    const disabled = saving || (field.tab === "harness" && !decisionProviderStatus.ready);
     if (field.type === "password") return <SettingsSecretField
       key={`${field.path}-${open}`} id={field.path} configured={hasConfiguredSecret(config, field.path)}
-      draft={changes[field.path]} disabled={saving} onChange={value => handleChange(field.path, value)} />;
+      draft={changes[field.path]} disabled={disabled} onChange={value => handleChange(field.path, value)} />;
     const sandboxMode = getValue("sandbox.mode");
     const sandboxConfined = sandboxMode !== "danger-full-access";
     const value =
@@ -340,7 +357,8 @@ export function ConfigDialog({
         <div className="flex justify-end">
           <Switch
             id={field.path}
-            checked={getBooleanValue(field.path)}
+            checked={field.path === "harness.enabled" && !decisionProviderStatus.ready ? false : getBooleanValue(field.path)}
+            disabled={disabled}
             onCheckedChange={(checked) => handleChange(field.path, checked)}
           />
         </div>
@@ -358,12 +376,30 @@ export function ConfigDialog({
       );
     }
 
+    if (field.control === "select") {
+      return (
+        <Select value={value} disabled={disabled} onValueChange={(next) => handleChange(field.path, next)}>
+          <SelectTrigger id={field.path} className="w-full">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectGroup>
+              {getSettingsOptions(field.optionsKey).map((option) => (
+                <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+              ))}
+            </SelectGroup>
+          </SelectContent>
+        </Select>
+      );
+    }
+
     if (field.control === "choiceList") {
       return (
         <SettingsChoiceList
           idPrefix={idPrefix}
           value={value}
           options={getSettingsOptions(field.optionsKey, { sandboxMode })}
+          disabled={disabled}
           onValueChange={(next) => {
             if (field.warning && next === "external_authority" && !window.confirm(field.warning)) return;
             handleChange(field.path, next);
@@ -391,6 +427,7 @@ export function ConfigDialog({
           min={field.min}
           max={field.max}
           placeholder={field.placeholder}
+          disabled={disabled}
           onChange={(next) => handleChange(field.path, next)}
         />
       );
@@ -404,6 +441,7 @@ export function ConfigDialog({
           onChange={(e) => handleChange(field.path, e.target.value)}
           placeholder={field.placeholder || ""}
           rows={3}
+          disabled={disabled}
           className="font-mono text-[12px]"
         />
       );
@@ -417,6 +455,7 @@ export function ConfigDialog({
         min={field.min}
         max={field.max}
         step={field.step}
+        disabled={disabled}
         onChange={(e) => handleChange(field.path, e.target.value)}
         placeholder={field.type === "password" ? "Enter a new key to replace the stored key" : field.placeholder || ""}
       />
@@ -433,6 +472,15 @@ export function ConfigDialog({
 
     return (
       <SettingsSection>
+        {tabId === "harness" && !decisionProviderStatus.ready && (
+          <Alert>
+            <AlertTitle>{t("harnessProviderNotReady")}</AlertTitle>
+            <AlertDescription>
+              {t(`harnessProvider_${decisionProviderStatus.reason}`)}{' '}
+              <Button variant="link" size="sm" className="px-0" onClick={() => setActiveTab("model")}>{t("harnessOpenModelSettings")}</Button>
+            </AlertDescription>
+          </Alert>
+        )}
         {fields.map((field) => (
           <SettingsField
             key={field.path}
@@ -446,6 +494,7 @@ export function ConfigDialog({
                 : undefined
             }
             inline={field.control === "switch"}
+            className={tabId === "harness" && !decisionProviderStatus.ready ? "opacity-60" : undefined}
           >
             {renderControl(field)}
           </SettingsField>

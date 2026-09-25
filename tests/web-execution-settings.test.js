@@ -2,6 +2,16 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { isWebConfigReadOnly, validateWebConfigValue } from '../codemini-web/shared/web-config-policy.js';
 import { assertWebConfigWritable } from '../codemini-web/lib/web-security.js';
+import { getDecisionProviderStatus } from '../codemini-web/client/src/lib/decision-provider-status.js';
+
+test('task decisions require the selected external provider to be configured', () => {
+  assert.equal(getDecisionProviderStatus({ provider: 'rules' }).ready, true);
+  assert.deepEqual(getDecisionProviderStatus({ provider: 'jev' }), { ready: false, reason: 'missing_url' });
+  assert.deepEqual(getDecisionProviderStatus({ provider: 'jev', baseUrl: 'https://example.test/decisions' }), { ready: false, reason: 'missing_key' });
+  assert.equal(getDecisionProviderStatus({ provider: 'jev', baseUrl: 'https://example.test/decisions', hasApiKey: true }).ready, true);
+  assert.equal(getDecisionProviderStatus({ provider: 'laya', baseUrl: 'http://127.0.0.1:8765' }).ready, true);
+  assert.equal(getDecisionProviderStatus({ provider: 'laya', baseUrl: 'file:///tmp/decide' }).reason, 'invalid_url');
+});
 
 test('execution limits are editable only at exact keys with bounded integer values', () => {
   for (const [key, min, max] of [['execution.max_steps', 1, 1000], ['execution.incomplete_retries', 0, 10]]) {
@@ -42,9 +52,9 @@ test('settings show new limits and security status with matching defaults and ra
     assert.ok(fields.some(f => f.path === 'model.fast_name'));
     for (const key of [
       'harness.provider',
-      'harness.providers.jev.enabled', 'harness.providers.jev.base_url',
+      'harness.providers.jev.base_url',
       'harness.providers.jev.api_key', 'harness.providers.jev.model',
-      'harness.providers.laya.enabled', 'harness.providers.laya.base_url', 'harness.providers.laya.model',
+      'harness.providers.laya.base_url', 'harness.providers.laya.model',
       'jev.enabled', 'jev.api_key', 'jev.model',
     ]) {
       assert.equal(fields.find(f => f.path === key)?.tab, 'model', key);
@@ -53,5 +63,20 @@ test('settings show new limits and security status with matching defaults and ra
       assert.equal(fields.find(f => f.path === key)?.tab, 'harness', key);
     }
     assert.notEqual(fields.find(f => f.path === 'harness.providers.jev.api_key')?.label, fields.find(f => f.path === 'jev.api_key')?.label);
+    assert.equal(fields.find(f => f.path === 'harness.provider')?.control, 'select');
+    assert.equal(fields.some(f => f.path === 'harness.providers.jev.enabled' || f.path === 'harness.providers.laya.enabled'), false);
+    for (const provider of ['rules', 'jev', 'laya']) {
+      const getValue = (path) => path === 'harness.provider' ? provider : false;
+      for (const name of ['jev', 'laya']) {
+        for (const field of fields.filter(f => f.path.startsWith(`harness.providers.${name}.`))) {
+          assert.equal(field.visibleWhen({ getValue }), provider === name, `${provider}: ${field.path}`);
+        }
+      }
+    }
+    for (const key of ['jev.api_key', 'jev.model']) {
+      const field = fields.find(f => f.path === key);
+      assert.equal(field.visibleWhen({ getValue: () => false }), false);
+      assert.equal(field.visibleWhen({ getValue: () => true }), true);
+    }
   }
 });

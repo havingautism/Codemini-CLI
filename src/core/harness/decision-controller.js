@@ -17,7 +17,7 @@ export function createDecisionController({
   shadowProviders = [],
   decisionMode = 'advisory',
 } = {}) {
-  const configured = createConfiguredDecisionProviders(providerConfig);
+  const configured = createConfiguredDecisionProviders(providerConfig, provider);
   const decisionAdapter = adapter || createDecisionAdapter({
     provider,
     providers: configured,

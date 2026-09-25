@@ -171,7 +171,7 @@ const OPTION_GETTERS = {
   shell: getShellOptions,
   replyLanguage: getReplyLanguageOptions,
   harnessProvider: () => [
-    { value: "rules", label: "Rules" },
+    { value: "rules", label: t("harnessProviderRules") },
     { value: "jev", label: "Jev" },
     { value: "laya", label: "Laya" },
   ],

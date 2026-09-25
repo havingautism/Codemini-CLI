@@ -6484,7 +6484,7 @@ async function askModel({
           } : {},
           policy: harnessConfig.policy || {},
         },
-        shadowProviders: ['jev', 'laya'].filter((name) => name !== harnessConfig.provider && harnessConfig.providers?.[name]?.enabled === true),
+        shadowProviders: [],
         onDecision: (event) => wrappedAgentEvent({ type: 'harness:decision', ...event }),
       })
     : null;

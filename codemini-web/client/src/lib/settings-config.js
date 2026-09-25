@@ -278,7 +278,7 @@ export function buildSettingsFields() {
     {
       tab: "model",
       path: "harness.provider",
-      control: "choiceList",
+      control: "select",
       optionsKey: "harnessProvider",
       label: t("harnessProvider"),
       help: t("harnessProviderHelp"),
@@ -318,18 +318,12 @@ export function buildSettingsFields() {
     },
     {
       tab: "model",
-      path: "harness.providers.jev.enabled",
-      control: "switch",
-      label: t("harnessJevEnabled"),
-      help: t("harnessJevEnabledHelp"),
-    },
-    {
-      tab: "model",
       path: "harness.providers.jev.base_url",
       control: "input",
       label: t("harnessJevUrl"),
       help: t("harnessProviderUrlHelp"),
       placeholder: "https://…",
+      visibleWhen: ({ getValue }) => getValue("harness.provider") === "jev",
     },
     {
       tab: "model",
@@ -338,6 +332,7 @@ export function buildSettingsFields() {
       type: "password",
       label: t("harnessJevApiKey"),
       help: t("harnessApiKeyHelp"),
+      visibleWhen: ({ getValue }) => getValue("harness.provider") === "jev",
     },
     {
       tab: "model",
@@ -345,13 +340,7 @@ export function buildSettingsFields() {
       control: "input",
       label: t("harnessJevModel"),
       placeholder: "typesafe/jev-1.13",
-    },
-    {
-      tab: "model",
-      path: "harness.providers.laya.enabled",
-      control: "switch",
-      label: t("harnessLayaEnabled"),
-      help: t("harnessLayaEnabledHelp"),
+      visibleWhen: ({ getValue }) => getValue("harness.provider") === "jev",
     },
     {
       tab: "model",
@@ -360,12 +349,14 @@ export function buildSettingsFields() {
       label: t("harnessLayaUrl"),
       help: t("harnessProviderUrlHelp"),
       placeholder: "http://127.0.0.1:8765",
+      visibleWhen: ({ getValue }) => getValue("harness.provider") === "laya",
     },
     {
       tab: "model",
       path: "harness.providers.laya.model",
       control: "input",
       label: t("harnessLayaModel"),
+      visibleWhen: ({ getValue }) => getValue("harness.provider") === "laya",
     },
     {
       tab: "model",
@@ -382,6 +373,7 @@ export function buildSettingsFields() {
       label: t("jevApiKey"),
       placeholder: "ts_...",
       help: t("jevApiKeyHelp"),
+      visibleWhen: ({ getValue }) => getValue("jev.enabled") === true,
     },
     {
       tab: "model",
@@ -389,6 +381,7 @@ export function buildSettingsFields() {
       control: "input",
       label: t("jevModel"),
       placeholder: "jev-latest",
+      visibleWhen: ({ getValue }) => getValue("jev.enabled") === true,
     },
     {
       tab: "policy",
