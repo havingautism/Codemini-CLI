@@ -34,6 +34,15 @@ import {
   stringifyTrajectoryValue,
   trajectoryExportFilename,
 } from "@/lib/session-trajectory.js";
+import {
+  activationLabel,
+  beliefPercent,
+  classifyDecision,
+  collectHarnessEvents,
+  decisionAction,
+  hardGateLabel,
+  summarizeHarness,
+} from "@/lib/harness-summary.js";
 import { t } from "../../i18n/index.js";
 
 const KIND_CLASS = {
@@ -321,20 +330,40 @@ export function TrajectoryPanel({
   const [exportError, setExportError] = useState("");
   const [inspectEvent, setInspectEvent] = useState(null);
   const [harnessEpisodes, setHarnessEpisodes] = useState([]);
+  const [harnessActivation, setHarnessActivation] = useState(null);
+  const [harnessFetchStatus, setHarnessFetchStatus] = useState("idle");
+  const [harnessFetchError, setHarnessFetchError] = useState("");
   const [toolReliability, setToolReliability] = useState([]);
 
   useEffect(() => {
     if (!sessionId) {
       setHarnessEpisodes([]);
+      setHarnessActivation(null);
+      setHarnessFetchStatus("idle");
+      setHarnessFetchError("");
       return undefined;
     }
     let active = true;
+    setHarnessFetchStatus("loading");
+    setHarnessFetchError("");
     fetch(`/api/harness/episodes?session_id=${encodeURIComponent(sessionId)}`)
-      .then((response) => (response.ok ? response.json() : { episodes: [] }))
-      .then((payload) => {
-        if (active) setHarnessEpisodes(Array.isArray(payload?.episodes) ? payload.episodes : []);
+      .then(async (response) => {
+        if (!response.ok) throw new Error(`请求失败（${response.status}）`);
+        return response.json();
       })
-      .catch(() => { if (active) setHarnessEpisodes([]); });
+      .then((payload) => {
+        if (!active) return;
+        setHarnessEpisodes(Array.isArray(payload?.episodes) ? payload.episodes : []);
+        setHarnessActivation(payload?.activation || null);
+        setHarnessFetchStatus("success");
+      })
+      .catch((error) => {
+        if (!active) return;
+        setHarnessEpisodes([]);
+        setHarnessActivation(null);
+        setHarnessFetchStatus("error");
+        setHarnessFetchError(String(error?.message || "任务决策助手轨迹请求失败"));
+      });
     return () => { active = false; };
   }, [sessionId, harnessRevision]);
 
@@ -370,26 +399,13 @@ export function TrajectoryPanel({
     return Object.keys(KIND_I18N).filter((kind) => seen.has(kind));
   }, [built.events]);
 
-  const harnessSummary = useMemo(() => {
-    const harnessEvents = harnessEpisodes.flatMap((episode) => (episode.events || [])
-      .filter((event) => ["harness:decision", "harness:route", "harness:context"].includes(event.type))
-      .map((event) => ({ ...event, episode })));
-    const decisions = harnessEvents.filter((event) => event.type === "harness:decision");
-    const routes = harnessEvents.filter((event) => event.type === "harness:route");
-    const contexts = harnessEvents.filter((event) => event.type === "harness:context");
-    const contextBlocks = contexts.reduce((total, event) => total + (Array.isArray(event.payload?.decisions) ? event.payload.decisions.length : 0), 0);
-    const actions = {};
-    for (const item of decisions) {
-      const action = item.payload?.policy?.action || item.payload?.advisory?.action || "unknown";
-      actions[action] = (actions[action] || 0) + 1;
-    }
-    const last = decisions.at(-1)?.payload || null;
-    const probability = (node) => {
-      const value = Number(last?.belief?.[node]?.true);
-      return Number.isFinite(value) ? `${Math.round(value * 100)}%` : "—";
-    };
-    return { decisions, routes, contexts, contextBlocks, actions, last, probability };
-  }, [harnessEpisodes]);
+  const harnessSummary = useMemo(
+    () => summarizeHarness(harnessEpisodes, {
+      fetchStatus: harnessFetchStatus,
+      fetchError: harnessFetchError,
+    }),
+    [harnessEpisodes, harnessFetchStatus, harnessFetchError],
+  );
 
   const activeTurn = turnOptions.includes(Number(turnFilter))
     ? Number(turnFilter)
@@ -547,21 +563,30 @@ export function TrajectoryPanel({
         <div className="flex flex-wrap items-center gap-2">
           <strong className="text-(--text-primary)">任务决策助手实际效果</strong>
           <span className="text-[11px] text-(--text-muted)">
-            {harnessSummary.decisions.length
-              ? `${harnessSummary.decisions.length} 次判断 · ${harnessSummary.routes.length} 次路由 · ${harnessSummary.contextBlocks} 个上下文块`
-              : "当前会话还没有决策记录"}
+            {harnessSummary.fetchStatus === "error"
+              ? `轨迹读取失败：${harnessSummary.fetchError || "未知错误"}`
+              : harnessSummary.decisions.length
+                ? `${harnessSummary.decisions.length} 次判断 · 成功 ${harnessSummary.counts.success} · 失败 ${harnessSummary.counts.failed} · 弃权 ${harnessSummary.counts.abstained} · ${harnessSummary.routes.length} 次路由 · ${harnessSummary.contextBlocks} 个上下文块`
+                : harnessActivation
+                  ? activationLabel(harnessActivation)
+                  : "尚无历史决策记录"}
           </span>
           <span className="ml-auto text-[11px] text-(--text-muted)">
-            {harnessEpisodes.length ? `${harnessEpisodes.length} 个 episode` : "仅显示当前会话"}
+            {harnessFetchStatus === "loading" ? "正在读取…" : `${harnessEpisodes.length} 个历史 episode`}
           </span>
         </div>
+        {harnessActivation ? (
+          <div className="mt-2 text-[11px] text-(--text-muted)">
+            当前配置资格：{activationLabel(harnessActivation)}。这只表示当前配置是否可能启用，不代表历史会话已经调用。
+          </div>
+        ) : null}
         {harnessSummary.decisions.length || harnessSummary.routes.length || harnessSummary.contexts.length ? (
           <>
             <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-5">
               {[["完成概率", "TaskComplete"], ["测试通过", "TestPass"], ["重试收益", "RetryBenefit"], ["需求遗漏", "RequirementsMiss"], ["工具可靠", "ToolReliability"]].map(([label, node]) => (
                 <div key={node} className="rounded bg-(--bg-primary) px-2 py-2">
                   <div className="text-[10px] text-(--text-muted)">{label}</div>
-                  <div className="mt-0.5 font-mono text-[14px] text-(--text-primary)">{harnessSummary.probability(node)}</div>
+                  <div className="mt-0.5 font-mono text-[14px] text-(--text-primary)">{beliefPercent(harnessSummary.latestBelief, node)}</div>
                 </div>
               ))}
             </div>
@@ -569,7 +594,7 @@ export function TrajectoryPanel({
               {Object.entries(harnessSummary.actions).map(([action, count]) => (
                 <span key={action} className="rounded-full border border-(--border-default) px-2 py-1 font-mono">{action}: {count}</span>
               ))}
-              {harnessSummary.last?.policy?.reason ? <span className="rounded-full bg-(--accent-blue-bg) px-2 py-1">原因：{harnessSummary.last.policy.reason}</span> : null}
+              {harnessSummary.latestDecision?.payload?.policy?.reason ? <span className="rounded-full bg-(--accent-blue-bg) px-2 py-1">原因：{harnessSummary.latestDecision.payload.policy.reason}</span> : null}
             </div>
             {toolReliability.length ? (
               <details className="mt-3">
@@ -591,13 +616,16 @@ export function TrajectoryPanel({
               <div className="mt-2 max-h-80 space-y-2 overflow-y-auto overscroll-contain pr-1">
                 {harnessSummary.decisions.map((item, index) => {
                   const payload = item.payload || {};
-                  const action = payload.policy?.action || payload.advisory?.action || "unknown";
+                  const action = decisionAction(payload);
                   const belief = payload.belief || {};
+                  const result = classifyDecision(item);
+                  const provider = payload.provider || payload.decision?.provider || "—";
                   return <div key={item.id || index} className="rounded border border-(--border-default) px-2 py-2 font-mono text-[11px]">
                     <div className="flex flex-wrap gap-x-3 gap-y-1 text-(--text-primary)">
-                      <span>#{index + 1}</span><span>step {item.step ?? "—"}</span><span>动作: {action}</span><span>provider: {payload.provider || payload.decision?.provider || "—"}</span>
+                      <span>#{index + 1}</span><span>step {item.step ?? "—"}</span><span>动作: {action}</span><span>结果: {result.status === "success" ? "成功" : result.status === "failed" ? "失败" : "弃权"}</span><span>provider: {provider}</span>
                     </div>
-                    <div className="mt-1 text-(--text-muted)">原因: {payload.policy?.reason || "—"} · 硬门禁: {payload.guards?.requiresReview ? "需要人工复核" : "通过"} · 重试收益: {Number.isFinite(Number(belief.RetryBenefit?.true)) ? `${Math.round(Number(belief.RetryBenefit.true) * 100)}%` : "—"}</div>
+                    <div className="mt-1 text-(--text-muted)">原因: {payload.policy?.reason || "—"} · 硬门禁: {hardGateLabel(payload)} · 重试收益: {Number.isFinite(Number(belief.RetryBenefit?.true)) ? `${Math.round(Number(belief.RetryBenefit.true) * 100)}%` : "—"}</div>
+                    <div className="mt-1 break-words text-(--text-muted)">模型: {payload.decision?.modelVersion || payload.decision?.model || "—"} · Jev 错误: {result.errors.length ? result.errors.join("；") : "无"}</div>
                   </div>;
                 })}
               </div>

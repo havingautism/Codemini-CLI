@@ -15,3 +15,8 @@ test('rollout bucket is stable across Windows path casing and separators', () =>
   const lower = shouldRollout({ rollout: config, sessionId: 'same-session', projectDir: 'c:/users/demo/project', riskTier: 'low' });
   assert.equal(upper, lower);
 });
+
+test('rollout project allowlist matches Windows path variants', () => {
+  const config = { enabled: true, percentage: 100, risk_tiers: ['low'], projects: ['C:/Work/Codemini'] };
+  assert.equal(shouldRollout({ rollout: config, projectDir: 'c:\\work\\codemini', riskTier: 'low' }), true);
+});

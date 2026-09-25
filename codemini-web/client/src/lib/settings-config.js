@@ -328,7 +328,7 @@ export function buildSettingsFields() {
       path: "harness.providers.jev.base_url",
       control: "input",
       label: t("harnessJevUrl"),
-      help: t("harnessProviderUrlHelp"),
+      help: t("harnessJevUrlHelp"),
       placeholder: "https://…",
     },
     {

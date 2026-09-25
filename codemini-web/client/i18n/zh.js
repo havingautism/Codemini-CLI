@@ -715,6 +715,7 @@ export const zh = {
   harnessJevEnabled: "启用 Jev",
   harnessJevEnabledHelp: "启用 Jev shadow provider；需要填写服务地址。",
   harnessJevUrl: "Jev 服务地址",
+  harnessJevUrlHelp: "OpenRouter 官方地址：https://openrouter.ai/api/alpha/decisions。请求体和返回值由 Codemini 自动转换。",
   harnessJevApiKey: "Jev API Key",
   harnessLayaEnabled: "启用 Laya",
   harnessLayaEnabledHelp: "启用本地 Laya shadow provider。",

@@ -21,7 +21,7 @@ export function createDecisionOrchestrator({ adapter, provider = 'rules', policy
       if (kind === 'task_route') {
         const answer = decision?.answers?.find((item) => item.id === 'route');
         event.selected = answer?.choice || null;
-        event.policy = resolveTaskRoute({ choice: answer?.choice, probability: answer?.probabilities?.[answer?.choice] || answer?.confidence || 0, riskTier: state.riskTier, thresholds: policy });
+        event.policy = resolveTaskRoute({ choice: answer?.choice, probability: answer?.probabilities?.[answer?.choice] || answer?.confidence || 0, margin: choiceMargin(answer), riskTier: state.riskTier, thresholds: policy });
       } else if (kind === 'tool_guard') {
         event.policy = resolveToolGuard({ decision, hardGuard: state.hardGuard || {}, thresholds: policy });
         event.selected = event.policy.action;
@@ -57,6 +57,15 @@ export function createDecisionOrchestrator({ adapter, provider = 'rules', policy
       return event;
     },
   };
+}
+
+function choiceMargin(answer = {}) {
+  const probabilities = Object.values(answer?.probabilities || {})
+    .map(Number)
+    .filter(Number.isFinite)
+    .sort((a, b) => b - a);
+  if (probabilities.length < 2) return probabilities.length === 1 ? probabilities[0] : 1;
+  return probabilities[0] - probabilities[1];
 }
 
 export { QUESTIONS as DECISION_QUESTIONS };

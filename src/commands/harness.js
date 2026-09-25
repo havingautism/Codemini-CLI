@@ -7,8 +7,16 @@ import { createCalibrationVersion, fitBinaryPriors, fitNetworkCpts } from '../co
 
 function usage() {
   console.log('Usage:\n  codemini harness replay <episode-id>\n  codemini harness metrics [--limit <n>]');
-  console.log('  codemini harness calibrate <jsonl>\n  codemini harness drift <jsonl>');
-  console.log('  codemini harness calibrate-history [--limit <n>]');
+  console.log('  codemini harness calibrate <jsonl> [--out <json>]\n  codemini harness drift <jsonl>');
+  console.log('  codemini harness calibrate-history [--limit <n>] [--out <json>]');
+}
+
+async function writeReportIfRequested(args, report) {
+  const index = args.indexOf('--out');
+  if (index < 0 || !args[index + 1]) return;
+  const outputPath = args[index + 1];
+  await fs.writeFile(outputPath, `${JSON.stringify(report, null, 2)}\n`, 'utf8');
+  console.log(`已写入校准报告：${outputPath}`);
 }
 
 export async function handleHarness(args = []) {
@@ -41,6 +49,7 @@ export async function handleHarness(args = []) {
         ...calculateCalibrationMetrics(rows),
       }
       : { datasetHash: calibrationDatasetHash(rows), generatedAt: new Date().toISOString(), drift: calculateDriftMetrics(rows) };
+    await writeReportIfRequested(args, report);
     console.log(JSON.stringify(report, null, 2));
     return;
   }
@@ -52,7 +61,7 @@ export async function handleHarness(args = []) {
     const eventsByEpisode = new Map(episodes.map((episode) => [episode.id, store.listEpisodeEvents(episode.id)]));
     const rows = extractCalibrationRows(episodes, eventsByEpisode);
     const datasetHash = calibrationDatasetHash(rows);
-    console.log(JSON.stringify({
+    const report = {
       datasetHash,
       generatedAt: new Date().toISOString(),
       source: 'harness-history',
@@ -60,7 +69,9 @@ export async function handleHarness(args = []) {
       cpts: fitNetworkCpts(rows),
       version: createCalibrationVersion({ datasetHash, params: { method: 'dirichlet-laplace', source: 'history' } }),
       ...calculateCalibrationMetrics(rows),
-    }, null, 2));
+    };
+    await writeReportIfRequested(args, report);
+    console.log(JSON.stringify(report, null, 2));
     return;
   }
   usage();

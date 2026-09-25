@@ -5,13 +5,32 @@ function abstainAnswers(questions = HARNESS_QUESTION_SET, reason = 'provider_err
   return questions.map((question) => ({ id: question.id, type: question.type, abstain: true, reason }));
 }
 
+function validProbability(value) {
+  return Number.isFinite(Number(value)) && Number(value) >= 0 && Number(value) <= 1;
+}
+
+function validProbabilityMap(value, allowedKeys, requireAll = false) {
+  if (value == null) return !requireAll;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const entries = Object.entries(value);
+  if (requireAll && allowedKeys.some((key) => !Object.hasOwn(value, key))) return false;
+  return entries.every(([key, probability]) => allowedKeys.includes(String(key)) && validProbability(probability));
+}
+
 function validateAnswer(answer, question) {
   if (!answer || answer.id !== question.id || answer.type !== question.type) return false;
   if (answer.abstain === true) return true;
-  if (question.type === 'choice' && !question.options.includes(answer.choice)) return false;
-  if (question.type === 'score' && !question.levels.includes(answer.score)) return false;
-  if (question.type === 'noul' && !(Number(answer.pTrue) >= 0 && Number(answer.pTrue) <= 1)) return false;
-  if (answer.confidence != null && !(Number(answer.confidence) >= 0 && Number(answer.confidence) <= 1)) return false;
+  if (question.type === 'choice') {
+    if (!question.options.includes(answer.choice)) return false;
+    if (!validProbabilityMap(answer.probabilities, question.options, true)) return false;
+  }
+  if (question.type === 'score') {
+    if (!question.levels.includes(answer.score)) return false;
+    if (!validProbabilityMap(answer.probabilities, question.levels, true)) return false;
+    if (answer.scoreValue != null && !Number.isFinite(Number(answer.scoreValue))) return false;
+  }
+  if (question.type === 'noul' && !validProbability(answer.pTrue)) return false;
+  if (answer.confidence != null && !validProbability(answer.confidence)) return false;
   return true;
 }
 
@@ -30,9 +49,9 @@ export function createHttpDecisionProvider({
     name,
     async ask(request = {}) {
       const questions = Array.isArray(request.questions) ? request.questions : HARNESS_QUESTION_SET;
-      const normalized = normalizeDecisionInput(request.state || {}, questions);
+      const normalized = normalizeDecisionInput(request.state || {}, questions, { maxString: 20000, maxItems: 200, maxDepth: 8 });
       if (!baseUrl || typeof fetchImpl !== 'function') {
-        return createDecisionResponse({ provider: name, answers: abstainAnswers(questions, 'provider_unavailable'), errors: ['provider endpoint is unavailable'] });
+        return createDecisionResponse({ provider: name, modelVersion: `${name}-unavailable`, calibrationId: '', answers: abstainAnswers(questions, 'provider_unavailable'), errors: ['provider endpoint is unavailable'] });
       }
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), Math.max(50, Number(timeoutMs) || 1500));
@@ -76,7 +95,7 @@ export function createHttpDecisionProvider({
           : { answers: Array.isArray(payload?.answers) ? payload.answers : [], modelVersion: payload.modelVersion, calibrationId: payload.calibrationId };
         const answers = Array.isArray(parsed?.answers) ? parsed.answers : [];
         if (answers.length !== questions.length || questions.some((question, index) => !validateAnswer(answers[index], question))) {
-          return createDecisionResponse({ provider: name, answers: abstainAnswers(questions, 'invalid_schema'), errors: ['provider response schema mismatch'] });
+          return createDecisionResponse({ provider: name, modelVersion: `${name}-invalid-schema`, calibrationId: '', answers: abstainAnswers(questions, 'invalid_schema'), errors: ['provider response schema mismatch'] });
         }
         return createDecisionResponse({
           provider: name,
@@ -88,7 +107,7 @@ export function createHttpDecisionProvider({
           errors: [],
         });
       } catch (error) {
-        return createDecisionResponse({ provider: name, answers: abstainAnswers(questions, error?.name === 'AbortError' ? 'timeout' : 'provider_error'), errors: [error?.message || String(error)] });
+        return createDecisionResponse({ provider: name, modelVersion: `${name}-error`, calibrationId: '', answers: abstainAnswers(questions, error?.name === 'AbortError' ? 'timeout' : 'provider_error'), errors: [error?.message || String(error)] });
       } finally {
         clearTimeout(timer);
       }

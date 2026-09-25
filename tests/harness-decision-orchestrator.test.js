@@ -11,6 +11,16 @@ test('decision orchestrator normalizes task route and applies policy', async () 
   assert.equal(event.policy.choice, 'proceed_fast');
 });
 
+test('decision orchestrator rejects an ambiguous task route margin', async () => {
+  const orchestrator = createDecisionOrchestrator({
+    adapter: { async ask() { return { provider: 'jev', answers: [{ id: 'route', choice: 'proceed_fast', probabilities: { proceed_fast: 0.52, deep_review: 0.48 } }] }; } },
+    policy: { route_min_probability: 0.5, route_min_margin: 0.12 },
+  });
+  const event = await orchestrator.decide({ kind: 'task_route', state: { riskTier: 'LOW' } });
+  assert.equal(event.policy.choice, 'ask_user');
+  assert.equal(event.policy.reason, 'low_confidence');
+});
+
 test('decision orchestrator refuses completion without verification', async () => {
   const orchestrator = createDecisionOrchestrator({
     adapter: { async ask() { return { provider: 'jev', answers: [{ id: 'completion_status', choice: 'complete', pTrue: 0.99 }] }; } },

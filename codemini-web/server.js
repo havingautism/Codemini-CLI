@@ -39,6 +39,7 @@ import {
 import { hasUiTranscriptInSqlite } from "../src/core/session-sqlite-store.js";
 import { createHarnessSqliteStore } from "../src/core/harness/audit/harness-sqlite-store.js";
 import { createToolReliabilityStore } from "../src/core/harness/tool-reliability.js";
+import { shouldRollout } from "../src/core/harness/rollout.js";
 import {
   forkIdleSession,
   sessionForkBlockedReason,
@@ -1057,7 +1058,39 @@ export function createWebRuntimeApi({
         ...episode,
         events: store.listEpisodeEvents(episode.id),
       }));
-      jsonResponse(res, { episodes: payload });
+      let config = {};
+      try { config = (await loadRuntimeConfig()) || {}; } catch { config = {}; }
+      let session = null;
+      if (sessionId) {
+        try { session = await loadStoredSession(sessionId); } catch { session = null; }
+      }
+      const harness = config?.harness || {};
+      const rollout = harness.rollout || {};
+      const projectDir = session?.projectDir || session?.workspaceRoot || "";
+      const active = harness.enabled === true && shouldRollout({
+        rollout,
+        sessionId,
+        projectDir,
+        riskTier: "low",
+      });
+      let reason = "当前会话已命中灰度并允许运行";
+      if (harness.enabled !== true) reason = "功能开关未开启";
+      else if (rollout.enabled !== true) reason = "灰度发布未开启";
+      else if (!Array.isArray(rollout.risk_tiers) || !rollout.risk_tiers.includes("low")) reason = "当前风险级别不在灰度范围";
+      else if (rollout.projects?.length && !rollout.projects.some((item) => String(item).replaceAll("\\", "/").replace(/\/+$/, "").toLowerCase() === String(projectDir).replaceAll("\\", "/").replace(/\/+$/, "").toLowerCase())) reason = "当前项目不在灰度项目名单";
+      else if (rollout.sessions?.length && !rollout.sessions.includes(sessionId)) reason = "当前会话不在灰度会话名单";
+      else if (Number(rollout.percentage) <= 0) reason = "灰度比例为 0%";
+      else if (!active) reason = "当前会话未命中灰度比例";
+      jsonResponse(res, {
+        episodes: payload,
+        activation: {
+          active,
+          reason,
+          provider: String(harness.provider || "rules"),
+          decisionMode: String(harness.decision_mode || "advisory"),
+          configured: harness.enabled === true,
+        },
+      });
       return true;
   }));
   runtimeRoutes.get("/api/harness/tool-reliability", nodeRoute(async (req, res) => {

@@ -584,6 +584,27 @@ function normalizeToolCallName(name) {
   return String(name || '').trim();
 }
 
+function toolCallFingerprint(toolName, args = {}) {
+  const name = normalizeToolCallName(toolName);
+  if (isShellToolName(name)) return `${name}:command:${String(args?.command || args?.cmd || '').trim()}`;
+  try {
+    return `${name}:args:${JSON.stringify(args || {})}`;
+  } catch {
+    return `${name}:args:${String(args || '')}`;
+  }
+}
+
+function extractVerificationSignal(toolName, args, result) {
+  if (!result || typeof result !== 'object') return null;
+  if (result.verificationPassed === true || result.testsPassed === true) return true;
+  if (result.verificationPassed === false || result.testsPassed === false) return false;
+  if (!isShellToolName(toolName) || !isVerificationCommand(args?.command || args?.cmd)) return null;
+  const rawCode = result.code ?? result.exitCode;
+  if (rawCode === undefined || rawCode === null || rawCode === '') return null;
+  const code = Number(rawCode);
+  return Number.isFinite(code) ? code === 0 : null;
+}
+
 const FULL_CONTEXT_TOOL_RESULTS = new Set(['skill', 'tasks', 'web_search']);
 
 function shouldPersistLargeToolResult(toolName) {
@@ -651,7 +672,8 @@ export async function runAgentLoop({
   toolGuard = null,
   completionReview = null,
   skillRoute = null,
-  contextSelector = null
+  contextSelector = null,
+  taskRoute = null
 }) {
   const experienceTracker = config?.memory?.enabled === false || config?.memory?.experience?.enabled === false
     ? null
@@ -701,6 +723,18 @@ export async function runAgentLoop({
     onEvent?.({ type: 'model:context', message });
     return message;
   };
+
+  if (taskRoute === 'ask_user' || taskRoute === 'block') {
+    const text = taskRoute === 'block'
+      ? '任务决策助手要求先阻止执行：当前任务需要人工确认后才能继续。'
+      : '任务决策助手要求先澄清需求：当前任务信息不足，确认后再继续。';
+    return settleLoop({ text, messages, steps: 0, checkpoint: true, stopReason: 'harness_route' });
+  }
+  if (taskRoute === 'deep_review') {
+    appendModelContextMessage('任务决策助手要求先做深度复核：先检查需求、风险和验证方案，再执行修改。', { source: 'harness', reason: 'task_route_deep_review' });
+  } else if (taskRoute === 'split_task') {
+    appendModelContextMessage('任务决策助手建议拆分任务：先明确可独立验证的子任务，再逐项执行。', { source: 'harness', reason: 'task_route_split_task' });
+  }
 
   let finalText = '';
   let lastAssistantText = '';
@@ -800,9 +834,15 @@ export async function runAgentLoop({
   let incompleteRetries = 0;
   let lastToolError = false;
   let lastToolName = '';
+  let lastToolFingerprint = '';
   let lastFailureReason = '';
   let retries = 0;
   let retrySucceeded = null;
+  let verificationPassed = false;
+  let testsPassed = false;
+  let completionReviewRetries = 0;
+  let externalGuidanceFingerprint = '';
+  let externalGuidanceCount = 0;
   while (true) {
     if (step >= stepLimit) {
       const text = 'Step limit reached. Continue in a new turn to resume.';
@@ -817,8 +857,10 @@ export async function runAgentLoop({
       break;
     }
     emitStepStart();
+    let decisionEvent = null;
     if (decisionController?.enabled) {
-      await decisionController.evaluate({
+      const toolReliability = lastToolName ? toolReliabilityStore?.get?.(lastToolName) : null;
+      decisionEvent = await decisionController.evaluate({
         episodeId,
         step,
         state: normalizeDecisionState({
@@ -830,14 +872,44 @@ export async function runAgentLoop({
           toolError: lastToolError,
           lastToolError: lastFailureReason,
           lastToolName,
+          lastToolFingerprint,
           retries,
           retrySucceeded,
           retryBenefit: lastToolError && !/permission|access denied|invalid.*schema|权限/i.test(lastFailureReason),
+          verificationPassed,
+          testsPassed,
+          ...(toolReliability ? { toolReliability: toolReliability.reliability } : {}),
           retryLimit,
         }),
         signal,
         onDecision,
       }).catch(() => {});
+    }
+    const externalAuthority = String(decisionController?.mode || '').toLowerCase() === 'external_authority'
+      || decisionEvent?.mode === 'external_authority';
+    const externalAction = externalAuthority ? String(decisionEvent?.policy?.action || '').toLowerCase() : '';
+    if (externalAuthority && (externalAction === 'ask_user' || externalAction === 'escalate')) {
+      const checkpointText = lastAssistantText || String(decisionEvent?.policy?.reason || '任务需要用户确认后继续。');
+      onEvent?.({ type: 'checkpoint', step, reason: `external_${externalAction}`, policy: decisionEvent?.policy || null });
+      emitStepEnd(`external_${externalAction}`);
+      await fireStopHooks(checkpointText);
+      return settleLoop({ text: checkpointText, messages, steps: step, checkpoint: true, stopReason: `external_${externalAction}` });
+    }
+    if (externalAuthority && (externalAction === 'retry_once' || externalAction === 'change_tool')) {
+      const guidanceFingerprint = `${externalAction}:${lastToolFingerprint || lastToolName}:${lastFailureReason}`;
+      if (guidanceFingerprint !== externalGuidanceFingerprint) {
+        externalGuidanceFingerprint = guidanceFingerprint;
+        externalGuidanceCount = 0;
+      }
+      if (externalGuidanceCount < 1) {
+        externalGuidanceCount += 1;
+        appendModelContextMessage(
+          externalAction === 'retry_once'
+            ? '决策助手允许重试一次。请修正上一次失败原因后再尝试，避免原样重复调用。'
+            : '决策助手要求更换工具或方案。请不要原样重复失败调用，选择不同的工具或命令。',
+          { source: 'harness', reason: `external-${externalAction}` },
+        );
+      }
     }
     const pruneResult = applyAggressiveToolPruneBeta(messages, config);
     if (pruneResult.changed) {
@@ -849,13 +921,14 @@ export async function runAgentLoop({
         });
       }
     }
+    let requestMessages = messages;
     if (typeof contextSelector === 'function') {
       const selected = await contextSelector({ messages, step }).catch(() => null);
-      if (Array.isArray(selected) && selected.length > 0) messages.splice(0, messages.length, ...selected);
+      if (Array.isArray(selected) && selected.length > 0) requestMessages = selected;
     }
     const completion = await requestCompletion({
       model,
-      messages,
+      messages: requestMessages,
       tools: toolDefinitionsForModel(),
       signal
     });
@@ -934,12 +1007,28 @@ export async function runAgentLoop({
         }
       }
       if (typeof completionReview === 'function') {
-        const review = await completionReview({ objective: userPrompt, completedWork: messages.slice(-8), step, assistantText }).catch(() => ({ choice: 'complete' }));
+        const review = await completionReview({
+          objective: userPrompt,
+          completedWork: messages.slice(-8),
+          step,
+          assistantText,
+          verificationPassed,
+          testsPassed,
+        }).catch(() => ({ choice: 'verify_more', reason: 'completion_review_error' }));
         if (review?.choice === 'verify_more') {
+          completionReviewRetries += 1;
+          if (completionReviewRetries > 2) {
+            const checkpointText = assistantText || '完成度复核未能在有限次数内完成，请继续验证后再提交。';
+            onEvent?.({ type: 'checkpoint', step, reason: 'completion_review_limit' });
+            emitStepEnd('completion_review_limit');
+            await fireStopHooks(checkpointText);
+            return settleLoop({ text: checkpointText, messages, steps: step, checkpoint: true, stopReason: 'completion_review_limit' });
+          }
           appendModelContextMessage(review.reason || '完成度复核要求继续验证任务结果。', { reason: 'completion-review' });
           emitStepEnd('completion_review');
           continue;
         }
+        completionReviewRetries = 0;
       }
       void maybeRunAutoDream(step, { force: true });
       emitStepEnd('final');
@@ -973,6 +1062,14 @@ export async function runAgentLoop({
       let outsideWorkspaceApproval = null;
       if (toolName === 'skill' && typeof skillRoute === 'function') {
         const route = await skillRoute({ skillName: args?.name || '', args, step }).catch(() => ({ choice: args?.name || '', reason: 'route_error' }));
+        if (route?.choice === 'none') {
+          approvalResults.set(call.id, {
+            approved: false,
+            args: approvalArgs,
+            errorContent: clipToolResult({ error: 'Skill route selected none; no skill may be loaded for this call.', selected_skill: 'none' }, toolResultMaxChars),
+          });
+          continue;
+        }
         if (route?.choice && route.choice !== args?.name && route.choice !== 'none') {
           approvalResults.set(call.id, { approved: false, args: approvalArgs, errorContent: clipToolResult({ error: `Skill route selected ${route.choice}; requested skill was not selected.`, selected_skill: route.choice }, toolResultMaxChars) });
           continue;
@@ -1200,9 +1297,24 @@ export async function runAgentLoop({
       }
       if (approved && typeof toolGuard === 'function') {
         const guard = await toolGuard({ toolName, displayName, args: approvalArgs, callId: call.id, step }).catch(() => ({ action: 'review', reason: 'guard_error' }));
-        if (guard?.action === 'deny' || guard?.action === 'review' || guard?.action === 'confirm') {
+        if (guard?.action === 'deny') {
           approved = false;
           approvalReason = String(guard.reason || guard.action);
+        } else if (guard?.action === 'review' || guard?.action === 'confirm') {
+          if (typeof requestToolApproval !== 'function') {
+            approved = false;
+            approvalReason = String(guard.reason || guard.action);
+          } else {
+            const decision = await requestToolApproval({
+              id: call.id,
+              name: toolName,
+              displayName,
+              arguments: approvalArgs,
+              approvalDetails: { guardAction: guard.action, reason: String(guard.reason || '') },
+            });
+            approved = Boolean(decision?.approved);
+            approvalReason = approved ? '' : String(decision?.reason || guard.reason || guard.action).trim();
+          }
         }
       }
       approvalResults.set(call.id, { approved, args: approvalArgs, reason: approvalReason });
@@ -1603,6 +1715,22 @@ export async function runAgentLoop({
         onEvent({ type: 'tool:end', name: toolName, displayName, id: call.id, arguments: effectiveArgs, durationMs, summary, fileChange, fileChanges, resultMeta });
       }
 
+      const resultFailed = Boolean(toolResult && typeof toolResult === 'object'
+        && (toolResult.ok === false || toolResult.error));
+      const verificationSignal = extractVerificationSignal(toolName, effectiveArgs, toolResult);
+      if (verificationSignal === true) {
+        verificationPassed = true;
+        testsPassed = true;
+      } else if (verificationSignal === false) {
+        verificationPassed = false;
+        testsPassed = false;
+      }
+      // 任何编辑都会使本轮之前的验证失效，避免把旧测试结果带到新代码上。
+      if (fileChanges.length > 0 || fileChange) {
+        verificationPassed = false;
+        testsPassed = false;
+      }
+
       let postToolContexts = [];
       if (skillHooksSession) {
         const postToolUse = await fireSkillHookEvent({
@@ -1616,8 +1744,8 @@ export async function runAgentLoop({
         postToolContexts = formatHookContextLines(postToolUse, 'PostToolUse', toolName);
       }
 
-      if (toolResult && typeof toolResult === 'object' && toolResult.error) {
-        const errMsg = String(toolResult.error).slice(0, 120);
+      if (resultFailed) {
+        const errMsg = String(toolResult.error || toolResult.message || toolResult.summary || 'Tool returned ok:false').slice(0, 120);
         experienceTracker?.recordAttempt({ tool: toolName, args: effectiveArgs, result: 'failure', error: errMsg });
         if (!experienceTracker && isAutoCaptureEnabled(config) && shouldAutoCaptureError(toolName, errMsg)) {
           await captureToolFailure(toolName, errMsg, effectiveArgs, config).catch(() => {});
@@ -1635,11 +1763,12 @@ export async function runAgentLoop({
       if (hookContexts.length > 0) {
         formatted = `${formatted}\n\n[Hook context]\n${hookContexts.join('\n')}`;
       }
-      if (toolResult && typeof toolResult === 'object' && toolResult.error) {
+      if (resultFailed) {
+        if (!/^error:/im.test(formatted)) formatted = `error: ${String(toolResult.error || toolResult.message || 'Tool returned ok:false')}\n\n${formatted}`;
         formatted = await attachRecoveryMemory(formatted, {
           toolName,
           args: effectiveArgs,
-          error: toolResult.error,
+          error: toolResult.error || toolResult.message || 'Tool returned ok:false',
           config,
           workspaceRoot,
           experienceTracker,
@@ -1660,9 +1789,10 @@ export async function runAgentLoop({
       return {
         callId: call.id,
         content: formatted,
+        error: resultFailed,
         durationMs,
         summary,
-        status: 'done',
+        status: resultFailed ? 'error' : 'done',
         fileChange,
         fileChanges,
         resultMeta,
@@ -1670,7 +1800,7 @@ export async function runAgentLoop({
         memoryCandidates: toolResult?.ok !== false && Array.isArray(toolResult?.memoryCandidates)
           ? toolResult.memoryCandidates
           : [],
-        workflowComplete: Boolean(toolResult?.workflowComplete),
+        workflowComplete: !resultFailed && Boolean(toolResult?.workflowComplete),
         workflowMessage: String(toolResult?.message || toolResult?.summary || '').trim()
       };
     }
@@ -1682,15 +1812,23 @@ export async function runAgentLoop({
     for (const result of orderedResults) resultEntries.set(result.callId, result);
     const failedCall = callsWithMeta.find(({ call }) => resultEntries.get(call.id)?.error);
     const successfulCall = callsWithMeta.find(({ call }) => !resultEntries.get(call.id)?.error && !resultEntries.get(call.id)?.blocked);
-    const previousFailedTool = lastToolName;
+    const previousFailedFingerprint = lastToolFingerprint;
     const previousHadError = lastToolError;
     lastToolError = Boolean(failedCall);
     lastToolName = failedCall?.toolName || successfulCall?.toolName || '';
+    lastToolFingerprint = failedCall
+      ? toolCallFingerprint(failedCall.toolName, failedCall.args)
+      : successfulCall
+        ? toolCallFingerprint(successfulCall.toolName, successfulCall.args)
+        : '';
     lastFailureReason = failedCall ? String(resultEntries.get(failedCall.call.id)?.summary || '') : '';
-    if (previousHadError && successfulCall?.toolName === previousFailedTool) {
+    if (previousHadError
+      && successfulCall
+      && toolCallFingerprint(successfulCall.toolName, successfulCall.args) === previousFailedFingerprint) {
       retries += 1;
       retrySucceeded = true;
-    } else if (failedCall && failedCall.toolName === previousFailedTool) {
+    } else if (failedCall
+      && toolCallFingerprint(failedCall.toolName, failedCall.args) === previousFailedFingerprint) {
       retries += 1;
       retrySucceeded = false;
     } else {

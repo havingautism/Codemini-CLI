@@ -4,6 +4,10 @@ export function mapStateToEvidence(state = {}, decision = null) {
     node, value, source, ...(likelihood ? { likelihood } : {})
   });
   if (state.toolError != null || state.toolResult?.ok != null) add('ToolReliability', state.toolError ? false : state.toolResult?.ok !== false);
+  if (Number.isFinite(Number(state.toolReliability))) {
+    const probability = Math.max(0.001, Math.min(0.999, Number(state.toolReliability)));
+    evidence.push({ node: 'ToolReliability', posterior: probability, source: 'tool_reliability' });
+  }
   if (state.environmentFault != null) add('EnvironmentFault', Boolean(state.environmentFault));
   if (state.codeDefect != null) add('CodeDefect', Boolean(state.codeDefect));
   if (state.requirementClarity != null) add('RequirementClarity', Boolean(state.requirementClarity));

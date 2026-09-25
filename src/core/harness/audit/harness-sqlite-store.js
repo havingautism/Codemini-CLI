@@ -29,7 +29,8 @@ export function createHarnessSqliteStore({ db = null } = {}) {
     },
     appendEvent({ episodeId, step = 0, type, source = 'runtime', parentId = '', payload = {} } = {}) {
       if (!episodeId || !type) return null;
-      const normalizedPayload = normalizeDecisionState(payload);
+      // 审计存储单独做脱敏；发给 Jev 的请求必须保留用户上下文 content。
+      const normalizedPayload = normalizeDecisionState(payload, { redactSensitive: true });
       const id = `${episodeId}:${Number(step) || 0}:${Date.now()}:${eventSequence += 1}`;
       const inputHash = stableHash(normalizedPayload);
       database.prepare(`

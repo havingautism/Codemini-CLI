@@ -721,6 +721,7 @@ export const en = {
   harnessJevEnabled: "Enable Jev",
   harnessJevEnabledHelp: "Enable the Jev shadow provider; a service URL is required.",
   harnessJevUrl: "Jev Service URL",
+  harnessJevUrlHelp: "OpenRouter endpoint: https://openrouter.ai/api/alpha/decisions. Codemini converts the request and response format automatically.",
   harnessJevApiKey: "Jev API Key",
   harnessLayaEnabled: "Enable Laya",
   harnessLayaEnabledHelp: "Enable the local Laya shadow provider.",

@@ -6148,6 +6148,9 @@ async function askModel({
   });
   let harnessStore = null;
   let toolReliabilityStore = null;
+  const harnessInfluenceActive = harnessActive
+    && harnessConfig.decision_mode === 'external_authority'
+    && harnessConfig.provider !== 'rules';
   const contextDecisionCache = new Map();
   const contextDecisionLimit = 32;
   if (harnessActive) {
@@ -6480,18 +6483,25 @@ async function askModel({
             baseUrl: harnessConfig.providers.laya.base_url,
             model: harnessConfig.providers.laya.model,
           } : {},
+          cpts: harnessConfig.belief?.cpts || harnessConfig.cpts,
+          priors: harnessConfig.belief?.priors || harnessConfig.priors,
+          nodeCpts: harnessConfig.belief?.nodeCpts || harnessConfig.nodeCpts,
           policy: harnessConfig.policy || {},
         },
         shadowProviders: ['jev', 'laya'].filter((name) => name !== harnessConfig.provider && harnessConfig.providers?.[name]?.enabled === true),
         onDecision: (event) => wrappedAgentEvent({ type: 'harness:decision', ...event }),
       })
     : null;
+  let harnessTaskRoute = null;
   if (decisionController?.orchestrate) {
     await decisionController.orchestrate({
       kind: 'task_route', episodeId: harnessEpisodeId, step: 0,
       state: { objective: loopUserPrompt, stage: 'task_start', riskTier: 'low' },
       candidates: ['proceed_fast', 'deep_review', 'split_task', 'ask_user', 'block'].map((id) => ({ id, type: 'route', allowed: true })),
-    }).then((event) => wrappedAgentEvent({ type: 'harness:route', stage: 'task_start', ...event })).catch(() => {});
+    }).then((event) => {
+      wrappedAgentEvent({ type: 'harness:route', stage: 'task_start', ...event });
+      if (harnessInfluenceActive) harnessTaskRoute = event.policy?.choice || null;
+    }).catch(() => {});
   }
   try {
     loopResult = await runAgentLoop({
@@ -6534,7 +6544,7 @@ async function askModel({
       decisionController,
       episodeId: harnessEpisodeId,
       toolReliabilityStore,
-      toolGuard: decisionController && harnessConfig.provider !== 'rules'
+      toolGuard: harnessInfluenceActive
         ? async ({ toolName, args, step }) => {
           const event = await decisionController.evaluate({
             episodeId: harnessEpisodeId,
@@ -6542,25 +6552,29 @@ async function askModel({
             state: { stage: 'tool_guard', tool: toolName, argumentsSummary: Object.keys(args || {}), riskTier: 'low' },
             questions: TOOL_GUARD_QUESTIONS,
           });
-          if (!event?.decision?.answers?.some((answer) => answer.id === 'guard_action' && answer.abstain !== true)) {
-            return { action: 'allow', reason: 'provider_unavailable_fallback' };
-          }
-          return resolveToolGuard({ decision: event?.decision, hardGuard: event?.guards, thresholds: harnessConfig.policy || {} });
+          return resolveToolGuard({
+            decision: event?.decision || {},
+            hardGuard: event?.guards || { allowed: false, requiresReview: true, reasons: ['decision_provider_unavailable'] },
+            thresholds: harnessConfig.policy || {},
+          });
         }
         : null,
-      completionReview: decisionController && harnessConfig.provider !== 'rules'
-        ? async ({ objective, completedWork, step, assistantText }) => {
+      completionReview: harnessInfluenceActive
+        ? async ({ objective, completedWork, step, assistantText, verificationPassed = false, testsPassed = false }) => {
           const event = await decisionController.evaluate({ episodeId: harnessEpisodeId, step, state: {
             stage: 'completion_review', objective, completedWork, assistantText,
-            verificationPassed: session.messages.some((message) => message?.tool_status === 'done'),
+            verificationPassed: verificationPassed === true,
+            testsPassed: testsPassed === true,
           }, questions: COMPLETION_REVIEW_QUESTIONS });
           const choice = event?.decision?.answers?.find((answer) => answer.id === 'completion_status')?.choice;
           const probability = event?.decision?.answers?.find((answer) => answer.id === 'completion_probability')?.pTrue;
-          if (!choice) return { choice: 'complete' };
+          if (!choice || event?.decision?.errors?.length || event?.decision?.answers?.some((answer) => answer.abstain === true)) {
+            return { choice: 'verify_more', reason: 'decision_provider_unavailable' };
+          }
           return resolveCompletionReview({ choice, probability, deterministicVerified: Boolean(event?.state?.verificationPassed) });
         }
         : null,
-      skillRoute: decisionController && harnessConfig.provider !== 'rules'
+      skillRoute: harnessInfluenceActive
         ? async ({ skillName, args, step }) => {
           const candidates = buildSkillCandidates([{ name: skillName, description: '当前模型请求的 Skill' }, { name: 'none', description: '不加载额外 Skill' }]);
           const event = await decisionController.orchestrate({ kind: 'skill_route', episodeId: harnessEpisodeId, step, state: { stage: 'skill_route', requestedSkill: skillName }, candidates, questions: [{ id: 'selected_skill', type: 'choice', options: candidates.map((item) => item.id) }] });
@@ -6568,7 +6582,7 @@ async function askModel({
           return { choice: event.selected || skillName, reason: event.policy?.reason };
         }
         : null,
-      contextSelector: decisionController && harnessConfig.provider !== 'rules'
+      contextSelector: harnessInfluenceActive
         ? async ({ messages, step }) => {
           // 系统消息和所有用户消息都是任务证据，不能因为它们不是最后一条
           // 消息就被上下文概率判断删除；否则工具调用后会丢失原始需求。
@@ -6601,6 +6615,7 @@ async function askModel({
           return messages.filter((_, index) => keep.has(`message-${index}`));
         }
         : null,
+      taskRoute: harnessTaskRoute,
       onForkJoin: (candidates) => commitForkMemoryCandidates({
         candidates,
         sessionId: session.id,
