@@ -1,4 +1,16 @@
 import { setTimeout as delay } from 'node:timers/promises';
+import tls from 'node:tls';
+
+// Windows applications can trust local TLS inspection roots that Node's bundled CAs omit.
+// Keep Node's existing roots and add the Windows trust store without disabling verification.
+if (process.platform === 'win32'
+  && typeof tls.getCACertificates === 'function'
+  && typeof tls.setDefaultCACertificates === 'function') {
+  const systemCAs = tls.getCACertificates('system');
+  if (systemCAs.length) {
+    tls.setDefaultCACertificates([...new Set([...tls.getCACertificates('default'), ...systemCAs])]);
+  }
+}
 
 export async function fetchWithRetry(url, init, { maxRetries = 2 } = {}) {
   const retries = Number.isFinite(Number(maxRetries)) ? Math.max(0, Math.min(10, Math.floor(Number(maxRetries)))) : 2;
