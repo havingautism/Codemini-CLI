@@ -86,6 +86,33 @@ test('agent networking reviews final arguments and grants only the reviewed invo
   assert.equal(grants[0].granted, true); assert.equal(grants[1].granted, false);
 });
 
+test('agent networking uses the configured model when no evaluator is injected', async (t) => {
+  const originalFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+  let reviews = 0;
+  globalThis.fetch = async () => {
+    reviews += 1;
+    return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({
+      risk: 'low', description: 'Prints a short message', sideEffects: 'none', recommendation: 'allow',
+    }) } }] }), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  let calls = 0;
+  let granted = false;
+  await runAgentLoop({
+    systemPrompt: 'test', userPrompt: 'test', model: 'test',
+    config: { ...config, gateway: { base_url: 'https://example.test/v1', api_key: 'test' }, model: { name: 'test' } },
+    approvalMode: 'review', skipAnalysisNudge: true,
+    toolDefinitions: [{ type: 'function', function: { name: 'run', parameters: { type: 'object', properties: { command: { type: 'string' }, network_access: { type: 'boolean' } } } } }],
+    toolHandlers: { run: async (_args, context) => { granted = context.networkAccessApproved; return { ok: true }; } },
+    requestToolApproval: async () => { throw new Error('safe network review should not ask the user'); },
+    requestCompletion: async () => ++calls === 1
+      ? { toolCalls: [{ id: 'network-call', name: 'run', arguments: JSON.stringify({ command: 'echo network', network_access: true }) }] }
+      : { text: 'done' },
+  });
+  assert.equal(reviews, 1);
+  assert.equal(granted, true);
+});
+
 test('tool schema exposes network requests and multiple approval markers survive composition', async () => {
   const tools = await getBuiltinTools({ workspaceRoot: process.cwd(), config });
   const definitions = tools.definitions;

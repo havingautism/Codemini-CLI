@@ -16,7 +16,8 @@ export async function reviewCommandAccess({ command, config, workspaceRoot, capa
     || !policy.allowed && /^(absolute path outside|relative path escapes|cd escapes|blocked protected system path|blocked command:)/i.test(policy.reason || '');
   let evaluation;
   try {
-    evaluation = await evaluate({ command, config, workspaceRoot, capability, signal });
+    const evaluator = typeof evaluate === 'function' ? evaluate : evaluateCommandWithLLM;
+    evaluation = await evaluator({ command, config, workspaceRoot, capability, signal });
   } catch {
     evaluation = { failed: true, failureReason: 'evaluator_error', recommendation: 'deny', risk: 'high' };
   }
