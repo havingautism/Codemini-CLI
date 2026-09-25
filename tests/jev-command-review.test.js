@@ -7,7 +7,9 @@ import {
   evaluationFromJevAnswers,
   evaluateCommandWithJev,
   jevReviewEnabled,
+  resolveJevReviewConnection,
 } from '../src/core/jev-command-review.js';
+import { askJev } from '../src/core/jev-client.js';
 
 const jevConfig = {
   ui: { reply_language: 'zh' },
@@ -21,6 +23,26 @@ test('Jev stays off unless the switch and a key are both set', () => {
   assert.equal(jevReviewEnabled({ jev: { enabled: true, api_key: '' } }), false);
   assert.equal(jevReviewEnabled({ jev: { enabled: false, api_key: 'secret' } }), false);
   assert.equal(jevReviewEnabled(jevConfig), true);
+  const shared = {
+    jev: { enabled: true },
+    harness: { provider: 'jev', providers: { jev: { base_url: 'https://example.test/decisions', api_key: 'shared', model: 'jev-new' } } },
+  };
+  assert.equal(jevReviewEnabled(shared), true);
+  assert.deepEqual(resolveJevReviewConnection(shared), {
+    endpoint: 'https://example.test/decisions', apiKey: 'shared', model: 'jev-new',
+  });
+});
+
+test('Jev client sends command review to the configured decision endpoint', async () => {
+  let requestedUrl;
+  await askJev({
+    endpoint: 'https://example.test/decisions', apiKey: 'shared', state: {}, questions: {},
+    fetchImpl: async (url) => {
+      requestedUrl = url;
+      return { ok: true, json: async () => ({ answers: {} }) };
+    },
+  });
+  assert.equal(requestedUrl, 'https://example.test/decisions');
 });
 
 test('Jev review maps score and choice into fixed text and a confidence gate', () => {

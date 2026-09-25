@@ -35,6 +35,7 @@ import {
   packageProfileArmEntry,
 } from './hook-profiles.js';
 import { runAgentLoop } from './agent-loop.js';
+import { resolveJevReviewConnection } from './jev-command-review.js';
 import { createDecisionController } from './harness/decision-controller.js';
 import { createHarnessSqliteStore } from './harness/audit/harness-sqlite-store.js';
 import { createToolReliabilityStore } from './harness/tool-reliability.js';
@@ -4276,7 +4277,7 @@ export function buildRuntimeStateSnapshot({ currentSession, config, model, execu
     mainModel: config.model?.name || '',
     fastModel: config.model?.fast_name || config.model?.name || '',
     jevReviewEnabled: config.jev?.enabled === true,
-    jevReviewHasKey: Boolean(String(config.jev?.api_key || '').trim()),
+    jevReviewHasKey: Boolean(String(resolveJevReviewConnection(config).apiKey || '').trim()),
     maxContextTokens,
     alwaysSkillNames: visibleAlwaysSkillNames,
     reasoningEnabled: config.model?.reasoning_enabled !== false,
@@ -6469,6 +6470,7 @@ async function askModel({
         enabled: true,
         mode: harnessConfig.mode,
         provider: harnessConfig.provider,
+        decisionMode: harnessConfig.decision_mode,
         providerConfig: {
           timeoutMs: harnessConfig.timeout_ms,
           jev: harnessConfig.providers?.jev ? {
@@ -10625,7 +10627,10 @@ export async function createChatRuntime({
       return true;
     },
     setJevApiKey: async (next) => {
-      await setConfigValue('jev.api_key', String(next || '').trim());
+      const keyPath = config.harness?.provider === 'jev' && config.harness?.providers?.jev?.base_url
+        ? 'harness.providers.jev.api_key'
+        : 'jev.api_key';
+      await setConfigValue(keyPath, String(next || '').trim());
       config = attachRuntimeState(await loadConfig());
       return true;
     },

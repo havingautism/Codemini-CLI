@@ -18,6 +18,13 @@ test('enabled controller emits a shadow advisory event', async () => {
   assert.equal(received, event);
 });
 
+test('external authority mode is reflected in controller decisions', async () => {
+  const controller = createDecisionController({ enabled: true, decisionMode: 'external_authority' });
+  const event = await controller.evaluate({ state: {} });
+  assert.equal(event.mode, 'external_authority');
+  assert.equal(event.policy.reason, 'external_authority');
+});
+
 test('controller preserves separate shadow provider results', async () => {
   const adapter = {
     async askShadow() {

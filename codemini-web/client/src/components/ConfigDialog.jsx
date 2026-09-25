@@ -52,6 +52,12 @@ function isSwitchField(field) {
   return field.control === "switch";
 }
 
+function isTaskDecisionField(field) {
+  return field.path.startsWith("harness.")
+    && field.path !== "harness.provider"
+    && !field.path.startsWith("harness.providers.");
+}
+
 function buildFieldsByPath(fields) {
   return new Map(fields.map((field) => [field.path, field]));
 }
@@ -340,7 +346,7 @@ export function ConfigDialog({
         {field.cliExample ? <code className="mt-1 block break-all text-xs">{field.cliExample}</code> : null}
       </div>;
     }
-    const disabled = saving || (field.tab === "harness" && !decisionProviderStatus.ready);
+    const disabled = saving || (isTaskDecisionField(field) && !decisionProviderStatus.ready);
     if (field.type === "password") return <SettingsSecretField
       key={`${field.path}-${open}`} id={field.path} configured={hasConfiguredSecret(config, field.path)}
       draft={changes[field.path]} disabled={disabled} onChange={value => handleChange(field.path, value)} />;
@@ -470,35 +476,46 @@ export function ConfigDialog({
       (field) => field.tab === tabId && shouldShowField(field),
     );
 
+    const renderField = (field) => (
+      <SettingsField
+        key={field.path}
+        id={field.path}
+        label={field.label}
+        help={field.help}
+        description={
+          field.path === "shell.default" && getValue("sandbox.mode") !== "danger-full-access"
+            ? t("shellSandboxLockedDesc")
+            : undefined
+        }
+        inline={field.control === "switch"}
+        className={isTaskDecisionField(field) && !decisionProviderStatus.ready ? "opacity-60" : undefined}
+      >
+        {renderControl(field)}
+      </SettingsField>
+    );
+
+    if (tabId === "decision") {
+      return (
+        <div className="flex flex-col gap-8">
+          <SettingsSection title={t("commandDecisionSection")} description={t("commandDecisionSectionHelp")}>
+            {fields.filter((field) => !isTaskDecisionField(field)).map(renderField)}
+          </SettingsSection>
+          <SettingsSection title={t("harness")} description={t("taskDecisionSectionHelp")}>
+            {!decisionProviderStatus.ready && (
+              <Alert>
+                <AlertTitle>{t("harnessProviderNotReady")}</AlertTitle>
+                <AlertDescription>{t(`harnessProvider_${decisionProviderStatus.reason}`)}</AlertDescription>
+              </Alert>
+            )}
+            {fields.filter(isTaskDecisionField).map(renderField)}
+          </SettingsSection>
+        </div>
+      );
+    }
+
     return (
       <SettingsSection>
-        {tabId === "harness" && !decisionProviderStatus.ready && (
-          <Alert>
-            <AlertTitle>{t("harnessProviderNotReady")}</AlertTitle>
-            <AlertDescription>
-              {t(`harnessProvider_${decisionProviderStatus.reason}`)}{' '}
-              <Button variant="link" size="sm" className="px-0" onClick={() => setActiveTab("model")}>{t("harnessOpenModelSettings")}</Button>
-            </AlertDescription>
-          </Alert>
-        )}
-        {fields.map((field) => (
-          <SettingsField
-            key={field.path}
-            id={field.path}
-            label={field.label}
-            help={field.help}
-            description={
-              field.path === "shell.default" &&
-              getValue("sandbox.mode") !== "danger-full-access"
-                ? t("shellSandboxLockedDesc")
-                : undefined
-            }
-            inline={field.control === "switch"}
-            className={tabId === "harness" && !decisionProviderStatus.ready ? "opacity-60" : undefined}
-          >
-            {renderControl(field)}
-          </SettingsField>
-        ))}
+        {fields.map(renderField)}
 
         {tabId === "model" && (
           <SettingsField

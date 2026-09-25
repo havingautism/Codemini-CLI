@@ -35,7 +35,12 @@ test('settings show new limits and security status with matching defaults and ra
     if (previousDocument === undefined) delete globalThis.document; else globalThis.document = previousDocument;
   });
   const { buildSettingsFields } = await import('../codemini-web/client/src/lib/settings-config.js');
+  const { SETTINGS_TABS } = await import('../codemini-web/client/src/lib/settings-options.js');
   const { setLocale } = await import('../codemini-web/client/i18n/index.js');
+  const tabIds = SETTINGS_TABS.map((tab) => tab.id);
+  assert.ok(tabIds.includes('decision'));
+  assert.ok(tabIds.indexOf('decision') < tabIds.indexOf('execution'));
+  assert.equal(tabIds.includes('harness'), false);
   for (const locale of ['zh', 'en']) {
     setLocale(locale);
     const fields = buildSettingsFields();
@@ -55,14 +60,14 @@ test('settings show new limits and security status with matching defaults and ra
       'harness.providers.jev.base_url',
       'harness.providers.jev.api_key', 'harness.providers.jev.model',
       'harness.providers.laya.base_url', 'harness.providers.laya.model',
-      'jev.enabled', 'jev.api_key', 'jev.model',
+      'jev.enabled',
     ]) {
-      assert.equal(fields.find(f => f.path === key)?.tab, 'model', key);
+      assert.equal(fields.find(f => f.path === key)?.tab, 'decision', key);
     }
     for (const key of ['harness.enabled', 'harness.decision_mode', 'harness.rollout.enabled']) {
-      assert.equal(fields.find(f => f.path === key)?.tab, 'harness', key);
+      assert.equal(fields.find(f => f.path === key)?.tab, 'decision', key);
     }
-    assert.notEqual(fields.find(f => f.path === 'harness.providers.jev.api_key')?.label, fields.find(f => f.path === 'jev.api_key')?.label);
+    assert.equal(fields.some(f => f.path === 'jev.api_key' || f.path === 'jev.model'), false);
     assert.equal(fields.find(f => f.path === 'harness.provider')?.control, 'select');
     assert.equal(fields.some(f => f.path === 'harness.providers.jev.enabled' || f.path === 'harness.providers.laya.enabled'), false);
     for (const provider of ['rules', 'jev', 'laya']) {
@@ -73,10 +78,9 @@ test('settings show new limits and security status with matching defaults and ra
         }
       }
     }
-    for (const key of ['jev.api_key', 'jev.model']) {
-      const field = fields.find(f => f.path === key);
-      assert.equal(field.visibleWhen({ getValue: () => false }), false);
-      assert.equal(field.visibleWhen({ getValue: () => true }), true);
-    }
+    const review = fields.find(f => f.path === 'jev.enabled');
+    assert.equal(review.visibleWhen({ getValue: () => false }), false);
+    assert.equal(review.visibleWhen({ getValue: (path) => path === 'harness.provider' ? 'jev' : false }), true);
+    assert.equal(review.visibleWhen({ getValue: (path) => path === 'jev.enabled' }), true);
   }
 });

@@ -5,8 +5,16 @@ export const JEV_REVIEW_CONFIDENCE = 0.8;
 
 const RISK_LEVELS = ['low', 'medium', 'high'];
 
+export function resolveJevReviewConnection(config = {}) {
+  const shared = config?.harness?.provider === 'jev' ? config.harness?.providers?.jev : null;
+  if (shared?.base_url && shared?.api_key) {
+    return { endpoint: shared.base_url, apiKey: shared.api_key, model: shared.model || 'typesafe/jev-1.13' };
+  }
+  return { apiKey: config?.jev?.api_key, model: config?.jev?.model || 'jev-latest' };
+}
+
 export function jevReviewEnabled(config = {}) {
-  return config?.jev?.enabled === true && Boolean(String(config?.jev?.api_key || '').trim());
+  return config?.jev?.enabled === true && Boolean(String(resolveJevReviewConnection(config).apiKey || '').trim());
 }
 
 function reviewText(risk, recommendation, config) {
@@ -59,9 +67,9 @@ export async function evaluateCommandWithJev({
   signal,
   ask = askJev,
 } = {}) {
+  const connection = resolveJevReviewConnection(config);
   const payload = await ask({
-    apiKey: config?.jev?.api_key,
-    model: config?.jev?.model || 'jev-latest',
+    ...connection,
     signal,
     state: {
       command: String(command || ''),

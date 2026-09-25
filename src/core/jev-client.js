@@ -1,6 +1,7 @@
 const JEV_ENDPOINT = 'https://api.typesafe.ai/v1/systemone';
 
 export async function askJev({
+  endpoint = JEV_ENDPOINT,
   apiKey,
   model = 'jev-latest',
   state,
@@ -17,7 +18,7 @@ export async function askJev({
   const onAbort = () => controller.abort();
   signal?.addEventListener?.('abort', onAbort, { once: true });
   try {
-    const response = await fetchImpl(JEV_ENDPOINT, {
+    const response = await fetchImpl(endpoint, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${key}`,

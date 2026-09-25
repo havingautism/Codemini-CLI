@@ -189,11 +189,11 @@ export function getSettingsOptions(key, context) {
 export const SETTINGS_TABS = [
   { id: "connection", labelKey: "gateway" },
   { id: "model", labelKey: "model" },
+  { id: "decision", labelKey: "decision" },
   { id: "execution", labelKey: "execution" },
   { id: "web", labelKey: "webSearch" },
   { id: "context", labelKey: "context" },
   { id: "shell", labelKey: "shell" },
   { id: "storage", labelKey: "storage" },
   { id: "policy", labelKey: "policy" },
-  { id: "harness", labelKey: "harness" },
 ];
