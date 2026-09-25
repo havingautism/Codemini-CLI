@@ -5,6 +5,9 @@ export const TOOL_DISPLAY_LABELS = {
   create_plan: 'Plan',
   create_spec: 'Create Spec',
   run_subagent: 'Subagent',
+  land_workers: 'Land',
+  cancel_worker: 'Cancel Worker',
+  crew_status: 'Crew Status',
   fork_task: 'Fork',
   tasks: 'Tasks',
   update_todos: 'Tasks',
@@ -18,6 +21,7 @@ export const TOOL_DISPLAY_LABELS = {
   read_ast_node: 'Read AST Node',
   web_fetch: 'Web Fetch',
   web_search: 'Web Search',
+  preview_html: 'HTML Artifact',
   list_background_tasks: 'List Background Tasks',
   get_background_task: 'Get Background Task',
   stop_background_task: 'Stop Background Task',
@@ -107,6 +111,25 @@ function formatToolWithArg(label, arg, { quoted = false } = {}) {
   const payload = String(arg || '').trim();
   if (!payload) return label;
   return `${label} (${quoted ? `"${payload}"` : payload})`;
+}
+
+export function describeCrewRunSubagent(args = {}) {
+  const review = String(args?.review || '').trim();
+  const role = String(args?.role || '').trim().toLowerCase();
+  const name = trimInlineText(args?.name || role || 'Alex', 24);
+  if (review) {
+    return { kind: 'review', label: `Crew review · ${review}`, persona: name };
+  }
+  if (role === 'survey') {
+    return { kind: 'survey', label: `Crew survey · ${name || 'Survey'}`, persona: name };
+  }
+  const resume = String(args?.resume || '').trim();
+  const hasPaths = Array.isArray(args?.paths) && args.paths.length > 0;
+  if (resume || hasPaths) {
+    const id = resume || name || 'Worker';
+    return { kind: 'worker', label: `Crew worker · ${id}`, persona: name };
+  }
+  return null;
 }
 
 function appendPrimaryToolArg(label, args = {}) {
@@ -234,7 +257,8 @@ export function formatToolDisplayName(name, args = {}, options = {}) {
   if (toolName === 'run_subagent') {
     const goal = trimInline(args?.goal || args?.prompt || '', 96);
     const persona = trimInline(args?.name || args?.role || 'Alex', 24);
-    const label = `Subagent · ${persona || 'Alex'}`;
+    const crew = describeCrewRunSubagent(args);
+    const label = crew?.label || `Subagent · ${persona || 'Alex'}`;
     return goal ? formatToolWithArg(label, goal) : label;
   }
   if (toolName === 'fork_task') {

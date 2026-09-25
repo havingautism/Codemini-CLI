@@ -195,3 +195,11 @@ export function loadUiTranscriptFromSqlite(sessionId) {
   if (!rows.length) return null;
   return rows.map((row) => parseJson(row.payload_json, null)).filter(Boolean);
 }
+
+/** True when a session still has persisted UI-transcript rows (display content). */
+export function hasUiTranscriptInSqlite(sessionId) {
+  const row = getGlobalDatabase().prepare(`
+    SELECT COUNT(*) AS count FROM ui_messages WHERE session_id = ?
+  `).get(String(sessionId || ''));
+  return Number(row?.count || 0) > 0;
+}

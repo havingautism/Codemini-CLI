@@ -4,7 +4,7 @@ import stripAnsi from 'strip-ansi';
 import { Container, getCapabilities, setCapabilities } from '@earendil-works/pi-tui';
 
 import { buildSlashCommands, runOpenCodeTui } from '../src/tui/opencode-chat-app.js';
-import { ActivityBar, ApprovalDialog, Footer, TopBar } from '../src/tui/components/chrome.js';
+import { ActivityBar, ApprovalDialog, Footer, TopBar, CrewProgressPanel } from '../src/tui/components/chrome.js';
 import { PlanProgress, ProcessedFold, ReasoningBlock, TodoProgress, ToolCall, ToolCallGroup, appendHistory, createAssistantMessage, createSystemMessage, createUserMessage, linkMarkdownImages, paintBackground } from '../src/tui/components/messages.js';
 import { ModeHome } from '../src/tui/components/mode-home.js';
 import { createTuiCopy } from '../src/tui/copy.js';
@@ -426,6 +426,34 @@ test('chat chrome keeps only the logo on top and runtime details at the bottom',
   const bottom = stripAnsi(new Footer({ runtime, model: 'fallback', sessionId: 'session-12345678', safeMode: true }).render(80).join('\n'));
   assert.match(bottom, /◆ CODE\s+│\s+● AUTO\s+│\s+◇ WORKSPACE.*◆ test-model\s+│\s+# 12345678/);
   assert.match(bottom, /⌂ E:\\repo.*CTX/);
+  assert.doesNotMatch(bottom, /CREW/);
+
+  const crewBottom = stripAnsi(new Footer({
+    runtime: {
+      getRuntimeState: () => ({
+        ...runtime.getRuntimeState(),
+        crewActive: true
+      })
+    },
+    model: 'fallback',
+    sessionId: 'session-12345678',
+    safeMode: true
+  }).render(80).join('\n'));
+  assert.match(crewBottom, /◆ CREW\s+│\s+● AUTO/);
+  assert.doesNotMatch(crewBottom, /◆ CODE/);
+
+  const crewDock = stripAnsi(new CrewProgressPanel({
+    runtime: {
+      getRuntimeState: () => ({
+        crewActive: true,
+        crewWorkers: [{ id: 'lena', kind: 'coder', sealed: true, runStatus: 'completed' }],
+        crewInFlightIds: ['lena'],
+      })
+    },
+    copy: createTuiCopy('en')
+  }).render(80).join('\n'));
+  assert.match(crewDock, /Crew/);
+  assert.match(crewDock, /lena reviewing/);
 
   const activity = new ActivityBar({ tui: { requestRender() {} }, copy: createTuiCopy('en') }).render(80).join('\n');
   assert.match(stripAnsi(activity), /● Ready.*\/ commands/);
@@ -1047,6 +1075,70 @@ test('slash commands share one catalog with skills', () => {
   assert.match(commands.find(({ value }) => value === 'review').label, /^技能/);
 });
 
+test('slash commands include runtime project commands and skills', () => {
+  const commands = buildSlashCommands({
+    getCommandCatalog: () => [
+      { name: 'release', kind: 'command', description: 'Prepare release' },
+      { name: 'review', kind: 'skill', description: 'Review changes' },
+    ],
+  }, createTuiCopy('en'));
+  assert.match(commands.find(({ value }) => value === 'release').label, /^TOOL/);
+  assert.match(commands.find(({ value }) => value === 'review').label, /^SKILL/);
+});
+
+test('Crew starts from the TUI mode selector and is absent from slash commands', async () => {
+  const terminal = new FakeTerminal();
+  const crewCalls = [];
+  const runtime = {
+    getSessionMessages: () => [],
+    getInputHistory: async () => [],
+    getAvailableSkills: () => [],
+    getRuntimeState: () => ({
+      mode: 'plan',
+      model: 'test-model',
+      workspaceRoot: 'E:\\repo',
+      crewActive: crewCalls.at(-1) === true
+    }),
+    setRequestToolApproval() {},
+    setExecutionMode: async () => { throw new Error('Crew must not use the ordinary execution-mode setter'); },
+    setCrewMode: async (active) => {
+      crewCalls.push(!!active);
+      return { ok: true, crew: { active: true, base: 'main' }, warning: 'Git · 2 uncommitted changes' };
+    },
+    submitMessage: async () => ({ type: 'noop' })
+  };
+
+  const running = runOpenCodeTui({
+    runtime,
+    sessionId: 'crew-test',
+    model: 'test-model',
+    language: 'en',
+    terminal,
+    workspaceDir: 'E:\\repo'
+  });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  terminal.send('\u001b[B');
+  terminal.send('\u001b[B');
+  terminal.send('\u001b[B');
+  terminal.send('\r');
+  await waitFor(() => stripAnsi(terminal.output).includes('Work mode'));
+  terminal.send('\u001b[C');
+  terminal.send('\u001b[C');
+  await waitFor(() => stripAnsi(terminal.output).includes('Crew'));
+  terminal.send('\u001b');
+  terminal.send('\u001b[A');
+  terminal.send('\u001b[A');
+  terminal.send('\u001b[A');
+  terminal.send('\r');
+  await waitFor(() => crewCalls.length === 1);
+  await waitFor(() => stripAnsi(terminal.output).includes('Git · 2 uncommitted changes'));
+  assert.deepEqual(crewCalls, [true]);
+  assert.equal(buildSlashCommands(runtime, createTuiCopy('en')).some(({ value }) => value === 'crew'), false);
+  terminal.send('\u0003');
+  terminal.send('\u0003');
+  await running;
+});
+
 test('/history opens session history and returns the selected session', async () => {
   const terminal = new DrainCheckingTerminal();
   const runtime = {
@@ -1173,6 +1265,40 @@ test('plan progress keeps every step visible with real status', () => {
   assert.match(rendered, /Plan  1\/2/);
   assert.match(rendered, /✓ Inspect/);
   assert.match(rendered, /● Build/);
+});
+
+test('plan progress can start from a Crew reviewer step_start', () => {
+  const plan = new PlanProgress(createTuiCopy('en'), {
+    goal: 'Review lena',
+    steps: [{
+      index: 1,
+      role: 'reviewer',
+      title: 'Crew review · lena',
+      status: 'running',
+      crewKind: 'review'
+    }]
+  });
+  const rendered = stripAnsi(plan.render(80).join('\n'));
+  assert.match(rendered, /Crew/);
+  assert.match(rendered, /Crew review · lena/);
+  assert.match(rendered, /review/);
+});
+
+test('plan progress shows cancelled crew workers instead of done', () => {
+  const plan = new PlanProgress(createTuiCopy('zh'), {
+    goal: 'Write docs',
+    steps: [{
+      index: 1,
+      role: 'doc-html',
+      title: 'Crew worker · doc-html',
+      status: 'running',
+      crewKind: 'worker'
+    }]
+  });
+  assert.equal(plan.markWorkerCancelled('doc-html'), true);
+  const rendered = stripAnsi(plan.render(80).join('\n'));
+  assert.match(rendered, /已取消/);
+  assert.doesNotMatch(rendered, /✓ Crew worker · doc-html/);
 });
 
 test('compact terminals use the full-name compact logo and still enter chat', async () => {

@@ -10,10 +10,17 @@ if (savedLocale && locales[savedLocale]) {
   current = savedLocale;
 }
 
+function syncDocumentLocale(locale) {
+  document.documentElement.lang = locale === 'zh' ? 'zh-CN' : 'en';
+}
+
+syncDocumentLocale(current);
+
 export function setLocale(locale) {
   if (locales[locale]) {
     current = locale;
     localStorage.setItem('codemini-ui-language', locale);
+    syncDocumentLocale(locale);
   }
 }
 

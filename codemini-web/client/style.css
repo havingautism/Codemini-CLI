@@ -1,4 +1,6 @@
 @import "tailwindcss";
+@import "@fontsource-variable/inter";
+@import "@fontsource-variable/noto-sans-sc";
 @custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
 
 @import "streamdown/styles.css";
@@ -127,6 +129,13 @@
   font-family: var(--font-sans);
   font-size: 13px;
   line-height: 1.75;
+}
+
+.codemini-resource-detail-prose,
+.codemini-resource-detail-prose .wmde-markdown {
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.65;
 }
 
 .codemini-md-preview .wmde-markdown {
@@ -633,22 +642,7 @@
   }
 }
 
-/* ── Geist Font Faces ── */
-@font-face {
-  font-family: "Geist";
-  src: url("../node_modules/geist/dist/fonts/geist-sans/Geist-Variable.woff2") format("woff2");
-  font-weight: 100 900;
-  font-display: swap;
-}
-
-@font-face {
-  font-family: "Geist";
-  src: url("../node_modules/geist/dist/fonts/geist-sans/Geist-Italic%5Bwght%5D.woff2") format("woff2");
-  font-weight: 100 900;
-  font-style: italic;
-  font-display: swap;
-}
-
+/* ── Geist Mono Font Face ── */
 @font-face {
   font-family: "Geist Mono";
   src: url("../node_modules/geist/dist/fonts/geist-mono/GeistMono-Variable.woff2") format("woff2");
@@ -687,8 +681,8 @@
   --radius-sm: var(--radius-sm);
   --radius: var(--radius);
   --radius-lg: var(--radius-lg);
-  --font-sans: var(--font-sans);
-  --font-mono: var(--font-mono);
+  --font-sans: var(--font-ui);
+  --font-mono: var(--font-code);
 }
 
 /* ── Design Tokens (shadcn/ui neutral base) ── */
@@ -763,8 +757,10 @@
   --radius: 0.5rem;
   --radius-lg: 0.75rem;
   --radius-xl: 1rem;
-  --font-sans: "Geist", "Inter", "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans CJK SC", "Noto Sans SC", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  --font-mono: "Geist Mono", "SF Mono", "Cascadia Code", "Cascadia Mono", Consolas, "Liberation Mono", ui-monospace, monospace;
+  --font-ui: "Inter Variable", "Noto Sans SC Variable", "Inter", "Noto Sans SC", "PingFang SC", "Microsoft YaHei UI", "Segoe UI", system-ui, sans-serif;
+  --font-code: "Geist Mono", "Cascadia Code", "Cascadia Mono", "SF Mono", Consolas, "Liberation Mono", ui-monospace, monospace;
+  --font-sans: var(--font-ui);
+  --font-mono: var(--font-code);
   --transition: 140ms ease;
 }
 
@@ -1487,6 +1483,8 @@ html {
   font-family: var(--font-sans);
   font-size: 14px;
   line-height: 1.5;
+  font-kerning: normal;
+  font-optical-sizing: auto;
   text-rendering: optimizeLegibility;
 }
 
@@ -1536,7 +1534,7 @@ body {
 .codemini-chat-session .msg-body {
   font-size: 15px;
   line-height: 1.55;
-  letter-spacing: -0.01em;
+  letter-spacing: normal;
 }
 
 .codemini-chat-session .msg-body> :first-child {
@@ -1632,9 +1630,9 @@ body {
 
 /* Assistant Markdown — refined Apple-leaning reading rhythm (prototype B). */
 .msg-body.codemini-assistant-markdown {
-  font-size: 15.5px;
+  font-size: 15px;
   line-height: 1.7;
-  letter-spacing: -0.005em;
+  letter-spacing: normal;
 }
 
 .msg-body.codemini-assistant-markdown h1 {
@@ -1931,6 +1929,36 @@ body {
 /* Nested fold bodies stay on the parent card; tool output uses --tool-detail-bg. */
 .codemini-fold-body {
   background: var(--fold-surface);
+}
+
+/* File mutations stay scan-friendly in the transcript and reveal their diff in place. */
+.codemini-file-tool-row {
+  gap: 6px;
+  padding-block: 4px;
+}
+
+.codemini-file-tool-caret.is-open {
+  transform: rotate(180deg);
+}
+
+.codemini-file-tool-caret {
+  transition: transform 140ms var(--ease-out, ease);
+}
+
+.codemini-file-tool-body {
+  margin: 2px 4px 6px 32px;
+  min-width: 0;
+}
+
+.codemini-file-tool-diff {
+  margin-top: 6px;
+  border-radius: 14px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .codemini-file-tool-caret {
+    transition: none;
+  }
 }
 
 .codemini-task-spinner {
@@ -2328,7 +2356,7 @@ samp {
   --scrollbar-size: 6px;
   --scrollbar-thumb: color-mix(in srgb, var(--text-muted) 55%, transparent);
   --scrollbar-thumb-hover: color-mix(in srgb, var(--text-muted) 75%, transparent);
-  --scrollbar-track: color-mix(in srgb, var(--text-muted) 16%, var(--bg-secondary));
+  --scrollbar-track: transparent;
 }
 
 * {
@@ -2361,7 +2389,7 @@ samp {
 /* Chat horizontal scroll (native fallback for markdown tables / code blocks) */
 .codemini-embed-banner-scroll {
   --scrollbar-thumb: color-mix(in srgb, var(--text-muted) 68%, transparent);
-  --scrollbar-track: color-mix(in srgb, var(--text-muted) 30%, var(--bg-secondary));
+  --scrollbar-track: transparent;
   overflow-x: auto;
   overflow-y: hidden;
   overscroll-behavior-x: contain;
@@ -2390,7 +2418,7 @@ samp {
 .codemini-md-preview .wmde-markdown pre>code::-webkit-scrollbar-track,
 .codemini-md-editor .wmde-markdown pre>code::-webkit-scrollbar-track {
   border-radius: 4px;
-  background: var(--scrollbar-track, color-mix(in srgb, var(--text-muted) 16%, var(--bg-secondary)));
+  background: var(--scrollbar-track, transparent);
 }
 
 .codemini-embed-banner-scroll::-webkit-scrollbar-thumb,
@@ -3001,8 +3029,10 @@ samp {
   color: var(--text-primary);
   margin: 0.15em 0;
   padding: 0.12em 0.4em;
-  font-family: var(--font-mono);
-  font-size: 0.88em;
+  font-family: var(--font-sans);
+  font-size: 0.9em;
+  font-weight: 500;
+  letter-spacing: normal;
   line-height: 1.35;
   box-decoration-break: clone;
   -webkit-box-decoration-break: clone;
@@ -4077,7 +4107,6 @@ samp {
   --radius: 0.75rem;
   --radius-lg: 1rem;
   --radius-xl: 1.25rem;
-  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", "PingFang SC", "Microsoft YaHei UI", sans-serif;
   --transition: 180ms cubic-bezier(0.25, 0.1, 0.25, 1);
   --input-shell-bg: rgba(255, 255, 255, 0.88);
   --input-shell-border: rgba(0, 0, 0, 0.08);

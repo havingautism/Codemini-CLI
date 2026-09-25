@@ -1,3 +1,4 @@
+import { fetchWithRetry } from './fetch-with-retry.js';
 import {
   modelUsesFixedKimiSampling,
   resolveOpenAICompatibleReasoning
@@ -60,36 +61,6 @@ async function parseJsonResponse(response) {
     throw new Error(`Gateway error ${response.status}: ${text || response.statusText}`);
   }
   return response.json();
-}
-
-function isRetryableStatus(status) {
-  return status === 408 || status === 409 || status === 425 || status === 429 || status >= 500;
-}
-
-function isRetryableError(error) {
-  const name = String(error?.name || '');
-  if (name === 'AbortError' || name === 'TimeoutError') return false;
-  const message = String(error?.message || error || '');
-  return /fetch failed|network|socket|ECONNRESET|ETIMEDOUT|EAI_AGAIN/i.test(message);
-}
-
-async function fetchWithRetry(url, init, { maxRetries = 0 } = {}) {
-  const attempts = Math.max(0, Number(maxRetries) || 0) + 1;
-  let lastError;
-  for (let attempt = 0; attempt < attempts; attempt += 1) {
-    try {
-      const response = await fetch(url, init);
-      if (response.ok || !isRetryableStatus(response.status) || attempt === attempts - 1) {
-        return response;
-      }
-      await response.arrayBuffer().catch(() => null);
-    } catch (error) {
-      lastError = error;
-      if (!isRetryableError(error) || attempt === attempts - 1) throw error;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 50 * (attempt + 1)));
-  }
-  throw lastError || new Error('Gateway request failed');
 }
 
 function isMiniMaxModel(model) {
@@ -368,11 +339,13 @@ export async function createChatCompletion({
   tools,
   toolChoice,
   payloadExtras,
+  onPayloadPrepared,
   reasoningEffort,
   timeoutMs = 1800000,
   maxRetries = 2
 }) {
   const payload = buildPayload({ model, temperature, messages, tools, toolChoice, payloadExtras, reasoningEffort });
+  onPayloadPrepared?.(payload);
   const response = await fetchWithRetry(buildChatCompletionsUrl(baseUrl), {
     method: 'POST',
     headers: createHeaders(apiKey),
@@ -427,6 +400,7 @@ export async function createChatCompletionStream({
   tools,
   toolChoice,
   payloadExtras,
+  onPayloadPrepared,
   reasoningEffort,
   onTextDelta,
   onReasoningDelta,
@@ -452,6 +426,7 @@ export async function createChatCompletionStream({
   }
   const url = buildChatCompletionsUrl(baseUrl);
   const payload = buildPayload({ model, temperature, messages, tools, stream: true, toolChoice, payloadExtras, reasoningEffort });
+  onPayloadPrepared?.(payload);
   const buildRequest = (bodyPayload) => ({
     method: 'POST',
     headers: createHeaders(apiKey),
@@ -485,7 +460,7 @@ export async function createChatCompletionStream({
     for await (const event of iterateSseJsonEvents(response.body)) {
     if (event.done) {
       streamDone = true;
-      continue;
+      break;
     }
     const chunk = event.data;
     usage = extractUsageObject(chunk) || usage;
@@ -537,7 +512,7 @@ export async function createChatCompletionStream({
 
     if (choice0?.finish_reason) {
       finishReason = String(choice0.finish_reason || '');
-      break;
+      continue;
     }
     }
   } finally {

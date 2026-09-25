@@ -9,13 +9,33 @@ import {
   applyPlanEventToMessage,
   applyStreamEventToPlanRun,
   findActivePlanParentMessage,
+  findCreatePlanCard,
+  findMessageOwningPlanCard,
   isCreatePlanToolEvent,
   isLegacyFinalPlanStep,
   isPlanTranscriptEvent,
+  reconcileLeakedPlanDispatchCards,
   shouldNestStreamEventInPlan,
   settleCompletedPlanToolCards,
 } from "./plan-ui-state.js";
 import { sessionRuntimeIsBusy } from "./session-ui-state.js";
+import {
+  isCrewBackgroundWorkerToolEvent,
+  sanitizeCrewMessageFileChanges,
+  settleLingeringCrewDispatchCards,
+  settleCrewReviewDispatchCards,
+  settleCrewCancelledWorkerCards,
+} from "./crew-ui-state.js";
+import { parseCrewReviewCompletedWake } from "../../../../src/core/crew-notification.js";
+import { cancelWorkerIdFromPayload } from "../../../../src/core/crew-progress.js";
+
+function sessionCrewActive(state, sessionId) {
+  const runtime = state.runtimeState || {};
+  if (String(runtime.sessionId || "") === sessionId) {
+    return Boolean(runtime.crewActive);
+  }
+  return Boolean(state.sessionRuntimeById?.[sessionId]?.crewActive);
+}
 
 const SESSION_SCOPED_RUNTIME_KEYS = new Set([
   "sessionId",
@@ -23,6 +43,7 @@ const SESSION_SCOPED_RUNTIME_KEYS = new Set([
   "status",
   "queuePosition",
   "pendingApproval",
+  "pendingApprovals",
   "pendingUserInput",
   "pendingSpecApproval",
   "pendingReflectSkill",
@@ -30,6 +51,54 @@ const SESSION_SCOPED_RUNTIME_KEYS = new Set([
   "needsAttention",
   "parallelWriteRisk",
 ]);
+
+const KEEP_PENDING_APPROVAL_STATUSES = new Set([
+  "queued",
+  "running",
+  "waiting",
+  "waiting_approval",
+  "waiting_input",
+]);
+
+function approvalId(value) {
+  return String(value?.id || "").trim();
+}
+
+function normalizeApprovalQueue(runtime = {}) {
+  const queued = Array.isArray(runtime?.pendingApprovals)
+    ? runtime.pendingApprovals.filter((item) => approvalId(item))
+    : [];
+  if (queued.length) return queued;
+  const single = runtime?.pendingApproval;
+  return approvalId(single) ? [single] : [];
+}
+
+function upsertApprovalQueue(queue, event) {
+  const id = approvalId(event);
+  if (!id) return queue;
+  const index = queue.findIndex((item) => approvalId(item) === id);
+  if (index >= 0) {
+    const next = queue.slice();
+    next[index] = event;
+    return next;
+  }
+  return [...queue, event];
+}
+
+function removeApprovalFromQueue(queue, id) {
+  const requestId = String(id || "").trim();
+  if (!requestId) return queue;
+  return queue.filter((item) => approvalId(item) !== requestId);
+}
+
+function withApprovalQueue(runtime, queue) {
+  const next = Array.isArray(queue) ? queue : [];
+  return {
+    ...runtime,
+    pendingApprovals: next,
+    pendingApproval: next[0] || null,
+  };
+}
 
 function projectIdleRuntimeState(previous, sessionId) {
   const next = {
@@ -251,23 +320,28 @@ export function reduceSessionRuntimeEvent(state, event) {
   if (event.type === "runtime:state") {
     runtime = { ...previous, ...(event.state || {}), sessionId };
   } else if (event.type === "runtime_pool_state") {
-    runtime = {
+    const merged = {
       ...previous,
       ...(event.state || {}),
-      ...(previous.pendingApproval &&
-      event.state?.status !== "waiting_approval"
-        ? { pendingApproval: null }
-        : {}),
-      ...(previous.pendingUserInput &&
-      event.state?.status !== "waiting_input"
-        ? { pendingUserInput: null }
-        : {}),
       sessionId,
     };
+    const queue = normalizeApprovalQueue(previous);
+    runtime = KEEP_PENDING_APPROVAL_STATUSES.has(event.state?.status)
+      ? withApprovalQueue(merged, queue)
+      : withApprovalQueue(merged, []);
+    if (previous.pendingUserInput && event.state?.status !== "waiting_input") {
+      runtime = { ...runtime, pendingUserInput: null };
+    }
   } else if (event.type === "approval:request") {
-    runtime = { ...previous, pendingApproval: event, sessionId };
+    runtime = withApprovalQueue(
+      { ...previous, sessionId },
+      upsertApprovalQueue(normalizeApprovalQueue(previous), event),
+    );
   } else if (event.type === "approval:resolved") {
-    runtime = { ...previous, pendingApproval: null, sessionId };
+    runtime = withApprovalQueue(
+      { ...previous, sessionId },
+      removeApprovalFromQueue(normalizeApprovalQueue(previous), event.id),
+    );
   } else if (event.type === "user-input:request") {
     runtime = {
       ...previous,
@@ -288,7 +362,20 @@ export function reduceSessionRuntimeEvent(state, event) {
   } else if (event.type === "submit:start") {
     runtime = { ...previous, status: "running", busy: true, sessionId };
   } else if (event.type === "submit:done") {
-    if (previous.pendingApproval || previous.pendingUserInput) {
+    if (event.result?.aborted === true || event.result?.type === "aborted") {
+      // An abort means the agent behind any pending approval/user-input is
+      // gone, so the interaction dialog must close or the session stays stuck
+      // on the "waiting" state even though no turn is running.
+      runtime = {
+        ...previous,
+        status: "aborted",
+        busy: false,
+        pendingApproval: null,
+        pendingApprovals: [],
+        pendingUserInput: null,
+        sessionId,
+      };
+    } else if (previous.pendingApproval || previous.pendingApprovals?.length || previous.pendingUserInput) {
       // Keep the interaction UI open. Pool may still be (or return to)
       // waiting_*; clearing here caused false "completed" + recovered clicks.
       runtime = {
@@ -302,6 +389,7 @@ export function reduceSessionRuntimeEvent(state, event) {
         status: event.result?.type === "error" ? "failed" : "completed",
         busy: false,
         pendingApproval: null,
+        pendingApprovals: [],
         pendingUserInput: null,
         sessionId,
       };
@@ -318,14 +406,67 @@ export function reduceSessionRuntimeEvent(state, event) {
   };
 }
 
+function findCrewWorkerOwnerMessage(messages, event) {
+  const parentId = String(event?.parentToolCallId || "").trim();
+  if (!parentId) return null;
+  return (Array.isArray(messages) ? messages : []).find((message) =>
+    findCreatePlanCard(message, parentId),
+  );
+}
+
 export function reduceSessionTranscriptEvent(state, event) {
   const sessionId = String(event?.sessionId || "").trim();
   if (!sessionId) return state;
 
   let sessionMessagesById = state.sessionMessagesById;
   const messages = state.sessionMessagesById[sessionId] || [];
+  if (event.type === "crew:wake") {
+    const headline = String(event.headline || event.text || "").trim();
+    if (!headline) return state;
+    const wakeId = String(event.messageId || "").trim() || `crew-wake-${Date.now()}`;
+    if (messages.some((message) => message.id === wakeId)) return state;
+    const reviewOf = parseCrewReviewCompletedWake(headline);
+    const nextMessages = reviewOf
+      ? settleCrewReviewDispatchCards(messages, reviewOf)
+      : messages;
+    return {
+      ...state,
+      sessionMessagesById: {
+        ...sessionMessagesById,
+        [sessionId]: [
+          ...nextMessages,
+          {
+            id: wakeId,
+            role: "divider",
+            dividerType: "crew-wake",
+            text: headline,
+            segments: [{ type: "text", text: headline, isStreaming: false }],
+            skillBadges: [],
+            fileChanges: [],
+            isComplete: true,
+            timestamp: event.timestamp || new Date().toISOString(),
+          },
+        ],
+      },
+    };
+  }
+  const crewActive = sessionCrewActive(state, sessionId);
+  const planOwner = isPlanTranscriptEvent(event.type)
+    ? findMessageOwningPlanCard(messages, event.toolCallId)
+    : null;
+  const workerOwner = isCrewBackgroundWorkerToolEvent(event, { crewActive })
+    ? findCrewWorkerOwnerMessage(messages, event)
+    : null;
+  if (
+    isCrewBackgroundWorkerToolEvent(event, { crewActive }) &&
+    !workerOwner
+  ) {
+    return state;
+  }
   const activePlanParent = findActivePlanParentMessage(messages);
   const messageId = (() => {
+    if (planOwner?.id) return planOwner.id;
+    if (workerOwner?.id) return workerOwner.id;
     if (event.type === "routing:graph" || event.type === "memory:retrieved") {
       const requested = String(event.messageId || "").trim();
       const userMessage = requested
@@ -475,11 +616,12 @@ export function reduceSessionTranscriptEvent(state, event) {
       if (message.id !== messageId) return message;
       return applyPlanEventToMessage(message, event);
     });
+    const settled = isLegacyFinalPlanStep(event)
+      ? settleCompletedPlanToolCards(nextMessages)
+      : nextMessages;
     sessionMessagesById = {
       ...sessionMessagesById,
-      [sessionId]: isLegacyFinalPlanStep(event)
-        ? settleCompletedPlanToolCards(nextMessages)
-        : nextMessages,
+      [sessionId]: reconcileLeakedPlanDispatchCards(settled),
     };
   } else if (isTranscriptStreamEvent(event.type)) {
     let nextMessages = messages;
@@ -505,16 +647,57 @@ export function reduceSessionTranscriptEvent(state, event) {
       ...sessionMessagesById,
       [sessionId]: nextMessages.map((message) => {
         if (message.id !== messageId) return message;
+        const crewActive = sessionCrewActive(state, sessionId);
+        let nextMessage = message;
         if (isCreatePlanToolEvent(event) || shouldNestStreamEventInPlan(message, event)) {
-          return applyStreamEventToPlanRun(message, event, {
+          nextMessage = applyStreamEventToPlanRun(message, event, {
+            stripText: stripPlanProgressText,
+          });
+        } else {
+          nextMessage = applyStreamEventToMessage(message, event, {
             stripText: stripPlanProgressText,
           });
         }
-        return applyStreamEventToMessage(message, event, {
-          stripText: stripPlanProgressText,
-        });
+        if (
+          crewActive &&
+          (isCrewBackgroundWorkerToolEvent(event, { crewActive }) ||
+            event.type === "tool:end")
+        ) {
+          nextMessage = sanitizeCrewMessageFileChanges(nextMessage, {
+            crewActive,
+          });
+        }
+        return nextMessage;
       }),
     };
+    if (
+      crewActive &&
+      (event.type === "tool:end" || event.type === "tool:result") &&
+      String(event.name || event.toolName || "").toLowerCase().replace(/\(.*$/, "") === "land_workers"
+    ) {
+      sessionMessagesById = {
+        ...sessionMessagesById,
+        [sessionId]: settleLingeringCrewDispatchCards(
+          sessionMessagesById[sessionId] || [],
+        ),
+      };
+    }
+    if (
+      crewActive &&
+      (event.type === "tool:end" || event.type === "tool:result") &&
+      String(event.name || event.toolName || "").toLowerCase().replace(/\(.*$/, "") === "cancel_worker"
+    ) {
+      const workerId = cancelWorkerIdFromPayload(event);
+      if (workerId) {
+        sessionMessagesById = {
+          ...sessionMessagesById,
+          [sessionId]: settleCrewCancelledWorkerCards(
+            sessionMessagesById[sessionId] || [],
+            workerId,
+          ),
+        };
+      }
+    }
   }
 
   if (sessionMessagesById === state.sessionMessagesById) return state;

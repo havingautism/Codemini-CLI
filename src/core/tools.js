@@ -8,6 +8,10 @@ import { createRequire } from "node:module";
 import { createHash } from "node:crypto";
 import { rgPath } from "@vscode/ripgrep";
 import net from "node:net";
+import {
+  resolveSandboxCapabilitySummary,
+  SANDBOX_CAPABILITY_COMMANDS,
+} from "./sandbox-capabilities.js";
 import { escapeRegex, normalizePath } from "./string-utils.js";
 import {
   classifyCommandIntent,
@@ -20,6 +24,13 @@ import {
   terminateChild,
 } from "./shell.js";
 import { evaluateCommandPolicy } from "./command-policy.js";
+import { evaluateCrewParentCommand } from "./crew-shell.js";
+import { normalizeCrewReviewVerdict } from "./crew-store.js";
+import {
+  formatCrewStatusSummary,
+  readCrewStatusPayload,
+  resolveCrewProjectRoot,
+} from "./crew-snapshot.js";
 import { classifyCommandRisk, hasShellWriteSyntax } from "./command-risk.js";
 import { createWriteCoordinator } from "./write-coordinator.js";
 import {
@@ -129,7 +140,7 @@ let backgroundTaskCounter = 0;
 let backgroundTaskLogCursorCounter = 0;
 
 export function markRunCommandSafeModeApproved(args = {}) {
-  const next = { ...(args && typeof args === "object" ? args : {}) };
+  const next = Object.defineProperties({}, Object.getOwnPropertyDescriptors(args && typeof args === "object" ? args : {}));
   Object.defineProperty(next, RUN_COMMAND_SAFE_MODE_APPROVED, {
     value: true,
     enumerable: false,
@@ -142,7 +153,7 @@ export function hasRunCommandSafeModeApproval(args = {}) {
 }
 
 export function markSandboxEscalationApproved(args = {}) {
-  const next = { ...(args && typeof args === "object" ? args : {}) };
+  const next = Object.defineProperties({}, Object.getOwnPropertyDescriptors(args && typeof args === "object" ? args : {}));
   Object.defineProperty(next, SANDBOX_ESCALATION_APPROVED, {
     value: true,
     enumerable: false,
@@ -155,7 +166,7 @@ export function hasSandboxEscalationApproval(args = {}) {
 }
 
 export function markOutsideWorkspaceMutationApproved(args = {}, approval = {}) {
-  const next = { ...(args && typeof args === "object" ? args : {}) };
+  const next = Object.defineProperties({}, Object.getOwnPropertyDescriptors(args && typeof args === "object" ? args : {}));
   const paths = Array.isArray(approval?.paths)
     ? approval.paths.map((item) => String(item || "").trim()).filter(Boolean).map((item) => path.resolve(item))
     : [];
@@ -2210,7 +2221,55 @@ async function deletePath(root, args, config = {}) {
   };
 }
 
+const HTML_ARTIFACT_MAX_BYTES = 2 * 1024 * 1024;
+
+async function previewHtmlArtifact(root, args, config = {}) {
+  const requestedPath = String(
+    args?.path || args?.file_path || args?.file || "",
+  ).trim();
+  if (!requestedPath) throw new Error("preview_html requires path");
+  const workspaceOnlyConfig = {
+    ...config,
+    policy: { ...(config?.policy || {}), allowed_paths: [] },
+  };
+  const target = await resolveInWorkspace(
+    root,
+    requestedPath,
+    workspaceOnlyConfig,
+  );
+  const stat = await fs.stat(target);
+  if (!stat.isFile()) throw new Error("HTML artifact path is not a file");
+  if (!/\.html?$/i.test(target)) {
+    throw new Error("preview_html requires an .html or .htm file");
+  }
+  if (stat.size > HTML_ARTIFACT_MAX_BYTES) {
+    throw new Error(
+      `HTML artifact exceeds the ${HTML_ARTIFACT_MAX_BYTES}-byte limit`,
+    );
+  }
+  const title = String(args?.title || path.basename(target))
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 100);
+  const requestedHeight = Number(args?.height);
+  const height = Number.isFinite(requestedHeight)
+    ? Math.min(900, Math.max(320, Math.round(requestedHeight)))
+    : 560;
+  return {
+    ok: true,
+    artifactType: "html",
+    path: toWorkspaceRelative(root, target),
+    title: title || path.basename(target),
+    height,
+    byteLength: stat.size,
+  };
+}
+
 async function runCommand(root, config, args, context = {}) {
+  if (args?.network_access === true) {
+    if (context.networkAccessApproved !== true) throw new Error("Network access requires command review");
+    config = { ...config, sandbox: { ...config.sandbox, network: "allow-all", network_isolated: true } };
+  }
   const command = args?.command || "";
   if (!command.trim()) {
     throw new Error("shell command is required");
@@ -2249,10 +2308,9 @@ async function runCommand(root, config, args, context = {}) {
     return startBackgroundTask(root, {
       ...config,
       shell: { ...(config?.shell || {}), default: executionShell },
-    }, {
-      ...args,
+    }, Object.assign(Object.defineProperties({}, Object.getOwnPropertyDescriptors(args)), {
       sandbox_mode: sandboxMode,
-    });
+    }));
   }
 
   const result = await runShellCommand({
@@ -2269,10 +2327,16 @@ async function runCommand(root, config, args, context = {}) {
     config,
     sandboxMode,
   });
+  // A danger-full-access Microsandbox escalation runs on host PowerShell. Do
+  // not start the guest again or label host output with guest capabilities.
+  const sandboxCapabilities = hostPowerShellEscalation
+    ? ""
+    : await resolveSandboxCapabilitySummary(config, { cwd: root }).catch(() => "");
   const payload = {
     ...result,
     command,
     shell: executionShell,
+    ...(sandboxCapabilities ? { sandboxCapabilities } : {}),
     ...(hostPowerShellEscalation
       ? {
           sandbox: {
@@ -2292,7 +2356,7 @@ async function runCommand(root, config, args, context = {}) {
   if (payload?.sandbox?.denied) {
     payload.error = [
       payload.error,
-      `[sandbox: escalation available — retry with sandbox_permissions (workspace-write|danger-full-access) + justification, or set sandbox.mode in config]`,
+      `[sandbox: if network is required, retry with network_access=true for lite review and user fallback. Request wider filesystem access with sandbox_permissions + justification only when needed]`,
     ]
       .filter(Boolean)
       .join("\n");
@@ -4146,6 +4210,9 @@ export function getBuiltinTools({
   backupManager,
   toolResultStore,
   platform = process.platform,
+  crewActive = false,
+  onLandWorkers,
+  onCancelWorker,
 }) {
   workspaceRoot = path.resolve(workspaceRoot);
   const isWin = platform === "win32";
@@ -4155,6 +4222,9 @@ export function getBuiltinTools({
   const vmSandbox = isVmSandbox(sandboxPolicy);
   const osSandbox = isOsSandbox(sandboxPolicy);
   const osKind = platform === "darwin" ? "Seatbelt" : "Landlock";
+  const sandboxCapabilityNote = vmSandbox || osSandbox
+    ? ` Network access can be requested with network_access=true for this command only (lite review, then user fallback). The sandbox command baseline (${SANDBOX_CAPABILITY_COMMANDS.join(", ")}) is probed once per image; the live manifest is shown as a \`sandbox commands:\` line in each output. Verify an uncommon tool with \`command -v <tool>\` before relying on it.`
+    : "";
   config = {
     ...(config || {}),
     shell: {
@@ -4777,6 +4847,34 @@ export function getBuiltinTools({
     {
       type: "function",
       function: {
+        name: "preview_html",
+        description:
+          "Present a self-contained interactive HTML artifact from the workspace in an isolated preview card. Create or edit the .html/.htm file first, then pass only its path. Inline CSS and JavaScript work; network requests, forms, nested frames, external assets, and access to the Codemini page are blocked. Prefer data: URLs for embedded images.",
+        parameters: {
+          type: "object",
+          properties: {
+            path: {
+              type: "string",
+              description: "Project-relative .html or .htm file path.",
+            },
+            title: {
+              type: "string",
+              description: "Short title shown on the artifact card.",
+            },
+            height: {
+              type: "integer",
+              minimum: 320,
+              maximum: 900,
+              description: "Preview height in pixels. Defaults to 560.",
+            },
+          },
+          required: ["path"],
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
         name: "begin_write",
         description:
           "Begin a transactional whole-file write for long content. This validates and snapshots the target but does not modify it. Follow with sequential write_chunk calls and exactly one commit_write. Use abort_write to discard the staging state.",
@@ -5074,16 +5172,17 @@ export function getBuiltinTools({
       type: "function",
       function: {
         name: commandToolName,
-        description: vmSandbox
+        description: `${crewActive ? "Crew parent inspect-only: git status/log/diff and other read-only commands. Do not merge, checkout, worktree, or copy into the main checkout; use land_workers. " : ""}${vmSandbox
           ? platform === "win32"
             ? `Run a compact Bash command inside the Linux microVM sandbox (${sandboxPolicy.mode}) from the project root. If a build or test cannot use Windows-native dependencies because the guest is Linux, retry that exact verification command with sandbox_permissions="danger-full-access" and justification; the escalated command must be Windows PowerShell-compatible and runs on the host only after LLM risk advice and user approval. Do not escalate ordinary code failures, missing dependencies, or timeouts. Use project-relative paths and run_in_background=true only for long-running sandboxed commands. Put command last.`
-            : `Run a compact Bash command inside the Linux microVM sandbox (${sandboxPolicy.mode}) from the project root with unrestricted outbound networking. Use project-relative paths. Ordinary Bash commands, including curl, are available; commands with destructive or external side effects may still require approval. On denial, stderr includes [sandbox: ...]; retry with a wider sandbox_permissions plus justification when needed. Use run_in_background=true for long-running commands. Put command last.`
+            : `Run a compact Bash command inside the Linux microVM sandbox (${sandboxPolicy.mode}) from the project root with network disabled unless explicitly configured or network_access=true is approved for this command. Use project-relative paths. Ordinary Bash commands, including curl, are available; commands with destructive or external side effects may still require approval. On denial, stderr includes [sandbox: ...]; retry with a wider sandbox_permissions plus justification when needed. Use run_in_background=true for long-running commands. Put command last.`
           : osSandbox
-            ? `Run a compact ${shellContext.shell === "powershell" ? "PowerShell" : "Bash"} command on the host under OS confinement (${osKind}, ${sandboxPolicy.mode}) with unrestricted outbound networking. Use host paths from the current working directory. Commands with destructive or external side effects may still require approval. On denial, stderr includes [sandbox: ...]; retry with a wider sandbox_permissions plus justification when needed. Use run_in_background=true for long-running commands. Put command last.`
-          : `Run a compact ${shellContext.shell === "powershell" ? "PowerShell" : "Bash"} command directly on the ${platform === "win32" ? "Windows" : "host"} system without microVM confinement. Use run_in_background=true for long-running commands. Put command last.`,
+            ? `Run a compact ${shellContext.shell === "powershell" ? "PowerShell" : "Bash"} command on the host under OS confinement (${osKind}, ${sandboxPolicy.mode}) with network disabled unless explicitly configured or network_access=true is approved for this command. Use host paths from the current working directory. Commands with destructive or external side effects may still require approval. On denial, stderr includes [sandbox: ...]; retry with a wider sandbox_permissions plus justification when needed. Use run_in_background=true for long-running commands. Put command last.`
+            : `Run a compact ${shellContext.shell === "powershell" ? "PowerShell" : "Bash"} command directly on the ${platform === "win32" ? "Windows" : "host"} system without microVM confinement. Use run_in_background=true for long-running commands. Put command last.`}${sandboxCapabilityNote}`,
         parameters: {
           type: "object",
           properties: {
+            network_access: { type: "boolean", description: "Request outbound network for this command only. Lite model reviews the exact command; uncertain or high-risk operations require user approval. Omit for offline execution. Never broaden sandbox_permissions just to get network access." },
             timeout: { type: "number", description: "Timeout in milliseconds" },
             run_in_background: {
               type: "boolean",
@@ -5197,15 +5296,7 @@ export function getBuiltinTools({
 
   const workflowToolDefinitions = [];
   if (typeof onRunSubAgent === "function") {
-    workflowToolDefinitions.push({
-      type: "function",
-      function: {
-        name: "run_subagent",
-        description:
-          "Delegate a bounded task to a clean-context subagent. Same-response independent calls run in parallel; use task_id/depends_on for dependencies and disjoint file ownership for parallel edits. Invent a short worker name such as David. Use fork_task instead when shared prompt prefix/state is more useful.",
-        parameters: {
-          type: "object",
-          properties: {
+    const subagentProperties = {
             prompt: {
               type: "string",
               description:
@@ -5261,13 +5352,43 @@ export function getBuiltinTools({
               items: { type: "string" },
               description: "Optional allow-list overriding the role defaults.",
             },
-          },
+    };
+    if (crewActive) {
+      subagentProperties.paths = {
+        type: "array",
+        items: { type: "string" },
+        description:
+          "Disjoint relative globs this new coder worker may change, such as docs/** or src/foo.ts. Required for a new coder worker. Not required for role: \"survey\". On resume, omit to keep stored paths, or pass a new disjoint list to change that worker's scope.",
+      };
+      subagentProperties.resume = {
+        type: "string",
+        description:
+          "Roster worker id to call back, such as alisa. That is the short unique name, never a call id or handoff folder. Reuses that worktree and branch. Omit paths to keep the stored scope, or pass new disjoint paths to change it.",
+      };
+      subagentProperties.review = {
+        type: "string",
+        description:
+          "Roster worker id to review, such as alisa. Use with role: \"reviewer\". Does not create a worktree. Omit paths and resume. Do not review survey workers.",
+      };
+      subagentProperties.role.description =
+        'Optional role preset. Use "survey" for read-only investigation (no exclusive paths, no review, no land). Use "reviewer" with review set to a coder worker id.';
+    }
+    workflowToolDefinitions.push({
+      type: "function",
+      function: {
+        name: "run_subagent",
+        description: crewActive
+          ? "Delegate isolated work to a git-worktree subagent. Same-response independent calls run in parallel; use task_id/depends_on for dependencies. Every objective, including a single task, must go to a worker. New coder workers need disjoint paths and a unique short name (that name becomes the resume id). Read-only investigation uses role: \"survey\" (no exclusive paths, no review, no land). Call an idle worker back with resume set to that id. After a coder commits, review that worker with role: \"reviewer\" and review set to its id before land_workers."
+          : "Delegate a bounded task to a clean-context subagent. Same-response independent calls run in parallel; use task_id/depends_on for dependencies and disjoint file ownership for parallel edits. Invent a short worker name such as David. Use fork_task instead when shared prompt prefix/state is more useful.",
+        parameters: {
+          type: "object",
+          properties: subagentProperties,
           required: [],
         },
       },
     });
   }
-  if (typeof onForkTask === "function") {
+  if (typeof onForkTask === "function" && !crewActive) {
     workflowToolDefinitions.push({
       type: "function",
       function: {
@@ -5307,6 +5428,81 @@ export function getBuiltinTools({
             },
           },
           required: [],
+        },
+      },
+    });
+  }
+  if (typeof onLandWorkers === "function") {
+    workflowToolDefinitions.push({
+      type: "function",
+      function: {
+        name: "land_workers",
+        description:
+          "Merge sealed Crew worker branches directly onto the current user branch with git merge --no-ff, then delete those worker branches when everyone on the roster is integrated. Workers still in review stay on their worktrees until they pass. If a worker conflicts on the base tip, resume that worker to rebase onto the returned commit, then review the new commit before landing again. If a review loop stops, resume with a new task or paths, or spawn a new worker; do not keep fixing the same findings. Do not merge or copy files yourself.",
+        parameters: {
+          type: "object",
+          properties: {},
+          required: [],
+        },
+      },
+    });
+  }
+  if (typeof onCancelWorker === "function") {
+    workflowToolDefinitions.push({
+      type: "function",
+      function: {
+        name: "cancel_worker",
+        description:
+          "Abort a Crew worker or its in-flight reviewer. Use when the user changes or revokes that worker's task (path, file type, scope) while running, queued, or sealed before review/land: cancel, then run_subagent with the new task. Cancelling a coder removes its worktree, branch, and roster slot. Cancelling while a review is running only stops that reviewer and keeps the author worktree. Use the worker id from crew_status.",
+        parameters: {
+          type: "object",
+          properties: {
+            worker_id: {
+              type: "string",
+              description: "Roster worker id to cancel (the same id used with resume / review).",
+            },
+          },
+          required: ["worker_id"],
+        },
+      },
+    });
+  }
+  if (crewActive || config?.runtime?.crew_session) {
+    workflowToolDefinitions.push({
+      type: "function",
+      function: {
+        name: "crew_status",
+        description:
+          "Read the latest Crew roster, unread completion events, and workflow state from disk. Call before dispatching, reviewing, landing, or answering progress — including after a restart, when a wake may be missing.",
+        parameters: {
+          type: "object",
+          properties: {},
+          required: [],
+        },
+      },
+    });
+  }
+  if (typeof config?.runtime?.onCrewReviewVerdict === "function") {
+    workflowToolDefinitions.push({
+      type: "function",
+      function: {
+        name: "submit_crew_review",
+        description:
+          "Submit the Crew review verdict before stopping. passed true means the commit may land (findings must be []); passed false requires one string per blocking issue. Example pass: { passed: true, findings: [] }. Example fail: { passed: false, findings: [\"missing test for edge case\"] }. Prose Findings: in your message does not count — call this tool once.",
+        parameters: {
+          type: "object",
+          properties: {
+            passed: {
+              type: "boolean",
+              description: "true if this commit is clean to land.",
+            },
+            findings: {
+              type: "array",
+              items: { type: "string" },
+              description: "Empty when passed is true. One item per blocking issue when passed is false.",
+            },
+          },
+          required: ["passed", "findings"],
         },
       },
     });
@@ -6330,6 +6526,8 @@ export function getBuiltinTools({
   }
 
   const handlers = {
+    preview_html: async (args) =>
+      previewHtmlArtifact(workspaceRoot, args, config),
     read: async (args) => {
       const inlineQuery = String(args?.query || "").trim();
       const directAstTarget = args?.ast_target;
@@ -6621,7 +6819,7 @@ export function getBuiltinTools({
     },
     write: async (args) => {
       await ensureProjectIndex();
-      if (!isWin && !String(args?.file_path || "").trim()) {
+      if (!isWin && !String(args?.file_path || args?.path || "").trim()) {
         throw new Error("file_path must be a non-empty string");
       }
       const baseMutationConfig = configWithApprovedMutationPaths(config, args);
@@ -6647,7 +6845,7 @@ export function getBuiltinTools({
             workspaceRoot,
             isWin
               ? args
-              : { ...args, path: args?.file_path, overwrite: true },
+              : { ...args, path: args?.file_path || args?.path, overwrite: true },
             mutationConfig,
           ),
           backup,
@@ -6995,9 +7193,18 @@ export function getBuiltinTools({
         taskId: String(args?.task_id || "").trim(),
         dependsOn: Array.isArray(args?.depends_on) ? args.depends_on : [],
         tools: Array.isArray(args?.tools) ? args.tools : null,
+        paths: Array.isArray(args?.paths) ? args.paths : [],
+        resume: String(args?.resume || "").trim(),
+        review: String(args?.review || "").trim(),
       });
     },
     fork_task: async (args = {}, ctx = {}) => {
+      if (crewActive) {
+        return {
+          ok: false,
+          error: "fork_task is not available in Crew mode. Use run_subagent.",
+        };
+      }
       if (typeof onForkTask !== "function") {
         return {
           ok: false,
@@ -7018,6 +7225,55 @@ export function getBuiltinTools({
         orchestrationId: String(ctx?.orchestrationId || "").trim(),
         forkPoint: ctx?.forkPoint || null,
       });
+    },
+    land_workers: async () => {
+      if (typeof onLandWorkers !== "function") {
+        return {
+          ok: false,
+          error: "land_workers is only available in Crew mode.",
+        };
+      }
+      return onLandWorkers();
+    },
+    cancel_worker: async (args = {}) => {
+      if (typeof onCancelWorker !== "function") {
+        return {
+          ok: false,
+          error: "cancel_worker is only available in Crew mode.",
+        };
+      }
+      const workerId = String(args?.worker_id || args?.id || args?.resume || "").trim();
+      if (!workerId) {
+        return { ok: false, code: "MISSING_ID", error: "worker_id is required." };
+      }
+      return onCancelWorker({ workerId });
+    },
+    crew_status: async () => {
+      if (!crewActive && !config?.runtime?.crew_session) {
+        return {
+          ok: false,
+          error: "crew_status is only available in Crew mode.",
+        };
+      }
+      const projectRoot = resolveCrewProjectRoot(
+        config?.runtime?.crew_project_root || workspaceRoot,
+      );
+      const inFlight = typeof config?.runtime?.getCrewInFlightWorkers === "function"
+        ? config.runtime.getCrewInFlightWorkers()
+        : [];
+      const pendingWakes = typeof config?.runtime?.getCrewPendingWakes === "function"
+        ? config.runtime.getCrewPendingWakes()
+        : 0;
+      return readCrewStatusPayload(projectRoot, { inFlight, pendingWakes });
+    },
+    submit_crew_review: async (args = {}) => {
+      const submit = config?.runtime?.onCrewReviewVerdict;
+      const verdict = normalizeCrewReviewVerdict(args);
+      if (!verdict.ok) return verdict;
+      if (typeof submit === "function") {
+        submit({ passed: verdict.passed, findings: verdict.findings });
+      }
+      return { ok: true, passed: verdict.passed, findings: verdict.findings };
     },
     create_spec: async (args = {}) => {
       if (typeof onCreateSpec !== "function") {
@@ -7061,7 +7317,15 @@ export function getBuiltinTools({
         sections,
       });
     },
-    run: Object.assign((args, context) => runCommand(workspaceRoot, config, args, context), {
+    run: Object.assign((args, context) => {
+      if (crewActive) {
+        const crewCheck = evaluateCrewParentCommand(args?.command, platform);
+        if (!crewCheck.allowed) {
+          throw new Error(crewCheck.reason);
+        }
+      }
+      return runCommand(workspaceRoot, config, args, context);
+    }, {
       prepareApproval: async (args) => {
         const evaluation = args?._evaluation || null;
         const risk = String(args?._risk || "").trim() ||
@@ -7327,6 +7591,17 @@ export function getBuiltinTools({
       const query = String(args?.query || "")
         .trim()
         .toLowerCase();
+      const already = definitions.find((item) => {
+        const name = String(item?.function?.name || item?.name || "").toLowerCase();
+        return name === query;
+      });
+      if (already) {
+        return {
+          loaded: [query],
+          schemas: [already],
+          message: `"${query}" is already in your current tool list. Call it directly; do not tool_search for it.`,
+        };
+      }
       if (query === "all") {
         const all = Object.values(deferredToolCatalog);
         return {
@@ -7516,6 +7791,12 @@ export function getBuiltinTools({
       return `${header}\n${dirs.join("\n")}${dirs.length && files.length ? "\n" : ""}${files.join("\n")}`;
     },
 
+    preview_html(result) {
+      if (!result || typeof result !== "object") return String(result);
+      if (result.error) return String(result.error);
+      return `Interactive HTML artifact ready: ${result.path || "?"}`;
+    },
+
     tasks(result) {
       if (!result || typeof result !== "object") return String(result);
       if (result.ok === false && result.error) return String(result.error);
@@ -7594,6 +7875,41 @@ export function getBuiltinTools({
       if (result.message) return String(result.message);
       if (result.text) return String(result.text);
       return JSON.stringify(result);
+    },
+
+    land_workers(result) {
+      if (!result || typeof result !== "object") return String(result);
+      if (result.error) {
+        const files = Array.isArray(result.files) && result.files.length
+          ? `\nFiles: ${result.files.join(', ')}`
+          : '';
+        const onto = String(result.onto || '').trim()
+          ? `\nRebase onto: ${String(result.onto).trim()}`
+          : '';
+        return `${result.error}${files}${onto}`;
+      }
+      if (result.message) return String(result.message);
+      return JSON.stringify(result);
+    },
+
+    cancel_worker(result) {
+      if (!result || typeof result !== "object") return String(result);
+      if (result.error) return String(result.error);
+      if (result.message) return String(result.message);
+      return JSON.stringify(result);
+    },
+
+    crew_status(result) {
+      return formatCrewStatusSummary(result);
+    },
+
+    submit_crew_review(result) {
+      if (!result || typeof result !== "object") return String(result);
+      if (result.error) return String(result.error);
+      if (result.passed === true) return "Review passed.";
+      const findings = Array.isArray(result.findings) ? result.findings.filter(Boolean) : [];
+      if (findings.length) return `Review did not pass:\n${findings.map((item) => `- ${item}`).join("\n")}`;
+      return "Review did not pass.";
     },
 
     fork_task(result) {
@@ -7788,6 +8104,21 @@ export function getBuiltinTools({
         return parts.join("\n");
       }
       const runSummary = summarizeRunOutput(result);
+      if (result.sandboxCapabilities) {
+        const capLine = String(result.sandboxCapabilities).trim();
+        if (runSummary) return `${execution}\n${capLine}\n${runSummary}`;
+        if (capLine) {
+          const command = String(result.command || "").slice(0, 200);
+          const stdout = String(result.stdout || "");
+          const stderr = String(result.stderr || "");
+          const code = result.code ?? 0;
+          const parts = [execution, `[exit: ${code}]`, capLine];
+          if (command) parts.push(`command: ${command}`);
+          if (stdout) parts.push(`stdout:\n${stdout}`);
+          if (stderr) parts.push(`stderr:\n${stderr}`);
+          return parts.join("\n");
+        }
+      }
       if (runSummary) return `${execution}\n${runSummary}`;
       const command = String(result.command || "").slice(0, 200);
       const stdout = String(result.stdout || "");

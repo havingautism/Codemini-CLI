@@ -20,12 +20,14 @@ test('Kimi streaming completion returns usage nested on the final choice', async
     headers: { 'content-type': 'text/event-stream' }
   });
 
+  let preparedPayload = null;
   const result = await createChatCompletionStream({
     baseUrl: 'https://api.moonshot.ai/v1',
     apiKey: 'test-key',
     model: 'kimi-k2.6',
     messages: [{ role: 'user', content: 'Hello' }],
-    maxRetries: 0
+    maxRetries: 0,
+    onPayloadPrepared: (payload) => { preparedPayload = payload; },
   });
 
   assert.equal(result.text, 'Hello');
@@ -35,6 +37,8 @@ test('Kimi streaming completion returns usage nested on the final choice', async
     total_tokens: 32,
     cached_tokens: 10
   });
+  assert.equal(preparedPayload.stream, true);
+  assert.equal(preparedPayload.messages[0].content, 'Hello');
 });
 
 test('OpenAI-compatible stream treats EOF without finish_reason as incomplete tool arguments', async (t) => {

@@ -1,3 +1,5 @@
+import { validateWebConfigValue } from './shared/web-config-policy.js';
+import { createWebSecurity, publicConfig, isSecretConfigKey, assertConfigPath, assertWebConfigWritable } from './lib/web-security.js';
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -34,6 +36,10 @@ import {
   deleteSession,
   saveSession,
 } from "../src/core/session-store.js";
+import { hasUiTranscriptInSqlite } from "../src/core/session-sqlite-store.js";
+import { createHarnessSqliteStore } from "../src/core/harness/audit/harness-sqlite-store.js";
+import { createToolReliabilityStore } from "../src/core/harness/tool-reliability.js";
+import { shouldRollout } from "../src/core/harness/rollout.js";
 import {
   forkIdleSession,
   sessionForkBlockedReason,
@@ -62,6 +68,7 @@ import {
   resizeTerminal,
   restartTerminal,
   runTerminalCommand,
+  disposeTerminals,
   stopTerminal,
   subscribeTerminal,
   writeTerminalInput,
@@ -69,7 +76,9 @@ import {
 import {
   listWorkspaceChildren,
   previewWorkspaceFile,
+  readWorkspaceHtmlArtifact,
   resolveWorkspacePath,
+  searchWorkspaceFiles,
   isPreviewableImagePath,
 } from "./lib/workspace-files.js";
 import {
@@ -808,6 +817,7 @@ function createPooledEmptySessionAllocator(
     listSessions: listFn = listSessions,
     loadSession: loadFn = loadSession,
     createSession: createFn = createSession,
+    isSessionDisplayEmpty,
   } = {},
 ) {
   return createEmptySessionAllocator({
@@ -821,6 +831,7 @@ function createPooledEmptySessionAllocator(
     matchesProject: matchesEmptySessionProject,
     isBusy: (sessionId) =>
       ACTIVE_RUNTIME_STATUSES.has(pool.getSessionState(sessionId)?.status),
+    isSessionDisplayEmpty,
   });
 }
 
@@ -882,12 +893,14 @@ export function createServerCleanup({
   runtimeStatusStore,
   server,
   exit = () => process.exit(0),
+  disposeTerminals = async () => {},
 }) {
   let cleanupPromise = null;
   return () => {
     if (cleanupPromise) return cleanupPromise;
     cleanupPromise = (async () => {
       runtimeEvictionTimer.stop();
+      await disposeTerminals();
       await Promise.allSettled(
         [...pool.entries.values()].map((entry) => entry.bridge?.dispose?.()),
       );
@@ -970,6 +983,7 @@ export function createWebRuntimeApi({
   loadConfig: loadRuntimeConfig = loadConfig,
   getConfigStatus: getRuntimeConfigStatus = getConfigStatus,
   allocateEmptySession = null,
+  isSessionDisplayEmpty = (sessionId) => !hasUiTranscriptInSqlite(sessionId),
 }) {
   const loadBridge = async (res, sessionId) => {
     const id = requireSessionId(res, sessionId);
@@ -1000,6 +1014,7 @@ export function createWebRuntimeApi({
       listSessions: listStoredSessions,
       loadSession: loadStoredSession,
       createSession: createStoredSession,
+      isSessionDisplayEmpty,
     });
   const submitOperation = (sessionId, invoke) =>
     pool.submit(sessionId, (bridge) =>
@@ -1034,6 +1049,54 @@ export function createWebRuntimeApi({
       });
       return true;
 
+  }));
+  runtimeRoutes.get("/api/harness/episodes", nodeRoute(async (req, res, url) => {
+      const sessionId = String(url.searchParams.get("session_id") || "").trim();
+      const store = createHarnessSqliteStore();
+      const episodes = store.listEpisodes({ sessionId, limit: 100 });
+      const payload = episodes.map((episode) => ({
+        ...episode,
+        events: store.listEpisodeEvents(episode.id),
+      }));
+      let config = {};
+      try { config = (await loadRuntimeConfig()) || {}; } catch { config = {}; }
+      let session = null;
+      if (sessionId) {
+        try { session = await loadStoredSession(sessionId); } catch { session = null; }
+      }
+      const harness = config?.harness || {};
+      const rollout = harness.rollout || {};
+      const projectDir = session?.projectDir || session?.workspaceRoot || "";
+      const active = harness.enabled === true && shouldRollout({
+        rollout,
+        sessionId,
+        projectDir,
+        riskTier: "low",
+      });
+      let reason = "当前会话已命中灰度并允许运行";
+      if (harness.enabled !== true) reason = "功能开关未开启";
+      else if (rollout.enabled !== true) reason = "灰度发布未开启";
+      else if (!Array.isArray(rollout.risk_tiers) || !rollout.risk_tiers.includes("low")) reason = "当前风险级别不在灰度范围";
+      else if (rollout.projects?.length && !rollout.projects.some((item) => String(item).replaceAll("\\", "/").replace(/\/+$/, "").toLowerCase() === String(projectDir).replaceAll("\\", "/").replace(/\/+$/, "").toLowerCase())) reason = "当前项目不在灰度项目名单";
+      else if (rollout.sessions?.length && !rollout.sessions.includes(sessionId)) reason = "当前会话不在灰度会话名单";
+      else if (Number(rollout.percentage) <= 0) reason = "灰度比例为 0%";
+      else if (!active) reason = "当前会话未命中灰度比例";
+      jsonResponse(res, {
+        episodes: payload,
+        activation: {
+          active,
+          reason,
+          provider: String(harness.provider || "rules"),
+          decisionMode: String(harness.decision_mode || "advisory"),
+          configured: harness.enabled === true,
+        },
+      });
+      return true;
+  }));
+  runtimeRoutes.get("/api/harness/tool-reliability", nodeRoute(async (req, res) => {
+      const store = createToolReliabilityStore();
+      jsonResponse(res, { tools: store.list() });
+      return true;
   }));
   runtimeRoutes.get("/api/sessions", nodeRoute(async (req, res, url) => {
       const requestedLimit = Number(url.searchParams.get("limit") || 200);
@@ -1295,6 +1358,7 @@ export function createWebRuntimeApi({
             skillNames: body.skillNames,
             attachmentIds: body.attachmentIds,
             dismissedAlwaysSkills: body.dismissedAlwaysSkills,
+            fileReferences: body.fileReferences,
             attachments,
             modelImages: attachmentData.modelImages,
             ...(mergedModelText ? { modelText: mergedModelText } : {}),
@@ -1303,6 +1367,26 @@ export function createWebRuntimeApi({
         jsonResponse(res, accepted, accepted.accepted ? 202 : 409);
       } catch (error) {
         chatErrorResponse(res, error, "INVALID_REQUEST");
+      }
+      return true;
+
+  }));
+  runtimeRoutes.post("/api/chat/crew-wakes/drain", nodeRoute(async (req, res) => {
+      const body = await readBody(req);
+      const bridge = await loadBridge(res, body?.sessionId);
+      if (!bridge) return true;
+      try {
+        await bridge.drainCrewPendingWakes();
+        jsonResponse(res, { ok: true });
+      } catch (error) {
+        jsonResponse(
+          res,
+          {
+            error: true,
+            message: error?.message || "Failed to drain crew wakes",
+          },
+          500,
+        );
       }
       return true;
 
@@ -1531,6 +1615,15 @@ export function createWebRuntimeApi({
         },
       ],
       [
+        "/api/crew-mode",
+        async ({ bridge, body }) => {
+          const active = body.active === true || body.active === "on" || body.active === "true";
+          const result = await bridge.setCrewMode(active);
+          if (result && typeof result === "object") return result;
+          return { ok: Boolean(result), crew: result?.crew || null };
+        },
+      ],
+      [
         "/api/approval-mode",
         async ({ bridge, body }) => ({
           ok: await bridge.setApprovalMode(body.mode),
@@ -1588,7 +1681,7 @@ export function createWebRuntimeApi({
         body.mode = sandboxMode;
       }
       if (
-        ["/api/execution-mode", "/api/approval-mode", "/api/sandbox-mode"].includes(url.pathname) &&
+        ["/api/execution-mode", "/api/approval-mode", "/api/sandbox-mode", "/api/crew-mode"].includes(url.pathname) &&
         (ACTIVE_RUNTIME_STATUSES.has(
           pool.getSessionState(body.sessionId)?.status,
         ) ||
@@ -1599,6 +1692,8 @@ export function createWebRuntimeApi({
             ? "Cannot switch execution mode while a request is running"
             : url.pathname === "/api/sandbox-mode"
               ? "Cannot switch sandbox mode while a request is running"
+              : url.pathname === "/api/crew-mode"
+                ? "Cannot switch crew while a request is running"
             : "Cannot switch approval mode while a request is running";
         jsonResponse(res, { error: true, message }, 409);
         return true;
@@ -1788,6 +1883,7 @@ export async function handleStructuredChatRequest(req, res, bridge) {
           skillNames: body?.skillNames,
           attachmentIds: body?.attachmentIds,
           dismissedAlwaysSkills: body?.dismissedAlwaysSkills,
+          fileReferences: body?.fileReferences,
           ...attachmentData,
         }),
       );
@@ -2161,6 +2257,37 @@ export async function serveStatic(res, filePath, req) {
     res.writeHead(404, { "Content-Type": "text/plain" });
     res.end("Not found");
   }
+}
+
+export const HTML_ARTIFACT_CSP = [
+  "sandbox allow-scripts",
+  "default-src 'none'",
+  "script-src 'unsafe-inline' blob:",
+  "style-src 'unsafe-inline'",
+  "img-src data: blob:",
+  "font-src data:",
+  "media-src data: blob:",
+  "connect-src 'none'",
+  "object-src 'none'",
+  "base-uri 'none'",
+  "form-action 'none'",
+  "frame-src 'none'",
+  "frame-ancestors 'self'",
+].join("; ");
+
+export async function serveHtmlArtifact(res, workspaceRoot, relativePath) {
+  const artifact = await readWorkspaceHtmlArtifact(workspaceRoot, relativePath);
+  const body = Buffer.from(artifact.content, "utf8");
+  res.writeHead(200, {
+    "Content-Type": "text/html; charset=utf-8",
+    "Content-Length": body.length,
+    "Cache-Control": "no-store",
+    "Content-Security-Policy": HTML_ARTIFACT_CSP,
+    "Referrer-Policy": "no-referrer",
+    "X-Content-Type-Options": "nosniff",
+  });
+  res.end(body);
+  return artifact;
 }
 
 function normalizeProjectPath(value) {
@@ -2619,6 +2746,8 @@ export async function buildRuntimeForSession({ sessionId, model, projectDir }) {
 
 async function main() {
   const args = parseArgs(process.argv);
+  const startupConfig = await loadConfig();
+  const webSecurity = await createWebSecurity({ directory: getBaseConfigDir(), host: args.host, port: args.port, terminalEnabled: startupConfig.webui?.terminal_enabled === true, devOrigin: process.env.CODEMINI_DEV_ORIGIN || "" });
   const readGitInfoAsync = createGitInfoReader();
 
   // Ensure general workspace directory exists
@@ -2784,13 +2913,17 @@ async function main() {
       else await runtimeStatusStore.set(session.id, "idle");
     },
   });
-  const allocateEmptySession = createPooledEmptySessionAllocator(pool);
+  const isSessionDisplayEmpty = (sessionId) => !hasUiTranscriptInSqlite(sessionId);
+  const allocateEmptySession = createPooledEmptySessionAllocator(pool, {
+    isSessionDisplayEmpty,
+  });
   const runtimeApi = createWebRuntimeApi({
     pool,
     eventBroker,
     ensureSession: ensurePooledSession,
     runtimeStatusStore,
     allocateEmptySession,
+    isSessionDisplayEmpty,
     getDefaultProjectDir: () => currentProjectDir,
     setDefaultProjectDir: (dir) => {
       const next = String(dir || "").trim();
@@ -3193,6 +3326,22 @@ async function main() {
       return;
 
   }));
+  routes.get("/api/workspace/search", nodeRoute(async (req, res, url) => {
+      const cwd = await resolveTerminalCwd(url);
+      try {
+        const query = String(url.searchParams.get("q") || "").trim();
+        const result = await searchWorkspaceFiles(cwd, query);
+        jsonResponse(res, result);
+      } catch (err) {
+        const message = String(err?.message || "Unable to search workspace");
+        const status = /outside|does not exist|not a directory/i.test(message)
+          ? 400
+          : 500;
+        jsonResponse(res, { error: true, message }, status);
+      }
+      return;
+
+  }));
   routes.get("/api/workspace/preview", nodeRoute(async (req, res, url) => {
       const cwd = await resolveTerminalCwd(url);
       try {
@@ -3207,6 +3356,25 @@ async function main() {
           )
             ? 400
             : 500;
+        jsonResponse(res, { error: true, message }, status);
+      }
+      return;
+
+  }));
+  routes.get("/api/artifacts/html", nodeRoute(async (req, res, url) => {
+      const cwd = await resolveTerminalCwd(url);
+      try {
+        const relativePath = String(url.searchParams.get("path") || "").trim();
+        if (!relativePath) {
+          jsonResponse(res, { error: true, message: "HTML artifact path required" }, 400);
+          return;
+        }
+        await serveHtmlArtifact(res, cwd, relativePath);
+      } catch (error) {
+        const message = String(error?.message || "Unable to load HTML artifact");
+        const status = /outside|does not exist|not a file|require|exceeds/i.test(message)
+          ? 400
+          : 500;
         jsonResponse(res, { error: true, message }, status);
       }
       return;
@@ -3542,7 +3710,7 @@ async function main() {
   }));
   routes.get("/api/config", nodeRoute(async (req, res, url) => {
       const config = await loadConfig();
-      jsonResponse(res, config);
+      jsonResponse(res, publicConfig(config));
       return;
 
   }));
@@ -3552,13 +3720,21 @@ async function main() {
         jsonResponse(res, { error: true, message: "Missing key" }, 400);
         return;
       }
+      try { assertWebConfigWritable(key); } catch (err) {
+        jsonResponse(res, { error: true, message: err.message }, 403);
+        return;
+      }
+      try { validateWebConfigValue(key, value); } catch (err) {
+        jsonResponse(res, { error: true, message: err.message }, 400);
+        return;
+      }
       try {
         await setConfigValue(key, value);
         const config = await loadConfig();
         await pool.reloadConfig(
           key === "model.name" ? { model: config.model?.name } : {},
         );
-        jsonResponse(res, { ok: true, config });
+        jsonResponse(res, { ok: true, config: publicConfig(config) });
       } catch (err) {
         jsonResponse(res, { error: true, message: err.message }, 500);
       }
@@ -4396,14 +4572,7 @@ async function main() {
   const handleRequest = async (req, res) => {
     const url = new URL(req.url, `http://localhost:${args.port}`);
 
-    res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-    if (req.method === "OPTIONS") {
-      res.writeHead(204);
-      res.end();
-      return;
-    }
+    if (await webSecurity.handle(req, res, url)) return;
 
     if (await runtimeApi(req, res)) return;
     if (await dispatchNodeRouter(routes, req, res)) return;
@@ -4609,7 +4778,16 @@ async function main() {
 
     if (req.method === "GET" && url.pathname.startsWith("/api/config/get/")) {
       const key = url.pathname.slice("/api/config/get/".length);
-      const value = await getConfigValue(key);
+      try { assertConfigPath(key); } catch (err) {
+        jsonResponse(res, { error: true, message: err.message }, 400);
+        return;
+      }
+      if (isSecretConfigKey(key.split(".").at(-1))) {
+        jsonResponse(res, { key, hasApiKey: Boolean(await getConfigValue(key)) });
+        return;
+      }
+      const safeConfig = publicConfig(await loadConfig());
+      const value = key.split(".").reduce((obj, part) => obj && Object.hasOwn(obj, part) ? obj[part] : undefined, safeConfig);
       jsonResponse(res, { key, value });
       return;
     }
@@ -5629,8 +5807,12 @@ async function main() {
     () => {
     const displayHost = args.host === "0.0.0.0" ? "localhost" : args.host;
     console.log(
-      `\n  Codemini Web UI\n  http://${displayHost}:${args.port}\n  Project: ${currentProjectDir}\n`,
+      `\n  Codemini Web UI\n  http://${displayHost}:${args.port}\n  Project: ${currentProjectDir}\n  Login token file: ${webSecurity.tokenPath}\n`,
     );
+    if (!process.env.CODEMINI_DEV_ORIGIN) {
+      console.log(webSecurity.loginInstructions(`http://${displayHost}:${args.port}`) + "\n");
+    }
+    process.send?.({ type: "web:ready", tokenPath: webSecurity.tokenPath });
     if (!args.open) return;
     const openCmd =
       process.platform === "darwin"
@@ -5648,6 +5830,7 @@ async function main() {
 
   const cleanup = createServerCleanup({
     runtimeEvictionTimer,
+    disposeTerminals,
     pool,
     runtimeStatusStore,
     server,

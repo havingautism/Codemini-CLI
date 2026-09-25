@@ -318,7 +318,10 @@ function SoulDetailPane({ soul, disabled = false, onSave }) {
             placeholder={t("soulPlaceholder")}
           />
         ) : (
-          <MarkdownPreview value={content} className="flex-1" />
+          <MarkdownPreview
+            value={content}
+            className="codemini-resource-detail-prose flex-1"
+          />
         )}
       </div>
     </div>
@@ -369,6 +372,7 @@ function SoulChoiceCard({
       tabIndex={0}
       onClick={() => onSelect(soul)}
       onKeyDown={(event) => {
+        if (event.target !== event.currentTarget) return;
         if (event.key === "Enter" || event.key === " ") onSelect(soul);
       }}
       className={cn(
@@ -410,7 +414,6 @@ function SoulChoiceCard({
         <Switch
           checked={active}
           onCheckedChange={handleToggle}
-          onClick={(event) => event.stopPropagation()}
           disabled={disabled}
           aria-label={
             active
@@ -422,16 +425,14 @@ function SoulChoiceCard({
 
       {/* Footer: actions (custom only) */}
       {isCustom && (
-        <div
-          className="flex items-center gap-0.5"
-          onClick={(event) => event.stopPropagation()}
-        >
+        <div className="flex items-center gap-0.5">
           <Button
             variant="ghost"
             size="icon-sm"
             disabled={disabled}
             className="text-(--accent-red) hover:bg-(--accent-red-bg) hover:text-(--accent-red)"
-            onClick={() => {
+            onClick={(event) => {
+              event.stopPropagation();
               if (disabled) return;
               onDelete(soul);
             }}

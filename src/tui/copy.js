@@ -1,6 +1,7 @@
 const EN = {
   modeCoding: 'Coding',
   modeDaily: 'Daily',
+  modeCrew: 'Crew',
   modeCodingDescription: 'Implementation, tools, plans and verification',
   modeDailyDescription: 'Conversation, research, notes and light tasks',
   chooseMode: 'Choose how to work in this session',
@@ -21,7 +22,7 @@ const EN = {
   settingSandbox: 'Sandbox access',
   settingSoul: 'Persona',
   settingValues: {
-    coding: 'Coding', daily: 'Daily', workspace: 'Default workspace', cwd: 'Current directory', off: 'Off', auto: 'Auto', low: 'Low', medium: 'Medium', high: 'High',
+    coding: 'Coding', daily: 'Daily', crew: 'Crew', workspace: 'Default workspace', cwd: 'Current directory', off: 'Off', auto: 'Auto', low: 'Low', medium: 'Medium', high: 'High',
     review: 'Review', full_access: 'Full access', 'read-only': 'Read only', 'workspace-write': 'Workspace write', 'danger-full-access': 'Full system access'
   },
   modelLabel: 'MODEL',
@@ -100,13 +101,29 @@ const EN = {
   help: 'Show keyboard shortcuts',
   tools: 'Toggle process details',
   codingMode: 'Switch to coding mode',
-  dailyMode: 'Switch to daily mode'
+  dailyMode: 'Switch to daily mode',
+  crewFailed: 'Could not change Crew mode',
+  crewWake: 'Crew update',
+  crewProgress: 'Crew',
+  crewPhaseRunning: 'working',
+  crewPhaseQueued: 'queued',
+  crewPhaseReviewing: 'reviewing',
+  crewPhaseAwaitingReview: 'awaiting review',
+  crewPhaseReady: 'ready to land',
+  crewPhaseDirty: 'uncommitted',
+  crewPhaseMerged: 'merged',
+  crewPhaseMerging: 'merging',
+  crewPhaseFailed: 'failed',
+  crewPhaseCancelled: 'cancelled',
+  crewPhaseSurveyDone: 'survey done',
+  crewPhaseIdle: 'idle'
 };
 
 const ZH = {
   ...EN,
   modeCoding: '编码模式',
   modeDaily: '日常模式',
+  modeCrew: '协作组模式',
   modeCodingDescription: '实现、工具调用、计划与验证',
   modeDailyDescription: '对话、研究、整理与轻任务',
   chooseMode: '选择这次会话的工作方式',
@@ -127,7 +144,7 @@ const ZH = {
   settingSandbox: '沙箱权限',
   settingSoul: '人格',
   settingValues: {
-    coding: '编码', daily: '日常', workspace: '默认 Workspace', cwd: '当前目录', off: '关闭', auto: '自动', low: '低', medium: '中', high: '高',
+    coding: '编码', daily: '日常', crew: '协作组', workspace: '默认 Workspace', cwd: '当前目录', off: '关闭', auto: '自动', low: '低', medium: '中', high: '高',
     review: '逐项审批', full_access: '完全放行', 'read-only': '只读', 'workspace-write': '工作区写入', 'danger-full-access': '完整系统权限'
   },
   modelLabel: '模型',
@@ -206,7 +223,22 @@ const ZH = {
   help: '查看键盘快捷键',
   tools: '展开或折叠过程详情',
   codingMode: '切换到编码模式',
-  dailyMode: '切换到日常模式'
+  dailyMode: '切换到日常模式',
+  crewFailed: '无法切换协作组模式',
+  crewWake: '协作组通知',
+  crewProgress: '协作组',
+  crewPhaseRunning: '工作中',
+  crewPhaseQueued: '排队中',
+  crewPhaseReviewing: '审核中',
+  crewPhaseAwaitingReview: '待审核',
+  crewPhaseReady: '可合回',
+  crewPhaseDirty: '未提交',
+  crewPhaseMerged: '已合并',
+  crewPhaseMerging: '合并中',
+  crewPhaseFailed: '失败',
+  crewPhaseCancelled: '已取消',
+  crewPhaseSurveyDone: '调研完成',
+  crewPhaseIdle: '空闲'
 };
 
 export function createTuiCopy(language = 'en') {

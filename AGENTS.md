@@ -41,3 +41,17 @@ This repo is Codemini CLI, a local-first coding agent with a CLI, Web UI, projec
 - Do not treat `skills/`, `souls/`, or `templates/` as source architecture unless the task is about those features.
 - Do not manually edit generated build output in `codemini-web/dist`.
 - Preserve Windows and PowerShell compatibility in commands, docs, and shell-facing behavior.
+
+## Agent skills
+
+### Issue tracker
+
+Issues, specs, and tickets live as markdown files under `.scratch/<feature-slug>/`. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Five canonical triage roles, label strings equal to their names. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context — root `CONTEXT.md` plus `docs/adr/`. See `docs/agents/domain.md`.

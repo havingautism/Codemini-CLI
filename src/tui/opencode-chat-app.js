@@ -17,7 +17,8 @@ import {
   QueuePanel,
   SessionPicker,
   SettingsDialog,
-  TopBar
+  TopBar,
+  CrewProgressPanel
 } from './components/chrome.js';
 import {
   PlanProgress,
@@ -37,6 +38,8 @@ import {
 } from './components/messages.js';
 import { ModeHome } from './components/mode-home.js';
 import { createTuiCopy } from './copy.js';
+import { parseCrewWakeHeadline } from '../core/crew-snapshot.js';
+import { cancelWorkerIdFromPayload } from '../core/crew-progress.js';
 import { color, editorTheme } from './theme.js';
 
 /** Editor variant that paints every rendered line with the dark surface color. */
@@ -59,18 +62,29 @@ const TUI_COMMANDS = [
 ];
 
 export function buildSlashCommands(runtime, copy = createTuiCopy('en')) {
-  const skills = (runtime.getAvailableSkills?.() || []).map((skill) => ({
-    value: String(skill?.name || skill),
-    label: `${copy.skillGroup}  ${String(skill?.name || skill)}`,
-    description: String(skill?.description || 'Use skill')
-  }));
+  const runtimeCatalog = runtime.getCommandCatalog?.();
+  const catalog = Array.isArray(runtimeCatalog)
+    ? runtimeCatalog
+    : (runtime.getAvailableSkills?.() || []).map((skill) => ({ ...skill, kind: 'skill' }));
+  const builtins = new Set(TUI_COMMANDS.map((command) => command.name));
+  const extensions = catalog
+    .filter((item) => !builtins.has(String(item?.name || item)))
+    .map((item) => {
+      const name = String(item?.name || item);
+      const skill = item?.kind !== 'command';
+      return {
+        value: name,
+        label: `${skill ? copy.skillGroup : copy.commandGroup}  ${name}`,
+        description: String(item?.description || (skill ? 'Use skill' : 'Run command'))
+      };
+    });
   return [
     ...TUI_COMMANDS.map(({ name, description }) => ({
       value: name,
       label: `${copy.commandGroup}  ${name}`,
       description: copy[description]
     })),
-    ...skills
+    ...extensions
   ];
 }
 
@@ -93,7 +107,8 @@ export async function runOpenCodeTui({ runtime, sessionId, model, safeMode = tru
   const activity = new ActivityBar({ tui, copy });
   const queuePanel = new QueuePanel(copy);
   const footer = new Footer({ runtime, model, sessionId: activeSessionId, safeMode });
-  const bottom = new VStack([queuePanel, editor, activity, footer], { gap: 0 });
+  const crewDock = new CrewProgressPanel({ runtime, copy });
+  const bottom = new VStack([crewDock, queuePanel, editor, activity, footer], { gap: 0 });
   const chatLayout = new VStack([
     { component: header, basis: 'auto', shrink: 0, minSize: 1 },
     { component: scroll, basis: 0, grow: 1, minSize: 1 },
@@ -123,6 +138,7 @@ export async function runOpenCodeTui({ runtime, sessionId, model, safeMode = tru
   const toolGroups = [];
   const reasoningBlocks = [];
   const processFolds = [];
+  const planByToolCallId = new Map();
   let helpHandle = null;
   let historyHandle = null;
   let historyPicker = null;
@@ -147,6 +163,8 @@ export async function runOpenCodeTui({ runtime, sessionId, model, safeMode = tru
     if (stopped) return;
     stopped = true;
     runtime.setRequestToolApproval?.(null);
+    runtime.setCrewWakeSubmit?.(null);
+    runtime.setCrewEventSink?.(null);
     activity.dispose();
     void (async () => {
       await terminal.drainInput?.(200, 20).catch?.(() => {});
@@ -169,7 +187,18 @@ export async function runOpenCodeTui({ runtime, sessionId, model, safeMode = tru
     approvalCancel = () => finish(false);
     requestRender();
   });
-  runtime.setRequestToolApproval?.(showApproval);
+  const enqueueApproval = (() => {
+    let chain = Promise.resolve();
+    return (request) => {
+      const next = chain.then(
+        () => showApproval(request),
+        () => showApproval(request),
+      );
+      chain = next.then(() => undefined, () => undefined);
+      return next;
+    };
+  })();
+  runtime.setRequestToolApproval?.(enqueueApproval);
 
   const ensureAssistant = () => {
     if (activeAssistant) return activeAssistant;
@@ -236,6 +265,14 @@ export async function runOpenCodeTui({ runtime, sessionId, model, safeMode = tru
 
   const handleEvent = (event) => {
     const type = String(event?.type || '');
+    if (
+      String(event?.parentToolCallId || '').trim() &&
+      runtime.getRuntimeState?.()?.crewActive &&
+      !type.startsWith('plan:')
+    ) {
+      requestRender();
+      return;
+    }
     if (type === 'assistant:start') {
       moveAssistantIntoProcess();
       finishReasoning();
@@ -282,6 +319,15 @@ export async function runOpenCodeTui({ runtime, sessionId, model, safeMode = tru
       setActivity('tool', `${event.displayName || event.name || 'tool'}…`);
     } else if (type === 'tool:end' || type === 'system_tool:end' || type === 'skill:end') {
       toolRows.get(toolEventKey(event, type))?.update(event, 'success');
+      const toolName = String(event.name || event.toolName || '').toLowerCase().replace(/\(.*$/, '');
+      if (toolName === 'cancel_worker') {
+        const workerId = cancelWorkerIdFromPayload(event);
+        if (workerId) {
+          for (const plan of planByToolCallId.values()) {
+            plan.markWorkerCancelled?.(workerId);
+          }
+        }
+      }
       setActivity('tool', copy.working);
     } else if (type === 'tool:result' || type === 'system_tool:result') {
       const row = toolRows.get(toolEventKey(event, type));
@@ -311,11 +357,32 @@ export async function runOpenCodeTui({ runtime, sessionId, model, safeMode = tru
     } else if (type === 'plan:steps') {
       finishReasoning();
       activePlan = new PlanProgress(copy, event);
+      const planId = String(event.toolCallId || '').trim();
+      if (planId) planByToolCallId.set(planId, activePlan);
       ensureProcessFold().addChild(new SurfaceSpacer(1));
       ensureProcessFold().addChild(activePlan);
       setActivity('tool', copy.working);
     } else if (type === 'plan:step_start' || type === 'plan:progress' || type === 'plan:step_done') {
-      activePlan?.update(event);
+      const planId = String(event.toolCallId || '').trim();
+      let plan = (planId && planByToolCallId.get(planId)) || null;
+      if (!plan) {
+        plan = new PlanProgress(copy, {
+          goal: event.goal || '',
+          steps: [{
+            index: Number(event.step || 1) || 1,
+            title: event.title || event.role || '',
+            role: event.role || '',
+            status: event.status || 'running',
+            crewKind: event.crewKind || '',
+          }],
+        });
+        if (planId) planByToolCallId.set(planId, plan);
+        ensureProcessFold().addChild(new SurfaceSpacer(1));
+        ensureProcessFold().addChild(plan);
+      } else {
+        plan.update(event);
+      }
+      activePlan = plan;
       setActivity(type === 'plan:step_done' ? 'tool' : 'thinking', event.title || copy.working);
     } else if (type === 'compact:auto' || type === 'dream:auto' || type === 'dream:complete') {
       transcript.addChild(createSystemMessage(event.summary || type.replace(':', ' '), color.warning));
@@ -352,6 +419,7 @@ export async function runOpenCodeTui({ runtime, sessionId, model, safeMode = tru
     reasoningBlocks.length = 0;
     toolGroups.length = 0;
     toolRows.clear();
+    planByToolCallId.clear();
     activeAssistant = null;
     activeAssistantSpacer = null;
     activeReasoning = null;
@@ -453,10 +521,37 @@ export async function runOpenCodeTui({ runtime, sessionId, model, safeMode = tru
         // After a fork the queued prompt was painted on the old transcript, so
         // show it again on the continuation session.
         submit(next, !continuedInNewSession);
+      } else {
+        void runtime.drainCrewPendingWakes?.().catch(() => {});
       }
     }
   };
   editor.onSubmit = submit;
+  const paintedCrewWakeIds = new Set();
+  const paintCrewWake = (headline, messageId) => {
+    const id = String(messageId || '').trim();
+    const label = String(headline || '').trim();
+    if ((id && paintedCrewWakeIds.has(id)) || (label && paintedCrewWakeIds.has(`h:${label}`))) return;
+    if (id) paintedCrewWakeIds.add(id);
+    if (label) paintedCrewWakeIds.add(`h:${label}`);
+    transcript.addChild(new SurfaceSpacer(1));
+    transcript.addChild(createSystemMessage(`${copy.crewWake} · ${headline}`, color.warning));
+    requestRender();
+  };
+  runtime.setCrewEventSink?.((event) => {
+    if (event?.type === 'crew:workers_changed') requestRender();
+    if (event?.type === 'crew:wake') {
+      paintCrewWake(event.headline || parseCrewWakeHeadline(event.text || ''), event.messageId);
+    }
+  });
+  runtime.setCrewWakeSubmit?.(async (wakeText, item = {}) => {
+    const text = String(wakeText || '').trim();
+    if (!text) return { type: 'noop' };
+    if (busy) throw new Error('Crew wake blocked while another turn is active');
+    const headline = parseCrewWakeHeadline(text);
+    paintCrewWake(headline, item.messageId);
+    return submit(text, true);
+  });
 
   const closeHelp = () => {
     helpHandle?.hide();
@@ -508,14 +603,15 @@ export async function runOpenCodeTui({ runtime, sessionId, model, safeMode = tru
   const showSettingsDialog = async () => {
     const state = runtime.getRuntimeState?.() || {};
     const souls = await runtime.getAvailableSouls?.() || [];
+    const soulCategory = home.mode === 'daily' ? 'daily' : 'coding';
     const dialog = new SettingsDialog({
       copy,
       values: {
-        mode: home.mode,
+        mode: state.crewActive ? 'crew' : home.mode,
         reasoning: state.reasoningEnabled === false ? 'off' : state.reasoningEffort || 'auto',
         approval: state.approvalMode || 'auto',
         sandbox: state.sandboxMode || 'workspace-write',
-        soul: state.activeSoul || souls.find((soul) => soul.category === home.mode && soul.active)?.name || '-'
+        soul: state.activeSoul || souls.find((soul) => soul.category === soulCategory && soul.active)?.name || '-'
       },
       souls,
       onChange: async (key, value) => {
@@ -583,7 +679,17 @@ export async function runOpenCodeTui({ runtime, sessionId, model, safeMode = tru
     tui.setFocus(editor);
     requestRender();
     try {
-      await runtime.setExecutionMode?.(mode);
+      let crewResult = null;
+      if (mode === 'crew') {
+        crewResult = await runtime.setCrewMode?.(true);
+        if (!crewResult?.ok) throw new Error(crewResult?.message || copy.crewFailed);
+      } else {
+        if (runtime.getRuntimeState?.()?.crewActive) {
+          const stopped = await runtime.setCrewMode?.(false);
+          if (!stopped?.ok) throw new Error(stopped?.message || copy.crewFailed);
+        }
+        await runtime.setExecutionMode?.(mode);
+      }
       if (!chatInitialized) {
         const history = runtime.getSessionMessages?.() || [];
         const restored = appendHistory(transcript, history, copy, {
@@ -601,6 +707,7 @@ export async function runOpenCodeTui({ runtime, sessionId, model, safeMode = tru
         for (const item of inputHistory) editor.addToHistory(String(item));
         chatInitialized = true;
       }
+      if (crewResult?.warning) transcript.addChild(createSystemMessage(crewResult.warning, color.warning));
     } catch (error) {
       transcript.addChild(createSystemMessage(error?.message || String(error), color.error));
     }

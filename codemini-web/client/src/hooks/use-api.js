@@ -2,6 +2,9 @@ const JSON_HEADERS = { 'Content-Type': 'application/json' };
 
 async function api(path, opts = {}) {
   const res = await fetch(path, opts);
+  if (res.status === 401 && typeof window !== 'undefined' && window.location.pathname !== '/login') {
+    window.location.replace('/login');
+  }
   return res;
 }
 
@@ -128,6 +131,15 @@ export async function submitMessage(sessionId, body = {}) {
   });
 }
 
+export async function drainCrewPendingWakes(sessionId) {
+  const res = await api('/api/chat/crew-wakes/drain', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ sessionId })
+  });
+  return readJsonResponse(res);
+}
+
 export async function submitChatAction(sessionId, name, payload = {}) {
   const res = await api('/api/chat/action', {
     method: 'POST',
@@ -179,6 +191,15 @@ export async function setExecutionMode(sessionId, mode) {
     body: JSON.stringify({ sessionId, mode })
   });
   return res.json();
+}
+
+export async function setCrewMode(sessionId, active) {
+  const res = await api('/api/crew-mode', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ sessionId, active: !!active })
+  });
+  return readJsonResponse(res);
 }
 
 export async function setApprovalMode(sessionId, mode) {
@@ -460,6 +481,14 @@ function withProjectDirQuery(path, projectDir) {
 export async function fetchSkills() {
   const res = await api('/api/skills');
   return res.json();
+}
+
+export async function fetchCommands(sessionId) {
+  const params = new URLSearchParams();
+  if (sessionId) params.set('sessionId', sessionId);
+  const suffix = params.toString();
+  const res = await api(`/api/commands${suffix ? `?${suffix}` : ''}`);
+  return readJsonResponse(res);
 }
 
 export async function fetchSkillIndex(projectDir) {
@@ -1019,6 +1048,14 @@ export async function runTerminalCommand(sessionId, command) {
   return readJsonResponse(res);
 }
 
+export async function resolveTerminalApproval(sessionId, id, approved) {
+  const res = await api('/api/terminal/approve', {
+    method: 'POST', headers: JSON_HEADERS,
+    body: JSON.stringify({ sessionId, id, approved }),
+  });
+  return readJsonResponse(res);
+}
+
 export async function stopTerminalCommand(sessionId) {
   const res = await api('/api/terminal/stop', {
     method: 'POST',
@@ -1074,10 +1111,26 @@ export async function fetchWorkspaceTree(sessionId, relativePath = '') {
   return readJsonResponse(res);
 }
 
+export async function searchWorkspaceFiles(sessionId, query = '') {
+  const params = new URLSearchParams();
+  if (sessionId) params.set('sessionId', sessionId);
+  params.set('q', String(query || '').trim());
+  const res = await api(`/api/workspace/search?${params.toString()}`);
+  return readJsonResponse(res);
+}
+
 export async function fetchWorkspacePreview(sessionId, relativePath = '') {
   const params = new URLSearchParams();
   if (sessionId) params.set('sessionId', sessionId);
   params.set('path', String(relativePath || '').trim());
   const res = await api(`/api/workspace/preview?${params.toString()}`);
   return readJsonResponse(res);
+}
+
+export function buildHtmlArtifactUrl(sessionId, relativePath, revision = 0) {
+  const params = new URLSearchParams();
+  if (sessionId) params.set('sessionId', sessionId);
+  params.set('path', String(relativePath || '').trim());
+  if (revision) params.set('revision', String(revision));
+  return `/api/artifacts/html?${params.toString()}`;
 }

@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Download, Eye, MagnifyingGlass, X } from "@/lib/icons";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -34,6 +34,15 @@ import {
   stringifyTrajectoryValue,
   trajectoryExportFilename,
 } from "@/lib/session-trajectory.js";
+import {
+  activationLabel,
+  beliefPercent,
+  classifyDecision,
+  collectHarnessEvents,
+  decisionAction,
+  hardGateLabel,
+  summarizeHarness,
+} from "@/lib/harness-summary.js";
 import { t } from "../../i18n/index.js";
 
 const KIND_CLASS = {
@@ -310,6 +319,7 @@ export function TrajectoryPanel({
   messages = [],
   runtimeState = null,
   sessionId = "",
+  harnessRevision = 0,
 }) {
   const [showDuration, setShowDuration] = useState(true);
   const [showTurns, setShowTurns] = useState(true);
@@ -319,6 +329,52 @@ export function TrajectoryPanel({
   const [query, setQuery] = useState("");
   const [exportError, setExportError] = useState("");
   const [inspectEvent, setInspectEvent] = useState(null);
+  const [harnessEpisodes, setHarnessEpisodes] = useState([]);
+  const [harnessActivation, setHarnessActivation] = useState(null);
+  const [harnessFetchStatus, setHarnessFetchStatus] = useState("idle");
+  const [harnessFetchError, setHarnessFetchError] = useState("");
+  const [toolReliability, setToolReliability] = useState([]);
+
+  useEffect(() => {
+    if (!sessionId) {
+      setHarnessEpisodes([]);
+      setHarnessActivation(null);
+      setHarnessFetchStatus("idle");
+      setHarnessFetchError("");
+      return undefined;
+    }
+    let active = true;
+    setHarnessFetchStatus("loading");
+    setHarnessFetchError("");
+    fetch(`/api/harness/episodes?session_id=${encodeURIComponent(sessionId)}`)
+      .then(async (response) => {
+        if (!response.ok) throw new Error(`请求失败（${response.status}）`);
+        return response.json();
+      })
+      .then((payload) => {
+        if (!active) return;
+        setHarnessEpisodes(Array.isArray(payload?.episodes) ? payload.episodes : []);
+        setHarnessActivation(payload?.activation || null);
+        setHarnessFetchStatus("success");
+      })
+      .catch((error) => {
+        if (!active) return;
+        setHarnessEpisodes([]);
+        setHarnessActivation(null);
+        setHarnessFetchStatus("error");
+        setHarnessFetchError(String(error?.message || "任务决策助手轨迹请求失败"));
+      });
+    return () => { active = false; };
+  }, [sessionId, harnessRevision]);
+
+  useEffect(() => {
+    let active = true;
+    fetch("/api/harness/tool-reliability")
+      .then((response) => (response.ok ? response.json() : { tools: [] }))
+      .then((payload) => { if (active) setToolReliability(Array.isArray(payload?.tools) ? payload.tools : []); })
+      .catch(() => { if (active) setToolReliability([]); });
+    return () => { active = false; };
+  }, [harnessEpisodes.length]);
 
   const built = useMemo(
     () =>
@@ -342,6 +398,14 @@ export function TrajectoryPanel({
     const seen = new Set(built.events.map((event) => event.kind));
     return Object.keys(KIND_I18N).filter((kind) => seen.has(kind));
   }, [built.events]);
+
+  const harnessSummary = useMemo(
+    () => summarizeHarness(harnessEpisodes, {
+      fetchStatus: harnessFetchStatus,
+      fetchError: harnessFetchError,
+    }),
+    [harnessEpisodes, harnessFetchStatus, harnessFetchError],
+  );
 
   const activeTurn = turnOptions.includes(Number(turnFilter))
     ? Number(turnFilter)
@@ -495,6 +559,82 @@ export function TrajectoryPanel({
           <AlertDescription>{exportError}</AlertDescription>
         </Alert>
       ) : null}
+      <section className="mx-3 mt-2 rounded border border-(--border-default) bg-(--bg-secondary)/40 px-3 py-3 text-[12px] sm:mx-5">
+        <div className="flex flex-wrap items-center gap-2">
+          <strong className="text-(--text-primary)">任务决策助手实际效果</strong>
+          <span className="text-[11px] text-(--text-muted)">
+            {harnessSummary.fetchStatus === "error"
+              ? `轨迹读取失败：${harnessSummary.fetchError || "未知错误"}`
+              : harnessSummary.decisions.length
+                ? `${harnessSummary.decisions.length} 次判断 · 成功 ${harnessSummary.counts.success} · 失败 ${harnessSummary.counts.failed} · 弃权 ${harnessSummary.counts.abstained} · ${harnessSummary.routes.length} 次路由 · ${harnessSummary.contextBlocks} 个上下文块`
+                : harnessActivation
+                  ? activationLabel(harnessActivation)
+                  : "尚无历史决策记录"}
+          </span>
+          <span className="ml-auto text-[11px] text-(--text-muted)">
+            {harnessFetchStatus === "loading" ? "正在读取…" : `${harnessEpisodes.length} 个历史 episode`}
+          </span>
+        </div>
+        {harnessActivation ? (
+          <div className="mt-2 text-[11px] text-(--text-muted)">
+            当前配置资格：{activationLabel(harnessActivation)}。这只表示当前配置是否可能启用，不代表历史会话已经调用。
+          </div>
+        ) : null}
+        {harnessSummary.decisions.length || harnessSummary.routes.length || harnessSummary.contexts.length ? (
+          <>
+            <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-5">
+              {[["完成概率", "TaskComplete"], ["测试通过", "TestPass"], ["重试收益", "RetryBenefit"], ["需求遗漏", "RequirementsMiss"], ["工具可靠", "ToolReliability"]].map(([label, node]) => (
+                <div key={node} className="rounded bg-(--bg-primary) px-2 py-2">
+                  <div className="text-[10px] text-(--text-muted)">{label}</div>
+                  <div className="mt-0.5 font-mono text-[14px] text-(--text-primary)">{beliefPercent(harnessSummary.latestBelief, node)}</div>
+                </div>
+              ))}
+            </div>
+            <div className="mt-3 flex flex-wrap gap-2 text-[11px] text-(--text-secondary)">
+              {Object.entries(harnessSummary.actions).map(([action, count]) => (
+                <span key={action} className="rounded-full border border-(--border-default) px-2 py-1 font-mono">{action}: {count}</span>
+              ))}
+              {harnessSummary.latestDecision?.payload?.policy?.reason ? <span className="rounded-full bg-(--accent-blue-bg) px-2 py-1">原因：{harnessSummary.latestDecision.payload.policy.reason}</span> : null}
+            </div>
+            {toolReliability.length ? (
+              <details className="mt-3">
+                <summary className="cursor-pointer text-(--text-secondary)">查看工具可靠性与降权原因</summary>
+                <div className="mt-2 max-h-64 space-y-1 overflow-y-auto overscroll-contain pr-1">
+                  {toolReliability.map((tool) => (
+                    <div key={tool.tool_name} className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded border border-(--border-default) px-2 py-1.5 font-mono text-[11px]">
+                      <span className="text-(--text-primary)">{tool.tool_name}</span>
+                      <span>可靠性 {Math.round(Number(tool.reliability || 0) * 100)}%</span>
+                      <span>成功 {tool.successes} · 失败 {Number(tool.failures || 0) + Number(tool.timeouts || 0) + Number(tool.permission_errors || 0)}</span>
+                      {tool.last_error ? <span className="text-(--text-muted)">最近原因：{tool.last_error}</span> : null}
+                    </div>
+                  ))}
+                </div>
+              </details>
+            ) : null}
+            <details className="mt-3">
+              <summary className="cursor-pointer text-(--text-secondary)">查看每次判断与硬门禁</summary>
+              <div className="mt-2 max-h-80 space-y-2 overflow-y-auto overscroll-contain pr-1">
+                {harnessSummary.decisions.map((item, index) => {
+                  const payload = item.payload || {};
+                  const action = decisionAction(payload);
+                  const belief = payload.belief || {};
+                  const result = classifyDecision(item);
+                  const provider = payload.provider || payload.decision?.provider || "—";
+                  return <div key={item.id || index} className="rounded border border-(--border-default) px-2 py-2 font-mono text-[11px]">
+                    <div className="flex flex-wrap gap-x-3 gap-y-1 text-(--text-primary)">
+                      <span>#{index + 1}</span><span>step {item.step ?? "—"}</span><span>动作: {action}</span><span>结果: {result.status === "success" ? "成功" : result.status === "failed" ? "失败" : "弃权"}</span><span>provider: {provider}</span>
+                    </div>
+                    <div className="mt-1 text-(--text-muted)">原因: {payload.policy?.reason || "—"} · 硬门禁: {hardGateLabel(payload)} · 重试收益: {Number.isFinite(Number(belief.RetryBenefit?.true)) ? `${Math.round(Number(belief.RetryBenefit.true) * 100)}%` : "—"}</div>
+                    <div className="mt-1 break-words text-(--text-muted)">模型: {payload.decision?.modelVersion || payload.decision?.model || "—"} · Jev 错误: {result.errors.length ? result.errors.join("；") : "无"}</div>
+                  </div>;
+                })}
+              </div>
+            </details>
+          </>
+        ) : (
+          <div className="mt-2 text-[11px] text-(--text-muted)">请在设置中开启任务决策助手，并让当前会话实际运行一步后，这里会显示概率、动作和触发原因。</div>
+        )}
+      </section>
       <div className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto">
         {visible.length === 0 ? (
           <div className="px-3 py-10 text-center text-[13px] text-(--text-muted) sm:px-5">

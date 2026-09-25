@@ -39,6 +39,7 @@ import {
   rollbackOptimisticSandboxMode,
   runSessionOperation,
 } from "../lib/session-state.js";
+import { isSessionTurnBusyResult } from "../lib/session-turn-busy.js";
 import { buildMcpToolDisplayLabels } from "../../../../src/core/mcp-tool-display.js";
 import { setMcpToolDisplayLabels } from "../../../../src/core/tool-display.js";
 import {
@@ -61,6 +62,7 @@ import {
   updatePlanOverviewStepStatus,
   planRunFromTranscript,
 } from "../lib/plan-ui-state.js";
+import { repairCrewSessionMessages } from "../lib/crew-ui-state.js";
 import {
   addSkillToSegments,
   finishStreamingTextSegments,
@@ -73,6 +75,10 @@ import {
 } from "../../../shared/transcript-segments.js";
 import { buildHookSegmentEvent } from "../../../shared/hook-ui.js";
 import { skillBadgesFromSessionMessage } from "../lib/user-skill-prompt.js";
+import {
+  isCrewBackgroundWorkerToolEvent,
+  shouldShowCrewModeFileChanges,
+} from "../lib/crew-ui-state.js";
 
 const AppContext = createContext(null);
 const AppActionsContext = createContext(null);
@@ -280,6 +286,8 @@ const initialState = {
   targetMessageId: null,
   pendingScrapbookContext: null,
   runtimeState: null,
+  // 每次任务决策助手事件到达时递增，驱动轨迹面板实时刷新审计记录。
+  harnessRevision: 0,
   currentSessionId: null,
   sessionRuntimeById: {},
   sessionMessagesById: {},
@@ -1643,7 +1651,7 @@ export function AppProvider({ children }) {
           const restored = sanitizeManualAbortMessages(
             repairSettledTranscriptMessages(
               enrichUiMessagesWithScrapbookAttachments(
-                settleCompletedPlanToolCards(uiMessages),
+                settleCompletedPlanToolCards(repairCrewSessionMessages(uiMessages)),
                 messages,
               ),
             ),
@@ -1994,18 +2002,20 @@ export function AppProvider({ children }) {
         const restored = sanitizeManualAbortMessages(
           repairSettledTranscriptMessages(
             settleCompletedPlanToolCards(
-              mergeAlignedAssistantSkillContext(
-                alignSessionAssistantMessages(
-                  mergeAlignedUserContext(
-                    alignSessionUserMessages(
-                      mergeStructuredUiPlans(processed, uiMessages),
+              repairCrewSessionMessages(
+                mergeAlignedAssistantSkillContext(
+                  alignSessionAssistantMessages(
+                    mergeAlignedUserContext(
+                      alignSessionUserMessages(
+                        mergeStructuredUiPlans(processed, uiMessages),
+                        uiMessages,
+                      ),
                       uiMessages,
                     ),
                     uiMessages,
                   ),
                   uiMessages,
                 ),
-                uiMessages,
               ),
             ),
           ),
@@ -2161,6 +2171,7 @@ export function AppProvider({ children }) {
             });
             break;
           }
+          planParentMsgRef.current = null;
           const requestedId = event.messageId || activeId;
           const requested = (s.messages || []).find(
             (message) => message.id === requestedId,
@@ -2224,11 +2235,32 @@ export function AppProvider({ children }) {
 
         case "assistant:tool_call_delta":
         case "tool:start": {
-          update({ stage: "tooling", live: true, stageLabel: t("tooling") });
+          const toolName = String(event.name || event.toolName || "")
+            .toLowerCase()
+            .replace(/\(.*$/, "");
+          const crewActive = Boolean(stateRef.current.runtimeState?.crewActive);
+          update({
+            stage: "tooling",
+            live: true,
+            stageLabel:
+              crewActive && toolName === "land_workers"
+                ? t("crewPhaseMerging")
+                : t("tooling"),
+          });
           break;
         }
 
         case "assistant:response": {
+          break;
+        }
+
+        case "harness:decision":
+        case "harness:route":
+        case "harness:context": {
+          setState((prev) => ({
+            ...prev,
+            harnessRevision: Number(prev.harnessRevision || 0) + 1,
+          }));
           break;
         }
 
@@ -2237,6 +2269,10 @@ export function AppProvider({ children }) {
         }
 
         case "tool:end": {
+          const crewActive = Boolean(stateRef.current.runtimeState?.crewActive);
+          if (isCrewBackgroundWorkerToolEvent(event, { crewActive })) {
+            break;
+          }
           const eventChanges =
             Array.isArray(event.fileChanges) && event.fileChanges.length
               ? event.fileChanges
@@ -2268,6 +2304,9 @@ export function AppProvider({ children }) {
         }
 
         case "plan:steps": {
+          if (String(event.parentToolCallId || "").trim()) {
+            break;
+          }
           const steps = (event.steps || []).map((s, i) => ({
             index: s.index ?? i,
             title: s.title,
@@ -2294,6 +2333,9 @@ export function AppProvider({ children }) {
         case "plan:progress":
         case "plan:step_start":
         case "plan:step_done": {
+          if (String(event.parentToolCallId || "").trim()) {
+            break;
+          }
           planRunPendingRef.current = true;
           const parentId =
             planParentMsgRef.current ||
@@ -2319,12 +2361,18 @@ export function AppProvider({ children }) {
                 : step,
             ),
           }));
-          if (event.type === "plan:step_start") {
+          if (event.type === "plan:step_start" && stateRef.current.busy) {
             update({
               stage: "tooling",
               busy: true,
               live: true,
               stageLabel: `${event.role || "agent"}: ${event.title || ""}`.trim(),
+            });
+          }
+          if (event.type === "plan:step_done" && !stateRef.current.busy) {
+            update({
+              stage: "idle",
+              stageLabel: "",
             });
           }
           break;
@@ -2581,21 +2629,30 @@ export function AppProvider({ children }) {
 
         case "submit:done": {
           const result = event.result || {};
+          const crewActive = Boolean(stateRef.current.runtimeState?.crewActive);
           if (activeId && pendingChangesRef.current.length) {
-            setState((prev) => ({
-              ...prev,
-              messages: prev.messages.map((m) =>
-                m.id === activeId
-                  ? {
-                      ...m,
-                      fileChanges: appendUniqueFileChanges(
-                        m.fileChanges,
-                        pendingChangesRef.current,
-                      ),
-                    }
-                  : m,
-              ),
-            }));
+            const activeMessage = stateRef.current.messages.find(
+              (message) => message.id === activeId,
+            );
+            const shouldAttachPendingChanges =
+              !crewActive ||
+              shouldShowCrewModeFileChanges(activeMessage, { crewActive });
+            if (shouldAttachPendingChanges) {
+              setState((prev) => ({
+                ...prev,
+                messages: prev.messages.map((m) =>
+                  m.id === activeId
+                    ? {
+                        ...m,
+                        fileChanges: appendUniqueFileChanges(
+                          m.fileChanges,
+                          pendingChangesRef.current,
+                        ),
+                      }
+                    : m,
+                ),
+              }));
+            }
             pendingChangesRef.current = [];
           }
           if (activeId) {
@@ -2746,17 +2803,32 @@ export function AppProvider({ children }) {
           // HTTP 202 returns before the turn finishes, so queued prompts wait
           // here. Skip aborted turns: stop/fork drains after session:forked,
           // and jump drains itself after continue-in-place abort.
-          if (!isAbortRelatedResult(result)) {
-            stateRef.current = {
-              ...stateRef.current,
-              busy: false,
-              live: false,
-              stage: "idle",
-              stageLabel: "",
-            };
-            drainQueueRef.current?.(
-              event.sessionId || s.currentSessionId,
-            );
+          if (isAbortRelatedResult(result)) {
+            if (result.crewWake) {
+              void api.drainCrewPendingWakes?.(
+                event.sessionId || s.currentSessionId,
+              );
+            }
+            break;
+          }
+          const doneSessionId = event.sessionId || s.currentSessionId;
+          // reduceSessionEvent already ran in setState, but stateRef still
+          // has the pre-render snapshot (status=running). Drain against the
+          // reduced runtime or the queued follow-up thinks the turn is busy.
+          const reduced = reduceSessionEvent(stateRef.current, event);
+          const turnBusy = isSessionBusyInState(reduced, doneSessionId);
+          stateRef.current = {
+            ...reduced,
+            busy: turnBusy,
+            live: turnBusy,
+            stage: turnBusy ? stateRef.current.stage : "idle",
+            stageLabel: turnBusy ? stateRef.current.stageLabel : "",
+          };
+          const queued = pendingQueueRef.current.get(doneSessionId) || [];
+          if (queued.length) {
+            drainQueueRef.current?.(doneSessionId);
+          } else {
+            void api.drainCrewPendingWakes?.(doneSessionId);
           }
           break;
         }
@@ -2768,6 +2840,44 @@ export function AppProvider({ children }) {
               ...stateRef.current.runtimeState,
               mode: rs.mode,
               ...rs,
+            },
+          });
+          break;
+        }
+
+        case "crew:wake": {
+          if (event.pending) break;
+          planParentMsgRef.current = null;
+          planRunPendingRef.current = false;
+          setActiveMsg(null);
+          break;
+        }
+
+        case "crew:workers_changed": {
+          update({
+            runtimeState: {
+              ...stateRef.current.runtimeState,
+              crewWorkersInFlight: Number(event.inFlight || 0),
+              crewInFlightIds: Array.isArray(event.inFlightIds)
+                ? event.inFlightIds
+                : stateRef.current.runtimeState?.crewInFlightIds || [],
+              crewWorkers: Array.isArray(event.workers)
+                ? event.workers
+                : stateRef.current.runtimeState?.crewWorkers || [],
+            },
+          });
+          break;
+        }
+
+        case "crew:changed": {
+          const rs = event;
+          const crewActive = Boolean(rs.crewActive);
+          update({
+            runtimeState: {
+              ...stateRef.current.runtimeState,
+              ...rs,
+              crewActive,
+              crewBase: rs.crewBase || "",
             },
           });
           break;
@@ -3216,7 +3326,12 @@ export function AppProvider({ children }) {
         ? { text: input, skillNames: [], attachmentIds: [], dismissedAlwaysSkills: [] }
         : input || {};
       const line = String(message.text || "");
-      if (!line.trim() && !(message.attachmentIds || []).length && !(message.skillNames || []).length) return;
+      if (
+        !line.trim() &&
+        !(message.attachmentIds || []).length &&
+        !(message.skillNames || []).length &&
+        !(message.fileReferences || []).length
+      ) return;
         const selectedSkillBadges = [
           ...new Set(
             (Array.isArray(message.skillNames) ? message.skillNames : [])
@@ -3226,55 +3341,25 @@ export function AppProvider({ children }) {
         ].map((name) => ({ name, status: "selected" }));
         if (stateRef.current.currentView !== "chat" && !options.stayInView)
           update({ currentView: "chat" });
-        const userMessageId = addMessage({
-              role: "you",
-              text: line,
-              skillBadges: selectedSkillBadges,
-              attachments: Array.isArray(options.attachments)
-                ? options.attachments
-                : Array.isArray(message.attachments)
-                  ? message.attachments
-                  : [],
-              timestamp: new Date().toISOString(),
-            });
-        // Sidebar bubbles appear when the conversation starts, not when the
-        // empty draft is created/reused.
-        setState((prev) => {
-          const existing = prev.sessions.find((s) => s.id === sessionId);
-          if (existing && Number(existing.messageCount || 0) > 0) {
-            return {
-              ...prev,
-              sessions: upsertSidebarSession(prev.sessions, {
-                id: sessionId,
-                updatedAt: new Date().toISOString(),
-                messageCount: Number(existing.messageCount || 0) + 1,
-              }),
-            };
-          }
-          const rs = prev.runtimeState || {};
-          const isGeneral = Boolean(rs.isGeneral);
-          const projectDir = isGeneral ? null : rs.cwd || rs.projectDir || null;
-          const entry = buildConversationStartSidebarEntry({
-            sessionId,
-            text: line,
-            isGeneral,
-            projectDir,
-            projectKey: projectDir
-              ? normalizeProjectDirKey(projectDir) || projectDir
-              : null,
-          });
-          if (!entry) return prev;
-          return {
-            ...prev,
-            sessions: upsertSidebarSession(prev.sessions, entry),
-          };
-        });
-        const waitingId = addMessage({
-          role: "system",
-          text: t("waitingResponse"),
+        // A new user turn must not stream into the prior plan/subagent card.
+        planParentMsgRef.current = null;
+        planRunPendingRef.current = false;
+        const userMessageId = `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        const youMessage = {
+          id: userMessageId,
+          role: "you",
+          text: line,
+          skillBadges: selectedSkillBadges,
+          fileReferences: Array.isArray(message.fileReferences)
+            ? message.fileReferences
+            : [],
+          attachments: Array.isArray(options.attachments)
+            ? options.attachments
+            : Array.isArray(message.attachments)
+              ? message.attachments
+              : [],
           timestamp: new Date().toISOString(),
-          transientKey: "waiting-response",
-        });
+        };
         setState((prev) => ({
           ...prev,
           busy: true,
@@ -3302,6 +3387,9 @@ export function AppProvider({ children }) {
             dismissedAlwaysSkills: Array.isArray(message.dismissedAlwaysSkills)
               ? message.dismissedAlwaysSkills
               : [],
+            fileReferences: Array.isArray(message.fileReferences)
+              ? message.fileReferences
+              : [],
             attachments: pickScrapbookAttachments(
               Array.isArray(options.attachments)
                 ? options.attachments
@@ -3320,20 +3408,66 @@ export function AppProvider({ children }) {
             });
             throw new Error(t("configRequired"));
           }
+          if (isSessionTurnBusyResult(result)) {
+            update({ busy: false, live: false, stage: "idle", stageLabel: "" });
+            return { type: "busy", sessionBusy: true };
+          }
           if (result?.error)
             throw new Error(result.message || "Request failed");
-          return await waitForAcceptedOperation(result, {
-            sessionId,
-            waiters: operationWaitersRef.current,
-            earlyResults: earlyOperationResultsRef.current,
-            fallbackError: t("actionFailed"),
+          addMessage(youMessage);
+          // Sidebar bubbles appear when the conversation starts, not when the
+          // empty draft is created/reused.
+          setState((prev) => {
+            const existing = prev.sessions.find((s) => s.id === sessionId);
+            if (existing && Number(existing.messageCount || 0) > 0) {
+              return {
+                ...prev,
+                sessions: upsertSidebarSession(prev.sessions, {
+                  id: sessionId,
+                  updatedAt: new Date().toISOString(),
+                  messageCount: Number(existing.messageCount || 0) + 1,
+                }),
+              };
+            }
+            const rs = prev.runtimeState || {};
+            const isGeneral = Boolean(rs.isGeneral);
+            const projectDir = isGeneral ? null : rs.cwd || rs.projectDir || null;
+            const entry = buildConversationStartSidebarEntry({
+              sessionId,
+              text: line,
+              isGeneral,
+              projectDir,
+              projectKey: projectDir
+                ? normalizeProjectDirKey(projectDir) || projectDir
+                : null,
+            });
+            if (!entry) return prev;
+            return {
+              ...prev,
+              sessions: upsertSidebarSession(prev.sessions, entry),
+            };
           });
-        } catch (err) {
-          if (waitingId)
+          const waitingId = addMessage({
+            role: "system",
+            text: t("waitingResponse"),
+            timestamp: new Date().toISOString(),
+            transientKey: "waiting-response",
+          });
+          try {
+            return await waitForAcceptedOperation(result, {
+              sessionId,
+              waiters: operationWaitersRef.current,
+              earlyResults: earlyOperationResultsRef.current,
+              fallbackError: t("actionFailed"),
+            });
+          } catch (err) {
             setState((prev) => ({
               ...prev,
               messages: prev.messages.filter((m) => m.id !== waitingId),
             }));
+            throw err;
+          }
+        } catch (err) {
           if (
             !isAbortRelatedText(err.message) &&
             err?.name !== "AbortError"
@@ -3378,16 +3512,18 @@ export function AppProvider({ children }) {
           ? { text: input, skillNames: [], attachmentIds: [], dismissedAlwaysSkills: [] }
           : input || {};
         const line = String(message.text || "");
-        if (!line.trim() && !(message.attachmentIds || []).length && !(message.skillNames || []).length) return;
+        if (
+          !line.trim() &&
+          !(message.attachmentIds || []).length &&
+          !(message.skillNames || []).length &&
+          !(message.fileReferences || []).length
+        ) return;
         const queued = options.__queued === true;
         const priority = options.priority === true || message.priority === true;
         const sessionBusy =
           sessionOperationsRef.current.has(sessionId) ||
           isSessionBusyInState(stateRef.current, sessionId);
-        // While a turn is already running for this session, keep the prompt in
-        // the composer queue (Cursor-style) instead of sending it into the
-        // transcript. Enter appends; jump aborts the current turn and drains.
-        if (!queued && sessionBusy) {
+        const enqueueComposer = (front = false) => {
           if (stateRef.current.currentView !== "chat" && !options.stayInView) {
             update({ currentView: "chat" });
           }
@@ -3396,11 +3532,17 @@ export function AppProvider({ children }) {
             message,
             options: { ...options, __queued: true, priority: false },
           };
-          if (priority) queue.unshift(queuedItem);
+          if (front || priority) queue.unshift(queuedItem);
           else queue.push(queuedItem);
           pendingQueueRef.current.set(sessionId, queue);
           update({ pendingQueues: snapshotPendingQueues() });
-          return;
+        };
+        // While a turn is already running for this session, keep the prompt in
+        // the composer queue (Cursor-style) instead of sending it into the
+        // transcript. Enter appends; jump aborts the current turn and drains.
+        if (sessionBusy) {
+          enqueueComposer(queued);
+          return queued ? { type: "busy", sessionBusy: true } : undefined;
         }
         let skipDrain = false;
         try {
@@ -3409,6 +3551,11 @@ export function AppProvider({ children }) {
             sessionId,
             () => runSubmitPrompt(input, options),
           );
+          if (result?.type === "busy") {
+            enqueueComposer(true);
+            skipDrain = true;
+            return result;
+          }
           if (
             isAbortRelatedResult(result) &&
             abortContinueInPlaceRef.current !== true
@@ -4482,6 +4629,38 @@ export function AppProvider({ children }) {
             ...patch,
           },
         });
+      },
+      setCrewMode: async (sessionId, active) => {
+        const sid = String(sessionId || stateRef.current.currentSessionId || "").trim();
+        const result = await api.setCrewMode(sid, active);
+        if (result?.error || result?.ok === false) return result;
+        const crew = result?.crew;
+        const crewActive = Boolean(crew?.active);
+        const crewBase = String(crew?.base || "");
+        const crewDirtyCount = crewActive
+          ? Math.max(0, Number(result?.dirtyCount) || 0)
+          : 0;
+        setState((prev) => ({
+          ...prev,
+          runtimeState: {
+            ...(prev.runtimeState || {}),
+            crewActive,
+            crewBase,
+            crewDirtyCount,
+          },
+          sessionRuntimeById: sid
+            ? {
+                ...prev.sessionRuntimeById,
+                [sid]: {
+                  ...(prev.sessionRuntimeById[sid] || { sessionId: sid }),
+                  crewActive,
+                  crewBase,
+                  crewDirtyCount,
+                },
+              }
+            : prev.sessionRuntimeById,
+        }));
+        return result;
       },
       setSandboxMode: async (sessionId, mode) => {
         const sid = String(sessionId || stateRef.current.currentSessionId || "").trim();

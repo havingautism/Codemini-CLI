@@ -6,6 +6,7 @@ import React, {
   useMemo,
 } from "react";
 import { Separator } from "@/components/ui/separator";
+import { FileTypeIcon } from "@/components/FileTypeIcon.jsx";
 import {
   Archive,
   ArrowSquareOut,
@@ -15,6 +16,7 @@ import {
   CaretUp,
   CircleNotch,
   FileText,
+  GitLogo,
   Hammer,
   ImageSquare,
   MaskHappy,
@@ -25,6 +27,7 @@ import {
   Paperclip,
   Plus,
   Sparkle,
+  TreeStructure,
   X,
 } from "@/lib/icons";
 import { cn } from "@/lib/utils";
@@ -48,6 +51,11 @@ import {
   beginActionParameter,
   cancelActionParameter,
   createComposerState,
+  findComposerMentionToken,
+  formatComposerFileMention,
+  parseComposerMentionQuery,
+  parseComposerSlashQuery,
+  removeComposerMentionToken,
   runComposerAction,
   toggleComposerSkill,
 } from "@/lib/chat-composer-state.js";
@@ -110,6 +118,16 @@ function extensionFromName(name = "") {
   return match ? match[1].toLowerCase() : "";
 }
 
+function splitWorkspaceFilePath(pathText = "") {
+  const value = String(pathText || "").replace(/\\/g, "/");
+  const slashIndex = value.lastIndexOf("/");
+  if (slashIndex < 0) return { dir: "", name: value };
+  return {
+    dir: value.slice(0, slashIndex + 1),
+    name: value.slice(slashIndex + 1),
+  };
+}
+
 function compactBytes(bytes = 0) {
   const value = Number(bytes || 0);
   if (!Number.isFinite(value) || value <= 0) return "0 B";
@@ -168,43 +186,141 @@ async function compressImageFile(file) {
   return compressed.size < file.size ? compressed : file;
 }
 
-function ModeSelector({ sessionId, current, disabled = false }) {
+function formatCrewDirtyWarning(count = 1) {
+  return t("crewDirtyWarning").replace("{count}", String(count || 1));
+}
+
+function ModeSelector({
+  sessionId,
+  current,
+  crewActive = false,
+  crewDirtyCount = 0,
+  disabled = false,
+}) {
+  const { actions } = useApp();
   const [open, setOpen] = useState(false);
   const [switching, setSwitching] = useState(false);
-  const MODE_OPTIONS = getExecutionModeOptions();
+  const [crewError, setCrewError] = useState("");
+  const [crewNotice, setCrewNotice] = useState("");
+  const dirtyCount = Math.max(0, Number(crewDirtyCount) || 0);
+  const dirtyWarning =
+    crewActive && dirtyCount > 0 ? formatCrewDirtyWarning(dirtyCount) : "";
+  const MODE_OPTIONS = [
+    ...getExecutionModeOptions(),
+    {
+      value: "crew",
+      label: t("crewMode"),
+      description: t("crewModeDesc"),
+      icon: TreeStructure,
+    },
+  ];
+  const selectedValue = crewActive
+    ? "crew"
+    : current === "plan" || current === "coding" || current === "code"
+      ? "plan"
+      : "normal";
   const active =
-    MODE_OPTIONS.find((m) => m.value === current) || MODE_OPTIONS[0];
+    MODE_OPTIONS.find((m) => m.value === selectedValue) || MODE_OPTIONS[0];
   const ActiveIcon = active.icon;
 
   const handleSelect = async (mode) => {
-    if (mode === current || switching || disabled) return;
+    if (!mode || mode === selectedValue || switching || disabled) return;
     setSwitching(true);
+    setCrewError("");
+    setCrewNotice("");
+    let failed = false;
+    let keepOpen = false;
     try {
-      const result = await api.setExecutionMode(sessionId, mode);
-      if (result?.error)
-        throw new Error(result.message || "Failed to switch mode");
+      if (mode === "crew") {
+        const result = await actions.setCrewMode(sessionId, true);
+        if (result?.error || result?.ok === false) {
+          failed = true;
+          const code = String(result?.code || "");
+          const message =
+            code === "NOT_GIT"
+              ? t("crewNeedsGit")
+              : code === "NO_COMMIT"
+                ? t("crewNeedsCommit")
+              : code === "DETACHED"
+                ? t("crewNeedsBranch")
+                : result?.message || t("crewFailed");
+          setCrewError(message);
+        } else if (result?.warning) {
+          keepOpen = true;
+          setCrewNotice(formatCrewDirtyWarning(result?.dirtyCount || 1));
+        }
+      } else {
+        if (crewActive) {
+          const off = await actions.setCrewMode(sessionId, false);
+          if (off?.error || off?.ok === false) {
+            failed = true;
+            setCrewError(off?.message || t("crewFailed"));
+          }
+        }
+        if (!failed && mode !== "crew") {
+          const result = await api.setExecutionMode(sessionId, mode);
+          if (result?.error) {
+            failed = true;
+            throw new Error(result.message || "Failed to switch mode");
+          }
+        }
+      }
     } catch {
+      failed = true;
     } finally {
       setSwitching(false);
     }
-    setOpen(false);
+    if (!failed && !keepOpen) setOpen(false);
+  };
+
+  const refreshCrewDirtyNotice = useCallback(async () => {
+    if (!crewActive || !sessionId) {
+      setCrewNotice("");
+      return;
+    }
+    try {
+      const result = await actions.setCrewMode(sessionId, true);
+      if (result?.warning) {
+        setCrewNotice(formatCrewDirtyWarning(result?.dirtyCount || 1));
+      } else {
+        setCrewNotice("");
+      }
+    } catch {
+      setCrewNotice("");
+    }
+  }, [actions, sessionId, crewActive]);
+
+  useEffect(() => {
+    if (dirtyWarning) setCrewNotice(dirtyWarning);
+    else if (!open) setCrewNotice("");
+  }, [dirtyWarning, open]);
+
+  const handleOpenChange = (next) => {
+    if (disabled) return;
+    setOpen(next);
+    if (next) void refreshCrewDirtyNotice();
   };
 
   return (
-    <Popover open={open} onOpenChange={(next) => !disabled && setOpen(next)}>
+    <Popover open={open} onOpenChange={handleOpenChange}>
       <PopoverTrigger asChild>
         <button
           type="button"
           className={cn(
             INPUT_PILL_CLASS,
             "px-2.5",
-            (switching || disabled) && "opacity-50 pointer-events-none",
+            dirtyWarning && "text-amber-700 dark:text-amber-400",
+            disabled && "opacity-50 pointer-events-none",
           )}
           disabled={disabled}
-          title={disabled ? t("switchModeDisabled") : t("switchMode")}
+          title={
+            dirtyWarning ||
+            (disabled ? t("switchModeDisabled") : t("switchMode"))
+          }
         >
           <ActiveIcon size={13} />
           <span className="truncate">{active.label}</span>
+          {dirtyWarning ? <GitLogo size={12} className="shrink-0" /> : null}
           <CaretDown size={11} />
         </button>
       </PopoverTrigger>
@@ -219,7 +335,7 @@ function ModeSelector({ sessionId, current, disabled = false }) {
         </div>
         <ToggleGroup
           type="single"
-          value={current}
+          value={selectedValue}
           onValueChange={handleSelect}
           disabled={disabled || switching}
           size="auto"
@@ -244,6 +360,18 @@ function ModeSelector({ sessionId, current, disabled = false }) {
             );
           })}
         </ToggleGroup>
+        {crewError ? (
+          <div className="flex items-center gap-1.5 px-0.5 pt-1.5 text-[11px] leading-snug text-destructive">
+            <GitLogo size={13} className="shrink-0" />
+            <span>{crewError}</span>
+          </div>
+        ) : null}
+        {crewNotice || dirtyWarning ? (
+          <div className="flex items-center gap-1.5 px-0.5 pt-1.5 text-[11px] leading-snug text-amber-600 dark:text-amber-400">
+            <GitLogo size={13} className="shrink-0" />
+            <span>{crewNotice || dirtyWarning}</span>
+          </div>
+        ) : null}
       </PopoverContent>
     </Popover>
   );
@@ -537,12 +665,20 @@ function ActionSkillPalette({
   defaultSkillNames = [],
   mode = "normal",
   hasConversation = false,
+  sessionId = "",
+  slashMode = false,
+  mentionMode = false,
   onClose,
 }) {
-  const [skills, setSkills] = useState([]);
+  const [catalog, setCatalog] = useState([]);
+  const [workspaceFiles, setWorkspaceFiles] = useState([]);
+  const [workspaceFilesLoading, setWorkspaceFilesLoading] = useState(false);
+  const [workspaceFilesError, setWorkspaceFilesError] = useState("");
+  const [workspaceFilesTruncated, setWorkspaceFilesTruncated] = useState(false);
   const [hoveredItem, setHoveredItem] = useState(null);
   const searchRef = useRef(null);
   const containerRef = useRef(null);
+  const workspaceSearchRequestRef = useRef(0);
 
   useEffect(() => {
     if (!visible) return;
@@ -557,30 +693,69 @@ function ActionSkillPalette({
 
   useEffect(() => {
     let cancelled = false;
-    if (visible) {
+    if (visible && !mentionMode) {
       api
-        .fetchSkills()
+        .fetchCommands(sessionId)
         .then((list) => {
           if (cancelled) return;
-          setSkills(
-            filterSkillsForExecutionMode(list, mode).filter(
-              (s) =>
-                !IMPLICIT_SKILLS.has(s.name) &&
-                !INTERNAL_SKILLS.has(s.name) &&
-                !USER_ACTION_COMMAND_NAMES.has(s.name),
-            ),
-          );
+          setCatalog((Array.isArray(list) ? list : []).map((item) => (
+            typeof item === "string" ? { name: item, kind: "command" } : item
+          )));
         })
-        .catch(() => {});
+        .catch(() => {
+          api.fetchSkills().then((list) => {
+            if (cancelled) return;
+            setCatalog(
+              (Array.isArray(list) ? list : []).map((skill) => ({ ...skill, kind: "skill" })),
+            );
+          }).catch(() => {});
+        });
     }
     return () => {
       cancelled = true;
     };
-  }, [visible, projectDirs, mode]);
+  }, [visible, mentionMode, projectDirs, mode, sessionId]);
 
   useEffect(() => {
-    if (visible) searchRef.current?.focus();
-  }, [visible]);
+    if (!visible || !mentionMode) return undefined;
+    const requestId = workspaceSearchRequestRef.current + 1;
+    workspaceSearchRequestRef.current = requestId;
+    setWorkspaceFilesLoading(true);
+    setWorkspaceFilesError("");
+    setWorkspaceFiles([]);
+    setWorkspaceFilesTruncated(false);
+    const timer = setTimeout(() => {
+      api
+        .searchWorkspaceFiles(sessionId, query)
+        .then((result) => {
+          if (workspaceSearchRequestRef.current !== requestId) return;
+          setWorkspaceFiles(
+            Array.isArray(result?.files) ? result.files : [],
+          );
+          setWorkspaceFilesTruncated(result?.truncated === true);
+        })
+        .catch((requestError) => {
+          if (workspaceSearchRequestRef.current !== requestId) return;
+          setWorkspaceFiles([]);
+          setWorkspaceFilesTruncated(false);
+          setWorkspaceFilesError(
+            String(requestError?.message || t("workspaceFileSearchFailed")),
+          );
+        })
+        .finally(() => {
+          if (workspaceSearchRequestRef.current === requestId) {
+            setWorkspaceFilesLoading(false);
+          }
+        });
+    }, 100);
+    return () => {
+      clearTimeout(timer);
+    };
+  }, [visible, mentionMode, query, sessionId]);
+
+  useEffect(() => {
+    if (visible && !slashMode && !mentionMode) searchRef.current?.focus();
+  }, [visible, slashMode, mentionMode]);
 
   const needle = query.trim().toLowerCase();
   const actionItems = useMemo(
@@ -601,7 +776,10 @@ function ActionSkillPalette({
 
   const skillItems = useMemo(
     () =>
-      skills
+      filterSkillsForExecutionMode(
+        catalog.filter((item) => item.kind === "skill"),
+        mode,
+      )
         .filter(
           (skill) =>
             !defaultSkillNames.includes(skill.name) &&
@@ -617,11 +795,81 @@ function ActionSkillPalette({
           kind: "skill",
           key: `skill-${skill.name}`,
         })),
-    [skills, needle, defaultSkillNames],
+    [catalog, mode, needle, defaultSkillNames],
   );
 
+  const commandItems = useMemo(
+    () => catalog
+      .filter((item) => item.kind === "command")
+      .filter((item, index, items) => items.findIndex((candidate) => candidate.name === item.name) === index)
+      .filter((item) => !needle
+        || item.name.toLowerCase().includes(needle)
+        || (item.description || "").toLowerCase().includes(needle))
+      .map((item) => ({
+        ...item,
+        icon: TreeStructure,
+        description: item.description || "Project command",
+        kind: "command",
+        key: `command-${item.name}`,
+      })),
+    [catalog, needle],
+  );
+
+  const fileItems = useMemo(
+    () =>
+      workspaceFiles.map((file) => {
+        const { dir, name } = splitWorkspaceFilePath(file.path);
+        return {
+          name: name || file.name || file.path,
+          path: file.path,
+          dir,
+          description: "",
+          kind: "file",
+          key: `file-${file.path}`,
+        };
+      }),
+    [workspaceFiles],
+  );
+
+  const allItems = useMemo(
+    () =>
+      mentionMode
+        ? fileItems
+        : [...actionItems, ...commandItems, ...skillItems],
+    [mentionMode, fileItems, actionItems, commandItems, skillItems],
+  );
+
+  useEffect(() => {
+    if (!visible) return;
+    setHoveredItem(allItems[0]?.key || null);
+  }, [visible, query, allItems]);
+
+  useEffect(() => {
+    if (!visible || allItems.length === 0) return undefined;
+    const handleKeyDown = (event) => {
+      if (!["ArrowDown", "ArrowUp", "Enter", "Escape"].includes(event.key)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.key === "Escape") {
+        onClose?.();
+        return;
+      }
+      const currentIndex = Math.max(0, allItems.findIndex((item) => item.key === hoveredItem));
+      if (event.key === "Enter") {
+        const item = allItems[currentIndex] || allItems[0];
+        if (!item.disabled) onSelect(item);
+        return;
+      }
+      const direction = event.key === "ArrowDown" ? 1 : -1;
+      const next = (currentIndex + direction + allItems.length) % allItems.length;
+      setHoveredItem(allItems[next].key);
+    };
+    document.addEventListener("keydown", handleKeyDown, true);
+    return () => document.removeEventListener("keydown", handleKeyDown, true);
+  }, [visible, allItems, hoveredItem, onClose, onSelect]);
+
   if (!visible) return null;
-  const hasItems = actionItems.length > 0 || skillItems.length > 0;
+  const hasItems = allItems.length > 0;
 
   const renderSection = (title, items) => {
     if (!items.length) return null;
@@ -634,16 +882,22 @@ function ActionSkillPalette({
           {items.map((item) => {
             const Icon = item.icon;
             const isHovered = hoveredItem === item.key;
+            const isFile = item.kind === "file";
             return (
               <button
                 key={item.key}
                 type="button"
+                role="option"
+                aria-selected={isHovered}
                 disabled={item.disabled}
                 title={
                   item.disabled ? t("actionRequiresConversation") : undefined
                 }
                 className={cn(
-                  "action-skill-palette-item w-full border-0 rounded-md px-2.5 py-2 text-left cursor-pointer grid grid-cols-[22px_minmax(96px,180px)_minmax(0,1fr)_auto] items-start gap-2 text-[12px] transition-colors outline-none shadow-none focus:outline-none focus:shadow-none focus-visible:outline-none focus-visible:shadow-none",
+                  "action-skill-palette-item w-full border-0 rounded-md px-2.5 py-2 text-left cursor-pointer grid items-center gap-2 text-[12px] transition-colors outline-none shadow-none focus:outline-none focus:shadow-none focus-visible:outline-none focus-visible:shadow-none",
+                  isFile
+                    ? "grid-cols-[22px_minmax(0,1fr)_auto]"
+                    : "grid-cols-[22px_minmax(96px,180px)_minmax(0,1fr)_auto] items-start",
                   item.disabled
                     ? "cursor-not-allowed bg-transparent text-(--text-muted) opacity-45"
                     : isHovered
@@ -654,40 +908,73 @@ function ActionSkillPalette({
                 onMouseEnter={() => setHoveredItem(item.key)}
                 onMouseLeave={() => setHoveredItem(null)}
               >
-                <span
-                  className={cn(
-                    "mt-0.5 inline-flex size-5 items-center justify-center rounded-md transition-colors",
-                    item.kind === "action"
-                      ? "bg-(--accent-cyan-bg) text-(--accent-cyan)"
-                      : "bg-(--accent-purple-bg) text-(--accent-purple)",
-                    !isHovered && "opacity-80",
-                  )}
-                >
-                  <Icon size={12} />
-                </span>
-                <span className="truncate font-medium leading-5 font-mono">
-                  /{item.name}
-                </span>
-                <span
-                  className="text-(--text-muted) text-[11px] leading-5 overflow-hidden"
-                  style={{
-                    display: "-webkit-box",
-                    WebkitLineClamp: 2,
-                    WebkitBoxOrient: "vertical",
-                  }}
-                >
-                  {item.description}
-                </span>
-                <span
-                  className={cn(
-                    "mt-0.5 rounded-full border px-1.5 py-0.5 text-[10px] uppercase leading-none",
-                    item.kind === "action"
-                      ? "border-(--accent-cyan)/25 text-(--accent-cyan)"
-                      : "border-(--accent-purple)/25 text-(--accent-purple)",
-                  )}
-                >
-                  {item.kind}
-                </span>
+                {isFile ? (
+                  <span className="inline-flex size-5 items-center justify-center">
+                    <FileTypeIcon path={item.path} size="sm" />
+                  </span>
+                ) : (
+                  <span
+                    className={cn(
+                      "mt-0.5 inline-flex size-5 items-center justify-center rounded-md transition-colors",
+                      item.kind === "action"
+                        ? "bg-(--accent-cyan-bg) text-(--accent-cyan)"
+                        : "bg-(--accent-purple-bg) text-(--accent-purple)",
+                      !isHovered && "opacity-80",
+                    )}
+                  >
+                    <Icon size={12} />
+                  </span>
+                )}
+                {isFile ? (
+                  <span
+                    className="flex min-w-0 items-center gap-1.5 font-mono leading-5"
+                    title={`@${item.path}`}
+                  >
+                    <span className="shrink-0 text-(--text-primary)">{item.name}</span>
+                    {item.dir ? (
+                      <span className="min-w-0 truncate text-[11px] text-(--text-muted)">
+                        ({item.dir})
+                      </span>
+                    ) : null}
+                  </span>
+                ) : (
+                  <span className="truncate font-medium leading-5 font-mono">
+                    /{item.name}
+                  </span>
+                )}
+                {!isFile ? (
+                  <span
+                    className="text-(--text-muted) text-[11px] leading-5 overflow-hidden"
+                    style={{
+                      display: "-webkit-box",
+                      WebkitLineClamp: 2,
+                      WebkitBoxOrient: "vertical",
+                    }}
+                  >
+                    {item.description}
+                  </span>
+                ) : null}
+                {isFile ? (
+                  <kbd
+                    className={cn(
+                      "rounded border border-(--border-default) bg-(--bg-secondary) px-1.5 py-0.5 font-sans text-[9px] leading-none text-(--text-muted) transition-opacity",
+                      !isHovered && "opacity-0",
+                    )}
+                  >
+                    Enter
+                  </kbd>
+                ) : (
+                  <span
+                    className={cn(
+                      "mt-0.5 rounded-full border px-1.5 py-0.5 text-[10px] uppercase leading-none",
+                      item.kind === "action"
+                        ? "border-(--accent-cyan)/25 text-(--accent-cyan)"
+                        : "border-(--accent-purple)/25 text-(--accent-purple)",
+                    )}
+                  >
+                    {item.kind}
+                  </span>
+                )}
               </button>
             );
           })}
@@ -699,10 +986,13 @@ function ActionSkillPalette({
   return (
     <div
       ref={containerRef}
+      role="listbox"
+      aria-label={mentionMode ? t("workspaceFiles") : t("searchActionsAndSkills")}
+      aria-busy={mentionMode && workspaceFilesLoading}
       className="absolute bottom-full left-0 right-0 mb-1.5 max-h-[360px] overflow-y-auto rounded-lg border border-(--border-default) bg-(--bg-primary) shadow-[var(--shadow-default)] z-50 animate-in fade-in-0 zoom-in-95 slide-in-from-bottom-2 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95"
       style={{ scrollbarWidth: "thin" }}
     >
-      <div className="sticky top-0 z-10 border-b border-(--border-default) bg-(--bg-primary) px-2 pt-2 pb-1.5">
+      {!slashMode && !mentionMode ? <div className="sticky top-0 z-10 border-b border-(--border-default) bg-(--bg-primary) px-2 pt-2 pb-1.5">
         <label className="action-skill-palette-search-shell flex items-center gap-2 rounded-md px-2">
           <MagnifyingGlass size={14} className="text-(--text-muted)" />
           <input
@@ -723,21 +1013,46 @@ function ActionSkillPalette({
             {error}
           </div>
         ) : null}
-      </div>
+      </div> : null}
       {/* <div className="px-2.5 py-1.5 text-[11px] text-(--text-muted) font-medium flex items-center gap-1.5 uppercase tracking-[0.45px]">
         Commands
       </div>
       <Separator className="my-2 bg-(--border-default)" /> */}
-      {!hasItems && (
+      {mentionMode && workspaceFilesLoading && !hasItems ? (
+        <div className="flex items-center justify-center gap-2 px-2.5 py-5 text-[12px] text-(--text-muted)">
+          <CircleNotch size={14} className="animate-spin" />
+          <span>{t("workspaceFileSearching")}</span>
+        </div>
+      ) : null}
+      {mentionMode && workspaceFilesError ? (
+        <div role="alert" className="px-2.5 py-4 text-center text-[12px] text-(--accent-red)">
+          {workspaceFilesError}
+        </div>
+      ) : null}
+      {!hasItems && !workspaceFilesLoading && !workspaceFilesError && (
         <div className="px-2.5 py-5 text-[12px] text-(--text-muted) text-center">
-          No matching commands
+          {mentionMode ? t("noMatchingFiles") : t("noMatchingCommands")}
         </div>
       )}
-      {renderSection("Actions", actionItems)}
-      {actionItems.length > 0 && skillItems.length > 0 && (
+      {renderSection(
+        mentionMode ? t("workspaceFiles") : "Actions",
+        mentionMode ? fileItems : actionItems,
+      )}
+      {!mentionMode &&
+        actionItems.length > 0 && (commandItems.length > 0 || skillItems.length > 0) && (
         <Separator className=" my-1 bg-(--border-default)" />
       )}
-      {renderSection("Skills", skillItems)}
+      {!mentionMode && renderSection("Commands", commandItems)}
+      {!mentionMode && commandItems.length > 0 && skillItems.length > 0 && (
+        <Separator className=" my-1 bg-(--border-default)" />
+      )}
+      {!mentionMode && renderSection("Skills", skillItems)}
+      {mentionMode && hasItems ? (
+        <div className="sticky bottom-0 flex items-center justify-between gap-3 border-t border-(--border-default) bg-(--bg-primary)/95 px-2.5 py-1.5 text-[10px] text-(--text-muted) backdrop-blur-sm">
+          <span>{t("workspaceFilePickerHint")}</span>
+          {workspaceFilesTruncated ? <span>{t("workspaceFileResultsLimited")}</span> : null}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -763,12 +1078,15 @@ export function InputBar({
   const [draftBeforeHistory, setDraftBeforeHistory] = useState("");
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [paletteQuery, setPaletteQuery] = useState("");
+  const [paletteSlashMode, setPaletteSlashMode] = useState(false);
+  const [paletteMentionMode, setPaletteMentionMode] = useState(false);
   const [paletteError, setPaletteError] = useState("");
   const [actionSubmitting, setActionSubmitting] = useState(false);
   const [actionParameter, setActionParameter] = useState(() =>
     createComposerState(),
   );
   const [attachments, setAttachments] = useState([]);
+  const [referencedFiles, setReferencedFiles] = useState([]);
   const [selectedSkills, setSelectedSkills] = useState([]);
   const [scrapbookContext, setScrapbookContext] = useState(null);
   const [scrapbookPickerOpen, setScrapbookPickerOpen] = useState(false);
@@ -787,6 +1105,7 @@ export function InputBar({
   const fileInputRef = useRef(null);
   const actionSubmissionRef = useRef(false);
   const imeComposingRef = useRef(false);
+  const mentionCursorRef = useRef(0);
 
   const rs = runtimeState || {};
   const pendingQueueItems =
@@ -842,6 +1161,13 @@ export function InputBar({
   // queued; only hard blockers lock it.
   const composerLocked = disabled || uploadingAttachments;
   const isGeneralChat = projectCwd === "__codemini_general__";
+  const hasComposerContent = Boolean(
+    value.trim() ||
+      attachments.length > 0 ||
+      referencedFiles.length > 0 ||
+      scrapbookContext ||
+      selectedSkills.length > 0,
+  );
 
   useEffect(() => {
     setSelectedSkills((current) =>
@@ -876,18 +1202,35 @@ export function InputBar({
       const val = value.trim();
       const hasText = val.length > 0;
       const hasAttachments = attachments.length > 0;
+      const hasFileReferences = referencedFiles.length > 0;
       const hasScrapbookContext = Boolean(scrapbookContext);
       const hasSkills = selectedSkills.length > 0;
       if (
-        (!hasText && !hasAttachments && !hasScrapbookContext && !hasSkills) ||
+        (!hasText &&
+          !hasAttachments &&
+          !hasFileReferences &&
+          !hasScrapbookContext &&
+          !hasSkills) ||
         composerLocked
       )
         return;
 
       let fallbackText = val;
-      if (!hasText && (hasAttachments || hasScrapbookContext)) {
-        fallbackText = t("attachmentFallbackPrompt");
+      if (
+        !hasText &&
+        (hasAttachments || hasScrapbookContext || hasFileReferences)
+      ) {
+        fallbackText = hasFileReferences
+          ? t("fileReferenceFallbackPrompt")
+          : t("attachmentFallbackPrompt");
       }
+
+      const fileReferenceText = referencedFiles
+        .map((item) => formatComposerFileMention(item.path))
+        .join("\n");
+      const modelContext = [scrapbookContext?.modelText, fileReferenceText]
+        .filter(Boolean)
+        .join("\n\n");
 
       const dismissedSkills = [...dismissedDefaultSkills];
       try {
@@ -895,13 +1238,18 @@ export function InputBar({
           {
             text: fallbackText,
             skillNames: selectedSkillNames,
+            fileReferences: referencedFiles.map(({ path, name, dir }) => ({
+              path,
+              name,
+              dir,
+            })),
             attachmentIds: attachments.map((item) => item.id).filter(Boolean),
             attachments: scrapbookContext
               ? [...attachments, scrapbookContext.attachment]
               : attachments,
             dismissedAlwaysSkills: dismissedSkills,
-            ...(scrapbookContext?.modelText
-              ? { modelText: scrapbookContext.modelText }
+            ...(modelContext
+              ? { modelText: modelContext }
               : {}),
           },
           { priority },
@@ -911,17 +1259,21 @@ export function InputBar({
       }
       setValue("");
       setAttachments([]);
+      setReferencedFiles([]);
       setScrapbookContext(null);
       setSelectedSkills([]);
       setDismissedDefaultSkills(new Set());
       setAttachmentError("");
       setPaletteOpen(false);
+      setPaletteSlashMode(false);
+      setPaletteMentionMode(false);
       setHistoryIndex(-1);
       if (textareaRef.current) textareaRef.current.style.height = "auto";
     },
     [
       value,
       attachments,
+      referencedFiles,
       scrapbookContext,
       selectedSkills,
       selectedSkillNames,
@@ -1023,13 +1375,63 @@ export function InputBar({
 
   const handleInput = useCallback((e) => {
     const val = e.target.value;
+    const cursor = e.target.selectionStart ?? val.length;
+    mentionCursorRef.current = cursor;
     setValue(val);
+    const slashQuery = parseComposerSlashQuery(val);
+    if (slashQuery !== null) {
+      setPaletteQuery(slashQuery);
+      setPaletteSlashMode(true);
+      setPaletteMentionMode(false);
+      setPaletteOpen(true);
+    } else {
+      if (paletteSlashMode) {
+        setPaletteSlashMode(false);
+        setPaletteMentionMode(false);
+      }
+      const mentionQuery = parseComposerMentionQuery(val, cursor);
+      if (mentionQuery !== null) {
+        setPaletteQuery(mentionQuery);
+        setPaletteMentionMode(true);
+        setPaletteOpen(true);
+      } else if (paletteMentionMode) {
+        setPaletteOpen(false);
+        setPaletteMentionMode(false);
+      }
+    }
     e.target.style.height = "auto";
     e.target.style.height = Math.min(e.target.scrollHeight, 160) + "px";
-  }, []);
+  }, [paletteSlashMode, paletteMentionMode]);
 
   const handleCommandSelect = useCallback(
     async (item) => {
+      if (item?.kind === "file") {
+        let nextCursor = mentionCursorRef.current;
+        setValue((current) => {
+          const result = removeComposerMentionToken(
+            current,
+            mentionCursorRef.current,
+          );
+          nextCursor = result.cursor;
+          return result.text;
+        });
+        setReferencedFiles((current) =>
+          current.some((entry) => entry.path === item.path)
+            ? current
+            : [
+                ...current,
+                { path: item.path, ...splitWorkspaceFilePath(item.path) },
+              ],
+        );
+        setPaletteOpen(false);
+        setPaletteMentionMode(false);
+        requestAnimationFrame(() => {
+          textareaRef.current?.focus();
+          textareaRef.current?.setSelectionRange(nextCursor, nextCursor);
+        });
+        return;
+      }
+
       if (item?.kind === "skill") {
         if (defaultSkillNames.includes(item.name)) {
           setValue("");
@@ -1048,8 +1450,20 @@ export function InputBar({
               },
             ).selectedSkills,
         );
+        if (paletteSlashMode) setValue("");
         setPaletteOpen(false);
+        setPaletteSlashMode(false);
+        setPaletteMentionMode(false);
         textareaRef.current?.focus();
+        return;
+      }
+
+      if (item?.kind === "command") {
+        setValue(`/${item.name} `);
+        setPaletteOpen(false);
+        setPaletteSlashMode(false);
+        setPaletteMentionMode(false);
+        requestAnimationFrame(() => textareaRef.current?.focus());
         return;
       }
 
@@ -1068,6 +1482,8 @@ export function InputBar({
         setPaletteError("");
         setActionSubmitting(true);
         setPaletteOpen(false);
+        setPaletteSlashMode(false);
+        setPaletteMentionMode(false);
         try {
           onActionStart?.(item.name);
           await new Promise((resolve) => requestAnimationFrame(resolve));
@@ -1082,12 +1498,18 @@ export function InputBar({
         return;
       }
     },
-    [defaultSkillNames, inputLocked, onAction, onActionStart],
+    [defaultSkillNames, inputLocked, onAction, onActionStart, paletteSlashMode],
   );
 
   const removeSelectedSkill = useCallback((name) => {
     setSelectedSkills((current) =>
       current.filter((skill) => skill.name !== name),
+    );
+  }, []);
+
+  const removeReferencedFile = useCallback((path) => {
+    setReferencedFiles((current) =>
+      current.filter((item) => item.path !== path),
     );
   }, []);
 
@@ -1211,7 +1633,14 @@ export function InputBar({
         defaultSkillNames={defaultSkillNames}
         mode={mode}
         hasConversation={hasConversation}
-        onClose={() => setPaletteOpen(false)}
+        sessionId={state?.currentSessionId || ""}
+        slashMode={paletteSlashMode}
+        mentionMode={paletteMentionMode}
+        onClose={() => {
+          setPaletteOpen(false);
+          setPaletteSlashMode(false);
+          setPaletteMentionMode(false);
+        }}
       />
       <div
         className={cn(
@@ -1294,13 +1723,41 @@ export function InputBar({
             </div>
           </div>
         )}
-        {(selectedSkills.length > 0 ||
+        {(referencedFiles.length > 0 ||
+          selectedSkills.length > 0 ||
           visibleDefaultSkillNames.length > 0 ||
           attachments.length > 0 ||
           scrapbookContext ||
           attachmentError ||
           uploadingAttachments) && (
           <div className="flex flex-wrap items-center gap-1.5">
+            {referencedFiles.map((item) => (
+              <span
+                key={item.path}
+                className="codemini-input-chip inline-flex max-w-full items-center gap-1.5 px-2 py-1 text-[12px] text-(--text-secondary)"
+                title={formatComposerFileMention(item.path)}
+              >
+                <FileTypeIcon path={item.path} size="sm" />
+                <span className="max-w-[180px] truncate font-mono text-(--text-primary)">
+                  {item.name}
+                </span>
+                {item.dir ? (
+                  <span className="max-w-[180px] truncate font-mono text-[11px] text-(--text-muted)">
+                    ({item.dir})
+                  </span>
+                ) : null}
+                <button
+                  type="button"
+                  className="ml-0.5 inline-flex size-4 items-center justify-center rounded hover:bg-(--bg-hover) hover:text-(--text-primary)"
+                  onClick={() => removeReferencedFile(item.path)}
+                  title={t("removeReferencedFile")}
+                  aria-label={`${t("removeReferencedFile")}: ${item.path}`}
+                  disabled={inputLocked}
+                >
+                  <X size={11} />
+                </button>
+              </span>
+            ))}
             {visibleDefaultSkillNames.map((name) => (
               <span
                 key={`default-${name}`}
@@ -1462,6 +1919,8 @@ export function InputBar({
               disabled={inputLocked}
               onClick={() => {
                 setPaletteQuery("");
+                setPaletteSlashMode(false);
+                setPaletteMentionMode(false);
                 setPaletteOpen((open) => !open);
               }}
             >
@@ -1639,6 +2098,8 @@ export function InputBar({
             <ModeSelector
               sessionId={rs.sessionId}
               current={mode}
+              crewActive={!!rs.crewActive}
+              crewDirtyCount={rs.crewDirtyCount || 0}
               disabled={inputLocked}
             />
             <ReasoningQuickControl
@@ -1683,20 +2144,12 @@ export function InputBar({
                 type="button"
                 className={cn(
                   "border-0 min-w-8 w-8 h-8 rounded-md inline-flex items-center justify-center shrink-0 cursor-pointer transition-all",
-                  (value.trim() ||
-                    attachments.length > 0 ||
-                    selectedSkills.length > 0) &&
-                    !inputLocked
+                  hasComposerContent && !inputLocked
                     ? "bg-(--text-primary) text-(--bg-primary) hover:opacity-85"
                     : "bg-(--text-muted)/25 text-(--text-muted) cursor-not-allowed",
                 )}
                 onClick={() => submitCurrent(false)}
-                disabled={
-                  (!value.trim() &&
-                    attachments.length === 0 &&
-                    selectedSkills.length === 0) ||
-                  inputLocked
-                }
+                disabled={!hasComposerContent || inputLocked}
                 title={t("sending")}
               >
                 <ArrowUp size={16} />

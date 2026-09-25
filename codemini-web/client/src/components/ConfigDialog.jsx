@@ -1,3 +1,6 @@
+import { SettingsSecretField } from '@/components/settings/SettingsSecretField.jsx';
+import { hasConfiguredSecret, secretSettingWrite } from '@/lib/secret-settings.js';
+import { isWebConfigReadOnly, validateWebConfigValue } from '../../../shared/web-config-policy.js';
 import { useState, useEffect, useMemo } from "react";
 import {
   Dialog,
@@ -92,6 +95,7 @@ function getBaselineValue(path, config, fieldsByPath) {
 }
 
 function isSameAsBaseline(path, value, config, fieldsByPath) {
+  if (fieldsByPath.get(path)?.type === "password") return secretSettingWrite(value) === undefined;
   if (!config) return false;
   return (
     normalizeDraftValue(path, value, fieldsByPath) ===
@@ -127,6 +131,8 @@ export function ConfigDialog({
 
   const [config, setConfig] = useState(null);
   const [changes, setChanges] = useState({});
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState("");
   const [activeTab, setActiveTab] = useState("connection");
   const [configLoading, setConfigLoading] = useState(false);
   const [playwrightStatus, setPlaywrightStatus] = useState(null);
@@ -139,6 +145,7 @@ export function ConfigDialog({
     setPlaywrightLoading(true);
     setPlaywrightStatus(null);
     setChanges({});
+    setSaveError("");
     setActiveTab("connection");
     api
       .fetchConfig()
@@ -265,6 +272,9 @@ export function ConfigDialog({
         : "text-(--text-muted)";
 
   const handleSave = async () => {
+    if (saving) return;
+    setSaving(true);
+    setSaveError("");
     try {
       let savedConfig = config;
       for (const [path, value] of Object.entries(changes)) {
@@ -281,18 +291,42 @@ export function ConfigDialog({
               ? Number(value)
               : value;
         }
+        if (fieldsByPath.get(path)?.type === "password") {
+          normalizedValue = secretSettingWrite(value);
+          if (normalizedValue === undefined) continue;
+        }
+        validateWebConfigValue(path, normalizedValue);
         const result = await api.setConfig(path, normalizedValue);
+        if (result?.error) throw new Error(result.message || t("settingsSaveFailed"));
         if (result?.config) savedConfig = result.config;
       }
       await onSaved?.(savedConfig);
+      setConfig(savedConfig);
       setChanges({});
       onOpenChange(false);
     } catch (err) {
-      console.error("Config save failed:", err);
+      setSaveError(String(err?.message || t("settingsSaveFailed")));
+    } finally {
+      setSaving(false);
     }
   };
 
   const renderControl = (field) => {
+    if (isWebConfigReadOnly(field.path)) {
+      const raw = getValue(field.path);
+      const label = field.valueLabels?.[raw]
+        || (field.control === "switch" ? t(getBooleanValue(field.path) ? "enabled" : "disabled") : null)
+        || getSettingsOptions(field.optionsKey).find(option => option.value === raw)?.label
+        || String(raw ?? "");
+      return <div className="text-sm text-(--text-muted)">
+        <div>{label}</div>
+        <p className="mt-1 text-xs">{t("settingsReadOnlyCli")}</p>
+        {field.cliExample ? <code className="mt-1 block break-all text-xs">{field.cliExample}</code> : null}
+      </div>;
+    }
+    if (field.type === "password") return <SettingsSecretField
+      key={`${field.path}-${open}`} id={field.path} configured={hasConfiguredSecret(config, field.path)}
+      draft={changes[field.path]} disabled={saving} onChange={value => handleChange(field.path, value)} />;
     const sandboxMode = getValue("sandbox.mode");
     const sandboxConfined = sandboxMode !== "danger-full-access";
     const value =
@@ -330,7 +364,10 @@ export function ConfigDialog({
           idPrefix={idPrefix}
           value={value}
           options={getSettingsOptions(field.optionsKey, { sandboxMode })}
-          onValueChange={(next) => handleChange(field.path, next)}
+          onValueChange={(next) => {
+            if (field.warning && next === "external_authority" && !window.confirm(field.warning)) return;
+            handleChange(field.path, next);
+          }}
         />
       );
     }
@@ -377,8 +414,11 @@ export function ConfigDialog({
         id={field.path}
         type={field.type ?? (field.control === "number" ? "number" : "text")}
         value={value}
+        min={field.min}
+        max={field.max}
+        step={field.step}
         onChange={(e) => handleChange(field.path, e.target.value)}
-        placeholder={field.placeholder || ""}
+        placeholder={field.type === "password" ? "Enter a new key to replace the stored key" : field.placeholder || ""}
       />
     );
   };
@@ -515,6 +555,7 @@ export function ConfigDialog({
           </Tabs>
         )}
 
+        {saveError ? <p role="alert" className="px-6 py-2 text-sm text-(--accent-red)">{saveError}</p> : null}
         <DialogFooter className="gap-2 shrink-0 border-t border-(--border-default) px-6 py-4">
           {hasChanges && (
             <span className="mr-auto text-[12px] text-(--text-muted)">
@@ -524,7 +565,7 @@ export function ConfigDialog({
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             {t("cancel")}
           </Button>
-          <Button onClick={handleSave} disabled={!hasChanges}>
+          <Button onClick={handleSave} disabled={!hasChanges || saving}>
             {t("saveChanges")}
           </Button>
         </DialogFooter>

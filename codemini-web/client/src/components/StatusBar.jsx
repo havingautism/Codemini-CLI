@@ -10,6 +10,7 @@ import {
 } from "@/lib/icons";
 import { cn } from "@/lib/utils";
 import { getModelLogo } from "@/lib/message-model-identity.js";
+import { getCrewStatusBarText } from "@/lib/crew-progress-ui.js";
 import { t } from "../../i18n/index.js";
 
 const STAGE_LIVE_CLASS = "linear-status-dot linear-status-dot--sm";
@@ -70,6 +71,13 @@ export function StatusBar({ runtimeState, live, stageLabel }) {
       : approvalMode === "auto"
         ? t("autoMode")
         : t("reviewMode");
+  const crewStatusText = getCrewStatusBarText(rs, t);
+  const statusText = live
+    ? crewStatusText
+      ? `${stageLabel} · ${crewStatusText}`
+      : stageLabel
+    : crewStatusText || t("idle");
+  const statusLive = live || Boolean(crewStatusText);
 
   return (
     <div className="flex items-center gap-2.5 flex-1 min-w-0 text-[11px] text-(--text-muted) overflow-hidden">
@@ -115,7 +123,7 @@ export function StatusBar({ runtimeState, live, stageLabel }) {
         </span>
       )}
       <span className="inline-flex items-center gap-1 ml-auto whitespace-nowrap">
-        {live ? (
+        {statusLive ? (
           <span
             className={cn(STAGE_LIVE_CLASS, "shrink-0")}
             aria-hidden="true"
@@ -126,7 +134,7 @@ export function StatusBar({ runtimeState, live, stageLabel }) {
             aria-hidden="true"
           />
         )}
-        <span>{live ? stageLabel : t("idle")}</span>
+        <span>{statusText}</span>
       </span>
     </div>
   );

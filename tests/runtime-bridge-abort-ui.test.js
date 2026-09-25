@@ -4,9 +4,17 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
-import { RuntimeBridge } from '../codemini-web/lib/runtime-bridge.js';
+import { RuntimeBridge, serializeSessionMessages } from '../codemini-web/lib/runtime-bridge.js';
 import { closeSqliteDatabasesForTests } from '../src/core/sqlite-database.js';
 import { loadUiTranscriptFromSqlite } from '../src/core/session-sqlite-store.js';
+
+test('runtime-only model context is replayed to the model but hidden from fallback UI history', () => {
+  assert.deepEqual(serializeSessionMessages([
+    { role: 'user', content: 'visible' },
+    { role: 'user', content: 'internal', model_context: true },
+    { role: 'assistant', content: 'done' },
+  ]).map((message) => message.content), ['visible', 'done']);
+});
 
 test('abort continuation keeps the settled partial reply in its UI transcript', async () => {
   closeSqliteDatabasesForTests();

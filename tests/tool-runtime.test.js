@@ -85,3 +85,24 @@ test('ToolRuntime bounds parallel batches and treats exclusive calls as barriers
   assert.ok(events.indexOf('start:write') > events.indexOf('end:read-2'));
   assert.ok(events.indexOf('start:read-3') > events.indexOf('end:write'));
 });
+
+test('ToolRuntime restores trusted deferred schemas in saved activation order', () => {
+  const first = definition('first');
+  const second = definition('second');
+  const activated = [];
+  const runtime = createToolRuntime({
+    definitions: [definition('base')],
+    deferredDefinitions: { first, second },
+    handlers: {
+      base: async () => null,
+      first: async () => null,
+      second: async () => null,
+    },
+    activeDeferredNames: ['second', 'removed', 'first', 'second'],
+    onSchemasActivated: (schemas) => activated.push(...schemas.map((schema) => schema.function.name)),
+  });
+
+  assert.deepEqual(runtime.definitions().map((item) => item.function.name), ['base', 'second', 'first']);
+  assert.deepEqual(activated, []);
+  assert.deepEqual(runtime.activateSchemas([first]), []);
+});

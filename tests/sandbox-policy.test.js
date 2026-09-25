@@ -24,12 +24,12 @@ test('normalizeSandboxMode defaults to workspace-write on every platform', () =>
   assert.equal(normalizeSandboxMode('read_only'), 'read-only');
 });
 
-test('normalizeSandboxNetwork defaults to allow-all and maps deny aliases', () => {
-  assert.equal(normalizeSandboxNetwork(undefined), 'allow-all');
-  assert.equal(normalizeSandboxNetwork(''), 'allow-all');
+test('normalizeSandboxNetwork defaults to deny-all and maps deny aliases', () => {
+  assert.equal(normalizeSandboxNetwork(undefined), 'none');
+  assert.equal(normalizeSandboxNetwork(''), 'none');
   assert.equal(normalizeSandboxNetwork('allow-all'), 'allow-all');
-  assert.equal(normalizeSandboxNetwork('ALL_ALL'), 'allow-all');
-  assert.equal(normalizeSandboxNetwork('bogus'), 'allow-all');
+  assert.equal(normalizeSandboxNetwork('ALL_ALL'), 'none');
+  assert.equal(normalizeSandboxNetwork('bogus'), 'none');
   assert.equal(normalizeSandboxNetwork('none'), 'none');
   assert.equal(normalizeSandboxNetwork('deny-all'), 'none');
   assert.equal(normalizeSandboxNetwork('deny_all'), 'none');
@@ -192,6 +192,50 @@ test('assertSandboxWriteAllowed fences read-only and workspace-write', () => {
   if (!underTmp) {
     assert.match(String(denied || ''), /sandbox: file access denied/);
   }
+});
+
+test('workspace-write crew workers can commit via parent git dirs only', () => {
+  // Keep the fake parent outside os.tmpdir(); tmpdir is always writable.
+  const parent = path.resolve('/opt/codemini-sandbox-crew-parent');
+  const worktree = path.join(parent, '.codemini', 'crew', 'worktrees', 'alisa');
+  const policy = {
+    enabled: true,
+    mode: 'workspace-write',
+    workspaceRoot: worktree,
+    platform: 'darwin',
+  };
+  const roots = writableRootsForMode(policy);
+  assert.ok(roots.includes(path.resolve(worktree)));
+  assert.ok(roots.includes(path.join(parent, '.git', 'objects')));
+  assert.ok(roots.includes(path.join(parent, '.git', 'worktrees', 'alisa')));
+  assert.ok(roots.includes(path.join(parent, '.git', 'refs', 'heads', 'codemini-crew')));
+  assert.equal(roots.includes(parent), false);
+  assert.equal(roots.includes(path.join(parent, '.git')), false);
+
+  const allow = (target) => assertSandboxWriteAllowed(target, policy);
+  assert.equal(allow(path.join(worktree, 'notes.md')), null);
+  assert.equal(allow(path.join(parent, '.git', 'objects', 'ab', 'cdef')), null);
+  assert.equal(allow(path.join(parent, '.git', 'worktrees', 'alisa', 'index.lock')), null);
+  assert.equal(allow(path.join(parent, '.git', 'refs', 'heads', 'codemini-crew', 'alisa')), null);
+  assert.match(String(allow(path.join(parent, 'notes.md')) || ''), /sandbox: file access denied/);
+  assert.match(String(allow(path.join(parent, '.git', 'hooks', 'pre-commit')) || ''), /sandbox: file access denied/);
+  assert.match(String(allow(path.join(parent, '.git', 'config')) || ''), /sandbox: file access denied/);
+  assert.match(String(allow(path.join(parent, '.git', 'refs', 'heads', 'main')) || ''), /sandbox: file access denied/);
+
+  const codingRoots = writableRootsForMode({
+    mode: 'workspace-write',
+    workspaceRoot: parent,
+  });
+  assert.equal(codingRoots.includes(path.join(parent, '.git', 'objects')), false);
+  assert.match(
+    String(assertSandboxWriteAllowed(path.join(parent, '.git', 'objects', 'ab', 'cdef'), {
+      enabled: true,
+      mode: 'read-only',
+      workspaceRoot: worktree,
+      platform: 'darwin',
+    }) || ''),
+    /sandbox: file access denied under read-only mode/,
+  );
 });
 
 test('readonly sandbox roots expose global skills but not sessions or writes', () => {

@@ -29,7 +29,10 @@ codemini-codewiki-web/
 *.tgz
 dist/
 coverage/
-docs/
+# Repo docs: keep contents ignored, but track agent-skill config and ADRs
+/docs/*
+!/docs/agents/
+!/docs/adr/
 .superpowers/
 # Logs
 *.log
@@ -46,4 +49,5 @@ Thumbs.db
 .idea/
 /cli-demo-example/
 # Local scratch docs
+.scratch/
 

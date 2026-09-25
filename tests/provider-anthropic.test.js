@@ -20,6 +20,7 @@ test('Anthropic DeepSeek completion explicitly disables thinking when requested'
     }), { status: 200, headers: { 'content-type': 'application/json' } });
   };
 
+  let preparedPayload = null;
   const result = await createChatCompletion({
     baseUrl: 'https://api.deepseek.com/anthropic',
     apiKey: 'test-key',
@@ -27,8 +28,10 @@ test('Anthropic DeepSeek completion explicitly disables thinking when requested'
     messages: [{ role: 'user', content: 'title' }],
     reasoningEffort: 'off',
     maxTokens: 256,
+    onPayloadPrepared: (payload) => { preparedPayload = payload; },
   });
 
+  assert.deepEqual(preparedPayload, requestBody);
   assert.deepEqual(requestBody.thinking, { type: 'disabled' });
   assert.equal(requestBody.max_tokens, 256);
   assert.equal(result.text, '🧪 Plan 工具注释测试');

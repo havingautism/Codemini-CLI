@@ -21,6 +21,7 @@ import {
   IconBookFilled,
   IconBook2,
   IconBrain,
+  IconBrandGit,
   IconBrandWindows,
   IconBrandWindowsFilled,
   IconBug,
@@ -225,6 +226,7 @@ export const Folder = wrap(IconFolder, IconFolderFilled);
 export const FolderOpen = wrap(IconFolderOpen, IconFolderOpenFilled);
 export const FolderSimple = wrap(IconFolder, IconFolderFilled);
 export const GearSix = wrap(IconSettings, IconSettingsFilled);
+export const GitLogo = wrap(IconBrandGit);
 export const GitBranch = wrap(IconGitBranch);
 export const GitDiff = wrap(IconFileDiff, IconFileDiffFilled);
 export const Globe = wrap(IconWorld, IconWorldFilled);

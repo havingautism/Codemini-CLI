@@ -72,12 +72,31 @@ test('forkIdleSession copies only the prefix at the clicked answer', async () =>
     const source = await createSession(dir);
     source.title = 'Original';
     source.messages = [
-      { role: 'user', content: 'one' },
+      {
+        role: 'user',
+        content: 'one',
+        model_images: [{ mime: 'image/png', data: 'aW1hZ2U=' }],
+      },
       { role: 'assistant', content: 'two' },
+      {
+        role: 'user',
+        content: 'runtime reminder',
+        model_context: true,
+        model_context_source: 'runtime',
+        model_context_reason: 'test',
+      },
       { role: 'user', content: 'three' },
       { role: 'assistant', content: 'four' }
     ];
     source.todos = [{ content: 'do it', status: 'pending' }];
+    source.activatedToolNames = ['grep'];
+    source.promptRequestSnapshot = {
+      promptRevision: 2,
+      systemHash: 'system-hash',
+      toolsHash: 'tools-hash',
+      toolCount: 2,
+      messageHashes: ['message-hash'],
+    };
     await saveSession(source);
     const ui = [
       { id: 'u1', role: 'you', text: 'one' },
@@ -89,14 +108,21 @@ test('forkIdleSession copies only the prefix at the clicked answer', async () =>
     const created = await forkIdleSession(source, { uiMessages: ui, messageId: 'a1' });
     assert.notEqual(created.id, source.id);
     assert.equal(created.title, 'Original-fork');
-    assert.deepEqual(created.messages.map((m) => m.content), ['one', 'two']);
+    assert.deepEqual(created.messages.map((m) => m.content), ['one', 'two', 'runtime reminder']);
+    assert.deepEqual(created.messages[0].model_images, [{ mime: 'image/png', data: 'aW1hZ2U=' }]);
+    assert.equal(created.messages[2].model_context, true);
+    assert.deepEqual(created.activatedToolNames, ['grep']);
+    assert.equal(created.promptRequestSnapshot.promptRevision, 2);
     assert.deepEqual(loadUiTranscriptFromSqlite(created.id).map((m) => m.id), ['u1', 'a1']);
 
     created.messages[0].content = 'mutated';
     created.todos[0].status = 'completed';
     const reloaded = await loadSession(source.id);
-    assert.equal(reloaded.messages.length, 4);
+    assert.equal(reloaded.messages.length, 5);
     assert.equal(reloaded.messages[0].content, 'one');
+    assert.deepEqual(reloaded.messages[0].model_images, [{ mime: 'image/png', data: 'aW1hZ2U=' }]);
+    assert.equal(reloaded.messages[2].model_context, true);
+    assert.equal(reloaded.messages[2].model_context_source, 'runtime');
     assert.equal(reloaded.todos[0].status, 'pending');
 
     const again = await forkIdleSession(created, { uiMessages: loadUiTranscriptFromSqlite(created.id), messageId: 'a1' });

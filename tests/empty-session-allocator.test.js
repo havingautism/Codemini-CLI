@@ -33,6 +33,48 @@ test('findReusableEmptySession returns null when the only empty draft is busy', 
   assert.equal(reusable, null);
 });
 
+test('findReusableEmptySession skips sessions that still hold a UI transcript', () => {
+  const sessions = [
+    { id: 'stale-ui', messageCount: 0, projectDir: '/repo' },
+    { id: 'truly-empty', messageCount: 0, projectDir: '/repo' },
+  ];
+
+  const reusable = findReusableEmptySession(sessions, {
+    matchesProject: (session) => session.projectDir === '/repo',
+    isBusy: () => false,
+    isSessionDisplayEmpty: (id) => id !== 'stale-ui',
+  });
+
+  assert.equal(reusable.id, 'truly-empty');
+});
+
+test('empty session allocator creates a fresh session when the only empty draft still renders UI', async () => {
+  let created = 0;
+  const sessions = [
+    { id: 'stale-ui', messageCount: 0, projectDir: '/repo' },
+  ];
+  const allocator = createEmptySessionAllocator({
+    listSessions: async () => sessions.map((session) => ({ ...session })),
+    loadSession: async (id) => sessions.find((session) => session.id === id),
+    createSession: async (projectDir) => {
+      created += 1;
+      const session = { id: `created-${created}`, projectDir, messageCount: 0 };
+      sessions.push(session);
+      return session;
+    },
+    projectKeyOf: (projectDir) => String(projectDir || ''),
+    matchesProject: (session, projectDir) => session.projectDir === projectDir,
+    isBusy: () => false,
+    isSessionDisplayEmpty: () => false,
+  });
+
+  const result = await allocator('/repo');
+
+  assert.equal(created, 1);
+  assert.equal(result.session.id, 'created-1');
+  assert.equal(result.reused, false);
+});
+
 test('empty session allocator serializes concurrent creates for the same project', async () => {
   let created = 0;
   const sessions = [];

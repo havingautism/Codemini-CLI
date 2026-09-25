@@ -23,6 +23,10 @@ function isUserUi(message) {
   return message?.role === 'you' && !message?.transientKey;
 }
 
+function isCoreUser(message) {
+  return message?.role === 'user' && message?.model_context !== true;
+}
+
 export function sliceUiMessagesThrough(uiMessages, messageId) {
   const id = String(messageId || '').trim();
   const list = Array.isArray(uiMessages) ? uiMessages : [];
@@ -50,7 +54,7 @@ export function sliceCoreMessagesThroughUi(coreMessages, uiPrefix) {
   let seen = 0;
   let userIndex = -1;
   for (let index = 0; index < core.length; index += 1) {
-    if (core[index]?.role !== 'user') continue;
+    if (!isCoreUser(core[index])) continue;
     seen += 1;
     if (seen === userCount) {
       userIndex = index;
@@ -61,7 +65,7 @@ export function sliceCoreMessagesThroughUi(coreMessages, uiPrefix) {
   if (prefixEndedOnUser(prefix)) return core.slice(0, userIndex + 1);
   let end = core.length;
   for (let index = userIndex + 1; index < core.length; index += 1) {
-    if (core[index]?.role === 'user') {
+    if (isCoreUser(core[index])) {
       end = index;
       break;
     }

@@ -353,3 +353,35 @@ test('runtime, attachment, and change oplog metadata use SQLite while payload fi
     await fs.rm(projectRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
   }
 });
+
+test('migration preserves duplicate evidence and repairs incomplete FTS', async () => {
+  await withGlobalDir(async () => {
+    let db = getGlobalDatabase();
+    db.exec(`
+      DROP INDEX research_evidence_candidate_idx;
+      UPDATE schema_meta SET value = '14' WHERE key = 'schema_version';
+      INSERT INTO research_sessions(id, created_at, updated_at) VALUES ('migration-session', 'now', 'now');
+      INSERT INTO research_questions(id, session_id, created_at, updated_at) VALUES ('migration-question', 'migration-session', 'now', 'now');
+      INSERT INTO research_evidence(id, session_id, question_id, created_at, updated_at, origin_candidate_id)
+        VALUES ('first', 'migration-session', 'migration-question', 'now', 'now', 'candidate'),
+               ('second', 'migration-session', 'migration-question', 'now', 'now', 'candidate');
+    `);
+    closeSqliteDatabasesForTests();
+    db = getGlobalDatabase();
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM research_evidence').get().n, 2);
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM research_evidence_candidate_conflicts').get().n, 1);
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM research_evidence WHERE origin_candidate_id = 'candidate'").get().n, 1);
+    // Simulate a legacy interrupted FTS refill by removing its index rows.
+    const columns = db.prepare('PRAGMA table_info(memories)').all();
+    const values = Object.fromEntries(columns.filter(c => c.notnull && c.dflt_value === null).map(c => [c.name, c.type === 'TEXT' ? 'migration' : 0]));
+    values.id = 'migration-memory'; values.content = 'recoverable searchable content'; values.summary = 'recoverable';
+    db.prepare(`INSERT INTO memories (${Object.keys(values).join(',')}) VALUES (${Object.keys(values).map(() => '?').join(',')})`).run(...Object.values(values));
+    db.exec('DELETE FROM memory_fts');
+    closeSqliteDatabasesForTests();
+    db = getGlobalDatabase();
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM memory_fts WHERE memory_fts MATCH 'recoverable'").get().n, 1);
+    closeSqliteDatabasesForTests();
+    db = getGlobalDatabase();
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM research_evidence').get().n, 2);
+  });
+});

@@ -24,6 +24,7 @@ import { ReflectApprovalDialog } from "@/components/ReflectApprovalDialog.jsx";
 import { DreamDialog } from "@/components/DreamDialog.jsx";
 import { SpecApprovalDialog } from "@/components/SpecApprovalDialog.jsx";
 import { RuntimeActivityStrip } from "@/components/RuntimeActivityStrip.jsx";
+import { CrewProgressDock } from "@/components/CrewProgressDock.jsx";
 import { SessionPanel } from "@/components/SessionPanel.jsx";
 import { TodoCard } from "@/components/TodoList.jsx";
 import { findLiveTodoDock } from "@/lib/live-todo-dock.js";
@@ -281,8 +282,9 @@ function Shell() {
       findLiveTodoDock(state.messages, {
         busy: state.busy,
         previous: liveTodoDockRef.current,
+        crewActive: Boolean(state.runtimeState?.crewActive),
       }),
-    [state.busy, state.messages],
+    [state.busy, state.messages, state.runtimeState?.crewActive],
   );
   liveTodoDockRef.current = liveTodoDock;
 
@@ -650,6 +652,7 @@ function Shell() {
                 messages={state.messages}
                 runtimeState={state.runtimeState}
                 sessionId={currentId}
+                harnessRevision={state.harnessRevision}
               />
             ) : (
               <ChatPanel
@@ -672,6 +675,7 @@ function Shell() {
               <RuntimeActivityStrip
                 activities={state.runtimeActivities}
               />
+              <CrewProgressDock runtimeState={state.runtimeState} />
               {liveTodoDock ? (
                 <div className="mb-2">
                   <TodoCard

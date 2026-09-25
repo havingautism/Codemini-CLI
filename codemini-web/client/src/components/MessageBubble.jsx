@@ -8,7 +8,10 @@ import {
 import { ModelIdentityBadge } from "./ModelIdentityBadge.jsx";
 import { UsageBadge } from "./UsageBadge.jsx";
 import { isCreatePlanCard } from "@/lib/plan-ui-state.js";
-import { isRequestUserInputCard } from "@/lib/tool-card-display.js";
+import {
+  isHtmlArtifactCard,
+  isRequestUserInputCard,
+} from "@/lib/tool-card-display.js";
 import { formatToolGroupSummaryLabel } from "@/lib/tool-group-summary.js";
 import { StreamdownRenderer } from "./StreamdownRenderer";
 import { EmbedBanner } from "./EmbedBanner.jsx";
@@ -19,6 +22,10 @@ import {
 import { collectMessageEmbeds } from "@/lib/message-embeds.js";
 import { buildRenderGroups } from "@/lib/message-render-groups.js";
 import { layoutAnswerProcessWithPlans } from "@/lib/answer-process.js";
+import {
+  shouldShowCrewModeFileChanges,
+  shouldSuppressCrewTaskTodos,
+} from "@/lib/crew-ui-state.js";
 import { TodoList } from "./TodoList";
 import { ConfirmDialog } from "@/components/ConfirmDialog.jsx";
 import { FileTypeIcon } from "@/components/FileTypeIcon.jsx";
@@ -65,6 +72,7 @@ import * as api from "@/hooks/use-api.js";
 import { useRotatingLabel } from "@/hooks/use-rotating-label.js";
 import { executionModeSkillContext } from "@/lib/skill-visibility.js";
 import {
+  useApp,
   useAppActions,
   useCurrentSessionId,
   useRuntimeMode,
@@ -514,8 +522,12 @@ function ToolGroup({ cards }) {
   const [expanded, setExpanded] = useState(false);
   const planCards = cards.filter(isCreatePlanCard);
   const userInputCards = cards.filter(isRequestUserInputCard);
+  const htmlArtifactCards = cards.filter(isHtmlArtifactCard);
   const otherCards = cards.filter(
-    (card) => !isCreatePlanCard(card) && !isRequestUserInputCard(card),
+    (card) =>
+      !isCreatePlanCard(card) &&
+      !isRequestUserInputCard(card) &&
+      !isHtmlArtifactCard(card),
   );
   const total = otherCards.length;
   const hasRunningTool = otherCards.some((card) => card.status === "running");
@@ -535,11 +547,23 @@ function ToolGroup({ cards }) {
           ))}
         </div>
       )}
+      {htmlArtifactCards.length > 0 && (
+        <div
+          className={cn(
+            "flex flex-col gap-3",
+            (planCards.length > 0 || userInputCards.length > 0) && "mt-3",
+          )}
+        >
+          {htmlArtifactCards.map((card) => (
+            <ToolCard key={card.id} card={card} collapsible={false} />
+          ))}
+        </div>
+      )}
       {total > 0 && shouldUseSummaryHeader && (
         <DisclosureRowButton
           open={expanded}
           className={cn(
-            (planCards.length > 0 || userInputCards.length > 0) && "mt-4",
+            (planCards.length > 0 || userInputCards.length > 0 || htmlArtifactCards.length > 0) && "mt-4",
           )}
           onClick={() => setExpanded((value) => !value)}
           icon={<SkillStatusDot status={groupStatus} />}
@@ -554,7 +578,9 @@ function ToolGroup({ cards }) {
               ? "codemini-disclosure-tree"
               : "flex flex-col gap-2",
             planCards.length > 0 && !shouldUseSummaryHeader && "mt-4",
-            userInputCards.length > 0 && !shouldUseSummaryHeader && "mt-2",
+            (userInputCards.length > 0 || htmlArtifactCards.length > 0) &&
+              !shouldUseSummaryHeader &&
+              "mt-2",
           )}
         >
           {otherCards.map((card) => (
@@ -1554,6 +1580,44 @@ function ScrapbookUserAttachment({ item }) {
   );
 }
 
+function UserFileReferenceChips({ references = [], className }) {
+  const items = Array.isArray(references) ? references : [];
+  if (!items.length) return null;
+
+  return (
+    <div className={cn("flex max-w-full flex-wrap gap-1.5", className)}>
+      {items.map((item) => {
+        const pathText = String(item?.path || "").trim();
+        if (!pathText) return null;
+        const normalizedPath = pathText.replace(/\\/g, "/");
+        const fallbackName = basename(normalizedPath);
+        const fallbackDir = normalizedPath.includes("/")
+          ? normalizedPath.slice(0, normalizedPath.lastIndexOf("/"))
+          : "";
+        const name = String(item?.name || fallbackName).trim() || fallbackName;
+        const dir = String(item?.dir || fallbackDir).trim();
+        return (
+          <span
+            key={pathText}
+            className="codemini-status-chip inline-flex max-w-full items-center gap-1.5 px-2 py-1 text-[12px] text-(--text-secondary)"
+            title={`@${pathText}`}
+          >
+            <FileTypeIcon path={pathText} size="sm" />
+            <span className="max-w-[220px] truncate font-mono text-(--text-primary)">
+              {name}
+            </span>
+            {dir ? (
+              <span className="max-w-[220px] truncate font-mono text-[11px] text-(--text-muted)">
+                ({dir})
+              </span>
+            ) : null}
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
 function UserAttachments({ attachments = [], className }) {
   const items = Array.isArray(attachments) ? attachments : [];
   if (!items.length) return null;
@@ -1860,7 +1924,18 @@ export function shouldShowPostCompletionExtras(
   return String(planStep.role || "").toLowerCase() === "summarizer";
 }
 
-function shouldShowFileChanges(message, messageComplete, mergedFileChanges) {
+function shouldShowFileChanges(
+  message,
+  messageComplete,
+  mergedFileChanges,
+  { crewActive = false } = {},
+) {
+  if (
+    !shouldShowCrewModeFileChanges(message, { crewActive }) ||
+    mergedFileChanges.length === 0
+  ) {
+    return false;
+  }
   return shouldShowPostCompletionExtras(
     message,
     messageComplete,
@@ -2108,6 +2183,9 @@ export const MessageBubble = memo(function MessageBubble({
   dockTodo = false,
   turnActive = false,
 }) {
+  const { state } = useApp();
+  const crewActive = Boolean(state.runtimeState?.crewActive);
+  const suppressCrewTodos = shouldSuppressCrewTaskTodos({ crewActive });
   const actions = useAppActions();
   const {
     role,
@@ -2122,6 +2200,7 @@ export const MessageBubble = memo(function MessageBubble({
     sdkProvider,
     model,
     attachments = [],
+    fileReferences = [],
   } = message;
   const ts = timestamp ? formatTimestamp(timestamp) : "";
 
@@ -2172,7 +2251,7 @@ export const MessageBubble = memo(function MessageBubble({
       layoutAnswerProcessWithPlans(
         renderGroups,
         message?.timestamp || message?.createdAt,
-        { fold: messageComplete, omitTodo: dockTodo },
+        { fold: messageComplete, omitTodo: dockTodo || suppressCrewTodos },
       ),
     [dockTodo, message?.createdAt, message?.timestamp, messageComplete, renderGroups],
   );
@@ -2208,6 +2287,9 @@ export const MessageBubble = memo(function MessageBubble({
   }
 
   if (role === "divider") {
+    if (message.dividerType === "crew-wake") {
+      return renderDivider(rawMessageText || legacyText || t("crewWakeDivider"));
+    }
     return renderDivider(legacyText || "以上内容已压缩");
   }
 
@@ -2364,6 +2446,7 @@ export const MessageBubble = memo(function MessageBubble({
     message,
     messageComplete,
     mergedFileChanges,
+    { crewActive },
   );
   const showRelatedLinks = shouldShowPostCompletionExtras(
     message,
@@ -2393,7 +2476,9 @@ export const MessageBubble = memo(function MessageBubble({
             <SpecExecutionCard details={specExecutionDetails} />
           ) : (
             <div className="codemini-message-surface codemini-user-bubble w-fit max-w-full rounded-2xl px-4 py-2">
-              {(userSkillChips.length > 0 || attachments.length > 0) && (
+              {(userSkillChips.length > 0 ||
+                fileReferences.length > 0 ||
+                attachments.length > 0) && (
                 <div
                   className={cn(
                     "flex max-w-full flex-col gap-2",
@@ -2403,6 +2488,7 @@ export const MessageBubble = memo(function MessageBubble({
                   {userSkillChips.length > 0 && (
                     <UserSkillChips badges={userSkillChips} />
                   )}
+                  <UserFileReferenceChips references={fileReferences} />
                   <UserAttachments attachments={attachments} />
                 </div>
               )}

@@ -26,6 +26,9 @@ export function normalizeUsage(usage) {
     const value = Number(usage?.[key]);
     if (Number.isFinite(value)) out[key] = Math.max(0, Math.round(value));
   }
+  if (["reported", "unreported", "partial"].includes(usage.cacheUsageStatus)) {
+    out.cacheUsageStatus = usage.cacheUsageStatus;
+  }
   const timing = sanitizeTiming(usage.timing);
   if (timing) out.timing = timing;
   return Object.keys(out).length ? out : null;
@@ -94,6 +97,11 @@ export function mergeUsage(current, incoming) {
       0,
       Math.round(Number(a[key] || 0) + Number(b[key] || 0)),
     );
+  }
+  if (a.cacheUsageStatus || b.cacheUsageStatus) {
+    out.cacheUsageStatus = a.cacheUsageStatus === b.cacheUsageStatus
+      ? a.cacheUsageStatus
+      : "partial";
   }
   const timing = mergeTiming(a.timing, b.timing);
   if (timing) out.timing = timing;

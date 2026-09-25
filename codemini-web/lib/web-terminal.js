@@ -368,8 +368,8 @@ export function runTerminalCommand({
   return { ok: true, snapshot: getTerminalSnapshot(cwd, shellDefault) };
 }
 
-/** Test helper */
-export async function _resetTerminalSessionsForTests() {
+/** Close the interactive terminal host during server shutdown. */
+export async function disposeTerminals() {
   sessions.clear();
   pendingHostMessages.length = 0;
   const host = terminalHost;
@@ -389,6 +389,8 @@ export async function _resetTerminalSessionsForTests() {
     }
   });
 }
+
+export const _resetTerminalSessionsForTests = disposeTerminals;
 
 process.once('exit', () => {
   try {

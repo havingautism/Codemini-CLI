@@ -3,9 +3,8 @@ import {
   loadCommandsAndSkills,
   loadIndexedSkills,
   buildSkillIndexPromptBlock,
-  isSkillIndexEligible,
-  isSkillModelInvocationDisabled,
   isUserInvocableSkill,
+  parseSlashCommandInvocation,
   renderCommandPrompt,
   appendSkillSandboxMountHint,
 } from './command-loader.js';
@@ -36,6 +35,14 @@ import {
   packageProfileArmEntry,
 } from './hook-profiles.js';
 import { runAgentLoop } from './agent-loop.js';
+import { createDecisionController } from './harness/decision-controller.js';
+import { createHarnessSqliteStore } from './harness/audit/harness-sqlite-store.js';
+import { createToolReliabilityStore } from './harness/tool-reliability.js';
+import { TOOL_GUARD_QUESTIONS, resolveToolGuard } from './harness/tool-guard.js';
+import { COMPLETION_REVIEW_QUESTIONS, resolveCompletionReview } from './harness/completion-review.js';
+import { buildSkillCandidates } from './harness/skill-router.js';
+import { stableHash } from './harness/normalize.js';
+import { shouldRollout } from './harness/rollout.js';
 import { createToolResultStore } from './tool-result-store.js';
 import { parseModelJsonObject } from './model-json.js';
 import { trimInline, normalizePath } from './string-utils.js';
@@ -51,6 +58,7 @@ import { isDangerousCommand, runShellCommand } from './shell.js';
 import { getBuiltinTools } from './tools.js';
 import { canonicalShellToolName, shellToolName, toolNameAllowed } from './shell-tool-name.js';
 import { createToolRuntime } from './tool-runtime.js';
+import { buildPromptRequestAudit } from './prompt-request-audit.js';
 import {
   createContinuationSession,
   deriveSessionTitle,
@@ -83,6 +91,29 @@ import { composeSystemPrompt } from './system-prompt-composer.js';
 import { buildTurnContextPrefix, buildTurnUserPrompt } from './turn-context.js';
 import { buildSubAgentShellRulesPrompt, buildSubAgentRuntimeNote, resolveShellContext } from './shell-profile.js';
 import { getBaseConfigDir, getProjectIndexDir, getProjectPlansDir, getProjectSpecsDir, getProjectWorkspaceDir, getSessionsDir, getSkillsDir } from './paths.js';
+import {
+  buildCrewModePromptBlock,
+  enterCrewMode,
+  exitCrewMode,
+  inspectCrewGit,
+  listCrewWorkersFromState,
+  normalizeCrewState,
+  patchCrewWorkerRecord,
+  readCrewStateFile,
+  applyCrewReviewOutcome,
+  buildCrewReviewVerdictPrompt,
+  markCrewEventsDeliveredForWake,
+  writeCrewStateFile,
+  appendCrewEvent,
+  buildCrewCompletionEvent,
+} from './crew-store.js';
+import { composeCrewResumeTask, composeCrewReviewTask, isCrewCommitAncestor, isCrewWorktreeDirty, removeCrewWorktrees, resolveCrewReviewTarget, resolveCrewSubagentWorkspace, shouldContinueCrewWorkerSeal, teardownCrewWorker } from './crew-worktree.js';
+import { landCrewWorkers } from './crew-land.js';
+import { createCrewCoordinator } from './crew-coordinator.js';
+import { createCrewWorkerScheduler } from './crew-scheduler.js';
+import { createCrewCancelReason } from './crew-cancel.js';
+import { runCrewWorkerJob } from './crew-worker-run.js';
+import { compactCrewSpawnResultForParent, formatCrewReviewIncompleteGuidance, resolveCrewProjectRoot, buildCrewWorkerStatusRecord, parseCrewWakeHeadline } from './crew-snapshot.js';
 import { composeMemorySnapshot } from './memory-prompt.js';
 import { buildProjectContextSnippet, initializeProjectIndex } from './project-index.js';
 import { queryProjectKnowledgeGraph } from './project-knowledge-graph.js';
@@ -94,10 +125,10 @@ import {
   buildMemoryRouteHintBlock
 } from './memory-policy.js';
 import {
-  buildCodingRouteDecisionBlock,
-  evaluateCodingRouteGraph,
-  isCodingRouteToolAllowed,
-} from './coding-route-graph.js';
+  buildCodingTurnPolicyBlock,
+  createCodingTurnPolicy,
+  isCodingTurnToolAllowed,
+} from './coding-turn-policy.js';
 import {
   buildCleanContextHandoff
 } from './workflow-gates.js';
@@ -112,6 +143,7 @@ import {
 } from './subagent-handoff-store.js';
 import { runDreamConsolidation } from './dream-consolidate.js';
 import {
+  beginSessionMemoryActivity,
   scheduleMemoryReviewBacklog,
   scheduleSessionMemoryReview
 } from './memory-session-review.js';
@@ -158,21 +190,49 @@ import { CHAT_ACTIONS, validateChatAction } from './chat-action-dispatcher.js';
 
 const STREAM_SAVE_DEBOUNCE_MS = 120;
 
+function approvalMap(state) {
+  return state?.byId instanceof Map ? state.byId : null;
+}
+
+function firstPendingApproval(state) {
+  const map = approvalMap(state);
+  if (map) return map.size ? map.values().next().value || null : null;
+  return state?.current || null;
+}
+
+function syncApprovalCurrent(state) {
+  if (!state || typeof state !== 'object') return;
+  state.current = firstPendingApproval(state);
+}
+
 export function takePendingApproval(state, requestId) {
-  const request = state?.current;
-  if (!request || String(request.id || '') !== String(requestId || '')) {
+  const id = String(requestId || '');
+  const map = approvalMap(state);
+  const fromMap = map && id ? map.get(id) : null;
+  const fromCurrent = state?.current && String(state.current.id || '') === id ? state.current : null;
+  const request = fromMap || fromCurrent;
+  if (!request) {
+    const hasOther = Boolean(firstPendingApproval(state));
     const error = new Error('No matching approval request is pending');
-    error.code = request ? 'STALE_ACTION' : 'NO_PENDING_APPROVAL';
+    error.code = hasOther ? 'STALE_ACTION' : 'NO_PENDING_APPROVAL';
     throw error;
   }
-  state.current = null;
+  if (map) map.delete(id);
+  else if (state) state.current = null;
+  syncApprovalCurrent(state);
   return request;
 }
 
 export function peekPendingApproval(state, requestId = null) {
+  const idFilter = requestId != null && String(requestId) !== '' ? String(requestId) : null;
+  const map = approvalMap(state);
+  if (map) {
+    if (idFilter) return map.get(idFilter) || null;
+    return map.size ? map.values().next().value || null : null;
+  }
   const request = state?.current || null;
   if (!request) return null;
-  if (requestId != null && String(request.id || '') !== String(requestId || '')) return null;
+  if (idFilter && String(request.id || '') !== idFilter) return null;
   return request;
 }
 
@@ -210,12 +270,12 @@ export function isModelVisibleMessage(message) {
   return message?.model_visible !== false && message?.local_only !== true;
 }
 
-function modelContentForMessage(message, index, { currentTurnUserIndex = -1 } = {}) {
+function modelContentForMessage(message) {
   const modelContent = typeof message?.model_content === 'string' && message.model_content
     ? message.model_content
     : '';
   const baseContent = modelContent || message?.content;
-  const images = index === currentTurnUserIndex && Array.isArray(message?.model_images)
+  const images = Array.isArray(message?.model_images)
     ? message.model_images
     : [];
   if (images.length) {
@@ -485,6 +545,12 @@ export function normalizeModelUsage(usage) {
     ['usage', 'cache_creation', 'ephemeral_5m_input_tokens'],
     ['usage', 'cache_creation', 'ephemeral_1h_input_tokens']
   ]);
+  const cacheUsageStatus = cachedInputTokens != null
+    || explicitCacheMissInputTokens != null
+    || cacheReadInputTokens != null
+    || cacheWriteInputTokens != null
+    ? 'reported'
+    : 'unreported';
   const hasAnthropicSplitCacheInput = explicitInputTokens != null
     && (cacheReadInputTokens != null || cacheWriteInputTokens != null)
     && promptCacheHitTokens == null;
@@ -535,6 +601,7 @@ export function normalizeModelUsage(usage) {
     cachedInputTokens: Math.round(cachedInputTokens || 0),
     cacheMissInputTokens: Math.round(cacheMissInputTokens || 0),
     cacheWriteInputTokens: Math.round(cacheWriteInputTokens || 0),
+    cacheUsageStatus,
     reasoningOutputTokens: Math.round(reasoningOutputTokens || 0),
     requests: 1,
     raw: collectRawUsage(usage)
@@ -549,6 +616,13 @@ function withTiming(base, ...sources) {
 
 function cloneModelUsage(usage) {
   if (!usage || typeof usage !== 'object') return null;
+  const cacheUsageStatus = ['reported', 'unreported', 'partial'].includes(usage.cacheUsageStatus)
+    ? usage.cacheUsageStatus
+    : Object.prototype.hasOwnProperty.call(usage, 'cachedInputTokens')
+      || Object.prototype.hasOwnProperty.call(usage, 'cacheMissInputTokens')
+      || Object.prototype.hasOwnProperty.call(usage, 'cacheWriteInputTokens')
+      ? 'reported'
+      : 'unreported';
   return withTiming({
     inputTokens: Math.max(0, Math.round(Number(usage.inputTokens || 0))),
     outputTokens: Math.max(0, Math.round(Number(usage.outputTokens || 0))),
@@ -556,6 +630,7 @@ function cloneModelUsage(usage) {
     cachedInputTokens: Math.max(0, Math.round(Number(usage.cachedInputTokens || 0))),
     cacheMissInputTokens: Math.max(0, Math.round(Number(usage.cacheMissInputTokens || 0))),
     cacheWriteInputTokens: Math.max(0, Math.round(Number(usage.cacheWriteInputTokens || 0))),
+    cacheUsageStatus,
     reasoningOutputTokens: Math.max(0, Math.round(Number(usage.reasoningOutputTokens || 0))),
     requests: Math.max(0, Math.round(Number(usage.requests || 0))),
     raw: Array.isArray(usage.raw) ? usage.raw.map((item) => ({ ...item })) : []
@@ -567,6 +642,9 @@ function mergeModelUsage(left, right) {
   const b = cloneModelUsage(right);
   if (!a) return b;
   if (!b) return a;
+  const cacheUsageStatus = a.cacheUsageStatus === b.cacheUsageStatus
+    ? a.cacheUsageStatus
+    : 'partial';
   return withTiming({
     inputTokens: a.inputTokens + b.inputTokens,
     outputTokens: a.outputTokens + b.outputTokens,
@@ -574,6 +652,7 @@ function mergeModelUsage(left, right) {
     cachedInputTokens: a.cachedInputTokens + b.cachedInputTokens,
     cacheMissInputTokens: a.cacheMissInputTokens + b.cacheMissInputTokens,
     cacheWriteInputTokens: a.cacheWriteInputTokens + b.cacheWriteInputTokens,
+    cacheUsageStatus,
     reasoningOutputTokens: a.reasoningOutputTokens + b.reasoningOutputTokens,
     requests: a.requests + b.requests,
     raw: [...a.raw, ...b.raw]
@@ -652,7 +731,7 @@ export const EXECUTION_MODE_TOOL_POLICY = {
     'save_memory',
     'tasks',
     'edit', 'write', 'begin_write', 'write_chunk', 'commit_write', 'abort_write', 'apply_patch', 'delete', 'run',
-    'run_subagent', 'fork_task', 'request_user_input'
+    'run_subagent', 'fork_task', 'land_workers', 'cancel_worker', 'crew_status', 'request_user_input'
   ]
 };
 
@@ -688,6 +767,25 @@ function resolveExecutionModeAllowedTools(executionMode, callerAllowedTools, con
   return modePolicy;
 }
 
+const CREW_PARENT_MUTATION_TOOLS = new Set([
+  'write', 'edit', 'delete', 'apply_patch', 'create',
+  'begin_write', 'write_chunk', 'commit_write', 'abort_write',
+]);
+
+export function applyCrewParentToolPolicy(allowedTools, { crewActive = false } = {}) {
+  if (!crewActive) return allowedTools;
+  const names = Array.isArray(allowedTools)
+    ? allowedTools.filter((name) => {
+        const toolName = String(name || '').trim();
+        return !CREW_PARENT_MUTATION_TOOLS.has(toolName) && toolName !== 'fork_task';
+      })
+    : [];
+  if (!names.includes('land_workers')) names.push('land_workers');
+  if (!names.includes('cancel_worker')) names.push('cancel_worker');
+  if (!names.includes('crew_status')) names.push('crew_status');
+  return names;
+}
+
 export function buildExecutionModePromptBlock(executionMode, platform = process.platform, shell = '') {
   const commandToolName = shellToolName({ platform, shell });
   if (normalizeExecutionMode(executionMode) === 'plan') {
@@ -697,7 +795,7 @@ export function buildExecutionModePromptBlock(executionMode, platform = process.
       'Implement only when requested. Preserve public contracts, project conventions, unrelated user changes, and platform compatibility.',
       '',
       'Workflow: inspect relevant source and callers → clarify only material choices → make the smallest complete change → run focused verification → inspect the diff.',
-      'The injected <coding_harness> route is authoritative for memory capability, and directive for tasks, skills, clarification, and bounded delegation.',
+      'Choose skills, planning, and delegation from inspected context; respect user restrictions and tool permissions.',
       'For bugs, establish a failing signal and fix the shared root cause. Never claim completion without fresh evidence.',
       '',
       'Subagent tool (run_subagent):',
@@ -758,6 +856,7 @@ export const ROLE_TOOL_POLICY = {
   coder: [...SUBAGENT_READ_TOOLS, ...SUBAGENT_EDIT_TOOLS, 'run', 'web_fetch', 'web_search'],
   refactorer: [...SUBAGENT_READ_TOOLS, ...SUBAGENT_EDIT_TOOLS, 'run'],
   reviewer: [...SUBAGENT_READ_TOOLS],
+  survey: [...SUBAGENT_READ_TOOLS, 'web_fetch', 'web_search'],
   tester: [...SUBAGENT_READ_TOOLS, 'run'],
   debugger: [...SUBAGENT_READ_TOOLS, 'run', 'web_search'],
   writer: [...SUBAGENT_READ_TOOLS, 'web_fetch', 'web_search'],
@@ -766,7 +865,7 @@ export const ROLE_TOOL_POLICY = {
 };
 
 /** Subagents must never spawn nested agents / workflow orchestrators. */
-export const SUBAGENT_FORBIDDEN_TOOLS = ['run_subagent', 'fork_task', 'create_plan', 'create_spec'];
+export const SUBAGENT_FORBIDDEN_TOOLS = ['run_subagent', 'fork_task', 'land_workers', 'cancel_worker', 'create_plan', 'create_spec'];
 
 /**
  * Fork branches keep the parent's full tool schemas for prefix-cache reuse,
@@ -775,7 +874,7 @@ export const SUBAGENT_FORBIDDEN_TOOLS = ['run_subagent', 'fork_task', 'create_pl
  * state while sibling branches are running.
  */
 export const FORK_FORBIDDEN_TOOLS = [
-  'fork_task', 'run_subagent', 'request_user_input', 'update_plan', 'create_plan', 'create_spec'
+  'fork_task', 'run_subagent', 'land_workers', 'cancel_worker', 'request_user_input', 'update_plan', 'create_plan', 'create_spec',
 ];
 
 const WINDOWS_STAGED_WRITE_TOOLS = [
@@ -865,6 +964,14 @@ export function compactSubAgentResultForParent({
   summary = '',
   handoffPath = '',
   artifactPaths = [],
+  dirty,
+  workerId = '',
+  reviewOf = '',
+  reviewPassed,
+  reviewLoopStopped,
+  reviewRound,
+  reviewIncomplete,
+  workerKind = '',
   maxChars = SUB_AGENT_PARENT_RESULT_MAX_CHARS,
 } = {}) {
   const artifacts = [...new Set(
@@ -878,12 +985,37 @@ export function compactSubAgentResultForParent({
   const clipped = body.length <= previewBudget
     ? body
     : `${body.slice(0, previewBudget).trimEnd()}\n\n[truncated]`;
+  const id = String(workerId || '').trim();
+  const reviewed = String(reviewOf || '').trim();
+  const sealLine = String(workerKind || '').trim().toLowerCase() === 'survey'
+    ? (dirty === true
+      ? 'Survey worker still has a dirty worktree. Do not review or land it.'
+      : 'Survey worker. Do not review or land it.')
+    : dirty === true
+      ? 'Worktree: dirty (not sealed). Do not land this worker.'
+      : dirty === false
+        ? 'Worktree: sealed.'
+        : '';
+  const reviewLine = reviewed
+    ? reviewLoopStopped === true
+      ? `Review of "${reviewed}" loop stopped${Number(reviewRound) > 0 ? ` after ${Number(reviewRound)} rounds` : ''}. Tell the user. Resume "${reviewed}" with a new task or paths, or spawn a new worker. Do not keep fixing the same findings. Do not land this worker until a new commit passes review.`
+      : reviewIncomplete === true
+        ? formatCrewReviewIncompleteGuidance(reviewed)
+      : reviewPassed === true
+      ? `Review of "${reviewed}" passed. land_workers may include this worker.`
+      : reviewPassed === false
+      ? `Review of "${reviewed}" did not pass. Resume "${reviewed}" with the review text. Do not land.`
+      : ''
+    : '';
   return [
     'Subagent finished. Use this conclusion; read the handoff file only if you need details.',
     String(summary || '').trim() ? `Summary: ${String(summary).trim()}` : '',
     clipped || '(empty)',
+    id ? `Worker id: ${id}. Call back with resume: "${id}". Do not use a call id or handoff folder. Omit paths to keep the stored scope, or pass new disjoint paths.` : '',
+    reviewLine,
     pathLine ? `Handoff: ${pathLine}` : '',
     artifacts.length ? `Artifacts:\n${artifacts.map((item) => `- ${item}`).join('\n')}` : '',
+    sealLine,
   ].filter(Boolean).join('\n');
 }
 
@@ -929,6 +1061,7 @@ export function resolveSubAgentToolAllowList({
   tools = null,
   config,
   platform = process.platform,
+  crewSession = false,
 } = {}) {
   const key = String(role || '').trim().toLowerCase();
   const basePolicy = ROLE_TOOL_POLICY[key] || ROLE_TOOL_POLICY.coder;
@@ -939,6 +1072,7 @@ export function resolveSubAgentToolAllowList({
     platform,
   );
   if (!roleTools.includes('tasks')) roleTools.push('tasks');
+  if (crewSession && !roleTools.includes('crew_status')) roleTools.push('crew_status');
   if (!Array.isArray(tools)) return roleTools;
   const requested = adaptToolNamesForPlatform(
     normalizeToolPolicy(tools, config).map(canonicalShellToolName).filter(
@@ -955,6 +1089,7 @@ export function resolveSubAgentToolAllowList({
     granted.push('tool_search');
   }
   if (!granted.includes('tasks')) granted.push('tasks');
+  if (crewSession && !granted.includes('crew_status')) granted.push('crew_status');
   return granted;
 }
 
@@ -979,9 +1114,10 @@ export function resolvePlanSubAgentApprovalOptions({
   projectIsGit = false,
   changeTrackerEnabled = false,
   workspaceHasGit = false,
-  tools = null
+  tools = null,
+  crewSession = false,
 } = {}) {
-  const roleAllowedTools = resolveSubAgentToolAllowList({ role, tools, config });
+  const roleAllowedTools = resolveSubAgentToolAllowList({ role, tools, config, crewSession });
   return {
     projectIsGit: resolveApprovalProjectIsGit({
       projectIsGit,
@@ -1218,6 +1354,13 @@ export function getSubAgentRolePrompt(role) {
       'Coverage:',
       '- <what is documented and what gaps remain>',
       'Do not add a closing summary — the pipeline handles what comes next.'
+    ].join('\n');
+  }
+  if (role === 'survey') {
+    return [
+      'You are a crew survey worker.',
+      'Inspect the repository snapshot in this worktree. Do not edit files, git commit, or change product code.',
+      'Return findings with file evidence, then stop. The parent will not review or land this worker.',
     ].join('\n');
   }
   if (role === 'reviewer') {
@@ -2496,23 +2639,6 @@ export function buildAlwaysSkillPromptBlock(commands, config, dismissedSkills = 
   return selected.map((skill) => (
     `[Always skill: ${skill.name}]\n${appendSkillSandboxMountHint(skill, skill.content, { config, cwd })}`
   )).join('\n\n');
-}
-
-function buildSelectedSkillPromptBlock(commands, names = [], config = {}, executionMode = 'code', cwd = process.cwd()) {
-  const selected = [];
-  for (const name of names) {
-    const skill = commands?.get?.(name);
-    if (
-      !skill
-      || !isSkillIndexEligible(skill)
-      || isSkillModelInvocationDisabled(skill)
-      || !isSkillEnabled(config, name, skill, executionMode)
-    ) continue;
-    selected.push(
-      `[Lite-selected skill: ${skill.name}]\n${appendSkillSandboxMountHint(skill, skill.content, { config, cwd })}`,
-    );
-  }
-  return selected.join('\n\n');
 }
 
 export function shouldInjectAlwaysSkills(executionMode) {
@@ -3989,7 +4115,11 @@ function buildPromptBudgetAudit({
   }));
   const components = [
     makePromptBudgetComponent('system_prompt', 'system', systemPrompt),
-    makePromptBudgetComponent('project_context', 'user', projectContextPrompt),
+    {
+      ...makePromptBudgetComponent('project_context', 'user', projectContextPrompt),
+      included_in_total: false,
+      note: 'breakdown_only_already_in_messages',
+    },
     {
       name: 'message_history',
       chars: messageTexts.reduce((total, message) => total + String(message.content || '').length, 0),
@@ -3997,8 +4127,9 @@ function buildPromptBudgetAudit({
     },
     makePromptBudgetComponent('tool_schemas', 'system', toolSchemaText)
   ];
-  const totalChars = components.reduce((total, component) => total + component.chars, 0);
-  const totalTokens = components.reduce((total, component) => total + component.estimated_tokens, 0);
+  const totalComponents = components.filter((component) => component.included_in_total !== false);
+  const totalChars = totalComponents.reduce((total, component) => total + component.chars, 0);
+  const totalTokens = totalComponents.reduce((total, component) => total + component.estimated_tokens, 0);
   const maxContextTokens = effectiveMaxContextTokens(config);
   const contextUsagePct =
     maxContextTokens > 0 ? Math.min(100, Math.max(0, (totalTokens / maxContextTokens) * 100)) : 0;
@@ -4064,7 +4195,7 @@ function summarizePromptBudgetAudit(audit) {
   const pct = Number(audit?.context_usage_pct || 0).toFixed(1);
   const components = (audit?.components || [])
     .filter((component) => component.estimated_tokens > 0)
-    .map((component) => `${component.name}=${component.estimated_tokens}`)
+    .map((component) => `${component.name}=${component.estimated_tokens}${component.included_in_total === false ? '(breakdown)' : ''}`)
     .join(', ');
   return `prompt budget: ${totalTokens}/${maxContextTokens} est tokens (${pct}%)${components ? `; ${components}` : ''}`;
 }
@@ -4099,7 +4230,7 @@ export function resolveLatestContextMeasurement(messages = [], fallbackOverhead 
   return { tokens: 0, source: 'estimated' };
 }
 
-export function buildRuntimeStateSnapshot({ currentSession, config, model, executionMode, extraSession, workspaceRoot, alwaysSkillNames = [] }) {
+export function buildRuntimeStateSnapshot({ currentSession, config, model, executionMode, extraSession, workspaceRoot, alwaysSkillNames = [], crewState, crewWorkers = [], crewInFlightIds = [], crewDirtyCount = 0 } = {}) {
   const activeMessages = extraSession
     ? extraSession.messages || []
     : Array.isArray(currentSession?.compact?.view) && currentSession.compact.view.length > 0
@@ -4116,6 +4247,9 @@ export function buildRuntimeStateSnapshot({ currentSession, config, model, execu
   const planState = currentSession?.planState;
   const specState = getPendingSpecState(currentSession);
   const resolvedMode = resolveRuntimeExecutionMode(executionMode, config, currentSession);
+  const crew = crewState !== undefined
+    ? normalizeCrewState(crewState)
+    : normalizeCrewState(currentSession?.crew);
   const soulCategory = soulContextFromExecutionMode(resolvedMode);
   const visibleAlwaysSkillNames = shouldInjectAlwaysSkills(resolvedMode)
     ? (Array.isArray(alwaysSkillNames) ? alwaysSkillNames : []).map((name) => String(name || '').trim()).filter(Boolean)
@@ -4153,7 +4287,13 @@ export function buildRuntimeStateSnapshot({ currentSession, config, model, execu
       : null,
     pendingReflectSkill: planState?.status === 'pending_reflect_skill'
       ? buildPendingReflectSkillSnapshot(planState)
-      : null
+      : null,
+    crewActive: Boolean(crew),
+    crewBase: crew?.base || '',
+    crewDirtyCount: crew ? Math.max(0, Number(crewDirtyCount) || 0) : 0,
+    crewWorkers: Array.isArray(crewWorkers) ? crewWorkers : [],
+    crewInFlightIds: Array.isArray(crewInFlightIds) ? crewInFlightIds : [],
+    crewWorkersInFlight: Array.isArray(crewInFlightIds) ? crewInFlightIds.length : 0,
   };
   Object.defineProperties(snapshot, {
     currentContextTokens: {
@@ -4206,32 +4346,6 @@ function resolveDefaultModel(config) {
 
 function resolveFastModel(config) {
   return String(config?.model?.fast_name || config?.model?.lite_name || config?.model?.name || '').trim();
-}
-
-const CODING_ROUTE_JUDGE_TIMEOUT_MS = 3000;
-
-async function judgeCodingRouteNodes({ request, config, model, signal }) {
-  const routeModel = resolveFastModel(config) || model || config?.model?.name;
-  if (!routeModel) return null;
-  const result = await createChatCompletion({
-    sdkProvider: config?.sdk?.provider,
-    baseUrl: config?.gateway?.base_url,
-    apiKey: config?.gateway?.api_key,
-    model: routeModel,
-    messages: [
-      { role: 'system', content: request.systemPrompt },
-      { role: 'user', content: request.userPrompt },
-    ],
-    tools: [],
-    temperature: 0,
-    reasoningEffort: 'off',
-    maxTokens: 480,
-    payloadExtras: { max_tokens: 480 },
-    timeoutMs: Math.min(Number(config?.gateway?.timeout_ms || CODING_ROUTE_JUDGE_TIMEOUT_MS), CODING_ROUTE_JUDGE_TIMEOUT_MS),
-    maxRetries: 0,
-    signal,
-  });
-  return result?.text || '';
 }
 
 const ROUTE_TRACE_EDIT_TOOLS = new Set(['edit', 'write', 'begin_write', 'write_chunk', 'commit_write', 'apply_patch', 'delete']);
@@ -4657,20 +4771,22 @@ async function resolveSpecPath(rawArg = '', sessionId = '', workspaceRoot = proc
   return '';
 }
 
-async function expandFileMentions(rawText, workspaceRoot = process.cwd()) {
+export async function expandFileMentions(rawText, workspaceRoot = process.cwd()) {
   const text = String(rawText || '');
-  const mentionRegex = /@([A-Za-z0-9_./\\-]+)(?::(\d+)-(\d+))?/g;
+  const mentionRegex = /@(?:"([^"\r\n]+)"|([A-Za-z0-9_./\\-]+))(?::(\d+)-(\d+))?/g;
   const matches = Array.from(text.matchAll(mentionRegex));
   if (matches.length === 0) return text;
 
   let out = text;
-  for (const m of matches) {
+  const root = path.resolve(workspaceRoot);
+  for (const m of matches.reverse()) {
     const full = m[0];
-    const relPath = m[1];
-    const a = m[2] ? Number(m[2]) : null;
-    const b = m[3] ? Number(m[3]) : null;
-    const abs = path.resolve(workspaceRoot, relPath);
-    if (!abs.startsWith(path.resolve(workspaceRoot))) continue;
+    const relPath = m[1] || m[2];
+    const a = m[3] ? Number(m[3]) : null;
+    const b = m[4] ? Number(m[4]) : null;
+    const abs = path.resolve(root, relPath);
+    const relative = path.relative(root, abs);
+    if (relative.startsWith('..') || path.isAbsolute(relative)) continue;
     try {
       const content = await fs.readFile(abs, 'utf8');
       let snippet = content;
@@ -4680,7 +4796,7 @@ async function expandFileMentions(rawText, workspaceRoot = process.cwd()) {
         snippet = lines.slice(s - 1, e).join('\n');
       }
       const replacement = `\n[FILE:${relPath}${a && b ? `:${a}-${b}` : ''}]\n${snippet}\n[/FILE]\n`;
-      out = out.replace(full, replacement);
+      out = `${out.slice(0, m.index)}${replacement}${out.slice(m.index + full.length)}`;
     } catch {
       continue;
     }
@@ -4706,6 +4822,7 @@ async function askModel({
   allowedTools,
   requestUserInput,
   skipAnalysisNudge = false,
+  shouldContinueAfterText = null,
   compactedForModel: compactedInput = null,
   onCompactedUpdate = null,
   changeTracker = null,
@@ -4725,6 +4842,14 @@ async function askModel({
   skipSystemPromptInsert = false,
   toolDefinitionsOverride = null,
   forbiddenTools = [],
+  crewState = null,
+  crewWorkersInFlight = null,
+  crewCoordinator = null,
+  crewWorkerScheduler = null,
+  crewJobRegistry = null,
+  onCancelWorker = null,
+  crewEventSink = null,
+  publishCrewWorkersChanged = () => {},
 }) {
   let compacted = compactedInput;
   const modelInputText = typeof modelText === 'string' && modelText ? modelText : text;
@@ -4849,7 +4974,8 @@ async function askModel({
   const shouldGenerateTitle = text
     ? !session.messages.some((msg) => msg?.role === 'user')
     : false;
-  const projectContextPromise = (config.context?.project_context_enabled !== false)
+  const projectContextPromise = (config.context?.project_context_enabled !== false
+    && !session.messages?.some((message) => message.role === 'user' && message.model_content))
     ? buildProjectContextSnippet(workspaceRoot, modelInputText).catch(() => '')
     : Promise.resolve('');
   // Snapshot lengths before this turn appends anything. Compacted is often
@@ -4858,6 +4984,8 @@ async function askModel({
   const turnStartMessageCount = session.messages.length;
   const turnStartCompactedCount = compacted ? compacted.length : 0;
   if (text) {
+    const last = session.messages[session.messages.length - 1];
+    const alreadyInserted = last?.role === 'user' && String(last.content || '') === String(text);
     const hasFileMentions = typeof modelText === 'string' && modelText && modelText !== text;
     const retrievedPart = typeof retrievedText === 'string' && retrievedText.trim() ? retrievedText.trim() : '';
     let userContent = text;
@@ -4883,11 +5011,13 @@ async function askModel({
         }
       : {};
     const memoryExtra = memoryInject && typeof memoryInject === 'object' ? { memoryInject } : {};
-    const userMessage = stampedMessage('user', userContent, { ...modelExtra, ...imageExtra, ...selectedSkillExtra, ...memoryExtra });
-    session.messages.push(userMessage);
-    if (compacted) {
-      compacted.push({ ...userMessage });
-      if (onCompactedUpdate) onCompactedUpdate(compacted);
+    if (!alreadyInserted) {
+      const userMessage = stampedMessage('user', userContent, { ...modelExtra, ...imageExtra, ...selectedSkillExtra, ...memoryExtra });
+      session.messages.push(userMessage);
+      if (compacted) {
+        compacted.push({ ...userMessage });
+        if (onCompactedUpdate) onCompactedUpdate(compacted);
+      }
     }
     let derivedTitle = false;
     if (shouldReplaceSessionTitle(session.title)) {
@@ -4914,6 +5044,11 @@ async function askModel({
     executionShellContext.commandPlatform,
     executionShellContext.shell,
   );
+  const crewWorkers = crewState
+    ? listCrewWorkersFromState(await readCrewStateFile(workspaceRoot))
+    : [];
+  const crewModePrompt = buildCrewModePromptBlock(crewState, crewWorkers);
+  const modePromptBlocks = [executionModePrompt, crewModePrompt].filter(Boolean).join('\n\n');
   const projectContextSnippet = await projectContextPromise;
   // Compose effectiveSystemPrompt without redundant composeSystemPrompt wrapping:
   // systemPrompt already went through composeSystemPrompt in buildActiveSystemPrompt.
@@ -4931,11 +5066,11 @@ async function askModel({
         return directiveIndex >= 0
           ? [
               systemPromptText.slice(0, directiveIndex).trimEnd(),
-              executionModePrompt,
+              modePromptBlocks,
               systemPromptText.slice(directiveIndex),
             ].filter(Boolean).join('\n\n')
           : buildSystemPromptWithReplyLanguage(
-              [systemPromptText.trim(), executionModePrompt].filter(Boolean).join('\n\n'),
+              [systemPromptText.trim(), modePromptBlocks].filter(Boolean).join('\n\n'),
               config,
             );
       })();
@@ -4947,6 +5082,9 @@ async function askModel({
     userText: modelInputText
   });
 
+  const inFlightCrewWorkers = crewWorkersInFlight instanceof Set
+    ? crewWorkersInFlight
+    : new Set();
   const toolConfig = {
     ...config,
     runtime: {
@@ -4954,7 +5092,16 @@ async function askModel({
       codewiki_comment_tools: Array.isArray(allowedTools) && (
         allowedTools.includes('add_code_comment') ||
         allowedTools.includes('update_code_comment')
-      )
+      ),
+      crew_parent_shell: Boolean(crewState),
+      crew_session: Boolean(crewState) || Boolean(config?.runtime?.crew_session),
+      crew_project_root: resolveCrewProjectRoot(workspaceRoot),
+      getCrewInFlightWorkers: () => [...inFlightCrewWorkers],
+      getCrewPendingWakes: () => (
+        Number.isFinite(crewCoordinator?.pendingWakeCount)
+          ? crewCoordinator.pendingWakeCount
+          : Number(config?.runtime?.getCrewPendingWakes?.() || 0)
+      ),
     },
     workspaceRoot,
     policy: {
@@ -4978,6 +5125,19 @@ async function askModel({
     onSystemEvent: onAgentEvent,
     requestUserInput,
     toolResultStore,
+    crewActive: Boolean(crewState),
+    onLandWorkers: crewState
+      ? async () => {
+          const result = await landCrewWorkers({ cwd: workspaceRoot, base: crewState.base });
+          if (result?.ok) {
+            publishCrewWorkersChanged();
+          }
+          return result;
+        }
+      : undefined,
+    onCancelWorker: crewState && typeof onCancelWorker === 'function'
+      ? onCancelWorker
+      : undefined,
     getTodos: () => normalizeTodos(session.todos),
     onTodosUpdate: (todos) => {
       session.todos = normalizeTodos(todos);
@@ -5001,9 +5161,13 @@ async function askModel({
           orchestrationId = '',
           taskId = '',
           dependsOn = [],
-          tools = null
+          tools = null,
+          paths = null,
+          resume = '',
+          review = ''
         } = {}) => {
           const { persona, policyKey, taskRole } = resolveSubAgentRolePolicy(name, role);
+          const isCrewSurvey = Boolean(crewState) && policyKey === 'survey';
           const taskPrompt = String(prompt || '').trim();
           const assignedTasks = normalizeTodos(tasks);
           if (!taskPrompt && assignedTasks.length === 0) {
@@ -5012,10 +5176,26 @@ async function askModel({
           const effectivePrompt = taskPrompt || 'Complete the assigned tasks.';
           const handoff = String(context || '').trim();
           const declaredGoal = String(goal || '').trim();
-          const title = trimInline(assignedTasks[0]?.content || effectivePrompt, 72) || persona;
+          const reviewTarget = String(review || '').trim();
+          const title = crewState
+            ? reviewTarget
+              ? `Crew review · ${reviewTarget}`
+              : isCrewSurvey
+                ? `Crew survey · ${persona}`
+                : `Crew worker · ${persona}`
+            : trimInline(assignedTasks[0]?.content || effectivePrompt, 72) || persona;
+          const crewKind = crewState
+            ? (reviewTarget ? 'review' : isCrewSurvey ? 'survey' : 'worker')
+            : '';
           const callId = String(toolCallId || `sub-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`).trim();
           const emit = (evt) => {
-            if (onAgentEvent) onAgentEvent({ ...evt, toolCallId: callId });
+            const tagged = {
+              ...evt,
+              toolCallId: callId,
+              ...(crewKind ? { crewKind } : {}),
+            };
+            if (onAgentEvent) onAgentEvent(tagged);
+            crewEventSink?.(tagged);
           };
           const dependencyTaskId = String(taskId || '').trim();
           const dependencyRegistration = subAgentDependencies.register({
@@ -5049,7 +5229,8 @@ async function askModel({
           const resolvedTools = resolveSubAgentToolAllowList({
             role: policyKey,
             tools: toolAllowList,
-            config
+            config,
+            crewSession: Boolean(crewState),
           });
           const stepModel = resolveSubAgentModel(config, model);
           const stepSdkProvider = config.sdk?.provider || '';
@@ -5114,36 +5295,401 @@ async function askModel({
           const scopedTask = contextSections.length
             ? `${contextSections.join('\n\n')}\n\nTask:\n${effectivePrompt}`
             : effectivePrompt;
-              let childUsage = null;
+          let childUsage = null;
+          let lockedCrewWorkerId = '';
+          let reviewingWorkerId = '';
+          let reviewingWorkerRecord = null;
           try {
+            let workerWorkspaceRoot = workspaceRoot;
+            let workerChangeTracker = changeTracker;
+            let workerBackupManager = backupManager;
+            let workerTask = scopedTask;
+            let reviewCommit = '';
+            let pendingRebaseOnto = '';
+            let spawnedCrewWorker = null;
+            if (crewState) {
+              const isReviewer = String(role || '').trim().toLowerCase() === 'reviewer' || policyKey === 'reviewer';
+              if (String(review || '').trim() && !isReviewer) {
+                const reviewError = 'review is only valid with role: "reviewer".';
+                emit({
+                  type: 'plan:step_done',
+                  toolCallId: callId,
+                  step: 1,
+                  total: 1,
+                  role: persona,
+                  title,
+                  status: 'failed',
+                  taskId: dependencyTaskId,
+                  dependsOn: dependencyRegistration.dependencies,
+                  summary: reviewError,
+                  sdkProvider: stepSdkProvider,
+                  model: stepModel,
+                });
+                const reviewResult = { ok: false, code: 'REVIEW_ROLE_REQUIRED', error: reviewError, text: '' };
+                dependencyRegistration.settle(reviewResult);
+                return reviewResult;
+              }
+              if (isReviewer) {
+                const pathList = (Array.isArray(paths) ? paths : [])
+                  .map((item) => String(item || '').trim())
+                  .filter(Boolean);
+                if (pathList.length) {
+                  const pathsError = 'review does not take paths. The reviewer reuses the author worktree.';
+                  emit({
+                    type: 'plan:step_done',
+                    toolCallId: callId,
+                    step: 1,
+                    total: 1,
+                    role: persona,
+                    title,
+                    status: 'failed',
+                    taskId: dependencyTaskId,
+                    dependsOn: dependencyRegistration.dependencies,
+                    summary: pathsError,
+                    sdkProvider: stepSdkProvider,
+                    model: stepModel,
+                  });
+                  const pathsResult = { ok: false, code: 'REVIEW_PATHS_CONFLICT', error: pathsError, text: '' };
+                  dependencyRegistration.settle(pathsResult);
+                  return pathsResult;
+                }
+                const reviewed = await resolveCrewReviewTarget({
+                  cwd: workspaceRoot,
+                  base: crewState.base,
+                  review,
+                  resume,
+                });
+                if (!reviewed.ok) {
+                  const spawnError = reviewed.error || 'Failed to start Crew review.';
+                  emit({
+                    type: 'plan:step_done',
+                    toolCallId: callId,
+                    step: 1,
+                    total: 1,
+                    role: persona,
+                    title,
+                    status: 'failed',
+                    taskId: dependencyTaskId,
+                    dependsOn: dependencyRegistration.dependencies,
+                    summary: spawnError,
+                    sdkProvider: stepSdkProvider,
+                    model: stepModel,
+                  });
+                  const spawnResult = {
+                    ok: false,
+                    code: reviewed.code,
+                    error: spawnError,
+                    text: '',
+                  };
+                  dependencyRegistration.settle(spawnResult);
+                  return spawnResult;
+                }
+                const workerId = String(reviewed.worker?.id || '').trim();
+                if (workerId && inFlightCrewWorkers.has(workerId)) {
+                  const busyError = `Crew worker "${workerId}" is still running. Wait for that shift to finish before review.`;
+                  emit({
+                    type: 'plan:step_done',
+                    toolCallId: callId,
+                    step: 1,
+                    total: 1,
+                    role: persona,
+                    title,
+                    status: 'failed',
+                    taskId: dependencyTaskId,
+                    dependsOn: dependencyRegistration.dependencies,
+                    summary: busyError,
+                    sdkProvider: stepSdkProvider,
+                    model: stepModel,
+                  });
+                  const busyResult = {
+                    ok: false,
+                    code: 'WORKER_BUSY',
+                    error: busyError,
+                    text: '',
+                  };
+                  dependencyRegistration.settle(busyResult);
+                  return busyResult;
+                }
+                if (workerId) {
+                  inFlightCrewWorkers.add(workerId);
+                  publishCrewWorkersChanged();
+                  lockedCrewWorkerId = workerId;
+                  reviewingWorkerId = workerId;
+                  reviewingWorkerRecord = reviewed.worker || null;
+                  spawnedCrewWorker = reviewed.worker || null;
+                }
+                reviewCommit = reviewed.commit;
+                workerTask = composeCrewReviewTask(scopedTask, {
+                  workerId,
+                  commit: reviewed.commit,
+                  paths: reviewed.worker?.paths,
+                  diff: reviewed.diff,
+                  base: reviewed.base || reviewed.worker?.landBase || crewState.base,
+                });
+                workerWorkspaceRoot = reviewed.worker.worktreePath;
+                workerChangeTracker = null;
+                workerBackupManager = null;
+              } else {
+                const spawned = await resolveCrewSubagentWorkspace({
+                  cwd: workspaceRoot,
+                  base: crewState.base,
+                  resume,
+                  taskId: dependencyTaskId,
+                  name: persona,
+                  callId,
+                  paths,
+                  dependsOn: dependencyRegistration.dependencies,
+                  kind: isCrewSurvey ? 'survey' : '',
+                });
+                if (!spawned.ok) {
+                  const spawnError = spawned.error || 'Failed to spawn Crew worktree.';
+                  emit({
+                    type: 'plan:step_done',
+                    toolCallId: callId,
+                    step: 1,
+                    total: 1,
+                    role: persona,
+                    title,
+                    status: 'failed',
+                    taskId: dependencyTaskId,
+                    dependsOn: dependencyRegistration.dependencies,
+                    summary: spawnError,
+                    sdkProvider: stepSdkProvider,
+                    model: stepModel,
+                  });
+                  const spawnResult = {
+                    ok: false,
+                    code: spawned.code,
+                    error: spawnError,
+                    text: '',
+                  };
+                  dependencyRegistration.settle(spawnResult);
+                  return spawnResult;
+                }
+                const workerId = String(spawned.worker?.id || '').trim();
+                if (workerId && inFlightCrewWorkers.has(workerId)) {
+                  const busyError = `Crew worker "${workerId}" is still running. Wait for that shift to finish before resume.`;
+                  emit({
+                    type: 'plan:step_done',
+                    toolCallId: callId,
+                    step: 1,
+                    total: 1,
+                    role: persona,
+                    title,
+                    status: 'failed',
+                    taskId: dependencyTaskId,
+                    dependsOn: dependencyRegistration.dependencies,
+                    summary: busyError,
+                    sdkProvider: stepSdkProvider,
+                    model: stepModel,
+                  });
+                  const busyResult = {
+                    ok: false,
+                    code: 'WORKER_BUSY',
+                    error: busyError,
+                    text: '',
+                  };
+                  dependencyRegistration.settle(busyResult);
+                  return busyResult;
+                }
+                if (workerId) {
+                  inFlightCrewWorkers.add(workerId);
+                  publishCrewWorkersChanged();
+                  lockedCrewWorkerId = workerId;
+                  spawnedCrewWorker = spawned.worker || null;
+                  await patchCrewWorkerRecord(workspaceRoot, workerId, {
+                    runStatus: 'running',
+                    runError: '',
+                  }).catch(() => null);
+                }
+                if (spawned.resume) {
+                  const priorHandoff = await readCrewWorkerHandoff(
+                    workspaceRoot,
+                    spawned.worker?.lastHandoffPath,
+                  );
+                  const reviewText = spawned.worker?.reviewPassed === false
+                    && spawned.worker?.reviewLoopStopped !== true
+                    && spawned.pathsChanged !== true
+                    ? spawned.worker?.reviewText
+                    : '';
+                  pendingRebaseOnto = String(spawned.worker?.rebaseOnto || '').trim();
+                  workerTask = composeCrewResumeTask(scopedTask, priorHandoff, reviewText, pendingRebaseOnto);
+                }
+                workerWorkspaceRoot = spawned.worker.worktreePath;
+                workerBackupManager = null;
+              }
+            }
+            if (crewState) {
+              const spawnMessage = compactCrewSpawnResultForParent({
+                workerId: lockedCrewWorkerId,
+                taskId: dependencyTaskId,
+                status: 'running',
+                branch: spawnedCrewWorker?.branch || '',
+                worktreePath: spawnedCrewWorker?.worktreePath || workerWorkspaceRoot,
+                reviewOf: reviewingWorkerId,
+                role: persona,
+              });
+              const runningResult = {
+                ok: true,
+                status: 'running',
+                workflowComplete: true,
+                workflowMessage: spawnMessage,
+                name: persona,
+                role: persona,
+                tools: resolvedTools,
+                text: '',
+                ...(lockedCrewWorkerId ? { workerId: lockedCrewWorkerId } : {}),
+                ...(reviewingWorkerId ? { reviewOf: reviewingWorkerId } : {}),
+                ...(dependencyTaskId ? { taskId: dependencyTaskId } : {}),
+                message: spawnMessage,
+              };
+              const jobController = new AbortController();
+              const jobId = lockedCrewWorkerId || reviewingWorkerId;
+              const job = {
+                controller: jobController,
+                kind: reviewingWorkerId ? 'reviewer' : 'worker',
+              };
+              if (jobId && crewJobRegistry) crewJobRegistry.set(jobId, job);
+              const runWorkerJob = async () => {
+                if (jobController.signal.aborted) {
+                  throw Object.assign(new Error('Aborted'), { name: 'AbortError', crewCancel: true });
+                }
+                if (!reviewingWorkerId && workerWorkspaceRoot !== workspaceRoot) {
+                  workerChangeTracker = await createCrewWorkerChangeTracker(
+                    workerWorkspaceRoot,
+                    `${session.id}:${lockedCrewWorkerId}`,
+                  );
+                }
+                return runCrewWorkerJob({
+                runSubAgentTask,
+                subAgentRunFailed,
+                compactSubAgentResultForParent,
+                collectPlanImplementationFileChanges,
+                subAgentAllowListMayMutate,
+                mergeModelUsage,
+                emit,
+                onWake: (wakeText) => crewCoordinator?.enqueueWake(wakeText),
+                releaseInFlight: (workerId) => {
+                  if (workerId) inFlightCrewWorkers.delete(workerId);
+                  publishCrewWorkersChanged();
+                },
+                callId,
+                persona,
+                policyKey,
+                taskRole,
+                title,
+                dependencyTaskId,
+                dependencyDependencies: dependencyRegistration.dependencies,
+                workerTask,
+                workerWorkspaceRoot,
+                workerChangeTracker,
+                workerBackupManager,
+                session,
+                workspaceRoot,
+                config,
+                stepModel,
+                systemPrompt,
+                onAgentEvent,
+                requestToolApproval,
+                resolvedTools,
+                toolAllowList,
+                assignedTasks,
+                declaredGoal,
+                taskPrompt,
+                summary,
+                stepSdkProvider,
+                lockedCrewWorkerId,
+                reviewingWorkerId,
+                reviewingWorkerRecord,
+                reviewCommit,
+                pendingRebaseOnto,
+                isCrewSurvey,
+                signal: jobController.signal,
+                });
+              };
+              const markWorkerStatus = (runStatus) => {
+                if (!lockedCrewWorkerId || reviewingWorkerId) return;
+                void patchCrewWorkerRecord(workspaceRoot, lockedCrewWorkerId, {
+                  runStatus,
+                  runError: '',
+                }).then(() => publishCrewWorkersChanged()).catch(() => {});
+              };
+              const workerJob = crewWorkerScheduler.run(runWorkerJob, {
+                signal: jobController.signal,
+                onQueued: () => markWorkerStatus('queued'),
+                onStart: () => markWorkerStatus('running'),
+              });
+              job.promise = workerJob;
+              void workerJob
+                .then(
+                  (result) => {
+                    if (jobId) inFlightCrewWorkers.delete(jobId);
+                    dependencyRegistration.settle(result);
+                  },
+                  (error) => {
+                    if (jobId) inFlightCrewWorkers.delete(jobId);
+                    dependencyRegistration.settle({
+                      ok: false,
+                      cancelled: Boolean(error?.crewCancel),
+                      error: String(error?.message || error),
+                      text: '',
+                    });
+                  },
+                )
+                .finally(() => {
+                  if (crewJobRegistry?.get(jobId) === job) crewJobRegistry.delete(jobId);
+                })
+                .catch(() => {});
+              return runningResult;
+            }
+            const reviewBox = { verdict: null };
             const output = await runSubAgentTask({
               role: taskRole,
-              task: scopedTask,
+              task: workerTask,
               initialTasks: assignedTasks,
               goal: declaredGoal,
               priorSteps: [],
               parentSession: session,
-              config,
+              extraRolePrompt: reviewingWorkerId ? buildCrewReviewVerdictPrompt() : '',
+              config: reviewingWorkerId
+                ? {
+                    ...config,
+                    runtime: {
+                      ...(config.runtime || {}),
+                      onCrewReviewVerdict: (verdict) => {
+                        reviewBox.verdict = verdict;
+                      },
+                    },
+                  }
+                : config,
               model: stepModel,
               systemPrompt,
               onAgentEvent,
               requestToolApproval,
               signal,
-              changeTracker,
-              backupManager,
+              changeTracker: workerChangeTracker,
+              backupManager: workerBackupManager,
               parentToolCallId: callId,
-              tools: toolAllowList,
+              tools: reviewingWorkerId
+                ? [...resolvedTools, 'submit_crew_review']
+                : (crewState ? resolvedTools : toolAllowList),
               onUsage: (usage) => {
                 childUsage = mergeModelUsage(childUsage, usage);
               },
               projectIsGit: resolveApprovalProjectIsGit({
                 projectIsGit,
-                changeTrackerEnabled: changeTracker?.mode === 'git-oplog',
+                changeTrackerEnabled: workerChangeTracker?.mode === 'git-oplog',
                 workspaceHasGit: Boolean(config?.runtime?.project_is_git)
               }),
-              workspaceRoot
+              workspaceRoot: workerWorkspaceRoot
             });
-            const failed = subAgentRunFailed(output, signal);
+            const failed = reviewingWorkerId
+              ? Boolean(signal?.aborted || output?.hasErrorLine)
+              : subAgentRunFailed(output, signal);
+            let crewDirty;
+            if (crewState && !reviewingWorkerId && workerWorkspaceRoot !== workspaceRoot) {
+              crewDirty = await isCrewWorktreeDirty(workerWorkspaceRoot).catch(() => true);
+            }
             const savedHandoff = failed
               ? null
               : await saveSubAgentHandoff({
@@ -5156,6 +5702,56 @@ async function askModel({
                   text: output.text,
                   artifactPaths: output.artifactPaths,
                 }).catch(() => null);
+            if (lockedCrewWorkerId && !reviewingWorkerId) {
+              const aborted = Boolean(signal?.aborted);
+              if (aborted) {
+                await teardownCrewWorker({ cwd: workspaceRoot, id: lockedCrewWorkerId, force: true }).catch(() => null);
+              } else {
+                const patch = {
+                  runStatus: failed ? 'failed' : 'completed',
+                  dirty: crewDirty === true,
+                  runError: failed ? String(output?.error || output?.text || '').trim().slice(0, 400) : '',
+                };
+                if (savedHandoff?.path) patch.lastHandoffPath = savedHandoff.path;
+                await patchCrewWorkerRecord(workspaceRoot, lockedCrewWorkerId, patch).catch(() => null);
+              }
+            }
+            if (
+              !failed
+              && pendingRebaseOnto
+              && lockedCrewWorkerId
+              && !reviewingWorkerId
+              && crewDirty === false
+            ) {
+              const ontoDone = await isCrewCommitAncestor(
+                workerWorkspaceRoot,
+                pendingRebaseOnto,
+              ).catch(() => false);
+              if (ontoDone) {
+                await patchCrewWorkerRecord(workspaceRoot, lockedCrewWorkerId, {
+                  landBase: pendingRebaseOnto,
+                  rebaseOnto: '',
+                }).catch(() => null);
+              }
+            }
+            let reviewPassed;
+            let reviewLoopStopped;
+            let reviewRound;
+            let reviewIncomplete;
+            if (!failed && reviewingWorkerId && reviewCommit) {
+              const applied = await applyCrewReviewOutcome({
+                cwd: workspaceRoot,
+                workerId: reviewingWorkerId,
+                workerRecord: reviewingWorkerRecord,
+                reviewCommit,
+                verdict: reviewBox.verdict,
+                outputText: output.text,
+              });
+              reviewPassed = applied.reviewPassed;
+              reviewLoopStopped = applied.reviewLoopStopped;
+              reviewRound = applied.reviewRound;
+              reviewIncomplete = applied.reviewIncomplete === true;
+            }
             emit({
               type: 'plan:step_done',
               toolCallId: callId,
@@ -5179,7 +5775,7 @@ async function askModel({
                 ])
               : [];
             const result = {
-              ok: !failed,
+              ok: !failed && reviewIncomplete !== true,
               workflowComplete: false,
               name: persona,
               role: persona,
@@ -5189,16 +5785,30 @@ async function askModel({
               artifactPaths: output.artifactPaths || [],
               ...(savedHandoff ? { handoffPath: savedHandoff.path } : {}),
               ...(fileChanges.length ? { fileChanges } : {}),
+              ...(crewDirty === undefined ? {} : { dirty: crewDirty }),
               message: compactSubAgentResultForParent({
                 text: output.text,
                 summary,
                 handoffPath: savedHandoff?.path,
                 artifactPaths: output.artifactPaths,
+                ...(crewDirty === undefined ? {} : { dirty: crewDirty }),
+                ...(isCrewSurvey ? { workerKind: 'survey' } : {}),
+                ...(lockedCrewWorkerId && !reviewingWorkerId ? { workerId: lockedCrewWorkerId } : {}),
+                ...(reviewingWorkerId ? {
+                  reviewOf: reviewingWorkerId,
+                  reviewPassed,
+                  ...(reviewIncomplete === true ? { reviewIncomplete: true } : {}),
+                  ...(reviewLoopStopped === true ? { reviewLoopStopped: true, reviewRound } : {}),
+                } : {}),
               }),
             };
             dependencyRegistration.settle(result);
             return result;
           } catch (err) {
+            if (lockedCrewWorkerId && inFlightCrewWorkers.has(lockedCrewWorkerId)) {
+              inFlightCrewWorkers.delete(lockedCrewWorkerId);
+              publishCrewWorkersChanged();
+            }
             emit({
               type: 'plan:step_done',
               toolCallId: callId,
@@ -5225,7 +5835,7 @@ async function askModel({
           }
         }
       : undefined,
-    onForkTask: normalizedExecutionMode === 'plan'
+    onForkTask: normalizedExecutionMode === 'plan' && !crewState
       ? async ({
           prompt,
           tasks = [],
@@ -5528,6 +6138,52 @@ async function askModel({
     }
     return false;
   };
+  const harnessConfig = toolConfig?.harness || {};
+  const harnessEpisodeId = `${session.id}:${turnStartMessageCount}`;
+  const harnessActive = harnessConfig.enabled === true && shouldRollout({
+    rollout: harnessConfig.rollout,
+    sessionId: session.id,
+    projectDir: workspaceRoot,
+    riskTier: 'low',
+  });
+  let harnessStore = null;
+  let toolReliabilityStore = null;
+  const harnessInfluenceActive = harnessActive
+    && harnessConfig.decision_mode === 'external_authority'
+    && harnessConfig.provider !== 'rules';
+  const contextDecisionCache = new Map();
+  const contextDecisionLimit = 32;
+  if (harnessActive) {
+    try {
+      harnessStore = createHarnessSqliteStore();
+      toolReliabilityStore = createToolReliabilityStore();
+    } catch { harnessStore = null; toolReliabilityStore = null; }
+  }
+  if (harnessStore) {
+    try {
+      harnessStore.createEpisode({
+        id: harnessEpisodeId,
+        sessionId: session.id,
+        projectDir: workspaceRoot,
+        mode: harnessConfig.mode,
+        decisionMode: harnessConfig.decision_mode,
+        provider: harnessConfig.provider,
+        configHash: stableHash({ mode: harnessConfig.mode, provider: harnessConfig.provider }),
+      });
+    } catch { harnessStore = null; }
+  }
+  const harnessEventType = (type) => {
+    const value = String(type || '');
+    return new Set([
+      'step:start', 'step:end', 'assistant:response', 'tool:start', 'tool:end',
+      'tool:error', 'tool:blocked', 'tool:result', 'model:context', 'checkpoint',
+      'aborted', 'harness:decision', 'harness:route', 'harness:context'
+    ]).has(value) || value.startsWith('approval:');
+  };
+  const finishHarnessEpisode = (status, outcome = '') => {
+    if (!harnessStore) return;
+    try { harnessStore.finishEpisode(harnessEpisodeId, { status, outcome }); } catch { /* 审计失败不影响主任务 */ }
+  };
   const wrappedAgentEvent = (event) => {
     // Always accumulate messages in session (for token tracking), only save when persisting
     if (event?.type === 'assistant:start') {
@@ -5662,8 +6318,39 @@ async function askModel({
       );
       pendingToolMeta.delete(toolId);
       if (persistSession) scheduleSessionSave();
+    } else if (event?.type === 'model:context' && event.message?.role === 'user') {
+      session.messages.push(stampedMessage('user', event.message.content || '', {
+        model_context: true,
+        model_context_source: String(event.message.model_context_source || 'runtime'),
+        ...(event.message.model_context_reason
+          ? { model_context_reason: String(event.message.model_context_reason) }
+          : {}),
+      }));
+      if (persistSession) scheduleSessionSave();
     }
 
+    if (harnessStore && harnessEventType(event?.type)) {
+      try {
+        harnessStore.appendEvent({
+          episodeId: harnessEpisodeId,
+          step: event?.step || 0,
+          type: event?.type,
+          source: event?.type === 'harness:decision' ? 'harness' : 'runtime',
+          parentId: event?.parentId || event?.toolCallId || '',
+          payload: event,
+        });
+      } catch { /* 审计失败不影响主任务 */ }
+    }
+    if (toolReliabilityStore && (event?.type === 'tool:end' || event?.type === 'tool:error')) {
+      try {
+        const failed = event.type === 'tool:error' || event.error === true || event.resultMeta?.ok === false;
+        toolReliabilityStore.record({
+          toolName: event.name,
+          ok: !failed,
+          error: event.summary || event.error || event.content || '',
+        });
+      } catch { /* 统计失败不影响主任务 */ }
+    }
     if (onAgentEvent) onAgentEvent(event);
   };
 
@@ -5766,9 +6453,56 @@ async function askModel({
     formatters,
     deferredDefinitions: nonDuplicateFilteredDeferred,
     displayLabels: displayLabels || {},
-    maxParallelCalls: toolConfig.tools?.max_parallel_calls
+    maxParallelCalls: toolConfig.tools?.max_parallel_calls,
+    activeDeferredNames: session.activatedToolNames,
+    onSchemasActivated: (activated) => {
+      const nextNames = [
+        ...(Array.isArray(session.activatedToolNames) ? session.activatedToolNames : []),
+        ...activated.map((definition) => String(definition?.function?.name || '').trim()),
+      ].filter(Boolean);
+      session.activatedToolNames = [...new Set(nextNames)];
+      if (persistSession) scheduleSessionSave();
+    },
   });
   let loopResult;
+  const decisionController = harnessActive
+      ? createDecisionController({
+        enabled: true,
+        mode: harnessConfig.mode,
+        provider: harnessConfig.provider,
+        providerConfig: {
+          timeoutMs: harnessConfig.timeout_ms,
+          jev: harnessConfig.providers?.jev ? {
+            enabled: harnessConfig.providers.jev.enabled,
+            baseUrl: harnessConfig.providers.jev.base_url,
+            apiKey: harnessConfig.providers.jev.api_key,
+            model: harnessConfig.providers.jev.model,
+          } : {},
+          laya: harnessConfig.providers?.laya ? {
+            enabled: harnessConfig.providers.laya.enabled,
+            baseUrl: harnessConfig.providers.laya.base_url,
+            model: harnessConfig.providers.laya.model,
+          } : {},
+          cpts: harnessConfig.belief?.cpts || harnessConfig.cpts,
+          priors: harnessConfig.belief?.priors || harnessConfig.priors,
+          nodeCpts: harnessConfig.belief?.nodeCpts || harnessConfig.nodeCpts,
+          policy: harnessConfig.policy || {},
+        },
+        shadowProviders: ['jev', 'laya'].filter((name) => name !== harnessConfig.provider && harnessConfig.providers?.[name]?.enabled === true),
+        onDecision: (event) => wrappedAgentEvent({ type: 'harness:decision', ...event }),
+      })
+    : null;
+  let harnessTaskRoute = null;
+  if (decisionController?.orchestrate) {
+    await decisionController.orchestrate({
+      kind: 'task_route', episodeId: harnessEpisodeId, step: 0,
+      state: { objective: loopUserPrompt, stage: 'task_start', riskTier: 'low' },
+      candidates: ['proceed_fast', 'deep_review', 'split_task', 'ask_user', 'block'].map((id) => ({ id, type: 'route', allowed: true })),
+    }).then((event) => {
+      wrappedAgentEvent({ type: 'harness:route', stage: 'task_start', ...event });
+      if (harnessInfluenceActive) harnessTaskRoute = event.policy?.choice || null;
+    }).catch(() => {});
+  }
   try {
     loopResult = await runAgentLoop({
       systemPrompt: skipSystemPromptInsert ? '' : effectiveSystemPrompt,
@@ -5801,11 +6535,87 @@ async function askModel({
       requestToolApproval,
       signal,
       skipAnalysisNudge,
+      shouldContinueAfterText,
       config: toolConfig,
       skillHooksSession,
       onSkillLoaded,
       workspaceRoot,
       sessionId: session.id,
+      decisionController,
+      episodeId: harnessEpisodeId,
+      toolReliabilityStore,
+      toolGuard: harnessInfluenceActive
+        ? async ({ toolName, args, step }) => {
+          const event = await decisionController.evaluate({
+            episodeId: harnessEpisodeId,
+            step,
+            state: { stage: 'tool_guard', tool: toolName, argumentsSummary: Object.keys(args || {}), riskTier: 'low' },
+            questions: TOOL_GUARD_QUESTIONS,
+          });
+          return resolveToolGuard({
+            decision: event?.decision || {},
+            hardGuard: event?.guards || { allowed: false, requiresReview: true, reasons: ['decision_provider_unavailable'] },
+            thresholds: harnessConfig.policy || {},
+          });
+        }
+        : null,
+      completionReview: harnessInfluenceActive
+        ? async ({ objective, completedWork, step, assistantText, verificationPassed = false, testsPassed = false }) => {
+          const event = await decisionController.evaluate({ episodeId: harnessEpisodeId, step, state: {
+            stage: 'completion_review', objective, completedWork, assistantText,
+            verificationPassed: verificationPassed === true,
+            testsPassed: testsPassed === true,
+          }, questions: COMPLETION_REVIEW_QUESTIONS });
+          const choice = event?.decision?.answers?.find((answer) => answer.id === 'completion_status')?.choice;
+          const probability = event?.decision?.answers?.find((answer) => answer.id === 'completion_probability')?.pTrue;
+          if (!choice || event?.decision?.errors?.length || event?.decision?.answers?.some((answer) => answer.abstain === true)) {
+            return { choice: 'verify_more', reason: 'decision_provider_unavailable' };
+          }
+          return resolveCompletionReview({ choice, probability, deterministicVerified: Boolean(event?.state?.verificationPassed) });
+        }
+        : null,
+      skillRoute: harnessInfluenceActive
+        ? async ({ skillName, args, step }) => {
+          const candidates = buildSkillCandidates([{ name: skillName, description: '当前模型请求的 Skill' }, { name: 'none', description: '不加载额外 Skill' }]);
+          const event = await decisionController.orchestrate({ kind: 'skill_route', episodeId: harnessEpisodeId, step, state: { stage: 'skill_route', requestedSkill: skillName }, candidates, questions: [{ id: 'selected_skill', type: 'choice', options: candidates.map((item) => item.id) }] });
+          wrappedAgentEvent({ type: 'harness:route', stage: 'skill_route', ...event });
+          return { choice: event.selected || skillName, reason: event.policy?.reason };
+        }
+        : null,
+      contextSelector: harnessInfluenceActive
+        ? async ({ messages, step }) => {
+          // 系统消息和所有用户消息都是任务证据，不能因为它们不是最后一条
+          // 消息就被上下文概率判断删除；否则工具调用后会丢失原始需求。
+          const blocks = messages.map((message, index) => ({ id: `message-${index}`, score: message.role === 'system' || message.role === 'user' ? 1 : 0.4, required: message.role === 'system' || message.role === 'user', message }));
+          const optional = blocks.filter((block) => !block.required);
+          let newJudgements = 0;
+          const judged = await Promise.all(optional.map(async (block) => {
+            const cacheKey = stableHash({ role: block.message?.role || '', content: block.message?.content || '' });
+            const cached = contextDecisionCache.get(cacheKey);
+            if (cached) return { ...block, ...cached };
+            if (newJudgements >= contextDecisionLimit) {
+              const bounded = { keep: true, probability: null, reason: 'judgement_budget_keep' };
+              contextDecisionCache.set(cacheKey, bounded);
+              return { ...block, ...bounded };
+            }
+            newJudgements += 1;
+            const event = await decisionController.orchestrate({
+              kind: 'context_keep', episodeId: harnessEpisodeId, step,
+              state: { stage: 'context_keep', objective: loopUserPrompt, contextBlock: block.message.content },
+              candidates: [{ id: block.id, type: 'context', allowed: true }],
+              questions: [{ id: 'keep_context', type: 'noul', statement: 'This context block is still relevant to the current task and should be kept.' }],
+            });
+            const result = { keep: event.selected === true, probability: event.probability, reason: event.policy?.reason };
+            contextDecisionCache.set(cacheKey, result);
+            return { ...block, ...result };
+          }));
+          const decisions = blocks.filter((block) => block.required).map((block) => ({ id: block.id, kept: true, probability: 1, reason: 'required' })).concat(judged.map((block) => ({ id: block.id, kept: block.keep, probability: block.probability, reason: block.reason })));
+          wrappedAgentEvent({ type: 'harness:context', stage: 'context_keep', step, decisions });
+          const keep = new Set(decisions.filter((item) => item.kept).map((item) => item.id));
+          return messages.filter((_, index) => keep.has(`message-${index}`));
+        }
+        : null,
+      taskRoute: harnessTaskRoute,
       onForkJoin: (candidates) => commitForkMemoryCandidates({
         candidates,
         sessionId: session.id,
@@ -5867,6 +6677,20 @@ async function askModel({
               if (Number.isFinite(configured) && configured > 0) return Math.floor(configured);
               return config.sdk?.provider === 'anthropic' ? 16384 : undefined;
             })(),
+            onPayloadPrepared: config.context?.prompt_request_audit === true ? (payload) => {
+              const { audit, snapshot } = buildPromptRequestAudit(
+                payload,
+                session.promptRequestSnapshot,
+                { requestPurpose: persistSession ? 'main' : initialMessagesOverride ? 'fork' : 'auxiliary' },
+              );
+              session.promptRequestSnapshot = snapshot;
+              if (persistSession) scheduleSessionSave();
+              wrappedAgentEvent({
+                type: 'prompt:request_audit',
+                summary: `${audit.firstChangedSection}: ${audit.changeReason}`,
+                details: audit,
+              });
+            } : undefined,
             signal,
             onTextDelta: (delta) => {
               tracker.noteTextDelta(delta);
@@ -5897,12 +6721,14 @@ async function askModel({
       }
     });
   } catch (error) {
+    finishHarnessEpisode(signal?.aborted || error?.name === 'AbortError' ? 'aborted' : 'failed', error?.message || String(error));
     if (signal?.aborted || error?.name === 'AbortError') {
       await handleAbortAftermath();
     }
     throw error;
   }
   if (signal?.aborted || loopResult?.aborted) {
+    finishHarnessEpisode('aborted', 'signal');
     await handleAbortAftermath();
     return { text: '', aborted: true };
   }
@@ -5939,7 +6765,39 @@ async function askModel({
       // keep chat usable even if pruning fails
     });
   }
+  finishHarnessEpisode('completed', loopResult.text || '');
   return { text: loopResult.text, aborted: !!loopResult.aborted };
+}
+
+function sameFsPath(left, right) {
+  const a = path.resolve(String(left || ''));
+  const b = path.resolve(String(right || ''));
+  if (a === b) return true;
+  return process.platform === 'win32' && a.toLowerCase() === b.toLowerCase();
+}
+
+function isCrewWorktreeRoot(root) {
+  return String(root || '').replace(/\\/g, '/').includes('/crew/worktrees/');
+}
+
+async function readCrewWorkerHandoff(workspaceRoot, relativePath) {
+  const rel = String(relativePath || '').trim();
+  if (!rel) return '';
+  try {
+    return await fs.readFile(path.resolve(workspaceRoot, rel), 'utf8');
+  } catch {
+    return '';
+  }
+}
+
+async function createCrewWorkerChangeTracker(worktreePath, sessionId) {
+  const tracker = await createGitOplogChangeTracker({
+    workspaceRoot: worktreePath,
+    sessionId,
+  }).catch(() => null);
+  if (!tracker?.enabled) return null;
+  if (!sameFsPath(tracker.workspaceRoot, worktreePath)) return null;
+  return tracker;
 }
 
 export async function runSubAgentTask({
@@ -5991,7 +6849,12 @@ export async function runSubAgentTask({
       ? `Accumulated plan ledger (clean-context; no executor transcripts):\n${planFileContext}`
       : `Accumulated plan file context (results from prior steps):\n${planFileContext}`
     : '';
-  const roleAllowedTools = resolveSubAgentToolAllowList({ role, tools, config });
+  const roleAllowedTools = resolveSubAgentToolAllowList({
+    role,
+    tools,
+    config,
+    crewSession: isCrewWorktreeRoot(workspaceRoot) || Boolean(config?.runtime?.crew_session),
+  });
   const runtimeNote = buildSubAgentRuntimeNote(roleAllowedTools, {
     shell: config?.shell?.default,
     workspaceRoot,
@@ -6004,11 +6867,24 @@ export async function runSubAgentTask({
       sessionId: parentSession?.id,
     }).catch(() => []),
   );
+  const crewWorktree = isCrewWorktreeRoot(workspaceRoot) && role !== 'reviewer';
+  const crewWorktreeNote = !crewWorktree
+    ? ''
+    : role === 'survey'
+      ? [
+          'Your cwd is this git worktree snapshot. Use paths relative to this directory.',
+          'Inspect only. Do not edit files or git commit. Stop with zero diff.',
+        ].join('\n')
+      : [
+          'Your cwd is this git worktree. Use paths relative to this directory. Do not write to the parent checkout with its absolute path.',
+          'When the assigned slice is done, git commit on this worktree branch. If you cannot finish, do not commit. Your final message must state the outcome: done, blocked, or failed.',
+        ].join('\n');
   const scopedTask = [
     'Role:',
     rolePrompt,
     extraRolePrompt,
     runtimeNote,
+    crewWorktreeNote,
     handoffCatalogPrompt,
     contextPacket,
     goalRequirementPacket,
@@ -6055,13 +6931,15 @@ export async function runSubAgentTask({
     }
   };
   const workspaceHasGit = Boolean(config?.runtime?.project_is_git) || changeTracker?.mode === 'git-oplog';
+  const crewSessionActive = isCrewWorktreeRoot(workspaceRoot) || Boolean(config?.runtime?.crew_session);
   const approvalOptions = resolvePlanSubAgentApprovalOptions({
     role,
     config,
     projectIsGit,
     changeTrackerEnabled: changeTracker?.mode === 'git-oplog',
     workspaceHasGit,
-    tools
+    tools,
+    crewSession: crewSessionActive,
   });
   const subShellRulesPrompt = buildSubAgentShellRulesPrompt(roleAllowedTools, {
     shell: config?.shell?.default,
@@ -6069,6 +6947,20 @@ export async function runSubAgentTask({
     config
   });
   if (onSessionActive) onSessionActive(subSession);
+  let sealNudges = 0;
+  const shouldContinueAfterText = crewWorktree
+    ? async (assistantText) => {
+        const decision = await shouldContinueCrewWorkerSeal({
+          worktreePath: workspaceRoot,
+          kind: role === 'survey' ? 'survey' : 'coder',
+          text: assistantText,
+          nudgeCount: sealNudges,
+        });
+        if (!decision.continue) return null;
+        sealNudges += 1;
+        return decision.content;
+      }
+    : null;
   const subSystemPrompt = await composeSystemPrompt({
     shellRulesPrompt: subShellRulesPrompt,
     config,
@@ -6079,7 +6971,15 @@ export async function runSubAgentTask({
   const subResult = await askModel({
     text: scopedTask,
     session: subSession,
-    config: withCandidateMemoryWrites(config),
+    config: withCandidateMemoryWrites({
+      ...config,
+      runtime: {
+        ...(config.runtime || {}),
+        crew_session: crewSessionActive || Boolean(config?.runtime?.crew_session),
+        crew_project_root: resolveCrewProjectRoot(workspaceRoot),
+        crew_parent_shell: false,
+      },
+    }),
     model: subAgentModel,
     systemPrompt: subSystemPrompt,
     onAgentEvent: wrappedOnAgentEvent,
@@ -6089,11 +6989,13 @@ export async function runSubAgentTask({
     allowedTools: approvalOptions.allowedTools,
     alwaysAllowTools: approvalOptions.alwaysAllowTools,
     skipAnalysisNudge: true,
+    shouldContinueAfterText,
     signal,
     changeTracker,
     backupManager,
     workspaceRoot,
-    projectIsGit: approvalOptions.projectIsGit
+    projectIsGit: approvalOptions.projectIsGit,
+    crewState: null,
   });
   collectSubAgentArtifactsFromMessages(subSession.messages, artifactPaths, seenArtifactPaths);
   const text = subResult.text || '';
@@ -8093,20 +8995,26 @@ export async function createChatRuntime({
   const root = path.resolve(workspaceRoot || session?.projectDir || process.cwd());
   if (session && typeof session === 'object') session.projectDir = root;
   let requestToolApprovalObserver = typeof requestToolApproval === 'function' ? requestToolApproval : null;
-  const approvalRequestState = { current: null };
+  const approvalRequestState = { current: null, byId: new Map() };
   const activeRequestToolApproval = async (request) => {
     let resolveStructuredApproval;
     const structuredDecision = new Promise((resolve) => {
       resolveStructuredApproval = resolve;
     });
-    approvalRequestState.current = { ...request, resolve: resolveStructuredApproval };
+    const pending = { ...request, resolve: resolveStructuredApproval };
+    const id = String(request?.id || '');
+    if (id) approvalRequestState.byId.set(id, pending);
+    if (!approvalRequestState.current) approvalRequestState.current = pending;
     try {
       const observerDecision = requestToolApprovalObserver
         ? Promise.resolve(requestToolApprovalObserver(request))
         : new Promise(() => {});
       return await Promise.race([structuredDecision, observerDecision]);
     } finally {
-      approvalRequestState.current = null;
+      if (id) approvalRequestState.byId.delete(id);
+      if (approvalRequestState.current && String(approvalRequestState.current.id || '') === id) {
+        syncApprovalCurrent(approvalRequestState);
+      }
     }
   };
   let activeRequestUserInput = null;
@@ -8150,6 +9058,262 @@ export async function createChatRuntime({
       ? systemPromptFactory(config)
       : baseSystemPrompt;
   let executionMode = resolveRuntimeExecutionMode(config.execution?.mode || 'normal', config, currentSession);
+  let crewState = normalizeCrewState(currentSession?.crew);
+  let lastCrewGitInspect = { dirtyCount: 0, warning: '' };
+  const refreshCrewGitInspect = async () => {
+    if (!crewState) {
+      lastCrewGitInspect = { dirtyCount: 0, warning: '' };
+      return lastCrewGitInspect;
+    }
+    const inspect = await inspectCrewGit(root);
+    lastCrewGitInspect = {
+      dirtyCount: inspect.dirtyCount || 0,
+      ...(inspect.warning ? { warning: inspect.warning } : {}),
+    };
+    return lastCrewGitInspect;
+  };
+  const crewWorkersInFlight = new Set();
+  let activeTurnCount = 0;
+  let crewEventSink = null;
+  let crewWakeExternalSubmit = null;
+  let lastCrewProgress = { workers: [], inFlightIds: [] };
+  const refreshCrewProgressCache = async () => {
+    const disk = crewState ? await readCrewStateFile(root).catch(() => null) : null;
+    lastCrewProgress = {
+      workers: crewState
+        ? listCrewWorkersFromState(disk).map(buildCrewWorkerStatusRecord)
+        : [],
+      inFlightIds: [...crewWorkersInFlight],
+    };
+    return lastCrewProgress;
+  };
+  const publishCrewWorkersChanged = () => {
+    lastCrewProgress = {
+      ...lastCrewProgress,
+      inFlightIds: [...crewWorkersInFlight],
+    };
+    crewEventSink?.({
+      type: 'crew:workers_changed',
+      inFlight: lastCrewProgress.inFlightIds.length,
+      inFlightIds: lastCrewProgress.inFlightIds,
+      workers: lastCrewProgress.workers,
+    });
+    void refreshCrewProgressCache().then((progress) => {
+      crewEventSink?.({
+        type: 'crew:workers_changed',
+        inFlight: progress.inFlightIds.length,
+        inFlightIds: progress.inFlightIds,
+        workers: progress.workers,
+      });
+    }).catch(() => {});
+  };
+  const crewWakeBridge = { submit: async () => {} };
+  const crewCoordinator = createCrewCoordinator({
+    inFlightWorkers: crewWorkersInFlight,
+    isTurnActive: () => activeTurnCount > 0,
+    submitWake: (text, item) => crewWakeBridge.submit(text, item),
+    onWakeQueued: (item) => {
+      crewEventSink?.({
+        type: 'crew:wake',
+        headline: parseCrewWakeHeadline(item.text),
+        messageId: item.messageId,
+        timestamp: item.timestamp,
+        pending: true,
+      });
+    },
+  });
+  const crewWorkerScheduler = createCrewWorkerScheduler({
+    getLimit: () => config?.crew?.max_workers ?? 4,
+  });
+  const crewJobRegistry = new Map();
+  const waitForCrewJob = async (job, timeoutMs = 15_000) => {
+    if (!job?.promise) return;
+    let timer;
+    try {
+      await Promise.race([
+        Promise.resolve(job.promise).catch(() => null),
+        new Promise((resolve) => {
+          timer = setTimeout(resolve, timeoutMs);
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  };
+  const cancelCrewWorker = async ({ workerId } = {}) => {
+    const id = String(workerId || '').trim();
+    if (!id) {
+      return { ok: false, code: 'MISSING_ID', error: 'worker_id is required.' };
+    }
+    const job = crewJobRegistry.get(id);
+    if (job?.controller && !job.controller.signal.aborted) {
+      job.controller.abort(createCrewCancelReason());
+    }
+    await waitForCrewJob(job);
+    if (crewJobRegistry.get(id) === job) crewJobRegistry.delete(id);
+    crewWorkersInFlight.delete(id);
+    if (job?.kind === 'reviewer') {
+      publishCrewWorkersChanged();
+      return {
+        ok: true,
+        cancelled: 'review',
+        workerId: id,
+        worktreeRemoved: false,
+        message: `Cancelled the in-flight review of "${id}". The worker worktree was kept. Call cancel_worker again to remove that worker.`,
+      };
+    }
+    const disk = await readCrewStateFile(root).catch(() => null);
+    const worker = listCrewWorkersFromState(disk).find((item) => item.id === id);
+    if (!worker && !job) {
+      return { ok: false, code: 'NOT_FOUND', error: `Unknown Crew worker "${id}".` };
+    }
+    if (worker?.integrated === true) {
+      return {
+        ok: false,
+        code: 'WORKER_INTEGRATED',
+        error: `Crew worker "${id}" is already integrated. It no longer has a worktree to cancel.`,
+      };
+    }
+    if (worker) {
+      const removed = await teardownCrewWorker({ cwd: root, id, force: true }).catch((error) => ({
+        ok: false,
+        error: String(error?.message || error),
+      }));
+      if (!removed?.ok && removed?.code !== 'NOT_FOUND') {
+        publishCrewWorkersChanged();
+        return {
+          ok: false,
+          code: removed?.code || 'TEARDOWN_FAILED',
+          error: removed?.error || `Failed to remove Crew worker "${id}".`,
+        };
+      }
+    }
+    publishCrewWorkersChanged();
+    return {
+      ok: true,
+      cancelled: 'worker',
+      workerId: id,
+      worktreeRemoved: true,
+      message: `Cancelled Crew worker "${id}" and removed its worktree.`,
+    };
+  };
+  const markStaleCrewWorkers = async () => {
+    if (!crewState) return;
+    const disk = await readCrewStateFile(root);
+    const workers = listCrewWorkersFromState(disk);
+    for (const worker of workers) {
+      if (worker.runStatus !== 'running') continue;
+      crewWorkersInFlight.delete(worker.id);
+      await patchCrewWorkerRecord(root, worker.id, {
+        runStatus: 'failed',
+        runError: 'Interrupted (session restored).',
+      }).catch(() => null);
+      const interrupted = buildCrewCompletionEvent({
+        workerId: worker.id,
+        status: 'interrupted',
+        summary: 'Interrupted (session restored).',
+      });
+      if (interrupted) {
+        await appendCrewEvent(root, interrupted).catch(() => null);
+      }
+    }
+  };
+  const persistCrewState = async (next) => {
+    crewState = normalizeCrewState(next);
+    if (!currentSession || typeof currentSession !== 'object') return;
+    if (crewState) currentSession.crew = crewState;
+    else delete currentSession.crew;
+    await saveSession(currentSession).catch(() => {});
+    if (!crewState) return;
+    await writeCrewStateFile(root, {
+      version: 1,
+      ...crewState,
+      sessionId: currentSession.id,
+    }).catch(() => {});
+  };
+  const deactivateCrew = async () => {
+    if (!crewState) return { ok: true, crew: null };
+    const inFlightIds = [...crewWorkersInFlight];
+    if (inFlightIds.length > 0) {
+      const message = `Crew still has running workers: ${inFlightIds.join(', ')}. Wait for completion before turning Crew off.`;
+      return {
+        ok: false,
+        code: 'WORKERS_IN_FLIGHT',
+        error: message,
+        message,
+        workers: inFlightIds,
+        crew: crewState,
+      };
+    }
+    await removeCrewWorktrees({ cwd: root }).catch(() => ({ kept: [] }));
+    await exitCrewMode({
+      cwd: root,
+      sessionId: currentSession?.id,
+      previous: crewState,
+    });
+    await persistCrewState(null);
+    lastCrewProgress = { workers: [], inFlightIds: [] };
+    await refreshCrewGitInspect();
+    publishCrewWorkersChanged();
+    return { ok: true, crew: null };
+  };
+  const setCrewMode = async (active) => {
+    const want = active === true || active === 'on' || String(active).toLowerCase() === 'true';
+    if (!want) return deactivateCrew();
+    if (crewState) {
+      await persistCrewState(crewState);
+      const inspect = await refreshCrewGitInspect();
+      return {
+        ok: true,
+        crew: crewState,
+        dirtyCount: inspect.dirtyCount || 0,
+        ...(inspect.warning ? { warning: inspect.warning } : {}),
+      };
+    }
+    const previousMode = normalizeExecutionMode(executionMode);
+    const switchedFromDaily = previousMode !== 'plan';
+    if (switchedFromDaily) {
+      const previouslyArmed = new Set([...skillHooksSession.activeSkills.keys()]);
+      executionMode = 'plan';
+      await setConfigValue('execution.mode', 'plan');
+      config = attachRuntimeState(await loadConfig());
+      await reloadWorkspaceHooks();
+      await reconcileSessionStartForModeChange(previouslyArmed);
+    }
+    const result = await enterCrewMode({
+      cwd: root,
+      sessionId: currentSession?.id,
+    });
+    if (!result.ok) {
+      if (switchedFromDaily) {
+        const previouslyArmed = new Set([...skillHooksSession.activeSkills.keys()]);
+        executionMode = 'normal';
+        await setConfigValue('execution.mode', 'normal');
+        config = attachRuntimeState(await loadConfig());
+        await reloadWorkspaceHooks();
+        await reconcileSessionStartForModeChange(previouslyArmed);
+      }
+      return result;
+    }
+    await persistCrewState(result.crew);
+    lastCrewGitInspect = {
+      dirtyCount: result.dirtyCount || 0,
+      ...(result.warning ? { warning: result.warning } : {}),
+    };
+    return result;
+  };
+  if (crewState && normalizeExecutionMode(executionMode) !== 'plan') {
+    await deactivateCrew();
+  } else if (crewState) {
+    await writeCrewStateFile(root, {
+      version: 1,
+      ...crewState,
+      sessionId: currentSession?.id,
+    }).catch(() => {});
+    await markStaleCrewWorkers();
+    await refreshCrewProgressCache();
+    await refreshCrewGitInspect();
+  }
   let compactState = null;
   const normalizeCompactThreshold = (value, fallback = 60) => {
     const num = Number(value);
@@ -8168,6 +9332,7 @@ export async function createChatRuntime({
         : [],
     );
     executionMode = resolveRuntimeExecutionMode(config.execution?.mode || 'normal', config, currentSession);
+    if (normalizeExecutionMode(executionMode) !== 'plan') await deactivateCrew();
     syncCompactStateFromConfig();
 
     const resolvedModel = String(nextModel || '').trim();
@@ -8433,6 +9598,12 @@ export async function createChatRuntime({
     if (!next?.id || next.id === currentSession?.id) return;
     currentSession = next;
     compactedForModel = Array.isArray(next.compact?.view) ? next.compact.view : null;
+    if (crewState) {
+      currentSession.crew = crewState;
+      void persistCrewState(crewState);
+    } else {
+      crewState = normalizeCrewState(currentSession.crew);
+    }
   };
   const appendSessionMessage = (message) => {
     currentSession.messages.push(message);
@@ -8652,15 +9823,17 @@ export async function createChatRuntime({
     await saveSession(currentSession).catch(() => {});
   };
 
-  const executeSubmission = async (line, onAgentEvent, options = {}) => {
+  const executeSubmissionTurn = async (line, onAgentEvent, options = {}) => {
+    const endMemoryActivity = beginSessionMemoryActivity(currentSession.id);
+    activeTurnCount += 1;
+    try {
     // 每次提交创建新的 AbortController，替代旧的
     activeAbortController = new AbortController();
     const { signal } = activeAbortController;
-    const codingRouteEnabled = normalizeExecutionMode(executionMode) === 'plan';
     const inputText = String(line || '');
     const activeReplySystemPrompt = await buildActiveSystemPrompt({
-      includeSkillIndex: !codingRouteEnabled,
-      includeMemoryGuide: !codingRouteEnabled,
+      includeSkillIndex: true,
+      includeMemoryGuide: true,
       userQuery: inputText,
     });
     const memoryInject = turnMemorySnapshot?.inject || null;
@@ -8713,38 +9886,6 @@ export async function createChatRuntime({
         .map((name) => String(name || '').trim())
         .filter(Boolean)
     );
-    const maybeAutoDreamFromRuntime = async () => {
-      const threshold = Number(config?.memory?.auto_dream_threshold ?? 10);
-      if (!(threshold > 0)) return null;
-      let entries = [];
-      try {
-        entries = await listInbox();
-      } catch {
-        return null;
-      }
-      if (entries.length < threshold) return null;
-      if (onAgentEvent) onAgentEvent({ type: 'dream:auto', message: 'inbox threshold reached' });
-      try {
-        const report = await runDreamConsolidation({
-          dryRun: false,
-          workspaceRoot: root,
-          config,
-          writeAudit: true
-        });
-        if (onAgentEvent) {
-          onAgentEvent({ type: 'dream:complete', report });
-        }
-        return report;
-      } catch (error) {
-        if (onAgentEvent) {
-          onAgentEvent({
-            type: 'dream:complete',
-            report: { ok: false, error: String(error?.message || error || 'unknown dream error') }
-          });
-        }
-        return null;
-      }
-    };
     const approvePendingSpec = async ({ executeImmediately = false, saveOnly = false } = {}) => {
       if (!hasPendingSpecApproval(currentSession)) {
         return { type: 'system', text: 'No pending spec approval.' };
@@ -9053,47 +10194,10 @@ export async function createChatRuntime({
       return { type: 'assistant', text: result.text, aborted: !!result.aborted };
     }
     const expandedText = await expandFileMentions(inputText, root);
-    const autoRoute = classifyAutoRoute(expandedText);
     const isCodingMode = normalizeExecutionMode(executionMode) === 'plan';
     const memoryRoute = classifyMemoryRoute(expandedText);
-    const routingRuntimeState = isCodingMode
-      ? buildRuntimeStateSnapshot({
-          currentSession,
-          config,
-          model,
-          executionMode,
-          extraSession: null,
-          workspaceRoot: root,
-        })
-      : null;
-    const contextUsage = routingRuntimeState
-      ? {
-          estimated_tokens: routingRuntimeState.currentContextTokens,
-          max_tokens: routingRuntimeState.maxContextTokens,
-          usage_pct: routingRuntimeState.contextUsagePct,
-        }
-      : {};
-    const toolTrace = isCodingMode ? buildPreviousTurnToolTrace(currentSession) : {};
-    const useSemanticJudge = isCodingMode;
-    const codingRoutePromise = (async () => {
-      const codingSkillIndexPrompt = useSemanticJudge ? await getSkillIndexPrompt() : '';
-      return {
-        codingSkillIndexPrompt,
-        codingRoute: await evaluateCodingRouteGraph({
-          executionMode: normalizeExecutionMode(executionMode),
-          text: expandedText,
-          autoRoute,
-          memoryRoute,
-          skillIndexPrompt: codingSkillIndexPrompt,
-          contextUsage,
-          sensitive: isSensitiveMemoryContent(expandedText),
-          judge: useSemanticJudge
-            ? (request) => judgeCodingRouteNodes({ request, config, model, signal })
-            : null,
-          toolTrace,
-        }),
-      };
-    })();
+    const crewActive = Boolean(normalizeCrewState(crewState));
+    const codingPolicy = createCodingTurnPolicy({ text: expandedText, crewActive });
 
     // Refresh workspace + package profiles every turn so installs/toggles take
     // effect without restarting the runtime. SessionStart only re-fires for
@@ -9155,40 +10259,6 @@ export async function createChatRuntime({
       ...(Array.isArray(skillHooksSession.sessionStartContexts) ? skillHooksSession.sessionStartContexts : []),
       ...formatHookContextLines(userPromptHookResult, 'UserPromptSubmit'),
     ];
-    const { codingSkillIndexPrompt, codingRoute } = await codingRoutePromise;
-    if (codingRoute.active) {
-      onAgentEvent?.({
-        type: 'routing:graph',
-        startedAt: new Date().toISOString(),
-        graphVersion: codingRoute.graph_version,
-        path: codingRoute.path,
-        source: codingRoute.source,
-        delegationMode: codingRoute.delegation_mode,
-        decisions: codingRoute.decisions,
-      });
-    }
-    const graphSelectedSkillNames = (
-      codingRoute?.decisions?.skills?.selected_names || []
-    ).filter((name) => {
-      const skill = commands?.get?.(name);
-      return Boolean(
-        skill
-        && isSkillIndexEligible(skill)
-        && !isSkillModelInvocationDisabled(skill)
-        && isSkillEnabled(config, name, skill, executionMode)
-      );
-    });
-    if (graphSelectedSkillNames.length > 0) {
-      onAgentEvent?.({
-        type: 'skill:auto-selected',
-        names: graphSelectedSkillNames,
-        source: 'coding-route-graph',
-      });
-      await Promise.all(
-        graphSelectedSkillNames.map((skillName) =>
-          armSkillHooksByName(skillName, { onAgentEvent })),
-      );
-    }
     const injectAlwaysSkills = shouldInjectAlwaysSkills(executionMode);
     const alwaysSkills = injectAlwaysSkills
       ? getAlwaysSkillCommands(commands, config, dismissedAlwaysSkills, executionMode)
@@ -9202,32 +10272,23 @@ export async function createChatRuntime({
     const alwaysSkillPrompt = injectAlwaysSkills
       ? buildAlwaysSkillPromptBlock(commands, config, dismissedAlwaysSkills, executionMode, root)
       : '';
-    const routedSkillIndexPrompt = codingRoute?.decisions?.skills?.inject_index
-      ? codingSkillIndexPrompt
-      : '';
-    const routedSelectedSkillPrompt = buildSelectedSkillPromptBlock(
-      commands,
-      graphSelectedSkillNames,
-      config,
-      executionMode,
-      root,
-    );
-    const memoryHint = isCodingMode ? '' : buildMemoryRouteHintBlock(memoryRoute);
-    const codingRouteDecisionBlock = buildCodingRouteDecisionBlock(codingRoute);
+    const memoryHint = buildMemoryRouteHintBlock(memoryRoute);
+    const codingPolicyBlock = isCodingMode ? buildCodingTurnPolicyBlock(codingPolicy) : '';
     // Per-turn routing / skill / hook context belongs in the user turn, not the
     // system prompt, so the system prompt stays a stable, cacheable prefix.
     const turnRoutingContext = [
-      routedSkillIndexPrompt,
-      routedSelectedSkillPrompt,
       alwaysSkillPrompt,
       memoryHint,
-      codingRouteDecisionBlock,
+      codingPolicyBlock,
       ...hookContexts,
     ].filter(Boolean).join('\n\n');
     const codingRouteAllowedTools = isCodingMode
-      ? EXECUTION_MODE_TOOL_POLICY.plan.filter((toolName) => (
-          isCodingRouteToolAllowed(codingRoute, toolName)
-        ))
+      ? applyCrewParentToolPolicy(
+          EXECUTION_MODE_TOOL_POLICY.plan.filter((toolName) => (
+            isCodingTurnToolAllowed(codingPolicy, toolName)
+          )),
+          { crewActive },
+        )
       : undefined;
     await persistLastSystemPrompt(activeReplySystemPrompt);
     const result = await askModel({
@@ -9255,16 +10316,52 @@ export async function createChatRuntime({
       workspaceRoot: root,
       selectedSkillNames: [
         ...(Array.isArray(options?.selectedSkillNames) ? options.selectedSkillNames : []),
-        ...graphSelectedSkillNames,
       ],
       skillHooksSession,
       onSkillLoaded: (skillName) => armSkillHooksByName(skillName, { onAgentEvent }),
       memoryInject,
       retrievedText,
+      crewState,
+      crewWorkersInFlight,
+      crewCoordinator,
+      crewWorkerScheduler,
+      crewJobRegistry,
+      onCancelWorker: cancelCrewWorker,
+      crewEventSink,
+      publishCrewWorkersChanged,
     });
     syncExecutionModeWithSession();
     void captureUserPromptForDream(expandedText);
     return { type: 'assistant', text: result.text, aborted: !!result.aborted };
+    } finally {
+      activeTurnCount -= 1;
+      endMemoryActivity();
+      if (config?.memory?.background_review?.after_turn !== false) {
+        scheduleSessionMemoryReview({ sessionId: currentSession.id, config });
+      }
+      if (!crewWakeExternalSubmit) {
+        void crewCoordinator.drainPendingWakes();
+      }
+    }
+  };
+  crewWakeBridge.submit = (wakeText, item) => {
+    void markCrewEventsDeliveredForWake(root, wakeText).catch(() => null);
+    if (typeof crewWakeExternalSubmit === 'function') {
+      return crewWakeExternalSubmit(wakeText, item);
+    }
+    return executeSubmissionTurn(wakeText, undefined, { crewWake: true });
+  };
+  const submit = async (line, onAgentEvent, options = {}) => {
+    const text = String(line || '');
+    if (!text.trim()) return { type: 'noop' };
+    if (text.trimStart().startsWith('!')) {
+      const shell = await handleShellInput(text.trimStart().slice(1), config, root);
+      return { type: 'shell', text: shell.text };
+    }
+    if (options?.crewWake === true) {
+      return executeSubmissionTurn(text, onAgentEvent, options);
+    }
+    return submitMessage({ text }, onAgentEvent);
   };
   const getAvailableSkills = () =>
     Array.from(commands.values())
@@ -9287,9 +10384,57 @@ export async function createChatRuntime({
       })
       .sort((a, b) => a.name.localeCompare(b.name));
 
+  const getCommandCatalog = () => Array.from(commands.values())
+    .filter((command) => {
+      if (command?.metadata?.type !== 'skill') return true;
+      return isUserInvocableSkill(command)
+        && isSkillEnabled(config, command.name, command, executionMode);
+    })
+    .map((command) => {
+      const source = String(command.source || '');
+      const contexts = config?.skills?.contexts?.[command.name]
+        || (source.startsWith('bundled') || source.startsWith('project') ? ['coding'] : ['coding', 'daily']);
+      const scope = source === 'project' || source.startsWith('project-')
+        ? 'project'
+        : source === 'global' || source.startsWith('global-') || source.startsWith('registry-')
+          ? 'global'
+          : source.startsWith('bundled-')
+            ? 'builtin'
+            : '';
+      return {
+        name: String(command.name || ''),
+        description: String(command.metadata?.description || '').trim(),
+        kind: command.metadata?.type === 'skill' ? 'skill' : 'command',
+        ...(command.metadata?.type === 'skill' ? { contexts } : {}),
+        ...(scope ? { scope } : {}),
+      };
+    })
+    .filter((command) => command.name)
+    .sort((a, b) => a.name.localeCompare(b.name));
+
   const submitMessage = async (submission, onAgentEvent) => {
-    const normalized = normalizeChatSubmission(submission);
+    const endMemoryInput = beginSessionMemoryActivity(currentSession.id);
+    try {
+    let normalized = normalizeChatSubmission(submission);
+    const displayText = normalized.text;
     await reloadCommandsAndSkills();
+    const invocation = parseSlashCommandInvocation(normalized.text);
+    const invoked = invocation ? commands.get(invocation.name) : null;
+    if (invoked?.metadata?.type === 'skill') {
+      if (!isUserInvocableSkill(invoked) || !isSkillEnabled(config, invoked.name, invoked, executionMode)) {
+        throw new Error(`Skill is disabled or unavailable: ${invocation.name}`);
+      }
+      normalized = {
+        ...normalized,
+        text: invocation.argLine,
+        skillNames: [...new Set([...normalized.skillNames, invoked.name])],
+      };
+    } else if (invoked) {
+      normalized = {
+        ...normalized,
+        text: renderCommandPrompt(invoked, invocation.args, { config, cwd: root }),
+      };
+    }
     const composed = composeSelectedSkills(commands, normalized, {
       isEnabled: (command) => isSkillEnabled(config, command.name, command, executionMode),
       config,
@@ -9308,7 +10453,7 @@ export async function createChatRuntime({
         });
       }
     }
-    const result = await executeSubmission(composed.text, onAgentEvent, {
+    const result = await executeSubmission(displayText || composed.text, onAgentEvent, {
       modelText: appendAttachmentContext(composed.modelText, submission?.modelText),
       modelImages: Array.isArray(submission?.modelImages) ? submission.modelImages : [],
       attachmentIds: normalized.attachmentIds,
@@ -9319,17 +10464,12 @@ export async function createChatRuntime({
       scheduleSessionMemoryReview({ sessionId: currentSession.id, config });
     }
     return result;
+    } finally { endMemoryInput(); }
   };
 
-  const submit = async (line, onAgentEvent) => {
-    const text = String(line || '');
-    if (!text.trim()) return { type: 'noop' };
-    if (text.trimStart().startsWith('!')) {
-      const shell = await handleShellInput(text.trimStart().slice(1), config, root);
-      return { type: 'shell', text: shell.text };
-    }
-    return submitMessage({ text }, onAgentEvent);
-  };
+  const executeSubmission = async (line, onAgentEvent, options = {}) => (
+    executeSubmissionTurn(line, onAgentEvent, options)
+  );
 
   const dispatchAction = async (action, options = {}) => {
     const onAgentEvent = typeof options.onAgentEvent === 'function'
@@ -9403,6 +10543,22 @@ export async function createChatRuntime({
   return {
     submit,
     submitMessage,
+    isTurnActive: () => activeTurnCount > 0,
+    drainCrewPendingWakes: () => crewCoordinator.drainPendingWakes(),
+    getCrewWorkersInFlight: () => crewWorkersInFlight.size,
+    waitForCrewIdle: async ({ timeoutMs = 10_000 } = {}) => {
+      const started = Date.now();
+      while (Date.now() - started < timeoutMs) {
+        if (activeTurnCount === 0 && crewCoordinator.pendingWakeCount === 0 && crewWorkersInFlight.size === 0) {
+          return true;
+        }
+        if (activeTurnCount === 0 && crewCoordinator.pendingWakeCount > 0) {
+          await crewCoordinator.drainPendingWakes();
+        }
+        await new Promise((resolve) => setTimeout(resolve, 40));
+      }
+      throw new Error('Timed out waiting for crew idle.');
+    },
     submitCodeWiki: (line, onAgentEvent, options = {}) => executeSubmission(line, onAgentEvent, options),
     dispatchAction,
     getSession: () => currentSession,
@@ -9428,6 +10584,8 @@ export async function createChatRuntime({
     })),
     getSessionCompact: () => currentSession.compact || null,
     getAvailableSkills,
+    getCommandCatalog,
+    listCommandNames: () => getCommandCatalog().map(({ name }) => name),
     getLastSystemPrompt: () => String(currentSession?.lastSystemPrompt || ''),
     persistRunStatus,
     getChangeSets: () => listGitOplogChanges(changeTracker),
@@ -9449,6 +10607,10 @@ export async function createChatRuntime({
       const normalized = normalizeExecutionMode(next);
       if (!['normal', 'plan'].includes(normalized)) return false;
       if (normalized === normalizeExecutionMode(executionMode)) return true;
+      if (normalized === 'normal') {
+        const deactivated = await deactivateCrew();
+        if (!deactivated.ok) return false;
+      }
       const previouslyArmed = new Set([...skillHooksSession.activeSkills.keys()]);
       executionMode = normalized;
       await setConfigValue('execution.mode', normalized);
@@ -9458,6 +10620,7 @@ export async function createChatRuntime({
       await reconcileSessionStartForModeChange(previouslyArmed);
       return true;
     },
+    setCrewMode,
     setApprovalMode: async (next) => {
       const normalized = String(next || '').toLowerCase().replace(/-/g, '_');
       if (!['review', 'auto', 'full_access'].includes(normalized)) return false;
@@ -9500,6 +10663,14 @@ export async function createChatRuntime({
     },
     setRequestToolApproval: (handler) => {
       requestToolApprovalObserver = typeof handler === 'function' ? handler : null;
+      return true;
+    },
+    setCrewEventSink: (handler) => {
+      crewEventSink = typeof handler === 'function' ? handler : null;
+      return true;
+    },
+    setCrewWakeSubmit: (handler) => {
+      crewWakeExternalSubmit = typeof handler === 'function' ? handler : null;
       return true;
     },
     resolveToolApproval: (requestId, decision = {}) => {
@@ -9617,7 +10788,11 @@ export async function createChatRuntime({
         executionMode,
         extraSession: activeSubSession,
         workspaceRoot: root,
-        alwaysSkillNames: getAlwaysSkillCommands(commands, config, null, executionMode).map((skill) => skill.name)
+        alwaysSkillNames: getAlwaysSkillCommands(commands, config, null, executionMode).map((skill) => skill.name),
+        crewState,
+        crewWorkers: lastCrewProgress.workers,
+        crewInFlightIds: lastCrewProgress.inFlightIds,
+        crewDirtyCount: lastCrewGitInspect.dirtyCount || 0,
       })
   };
 }

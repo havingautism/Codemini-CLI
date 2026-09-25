@@ -1,3 +1,4 @@
+import { isDangerousCommand } from './shell.js';
 import path from 'node:path';
 import { getEffectivePolicy } from './shell-profile.js';
 import { getBaseConfigDir, getSkillsDir } from './paths.js';
@@ -79,7 +80,7 @@ function splitCommandSegments(command) {
       continue;
     }
 
-    if (ch === '|' || ch === ';' || ch === '&') {
+    if (ch === '|' || ch === ';' || ch === '&' || ch === '\n' || ch === '\r') {
       if (current.trim()) segments.push(current.trim());
       current = '';
       continue;
@@ -236,13 +237,15 @@ export function evaluateCommandPolicy(command, config, workspaceRoot = process.c
     return { allowed: false, reason: 'empty command' };
   }
 
-  if (!policy.allow_dangerous_commands && includesAny(lower, policy.blocked_command_patterns)) {
+  if (!policy.allow_dangerous_commands && isDangerousCommand(cmd, policy.blocked_command_patterns)) {
     return { allowed: false, reason: 'blocked by dangerous command pattern' };
   }
 
   if (!policy.safe_mode) {
     return { allowed: true };
   }
+
+  if (/[`]|\$\(|[<>]\(/.test(cmd)) return { allowed: false, reason: 'ambiguous command substitution requires approval' };
 
   // The Linux microVM is the command boundary. Reapplying the host-oriented
   // allowlist and path parser here rejects valid guest commands and paths such

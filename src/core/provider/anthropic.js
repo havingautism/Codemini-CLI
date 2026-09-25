@@ -1,3 +1,4 @@
+import { fetchWithRetry } from './fetch-with-retry.js';
 import { resolveAnthropicReasoning } from './reasoning-effort.js';
 import { isCompletionTruncated } from './completion-status.js';
 import { stringifyGatewayJson } from './json-body.js';
@@ -402,21 +403,24 @@ export async function createChatCompletion({
   tools,
   toolChoice,
   reasoningEffort,
+  onPayloadPrepared,
   timeoutMs = 1800000,
   maxTokens = 16384,
+  maxRetries = 2,
   signal: externalSignal
 }) {
   const payload = buildPayload({ model, temperature, messages, tools, maxTokens, toolChoice, reasoningEffort });
+  onPayloadPrepared?.(payload);
   const timeoutSignal = AbortSignal.timeout(timeoutMs);
   const signal = externalSignal
     ? AbortSignal.any([timeoutSignal, externalSignal])
     : timeoutSignal;
-  const response = await fetch(buildMessagesUrl(baseUrl), {
+  const response = await fetchWithRetry(buildMessagesUrl(baseUrl), {
     method: 'POST',
     headers: createHeaders(apiKey),
     body: stringifyGatewayJson(payload),
     signal
-  });
+  }, { maxRetries });
   const data = await parseJsonResponse(response);
   return extractAssistantResult(data, messages);
 }
@@ -430,21 +434,27 @@ export async function createChatCompletionStream({
   tools,
   toolChoice,
   reasoningEffort,
+  onPayloadPrepared,
   onTextDelta,
   onReasoningDelta,
   onToolCallDelta,
   timeoutMs = 1800000,
   maxTokens = 16384,
-  signal: externalSignal
+  maxRetries = 2,
+  signal: externalSignal,
 }) {
   // 合并超时信号与外部中止信号
   const timeoutSignal = AbortSignal.timeout(timeoutMs);
   const controller = new AbortController();
-  const onTimeoutAbort = () => controller.abort(
-    new Error(`Gateway request timed out after ${timeoutMs}ms`)
-  );
+  const onTimeoutAbort = () => {
+    controller.abort(
+      new Error(`Gateway request timed out after ${timeoutMs}ms`)
+    );
+  };
   timeoutSignal.addEventListener('abort', onTimeoutAbort, { once: true });
-  const onExternalAbort = () => controller.abort();
+  const onExternalAbort = () => {
+    controller.abort();
+  };
   if (externalSignal) {
     if (externalSignal.aborted) {
       controller.abort();
@@ -454,12 +464,13 @@ export async function createChatCompletionStream({
   }
   try {
     const payload = buildPayload({ model, temperature, messages, tools, stream: true, maxTokens, toolChoice, reasoningEffort });
-    const response = await fetch(buildMessagesUrl(baseUrl), {
+    onPayloadPrepared?.(payload);
+    const response = await fetchWithRetry(buildMessagesUrl(baseUrl), {
       method: 'POST',
       headers: createHeaders(apiKey),
       body: stringifyGatewayJson(payload),
       signal: controller.signal
-    });
+    }, { maxRetries });
 
     if (!response.ok || !response.body) {
       const text = await response.text().catch(() => '');

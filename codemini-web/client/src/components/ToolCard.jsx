@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import {
   Archive,
   ArrowSquareOut,
+  CaretDown,
   FileText,
   Folder,
   FolderOpen,
@@ -19,6 +20,7 @@ import {
   DisclosureLeading,
 } from "@/components/DisclosureLeading.jsx";
 import { TodoCard } from "@/components/TodoList.jsx";
+import { HtmlArtifactCard } from "@/components/HtmlArtifactCard.jsx";
 import {
   requestFromToolCard,
   resultFromToolCard,
@@ -26,7 +28,7 @@ import {
 } from "@/components/UserInputDialog.jsx";
 import { useApp } from "@/context/app-context.jsx";
 import { openWorkspaceFile } from "@/hooks/use-api.js";
-import { cn } from "@/lib/utils";
+import { shouldSuppressCrewTaskTodos } from "@/lib/crew-ui-state.js";
 import { interactiveRequestForSession } from "@/lib/session-ui-state.js";
 import {
   extractToolName,
@@ -34,11 +36,13 @@ import {
   getConversationToolOutput,
   getFileToolMeta,
   getTodoToolItems,
+  isHtmlArtifactCard,
   isRequestUserInputCard,
   isTodoToolCard,
   resolveToolHeaderParts,
 } from "@/lib/tool-card-display.js";
 import { t } from "../../i18n/index.js";
+import { cn } from "@/lib/utils";
 import { PatchDiff } from "@pierre/diffs/react";
 
 const TOOL_ICONS = {
@@ -49,6 +53,8 @@ const TOOL_ICONS = {
   apply_patch: PencilLine,
   create_plan: ListChecks,
   run_subagent: ListChecks,
+  crew_status: ListChecks,
+  land_workers: ListChecks,
   fork_task: ListChecks,
   tasks: ListChecks,
   create_spec: FileText,
@@ -156,13 +162,14 @@ export function FilePreview({ meta }) {
   const themeType = usePatchThemeType();
   if (isUnifiedPatch(meta?.diffPreview)) {
     return (
-      <div className="mt-2 max-h-[420px] overflow-auto rounded-md border border-(--border-default) bg-(--tool-detail-bg) text-xs">
+      <div className="codemini-file-tool-diff max-h-[420px] overflow-auto border border-(--border-default) bg-(--tool-detail-bg) text-xs">
         <PatchDiff
           patch={meta.diffPreview}
           options={{
             theme: { dark: "pierre-dark", light: "pierre-light" },
             themeType,
             diffStyle: "unified",
+            disableFileHeader: true,
           }}
         />
       </div>
@@ -340,11 +347,57 @@ function ToolCardHeaderMeta({
   );
 }
 
+function FileToolHeaderMeta({ fileMeta, open, toolLabel }) {
+  const { dir, name } = splitPathForDisplay(fileMeta?.path);
+  return (
+    <>
+      <span className="shrink-0">{toolLabel}</span>
+      <span
+        className="codemini-file-tool-path flex min-w-0 flex-1 items-center gap-1.5 font-mono text-xs font-normal"
+        title={fileMeta?.path}
+      >
+        <span className="flex shrink-0 items-center gap-1.5 text-(--text-process-hover)">
+          <FileTypeIcon path={fileMeta?.path} size="sm" />
+          <span>{name || "file"}</span>
+        </span>
+        {dir ? (
+          <span className="min-w-0 truncate text-(--text-process-detail)">
+            ({dir})
+          </span>
+        ) : null}
+      </span>
+      {fileMeta?.added > 0 && (
+        <span className="shrink-0 font-mono text-xs text-(--accent-green)">
+          +{fileMeta.added}
+        </span>
+      )}
+      {fileMeta?.removed > 0 && (
+        <span className="shrink-0 font-mono text-xs text-(--accent-red)">
+          -{fileMeta.removed}
+        </span>
+      )}
+      <CaretDown
+        size={14}
+        aria-hidden="true"
+        className={cn(
+          "codemini-file-tool-caret shrink-0 text-(--text-process-detail)",
+          open && "is-open",
+          !fileMeta && "invisible",
+        )}
+      />
+    </>
+  );
+}
+
 export function ToolCard({
   card,
   defaultOpen = false,
   collapsible = true,
 }) {
+  const { state } = useApp();
+  const suppressCrewTodos = shouldSuppressCrewTaskTodos({
+    crewActive: Boolean(state.runtimeState?.crewActive),
+  });
   const [open, setOpen] = useState(defaultOpen);
   const [fileAction, setFileAction] = useState("");
   const [fileActionError, setFileActionError] = useState("");
@@ -356,12 +409,16 @@ export function ToolCard({
     ? getTodoToolItems(card.arguments, card.result)
     : [];
   if (isTasksTool) {
+    if (suppressCrewTodos) return null;
     return (
       <TodoCard todos={todoItems} persistKey={card?.id || ""} />
     );
   }
   if (isRequestUserInputCard(card)) {
     return <UserInputToolCard card={card} />;
+  }
+  if (isHtmlArtifactCard(card)) {
+    return <HtmlArtifactCard card={card} />;
   }
   const fileMeta = getFileToolMeta(
     toolName,
@@ -407,6 +464,104 @@ export function ToolCard({
   const hasFilePreview = Boolean(fileMeta);
   const conversationOutput = getConversationToolOutput(card, { hasFilePreview });
   const showBody = showDetails && (hasFilePreview || Boolean(conversationOutput));
+  const fileDisplayMeta = fileMeta || (
+    toolName === "read" && filePath ? { path: filePath } : null
+  );
+
+  if (fileDisplayMeta && collapsible) {
+    return (
+      <div className="codemini-disclosure codemini-file-tool msg-process-meta relative">
+        <div className={cn(TOOL_ROW_CLASS, "codemini-file-tool-row")}>
+          <button
+            type="button"
+            className="flex min-w-0 flex-1 items-center gap-1.5 bg-transparent p-0 text-left"
+            onClick={() => setOpen((current) => !current)}
+            aria-expanded={open}
+          >
+            <DisclosureLeading open={open}>
+              <ToolCardIcon Icon={Icon} />
+            </DisclosureLeading>
+            <FileToolHeaderMeta
+              fileMeta={fileDisplayMeta}
+              open={open}
+              toolLabel={toolLabel}
+            />
+            {card.status === "running" ? (
+              <Spinner className="loading-dots--tool" aria-label={t("toolRunning")} />
+            ) : card.status === "error" || card.status === "blocked" ? (
+              <span
+                aria-hidden="true"
+                className={cn(
+                  "h-1.5 w-1.5 shrink-0 rounded-full",
+                  STATUS_STYLES[card.status],
+                )}
+              />
+            ) : null}
+          </button>
+          {canOpenFile ? (
+            <div
+              className="flex h-6 shrink-0 items-center gap-0.5"
+              role="group"
+              aria-label={`${t("openFile")} / ${t("revealFile")}: ${basename(filePath)}`}
+            >
+              <button
+                type="button"
+                className="flex size-6 items-center justify-center rounded-md text-(--text-muted) opacity-80 transition-[background-color,color,opacity,transform] duration-100 hover:bg-(--bg-hover) hover:text-(--accent-blue) hover:opacity-100 active:scale-[0.94] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-(--accent-blue)"
+                onClick={(event) => handleFileAction(event, "open")}
+                aria-label={`${t("openFile")}: ${basename(filePath)}`}
+                title={`${t("openFile")}: ${filePath}`}
+                disabled={Boolean(fileAction)}
+              >
+                {fileAction === "open" ? (
+                  <LinearRing size="sm" />
+                ) : (
+                  <ArrowSquareOut size={14} weight="bold" aria-hidden="true" />
+                )}
+              </button>
+              <button
+                type="button"
+                className="flex size-6 items-center justify-center rounded-md text-(--text-muted) opacity-80 transition-[background-color,color,opacity,transform] duration-100 hover:bg-(--bg-hover) hover:text-(--accent-blue) hover:opacity-100 active:scale-[0.94] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-(--accent-blue)"
+                onClick={(event) => handleFileAction(event, "reveal")}
+                aria-label={`${t("revealFile")}: ${basename(filePath)}`}
+                title={`${t("revealFile")}: ${filePath}`}
+                disabled={Boolean(fileAction)}
+              >
+                {fileAction === "reveal" ? (
+                  <LinearRing size="sm" />
+                ) : (
+                  <FolderOpen size={14} weight="bold" aria-hidden="true" />
+                )}
+              </button>
+            </div>
+          ) : null}
+        </div>
+
+        {fileActionError ? (
+          <div
+            role="alert"
+            className="mx-8 mb-1 rounded-md bg-(--accent-red-bg) px-2.5 py-2 text-xs text-(--accent-red)"
+          >
+            {fileActionError}
+          </div>
+        ) : null}
+
+        {showBody ? (
+          <div className="codemini-file-tool-body">
+            {hasFilePreview ? (
+              <>
+                <BackupNotice meta={fileMeta} />
+                <FilePreview meta={fileMeta} />
+              </>
+            ) : (
+              <div className="codemini-disclosure-payload codemini-disclosure-scroll mt-1">
+                <pre className={DETAIL_PRE_CLASS}>{conversationOutput}</pre>
+              </div>
+            )}
+          </div>
+        ) : null}
+      </div>
+    );
+  }
 
   return (
     <div className="codemini-disclosure msg-process-meta relative">

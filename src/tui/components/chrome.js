@@ -2,6 +2,11 @@ import { SelectList, matchesKey, truncateToWidth, visibleWidth } from '@earendil
 
 import { bold, color, sealAnsi, selectTheme, TEXT_FG } from '../theme.js';
 import { oneLine } from './messages.js';
+import {
+  buildCrewProgressItems,
+  formatCrewProgressLine,
+  shouldShowCrewProgressDock,
+} from '../../core/crew-progress.js';
 
 const SPINNER = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 const LIVE_STATES = new Set(['thinking', 'generating', 'tool', 'sending', 'stopping']);
@@ -116,6 +121,41 @@ export class QueuePanel {
   }
 }
 
+export class CrewProgressPanel {
+  constructor({ runtime, copy }) {
+    this.runtime = runtime;
+    this.copy = copy;
+  }
+
+  invalidate() {}
+
+  render(width) {
+    const state = this.runtime.getRuntimeState?.() || {};
+    if (!state.crewActive) return [];
+    const workers = Array.isArray(state.crewWorkers) ? state.crewWorkers : [];
+    const inFlightIds = Array.isArray(state.crewInFlightIds) ? state.crewInFlightIds : [];
+    if (!shouldShowCrewProgressDock({ crewActive: true, workers, inFlightIds })) return [];
+    const items = buildCrewProgressItems({ workers, inFlightIds });
+    const labels = {
+      running: this.copy.crewPhaseRunning,
+      queued: this.copy.crewPhaseQueued,
+      reviewing: this.copy.crewPhaseReviewing,
+      awaiting_review: this.copy.crewPhaseAwaitingReview,
+      ready: this.copy.crewPhaseReady,
+      dirty: this.copy.crewPhaseDirty,
+      merged: this.copy.crewPhaseMerged,
+      merging: this.copy.crewPhaseMerging,
+      failed: this.copy.crewPhaseFailed,
+      cancelled: this.copy.crewPhaseCancelled,
+      survey_done: this.copy.crewPhaseSurveyDone,
+      idle: this.copy.crewPhaseIdle,
+    };
+    const line = formatCrewProgressLine(items, labels);
+    if (!line) return [];
+    return [fill(`${color.warning(this.copy.crewProgress)}  ${color.muted(line)}`, width, color.surfaceBg)];
+  }
+}
+
 export class Footer {
   constructor({ runtime, model, sessionId, safeMode }) {
     this.runtime = runtime;
@@ -132,7 +172,11 @@ export class Footer {
     const approval = String(state.approvalMode || (this.safeMode ? 'auto' : 'full_access'));
     const sandbox = String(state.sandboxMode || 'workspace-write');
     const shell = String(state.shell || 'bash').toUpperCase();
-    const modeTag = mode === 'coding' ? `${color.accent('◆')} ${bold(color.accent('CODE'))}` : `${color.cyan('◆')} ${bold(color.cyan('DAILY'))}`;
+    const modeTag = state.crewActive
+      ? `${color.warning('◆')} ${bold(color.warning('CREW'))}`
+      : mode === 'coding'
+        ? `${color.accent('◆')} ${bold(color.accent('CODE'))}`
+        : `${color.cyan('◆')} ${bold(color.cyan('DAILY'))}`;
     const accessTag = approval === 'full_access'
       ? `${color.error('●')} ${color.error('OPEN')}`
       : approval === 'review'
@@ -295,7 +339,7 @@ export class SettingsDialog {
     const category = this.values.mode === 'daily' ? 'daily' : 'coding';
     const souls = this.souls.filter((soul) => soul.category === category).map((soul) => soul.name);
     return [
-      { key: 'mode', label: `🧭 ${this.copy.settingMode}`, options: ['coding', 'daily'] },
+      { key: 'mode', label: `🧭 ${this.copy.settingMode}`, options: ['coding', 'daily', 'crew'] },
       { key: 'reasoning', label: `🧠 ${this.copy.settingReasoning}`, options: ['off', 'auto', 'low', 'medium', 'high'] },
       { key: 'approval', label: `✅ ${this.copy.settingApproval}`, options: ['review', 'auto', 'full_access'] },
       { key: 'sandbox', label: `🔒 ${this.copy.settingSandbox}`, options: ['read-only', 'workspace-write', 'danger-full-access'] },

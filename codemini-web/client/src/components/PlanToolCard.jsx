@@ -21,6 +21,9 @@ import {
   shouldExpandPlanStep,
   stripDelegationTaskPrefix,
 } from "@/lib/plan-ui-state.js";
+import { describeCrewRunSubagent } from "../../../../src/core/tool-display.js";
+import { shouldSuppressCrewTaskTodos } from "@/lib/crew-ui-state.js";
+import { useApp } from "@/context/app-context.jsx";
 import { t } from "../../i18n/index.js";
 
 const SUBAGENT_AVATAR_STYLE = new Style(bottts);
@@ -29,6 +32,7 @@ const STATUS_DOT = {
   completed: "bg-[var(--accent-green)]",
   failed: "bg-[var(--accent-red)]",
   aborted: "bg-[var(--accent-orange)]",
+  cancelled: "bg-[var(--accent-orange)]",
   waiting: "bg-[var(--accent-orange)]",
   blocked: "bg-[var(--accent-orange)]",
 };
@@ -41,6 +45,7 @@ const STATUS_LABEL_KEY = {
   blocked: "subagentStatusBlocked",
   failed: "subagentStatusFailed",
   aborted: "subagentStatusAborted",
+  cancelled: "subagentStatusCancelled",
 };
 
 const FORK_STATUS_LABEL_KEY = {
@@ -51,6 +56,7 @@ const FORK_STATUS_LABEL_KEY = {
   blocked: "forkStatusBlocked",
   failed: "forkStatusFailed",
   aborted: "forkStatusAborted",
+  cancelled: "forkStatusCancelled",
 };
 
 function statusLabel(phase, kind = "subagent") {
@@ -280,6 +286,26 @@ function StepBody({ step }) {
   );
 }
 
+function CrewWorkerMeta({ args }) {
+  const crew = describeCrewRunSubagent(args);
+  if (!crew) return null;
+  const paths = Array.isArray(args?.paths)
+    ? args.paths.map((item) => String(item || "").trim()).filter(Boolean).join(", ")
+    : "";
+  const hint =
+    crew.kind === "review"
+      ? t("crewReviewHint")
+      : crew.kind === "survey"
+        ? t("crewSurveyHint")
+        : t("crewWorkerHint");
+  return (
+    <div className="mb-1 px-1 text-[11px] leading-snug text-(--text-muted)">
+      {hint}
+      {paths ? ` · ${paths}` : ""}
+    </div>
+  );
+}
+
 function SubagentTaskDetails({ task }) {
   const text = String(task || "").trim();
   if (!text) return null;
@@ -357,6 +383,8 @@ function SubagentStepRow({ step, index }) {
                   ? STATUS_DOT.completed
                   : status === "failed"
                     ? STATUS_DOT.failed
+                    : status === "cancelled" || status === "canceled" || status === "aborted"
+                      ? STATUS_DOT.cancelled
                     : status === "waiting" || status === "blocked"
                       ? STATUS_DOT[status]
                       : "bg-[var(--muted)]",
@@ -387,10 +415,19 @@ function SubagentStepRow({ step, index }) {
 }
 
 export function PlanToolCard({ card }) {
+  const { state } = useApp();
+  const suppressCrewTodos = shouldSuppressCrewTaskTodos({
+    crewActive: Boolean(state.runtimeState?.crewActive),
+  });
   const planRun = card?.planRun || null;
+  const status = String(card?.status || "").toLowerCase();
+  const rawPhase = String(planRun?.phase || "").toLowerCase();
   const phase =
-    planRun?.phase || (card?.status === "done" ? "completed" : "planning");
-  const running = String(card?.status || "").toLowerCase() === "running";
+    rawPhase === "canceled"
+      ? "cancelled"
+      : rawPhase || (status === "done" ? "completed" : status === "running" ? "executing" : "planning");
+  const live = phase === "planning" || phase === "executing";
+  const running = live && phase !== "waiting";
   const isSubagent = isRunSubagentCard(card);
   const isFork = isForkCard(card);
   const isDelegationCard = isSubagent || isFork;
@@ -438,7 +475,7 @@ export function PlanToolCard({ card }) {
       : goal,
   );
   const title = isSubagent
-    ? persona || t("subagentWorker")
+    ? describeCrewRunSubagent(card?.arguments)?.label || persona || t("subagentWorker")
     : isFork
       ? t("forkBranch")
       : card?.displayName || planPhaseTitle(phase);
@@ -498,7 +535,7 @@ export function PlanToolCard({ card }) {
                 ? statusLabel(phase, "fork")
                 : planPhaseTitle(phase)}
           </span>
-          {isDelegationCard && todoItems.length ? (
+          {isDelegationCard && todoItems.length && !suppressCrewTodos ? (
             <span className="tabular-nums text-(--text-muted)">
               {todoCompleted}/{todoItems.length}
             </span>
@@ -509,7 +546,12 @@ export function PlanToolCard({ card }) {
       {expanded ? (
         <div className="codemini-disclosure-tree">
           {isDelegationCard ? <SubagentTaskDetails task={goal} /> : null}
-          {todoCard ? <ToolCard card={todoCard} embedded /> : null}
+          {isSubagent ? (
+            <CrewWorkerMeta args={card?.arguments} />
+          ) : null}
+          {todoCard && !suppressCrewTodos ? (
+            <ToolCard card={todoCard} embedded />
+          ) : null}
           {isSubagent ? (
             <SubagentDependencyDetails
               step={primary}

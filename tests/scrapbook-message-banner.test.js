@@ -55,7 +55,10 @@ test('server persists scrapbook banner into submit message attachments', async (
   assert.match(source, /pickScrapbookAttachments\(body\.attachments\)/);
   assert.match(source, /parseScrapbookAttachmentFromModelContent\(mergedModelText\)/);
   assert.match(source, /const attachments = scrapbookAttachment/);
-  assert.match(source, /dismissedAlwaysSkills: body\.dismissedAlwaysSkills,\s*attachments,/);
+  assert.match(
+    source,
+    /dismissedAlwaysSkills: body\.dismissedAlwaysSkills,\s*(?:fileReferences: body\.fileReferences,\s*)?attachments,/,
+  );
 });
 
 test('client submit forwards scrapbook attachments for ui transcript persistence', async () => {
