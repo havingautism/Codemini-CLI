@@ -20,6 +20,7 @@ import {
   UploadSimple,
 } from "@/lib/icons";
 import { t } from "../../i18n/index.js";
+import { SCRAPBOOK_ACCEPT } from "../../../shared/document-formats.js";
 import {
   addScrapbookSource,
   createMultiSourceScrapbookEntry,
@@ -911,7 +912,7 @@ export function ScrapbookPanel() {
                   {t("scrapbookUploadDocuments")}
                   <input
                     type="file"
-                    accept=".pdf,.docx,.txt,.md,.markdown"
+                    accept={SCRAPBOOK_ACCEPT}
                     multiple
                     className="sr-only"
                     onChange={handleUploadSources}
@@ -1366,7 +1367,7 @@ export function ScrapbookPanel() {
                 <span>{t("scrapbookChooseMultipleDocuments")}</span>
                 <input
                   type="file"
-                  accept=".pdf,.docx,.txt,.md,.markdown"
+                  accept={SCRAPBOOK_ACCEPT}
                   multiple
                   className="sr-only"
                   onChange={(event) => {

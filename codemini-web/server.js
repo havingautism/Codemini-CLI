@@ -1,4 +1,5 @@
 import { validateWebConfigValue } from './shared/web-config-policy.js';
+import { DOCUMENT_EXTENSIONS, SCRAPBOOK_TEXT_EXTENSIONS } from './shared/document-formats.js';
 import { createWebSecurity, publicConfig, isSecretConfigKey, assertConfigPath, assertWebConfigWritable } from './lib/web-security.js';
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -84,7 +85,7 @@ import {
   parseScrapbookAttachmentFromModelContent,
   pickScrapbookAttachments,
 } from "./lib/message-context-parsers.js";
-import { extractPdfText } from "./lib/pdf-text.js";
+import { extractDocumentText } from "./lib/document-text.js";
 import {
   addScrapbookSource,
   buildScrapbookAskPayload,
@@ -577,21 +578,22 @@ const MAX_ATTACHMENT_TEXT_CHARS = 80_000;
 const MODEL_IMAGE_MAX_DIMENSION = 1568;
 const MODEL_IMAGE_WEBP_QUALITY = 80;
 const ATTACHMENT_UPLOAD_DIR = path.join(getBaseConfigDir(), "web-ui-uploads");
-const SUPPORTED_ATTACHMENT_EXTENSIONS = new Set([
-  ".png",
-  ".jpg",
-  ".jpeg",
-  ".webp",
-  ".gif",
-  ".pdf",
-  ".docx",
-]);
 const IMAGE_ATTACHMENT_EXTENSIONS = new Set([
   ".png",
   ".jpg",
   ".jpeg",
   ".webp",
   ".gif",
+]);
+const DOCUMENT_ATTACHMENT_EXTENSIONS = new Set(DOCUMENT_EXTENSIONS);
+const SUPPORTED_ATTACHMENT_EXTENSIONS = new Set([
+  ...IMAGE_ATTACHMENT_EXTENSIONS,
+  ...DOCUMENT_ATTACHMENT_EXTENSIONS,
+]);
+const scrapbookTextExtensions = new Set(SCRAPBOOK_TEXT_EXTENSIONS);
+const SCRAPBOOK_SOURCE_EXTENSIONS = new Set([
+  ...DOCUMENT_ATTACHMENT_EXTENSIONS,
+  ...scrapbookTextExtensions,
 ]);
 
 function normalizeBaseUrl(value) {
@@ -1937,14 +1939,8 @@ async function readMultipartForm(req) {
 }
 
 async function extractAttachmentText(buffer, ext) {
-  if (ext === ".pdf") {
-    return extractPdfText(buffer);
-  }
-  if (ext === ".docx") {
-    const mammoth = await import("mammoth");
-    const parsed = await mammoth.extractRawText({ buffer });
-    return String(parsed?.value || "").trim();
-  }
+  if (DOCUMENT_ATTACHMENT_EXTENSIONS.has(ext))
+    return extractDocumentText(buffer);
   return "";
 }
 
@@ -1952,7 +1948,7 @@ async function saveUploadedAttachment({ file, sessionId }) {
   const originalName = safeUploadFileName(file?.name || "attachment");
   const ext = path.extname(originalName).toLowerCase();
   if (!SUPPORTED_ATTACHMENT_EXTENSIONS.has(ext)) {
-    throw new Error("Unsupported attachment type. Use images, PDF, or DOCX.");
+    throw new Error("Unsupported attachment type. Use images, PDF, Word, PowerPoint, or Excel.");
   }
   if (Number(file?.size || 0) > MAX_ATTACHMENT_BYTES) {
     throw new Error("Attachment is too large. Maximum size is 20 MB.");
@@ -3962,13 +3958,13 @@ async function main() {
           }
           const name = safeUploadFileName(file.name || "source");
           const ext = path.extname(name).toLowerCase();
-          if (![".pdf", ".docx", ".txt", ".md", ".markdown"].includes(ext)) {
+          if (!SCRAPBOOK_SOURCE_EXTENSIONS.has(ext)) {
             throw new Error(
-              "Unsupported source type. Use PDF, DOCX, TXT, or Markdown.",
+              "Unsupported source type. Use PDF, Word, PowerPoint, Excel, TXT, or Markdown.",
             );
           }
           const buffer = Buffer.from(await file.arrayBuffer());
-          const extractedText = [".txt", ".md", ".markdown"].includes(ext)
+          const extractedText = scrapbookTextExtensions.has(ext)
             ? buffer.toString("utf8").trim()
             : await extractAttachmentText(buffer, ext);
           if (!extractedText)
@@ -5050,13 +5046,13 @@ async function main() {
           }
           const name = safeUploadFileName(file.name || "source");
           const ext = path.extname(name).toLowerCase();
-          if (![".pdf", ".docx", ".txt", ".md", ".markdown"].includes(ext)) {
+          if (!SCRAPBOOK_SOURCE_EXTENSIONS.has(ext)) {
             throw new Error(
-              "Unsupported source type. Use PDF, DOCX, TXT, or Markdown.",
+              "Unsupported source type. Use PDF, Word, PowerPoint, Excel, TXT, or Markdown.",
             );
           }
           const buffer = Buffer.from(await file.arrayBuffer());
-          const contentText = [".txt", ".md", ".markdown"].includes(ext)
+          const contentText = scrapbookTextExtensions.has(ext)
             ? buffer.toString("utf8").trim()
             : await extractAttachmentText(buffer, ext);
           if (!contentText)

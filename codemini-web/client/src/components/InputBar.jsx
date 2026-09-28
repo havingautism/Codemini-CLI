@@ -32,6 +32,7 @@ import {
 } from "@/lib/icons";
 import { cn } from "@/lib/utils";
 import { t } from "../../i18n/index.js";
+import { DOCUMENT_ACCEPT } from "../../../shared/document-formats.js";
 import * as api from "@/hooks/use-api";
 import { useApp } from "@/context/app-context.jsx";
 import { ReasoningQuickControl } from "@/components/ReasoningControls.jsx";
@@ -104,18 +105,13 @@ const INPUT_PILL_CLASS =
   "codemini-input-pill border-0 bg-(--badge-bg) text-(--text-secondary) h-7 rounded-md inline-flex items-center justify-center gap-1.5 shrink-0 cursor-pointer text-[11px] sm:text-[12px] whitespace-nowrap transition-all shadow-[0_1px_2px_color-mix(in_srgb,black_5%,transparent)] hover:bg-(--bg-hover) hover:text-(--text-primary) hover:shadow-[0_1px_3px_color-mix(in_srgb,black_10%,transparent)]";
 
 const ATTACHMENT_ACCEPT =
-  "image/png,image/jpeg,image/webp,image/gif,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,.png,.jpg,.jpeg,.webp,.gif,.pdf,.docx";
+  `image/png,image/jpeg,image/webp,image/gif,.png,.jpg,.jpeg,.webp,.gif,${DOCUMENT_ACCEPT}`;
 const IMAGE_MAX_EDGE = 1600;
 const SCRAPBOOK_PICKER_PAGE_SIZE = 8;
 const IMAGE_JPEG_QUALITY = 0.82;
 
 function isImageFile(file) {
   return String(file?.type || "").startsWith("image/");
-}
-
-function extensionFromName(name = "") {
-  const match = String(name || "").match(/\.([^.]+)$/);
-  return match ? match[1].toLowerCase() : "";
 }
 
 function splitWorkspaceFilePath(pathText = "") {
@@ -1522,10 +1518,6 @@ export function InputBar({
       try {
         const prepared = [];
         for (const file of files.slice(0, 8)) {
-          const ext = extensionFromName(file.name);
-          if (ext === "doc") {
-            throw new Error(t("attachmentDocUnsupported"));
-          }
           try {
             prepared.push(await compressImageFile(file));
           } catch {

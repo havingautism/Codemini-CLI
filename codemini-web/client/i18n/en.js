@@ -73,8 +73,6 @@ export const en = {
   attachmentFallbackPrompt: "Please review the attachments",
   attachmentUploading: "Uploading attachment…",
   attachmentUploadFailed: "Attachment upload failed",
-  attachmentDocUnsupported:
-    ".doc is not supported yet. Upload a .docx file instead.",
   attachmentImage: "Image attachment",
   removeAttachment: "Remove attachment",
   removeLoadedSkill: "Remove skill",
@@ -1703,7 +1701,7 @@ export const en = {
   scrapbookUploadDocuments: "Upload PDF or document",
   scrapbookMultipleUrls: "Web links (one per line)",
   scrapbookDocuments: "PDFs and documents",
-  scrapbookChooseMultipleDocuments: "Choose multiple PDF, DOCX, TXT, or Markdown files",
+  scrapbookChooseMultipleDocuments: "Choose PDF, Word, PowerPoint, Excel, TXT, or Markdown files",
   scrapbookOptionalNote: "Supporting note (optional)",
   scrapbookOptionalNotePlaceholder: "Add context or priorities to summarize with these sources…",
   scrapbookExpandMindMap: "Expand mind map",

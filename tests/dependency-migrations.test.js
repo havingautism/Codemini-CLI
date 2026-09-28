@@ -4,16 +4,18 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
-import { extractPdfText } from '../codemini-web/lib/pdf-text.js';
+import { extractDocumentText } from '../codemini-web/lib/document-text.js';
+import { DOCUMENT_ACCEPT, DOCUMENT_EXTENSIONS, SCRAPBOOK_ACCEPT } from '../codemini-web/shared/document-formats.js';
 import { queryAst, queryAstGrep } from '../src/core/ast.js';
 import { runProcess } from '../src/core/process-run.js';
 
 function createTextPdf(text) {
+  const contentStream = `BT /F1 18 Tf 72 100 Td (${text}) Tj ET\n`;
   const objects = [
     '<< /Type /Catalog /Pages 2 0 R >>',
     '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
     '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 144] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>',
-    `<< /Length ${text.length + 36} >>\nstream\nBT /F1 18 Tf 72 100 Td (${text}) Tj ET\nendstream`,
+    `<< /Length ${Buffer.byteLength(contentStream)} >>\nstream\n${contentStream}endstream`,
     '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
   ];
   let pdf = '%PDF-1.4\n';
@@ -29,8 +31,35 @@ function createTextPdf(text) {
   return Buffer.from(pdf);
 }
 
-test('pdf-parse v2 extracts attachment text', async () => {
-  assert.match(await extractPdfText(createTextPdf('Hello Codemini')), /Hello Codemini/);
+test('anydoc extracts text from PDF attachments', async () => {
+  assert.match(await extractDocumentText(createTextPdf('Hello Codemini')), /Hello Codemini/);
+});
+
+test('anydoc preserves DOCX table structure for document imports', async () => {
+  const file = new URL('./fixtures/anydoc-text.docx', import.meta.url);
+  const markdown = await extractDocumentText(await fs.readFile(file));
+  assert.match(markdown, /Hello Codemini/);
+  assert.match(markdown, /\| Item \| Value \|/);
+  assert.match(markdown, /\| Alpha \| 42 \|/);
+});
+
+test('document upload accepts Word, PowerPoint, and Excel formats', () => {
+  assert.deepEqual(DOCUMENT_EXTENSIONS, [
+    '.pdf', '.doc', '.docx', '.ppt', '.pptx', '.xls', '.xlsx',
+  ]);
+  for (const extension of DOCUMENT_EXTENSIONS) {
+    assert.ok(DOCUMENT_ACCEPT.split(',').includes(extension));
+    assert.ok(SCRAPBOOK_ACCEPT.split(',').includes(extension));
+  }
+});
+
+test('anydoc extracts PowerPoint slides and Excel tables', async () => {
+  const slides = await fs.readFile(new URL('./fixtures/anydoc-slides.pptx', import.meta.url));
+  const sheet = await fs.readFile(new URL('./fixtures/anydoc-sheet.xlsx', import.meta.url));
+  assert.match(await extractDocumentText(slides), /Quarterly plan/);
+  const table = await extractDocumentText(sheet);
+  assert.match(table, /\| Quarter \| Revenue \|/);
+  assert.match(table, /\| Q1 \| 42 \|/);
 });
 
 test('Execa v10 preserves the runProcess result contract', async () => {
