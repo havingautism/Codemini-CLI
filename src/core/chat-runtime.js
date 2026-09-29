@@ -111,7 +111,7 @@ import {
   listUnreadCrewInbox,
   markCrewInboxDelivered,
 } from './crew-store.js';
-import { composeCrewResumeTask, composeCrewReviewTask, crewTaskSummary, isCrewCommitAncestor, isCrewWorktreeDirty, resolveCrewReviewTarget, resolveCrewSubagentWorkspace, shouldContinueCrewWorkerSeal, teardownCrewWorker } from './crew-worktree.js';
+import { composeCrewResumeTask, composeCrewReviewTask, crewTaskSummary, findCrewWorker, isCrewCommitAncestor, isCrewWorktreeDirty, resolveCrewReviewTarget, resolveCrewSubagentWorkspace, shouldContinueCrewWorkerSeal, teardownCrewWorker } from './crew-worktree.js';
 import { landCrewWorkers } from './crew-land.js';
 import { createCrewCoordinator } from './crew-coordinator.js';
 import { createCrewWorkerScheduler } from './crew-scheduler.js';
@@ -5189,17 +5189,26 @@ async function askModel({
           const handoff = String(context || '').trim();
           const declaredGoal = String(goal || '').trim();
           const reviewTarget = String(review || '').trim();
+          const resumeTarget = String(resume || '').trim();
+          const rosterWorkers = listCrewWorkersFromState(crewState);
+          const rosterTarget = reviewTarget || resumeTarget
+            ? findCrewWorker(rosterWorkers, { resume: reviewTarget || resumeTarget })
+            : null;
+          const rosterLabel = String(rosterTarget?.name || '').trim();
           const title = crewState
             ? reviewTarget
-              ? `Crew review · ${reviewTarget}`
+              ? `Crew review · ${rosterLabel || reviewTarget}`
               : isCrewSurvey
                 ? `Crew survey · ${persona}`
-                : `Crew worker · ${persona}`
+                : `Crew worker · ${rosterLabel || persona}`
             : trimInline(assignedTasks[0]?.content || effectivePrompt, 72) || persona;
           const crewKind = crewState
             ? (reviewTarget ? 'review' : isCrewSurvey ? 'survey' : 'worker')
             : '';
           const callId = String(toolCallId || `sub-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`).trim();
+          const subagentId = crewState
+            ? ''
+            : `sub_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
           const emit = (evt) => {
             const tagged = {
               ...evt,
@@ -5447,7 +5456,7 @@ async function askModel({
                   base: crewState.base,
                   resume,
                   taskId: dependencyTaskId,
-                  name: persona,
+                  name: String(name || '').trim() || persona,
                   callId,
                   paths,
                   dependsOn: dependencyRegistration.dependencies,
@@ -5541,6 +5550,7 @@ async function askModel({
             if (crewState) {
               const spawnMessage = compactCrewSpawnResultForParent({
                 workerId: lockedCrewWorkerId,
+                name: reviewingWorkerRecord?.name || spawnedCrewWorker?.name || '',
                 taskId: dependencyTaskId,
                 status: 'running',
                 branch: spawnedCrewWorker?.branch || '',
@@ -5800,6 +5810,7 @@ async function askModel({
               role: persona,
               tools: resolvedTools,
               text: output.text || '',
+              ...(subagentId ? { subagentId } : {}),
               ...(childUsage ? { usage: childUsage } : {}),
               artifactPaths: output.artifactPaths || [],
               ...(savedHandoff ? { handoffPath: savedHandoff.path } : {}),
@@ -6883,7 +6894,7 @@ export async function runSubAgentTask({
       : [
           'Your cwd is this git worktree. Use paths relative to this directory. Do not write to the parent checkout with its absolute path.',
           'When the assigned slice is done, git commit on this worktree branch. If you cannot finish, do not commit. Your final message must state the outcome: done, blocked, or failed.',
-          'You may call crew_inbox while you work and crew_send to another worker, the coordinator, or all. Sending mail does not wake the coordinator.',
+          'You may call crew_inbox while you work and crew_send to another worker, the coordinator, or all. Address workers by the id from crew_status, not their nickname. Sending mail does not wake the coordinator.',
         ].join('\n');
   const scopedTask = [
     'Role:',
@@ -9147,10 +9158,13 @@ export async function createChatRuntime({
     }
   };
   const cancelCrewWorker = async ({ workerId } = {}) => {
-    const id = String(workerId || '').trim();
-    if (!id) {
+    const requested = String(workerId || '').trim();
+    if (!requested) {
       return { ok: false, code: 'MISSING_ID', error: 'worker_id is required.' };
     }
+    const roster = listCrewWorkersFromState(await readCrewStateFile(root).catch(() => null));
+    const matched = findCrewWorker(roster, { resume: requested });
+    const id = matched?.id || requested;
     const job = crewJobRegistry.get(id);
     if (job?.controller && !job.controller.signal.aborted) {
       job.controller.abort(createCrewCancelReason());
@@ -9165,7 +9179,7 @@ export async function createChatRuntime({
         cancelled: 'review',
         workerId: id,
         worktreeRemoved: false,
-        message: `Cancelled the in-flight review of "${id}". The worker worktree was kept. Call cancel_worker again to remove that worker.`,
+        message: `Cancelled the in-flight review of "${matched?.name || id}". The worker worktree was kept. Call cancel_worker again to remove that worker.`,
       };
     }
     const disk = await readCrewStateFile(root).catch(() => null);
@@ -9200,7 +9214,7 @@ export async function createChatRuntime({
       cancelled: 'worker',
       workerId: id,
       worktreeRemoved: true,
-      message: `Cancelled Crew worker "${id}" and removed its worktree.`,
+      message: `Cancelled Crew worker "${matched?.name || id}" and removed its worktree.`,
     };
   };
   const markStaleCrewWorkers = async () => {

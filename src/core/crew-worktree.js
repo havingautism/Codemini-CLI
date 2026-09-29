@@ -51,28 +51,22 @@ export function sanitizeCrewWorkerId(value, fallback = 'worker') {
   return cleaned || fallback;
 }
 
-export function allocateCrewWorkerId({
-  taskId = '',
-  name = '',
-  callId = '',
-  existingIds = [],
-} = {}) {
+export function createCrewWorkerId(existingIds = []) {
   const used = new Set([
     ...RESERVED_WORKER_IDS,
     ...(Array.isArray(existingIds) ? existingIds : [])
       .map((id) => String(id || '').toLowerCase())
       .filter(Boolean),
   ]);
-  const preferred =
-    sanitizeCrewWorkerId(taskId, '')
-    || sanitizeCrewWorkerId(name, '')
-    || sanitizeCrewWorkerId(callId, 'worker');
-  if (preferred && !used.has(preferred)) return preferred;
-  for (let index = 2; index < 1000; index += 1) {
-    const next = `${preferred}-${index}`.slice(0, 48);
-    if (!used.has(next)) return next;
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const id = `wkr_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+    if (!used.has(id)) return id;
   }
-  return `${preferred}-${Date.now().toString(36)}`.slice(0, 48);
+  return `wkr_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+export function allocateCrewWorkerId({ existingIds = [] } = {}) {
+  return createCrewWorkerId(existingIds);
 }
 
 export function crewWorkerBranchName(workerId) {
@@ -83,13 +77,15 @@ export function findCrewWorker(workers, { resume = '', name = '', taskId = '', c
   const list = Array.isArray(workers) ? workers : [];
   const resumeId = sanitizeCrewWorkerId(resume, '');
   if (resumeId) {
-    const byId = list.find((item) => item.id === resumeId);
+    const byId = list.find((item) => item.id === resumeId || sanitizeCrewWorkerId(item.id, '') === resumeId);
     if (byId) return byId;
     const byCall = list.filter((item) => {
       const cid = sanitizeCrewWorkerId(item.callId, '');
       return cid && cid === resumeId;
     });
     if (byCall.length === 1) return byCall[0];
+    const byName = list.filter((item) => sanitizeCrewWorkerId(item.name, '') === resumeId);
+    if (byName.length === 1) return byName[0];
     return null;
   }
   const nameId = sanitizeCrewWorkerId(taskId, '')
@@ -103,7 +99,7 @@ export function formatIdleCrewWorkers(workers) {
   const list = (Array.isArray(workers) ? workers : []).filter((item) => item?.integrated !== true);
   if (list.length === 0) return 'No idle Crew workers. Spawn a new one with a unique name and paths.';
   const ids = list.map((item) => `"${item.id}"`).join(', ');
-  return `Idle workers: ${ids}. Call back with resume set to that id (the short name, not a call/handoff id). Omit paths to keep the stored scope, or pass new disjoint paths.`;
+  return `Idle workers: ${ids}. Call back with resume set to that worker id from crew_status, not the nickname, call id, or handoff folder. Omit paths to keep the stored scope, or pass new disjoint paths.`;
 }
 
 export function crewTaskSummary(text = '') {
@@ -654,10 +650,12 @@ async function addCrewWorktreeUnlocked({
   }
   const normalizedDependsOn = normalizeCrewDependsOn(dependsOn);
   const normalizedTaskId = String(taskId || '').trim();
+  const nickname = String(name || '').replace(/\s+/g, ' ').trim().slice(0, 40);
   const worker = {
     id: workerId,
     branch,
     worktreePath,
+    ...(nickname ? { name: nickname } : {}),
     ...(normalizedPaths.length ? { paths: normalizedPaths } : {}),
     ...(survey ? { kind: 'survey' } : {}),
     ...(normalizedTaskId ? { taskId: normalizedTaskId } : {}),

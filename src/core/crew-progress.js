@@ -1,3 +1,17 @@
+export function resolveCrewWorkerDisplayName(target = '', workers = []) {
+  const key = String(target || '').trim();
+  if (!key) return '';
+  const list = Array.isArray(workers) ? workers : [];
+  const needle = key.toLowerCase();
+  const match = list.find((worker) => {
+    const id = String(worker?.id || '').trim().toLowerCase();
+    const name = String(worker?.name || '').trim().toLowerCase();
+    return id === needle || name === needle;
+  });
+  const name = String(match?.name || '').trim();
+  return name || key;
+}
+
 export function crewIdentityMatchesWorker(target = {}, workerId = '') {
   const id = String(workerId || '').trim().toLowerCase();
   if (!id) return false;
@@ -55,7 +69,7 @@ export function describeCrewWorkerProgress(worker = {}, { inFlightIds = [] } = {
   else if (worker.sealed && worker.reviewPassed === true) phase = 'ready';
   else if (worker.sealed) phase = 'awaiting_review';
   else if (worker.runStatus) phase = String(worker.runStatus);
-  return { id, kind, phase };
+  return { id, ...(worker.name ? { name: worker.name } : {}), kind, phase };
 }
 
 export function buildCrewProgressItems({ workers = [], inFlightIds = [] } = {}) {
@@ -84,6 +98,6 @@ export function shouldShowCrewProgressDock({ crewActive, workers = [], inFlightI
 
 export function formatCrewProgressLine(items = [], labels = {}) {
   return (Array.isArray(items) ? items : [])
-    .map((item) => `${item.id} ${labels[item.phase] || item.phase}`)
+    .map((item) => `${item.name || item.id} ${labels[item.phase] || item.phase}`)
     .join(' · ');
 }

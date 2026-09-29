@@ -1,5 +1,6 @@
 import { trimInline as trimInlineText } from './string-utils.js';
 import { isShellToolName } from './shell-tool-name.js';
+import { resolveCrewWorkerDisplayName } from './crew-progress.js';
 
 export const TOOL_DISPLAY_LABELS = {
   create_plan: 'Plan',
@@ -113,12 +114,16 @@ function formatToolWithArg(label, arg, { quoted = false } = {}) {
   return `${label} (${quoted ? `"${payload}"` : payload})`;
 }
 
-export function describeCrewRunSubagent(args = {}) {
+export function describeCrewRunSubagent(args = {}, { workers } = {}) {
   const review = String(args?.review || '').trim();
   const role = String(args?.role || '').trim().toLowerCase();
   const name = trimInlineText(args?.name || role || 'Alex', 24);
   if (review) {
-    return { kind: 'review', label: `Crew review · ${review}`, persona: name };
+    return {
+      kind: 'review',
+      label: `Crew review · ${resolveCrewWorkerDisplayName(review, workers)}`,
+      persona: name,
+    };
   }
   if (role === 'survey') {
     return { kind: 'survey', label: `Crew survey · ${name || 'Survey'}`, persona: name };
@@ -126,8 +131,10 @@ export function describeCrewRunSubagent(args = {}) {
   const resume = String(args?.resume || '').trim();
   const hasPaths = Array.isArray(args?.paths) && args.paths.length > 0;
   if (resume || hasPaths) {
-    const id = resume || name || 'Worker';
-    return { kind: 'worker', label: `Crew worker · ${id}`, persona: name };
+    const label = resume
+      ? resolveCrewWorkerDisplayName(resume, workers)
+      : (trimInlineText(args?.name || '', 24) || name || 'Worker');
+    return { kind: 'worker', label: `Crew worker · ${label}`, persona: name };
   }
   return null;
 }
@@ -257,9 +264,19 @@ export function formatToolDisplayName(name, args = {}, options = {}) {
   if (toolName === 'run_subagent') {
     const goal = trimInline(args?.goal || args?.prompt || '', 96);
     const persona = trimInline(args?.name || args?.role || 'Alex', 24);
-    const crew = describeCrewRunSubagent(args);
+    const crew = describeCrewRunSubagent(args, { workers: options?.crewWorkers });
     const label = crew?.label || `Subagent · ${persona || 'Alex'}`;
     return goal ? formatToolWithArg(label, goal) : label;
+  }
+  if (toolName === 'cancel_worker') {
+    const target = trimInline(
+      args?.worker_id || args?.id || args?.resume || '',
+      64,
+    );
+    const label = formatToolLabel('cancel_worker');
+    if (!target) return label;
+    const display = resolveCrewWorkerDisplayName(target, options?.crewWorkers);
+    return formatToolWithArg(label, display);
   }
   if (toolName === 'fork_task') {
     const goal = trimInline(args?.prompt || '', 96);

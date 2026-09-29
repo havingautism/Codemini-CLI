@@ -5332,7 +5332,9 @@ export function getBuiltinTools({
             },
             name: {
               type: "string",
-              description: "Short invented worker name, such as David or Mira.",
+              description: crewActive
+                ? "Nickname shown in crew status, such as Toby. Not the worker id. resume, review, cancel_worker, and crew_send use the worker id returned by run_subagent."
+                : "Short invented worker name, such as David or Mira. Display only.",
             },
             role: {
               type: "string",
@@ -5371,12 +5373,12 @@ export function getBuiltinTools({
       subagentProperties.resume = {
         type: "string",
         description:
-          "Roster worker id to call back, such as alisa. That is the short unique name, never a call id or handoff folder. Reuses that worktree and branch. Omit paths to keep the stored scope, or pass new disjoint paths to change it.",
+          "Worker id from crew_status or the run_subagent result, such as wkr_abc_def. Not the nickname, task_id, call id, or handoff folder. Reuses that worktree and branch. Omit paths to keep the stored scope, or pass new disjoint paths to change it.",
       };
       subagentProperties.review = {
         type: "string",
         description:
-          "Roster worker id to review, such as alisa. Use with role: \"reviewer\". Does not create a worktree. Omit paths and resume. Do not review survey workers.",
+          "Worker id from crew_status to review, such as wkr_abc_def. Not the nickname. Use with role: \"reviewer\". Does not create a worktree. Omit paths and resume. Do not review survey workers.",
       };
       subagentProperties.role.description =
         'Optional role preset. Use "survey" for read-only investigation (no exclusive paths, no review, no land). Use "reviewer" with review set to a coder worker id.';
@@ -5386,7 +5388,7 @@ export function getBuiltinTools({
       function: {
         name: "run_subagent",
         description: crewActive
-          ? "Delegate isolated work to a git-worktree subagent. Same-response independent calls run in parallel; use task_id/depends_on for dependencies. Every objective, including a single task, must go to a worker. New coder workers need disjoint paths and a unique short name (that name becomes the resume id). Read-only investigation uses role: \"survey\" (no exclusive paths, no review, no land). Call an idle worker back with resume set to that id. After a coder commits, review that worker with role: \"reviewer\" and review set to its id before land_workers."
+          ? "Delegate isolated work to a git-worktree subagent. Same-response independent calls run in parallel; use task_id/depends_on for dependencies. Every objective, including a single task, must go to a worker. New coder workers need disjoint paths. name is a nickname. The returned worker id is what resume, review, cancel_worker, and crew_send use. Read-only investigation uses role: \"survey\" (no exclusive paths, no review, no land). After a coder commits, dispatch role: \"reviewer\" with review set to that worker id before land_workers."
           : "Delegate a bounded task to a clean-context subagent. Same-response independent calls run in parallel; use task_id/depends_on for dependencies and disjoint file ownership for parallel edits. Invent a short worker name such as David. Use fork_task instead when shared prompt prefix/state is more useful.",
         parameters: {
           type: "object",
@@ -5467,7 +5469,7 @@ export function getBuiltinTools({
           properties: {
             worker_id: {
               type: "string",
-              description: "Roster worker id to cancel (the same id used with resume / review).",
+              description: "Worker id from crew_status (the same id used with resume / review), not the nickname.",
             },
           },
           required: ["worker_id"],
@@ -5494,11 +5496,11 @@ export function getBuiltinTools({
       function: {
         name: "crew_send",
         description:
-          "Write a Crew inbox message. Recipients are a roster worker id that is not yet integrated, \"coordinator\", or \"all\". Does not wake the coordinator; they read crew_inbox on the next completion or user wake. Do not edit .codemini/crew/inbox files yourself.",
+          "Write a Crew inbox message. Recipients are a worker id from crew_status that is not yet integrated, \"coordinator\", or \"all\". Use the worker id, not the nickname. Does not wake the coordinator; they read crew_inbox on the next completion or user wake. Do not edit .codemini/crew/inbox files yourself.",
         parameters: {
           type: "object",
           properties: {
-            to: { type: "string", description: "Worker id, coordinator, or all." },
+            to: { type: "string", description: "Worker id from crew_status, coordinator, or all. Not a nickname." },
             subject: { type: "string", description: "Short subject." },
             body: { type: "string", description: "Full message. Not truncated." },
           },

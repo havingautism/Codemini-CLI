@@ -95,7 +95,9 @@ async function waitForWorkerStatus(dir, workerId, status, timeoutMs = 8000) {
   while (Date.now() - started < timeoutMs) {
     const raw = await fs.readFile(getProjectCrewStatePath(dir), 'utf8').catch(() => '');
     if (raw) {
-      const worker = listCrewWorkersFromState(JSON.parse(raw)).find((item) => item.id === workerId);
+      const worker = listCrewWorkersFromState(JSON.parse(raw)).find((item) => (
+        item.id === workerId || String(item.name || '').toLowerCase() === String(workerId).toLowerCase()
+      ));
       if (worker?.runStatus === status) return worker;
     }
     await new Promise((resolve) => setTimeout(resolve, 40));
@@ -406,14 +408,16 @@ test('coding mode can enter crew, persist it, and daily mode closes it', async (
   });
 });
 
-test('sanitizeCrewWorkerId and allocateCrewWorkerId stay git-safe and unique', () => {
+test('sanitizeCrewWorkerId stays git-safe and allocateCrewWorkerId ignores nicknames', () => {
   assert.equal(sanitizeCrewWorkerId('Front End!'), 'front-end');
   assert.equal(sanitizeCrewWorkerId(''), 'worker');
-  assert.equal(allocateCrewWorkerId({ taskId: 'm1', existingIds: [] }), 'm1');
-  assert.equal(allocateCrewWorkerId({ taskId: 'm1', existingIds: ['m1'] }), 'm1-2');
-  assert.equal(allocateCrewWorkerId({ name: 'Frontend', existingIds: [] }), 'frontend');
-  assert.equal(allocateCrewWorkerId({ taskId: 'tmp', existingIds: [] }), 'tmp-2');
-  assert.equal(allocateCrewWorkerId({ taskId: '_merge-tmp', existingIds: [] }), 'merge-tmp-2');
+  const first = allocateCrewWorkerId({ name: 'Frontend', taskId: 'm1', existingIds: [] });
+  const second = allocateCrewWorkerId({ name: 'Frontend', taskId: 'm1', existingIds: [first] });
+  assert.match(first, /^wkr_[a-z0-9_]+$/);
+  assert.match(second, /^wkr_[a-z0-9_]+$/);
+  assert.notEqual(first, second);
+  assert.notEqual(first, 'frontend');
+  assert.notEqual(first, 'm1');
 });
 
 test('crew worktrees isolate workers, skip dirty remove, and keep parent handoffs', async () => {
@@ -446,7 +450,8 @@ test('crew worktrees isolate workers, skip dirty remove, and keep parent handoff
 
     const saved = JSON.parse(await fs.readFile(getProjectCrewStatePath(dir), 'utf8'));
     assert.equal(listCrewWorkersFromState(saved).length, 2);
-    assert.equal(saved.workers[0].id, 'm1');
+    assert.equal(saved.workers[0].id, first.worker.id);
+    assert.match(first.worker.id, /^wkr_/);
 
     const handoff = await saveSubAgentHandoff({
       workspaceRoot: dir,
@@ -464,7 +469,7 @@ test('crew worktrees isolate workers, skip dirty remove, and keep parent handoff
     const removed = await removeCrewWorktrees({ cwd: dir });
     assert.equal(removed.removed.length, 1);
     assert.equal(removed.kept.length, 1);
-    assert.equal(removed.kept[0].id, 'm1');
+    assert.equal(removed.kept[0].id, first.worker.id);
     assert.equal(await fs.access(second.worker.worktreePath).then(() => true, () => false), false);
     await fs.access(first.worker.worktreePath);
 
@@ -611,7 +616,8 @@ test('Crew refuses to turn off while a background worker is running', async () =
     const stoppedEarly = await runtime.setCrewMode(false);
     assert.equal(stoppedEarly.ok, false);
     assert.equal(stoppedEarly.code, 'WORKERS_IN_FLIGHT');
-    await fs.access(path.join(getProjectCrewWorktreesDir(dir), 'slow'));
+    const slow = listCrewWorkersFromState(await readCrewStateFile(dir)).find((item) => item.name === 'slow');
+    await fs.access(path.join(getProjectCrewWorktreesDir(dir), slow.id));
 
     await runtime.waitForCrewIdle();
     const stopped = await runtime.setCrewMode(false);
@@ -631,8 +637,8 @@ test('crew-on run_subagent creates two worktrees; session overlay has no workers
     const saved = JSON.parse(await fs.readFile(getProjectCrewStatePath(dir), 'utf8'));
     assert.equal(listCrewWorkersFromState(saved).length, 2);
     const trees = await fs.readdir(getProjectCrewWorktreesDir(dir));
-    assert.equal(trees.includes('m1'), true);
-    assert.equal(trees.includes('m2'), true);
+    const ids = listCrewWorkersFromState(saved).map((item) => item.id);
+    assert.equal(ids.every((id) => trees.includes(id)), true);
     const loaded = await loadSession(session.id);
     assert.equal(loaded.crew.active, true);
     assert.equal(loaded.crew.workers, undefined);
@@ -648,8 +654,9 @@ test('crew-on run_subagent creates two worktrees; session overlay has no workers
     assert.equal(paused.active, false);
     const pausedWorkers = listCrewWorkersFromState(paused);
     assert.equal(pausedWorkers.length, 2);
-    assert.equal(await fs.access(path.join(getProjectCrewWorktreesDir(dir), 'm1')).then(() => true, () => false), true);
-    assert.equal(await fs.access(path.join(getProjectCrewWorktreesDir(dir), 'm2')).then(() => true, () => false), true);
+    for (const worker of pausedWorkers) {
+      assert.equal(await fs.access(path.join(getProjectCrewWorktreesDir(dir), worker.id)).then(() => true, () => false), true);
+    }
     for (const worker of pausedWorkers) {
       const listed = await git(dir, ['branch', '--list', worker.branch]);
       assert.match(String(listed.stdout || ''), new RegExp(worker.branch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
@@ -724,7 +731,7 @@ test('overlapping crew paths reject the second spawn', async () => {
     const saved = JSON.parse(await fs.readFile(getProjectCrewStatePath(dir), 'utf8'));
     const workers = listCrewWorkersFromState(saved);
     assert.equal(workers.length, 1);
-    assert.equal(['docs', 'docs-two'].includes(workers[0].id), true);
+    assert.equal(['docs', 'docs-two'].includes(workers[0].name), true);
     await waitForWorkerStatus(dir, workers[0].id, 'completed');
     const trees = await fs.readdir(getProjectCrewWorktreesDir(dir));
     assert.deepEqual(trees.filter((name) => name !== '.DS_Store'), [workers[0].id]);
@@ -754,10 +761,11 @@ test('teardown after abort frees scope for a new worker on the same paths', asyn
     const saved = JSON.parse(await fs.readFile(getProjectCrewStatePath(dir), 'utf8'));
     const workers = listCrewWorkersFromState(saved);
     assert.equal(workers.length, 1);
-    assert.equal(workers[0].id, 'nina');
+    assert.equal(workers[0].id, second.worker.id);
+    assert.equal(workers[0].name, 'nina');
     const trees = await fs.readdir(getProjectCrewWorktreesDir(dir));
-    assert.equal(trees.includes('noa'), false);
-    assert.equal(trees.includes('nina'), true);
+    assert.equal(trees.includes(first.worker.id), false);
+    assert.equal(trees.includes(second.worker.id), true);
   });
 });
 
@@ -801,14 +809,15 @@ test('cancel_worker aborts a running Crew worker and removes its worktree', asyn
   }, async ({ dir, runtime, session }) => {
     await runtime.setCrewMode(true);
     await runtime.submitMessage({ text: '使用子代理执行慢任务' });
-    await fs.access(path.join(getProjectCrewWorktreesDir(dir), 'slow'));
+    const slow = listCrewWorkersFromState(await readCrewStateFile(dir)).find((item) => item.name === 'slow');
+    await fs.access(path.join(getProjectCrewWorktreesDir(dir), slow.id));
     await runtime.submitMessage({ text: '取消工人 slow' });
     const cancelResult = session.messages.find((message) => message.tool_call_id === 'call-cancel');
     assert.ok(cancelResult, `missing cancel_worker result; ids=${session.messages.map((m) => m.tool_call_id).filter(Boolean).join(',')}`);
     assert.match(String(cancelResult.content || ''), /Cancelled Crew worker "slow"/);
     const workers = listCrewWorkersFromState(await readCrewStateFile(dir));
-    assert.equal(workers.some((item) => item.id === 'slow'), false);
-    assert.equal(await fs.access(path.join(getProjectCrewWorktreesDir(dir), 'slow')).then(() => true, () => false), false);
+    assert.equal(workers.some((item) => item.name === 'slow'), false);
+    assert.equal(await fs.access(path.join(getProjectCrewWorktreesDir(dir), slow.id)).then(() => true, () => false), false);
     const reused = await addCrewWorktree({
       cwd: dir,
       base: 'main',
@@ -842,7 +851,7 @@ test('cancel_worker removes a queued Crew worker without starting it', async () 
     await waitForCondition(async () => {
       const state = await readCrewStateFile(dir);
       lastStatuses = Object.fromEntries(
-        listCrewWorkersFromState(state).map((worker) => [worker.id, worker.runStatus]),
+        listCrewWorkersFromState(state).map((worker) => [worker.name || worker.id, worker.runStatus]),
       );
       return lastStatuses.m1 === 'running' && lastStatuses.m2 === 'queued';
     }).catch((error) => {
@@ -854,9 +863,8 @@ test('cancel_worker removes a queued Crew worker without starting it', async () 
     assert.ok(cancelResult, `missing cancel_worker result; ids=${session.messages.map((m) => m.tool_call_id).filter(Boolean).join(',')}`);
     assert.match(String(cancelResult.content || ''), /Cancelled Crew worker "m2"/);
     const workers = listCrewWorkersFromState(await readCrewStateFile(dir));
-    assert.equal(workers.some((item) => item.id === 'm2'), false);
-    assert.equal(workers.some((item) => item.id === 'm1'), true);
-    assert.equal(await fs.access(path.join(getProjectCrewWorktreesDir(dir), 'm2')).then(() => true, () => false), false);
+    assert.equal(workers.some((item) => item.name === 'm2'), false);
+    assert.equal(workers.some((item) => item.name === 'm1'), true);
     await waitForWorkerStatus(dir, 'm1', 'completed');
   });
 });
@@ -890,7 +898,7 @@ test('cancel_worker removes an idle Crew worker after it finishes', async () => 
     assert.ok(cancelResult, `missing cancel_worker result; ids=${session.messages.map((m) => m.tool_call_id).filter(Boolean).join(',')}`);
     assert.match(String(cancelResult.content || ''), /Cancelled Crew worker "idle"/);
     const workers = listCrewWorkersFromState(await readCrewStateFile(dir));
-    assert.equal(workers.some((item) => item.id === 'idle'), false);
+    assert.equal(workers.some((item) => item.name === 'idle'), false);
     assert.equal(await fs.access(path.join(getProjectCrewWorktreesDir(dir), 'idle')).then(() => true, () => false), false);
   });
 });
@@ -916,8 +924,9 @@ test('parent Stop does not abort a running Crew worker', async () => {
     runtime.abort();
     await follow.catch(() => null);
     await waitForWorkerStatus(dir, 'keep', 'completed');
-    assert.equal(await fs.access(path.join(getProjectCrewWorktreesDir(dir), 'keep')).then(() => true, () => false), true);
     const workers = listCrewWorkersFromState(await readCrewStateFile(dir));
-    assert.equal(workers.some((item) => item.id === 'keep'), true);
+    const keep = workers.find((item) => item.name === 'keep');
+    assert.ok(keep);
+    assert.equal(await fs.access(path.join(getProjectCrewWorktreesDir(dir), keep.id)).then(() => true, () => false), true);
   });
 });

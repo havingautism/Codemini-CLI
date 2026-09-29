@@ -146,6 +146,20 @@ test('describeCrewRunSubagent labels review, survey, and worktree cards', () => 
   assert.equal(describeCrewRunSubagent({ name: 'Mira' }), null);
   assert.equal(describeCrewRunSubagent({ review: 'alisa', role: 'reviewer' }).kind, 'review');
   assert.match(describeCrewRunSubagent({ review: 'alisa', role: 'reviewer' }).label, /Crew review/);
+  assert.equal(
+    describeCrewRunSubagent(
+      { review: 'wkr_alisa_1', role: 'reviewer' },
+      { workers: [{ id: 'wkr_alisa_1', name: 'Alisa' }] },
+    ).label,
+    'Crew review · Alisa',
+  );
+  assert.equal(
+    describeCrewRunSubagent(
+      { resume: 'wkr_backend_1', prompt: 'continue' },
+      { workers: [{ id: 'wkr_backend_1', name: 'Backend-Health' }] },
+    ).label,
+    'Crew worker · Backend-Health',
+  );
   assert.equal(describeCrewRunSubagent({ role: 'survey', name: 'Scout' }).kind, 'survey');
   assert.equal(describeCrewRunSubagent({ name: 'Alisa', paths: ['notes.md'] }).kind, 'worker');
 });

@@ -73,7 +73,7 @@ export function CrewProgressDock({ runtimeState }) {
                 />
               )}
               <span className="min-w-0 truncate font-medium text-(--text-primary)">
-                {item.id}
+                {item.name || item.id}
               </span>
               <span className="shrink-0 text-[11px] uppercase tracking-[0.04em] text-(--text-muted)">
                 {t(kindKey)}

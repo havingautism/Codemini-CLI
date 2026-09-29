@@ -183,7 +183,9 @@ async function waitForWorkerStatus(dir, workerId, status, timeoutMs = 8000) {
   while (Date.now() - started < timeoutMs) {
     const raw = await fs.readFile(getProjectCrewStatePath(dir), 'utf8').catch(() => '');
     if (raw) {
-      const worker = listCrewWorkersFromState(JSON.parse(raw)).find((item) => item.id === workerId);
+      const worker = listCrewWorkersFromState(JSON.parse(raw)).find((item) => (
+        item.id === workerId || String(item.name || '').toLowerCase() === String(workerId).toLowerCase()
+      ));
       if (worker?.runStatus === status) return worker;
     }
     await new Promise((resolve) => setTimeout(resolve, 40));
@@ -275,10 +277,10 @@ test('resume reuses the same worktree; same name without resume is rejected', as
       paths: ['other.md'],
     });
     assert.equal(dup.ok, false);
-    assert.equal(dup.code, 'WORKER_EXISTS');
-    assert.deepEqual(await listCrewBranches(dir), ['codemini-crew/alisa']);
+    assert.equal(dup.code, 'SCOPE_OVERLAP');
+    assert.deepEqual(await listCrewBranches(dir), [spawned.worker.branch]);
     const trees = await fs.readdir(getProjectCrewWorktreesDir(dir));
-    assert.deepEqual(trees, ['alisa']);
+    assert.deepEqual(trees, [spawned.worker.id]);
 
     const wrongResume = await resolveCrewSubagentWorkspace({
       cwd: dir,
@@ -288,8 +290,8 @@ test('resume reuses the same worktree; same name without resume is rejected', as
     });
     assert.equal(wrongResume.ok, false);
     assert.equal(wrongResume.code, 'RESUME_UNKNOWN');
-    assert.match(wrongResume.error, /resume: "alisa"/);
-    assert.deepEqual(await fs.readdir(getProjectCrewWorktreesDir(dir)), ['alisa']);
+    assert.match(wrongResume.error, new RegExp(spawned.worker.id));
+    assert.deepEqual(await fs.readdir(getProjectCrewWorktreesDir(dir)), [spawned.worker.id]);
   });
 });
 
@@ -331,7 +333,9 @@ test('after land, the same name is a new worker and needs paths', async () => {
     });
     assert.equal(again.ok, true, again.error);
     assert.equal(Boolean(again.resume), false);
-    assert.equal(again.worker.id, 'alisa');
+    assert.match(again.worker.id, /^wkr_/);
+    assert.notEqual(again.worker.id, spawned.worker.id);
+    assert.equal(again.worker.name, 'Alisa');
   });
 });
 
@@ -365,15 +369,15 @@ test('spawn then resume injects the last handoff into the new prompt', async () 
     await waitForWorkerStatus(dir, 'alisa', 'completed');
     const afterSpawn = JSON.parse(await fs.readFile(getProjectCrewStatePath(dir), 'utf8'));
     const [worker] = listCrewWorkersFromState(afterSpawn);
-    assert.equal(worker.id, 'alisa');
+    assert.equal(String(worker.name || '').toLowerCase(), 'alisa');
     assert.match(String(worker.lastHandoffPath || ''), /handoffs/);
 
     await runtime.submitMessage({ text: 'RESUME_ALISA' });
     await waitUntil(() => bodies.some((item) => messageBlob(item).includes('Previous shift handoff')));
     const afterResume = JSON.parse(await fs.readFile(getProjectCrewStatePath(dir), 'utf8'));
     assert.equal(listCrewWorkersFromState(afterResume).length, 1);
-    assert.deepEqual(await fs.readdir(getProjectCrewWorktreesDir(dir)), ['alisa']);
-    assert.deepEqual(await listCrewBranches(dir), ['codemini-crew/alisa']);
+    assert.deepEqual(await fs.readdir(getProjectCrewWorktreesDir(dir)), [worker.id]);
+    assert.deepEqual(await listCrewBranches(dir), [worker.branch]);
 
     const resumePrompt = bodies
       .map((item) => messageBlob(item))
@@ -427,8 +431,9 @@ test('in-flight resume of the same worker is rejected', async () => {
     await runtime.submitMessage({ text: 'DOUBLE_RESUME' });
     const transcript = JSON.stringify(session.messages);
     assert.match(transcript, /still running/);
+    const spawnedWorker = await waitForWorkerStatus(dir, 'alisa', 'completed');
     const trees = await fs.readdir(getProjectCrewWorktreesDir(dir));
-    assert.deepEqual(trees, ['alisa']);
+    assert.deepEqual(trees, [spawnedWorker.id]);
     await waitForWorkerStatus(dir, 'alisa', 'completed');
   });
 });

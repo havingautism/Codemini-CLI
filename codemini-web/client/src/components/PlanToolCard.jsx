@@ -286,8 +286,8 @@ function StepBody({ step }) {
   );
 }
 
-function CrewWorkerMeta({ args }) {
-  const crew = describeCrewRunSubagent(args);
+function CrewWorkerMeta({ args, workers }) {
+  const crew = describeCrewRunSubagent(args, { workers });
   if (!crew) return null;
   const paths = Array.isArray(args?.paths)
     ? args.paths.map((item) => String(item || "").trim()).filter(Boolean).join(", ")
@@ -416,6 +416,9 @@ function SubagentStepRow({ step, index }) {
 
 export function PlanToolCard({ card }) {
   const { state } = useApp();
+  const crewWorkers = Array.isArray(state.runtimeState?.crewWorkers)
+    ? state.runtimeState.crewWorkers
+    : [];
   const suppressCrewTodos = shouldSuppressCrewTaskTodos({
     crewActive: Boolean(state.runtimeState?.crewActive),
   });
@@ -475,7 +478,9 @@ export function PlanToolCard({ card }) {
       : goal,
   );
   const title = isSubagent
-    ? describeCrewRunSubagent(card?.arguments)?.label || persona || t("subagentWorker")
+    ? describeCrewRunSubagent(card?.arguments, { workers: crewWorkers })?.label
+      || persona
+      || t("subagentWorker")
     : isFork
       ? t("forkBranch")
       : card?.displayName || planPhaseTitle(phase);
@@ -547,7 +552,7 @@ export function PlanToolCard({ card }) {
         <div className="codemini-disclosure-tree">
           {isDelegationCard ? <SubagentTaskDetails task={goal} /> : null}
           {isSubagent ? (
-            <CrewWorkerMeta args={card?.arguments} />
+            <CrewWorkerMeta args={card?.arguments} workers={crewWorkers} />
           ) : null}
           {todoCard && !suppressCrewTodos ? (
             <ToolCard card={todoCard} embedded />

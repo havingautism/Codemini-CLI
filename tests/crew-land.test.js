@@ -133,7 +133,7 @@ test('land_workers refuses a dirty worker worktree and does not commit the user 
     assert.equal(landed.code, 'DIRTY_WORKTREE');
     assert.deepEqual(await commitCount(dir), ['init']);
     assert.equal(await fs.access(path.join(dir, 'docs', 'a.md')).then(() => true, () => false), false);
-    assert.deepEqual(await listCrewRefs(dir), ['codemini-crew/docs']);
+    assert.deepEqual(await listCrewRefs(dir), [spawned.worker.branch]);
   });
 });
 
@@ -153,7 +153,7 @@ test('one sealed worker commits onto the user branch', async () => {
     assert.equal(await fs.readFile(path.join(dir, 'docs', 'a.md'), 'utf8'), 'alpha\n');
     const commits = await commitCount(dir);
     assert.equal(commits.length, 2);
-    assert.match(commits[0], /codemini-crew merge docs/);
+    assert.match(commits[0], new RegExp(`codemini-crew merge ${spawned.worker.id}`));
     const saved = JSON.parse(await fs.readFile(getProjectCrewStatePath(dir), 'utf8'));
     assert.equal(listCrewWorkersFromState(saved).length, 0);
     assert.deepEqual(landed.kept, []);
@@ -181,7 +181,7 @@ test('land_workers refuses to merge after the user switches away from the record
     assert.equal(landed.base, 'main');
     assert.equal(landed.currentBranch, 'unrelated');
     assert.equal(await fs.access(path.join(dir, 'docs', 'a.md')).then(() => true, () => false), false);
-    assert.deepEqual(await listCrewRefs(dir), ['codemini-crew/docs']);
+    assert.deepEqual(await listCrewRefs(dir), [spawned.worker.branch]);
   });
 });
 
@@ -234,7 +234,7 @@ test('land_workers refuses files outside the worker glob', async () => {
     assert.equal(await fs.access(path.join(dir, 'escaped.txt')).then(() => true, () => false), false);
     const saved = JSON.parse(await fs.readFile(getProjectCrewStatePath(dir), 'utf8'));
     assert.equal(listCrewWorkersFromState(saved).length, 1);
-    assert.deepEqual(await listCrewRefs(dir), ['codemini-crew/docs']);
+    assert.deepEqual(await listCrewRefs(dir), [spawned.worker.branch]);
   });
 });
 
@@ -256,7 +256,7 @@ test('land_workers stops when the user worktree would overwrite uncommitted file
     assert.equal(await fs.readFile(path.join(dir, 'docs', 'a.md'), 'utf8'), 'local\n');
     const saved = JSON.parse(await fs.readFile(getProjectCrewStatePath(dir), 'utf8'));
     assert.equal(listCrewWorkersFromState(saved).length, 1);
-    assert.deepEqual(await listCrewRefs(dir), ['codemini-crew/docs']);
+    assert.deepEqual(await listCrewRefs(dir), [spawned.worker.branch]);
   });
 });
 
@@ -286,8 +286,8 @@ test('failed two-worker land keeps worker branches for retry after local checkou
     assert.equal(await fs.readFile(path.join(dir, 'docs', 'a.md'), 'utf8'), 'local\n');
     assert.equal(await fs.access(path.join(dir, 'src', 'a.ts')).then(() => true, () => false), false);
     const refs = await listCrewRefs(dir);
-    assert.equal(refs.includes('codemini-crew/docs'), true);
-    assert.equal(refs.includes('codemini-crew/src'), true);
+    assert.equal(refs.includes(docs.worker.branch), true);
+    assert.equal(refs.includes(src.worker.branch), true);
     assert.equal(refs.includes('codemini-crew/_merge-tmp'), false);
     const saved = JSON.parse(await fs.readFile(getProjectCrewStatePath(dir), 'utf8'));
     const workers = listCrewWorkersFromState(saved);
@@ -387,18 +387,18 @@ test('land_workers merges a passing worker onto base while another is still in r
     const first = await landCrewWorkers({ cwd: dir, base: 'main' });
     assert.equal(first.ok, true, first.error);
     assert.equal(first.committed, true);
-    assert.deepEqual(first.integrated, ['docs']);
-    assert.deepEqual(first.pending, ['src']);
+    assert.deepEqual(first.integrated, [docs.worker.id]);
+    assert.deepEqual(first.pending, [src.worker.id]);
     assert.equal(await fs.readFile(path.join(dir, 'docs', 'a.md'), 'utf8'), 'alpha\n');
     assert.equal((await fs.readdir(getProjectCrewWorktreesDir(dir))).includes('_merge-tmp'), false);
 
     const saved = JSON.parse(await fs.readFile(getProjectCrewStatePath(dir), 'utf8'));
     const workers = listCrewWorkersFromState(saved);
-    assert.equal(workers.find((item) => item.id === 'docs')?.integrated, true);
+    assert.equal(workers.find((item) => item.id === docs.worker.id)?.integrated, true);
     const resumeIntegrated = await resolveCrewSubagentWorkspace({
       cwd: dir,
       base: 'main',
-      resume: 'docs',
+      resume: docs.worker.id,
     });
     assert.equal(resumeIntegrated.ok, false);
     assert.equal(resumeIntegrated.code, 'WORKER_INTEGRATED');
@@ -459,22 +459,22 @@ test('two-worker merge conflict requires rebase onto the base tip', async () => 
     await commitWorkerFile(noah.worker.worktreePath, 'README.md', 'from-noah\n');
     await patchCrewWorkerRecord(dir, mia.worker.id, { paths: ['docs/**', 'README.md'] });
     await patchCrewWorkerRecord(dir, noah.worker.id, { paths: ['src/**', 'README.md'] });
-    const miaRecord = { ...mia.worker, id: 'mia' };
-    const noahRecord = { ...noah.worker, id: 'noah' };
+    const miaRecord = mia.worker;
+    const noahRecord = noah.worker;
     await markCleanReview(dir, miaRecord);
     await markCleanReview(dir, noahRecord);
 
     const landed = await landCrewWorkers({ cwd: dir, base: 'main' });
     assert.equal(landed.ok, false);
     assert.equal(landed.code, 'REBASE_REQUIRED');
-    assert.equal(landed.workerId, 'noah');
+    assert.equal(landed.workerId, noah.worker.id);
     assert.equal(Boolean(landed.onto), true);
     const baseTip = String((await git(dir, ['rev-parse', 'HEAD'])).stdout || '').trim();
     assert.equal(landed.onto, baseTip);
     assert.equal((await fs.readdir(getProjectCrewWorktreesDir(dir))).includes('_merge-tmp'), false);
 
     const afterConflict = JSON.parse(await fs.readFile(getProjectCrewStatePath(dir), 'utf8'));
-    const noahState = listCrewWorkersFromState(afterConflict).find((item) => item.id === 'noah');
+    const noahState = listCrewWorkersFromState(afterConflict).find((item) => item.id === noah.worker.id);
     assert.equal(noahState.rebaseOnto, baseTip);
     assert.notEqual(noahState.reviewPassed, true);
     assert.equal(noahState.reviewedCommit, undefined);
@@ -512,7 +512,7 @@ test('two-worker merge conflict requires rebase onto the base tip', async () => 
       },
     });
 
-    await patchCrewWorkerRecord(dir, 'noah', { landBase: '', rebaseOnto: '' });
+    await patchCrewWorkerRecord(dir, noah.worker.id, { landBase: '', rebaseOnto: '' });
     await markCleanReview(dir, noahRecord);
     const finished = await landCrewWorkers({ cwd: dir, base: 'main' });
     assert.equal(finished.ok, true, finished.error);
@@ -541,18 +541,18 @@ test('rebase conflict loops through resume, worker fix, review, and land', async
     await commitWorkerFile(noah.worker.worktreePath, 'README.md', 'from-noah\n');
     await patchCrewWorkerRecord(dir, mia.worker.id, { paths: ['docs/**', 'README.md'] });
     await patchCrewWorkerRecord(dir, noah.worker.id, { paths: ['src/**', 'README.md'] });
-    await markCleanReview(dir, { ...mia.worker, id: 'mia' });
-    await markCleanReview(dir, { ...noah.worker, id: 'noah' });
+    await markCleanReview(dir, mia.worker);
+    await markCleanReview(dir, noah.worker);
 
     const conflictLand = await landCrewWorkers({ cwd: dir, base: 'main' });
     assert.equal(conflictLand.ok, false);
     assert.equal(conflictLand.code, 'REBASE_REQUIRED');
-    assert.equal(conflictLand.workerId, 'noah');
+    assert.equal(conflictLand.workerId, noah.worker.id);
     const baseTip = String((await git(dir, ['rev-parse', 'HEAD'])).stdout || '').trim();
 
     const afterPartial = JSON.parse(await fs.readFile(getProjectCrewStatePath(dir), 'utf8'));
-    const miaState = listCrewWorkersFromState(afterPartial).find((item) => item.id === 'mia');
-    const noahState = listCrewWorkersFromState(afterPartial).find((item) => item.id === 'noah');
+    const miaState = listCrewWorkersFromState(afterPartial).find((item) => item.id === mia.worker.id);
+    const noahState = listCrewWorkersFromState(afterPartial).find((item) => item.id === noah.worker.id);
     assert.equal(miaState.integrated, true);
     assert.equal(noahState.rebaseOnto, baseTip);
     assert.notEqual(noahState.reviewPassed, true);
@@ -560,7 +560,7 @@ test('rebase conflict loops through resume, worker fix, review, and land', async
     const resumed = await resolveCrewSubagentWorkspace({
       cwd: dir,
       base: 'main',
-      resume: 'noah',
+      resume: noah.worker.id,
     });
     assert.equal(resumed.ok, true, resumed.error);
     assert.equal(resumed.resume, true);
@@ -606,11 +606,11 @@ test('rebase conflict loops through resume, worker fix, review, and land', async
     const reviewTarget = await resolveCrewReviewTarget({
       cwd: dir,
       base: 'main',
-      review: 'noah',
+      review: noah.worker.id,
     });
     assert.equal(reviewTarget.ok, true, reviewTarget.error);
     assert.equal(reviewTarget.review, true);
-    assert.equal(reviewTarget.worker.id, 'noah');
+    assert.equal(reviewTarget.worker.id, noah.worker.id);
     const reviewPrompt = composeCrewReviewTask('Review the rebased README fix', {
       workerId: reviewTarget.worker.id,
       commit: reviewTarget.commit,

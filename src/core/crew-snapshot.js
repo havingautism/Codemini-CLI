@@ -41,6 +41,7 @@ export function buildCrewWorkerStatusRecord(worker = {}) {
   const runStatus = String(worker.runStatus || '').trim().toLowerCase();
   return {
     id: worker.id,
+    ...(worker.name ? { name: worker.name } : {}),
     kind,
     paths: Array.isArray(worker.paths) ? worker.paths : [],
     task: worker.task || '',
@@ -195,7 +196,7 @@ export function formatCrewStatusSummary(result = {}) {
         ? 'fail'
         : 'pending';
     const parts = [
-      worker.id,
+      worker.name ? `${worker.name} (${worker.id})` : worker.id,
       worker.task ? `task=${worker.task}` : '',
       Array.isArray(worker.paths) && worker.paths.length ? `paths=${worker.paths.join(',')}` : '',
       `run=${worker.runStatus || 'idle'}`,
@@ -226,7 +227,7 @@ export function formatCrewRosterSnapshot(workers = []) {
   const lines = roster.map((item) => {
     const scope = Array.isArray(item.paths) && item.paths.length ? item.paths.join(', ') : 'no paths';
     const parts = [
-      item.id,
+      item.name ? `${item.name} (${item.id})` : item.id,
       item.task ? `task=${item.task}` : '',
       `scope=${scope}`,
       item.integrated === true ? 'integrated' : 'idle',
@@ -295,6 +296,7 @@ export function buildCrewWorkerCompletedWake({
 
 export function compactCrewSpawnResultForParent({
   workerId = '',
+  name = '',
   taskId = '',
   status = 'running',
   branch = '',
@@ -303,11 +305,13 @@ export function compactCrewSpawnResultForParent({
   role = '',
 } = {}) {
   const id = String(workerId || '').trim();
+  const nickname = String(name || '').trim();
   const reviewed = String(reviewOf || '').trim();
+  const label = nickname && id ? `${nickname} (${id})` : (id || nickname || role || 'worker');
   const lines = [
     reviewed
-      ? `Crew review of "${reviewed}" started (${status}).`
-      : `Crew worker "${id || role || 'worker'}" spawned (${status}).`,
+      ? `Crew review of "${nickname || reviewed}" (${reviewed}) started (${status}).`
+      : `Crew worker "${label}" spawned (${status}).`,
     String(taskId || '').trim() ? `Task id: ${String(taskId).trim()}.` : '',
     String(branch || '').trim() ? `Branch: ${String(branch).trim()}.` : '',
     String(worktreePath || '').trim() ? `Worktree: ${String(worktreePath).trim()}.` : '',

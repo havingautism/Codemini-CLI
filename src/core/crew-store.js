@@ -64,6 +64,7 @@ export function normalizeCrewWorkerRecord(value) {
   const runStatus = String(value.runStatus || '').trim().toLowerCase();
   const runError = String(value.runError || '').trim();
   const task = String(value.task || '').replace(/\s+/g, ' ').trim().slice(0, 160);
+  const name = String(value.name || '').replace(/\s+/g, ' ').trim().slice(0, 40);
   return {
     id,
     branch,
@@ -91,6 +92,7 @@ export function normalizeCrewWorkerRecord(value) {
     ...(value.dirty === true || value.dirty === false ? { dirty: value.dirty === true } : {}),
     ...(String(value.kind || '').trim().toLowerCase() === 'survey' ? { kind: 'survey' } : {}),
     ...(task ? { task } : {}),
+    ...(name ? { name } : {}),
   };
 }
 
@@ -358,6 +360,7 @@ export function normalizeCrewInboxRecord(value) {
     path: filePath,
     at,
     delivered: value.delivered === true,
+    ...(value.archived === true ? { archived: true } : {}),
   };
 }
 
@@ -369,7 +372,7 @@ export function listCrewInboxFromState(state) {
 export function listUnreadCrewInbox(state, { to = '' } = {}) {
   const recipient = String(to || '').trim();
   return listCrewInboxFromState(state).filter((item) => {
-    if (item.delivered === true) return false;
+    if (item.delivered === true || item.archived === true) return false;
     if (!recipient || recipient === 'coordinator') return true;
     return item.to === recipient || item.to === 'all';
   });
@@ -505,6 +508,14 @@ export function buildCrewCompletionEvent(input = {}) {
 
 const CREW_INBOX_BODY_MAX = 200_000;
 
+function crewNicknameKey(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
 function crewInboxRecipients(state) {
   const ids = listCrewWorkersFromState(state)
     .filter((worker) => worker.integrated !== true)
@@ -529,9 +540,18 @@ export async function sendCrewInboxMessage(cwd, { from = '', to = '', subject = 
     if (!normalizeCrewState(current)) {
       return { ok: false, code: 'CREW_INACTIVE', error: 'Crew mode is not active.' };
     }
+    const workers = listCrewWorkersFromState(current).filter((worker) => worker.integrated !== true);
+    const nick = crewNicknameKey(recipient);
+    const named = workers.filter((worker) => worker.id !== recipient && crewNicknameKey(worker.name) === nick);
+    const resolved = workers.some((worker) => worker.id === recipient)
+      ? recipient
+      : (named.length === 1 ? named[0].id : recipient);
+    if (resolved === sender) {
+      return { ok: false, code: 'SELF', error: 'Cannot send crew mail to yourself.' };
+    }
     const known = crewInboxRecipients(current);
-    if (!known.has(recipient)) {
-      const integrated = listCrewWorkersFromState(current).find((worker) => worker.id === recipient && worker.integrated === true);
+    if (!known.has(resolved)) {
+      const integrated = listCrewWorkersFromState(current).find((worker) => worker.id === resolved && worker.integrated === true);
       if (integrated) {
         return {
           ok: false,
@@ -553,7 +573,7 @@ export async function sendCrewInboxMessage(cwd, { from = '', to = '', subject = 
     const record = normalizeCrewInboxRecord({
       id,
       from: sender,
-      to: recipient,
+      to: resolved,
       subject: title,
       path: relativePath,
       at: new Date().toISOString(),
@@ -584,6 +604,26 @@ export function markCrewInboxDeliveredInState(state, { ids = [] } = {}) {
     return { ...item, delivered: true };
   });
   return { inbox, marked };
+}
+
+export function archiveCrewInboxInState(state) {
+  let marked = 0;
+  const inbox = listCrewInboxFromState(state).map((item) => {
+    if (item.archived === true) return item;
+    marked += 1;
+    return { ...item, archived: true };
+  });
+  return { inbox, marked };
+}
+
+export function archiveCrewInbox(cwd) {
+  return withCrewStateLock(cwd, async () => {
+    const current = (await readCrewStateFile(cwd)) || {};
+    const { inbox, marked } = archiveCrewInboxInState(current);
+    if (!marked) return { ok: true, marked: 0 };
+    await writeCrewStateFileUnlocked(cwd, composeCrewStateDocument(current, { inbox }));
+    return { ok: true, marked };
+  });
 }
 
 export function markCrewInboxDelivered(cwd, ids = []) {
@@ -625,14 +665,14 @@ export function buildCrewModePromptBlock(crewState) {
   return [
     'Crew Mode: on',
     `Recorded git base branch: ${state.base}`,
-    'You are the Crew coordinator for this session. Dispatch implementation work with run_subagent. One worker is enough; do not invent extra missions. Do not implement, answer the coding question yourself, or edit the main checkout.',
+    'You are the Crew coordinator for this session. Dispatch implementation work with run_subagent. Do not implement, answer the coding question yourself, or edit the main checkout.',
     'Call crew_status for the live roster before dispatching, reviewing, landing, or answering progress. Do not infer progress from this prompt, memory, or an earlier tool result. crew_status also lists recent completion events and unread inbox mail; after a restart a wake may be missing — use those and the roster.',
     'On every wake (a worker or reviewer finished, or the user spoke), call crew_status and crew_inbox before you review, land, or resume. crew_send does not wake you. If unread mail is for a worker who is not integrated, resume that worker with the letter in the task. If that worker is already integrated, do not resume them. Do not poll.',
     'User progress or status questions (for example "做到哪了", "进展如何", "还要多久") are not new missions. Call crew_status, then answer in plain language. Do not spawn workers, reviewers, or survey runs, and do not call land_workers, just to answer a status question.',
     'If crew_status shows pending wakes, wait for that notification turn. Do not land or dispatch while a wake is queued.',
     'When a turn includes both a user message and a Crew notification, handle the notification workflow first (review sealed coders, land when ready), then answer any user status question in the same reply.',
     'Coder workers get a git worktree each. Do not create worktrees, extra branches, or merge into the user branch yourself.',
-    'New coder workers require paths: disjoint relative globs such as docs/** or src/foo.ts. Overlapping paths are rejected unless that other worker is already integrated onto the base branch. Resume with resume set to that id from crew_status; omit paths to keep the stored list, or pass a new disjoint list to change it.',
+    'New coder workers require paths: disjoint relative globs such as docs/** or src/foo.ts. Overlapping paths are rejected unless that other worker is already integrated onto the base branch. run_subagent returns a worker id. name is only a nickname. Resume, review, cancel_worker, and crew_send use that worker id from the tool result or crew_status, not the nickname or task_id. task_id is only for depends_on in the same response. Omit paths on resume to keep the stored list, or pass a new disjoint list to change it.',
     'Read-only investigation uses role: "survey". Survey workers still get a worktree, do not take exclusive paths, must not edit or commit, and are not reviewed or landed.',
     'Crew workers run in the background. Capacity is bounded; excess workers remain queued and still count as in flight. run_subagent returns immediately with status running or queued; completion wakes you in a new turn via a Crew notification. Use crew_status and the wake notification — not the original tool result — to decide the next step. dirty means the worker did not git commit — do not review or land that worker. After a coder is sealed, dispatch a separate run_subagent with role: "reviewer" and review set to that worker id. Reviewers also run in the background. Do not resume the author to review themselves. The reviewer is not a roster worker and does not get paths or a new worktree. Do not review survey workers. fork_task is not available; do not use it.',
     'If the user changes, narrows, or revokes a worker assignment (different path, file type, or scope), call cancel_worker for that roster id, then run_subagent with the updated task. This applies while the worker is running, queued, or sealed before review/land. Do not answer that in-flight workers cannot be interrupted, and do not defer with "wait for completion then resume" when cancel_worker can apply the change now.',

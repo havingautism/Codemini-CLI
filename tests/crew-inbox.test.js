@@ -9,9 +9,12 @@ import { formatCrewStatusSummary, readCrewStatusPayload } from '../src/core/crew
 import {
   appendCrewEvent,
   buildCrewCompletionEvent,
+  archiveCrewInbox,
   enterCrewMode,
+  exitCrewMode,
   listCrewEventsFromState,
   listCrewInboxFromState,
+  listUnreadCrewInbox,
   readCrewStateFile,
   writeCrewStateFile,
 } from '../src/core/crew-store.js';
@@ -144,5 +147,23 @@ test('crew_status shows the roster task and unread inbox without dropping comple
     assert.match(summary, /task=收藏夹前端/);
     assert.match(summary, /coordinator -> ada: api/);
     assert.match(composeCrewResumeTask('continue', '', '', '', 'From coordinator to ada: api\nkeep me'), /Unread crew mail/);
+  });
+});
+
+test('leaving Crew keeps unread mail; archiving drops it from unread and keeps the file', async () => {
+  await withTempDir(async (dir) => {
+    await initCrew(dir);
+    await tools(dir, 'coordinator').crew_send({ to: 'ada', subject: 'api', body: 'old round' });
+    await tools(dir, 'ada').crew_send({ to: 'coordinator', subject: 'ack', body: 'seen' });
+    await exitCrewMode({ cwd: dir, sessionId: 's1' });
+    const exited = await readCrewStateFile(dir);
+    assert.equal(exited.active, false);
+    assert.equal(listUnreadCrewInbox(exited, { to: 'coordinator' }).length, 2);
+    const archived = await archiveCrewInbox(dir);
+    assert.equal(archived.marked, 2);
+    const state = await readCrewStateFile(dir);
+    assert.equal(listCrewInboxFromState(state).every((item) => item.archived === true), true);
+    assert.equal(listUnreadCrewInbox(state, { to: 'coordinator' }).length, 0);
+    assert.equal((await fs.readdir(path.join(dir, '.codemini', 'crew', 'inbox'))).length, 2);
   });
 });
