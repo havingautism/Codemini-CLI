@@ -195,6 +195,8 @@ test('applyCrewParentToolPolicy strips mutation tools only when crew is on', () 
   assert.equal(crew.includes('land_workers'), true);
   assert.equal(crew.includes('cancel_worker'), true);
   assert.equal(crew.includes('crew_status'), true);
+  assert.equal(crew.includes('crew_send'), true);
+  assert.equal(crew.includes('crew_inbox'), true);
   assert.equal(crew.includes('run'), true);
 });
 
@@ -206,6 +208,8 @@ test('crew workers keep crew_status without parent inspect-only shell', async ()
   });
   const names = bundle.definitions.map((item) => item.function?.name || item.name);
   assert.equal(names.includes('crew_status'), true);
+  assert.equal(names.includes('crew_send'), true);
+  assert.equal(names.includes('crew_inbox'), true);
   const run = shellTool(bundle);
   assert.equal(String(run.def?.function?.description || '').includes('inspect-only'), false);
 });

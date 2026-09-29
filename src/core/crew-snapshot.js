@@ -2,6 +2,7 @@ import path from 'node:path';
 
 import {
   listUnreadCrewEvents,
+  listUnreadCrewInbox,
   listCrewWorkersFromState,
   markCrewEventsDelivered,
   normalizeCrewState,
@@ -42,6 +43,7 @@ export function buildCrewWorkerStatusRecord(worker = {}) {
     id: worker.id,
     kind,
     paths: Array.isArray(worker.paths) ? worker.paths : [],
+    task: worker.task || '',
     branch: worker.branch || '',
     runStatus,
     dirty: worker.dirty,
@@ -123,6 +125,7 @@ export async function readCrewStatusPayload(cwd = process.cwd(), {
     && item.reviewLoopStopped !== true
     && !item.integrated
   )).length;
+  const inbox = listUnreadCrewInbox(raw);
   const events = listUnreadCrewEvents(raw);
   if (events.length) {
     await markCrewEventsDelivered(projectRoot, {
@@ -143,9 +146,11 @@ export async function readCrewStatusPayload(cwd = process.cwd(), {
       integrated,
       awaitingReview,
       unreadEvents: events.length,
+      unreadInbox: inbox.length,
     },
     workers,
     events,
+    inbox,
     suggestedNext: suggestCrewNextAction({
       workers,
       inFlight: inFlightIds,
@@ -176,6 +181,12 @@ export function formatCrewStatusSummary(result = {}) {
       lines.push(`  - ${parts.join(' | ')}`);
     }
   }
+  if (result.inbox?.length) {
+    lines.push(`Unread inbox: ${result.inbox.length}`);
+    for (const message of result.inbox) {
+      lines.push(`  - ${message.from} -> ${message.to}${message.subject ? `: ${message.subject}` : ''}`);
+    }
+  }
   if (result.suggestedNext) lines.push(`Next: ${result.suggestedNext}`);
   for (const worker of result.workers || []) {
     const review = worker.reviewPassed === true
@@ -185,6 +196,8 @@ export function formatCrewStatusSummary(result = {}) {
         : 'pending';
     const parts = [
       worker.id,
+      worker.task ? `task=${worker.task}` : '',
+      Array.isArray(worker.paths) && worker.paths.length ? `paths=${worker.paths.join(',')}` : '',
       `run=${worker.runStatus || 'idle'}`,
       worker.sealed ? 'sealed' : '',
       worker.integrated ? 'integrated' : '',
@@ -214,6 +227,7 @@ export function formatCrewRosterSnapshot(workers = []) {
     const scope = Array.isArray(item.paths) && item.paths.length ? item.paths.join(', ') : 'no paths';
     const parts = [
       item.id,
+      item.task ? `task=${item.task}` : '',
       `scope=${scope}`,
       item.integrated === true ? 'integrated' : 'idle',
       item.runStatus ? `run=${item.runStatus}` : '',

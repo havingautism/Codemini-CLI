@@ -74,6 +74,9 @@ export async function runCrewWorkerJob({
   let crewDirty = initialCrewDirty;
   try {
     const reviewBox = { verdict: null };
+    const crewActor = reviewingWorkerId
+      ? `reviewer:${reviewingWorkerId}`
+      : String(lockedCrewWorkerId || '').trim();
     const output = await runSubAgentTask({
       role: taskRole,
       task: workerTask,
@@ -82,17 +85,22 @@ export async function runCrewWorkerJob({
       priorSteps: [],
       parentSession: session,
       extraRolePrompt: reviewingWorkerId ? buildCrewReviewVerdictPrompt() : '',
-      config: reviewingWorkerId
-        ? {
-            ...config,
-            runtime: {
-              ...(config.runtime || {}),
-              onCrewReviewVerdict: (verdict) => {
-                reviewBox.verdict = verdict;
-              },
-            },
-          }
-        : config,
+      config: {
+        ...config,
+        runtime: {
+          ...(config.runtime || {}),
+          crew_session: true,
+          crew_project_root: workspaceRoot,
+          ...(crewActor ? { crew_actor: crewActor } : {}),
+          ...(reviewingWorkerId
+            ? {
+                onCrewReviewVerdict: (verdict) => {
+                  reviewBox.verdict = verdict;
+                },
+              }
+            : {}),
+        },
+      },
       model: stepModel,
       systemPrompt,
       onAgentEvent,

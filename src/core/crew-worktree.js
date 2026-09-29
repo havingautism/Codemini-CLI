@@ -106,12 +106,17 @@ export function formatIdleCrewWorkers(workers) {
   return `Idle workers: ${ids}. Call back with resume set to that id (the short name, not a call/handoff id). Omit paths to keep the stored scope, or pass new disjoint paths.`;
 }
 
-export function composeCrewResumeTask(task, handoffText, reviewText = '', rebaseOnto = '') {
+export function crewTaskSummary(text = '') {
+  return String(text || '').replace(/\s+/g, ' ').trim().slice(0, 160);
+}
+
+export function composeCrewResumeTask(task, handoffText, reviewText = '', rebaseOnto = '', inboxText = '') {
   const next = String(task || '').trim();
   const prior = String(handoffText || '').trim();
   const review = String(reviewText || '').trim();
   const onto = String(rebaseOnto || '').trim();
-  if (!prior && !review && !onto) return next;
+  const mail = String(inboxText || '').trim();
+  if (!prior && !review && !onto && !mail) return next;
   return [
     next,
     prior ? 'Previous shift handoff (context from last run, not a new requirement):' : '',
@@ -121,6 +126,8 @@ export function composeCrewResumeTask(task, handoffText, reviewText = '', rebase
     onto
       ? `Rebase onto ${onto} in this worktree (git rebase ${onto}), resolve any conflicts, then git commit. Stay in your paths. Do not merge into the user branch.`
       : '',
+    mail ? 'Unread crew mail addressed to you:' : '',
+    mail,
   ].filter(Boolean).join('\n\n');
 }
 
@@ -137,6 +144,7 @@ export function composeCrewReviewTask(task, {
     `You are reviewing Crew worker "${workerId}" at commit ${commit} against base ${base}.`,
     `Scope: ${scope}. Stay inside that scope.`,
     'Do not edit files or git commit.',
+    'You may crew_send the author or the coordinator. Sending mail does not wake the coordinator.',
     buildCrewReviewVerdictPrompt(),
     diff ? `Diff vs base:\n${diff}` : 'No diff vs base was available; inspect the worktree.',
   ].join('\n\n');
@@ -264,8 +272,10 @@ export async function resolveCrewSubagentWorkspace({
   paths = [],
   dependsOn = [],
   kind = '',
+  task = '',
 } = {}) {
   const root = path.resolve(cwd);
+  const taskLine = crewTaskSummary(task);
   const resumeId = sanitizeCrewWorkerId(resume, '');
   const existing = listCrewWorkersFromState(await readCrewStateFile(root));
 
@@ -305,6 +315,7 @@ export async function resolveCrewSubagentWorkspace({
           reviewLoopStopped: false,
           reviewRound: 0,
           lastFindingsKey: '',
+          ...(taskLine ? { task: taskLine } : {}),
         });
         if (!patched.ok) {
           return {
@@ -320,6 +331,10 @@ export async function resolveCrewSubagentWorkspace({
           worker: patched.worker || { ...worker, paths: requested },
           pathsChanged: true,
         };
+      }
+      if (taskLine) {
+        await patchCrewWorkerRecord(root, worker.id, { task: taskLine }).catch(() => null);
+        worker.task = taskLine;
       }
       return { ok: true, resume: true, worker };
     }
@@ -347,6 +362,7 @@ export async function resolveCrewSubagentWorkspace({
       callId,
       paths,
       dependsOn,
+      task: taskLine,
       kind,
     });
   }
@@ -370,6 +386,7 @@ export async function resolveCrewSubagentWorkspace({
     paths,
     dependsOn,
     kind,
+    task: taskLine,
   });
 }
 
@@ -395,7 +412,7 @@ export function resolveCrewParentRoot(worktreePath) {
   return path.resolve(normalized.slice(0, index));
 }
 
-function crewWorkerIdFromWorktreePath(worktreePath) {
+export function crewWorkerIdFromWorktreePath(worktreePath) {
   const worktree = path.resolve(String(worktreePath || '').trim() || '.');
   const parent = resolveCrewParentRoot(worktree);
   if (!parent) return '';
@@ -564,8 +581,10 @@ async function addCrewWorktreeUnlocked({
   paths = [],
   dependsOn = [],
   kind = '',
+  task = '',
 } = {}) {
   const root = path.resolve(cwd);
+  const taskLine = crewTaskSummary(task);
   const baseBranch = String(base || '').trim();
   if (!baseBranch || baseBranch === 'HEAD') {
     return { ok: false, code: 'NO_BASE', error: 'Crew spawn needs a recorded git base branch.' };
@@ -644,6 +663,7 @@ async function addCrewWorktreeUnlocked({
     ...(normalizedTaskId ? { taskId: normalizedTaskId } : {}),
     ...(normalizedDependsOn.length ? { dependsOn: normalizedDependsOn } : {}),
     ...(String(callId || '').trim() ? { callId: String(callId).trim() } : {}),
+    ...(taskLine ? { task: taskLine } : {}),
   };
   const saved = await appendCrewWorkerRecord(root, worker);
   if (!saved.ok) {

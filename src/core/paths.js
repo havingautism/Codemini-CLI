@@ -118,6 +118,10 @@ export function getProjectCrewWorktreesDir(cwd = process.cwd()) {
   return path.join(getProjectCrewDir(cwd), 'worktrees');
 }
 
+export function getProjectCrewInboxDir(cwd = process.cwd()) {
+  return path.join(getProjectCrewDir(cwd), 'inbox');
+}
+
 export function getProjectTasksDir(cwd = process.cwd()) {
   return path.join(getProjectWorkspaceDir(cwd), 'tasks');
 }

@@ -25,7 +25,15 @@ import {
 } from "./shell.js";
 import { evaluateCommandPolicy } from "./command-policy.js";
 import { evaluateCrewParentCommand } from "./crew-shell.js";
-import { normalizeCrewReviewVerdict } from "./crew-store.js";
+import {
+  formatCrewInboxMessages,
+  listUnreadCrewInbox,
+  markCrewInboxDelivered,
+  normalizeCrewReviewVerdict,
+  readCrewStateFile,
+  sendCrewInboxMessage,
+} from "./crew-store.js";
+import { crewWorkerIdFromWorktreePath } from "./crew-worktree.js";
 import {
   formatCrewStatusSummary,
   readCrewStatusPayload,
@@ -5481,6 +5489,36 @@ export function getBuiltinTools({
         },
       },
     });
+    workflowToolDefinitions.push({
+      type: "function",
+      function: {
+        name: "crew_send",
+        description:
+          "Write a Crew inbox message. Recipients are a roster worker id that is not yet integrated, \"coordinator\", or \"all\". Does not wake the coordinator; they read crew_inbox on the next completion or user wake. Do not edit .codemini/crew/inbox files yourself.",
+        parameters: {
+          type: "object",
+          properties: {
+            to: { type: "string", description: "Worker id, coordinator, or all." },
+            subject: { type: "string", description: "Short subject." },
+            body: { type: "string", description: "Full message. Not truncated." },
+          },
+          required: ["to", "body"],
+        },
+      },
+    });
+    workflowToolDefinitions.push({
+      type: "function",
+      function: {
+        name: "crew_inbox",
+        description:
+          "Read unread Crew mail. Workers see messages to themselves or all, and those are marked delivered. The coordinator sees every unread message and does not consume worker mail.",
+        parameters: {
+          type: "object",
+          properties: {},
+          required: [],
+        },
+      },
+    });
   }
   if (typeof config?.runtime?.onCrewReviewVerdict === "function") {
     workflowToolDefinitions.push({
@@ -7266,6 +7304,52 @@ export function getBuiltinTools({
         : 0;
       return readCrewStatusPayload(projectRoot, { inFlight, pendingWakes });
     },
+    crew_send: async (args = {}) => {
+      if (!crewActive && !config?.runtime?.crew_session) {
+        return { ok: false, error: "crew_send is only available in Crew mode." };
+      }
+      const projectRoot = resolveCrewProjectRoot(
+        config?.runtime?.crew_project_root || workspaceRoot,
+      );
+      const from = String(config?.runtime?.crew_actor || "").trim()
+        || crewWorkerIdFromWorktreePath(workspaceRoot)
+        || "coordinator";
+      return sendCrewInboxMessage(projectRoot, {
+        from,
+        to: args?.to,
+        subject: args?.subject,
+        body: args?.body,
+      });
+    },
+    crew_inbox: async () => {
+      if (!crewActive && !config?.runtime?.crew_session) {
+        return { ok: false, error: "crew_inbox is only available in Crew mode." };
+      }
+      const projectRoot = resolveCrewProjectRoot(
+        config?.runtime?.crew_project_root || workspaceRoot,
+      );
+      const actor = String(config?.runtime?.crew_actor || "").trim()
+        || crewWorkerIdFromWorktreePath(workspaceRoot)
+        || "coordinator";
+      const state = await readCrewStateFile(projectRoot);
+      const messages = listUnreadCrewInbox(state, { to: actor });
+      const text = await formatCrewInboxMessages(projectRoot, messages);
+      if (actor !== "coordinator" && messages.length) {
+        await markCrewInboxDelivered(projectRoot, messages.map((item) => item.id));
+      }
+      return {
+        ok: true,
+        actor,
+        count: messages.length,
+        messages: messages.map((item) => ({
+          id: item.id,
+          from: item.from,
+          to: item.to,
+          subject: item.subject,
+        })),
+        text,
+      };
+    },
     submit_crew_review: async (args = {}) => {
       const submit = config?.runtime?.onCrewReviewVerdict;
       const verdict = normalizeCrewReviewVerdict(args);
@@ -7897,6 +7981,21 @@ export function getBuiltinTools({
       if (result.error) return String(result.error);
       if (result.message) return String(result.message);
       return JSON.stringify(result);
+    },
+
+    crew_send(result) {
+      if (!result || typeof result !== "object") return String(result);
+      if (result.error) return String(result.error);
+      const message = result.message;
+      if (!message) return "Crew mail sent.";
+      return `Crew mail sent to ${message.to}${message.subject ? `: ${message.subject}` : ""}.`;
+    },
+
+    crew_inbox(result) {
+      if (!result || typeof result !== "object") return String(result);
+      if (result.error) return String(result.error);
+      if (!result.count) return "Crew inbox: no unread mail.";
+      return result.text || `Crew inbox: ${result.count} unread.`;
     },
 
     crew_status(result) {

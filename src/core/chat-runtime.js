@@ -107,8 +107,11 @@ import {
   writeCrewStateFile,
   appendCrewEvent,
   buildCrewCompletionEvent,
+  formatCrewInboxMessages,
+  listUnreadCrewInbox,
+  markCrewInboxDelivered,
 } from './crew-store.js';
-import { composeCrewResumeTask, composeCrewReviewTask, isCrewCommitAncestor, isCrewWorktreeDirty, resolveCrewReviewTarget, resolveCrewSubagentWorkspace, shouldContinueCrewWorkerSeal, teardownCrewWorker } from './crew-worktree.js';
+import { composeCrewResumeTask, composeCrewReviewTask, crewTaskSummary, isCrewCommitAncestor, isCrewWorktreeDirty, resolveCrewReviewTarget, resolveCrewSubagentWorkspace, shouldContinueCrewWorkerSeal, teardownCrewWorker } from './crew-worktree.js';
 import { landCrewWorkers } from './crew-land.js';
 import { createCrewCoordinator } from './crew-coordinator.js';
 import { createCrewWorkerScheduler } from './crew-scheduler.js';
@@ -732,7 +735,7 @@ export const EXECUTION_MODE_TOOL_POLICY = {
     'save_memory',
     'tasks',
     'edit', 'write', 'begin_write', 'write_chunk', 'commit_write', 'abort_write', 'apply_patch', 'delete', 'run',
-    'run_subagent', 'fork_task', 'land_workers', 'cancel_worker', 'crew_status', 'request_user_input'
+    'run_subagent', 'fork_task', 'land_workers', 'cancel_worker', 'crew_status', 'crew_send', 'crew_inbox', 'request_user_input'
   ]
 };
 
@@ -784,6 +787,8 @@ export function applyCrewParentToolPolicy(allowedTools, { crewActive = false } =
   if (!names.includes('land_workers')) names.push('land_workers');
   if (!names.includes('cancel_worker')) names.push('cancel_worker');
   if (!names.includes('crew_status')) names.push('crew_status');
+  if (!names.includes('crew_send')) names.push('crew_send');
+  if (!names.includes('crew_inbox')) names.push('crew_inbox');
   return names;
 }
 
@@ -1074,6 +1079,8 @@ export function resolveSubAgentToolAllowList({
   );
   if (!roleTools.includes('tasks')) roleTools.push('tasks');
   if (crewSession && !roleTools.includes('crew_status')) roleTools.push('crew_status');
+  if (crewSession && !roleTools.includes('crew_send')) roleTools.push('crew_send');
+  if (crewSession && !roleTools.includes('crew_inbox')) roleTools.push('crew_inbox');
   if (!Array.isArray(tools)) return roleTools;
   const requested = adaptToolNamesForPlatform(
     normalizeToolPolicy(tools, config).map(canonicalShellToolName).filter(
@@ -1091,6 +1098,8 @@ export function resolveSubAgentToolAllowList({
   }
   if (!granted.includes('tasks')) granted.push('tasks');
   if (crewSession && !granted.includes('crew_status')) granted.push('crew_status');
+  if (crewSession && !granted.includes('crew_send')) granted.push('crew_send');
+  if (crewSession && !granted.includes('crew_inbox')) granted.push('crew_inbox');
   return granted;
 }
 
@@ -5443,6 +5452,7 @@ async function askModel({
                   paths,
                   dependsOn: dependencyRegistration.dependencies,
                   kind: isCrewSurvey ? 'survey' : '',
+                  task: crewTaskSummary(effectivePrompt),
                 });
                 if (!spawned.ok) {
                   const spawnError = spawned.error || 'Failed to spawn Crew worktree.';
@@ -5516,7 +5526,13 @@ async function askModel({
                     ? spawned.worker?.reviewText
                     : '';
                   pendingRebaseOnto = String(spawned.worker?.rebaseOnto || '').trim();
-                  workerTask = composeCrewResumeTask(scopedTask, priorHandoff, reviewText, pendingRebaseOnto);
+                  const unread = listUnreadCrewInbox(await readCrewStateFile(workspaceRoot), { to: workerId });
+                  const directMail = unread.filter((item) => item.to === workerId);
+                  const inboxText = await formatCrewInboxMessages(workspaceRoot, directMail);
+                  if (directMail.length) {
+                    await markCrewInboxDelivered(workspaceRoot, directMail.map((item) => item.id));
+                  }
+                  workerTask = composeCrewResumeTask(scopedTask, priorHandoff, reviewText, pendingRebaseOnto, inboxText);
                 }
                 workerWorkspaceRoot = spawned.worker.worktreePath;
                 workerBackupManager = null;
@@ -6867,6 +6883,7 @@ export async function runSubAgentTask({
       : [
           'Your cwd is this git worktree. Use paths relative to this directory. Do not write to the parent checkout with its absolute path.',
           'When the assigned slice is done, git commit on this worktree branch. If you cannot finish, do not commit. Your final message must state the outcome: done, blocked, or failed.',
+          'You may call crew_inbox while you work and crew_send to another worker, the coordinator, or all. Sending mail does not wake the coordinator.',
         ].join('\n');
   const scopedTask = [
     'Role:',

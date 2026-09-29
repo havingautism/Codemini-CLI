@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
-import { getProjectCrewDir, getProjectCrewStatePath } from './paths.js';
+import { getProjectCrewDir, getProjectCrewInboxDir, getProjectCrewStatePath } from './paths.js';
 import { runGit } from './process-run.js';
 import { atomicWriteUtf8 } from './staged-write.js';
 import { normalizeCrewDependsOn, normalizeCrewPaths } from './crew-scope.js';
@@ -63,6 +63,7 @@ export function normalizeCrewWorkerRecord(value) {
   const lastFindingsKey = String(value.lastFindingsKey || '').trim();
   const runStatus = String(value.runStatus || '').trim().toLowerCase();
   const runError = String(value.runError || '').trim();
+  const task = String(value.task || '').replace(/\s+/g, ' ').trim().slice(0, 160);
   return {
     id,
     branch,
@@ -89,6 +90,7 @@ export function normalizeCrewWorkerRecord(value) {
     ...(runError ? { runError } : {}),
     ...(value.dirty === true || value.dirty === false ? { dirty: value.dirty === true } : {}),
     ...(String(value.kind || '').trim().toLowerCase() === 'survey' ? { kind: 'survey' } : {}),
+    ...(task ? { task } : {}),
   };
 }
 
@@ -339,6 +341,40 @@ export function listCrewEventsFromState(state) {
   return events.map(normalizeCrewEvent).filter(Boolean);
 }
 
+export function normalizeCrewInboxRecord(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const id = String(value.id || '').trim();
+  const from = String(value.from || '').trim();
+  const to = String(value.to || '').trim();
+  const at = String(value.at || '').trim();
+  const filePath = String(value.path || '').trim();
+  if (!id || !from || !to || !at || !filePath) return null;
+  const subject = String(value.subject || '').replace(/\s+/g, ' ').trim().slice(0, 120);
+  return {
+    id,
+    from,
+    to,
+    subject,
+    path: filePath,
+    at,
+    delivered: value.delivered === true,
+  };
+}
+
+export function listCrewInboxFromState(state) {
+  const inbox = Array.isArray(state?.inbox) ? state.inbox : [];
+  return inbox.map(normalizeCrewInboxRecord).filter(Boolean);
+}
+
+export function listUnreadCrewInbox(state, { to = '' } = {}) {
+  const recipient = String(to || '').trim();
+  return listCrewInboxFromState(state).filter((item) => {
+    if (item.delivered === true) return false;
+    if (!recipient || recipient === 'coordinator') return true;
+    return item.to === recipient || item.to === 'all';
+  });
+}
+
 export function listUnreadCrewEvents(state, { to = 'coordinator', limit = 12 } = {}) {
   const unread = listCrewEventsFromState(state).filter((item) => (
     item.delivered !== true && item.to === (String(to || '').trim() || 'coordinator')
@@ -419,7 +455,10 @@ export function composeCrewStateDocument(current = {}, patch = {}) {
   const events = overlay.events !== undefined
     ? capCrewEvents(listCrewEventsFromState({ events: overlay.events }))
     : listCrewEventsFromState(base);
-  return { ...base, ...overlay, workers, events };
+  const inbox = overlay.inbox !== undefined
+    ? listCrewInboxFromState({ inbox: overlay.inbox })
+    : listCrewInboxFromState(base);
+  return { ...base, ...overlay, workers, events, inbox };
 }
 
 export function buildCrewCompletionEvent(input = {}) {
@@ -464,6 +503,111 @@ export function buildCrewCompletionEvent(input = {}) {
   };
 }
 
+const CREW_INBOX_BODY_MAX = 200_000;
+
+function crewInboxRecipients(state) {
+  const ids = listCrewWorkersFromState(state)
+    .filter((worker) => worker.integrated !== true)
+    .map((worker) => worker.id);
+  return new Set(['coordinator', 'all', ...ids]);
+}
+
+export async function sendCrewInboxMessage(cwd, { from = '', to = '', subject = '', body = '' } = {}) {
+  const sender = String(from || '').trim();
+  const recipient = String(to || '').trim();
+  const text = String(body || '').trim();
+  const title = String(subject || '').replace(/\s+/g, ' ').trim().slice(0, 120);
+  if (!sender) return { ok: false, code: 'MISSING_FROM', error: 'crew_send requires a sender.' };
+  if (!recipient) return { ok: false, code: 'MISSING_TO', error: 'crew_send requires to: a roster worker id, "coordinator", or "all".' };
+  if (recipient === sender) return { ok: false, code: 'SELF', error: 'Cannot send crew mail to yourself.' };
+  if (!text) return { ok: false, code: 'EMPTY', error: 'crew_send body is empty.' };
+  if (text.length > CREW_INBOX_BODY_MAX) {
+    return { ok: false, code: 'BODY_TOO_LARGE', error: 'crew_send body is too large. Shorten it; the tool does not truncate.' };
+  }
+  return withCrewStateLock(cwd, async () => {
+    const current = (await readCrewStateFile(cwd)) || {};
+    if (!normalizeCrewState(current)) {
+      return { ok: false, code: 'CREW_INACTIVE', error: 'Crew mode is not active.' };
+    }
+    const known = crewInboxRecipients(current);
+    if (!known.has(recipient)) {
+      const integrated = listCrewWorkersFromState(current).find((worker) => worker.id === recipient && worker.integrated === true);
+      if (integrated) {
+        return {
+          ok: false,
+          code: 'INTEGRATED',
+          error: `Worker "${recipient}" is already integrated. Do not send mail to them; dispatch a new worker or send to coordinator.`,
+        };
+      }
+      return {
+        ok: false,
+        code: 'UNKNOWN_RECIPIENT',
+        error: `Unknown recipient "${recipient}". Address a roster worker who is not integrated, "coordinator", or "all".`,
+      };
+    }
+    const id = `msg_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+    const relativePath = `inbox/${id}.md`;
+    const dir = getProjectCrewInboxDir(cwd);
+    await fs.mkdir(dir, { recursive: true });
+    await atomicWriteUtf8(path.join(dir, `${id}.md`), `${text}\n`);
+    const record = normalizeCrewInboxRecord({
+      id,
+      from: sender,
+      to: recipient,
+      subject: title,
+      path: relativePath,
+      at: new Date().toISOString(),
+      delivered: false,
+    });
+    const inbox = [...listCrewInboxFromState(current), record];
+    await writeCrewStateFileUnlocked(cwd, composeCrewStateDocument(current, { inbox }));
+    return { ok: true, message: record };
+  });
+}
+
+export async function readCrewInboxFile(cwd, record) {
+  const relativePath = String(record?.path || '').trim();
+  if (!relativePath || relativePath.includes('..')) return '';
+  try {
+    return String(await fs.readFile(path.join(getProjectCrewDir(cwd), relativePath), 'utf8')).trim();
+  } catch {
+    return '';
+  }
+}
+
+export function markCrewInboxDeliveredInState(state, { ids = [] } = {}) {
+  const idSet = new Set((Array.isArray(ids) ? ids : []).map((item) => String(item || '').trim()).filter(Boolean));
+  let marked = 0;
+  const inbox = listCrewInboxFromState(state).map((item) => {
+    if (item.delivered === true || !idSet.has(item.id)) return item;
+    marked += 1;
+    return { ...item, delivered: true };
+  });
+  return { inbox, marked };
+}
+
+export function markCrewInboxDelivered(cwd, ids = []) {
+  return withCrewStateLock(cwd, async () => {
+    const current = (await readCrewStateFile(cwd)) || {};
+    const { inbox, marked } = markCrewInboxDeliveredInState(current, { ids });
+    if (!marked) return { ok: true, marked: 0 };
+    await writeCrewStateFileUnlocked(cwd, composeCrewStateDocument(current, { inbox }));
+    return { ok: true, marked };
+  });
+}
+
+export async function formatCrewInboxMessages(cwd, records = []) {
+  const blocks = [];
+  for (const record of records) {
+    const body = await readCrewInboxFile(cwd, record);
+    blocks.push([
+      `From ${record.from} to ${record.to}${record.subject ? `: ${record.subject}` : ''}`,
+      body || '(message file missing)',
+    ].join('\n'));
+  }
+  return blocks.join('\n\n');
+}
+
 export function appendCrewEvent(cwd, event) {
   return withCrewStateLock(cwd, async () => {
     const record = normalizeCrewEvent(event);
@@ -482,7 +626,8 @@ export function buildCrewModePromptBlock(crewState) {
     'Crew Mode: on',
     `Recorded git base branch: ${state.base}`,
     'You are the Crew coordinator for this session. Dispatch implementation work with run_subagent. One worker is enough; do not invent extra missions. Do not implement, answer the coding question yourself, or edit the main checkout.',
-    'Call crew_status for the live roster before dispatching, reviewing, landing, or answering progress. Do not infer progress from this prompt, memory, or an earlier tool result. crew_status also lists recent completion events; after a restart a wake may be missing — use those events and the roster.',
+    'Call crew_status for the live roster before dispatching, reviewing, landing, or answering progress. Do not infer progress from this prompt, memory, or an earlier tool result. crew_status also lists recent completion events and unread inbox mail; after a restart a wake may be missing — use those and the roster.',
+    'On every wake (a worker or reviewer finished, or the user spoke), call crew_status and crew_inbox before you review, land, or resume. crew_send does not wake you. If unread mail is for a worker who is not integrated, resume that worker with the letter in the task. If that worker is already integrated, do not resume them. Do not poll.',
     'User progress or status questions (for example "做到哪了", "进展如何", "还要多久") are not new missions. Call crew_status, then answer in plain language. Do not spawn workers, reviewers, or survey runs, and do not call land_workers, just to answer a status question.',
     'If crew_status shows pending wakes, wait for that notification turn. Do not land or dispatch while a wake is queued.',
     'When a turn includes both a user message and a Crew notification, handle the notification workflow first (review sealed coders, land when ready), then answer any user status question in the same reply.',
