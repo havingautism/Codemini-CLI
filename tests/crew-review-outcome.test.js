@@ -84,8 +84,8 @@ test('buildCrewWorkerCompletedWake distinguishes incomplete review from failed r
     reviewIncomplete: true,
   });
   assert.match(incomplete, /Review of "t1" incomplete/);
-  assert.match(incomplete, /resume "t1" and rebase/);
-  assert.match(incomplete, /dispatch reviewer again/);
+  assert.match(incomplete, /dispatch reviewer again/i);
+  assert.doesNotMatch(incomplete, /rebase/i);
   assert.doesNotMatch(incomplete, /Review did not pass/);
 
   const failed = buildCrewWorkerCompletedWake({

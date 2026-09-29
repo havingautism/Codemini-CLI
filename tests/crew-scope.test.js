@@ -341,7 +341,15 @@ test('compactSubAgentResultForParent reports dirty vs sealed worktrees', () => {
       reviewOf: 'alisa',
       reviewIncomplete: true,
     }),
-    /resume "alisa" and rebase/,
+    /dispatch reviewer again/i,
+  );
+  assert.doesNotMatch(
+    compactSubAgentResultForParent({
+      text: 'Still checking the diff.',
+      reviewOf: 'alisa',
+      reviewIncomplete: true,
+    }),
+    /rebase/i,
   );
   assert.match(
     compactSubAgentResultForParent({

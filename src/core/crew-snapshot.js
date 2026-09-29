@@ -86,7 +86,7 @@ export function suggestCrewNextAction({ workers = [], inFlight = [], pendingWake
     return `Resume and rebase onto the current base: ${needRebase.map((item) => item.id).join(', ')}. Then dispatch reviewer for the new commit.`;
   }
   if (awaitingReview.length) {
-    return `Dispatch reviewer for: ${awaitingReview.map((item) => item.id).join(', ')}. If another worker already landed, resume and rebase first, then review.`;
+    return `Dispatch reviewer for: ${awaitingReview.map((item) => item.id).join(', ')}.`;
   }
   const reviewFailed = roster.filter((item) => item.reviewPassed === false && item.reviewLoopStopped !== true);
   if (reviewFailed.length) {
@@ -247,7 +247,7 @@ export function formatCrewRosterSnapshot(workers = []) {
 
 export function formatCrewReviewIncompleteGuidance(workerId = '') {
   const id = String(workerId || 'worker').trim() || 'worker';
-  return `Review of "${id}" incomplete — not a failed review. Reviewer did not call submit_crew_review. If crew_status shows another worker already landed or the base moved, resume "${id}" and rebase onto the current base, then review the new commit. Otherwise dispatch reviewer again with review: "${id}". Do not land until a passing review is recorded.`;
+  return `Review of "${id}" incomplete — not a failed review. Reviewer did not call submit_crew_review. Dispatch reviewer again with review: "${id}". Do not land until a passing review is recorded.`;
 }
 
 export function buildCrewWorkerCompletedWake({

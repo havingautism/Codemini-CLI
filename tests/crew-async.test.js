@@ -188,10 +188,10 @@ test('suggestCrewNextAction prefers review for sealed workers', () => {
   });
   assert.match(suggestion, /reviewer/i);
   assert.match(suggestion, /workera/);
-  assert.match(suggestion, /rebase/i);
+  assert.doesNotMatch(suggestion, /rebase/i);
 });
 
-test('suggestCrewNextAction prefers rebase when the base already moved', () => {
+test('suggestCrewNextAction prefers rebase only when rebaseOnto is set', () => {
   const suggestion = suggestCrewNextAction({
     workers: [{
       id: 'noah',

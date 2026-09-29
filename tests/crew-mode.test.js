@@ -236,7 +236,6 @@ test('crew prompt is present only when the overlay is active', () => {
   assert.match(prompt, /role: "survey"/);
   assert.match(prompt, /run_subagent/);
   assert.match(prompt, /land_workers/);
-  assert.match(prompt, /REBASE_REQUIRED/);
   assert.match(prompt, /git merge --no-ff/);
   assert.match(prompt, /review set to that worker id/);
   assert.match(prompt, /inspect-only/);
