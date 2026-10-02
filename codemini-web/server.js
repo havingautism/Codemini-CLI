@@ -2775,7 +2775,27 @@ async function main() {
         },
         onLifecycle: (lifecycle) => {
           const status = lifecycle?.status;
-          if (status === "running") return;
+          if (status === "running") {
+            // Pool writes running itself when a turn starts. A later running
+            // signal is the approval/input queue becoming empty. Ignore it
+            // while that same turn is still in progress. If the parent turn
+            // has already finished, settle the leftover wait so the session
+            // does not stay busy.
+            if (
+              sessionBridge.hasPendingApproval?.() ||
+              sessionBridge.hasPendingUserInput?.() ||
+              sessionBridge.isBusy?.()
+            ) {
+              return;
+            }
+            const resolve = lifecycleWaiters.get(sessionId);
+            pool.releaseIdleWait(sessionId);
+            if (resolve) {
+              lifecycleWaiters.delete(sessionId);
+              resolve({ status: "completed" });
+            }
+            return;
+          }
 
           // Waiting must win even when the Pool RUN already settled (completed
           // consumed the waiter). Otherwise approval UI appears while Pool is

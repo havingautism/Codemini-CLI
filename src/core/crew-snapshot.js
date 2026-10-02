@@ -262,15 +262,19 @@ export function buildCrewWorkerCompletedWake({
   reviewLoopStopped,
   reviewRound,
   reviewIncomplete,
+  name = '',
 } = {}) {
   const id = String(workerId || reviewOf || '').trim();
+  const nickname = String(name || '').trim();
+  const reviewTarget = String(reviewOf || '').trim();
+  const named = nickname && id && nickname !== id ? `${nickname} (${id})` : (nickname || id);
   const seal = sealLabel({ dirty, workerKind, status });
-  const notificationType = String(reviewOf || '').trim()
+  const notificationType = reviewTarget
     ? 'crew.review.completed'
     : 'crew.worker.completed';
-  const headline = String(reviewOf || '').trim()
-    ? `Crew review of "${reviewOf}" finished (${status}).`
-    : `Crew worker "${id}" ${status}.`;
+  const headline = reviewTarget
+    ? `Crew review of "${reviewTarget}"${nickname ? ` (${nickname})` : ''} finished (${status}).`
+    : `Crew worker "${named || 'worker'}" ${status}.`;
   const reviewLine = String(reviewOf || '').trim()
     ? reviewLoopStopped === true
       ? `Review loop stopped${Number(reviewRound) > 0 ? ` after ${Number(reviewRound)} rounds` : ''}.`

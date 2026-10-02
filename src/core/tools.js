@@ -5513,7 +5513,7 @@ export function getBuiltinTools({
       function: {
         name: "crew_inbox",
         description:
-          "Read unread Crew mail. Workers see messages to themselves or all, and those are marked delivered. The coordinator sees every unread message and does not consume worker mail.",
+          "Read unread Crew mail. Direct mail to a worker is marked delivered when that worker reads it. Broadcast mail (to: all) stays unread for everyone else. The coordinator sees unread mail and does not consume it.",
         parameters: {
           type: "object",
           properties: {},
@@ -7337,7 +7337,11 @@ export function getBuiltinTools({
       const messages = listUnreadCrewInbox(state, { to: actor });
       const text = await formatCrewInboxMessages(projectRoot, messages);
       if (actor !== "coordinator" && messages.length) {
-        await markCrewInboxDelivered(projectRoot, messages.map((item) => item.id));
+        await markCrewInboxDelivered(
+          projectRoot,
+          messages.map((item) => item.id),
+          { actor },
+        );
       }
       return {
         ok: true,

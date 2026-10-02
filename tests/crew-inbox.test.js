@@ -128,6 +128,26 @@ test('worker inbox consumes its mail and the coordinator read does not', async (
   });
 });
 
+test('broadcast mail stays unread for the coordinator and other workers', async () => {
+  await withTempDir(async (dir) => {
+    await initCrew(dir);
+    await tools(dir, 'ada').crew_send({
+      to: 'all',
+      subject: 'contract',
+      body: 'version is a string',
+    });
+    const first = await tools(dir, 'ben').crew_inbox();
+    assert.equal(first.count, 1);
+    const state = await readCrewStateFile(dir);
+    assert.equal(state.inbox[0].delivered, false);
+    assert.deepEqual(state.inbox[0].readBy, ['ben']);
+    assert.equal((await tools(dir, 'ben').crew_inbox()).count, 0);
+    assert.equal((await tools(dir, 'ada').crew_inbox()).count, 0);
+    assert.equal((await tools(dir, 'coordinator').crew_inbox()).count, 1);
+    assert.equal(listUnreadCrewInbox(await readCrewStateFile(dir), { to: 'cyra' }).length, 1);
+  });
+});
+
 test('crew_status shows the roster task and unread inbox without dropping completion events', async () => {
   await withTempDir(async (dir) => {
     await initCrew(dir);

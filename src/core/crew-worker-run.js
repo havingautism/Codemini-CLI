@@ -242,6 +242,9 @@ export async function runCrewWorkerJob({
         reviewLoopStopped,
         reviewRound,
         reviewIncomplete,
+        name: reviewingWorkerId
+          ? String(reviewingWorkerRecord?.name || '').trim()
+          : String(persona || '').trim(),
       }));
     }
     return {
@@ -310,6 +313,9 @@ export async function runCrewWorkerJob({
         reviewOf: reviewingWorkerId,
         status: 'failed',
         summary: String(err?.message || err).slice(0, 200),
+        name: reviewingWorkerId
+          ? String(reviewingWorkerRecord?.name || '').trim()
+          : String(persona || '').trim(),
       }));
     }
     return {

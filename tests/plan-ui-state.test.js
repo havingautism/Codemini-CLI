@@ -7,6 +7,7 @@ import {
   findMessageOwningPlanCard,
   findPlanStepMessageId,
   findActivePlanParentMessage,
+  findRestorableActiveMessageId,
   isLegacyFinalPlanStep,
   planPhaseTitle,
   planRunFromTranscript,
@@ -807,6 +808,94 @@ test('findActivePlanParentMessage ignores background run_subagent cards', () => 
   };
   assert.equal(findActivePlanParentMessage([dispatch]), undefined);
   assert.equal(findActivePlanParentMessage([dispatch, plan])?.id, 'plan');
+});
+
+test('history restore does not keep a finished crew dispatch live', () => {
+  const dispatch = {
+    id: 'dispatch',
+    role: 'general',
+    isComplete: true,
+    segments: [{
+      type: 'tools',
+      cards: [{
+        id: 'call-mira',
+        name: 'run_subagent',
+        status: 'running',
+        planRun: { phase: 'executing', steps: [{ status: 'running' }] },
+      }],
+    }],
+  };
+  const fork = {
+    id: 'fork',
+    role: 'general',
+    isComplete: true,
+    segments: [{
+      type: 'tools',
+      cards: [{ id: 'fork-1', name: 'fork_task', status: 'running' }],
+    }],
+  };
+  assert.equal(findRestorableActiveMessageId([dispatch], false), null);
+  assert.equal(findRestorableActiveMessageId([dispatch], true), null);
+  assert.equal(findRestorableActiveMessageId([fork], true), null);
+  assert.equal(
+    findRestorableActiveMessageId([
+      { id: 'older', role: 'general', isComplete: true, segments: [] },
+      dispatch,
+    ], true),
+    null,
+  );
+});
+
+test('history restore still follows an in-progress coding or plan turn', () => {
+  const coding = {
+    id: 'coding',
+    role: 'general',
+    isComplete: false,
+    segments: [{
+      type: 'tools',
+      cards: [{ id: 'sub-1', name: 'run_subagent', status: 'running' }],
+    }],
+  };
+  const paused = {
+    id: 'paused',
+    role: 'general',
+    isComplete: true,
+    segments: [{ type: 'text', text: 'between calls', isStreaming: false }],
+  };
+  const editing = {
+    id: 'editing',
+    role: 'general',
+    isComplete: true,
+    segments: [{
+      type: 'tools',
+      cards: [{ id: 'edit-1', name: 'edit', status: 'running' }],
+    }],
+  };
+  const planStep = {
+    id: 'step',
+    role: 'general',
+    isComplete: true,
+    planStep: { step: 1, status: 'running' },
+    segments: [],
+  };
+  assert.equal(findRestorableActiveMessageId([coding], false), 'coding');
+  assert.equal(findRestorableActiveMessageId([paused], true), 'paused');
+  assert.equal(findRestorableActiveMessageId([paused], false), null);
+  assert.equal(findRestorableActiveMessageId([editing], false), 'editing');
+  assert.equal(findRestorableActiveMessageId([planStep], false), 'step');
+  assert.equal(findRestorableActiveMessageId([{
+    id: 'plan',
+    role: 'general',
+    isComplete: true,
+    segments: [{
+      type: 'tools',
+      cards: [{ id: 'plan-1', name: 'create_plan', status: 'running' }],
+    }],
+  }], false), 'plan');
+  assert.equal(findRestorableActiveMessageId([
+    { id: 'you', role: 'you', isComplete: true },
+    { id: 'wake', role: 'divider', dividerType: 'crew-wake' },
+  ], true), null);
 });
 
 test('plan:step_done does not create an empty run_subagent card', () => {

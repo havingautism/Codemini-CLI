@@ -9,6 +9,6 @@ export function parseCrewWakeHeadline(wakeText = '') {
 
 export function parseCrewReviewCompletedWake(wakeText = '') {
   const headline = parseCrewWakeHeadline(wakeText);
-  const match = String(headline || '').match(/(?:Crew|Crew) review of "([^"]+)" finished/i);
+  const match = String(headline || '').match(/review of "([^"]+)"(?: \([^)]*\))? finished/i);
   return match ? String(match[1] || '').trim() : '';
 }

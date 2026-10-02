@@ -352,6 +352,11 @@ export function normalizeCrewInboxRecord(value) {
   const filePath = String(value.path || '').trim();
   if (!id || !from || !to || !at || !filePath) return null;
   const subject = String(value.subject || '').replace(/\s+/g, ' ').trim().slice(0, 120);
+  const readBy = [...new Set(
+    (Array.isArray(value.readBy) ? value.readBy : [])
+      .map((item) => String(item || '').trim())
+      .filter(Boolean),
+  )];
   return {
     id,
     from,
@@ -360,6 +365,7 @@ export function normalizeCrewInboxRecord(value) {
     path: filePath,
     at,
     delivered: value.delivered === true,
+    ...(readBy.length ? { readBy } : {}),
     ...(value.archived === true ? { archived: true } : {}),
   };
 }
@@ -369,12 +375,22 @@ export function listCrewInboxFromState(state) {
   return inbox.map(normalizeCrewInboxRecord).filter(Boolean);
 }
 
+function crewInboxReadBy(item) {
+  return Array.isArray(item?.readBy) ? item.readBy : [];
+}
+
 export function listUnreadCrewInbox(state, { to = '' } = {}) {
   const recipient = String(to || '').trim();
+  const actor = recipient || 'coordinator';
   return listCrewInboxFromState(state).filter((item) => {
-    if (item.delivered === true || item.archived === true) return false;
+    if (item.archived === true) return false;
+    if (item.to === 'all') {
+      if (item.from === actor) return false;
+      return !crewInboxReadBy(item).includes(actor);
+    }
+    if (item.delivered === true) return false;
     if (!recipient || recipient === 'coordinator') return true;
-    return item.to === recipient || item.to === 'all';
+    return item.to === recipient;
   });
 }
 
@@ -595,11 +611,20 @@ export async function readCrewInboxFile(cwd, record) {
   }
 }
 
-export function markCrewInboxDeliveredInState(state, { ids = [] } = {}) {
+export function markCrewInboxDeliveredInState(state, { ids = [], actor = '' } = {}) {
   const idSet = new Set((Array.isArray(ids) ? ids : []).map((item) => String(item || '').trim()).filter(Boolean));
+  const reader = String(actor || '').trim();
   let marked = 0;
   const inbox = listCrewInboxFromState(state).map((item) => {
-    if (item.delivered === true || !idSet.has(item.id)) return item;
+    if (!idSet.has(item.id) || item.archived === true) return item;
+    if (item.to === 'all') {
+      if (!reader || reader === 'coordinator' || item.from === reader || crewInboxReadBy(item).includes(reader)) {
+        return item;
+      }
+      marked += 1;
+      return { ...item, readBy: [...crewInboxReadBy(item), reader] };
+    }
+    if (item.delivered === true) return item;
     marked += 1;
     return { ...item, delivered: true };
   });
@@ -626,10 +651,10 @@ export function archiveCrewInbox(cwd) {
   });
 }
 
-export function markCrewInboxDelivered(cwd, ids = []) {
+export function markCrewInboxDelivered(cwd, ids = [], { actor = '' } = {}) {
   return withCrewStateLock(cwd, async () => {
     const current = (await readCrewStateFile(cwd)) || {};
-    const { inbox, marked } = markCrewInboxDeliveredInState(current, { ids });
+    const { inbox, marked } = markCrewInboxDeliveredInState(current, { ids, actor });
     if (!marked) return { ok: true, marked: 0 };
     await writeCrewStateFileUnlocked(cwd, composeCrewStateDocument(current, { inbox }));
     return { ok: true, marked };
@@ -668,6 +693,7 @@ export function buildCrewModePromptBlock(crewState) {
     'You are the Crew coordinator for this session. Dispatch implementation work with run_subagent. Do not implement, answer the coding question yourself, or edit the main checkout.',
     'Call crew_status for the live roster before dispatching, reviewing, landing, or answering progress. Do not infer progress from this prompt, memory, or an earlier tool result. crew_status also lists recent completion events and unread inbox mail; after a restart a wake may be missing — use those and the roster.',
     'On every wake (a worker or reviewer finished, or the user spoke), call crew_status and crew_inbox before you review, land, or resume. crew_send does not wake you. If unread mail is for a worker who is not integrated, resume that worker with the letter in the task. If that worker is already integrated, do not resume them. Do not poll.',
+    'Do not invent a cross-worker contract in both task prompts. If the shared interface is not already fixed by the user or the existing code, tell the workers to settle it with crew_send. If the shape is already determined, state it; they should not wait on mail.',
     'User progress or status questions (for example "做到哪了", "进展如何", "还要多久") are not new missions. Call crew_status, then answer in plain language. Do not spawn workers, reviewers, or survey runs, and do not call land_workers, just to answer a status question.',
     'If crew_status shows pending wakes, wait for that notification turn. Do not land or dispatch while a wake is queued.',
     'When a turn includes both a user message and a Crew notification, handle the notification workflow first (review sealed coders, land when ready), then answer any user status question in the same reply.',

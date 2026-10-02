@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 
+import { placeAcceptedUserMessage } from '../codemini-web/client/src/lib/user-message-order.js';
 import {
   createSessionState,
   reduceSessionEvent,
@@ -21,7 +22,7 @@ test('web paints the user bubble after HTTP 202, not before POST', async () => {
     'utf8',
   );
   const fn = runSubmitPromptSource(source);
-  const addAt = fn.indexOf('addMessage(youMessage)');
+  const addAt = fn.indexOf('addMessage(youMessage');
   const submitAt = fn.indexOf('api.submitMessage');
   const busyAt = fn.indexOf('isSessionTurnBusyResult');
   assert.ok(addAt >= 0, 'user bubble must be painted in runSubmitPrompt');
@@ -75,4 +76,25 @@ test('queued follow-up stays in the composer until drain; wake bars still append
     'general:a1',
     'divider:wake-1',
   ]);
+});
+
+test('accepted follow-up is inserted before the reply and after a wake divider', () => {
+  const question = { id: 'q2', role: 'you', text: '现在呢' };
+  const beforeReply = placeAcceptedUserMessage([
+    { id: 'old', role: 'general' },
+    { id: 'reply', role: 'general' },
+  ], question, 'old');
+  assert.deepEqual(beforeReply.map((message) => message.id), ['old', 'q2', 'reply']);
+
+  const afterWake = placeAcceptedUserMessage([
+    { id: 'old', role: 'general' },
+    { id: 'wake', role: 'divider', dividerType: 'crew-wake' },
+    { id: 'reply', role: 'general' },
+  ], question, 'old');
+  assert.deepEqual(afterWake.map((message) => message.id), ['old', 'wake', 'q2', 'reply']);
+
+  const appended = placeAcceptedUserMessage([
+    { id: 'old', role: 'general' },
+  ], question, 'old');
+  assert.deepEqual(appended.map((message) => message.id), ['old', 'q2']);
 });

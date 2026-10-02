@@ -5536,10 +5536,10 @@ async function askModel({
                     : '';
                   pendingRebaseOnto = String(spawned.worker?.rebaseOnto || '').trim();
                   const unread = listUnreadCrewInbox(await readCrewStateFile(workspaceRoot), { to: workerId });
-                  const directMail = unread.filter((item) => item.to === workerId);
+                  const directMail = unread.filter((item) => item.to === workerId || item.to === 'all');
                   const inboxText = await formatCrewInboxMessages(workspaceRoot, directMail);
                   if (directMail.length) {
-                    await markCrewInboxDelivered(workspaceRoot, directMail.map((item) => item.id));
+                    await markCrewInboxDelivered(workspaceRoot, directMail.map((item) => item.id), { actor: workerId });
                   }
                   workerTask = composeCrewResumeTask(scopedTask, priorHandoff, reviewText, pendingRebaseOnto, inboxText);
                 }
@@ -6894,7 +6894,7 @@ export async function runSubAgentTask({
       : [
           'Your cwd is this git worktree. Use paths relative to this directory. Do not write to the parent checkout with its absolute path.',
           'When the assigned slice is done, git commit on this worktree branch. If you cannot finish, do not commit. Your final message must state the outcome: done, blocked, or failed.',
-          'You may call crew_inbox while you work and crew_send to another worker, the coordinator, or all. Address workers by the id from crew_status, not their nickname. Sending mail does not wake the coordinator.',
+          'If your slice depends on another worker and that interface is not already fixed, crew_send them or all and read crew_inbox before you lock the shape. If it is already determined, do not wait for mail. Address workers by the id from crew_status, not their nickname. Sending mail does not wake the coordinator.',
         ].join('\n');
   const scopedTask = [
     'Role:',

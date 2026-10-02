@@ -56,6 +56,7 @@ import {
 import { normalizeProjectDirKey } from "../../../shared/project-key.js";
 import {
   findPlanStepMessageId,
+  findRestorableActiveMessageId,
   isCompletedStatus,
   settleCompletedPlanToolCards,
   settleRunningCreatePlanCards,
@@ -75,6 +76,7 @@ import {
 } from "../../../shared/transcript-segments.js";
 import { buildHookSegmentEvent } from "../../../shared/hook-ui.js";
 import { skillBadgesFromSessionMessage } from "../lib/user-skill-prompt.js";
+import { placeAcceptedUserMessage } from "../lib/user-message-order.js";
 import {
   isCrewBackgroundWorkerToolEvent,
   shouldShowCrewModeFileChanges,
@@ -1206,7 +1208,7 @@ export function AppProvider({ children }) {
     setState((prev) => ({ ...prev, ...updates }));
   }, []);
 
-  const addMessage = useCallback((msg) => {
+  const addMessage = useCallback((msg, { anchorId = "" } = {}) => {
     const id =
       msg.id || `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const segments =
@@ -1228,7 +1230,10 @@ export function AppProvider({ children }) {
       skillBadges: Array.isArray(msg.skillBadges) ? msg.skillBadges : [],
       fileChanges: [],
     };
-    setState((prev) => ({ ...prev, messages: [...prev.messages, newMsg] }));
+    setState((prev) => ({
+      ...prev,
+      messages: placeAcceptedUserMessage(prev.messages, newMsg, anchorId),
+    }));
     return id;
   }, []);
 
@@ -1529,48 +1534,10 @@ export function AppProvider({ children }) {
   // the last assistant message even when it looks "complete" — agentic
   // loops pause between model calls (isComplete=true, no streaming, no
   // running tools) and the next assistant:start must land on the same
-  // bubble.
+  // bubble. A finished turn is not live just because a background
+  // run_subagent or fork_task card is still running.
   function restoreActiveMsgRef(messages, sessionActive = false) {
-    const list = Array.isArray(messages) ? messages : [];
-    for (let i = list.length - 1; i >= 0; i--) {
-      const m = list[i];
-      if (
-        m.role === "you" ||
-        m.role === "divider" ||
-        m.role === "system" ||
-        m.transientKey
-      )
-        continue;
-      if (m.manualAborted) continue;
-      if (m.isComplete === false) {
-        activeMsgRef.current = m.id;
-        return;
-      }
-      if (
-        (m.segments || []).some(
-          (seg) =>
-            seg.isStreaming ||
-            (seg.type === "tools" &&
-              (seg.cards || []).some((c) => c.status === "running")),
-        )
-      ) {
-        activeMsgRef.current = m.id;
-        return;
-      }
-      if (
-        m.planStep &&
-        !["done", "failed"].includes(String(m.planStep.status || ""))
-      ) {
-        activeMsgRef.current = m.id;
-        return;
-      }
-      // Fallback for active sessions: use the last assistant message
-      // even if it appears complete (between model calls).
-      if (sessionActive && !activeMsgRef.current) {
-        activeMsgRef.current = m.id;
-        return;
-      }
-    }
+    activeMsgRef.current = findRestorableActiveMessageId(messages, sessionActive);
   }
 
   const loadSessionMessages = useCallback(
@@ -3345,6 +3312,7 @@ export function AppProvider({ children }) {
         planParentMsgRef.current = null;
         planRunPendingRef.current = false;
         const userMessageId = `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        const messageAnchorId = stateRef.current.messages.at(-1)?.id || "";
         const youMessage = {
           id: userMessageId,
           role: "you",
@@ -3414,7 +3382,7 @@ export function AppProvider({ children }) {
           }
           if (result?.error)
             throw new Error(result.message || "Request failed");
-          addMessage(youMessage);
+          addMessage(youMessage, { anchorId: messageAnchorId });
           // Sidebar bubbles appear when the conversation starts, not when the
           // empty draft is created/reused.
           setState((prev) => {

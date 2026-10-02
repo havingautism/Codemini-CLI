@@ -247,6 +247,7 @@ test('crew prompt is present only when the overlay is active', () => {
   assert.match(prompt, /Call crew_status/);
   assert.match(prompt, /pending wakes/);
   assert.match(prompt, /Do not infer progress from this prompt/);
+  assert.match(prompt, /Do not invent a cross-worker contract/);
   const withRoster = buildCrewModePromptBlock({ active: true, base: 'main' }, [
     { id: 'alisa', branch: 'codemini-crew/alisa', worktreePath: '/tmp/alisa', paths: ['notes.md'] },
   ]);
