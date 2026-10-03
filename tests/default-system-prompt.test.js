@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { buildDefaultSystemPrompt } from '../src/core/default-system-prompt.js';
+import { buildSubAgentShellRulesPrompt } from '../src/core/shell-profile.js';
 
 test('buildDefaultSystemPrompt uses workspaceRoot instead of process.cwd()', () => {
   const projectRoot = 'E:\\Git Projects\\demo-app';
@@ -137,4 +138,31 @@ test('buildDefaultSystemPrompt includes compact natural-writing defaults', () =>
 test('buildDefaultSystemPrompt stays compact enough for layered turn context', () => {
   const prompt = buildDefaultSystemPrompt({}, { workspaceRoot: process.cwd() });
   assert.ok(prompt.length < 5000, `default prompt grew to ${prompt.length} characters`);
+});
+
+test('web tool discovery and research preference reach CLI and Web UI default prompts', () => {
+  for (const platform of ['win32', 'darwin', 'linux']) {
+    const prompt = buildDefaultSystemPrompt({}, { platform });
+    assert.match(prompt, /prefer dedicated web tools over shell commands for online research/);
+    assert.match(prompt, /tool_search\(\{"query":"web_search"\}\)/);
+    assert.match(prompt, /tool_search\(\{"query":"web_fetch"\}\)/);
+    assert.match(prompt, /Tool: web_search\(/);
+    assert.match(prompt, /API debugging, downloads, explicit user requests/);
+  }
+});
+
+test('disabled search is not advertised or rediscovered in default prompts', () => {
+  const prompt = buildDefaultSystemPrompt({ web: { search_enabled: false } });
+  assert.doesNotMatch(prompt, /tool_search\(\{"query":"web_search"\}\)|Tool: web_search\(|- web_search:/);
+  assert.match(prompt, /tool_search\(\{"query":"web_fetch"\}\)/);
+  assert.match(prompt, /do not bypass disabled search or denied network access/);
+});
+
+test('subagents receive web guidance without changing their stable prefix by role scope', () => {
+  const explorer = buildSubAgentShellRulesPrompt(['web_search', 'web_fetch']);
+  const coder = buildSubAgentShellRulesPrompt(['read', 'run']);
+  assert.equal(explorer, coder);
+  assert.match(explorer, /Within your allowed tool scope/);
+  assert.match(explorer, /tool_search\(\{"query":"web_search"\}\)/);
+  assert.match(explorer, /prefer it over curl for reading web pages/);
 });

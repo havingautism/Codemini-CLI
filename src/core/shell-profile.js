@@ -2,6 +2,7 @@ import path from 'node:path';
 import { getReadOnlyCommandTokens } from './read-only-command-tokens.js';
 import { shellToolName } from './shell-tool-name.js';
 import { isVmSandbox, resolveSandboxPolicy } from './sandbox-policy.js';
+import { getWebToolGuidance } from './provider/search-tool-registry.js';
 
 const DEFAULT_SHELL = 'bash';
 
@@ -237,6 +238,7 @@ export function buildSubAgentShellRulesPrompt(_allowedTools = [], { shell, works
     'You may ONLY call tools present in this request. Other tools fail.',
     `Use source tools for code context and ${commandToolName} only for execution when it is present.`,
     'Load an allowed deferred tool with tool_search when needed.',
+    getWebToolGuidance(config),
     '',
     '# Doing tasks',
     '- Use the supplied handoff and plan context before exploring.',
