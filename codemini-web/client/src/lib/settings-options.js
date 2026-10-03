@@ -179,6 +179,10 @@ const OPTION_GETTERS = {
     { value: "advisory", label: "建议模式" },
     { value: "external_authority", label: "外部决策接管（高风险）" },
   ],
+  distillationMode: () => [
+    { value: "shadow", label: t("distillationShadow") },
+    { value: "filter", label: t("distillationFilter") },
+  ],
 };
 
 export function getSettingsOptions(key, context) {

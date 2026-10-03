@@ -1,4 +1,5 @@
 import fs from 'node:fs/promises';
+import { normalizeDistillationConfig } from './harness/distillation.js';
 import { getConfigFilePath } from './paths.js';
 import { atomicWriteUtf8 } from './staged-write.js';
 import { normalizeReplyLanguage } from './reply-language.js';
@@ -177,6 +178,7 @@ const DEFAULT_CONFIG = {
   },
   harness: {
     enabled: false,
+    distillation: normalizeDistillationConfig(),
     mode: 'shadow',
     decision_mode: 'advisory',
     provider: 'rules',
@@ -494,6 +496,7 @@ function normalizePolicyLists(config) {
     normalizedNumber(next.crew.max_workers, DEFAULT_CONFIG.crew.max_workers, 1, { integer: true }),
   );
   next.harness = next.harness || {};
+  next.harness.distillation = normalizeDistillationConfig(next.harness.distillation);
   next.harness.enabled = next.harness.enabled === true;
   next.harness.mode = String(next.harness.mode || 'shadow').trim().toLowerCase() === 'shadow'
     ? 'shadow'

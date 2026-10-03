@@ -4617,6 +4617,10 @@ function buildPendingReflectSkillMessage(reflectState) {
     lines.push('');
     lines.push(`[${candidate.id || 1}] ${candidate.name}`);
     lines.push(`Confidence: ${Number(candidate.confidence ?? 0.75).toFixed(2)}`);
+    if (candidate.distillation) {
+      const decision = candidate.distillation;
+      lines.push(`Distillation (${decision.mode}): reusable=${decision.reusableProbability ?? '?'}, duplicate=${decision.duplicateProbability ?? '?'}, applicability=${decision.suggestedScope || '?'}`);
+    }
     lines.push(`Target: ${candidate.targetPath || '-'}`);
     lines.push('');
     lines.push(String(candidate.content || '').trim());
@@ -4637,6 +4641,7 @@ function buildPendingReflectSkillSnapshot(reflectState) {
     name: candidate.name || '',
     description: candidate.description || '',
     confidence: Number(candidate.confidence ?? 0.75),
+    ...(candidate.distillation ? { distillation: candidate.distillation } : {}),
     targetPath: candidate.targetPath || '',
     content: candidate.content || ''
   };

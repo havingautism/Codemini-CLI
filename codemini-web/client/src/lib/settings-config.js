@@ -276,6 +276,26 @@ export function buildSettingsFields() {
       help: t("harnessEnabledHelp"),
     },
     {
+      tab: "decision", path: "harness.distillation.memory_enabled", control: "switch",
+      label: t("distillationMemory"), help: t("distillationMemoryHelp"),
+    },
+    {
+      tab: "decision", path: "harness.distillation.skill_enabled", control: "switch",
+      label: t("distillationSkill"), help: t("distillationSkillHelp"),
+    },
+    {
+      tab: "decision", path: "harness.distillation.mode", control: "select", optionsKey: "distillationMode",
+      label: t("distillationMode"), help: t("distillationModeHelp"),
+    },
+    {
+      tab: "decision", path: "harness.distillation.confidence_threshold", control: "number",
+      label: t("distillationThreshold"), help: t("distillationThresholdHelp"), min: 0.5, max: 1, step: 0.01, placeholder: "0.8",
+    },
+    {
+      tab: "decision", path: "harness.distillation.max_candidates", control: "number",
+      label: t("distillationMaxCandidates"), help: t("distillationMaxCandidatesHelp"), min: 1, max: 16, step: 1, placeholder: "8",
+    },
+    {
       tab: "decision",
       path: "harness.provider",
       control: "select",

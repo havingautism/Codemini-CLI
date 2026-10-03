@@ -512,6 +512,16 @@ async function captureToInboxUnlocked({
             durableScore: Math.max(0, Math.min(10, Number(evidence.durableScore) || 0)),
             confidence: Math.max(0, Math.min(1, Number(evidence.confidence) || 0)),
             reason: normalizeMemoryText(evidence.reason).slice(0, 240),
+            ...(evidence.distillation ? { distillation: {
+              decisionId: String(evidence.distillation.decisionId || '').slice(0, 120),
+              provider: String(evidence.distillation.provider || '').slice(0, 24),
+              modelVersion: String(evidence.distillation.modelVersion || '').slice(0, 80),
+              mode: evidence.distillation.mode === 'filter' ? 'filter' : 'shadow',
+              reusableProbability: evidence.distillation.reusableProbability ?? null,
+              duplicateProbability: evidence.distillation.duplicateProbability ?? null,
+              suggestedScope: evidence.distillation.suggestedScope || null,
+              reason: String(evidence.distillation.reason || '').slice(0, 80),
+            } } : {}),
             ...(evidence.successful_recovery === true ? { successful_recovery: true } : {}),
             ...(evidence.verified === true ? { verified: true } : {}),
             ...(evidence.verification && typeof evidence.verification === 'object'
