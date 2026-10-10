@@ -11,7 +11,7 @@ test("select keeps option descriptions out of its compact trigger", async () => 
   assert.match(source, /data-option-description/);
   assert.match(
     source,
-    /SelectTrigger className="w-full \[&_\[data-option-description\]\]:hidden"/,
+    /SelectTrigger[^>]*className="w-full \[&_\[data-option-description\]\]:hidden"/,
   );
 });
 

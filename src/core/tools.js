@@ -25,7 +25,15 @@ import {
 } from "./shell.js";
 import { evaluateCommandPolicy } from "./command-policy.js";
 import { evaluateCrewParentCommand } from "./crew-shell.js";
-import { normalizeCrewReviewVerdict } from "./crew-store.js";
+import {
+  formatCrewInboxMessages,
+  listUnreadCrewInbox,
+  markCrewInboxDelivered,
+  normalizeCrewReviewVerdict,
+  readCrewStateFile,
+  sendCrewInboxMessage,
+} from "./crew-store.js";
+import { crewWorkerIdFromWorktreePath } from "./crew-worktree.js";
 import {
   formatCrewStatusSummary,
   readCrewStatusPayload,
@@ -5175,7 +5183,7 @@ export function getBuiltinTools({
         description: `${crewActive ? "Crew parent inspect-only: git status/log/diff and other read-only commands. Do not merge, checkout, worktree, or copy into the main checkout; use land_workers. " : ""}${vmSandbox
           ? platform === "win32"
             ? `Run a compact Bash command inside the Linux microVM sandbox (${sandboxPolicy.mode}) from the project root. If a build or test cannot use Windows-native dependencies because the guest is Linux, retry that exact verification command with sandbox_permissions="danger-full-access" and justification; the escalated command must be Windows PowerShell-compatible and runs on the host only after LLM risk advice and user approval. Do not escalate ordinary code failures, missing dependencies, or timeouts. Use project-relative paths and run_in_background=true only for long-running sandboxed commands. Put command last.`
-            : `Run a compact Bash command inside the Linux microVM sandbox (${sandboxPolicy.mode}) from the project root with network disabled unless explicitly configured or network_access=true is approved for this command. Use project-relative paths. Ordinary Bash commands, including curl, are available; commands with destructive or external side effects may still require approval. On denial, stderr includes [sandbox: ...]; retry with a wider sandbox_permissions plus justification when needed. Use run_in_background=true for long-running commands. Put command last.`
+            : `Run a compact Bash command inside the Linux microVM sandbox (${sandboxPolicy.mode}) from the project root with network disabled unless explicitly configured or network_access=true is approved for this command. Use project-relative paths. Commands with destructive or external side effects may still require approval. On denial, stderr includes [sandbox: ...]; retry with a wider sandbox_permissions plus justification when needed. Use run_in_background=true for long-running commands. Put command last.`
           : osSandbox
             ? `Run a compact ${shellContext.shell === "powershell" ? "PowerShell" : "Bash"} command on the host under OS confinement (${osKind}, ${sandboxPolicy.mode}) with network disabled unless explicitly configured or network_access=true is approved for this command. Use host paths from the current working directory. Commands with destructive or external side effects may still require approval. On denial, stderr includes [sandbox: ...]; retry with a wider sandbox_permissions plus justification when needed. Use run_in_background=true for long-running commands. Put command last.`
             : `Run a compact ${shellContext.shell === "powershell" ? "PowerShell" : "Bash"} command directly on the ${platform === "win32" ? "Windows" : "host"} system without microVM confinement. Use run_in_background=true for long-running commands. Put command last.`}${sandboxCapabilityNote}`,
@@ -5324,7 +5332,9 @@ export function getBuiltinTools({
             },
             name: {
               type: "string",
-              description: "Short invented worker name, such as David or Mira.",
+              description: crewActive
+                ? "Nickname shown in crew status, such as Toby. Not the worker id. resume, review, cancel_worker, and crew_send use the worker id returned by run_subagent."
+                : "Short invented worker name, such as David or Mira. Display only.",
             },
             role: {
               type: "string",
@@ -5363,12 +5373,12 @@ export function getBuiltinTools({
       subagentProperties.resume = {
         type: "string",
         description:
-          "Roster worker id to call back, such as alisa. That is the short unique name, never a call id or handoff folder. Reuses that worktree and branch. Omit paths to keep the stored scope, or pass new disjoint paths to change it.",
+          "Worker id from crew_status or the run_subagent result, such as wkr_abc_def. Not the nickname, task_id, call id, or handoff folder. Reuses that worktree and branch. Omit paths to keep the stored scope, or pass new disjoint paths to change it.",
       };
       subagentProperties.review = {
         type: "string",
         description:
-          "Roster worker id to review, such as alisa. Use with role: \"reviewer\". Does not create a worktree. Omit paths and resume. Do not review survey workers.",
+          "Worker id from crew_status to review, such as wkr_abc_def. Not the nickname. Use with role: \"reviewer\". Does not create a worktree. Omit paths and resume. Do not review survey workers.",
       };
       subagentProperties.role.description =
         'Optional role preset. Use "survey" for read-only investigation (no exclusive paths, no review, no land). Use "reviewer" with review set to a coder worker id.';
@@ -5378,7 +5388,7 @@ export function getBuiltinTools({
       function: {
         name: "run_subagent",
         description: crewActive
-          ? "Delegate isolated work to a git-worktree subagent. Same-response independent calls run in parallel; use task_id/depends_on for dependencies. Every objective, including a single task, must go to a worker. New coder workers need disjoint paths and a unique short name (that name becomes the resume id). Read-only investigation uses role: \"survey\" (no exclusive paths, no review, no land). Call an idle worker back with resume set to that id. After a coder commits, review that worker with role: \"reviewer\" and review set to its id before land_workers."
+          ? "Delegate isolated work to a git-worktree subagent. Same-response independent calls run in parallel; use task_id/depends_on for dependencies. Every objective, including a single task, must go to a worker. New coder workers need disjoint paths. name is a nickname. The returned worker id is what resume, review, cancel_worker, and crew_send use. Read-only investigation uses role: \"survey\" (no exclusive paths, no review, no land). After a coder commits, dispatch role: \"reviewer\" with review set to that worker id before land_workers."
           : "Delegate a bounded task to a clean-context subagent. Same-response independent calls run in parallel; use task_id/depends_on for dependencies and disjoint file ownership for parallel edits. Invent a short worker name such as David. Use fork_task instead when shared prompt prefix/state is more useful.",
         parameters: {
           type: "object",
@@ -5459,7 +5469,7 @@ export function getBuiltinTools({
           properties: {
             worker_id: {
               type: "string",
-              description: "Roster worker id to cancel (the same id used with resume / review).",
+              description: "Worker id from crew_status (the same id used with resume / review), not the nickname.",
             },
           },
           required: ["worker_id"],
@@ -5474,6 +5484,36 @@ export function getBuiltinTools({
         name: "crew_status",
         description:
           "Read the latest Crew roster, unread completion events, and workflow state from disk. Call before dispatching, reviewing, landing, or answering progress — including after a restart, when a wake may be missing.",
+        parameters: {
+          type: "object",
+          properties: {},
+          required: [],
+        },
+      },
+    });
+    workflowToolDefinitions.push({
+      type: "function",
+      function: {
+        name: "crew_send",
+        description:
+          "Write a Crew inbox message. Recipients are a worker id from crew_status that is not yet integrated, \"coordinator\", or \"all\". Use the worker id, not the nickname. Does not wake the coordinator; they read crew_inbox on the next completion or user wake. Do not edit .codemini/crew/inbox files yourself.",
+        parameters: {
+          type: "object",
+          properties: {
+            to: { type: "string", description: "Worker id from crew_status, coordinator, or all. Not a nickname." },
+            subject: { type: "string", description: "Short subject." },
+            body: { type: "string", description: "Full message. Not truncated." },
+          },
+          required: ["to", "body"],
+        },
+      },
+    });
+    workflowToolDefinitions.push({
+      type: "function",
+      function: {
+        name: "crew_inbox",
+        description:
+          "Read unread Crew mail. Direct mail to a worker is marked delivered when that worker reads it. Broadcast mail (to: all) stays unread for everyone else. The coordinator sees unread mail and does not consume it.",
         parameters: {
           type: "object",
           properties: {},
@@ -5818,7 +5858,7 @@ export function getBuiltinTools({
       function: {
         name: "web_fetch",
         description:
-          "Fetch and read a live web page. Uses a lightweight fetch + Cheerio reader by default, then falls back to optional Playwright browser rendering for JavaScript-heavy pages when Playwright is installed. Use this for direct URL reads, not for keyword search.",
+          "Fetch and read a live web page. Prefer this tool over shell curl for reading known URLs and web_search result pages. Use web_search for keyword search. Uses a lightweight fetch + Cheerio reader by default, then falls back to optional Playwright browser rendering for JavaScript-heavy pages when Playwright is installed.",
         parameters: {
           type: "object",
           properties: {
@@ -7266,6 +7306,56 @@ export function getBuiltinTools({
         : 0;
       return readCrewStatusPayload(projectRoot, { inFlight, pendingWakes });
     },
+    crew_send: async (args = {}) => {
+      if (!crewActive && !config?.runtime?.crew_session) {
+        return { ok: false, error: "crew_send is only available in Crew mode." };
+      }
+      const projectRoot = resolveCrewProjectRoot(
+        config?.runtime?.crew_project_root || workspaceRoot,
+      );
+      const from = String(config?.runtime?.crew_actor || "").trim()
+        || crewWorkerIdFromWorktreePath(workspaceRoot)
+        || "coordinator";
+      return sendCrewInboxMessage(projectRoot, {
+        from,
+        to: args?.to,
+        subject: args?.subject,
+        body: args?.body,
+      });
+    },
+    crew_inbox: async () => {
+      if (!crewActive && !config?.runtime?.crew_session) {
+        return { ok: false, error: "crew_inbox is only available in Crew mode." };
+      }
+      const projectRoot = resolveCrewProjectRoot(
+        config?.runtime?.crew_project_root || workspaceRoot,
+      );
+      const actor = String(config?.runtime?.crew_actor || "").trim()
+        || crewWorkerIdFromWorktreePath(workspaceRoot)
+        || "coordinator";
+      const state = await readCrewStateFile(projectRoot);
+      const messages = listUnreadCrewInbox(state, { to: actor });
+      const text = await formatCrewInboxMessages(projectRoot, messages);
+      if (actor !== "coordinator" && messages.length) {
+        await markCrewInboxDelivered(
+          projectRoot,
+          messages.map((item) => item.id),
+          { actor },
+        );
+      }
+      return {
+        ok: true,
+        actor,
+        count: messages.length,
+        messages: messages.map((item) => ({
+          id: item.id,
+          from: item.from,
+          to: item.to,
+          subject: item.subject,
+        })),
+        text,
+      };
+    },
     submit_crew_review: async (args = {}) => {
       const submit = config?.runtime?.onCrewReviewVerdict;
       const verdict = normalizeCrewReviewVerdict(args);
@@ -7897,6 +7987,21 @@ export function getBuiltinTools({
       if (result.error) return String(result.error);
       if (result.message) return String(result.message);
       return JSON.stringify(result);
+    },
+
+    crew_send(result) {
+      if (!result || typeof result !== "object") return String(result);
+      if (result.error) return String(result.error);
+      const message = result.message;
+      if (!message) return "Crew mail sent.";
+      return `Crew mail sent to ${message.to}${message.subject ? `: ${message.subject}` : ""}.`;
+    },
+
+    crew_inbox(result) {
+      if (!result || typeof result !== "object") return String(result);
+      if (result.error) return String(result.error);
+      if (!result.count) return "Crew inbox: no unread mail.";
+      return result.text || `Crew inbox: ${result.count} unread.`;
     },
 
     crew_status(result) {

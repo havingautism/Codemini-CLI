@@ -5,6 +5,7 @@ import { runGit } from './process-run.js';
 import { fileMatchesCrewPaths, isCrewLandableWorker, normalizeCrewDependsOn, orderCrewWorkersForLand } from './crew-scope.js';
 import {
   formatCrewReviewLoopStoppedError,
+  archiveCrewInbox,
   listCrewWorkersFromState,
   patchCrewWorkerRecord,
   readCrewStateFile,
@@ -383,6 +384,7 @@ export async function landCrewWorkers({
     }
 
     const commitSha = String((await tryGit(root, ['rev-parse', 'HEAD'])).stdout || '').trim();
+    await archiveCrewInbox(root).catch(() => null);
     const cleaned = await removeCrewWorktrees({ cwd: root, skipLock: true, force: true });
     const checkedOut = await listCheckedOutBranches(root);
     const kept = [];

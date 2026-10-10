@@ -35,7 +35,7 @@ test('settings show new limits and security status with matching defaults and ra
     if (previousDocument === undefined) delete globalThis.document; else globalThis.document = previousDocument;
   });
   const { buildSettingsFields } = await import('../codemini-web/client/src/lib/settings-config.js');
-  const { SETTINGS_TABS } = await import('../codemini-web/client/src/lib/settings-options.js');
+  const { SETTINGS_TABS, getSettingsOptions } = await import('../codemini-web/client/src/lib/settings-options.js');
   const { setLocale } = await import('../codemini-web/client/i18n/index.js');
   const tabIds = SETTINGS_TABS.map((tab) => tab.id);
   assert.ok(tabIds.includes('decision'));
@@ -55,6 +55,14 @@ test('settings show new limits and security status with matching defaults and ra
       assert.ok(field.help.length > 20);
     }
     assert.ok(fields.some(f => f.path === 'model.fast_name'));
+    for (const key of ['memory_enabled', 'skill_enabled', 'mode', 'confidence_threshold', 'max_candidates']) {
+      const field = fields.find(f => f.path === `harness.distillation.${key}`);
+      assert.equal(field?.tab, 'decision');
+      assert.ok(field.help.length > 20);
+      assert.notEqual(field.label, field.path);
+      assert.equal(isWebConfigReadOnly(field.path), false);
+    }
+    assert.deepEqual(getSettingsOptions('distillationMode').map(option => option.value), ['shadow', 'filter']);
     for (const key of [
       'harness.provider',
       'harness.providers.jev.base_url',

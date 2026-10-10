@@ -2,6 +2,7 @@ import path from 'node:path';
 
 import {
   listUnreadCrewEvents,
+  listUnreadCrewInbox,
   listCrewWorkersFromState,
   markCrewEventsDelivered,
   normalizeCrewState,
@@ -40,8 +41,10 @@ export function buildCrewWorkerStatusRecord(worker = {}) {
   const runStatus = String(worker.runStatus || '').trim().toLowerCase();
   return {
     id: worker.id,
+    ...(worker.name ? { name: worker.name } : {}),
     kind,
     paths: Array.isArray(worker.paths) ? worker.paths : [],
+    task: worker.task || '',
     branch: worker.branch || '',
     runStatus,
     dirty: worker.dirty,
@@ -83,7 +86,7 @@ export function suggestCrewNextAction({ workers = [], inFlight = [], pendingWake
     return `Resume and rebase onto the current base: ${needRebase.map((item) => item.id).join(', ')}. Then dispatch reviewer for the new commit.`;
   }
   if (awaitingReview.length) {
-    return `Dispatch reviewer for: ${awaitingReview.map((item) => item.id).join(', ')}. If another worker already landed, resume and rebase first, then review.`;
+    return `Dispatch reviewer for: ${awaitingReview.map((item) => item.id).join(', ')}.`;
   }
   const reviewFailed = roster.filter((item) => item.reviewPassed === false && item.reviewLoopStopped !== true);
   if (reviewFailed.length) {
@@ -123,6 +126,7 @@ export async function readCrewStatusPayload(cwd = process.cwd(), {
     && item.reviewLoopStopped !== true
     && !item.integrated
   )).length;
+  const inbox = listUnreadCrewInbox(raw);
   const events = listUnreadCrewEvents(raw);
   if (events.length) {
     await markCrewEventsDelivered(projectRoot, {
@@ -143,9 +147,11 @@ export async function readCrewStatusPayload(cwd = process.cwd(), {
       integrated,
       awaitingReview,
       unreadEvents: events.length,
+      unreadInbox: inbox.length,
     },
     workers,
     events,
+    inbox,
     suggestedNext: suggestCrewNextAction({
       workers,
       inFlight: inFlightIds,
@@ -176,6 +182,12 @@ export function formatCrewStatusSummary(result = {}) {
       lines.push(`  - ${parts.join(' | ')}`);
     }
   }
+  if (result.inbox?.length) {
+    lines.push(`Unread inbox: ${result.inbox.length}`);
+    for (const message of result.inbox) {
+      lines.push(`  - ${message.from} -> ${message.to}${message.subject ? `: ${message.subject}` : ''}`);
+    }
+  }
   if (result.suggestedNext) lines.push(`Next: ${result.suggestedNext}`);
   for (const worker of result.workers || []) {
     const review = worker.reviewPassed === true
@@ -184,7 +196,9 @@ export function formatCrewStatusSummary(result = {}) {
         ? 'fail'
         : 'pending';
     const parts = [
-      worker.id,
+      worker.name ? `${worker.name} (${worker.id})` : worker.id,
+      worker.task ? `task=${worker.task}` : '',
+      Array.isArray(worker.paths) && worker.paths.length ? `paths=${worker.paths.join(',')}` : '',
       `run=${worker.runStatus || 'idle'}`,
       worker.sealed ? 'sealed' : '',
       worker.integrated ? 'integrated' : '',
@@ -213,7 +227,8 @@ export function formatCrewRosterSnapshot(workers = []) {
   const lines = roster.map((item) => {
     const scope = Array.isArray(item.paths) && item.paths.length ? item.paths.join(', ') : 'no paths';
     const parts = [
-      item.id,
+      item.name ? `${item.name} (${item.id})` : item.id,
+      item.task ? `task=${item.task}` : '',
       `scope=${scope}`,
       item.integrated === true ? 'integrated' : 'idle',
       item.runStatus ? `run=${item.runStatus}` : '',
@@ -232,7 +247,7 @@ export function formatCrewRosterSnapshot(workers = []) {
 
 export function formatCrewReviewIncompleteGuidance(workerId = '') {
   const id = String(workerId || 'worker').trim() || 'worker';
-  return `Review of "${id}" incomplete — not a failed review. Reviewer did not call submit_crew_review. If crew_status shows another worker already landed or the base moved, resume "${id}" and rebase onto the current base, then review the new commit. Otherwise dispatch reviewer again with review: "${id}". Do not land until a passing review is recorded.`;
+  return `Review of "${id}" incomplete — not a failed review. Reviewer did not call submit_crew_review. Dispatch reviewer again with review: "${id}". Do not land until a passing review is recorded.`;
 }
 
 export function buildCrewWorkerCompletedWake({
@@ -247,15 +262,19 @@ export function buildCrewWorkerCompletedWake({
   reviewLoopStopped,
   reviewRound,
   reviewIncomplete,
+  name = '',
 } = {}) {
   const id = String(workerId || reviewOf || '').trim();
+  const nickname = String(name || '').trim();
+  const reviewTarget = String(reviewOf || '').trim();
+  const named = nickname && id && nickname !== id ? `${nickname} (${id})` : (nickname || id);
   const seal = sealLabel({ dirty, workerKind, status });
-  const notificationType = String(reviewOf || '').trim()
+  const notificationType = reviewTarget
     ? 'crew.review.completed'
     : 'crew.worker.completed';
-  const headline = String(reviewOf || '').trim()
-    ? `Crew review of "${reviewOf}" finished (${status}).`
-    : `Crew worker "${id}" ${status}.`;
+  const headline = reviewTarget
+    ? `Crew review of "${reviewTarget}"${nickname ? ` (${nickname})` : ''} finished (${status}).`
+    : `Crew worker "${named || 'worker'}" ${status}.`;
   const reviewLine = String(reviewOf || '').trim()
     ? reviewLoopStopped === true
       ? `Review loop stopped${Number(reviewRound) > 0 ? ` after ${Number(reviewRound)} rounds` : ''}.`
@@ -281,6 +300,7 @@ export function buildCrewWorkerCompletedWake({
 
 export function compactCrewSpawnResultForParent({
   workerId = '',
+  name = '',
   taskId = '',
   status = 'running',
   branch = '',
@@ -289,11 +309,13 @@ export function compactCrewSpawnResultForParent({
   role = '',
 } = {}) {
   const id = String(workerId || '').trim();
+  const nickname = String(name || '').trim();
   const reviewed = String(reviewOf || '').trim();
+  const label = nickname && id ? `${nickname} (${id})` : (id || nickname || role || 'worker');
   const lines = [
     reviewed
-      ? `Crew review of "${reviewed}" started (${status}).`
-      : `Crew worker "${id || role || 'worker'}" spawned (${status}).`,
+      ? `Crew review of "${nickname || reviewed}" (${reviewed}) started (${status}).`
+      : `Crew worker "${label}" spawned (${status}).`,
     String(taskId || '').trim() ? `Task id: ${String(taskId).trim()}.` : '',
     String(branch || '').trim() ? `Branch: ${String(branch).trim()}.` : '',
     String(worktreePath || '').trim() ? `Worktree: ${String(worktreePath).trim()}.` : '',

@@ -278,6 +278,67 @@ export function findActivePlanParentMessage(messages = []) {
     .find((message) => messageHasActivePlanRun(message));
 }
 
+function isRestorableTranscriptMessage(message) {
+  if (!message || message.transientKey || message.manualAborted) return false;
+  return message.role !== "you"
+    && message.role !== "divider"
+    && message.role !== "system";
+}
+
+function messageHasForegroundLiveWork(message) {
+  return (message?.segments || []).some((segment) => {
+    if (segment?.isStreaming) return true;
+    if (segment?.type !== "tools" || !Array.isArray(segment.cards)) return false;
+    return segment.cards.some((card) => {
+      if (String(card?.status || "").toLowerCase() !== "running") return false;
+      return !isDelegationToolCard(card);
+    });
+  });
+}
+
+function messageHasRunningDelegationCard(message) {
+  return (message?.segments || []).some(
+    (segment) => segment?.type === "tools"
+      && (segment.cards || []).some(
+        (card) => String(card?.status || "").toLowerCase() === "running"
+          && isDelegationToolCard(card),
+      ),
+  );
+}
+
+function messageHasOpenPlanStep(message) {
+  return Boolean(
+    message?.planStep
+    && !["done", "failed"].includes(String(message.planStep.status || "")),
+  );
+}
+
+/**
+ * Which bubble later SSE should continue after a history reload.
+ * A finished turn must not stay live just because a background
+ * run_subagent / fork_task card is still running. An in-progress turn
+ * (isComplete === false), a foreground tool, or an open plan step still does.
+ */
+export function findRestorableActiveMessageId(messages, sessionActive = false) {
+  const list = Array.isArray(messages) ? messages : [];
+  let passedSettledDelegation = false;
+  for (let index = list.length - 1; index >= 0; index -= 1) {
+    const message = list[index];
+    if (!isRestorableTranscriptMessage(message)) continue;
+    if (message.isComplete === false) return message.id;
+    if (messageHasForegroundLiveWork(message)) return message.id;
+    if (messageHasOpenPlanStep(message)) return message.id;
+    const settledDelegation = message.isComplete !== false
+      && messageHasRunningDelegationCard(message);
+    if (settledDelegation) {
+      passedSettledDelegation = true;
+      continue;
+    }
+    if (sessionActive && !passedSettledDelegation) return message.id;
+  }
+  return null;
+}
+
 function planCardHasSpawnArguments(card) {
   const args = card?.arguments && typeof card.arguments === "object" ? card.arguments : {};
   return Boolean(

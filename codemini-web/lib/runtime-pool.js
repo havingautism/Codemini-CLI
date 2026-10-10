@@ -151,6 +151,27 @@ export class RuntimePool {
   }
 
   /**
+   * Drop a wait that no longer belongs to a live parent turn.
+   * Queued resumes are removed before their promise settles. A running resume
+   * is left for #settle when that promise resolves completed.
+   */
+  releaseIdleWait(sessionId) {
+    const entry = this.entries.get(sessionId);
+    if (!entry) return false;
+    if (entry.status === 'queued') {
+      this.#removeQueued(sessionId);
+      entry.operation = null;
+      this.#setStatus(entry, 'completed');
+      this.#drain();
+      return true;
+    }
+    if (!WAITING_STATUSES.has(entry.status)) return false;
+    entry.operation = null;
+    this.#setStatus(entry, 'completed');
+    return true;
+  }
+
+  /**
    * Put a session into waiting_approval / waiting_input even if the Pool RUN
    * already settled (e.g. completed ate the lifecycle waiter). Frees a running
    * slot when needed so concurrency stays correct.

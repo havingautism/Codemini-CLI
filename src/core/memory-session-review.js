@@ -2,7 +2,8 @@ import { createIdleMaintenanceScheduler } from './idle-maintenance.js';
 import { sha256 } from './crypto-utils.js';
 import { createChatCompletion } from './provider/index.js';
 import { listSessions, loadSession } from './session-store.js';
-import { captureToInbox } from './memory-store.js';
+import { captureToInbox, listMemories, listInbox } from './memory-store.js';
+import { createDistillationJudge } from './harness/distillation.js';
 import {
   assertSafeMemoryContent,
   inferMemoryFamily,
@@ -166,11 +167,21 @@ export function isSessionMemoryCandidateEligible(candidate) {
   return true;
 }
 
-async function evaluateSession({ session, messages, config, maxInputChars }) {
+export async function evaluateSessionMemory({ session, messages, config, maxInputChars, complete = createChatCompletion,
+  judge = createDistillationJudge({ config, kind: 'memory', sessionId: session.id, projectDir: session.projectDir }),
+  loadExisting = async () => {
+    const scopes = ['user', 'project', 'global'];
+    const groups = await Promise.all(scopes.map((scope) => listMemories({ scope, workspaceRoot: session.projectDir || process.cwd() })));
+    const inbox = await listInbox();
+    return [...groups.flat(), ...inbox.filter((item) => item.scope !== 'project' || item.projectDir === session.projectDir)];
+  },
+}) {
+  const preflight = await judge.preflight(messages);
+  if (!preflight.extract) return [];
   const systemPrompt = appendStructuredOutputLanguageRule(REVIEW_SYSTEM_PROMPT, config, {
     fields: 'content, summary, and reason'
   });
-  const result = await createChatCompletion({
+  const result = await complete({
     sdkProvider: config?.sdk?.provider,
     baseUrl: config?.gateway?.base_url,
     apiKey: config?.gateway?.api_key,
@@ -187,9 +198,13 @@ async function evaluateSession({ session, messages, config, maxInputChars }) {
   });
   const parsed = parseCandidates(result?.text || '');
   if (!parsed) throw new Error('Session memory reviewer returned invalid JSON');
-  return parsed
+  const candidates = parsed
     .map((candidate) => normalizeSessionMemoryCandidate(candidate, messages))
     .filter(isSessionMemoryCandidateEligible);
+  if (!judge.enabled || !candidates.length) return candidates;
+  // Library lookup failure leaves the established eligibility checks in charge.
+  try { return await judge.assess(candidates, await loadExisting(), { messages }); }
+  catch { return candidates; }
 }
 
 export async function reviewSessionMemory({ sessionId, config }) {
@@ -203,7 +218,14 @@ export async function reviewSessionMemory({ sessionId, config }) {
   const session = await loadSession(sessionId);
   const messages = visibleConversationMessages(session);
   if (messages.length < 2) return { skipped: true, reason: 'insufficient-conversation' };
-  const contentHash = conversationHash(messages);
+  // A changed decision policy must not reuse an earlier review's completion marker.
+  const contentHash = config?.harness?.distillation?.memory_enabled === true ? sha256(JSON.stringify({ conversation: conversationHash(messages),
+    distillation: config?.harness?.distillation || {}, enabled: config?.harness?.enabled,
+    provider: config?.harness?.provider, rollout: config?.harness?.rollout,
+    model: config?.harness?.providers?.[config?.harness?.provider]?.model,
+    endpoint: config?.harness?.providers?.[config?.harness?.provider]?.base_url,
+    hasKey: Boolean(config?.harness?.providers?.[config?.harness?.provider]?.api_key),
+  })) : conversationHash(messages);
   const reviewerVersion = SESSION_MEMORY_REVIEWER_VERSION;
   const leaseMs = Math.max(30000, Number(config?.memory?.background_review?.lease_ms || 120000));
   const claim = await claimSessionMemoryReview({ sessionId, contentHash, reviewerVersion, leaseMs });
@@ -211,7 +233,7 @@ export async function reviewSessionMemory({ sessionId, config }) {
 
   try {
     const maxInputChars = Math.max(2000, Number(config?.memory?.background_review?.max_input_chars || 12000));
-    const candidates = await evaluateSession({ session, messages, config, maxInputChars });
+    const candidates = await evaluateSessionMemory({ session, messages, config, maxInputChars });
     let captured = 0;
     for (const candidate of candidates) {
       const idempotencyKey = `${sessionId}:${reviewerVersion}:${contentHash}:${candidate.semanticKey}`;
@@ -234,7 +256,8 @@ export async function reviewSessionMemory({ sessionId, config }) {
           decisionState: candidate.decisionState,
           durableScore: candidate.durableScore,
           confidence: candidate.confidence,
-          reason: candidate.reason
+          reason: candidate.reason,
+          ...(candidate.distillation ? { distillation: candidate.distillation } : {})
         },
         projectDir: session.projectDir || ''
       });

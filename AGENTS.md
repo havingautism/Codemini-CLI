@@ -20,6 +20,7 @@ This repo is Codemini CLI, a local-first coding agent with a CLI, Web UI, projec
 - Hook Profiles (custom/global/project plus skill-backed profiles): `src/core/hook-profiles.js` and `src/core/project-hooks.js`; Web UI entry under Skills in the sidebar.
 - Tool matcher aliases (Claude Bash→run etc.): `src/core/skill-hooks-tool-aliases.js`.
 - Reflect-to-skill behavior: start in `src/core/reflect-skill.js`.
+- Memory / Skill distillation decisions: `src/core/harness/distillation.js`, wired from `memory-session-review.js` and `reflect-skill.js`; see `docs/agents/memory-skill-distillation.md`.
 - Built-in tool behavior: start in `src/core/tools.js`.
 - Subagent delegation (`run_subagent`): start in `src/core/chat-runtime.js` (`runSubAgentTask` + `onRunSubAgent`), `src/core/subagent-orchestrator.js`, and `src/core/subagent-handoff-store.js`.
 - Fork branches (`fork_task`, same-state parallel branches sharing the parent prefix): fork-point capture in `src/core/agent-loop.js`, branch execution in `src/core/chat-runtime.js` (`runForkTask` + `onForkTask`).

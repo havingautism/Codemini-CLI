@@ -1,4 +1,5 @@
 import { useState } from "react";
+import DistillationSummary from './DistillationSummary.jsx';
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -84,6 +85,7 @@ export function ReflectApprovalCard({
         </div>
       </div>
 
+      <DistillationSummary decision={draft.distillation} />
       <FieldGroup className="gap-2">
         <Field className="flex-col items-stretch gap-1.5">
           <FieldTitle>{t("skillContext")}</FieldTitle>

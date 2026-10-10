@@ -199,14 +199,15 @@ test('resolveCrewReviewTarget reuses the author worktree and does not add a work
     const reviewed = await resolveCrewReviewTarget({ cwd: dir, base: 'main', review: 'alisa' });
     assert.equal(reviewed.ok, true, reviewed.error);
     assert.equal(reviewed.review, true);
-    assert.equal(reviewed.worker.id, 'alisa');
+    assert.equal(reviewed.worker.id, spawned.worker.id);
+    assert.equal(reviewed.worker.name, 'Alisa');
     assert.equal(reviewed.worker.worktreePath, spawned.worker.worktreePath);
     assert.equal(reviewed.commit.length > 10, true);
     assert.match(reviewed.diff, /hello/);
 
     const saved = await readCrewStateFile(dir);
     assert.equal(listCrewWorkersFromState(saved).length, 1);
-    assert.deepEqual(await fs.readdir(getProjectCrewWorktreesDir(dir)), ['alisa']);
+    assert.deepEqual(await fs.readdir(getProjectCrewWorktreesDir(dir)), [spawned.worker.id]);
   });
 });
 
@@ -423,7 +424,9 @@ async function waitForWorkerStatus(dir, workerId, status, timeoutMs = 8000) {
   while (Date.now() - started < timeoutMs) {
     const raw = await fs.readFile(getProjectCrewStatePath(dir), 'utf8').catch(() => '');
     if (raw) {
-      const worker = listCrewWorkersFromState(JSON.parse(raw)).find((item) => item.id === workerId);
+      const worker = listCrewWorkersFromState(JSON.parse(raw)).find((item) => (
+        item.id === workerId || String(item.name || '').toLowerCase() === String(workerId).toLowerCase()
+      ));
       if (worker?.runStatus === status) return worker;
     }
     await new Promise((resolve) => setTimeout(resolve, 40));
@@ -436,7 +439,9 @@ async function waitForWorkerField(dir, workerId, predicate, timeoutMs = 8000) {
   while (Date.now() - started < timeoutMs) {
     const raw = await fs.readFile(getProjectCrewStatePath(dir), 'utf8').catch(() => '');
     if (raw) {
-      const worker = listCrewWorkersFromState(JSON.parse(raw)).find((item) => item.id === workerId);
+      const worker = listCrewWorkersFromState(JSON.parse(raw)).find((item) => (
+        item.id === workerId || String(item.name || '').toLowerCase() === String(workerId).toLowerCase()
+      ));
       if (worker && predicate(worker)) return worker;
     }
     await new Promise((resolve) => setTimeout(resolve, 40));
@@ -513,7 +518,7 @@ test('crew reviewer reuses the author worktree, stays off the roster, and record
     const saved = JSON.parse(await fs.readFile(getProjectCrewStatePath(dir), 'utf8'));
     const workers = listCrewWorkersFromState(saved);
     assert.equal(workers.length, 1);
-    assert.equal(workers[0].id, 'alisa');
+    assert.equal(workers[0].name, 'Alisa');
     assert.equal(workers[0].worktreePath, worker.worktreePath);
     assert.equal(reviewed.reviewedCommit, sha);
     assert.equal(reviewed.reviewPassed, true);
@@ -521,7 +526,7 @@ test('crew reviewer reuses the author worktree, stays off the roster, and record
     assert.equal(reviewed.reviewLoopStopped, undefined);
     assert.equal(reviewed.reviewRound, undefined);
     assert.equal(String(reviewed.reviewText || ''), '');
-    assert.deepEqual(await fs.readdir(getProjectCrewWorktreesDir(dir)), ['alisa']);
+    assert.deepEqual(await fs.readdir(getProjectCrewWorktreesDir(dir)), [workers[0].id]);
 
     const reviewPrompt = bodies.map((item) => messageBlob(item)).find((text) => text.includes('You are reviewing Crew worker'));
     assert.ok(reviewPrompt);
@@ -530,7 +535,7 @@ test('crew reviewer reuses the author worktree, stays off the roster, and record
     assert.equal(reviewPrompt.includes('Worker id:'), false);
 
     const reviewResult = session.messages.find((message) => message.tool_call_id === 'call-review');
-    assert.match(String(reviewResult?.content || ''), /Crew review of "alisa" started \(running\)/);
+    assert.match(String(reviewResult?.content || ''), /Crew review of ".+" \(.+\) started \(running\)/);
     assert.equal(String(reviewResult?.content || '').includes('Worker id:'), false);
     const spawnResult = session.messages.find((message) => message.tool_call_id === 'call-spawn');
     assert.match(String(spawnResult?.content || ''), /spawned \(running\)|background/i);
@@ -679,7 +684,7 @@ test('failed review stays bound to that commit; resume injects the findings', as
     assert.equal(reviewed.reviewPassed, false);
     assert.equal(reviewed.reviewRound, 1);
     assert.equal(reviewed.reviewLoopStopped, undefined);
-    assert.deepEqual(await fs.readdir(getProjectCrewWorktreesDir(dir)), ['alisa']);
+    assert.deepEqual(await fs.readdir(getProjectCrewWorktreesDir(dir)), [reviewed.id]);
 
     const landed = await landCrewWorkers({ cwd: dir, base: 'main' });
     assert.equal(landed.ok, false);
@@ -690,7 +695,7 @@ test('failed review stays bound to that commit; resume injects the findings', as
     const resumePrompt = bodies.map((item) => messageBlob(item)).find((text) => text.includes('Latest review'));
     assert.ok(resumePrompt);
     assert.match(resumePrompt, /missing tests/);
-    await waitForSessionMatch(session, /Resume "alisa"/);
+    await waitForSessionMatch(session, /Resume "/);
   });
 });
 
@@ -761,7 +766,7 @@ test('identical failed reviews stop the loop and allow a redirected resume', asy
     assert.equal(landed.ok, false);
     assert.equal(landed.code, 'REVIEW_FAILED');
 
-    await waitForSessionMatch(session, /Resume "alisa"/);
+    await waitForSessionMatch(session, /Resume "/);
     await waitForSessionMatch(session, /loop stopped/);
 
     await runtime.submitMessage({ text: 'RESUME_ALISA' });
@@ -875,20 +880,21 @@ test('cancel_worker aborts an in-flight review and keeps the author worktree', a
     await runtime.submitMessage({ text: 'CANCEL_REVIEW' });
     const cancelResult = session.messages.find((message) => message.tool_call_id === 'call-cancel-review');
     assert.ok(cancelResult, `missing cancel_worker result; ids=${session.messages.map((m) => m.tool_call_id).filter(Boolean).join(',')}`);
-    assert.match(String(cancelResult.content || ''), /in-flight review of "alisa"/);
+    assert.match(String(cancelResult.content || ''), /in-flight review of "Alisa"/);
     assert.match(String(cancelResult.content || ''), /worktree was kept/);
     const afterReview = listCrewWorkersFromState(JSON.parse(await fs.readFile(getProjectCrewStatePath(dir), 'utf8')));
-    assert.equal(afterReview.some((item) => item.id === 'alisa'), true);
-    assert.equal(await fs.access(path.join(getProjectCrewWorktreesDir(dir), 'alisa')).then(() => true, () => false), true);
+    const author = afterReview.find((item) => item.name === 'Alisa');
+    assert.ok(author);
+    assert.equal(await fs.access(path.join(getProjectCrewWorktreesDir(dir), author.id)).then(() => true, () => false), true);
     assert.equal(runtime.getCrewWorkersInFlight(), 0);
 
     await runtime.submitMessage({ text: 'REMOVE_ALISA' });
     const removeResult = session.messages.find((message) => message.tool_call_id === 'call-cancel-author');
     assert.ok(removeResult, `missing second cancel_worker result; ids=${session.messages.map((m) => m.tool_call_id).filter(Boolean).join(',')}`);
-    assert.match(String(removeResult.content || ''), /Cancelled Crew worker "alisa"/);
+    assert.match(String(removeResult.content || ''), /Cancelled Crew worker "Alisa"/);
     const afterRemove = listCrewWorkersFromState(JSON.parse(await fs.readFile(getProjectCrewStatePath(dir), 'utf8')));
-    assert.equal(afterRemove.some((item) => item.id === 'alisa'), false);
-    assert.equal(await fs.access(path.join(getProjectCrewWorktreesDir(dir), 'alisa')).then(() => true, () => false), false);
+    assert.equal(afterRemove.some((item) => item.name === 'Alisa'), false);
+    assert.equal(await fs.access(path.join(getProjectCrewWorktreesDir(dir), author.id)).then(() => true, () => false), false);
   });
 });
 
@@ -1000,14 +1006,14 @@ test('runtime resumes a conflicted worker, then reviews and lands after rebase',
     await waitForWorkerStatus(dir, 'mia', 'completed');
     await waitForWorkerStatus(dir, 'noah', 'completed');
     const spawned = listCrewWorkersFromState(JSON.parse(await fs.readFile(getProjectCrewStatePath(dir), 'utf8')));
-    const mia = spawned.find((item) => item.id === 'mia');
-    const noah = spawned.find((item) => item.id === 'noah');
+    const mia = spawned.find((item) => String(item.name || '').toLowerCase() === 'mia');
+    const noah = spawned.find((item) => String(item.name || '').toLowerCase() === 'noah');
     await commitWorkerFile(mia.worktreePath, path.join('docs', 'a.md'), 'mia\n');
     await commitWorkerFile(noah.worktreePath, path.join('src', 'a.ts'), 'export {}\n');
     await commitWorkerFile(mia.worktreePath, 'README.md', 'from-mia\n');
     await commitWorkerFile(noah.worktreePath, 'README.md', 'from-noah\n');
-    await patchCrewWorkerRecord(dir, 'mia', { paths: ['docs/**', 'README.md'] });
-    await patchCrewWorkerRecord(dir, 'noah', { paths: ['src/**', 'README.md'] });
+    await patchCrewWorkerRecord(dir, mia.id, { paths: ['docs/**', 'README.md'] });
+    await patchCrewWorkerRecord(dir, noah.id, { paths: ['src/**', 'README.md'] });
     await markCleanReview(dir, mia);
     await markCleanReview(dir, noah);
 
@@ -1016,8 +1022,8 @@ test('runtime resumes a conflicted worker, then reviews and lands after rebase',
     assert.ok(landFail, `missing first land_workers result; ids=${session.messages.map((m) => m.tool_call_id).filter(Boolean).join(',')}`);
     assert.match(String(landFail.content || ''), /REBASE_REQUIRED|conflicts with the current base tip/);
     const afterConflict = listCrewWorkersFromState(JSON.parse(await fs.readFile(getProjectCrewStatePath(dir), 'utf8')));
-    const noahState = afterConflict.find((item) => item.id === 'noah');
-    assert.equal(afterConflict.find((item) => item.id === 'mia')?.integrated, true);
+    const noahState = afterConflict.find((item) => item.id === noah.id);
+    assert.equal(afterConflict.find((item) => item.id === mia.id)?.integrated, true);
     assert.ok(String(noahState.rebaseOnto || '').trim());
     assert.notEqual(noahState.reviewPassed, true);
 

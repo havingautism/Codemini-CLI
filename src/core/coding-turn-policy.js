@@ -22,6 +22,8 @@ export function isCodingTurnToolAllowed(policy, toolName) {
   if (
     toolName === 'land_workers'
     || toolName === 'crew_status'
+    || toolName === 'crew_send'
+    || toolName === 'crew_inbox'
     || toolName === 'cancel_worker'
   ) return policy.crewActive;
   if (toolName === 'save_memory') return policy.allowSaveMemory;

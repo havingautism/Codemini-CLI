@@ -48,6 +48,21 @@ test('parseCrewWakeHeadline extracts notification headline', () => {
     summary: 'Docs updated.',
   });
   assert.match(parseCrewWakeHeadline(wake), /Crew worker "bob" completed\./);
+  const named = buildCrewWorkerCompletedWake({
+    workerId: 'wkr_mia',
+    name: 'Nia',
+    status: 'completed',
+  });
+  assert.match(parseCrewWakeHeadline(named), /Crew worker "Nia \(wkr_mia\)" completed\./);
+  const review = buildCrewWorkerCompletedWake({
+    workerId: 'wkr_mia',
+    reviewOf: 'wkr_mia',
+    name: 'Nia',
+    status: 'completed',
+    reviewPassed: true,
+  });
+  assert.match(parseCrewWakeHeadline(review), /Crew review of "wkr_mia" \(Nia\) finished/);
+  assert.equal(parseCrewReviewCompletedWake(review), 'wkr_mia');
 });
 
 test('parseCrewReviewCompletedWake extracts the reviewed worker id', () => {
@@ -188,10 +203,10 @@ test('suggestCrewNextAction prefers review for sealed workers', () => {
   });
   assert.match(suggestion, /reviewer/i);
   assert.match(suggestion, /workera/);
-  assert.match(suggestion, /rebase/i);
+  assert.doesNotMatch(suggestion, /rebase/i);
 });
 
-test('suggestCrewNextAction prefers rebase when the base already moved', () => {
+test('suggestCrewNextAction prefers rebase only when rebaseOnto is set', () => {
   const suggestion = suggestCrewNextAction({
     workers: [{
       id: 'noah',

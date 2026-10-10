@@ -5,7 +5,7 @@ const HTTP_WEB_SEARCH_DEFINITION = {
   function: {
     name: 'web_search',
     description:
-      'Run a live web search. Defaults to no-API Bing RSS, or uses config.web.search_provider=tavily|exa|firecrawl when configured with an API key. This tool respects config.web.search_enabled and will fail when network search is disabled.',
+      'Search the live web for external facts, documentation, news, and current information. Prefer this tool over shell commands such as curl for keyword search. Returns source titles, URLs, and snippets; use web_fetch to read a result page. Defaults to no-API Bing RSS, or uses config.web.search_provider=tavily|exa|firecrawl when configured with an API key. Respects config.web.search_enabled.',
     parameters: {
       type: 'object',
       properties: {
@@ -144,6 +144,22 @@ export function getSearchToolHint(config) {
     return '- web_search: search the web for external information';
   }
   return '';
+}
+
+export function getWebToolGuidance(config) {
+  const searchHint = getSearchToolHint(config);
+  const discoveryExamples = [
+    searchHint ? 'tool_search({"query":"web_search"})' : '',
+    'tool_search({"query":"web_fetch"})',
+  ].filter(Boolean).join(' or ');
+  return [
+    '# Web tools',
+    'Within your allowed tool scope, prefer dedicated web tools over shell commands for online research.',
+    searchHint,
+    '- web_fetch: read a known URL or a search result page; prefer it over curl for reading web pages.',
+    `If a web tool is not visible, load it by exact name with ${discoveryExamples}, only when enabled and allowed.`,
+    'Use shell HTTP commands for API debugging, downloads, explicit user requests, or a concrete web-tool failure or limitation. Explain a research fallback; do not bypass disabled search or denied network access.',
+  ].filter(Boolean).join('\n');
 }
 
 function getHttpSearchFewShotBlock() {

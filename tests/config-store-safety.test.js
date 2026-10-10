@@ -27,6 +27,25 @@ test('new config defaults memory retrieval min score to 0.6', async () => {
     assert.equal(config.memory.retrieval.max_tokens, 1000);
     assert.equal(config.memory.recovery.max_tokens, 500);
     assert.equal(config.memory.retrieval.query_expansion, true);
+    assert.deepEqual(config.harness.distillation, {
+      memory_enabled: false, skill_enabled: false, mode: 'shadow', confidence_threshold: 0.8, max_candidates: 8,
+    });
+  });
+});
+
+test('distillation settings survive config reload and malformed limits fall back safely', async () => {
+  await withConfigDir(async () => {
+    const config = await loadConfig();
+    config.harness.distillation = { memory_enabled: true, skill_enabled: true, mode: 'filter', confidence_threshold: 0.9, max_candidates: 12 };
+    await saveConfig(config);
+    assert.deepEqual((await loadConfig()).harness.distillation, config.harness.distillation);
+    config.harness.distillation = { memory_enabled: 'true', mode: 'invalid', confidence_threshold: 'NaN', max_candidates: -3 };
+    await saveConfig(config);
+    const reloaded = (await loadConfig()).harness.distillation;
+    assert.equal(reloaded.memory_enabled, false);
+    assert.equal(reloaded.mode, 'shadow');
+    assert.equal(reloaded.confidence_threshold, 0.8);
+    assert.equal(reloaded.max_candidates, 1);
   });
 });
 

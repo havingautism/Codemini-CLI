@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import DistillationSummary from './DistillationSummary.jsx';
 import {
   ArrowClockwise,
   CaretDown,
@@ -313,6 +314,7 @@ function InboxDetailPane({ entry }) {
               <p>{entry.suggestedAction}</p>
             </section>
           ) : null}
+          <DistillationSummary decision={entry.evidence?.distillation} />
           {entry.evidence?.reason ? (
             <section className="flex flex-col gap-1">
               <h4 className="text-[11px] font-medium uppercase tracking-wide text-(--text-muted)">
