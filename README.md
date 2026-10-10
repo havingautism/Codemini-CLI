@@ -471,6 +471,7 @@ npm run build:web
 
 - [使用手册](./OPERATIONS.md)
 - [部署指南](./deployment.md)
+- [Token 活动与用量记录](./docs/adr/token-activity.md)
 - [Releases](https://github.com/havingautism/Codemini-CLI/releases)
 
 ### 许可证

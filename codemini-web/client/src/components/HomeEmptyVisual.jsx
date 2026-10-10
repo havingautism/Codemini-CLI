@@ -1,3 +1,5 @@
+import { TokenActivity } from './TokenActivity.jsx';
+
 export function HomeEmptyVisual({ children }) {
   return (
     <div className="codemini-home-empty-stage">
@@ -5,6 +7,7 @@ export function HomeEmptyVisual({ children }) {
         <div className="codemini-home-aurora__wash" />
       </div>
       {children ? <div className="codemini-home-empty-caption">{children}</div> : null}
+      <TokenActivity />
     </div>
   );
 }

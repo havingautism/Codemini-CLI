@@ -113,18 +113,16 @@ export function listSessionsFromSqlite(limit = 30, { includeEmpty = false } = {}
   const db = getGlobalDatabase();
   const where = includeEmpty ? '' : 'WHERE s.message_count > 0';
   return db.prepare(`
+    WITH page AS MATERIALIZED (
+      SELECT * FROM sessions s ${where} ORDER BY s.updated_at DESC LIMIT ?
+    )
     SELECT s.id, s.title, s.updated_at, s.message_count, s.project_dir, s.model, s.mode,
       COALESCE(substr(replace(replace(m.content_text, char(10), ' '), char(13), ' '), 1, 80), '') AS preview
-    FROM sessions s
-    LEFT JOIN (
-      SELECT session_id, MAX(ordinal) AS max_ordinal
-      FROM session_messages
-      GROUP BY session_id
-    ) last ON last.session_id = s.id
-    LEFT JOIN session_messages m ON m.session_id = s.id AND m.ordinal = last.max_ordinal
-    ${where}
+    FROM page s
+    LEFT JOIN session_messages m ON m.session_id = s.id AND m.ordinal = (
+      SELECT ordinal FROM session_messages WHERE session_id = s.id ORDER BY ordinal DESC LIMIT 1
+    )
     ORDER BY s.updated_at DESC
-    LIMIT ?
   `).all(Math.max(1, Number(limit || 30))).map((row) => ({
     id: row.id,
     title: row.title,
@@ -137,29 +135,40 @@ export function listSessionsFromSqlite(limit = 30, { includeEmpty = false } = {}
   }));
 }
 
+export function sessionProjectDirsFromSqlite() {
+  return getGlobalDatabase().prepare('SELECT DISTINCT project_dir FROM sessions WHERE message_count > 0').all().map((row) => row.project_dir);
+}
+
+export function listSessionPageFromSqlite({ projectDirs, limit = 10, cursor = null }) {
+  if (!projectDirs.length) return { sessions: [], hasMore: false, nextCursor: null };
+  const db = getGlobalDatabase();
+  const count = Math.max(1, Math.min(100, Math.floor(limit)));
+  const conditions = ['s.message_count > 0', `s.project_dir IN (${projectDirs.map(() => '?').join(',')})`];
+  const params = [...projectDirs];
+  if (cursor) {
+    conditions.push('(s.updated_at < ? OR (s.updated_at = ? AND s.id < ?))');
+    params.push(cursor.updatedAt, cursor.updatedAt, cursor.id);
+  }
+  const rows = db.prepare(`WITH page AS MATERIALIZED (
+    SELECT * FROM sessions s WHERE ${conditions.join(' AND ')}
+    ORDER BY s.updated_at DESC, s.id DESC LIMIT ?
+    ) SELECT s.id, s.title, s.updated_at AS updatedAt, s.message_count AS messageCount,
+    s.project_dir AS projectDir, s.model, s.mode,
+    COALESCE(substr(replace(replace(m.content_text, char(10), ' '), char(13), ' '), 1, 80), '') AS preview
+    FROM page s LEFT JOIN session_messages m ON m.session_id = s.id AND m.ordinal = (
+      SELECT ordinal FROM session_messages WHERE session_id = s.id ORDER BY ordinal DESC LIMIT 1
+    ) ORDER BY s.updated_at DESC, s.id DESC`).all(...params, count + 1);
+  const sessions = rows.slice(0, count);
+  const last = sessions.at(-1);
+  return { sessions, hasMore: rows.length > count,
+    nextCursor: rows.length > count ? { updatedAt: last.updatedAt, id: last.id } : null };
+}
+
 export function deleteSessionFromSqlite(sessionId) {
   forgetSessionMessageRefs(sessionId);
   const result = getGlobalDatabase().prepare('DELETE FROM sessions WHERE id = ?').run(sessionId);
   getGlobalDatabase().prepare('DELETE FROM runtime_status WHERE session_id = ?').run(sessionId);
   return Number(result.changes || 0) > 0;
-}
-
-export function pruneSessionsFromSqlite({ maxSessions = 100, retentionDays = 30 } = {}) {
-  const db = getGlobalDatabase();
-  const rows = db.prepare('SELECT id, updated_at FROM sessions ORDER BY updated_at DESC').all();
-  const cutoff = Date.now() - Math.max(0, Number(retentionDays || 0)) * 86400000;
-  const remove = rows.filter((row, index) =>
-    index >= Math.max(1, Number(maxSessions || 100)) ||
-    (retentionDays > 0 && (Date.parse(row.updated_at) || 0) < cutoff)
-  );
-  transaction(db, () => {
-    const statement = db.prepare('DELETE FROM sessions WHERE id = ?');
-    for (const row of remove) {
-      forgetSessionMessageRefs(row.id);
-      statement.run(row.id);
-    }
-  });
-  return remove.length;
 }
 
 export function saveUiTranscriptToSqlite(sessionId, messages = []) {

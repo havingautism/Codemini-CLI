@@ -11,7 +11,6 @@ import {
   deleteSessionFromSqlite,
   listSessionsFromSqlite,
   loadSessionFromSqlite,
-  pruneSessionsFromSqlite,
   rememberSessionMessageRefs,
   saveSessionToSqlite,
   sessionMessageWriteStart
@@ -861,13 +860,4 @@ export async function deleteSession(sessionId) {
   }
 
   return { removed };
-}
-
-export async function pruneSessions(policy = {}) {
-  await importLegacySessions();
-  const removed = pruneSessionsFromSqlite({
-    maxSessions: Number(policy.max_sessions || 100),
-    retentionDays: Number(policy.retention_days || 30)
-  });
-  return { removed, kept: listSessionsFromSqlite(10000, { includeEmpty: true }).length };
 }

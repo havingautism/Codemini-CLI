@@ -457,7 +457,7 @@ function ChatPanelContent({
         </div>
       )}
       {!messagesLoading && !hasConversation && (
-        <div className="absolute inset-0 pointer-events-none overflow-hidden">
+        <div className="absolute inset-0 z-10 overflow-y-auto">
           {isGeneral ? (
             <HomeEmptyVisual>
               <HomeEmptyCaption

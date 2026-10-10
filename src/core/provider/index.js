@@ -6,6 +6,17 @@ import {
   createChatCompletion as createAnthropicChatCompletion,
   createChatCompletionStream as createAnthropicChatCompletionStream
 } from './anthropic.js';
+import { recordTokenUsage } from '../token-usage-store.js';
+
+function recordCompletion(options, provider, result) {
+  try {
+    recordTokenUsage({ model: options?.model, provider, usage: result?.usage });
+  } catch (error) {
+    // A storage failure must not discard a paid completion.
+    console.warn(`Token usage could not be saved: ${error.message}`);
+  }
+  return result;
+}
 
 function normalizeSdkProvider(value) {
   const raw = String(value || '').trim().toLowerCase();
@@ -22,16 +33,16 @@ export function getSdkProvider(configOrValue) {
 
 export async function createChatCompletion(options) {
   const provider = getSdkProvider(options?.sdkProvider);
-  if (provider === 'anthropic') {
-    return createAnthropicChatCompletion(options);
-  }
-  return createOpenAICompatibleChatCompletion(options);
+  const result = await (provider === 'anthropic'
+    ? createAnthropicChatCompletion(options)
+    : createOpenAICompatibleChatCompletion(options));
+  return recordCompletion(options, provider, result);
 }
 
 export async function createChatCompletionStream(options) {
   const provider = getSdkProvider(options?.sdkProvider);
-  if (provider === 'anthropic') {
-    return createAnthropicChatCompletionStream(options);
-  }
-  return createOpenAICompatibleChatCompletionStream(options);
+  const result = await (provider === 'anthropic'
+    ? createAnthropicChatCompletionStream(options)
+    : createOpenAICompatibleChatCompletionStream(options));
+  return recordCompletion(options, provider, result);
 }

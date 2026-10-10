@@ -1,6 +1,22 @@
 # Operations Guide
 
+## Session history retention
+
+Conversation history is retained until manually deleted. Completing a turn never
+deletes other sessions based on age or count. Legacy `sessions.auto_prune`,
+`sessions.max_sessions`, and `sessions.retention_days` settings have no effect.
+
+The sidebar initially loads five conversations per active project and ten general
+conversations. “Load more” requests the next page for that group; older history has
+no 200-session cutoff. The Sessions view can also load further pages. Refreshes
+preserve already expanded history. Session message content loads when a conversation
+is opened, separately from these paginated summaries.
+
 ## Purpose
+
+`npm test` runs in a fresh isolated global configuration directory. To run focused
+tests with the same protection, use `npm test -- tests/config-store-safety.test.js`.
+The test runner does not inherit the real user's `CODEMINI_GLOBAL_DIR`.
 
 This document is the day-to-day operator guide for Codemini CLI.
 

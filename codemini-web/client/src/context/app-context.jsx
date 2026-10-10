@@ -47,7 +47,8 @@ import {
   activeSessionIds,
   abortSessionIds,
   buildConversationStartSidebarEntry,
-  mergeFetchedSessions,
+  mergeSessionPage,
+  mergeSessionPageMetadata,
   patchSidebarSession,
   projectSessionRuntime,
   rekeyPendingQueue,
@@ -322,6 +323,7 @@ const initialState = {
   aboutOpen: false,
   gitDiffOpen: false,
   sessions: [],
+  sessionPages: {},
   projectCwd: null,
   isGeneral: false,
   history: [],
@@ -1131,6 +1133,7 @@ export function AppProvider({ children }) {
   const activeMsgRef = useRef(null);
   const pendingChangesRef = useRef([]);
   const sessionsLoadPromiseRef = useRef(null);
+  const sessionPagePromisesRef = useRef(new Map());
   const pendingSkillBadgesRef = useRef([]);
   const pendingSkillSegmentsRef = useRef([]);
   const planRunPendingRef = useRef(false);
@@ -1454,22 +1457,16 @@ export function AppProvider({ children }) {
       const isAlive = options?.isAlive || (() => true);
       if (force) sessionsLoadPromiseRef.current = null;
       if (sessionsLoadPromiseRef.current) return sessionsLoadPromiseRef.current;
-      const requestStartedAt = Date.now();
-      const sessionIdsAtRequestStart = new Set(
-        (stateRef.current.sessions || []).map((session) => session?.id).filter(Boolean),
-      );
       if (isAlive()) update({ sessionsLoading: true });
       const promise = (async () => {
         try {
-          const sessions = await api.fetchSessions(200);
+          const snapshot = await api.fetchSessionSidebar();
           if (!isAlive()) return;
-          const list = Array.isArray(sessions) ? sessions : [];
+          const list = snapshot.sessions || [];
           setState((prev) => ({
             ...prev,
-            sessions: mergeFetchedSessions(prev.sessions, list, {
-              sessionIdsAtRequestStart,
-              requestStartedAt,
-            }),
+            sessions: mergeSessionPage(prev.sessions, list, Object.keys(snapshot.pages)),
+            sessionPages: mergeSessionPageMetadata(prev.sessionPages, snapshot.pages),
             sessionsLoading: false,
           }));
           loadGitBatch(list, { isAlive });
@@ -1484,6 +1481,30 @@ export function AppProvider({ children }) {
     },
     [update, loadGitBatch],
   );
+
+  const loadMoreSessions = useCallback((groupKey) => {
+    if (sessionPagePromisesRef.current.has(groupKey)) return sessionPagePromisesRef.current.get(groupKey);
+    const page = stateRef.current.sessionPages?.[groupKey];
+    if (!page?.hasMore) return Promise.resolve(0);
+    setState((prev) => ({ ...prev, sessionPages: { ...prev.sessionPages,
+      [groupKey]: { ...prev.sessionPages[groupKey], loading: true, error: false } } }));
+    const promise = (async () => {
+      try {
+        const result = await api.fetchSessionPage(groupKey, page.nextCursor);
+        setState((prev) => ({ ...prev, sessions: mergeSessionPage(prev.sessions, result.sessions),
+          sessionPages: { ...prev.sessionPages, [groupKey]: { hasMore: result.hasMore,
+            nextCursor: result.nextCursor, expanded: true, loading: false, error: false } } }));
+        loadGitBatch(result.sessions);
+        return result.sessions.length;
+      } catch {
+        setState((prev) => ({ ...prev, sessionPages: { ...prev.sessionPages,
+          [groupKey]: { ...prev.sessionPages[groupKey], loading: false, error: true } } }));
+        return null;
+      } finally { sessionPagePromisesRef.current.delete(groupKey); }
+    })();
+    sessionPagePromisesRef.current.set(groupKey, promise);
+    return promise;
+  }, [loadGitBatch]);
 
   const openCodeWikiProjectFromRoute = useCallback(async (projectPath) => {
     if (!projectPath) return null;
@@ -3069,6 +3090,7 @@ export function AppProvider({ children }) {
       loadGitInfo,
       loadHistory,
       loadSessions,
+      loadMoreSessions,
       loadState,
       loadSessionMessages,
     ],
@@ -3159,13 +3181,14 @@ export function AppProvider({ children }) {
         : null;
       if (!alive) return;
       if (!rs) {
-        const sessions = await api.fetchSessions(200).catch(() => []);
+        const snapshot = await api.fetchSessionSidebar().catch(() => ({ sessions: [], pages: {} }));
+        const sessions = snapshot.sessions;
         if (!alive) return;
         preferredSessionId =
           Object.keys(runtimeSessions || {}).find((id) => id !== preferredSessionId) ||
           sessions?.[0]?.id ||
           null;
-        update({ sessions, currentSessionId: preferredSessionId });
+        update({ sessions, sessionPages: snapshot.pages, currentSessionId: preferredSessionId });
         rs = preferredSessionId
           ? await loadState(preferredSessionId, { isAlive })
           : null;
@@ -3649,6 +3672,7 @@ export function AppProvider({ children }) {
 
     return {
       submit,
+      loadMoreSessions,
       removeQueuedPrompt,
       moveQueuedPrompt,
       jumpQueuedPrompt,
@@ -4761,6 +4785,7 @@ export function AppProvider({ children }) {
       loadHistory,
       loadSessionMessages,
       loadSessions,
+      loadMoreSessions,
       loadState,
       setState,
       update,

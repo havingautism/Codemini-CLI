@@ -336,6 +336,8 @@ function Shell() {
     <MemoSidebar
         sessions={state.sessions}
         sessionsLoading={state.sessionsLoading}
+        sessionPages={state.sessionPages}
+        onLoadMoreSessions={actions.loadMoreSessions}
         currentSessionId={currentId}
         onNewSession={handleNewSession}
         onSwitchSession={handleSwitchSession}
@@ -393,6 +395,8 @@ function Shell() {
           <div className="codemini-workspace-panel flex flex-1 flex-col min-h-0 overflow-hidden">
             <SessionPanel
               sessions={state.sessions}
+              sessionPages={state.sessionPages}
+              onLoadMoreSessions={actions.loadMoreSessions}
               sessionsLoading={state.sessionsLoading}
               currentId={currentId}
               onSwitch={actions.switchSession}

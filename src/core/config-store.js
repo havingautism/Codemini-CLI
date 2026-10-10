@@ -77,10 +77,6 @@ const DEFAULT_CONFIG = {
     write_chunk_max_chars: 12000,
     staged_write_max_chars: 4194304
   },
-  sessions: {
-    max_sessions: 100,
-    retention_days: 30
-  },
   shell: {
     default: 'bash',
     timeout_ms: 1800000
@@ -604,11 +600,14 @@ function migrateSoulConfig(parsed = {}) {
 }
 
 export async function loadConfig() {
-  const configPath = getConfigFilePath();
+  return loadConfigAtPath(getConfigFilePath());
+}
+
+async function loadConfigAtPath(configPath) {
   const stat = await fs.stat(configPath).catch(() => null);
   const mtime = stat ? stat.mtimeMs : 0;
   const size = stat ? stat.size : 0;
-  if (cachedConfig && cachedConfigStat && cachedConfigStat.mtime === mtime && cachedConfigStat.size === size) {
+  if (cachedConfig && cachedConfigStat && cachedConfigStat.path === configPath && cachedConfigStat.mtime === mtime && cachedConfigStat.size === size) {
     return structuredClone(cachedConfig);
   }
   let raw;
@@ -619,7 +618,7 @@ export async function loadConfig() {
       throw new Error(`Failed to read configuration at ${configPath}; existing file was preserved.`, { cause: error });
     }
     const defaultConfig = normalizePolicyLists(structuredClone(DEFAULT_CONFIG));
-    await saveConfig(defaultConfig);
+    await saveConfigAtPath(configPath, defaultConfig);
     return defaultConfig;
   }
   let parsed;
@@ -630,7 +629,7 @@ export async function loadConfig() {
   }
   const config = normalizePolicyLists(deepMerge(DEFAULT_CONFIG, parsed));
   cachedConfig = config;
-  cachedConfigStat = { mtime, size };
+  cachedConfigStat = { path: configPath, mtime, size };
   return structuredClone(config);
 }
 
@@ -651,18 +650,22 @@ async function backupValidConfig(configPath) {
 }
 
 export async function saveConfig(config) {
-  const configPath = getConfigFilePath();
+  return saveConfigAtPath(getConfigFilePath(), config);
+}
+
+async function saveConfigAtPath(configPath, config) {
   await backupValidConfig(configPath);
   await atomicWriteUtf8(configPath, `${JSON.stringify(config, null, 2)}\n`);
   cachedConfig = normalizePolicyLists(structuredClone(config));
   const stat = await fs.stat(configPath).catch(() => null);
-  cachedConfigStat = stat ? { mtime: stat.mtimeMs, size: stat.size } : null;
+  cachedConfigStat = stat ? { path: configPath, mtime: stat.mtimeMs, size: stat.size } : null;
 }
 
 export async function setConfigValue(keyPath, value) {
-  const config = await loadConfig();
+  const configPath = getConfigFilePath();
+  const config = await loadConfigAtPath(configPath);
   setNested(config, keyPath, value);
-  await saveConfig(normalizePolicyLists(config));
+  await saveConfigAtPath(configPath, normalizePolicyLists(config));
 }
 
 export async function getConfigValue(keyPath) {

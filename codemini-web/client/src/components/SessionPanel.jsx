@@ -15,6 +15,8 @@ import { ACTIVE_SESSION_STATUSES } from '@/lib/session-ui-state.js';
 export function SessionPanel({
   sessions,
   sessionsLoading,
+  sessionPages = {},
+  onLoadMoreSessions,
   currentId,
   onSwitch,
   onNew,
@@ -199,6 +201,12 @@ export function SessionPanel({
               </div>
             </div>
           ))}
+          {Object.entries(sessionPages).some(([, page]) => page.hasMore) && (
+            <Button variant="ghost" disabled={Object.values(sessionPages).some((page) => page.loading)}
+              onClick={() => Promise.all(Object.entries(sessionPages).filter(([, page]) => page.hasMore).map(([key]) => onLoadMoreSessions?.(key)))}>
+              {Object.values(sessionPages).some((page) => page.loading) ? <Spinner /> : t(Object.values(sessionPages).some((page) => page.error) ? 'loadMoreSessionsError' : 'showMoreSessions')}
+            </Button>
+          )}
         </div>
       </ScrollArea>
       <ConfirmDialog

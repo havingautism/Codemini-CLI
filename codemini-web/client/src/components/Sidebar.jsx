@@ -238,6 +238,8 @@ function formatRelativeTime(value) {
 export function Sidebar({
   sessions,
   sessionsLoading,
+  sessionPages = {},
+  onLoadMoreSessions,
   currentSessionId,
   onNewSession,
   onSwitchSession,
@@ -505,19 +507,30 @@ export function Sidebar({
     }
   };
 
-  const loadMoreProjectSessions = (projectKey, total) => {
+  const loadMoreProjectSessions = async (projectKey, total) => {
+    const currentLimit = projectSessionLimits[projectKey] || PROJECT_SESSION_PREVIEW_LIMIT;
+    let added = 0;
+    if (currentLimit + PROJECT_SESSION_PREVIEW_LIMIT > total && sessionPages[projectKey]?.hasMore) {
+      added = await onLoadMoreSessions?.(projectKey);
+      if (added == null) return;
+    }
     setProjectSessionLimits((prev) => {
       const current = prev[projectKey] || PROJECT_SESSION_PREVIEW_LIMIT;
       return {
         ...prev,
-        [projectKey]: Math.min(current + PROJECT_SESSION_PREVIEW_LIMIT, total),
+        [projectKey]: Math.min(current + PROJECT_SESSION_PREVIEW_LIMIT, total + added),
       };
     });
   };
 
-  const loadMoreGeneralSessions = () => {
+  const loadMoreGeneralSessions = async () => {
+    let added = 0;
+    if (generalSessionLimit + GENERAL_SESSION_PREVIEW_LIMIT > generalSessions.length && sessionPages[GENERAL_PROJECT_MARKER]?.hasMore) {
+      added = await onLoadMoreSessions?.(GENERAL_PROJECT_MARKER);
+      if (added == null) return;
+    }
     setGeneralSessionLimit((current) =>
-      Math.min(current + GENERAL_SESSION_PREVIEW_LIMIT, generalSessions.length),
+      Math.min(current + GENERAL_SESSION_PREVIEW_LIMIT, generalSessions.length + added),
     );
   };
 
@@ -931,9 +944,10 @@ export function Sidebar({
                         />
                       </div>
                     ))}
-                    {projectSessionLimit < projectSessions.length && (
+                    {(projectSessionLimit < projectSessions.length || sessionPages[projectKey]?.hasMore) && (
                       <button
                         type="button"
+                        disabled={sessionPages[projectKey]?.loading}
                         className="h-[26px] rounded-md border-0 bg-transparent px-2 text-left text-[12px] font-medium text-(--text-muted) hover:text-(--text-primary)"
                         onClick={() =>
                           loadMoreProjectSessions(
@@ -942,7 +956,7 @@ export function Sidebar({
                           )
                         }
                       >
-                        {t("showMoreSessions")}
+                        {sessionPages[projectKey]?.loading ? <Spinner /> : t(sessionPages[projectKey]?.error ? "loadMoreSessionsError" : "showMoreSessions")}
                       </button>
                     )}
                   </div>
@@ -1059,13 +1073,14 @@ export function Sidebar({
                 </div>
               );
             })}
-            {generalSessionLimit < generalSessions.length && (
+            {(generalSessionLimit < generalSessions.length || sessionPages[GENERAL_PROJECT_MARKER]?.hasMore) && (
               <button
                 type="button"
+                disabled={sessionPages[GENERAL_PROJECT_MARKER]?.loading}
                 className="h-[28px] rounded-md border-0 bg-transparent px-2 text-left text-[12px] font-medium text-(--text-muted) hover:text-(--text-primary)"
                 onClick={loadMoreGeneralSessions}
               >
-                {t("showMoreSessions")}
+                {sessionPages[GENERAL_PROJECT_MARKER]?.loading ? <Spinner /> : t(sessionPages[GENERAL_PROJECT_MARKER]?.error ? "loadMoreSessionsError" : "showMoreSessions")}
               </button>
             )}
             {!sessionsLoading && generalSessions.length === 0 && (

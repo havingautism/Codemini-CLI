@@ -60,6 +60,12 @@ export async function fetchRuntimeSessions() {
   return res.json();
 }
 
+export async function fetchTokenActivity(signal) {
+  const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const res = await api(`/api/usage/activity?${new URLSearchParams({ timeZone })}`, { signal });
+  return readJsonOrThrow(res);
+}
+
 export async function fetchState(sessionId) {
   const res = await api(withSessionQuery('/api/state', sessionId));
   return res.json();
@@ -81,6 +87,16 @@ export async function fetchSessions(limit = 200) {
   if (Number.isFinite(numericLimit) && numericLimit > 0) params.set('limit', String(Math.round(numericLimit)));
   const res = await api(params.size ? `/api/sessions?${params.toString()}` : '/api/sessions');
   return res.json();
+}
+
+export async function fetchSessionSidebar() {
+  return readJsonOrThrow(await api('/api/sessions/sidebar'));
+}
+
+export async function fetchSessionPage(groupKey, cursor) {
+  const params = new URLSearchParams({ groupKey });
+  if (cursor) params.set('cursor', cursor);
+  return readJsonOrThrow(await api(`/api/sessions/page?${params}`));
 }
 
 export async function fetchSessionMessages(sessionId) {

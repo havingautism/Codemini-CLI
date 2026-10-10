@@ -1,3 +1,5 @@
+import { getTokenActivity } from '../src/core/token-usage-store.js';
+import { decodeSessionCursor, getSessionGroupPage, getSessionSidebarSnapshot } from './lib/session-pages.js';
 import { validateWebConfigValue } from './shared/web-config-policy.js';
 import { DOCUMENT_EXTENSIONS, SCRAPBOOK_TEXT_EXTENSIONS } from './shared/document-formats.js';
 import { createWebSecurity, publicConfig, isSecretConfigKey, assertConfigPath, assertWebConfigWritable } from './lib/web-security.js';
@@ -1032,6 +1034,35 @@ export function createWebRuntimeApi({
     });
 
   const runtimeRoutes = createNodeRouter();
+  runtimeRoutes.get("/api/sessions/sidebar", nodeRoute(async (req, res) => {
+    await listStoredSessions(1); // Preserve legacy-session import before SQLite pagination.
+    const { active } = await loadActiveProjects();
+    const snapshot = getSessionSidebarSnapshot(active);
+    snapshot.sessions = snapshot.sessions.map((session) => ({ ...session, runtime: pool.getSessionState(session.id) }));
+    jsonResponse(res, snapshot);
+    return true;
+  }));
+  runtimeRoutes.get("/api/sessions/page", nodeRoute(async (req, res, url) => {
+    let cursor;
+    try { cursor = decodeSessionCursor(url.searchParams.get('cursor')); }
+    catch (error) { jsonResponse(res, { error: true, message: error.message }, 400); return true; }
+    const { active } = await loadActiveProjects();
+    const page = getSessionGroupPage({ groupKey: url.searchParams.get('groupKey') || '__codemini_general__', active, cursor });
+    page.sessions = page.sessions.map((session) => ({ ...session, runtime: pool.getSessionState(session.id) }));
+    jsonResponse(res, page);
+    return true;
+  }));
+  runtimeRoutes.get("/api/usage/activity", nodeRoute(async (req, res, url) => {
+    const timeZone = url.searchParams.get("timeZone") || Intl.DateTimeFormat().resolvedOptions().timeZone;
+    try {
+      new Intl.DateTimeFormat('en', { timeZone });
+    } catch {
+      jsonResponse(res, { error: true, message: "Invalid time zone" }, 400);
+      return true;
+    }
+    jsonResponse(res, getTokenActivity({ timeZone }));
+    return true;
+  }));
   runtimeRoutes.get("/api/events", nodeRoute(async (req, res, url) => {
       eventBroker.addClient(res);
       return true;

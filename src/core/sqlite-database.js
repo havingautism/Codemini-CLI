@@ -4,7 +4,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { getBaseConfigDir, getProjectIndexDir } from './paths.js';
 import { insertMemoryFtsRow, MEMORY_FTS_DDL } from './memory-fts.js';
 
-const GLOBAL_SCHEMA_VERSION = 16;
+const GLOBAL_SCHEMA_VERSION = 18;
 const PROJECT_SCHEMA_VERSION = 6;
 const databases = new Map();
 
@@ -55,6 +55,21 @@ function openDatabase(filePath, schema, version) {
 
 function createGlobalSchema(db, currentVersion = 0) {
   db.exec(`
+    CREATE TABLE IF NOT EXISTS token_usage_records (
+      id TEXT PRIMARY KEY,
+      created_at TEXT NOT NULL,
+      model TEXT NOT NULL DEFAULT '',
+      provider TEXT NOT NULL DEFAULT '',
+      input_tokens INTEGER NOT NULL,
+      output_tokens INTEGER NOT NULL,
+      total_tokens INTEGER NOT NULL,
+      cached_input_tokens INTEGER NOT NULL,
+      cache_write_input_tokens INTEGER NOT NULL,
+      reported INTEGER NOT NULL
+    ) STRICT;
+    CREATE INDEX IF NOT EXISTS token_usage_created_idx ON token_usage_records(created_at);
+  `);
+  db.exec(`
     CREATE TABLE IF NOT EXISTS sessions (
       id TEXT PRIMARY KEY,
       created_at TEXT NOT NULL,
@@ -67,6 +82,7 @@ function createGlobalSchema(db, currentVersion = 0) {
       message_count INTEGER NOT NULL DEFAULT 0
     ) STRICT;
     CREATE INDEX IF NOT EXISTS sessions_updated_idx ON sessions(updated_at DESC);
+    CREATE INDEX IF NOT EXISTS sessions_project_page_idx ON sessions(project_dir, updated_at DESC, id DESC);
 
     CREATE TABLE IF NOT EXISTS session_messages (
       session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
