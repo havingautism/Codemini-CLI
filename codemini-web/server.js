@@ -1060,7 +1060,21 @@ export function createWebRuntimeApi({
       jsonResponse(res, { error: true, message: "Invalid time zone" }, 400);
       return true;
     }
-    jsonResponse(res, getTokenActivity({ timeZone }));
+    const year = url.searchParams.get('year');
+    const month = url.searchParams.get('month');
+    try {
+      jsonResponse(res, getTokenActivity({
+        timeZone,
+        ...(year ? { year: Number(year) } : {}),
+        ...(month ? { month: Number(month) } : {}),
+      }));
+    } catch (error) {
+      if (error instanceof RangeError) {
+        jsonResponse(res, { error: true, message: error.message }, 400);
+        return true;
+      }
+      throw error;
+    }
     return true;
   }));
   runtimeRoutes.get("/api/events", nodeRoute(async (req, res, url) => {
