@@ -10,6 +10,7 @@ import {
   remapCrewToolArguments,
   resolveCrewParentRoot,
   crewGitWritableRoots,
+  crewWorkerIdFromWorktreePath,
 } from '../src/core/crew-worktree.js';
 
 async function withCrewLayout(task) {
@@ -23,6 +24,15 @@ async function withCrewLayout(task) {
     await fs.rm(parent, { recursive: true, force: true });
   }
 }
+
+test('crewWorkerIdFromWorktreePath keeps the directory name, including underscores', () => {
+  const id = 'wkr_mvdntmcs_k1s6yz';
+  const worktree = path.join('/repo', '.codemini', 'crew', 'worktrees', id);
+  assert.equal(crewWorkerIdFromWorktreePath(worktree), id);
+  assert.equal(crewWorkerIdFromWorktreePath(path.join('/repo', '.codemini', 'crew', 'worktrees', 'alex')), 'alex');
+  assert.equal(crewWorkerIdFromWorktreePath(path.join('/repo', '.codemini', 'crew', 'worktrees', 'tmp')), '');
+  assert.equal(crewWorkerIdFromWorktreePath(path.join('/repo', '.codemini', 'crew', 'worktrees', 'has space')), '');
+});
 
 test('resolveCrewParentRoot walks out of the worker checkout', async () => {
   await withCrewLayout(({ parent, worktree }) => {

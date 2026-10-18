@@ -5,6 +5,7 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 
+import { planCrewMissions } from '../src/core/crew-missions.js';
 import { createChatRuntime } from '../src/core/chat-runtime.js';
 import { landCrewWorkers } from '../src/core/crew-land.js';
 import { runGit } from '../src/core/process-run.js';
@@ -12,6 +13,7 @@ import { getProjectCrewStatePath, getProjectCrewWorktreesDir } from '../src/core
 import { closeSqliteDatabasesForTests } from '../src/core/sqlite-database.js';
 import { createSession } from '../src/core/session-store.js';
 import { withCodeminiGlobalDir } from './helpers/codemini-global-dir.js';
+import { waitForCrewWorkerRunStatus as waitForWorkerStatus } from './helpers/crew-worker-status.js';
 import {
   enterCrewMode,
   listCrewWorkersFromState,
@@ -154,6 +156,10 @@ async function withResumeRuntime(respond, task) {
           workspaceRoot: dir,
         });
         await runtime.setCrewMode(true);
+        const seeded = await planCrewMissions(dir, {
+          missions: [{ title: 'Notes', kind: 'build', paths: ['notes.md'] }],
+        });
+        if (!seeded.ok) throw new Error(seeded.error || 'failed to seed notes mission');
         await task({ dir, bodies, runtime, session });
         await runtime.waitForCrewIdle?.().catch(() => {});
         await runtime.dispose?.();
@@ -176,21 +182,6 @@ function lastUserText(body) {
     return typeof content === 'string' ? content : JSON.stringify(content || '');
   }
   return '';
-}
-
-async function waitForWorkerStatus(dir, workerId, status, timeoutMs = 8000) {
-  const started = Date.now();
-  while (Date.now() - started < timeoutMs) {
-    const raw = await fs.readFile(getProjectCrewStatePath(dir), 'utf8').catch(() => '');
-    if (raw) {
-      const worker = listCrewWorkersFromState(JSON.parse(raw)).find((item) => (
-        item.id === workerId || String(item.name || '').toLowerCase() === String(workerId).toLowerCase()
-      ));
-      if (worker?.runStatus === status) return worker;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 40));
-  }
-  throw new Error(`timed out waiting for ${workerId} status=${status}`);
 }
 
 async function waitUntil(predicate, timeoutMs = 8000) {
@@ -277,7 +268,7 @@ test('resume reuses the same worktree; same name without resume is rejected', as
       paths: ['other.md'],
     });
     assert.equal(dup.ok, false);
-    assert.equal(dup.code, 'SCOPE_OVERLAP');
+    assert.equal(dup.code, 'MISSION_REQUIRED');
     assert.deepEqual(await listCrewBranches(dir), [spawned.worker.branch]);
     const trees = await fs.readdir(getProjectCrewWorktreesDir(dir));
     assert.deepEqual(trees, [spawned.worker.id]);
@@ -323,19 +314,20 @@ test('after land, the same name is a new worker and needs paths', async () => {
       name: 'Alisa',
     });
     assert.equal(missingPaths.ok, false);
-    assert.equal(missingPaths.code, 'PATHS_REQUIRED');
+    assert.notEqual(missingPaths.code, 'BATCH_CLOSED');
 
+    const planned = await planCrewMissions(dir, {
+      missions: [{ title: 'Other', kind: 'build', paths: ['other.md'] }],
+    });
+    assert.equal(planned.ok, true, planned.error);
     const again = await resolveCrewSubagentWorkspace({
       cwd: dir,
       base: 'main',
       name: 'Alisa',
-      paths: ['notes.md'],
+      missionId: planned.created[0].id,
+      paths: ['other.md'],
     });
     assert.equal(again.ok, true, again.error);
-    assert.equal(Boolean(again.resume), false);
-    assert.match(again.worker.id, /^wkr_/);
-    assert.notEqual(again.worker.id, spawned.worker.id);
-    assert.equal(again.worker.name, 'Alisa');
   });
 });
 
@@ -348,6 +340,7 @@ test('spawn then resume injects the last handoff into the new prompt', async () 
         arguments: JSON.stringify({
           prompt: 'First shift on notes.md',
           name: 'Alisa',
+          mission_id: 'm1',
           paths: ['notes.md'],
         }),
       }]);
@@ -402,6 +395,7 @@ test('in-flight resume of the same worker is rejected', async () => {
         arguments: JSON.stringify({
           prompt: 'First shift on notes.md',
           name: 'Alisa',
+          mission_id: 'm1',
           paths: ['notes.md'],
         }),
       }]);

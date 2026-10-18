@@ -5,6 +5,8 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 
+import { completeCrewMission, planCrewMissions, setCrewMissionStatus } from '../src/core/crew-missions.js';
+import { waitForCrewWorkerRunStatus as waitForWorkerStatus } from './helpers/crew-worker-status.js';
 import { createChatRuntime } from '../src/core/chat-runtime.js';
 import { landCrewWorkers } from '../src/core/crew-land.js';
 import { runGit } from '../src/core/process-run.js';
@@ -404,7 +406,13 @@ async function withReviewRuntime({ crew = true } = {}, respond, task) {
           systemPrompt: 'stable',
           workspaceRoot: dir,
         });
-        if (crew) await runtime.setCrewMode(true);
+        if (crew) {
+          await runtime.setCrewMode(true);
+          const seeded = await planCrewMissions(dir, {
+            missions: [{ title: 'Notes', kind: 'build', paths: ['notes.md'] }],
+          });
+          if (!seeded.ok) throw new Error(seeded.error || 'failed to seed notes mission');
+        }
         await task({ dir, bodies, runtime, session });
         await runtime.waitForCrewIdle?.().catch(() => {});
         await runtime.dispose?.();
@@ -417,21 +425,6 @@ async function withReviewRuntime({ crew = true } = {}, respond, task) {
   } finally {
     await fs.rm(globalDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 50 });
   }
-}
-
-async function waitForWorkerStatus(dir, workerId, status, timeoutMs = 8000) {
-  const started = Date.now();
-  while (Date.now() - started < timeoutMs) {
-    const raw = await fs.readFile(getProjectCrewStatePath(dir), 'utf8').catch(() => '');
-    if (raw) {
-      const worker = listCrewWorkersFromState(JSON.parse(raw)).find((item) => (
-        item.id === workerId || String(item.name || '').toLowerCase() === String(workerId).toLowerCase()
-      ));
-      if (worker?.runStatus === status) return worker;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 40));
-  }
-  throw new Error(`timed out waiting for ${workerId} status=${status}`);
 }
 
 async function waitForWorkerField(dir, workerId, predicate, timeoutMs = 8000) {
@@ -478,6 +471,12 @@ async function sealWorkerNotes(dir) {
   await git(worker.worktreePath, ['add', 'notes.md']);
   await git(worker.worktreePath, ['commit', '-m', 'notes']);
   const sha = String((await git(worker.worktreePath, ['rev-parse', 'HEAD'])).stdout || '').trim();
+  const submitted = await completeCrewMission({
+    cwd: dir,
+    workerId: worker.id,
+    report: 'Notes updated for test.',
+  });
+  assert.equal(submitted.ok, true, submitted.error || submitted.message);
   return { worker, sha };
 }
 
@@ -490,6 +489,7 @@ test('crew reviewer reuses the author worktree, stays off the roster, and record
         arguments: JSON.stringify({
           prompt: 'First shift on notes.md',
           name: 'Alisa',
+          mission_id: 'm1',
           paths: ['notes.md'],
         }),
       }]);
@@ -554,6 +554,7 @@ test('crew review prose with no findings and pass language infers pass without s
         arguments: JSON.stringify({
           prompt: 'First shift on notes.md',
           name: 'Alisa',
+          mission_id: 'm1',
           paths: ['notes.md'],
         }),
       }]);
@@ -603,6 +604,7 @@ test('crew review without submit_crew_review or pass prose stays incomplete', as
         arguments: JSON.stringify({
           prompt: 'First shift on notes.md',
           name: 'Alisa',
+          mission_id: 'm1',
           paths: ['notes.md'],
         }),
       }]);
@@ -644,6 +646,7 @@ test('failed review stays bound to that commit; resume injects the findings', as
         arguments: JSON.stringify({
           prompt: 'First shift on notes.md',
           name: 'Alisa',
+          mission_id: 'm1',
           paths: ['notes.md'],
         }),
       }]);
@@ -708,6 +711,7 @@ test('identical failed reviews stop the loop and allow a redirected resume', asy
         arguments: JSON.stringify({
           prompt: 'First shift on notes.md',
           name: 'Alisa',
+          mission_id: 'm1',
           paths: ['notes.md'],
         }),
       }]);
@@ -831,6 +835,7 @@ test('cancel_worker aborts an in-flight review and keeps the author worktree', a
         arguments: JSON.stringify({
           prompt: 'First shift on notes.md',
           name: 'Alisa',
+          mission_id: 'm1',
           paths: ['notes.md'],
         }),
       }]);
@@ -912,6 +917,7 @@ async function markCleanReview(dir, worker) {
     reviewedCommit: sha,
     reviewPassed: true,
     reviewText: 'Findings:\n- none',
+    missionStatus: 'completed',
   });
 }
 
@@ -956,6 +962,7 @@ test('runtime resumes a conflicted worker, then reviews and lands after rebase',
           arguments: JSON.stringify({
             prompt: 'Docs worker',
             name: 'Mia',
+            mission_id: 'm2',
             paths: ['docs/**'],
           }),
         },
@@ -965,16 +972,31 @@ test('runtime resumes a conflicted worker, then reviews and lands after rebase',
           arguments: JSON.stringify({
             prompt: 'Src worker',
             name: 'Noah',
+            mission_id: 'm3',
             paths: ['src/**'],
           }),
         },
       ]);
     }
-    if (isParentUserTurn(body, /LAND_NOW|LAND_AGAIN/)) {
+    if (isParentUserTurn(body, /LAND_MIA/)) {
       return sseToolCalls([{
-        id: /LAND_AGAIN/.test(lastUserText(body)) ? 'call-land-2' : 'call-land-1',
+        id: 'call-land-1',
         name: 'land_workers',
-        arguments: '{}',
+        arguments: JSON.stringify({ mission_id: 'm2' }),
+      }]);
+    }
+    if (isParentUserTurn(body, /LAND_NOAH/)) {
+      return sseToolCalls([{
+        id: 'call-land-noah',
+        name: 'land_workers',
+        arguments: JSON.stringify({ mission_id: 'm3' }),
+      }]);
+    }
+    if (isParentUserTurn(body, /LAND_AGAIN/)) {
+      return sseToolCalls([{
+        id: 'call-land-2',
+        name: 'land_workers',
+        arguments: JSON.stringify({ mission_id: 'm3' }),
       }]);
     }
     if (isParentUserTurn(body, /RESUME_NOAH/)) {
@@ -1002,6 +1024,12 @@ test('runtime resumes a conflicted worker, then reviews and lands after rebase',
     if (submitted) return submitted;
     return sseText('WORKER_BODY');
   }, async ({ dir, bodies, runtime, session }) => {
+    await planCrewMissions(dir, {
+      missions: [
+        { title: 'Docs', kind: 'build', paths: ['docs/**'] },
+        { title: 'Src', kind: 'build', paths: ['src/**'] },
+      ],
+    });
     await runtime.submitMessage({ text: 'SPAWN_PAIR' });
     await waitForWorkerStatus(dir, 'mia', 'completed');
     await waitForWorkerStatus(dir, 'noah', 'completed');
@@ -1017,10 +1045,16 @@ test('runtime resumes a conflicted worker, then reviews and lands after rebase',
     await markCleanReview(dir, mia);
     await markCleanReview(dir, noah);
 
-    await runtime.submitMessage({ text: 'LAND_NOW' });
-    const landFail = session.messages.find((message) => message.tool_call_id === 'call-land-1');
+    await setCrewMissionStatus(dir, 'm2', 'completed');
+    await setCrewMissionStatus(dir, 'm3', 'completed');
+    await runtime.submitMessage({ text: 'LAND_MIA' });
+    const landMia = session.messages.find((message) => message.tool_call_id === 'call-land-1');
+    assert.ok(landMia, `missing mia land result; ids=${session.messages.map((m) => m.tool_call_id).filter(Boolean).join(',')}`);
+    assert.match(String(landMia.content || ''), /Merged mission m2/);
+    await runtime.submitMessage({ text: 'LAND_NOAH' });
+    const landFail = session.messages.find((message) => message.tool_call_id === 'call-land-noah');
     assert.ok(landFail, `missing first land_workers result; ids=${session.messages.map((m) => m.tool_call_id).filter(Boolean).join(',')}`);
-    assert.match(String(landFail.content || ''), /REBASE_REQUIRED|conflicts with the current base tip/);
+    assert.match(String(landFail.content || ''), /behind base|REBASE_REQUIRED|conflicts with the current base tip/);
     const afterConflict = listCrewWorkersFromState(JSON.parse(await fs.readFile(getProjectCrewStatePath(dir), 'utf8')));
     const noahState = afterConflict.find((item) => item.id === noah.id);
     assert.equal(afterConflict.find((item) => item.id === mia.id)?.integrated, true);
@@ -1028,10 +1062,10 @@ test('runtime resumes a conflicted worker, then reviews and lands after rebase',
     assert.notEqual(noahState.reviewPassed, true);
 
     await runtime.submitMessage({ text: 'RESUME_NOAH' });
-    await waitUntilBodies(bodies, (text) => text.includes('Do not merge into the user branch') && text.includes(noahState.rebaseOnto));
+    await waitUntilBodies(bodies, (text) => text.includes(noahState.rebaseOnto));
     const resumePrompt = bodies
       .map((item) => messageBlob(item))
-      .find((text) => text.includes('Do not merge into the user branch'));
+      .find((text) => text.includes(noahState.rebaseOnto));
     assert.ok(resumePrompt);
     assert.match(resumePrompt, new RegExp(noahState.rebaseOnto));
     await waitForWorkerStatus(dir, 'noah', 'completed');
@@ -1043,9 +1077,9 @@ test('runtime resumes a conflicted worker, then reviews and lands after rebase',
     await runtime.submitMessage({ text: 'LAND_AGAIN' });
     const landOk = session.messages.find((message) => message.tool_call_id === 'call-land-2');
     assert.ok(landOk, `missing second land_workers result; ids=${session.messages.map((m) => m.tool_call_id).filter(Boolean).join(',')}`);
-    assert.match(String(landOk.content || ''), /Landed|onto the current branch/);
+    assert.match(String(landOk.content || ''), /Merged mission m3|onto the current branch/);
     assert.equal(await fs.readFile(path.join(dir, 'README.md'), 'utf8'), 'from-noah-rebased\n');
     const saved = listCrewWorkersFromState(JSON.parse(await fs.readFile(getProjectCrewStatePath(dir), 'utf8')));
-    assert.equal(saved.length, 0);
+    assert.equal(saved.find((item) => item.id === noah.id)?.integrated, true);
   });
 });

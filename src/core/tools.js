@@ -24,7 +24,9 @@ import {
   terminateChild,
 } from "./shell.js";
 import { evaluateCommandPolicy } from "./command-policy.js";
-import { evaluateCrewParentCommand } from "./crew-shell.js";
+import { isCrewWorktreePath } from "./crew-worktree.js";
+import { completeCrewMission, finishCrewMissions, planCrewMissions } from "./crew-missions.js";
+import { crewLedgerWriteRefusal, evaluateCrewParentCommand } from "./crew-shell.js";
 import {
   formatCrewInboxMessages,
   listUnreadCrewInbox,
@@ -4221,8 +4223,14 @@ export function getBuiltinTools({
   crewActive = false,
   onLandWorkers,
   onCancelWorker,
+  onCrewWorkerWake,
 }) {
   workspaceRoot = path.resolve(workspaceRoot);
+  const crewWorkerWake = typeof onCrewWorkerWake === "function"
+    ? onCrewWorkerWake
+    : (typeof config?.runtime?.onCrewWorkerWake === "function"
+      ? config.runtime.onCrewWorkerWake
+      : undefined);
   const isWin = platform === "win32";
   const shellContext = resolveShellContext(config, { platform, cwd: workspaceRoot });
   const commandToolName = shellContext.commandToolName;
@@ -5380,6 +5388,11 @@ export function getBuiltinTools({
         description:
           "Worker id from crew_status to review, such as wkr_abc_def. Not the nickname. Use with role: \"reviewer\". Does not create a worktree. Omit paths and resume. Do not review survey workers.",
       };
+      subagentProperties.mission_id = {
+        type: "string",
+        description:
+          "Mission id from crew_plan, such as m1. Required for a new build or survey worker. Not used for reviewers.",
+      };
       subagentProperties.role.description =
         'Optional role preset. Use "survey" for read-only investigation (no exclusive paths, no review, no land). Use "reviewer" with review set to a coder worker id.';
     }
@@ -5448,11 +5461,16 @@ export function getBuiltinTools({
       function: {
         name: "land_workers",
         description:
-          "Merge sealed Crew worker branches directly onto the current user branch with git merge --no-ff, then delete those worker branches when everyone on the roster is integrated. Workers still in review stay on their worktrees until they pass. If a worker conflicts on the base tip, resume that worker to rebase onto the returned commit, then review the new commit before landing again. If a review loop stops, resume with a new task or paths, or spawn a new worker; do not keep fixing the same findings. Do not merge or copy files yourself.",
+          "Merge one completed Crew build mission onto the current branch with git merge --no-ff. Pass mission_id. Does not delete worktrees or finish the crew. If the base moved, resume that worker to rebase, then review the new commit.",
         parameters: {
           type: "object",
-          properties: {},
-          required: [],
+          properties: {
+            mission_id: {
+              type: "string",
+              description: "Mission id from crew_status, such as m1.",
+            },
+          },
+          required: ["mission_id"],
         },
       },
     });
@@ -5518,6 +5536,65 @@ export function getBuiltinTools({
           type: "object",
           properties: {},
           required: [],
+        },
+      },
+    });
+    workflowToolDefinitions.push({
+      type: "function",
+      function: {
+        name: "crew_plan",
+        description:
+          "Record Crew missions before dispatching. Pass titles, kind (build or survey), paths, optional depends_on and context. Build scopes that overlap need a dependency. Returns mission ids. Abandon a non-merged mission with abandon.",
+        parameters: {
+          type: "object",
+          properties: {
+            missions: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  title: { type: "string" },
+                  kind: { type: "string", enum: ["build", "survey"] },
+                  paths: { type: "array", items: { type: "string" } },
+                  depends_on: { type: "array", items: { type: "string" } },
+                  context: { type: "string" },
+                },
+                required: ["title"],
+              },
+            },
+            abandon: { type: "string", description: "Mission id to mark abandoned. Cannot abandon a merged mission." },
+          },
+        },
+      },
+    });
+    workflowToolDefinitions.push({
+      type: "function",
+      function: {
+        name: "crew_finish",
+        description:
+          "Remove clean worktrees after every mission is terminal. Refuses while any mission is planned or active, or a worker is in flight. Does not turn Crew off and does not delete the ledger.",
+        parameters: { type: "object", properties: {}, required: [] },
+      },
+    });
+  }
+  if (isCrewWorktreePath(workspaceRoot)) {
+    workflowToolDefinitions.push({
+      type: "function",
+      function: {
+        name: "crew_complete",
+        description:
+          "Submit this worker's mission before stopping. Requires a report. outcome ok needs a clean worktree and build commits (or zero survey diff). outcome blocked or failed keeps the mission active. Unread crew mail must be read first.",
+        parameters: {
+          type: "object",
+          properties: {
+            report: { type: "string", description: "Completion report for the coordinator." },
+            outcome: {
+              type: "string",
+              enum: ["ok", "blocked", "failed"],
+              description: "ok when work is ready for review; blocked or failed when the worker cannot finish.",
+            },
+          },
+          required: ["report"],
         },
       },
     });
@@ -6756,6 +6833,11 @@ export function getBuiltinTools({
       return result;
     },
     edit: async (args) => {
+      const ledgerPath = args?.path || args?.file || args?.file_path || '';
+      if (crewActive) {
+        const blocked = crewLedgerWriteRefusal(ledgerPath, workspaceRoot);
+        if (blocked) throw new Error(blocked);
+      }
       await ensureProjectIndex();
       if (!isWin) {
         if (!String(args?.file_path || "").trim()) {
@@ -6837,6 +6919,10 @@ export function getBuiltinTools({
       return result;
     },
     create: async (args) => {
+      if (crewActive) {
+        const blocked = crewLedgerWriteRefusal(args?.path || '', workspaceRoot);
+        if (blocked) throw new Error(blocked);
+      }
       await ensureProjectIndex();
       const mutationConfig = configWithApprovedMutationPaths(config, args);
       const createPath = normalizeFilePathValue(
@@ -6858,6 +6944,10 @@ export function getBuiltinTools({
       return result;
     },
     write: async (args) => {
+      if (crewActive) {
+        const blocked = crewLedgerWriteRefusal(args?.path || args?.file || '', workspaceRoot);
+        if (blocked) throw new Error(blocked);
+      }
       await ensureProjectIndex();
       if (!isWin && !String(args?.file_path || args?.path || "").trim()) {
         throw new Error("file_path must be a non-empty string");
@@ -6999,6 +7089,9 @@ export function getBuiltinTools({
     },
     abort_write: async (args) => stagedWrites.abort(args?.write_id),
     apply_patch: async (args) => {
+      if (crewActive && String(args?.patch || args?.patch_text || '').includes('.codemini/crew')) {
+        throw new Error(crewLedgerWriteRefusal('.codemini/crew/state.json', workspaceRoot));
+      }
       await ensureProjectIndex();
       const mutationConfig = configWithApprovedMutationPaths(config, args);
       const patchText = String(
@@ -7236,6 +7329,7 @@ export function getBuiltinTools({
         paths: Array.isArray(args?.paths) ? args.paths : [],
         resume: String(args?.resume || "").trim(),
         review: String(args?.review || "").trim(),
+        ...(crewActive ? { missionId: String(args?.mission_id || "").trim() } : {}),
       });
     },
     fork_task: async (args = {}, ctx = {}) => {
@@ -7266,14 +7360,62 @@ export function getBuiltinTools({
         forkPoint: ctx?.forkPoint || null,
       });
     },
-    land_workers: async () => {
+    land_workers: async (args = {}) => {
       if (typeof onLandWorkers !== "function") {
         return {
           ok: false,
           error: "land_workers is only available in Crew mode.",
         };
       }
-      return onLandWorkers();
+      const missionId = String(args?.mission_id || "").trim();
+      if (!missionId) {
+        return {
+          ok: false,
+          code: "MISSION_REQUIRED",
+          error: "land_workers requires a mission id from crew_status. Pass one completed build mission. Omitting mission_id does not land the roster.",
+        };
+      }
+      return onLandWorkers({ missionId });
+    },
+    crew_plan: async (args = {}) => {
+      if (!crewActive) return { ok: false, error: "crew_plan is only available in Crew mode." };
+      return planCrewMissions(config?.runtime?.crew_project_root || workspaceRoot, {
+        missions: Array.isArray(args?.missions) ? args.missions : [],
+        abandonId: String(args?.abandon || "").trim(),
+      });
+    },
+    crew_finish: async () => {
+      if (!crewActive) return { ok: false, error: "crew_finish is only available in Crew mode." };
+      const inFlight = typeof config?.runtime?.getCrewInFlightWorkers === "function"
+        ? config.runtime.getCrewInFlightWorkers()
+        : [];
+      return finishCrewMissions({
+        cwd: config?.runtime?.crew_project_root || workspaceRoot,
+        inFlight,
+      });
+    },
+    crew_complete: async (args = {}) => {
+      const { crewWorkerIdFromWorktreePath } = await import("./crew-worktree.js");
+      const { emitCrewMissionSubmitWake } = await import("./crew-worker-run.js");
+      const workerId = crewWorkerIdFromWorktreePath(workspaceRoot);
+      if (!workerId) {
+        return { ok: false, error: "crew_complete is only for the worker that owns a mission." };
+      }
+      const projectRoot = config?.runtime?.crew_project_root || workspaceRoot;
+      const result = await completeCrewMission({
+        cwd: projectRoot,
+        workerId,
+        report: args?.report,
+        outcome: args?.outcome,
+      });
+      if (result?.ok && typeof crewWorkerWake === "function") {
+        await emitCrewMissionSubmitWake({
+          workspaceRoot: projectRoot,
+          result,
+          onWake: crewWorkerWake,
+        });
+      }
+      return result;
     },
     cancel_worker: async (args = {}) => {
       if (typeof onCancelWorker !== "function") {
