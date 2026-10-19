@@ -85,7 +85,7 @@ export function normalizeCrewWorkerRecord(value) {
     ...(value.integrated === true ? { integrated: true } : {}),
     ...(rebaseOnto ? { rebaseOnto } : {}),
     ...(landBase ? { landBase } : {}),
-    ...(runStatus === 'queued' || runStatus === 'running' || runStatus === 'completed' || runStatus === 'failed'
+    ...(runStatus === 'queued' || runStatus === 'running' || runStatus === 'completed' || runStatus === 'failed' || runStatus === 'awaiting_submit'
       ? { runStatus }
       : {}),
     ...(runError ? { runError } : {}),

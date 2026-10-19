@@ -18,6 +18,7 @@ import {
   inspectCrewGit,
   listCrewWorkersFromState,
   normalizeCrewState,
+  normalizeCrewWorkerRecord,
   patchCrewWorkerRecord,
   readCrewStateFile,
   writeCrewStateFile,
@@ -245,6 +246,16 @@ async function withRuntime({ mode = 'plan', gitRepo = true, firstCompletion, fol
     await fs.rm(globalDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 50 });
   }
 }
+
+test('normalizeCrewWorkerRecord keeps awaiting_submit runStatus', () => {
+  const worker = normalizeCrewWorkerRecord({
+    id: 'alisa',
+    branch: 'codemini-crew/alisa',
+    worktreePath: '/tmp/alisa',
+    runStatus: 'awaiting_submit',
+  });
+  assert.equal(worker.runStatus, 'awaiting_submit');
+});
 
 test('normalizeCrewState keeps only an active overlay with a base branch', () => {
   assert.equal(normalizeCrewState(null), null);
