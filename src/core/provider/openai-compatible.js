@@ -3,7 +3,7 @@ import {
   modelUsesFixedKimiSampling,
   resolveOpenAICompatibleReasoning
 } from './reasoning-effort.js';
-import { isCompletionTruncated } from './completion-status.js';
+import { normalizeFinishReason } from './completion-status.js';
 import { stringifyGatewayJson } from './json-body.js';
 import { iterateSseJsonEvents } from '../sse.js';
 
@@ -234,8 +234,16 @@ function hasTrailingToolContext(messages) {
   return false;
 }
 
+function isSuccessfulToolCompletion(finishReason) {
+  // Compatible gateways may use stop (or legacy function_call) for tool calls.
+  // Missing, filtered, truncated, and unknown endings cannot authorize execution.
+  return ['tool_calls', 'stop', 'function_call'].includes(normalizeFinishReason(finishReason));
+}
+
 function buildFinalStreamResult(text, toolCallsByIndex, usage, messages, finishReason = '', streamDone = false) {
-  const argumentsComplete = (Boolean(finishReason) || streamDone) && !isCompletionTruncated(finishReason);
+  // Choice completion and transport completion are both required. Neither EOF
+  // after finish_reason nor a gateway's bare [DONE] proves a complete tool call.
+  const argumentsComplete = streamDone && isSuccessfulToolCompletion(finishReason);
   const toolCalls = Array.from(toolCallsByIndex.entries())
     .sort((a, b) => a[0] - b[0])
     .map(([, tc], i) => ({
@@ -361,7 +369,7 @@ export async function createChatCompletion({
     id: tc.id,
     name: tc.function?.name,
     arguments: normalizeIncomingToolCallArguments(tc.function?.arguments),
-    argumentsComplete: !isCompletionTruncated(finishReason)
+    argumentsComplete: isSuccessfulToolCompletion(finishReason)
   }));
   const normalizedText = String(text || '').trim();
 

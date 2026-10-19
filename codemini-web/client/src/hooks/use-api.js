@@ -66,6 +66,11 @@ export async function fetchTokenActivity(signal) {
   return readJsonOrThrow(res);
 }
 
+export async function fetchSessionTokenUsage(sessionId, signal) {
+  const res = await api(`/api/usage/session?${new URLSearchParams({ sessionId })}`, { signal });
+  return readJsonOrThrow(res);
+}
+
 export async function fetchState(sessionId) {
   const res = await api(withSessionQuery('/api/state', sessionId));
   return res.json();

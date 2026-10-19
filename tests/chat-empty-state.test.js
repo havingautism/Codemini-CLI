@@ -26,7 +26,7 @@ test('startup Hook metadata does not suppress the project welcome page', () => {
   );
 });
 
-test('empty session uses a CSS aurora that unmounts once conversation starts', async () => {
+test('empty session uses a quiet welcome that unmounts once conversation starts', async () => {
   const visual = await fs.readFile(
     'codemini-web/client/src/components/HomeEmptyVisual.jsx',
     'utf8',
@@ -35,14 +35,17 @@ test('empty session uses a CSS aurora that unmounts once conversation starts', a
     'codemini-web/client/src/components/ChatPanel.jsx',
     'utf8',
   );
-  const css = await fs.readFile('codemini-web/client/style.css', 'utf8');
+  const css = await fs.readFile('codemini-web/client/src/conversation-design.css', 'utf8');
 
-  assert.match(visual, /codemini-home-aurora/);
+  assert.match(visual, /codemini-welcome-brand/);
+  assert.match(visual, /welcomeDescription/);
+  assert.match(visual, /<TokenActivity/);
+  assert.doesNotMatch(visual, /codemini-home-aurora/);
   assert.doesNotMatch(visual, /GeminiLightStrips|codemini-gemini-canvas/);
   assert.doesNotMatch(
     visual,
     /pickHomeEmptyVisual/,
-    'aurora should follow theme tokens instead of random palettes',
+    'welcome should follow theme tokens instead of random palettes',
   );
 
   const emptyOverlay = panel.slice(
@@ -53,14 +56,11 @@ test('empty session uses a CSS aurora that unmounts once conversation starts', a
   assert.doesNotMatch(
     panel.slice(panel.indexOf('<MessageScroller>')),
     /<HomeEmptyVisual/,
-    'aurora must not stay mounted after messages render',
+    'welcome must not stay mounted after messages render',
   );
 
-  assert.match(css, /@keyframes\s+codemini-aurora/);
-  assert.match(
-    css,
-    /prefers-reduced-motion: reduce[\s\S]*codemini-home-aurora/,
-  );
+  assert.match(css, /\.codemini-welcome-mark\s*\{[^}]*background: var\(--primary\)/);
+  assert.doesNotMatch(css, /@keyframes/);
 });
 
 test('waiting-response is a dots loader and disappears once General starts rendering', async () => {

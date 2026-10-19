@@ -462,15 +462,15 @@ function ChatPanelContent({
             <HomeEmptyVisual>
               <HomeEmptyCaption
                 promptKey="askAnythingGeneralPrompts"
-                className="codemini-home-empty-title mx-auto max-w-[320px] sm:max-w-none text-[20px] sm:text-[26px] font-medium leading-tight tracking-normal text-(--text-primary) break-words"
+                className="codemini-home-empty-title"
               />
             </HomeEmptyVisual>
           ) : (
             <HomeEmptyVisual>
               <HomeEmptyCaption
                 promptKey="buildInProjectPrompts"
-                vars={{ project: projectCwd || t("currentProject") }}
-                className="codemini-home-empty-title mx-auto max-w-[320px] sm:max-w-none text-[20px] sm:text-[26px] font-medium leading-tight tracking-normal text-(--text-primary) break-words"
+                vars={{ project: String(projectCwd || "").split(/[/\\]/).filter(Boolean).pop() || t("currentProject") }}
+                className="codemini-home-empty-title"
               />
               <GitWorkspaceHint />
             </HomeEmptyVisual>
@@ -480,7 +480,7 @@ function ChatPanelContent({
       <MessageScroller>
         <MessageScrollerViewport ref={scrollRef}>
           <MessageScrollerContent className="gap-0 py-[32px_0_24px]">
-            <div className="w-[calc(100%_-_32px)] max-w-[920px] sm:w-[calc(100%_-_64px)] mx-auto">
+            <div className="w-[calc(100%_-_32px)] max-w-[var(--conversation-width)] sm:w-[calc(100%_-_64px)] mx-auto">
               <Suspense fallback={null}>
                 {messages.map((msg, index) => {
                   if (isSupersededWaitingResponse(messages, index)) return null;

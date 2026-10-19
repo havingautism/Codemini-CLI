@@ -342,14 +342,17 @@ function emptyToolCall(index) {
   };
 }
 
-function buildFinalStreamResult(text, toolCallsByIndex, usage, messages, thinkingBlocks = [], finishReason = '') {
+function buildFinalStreamResult(text, toolCallsByIndex, usage, messages, thinkingBlocks = [], finishReason = '', messageStopped = false) {
+  // A closed block alone is not authority to execute tools: EOF can precede
+  // message completion. Gateways must also provide the Anthropic terminal events.
+  const messageComplete = messageStopped && Boolean(finishReason.trim()) && !isCompletionTruncated(finishReason);
   const toolCalls = Array.from(toolCallsByIndex.entries())
     .sort((a, b) => a[0] - b[0])
     .map(([, tc], i) => ({
       id: tc.id || `tc-${i + 1}`,
       name: tc.name,
       arguments: tc.arguments || '{}',
-      argumentsComplete: tc.closed === true && !isCompletionTruncated(finishReason)
+      argumentsComplete: tc.closed === true && messageComplete
     }))
     .filter((tc) => tc.name);
   const normalizedText = String(text || '').trim();
@@ -480,6 +483,7 @@ export async function createChatCompletionStream({
     let text = '';
     let usage = null;
     let finishReason = '';
+    let messageStopped = false;
     const toolCallsByIndex = new Map();
     const thinkingBlocksByIndex = new Map();
 
@@ -487,6 +491,11 @@ export async function createChatCompletionStream({
       if (chunk.done) continue;
       usage = mergeUsage(usage, chunk?.data?.usage);
       usage = mergeUsage(usage, chunk?.data?.message?.usage);
+
+      if (chunk.event === 'message_stop' && chunk?.data?.type === 'message_stop') {
+        messageStopped = true;
+        break;
+      }
 
       if (chunk.event === 'message_delta') {
         const stopReason = chunk?.data?.delta?.stop_reason || chunk?.data?.stop_reason;
@@ -581,7 +590,7 @@ export async function createChatCompletionStream({
       .map(([, block]) => cloneAnthropicContentBlock(block))
       .filter(Boolean);
 
-    return buildFinalStreamResult(text, toolCallsByIndex, usage, messages, thinkingBlocks, finishReason);
+    return buildFinalStreamResult(text, toolCallsByIndex, usage, messages, thinkingBlocks, finishReason, messageStopped);
   } finally {
     timeoutSignal.removeEventListener('abort', onTimeoutAbort);
     if (externalSignal) externalSignal.removeEventListener('abort', onExternalAbort);

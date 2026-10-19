@@ -522,6 +522,13 @@ test('editor cursor is a high-contrast block on the dark input line', () => {
   assert.equal(painted.includes(SURFACE_BG), true);
 });
 
+test('editor cursor preserves contrast with pi-tui reverse-video resets', () => {
+  const painted = paintBackground('\u001b[7mA\u001b[27m typed', 24);
+  assert.doesNotMatch(painted, /\u001b\[7m/);
+  assert.match(painted, /\u001b\[38;2;14;14;16m\u001b\[48;2;236;236;240mA/);
+  assert.match(stripAnsi(painted), /^A typed\s*$/);
+});
+
 test('every rendered TUI line is painted with the dark surface background', () => {
   const copy = createTuiCopy('en');
   const painted = (lines) => lines.every((line) => line.includes(SURFACE_BG));

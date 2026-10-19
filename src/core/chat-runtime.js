@@ -37,6 +37,7 @@ import {
   packageProfileArmEntry,
 } from './hook-profiles.js';
 import { runAgentLoop } from './agent-loop.js';
+import { withTokenUsageSession, getTokenUsageSession } from './token-usage-context.js';
 import { resolveJevReviewConnection } from './jev-command-review.js';
 import { createDecisionController } from './harness/decision-controller.js';
 import { createHarnessSqliteStore } from './harness/audit/harness-sqlite-store.js';
@@ -4576,7 +4577,11 @@ export async function expandFileMentions(rawText, workspaceRoot = process.cwd())
   return out;
 }
 
-async function askModel({
+function askModel(options) {
+  return withTokenUsageSession(getTokenUsageSession() || options.session?.id, () => askModelInSession(options));
+}
+
+async function askModelInSession({
   text,
   modelText,
   modelImages = [],
@@ -9603,7 +9608,10 @@ export async function createChatRuntime({
     await saveSession(currentSession).catch(() => {});
   };
 
-  const executeSubmissionTurn = async (line, onAgentEvent, options = {}) => {
+  const executeSubmissionTurn = (line, onAgentEvent, options = {}) =>
+    withTokenUsageSession(currentSession.id, () => executeSubmissionTurnInSession(line, onAgentEvent, options));
+
+  const executeSubmissionTurnInSession = async (line, onAgentEvent, options = {}) => {
     const endMemoryActivity = beginSessionMemoryActivity(currentSession.id);
     activeTurnCount += 1;
     try {

@@ -8,6 +8,7 @@ import React, {
   useState,
 } from "react";
 import { t } from "../../i18n/index.js";
+import { applyAppearance, readAppearance } from "../lib/ui-appearance.js";
 import * as api from "../hooks/use-api.js";
 import { extractReasoningRuntimePatch } from "../lib/reasoning-controls.js";
 import {
@@ -3293,12 +3294,7 @@ export function AppProvider({ children }) {
   ]);
 
   const applyTheme = useCallback((mode) => {
-    localStorage.setItem("codemini-theme", mode);
-    const mq =
-      window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)");
-    const resolved =
-      mode === "auto" ? (mq && mq.matches ? "dark" : "light") : mode;
-    document.documentElement.dataset.theme = resolved;
+    applyAppearance({ ...readAppearance(), mode });
   }, []);
 
   const actions = useMemo(() => {

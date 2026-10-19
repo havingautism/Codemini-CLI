@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { evaluateCommandPolicy } from './command-policy.js';
-import { requiresDeterministicCommandApproval } from './command-risk.js';
+import { isLowRiskCommandApproval, requiresDeterministicCommandApproval } from './command-risk.js';
 import { evaluateCommandWithLLM } from './command-evaluator.js';
 
 // Authorization is returned to the caller, never persisted into global config.
@@ -23,8 +23,7 @@ export async function reviewCommandAccess({ command, config, workspaceRoot, capa
   }
   signal?.throwIfAborted();
   onReview?.({ capability, command, evaluation, humanRequired });
-  if (!humanRequired && evaluation?.failed !== true && evaluation?.uncertain !== true
-      && ['low', 'medium'].includes(evaluation?.risk) && evaluation?.recommendation === 'allow') {
+  if (!humanRequired && isLowRiskCommandApproval(evaluation)) {
     return { approved: true, source: 'lite', evaluation };
   }
   if (typeof requestApproval !== 'function') {

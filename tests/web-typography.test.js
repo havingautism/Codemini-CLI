@@ -12,6 +12,10 @@ const i18n = fs.readFileSync(
   path.join(root, 'codemini-web', 'client', 'i18n', 'index.js'),
   'utf8',
 );
+const conversationStyle = fs.readFileSync(
+  path.join(root, 'codemini-web', 'client', 'src', 'conversation-design.css'),
+  'utf8',
+);
 
 test('web typography uses one UI stack and one code stack', () => {
   assert.match(
@@ -27,16 +31,24 @@ test('web typography uses one UI stack and one code stack', () => {
 
 test('chat prose keeps stable Windows metrics and neutral body tracking', () => {
   assert.match(
-    style,
-    /\.msg-body\.codemini-assistant-markdown\s*\{[^}]*font-size:\s*15px;[^}]*line-height:\s*1\.7;[^}]*letter-spacing:\s*normal;/s,
+    conversationStyle,
+    /--font-reading:\s*"Source Serif 4 Variable",\s*"Noto Serif SC Variable"/,
+  );
+  assert.match(
+    conversationStyle,
+    /\.codemini-chat-session \.msg-body\.codemini-assistant-markdown\s*\{[^}]*font-family:\s*var\(--font-chat\);[^}]*letter-spacing:\s*normal;/s,
+  );
+  assert.match(
+    conversationStyle,
+    /\.codemini-chat-session \.msg-body\.codemini-assistant-markdown\s*\{[^}]*font-size:\s*16px;[^}]*line-height:\s*1\.85;/s,
   );
   assert.match(style, /font-optical-sizing:\s*auto;/);
 });
 
-test('inline terms use the UI face while real code blocks remain monospaced', () => {
+test('inline code and real code blocks remain monospaced', () => {
   assert.match(
-    style,
-    /\.msg-body :not\(pre\)>code\s*\{[^}]*font-family:\s*var\(--font-sans\);[^}]*font-weight:\s*500;/s,
+    conversationStyle,
+    /\.codemini-chat-session \.msg-body :not\(pre\) > code\s*\{[^}]*font-family:\s*var\(--font-mono\);/s,
   );
   assert.match(
     style,

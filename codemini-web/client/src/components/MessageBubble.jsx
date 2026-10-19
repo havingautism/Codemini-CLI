@@ -120,7 +120,7 @@ const ROLE_STYLES = {
   },
   general: {
     badge: NEUTRAL_ROLE_BADGE,
-    label: "General",
+    label: "Codemini",
   },
   coder: {
     badge: NEUTRAL_ROLE_BADGE,
@@ -344,7 +344,9 @@ function HandoffBlock({ segment }) {
       <DisclosureRowButton
         open={open}
         onClick={() => setOpen((value) => !value)}
-        icon={<span className="inline-block size-1.5 rounded-full bg-(--accent-blue)" />}
+        icon={
+          <span className="inline-block size-1.5 rounded-full bg-(--accent-blue)" />
+        }
       >
         <span>Handoff</span>
         <span className="codemini-disclosure-sep" aria-hidden="true" />
@@ -532,7 +534,8 @@ function ToolGroup({ cards }) {
   const total = otherCards.length;
   const hasRunningTool = otherCards.some((card) => card.status === "running");
   let groupStatus = "done";
-  if (otherCards.some((card) => card.status === "blocked")) groupStatus = "blocked";
+  if (otherCards.some((card) => card.status === "blocked"))
+    groupStatus = "blocked";
   if (hasRunningTool) groupStatus = "running";
   const shouldUseSummaryHeader = total > TOOL_COLLAPSE_THRESHOLD;
   const summaryLabel = formatToolGroupSummaryLabel(otherCards, t);
@@ -541,7 +544,9 @@ function ToolGroup({ cards }) {
     <div className={cn("codemini-disclosure my-2", PROCESS_META_CLASS)}>
       <PlanToolCardGroup cards={planCards} />
       {userInputCards.length > 0 && (
-        <div className={cn("flex flex-col gap-2", planCards.length > 0 && "mt-4")}>
+        <div
+          className={cn("flex flex-col gap-2", planCards.length > 0 && "mt-4")}
+        >
           {userInputCards.map((card) => (
             <ToolCard key={card.id} card={card} />
           ))}
@@ -563,7 +568,10 @@ function ToolGroup({ cards }) {
         <DisclosureRowButton
           open={expanded}
           className={cn(
-            (planCards.length > 0 || userInputCards.length > 0 || htmlArtifactCards.length > 0) && "mt-4",
+            (planCards.length > 0 ||
+              userInputCards.length > 0 ||
+              htmlArtifactCards.length > 0) &&
+              "mt-4",
           )}
           onClick={() => setExpanded((value) => !value)}
           icon={<SkillStatusDot status={groupStatus} />}
@@ -872,13 +880,16 @@ function ProcessGroup({ group }) {
           .replace("{{thoughts}}", thoughtCount)
           .replace("{{tools}}", toolCount);
 
-  if (!planCards.length && !userInputCards.length && !nestedGroups.length) return null;
+  if (!planCards.length && !userInputCards.length && !nestedGroups.length)
+    return null;
 
   return (
     <div className={cn("codemini-disclosure my-2", PROCESS_META_CLASS)}>
       <PlanToolCardGroup cards={planCards} />
       {userInputCards.length > 0 && (
-        <div className={cn("flex flex-col gap-2", planCards.length > 0 && "mt-4")}>
+        <div
+          className={cn("flex flex-col gap-2", planCards.length > 0 && "mt-4")}
+        >
           {userInputCards.map((card) => (
             <ToolCard key={card.id} card={card} />
           ))}
@@ -892,7 +903,9 @@ function ProcessGroup({ group }) {
               (planCards.length > 0 || userInputCards.length > 0) && "mt-4",
             )}
             onClick={() => setExpanded((value) => !value)}
-            icon={<span className="inline-block size-1.5 rounded-full bg-(--accent-green)" />}
+            icon={
+              <span className="inline-block size-1.5 rounded-full bg-(--accent-green)" />
+            }
           >
             <span>{label}</span>
             {details ? (
@@ -1181,7 +1194,6 @@ function summarizeFileChanges(changes = []) {
 function FileChangesOverviewBar({ changes }) {
   const stats = summarizeFileChanges(changes);
   if (!stats.fileCount) return null;
-
 
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-(--border-default) bg-(--bg-tertiary) px-3 py-2.5">
@@ -1556,9 +1568,7 @@ function ScrapbookUserAttachment({ item }) {
 
   if (!canOpen) {
     return (
-      <span
-        className="codemini-status-chip inline-flex max-w-full items-center gap-1.5 border-(--border-default) bg-(--bg-secondary) px-2 py-1 text-[12px] text-(--text-secondary)"
-      >
+      <span className="codemini-status-chip inline-flex max-w-full items-center gap-1.5 border-(--border-default) bg-(--bg-secondary) px-2 py-1 text-[12px] text-(--text-secondary)">
         <Notebook size={14} className="shrink-0" />
         <span className="max-w-55 truncate">{label}</span>
       </span>
@@ -1633,10 +1643,7 @@ function UserAttachments({ attachments = [], className }) {
           String(item?.id || "").startsWith("scrapbook:")
         ) {
           return (
-            <ScrapbookUserAttachment
-              key={item.id || item.name}
-              item={item}
-            />
+            <ScrapbookUserAttachment key={item.id || item.name} item={item} />
           );
         }
         return (
@@ -2125,7 +2132,9 @@ function renderGroupItem(group, i) {
     );
   }
   if (group.type === "tools") {
-    const planId = (group.cards || []).find((card) => isCreatePlanCard(card))?.id;
+    const planId = (group.cards || []).find((card) =>
+      isCreatePlanCard(card),
+    )?.id;
     const firstId = group.cards?.[0]?.id;
     return (
       <ToolGroup key={planId || firstId || `tg-${i}`} cards={group.cards} />
@@ -2159,11 +2168,18 @@ function AnswerProcessFold({ groups, durationMs }) {
     : t("processed");
 
   return (
-    <div className={cn("codemini-answer-fold codemini-disclosure my-2", PROCESS_META_CLASS)}>
+    <div
+      className={cn(
+        "codemini-answer-fold codemini-disclosure my-2",
+        PROCESS_META_CLASS,
+      )}
+    >
       <DisclosureRowButton
         open={expanded}
         onClick={() => setExpanded((value) => !value)}
-        icon={<span className="inline-block size-1.5 rounded-full bg-(--accent-blue)" />}
+        icon={
+          <span className="inline-block size-1.5 rounded-full bg-(--accent-blue)" />
+        }
       >
         <span>{label}</span>
       </DisclosureRowButton>
@@ -2253,7 +2269,13 @@ export const MessageBubble = memo(function MessageBubble({
         message?.timestamp || message?.createdAt,
         { fold: messageComplete, omitTodo: dockTodo || suppressCrewTodos },
       ),
-    [dockTodo, message?.createdAt, message?.timestamp, messageComplete, renderGroups],
+    [
+      dockTodo,
+      message?.createdAt,
+      message?.timestamp,
+      messageComplete,
+      renderGroups,
+    ],
   );
   const hasAnswerFold = answerLayout.hasFold;
   const preAnswerDuration = answerLayout.durationMs;
@@ -2288,7 +2310,9 @@ export const MessageBubble = memo(function MessageBubble({
 
   if (role === "divider") {
     if (message.dividerType === "crew-wake") {
-      return renderDivider(rawMessageText || legacyText || t("crewWakeDivider"));
+      return renderDivider(
+        rawMessageText || legacyText || t("crewWakeDivider"),
+      );
     }
     return renderDivider(legacyText || "以上内容已压缩");
   }
@@ -2463,9 +2487,10 @@ export const MessageBubble = memo(function MessageBubble({
   return (
     <div
       data-message-id={message.id}
+      data-message-role={displayRole}
       data-plan-status={isPlanFlowMessage ? planFlowStatus : undefined}
       className={cn(
-        "py-2 group/message",
+        "codemini-conversation-message py-2 group/message",
         role === "you" && "flex justify-end mt-6",
         isPlanFlowMessage && "codemini-plan-flow",
       )}
@@ -2515,15 +2540,15 @@ export const MessageBubble = memo(function MessageBubble({
         </div>
       ) : (
         <div>
-          <div className="flex items-center gap-2 mb-1.5">
-            <span
+          <div className="codemini-reply-heading flex items-center gap-2 mb-3">
+            {/* <span
               className={cn(
                 "inline-flex h-5 items-center rounded-md border px-1.5 py-0 text-[10px] font-medium uppercase tracking-[0.04em]",
                 style.badge,
               )}
             >
               {style.label}
-            </span>
+            </span> */}
             {planStep?.title ? (
               <span className="min-w-0 truncate text-[12px] text-(--text-secondary)">
                 {planStep.title}
@@ -2545,7 +2570,7 @@ export const MessageBubble = memo(function MessageBubble({
           <div className="flex flex-col">
             <SkillActivityList badges={skillBadges || []} />
 
-            {(answerLayout.hasTodo || hasAnswerFold) ? (
+            {answerLayout.hasTodo || hasAnswerFold ? (
               <>
                 {answerLayout.items.map((item, i) => {
                   if (item.type === "fold") {

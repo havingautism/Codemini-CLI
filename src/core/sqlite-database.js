@@ -4,7 +4,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { getBaseConfigDir, getProjectIndexDir } from './paths.js';
 import { insertMemoryFtsRow, MEMORY_FTS_DDL } from './memory-fts.js';
 
-const GLOBAL_SCHEMA_VERSION = 18;
+const GLOBAL_SCHEMA_VERSION = 19;
 const PROJECT_SCHEMA_VERSION = 6;
 const databases = new Map();
 
@@ -69,6 +69,18 @@ function createGlobalSchema(db, currentVersion = 0) {
     ) STRICT;
     CREATE INDEX IF NOT EXISTS token_usage_created_idx ON token_usage_records(created_at);
   `);
+  const usageColumns = new Set(db.prepare("SELECT name FROM pragma_table_info('token_usage_records')").all().map((row) => row.name));
+  for (const [name, type] of Object.entries({
+    session_id: "TEXT NOT NULL DEFAULT ''",
+    cache_reported: 'INTEGER',
+    reasoning_output_tokens: 'INTEGER',
+    duration_ms: 'INTEGER',
+    waiting_ms: 'INTEGER',
+    generating_ms: 'INTEGER',
+  })) {
+    if (!usageColumns.has(name)) db.exec(`ALTER TABLE token_usage_records ADD COLUMN ${name} ${type}`);
+  }
+  db.exec('CREATE INDEX IF NOT EXISTS token_usage_session_idx ON token_usage_records(session_id, created_at)');
   db.exec(`
     CREATE TABLE IF NOT EXISTS sessions (
       id TEXT PRIMARY KEY,

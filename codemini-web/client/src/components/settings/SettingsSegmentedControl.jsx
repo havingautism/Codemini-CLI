@@ -7,10 +7,13 @@ export function SettingsSegmentedControl({
   options = [],
   disabled = false,
   idPrefix = "settings-segmented",
+  label,
   className,
 }) {
   return (
     <ToggleGroup
+      id={idPrefix}
+      aria-label={label}
       type="single"
       value={value}
       onValueChange={(next) => next && onValueChange?.(next)}

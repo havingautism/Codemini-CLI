@@ -1,0 +1,338 @@
+@import "@fontsource-variable/source-serif-4";
+@import "@fontsource-variable/noto-serif-sc";
+
+/* Every palette supplies the same semantic tokens in both light and dark mode. */
+:root[data-theme][data-palette] {
+  --background: var(--palette-canvas);
+  --foreground: var(--palette-text);
+  --card: var(--palette-surface);
+  --card-foreground: var(--foreground);
+  --popover: var(--palette-surface);
+  --popover-foreground: var(--foreground);
+  --primary: var(--palette-accent);
+  --primary-foreground: var(--palette-surface);
+  --secondary: var(--palette-sidebar);
+  --secondary-foreground: var(--foreground);
+  --muted: var(--palette-sidebar);
+  --muted-foreground: var(--palette-muted);
+  --accent: color-mix(in srgb, var(--palette-accent) 10%, var(--palette-surface));
+  --accent-foreground: var(--foreground);
+  --ring: var(--palette-accent);
+  --sidebar: var(--palette-sidebar);
+  --sidebar-foreground: var(--foreground);
+  --bg-primary: var(--background);
+  --bg-secondary: var(--secondary);
+  --bg-tertiary: color-mix(in srgb, var(--palette-text) 8%, var(--background));
+  --bg-input: var(--card);
+  --text-primary: var(--foreground);
+  --text-secondary: var(--palette-muted);
+  --text-muted: var(--palette-muted);
+  --accent-blue: var(--palette-accent);
+  --accent-blue-bg: color-mix(in srgb, var(--palette-accent) 10%, var(--background));
+  --accent-hover: color-mix(in srgb, var(--palette-accent) 82%, var(--palette-text));
+  --md-link: var(--palette-accent);
+  --md-code-bg: var(--secondary);
+  --md-inline-code-bg: var(--bg-tertiary);
+  --md-inline-code-text: var(--foreground);
+  --md-table-header-bg: var(--secondary);
+  --md-table-row-alt-bg: var(--background);
+  --shell-canvas: var(--sidebar);
+  --interactive-hover: color-mix(in srgb, var(--palette-accent) 6%, var(--background));
+  --selected-bg: color-mix(in srgb, var(--palette-accent) 12%, var(--background));
+  --bg-hover: var(--interactive-hover);
+  --bg-active: var(--selected-bg);
+  --bg-subtle: color-mix(in srgb, var(--palette-text) 3%, var(--background));
+  --message-surface: var(--secondary);
+  --accent-green-bg: color-mix(in srgb, var(--accent-green) 10%, var(--background));
+  --accent-red-bg: color-mix(in srgb, var(--accent-red) 10%, var(--background));
+  --accent-orange-bg: color-mix(in srgb, var(--accent-orange) 10%, var(--background));
+  --accent-purple-bg: color-mix(in srgb, var(--accent-purple) 10%, var(--background));
+}
+
+/* Shared surfaces follow the selected palette, including existing overlays. */
+:root,
+:root[data-theme],
+:root[data-palette],
+:root[data-theme][data-palette] {
+  --apple-text: var(--text-primary);
+  --apple-material: var(--bg-primary);
+  --apple-material-raised: var(--popover);
+  --material-elevated: var(--popover);
+}
+
+:root {
+  --font-chat: var(--font-ui);
+  --conversation-width: 780px;
+  --composer-width: 800px;
+  --font-reading: "Source Serif 4 Variable", "Noto Serif SC Variable", "Noto Serif SC", "Songti SC", "SimSun", serif;
+}
+
+:root[data-chat-font="serif"] {
+  --font-chat: var(--font-reading);
+}
+
+:root[data-chat-font="system"] {
+  --font-chat: system-ui, "Segoe UI", "Microsoft YaHei UI", sans-serif;
+}
+
+:root[data-theme][data-palette] {
+  --conversation-width: 780px;
+  --composer-width: 800px;
+  --input-shell-bg: var(--bg-input);
+  --input-shell-border: color-mix(in srgb, var(--text-primary) 14%, transparent);
+  --input-shell-shadow: 0 2px 8px color-mix(in srgb, black 4%, transparent);
+  --text-process: var(--text-secondary);
+  --text-process-detail: var(--text-muted);
+}
+
+.codemini-home-empty-title {
+  font-family: var(--font-chat);
+  margin: 0;
+  font-size: 26px;
+  font-weight: 500;
+  line-height: 1.4;
+}
+
+:root[data-theme] .codemini-conversation-message {
+  padding-block: 12px;
+}
+
+:root[data-theme] .codemini-app-shell {
+  background: var(--shell-canvas);
+}
+
+:root[data-theme] .codemini-sidebar,
+:root[data-theme] [data-slot="dialog-content"],
+:root[data-theme] [data-slot="sheet-content"],
+:root[data-theme] [data-slot="popover-content"],
+:root[data-theme] [data-slot="select-content"] {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+:root[data-theme] .codemini-workspace-panel {
+  box-shadow: none;
+}
+
+/* A still welcome screen keeps attention on the invitation and the composer. */
+:root[data-theme] .codemini-home-empty-stage {
+  position: relative;
+  inset: auto;
+  min-height: 100%;
+  justify-content: center;
+  gap: 20px;
+  padding: clamp(32px, 6vh, 72px) 16px 48px;
+}
+
+:root[data-theme] .codemini-welcome-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--text-secondary);
+  font-size: 15px;
+  letter-spacing: 0.02em;
+}
+
+:root[data-theme] .codemini-welcome-mark {
+  width: 20px;
+  height: 20px;
+  border-radius: 7px;
+  background: var(--primary);
+  transform: rotate(-12deg);
+  box-shadow: inset 0 0 0 5px color-mix(in srgb, var(--bg-primary) 25%, transparent);
+}
+
+:root[data-theme] .codemini-home-empty-title {
+  margin: 0;
+  font-family: var(--font-chat);
+  font-size: clamp(25px, 3.2vw, 36px);
+  font-weight: 400;
+  line-height: 1.45;
+  letter-spacing: -0.025em;
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+  text-wrap: balance;
+}
+
+:root[data-theme] .codemini-welcome-description {
+  margin: -6px 0 4px;
+  max-width: 440px;
+  color: var(--text-secondary);
+  font-size: 14px;
+  line-height: 1.75;
+  text-align: center;
+  text-wrap: balance;
+}
+
+:root[data-theme] .codemini-token-activity {
+  width: min(680px, 100%);
+  margin-top: 12px;
+  border-color: var(--separator);
+  background: transparent;
+  box-shadow: none;
+}
+
+/* The composer stays quiet during work; running/stop controls carry status. */
+:root[data-theme] .codemini-input-shell {
+  background: var(--input-shell-bg);
+  border: 1px solid var(--input-shell-border);
+  border-radius: 20px;
+  padding: 12px 16px;
+  gap: 12px;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  box-shadow: var(--input-shell-shadow);
+}
+
+:root[data-theme] .codemini-input-shell::before {
+  content: none;
+  animation: none;
+}
+
+:root[data-theme] .codemini-input-shell:focus-within {
+  background: var(--input-shell-bg);
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 12%, transparent);
+}
+
+:root[data-theme] .codemini-chat-session .msg-body,
+:root[data-theme] .codemini-chat-session .msg-body.codemini-assistant-markdown {
+  font-size: 16px;
+  line-height: 1.85;
+}
+
+.codemini-chat-session .msg-body.codemini-assistant-markdown {
+  font-family: var(--font-chat);
+  font-weight: 400;
+  letter-spacing: normal;
+}
+
+.codemini-chat-session .msg-body :not(pre) > code {
+  font-family: var(--font-mono);
+}
+
+:root[data-theme] .codemini-user-bubble {
+  padding: 12px 18px;
+  border: 0;
+  border-radius: 18px;
+}
+
+:root[data-theme] .codemini-conversation-message:not([data-message-role="error"]) .codemini-reply-heading > span:first-child {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+:root[data-theme] .codemini-chat-session .codemini-disclosure-row {
+  min-height: 32px;
+}
+
+:where(button, a, input, textarea, select, [role="button"], [role="option"]):focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 3px;
+}
+
+.codemini-input-shell textarea:focus-visible {
+  outline: none;
+}
+
+@media (max-width: 735px) {
+  :root[data-theme] .codemini-home-empty-stage {
+    gap: 16px;
+    padding: 28px 16px 32px;
+  }
+
+  :root[data-theme] .codemini-chat-session .msg-body,
+  :root[data-theme] .codemini-chat-session .msg-body.codemini-assistant-markdown {
+    font-size: 15px;
+  }
+}
+
+@media (forced-colors: active) {
+  :where(button, a, input, textarea, select, [role="button"], [role="option"]):focus-visible {
+    outline-color: Highlight;
+  }
+
+  :root[data-theme] .codemini-input-shell:focus-within {
+    outline: 2px solid Highlight;
+  }
+}
+
+/* Palette cards show the actual light/dark tokens, independent of the active UI. */
+.settings-palette-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  width: 100%;
+}
+
+.settings-palette-card {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  height: auto;
+  min-width: 0;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  background: var(--card);
+  color: var(--text-primary);
+  text-align: left;
+  white-space: normal;
+}
+
+.settings-palette-card:hover {
+  background: var(--bg-hover);
+}
+
+.settings-palette-card[data-state="on"] {
+  border-color: var(--primary);
+  background: var(--accent);
+  box-shadow: 0 0 0 1px var(--primary);
+}
+
+.settings-palette-card__name {
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.settings-palette-card__samples {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.settings-palette-card__sample {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.settings-palette-card__mode {
+  flex: none;
+  font-size: 10px;
+  color: var(--text-secondary);
+}
+
+.settings-palette-card__swatches {
+  display: flex;
+  flex: 1;
+  height: 16px;
+  overflow: hidden;
+  border: 1px solid var(--border-strong);
+  border-radius: 5px;
+}
+
+.settings-palette-card__swatches > span {
+  flex: 1;
+}
+
+@media (max-width: 520px) {
+  .settings-palette-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

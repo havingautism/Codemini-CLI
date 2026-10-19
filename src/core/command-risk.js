@@ -196,7 +196,20 @@ export function classifyCommandRisk(command, shellName = 'bash', platform = proc
  * 只读命令跳过，其余都需要。
  */
 export function requiresApprovalEvaluation(command, shellName = 'bash', platform = process.platform) {
-  return classifyCommandRisk(command, shellName, platform) !== 'read-only';
+  return requiresCommandModelReview(command) || classifyCommandRisk(command, shellName, platform) !== 'read-only';
+}
+
+// Opaque syntax needs a model review even when the first command is read-only
+// or a confining sandbox would normally skip review.
+export function requiresCommandModelReview(command) {
+  return /[`]|\$\(|[<>]\(/.test(command)
+    || collectCommandTokens(command).some(({ token }) =>
+      ['bash', 'sh', 'zsh', 'dash', 'ksh', 'powershell', 'pwsh', 'cmd'].includes(token));
+}
+
+export function isLowRiskCommandApproval(evaluation) {
+  return evaluation?.failed !== true && evaluation?.uncertain !== true
+    && evaluation?.risk === 'low' && evaluation?.recommendation === 'allow';
 }
 
 const ROUTINE_PROJECT_SCRIPTS = /^(?:build|check|dev|fmt|format|lint|preview|start|test|type-?check)(?::[\w.-]+)?$/i;
@@ -234,10 +247,10 @@ function commandTail(raw = '') {
  * These go straight to human approval; ordinary workspace writes rely on the sandbox.
  */
 export function requiresDeterministicCommandApproval(command) {
-  if (/[`]|\$\(|[<>]\(/.test(command)) return true;
+  // Downloading code into an interpreter remains an explicit execution gate.
+  if (/\|\s*(?:bash|sh|zsh|dash|ksh|powershell|pwsh|cmd)\b/i.test(command)) return true;
   return collectCommandTokens(command).some(({ token, raw }) => {
     const tail = commandTail(raw);
-    if (['bash', 'sh', 'zsh', 'dash', 'ksh', 'powershell', 'pwsh', 'cmd'].includes(token)) return true;
     if (['sudo', 'doas', 'su', 'systemctl', 'service', 'launchctl', 'shutdown', 'reboot', 'halt', 'poweroff', 'kill', 'pkill', 'killall', 'ssh', 'scp'].includes(token)) return true;
     if (token === 'git') {
       return /^(?:(?:-[cC])\s+\S+\s+)*(?:push\b|reset\s+--hard\b|clean\b.*(?:--force|-[^\s]*f)|branch\s+-D\b|checkout\s+--\b)/i.test(tail);

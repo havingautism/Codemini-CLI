@@ -12,12 +12,47 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
 
 test('lite allows routine access; failures and negative/high-risk verdicts fall back to user', async () => {
   assert.equal((await reviewCommandAccess({ command: 'echo ok', config, evaluate: allow })).source, 'lite');
-  for (const evaluate of [async () => { throw Error('offline'); }, async () => ({ risk: 'high', recommendation: 'allow' }), async () => ({ risk: 'low', recommendation: 'deny' }), async () => ({})]) {
+  for (const evaluate of [async () => { throw Error('offline'); }, async () => ({ risk: 'medium', recommendation: 'allow' }), async () => ({ risk: 'high', recommendation: 'allow' }), async () => ({ risk: 'low', recommendation: 'deny' }), async () => ({ risk: 'low', recommendation: 'allow', failed: true }), async () => ({ risk: 'low', recommendation: 'allow', uncertain: true }), async () => ({})]) {
     let requests = 0;
     const result = await reviewCommandAccess({ command: 'echo ok', config, evaluate,
       requestApproval: async request => { requests++; assert.equal(request.arguments.command, 'echo ok'); return { approved: true }; },
     });
     assert.equal(result.source, 'user'); assert.equal(result.approved, true); assert.equal(requests, 1);
+  }
+});
+
+test('syntax ambiguity can be approved by a certain low-risk model verdict', async () => {
+  for (const command of ['echo $(printf ok)', 'echo `printf ok`', 'cat <(printf ok)', 'bash -lc "printf ok"', "echo '$(git push origin main)'", 'for u in https://example.com; do curl -I "$u"; done']) {
+    const result = await reviewCommandAccess({ command, config, evaluate: allow,
+      requestApproval: async () => { assert.fail(`unexpected prompt: ${command}`); },
+    });
+    assert.equal(result.approved, true, command);
+    assert.equal(result.source, 'lite', command);
+  }
+});
+
+test('low-risk advice cannot override explicit policy, destructive effects, or forced review', async () => {
+  for (const args of [
+    { command: 'git push origin main' },
+    { command: 'bash -lc "git reset --hard HEAD"' },
+    { command: 'dash -c "git push origin main"' },
+    { command: 'bash -cl "git push origin main"' },
+    { command: 'echo $(git push origin main)' },
+    { command: 'echo "$(echo $(git push origin main))"' },
+    { command: 'echo `git push origin main`' },
+    { command: 'cat <(git push origin main)' },
+    { command: 'echo $(rm -r dist)' },
+    { command: 'echo $(forbidden)', config: { ...config, policy: { ...config.policy, blocked_commands: ['forbidden'] } } },
+    { command: 'echo $(printf ok); forbidden', config: { ...config, policy: { ...config.policy, blocked_commands: ['forbidden'] } } },
+    { command: 'echo $(printf ok)', config: { ...config, policy: { ...config.policy, blocked_path_patterns: ['printf'] } } },
+    { command: 'echo $(printf ok)', forceHuman: true },
+  ]) {
+    let prompts = 0;
+    const result = await reviewCommandAccess({ config, evaluate: allow, ...args,
+      requestApproval: async () => { prompts++; return { approved: false }; },
+    });
+    assert.equal(prompts, 1, args.command);
+    assert.equal(result.approved, false, args.command);
   }
 });
 
@@ -84,6 +119,46 @@ test('agent networking reviews final arguments and grants only the reviewed invo
   });
   assert.equal(evaluations, 1); assert.equal(grants.length, 2);
   assert.equal(grants[0].granted, true); assert.equal(grants[1].granted, false);
+});
+
+test('agent auto mode reviews opaque commands and only auto-allows certain low-risk verdicts', async () => {
+  const command = 'echo $(printf ok)';
+  for (const network of [false, true]) {
+    for (const evaluation of [
+      { risk: 'low', recommendation: 'allow' },
+      { risk: 'medium', recommendation: 'allow' },
+      { risk: 'low', recommendation: 'deny' },
+      { risk: 'low', recommendation: 'allow', uncertain: true },
+      { risk: 'low', recommendation: 'allow', failed: true },
+      { recommendation: 'allow' },
+    ]) {
+      let completions = 0;
+      let reviews = 0;
+      let prompts = 0;
+      const executions = [];
+      const autoAllowed = evaluation.risk === 'low' && evaluation.recommendation === 'allow'
+        && !evaluation.failed && !evaluation.uncertain;
+      await runAgentLoop({ systemPrompt: 'test', userPrompt: 'test', model: 'test', config,
+        projectIsGit: true, approvalMode: 'auto', skipAnalysisNudge: true,
+        toolDefinitions: [{ type: 'function', function: { name: 'run', parameters: { type: 'object', properties: { command: { type: 'string' }, network_access: { type: 'boolean' } } } } }],
+        toolHandlers: { run: async (args, context) => {
+          executions.push(context.networkAccessApproved);
+          assert.equal(hasRunCommandSafeModeApproval(args), true);
+          return { ok: true };
+        } },
+        evaluateCommand: async args => { reviews++; assert.equal(args.command, command); return evaluation; },
+        requestToolApproval: async () => { prompts++; return { approved: false }; },
+        requestCompletion: async () => ++completions === 1
+          ? { toolCalls: [{ id: 'opaque', name: 'run', arguments: JSON.stringify({ command, network_access: network }) }] }
+          : { text: 'done' },
+      });
+      const label = JSON.stringify({ network, evaluation });
+      assert.equal(reviews, 1, label);
+      assert.equal(prompts, autoAllowed ? 0 : 1, label);
+      assert.deepEqual(executions, autoAllowed ? [network] : [], label);
+      assert.equal(config.sandbox.network, 'none');
+    }
+  }
 });
 
 test('agent networking uses the configured model when no evaluator is injected', async (t) => {

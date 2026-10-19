@@ -141,11 +141,13 @@ function tokenizeTopLevel(command) {
 function unwrapShellPayload(command) {
   const tokens = tokenizeTopLevel(command);
   const token = firstToken(command);
-  if (!['bash', 'sh', 'zsh', 'powershell', 'pwsh', 'cmd'].includes(token)) return '';
+  if (!['bash', 'sh', 'zsh', 'dash', 'ksh', 'powershell', 'pwsh', 'cmd'].includes(token)) return '';
 
   const index = tokens.findIndex((item, itemIndex) => {
-    if (token === 'cmd') return itemIndex > 0 && /^\/c$/i.test(item);
-    return /^-(?:c|lc|command)$/i.test(item);
+    if (itemIndex === 0) return false;
+    if (token === 'cmd') return /^\/[ck]$/i.test(item);
+    if (token === 'powershell' || token === 'pwsh') return /^-(?:c|command)$/i.test(item);
+    return /^-[a-z]*c[a-z]*$/i.test(item);
   });
   if (index < 0 || index + 1 >= tokens.length) return '';
   return tokens.slice(index + 1).join(' ').trim();
@@ -166,7 +168,60 @@ function collectCommandTokens(command) {
   if (wrapped && wrapped !== cmd) {
     out.push(...collectCommandTokens(wrapped));
   }
+  for (const body of commandSubstitutionBodies(cmd)) {
+    out.push(...collectCommandTokens(body));
+  }
   return out;
+}
+
+// Inspect literal nested commands too: making syntax model-reviewable must not
+// hide an explicit operation such as echo $(git push) from deterministic gates.
+function commandSubstitutionBodies(text) {
+  function backtickEnd(start) {
+    for (let i = start + 1; i < text.length; i++) {
+      if (text[i] === '\\') { i++; continue; }
+      if (text[i] === '`') return i;
+    }
+    return text.length;
+  }
+  function parenthesisEnd(start) {
+    let depth = 1;
+    let quote = '';
+    for (let i = start + 1; i < text.length; i++) {
+      const ch = text[i];
+      if (quote === "'") { if (ch === "'") quote = ''; continue; }
+      if (ch === '\\') { i++; continue; }
+      if (ch === '`') { i = backtickEnd(i); continue; }
+      if ((ch === '$' || !quote && /[<>]/.test(ch)) && text[i + 1] === '(') { i = parenthesisEnd(i + 1); continue; }
+      if (quote === '"') { if (ch === '"') quote = ''; continue; }
+      if (ch === "'" || ch === '"') { quote = ch; continue; }
+      if (ch === '(') depth++;
+      if (ch === ')' && --depth === 0) return i;
+    }
+    return text.length;
+  }
+  const bodies = [];
+  let quote = '';
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (quote === "'") { if (ch === "'") quote = ''; continue; }
+    if (ch === '\\') { i++; continue; }
+    if (ch === '`') {
+      const end = backtickEnd(i);
+      bodies.push(text.slice(i + 1, end));
+      i = end;
+      continue;
+    }
+    if ((ch === '$' || !quote && /[<>]/.test(ch)) && text[i + 1] === '(') {
+      const end = parenthesisEnd(i + 1);
+      bodies.push(text.slice(i + 2, end));
+      i = end;
+      continue;
+    }
+    if (ch === '"') quote = quote === '"' ? '' : '"';
+    if (ch === "'" && !quote) quote = "'";
+  }
+  return bodies;
 }
 
 function includesAny(haystackLower, patterns = []) {
@@ -245,7 +300,7 @@ export function evaluateCommandPolicy(command, config, workspaceRoot = process.c
     return { allowed: true };
   }
 
-  if (/[`]|\$\(|[<>]\(/.test(cmd)) return { allowed: false, reason: 'ambiguous command substitution requires approval' };
+  const ambiguousSyntax = /[`]|\$\(|[<>]\(/.test(cmd);
 
   // The Linux microVM is the command boundary. Reapplying the host-oriented
   // allowlist and path parser here rejects valid guest commands and paths such
@@ -263,10 +318,14 @@ export function evaluateCommandPolicy(command, config, workspaceRoot = process.c
     const explicitAllowlist = Array.isArray(config?.policy?.command_allowlist)
       ? config.policy.command_allowlist
       : [];
-    for (const item of collectCommandTokens(cmd)) {
+    const inspectedTokens = collectCommandTokens(cmd);
+    for (const item of inspectedTokens) {
       if (includesAny(item.token, explicitBlockedCommands)) {
         return { allowed: false, reason: `blocked command: ${item.token}`, suggestion: suggestionForToken(item.token, config) };
       }
+    }
+    if (ambiguousSyntax) return { allowed: false, reason: 'ambiguous command substitution requires approval' };
+    for (const item of inspectedTokens) {
       if (explicitAllowlist.length > 0 && !explicitAllowlist.includes(item.token)) {
         return { allowed: false, reason: `command not in allowlist: ${item.token}`, suggestion: suggestionForToken(item.token, config) };
       }
@@ -305,13 +364,6 @@ export function evaluateCommandPolicy(command, config, workspaceRoot = process.c
     if (includesAny(item.token, policy.blocked_commands)) {
       return { allowed: false, reason: `blocked command: ${item.token}`, suggestion: suggestionForToken(item.token, config) };
     }
-    if (allowlist.length > 0 && !allowlist.includes(item.token)) {
-      return {
-        allowed: false,
-        reason: `command not in allowlist: ${item.token}`,
-        suggestion: suggestionForToken(item.token, config)
-      };
-    }
   }
 
   const outside = pathInspection.outside[0];
@@ -320,6 +372,16 @@ export function evaluateCommandPolicy(command, config, workspaceRoot = process.c
       ? `relative path escapes workspace or allowed paths: ${outside.value}`
       : `absolute path outside workspace or allowed paths: ${outside.value}`;
     return { allowed: false, reason, suggestion: suggestionForToken(token, config) };
+  }
+
+  // Explicit command/path restrictions take precedence over model-reviewable
+  // syntax and allowlist misses, so a low-risk verdict cannot hide a hard gate.
+  if (ambiguousSyntax) return { allowed: false, reason: 'ambiguous command substitution requires approval' };
+  for (const item of inspectedTokens) {
+    if (SHELL_KEYWORDS.has(item.token)) continue;
+    if (allowlist.length > 0 && !allowlist.includes(item.token)) {
+      return { allowed: false, reason: `command not in allowlist: ${item.token}`, suggestion: suggestionForToken(item.token, config) };
+    }
   }
 
   return { allowed: true };

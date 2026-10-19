@@ -4107,8 +4107,8 @@ samp {
 }
 
 /* ── Codemini Apple material system ── */
-:root,
-:root[data-palette] {
+:root:not([data-palette]),
+:root[data-palette="default"] {
   color-scheme: light;
   --background: #ffffff;
   --foreground: #1d1d1f;
@@ -4190,8 +4190,8 @@ samp {
   box-shadow: none !important;
 }
 
-:root[data-theme="dark"],
-:root[data-theme="dark"][data-palette] {
+:root[data-theme="dark"]:not([data-palette]),
+:root[data-theme="dark"][data-palette="default"] {
   color-scheme: dark;
   --background: #121214;
   --foreground: #f5f5f7;
@@ -4287,7 +4287,7 @@ samp {
 :root:not([data-theme="dark"]) .codewiki-sidebar,
 :root:not([data-theme="dark"]) .codewiki-main,
 :root:not([data-theme="dark"]) .codewiki-question-panel {
-  background: #fcfcfd;
+  background: var(--bg-primary);
 }
 
 :root:not([data-theme="dark"]) .codemini-input-shell,
@@ -4353,11 +4353,11 @@ samp {
 :root[data-theme="dark"] .codewiki-sidebar,
 :root[data-theme="dark"] .codewiki-main,
 :root[data-theme="dark"] .codewiki-question-panel {
-  background: #19191c;
+  background: var(--bg-primary);
 }
 
 :root[data-theme="dark"] .codemini-chat-session {
-  background: linear-gradient(180deg, #1a1a1d 0%, #18181b 100%);
+  background: var(--bg-primary);
 }
 
 [data-slot="dialog-content"],

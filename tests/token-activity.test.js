@@ -3,7 +3,12 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { recordTokenUsage, getTokenActivity } from '../src/core/token-usage-store.js';
+import { DatabaseSync } from 'node:sqlite';
+import { recordTokenUsage, getTokenActivity, getSessionTokenUsage } from '../src/core/token-usage-store.js';
+import { withTokenUsageSession } from '../src/core/token-usage-context.js';
+import { normalizeModelUsage } from '../src/core/model-usage.js';
+import { createChatRuntime } from '../src/core/chat-runtime.js';
+import { createSession } from '../src/core/session-store.js';
 import { getGlobalDatabase, closeSqliteDatabasesForTests } from '../src/core/sqlite-database.js';
 import { createChatCompletion, createChatCompletionStream } from '../src/core/provider/index.js';
 import { buildActivityGrid } from '../codemini-web/client/src/lib/token-activity.js';
@@ -97,4 +102,121 @@ test('Web activity API returns recorded totals and rejects invalid timezones', a
   assert.equal(result.body.lifetime.totalTokens, 42);
   assert.equal(result.body.timeZone, 'Asia/Shanghai');
   assert.equal((await request('invalid')).status, 400);
+});
+
+test('session usage is durable, isolated and preserves missing timing and cache coverage', async (t) => {
+  const dir = await isolate(t);
+  recordTokenUsage({ id: 'a', sessionId: 'alpha', model: 'one', usage: { prompt_tokens: 100, completion_tokens: 10, prompt_tokens_details: { cached_tokens: 80 } }, timing: { requestSentAt: '2026-10-19T00:00:00Z', firstTokenAt: '2026-10-19T00:00:01Z', completedAt: '2026-10-19T00:00:03Z' } });
+  recordTokenUsage({ id: 'b', sessionId: 'alpha', model: 'two' });
+  recordTokenUsage({ sessionId: 'beta', usage: { total_tokens: 999 } });
+  recordTokenUsage({ usage: { total_tokens: 777 } });
+  getGlobalDatabase().exec('DELETE FROM sessions');
+  closeSqliteDatabasesForTests(dir);
+  const result = getSessionTokenUsage('alpha');
+  assert.equal(result.totals.requests, 2);
+  assert.equal(result.totals.reportedRequests, 1);
+  assert.equal(result.totals.totalTokens, 110);
+  assert.equal(result.totals.cacheReportedInputTokens, 100);
+  assert.equal(result.totals.cachedInputTokens, 80);
+  assert.equal(result.totals.durationMs, 3000);
+  assert.equal(result.totals.waitingMs, 1000);
+  assert.equal(result.totals.generatingMs, 2000);
+  assert.equal(result.totals.timedRequests, 1);
+  assert.equal(result.models.length, 2);
+  assert.equal(getSessionTokenUsage('beta').totals.totalTokens, 999);
+  assert.equal(getSessionTokenUsage('').totals.requests, 0);
+  assert.equal(getSessionTokenUsage('missing').totals.durationMs, null);
+});
+
+test('normalized usage retains cache status and does not count cache writes twice', async (t) => {
+  await isolate(t);
+  const usage = normalizeModelUsage({ input_tokens: 5, output_tokens: 2, cache_read_input_tokens: 7, cache_creation_input_tokens: 3 });
+  recordTokenUsage({ sessionId: 'cache', usage });
+  const totals = getSessionTokenUsage('cache').totals;
+  assert.equal(totals.inputTokens, 15);
+  assert.equal(totals.totalTokens, 17);
+  assert.equal(totals.cacheWriteInputTokens, 3);
+  assert.equal(totals.cachedInputTokens, 7);
+  recordTokenUsage({ sessionId: 'plain', usage: normalizeModelUsage({ prompt_tokens: 20, completion_tokens: 2 }) });
+  assert.equal(getSessionTokenUsage('plain').totals.cacheReportedRequests, 0);
+});
+
+test('version 18 usage table migrates without assigning historical records to a session', async (t) => {
+  const dir = await isolate(t);
+  const legacy = new DatabaseSync(path.join(dir, 'codemini.sqlite'));
+  legacy.exec(`CREATE TABLE schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
+    INSERT INTO schema_meta VALUES ('schema_version', '18');
+    CREATE TABLE token_usage_records (id TEXT PRIMARY KEY, created_at TEXT NOT NULL, model TEXT NOT NULL DEFAULT '',
+      provider TEXT NOT NULL DEFAULT '', input_tokens INTEGER NOT NULL, output_tokens INTEGER NOT NULL,
+      total_tokens INTEGER NOT NULL, cached_input_tokens INTEGER NOT NULL, cache_write_input_tokens INTEGER NOT NULL,
+      reported INTEGER NOT NULL) STRICT;
+    INSERT INTO token_usage_records VALUES ('legacy', '2026-10-19T00:00:00Z', 'old', '', 10, 2, 12, 0, 0, 1);`);
+  legacy.close();
+  const row = getGlobalDatabase().prepare('SELECT * FROM token_usage_records').get();
+  assert.equal(row.total_tokens, 12);
+  assert.equal(row.session_id, '');
+  assert.equal(row.duration_ms, null);
+  assert.equal(row.cache_reported, null);
+  recordTokenUsage({ sessionId: 'new', usage: { total_tokens: 3 } });
+  assert.equal(getSessionTokenUsage('new').totals.totalTokens, 3);
+  assert.equal(getTokenActivity().lifetime.totalTokens, 15);
+});
+
+test('parallel provider calls keep their own session association and record timing', async (t) => {
+  await isolate(t);
+  const originalFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+  globalThis.fetch = async (_url, options) => {
+    const { model } = JSON.parse(options.body);
+    await new Promise((resolve) => setTimeout(resolve, model === 'a' ? 15 : 1));
+    return Response.json({ choices: [{ message: { content: 'done' }, finish_reason: 'stop' }], usage: { prompt_tokens: model === 'a' ? 10 : 20, completion_tokens: 2 } });
+  };
+  await Promise.all(['a', 'b'].map((sessionId) => withTokenUsageSession(sessionId, () => createChatCompletion({ baseUrl: 'https://example.test/v1', apiKey: 'test', model: sessionId, messages: [], maxRetries: 0 }))));
+  assert.equal(getSessionTokenUsage('a').totals.totalTokens, 12);
+  assert.equal(getSessionTokenUsage('b').totals.totalTokens, 22);
+  assert.equal(getSessionTokenUsage('a').totals.timedRequests, 1);
+  assert.equal(getSessionTokenUsage('a').totals.splitTimedRequests, 0);
+});
+
+test('session usage API requires an ID, returns only that session and caps recent requests', async (t) => {
+  await isolate(t);
+  for (let i = 0; i < 45; i++) recordTokenUsage({ id: String(i), sessionId: 'current', usage: { total_tokens: 1 } });
+  recordTokenUsage({ sessionId: 'other', usage: { total_tokens: 1000 } });
+  const handle = createWebRuntimeApi({ pool: {}, ensureSession: async () => {} });
+  let status, body;
+  const res = { writeHead(code) { status = code; }, end(value) { body = JSON.parse(value); } };
+  await handle({ method: 'GET', url: '/api/usage/session?sessionId=current', headers: {} }, res);
+  assert.equal(status, 200);
+  assert.equal(body.totals.totalTokens, 45);
+  assert.equal(body.recent.length, 40);
+  await handle({ method: 'GET', url: '/api/usage/session', headers: {} }, res);
+  assert.equal(status, 400);
+});
+
+test('a real runtime submission attaches completed usage to its current session', async (t) => {
+  const dir = await isolate(t);
+  const originalFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+  globalThis.fetch = async () => new Response('data: {"choices":[{"delta":{"content":"Done."},"finish_reason":"stop"}],"usage":{"prompt_tokens":12,"completion_tokens":3}}\n\ndata: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } });
+  const session = await createSession(dir);
+  const runtime = await createChatRuntime({
+    session, model: 'test-model', workspaceRoot: dir, systemPrompt: 'You are a test.',
+    config: {
+      sdk: { provider: 'openai-compatible' },
+      gateway: { base_url: 'https://example.test/v1', api_key: 'test', timeout_ms: 5000, max_retries: 0 },
+      model: { name: 'test-model', reasoning_enabled: false },
+      context: { project_context_enabled: false, project_instructions_enabled: false, preflight_trigger_pct: 95, microcompact_enabled: false },
+      execution: { mode: 'normal', approval_mode: 'auto' },
+      memory: { enabled: false, background_review: { enabled: false } },
+      ui: { language: 'en', reply_language: 'en' }, soul: { preset: 'default' },
+    },
+  });
+  try {
+    await runtime.submitMessage({ text: 'Say Done.' });
+    const result = getSessionTokenUsage(session.id);
+    assert.ok(result.totals.requests >= 1);
+    assert.equal(result.totals.totalTokens, result.totals.requests * 15);
+    assert.ok(result.totals.timedRequests >= 1);
+    assert.equal(getSessionTokenUsage('other').totals.requests, 0);
+  } finally { await runtime.dispose(); }
 });

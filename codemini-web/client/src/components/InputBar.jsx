@@ -1893,11 +1893,11 @@ export function InputBar({
                   ? t("queueWhileBusy")
                   : disabled
                     ? disabledReason || t("inputDisabled")
-                    : t("sendMessageToCodemini")
+                    : t(isGeneralChat ? "sendMessageToCodemini" : "projectMessagePlaceholder")
             }
             disabled={composerLocked}
             rows={1}
-            className="flex-1 resize-none border-0 outline-none bg-transparent text-(--text-primary) min-h-[30px] max-h-[150px] p-1 leading-[1.5] text-[14px] placeholder:text-(--text-muted) cursor-text disabled:opacity-50 disabled:cursor-not-allowed"
+            className="flex-1 min-w-0 resize-none border-0 outline-none bg-transparent text-(--text-primary) min-h-[38px] max-h-[150px] p-1 leading-[1.65] text-[15px] placeholder:text-(--text-muted) cursor-text disabled:opacity-50 disabled:cursor-not-allowed"
             style={{ height: "auto" }}
           />
         </div>

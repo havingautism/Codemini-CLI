@@ -20,7 +20,7 @@ const fg = (r, g, b) => esc(`\u001b[38;2;${r};${g};${b}m`, TEXT_FG);
 const bg = (r, g, b) => esc(`\u001b[48;2;${r};${g};${b}m`, SURFACE_BG);
 
 export function styleEditorCursor(text) {
-  return String(text).replace(/\u001b\[7m([\s\S]*?)\u001b\[0m/g, (_match, cell) => (
+  return String(text).replace(/\u001b\[7m([\s\S]*?)\u001b\[(?:0|27)m/g, (_match, cell) => (
     `\u001b[27m${CURSOR_FG}${CURSOR_BG}${cell || ' '}${ATTR_OFF}${TEXT_FG}${SURFACE_BG}`
   ));
 }

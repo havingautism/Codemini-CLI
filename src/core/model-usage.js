@@ -184,13 +184,15 @@ export function normalizeModelUsage(usage) {
     ['usage', 'cache_creation', 'ephemeral_5m_input_tokens'],
     ['usage', 'cache_creation', 'ephemeral_1h_input_tokens']
   ]);
-  const cacheUsageStatus = cachedInputTokens != null
+  const hasCacheUsage = cachedInputTokens != null
     || explicitCacheMissInputTokens != null
     || cacheReadInputTokens != null
-    || cacheWriteInputTokens != null
-    ? 'reported'
-    : 'unreported';
+    || cacheWriteInputTokens != null;
+  // Canonical usage has zero-valued cache fields even when no cache data was reported.
+  const isNormalized = ['reported', 'unreported'].includes(usage.cacheUsageStatus);
+  const cacheUsageStatus = isNormalized ? usage.cacheUsageStatus : hasCacheUsage ? 'reported' : 'unreported';
   const hasAnthropicSplitCacheInput = explicitInputTokens != null
+    && !isNormalized
     && (cacheReadInputTokens != null || cacheWriteInputTokens != null)
     && promptCacheHitTokens == null;
   const cacheMissInputTokens = explicitCacheMissInputTokens ?? (
@@ -207,6 +209,7 @@ export function normalizeModelUsage(usage) {
         : null
     );
   const reasoningOutputTokens = firstFiniteNumber(usage, [
+    ['reasoningOutputTokens'],
     ['completion_tokens_details', 'reasoning_tokens'],
     ['output_tokens_details', 'reasoning_tokens'],
     ['completionTokensDetails', 'reasoningTokens'],

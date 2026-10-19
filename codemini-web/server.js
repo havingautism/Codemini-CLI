@@ -1,4 +1,4 @@
-import { getTokenActivity } from '../src/core/token-usage-store.js';
+import { getTokenActivity, getSessionTokenUsage } from '../src/core/token-usage-store.js';
 import { decodeSessionCursor, getSessionGroupPage, getSessionSidebarSnapshot } from './lib/session-pages.js';
 import { validateWebConfigValue } from './shared/web-config-policy.js';
 import { DOCUMENT_EXTENSIONS, SCRAPBOOK_TEXT_EXTENSIONS } from './shared/document-formats.js';
@@ -1050,6 +1050,15 @@ export function createWebRuntimeApi({
     const page = getSessionGroupPage({ groupKey: url.searchParams.get('groupKey') || '__codemini_general__', active, cursor });
     page.sessions = page.sessions.map((session) => ({ ...session, runtime: pool.getSessionState(session.id) }));
     jsonResponse(res, page);
+    return true;
+  }));
+  runtimeRoutes.get("/api/usage/session", nodeRoute(async (req, res, url) => {
+    const sessionId = url.searchParams.get('sessionId')?.trim();
+    if (!sessionId) {
+      jsonResponse(res, { error: true, message: 'sessionId is required' }, 400);
+      return true;
+    }
+    jsonResponse(res, getSessionTokenUsage(sessionId));
     return true;
   }));
   runtimeRoutes.get("/api/usage/activity", nodeRoute(async (req, res, url) => {

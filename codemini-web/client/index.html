@@ -5,26 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Codemini</title>
     <link rel="icon" type="image/x-icon" href="/favicon.ico" />
-    <script>
-      (() => {
-        const mq = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)');
-        function applyTheme() {
-          const stored = localStorage.getItem('codemini-theme');
-          const isAuto = !stored || stored === 'auto';
-          const prefersDark = mq && mq.matches;
-          const resolved = isAuto ? (prefersDark ? 'dark' : 'light') : stored;
-          document.documentElement.dataset.theme = resolved;
-        }
-        applyTheme();
-        localStorage.removeItem('codemini-theme-palette');
-        delete document.documentElement.dataset.palette;
-        if (mq) {
-          mq.addEventListener('change', () => {
-            const stored = localStorage.getItem('codemini-theme');
-            if (!stored || stored === 'auto') applyTheme();
-          });
-        }
-      })();
+    <script type="module">
+      import { initializeAppearance } from '/src/lib/ui-appearance.js';
+      initializeAppearance();
     </script>
   </head>
   <body class="font-sans antialiased">

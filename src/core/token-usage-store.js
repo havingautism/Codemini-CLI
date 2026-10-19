@@ -3,17 +3,49 @@ import { getGlobalDatabase } from './sqlite-database.js';
 import { normalizeModelUsage } from './model-usage.js';
 
 // No session foreign key: deleting or compacting a transcript must not erase usage.
-export function recordTokenUsage({ id = randomUUID(), createdAt = new Date().toISOString(), model = '', provider = '', usage } = {}) {
+export function recordTokenUsage({ id = randomUUID(), createdAt = new Date().toISOString(), model = '', provider = '', sessionId = '', usage, timing } = {}) {
   const normalized = normalizeModelUsage(usage);
   const timestamp = new Date(createdAt).toISOString();
+  const times = timing || usage?.timing;
+  const sent = Date.parse(times?.requestSentAt);
+  const first = Date.parse(times?.firstTokenAt);
+  const done = Date.parse(times?.completedAt);
+  const duration = Number.isFinite(sent) && Number.isFinite(done) && done >= sent ? done - sent : null;
+  const split = duration != null && Number.isFinite(first) && first >= sent && first <= done;
   getGlobalDatabase().prepare(`
     INSERT OR IGNORE INTO token_usage_records
       (id, created_at, model, provider, input_tokens, output_tokens, total_tokens,
-       cached_input_tokens, cache_write_input_tokens, reported)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       cached_input_tokens, cache_write_input_tokens, reported, session_id,
+       cache_reported, reasoning_output_tokens, duration_ms, waiting_ms, generating_ms)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(id, timestamp, String(model), String(provider), normalized?.inputTokens || 0,
     normalized?.outputTokens || 0, normalized?.totalTokens || 0,
-    normalized?.cachedInputTokens || 0, normalized?.cacheWriteInputTokens || 0, normalized ? 1 : 0);
+    normalized?.cachedInputTokens || 0, normalized?.cacheWriteInputTokens || 0, normalized ? 1 : 0,
+    String(sessionId || ''), normalized ? Number(normalized.cacheUsageStatus === 'reported') : null,
+    normalized?.reasoningOutputTokens ?? null, duration, split ? first - sent : null, split ? done - first : null);
+}
+
+export function getSessionTokenUsage(sessionId) {
+  const db = getGlobalDatabase();
+  const totals = db.prepare(`SELECT COUNT(*) AS requests, COALESCE(SUM(reported), 0) AS reportedRequests,
+    COALESCE(SUM(total_tokens), 0) AS totalTokens, COALESCE(SUM(input_tokens), 0) AS inputTokens,
+    COALESCE(SUM(output_tokens), 0) AS outputTokens, COALESCE(SUM(cached_input_tokens), 0) AS cachedInputTokens,
+    COALESCE(SUM(cache_write_input_tokens), 0) AS cacheWriteInputTokens,
+    COALESCE(SUM(cache_reported), 0) AS cacheReportedRequests,
+    COALESCE(SUM(CASE WHEN cache_reported = 1 THEN input_tokens ELSE 0 END), 0) AS cacheReportedInputTokens,
+    SUM(duration_ms) AS durationMs, COUNT(duration_ms) AS timedRequests,
+    SUM(waiting_ms) AS waitingMs, SUM(generating_ms) AS generatingMs,
+    COUNT(generating_ms) AS splitTimedRequests,
+    SUM(CASE WHEN generating_ms > 0 THEN output_tokens ELSE 0 END) AS timedOutputTokens,
+    MIN(created_at) AS recordingSince
+    FROM token_usage_records WHERE session_id = ? AND session_id <> ''`).get(String(sessionId || ''));
+  const models = db.prepare(`SELECT model, provider, COUNT(*) AS requests, SUM(total_tokens) AS totalTokens
+    FROM token_usage_records WHERE session_id = ? AND session_id <> '' GROUP BY model, provider
+    ORDER BY totalTokens DESC, model, provider`).all(String(sessionId || ''));
+  const recent = db.prepare(`SELECT id, created_at AS createdAt, model, total_tokens AS totalTokens,
+    reported, duration_ms AS durationMs FROM token_usage_records WHERE session_id = ? AND session_id <> ''
+    ORDER BY created_at DESC, id DESC LIMIT 40`).all(String(sessionId || '')).reverse();
+  return { sessionId: String(sessionId || ''), totals, models, recent };
 }
 
 export function getTokenActivity({ timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone, now = new Date() } = {}) {

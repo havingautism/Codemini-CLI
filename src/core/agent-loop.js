@@ -7,6 +7,8 @@ import { retrieveMemories, renderRecoveryMemory, buildFailureMemoryQuery, compac
 import { isVerificationCommand, shouldSkipFailureRecall } from './memory-policy.js';
 import {
   isRoutineProjectCommand,
+  isLowRiskCommandApproval,
+  requiresCommandModelReview,
   requiresApprovalEvaluation,
   requiresDeterministicCommandApproval,
 } from './command-risk.js';
@@ -513,12 +515,14 @@ export function resolveShellApprovalStrategy({
   const policyCheck = evaluateCommandPolicy(command, config, workspaceRoot, platform);
   const policyHardGate = !policyCheck.allowed && /^(?:absolute path outside|relative path escapes|cd escapes|blocked protected system path|blocked command:)/i.test(policyCheck.reason || '');
   const deterministicGate = policyHardGate || requiresDeterministicCommandApproval(command);
-  const sandboxFirst = Boolean(osSandboxConfining && approvalMode !== 'review' && !deterministicGate && policyCheck.allowed);
+  const modelReviewRequired = requiresCommandModelReview(command);
+  const sandboxFirst = Boolean(osSandboxConfining && approvalMode !== 'review' && !deterministicGate && !modelReviewRequired && policyCheck.allowed);
   const windowsFastLane = Boolean(
     platform === 'win32'
     && projectIsGit
     && approvalMode !== 'review'
     && !deterministicGate
+    && !modelReviewRequired
     && policyCheck.allowed
     && isRoutineProjectCommand(command)
   );
@@ -1097,9 +1101,7 @@ export async function runAgentLoop({
               }
               approvalArgs = {
                 ...approvalArgs,
-                _risk: evaluation.failed
-                  ? ''
-                  : (isSafeModePolicyBlocked && evaluation.risk === 'low' ? 'medium' : evaluation.risk),
+                _risk: evaluation.failed ? '' : evaluation.risk,
                 _evaluation: evaluation,
                 _policyBlock: isSafeModePolicyBlocked
                   ? { reason: runPolicyCheck.reason, suggestion: runPolicyCheck.suggestion || '' }
@@ -1117,14 +1119,13 @@ export async function runAgentLoop({
                 });
                 continue;
               }
-              /* Auto mode: allow low/medium + allow without a panel; high still needs review. */
+              /* Only a successful, certain low-risk allow verdict can skip the panel. */
               if (
                 !isSandboxEscalation
+                && !isDeterministicCommandGate
                 && projectIsGit
                 && normalizedApprovalMode !== 'review'
-                && evaluation.uncertain !== true
-                && evaluation.recommendation === 'allow'
-                && evaluation.risk !== 'high'
+                && isLowRiskCommandApproval(evaluation)
               ) {
                 if (isSafeModePolicyBlocked) {
                   approvalArgs = markRunCommandSafeModeApproved(approvalArgs);

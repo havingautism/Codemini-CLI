@@ -191,6 +191,7 @@ export function getSettingsOptions(key, context) {
 }
 
 export const SETTINGS_TABS = [
+  { id: "appearance", labelKey: "appearanceSettings" },
   { id: "connection", labelKey: "gateway" },
   { id: "model", labelKey: "model" },
   { id: "decision", labelKey: "decision" },

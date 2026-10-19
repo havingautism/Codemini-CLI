@@ -44,6 +44,8 @@ import { SettingsProviderCards } from "@/components/settings/SettingsProviderCar
 import { SettingsPercentField } from "@/components/settings/SettingsPercentField.jsx";
 import { SettingsStorage } from "@/components/settings/SettingsStorage.jsx";
 import { ConfirmDialog } from "@/components/ConfirmDialog.jsx";
+import { SettingsAppearance } from "@/components/settings/SettingsAppearance.jsx";
+import { applyAppearance, readAppearance } from "@/lib/ui-appearance.js";
 
 function getNestedValue(obj, path) {
   return path.split(".").reduce((o, k) => o?.[k], obj);
@@ -143,6 +145,8 @@ export function ConfigDialog({
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState("");
   const [activeTab, setActiveTab] = useState("connection");
+  const [appearanceBaseline, setAppearanceBaseline] = useState(readAppearance);
+  const [appearanceDraft, setAppearanceDraft] = useState(readAppearance);
   const [configLoading, setConfigLoading] = useState(false);
   const [playwrightStatus, setPlaywrightStatus] = useState(null);
   const [playwrightLoading, setPlaywrightLoading] = useState(false);
@@ -158,6 +162,9 @@ export function ConfigDialog({
     setPendingWarning(null);
     setSaveError("");
     setActiveTab("connection");
+    const appearance = readAppearance();
+    setAppearanceBaseline(appearance);
+    setAppearanceDraft(appearance);
     api
       .fetchConfig()
       .then((cfg) => {
@@ -255,11 +262,16 @@ export function ConfigDialog({
     return normalizeReasoningEffort(config?.model?.reasoning_effort);
   };
 
-  const hasChanges = Object.keys(changes).length > 0;
+  const hasConfigChanges = Object.keys(changes).length > 0;
+  const hasAppearanceChanges = Object.keys(appearanceDraft).some(
+    (key) => appearanceDraft[key] !== appearanceBaseline[key],
+  );
+  const hasChanges = hasConfigChanges || hasAppearanceChanges;
   const shouldShowField = (field) =>
     typeof field.visibleWhen !== "function" || field.visibleWhen({ getValue });
 
   const tabHasChanges = (tabId) =>
+    (tabId === "appearance" && hasAppearanceChanges) ||
     SETTINGS_FIELDS.some(
       (field) =>
         field.tab === tabId &&
@@ -299,7 +311,7 @@ export function ConfigDialog({
     setSaveError("");
     try {
       let savedConfig = config;
-      const pendingChanges = !decisionProviderStatus.ready && getBooleanValue("harness.enabled")
+      const pendingChanges = hasConfigChanges && !decisionProviderStatus.ready && getBooleanValue("harness.enabled")
         ? { ...changes, "harness.enabled": false }
         : changes;
       for (const [path, value] of Object.entries(pendingChanges)) {
@@ -325,7 +337,8 @@ export function ConfigDialog({
         if (result?.error) throw new Error(result.message || t("settingsSaveFailed"));
         if (result?.config) savedConfig = result.config;
       }
-      await onSaved?.(savedConfig);
+      if (hasAppearanceChanges) applyAppearance(appearanceDraft);
+      if (hasConfigChanges) await onSaved?.(savedConfig);
       setConfig(savedConfig);
       setChanges({});
       onOpenChange(false);
@@ -475,6 +488,9 @@ export function ConfigDialog({
   };
 
   const renderTabContent = (tabId) => {
+    if (tabId === "appearance") {
+      return <SettingsAppearance value={appearanceDraft} onChange={setAppearanceDraft} disabled={saving} />;
+    }
     if (tabId === "storage") {
       return <SettingsStorage active={activeTab === "storage"} />;
     }
@@ -572,7 +588,7 @@ export function ConfigDialog({
           <DialogTitle>{t("settingsTitle")}</DialogTitle>
         </DialogHeader>
 
-        {status?.setupRequired && (
+        {status?.setupRequired && activeTab !== "appearance" && (
           <div className="px-6 pb-2">
             <Alert>
               <AlertTitle>{t("configRequiredTitle")}</AlertTitle>
@@ -581,51 +597,47 @@ export function ConfigDialog({
           </div>
         )}
 
-        {configLoading ? (
-          <div className="flex items-center justify-center py-16">
-            <Spinner />
-          </div>
-        ) : (
-          <Tabs
-            value={activeTab}
-            onValueChange={setActiveTab}
-            orientation="vertical"
-            className="flex min-h-0 flex-1 flex-row gap-0 px-6 pb-4"
+        <Tabs
+          value={activeTab}
+          onValueChange={setActiveTab}
+          orientation="vertical"
+          className="flex min-h-0 flex-1 flex-row gap-0 px-6 pb-4"
+        >
+          <TabsList
+            variant="line"
+            className="settings-nav-tabs h-auto w-[100px] sm:w-[148px] shrink-0 flex-col items-stretch justify-start gap-1 border-r border-(--border-default) bg-transparent pr-3"
           >
-            <TabsList
-              variant="line"
-              className="settings-nav-tabs h-auto w-[148px] shrink-0 flex-col items-stretch justify-start gap-1 border-r border-(--border-default) bg-transparent pr-3"
-            >
-              {SETTINGS_TABS.map((tab) => (
-                <TabsTrigger
-                  key={tab.id}
-                  value={tab.id}
-                  className="settings-nav-trigger h-9 justify-start px-2.5 text-[13px] data-[state=active]:font-medium"
-                >
-                  <span className="truncate">{t(tab.labelKey)}</span>
-                  {tabHasChanges(tab.id) && (
-                    <span
-                      className="ml-auto size-1.5 shrink-0 rounded-full bg-[var(--input-shell-accent)]"
-                      aria-label={t("settingsUnsavedChanges")}
-                    />
-                  )}
-                </TabsTrigger>
-              ))}
-            </TabsList>
+            {SETTINGS_TABS.map((tab) => (
+              <TabsTrigger
+                key={tab.id}
+                value={tab.id}
+                className="settings-nav-trigger h-9 justify-start px-2.5 text-[13px] data-[state=active]:font-medium"
+              >
+                <span className="truncate">{t(tab.labelKey)}</span>
+                {tabHasChanges(tab.id) && (
+                  <span
+                    className="ml-auto size-1.5 shrink-0 rounded-full bg-[var(--input-shell-accent)]"
+                    aria-label={t("settingsUnsavedChanges")}
+                  />
+                )}
+              </TabsTrigger>
+            ))}
+          </TabsList>
 
-            <div className="min-h-0 flex-1 overflow-y-auto pl-4 scroll-smooth pr-3 [scrollbar-gutter:stable]">
-              {SETTINGS_TABS.map((tab) => (
-                <TabsContent
-                  key={tab.id}
-                  value={tab.id}
-                  className="mt-0 focus-visible:outline-none"
-                >
-                  {renderTabContent(tab.id)}
-                </TabsContent>
-              ))}
-            </div>
-          </Tabs>
-        )}
+          <div className="min-h-0 flex-1 overflow-y-auto pl-4 scroll-smooth pr-3 [scrollbar-gutter:stable]">
+            {SETTINGS_TABS.map((tab) => (
+              <TabsContent
+                key={tab.id}
+                value={tab.id}
+                className="mt-0 focus-visible:outline-none"
+              >
+                {configLoading && tab.id !== "appearance" ? (
+                  <div className="flex items-center justify-center py-16"><Spinner /></div>
+                ) : renderTabContent(tab.id)}
+              </TabsContent>
+            ))}
+          </div>
+        </Tabs>
 
         {saveError ? <p role="alert" className="px-6 py-2 text-sm text-(--accent-red)">{saveError}</p> : null}
         <DialogFooter className="gap-2 shrink-0 border-t border-(--border-default) px-6 py-4">

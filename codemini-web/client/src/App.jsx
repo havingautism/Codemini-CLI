@@ -34,6 +34,9 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { TrajectoryPanel } from "@/components/TrajectoryPanel.jsx";
 import "../style.css";
 import "./apple-design.css";
+import "./conversation-design.css";
+
+const SessionContextPanel = lazy(() => import("@/components/SessionContextPanel.jsx").then((module) => ({ default: module.SessionContextPanel })));
 
 const CodeWikiPanel = lazy(() =>
   import("@/components/CodeWikiPanel.jsx").then((module) => ({
@@ -572,6 +575,9 @@ function Shell() {
                     <TabsTrigger value="trajectory" className="px-2 text-[13px]">
                       {t("trajectory")}
                     </TabsTrigger>
+                    <TabsTrigger value="context" className="px-2 text-[13px]">
+                      {t("contextTab")}
+                    </TabsTrigger>
                   </TabsList>
                 </Tabs>
               </div>
@@ -651,7 +657,11 @@ function Shell() {
 
             <div className="codemini-chat-session flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
             {/* Chat Panel */}
-            {chatPageTab === "trajectory" ? (
+            {chatPageTab === "context" ? (
+              <Suspense fallback={<div className="p-6 text-(--text-muted)" role="status">{t('tokenActivityLoading')}</div>}>
+                <SessionContextPanel key={currentId || 'new'} sessionId={currentId} messages={state.messages} busy={state.busy} />
+              </Suspense>
+            ) : chatPageTab === "trajectory" ? (
               <TrajectoryPanel
                 messages={state.messages}
                 runtimeState={state.runtimeState}
@@ -675,7 +685,7 @@ function Shell() {
             )}
 
             {/* Plan Review / Input Area */}
-            <div className="w-[calc(100%_-_32px)] max-w-[940px] sm:w-[calc(100%_-_48px)] mx-auto mb-2 sm:mb-3 shrink-0 z-30 bg-transparent relative">
+            <div className="w-[calc(100%_-_32px)] max-w-[var(--composer-width)] sm:w-[calc(100%_-_48px)] mx-auto mb-3 sm:mb-5 shrink-0 z-30 bg-transparent relative">
               <RuntimeActivityStrip
                 activities={state.runtimeActivities}
               />
