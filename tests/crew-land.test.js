@@ -68,6 +68,7 @@ async function markCleanReview(dir, worker) {
     reviewedCommit: sha,
     reviewPassed: true,
     reviewText: 'Findings:\n- none',
+    missionStatus: 'completed',
   });
 }
 

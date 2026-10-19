@@ -308,7 +308,7 @@ function normalizePolicyLists(config) {
   const rawApprovalMode = String(next.execution.approval_mode || '').toLowerCase().replace(/-/g, '_');
   next.execution.mode = rawExecutionMode === 'spec'
     ? 'plan'
-    : (['normal', 'plan'].includes(rawExecutionMode) ? rawExecutionMode : 'normal');
+    : (['normal', 'plan', 'crew'].includes(rawExecutionMode) ? rawExecutionMode : 'normal');
   next.execution.approval_mode = ['review', 'auto', 'full_access'].includes(rawApprovalMode)
     ? rawApprovalMode
     : 'review';

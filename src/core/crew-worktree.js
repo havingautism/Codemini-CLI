@@ -7,11 +7,19 @@ import { runGit } from './process-run.js';
 import {
   appendCrewWorkerRecord,
   buildCrewReviewVerdictPrompt,
+  isCrewMissionTerminal,
   listCrewWorkersFromState,
   patchCrewWorkerRecord,
   readCrewStateFile,
   writeCrewWorkerRecords,
 } from './crew-store.js';
+import {
+  bindCrewMissionWorker,
+  crewMissionAcceptsSpawn,
+  findCrewMissionForWorker,
+  listCrewMissionsFromState,
+} from './crew-missions.js';
+import { CREW_LEDGER_WRITE_BLOCK } from './crew-shell.js';
 import { findOverlappingCrewWorker, isCrewSurveyWorker, normalizeCrewDependsOn, normalizeCrewPaths, crewWorkerBlocksSpawn } from './crew-scope.js';
 
 const BRANCH_PREFIX = 'codemini-crew/';
@@ -233,6 +241,15 @@ export async function resolveCrewReviewTarget({
   };
 }
 
+export async function listCrewChangedFiles(repoRoot, base, branch) {
+  const from = String(base || '').trim();
+  const to = String(branch || '').trim();
+  if (!from || !to) return [];
+  const diff = await tryGit(repoRoot, ['diff', '--name-only', `${from}...${to}`]);
+  if (diff.code !== 0) return [];
+  return String(diff.stdout || '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+}
+
 export async function isCrewCommitAncestor(cwd, ancestor, tip = 'HEAD') {
   const sha = String(ancestor || '').trim();
   const target = String(tip || 'HEAD').trim() || 'HEAD';
@@ -269,20 +286,39 @@ export async function resolveCrewSubagentWorkspace({
   dependsOn = [],
   kind = '',
   task = '',
+  missionId = '',
 } = {}) {
   const root = path.resolve(cwd);
   const taskLine = crewTaskSummary(task);
   const resumeId = sanitizeCrewWorkerId(resume, '');
-  const existing = listCrewWorkersFromState(await readCrewStateFile(root));
+  const disk = await readCrewStateFile(root);
+  const existing = listCrewWorkersFromState(disk);
+  const missions = listCrewMissionsFromState(disk);
+  const requestedMissionId = String(missionId || '').trim();
 
   if (resumeId) {
     const worker = findCrewWorker(existing, { resume });
     if (worker) {
+      const mission = findCrewMissionForWorker(missions, worker);
+      const accepted = crewMissionAcceptsSpawn(mission || {
+        id: worker.missionId || worker.id,
+        kind: worker.kind === 'survey' ? 'survey' : 'build',
+        status: worker.integrated ? 'merged' : (worker.missionStatus || 'active'),
+      }, { resume: true, rebaseOnto: worker.rebaseOnto });
+      if (!accepted.ok && mission) return { ...accepted, workerId: worker.id };
       if (worker.integrated === true && !String(worker.rebaseOnto || '').trim()) {
         return {
           ok: false,
           code: 'WORKER_INTEGRATED',
           error: `Crew worker "${worker.id}" is already integrated onto the base branch. Wait for the rest of the roster, then land_workers. Do not resume.`,
+          workerId: worker.id,
+        };
+      }
+      if (isCrewMissionTerminal(worker)) {
+        return {
+          ok: false,
+          code: 'MISSION_TERMINAL',
+          error: `Mission "${worker.id}" is ${worker.missionStatus || 'merged'}. Do not resume or spawn another worker on it.`,
           workerId: worker.id,
         };
       }
@@ -332,6 +368,9 @@ export async function resolveCrewSubagentWorkspace({
         await patchCrewWorkerRecord(root, worker.id, { task: taskLine }).catch(() => null);
         worker.task = taskLine;
       }
+      if (mission && String(worker.rebaseOnto || '').trim()) {
+        await bindCrewMissionWorker(root, mission.id, worker.id);
+      }
       return { ok: true, resume: true, worker };
     }
     const named = findCrewWorker(existing, { name, taskId });
@@ -350,8 +389,8 @@ export async function resolveCrewSubagentWorkspace({
         error: `Unknown resume "${resumeId}". ${formatIdleCrewWorkers(existing)}`,
       };
     }
-    return addCrewWorktree({
-      cwd: root,
+    return spawnCrewWorkerOnMission({
+      root,
       base,
       taskId: resumeId,
       name: resumeId,
@@ -360,10 +399,20 @@ export async function resolveCrewSubagentWorkspace({
       dependsOn,
       task: taskLine,
       kind,
+      missionId: requestedMissionId,
+      missions,
     });
   }
 
   const named = findCrewWorker(existing, { name, taskId });
+  if (named && isCrewMissionTerminal(named)) {
+    return {
+      ok: false,
+      code: 'MISSION_TERMINAL',
+      error: `Mission "${named.id}" is already ${named.missionStatus || 'merged'}. Do not dispatch another worker on it.`,
+      workerId: named.id,
+    };
+  }
   if (named && crewWorkerBlocksSpawn(named)) {
     return {
       ok: false,
@@ -373,8 +422,8 @@ export async function resolveCrewSubagentWorkspace({
     };
   }
 
-  return addCrewWorktree({
-    cwd: root,
+  return spawnCrewWorkerOnMission({
+    root,
     base,
     taskId,
     name,
@@ -383,7 +432,66 @@ export async function resolveCrewSubagentWorkspace({
     dependsOn,
     kind,
     task: taskLine,
+    missionId: requestedMissionId,
+    missions,
   });
+}
+
+async function spawnCrewWorkerOnMission({
+  root,
+  base,
+  taskId,
+  name,
+  callId,
+  paths,
+  dependsOn,
+  kind,
+  task,
+  missionId,
+  missions,
+}) {
+  if (!missionId) {
+    return {
+      ok: false,
+      code: 'MISSION_REQUIRED',
+      error: 'New Crew workers require mission_id from crew_plan. Call crew_plan, then run_subagent with that mission_id.',
+    };
+  }
+  const mission = (Array.isArray(missions) ? missions : []).find((item) => item.id === missionId);
+  const accepted = crewMissionAcceptsSpawn(mission, { resume: false });
+  if (!accepted.ok) return accepted;
+  const survey = String(kind || '').trim().toLowerCase() === 'survey';
+  if (survey !== (mission.kind === 'survey')) {
+    return {
+      ok: false,
+      code: 'MISSION_KIND',
+      error: `Mission ${mission.id} is ${mission.kind}. Use ${mission.kind === 'survey' ? 'role: "survey"' : 'a build worker'} for it.`,
+    };
+  }
+  const missionPaths = normalizeCrewPaths(mission.paths);
+  const requested = normalizeCrewPaths(paths);
+  if (mission.kind === 'build' && requested.length && missionPaths.join('\n') !== requested.join('\n')) {
+    return {
+      ok: false,
+      code: 'MISSION_PATHS',
+      error: `Mission ${mission.id} paths are ${missionPaths.join(', ')}. Pass those paths or omit paths.`,
+    };
+  }
+  const spawned = await addCrewWorktree({
+    cwd: root,
+    base,
+    taskId,
+    name,
+    callId,
+    paths: mission.kind === 'build' ? missionPaths : requested,
+    dependsOn,
+    kind,
+    task,
+    missionId: mission.id,
+  });
+  if (!spawned.ok) return spawned;
+  await bindCrewMissionWorker(root, mission.id, spawned.worker.id);
+  return { ...spawned, mission };
 }
 
 function posixPath(value) {
@@ -415,9 +523,8 @@ export function crewWorkerIdFromWorktreePath(worktreePath) {
   const rel = posixPath(path.relative(path.join(parent, '.codemini', 'crew', 'worktrees'), worktree));
   if (!rel || rel === '.' || rel.startsWith('..') || rel.includes('/') || path.isAbsolute(rel)) return '';
   if (RESERVED_WORKER_IDS.has(rel)) return '';
-  const id = sanitizeCrewWorkerId(rel, '');
-  if (!id || id !== rel) return '';
-  return id;
+  if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/.test(rel)) return '';
+  return rel;
 }
 
 function readCrewWorktreeGitDir(worktree, parent) {
@@ -469,11 +576,33 @@ export function remapCrewParentPath(inputPath, worktreeRoot) {
   if (!pathIsWithinRoot(parent, absolute)) return raw;
   const relative = path.relative(parent, absolute);
   const relPosix = posixPath(relative);
-  if (relPosix === '.codemini/crew' || relPosix.startsWith('.codemini/crew/')) return raw;
+  if (relPosix === '.codemini/crew' || relPosix.startsWith('.codemini/crew/')) {
+    const ledger = relPosix === '.codemini/crew/state.json'
+      || relPosix === '.codemini/crew/inbox'
+      || relPosix.startsWith('.codemini/crew/inbox/');
+    if (ledger) return path.join(worktree, relative);
+    return raw;
+  }
   return path.join(worktree, relative);
 }
 
 const CREW_PATH_KEYS = ['path', 'file', 'file_path', 'target', 'notebook_path'];
+
+export function crewLedgerArgumentBlock(args, worktreeRoot) {
+  const parent = resolveCrewParentRoot(worktreeRoot);
+  if (!parent || !args || typeof args !== 'object') return '';
+  const keys = ['path', 'file', 'file_path', 'target', 'notebook_path'];
+  for (const key of keys) {
+    if (typeof args[key] !== 'string' || !args[key].trim()) continue;
+    const absolute = path.resolve(worktreeRoot, args[key]);
+    const rel = posixPath(path.relative(parent, absolute));
+    const ledger = rel === '.codemini/crew/state.json'
+      || rel === '.codemini/crew/inbox'
+      || rel.startsWith('.codemini/crew/inbox/');
+    if (ledger) return CREW_LEDGER_WRITE_BLOCK;
+  }
+  return '';
+}
 
 export function remapCrewToolArguments(args, worktreeRoot) {
   if (!args || typeof args !== 'object' || Array.isArray(args)) return args;
@@ -578,6 +707,7 @@ async function addCrewWorktreeUnlocked({
   dependsOn = [],
   kind = '',
   task = '',
+  missionId: optionsMissionId = '',
 } = {}) {
   const root = path.resolve(cwd);
   const taskLine = crewTaskSummary(task);
@@ -658,6 +788,8 @@ async function addCrewWorktreeUnlocked({
     ...(nickname ? { name: nickname } : {}),
     ...(normalizedPaths.length ? { paths: normalizedPaths } : {}),
     ...(survey ? { kind: 'survey' } : {}),
+    ...(String(optionsMissionId || '').trim() ? { missionId: String(optionsMissionId).trim() } : {}),
+    missionStatus: 'active',
     ...(normalizedTaskId ? { taskId: normalizedTaskId } : {}),
     ...(normalizedDependsOn.length ? { dependsOn: normalizedDependsOn } : {}),
     ...(String(callId || '').trim() ? { callId: String(callId).trim() } : {}),

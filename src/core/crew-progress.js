@@ -55,17 +55,18 @@ export function describeCrewWorkerProgress(worker = {}, { inFlightIds = [] } = {
   const flying = (Array.isArray(inFlightIds) ? inFlightIds : []).includes(id);
   const kind = String(worker.kind || '').trim().toLowerCase() || 'coder';
   let phase = 'idle';
-  if (worker.integrated === true) phase = 'merged';
-  else if (String(worker.runStatus || '').toLowerCase() === 'failed' && !flying) phase = 'failed';
+  const runStatus = String(worker.runStatus || '').toLowerCase();
+  if (kind === 'survey' && runStatus === 'completed' && worker.dirty !== true && !flying) phase = 'survey_done';
+  else if (worker.integrated === true) phase = 'merged';
+  else if (runStatus === 'failed' && !flying) phase = 'failed';
   else if (String(worker.runStatus || '').toLowerCase() === 'queued') phase = 'queued';
-  else if (flying && (
+  else if (kind !== 'survey' && flying && (
     worker.sealed
     || worker.dirty === false
-    || String(worker.runStatus || '').toLowerCase() === 'completed'
+    || runStatus === 'completed'
   )) phase = 'reviewing';
-  else if (flying || String(worker.runStatus || '').toLowerCase() === 'running') phase = 'running';
+  else if (flying || runStatus === 'running') phase = 'running';
   else if (worker.dirty === true) phase = 'dirty';
-  else if (kind === 'survey' && String(worker.runStatus || '').toLowerCase() === 'completed') phase = 'survey_done';
   else if (worker.sealed && worker.reviewPassed === true) phase = 'ready';
   else if (worker.sealed) phase = 'awaiting_review';
   else if (worker.runStatus) phase = String(worker.runStatus);

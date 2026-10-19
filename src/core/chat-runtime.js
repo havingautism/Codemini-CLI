@@ -111,15 +111,18 @@ import {
   buildCrewCompletionEvent,
   formatCrewInboxMessages,
   listUnreadCrewInbox,
+  listUnreadCrewEvents,
   markCrewInboxDelivered,
 } from './crew-store.js';
 import { composeCrewResumeTask, composeCrewReviewTask, crewTaskSummary, findCrewWorker, isCrewCommitAncestor, isCrewWorktreeDirty, resolveCrewReviewTarget, resolveCrewSubagentWorkspace, shouldContinueCrewWorkerSeal, teardownCrewWorker } from './crew-worktree.js';
+import { composeCrewBriefing } from './crew-briefing.js';
+import { findCrewMissionForWorker, formatCrewMissionBrief, listCrewMissionsFromState } from './crew-missions.js';
 import { landCrewWorkers } from './crew-land.js';
 import { createCrewCoordinator } from './crew-coordinator.js';
 import { createCrewWorkerScheduler } from './crew-scheduler.js';
 import { createCrewCancelReason } from './crew-cancel.js';
-import { runCrewWorkerJob } from './crew-worker-run.js';
-import { compactCrewSpawnResultForParent, formatCrewReviewIncompleteGuidance, resolveCrewProjectRoot, buildCrewWorkerStatusRecord, parseCrewWakeHeadline } from './crew-snapshot.js';
+import { buildSubagentToolSegmentsFromMessages, runCrewWorkerJob } from './crew-worker-run.js';
+import { buildCrewWorkerCompletedWake, compactCrewSpawnResultForParent, formatCrewReviewIncompleteGuidance, resolveCrewProjectRoot, buildCrewWorkerStatusRecord, parseCrewWakeHeadline } from './crew-snapshot.js';
 import { composeMemorySnapshot } from './memory-prompt.js';
 import { buildProjectContextSnippet, initializeProjectIndex } from './project-index.js';
 import { queryProjectKnowledgeGraph } from './project-knowledge-graph.js';
@@ -497,14 +500,21 @@ export const EXECUTION_MODE_TOOL_POLICY = {
 
 export function normalizeExecutionMode(mode) {
   const normalized = String(mode || 'normal').toLowerCase();
+  if (normalized === 'crew') return 'crew';
   if (['spec', 'plan', 'code', 'coding'].includes(normalized)) return 'plan';
   if (['normal', 'daily'].includes(normalized)) return 'normal';
   return 'normal';
 }
 
+/** Coding capabilities (tools, skills, hooks, soul). Not the coding session contract. */
+export function usesEngineeringRuntime(mode) {
+  const normalized = normalizeExecutionMode(mode);
+  return normalized === 'plan' || normalized === 'crew';
+}
+
 function isExecutionModeInput(value) {
   const normalized = String(value || '').trim().toLowerCase();
-  return ['normal', 'daily', 'plan', 'code', 'coding', 'spec'].includes(normalized);
+  return ['normal', 'daily', 'plan', 'code', 'coding', 'spec', 'crew'].includes(normalized);
 }
 
 function displayExecutionMode(mode) {
@@ -545,6 +555,8 @@ export function applyCrewParentToolPolicy(allowedTools, { crewActive = false } =
   if (!names.includes('crew_status')) names.push('crew_status');
   if (!names.includes('crew_send')) names.push('crew_send');
   if (!names.includes('crew_inbox')) names.push('crew_inbox');
+  if (!names.includes('crew_plan')) names.push('crew_plan');
+  if (!names.includes('crew_finish')) names.push('crew_finish');
   return names;
 }
 
@@ -625,6 +637,9 @@ export const ROLE_TOOL_POLICY = {
   summarizer: ['read', 'tool_search', 'skill'],
   codewiki: CODEWIKI_ROLE_TOOLS
 };
+ROLE_TOOL_POLICY.crew_builder = ROLE_TOOL_POLICY.coder;
+ROLE_TOOL_POLICY.crew_survey = ROLE_TOOL_POLICY.survey;
+ROLE_TOOL_POLICY.crew_reviewer = ROLE_TOOL_POLICY.reviewer;
 
 /** Subagents must never spawn nested agents / workflow orchestrators. */
 export const SUBAGENT_FORBIDDEN_TOOLS = ['run_subagent', 'fork_task', 'land_workers', 'cancel_worker', 'create_plan', 'create_spec'];
@@ -706,6 +721,19 @@ export function resolveSubAgentRolePolicy(name = '', role = '') {
   const policyKey = ROLE_TOOL_POLICY[roleKey] ? roleKey : 'coder';
   const taskRole = ROLE_TOOL_POLICY[roleKey] ? roleKey : persona;
   return { persona, policyKey, taskRole };
+}
+
+export function resolveCrewTurnPersona({
+  name = '',
+  role = '',
+  resume = '',
+  review = '',
+  rosterName = '',
+} = {}) {
+  const explicit = String(name || '').trim();
+  const roster = String(rosterName || '').trim();
+  const resuming = String(resume || '').trim() && !String(review || '').trim();
+  return resolveSubAgentRolePolicy(explicit || (resuming ? roster : ''), role);
 }
 
 export function getSubAgentPersonaPrompt(name = 'Alex') {
@@ -837,6 +865,9 @@ export function resolveSubAgentToolAllowList({
   if (crewSession && !roleTools.includes('crew_status')) roleTools.push('crew_status');
   if (crewSession && !roleTools.includes('crew_send')) roleTools.push('crew_send');
   if (crewSession && !roleTools.includes('crew_inbox')) roleTools.push('crew_inbox');
+  if (crewSession && key !== 'reviewer' && key !== 'crew_reviewer' && !roleTools.includes('crew_complete')) {
+    roleTools.push('crew_complete');
+  }
   if (!Array.isArray(tools)) return roleTools;
   const requested = adaptToolNamesForPlatform(
     normalizeToolPolicy(tools, config).map(canonicalShellToolName).filter(
@@ -856,6 +887,9 @@ export function resolveSubAgentToolAllowList({
   if (crewSession && !granted.includes('crew_status')) granted.push('crew_status');
   if (crewSession && !granted.includes('crew_send')) granted.push('crew_send');
   if (crewSession && !granted.includes('crew_inbox')) granted.push('crew_inbox');
+  if (crewSession && key !== 'reviewer' && key !== 'crew_reviewer' && !granted.includes('crew_complete')) {
+    granted.push('crew_complete');
+  }
   return granted;
 }
 
@@ -1021,6 +1055,29 @@ const PLAN_MEMORY_MARKERS = {
   progress: ['<!-- plan-progress-start -->', '<!-- plan-progress-end -->']
 };
 export function getSubAgentRolePrompt(role) {
+  if (role === 'crew_builder') {
+    return [
+      'You are a Crew build worker. You implement one mission in your own git worktree.',
+      'Change only files inside your assigned paths. Do not merge into the user branch and do not create extra worktrees.',
+      'Run the project\'s existing build or test commands in this worktree when they apply, then git add and git commit the source changes. Do not commit node_modules or build output.',
+      'When the commit is on your branch, stop. The parent reviews and lands. Do not review yourself.',
+      'Report what changed, the commands you ran, and their results.',
+    ].join('\n');
+  }
+  if (role === 'crew_survey') {
+    return [
+      'You are a Crew survey worker. Inspect the repository snapshot in this worktree.',
+      'Do not edit files, git commit, or change product code. Your branch must stay identical to the base.',
+      'Return findings with file evidence, then stop. The parent will not review or land this worker.',
+    ].join('\n');
+  }
+  if (role === 'crew_reviewer') {
+    return [
+      'You are a Crew reviewer. Review the handed-off diff. Do not edit files or implement fixes.',
+      'Focus on bugs, regressions, and scope escapes in the files the worker changed.',
+      'Call submit_crew_review exactly once. passed true only when the diff is clean to land.',
+    ].join('\n');
+  }
   if (role === 'planner') {
     return [
       'You are the planner in a multi-step agent pipeline.',
@@ -2408,7 +2465,8 @@ export function buildAlwaysSkillPromptBlock(commands, config, dismissedSkills = 
 }
 
 export function shouldInjectAlwaysSkills(executionMode) {
-  return ['normal', 'plan'].includes(normalizeExecutionMode(executionMode));
+  const mode = normalizeExecutionMode(executionMode);
+  return mode === 'normal' || usesEngineeringRuntime(mode);
 }
 
 function normalizePlanStepRoles(steps = []) {
@@ -3970,7 +4028,7 @@ function estimateBaselinePromptOverhead(config, executionMode) {
   // System prompt overhead: default prompt + soul + reply language directive
   let overhead = 2800;
   // Plan mode uses richer tool definitions and plan-specific prompts
-  if (executionMode === 'plan') overhead += 1500;
+  if (executionMode === 'plan' || executionMode === 'crew') overhead += 1500;
   // Project context snippet (file index, AST map)
   if (config.context?.project_context_enabled !== false) overhead += 1200;
   // Always-installed skills add prompt content
@@ -4812,19 +4870,22 @@ async function askModelInSession({
   const projectContextGuidance =
     'Use this project context as lightweight guidance and verify important details with fresh reads when needed.';
   const normalizedExecutionMode = normalizeExecutionMode(executionMode || config.execution?.mode || 'normal');
+  const crewSessionMode = normalizedExecutionMode === 'crew';
   const executionShellContext = resolveShellContext(config, {
     cwd: workspaceRoot,
     platform: process.platform,
   });
-  const executionModePrompt = buildExecutionModePromptBlock(
-    normalizedExecutionMode,
-    executionShellContext.commandPlatform,
-    executionShellContext.shell,
-  );
+  const executionModePrompt = crewSessionMode
+    ? ''
+    : buildExecutionModePromptBlock(
+      normalizedExecutionMode,
+      executionShellContext.commandPlatform,
+      executionShellContext.shell,
+    );
   const crewWorkers = crewState
     ? listCrewWorkersFromState(await readCrewStateFile(workspaceRoot))
     : [];
-  const crewModePrompt = buildCrewModePromptBlock(crewState, crewWorkers);
+  const crewModePrompt = crewSessionMode ? buildCrewModePromptBlock(crewState, crewWorkers) : '';
   const modePromptBlocks = [executionModePrompt, crewModePrompt].filter(Boolean).join('\n\n');
   const projectContextSnippet = await projectContextPromise;
   // Compose effectiveSystemPrompt without redundant composeSystemPrompt wrapping:
@@ -4862,6 +4923,12 @@ async function askModelInSession({
   const inFlightCrewWorkers = crewWorkersInFlight instanceof Set
     ? crewWorkersInFlight
     : new Set();
+  const parentCrewWorkerWake = typeof config?.runtime?.onCrewWorkerWake === 'function'
+    ? config.runtime.onCrewWorkerWake
+    : null;
+  const notifyCrewWorkerWake = crewCoordinator
+    ? (wakeText) => crewCoordinator.enqueueWake(wakeText)
+    : parentCrewWorkerWake;
   const toolConfig = {
     ...config,
     runtime: {
@@ -4879,6 +4946,7 @@ async function askModelInSession({
           ? crewCoordinator.pendingWakeCount
           : Number(config?.runtime?.getCrewPendingWakes?.() || 0)
       ),
+      ...(notifyCrewWorkerWake ? { onCrewWorkerWake: notifyCrewWorkerWake } : {}),
     },
     workspaceRoot,
     policy: {
@@ -4904,8 +4972,12 @@ async function askModelInSession({
     toolResultStore,
     crewActive: Boolean(crewState),
     onLandWorkers: crewState
-      ? async () => {
-          const result = await landCrewWorkers({ cwd: workspaceRoot, base: crewState.base });
+      ? async ({ missionId } = {}) => {
+          const result = await landCrewWorkers({
+            cwd: workspaceRoot,
+            base: crewState.base,
+            missionId,
+          });
           if (result?.ok) {
             publishCrewWorkersChanged();
           }
@@ -4915,6 +4987,7 @@ async function askModelInSession({
     onCancelWorker: crewState && typeof onCancelWorker === 'function'
       ? onCancelWorker
       : undefined,
+    ...(notifyCrewWorkerWake ? { onCrewWorkerWake: notifyCrewWorkerWake } : {}),
     getTodos: () => normalizeTodos(session.todos),
     onTodosUpdate: (todos) => {
       session.todos = normalizeTodos(todos);
@@ -4925,7 +4998,7 @@ async function askModelInSession({
       session.planState = normalizePlanState(planState);
       scheduleSessionSave();
     },
-    onRunSubAgent: normalizedExecutionMode === 'plan'
+    onRunSubAgent: usesEngineeringRuntime(normalizedExecutionMode)
       ? async ({
           prompt,
           tasks = [],
@@ -4941,10 +5014,9 @@ async function askModelInSession({
           tools = null,
           paths = null,
           resume = '',
-          review = ''
+          review = '',
+          missionId = '',
         } = {}) => {
-          const { persona, policyKey, taskRole } = resolveSubAgentRolePolicy(name, role);
-          const isCrewSurvey = Boolean(crewState) && policyKey === 'survey';
           const taskPrompt = String(prompt || '').trim();
           const assignedTasks = normalizeTodos(tasks);
           if (!taskPrompt && assignedTasks.length === 0) {
@@ -4960,6 +5032,14 @@ async function askModelInSession({
             ? findCrewWorker(rosterWorkers, { resume: reviewTarget || resumeTarget })
             : null;
           const rosterLabel = String(rosterTarget?.name || '').trim();
+          const { persona, policyKey, taskRole } = resolveCrewTurnPersona({
+            name,
+            role,
+            resume: resumeTarget,
+            review: reviewTarget,
+            rosterName: rosterLabel,
+          });
+          const isCrewSurvey = Boolean(crewState) && policyKey === 'survey';
           const title = crewState
             ? reviewTarget
               ? `Crew review · ${rosterLabel || reviewTarget}`
@@ -5095,6 +5175,31 @@ async function askModelInSession({
             let spawnedCrewWorker = null;
             if (crewState) {
               const isReviewer = String(role || '').trim().toLowerCase() === 'reviewer' || policyKey === 'reviewer';
+              if (resumeTarget && isReviewer) {
+                const resumeReviewerError = 'Crew reviewers are not resumed. Dispatch with role: "reviewer" and review set to the worker id.';
+                emit({
+                  type: 'plan:step_done',
+                  toolCallId: callId,
+                  step: 1,
+                  total: 1,
+                  role: persona,
+                  title,
+                  status: 'failed',
+                  taskId: dependencyTaskId,
+                  dependsOn: dependencyRegistration.dependencies,
+                  summary: resumeReviewerError,
+                  sdkProvider: stepSdkProvider,
+                  model: stepModel,
+                });
+                const resumeReviewerResult = {
+                  ok: false,
+                  code: 'REVIEW_RESUME_FORBIDDEN',
+                  error: resumeReviewerError,
+                  text: '',
+                };
+                dependencyRegistration.settle(resumeReviewerResult);
+                return resumeReviewerResult;
+              }
               if (String(review || '').trim() && !isReviewer) {
                 const reviewError = 'review is only valid with role: "reviewer".';
                 emit({
@@ -5212,6 +5317,12 @@ async function askModelInSession({
                   diff: reviewed.diff,
                   base: reviewed.base || reviewed.worker?.landBase || crewState.base,
                 });
+                const reviewMission = findCrewMissionForWorker(
+                  listCrewMissionsFromState(await readCrewStateFile(workspaceRoot)),
+                  reviewed.worker,
+                );
+                const reviewBrief = formatCrewMissionBrief(reviewMission);
+                if (reviewBrief) workerTask = `${reviewBrief}\n\n${workerTask}`;
                 workerWorkspaceRoot = reviewed.worker.worktreePath;
                 workerChangeTracker = null;
                 workerBackupManager = null;
@@ -5227,6 +5338,7 @@ async function askModelInSession({
                   dependsOn: dependencyRegistration.dependencies,
                   kind: isCrewSurvey ? 'survey' : '',
                   task: crewTaskSummary(effectivePrompt),
+                  missionId: reviewTarget ? '' : String(missionId || '').trim(),
                 });
                 if (!spawned.ok) {
                   const spawnError = spawned.error || 'Failed to spawn Crew worktree.';
@@ -5308,6 +5420,12 @@ async function askModelInSession({
                   }
                   workerTask = composeCrewResumeTask(scopedTask, priorHandoff, reviewText, pendingRebaseOnto, inboxText);
                 }
+                const missionForBrief = spawned.mission || findCrewMissionForWorker(
+                  listCrewMissionsFromState(await readCrewStateFile(workspaceRoot)),
+                  spawned.worker,
+                );
+                const missionBrief = formatCrewMissionBrief(missionForBrief);
+                if (missionBrief) workerTask = `${missionBrief}\n\n${workerTask}`;
                 workerWorkspaceRoot = spawned.worker.worktreePath;
                 workerBackupManager = null;
               }
@@ -5354,6 +5472,15 @@ async function askModelInSession({
                     `${session.id}:${lockedCrewWorkerId}`,
                   );
                 }
+                const crewPromptRole = reviewingWorkerId
+                  ? 'crew_reviewer'
+                  : isCrewSurvey
+                    ? 'crew_survey'
+                    : 'crew_builder';
+                const briefedTask = composeCrewBriefing({
+                  kind: reviewingWorkerId ? 'reviewer' : isCrewSurvey ? 'survey' : 'build',
+                  additional: workerTask,
+                });
                 return runCrewWorkerJob({
                 runSubAgentTask,
                 subAgentRunFailed,
@@ -5370,17 +5497,17 @@ async function askModelInSession({
                 callId,
                 persona,
                 policyKey,
-                taskRole,
+                taskRole: crewPromptRole,
                 title,
                 dependencyTaskId,
                 dependencyDependencies: dependencyRegistration.dependencies,
-                workerTask,
+                workerTask: briefedTask,
                 workerWorkspaceRoot,
                 workerChangeTracker,
                 workerBackupManager,
                 session,
                 workspaceRoot,
-                config,
+                config: toolConfig,
                 stepModel,
                 systemPrompt,
                 onAgentEvent,
@@ -5546,6 +5673,7 @@ async function askModelInSession({
               reviewRound = applied.reviewRound;
               reviewIncomplete = applied.reviewIncomplete === true;
             }
+            const syncStepSegments = buildSubagentToolSegmentsFromMessages(output.messages || []);
             emit({
               type: 'plan:step_done',
               toolCallId: callId,
@@ -5560,6 +5688,7 @@ async function askModelInSession({
               output: formatPlanStepOutputForDisplay(output.text || ''),
               sdkProvider: stepSdkProvider,
               model: stepModel,
+              ...(syncStepSegments.length ? { stepSegments: syncStepSegments } : {}),
               ...(savedHandoff ? { handoffPath: savedHandoff.path } : {}),
               ...(childUsage ? { usage: childUsage, usageScope: 'subagent' } : {})
             });
@@ -6757,6 +6886,7 @@ export async function runSubAgentTask({
         crew_session: crewSessionActive || Boolean(config?.runtime?.crew_session),
         crew_project_root: resolveCrewProjectRoot(workspaceRoot),
         crew_parent_shell: false,
+        onCrewWorkerWake: config?.runtime?.onCrewWorkerWake,
       },
     }),
     model: subAgentModel,
@@ -8901,6 +9031,41 @@ export async function createChatRuntime({
       });
     },
   });
+  const replayUndeliveredCrewCompletionWakes = async () => {
+    if (!crewState) return;
+    const disk = await readCrewStateFile(root).catch(() => null);
+    if (!disk) return;
+    const workers = listCrewWorkersFromState(disk);
+    const events = listUnreadCrewEvents(disk);
+    for (const event of events) {
+      const kind = String(event?.kind || '').trim();
+      if (!['worker.completed', 'worker.failed', 'worker.interrupted', 'review.completed'].includes(kind)) {
+        continue;
+      }
+      const payload = event?.payload && typeof event.payload === 'object' ? event.payload : {};
+      const workerId = String(payload.workerId || event.from || '').trim();
+      if (!workerId) continue;
+      const worker = workers.find((item) => item.id === workerId);
+      const rawStatus = String(payload.status || 'completed').trim().toLowerCase();
+      const status = rawStatus === 'interrupted' ? 'awaiting_submit' : rawStatus;
+      const reviewOf = kind === 'review.completed' ? workerId : '';
+      crewCoordinator.enqueueWake(buildCrewWorkerCompletedWake({
+        workerId: reviewOf ? '' : workerId,
+        reviewOf,
+        status,
+        dirty: payload.dirty,
+        workerKind: payload.workerKind,
+        summary: payload.summary,
+        handoffPath: payload.handoffPath,
+        reviewPassed: payload.reviewPassed,
+        reviewLoopStopped: payload.reviewLoopStopped,
+        reviewRound: payload.reviewRound,
+        reviewIncomplete: payload.reviewIncomplete,
+        name: worker?.name,
+      }));
+    }
+  };
+  void replayUndeliveredCrewCompletionWakes();
   const crewWorkerScheduler = createCrewWorkerScheduler({
     getLimit: () => config?.crew?.max_workers ?? 4,
   });
@@ -9035,6 +9200,11 @@ export async function createChatRuntime({
       previous: crewState,
     });
     await persistCrewState(null);
+    if (normalizeExecutionMode(executionMode) === 'crew') {
+      executionMode = 'plan';
+      if (config.execution) config.execution.mode = 'plan';
+      await setConfigValue('execution.mode', 'plan');
+    }
     lastCrewProgress = { workers: [], inFlightIds: [] };
     await refreshCrewGitInspect();
     publishCrewWorkersChanged();
@@ -9054,12 +9224,11 @@ export async function createChatRuntime({
       };
     }
     const previousMode = normalizeExecutionMode(executionMode);
-    const switchedFromDaily = previousMode !== 'plan';
-    if (switchedFromDaily) {
+    if (previousMode !== 'crew') {
       const previouslyArmed = new Set([...skillHooksSession.activeSkills.keys()]);
-      executionMode = 'plan';
-      await setConfigValue('execution.mode', 'plan');
-      config = attachRuntimeState(await loadConfig());
+      executionMode = 'crew';
+      if (config.execution) config.execution.mode = 'crew';
+      await setConfigValue('execution.mode', 'crew');
       await reloadWorkspaceHooks();
       await reconcileSessionStartForModeChange(previouslyArmed);
     }
@@ -9068,11 +9237,11 @@ export async function createChatRuntime({
       sessionId: currentSession?.id,
     });
     if (!result.ok) {
-      if (switchedFromDaily) {
+      if (previousMode !== 'crew') {
         const previouslyArmed = new Set([...skillHooksSession.activeSkills.keys()]);
-        executionMode = 'normal';
-        await setConfigValue('execution.mode', 'normal');
-        config = attachRuntimeState(await loadConfig());
+        executionMode = previousMode === 'normal' ? 'normal' : 'plan';
+        if (config.execution) config.execution.mode = executionMode;
+        await setConfigValue('execution.mode', executionMode);
         await reloadWorkspaceHooks();
         await reconcileSessionStartForModeChange(previouslyArmed);
       }
@@ -9087,7 +9256,22 @@ export async function createChatRuntime({
     };
     return result;
   };
-  if (crewState && normalizeExecutionMode(executionMode) !== 'plan') {
+  if (crewState && normalizeExecutionMode(executionMode) === 'plan') {
+    executionMode = 'crew';
+    if (config.execution) config.execution.mode = 'crew';
+    await setConfigValue('execution.mode', 'crew');
+  }
+  if (normalizeExecutionMode(executionMode) === 'crew' && !crewState) {
+    const entered = await enterCrewMode({ cwd: root, sessionId: currentSession?.id });
+    if (!entered.ok) {
+      executionMode = 'plan';
+      if (config.execution) config.execution.mode = 'plan';
+      await setConfigValue('execution.mode', 'plan');
+    } else {
+      await persistCrewState(entered.crew);
+    }
+  }
+  if (crewState && normalizeExecutionMode(executionMode) !== 'crew') {
     await deactivateCrew();
   } else if (crewState) {
     await writeCrewStateFile(root, {
@@ -9117,7 +9301,7 @@ export async function createChatRuntime({
         : [],
     );
     executionMode = resolveRuntimeExecutionMode(config.execution?.mode || 'normal', config, currentSession);
-    if (normalizeExecutionMode(executionMode) !== 'plan') await deactivateCrew();
+    if (normalizeExecutionMode(executionMode) !== 'crew') await deactivateCrew();
     syncCompactStateFromConfig();
 
     const resolvedModel = String(nextModel || '').trim();
@@ -9196,7 +9380,7 @@ export async function createChatRuntime({
   // Workspace (project/global) hooks are always armed for this runtime.
   const skillHooksSession = createSkillHooksSession();
   const reloadWorkspaceHooks = async () => {
-    const hookContext = normalizeExecutionMode(executionMode) === 'plan' ? 'coding' : 'daily';
+    const hookContext = usesEngineeringRuntime(executionMode) ? 'coding' : 'daily';
     const [projectLayer, globalLayer, customProfiles] = await Promise.all([
       loadProjectHooks(root, { context: hookContext }).catch(() => ({ hooks: {} })),
       loadGlobalHooks().catch(() => ({ hooks: {} })),
@@ -9588,7 +9772,7 @@ export async function createChatRuntime({
       skillsPrompt,
       memorySnapshot,
       extraPrompts: includeMemoryGuide ? [memoryGuide] : [],
-      soulContext: normalizeExecutionMode(executionMode) === 'plan' ? 'coding' : 'daily',
+      soulContext: usesEngineeringRuntime(executionMode) ? 'coding' : 'daily',
     });
   };
 
@@ -9982,9 +10166,11 @@ export async function createChatRuntime({
       return { type: 'assistant', text: result.text, aborted: !!result.aborted };
     }
     const expandedText = await expandFileMentions(inputText, root);
-    const isCodingMode = normalizeExecutionMode(executionMode) === 'plan';
+    const turnMode = normalizeExecutionMode(executionMode);
+    const isCodingMode = turnMode === 'plan';
+    const isCrewMode = turnMode === 'crew';
     const memoryRoute = classifyMemoryRoute(expandedText);
-    const crewActive = Boolean(normalizeCrewState(crewState));
+    const crewActive = isCrewMode && Boolean(normalizeCrewState(crewState));
     const codingPolicy = createCodingTurnPolicy({ text: expandedText, crewActive });
 
     // Refresh workspace + package profiles every turn so installs/toggles take
@@ -10061,7 +10247,7 @@ export async function createChatRuntime({
       ? buildAlwaysSkillPromptBlock(commands, config, dismissedAlwaysSkills, executionMode, root)
       : '';
     const memoryHint = buildMemoryRouteHintBlock(memoryRoute);
-    const codingPolicyBlock = isCodingMode ? buildCodingTurnPolicyBlock(codingPolicy) : '';
+    const codingPolicyBlock = isCodingMode || isCrewMode ? buildCodingTurnPolicyBlock(codingPolicy) : '';
     // Per-turn routing / skill / hook context belongs in the user turn, not the
     // system prompt, so the system prompt stays a stable, cacheable prefix.
     const turnRoutingContext = [
@@ -10070,7 +10256,7 @@ export async function createChatRuntime({
       codingPolicyBlock,
       ...hookContexts,
     ].filter(Boolean).join('\n\n');
-    const codingRouteAllowedTools = isCodingMode
+    const codingRouteAllowedTools = isCodingMode || isCrewMode
       ? applyCrewParentToolPolicy(
           EXECUTION_MODE_TOOL_POLICY.plan.filter((toolName) => (
             isCodingTurnToolAllowed(codingPolicy, toolName)
@@ -10203,6 +10389,10 @@ export async function createChatRuntime({
   const submitMessage = async (submission, onAgentEvent) => {
     const endMemoryInput = beginSessionMemoryActivity(currentSession.id);
     try {
+    const crewDisk = await readCrewStateFile(root).catch(() => null);
+    if (crewDisk?.batchClosed === true) {
+      await writeCrewStateFile(root, { batchClosed: false }).catch(() => {});
+    }
     let normalized = normalizeChatSubmission(submission);
     const displayText = normalized.text;
     await reloadCommandsAndSkills();
@@ -10395,7 +10585,7 @@ export async function createChatRuntime({
       const normalized = normalizeExecutionMode(next);
       if (!['normal', 'plan'].includes(normalized)) return false;
       if (normalized === normalizeExecutionMode(executionMode)) return true;
-      if (normalized === 'normal') {
+      if (normalizeExecutionMode(executionMode) === 'crew') {
         const deactivated = await deactivateCrew();
         if (!deactivated.ok) return false;
       }

@@ -16,6 +16,7 @@ test('soulContextFromExecutionMode maps plan/code to coding', () => {
   assert.equal(soulContextFromExecutionMode('plan'), 'coding');
   assert.equal(soulContextFromExecutionMode('code'), 'coding');
   assert.equal(soulContextFromExecutionMode('normal'), 'daily');
+  assert.equal(soulContextFromExecutionMode('crew'), 'coding');
 });
 
 test('getActiveSoulName prefers category then legacy preset', () => {

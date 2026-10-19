@@ -4,20 +4,113 @@ import {
   applyCrewReviewOutcome,
   buildCrewCompletionEvent,
   buildCrewReviewVerdictPrompt,
+  listCrewMissionsFromState,
+  listCrewWorkersFromState,
+  listUnreadCrewInbox,
   patchCrewWorkerRecord,
+  readCrewStateFile,
 } from './crew-store.js';
+import { findCrewMissionForWorker } from './crew-missions.js';
 import {
   isCrewCommitAncestor,
   isCrewWorktreeDirty,
+  listCrewChangedFiles,
 } from './crew-worktree.js';
 import { saveSubAgentHandoff } from './subagent-handoff-store.js';
 import { isCrewCancelSignal } from './crew-cancel.js';
-import { buildCrewWorkerCompletedWake } from './crew-snapshot.js';
+import {
+  buildCrewWorkerCompletedWake,
+  compactCrewWorkerTurnResultForParent,
+} from './crew-snapshot.js';
+
+export async function settleCrewMission({ workspaceRoot, workerId, dirty = false } = {}) {
+  const state = await readCrewStateFile(workspaceRoot);
+  const worker = listCrewWorkersFromState(state).find((item) => item.id === workerId);
+  const kind = worker?.kind === 'survey' ? 'survey' : 'build';
+  if (dirty) {
+    return {
+      missionStatus: 'active',
+      runError: kind === 'survey'
+        ? 'Survey worktree is dirty. Revert edits. Do not commit.'
+        : 'Worktree is dirty. Commit the source changes before finishing.',
+    };
+  }
+  const unread = listUnreadCrewInbox(state, { to: workerId });
+  if (unread.length) {
+    return {
+      missionStatus: 'active',
+      runError: `Unread crew mail (${unread.length}). Read it before finishing.`,
+    };
+  }
+  const changed = await listCrewChangedFiles(workspaceRoot, state?.base, worker?.branch);
+  const missions = listCrewMissionsFromState(state);
+  const mission = missions.find((item) => item.workerId === workerId || item.id === worker?.missionId);
+  if (mission?.status === 'completed' || mission?.status === 'merged') {
+    return { missionStatus: mission.status === 'merged' ? 'merged' : 'completed', runError: '' };
+  }
+  if (kind === 'survey') {
+    if (changed.length) {
+      return {
+        missionStatus: 'active',
+        runError: `Survey changed ${changed.slice(0, 5).join(', ')}. Revert those files, then call crew_complete.`,
+      };
+    }
+    return {
+      missionStatus: 'active',
+      runError: 'Call crew_complete with the survey report before this mission can be completed.',
+    };
+  }
+  if (!changed.length) {
+    return {
+      missionStatus: 'active',
+      runError: 'Build mission has no commits against the base. Commit the work, then call crew_complete.',
+    };
+  }
+  return {
+    missionStatus: 'active',
+    runError: 'Call crew_complete with a report before this mission can be completed.',
+  };
+}
 
 function formatPlanStepOutputForDisplay(text = '', maxChars = 6000) {
   const body = String(text || '').trim();
   if (body.length <= maxChars) return body;
   return `${body.slice(0, maxChars).trimEnd()}\n\n[truncated]`;
+}
+
+/** Tool cards from the worker sub-session (includes crew_complete after streaming ends). */
+export function buildSubagentToolSegmentsFromMessages(messages = []) {
+  const toolCardsById = new Map();
+  const toolCards = [];
+  const source = Array.isArray(messages) ? messages : [];
+  for (const msg of source) {
+    if (msg?.role === 'assistant' && Array.isArray(msg.tool_calls)) {
+      for (const tc of msg.tool_calls) {
+        const id = String(tc?.id || `tool-${toolCards.length + 1}`);
+        if (toolCardsById.has(id)) continue;
+        const card = {
+          id,
+          name: tc?.function?.name || tc?.name || 'tool',
+          arguments: tc?.function?.arguments || tc?.arguments || {},
+          status: tc?.status || 'done',
+          durationMs: Number.isFinite(Number(tc?.durationMs)) ? Number(tc.durationMs) : null,
+          summary: tc?.summary || '',
+          result: '',
+        };
+        toolCardsById.set(id, card);
+        toolCards.push(card);
+      }
+    } else if (msg?.role === 'tool') {
+      const id = String(msg.tool_call_id || '');
+      const card = toolCardsById.get(id);
+      if (!card) continue;
+      card.result = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content || '');
+      if (typeof msg.tool_summary === 'string' && msg.tool_summary.trim()) card.summary = msg.tool_summary.trim();
+      if (Number.isFinite(Number(msg.tool_duration_ms))) card.durationMs = Number(msg.tool_duration_ms);
+      if (typeof msg.tool_status === 'string' && msg.tool_status.trim()) card.status = msg.tool_status.trim();
+    }
+  }
+  return toolCards.length > 0 ? [{ type: 'tools', cards: toolCards }] : [];
 }
 
 async function persistCrewCompletionEvent(workspaceRoot, input) {
@@ -72,6 +165,9 @@ export async function runCrewWorkerJob({
 } = {}) {
   let childUsage = null;
   let crewDirty = initialCrewDirty;
+  let missionGate = null;
+  let missionSubmittedDuringRun = false;
+  let workerWakeStatus = '';
   try {
     const reviewBox = { verdict: null };
     const crewActor = reviewingWorkerId
@@ -139,19 +235,41 @@ export async function runCrewWorkerJob({
         }).catch(() => null);
     if (lockedCrewWorkerId && !reviewingWorkerId && !cancelled) {
       if (failed) {
+        workerWakeStatus = 'failed';
         await patchCrewWorkerRecord(workspaceRoot, lockedCrewWorkerId, {
           runStatus: 'failed',
           dirty: crewDirty === true,
           runError: String(output?.error || output?.text || '').trim().slice(0, 400),
         }).catch(() => null);
       } else {
-        const patch = {
-          runStatus: 'completed',
-          dirty: crewDirty === true,
-          runError: '',
-        };
-        if (savedHandoff?.path) patch.lastHandoffPath = savedHandoff.path;
-        await patchCrewWorkerRecord(workspaceRoot, lockedCrewWorkerId, patch).catch(() => null);
+        const stateAfter = (await readCrewStateFile(workspaceRoot)) || {};
+        const workerAfter = listCrewWorkersFromState(stateAfter).find((item) => item.id === lockedCrewWorkerId);
+        const missionAfter = findCrewMissionForWorker(listCrewMissionsFromState(stateAfter), workerAfter);
+        missionSubmittedDuringRun = missionAfter?.status === 'completed';
+        if (missionSubmittedDuringRun) {
+          workerWakeStatus = '';
+          await patchCrewWorkerRecord(workspaceRoot, lockedCrewWorkerId, {
+            runStatus: 'completed',
+            dirty: crewDirty === true,
+            runError: '',
+            missionStatus: 'completed',
+            ...(savedHandoff?.path ? { lastHandoffPath: savedHandoff.path } : {}),
+          }).catch(() => null);
+        } else {
+          const gate = missionGate = await settleCrewMission({
+            workspaceRoot,
+            workerId: lockedCrewWorkerId,
+            dirty: crewDirty === true,
+          });
+          workerWakeStatus = 'awaiting_submit';
+          await patchCrewWorkerRecord(workspaceRoot, lockedCrewWorkerId, {
+            runStatus: 'awaiting_submit',
+            dirty: crewDirty === true,
+            runError: gate.runError,
+            missionStatus: 'active',
+            ...(savedHandoff?.path ? { lastHandoffPath: savedHandoff.path } : {}),
+          }).catch(() => null);
+        }
       }
     }
     if (
@@ -191,6 +309,7 @@ export async function runCrewWorkerJob({
       reviewRound = applied.reviewRound;
       reviewIncomplete = applied.reviewIncomplete === true;
     }
+    const stepSegments = buildSubagentToolSegmentsFromMessages(output.messages || []);
     emit({
       type: 'plan:step_done',
       toolCallId: callId,
@@ -205,6 +324,7 @@ export async function runCrewWorkerJob({
       output: formatPlanStepOutputForDisplay(output.text || ''),
       sdkProvider: stepSdkProvider,
       model: stepModel,
+      ...(stepSegments.length ? { stepSegments } : {}),
       ...(savedHandoff ? { handoffPath: savedHandoff.path } : {}),
       ...(childUsage ? { usage: childUsage, usageScope: 'subagent' } : {}),
     });
@@ -213,12 +333,23 @@ export async function runCrewWorkerJob({
           { role: policyKey, messages: output.messages || [] },
         ])
       : [];
-    const completionSummary = trimInline(output.text || '', 200);
-    if (!cancelled) {
+    const completionSummary = trimInline(
+      [missionGate?.runError, output.text].filter(Boolean).join(' '),
+      200,
+    );
+    const shouldWakeWorker = !cancelled && (
+      reviewingWorkerId
+      || workerWakeStatus === 'failed'
+      || workerWakeStatus === 'awaiting_submit'
+    );
+    if (shouldWakeWorker) {
+      const wakeStatus = reviewingWorkerId
+        ? (failed ? 'failed' : 'completed')
+        : workerWakeStatus;
       await persistCrewCompletionEvent(workspaceRoot, {
         workerId: lockedCrewWorkerId,
         reviewOf: reviewingWorkerId,
-        status: failed ? 'failed' : 'completed',
+        status: wakeStatus === 'awaiting_submit' ? 'interrupted' : wakeStatus,
         dirty: crewDirty,
         workerKind: isCrewSurvey ? 'survey' : '',
         summary: completionSummary,
@@ -229,11 +360,13 @@ export async function runCrewWorkerJob({
         reviewIncomplete,
       });
     }
-    if (!cancelled && typeof onWake === 'function') {
+    if (shouldWakeWorker && typeof onWake === 'function') {
       onWake(buildCrewWorkerCompletedWake({
         workerId: lockedCrewWorkerId,
         reviewOf: reviewingWorkerId,
-        status: failed ? 'failed' : 'completed',
+        status: reviewingWorkerId
+          ? (failed ? 'failed' : 'completed')
+          : workerWakeStatus,
         dirty: crewDirty,
         workerKind: isCrewSurvey ? 'survey' : '',
         summary: completionSummary,
@@ -247,20 +380,16 @@ export async function runCrewWorkerJob({
           : String(persona || '').trim(),
       }));
     }
-    return {
-      ok: !failed && !cancelled && reviewIncomplete !== true,
-      cancelled,
-      workflowComplete: false,
-      name: persona,
-      role: persona,
-      tools: resolvedTools,
-      text: output.text || '',
-      ...(childUsage ? { usage: childUsage } : {}),
-      artifactPaths: output.artifactPaths || [],
-      ...(savedHandoff ? { handoffPath: savedHandoff.path } : {}),
-      ...(fileChanges.length ? { fileChanges } : {}),
-      ...(crewDirty === undefined ? {} : { dirty: crewDirty }),
-      message: compactSubAgentResultForParent({
+    const parentMessage = lockedCrewWorkerId && !reviewingWorkerId
+      ? compactCrewWorkerTurnResultForParent({
+        text: output.text,
+        summary,
+        handoffPath: savedHandoff?.path,
+        workerId: lockedCrewWorkerId,
+        missionSubmitted: missionSubmittedDuringRun,
+        submitHint: missionGate?.runError,
+      })
+      : compactSubAgentResultForParent({
         text: output.text,
         summary,
         handoffPath: savedHandoff?.path,
@@ -274,7 +403,21 @@ export async function runCrewWorkerJob({
           ...(reviewIncomplete === true ? { reviewIncomplete: true } : {}),
           ...(reviewLoopStopped === true ? { reviewLoopStopped: true, reviewRound } : {}),
         } : {}),
-      }),
+      });
+    return {
+      ok: !failed && !cancelled && reviewIncomplete !== true,
+      cancelled,
+      workflowComplete: false,
+      name: persona,
+      role: persona,
+      tools: resolvedTools,
+      text: output.text || '',
+      ...(childUsage ? { usage: childUsage } : {}),
+      artifactPaths: output.artifactPaths || [],
+      ...(savedHandoff ? { handoffPath: savedHandoff.path } : {}),
+      ...(fileChanges.length ? { fileChanges } : {}),
+      ...(crewDirty === undefined ? {} : { dirty: crewDirty }),
+      message: parentMessage,
     };
   } catch (err) {
     const cancelled = isCrewCancelSignal(signal) || err?.crewCancel === true || err?.name === 'AbortError';
@@ -330,4 +473,29 @@ export async function runCrewWorkerJob({
       releaseInFlight(lockedCrewWorkerId || reviewingWorkerId);
     }
   }
+}
+
+export async function emitCrewMissionSubmitWake({
+  workspaceRoot,
+  result,
+  onWake,
+} = {}) {
+  if (!result?.ok || !workspaceRoot) return;
+  const wakeStatus = String(result.wakeStatus || 'completed').trim();
+  await persistCrewCompletionEvent(workspaceRoot, {
+    workerId: result.workerId,
+    status: wakeStatus === 'awaiting_submit' ? 'interrupted' : wakeStatus,
+    dirty: result.dirty,
+    workerKind: result.workerKind,
+    summary: String(result.report || result.message || '').slice(0, 200),
+  });
+  if (typeof onWake !== 'function') return;
+  onWake(buildCrewWorkerCompletedWake({
+    workerId: result.workerId,
+    status: wakeStatus,
+    dirty: result.dirty,
+    workerKind: result.workerKind,
+    summary: String(result.report || '').slice(0, 200),
+    name: result.workerName,
+  }));
 }

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createCodingTurnPolicy, isCodingTurnToolAllowed, buildCodingTurnPolicyBlock } from '../src/core/coding-turn-policy.js';
-import { applyCrewParentToolPolicy } from '../src/core/chat-runtime.js';
+import { applyCrewParentToolPolicy, EXECUTION_MODE_TOOL_POLICY } from '../src/core/chat-runtime.js';
 
 test('ordinary coding leaves planning and delegation available without permitting memory writes', () => {
   for (const text of ['继续', '改一个按钮文案', '解释刚才的结果', '修复多个文件并验证']) {
@@ -11,6 +11,8 @@ test('ordinary coding leaves planning and delegation available without permittin
     }
     assert.equal(isCodingTurnToolAllowed(policy, 'save_memory'), false);
     assert.equal(isCodingTurnToolAllowed(policy, 'land_workers'), false);
+    assert.equal(isCodingTurnToolAllowed(policy, 'crew_plan'), false);
+    assert.equal(isCodingTurnToolAllowed(policy, 'crew_finish'), false);
     assert.equal(buildCodingTurnPolicyBlock(policy), '');
   }
 });
@@ -36,6 +38,20 @@ test('Crew keeps parent restrictions even when the user disables delegation', ()
     assert.equal(tools.includes('run_subagent'), text !== '不要子代理');
     assert.match(buildCodingTurnPolicyBlock(policy), /Do not implement in the parent/);
   }
+});
+
+test('Crew parent turn allow list includes plan and finish', () => {
+  const policy = createCodingTurnPolicy({ text: '给随手记加稍后读', crewActive: true });
+  const tools = applyCrewParentToolPolicy(
+    EXECUTION_MODE_TOOL_POLICY.plan.filter((toolName) => isCodingTurnToolAllowed(policy, toolName)),
+    { crewActive: true },
+  );
+  assert.equal(tools.includes('crew_plan'), true);
+  assert.equal(tools.includes('crew_finish'), true);
+  assert.equal(tools.includes('crew_status'), true);
+  assert.equal(tools.includes('run_subagent'), true);
+  assert.equal(tools.includes('write'), false);
+  assert.equal(tools.includes('edit'), false);
 });
 
 test('explicit durable memory remains available and secrets remain blocked', () => {

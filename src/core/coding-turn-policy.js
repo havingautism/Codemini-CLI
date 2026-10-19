@@ -24,6 +24,8 @@ export function isCodingTurnToolAllowed(policy, toolName) {
     || toolName === 'crew_status'
     || toolName === 'crew_send'
     || toolName === 'crew_inbox'
+    || toolName === 'crew_plan'
+    || toolName === 'crew_finish'
     || toolName === 'cancel_worker'
   ) return policy.crewActive;
   if (toolName === 'save_memory') return policy.allowSaveMemory;

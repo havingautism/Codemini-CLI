@@ -1,6 +1,8 @@
 import path from 'node:path';
 
 import {
+  isCrewTaskTerminal,
+  listCrewMissionsFromState,
   listUnreadCrewEvents,
   listUnreadCrewInbox,
   listCrewWorkersFromState,
@@ -61,45 +63,81 @@ export function buildCrewWorkerStatusRecord(worker = {}) {
   };
 }
 
-export function suggestCrewNextAction({ workers = [], inFlight = [], pendingWakes = 0 } = {}) {
+export function suggestCrewNextAction({
+  workers = [],
+  missions,
+  inFlight = [],
+  pendingWakes = 0,
+} = {}) {
   const pending = Number(pendingWakes) || 0;
   if (pending > 0) {
     return 'A Crew notification is queued. Do not land or dispatch; wait for that wake turn.';
   }
-  const roster = (Array.isArray(workers) ? workers : []).filter((item) => item.integrated !== true);
   const inFlightIds = [...new Set((Array.isArray(inFlight) ? inFlight : []).map((item) => String(item || '').trim()).filter(Boolean))];
   if (inFlightIds.length) {
-    return `Wait for in-flight workers (${inFlightIds.join(', ')}) or call crew_status again before dispatching. If the user changed a worker's assignment, cancel_worker that id then run_subagent — do not only explain that workers cannot be interrupted.`;
+    return `Wait for in-flight workers (${inFlightIds.join(', ')}) or call crew_status again before dispatching.`;
   }
+  const missionList = Array.isArray(missions)
+    ? missions
+    : (Array.isArray(workers) ? workers : []).filter((worker) => worker.integrated !== true).map((worker) => ({
+      id: worker.id,
+      kind: worker.kind === 'survey' ? 'survey' : 'build',
+      status: worker.sealed || worker.reviewPassed === true ? 'completed' : 'active',
+      workerId: worker.id,
+      title: worker.id,
+    }));
+  if (!missionList.length) {
+    return 'No missions are recorded. Call crew_plan before dispatching. An empty mission list is not a finished crew.';
+  }
+  const roster = (Array.isArray(workers) ? workers : []).filter((item) => item.integrated !== true);
   const dirty = roster.filter((item) => item.dirty === true);
   if (dirty.length) {
     return `Resume dirty workers: ${dirty.map((item) => item.id).join(', ')} before review or land.`;
   }
-  const awaitingReview = roster.filter((item) => (
-    item.sealed
-    && item.kind !== 'survey'
-    && item.reviewPassed !== true
-    && item.reviewLoopStopped !== true
-  ));
-  const needRebase = awaitingReview.filter((item) => String(item.rebaseOnto || '').trim());
+  const planned = missionList.filter((mission) => mission.status === 'planned');
+  if (planned.length) {
+    return `Dispatch with run_subagent mission_id for: ${planned.map((mission) => mission.id).join(', ')}.`;
+  }
+  const needRebase = roster.filter((item) => String(item.rebaseOnto || '').trim());
   if (needRebase.length) {
-    return `Resume and rebase onto the current base: ${needRebase.map((item) => item.id).join(', ')}. Then dispatch reviewer for the new commit.`;
+    return `Resume and rebase onto the current base: ${needRebase.map((item) => item.id).join(', ')}. Then dispatch a reviewer for the new commit.`;
   }
+  const awaitingReview = missionList.filter((mission) => (
+    mission.kind === 'build'
+    && mission.status === 'completed'
+    && roster.some((worker) => (
+      (worker.id === mission.workerId || worker.missionId === mission.id)
+      && worker.reviewPassed !== true
+      && worker.reviewLoopStopped !== true
+    ))
+  ));
   if (awaitingReview.length) {
-    return `Dispatch reviewer for: ${awaitingReview.map((item) => item.id).join(', ')}.`;
+    return `Dispatch a reviewer for: ${awaitingReview.map((mission) => mission.workerId || mission.id).join(', ')}.`;
   }
-  const reviewFailed = roster.filter((item) => item.reviewPassed === false && item.reviewLoopStopped !== true);
-  if (reviewFailed.length) {
-    return `Resume workers with review feedback: ${reviewFailed.map((item) => item.id).join(', ')}`;
+  const ready = missionList.filter((mission) => (
+    mission.kind === 'build'
+    && mission.status === 'completed'
+    && roster.some((worker) => (
+      (worker.id === mission.workerId || worker.missionId === mission.id)
+      && worker.reviewPassed === true
+    ))
+  ));
+  if (ready.length) {
+    return `Call land_workers for mission ${ready[0].id}.`;
   }
-  const readyToLand = roster.filter((item) => item.reviewPassed === true);
-  if (readyToLand.length && roster.every((item) => item.reviewPassed === true || item.kind === 'survey')) {
-    return 'Call land_workers when the roster is ready.';
+  const sealedAwaiting = roster.filter((worker) => (
+    worker.sealed
+    && worker.kind !== 'survey'
+    && worker.reviewPassed !== true
+    && worker.reviewLoopStopped !== true
+  ));
+  if (sealedAwaiting.length) {
+    return `Dispatch reviewer for: ${sealedAwaiting.map((worker) => worker.id).join(', ')}.`;
   }
-  if (!roster.length) {
-    return 'Crew roster is empty. Dispatch workers with run_subagent.';
+  if (missionList.every((mission) => isCrewTaskTerminal(mission))) {
+    return 'Every mission is terminal. Call crew_finish to remove clean worktrees. Crew mode stays on.';
   }
-  return 'Review crew_status and recent notifications before the next action.';
+  return 'Review crew_status before the next action.';
 }
 
 export async function readCrewStatusPayload(cwd = process.cwd(), {
@@ -113,6 +151,7 @@ export async function readCrewStatusPayload(cwd = process.cwd(), {
     return { ok: false, active: false, error: 'Crew mode is not active.' };
   }
   const workers = listCrewWorkersFromState(raw).map(buildCrewWorkerStatusRecord);
+  const missions = listCrewMissionsFromState(raw);
   const inFlightIds = [...new Set((Array.isArray(inFlight) ? inFlight : []).map((item) => String(item || '').trim()).filter(Boolean))];
   const running = workers.filter((item) => (
     item.runStatus === 'running' || inFlightIds.includes(item.id)
@@ -150,10 +189,12 @@ export async function readCrewStatusPayload(cwd = process.cwd(), {
       unreadInbox: inbox.length,
     },
     workers,
+    missions,
     events,
     inbox,
     suggestedNext: suggestCrewNextAction({
       workers,
+      missions,
       inFlight: inFlightIds,
       pendingWakes: Number(pendingWakes) || 0,
     }),
@@ -189,19 +230,25 @@ export function formatCrewStatusSummary(result = {}) {
     }
   }
   if (result.suggestedNext) lines.push(`Next: ${result.suggestedNext}`);
+  for (const mission of result.missions || []) {
+    lines.push(`- mission ${mission.id} | ${mission.status} | ${mission.kind} | ${mission.title}`);
+  }
   for (const worker of result.workers || []) {
     const review = worker.reviewPassed === true
       ? 'pass'
       : worker.reviewPassed === false
         ? 'fail'
         : 'pending';
+    const surveyDone = worker.kind === 'survey'
+      && worker.runStatus === 'completed'
+      && worker.dirty !== true;
     const parts = [
       worker.name ? `${worker.name} (${worker.id})` : worker.id,
       worker.task ? `task=${worker.task}` : '',
       Array.isArray(worker.paths) && worker.paths.length ? `paths=${worker.paths.join(',')}` : '',
       `run=${worker.runStatus || 'idle'}`,
-      worker.sealed ? 'sealed' : '',
-      worker.integrated ? 'integrated' : '',
+      surveyDone ? 'survey-complete' : worker.sealed ? 'sealed' : '',
+      worker.integrated && !surveyDone ? 'integrated' : '',
       `review=${review}`,
     ].filter(Boolean);
     lines.push(`- ${parts.join(' | ')}`);
@@ -212,7 +259,8 @@ export function formatCrewStatusSummary(result = {}) {
 function sealLabel({ dirty, workerKind = '', status = '' } = {}) {
   const kind = String(workerKind || '').trim().toLowerCase();
   const normalized = String(status || '').trim().toLowerCase();
-  if (normalized === 'failed') return 'failed';
+  if (normalized === 'failed' || normalized === 'blocked') return normalized;
+  if (normalized === 'awaiting_submit') return 'awaiting_submit';
   if (kind === 'survey') {
     return dirty === true ? 'dirty' : 'survey-complete';
   }
@@ -226,13 +274,16 @@ export function formatCrewRosterSnapshot(workers = []) {
   if (!roster.length) return 'Crew roster: (empty)';
   const lines = roster.map((item) => {
     const scope = Array.isArray(item.paths) && item.paths.length ? item.paths.join(', ') : 'no paths';
+    const surveyDone = String(item.kind || '').toLowerCase() === 'survey'
+      && String(item.runStatus || '').toLowerCase() === 'completed'
+      && item.dirty !== true;
     const parts = [
       item.name ? `${item.name} (${item.id})` : item.id,
       item.task ? `task=${item.task}` : '',
       `scope=${scope}`,
-      item.integrated === true ? 'integrated' : 'idle',
+      surveyDone ? 'survey-complete' : item.integrated === true ? 'integrated' : 'idle',
       item.runStatus ? `run=${item.runStatus}` : '',
-      item.dirty === true ? 'dirty' : item.dirty === false ? 'sealed' : '',
+      item.dirty === true ? 'dirty' : item.dirty === false && !surveyDone ? 'sealed' : '',
       item.reviewPassed === true ? 'review=pass' : item.reviewPassed === false ? 'review=fail' : '',
       item.reviewLoopStopped === true ? 'review-loop-stopped' : '',
       item.rebaseOnto ? `rebaseOnto=${item.rebaseOnto}` : '',
@@ -269,12 +320,19 @@ export function buildCrewWorkerCompletedWake({
   const reviewTarget = String(reviewOf || '').trim();
   const named = nickname && id && nickname !== id ? `${nickname} (${id})` : (nickname || id);
   const seal = sealLabel({ dirty, workerKind, status });
+  const normalizedStatus = String(status || 'completed').trim().toLowerCase();
   const notificationType = reviewTarget
     ? 'crew.review.completed'
-    : 'crew.worker.completed';
+    : normalizedStatus === 'awaiting_submit'
+      ? 'crew.worker.awaiting_submit'
+      : normalizedStatus === 'failed' || normalizedStatus === 'blocked'
+        ? 'crew.worker.failed'
+        : 'crew.worker.completed';
   const headline = reviewTarget
     ? `Crew review of "${reviewTarget}"${nickname ? ` (${nickname})` : ''} finished (${status}).`
-    : `Crew worker "${named || 'worker'}" ${status}.`;
+    : normalizedStatus === 'awaiting_submit'
+      ? `Crew worker "${named || 'worker'}" ended without crew_complete.`
+      : `Crew worker "${named || 'worker'}" ${status}.`;
   const reviewLine = String(reviewOf || '').trim()
     ? reviewLoopStopped === true
       ? `Review loop stopped${Number(reviewRound) > 0 ? ` after ${Number(reviewRound)} rounds` : ''}.`
@@ -285,7 +343,11 @@ export function buildCrewWorkerCompletedWake({
         : reviewPassed === false
           ? `Review did not pass. Resume "${reviewOf}" with the review text.`
           : ''
-    : '';
+    : normalizedStatus === 'awaiting_submit'
+      ? `Mission still active. Resume "${id}" and call crew_complete (outcome ok, blocked, or failed) before stopping.`
+      : (!reviewTarget && String(workerKind || '').toLowerCase() === 'survey' && normalizedStatus === 'completed')
+        ? 'Survey submitted. Do not review or land. Call crew_plan for build missions when ready.'
+        : '';
   return [
     `<notification type="${notificationType}" workerId="${id}" status="${status}">`,
     headline,
@@ -293,8 +355,39 @@ export function buildCrewWorkerCompletedWake({
     String(summary || '').trim() ? `Summary: ${String(summary).trim()}` : '',
     String(handoffPath || '').trim() ? `Handoff: ${String(handoffPath).trim()}` : '',
     reviewLine,
-    'Worker completion is asynchronous. Call crew_status or use this notification for the latest roster; do not wait on the original run_subagent tool result.',
+    normalizedStatus === 'awaiting_submit'
+      ? 'Handoff text is not a submission. Only a successful crew_complete advances the mission.'
+      : 'Worker completion is asynchronous. Call crew_status or use this notification for the latest roster; do not wait on the original run_subagent tool result.',
     '</notification>',
+  ].filter(Boolean).join('\n');
+}
+
+export function compactCrewWorkerTurnResultForParent({
+  text = '',
+  summary = '',
+  handoffPath = '',
+  workerId = '',
+  missionSubmitted = false,
+  submitHint = '',
+  maxChars = 1500,
+} = {}) {
+  const body = String(text || '').trim();
+  const clipped = body.length <= maxChars ? body : `${body.slice(0, maxChars).trimEnd()}\n\n[truncated]`;
+  const id = String(workerId || '').trim();
+  if (missionSubmitted) {
+    return [
+      'Crew worker submitted via crew_complete. Use the crew notification (or crew_status), not this handoff, for review/land.',
+      String(summary || '').trim() ? `Summary: ${String(summary).trim()}` : '',
+      clipped || '(empty)',
+    ].filter(Boolean).join('\n');
+  }
+  return [
+    'Crew worker turn ended without crew_complete. Mission stays active.',
+    String(submitHint || '').trim() ? String(submitHint).trim() : '',
+    String(summary || '').trim() ? `Summary: ${String(summary).trim()}` : '',
+    clipped || '(empty)',
+    id ? `Resume with resume: "${id}" and require crew_complete before the worker stops.` : '',
+    String(handoffPath || '').trim() ? `Handoff (reference only): ${String(handoffPath).trim()}` : '',
   ].filter(Boolean).join('\n');
 }
 
