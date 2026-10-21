@@ -21,6 +21,7 @@ export function isCodingTurnToolAllowed(policy, toolName) {
   if (toolName === 'fork_task') return policy.allowFork;
   if (
     toolName === 'land_workers'
+    || toolName === 'crew_rebase'
     || toolName === 'crew_status'
     || toolName === 'crew_send'
     || toolName === 'crew_inbox'

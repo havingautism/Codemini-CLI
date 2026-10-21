@@ -358,12 +358,12 @@ export async function finishCrewMissions({ cwd, inFlight = [] } = {}) {
       error: 'crew_finish refused — the mission list is empty. An empty list is not a finished crew. Call crew_plan.',
     };
   }
-  const open = missions.filter((mission) => mission.status === 'planned' || mission.status === 'active');
-  if (open.length) {
+  const unfinished = missions.filter((mission) => !isCrewTaskTerminal(mission));
+  if (unfinished.length) {
     return {
       ok: false,
       code: 'MISSIONS_OPEN',
-      error: `crew_finish refused — still open: ${open.map((mission) => `${mission.id} (${mission.status})`).join(', ')}. Dispatch them with run_subagent, or abandon a mission you will not do.`,
+      error: `crew_finish refused — not terminal: ${unfinished.map((mission) => `${mission.id} (${mission.status})`).join(', ')}. Build missions must be merged with land_workers or abandoned; surveys must be completed or abandoned.`,
     };
   }
   const workers = listCrewWorkersFromState(state);

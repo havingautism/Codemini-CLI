@@ -118,6 +118,7 @@ import { composeCrewResumeTask, composeCrewReviewTask, crewTaskSummary, findCrew
 import { composeCrewBriefing } from './crew-briefing.js';
 import { findCrewMissionForWorker, formatCrewMissionBrief, listCrewMissionsFromState } from './crew-missions.js';
 import { landCrewWorkers } from './crew-land.js';
+import { rebaseCrewMission } from './crew-rebase.js';
 import { createCrewCoordinator } from './crew-coordinator.js';
 import { createCrewWorkerScheduler } from './crew-scheduler.js';
 import { createCrewCancelReason } from './crew-cancel.js';
@@ -557,6 +558,7 @@ export function applyCrewParentToolPolicy(allowedTools, { crewActive = false } =
   if (!names.includes('crew_inbox')) names.push('crew_inbox');
   if (!names.includes('crew_plan')) names.push('crew_plan');
   if (!names.includes('crew_finish')) names.push('crew_finish');
+  if (!names.includes('crew_rebase')) names.push('crew_rebase');
   return names;
 }
 
@@ -4974,6 +4976,19 @@ async function askModelInSession({
     onLandWorkers: crewState
       ? async ({ missionId } = {}) => {
           const result = await landCrewWorkers({
+            cwd: workspaceRoot,
+            base: crewState.base,
+            missionId,
+          });
+          if (result?.ok) {
+            publishCrewWorkersChanged();
+          }
+          return result;
+        }
+      : undefined,
+    onRebaseCrewMission: crewState
+      ? async ({ missionId } = {}) => {
+          const result = await rebaseCrewMission({
             cwd: workspaceRoot,
             base: crewState.base,
             missionId,
@@ -10389,10 +10404,6 @@ export async function createChatRuntime({
   const submitMessage = async (submission, onAgentEvent) => {
     const endMemoryInput = beginSessionMemoryActivity(currentSession.id);
     try {
-    const crewDisk = await readCrewStateFile(root).catch(() => null);
-    if (crewDisk?.batchClosed === true) {
-      await writeCrewStateFile(root, { batchClosed: false }).catch(() => {});
-    }
     let normalized = normalizeChatSubmission(submission);
     const displayText = normalized.text;
     await reloadCommandsAndSkills();

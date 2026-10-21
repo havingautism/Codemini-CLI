@@ -100,7 +100,8 @@ export function suggestCrewNextAction({
   }
   const needRebase = roster.filter((item) => String(item.rebaseOnto || '').trim());
   if (needRebase.length) {
-    return `Resume and rebase onto the current base: ${needRebase.map((item) => item.id).join(', ')}. Then dispatch a reviewer for the new commit.`;
+    const missionIds = needRebase.map((item) => String(item.missionId || '').trim() || item.id);
+    return `Call crew_rebase for mission ${missionIds[0]}${missionIds.length > 1 ? ` (also: ${missionIds.slice(1).join(', ')})` : ''}. If crew_rebase returns RESUME_REQUIRED, resume that worker to fix conflicts, then review before land_workers.`;
   }
   const awaitingReview = missionList.filter((mission) => (
     mission.kind === 'build'
@@ -123,7 +124,7 @@ export function suggestCrewNextAction({
     ))
   ));
   if (ready.length) {
-    return `Call land_workers for mission ${ready[0].id}.`;
+    return `Call land_workers for mission ${ready[0].id}. On failure, follow the result code: REBASE_REQUIRED → crew_rebase; MAIN_WORKTREE_DIRTY → ask the user to clean the main checkout (no resume); LAND_MERGE_CONFLICT → fix main/git state, do not crew_rebase.`;
   }
   const sealedAwaiting = roster.filter((worker) => (
     worker.sealed

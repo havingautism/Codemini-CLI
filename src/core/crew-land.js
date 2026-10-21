@@ -2,22 +2,18 @@ import path from 'node:path';
 
 import { getProjectCrewWorktreesDir } from './paths.js';
 import { runGit } from './process-run.js';
-import { fileMatchesCrewPaths, isCrewLandableWorker, normalizeCrewDependsOn, orderCrewWorkersForLand } from './crew-scope.js';
+import { fileMatchesCrewPaths, isCrewLandableWorker } from './crew-scope.js';
 import {
   formatCrewReviewLoopStoppedError,
-  archiveCrewInbox,
-  isCrewMissionTerminal,
   listCrewWorkersFromState,
   patchCrewWorkerRecord,
   readCrewStateFile,
-  writeCrewStateFile,
   workerLandBaseRef,
   workerReviewMatchesCommit,
 } from './crew-store.js';
 import {
   isCrewCommitAncestor,
   isCrewWorktreeDirty,
-  removeCrewWorktrees,
   withCrewGitLock,
 } from './crew-worktree.js';
 
@@ -61,60 +57,46 @@ async function removeLegacyMergeTmp(root) {
   await tryGit(root, ['worktree', 'prune']);
 }
 
-function parseCheckedOutBranches(porcelain) {
-  const branches = new Set();
-  for (const line of String(porcelain || '').split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (trimmed.startsWith('branch refs/heads/')) {
-      branches.add(trimmed.slice('branch refs/heads/'.length).trim());
-    }
-  }
-  return branches;
-}
-
-async function listCheckedOutBranches(root) {
-  const listed = await tryGit(root, ['worktree', 'list', '--porcelain']);
-  return parseCheckedOutBranches(listed.stdout);
-}
-
-async function deleteCrewWorkerBranch(root, branch, checkedOut) {
-  const name = String(branch || '').trim();
-  if (!name.startsWith('codemini-crew/') || name === LEGACY_TMP_BRANCH) {
-    return { ok: false, skipped: true, reason: 'not-worker' };
-  }
-  if (checkedOut.has(name)) {
-    return { ok: false, skipped: true, reason: 'checked-out' };
-  }
-  const deleted = await tryGit(root, ['branch', '-D', name]);
-  if (deleted.code !== 0) {
-    return {
-      ok: false,
-      error: String(deleted.stderr || deleted.stdout || '').trim() || `Failed to delete ${name}.`,
-    };
-  }
-  return { ok: true };
-}
-
-function buildLandMessage(ordered, kept, commitSha = '') {
-  const ids = ordered.map((worker) => worker.id).join(', ');
-  const sha = String(commitSha || '').trim();
-  const base = sha
-    ? `Landed ${ids} onto the current branch (tip ${sha.slice(0, 12)}). The user still controls push.`
-    : `Landed ${ids} onto the current branch. The user still controls push.`;
-  if (!kept.length) {
-    return `${base} Worker branches were deleted.`;
-  }
-  return `${base} Could not delete: ${kept.join(', ')}. Do not check out those branches until cleanup finishes.`;
-}
-
-function buildRebaseRequired(worker, files = []) {
-  const onto = String(worker?.rebaseOnto || '').trim();
+export function buildLandMergeConflict(worker, files = [], { missionId = '' } = {}) {
   const names = Array.isArray(files) ? files.filter(Boolean) : [];
+  const mission = String(missionId || worker?.missionId || '').trim();
+  return {
+    ok: false,
+    code: 'LAND_MERGE_CONFLICT',
+    error: mission
+      ? `Mission ${mission} already contains the current base tip, but git merge still failed. Do not call crew_rebase — the worker branch is not behind base. Check git status on the main checkout: uncommitted files often block merge (commit, stash, or remove them and ask the user if needed). Do not resume the worker for main-checkout-only issues; retry land_workers after the main worktree is clean.`
+      : `Worker "${worker.id}" already contains the current base tip, but git merge still failed. Check the main checkout worktree before resuming the worker.`,
+    workerId: worker.id,
+    missionId: mission || undefined,
+    ...(names.length ? { files: names } : {}),
+  };
+}
+
+export function buildMainWorktreeDirty(worker, { missionId = '' } = {}) {
+  const mission = String(missionId || worker?.missionId || '').trim();
+  return {
+    ok: false,
+    code: 'MAIN_WORKTREE_DIRTY',
+    error: mission
+      ? `Mission ${mission} cannot land while the main checkout has uncommitted changes. Ask the user to commit, stash, or remove local edits on the base branch, then retry land_workers. Do not resume the worker to fix this.`
+      : `Cannot land while the main checkout has uncommitted changes. Ask the user to clean up the base branch worktree, then retry land_workers.`,
+    workerId: worker.id,
+    missionId: mission || undefined,
+  };
+}
+
+function buildRebaseRequired(worker, files = [], { missionId = '', onto: ontoOverride = '' } = {}) {
+  const onto = String(ontoOverride || worker?.rebaseOnto || '').trim();
+  const names = Array.isArray(files) ? files.filter(Boolean) : [];
+  const mission = String(missionId || worker?.missionId || '').trim();
   return {
     ok: false,
     code: 'REBASE_REQUIRED',
-    error: `Worker "${worker.id}" conflicts with the current base tip. Resume "${worker.id}" to git rebase onto ${onto}, resolve, commit, then review the new commit. Do not land.`,
+    error: mission
+      ? `Mission ${mission} is behind the current base tip. Call crew_rebase with mission_id "${mission}" first. If crew_rebase returns RESUME_REQUIRED, resume "${worker.id}" to fix conflicts, then review before land_workers.`
+      : `Worker "${worker.id}" is behind the current base tip. Call crew_rebase for that mission first. If crew_rebase returns RESUME_REQUIRED, resume "${worker.id}" to resolve conflicts.`,
     workerId: worker.id,
+    missionId: mission || undefined,
     onto,
     ...(names.length ? { files: names } : {}),
   };
@@ -153,25 +135,6 @@ async function collectScopeEscape(root, base, worker) {
     };
   }
   return { ok: true, files };
-}
-
-function workerLookupKeys(worker) {
-  return [worker?.id, worker?.taskId]
-    .map((value) => String(value || '').trim())
-    .filter(Boolean);
-}
-
-function depsReady(worker, byId, satisfied) {
-  return normalizeCrewDependsOn(worker.dependsOn).every((dep) => {
-    const target = byId.get(dep);
-    return !target || satisfied.has(target);
-  });
-}
-
-function buildPartialMessage(integrated, pending, baseBranch) {
-  const done = integrated.map((worker) => worker.id).join(', ');
-  const wait = pending.map((worker) => worker.id).join(', ');
-  return `Merged ${done} onto ${baseBranch}. Waiting on ${wait}. Land again after the rest pass review.`;
 }
 
 async function classifyWorker(root, baseBranch, worker) {
@@ -217,7 +180,10 @@ async function classifyWorker(root, baseBranch, worker) {
   return { kind: 'ready', worker };
 }
 
-async function mergeWorkerOntoBase(root, worker) {
+async function mergeWorkerOntoBase(root, worker, { missionId = '' } = {}) {
+  if (await isCrewWorktreeDirty(root)) {
+    return buildMainWorktreeDirty(worker, { missionId });
+  }
   if (await isCrewCommitAncestor(root, worker.branch)) {
     const head = String((await tryGit(root, ['rev-parse', 'HEAD'])).stdout || '').trim();
     await patchCrewWorkerRecord(root, worker.id, {
@@ -242,29 +208,19 @@ async function mergeWorkerOntoBase(root, worker) {
     const conflicted = splitNames((await tryGit(root, ['diff', '--name-only', '--diff-filter=U'])).stdout);
     await abortMerge(root);
     if (conflicted.length > 0) {
-      const onto = String((await tryGit(root, ['rev-parse', 'HEAD'])).stdout || '').trim();
-      if (!onto) {
-        return {
-          ok: false,
-          code: 'GIT_MERGE',
-          error: String(merged.stderr || merged.stdout || '').trim() || `Failed to merge worker "${worker.id}".`,
-          workerId: worker.id,
-          files: conflicted,
-        };
-      }
-      worker.rebaseOnto = onto;
-      await patchCrewWorkerRecord(root, worker.id, {
-        rebaseOnto: onto,
-        reviewedCommit: '',
-        reviewText: '',
-        reviewPassed: false,
-      }).catch(() => null);
-      return buildRebaseRequired(worker, conflicted);
+      return buildLandMergeConflict(worker, conflicted, { missionId: missionId || worker.missionId });
     }
+    if (await isCrewWorktreeDirty(root)) {
+      return buildMainWorktreeDirty(worker, { missionId: missionId || worker.missionId });
+    }
+    const mergeDetail = String(merged.stderr || merged.stdout || '').trim();
+    const localOverwrite = /local changes|would be overwritten/i.test(mergeDetail);
     return {
       ok: false,
-      code: 'GIT_MERGE',
-      error: String(merged.stderr || merged.stdout || '').trim() || `Failed to merge worker "${worker.id}".`,
+      code: localOverwrite ? 'MAIN_WORKTREE_DIRTY' : 'GIT_MERGE',
+      error: localOverwrite
+        ? buildMainWorktreeDirty(worker, { missionId: missionId || worker.missionId }).error
+        : mergeDetail || `Failed to merge worker "${worker.id}".`,
       workerId: worker.id,
     };
   }
@@ -281,31 +237,6 @@ async function mergeWorkerOntoBase(root, worker) {
   return { ok: true, alreadyMerged: false };
 }
 
-export async function finishCrewBatchIfSettled(cwd, { skipLock = false } = {}) {
-  const run = async () => {
-    const root = path.resolve(cwd);
-    const workers = listCrewWorkersFromState(await readCrewStateFile(root));
-    const buildWorkers = workers.filter((worker) => worker.kind !== 'survey');
-    const openBuild = buildWorkers.filter((worker) => !isCrewMissionTerminal(worker));
-    // A finished survey is not the end of the batch. Close only after every build mission is terminal.
-    if (!buildWorkers.length || openBuild.length) {
-      return { settled: false, kept: [], removed: [] };
-    }
-    await archiveCrewInbox(root).catch(() => null);
-    const cleaned = await removeCrewWorktrees({ cwd: root, skipLock: true, force: true });
-    const checkedOut = await listCheckedOutBranches(root);
-    const kept = [];
-    for (const worker of cleaned.kept || []) kept.push(worker.id);
-    for (const worker of cleaned.removed || []) {
-      const deleted = await deleteCrewWorkerBranch(root, worker.branch, checkedOut);
-      if (!deleted.ok) kept.push(worker.id);
-    }
-    await writeCrewStateFile(root, { batchClosed: true });
-    return { settled: true, kept: [...new Set(kept)], removed: cleaned.removed || [] };
-  };
-  return skipLock ? run() : withCrewGitLock(cwd, run);
-}
-
 export async function landCrewWorkers({
   cwd = process.cwd(),
   base,
@@ -315,7 +246,11 @@ export async function landCrewWorkers({
   const baseBranch = String(base || '').trim();
   const requestedMission = String(missionId || '').trim();
   if (!requestedMission) {
-    return landLegacyRoster({ cwd: root, base: baseBranch });
+    return {
+      ok: false,
+      code: 'MISSION_REQUIRED',
+      error: 'land_workers requires mission_id from crew_plan. Pass the completed mission id to merge one build at a time.',
+    };
   }
   if (!baseBranch || baseBranch === 'HEAD') {
     return { ok: false, code: 'NO_BASE', error: 'Crew land needs a recorded git base branch.' };
@@ -397,21 +332,16 @@ export async function landCrewWorkers({
     const baseHead = String((await tryGit(root, ['rev-parse', 'HEAD'])).stdout || '').trim();
   const containsBase = await isCrewCommitAncestor(root, baseHead, worker.branch);
     if (!containsBase) {
-      await patchCrewWorkerRecord(root, worker.id, { rebaseOnto: baseHead, reviewPassed: false, reviewedCommit: '' }).catch(() => null);
-      return {
-        ok: false,
-        code: 'REBASE_REQUIRED',
-        error: `Mission ${mission.id} is behind base "${baseBranch}". Resume "${worker.id}" to rebase onto ${baseHead}, then review the new commit. Do not land.`,
-        workerId: worker.id,
-        onto: baseHead,
-      };
+      await patchCrewWorkerRecord(root, worker.id, { rebaseOnto: baseHead }).catch(() => null);
+      worker.rebaseOnto = baseHead;
+      return buildRebaseRequired(worker, [], { missionId: mission.id, onto: baseHead });
     }
     const classified = await classifyWorker(root, baseBranch, worker);
     if (classified.kind !== 'ready') {
       const { kind, worker: ignored, ...error } = classified;
       return { ok: false, ...error };
     }
-    const merged = await mergeWorkerOntoBase(root, worker);
+    const merged = await mergeWorkerOntoBase(root, worker, { missionId: mission.id });
     if (!merged.ok) return merged;
     await setCrewMissionStatus(root, mission.id, 'merged');
     const after = listCrewMissionsFromState(await readCrewStateFile(root));
@@ -423,144 +353,6 @@ export async function landCrewWorkers({
       landed: [worker.id],
       missionId: mission.id,
       message: `Merged mission ${mission.id} (${worker.id}) onto ${baseBranch} (tip ${commitSha.slice(0, 12)}). The user still controls push. ${formatOpenMissionHint(after)}`,
-    };
-  });
-}
-
-async function landLegacyRoster({
-  cwd = process.cwd(),
-  base,
-} = {}) {
-  const root = path.resolve(cwd);
-  const baseBranch = String(base || '').trim();
-  if (!baseBranch || baseBranch === 'HEAD') {
-    return { ok: false, code: 'NO_BASE', error: 'Crew land needs a recorded git base branch.' };
-  }
-  return withCrewGitLock(root, async () => {
-    const currentBranchResult = await tryGit(root, ['branch', '--show-current']);
-    const currentBranch = String(currentBranchResult.stdout || '').trim();
-    if (currentBranchResult.code !== 0 || currentBranch !== baseBranch) {
-      return {
-        ok: false,
-        code: 'BASE_BRANCH_MISMATCH',
-        error: currentBranch
-          ? `Crew started on "${baseBranch}", but the current branch is "${currentBranch}". Switch back before landing.`
-          : `Crew started on "${baseBranch}", but the current checkout is detached. Switch back before landing.`,
-        base: baseBranch,
-        currentBranch,
-      };
-    }
-    await removeLegacyMergeTmp(root).catch(() => null);
-
-    const workers = listCrewWorkersFromState(await readCrewStateFile(root))
-      .filter(isCrewLandableWorker);
-    if (workers.length === 0) {
-      return { ok: false, code: 'NO_WORKERS', error: 'No Crew workers to land. Survey workers are not landed.' };
-    }
-    const ordered = orderCrewWorkersForLand(workers);
-
-    const pendingRebase = [];
-    for (const worker of ordered) {
-      const onto = String(worker.rebaseOnto || '').trim();
-      if (!onto) continue;
-      const done = await isCrewCommitAncestor(worker.worktreePath, onto);
-      if (!done) {
-        pendingRebase.push(worker);
-        continue;
-      }
-      worker.landBase = onto;
-      delete worker.rebaseOnto;
-      await patchCrewWorkerRecord(root, worker.id, { landBase: onto, rebaseOnto: '' }).catch(() => null);
-    }
-    if (pendingRebase.length) {
-      return buildRebaseRequired(pendingRebase[0]);
-    }
-
-    const already = ordered.filter((worker) => worker.integrated === true);
-    const rest = ordered.filter((worker) => worker.integrated !== true);
-
-    const classified = [];
-    for (const worker of rest) {
-      classified.push(await classifyWorker(root, baseBranch, worker));
-    }
-    const ready = classified.filter((item) => item.kind === 'ready').map((item) => item.worker);
-    const blocked = classified.filter((item) => item.kind === 'blocked');
-
-    const byId = new Map();
-    for (const worker of ordered) {
-      for (const key of workerLookupKeys(worker)) {
-        if (!byId.has(key)) byId.set(key, worker);
-      }
-    }
-    const satisfied = new Set(already);
-    const toMerge = [];
-    for (const worker of orderCrewWorkersForLand(ready)) {
-      if (!depsReady(worker, byId, satisfied)) continue;
-      toMerge.push(worker);
-      satisfied.add(worker);
-    }
-    const merging = new Set(toMerge);
-    const pending = rest.filter((worker) => !merging.has(worker));
-    const reviewWait = new Set(['REVIEW_REQUIRED', 'REVIEW_FAILED']);
-    const hardBlocked = blocked.filter((item) => !reviewWait.has(item.code));
-
-    if (toMerge.length === 0) {
-      if (hardBlocked.length) {
-        const { kind, worker, ...error } = hardBlocked[0];
-        return { ok: false, ...error };
-      }
-      if (already.length > 0 && pending.length > 0) {
-        return {
-          ok: true,
-          committed: true,
-          integrated: already.map((worker) => worker.id),
-          pending: pending.map((worker) => worker.id),
-          message: buildPartialMessage(already, pending, baseBranch),
-        };
-      }
-      const first = blocked[0];
-      if (first) {
-        const { kind, worker, ...error } = first;
-        return { ok: false, ...error };
-      }
-      return { ok: false, code: 'NO_WORKERS', error: 'No Crew workers to land.' };
-    }
-
-    for (const worker of toMerge) {
-      const merged = await mergeWorkerOntoBase(root, worker);
-      if (!merged.ok) return merged;
-    }
-
-    const stillPending = ordered.filter((worker) => worker.integrated !== true);
-    if (stillPending.length > 0) {
-      const onBase = ordered.filter((worker) => worker.integrated === true);
-      return {
-        ok: true,
-        committed: true,
-        integrated: onBase.map((worker) => worker.id),
-        pending: stillPending.map((worker) => worker.id),
-        message: buildPartialMessage(onBase, stillPending, baseBranch),
-      };
-    }
-
-    const commitSha = String((await tryGit(root, ['rev-parse', 'HEAD'])).stdout || '').trim();
-    await archiveCrewInbox(root).catch(() => null);
-    const cleaned = await removeCrewWorktrees({ cwd: root, skipLock: true, force: true });
-    const checkedOut = await listCheckedOutBranches(root);
-    const kept = [];
-    for (const worker of cleaned.kept || []) kept.push(worker.id);
-    for (const worker of cleaned.removed || []) {
-      const deleted = await deleteCrewWorkerBranch(root, worker.branch, checkedOut);
-      if (!deleted.ok) kept.push(worker.id);
-    }
-    const uniqueKept = [...new Set(kept)];
-    return {
-      ok: true,
-      committed: true,
-      commit: commitSha,
-      landed: ordered.map((worker) => worker.id),
-      kept: uniqueKept,
-      message: buildLandMessage(ordered, uniqueKept, commitSha),
     };
   });
 }

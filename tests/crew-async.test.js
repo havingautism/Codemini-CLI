@@ -210,6 +210,7 @@ test('suggestCrewNextAction prefers rebase only when rebaseOnto is set', () => {
   const suggestion = suggestCrewNextAction({
     workers: [{
       id: 'noah',
+      missionId: 'm2',
       sealed: true,
       kind: 'coder',
       reviewPassed: undefined,
@@ -218,9 +219,9 @@ test('suggestCrewNextAction prefers rebase only when rebaseOnto is set', () => {
     }],
     inFlight: [],
   });
-  assert.match(suggestion, /Resume and rebase/);
-  assert.match(suggestion, /noah/);
-  assert.match(suggestion, /reviewer/);
+  assert.match(suggestion, /crew_rebase/);
+  assert.match(suggestion, /m2/);
+  assert.match(suggestion, /RESUME_REQUIRED|land_workers/i);
 });
 
 test('suggestCrewNextAction waits for queued wakes instead of landing', () => {

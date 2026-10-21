@@ -104,6 +104,7 @@ test('crew parent run is inspect-only; coding run is unchanged', async () => {
     crewActive: true,
     onRunSubAgent: async () => ({ ok: true }),
     onLandWorkers: async () => ({ ok: true }),
+    onRebaseCrewMission: async () => ({ ok: true, status: 'up-to-date' }),
   });
   const crewRun = shellTool(crew);
   assert.match(String(crewRun.def?.function?.description || ''), /inspect-only/i);
@@ -150,6 +151,7 @@ test('cancel_worker is Crew-only and removes via the wired callback', async () =
     crewActive: true,
     onRunSubAgent: async () => ({ ok: true }),
     onLandWorkers: async () => ({ ok: true }),
+    onRebaseCrewMission: async () => ({ ok: true, status: 'up-to-date' }),
   });
   assert.equal(
     hidden.definitions.some((item) => item.function?.name === 'cancel_worker'),
@@ -168,6 +170,7 @@ test('cancel_worker is Crew-only and removes via the wired callback', async () =
     crewActive: true,
     onRunSubAgent: async () => ({ ok: true }),
     onLandWorkers: async () => ({ ok: true }),
+    onRebaseCrewMission: async () => ({ ok: true, status: 'up-to-date' }),
     onCancelWorker: async ({ workerId }) => {
       seen = workerId;
       return { ok: true, cancelled: 'worker', workerId, message: `Cancelled Crew worker "${workerId}" and removed its worktree.` };
@@ -199,6 +202,7 @@ test('applyCrewParentToolPolicy strips mutation tools only when crew is on', () 
   assert.equal(crew.includes('crew_inbox'), true);
   assert.equal(crew.includes('crew_plan'), true);
   assert.equal(crew.includes('crew_finish'), true);
+  assert.equal(crew.includes('crew_rebase'), true);
   assert.equal(crew.includes('run'), true);
 });
 
@@ -221,6 +225,7 @@ test('tool_search for crew_status says the tool is already available', async () 
     crewActive: true,
     onRunSubAgent: async () => ({ ok: true }),
     onLandWorkers: async () => ({ ok: true }),
+    onRebaseCrewMission: async () => ({ ok: true, status: 'up-to-date' }),
   });
   const result = handlers.tool_search({ query: 'crew_status' });
   assert.equal(result.error, undefined);
@@ -242,6 +247,7 @@ test('crew_status is exposed for Crew sessions and reads fresh state', async () 
     crewActive: true,
     onRunSubAgent: async () => ({ ok: true }),
     onLandWorkers: async () => ({ ok: true }),
+    onRebaseCrewMission: async () => ({ ok: true, status: 'up-to-date' }),
     config: {
       runtime: {
         crew_session: true,
@@ -265,6 +271,7 @@ test('submit_crew_review is only exposed when a verdict callback is wired', asyn
     crewActive: true,
     onRunSubAgent: async () => ({ ok: true }),
     onLandWorkers: async () => ({ ok: true }),
+    onRebaseCrewMission: async () => ({ ok: true, status: 'up-to-date' }),
   });
   assert.equal(
     hidden.definitions.some((item) => item.function?.name === 'submit_crew_review'),

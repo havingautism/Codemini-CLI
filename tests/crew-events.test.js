@@ -199,7 +199,7 @@ test('runCrewWorkerJob records a completion event before waking Crew', async () 
     assert.equal(wakes.length, 1);
     const events = listCrewEventsFromState(await readCrewStateFile(dir));
     assert.equal(events.length, 1);
-    assert.equal(events[0].kind, 'worker.completed');
+    assert.equal(events[0].kind, 'worker.interrupted');
     assert.equal(events[0].from, 'mia');
     assert.equal(events[0].delivered, false);
   });

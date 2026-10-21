@@ -5,6 +5,8 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { landCrewWorkers } from '../src/core/crew-land.js';
+import { rebaseCrewMission } from '../src/core/crew-rebase.js';
+import { planCrewMissions, setCrewMissionStatus } from '../src/core/crew-missions.js';
 import { runGit } from '../src/core/process-run.js';
 import { getProjectCrewStatePath, getProjectCrewWorktreesDir } from '../src/core/paths.js';
 import { enterCrewMode, listCrewWorkersFromState, patchCrewWorkerRecord } from '../src/core/crew-store.js';
@@ -72,6 +74,56 @@ async function markCleanReview(dir, worker) {
   });
 }
 
+async function spawnBuildMission(dir, { title = 'task', paths = ['docs/**'], dependsOn = [] } = {}) {
+  const planned = await planCrewMissions(dir, {
+    missions: [{
+      title,
+      kind: 'build',
+      paths,
+      ...(dependsOn.length ? { dependsOn } : {}),
+    }],
+  });
+  assert.equal(planned.ok, true, planned.error);
+  const mission = planned.created[0];
+  const spawned = await addCrewWorktree({
+    cwd: dir,
+    base: 'main',
+    taskId: mission.id,
+    paths,
+    missionId: mission.id,
+    dependsOn,
+  });
+  assert.equal(spawned.ok, true, spawned.error);
+  return { mission, worker: spawned.worker };
+}
+
+async function planAndSpawnBuilds(dir, specs) {
+  const planned = await planCrewMissions(dir, {
+    missions: specs.map((spec) => ({ kind: 'build', ...spec })),
+  });
+  assert.equal(planned.ok, true, planned.error);
+  const entries = [];
+  for (const mission of planned.created) {
+    const spawned = await addCrewWorktree({
+      cwd: dir,
+      base: 'main',
+      taskId: mission.id,
+      paths: mission.paths,
+      missionId: mission.id,
+      dependsOn: mission.dependsOn || [],
+    });
+    assert.equal(spawned.ok, true, spawned.error);
+    entries.push({ mission, worker: spawned.worker });
+  }
+  return entries;
+}
+
+async function landBuildMission(dir, mission, worker, { review = true } = {}) {
+  if (review) await markCleanReview(dir, worker);
+  await setCrewMissionStatus(dir, mission.id, 'completed');
+  return landCrewWorkers({ cwd: dir, base: 'main', missionId: mission.id });
+}
+
 async function commitCount(cwd) {
   const log = await git(cwd, ['log', '--first-parent', '--format=%s']);
   return String(log.stdout || '').trim().split('\n').filter(Boolean);
@@ -119,102 +171,96 @@ test('addCrewWorktree requires paths and rejects overlapping globs', async () =>
   });
 });
 
+test('land_workers requires mission_id', async () => {
+  await withRepo(async (dir) => {
+    const refused = await landCrewWorkers({ cwd: dir, base: 'main' });
+    assert.equal(refused.ok, false);
+    assert.equal(refused.code, 'MISSION_REQUIRED');
+  });
+});
+
 test('land_workers refuses a dirty worker worktree and does not commit the user branch', async () => {
   await withRepo(async (dir) => {
-    const spawned = await addCrewWorktree({
-      cwd: dir,
-      base: 'main',
-      taskId: 'docs',
-      paths: ['docs/**'],
-    });
-    await fs.mkdir(path.join(spawned.worker.worktreePath, 'docs'), { recursive: true });
-    await fs.writeFile(path.join(spawned.worker.worktreePath, 'docs', 'a.md'), 'draft\n');
-    const landed = await landCrewWorkers({ cwd: dir, base: 'main' });
+    const { mission, worker: spawned } = await spawnBuildMission(dir, { title: 'docs', paths: ['docs/**'] });
+    await fs.mkdir(path.join(spawned.worktreePath, 'docs'), { recursive: true });
+    await fs.writeFile(path.join(spawned.worktreePath, 'docs', 'a.md'), 'draft\n');
+    await setCrewMissionStatus(dir, mission.id, 'completed');
+    const landed = await landCrewWorkers({ cwd: dir, base: 'main', missionId: mission.id });
     assert.equal(landed.ok, false);
     assert.equal(landed.code, 'DIRTY_WORKTREE');
     assert.deepEqual(await commitCount(dir), ['init']);
     assert.equal(await fs.access(path.join(dir, 'docs', 'a.md')).then(() => true, () => false), false);
-    assert.deepEqual(await listCrewRefs(dir), [spawned.worker.branch]);
+    assert.deepEqual(await listCrewRefs(dir), [spawned.branch]);
   });
 });
 
 test('one sealed worker commits onto the user branch', async () => {
   await withRepo(async (dir) => {
-    const spawned = await addCrewWorktree({
-      cwd: dir,
-      base: 'main',
-      taskId: 'docs',
-      paths: ['docs/**'],
-    });
-    await commitWorkerFile(spawned.worker.worktreePath, path.join('docs', 'a.md'), 'alpha\n');
-    await markCleanReview(dir, spawned.worker);
-    const landed = await landCrewWorkers({ cwd: dir, base: 'main' });
+    const { mission, worker } = await spawnBuildMission(dir, { title: 'docs', paths: ['docs/**'] });
+    await commitWorkerFile(worker.worktreePath, path.join('docs', 'a.md'), 'alpha\n');
+    const landed = await landBuildMission(dir, mission, worker);
     assert.equal(landed.ok, true, landed.error);
     assert.equal(landed.committed, true);
     assert.equal(await fs.readFile(path.join(dir, 'docs', 'a.md'), 'utf8'), 'alpha\n');
     const commits = await commitCount(dir);
     assert.equal(commits.length, 2);
-    assert.match(commits[0], new RegExp(`codemini-crew merge ${spawned.worker.id}`));
+    assert.match(commits[0], new RegExp(`codemini-crew merge ${worker.id}`));
     const saved = JSON.parse(await fs.readFile(getProjectCrewStatePath(dir), 'utf8'));
-    assert.equal(listCrewWorkersFromState(saved).length, 0);
-    assert.deepEqual(landed.kept, []);
-    assert.match(String(landed.message || ''), /Worker branches were deleted/);
-    assert.deepEqual(await listCrewRefs(dir), []);
+    assert.equal(listCrewWorkersFromState(saved).length, 1);
+    assert.equal(listCrewWorkersFromState(saved)[0].integrated, true);
+    assert.deepEqual(await listCrewRefs(dir), [worker.branch]);
   });
 });
 
 test('land_workers refuses to merge after the user switches away from the recorded base branch', async () => {
   await withRepo(async (dir) => {
-    const spawned = await addCrewWorktree({
-      cwd: dir,
-      base: 'main',
-      taskId: 'docs',
-      paths: ['docs/**'],
-    });
-    await commitWorkerFile(spawned.worker.worktreePath, path.join('docs', 'a.md'), 'alpha\n');
-    await markCleanReview(dir, spawned.worker);
+    const { mission, worker } = await spawnBuildMission(dir, { title: 'docs', paths: ['docs/**'] });
+    await commitWorkerFile(worker.worktreePath, path.join('docs', 'a.md'), 'alpha\n');
+    await markCleanReview(dir, worker);
+    await setCrewMissionStatus(dir, mission.id, 'completed');
     await git(dir, ['switch', '-c', 'unrelated']);
 
-    const landed = await landCrewWorkers({ cwd: dir, base: 'main' });
+    const landed = await landCrewWorkers({ cwd: dir, base: 'main', missionId: mission.id });
 
     assert.equal(landed.ok, false);
     assert.equal(landed.code, 'BASE_BRANCH_MISMATCH');
     assert.equal(landed.base, 'main');
     assert.equal(landed.currentBranch, 'unrelated');
     assert.equal(await fs.access(path.join(dir, 'docs', 'a.md')).then(() => true, () => false), false);
-    assert.deepEqual(await listCrewRefs(dir), [spawned.worker.branch]);
+    assert.deepEqual(await listCrewRefs(dir), [worker.branch]);
   });
 });
 
-test('two sealed workers land both files in one crew commit', async () => {
+test('two sealed workers land both files in separate mission merges', async () => {
   await withRepo(async (dir) => {
-    const docs = await addCrewWorktree({
-      cwd: dir,
-      base: 'main',
-      taskId: 'docs',
-      paths: ['docs/**'],
-    });
-    const src = await addCrewWorktree({
-      cwd: dir,
-      base: 'main',
-      taskId: 'src',
-      paths: ['src/**'],
-      dependsOn: ['docs'],
-    });
+    const [docs, src] = await planAndSpawnBuilds(dir, [
+      { title: 'docs', paths: ['docs/**'] },
+      { title: 'src', paths: ['src/**'] },
+    ]);
     await commitWorkerFile(docs.worker.worktreePath, path.join('docs', 'a.md'), 'alpha\n');
     await commitWorkerFile(src.worker.worktreePath, path.join('src', 'a.ts'), 'export {}\n');
-    await markCleanReview(dir, docs.worker);
-    await markCleanReview(dir, src.worker);
-    const landed = await landCrewWorkers({ cwd: dir, base: 'main' });
-    assert.equal(landed.ok, true, landed.error);
-    assert.equal(landed.committed, true);
+    const landedDocs = await landBuildMission(dir, docs.mission, docs.worker);
+    assert.equal(landedDocs.ok, true, landedDocs.error);
+    const baseTip = String((await git(dir, ['rev-parse', 'HEAD'])).stdout || '').trim();
+    await runGit(['rebase', baseTip], {
+      cwd: src.worker.worktreePath,
+      allowFailure: false,
+      timeoutMs: 15_000,
+      env: {
+        ...process.env,
+        GIT_AUTHOR_NAME: 'Codemini Test',
+        GIT_AUTHOR_EMAIL: 'crew@test.local',
+        GIT_COMMITTER_NAME: 'Codemini Test',
+        GIT_COMMITTER_EMAIL: 'crew@test.local',
+      },
+    });
+    const landedSrc = await landBuildMission(dir, src.mission, src.worker);
+    assert.equal(landedSrc.ok, true, landedSrc.error);
     assert.equal(await fs.readFile(path.join(dir, 'docs', 'a.md'), 'utf8'), 'alpha\n');
     assert.equal(await fs.readFile(path.join(dir, 'src', 'a.ts'), 'utf8'), 'export {}\n');
     const commits = await commitCount(dir);
     assert.equal(commits.length, 3);
     assert.match(commits[0], /codemini-crew merge/);
-    assert.deepEqual(landed.kept, []);
-    assert.deepEqual(await listCrewRefs(dir), []);
     const worktrees = await git(dir, ['worktree', 'list']);
     assert.equal(String(worktrees.stdout || '').includes('_merge-tmp'), false);
   });
@@ -222,80 +268,62 @@ test('two sealed workers land both files in one crew commit', async () => {
 
 test('land_workers refuses files outside the worker glob', async () => {
   await withRepo(async (dir) => {
-    const spawned = await addCrewWorktree({
-      cwd: dir,
-      base: 'main',
-      taskId: 'docs',
-      paths: ['docs/**'],
-    });
-    await commitWorkerFile(spawned.worker.worktreePath, 'escaped.txt', 'nope\n');
-    const landed = await landCrewWorkers({ cwd: dir, base: 'main' });
+    const { mission, worker: spawned } = await spawnBuildMission(dir, { title: 'docs', paths: ['docs/**'] });
+    await commitWorkerFile(spawned.worktreePath, 'escaped.txt', 'nope\n');
+    await setCrewMissionStatus(dir, mission.id, 'completed');
+    const landed = await landCrewWorkers({ cwd: dir, base: 'main', missionId: mission.id });
     assert.equal(landed.ok, false);
     assert.equal(landed.code, 'SCOPE_ESCAPE');
     assert.equal(await fs.access(path.join(dir, 'escaped.txt')).then(() => true, () => false), false);
     const saved = JSON.parse(await fs.readFile(getProjectCrewStatePath(dir), 'utf8'));
     assert.equal(listCrewWorkersFromState(saved).length, 1);
-    assert.deepEqual(await listCrewRefs(dir), [spawned.worker.branch]);
+    assert.deepEqual(await listCrewRefs(dir), [spawned.branch]);
   });
 });
 
 test('land_workers stops when the user worktree would overwrite uncommitted files', async () => {
   await withRepo(async (dir) => {
-    const spawned = await addCrewWorktree({
-      cwd: dir,
-      base: 'main',
-      taskId: 'docs',
-      paths: ['docs/**'],
-    });
-    await commitWorkerFile(spawned.worker.worktreePath, path.join('docs', 'a.md'), 'from-worker\n');
-    await markCleanReview(dir, spawned.worker);
+    const { mission, worker: spawned } = await spawnBuildMission(dir, { title: 'docs', paths: ['docs/**'] });
+    await commitWorkerFile(spawned.worktreePath, path.join('docs', 'a.md'), 'from-worker\n');
+    await markCleanReview(dir, spawned);
+    await setCrewMissionStatus(dir, mission.id, 'completed');
     await fs.mkdir(path.join(dir, 'docs'), { recursive: true });
     await fs.writeFile(path.join(dir, 'docs', 'a.md'), 'local\n');
-    const landed = await landCrewWorkers({ cwd: dir, base: 'main' });
+    const landed = await landCrewWorkers({ cwd: dir, base: 'main', missionId: mission.id });
     assert.equal(landed.ok, false);
-    assert.equal(landed.code, 'GIT_MERGE');
+    assert.equal(landed.code, 'MAIN_WORKTREE_DIRTY');
+    assert.match(landed.error, /user/i);
     assert.equal(await fs.readFile(path.join(dir, 'docs', 'a.md'), 'utf8'), 'local\n');
     const saved = JSON.parse(await fs.readFile(getProjectCrewStatePath(dir), 'utf8'));
+    const workerState = listCrewWorkersFromState(saved)[0];
+    assert.equal(workerState.reviewPassed, true);
     assert.equal(listCrewWorkersFromState(saved).length, 1);
-    assert.deepEqual(await listCrewRefs(dir), [spawned.worker.branch]);
+    assert.deepEqual(await listCrewRefs(dir), [spawned.branch]);
   });
 });
 
-test('failed two-worker land keeps worker branches for retry after local checkout conflict', async () => {
+test('failed mission land keeps worker branches for retry after local checkout conflict', async () => {
   await withRepo(async (dir) => {
-    const docs = await addCrewWorktree({
-      cwd: dir,
-      base: 'main',
-      taskId: 'docs',
-      paths: ['docs/**'],
-    });
-    const src = await addCrewWorktree({
-      cwd: dir,
-      base: 'main',
-      taskId: 'src',
-      paths: ['src/**'],
-    });
+    const [docs] = await planAndSpawnBuilds(dir, [
+      { title: 'docs', paths: ['docs/**'] },
+    ]);
     await commitWorkerFile(docs.worker.worktreePath, path.join('docs', 'a.md'), 'from-worker\n');
-    await commitWorkerFile(src.worker.worktreePath, path.join('src', 'a.ts'), 'export {}\n');
     await markCleanReview(dir, docs.worker);
-    await markCleanReview(dir, src.worker);
+    await setCrewMissionStatus(dir, docs.mission.id, 'completed');
     await fs.mkdir(path.join(dir, 'docs'), { recursive: true });
     await fs.writeFile(path.join(dir, 'docs', 'a.md'), 'local\n');
-    const landed = await landCrewWorkers({ cwd: dir, base: 'main' });
+    const landed = await landCrewWorkers({ cwd: dir, base: 'main', missionId: docs.mission.id });
     assert.equal(landed.ok, false);
-    assert.equal(landed.code, 'GIT_MERGE');
+    assert.equal(landed.code, 'MAIN_WORKTREE_DIRTY');
     assert.equal(await fs.readFile(path.join(dir, 'docs', 'a.md'), 'utf8'), 'local\n');
-    assert.equal(await fs.access(path.join(dir, 'src', 'a.ts')).then(() => true, () => false), false);
     const refs = await listCrewRefs(dir);
     assert.equal(refs.includes(docs.worker.branch), true);
-    assert.equal(refs.includes(src.worker.branch), true);
-    assert.equal(refs.includes('codemini-crew/_merge-tmp'), false);
     const saved = JSON.parse(await fs.readFile(getProjectCrewStatePath(dir), 'utf8'));
     const workers = listCrewWorkersFromState(saved);
-    assert.equal(workers.length, 2);
-    assert.equal(workers.every((item) => item.integrated === true), false);
+    assert.equal(workers.length, 1);
+    assert.equal(workers[0].integrated, undefined);
     await fs.rm(path.join(dir, 'docs', 'a.md'));
-    const retried = await landCrewWorkers({ cwd: dir, base: 'main' });
+    const retried = await landCrewWorkers({ cwd: dir, base: 'main', missionId: docs.mission.id });
     assert.equal(retried.ok, true, retried.error);
     assert.equal(retried.committed, true);
     assert.equal(await fs.readFile(path.join(dir, 'docs', 'a.md'), 'utf8'), 'from-worker\n');
@@ -304,14 +332,10 @@ test('failed two-worker land keeps worker branches for retry after local checkou
 
 test('land_workers refuses a sealed worker with no passing review', async () => {
   await withRepo(async (dir) => {
-    const spawned = await addCrewWorktree({
-      cwd: dir,
-      base: 'main',
-      taskId: 'docs',
-      paths: ['docs/**'],
-    });
-    await commitWorkerFile(spawned.worker.worktreePath, path.join('docs', 'a.md'), 'alpha\n');
-    const landed = await landCrewWorkers({ cwd: dir, base: 'main' });
+    const { mission, worker: spawned } = await spawnBuildMission(dir, { title: 'docs', paths: ['docs/**'] });
+    await commitWorkerFile(spawned.worktreePath, path.join('docs', 'a.md'), 'alpha\n');
+    await setCrewMissionStatus(dir, mission.id, 'completed');
+    const landed = await landCrewWorkers({ cwd: dir, base: 'main', missionId: mission.id });
     assert.equal(landed.ok, false);
     assert.equal(landed.code, 'REVIEW_REQUIRED');
     assert.equal(await fs.access(path.join(dir, 'docs', 'a.md')).then(() => true, () => false), false);
@@ -322,20 +346,16 @@ test('land_workers refuses a sealed worker with no passing review', async () => 
 
 test('land_workers refuses a failed review of the current commit', async () => {
   await withRepo(async (dir) => {
-    const spawned = await addCrewWorktree({
-      cwd: dir,
-      base: 'main',
-      taskId: 'docs',
-      paths: ['docs/**'],
-    });
-    await commitWorkerFile(spawned.worker.worktreePath, path.join('docs', 'a.md'), 'alpha\n');
-    const sha = String((await git(spawned.worker.worktreePath, ['rev-parse', 'HEAD'])).stdout || '').trim();
-    await patchCrewWorkerRecord(dir, spawned.worker.id, {
+    const { mission, worker: spawned } = await spawnBuildMission(dir, { title: 'docs', paths: ['docs/**'] });
+    await commitWorkerFile(spawned.worktreePath, path.join('docs', 'a.md'), 'alpha\n');
+    const sha = String((await git(spawned.worktreePath, ['rev-parse', 'HEAD'])).stdout || '').trim();
+    await patchCrewWorkerRecord(dir, spawned.id, {
       reviewedCommit: sha,
       reviewPassed: false,
       reviewText: 'Findings:\n- missing tests',
     });
-    const landed = await landCrewWorkers({ cwd: dir, base: 'main' });
+    await setCrewMissionStatus(dir, mission.id, 'completed');
+    const landed = await landCrewWorkers({ cwd: dir, base: 'main', missionId: mission.id });
     assert.equal(landed.ok, false);
     assert.equal(landed.code, 'REVIEW_FAILED');
   });
@@ -343,15 +363,10 @@ test('land_workers refuses a failed review of the current commit', async () => {
 
 test('land_workers treats a stopped review loop like a failed review', async () => {
   await withRepo(async (dir) => {
-    const spawned = await addCrewWorktree({
-      cwd: dir,
-      base: 'main',
-      taskId: 'docs',
-      paths: ['docs/**'],
-    });
-    await commitWorkerFile(spawned.worker.worktreePath, path.join('docs', 'a.md'), 'alpha\n');
-    const sha = String((await git(spawned.worker.worktreePath, ['rev-parse', 'HEAD'])).stdout || '').trim();
-    await patchCrewWorkerRecord(dir, spawned.worker.id, {
+    const { mission, worker: spawned } = await spawnBuildMission(dir, { title: 'docs', paths: ['docs/**'] });
+    await commitWorkerFile(spawned.worktreePath, path.join('docs', 'a.md'), 'alpha\n');
+    const sha = String((await git(spawned.worktreePath, ['rev-parse', 'HEAD'])).stdout || '').trim();
+    await patchCrewWorkerRecord(dir, spawned.id, {
       reviewedCommit: sha,
       reviewPassed: false,
       reviewText: 'Findings:\n- missing tests',
@@ -359,7 +374,8 @@ test('land_workers treats a stopped review loop like a failed review', async () 
       lastFindingsKey: 'missing tests',
       reviewLoopStopped: true,
     });
-    const landed = await landCrewWorkers({ cwd: dir, base: 'main' });
+    await setCrewMissionStatus(dir, mission.id, 'completed');
+    const landed = await landCrewWorkers({ cwd: dir, base: 'main', missionId: mission.id });
     assert.equal(landed.ok, false);
     assert.equal(landed.code, 'REVIEW_FAILED');
     assert.match(String(landed.error || ''), /new task or paths/);
@@ -367,29 +383,17 @@ test('land_workers treats a stopped review loop like a failed review', async () 
   });
 });
 
-test('land_workers merges a passing worker onto base while another is still in review', async () => {
+test('land_workers merges one mission while another worker is still in review', async () => {
   await withRepo(async (dir) => {
-    const docs = await addCrewWorktree({
-      cwd: dir,
-      base: 'main',
-      taskId: 'docs',
-      paths: ['docs/**'],
-    });
-    const src = await addCrewWorktree({
-      cwd: dir,
-      base: 'main',
-      taskId: 'src',
-      paths: ['src/**'],
-    });
+    const [docs, src] = await planAndSpawnBuilds(dir, [
+      { title: 'docs', paths: ['docs/**'] },
+      { title: 'src', paths: ['src/**'] },
+    ]);
     await commitWorkerFile(docs.worker.worktreePath, path.join('docs', 'a.md'), 'alpha\n');
     await commitWorkerFile(src.worker.worktreePath, path.join('src', 'a.ts'), 'export {}\n');
-    await markCleanReview(dir, docs.worker);
-
-    const first = await landCrewWorkers({ cwd: dir, base: 'main' });
+    const first = await landBuildMission(dir, docs.mission, docs.worker);
     assert.equal(first.ok, true, first.error);
     assert.equal(first.committed, true);
-    assert.deepEqual(first.integrated, [docs.worker.id]);
-    assert.deepEqual(first.pending, [src.worker.id]);
     assert.equal(await fs.readFile(path.join(dir, 'docs', 'a.md'), 'utf8'), 'alpha\n');
     assert.equal((await fs.readdir(getProjectCrewWorktreesDir(dir))).includes('_merge-tmp'), false);
 
@@ -402,20 +406,24 @@ test('land_workers merges a passing worker onto base while another is still in r
       resume: docs.worker.id,
     });
     assert.equal(resumeIntegrated.ok, false);
-    assert.equal(resumeIntegrated.code, 'WORKER_INTEGRATED');
-    const overlap = await addCrewWorktree({
-      cwd: dir,
-      base: 'main',
-      taskId: 'docs2',
-      paths: ['docs/**'],
-    });
-    assert.equal(overlap.ok, true, overlap.error);
+    assert.ok(['WORKER_INTEGRATED', 'MISSION_TERMINAL'].includes(resumeIntegrated.code));
 
-    await markCleanReview(dir, src.worker);
-    const second = await landCrewWorkers({ cwd: dir, base: 'main' });
+    const baseTip = String((await git(dir, ['rev-parse', 'HEAD'])).stdout || '').trim();
+    await runGit(['rebase', baseTip], {
+      cwd: src.worker.worktreePath,
+      allowFailure: false,
+      timeoutMs: 15_000,
+      env: {
+        ...process.env,
+        GIT_AUTHOR_NAME: 'Codemini Test',
+        GIT_AUTHOR_EMAIL: 'crew@test.local',
+        GIT_COMMITTER_NAME: 'Codemini Test',
+        GIT_COMMITTER_EMAIL: 'crew@test.local',
+      },
+    });
+    const second = await landBuildMission(dir, src.mission, src.worker);
     assert.equal(second.ok, true, second.error);
     assert.equal(second.committed, true);
-    assert.equal(await fs.readFile(path.join(dir, 'docs', 'a.md'), 'utf8'), 'alpha\n');
     assert.equal(await fs.readFile(path.join(dir, 'src', 'a.ts'), 'utf8'), 'export {}\n');
     const commits = await commitCount(dir);
     assert.equal(commits.length, 3);
@@ -423,18 +431,50 @@ test('land_workers merges a passing worker onto base while another is still in r
   });
 });
 
+test('crew_rebase refuses missions that are not completed', async () => {
+  await withRepo(async (dir) => {
+    const { mission } = await spawnBuildMission(dir, { title: 'docs', paths: ['docs/**'] });
+    const rebased = await rebaseCrewMission({ cwd: dir, base: 'main', missionId: mission.id });
+    assert.equal(rebased.ok, false);
+    assert.equal(rebased.code, 'NOT_COMPLETED');
+  });
+});
+
+test('crew_rebase preserves review when rebase is clean and scopes are disjoint', async () => {
+  await withRepo(async (dir) => {
+    const [mia, noah] = await planAndSpawnBuilds(dir, [
+      { title: 'mia', paths: ['docs/**'] },
+      { title: 'noah', paths: ['src/**'] },
+    ]);
+    await commitWorkerFile(mia.worker.worktreePath, path.join('docs', 'a.md'), 'mia\n');
+    await commitWorkerFile(noah.worker.worktreePath, path.join('src', 'a.ts'), 'export {}\n');
+    await markCleanReview(dir, mia.worker);
+    await markCleanReview(dir, noah.worker);
+    await setCrewMissionStatus(dir, mia.mission.id, 'completed');
+    await setCrewMissionStatus(dir, noah.mission.id, 'completed');
+
+    const landedMia = await landBuildMission(dir, mia.mission, mia.worker);
+    assert.equal(landedMia.ok, true, landedMia.error);
+    const blocked = await landCrewWorkers({ cwd: dir, base: 'main', missionId: noah.mission.id });
+    assert.equal(blocked.code, 'REBASE_REQUIRED');
+
+    const rebased = await rebaseCrewMission({ cwd: dir, base: 'main', missionId: noah.mission.id });
+    assert.equal(rebased.ok, true, rebased.error);
+    assert.equal(rebased.reviewKept, true);
+
+    const finished = await landCrewWorkers({ cwd: dir, base: 'main', missionId: noah.mission.id });
+    assert.equal(finished.ok, true, finished.error);
+  });
+});
+
 test('a new worker commit invalidates the previous passing review', async () => {
   await withRepo(async (dir) => {
-    const spawned = await addCrewWorktree({
-      cwd: dir,
-      base: 'main',
-      taskId: 'docs',
-      paths: ['docs/**'],
-    });
-    await commitWorkerFile(spawned.worker.worktreePath, path.join('docs', 'a.md'), 'alpha\n');
-    await markCleanReview(dir, spawned.worker);
-    await commitWorkerFile(spawned.worker.worktreePath, path.join('docs', 'b.md'), 'beta\n');
-    const landed = await landCrewWorkers({ cwd: dir, base: 'main' });
+    const { mission, worker: spawned } = await spawnBuildMission(dir, { title: 'docs', paths: ['docs/**'] });
+    await commitWorkerFile(spawned.worktreePath, path.join('docs', 'a.md'), 'alpha\n');
+    await markCleanReview(dir, spawned);
+    await commitWorkerFile(spawned.worktreePath, path.join('docs', 'b.md'), 'beta\n');
+    await setCrewMissionStatus(dir, mission.id, 'completed');
+    const landed = await landCrewWorkers({ cwd: dir, base: 'main', missionId: mission.id });
     assert.equal(landed.ok, false);
     assert.equal(landed.code, 'REVIEW_REQUIRED');
   });
@@ -442,18 +482,10 @@ test('a new worker commit invalidates the previous passing review', async () => 
 
 test('two-worker merge conflict requires rebase onto the base tip', async () => {
   await withRepo(async (dir) => {
-    const mia = await addCrewWorktree({
-      cwd: dir,
-      base: 'main',
-      taskId: 'mia',
-      paths: ['docs/**'],
-    });
-    const noah = await addCrewWorktree({
-      cwd: dir,
-      base: 'main',
-      taskId: 'noah',
-      paths: ['src/**'],
-    });
+    const [mia, noah] = await planAndSpawnBuilds(dir, [
+      { title: 'mia', paths: ['docs/**'] },
+      { title: 'noah', paths: ['src/**'] },
+    ]);
     await commitWorkerFile(mia.worker.worktreePath, path.join('docs', 'a.md'), 'mia\n');
     await commitWorkerFile(noah.worker.worktreePath, path.join('src', 'a.ts'), 'export {}\n');
     await commitWorkerFile(mia.worker.worktreePath, 'README.md', 'from-mia\n');
@@ -465,7 +497,9 @@ test('two-worker merge conflict requires rebase onto the base tip', async () => 
     await markCleanReview(dir, miaRecord);
     await markCleanReview(dir, noahRecord);
 
-    const landed = await landCrewWorkers({ cwd: dir, base: 'main' });
+    const landedMia = await landBuildMission(dir, mia.mission, miaRecord);
+    assert.equal(landedMia.ok, true, landedMia.error);
+    const landed = await landBuildMission(dir, noah.mission, noahRecord);
     assert.equal(landed.ok, false);
     assert.equal(landed.code, 'REBASE_REQUIRED');
     assert.equal(landed.workerId, noah.worker.id);
@@ -477,12 +511,17 @@ test('two-worker merge conflict requires rebase onto the base tip', async () => 
     const afterConflict = JSON.parse(await fs.readFile(getProjectCrewStatePath(dir), 'utf8'));
     const noahState = listCrewWorkersFromState(afterConflict).find((item) => item.id === noah.worker.id);
     assert.equal(noahState.rebaseOnto, baseTip);
-    assert.notEqual(noahState.reviewPassed, true);
-    assert.equal(noahState.reviewedCommit, undefined);
+    assert.equal(noahState.reviewPassed, true);
+    assert.ok(noahState.reviewedCommit);
 
-    const again = await landCrewWorkers({ cwd: dir, base: 'main' });
+    const again = await landCrewWorkers({ cwd: dir, base: 'main', missionId: noah.mission.id });
     assert.equal(again.code, 'REBASE_REQUIRED');
+    assert.match(again.error, /crew_rebase/i);
     assert.equal(String((await git(dir, ['rev-parse', 'HEAD'])).stdout || '').trim(), baseTip);
+
+    const crewRebase = await rebaseCrewMission({ cwd: dir, base: 'main', missionId: noah.mission.id });
+    assert.equal(crewRebase.ok, false);
+    assert.equal(crewRebase.code, 'RESUME_REQUIRED');
 
     const rebase = await runGit(['rebase', baseTip], {
       cwd: noah.worker.worktreePath,
@@ -515,27 +554,18 @@ test('two-worker merge conflict requires rebase onto the base tip', async () => 
 
     await patchCrewWorkerRecord(dir, noah.worker.id, { landBase: '', rebaseOnto: '' });
     await markCleanReview(dir, noahRecord);
-    const finished = await landCrewWorkers({ cwd: dir, base: 'main' });
+    const finished = await landCrewWorkers({ cwd: dir, base: 'main', missionId: noah.mission.id });
     assert.equal(finished.ok, true, finished.error);
     assert.equal((await fs.readdir(getProjectCrewWorktreesDir(dir))).includes('_merge-tmp'), false);
-    assert.deepEqual(await listCrewRefs(dir), []);
   });
 });
 
 test('rebase conflict loops through resume, worker fix, review, and land', async () => {
   await withRepo(async (dir) => {
-    const mia = await addCrewWorktree({
-      cwd: dir,
-      base: 'main',
-      taskId: 'mia',
-      paths: ['docs/**'],
-    });
-    const noah = await addCrewWorktree({
-      cwd: dir,
-      base: 'main',
-      taskId: 'noah',
-      paths: ['src/**'],
-    });
+    const [mia, noah] = await planAndSpawnBuilds(dir, [
+      { title: 'mia', paths: ['docs/**'] },
+      { title: 'noah', paths: ['src/**'] },
+    ]);
     await commitWorkerFile(mia.worker.worktreePath, path.join('docs', 'a.md'), 'mia\n');
     await commitWorkerFile(noah.worker.worktreePath, path.join('src', 'a.ts'), 'export {}\n');
     await commitWorkerFile(mia.worker.worktreePath, 'README.md', 'from-mia\n');
@@ -545,7 +575,8 @@ test('rebase conflict loops through resume, worker fix, review, and land', async
     await markCleanReview(dir, mia.worker);
     await markCleanReview(dir, noah.worker);
 
-    const conflictLand = await landCrewWorkers({ cwd: dir, base: 'main' });
+    await landBuildMission(dir, mia.mission, mia.worker);
+    const conflictLand = await landBuildMission(dir, noah.mission, noah.worker, { review: true });
     assert.equal(conflictLand.ok, false);
     assert.equal(conflictLand.code, 'REBASE_REQUIRED');
     assert.equal(conflictLand.workerId, noah.worker.id);
@@ -556,7 +587,13 @@ test('rebase conflict loops through resume, worker fix, review, and land', async
     const noahState = listCrewWorkersFromState(afterPartial).find((item) => item.id === noah.worker.id);
     assert.equal(miaState.integrated, true);
     assert.equal(noahState.rebaseOnto, baseTip);
-    assert.notEqual(noahState.reviewPassed, true);
+    assert.equal(noahState.reviewPassed, true);
+
+    const crewRebase = await rebaseCrewMission({ cwd: dir, base: 'main', missionId: noah.mission.id });
+    assert.equal(crewRebase.code, 'RESUME_REQUIRED');
+    const afterRebaseAttempt = JSON.parse(await fs.readFile(getProjectCrewStatePath(dir), 'utf8'));
+    const noahAfterRebase = listCrewWorkersFromState(afterRebaseAttempt).find((item) => item.id === noah.worker.id);
+    assert.notEqual(noahAfterRebase.reviewPassed, true);
 
     const resumed = await resolveCrewSubagentWorkspace({
       cwd: dir,
@@ -623,13 +660,13 @@ test('rebase conflict loops through resume, worker fix, review, and land', async
     assert.match(reviewPrompt, /Review the rebased README fix/);
 
     await markCleanReview(dir, reviewTarget.worker);
-    const finished = await landCrewWorkers({ cwd: dir, base: 'main' });
+    await setCrewMissionStatus(dir, noah.mission.id, 'completed');
+    const finished = await landCrewWorkers({ cwd: dir, base: 'main', missionId: noah.mission.id });
     assert.equal(finished.ok, true, finished.error);
     const readme = await fs.readFile(path.join(dir, 'README.md'), 'utf8');
     assert.equal(readme, 'from-noah-rebased\n');
     assert.equal((await fs.readdir(getProjectCrewWorktreesDir(dir))).includes('_merge-tmp'), false);
-    assert.deepEqual(await listCrewRefs(dir), []);
     const saved = JSON.parse(await fs.readFile(getProjectCrewStatePath(dir), 'utf8'));
-    assert.equal(listCrewWorkersFromState(saved).length, 0);
+    assert.equal(listCrewWorkersFromState(saved).length, 2);
   });
 });

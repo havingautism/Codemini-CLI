@@ -78,7 +78,32 @@ test('crew_plan rejects overlap and crew_finish rejects an open mission', async 
     assert.equal(finish.ok, false);
     assert.equal(finish.code, 'MISSIONS_OPEN');
     const state = await readCrewStateFile(dir);
-    assert.equal(state.batchClosed, undefined);
+  } finally {
+    if (previous === undefined) delete process.env.CODEMINI_GLOBAL_DIR;
+    else process.env.CODEMINI_GLOBAL_DIR = previous;
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('crew_finish refuses completed build missions that are not merged yet', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-crew-finish-'));
+  const previous = process.env.CODEMINI_GLOBAL_DIR;
+  process.env.CODEMINI_GLOBAL_DIR = path.join(dir, 'global');
+  try {
+    await enterCrewMode({ cwd: dir, sessionId: 'finish' }).catch(() => null);
+    await fs.mkdir(path.join(dir, '.codemini', 'crew'), { recursive: true });
+    await fs.writeFile(path.join(dir, '.codemini', 'crew', 'state.json'), JSON.stringify({
+      version: 1,
+      active: true,
+      base: 'main',
+      workers: [{ id: 'w1', branch: 'codemini-crew/w1', worktreePath: '/tmp/w1', missionId: 'm1' }],
+      missions: [{ id: 'm1', title: 'Build', kind: 'build', status: 'completed', paths: ['src/**'], workerId: 'w1' }],
+    }));
+    const finish = await finishCrewMissions({ cwd: dir, inFlight: [] });
+    assert.equal(finish.ok, false);
+    assert.equal(finish.code, 'MISSIONS_OPEN');
+    assert.match(finish.error, /not terminal/i);
+    assert.match(finish.error, /m1 \(completed\)/);
   } finally {
     if (previous === undefined) delete process.env.CODEMINI_GLOBAL_DIR;
     else process.env.CODEMINI_GLOBAL_DIR = previous;

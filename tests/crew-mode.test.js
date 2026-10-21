@@ -287,6 +287,9 @@ test('crew prompt is present only when the overlay is active', () => {
   assert.match(prompt, /inspect-only/);
   assert.match(prompt, /fork_task is not available/);
   assert.match(prompt, /land_workers is the only merge path/);
+  assert.match(prompt, /MAIN_WORKTREE_DIRTY/);
+  assert.match(prompt, /LAND_MERGE_CONFLICT/);
+  assert.match(prompt, /REBASE_REQUIRED/);
   assert.match(prompt, /cancel_worker/);
   assert.match(prompt, /cancel_worker for that roster id/);
   assert.match(prompt, /Do not answer that in-flight workers cannot be interrupted/);
