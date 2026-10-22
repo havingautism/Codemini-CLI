@@ -3,7 +3,11 @@ import assert from 'node:assert/strict';
 
 import { composeCrewBriefing } from '../src/core/crew-briefing.js';
 import { crewMissionAcceptsSpawn } from '../src/core/crew-missions.js';
-import { dedupeCrewMissionRecords, isCrewMissionTerminal } from '../src/core/crew-store.js';
+import {
+  dedupeCrewMissionRecords,
+  isWorkerIntegrated,
+  isWorkerMissionTerminal,
+} from '../src/core/crew-store.js';
 import { summarizeToolResult } from '../src/core/tool-result-store.js';
 import { normalizeExecutionMode, usesEngineeringRuntime } from '../src/core/chat-runtime.js';
 import { buildCrewWorkerCompletedWake, parseCrewWakeHeadline } from '../src/core/crew-snapshot.js';
@@ -65,12 +69,20 @@ test('awaiting_submit wake tells coordinator to require crew_complete', () => {
   assert.match(parseCrewWakeHeadline(wake), /without crew_complete/);
 });
 
-test('merged and abandoned missions are terminal', () => {
-  assert.equal(isCrewMissionTerminal({ missionStatus: 'merged' }), true);
-  assert.equal(isCrewMissionTerminal({ missionStatus: 'abandoned' }), true);
-  assert.equal(isCrewMissionTerminal({ missionStatus: 'active' }), false);
-  assert.equal(isCrewMissionTerminal({ integrated: true }), true);
-  assert.equal(isCrewMissionTerminal({ integrated: true, rebaseOnto: 'abc' }), false);
+test('mission terminal and integrated projection use missions[] only', () => {
+  const state = {
+    missions: [
+      { id: 'm1', title: 'A', kind: 'build', status: 'merged', workerId: 'anna' },
+      { id: 'm2', title: 'B', kind: 'build', status: 'abandoned', workerId: 'bob' },
+      { id: 'm3', title: 'C', kind: 'build', status: 'active', workerId: 'cara' },
+    ],
+    workers: [{ id: 'anna', branch: 'b', worktreePath: '/w' }],
+  };
+  assert.equal(isWorkerMissionTerminal(state, { id: 'anna' }), true);
+  assert.equal(isWorkerMissionTerminal(state, { id: 'bob' }), true);
+  assert.equal(isWorkerMissionTerminal(state, { id: 'cara' }), false);
+  assert.equal(isWorkerIntegrated(state, { id: 'anna' }), true);
+  assert.equal(isWorkerIntegrated(state, { id: 'anna', rebaseOnto: 'abc' }), false);
 });
 
 test('buildSubagentToolSegmentsFromMessages includes crew_complete from sub-session', () => {

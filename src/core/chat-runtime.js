@@ -9129,7 +9129,8 @@ export async function createChatRuntime({
     if (!worker && !job) {
       return { ok: false, code: 'NOT_FOUND', error: `Unknown Crew worker "${id}".` };
     }
-    if (worker?.integrated === true) {
+    const { isWorkerIntegrated } = await import('./crew-store.js');
+    if (worker && isWorkerIntegrated(disk, worker)) {
       return {
         ok: false,
         code: 'WORKER_INTEGRATED',

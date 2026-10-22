@@ -10,6 +10,7 @@ import { runGit } from '../src/core/process-run.js';
 import { runAgentLoop } from '../src/core/agent-loop.js';
 import { compactSubAgentResultForParent } from '../src/core/chat-runtime.js';
 import { describeCrewRunSubagent } from '../src/core/tool-display.js';
+import { planCrewMissions, setCrewMissionStatus } from '../src/core/crew-missions.js';
 import { enterCrewMode, listCrewWorkersFromState, patchCrewWorkerRecord } from '../src/core/crew-store.js';
 import {
   addCrewWorktree,
@@ -56,11 +57,16 @@ async function withRepo(task) {
 
 test('survey workers spawn without paths and do not occupy coder scope', async () => {
   await withRepo(async (dir) => {
+    const surveyPlan = await planCrewMissions(dir, { missions: [{ title: 'Scout', kind: 'survey' }] });
+    const buildPlan = await planCrewMissions(dir, { missions: [{ title: 'Notes', kind: 'build', paths: ['notes.md'] }] });
+    const surveyMission = surveyPlan.created[0];
+    const buildMission = buildPlan.created[0];
     const survey = await addCrewWorktree({
       cwd: dir,
       base: 'main',
       name: 'Scout',
       kind: 'survey',
+      missionId: surveyMission.id,
     });
     assert.equal(survey.ok, true, survey.error);
     assert.equal(survey.worker.kind, 'survey');
@@ -71,6 +77,7 @@ test('survey workers spawn without paths and do not occupy coder scope', async (
       base: 'main',
       name: 'Alisa',
       paths: ['notes.md'],
+      missionId: buildMission.id,
     });
     assert.equal(coder.ok, true, coder.error);
 
@@ -82,7 +89,7 @@ test('survey workers spawn without paths and do not occupy coder scope', async (
     assert.equal(review.ok, false);
     assert.equal(review.code, 'SURVEY_NO_REVIEW');
 
-    const land = await landCrewWorkers({ cwd: dir, base: 'main', missionId: `m_${coder.worker.id}` });
+    const land = await landCrewWorkers({ cwd: dir, base: 'main', missionId: buildMission.id });
     assert.equal(land.ok, false);
     assert.equal(land.code, 'NOT_COMPLETED');
   });
@@ -90,17 +97,21 @@ test('survey workers spawn without paths and do not occupy coder scope', async (
 
 test('land skips survey workers when a sealed coder is ready', async () => {
   await withRepo(async (dir) => {
+    const surveyPlan = await planCrewMissions(dir, { missions: [{ title: 'Scout', kind: 'survey' }] });
+    const buildPlan = await planCrewMissions(dir, { missions: [{ title: 'Notes', kind: 'build', paths: ['notes.md'] }] });
     const survey = await addCrewWorktree({
       cwd: dir,
       base: 'main',
       name: 'Scout',
       kind: 'survey',
+      missionId: surveyPlan.created[0].id,
     });
     const coder = await addCrewWorktree({
       cwd: dir,
       base: 'main',
       name: 'Alisa',
       paths: ['notes.md'],
+      missionId: buildPlan.created[0].id,
     });
     await fs.writeFile(path.join(coder.worker.worktreePath, 'notes.md'), 'hello from alisa\n');
     await git(coder.worker.worktreePath, ['add', 'notes.md']);
@@ -111,9 +122,8 @@ test('land skips survey workers when a sealed coder is ready', async () => {
       reviewPassed: true,
     });
 
-    const { setCrewMissionStatus } = await import('../src/core/crew-missions.js');
-    await setCrewMissionStatus(dir, `m_${coder.worker.id}`, 'completed');
-    const landed = await landCrewWorkers({ cwd: dir, base: 'main', missionId: `m_${coder.worker.id}` });
+    await setCrewMissionStatus(dir, buildPlan.created[0].id, 'completed');
+    const landed = await landCrewWorkers({ cwd: dir, base: 'main', missionId: buildPlan.created[0].id });
     assert.equal(landed.ok, true, landed.error);
     assert.deepEqual(landed.landed, [coder.worker.id]);
     const raw = JSON.parse(await fs.readFile(path.join(dir, '.codemini', 'crew', 'state.json'), 'utf8'));
@@ -137,8 +147,6 @@ test('a clean survey finishes as completed and stays on the roster', async () =>
       workerId: survey.worker.id,
       dirty: false,
     });
-    assert.equal(clean.missionStatus, 'active');
-    assert.equal(clean.integrated, undefined);
     assert.match(clean.runError, /crew_complete/);
 
     await fs.writeFile(path.join(survey.worker.worktreePath, 'notes.md'), 'scout wrote this\n');
@@ -149,9 +157,7 @@ test('a clean survey finishes as completed and stays on the roster', async () =>
       workerId: survey.worker.id,
       dirty: false,
     });
-    assert.equal(changed.missionStatus, 'active');
     assert.match(changed.runError, /Revert/);
-    assert.equal(changed.integrated, undefined);
 
     const roster = listCrewWorkersFromState(JSON.parse(await fs.readFile(
       path.join(dir, '.codemini', 'crew', 'state.json'),

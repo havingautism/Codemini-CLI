@@ -1,5 +1,6 @@
 import { crewGlobsOverlap, normalizeCrewDependsOn, normalizeCrewPaths } from './crew-scope.js';
 import {
+  findCrewMissionForWorker,
   isCrewTaskTerminal,
   isWholeRepoCrewGlob,
   listCrewMissionsFromState,
@@ -13,7 +14,12 @@ import {
 } from './crew-store.js';
 import { isCrewWorktreeDirty, listCrewChangedFiles, removeCrewWorktree } from './crew-worktree.js';
 
-export { isCrewTaskTerminal, isWholeRepoCrewGlob, listCrewMissionsFromState };
+export {
+  findCrewMissionForWorker,
+  isCrewTaskTerminal,
+  isWholeRepoCrewGlob,
+  listCrewMissionsFromState,
+};
 
 function nextMissionId(missions) {
   let max = 0;
@@ -162,17 +168,6 @@ export async function planCrewMissions(cwd, { missions = [], abandonId = '' } = 
   return { ok: true, missions: listCrewMissionsFromState(result), created, message };
 }
 
-export function findCrewMissionForWorker(missions, worker) {
-  const list = Array.isArray(missions) ? missions : [];
-  const missionId = String(worker?.missionId || '').trim();
-  if (missionId) {
-    const match = list.find((mission) => mission.id === missionId);
-    if (match) return match;
-  }
-  const workerId = String(worker?.id || '').trim();
-  return list.find((mission) => mission.workerId === workerId) || null;
-}
-
 export function crewMissionAcceptsSpawn(mission, { resume = false, rebaseOnto = '' } = {}) {
   if (!mission) {
     return {
@@ -298,7 +293,6 @@ export async function completeCrewMission({ cwd, workerId, report = '', outcome 
     runStatus: 'completed',
     dirty: dirty === true,
     runError: submissionOutcome === 'ok' ? '' : text.slice(0, 400),
-    missionStatus: submissionOutcome === 'ok' ? 'completed' : 'active',
   };
   await patchCrewWorkerRecord(root, worker.id, workerPatch).catch(() => null);
   let next = missions;

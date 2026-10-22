@@ -1,7 +1,9 @@
 import path from 'node:path';
 
 import {
+  findCrewMissionForWorker,
   isCrewTaskTerminal,
+  isWorkerIntegrated,
   listCrewMissionsFromState,
   listUnreadCrewEvents,
   listUnreadCrewInbox,
@@ -38,11 +40,13 @@ export function resolveCrewProjectRoot(cwd = process.cwd()) {
   return normalized;
 }
 
-export function buildCrewWorkerStatusRecord(worker = {}) {
+export function buildCrewWorkerStatusRecord(worker = {}, { mission } = {}) {
   const kind = String(worker.kind || '').trim().toLowerCase() || 'coder';
   const runStatus = String(worker.runStatus || '').trim().toLowerCase();
+  const integrated = mission?.status === 'merged' && !String(worker.rebaseOnto || '').trim();
   return {
     id: worker.id,
+    ...(worker.missionId ? { missionId: worker.missionId } : {}),
     ...(worker.name ? { name: worker.name } : {}),
     kind,
     paths: Array.isArray(worker.paths) ? worker.paths : [],
@@ -51,7 +55,7 @@ export function buildCrewWorkerStatusRecord(worker = {}) {
     runStatus,
     dirty: worker.dirty,
     sealed: worker.dirty === false && runStatus === 'completed',
-    integrated: worker.integrated === true,
+    integrated,
     reviewPassed: worker.reviewPassed,
     reviewLoopStopped: worker.reviewLoopStopped === true,
     reviewRound: Number.isInteger(worker.reviewRound) ? worker.reviewRound : 0,
@@ -77,31 +81,32 @@ export function suggestCrewNextAction({
   if (inFlightIds.length) {
     return `Wait for in-flight workers (${inFlightIds.join(', ')}) or call crew_status again before dispatching.`;
   }
-  const missionList = Array.isArray(missions)
-    ? missions
-    : (Array.isArray(workers) ? workers : []).filter((worker) => worker.integrated !== true).map((worker) => ({
-      id: worker.id,
-      kind: worker.kind === 'survey' ? 'survey' : 'build',
-      status: worker.sealed || worker.reviewPassed === true ? 'completed' : 'active',
-      workerId: worker.id,
-      title: worker.id,
-    }));
-  if (!missionList.length) {
-    return 'No missions are recorded. Call crew_plan before dispatching. An empty mission list is not a finished crew.';
-  }
-  const roster = (Array.isArray(workers) ? workers : []).filter((item) => item.integrated !== true);
+  const missionList = Array.isArray(missions) ? missions : [];
+  const roster = (Array.isArray(workers) ? workers : []).filter((item) => !item.integrated);
   const dirty = roster.filter((item) => item.dirty === true);
   if (dirty.length) {
     return `Resume dirty workers: ${dirty.map((item) => item.id).join(', ')} before review or land.`;
-  }
-  const planned = missionList.filter((mission) => mission.status === 'planned');
-  if (planned.length) {
-    return `Dispatch with run_subagent mission_id for: ${planned.map((mission) => mission.id).join(', ')}.`;
   }
   const needRebase = roster.filter((item) => String(item.rebaseOnto || '').trim());
   if (needRebase.length) {
     const missionIds = needRebase.map((item) => String(item.missionId || '').trim() || item.id);
     return `Call crew_rebase for mission ${missionIds[0]}${missionIds.length > 1 ? ` (also: ${missionIds.slice(1).join(', ')})` : ''}. If crew_rebase returns RESUME_REQUIRED, resume that worker to fix conflicts, then review before land_workers.`;
+  }
+  const sealedAwaiting = roster.filter((worker) => (
+    worker.sealed
+    && worker.kind !== 'survey'
+    && worker.reviewPassed !== true
+    && worker.reviewLoopStopped !== true
+  ));
+  if (!missionList.length) {
+    if (sealedAwaiting.length) {
+      return `Dispatch reviewer for: ${sealedAwaiting.map((worker) => worker.id).join(', ')}.`;
+    }
+    return 'No missions are recorded. Call crew_plan before dispatching. An empty mission list is not a finished crew.';
+  }
+  const planned = missionList.filter((mission) => mission.status === 'planned');
+  if (planned.length) {
+    return `Dispatch with run_subagent mission_id for: ${planned.map((mission) => mission.id).join(', ')}.`;
   }
   const awaitingReview = missionList.filter((mission) => (
     mission.kind === 'build'
@@ -126,12 +131,6 @@ export function suggestCrewNextAction({
   if (ready.length) {
     return `Call land_workers for mission ${ready[0].id}. On failure, follow the result code: REBASE_REQUIRED → crew_rebase; MAIN_WORKTREE_DIRTY → ask the user to clean the main checkout (no resume); LAND_MERGE_CONFLICT → fix main/git state, do not crew_rebase.`;
   }
-  const sealedAwaiting = roster.filter((worker) => (
-    worker.sealed
-    && worker.kind !== 'survey'
-    && worker.reviewPassed !== true
-    && worker.reviewLoopStopped !== true
-  ));
   if (sealedAwaiting.length) {
     return `Dispatch reviewer for: ${sealedAwaiting.map((worker) => worker.id).join(', ')}.`;
   }
@@ -151,8 +150,10 @@ export async function readCrewStatusPayload(cwd = process.cwd(), {
   if (!crewState) {
     return { ok: false, active: false, error: 'Crew mode is not active.' };
   }
-  const workers = listCrewWorkersFromState(raw).map(buildCrewWorkerStatusRecord);
   const missions = listCrewMissionsFromState(raw);
+  const workers = listCrewWorkersFromState(raw).map((worker) => (
+    buildCrewWorkerStatusRecord(worker, { mission: findCrewMissionForWorker(missions, worker) })
+  ));
   const inFlightIds = [...new Set((Array.isArray(inFlight) ? inFlight : []).map((item) => String(item || '').trim()).filter(Boolean))];
   const running = workers.filter((item) => (
     item.runStatus === 'running' || inFlightIds.includes(item.id)
@@ -270,10 +271,16 @@ function sealLabel({ dirty, workerKind = '', status = '' } = {}) {
   return normalized === 'completed' ? 'completed' : 'unknown';
 }
 
-export function formatCrewRosterSnapshot(workers = []) {
-  const roster = listCrewWorkersFromState({ workers });
+export function formatCrewRosterSnapshot(stateOrWorkers = {}) {
+  const state = Array.isArray(stateOrWorkers)
+    ? { workers: stateOrWorkers }
+    : (stateOrWorkers && typeof stateOrWorkers === 'object' ? stateOrWorkers : {});
+  const roster = listCrewWorkersFromState(state);
+  const missions = listCrewMissionsFromState(state);
   if (!roster.length) return 'Crew roster: (empty)';
   const lines = roster.map((item) => {
+    const mission = findCrewMissionForWorker(missions, item);
+    const integrated = mission?.status === 'merged' && !String(item.rebaseOnto || '').trim();
     const scope = Array.isArray(item.paths) && item.paths.length ? item.paths.join(', ') : 'no paths';
     const surveyDone = String(item.kind || '').toLowerCase() === 'survey'
       && String(item.runStatus || '').toLowerCase() === 'completed'
@@ -282,7 +289,7 @@ export function formatCrewRosterSnapshot(workers = []) {
       item.name ? `${item.name} (${item.id})` : item.id,
       item.task ? `task=${item.task}` : '',
       `scope=${scope}`,
-      surveyDone ? 'survey-complete' : item.integrated === true ? 'integrated' : 'idle',
+      surveyDone ? 'survey-complete' : integrated ? 'integrated' : 'idle',
       item.runStatus ? `run=${item.runStatus}` : '',
       item.dirty === true ? 'dirty' : item.dirty === false && !surveyDone ? 'sealed' : '',
       item.reviewPassed === true ? 'review=pass' : item.reviewPassed === false ? 'review=fail' : '',

@@ -187,14 +187,11 @@ async function mergeWorkerOntoBase(root, worker, { missionId = '' } = {}) {
   if (await isCrewCommitAncestor(root, worker.branch)) {
     const head = String((await tryGit(root, ['rev-parse', 'HEAD'])).stdout || '').trim();
     await patchCrewWorkerRecord(root, worker.id, {
-      integrated: true,
-      missionStatus: 'merged',
       landBase: head,
       rebaseOnto: '',
     }).catch(() => null);
-    worker.integrated = true;
-    worker.missionStatus = 'merged';
     worker.landBase = head;
+    worker.rebaseOnto = '';
     return { ok: true, alreadyMerged: true };
   }
   const merged = await tryGit(root, [
@@ -225,12 +222,9 @@ async function mergeWorkerOntoBase(root, worker, { missionId = '' } = {}) {
     };
   }
   const head = String((await tryGit(root, ['rev-parse', 'HEAD'])).stdout || '').trim();
-  worker.integrated = true;
-  worker.missionStatus = 'merged';
   worker.landBase = head;
+  worker.rebaseOnto = '';
   await patchCrewWorkerRecord(root, worker.id, {
-    integrated: true,
-    missionStatus: 'merged',
     landBase: head,
     rebaseOnto: '',
   }).catch(() => null);

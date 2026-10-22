@@ -9,7 +9,12 @@ import { rebaseCrewMission } from '../src/core/crew-rebase.js';
 import { planCrewMissions, setCrewMissionStatus } from '../src/core/crew-missions.js';
 import { runGit } from '../src/core/process-run.js';
 import { getProjectCrewStatePath, getProjectCrewWorktreesDir } from '../src/core/paths.js';
-import { enterCrewMode, listCrewWorkersFromState, patchCrewWorkerRecord } from '../src/core/crew-store.js';
+import {
+  enterCrewMode,
+  listCrewMissionsFromState,
+  listCrewWorkersFromState,
+  patchCrewWorkerRecord,
+} from '../src/core/crew-store.js';
 import {
   addCrewWorktree,
   composeCrewResumeTask,
@@ -70,7 +75,6 @@ async function markCleanReview(dir, worker) {
     reviewedCommit: sha,
     reviewPassed: true,
     reviewText: 'Findings:\n- none',
-    missionStatus: 'completed',
   });
 }
 
@@ -207,7 +211,7 @@ test('one sealed worker commits onto the user branch', async () => {
     assert.match(commits[0], new RegExp(`codemini-crew merge ${worker.id}`));
     const saved = JSON.parse(await fs.readFile(getProjectCrewStatePath(dir), 'utf8'));
     assert.equal(listCrewWorkersFromState(saved).length, 1);
-    assert.equal(listCrewWorkersFromState(saved)[0].integrated, true);
+    assert.equal(listCrewMissionsFromState(saved).find((item) => item.id === mission.id)?.status, 'merged');
     assert.deepEqual(await listCrewRefs(dir), [worker.branch]);
   });
 });
@@ -321,7 +325,7 @@ test('failed mission land keeps worker branches for retry after local checkout c
     const saved = JSON.parse(await fs.readFile(getProjectCrewStatePath(dir), 'utf8'));
     const workers = listCrewWorkersFromState(saved);
     assert.equal(workers.length, 1);
-    assert.equal(workers[0].integrated, undefined);
+    assert.equal(listCrewMissionsFromState(saved).find((item) => item.id === docs.mission.id)?.status, 'completed');
     await fs.rm(path.join(dir, 'docs', 'a.md'));
     const retried = await landCrewWorkers({ cwd: dir, base: 'main', missionId: docs.mission.id });
     assert.equal(retried.ok, true, retried.error);
@@ -399,7 +403,7 @@ test('land_workers merges one mission while another worker is still in review', 
 
     const saved = JSON.parse(await fs.readFile(getProjectCrewStatePath(dir), 'utf8'));
     const workers = listCrewWorkersFromState(saved);
-    assert.equal(workers.find((item) => item.id === docs.worker.id)?.integrated, true);
+    assert.equal(listCrewMissionsFromState(saved).find((item) => item.id === docs.mission.id)?.status, 'merged');
     const resumeIntegrated = await resolveCrewSubagentWorkspace({
       cwd: dir,
       base: 'main',
@@ -585,7 +589,7 @@ test('rebase conflict loops through resume, worker fix, review, and land', async
     const afterPartial = JSON.parse(await fs.readFile(getProjectCrewStatePath(dir), 'utf8'));
     const miaState = listCrewWorkersFromState(afterPartial).find((item) => item.id === mia.worker.id);
     const noahState = listCrewWorkersFromState(afterPartial).find((item) => item.id === noah.worker.id);
-    assert.equal(miaState.integrated, true);
+    assert.equal(listCrewMissionsFromState(afterPartial).find((item) => item.id === mia.mission.id)?.status, 'merged');
     assert.equal(noahState.rebaseOnto, baseTip);
     assert.equal(noahState.reviewPassed, true);
 

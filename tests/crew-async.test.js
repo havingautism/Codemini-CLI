@@ -310,15 +310,18 @@ test('crew progress dock describes reviewing and hides after full merge', () => 
     workers: [{ id: 'scout', kind: 'survey', runStatus: 'completed', dirty: false, integrated: true }],
     inFlightIds: [],
   }), true);
-  const roster = formatCrewRosterSnapshot([{
-    id: 'scout',
-    kind: 'survey',
-    branch: 'codemini-crew/scout',
-    worktreePath: '/tmp/scout',
-    runStatus: 'completed',
-    dirty: false,
-    integrated: true,
-  }]);
+  const roster = formatCrewRosterSnapshot({
+    workers: [{
+      id: 'scout',
+      kind: 'survey',
+      branch: 'codemini-crew/scout',
+      worktreePath: '/tmp/scout',
+      runStatus: 'completed',
+      dirty: false,
+      missionId: 'm1',
+    }],
+    missions: [{ id: 'm1', title: 'scout', kind: 'survey', status: 'merged', workerId: 'scout' }],
+  });
   assert.match(roster, /survey-complete/);
   assert.doesNotMatch(roster, /integrated/);
 });

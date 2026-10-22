@@ -7,7 +7,10 @@ import { runGit } from './process-run.js';
 import {
   appendCrewWorkerRecord,
   buildCrewReviewVerdictPrompt,
-  isCrewMissionTerminal,
+  findCrewMissionForWorker,
+  isWorkerIntegrated,
+  isWorkerMissionTerminal,
+  listCrewMissionsFromState,
   listCrewWorkersFromState,
   patchCrewWorkerRecord,
   readCrewStateFile,
@@ -16,8 +19,6 @@ import {
 import {
   bindCrewMissionWorker,
   crewMissionAcceptsSpawn,
-  findCrewMissionForWorker,
-  listCrewMissionsFromState,
 } from './crew-missions.js';
 import { CREW_LEDGER_WRITE_BLOCK } from './crew-shell.js';
 import { findOverlappingCrewWorker, isCrewSurveyWorker, normalizeCrewDependsOn, normalizeCrewPaths, crewWorkerBlocksSpawn } from './crew-scope.js';
@@ -103,8 +104,12 @@ export function findCrewWorker(workers, { resume = '', name = '', taskId = '', c
   return list.find((item) => item.id === nameId) || null;
 }
 
-export function formatIdleCrewWorkers(workers) {
-  const list = (Array.isArray(workers) ? workers : []).filter((item) => item?.integrated !== true);
+export function formatIdleCrewWorkers(workers, missions = []) {
+  const missionList = Array.isArray(missions) ? missions : [];
+  const list = (Array.isArray(workers) ? workers : []).filter((item) => {
+    const mission = findCrewMissionForWorker(missionList, item);
+    return mission?.status !== 'merged' || String(item?.rebaseOnto || '').trim();
+  });
   if (list.length === 0) return 'No idle Crew workers. Spawn a new one with a unique name and paths.';
   const ids = list.map((item) => `"${item.id}"`).join(', ');
   return `Idle workers: ${ids}. Call back with resume set to that worker id from crew_status, not the nickname, call id, or handoff folder. Omit paths to keep the stored scope, or pass new disjoint paths.`;
@@ -176,13 +181,15 @@ export async function resolveCrewReviewTarget({
       error: 'review requires a roster worker id, such as alisa.',
     };
   }
-  const existing = listCrewWorkersFromState(await readCrewStateFile(root));
+  const disk = await readCrewStateFile(root);
+  const existing = listCrewWorkersFromState(disk);
+  const missions = listCrewMissionsFromState(disk);
   const worker = findCrewWorker(existing, { resume: workerId });
   if (!worker) {
     return {
       ok: false,
       code: 'REVIEW_UNKNOWN',
-      error: `Unknown review target "${workerId}". ${formatIdleCrewWorkers(existing)}`,
+      error: `Unknown review target "${workerId}". ${formatIdleCrewWorkers(existing, missions)}`,
     };
   }
   if (!(await worktreePathExists(worker.worktreePath))) {
@@ -201,7 +208,7 @@ export async function resolveCrewReviewTarget({
       workerId: worker.id,
     };
   }
-  if (worker.integrated === true) {
+  if (isWorkerIntegrated(disk, worker)) {
     return {
       ok: false,
       code: 'WORKER_INTEGRATED',
@@ -300,13 +307,9 @@ export async function resolveCrewSubagentWorkspace({
     const worker = findCrewWorker(existing, { resume });
     if (worker) {
       const mission = findCrewMissionForWorker(missions, worker);
-      const accepted = crewMissionAcceptsSpawn(mission || {
-        id: worker.missionId || worker.id,
-        kind: worker.kind === 'survey' ? 'survey' : 'build',
-        status: worker.integrated ? 'merged' : (worker.missionStatus || 'active'),
-      }, { resume: true, rebaseOnto: worker.rebaseOnto });
-      if (!accepted.ok && mission) return { ...accepted, workerId: worker.id };
-      if (worker.integrated === true && !String(worker.rebaseOnto || '').trim()) {
+      const accepted = crewMissionAcceptsSpawn(mission, { resume: true, rebaseOnto: worker.rebaseOnto });
+      if (!accepted.ok) return { ...accepted, workerId: worker.id };
+      if (isWorkerIntegrated(disk, worker)) {
         return {
           ok: false,
           code: 'WORKER_INTEGRATED',
@@ -314,11 +317,12 @@ export async function resolveCrewSubagentWorkspace({
           workerId: worker.id,
         };
       }
-      if (isCrewMissionTerminal(worker)) {
+      if (isWorkerMissionTerminal(disk, worker)) {
+        const status = mission?.status || 'terminal';
         return {
           ok: false,
           code: 'MISSION_TERMINAL',
-          error: `Mission "${worker.id}" is ${worker.missionStatus || 'merged'}. Do not resume or spawn another worker on it.`,
+          error: `Mission "${mission?.id || worker.id}" is ${status}. Do not resume or spawn another worker on it.`,
           workerId: worker.id,
         };
       }
@@ -332,7 +336,7 @@ export async function resolveCrewSubagentWorkspace({
       }
       const requested = normalizeCrewPaths(paths);
       if (requested.length > 0 && !crewPathsEqual(requested, worker.paths)) {
-        const overlap = findOverlappingCrewWorker(requested, existing, { exceptId: worker.id });
+        const overlap = findOverlappingCrewWorker(requested, existing, { exceptId: worker.id, missions });
         if (overlap) {
           const otherId = String(overlap.worker?.id || 'worker').trim() || 'worker';
           return {
@@ -386,7 +390,7 @@ export async function resolveCrewSubagentWorkspace({
       return {
         ok: false,
         code: 'RESUME_UNKNOWN',
-        error: `Unknown resume "${resumeId}". ${formatIdleCrewWorkers(existing)}`,
+        error: `Unknown resume "${resumeId}". ${formatIdleCrewWorkers(existing, missions)}`,
       };
     }
     return spawnCrewWorkerOnMission({
@@ -405,15 +409,16 @@ export async function resolveCrewSubagentWorkspace({
   }
 
   const named = findCrewWorker(existing, { name, taskId });
-  if (named && isCrewMissionTerminal(named)) {
+  const namedMission = named ? findCrewMissionForWorker(missions, named) : null;
+  if (named && isWorkerMissionTerminal(disk, named)) {
     return {
       ok: false,
       code: 'MISSION_TERMINAL',
-      error: `Mission "${named.id}" is already ${named.missionStatus || 'merged'}. Do not dispatch another worker on it.`,
+      error: `Mission "${namedMission?.id || named.id}" is already ${namedMission?.status || 'terminal'}. Do not dispatch another worker on it.`,
       workerId: named.id,
     };
   }
-  if (named && crewWorkerBlocksSpawn(named)) {
+  if (named && crewWorkerBlocksSpawn(named, namedMission)) {
     return {
       ok: false,
       code: 'WORKER_EXISTS',
@@ -726,8 +731,9 @@ async function addCrewWorktreeUnlocked({
   }
   const current = await readCrewStateFile(root);
   const existing = listCrewWorkersFromState(current);
+  const missions = listCrewMissionsFromState(current);
   if (!survey) {
-    const overlap = findOverlappingCrewWorker(normalizedPaths, existing);
+    const overlap = findOverlappingCrewWorker(normalizedPaths, existing, { missions });
     if (overlap) {
       const workerId = String(overlap.worker?.id || 'worker').trim() || 'worker';
       return {
@@ -744,7 +750,11 @@ async function addCrewWorktreeUnlocked({
   if (
     preferred
     && !RESERVED_WORKER_IDS.has(preferred)
-    && existing.some((item) => item.id === preferred && crewWorkerBlocksSpawn(item))
+    && existing.some((item) => {
+      if (item.id !== preferred) return false;
+      const mission = findCrewMissionForWorker(missions, item);
+      return crewWorkerBlocksSpawn(item, mission);
+    })
   ) {
     return {
       ok: false,
@@ -789,7 +799,6 @@ async function addCrewWorktreeUnlocked({
     ...(normalizedPaths.length ? { paths: normalizedPaths } : {}),
     ...(survey ? { kind: 'survey' } : {}),
     ...(String(optionsMissionId || '').trim() ? { missionId: String(optionsMissionId).trim() } : {}),
-    missionStatus: 'active',
     ...(normalizedTaskId ? { taskId: normalizedTaskId } : {}),
     ...(normalizedDependsOn.length ? { dependsOn: normalizedDependsOn } : {}),
     ...(String(callId || '').trim() ? { callId: String(callId).trim() } : {}),

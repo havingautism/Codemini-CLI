@@ -16,6 +16,7 @@ import { withCodeminiGlobalDir } from './helpers/codemini-global-dir.js';
 import { waitForCrewWorkerRunStatus as waitForWorkerStatus } from './helpers/crew-worker-status.js';
 import {
   enterCrewMode,
+  listCrewMissionsFromState,
   listCrewWorkersFromState,
   patchCrewWorkerRecord,
 } from '../src/core/crew-store.js';
@@ -61,6 +62,23 @@ async function withRepo(task) {
   } finally {
     await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 50 });
   }
+}
+
+async function spawnPlannedBuild(dir, { name, paths }) {
+  const planned = await planCrewMissions(dir, {
+    missions: [{ title: name, kind: 'build', paths }],
+  });
+  assert.equal(planned.ok, true, planned.error);
+  const mission = planned.created[0];
+  const spawned = await addCrewWorktree({
+    cwd: dir,
+    base: 'main',
+    name,
+    paths,
+    missionId: mission.id,
+  });
+  assert.equal(spawned.ok, true, spawned.error);
+  return { mission, worker: spawned.worker };
 }
 
 async function listCrewBranches(cwd) {
@@ -233,13 +251,7 @@ test('findCrewWorker matches resume id first, then sanitized name', () => {
 
 test('resume reuses the same worktree; same name without resume is rejected', async () => {
   await withRepo(async (dir) => {
-    const spawned = await addCrewWorktree({
-      cwd: dir,
-      base: 'main',
-      name: 'Alisa',
-      paths: ['notes.md'],
-    });
-    assert.equal(spawned.ok, true);
+    const spawned = await spawnPlannedBuild(dir, { name: 'Alisa', paths: ['notes.md'] });
     const resumed = await resolveCrewSubagentWorkspace({
       cwd: dir,
       base: 'main',
@@ -315,7 +327,7 @@ test('after land, the same name is a new worker and needs paths', async () => {
     assert.equal(landed.ok, true, landed.error);
     const saved = JSON.parse(await fs.readFile(getProjectCrewStatePath(dir), 'utf8'));
     assert.equal(listCrewWorkersFromState(saved).length, 1);
-    assert.equal(listCrewWorkersFromState(saved)[0].integrated, true);
+    assert.equal(listCrewMissionsFromState(saved).find((item) => item.id === mission.id)?.status, 'merged');
 
     const missingPaths = await resolveCrewSubagentWorkspace({
       cwd: dir,
@@ -443,12 +455,7 @@ test('in-flight resume of the same worker is rejected', async () => {
 
 test('patchCrewWorkerRecord stores lastHandoffPath', async () => {
   await withRepo(async (dir) => {
-    const spawned = await addCrewWorktree({
-      cwd: dir,
-      base: 'main',
-      name: 'Alisa',
-      paths: ['notes.md'],
-    });
+    const spawned = await spawnPlannedBuild(dir, { name: 'Alisa', paths: ['notes.md'] });
     const patched = await patchCrewWorkerRecord(dir, spawned.worker.id, {
       lastHandoffPath: '.codemini/handoffs/sess/call-a/handoff.md',
     });

@@ -44,8 +44,10 @@ test('findOverlappingCrewWorker reports the colliding glob', () => {
   assert.equal(findOverlappingCrewWorker(['backend/**'], [{ id: 'anna', paths: ['docs/**'] }]), null);
   assert.equal(
     findOverlappingCrewWorker(['docs/guide.md'], [
-      { id: 'anna', paths: ['docs/**'], integrated: true },
-    ]),
+      { id: 'anna', paths: ['docs/**'] },
+    ], {
+      missions: [{ id: 'm1', status: 'merged', workerId: 'anna', kind: 'build' }],
+    }),
     null,
   );
   assert.equal(
@@ -56,16 +58,19 @@ test('findOverlappingCrewWorker reports the colliding glob', () => {
   );
 });
 
-test('integrated workers do not hold scope; active workers block overlapping spawn', () => {
-  const integrated = { id: 'anna', paths: ['docs/**'], integrated: true };
-  const active = { id: 'mira', paths: ['backend/**'] };
-  assert.equal(workerHoldsCrewScope(integrated), false);
-  assert.equal(crewWorkerBlocksSpawn(integrated), true);
-  assert.equal(workerHoldsCrewScope(active), true);
-  assert.equal(crewWorkerBlocksSpawn(active), true);
-  assert.equal(findOverlappingCrewWorker(['docs/**'], [integrated]), null);
-  assert.equal(findOverlappingCrewWorker(['backend/**'], [active])?.worker?.id, 'mira');
-  assert.ok(findOverlappingCrewWorker(['docs/**'], [{ id: 'busy', paths: ['docs/**'] }]));
+test('merged missions release scope; merged workers still block spawn', () => {
+  const anna = { id: 'anna', paths: ['docs/**'] };
+  const mira = { id: 'mira', paths: ['backend/**'] };
+  const mergedAnna = { id: 'm1', status: 'merged', workerId: 'anna', kind: 'build' };
+  const activeMira = { id: 'm2', status: 'active', workerId: 'mira', kind: 'build' };
+  const missions = [mergedAnna, activeMira];
+  assert.equal(workerHoldsCrewScope(anna, mergedAnna), false);
+  assert.equal(crewWorkerBlocksSpawn(anna, mergedAnna), true);
+  assert.equal(workerHoldsCrewScope(mira, activeMira), true);
+  assert.equal(crewWorkerBlocksSpawn(mira, activeMira), true);
+  assert.equal(findOverlappingCrewWorker(['docs/**'], [anna], { missions }), null);
+  assert.equal(findOverlappingCrewWorker(['backend/**'], [mira], { missions })?.worker?.id, 'mira');
+  assert.ok(findOverlappingCrewWorker(['docs/**'], [{ id: 'busy', paths: ['docs/**'] }], { missions: [{ id: 'm9', status: 'active', workerId: 'busy', kind: 'build' }] }));
 });
 
 test('orderCrewWorkersForLand follows dependsOn then spawn order', () => {

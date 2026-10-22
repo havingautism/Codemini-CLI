@@ -120,25 +120,29 @@ export function isCrewLandableWorker(worker) {
   return Boolean(worker) && !isCrewSurveyWorker(worker);
 }
 
-export function workerHoldsCrewScope(worker) {
-  return Boolean(worker)
-    && worker.integrated !== true
-    && !isCrewSurveyWorker(worker);
+export function workerHoldsCrewScope(worker, mission) {
+  if (!worker || isCrewSurveyWorker(worker)) return false;
+  if (!mission) return true;
+  if (mission.status === 'merged' || mission.status === 'abandoned') return false;
+  if (mission.kind === 'survey' && mission.status === 'completed') return false;
+  return true;
 }
 
-export function crewWorkerBlocksSpawn(worker) {
+export function crewWorkerBlocksSpawn(worker, mission) {
   if (!worker) return false;
-  if (worker.integrated === true && !String(worker.rebaseOnto || '').trim()) return true;
+  if (mission?.status === 'merged' && !String(worker.rebaseOnto || '').trim()) return true;
   if (String(worker.runStatus || '').trim().toLowerCase() === 'running') return true;
-  return workerHoldsCrewScope(worker);
+  return workerHoldsCrewScope(worker, mission);
 }
 
-export function findOverlappingCrewWorker(paths, workers, { exceptId = '' } = {}) {
+export function findOverlappingCrewWorker(paths, workers, { exceptId = '', missions = [] } = {}) {
   const next = normalizeCrewPaths(paths);
   const list = Array.isArray(workers) ? workers : [];
+  const missionList = Array.isArray(missions) ? missions : [];
   const skipId = String(exceptId || '').trim();
   for (const worker of list) {
-    if (!workerHoldsCrewScope(worker)) continue;
+    const mission = missionList.find((item) => item.workerId === worker.id || item.id === worker.missionId) || null;
+    if (!workerHoldsCrewScope(worker, mission)) continue;
     if (skipId && String(worker?.id || '').trim() === skipId) continue;
     const existing = normalizeCrewPaths(worker?.paths);
     if (existing.length === 0) {

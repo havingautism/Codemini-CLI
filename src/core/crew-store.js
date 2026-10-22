@@ -82,7 +82,6 @@ export function normalizeCrewWorkerRecord(value) {
     ...(Number.isInteger(reviewRound) && reviewRound > 0 ? { reviewRound } : {}),
     ...(lastFindingsKey ? { lastFindingsKey } : {}),
     ...(value.reviewLoopStopped === true ? { reviewLoopStopped: true } : {}),
-    ...(value.integrated === true ? { integrated: true } : {}),
     ...(rebaseOnto ? { rebaseOnto } : {}),
     ...(landBase ? { landBase } : {}),
     ...(runStatus === 'queued' || runStatus === 'running' || runStatus === 'completed' || runStatus === 'failed' || runStatus === 'awaiting_submit'
@@ -94,16 +93,7 @@ export function normalizeCrewWorkerRecord(value) {
     ...(String(value.missionId || '').trim() ? { missionId: String(value.missionId).trim() } : {}),
     ...(task ? { task } : {}),
     ...(name ? { name } : {}),
-    ...(['planned', 'active', 'completed', 'merged', 'abandoned'].includes(String(value.missionStatus || '').trim().toLowerCase())
-      ? { missionStatus: String(value.missionStatus).trim().toLowerCase() }
-      : {}),
   };
-}
-
-export function isCrewMissionTerminal(worker) {
-  const status = String(worker?.missionStatus || '').trim().toLowerCase();
-  if (status === 'merged' || status === 'abandoned') return true;
-  return worker?.integrated === true && !String(worker?.rebaseOnto || '').trim();
 }
 
 const CREW_TASK_STATUSES = new Set(['planned', 'active', 'completed', 'merged', 'abandoned']);
@@ -151,23 +141,6 @@ export function isCrewTaskTerminal(mission) {
   return status === 'merged';
 }
 
-export function synthesizeCrewMissionFromWorker(worker) {
-  const kind = worker?.kind === 'survey' ? 'survey' : 'build';
-  let status = 'active';
-  if (worker?.missionStatus === 'abandoned') status = 'abandoned';
-  else if (worker?.missionStatus === 'merged' || worker?.integrated === true) status = 'merged';
-  else if (kind === 'survey' && worker?.runStatus === 'completed' && worker?.dirty !== true) status = 'completed';
-  else if (worker?.reviewPassed === true || worker?.missionStatus === 'completed') status = 'completed';
-  return normalizeCrewMissionRecord({
-    id: `m_${worker.id}`,
-    title: worker.name || worker.task || worker.id,
-    kind,
-    status,
-    paths: worker.paths,
-    workerId: worker.id,
-  });
-}
-
 export function dedupeCrewMissionRecords(missions = []) {
   const list = (Array.isArray(missions) ? missions : [])
     .map(normalizeCrewMissionRecord)
@@ -189,21 +162,31 @@ export function dedupeCrewMissionRecords(missions = []) {
 }
 
 export function listCrewMissionsFromState(state) {
-  const recorded = Array.isArray(state?.missions)
-    ? dedupeCrewMissionRecords(state.missions)
-    : null;
-  const workers = listCrewWorkersFromState(state);
-  if (!recorded) return workers.map(synthesizeCrewMissionFromWorker).filter(Boolean);
-  const covered = new Set(recorded.map((mission) => mission.workerId).filter(Boolean));
-  const extra = workers
-    .filter((worker) => {
-      if (covered.has(worker.id)) return false;
-      const paths = normalizeCrewPaths(worker.paths).join('\n');
-      return !recorded.some((mission) => normalizeCrewPaths(mission.paths).join('\n') === paths && paths);
-    })
-    .map(synthesizeCrewMissionFromWorker)
-    .filter(Boolean);
-  return dedupeCrewMissionRecords([...recorded, ...extra]);
+  if (!Array.isArray(state?.missions)) return [];
+  return dedupeCrewMissionRecords(state.missions);
+}
+
+export function findCrewMissionForWorker(missions, worker) {
+  const list = Array.isArray(missions) ? missions : [];
+  const missionId = String(worker?.missionId || '').trim();
+  if (missionId) {
+    const match = list.find((mission) => mission.id === missionId);
+    if (match) return match;
+  }
+  const workerId = String(worker?.id || '').trim();
+  return list.find((mission) => mission.workerId === workerId) || null;
+}
+
+export function isWorkerIntegrated(state, worker) {
+  const mission = findCrewMissionForWorker(listCrewMissionsFromState(state), worker);
+  if (!mission || mission.status !== 'merged') return false;
+  return !String(worker?.rebaseOnto || '').trim();
+}
+
+export function isWorkerMissionTerminal(state, worker) {
+  const mission = findCrewMissionForWorker(listCrewMissionsFromState(state), worker);
+  if (!mission) return false;
+  return isCrewTaskTerminal(mission);
 }
 
 export function workerLandBaseRef(worker, fallback = '') {
@@ -350,7 +333,6 @@ export async function applyCrewReviewOutcome({
       reviewedCommit: commit,
       reviewPassed: false,
       reviewText: formatCrewReviewText({ passed: false, findings: outcome.findings }),
-      missionStatus: 'active',
       ...loop,
     }).catch(() => null);
     const { reopenCrewMission } = await import('./crew-missions.js');
@@ -652,7 +634,7 @@ function crewNicknameKey(value) {
 
 function crewInboxRecipients(state) {
   const ids = listCrewWorkersFromState(state)
-    .filter((worker) => worker.integrated !== true)
+    .filter((worker) => !isWorkerIntegrated(state, worker))
     .map((worker) => worker.id);
   return new Set(['coordinator', 'all', ...ids]);
 }
@@ -674,7 +656,7 @@ export async function sendCrewInboxMessage(cwd, { from = '', to = '', subject = 
     if (!normalizeCrewState(current)) {
       return { ok: false, code: 'CREW_INACTIVE', error: 'Crew mode is not active.' };
     }
-    const workers = listCrewWorkersFromState(current).filter((worker) => worker.integrated !== true);
+    const workers = listCrewWorkersFromState(current).filter((worker) => !isWorkerIntegrated(current, worker));
     const nick = crewNicknameKey(recipient);
     const named = workers.filter((worker) => worker.id !== recipient && crewNicknameKey(worker.name) === nick);
     const resolved = workers.some((worker) => worker.id === recipient)
@@ -685,7 +667,7 @@ export async function sendCrewInboxMessage(cwd, { from = '', to = '', subject = 
     }
     const known = crewInboxRecipients(current);
     if (!known.has(resolved)) {
-      const integrated = listCrewWorkersFromState(current).find((worker) => worker.id === resolved && worker.integrated === true);
+      const integrated = listCrewWorkersFromState(current).find((worker) => worker.id === resolved && isWorkerIntegrated(current, worker));
       if (integrated) {
         return {
           ok: false,
