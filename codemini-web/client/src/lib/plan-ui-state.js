@@ -749,6 +749,33 @@ export function appendPlanRunStreamingText(message, text) {
   });
 }
 
+/** Merge streamed worker tools with the sub-session transcript (e.g. crew_complete). */
+export function mergeSubagentStepSegments(streamed = [], authoritative = []) {
+  const streamedList = Array.isArray(streamed) ? streamed : [];
+  const authList = Array.isArray(authoritative) ? authoritative : [];
+  if (!authList.length) return streamedList;
+
+  const streamedProcess = streamedList.filter((segment) => segment?.type !== "tools");
+  const streamedTools = streamedList.find((segment) => segment?.type === "tools");
+  const authTools = authList.find((segment) => segment?.type === "tools");
+  const cardsById = new Map();
+  for (const card of streamedTools?.cards || []) {
+    const id = String(card?.id || "").trim();
+    if (id) cardsById.set(id, card);
+  }
+  for (const card of authTools?.cards || []) {
+    const id = String(card?.id || "").trim();
+    if (id) cardsById.set(id, card);
+  }
+  const merged = [...streamedProcess];
+  if (cardsById.size > 0) {
+    merged.push({ type: "tools", cards: [...cardsById.values()] });
+  } else if (streamedTools) {
+    merged.push(streamedTools);
+  }
+  return merged.length ? merged : streamedList.length ? streamedList : authList;
+}
+
 export function applyPlanEventToMessage(message, event) {
   if (!message || !event?.type) return message;
   const type = String(event.type);
@@ -861,6 +888,13 @@ export function applyPlanEventToMessage(message, event) {
               },
             ];
           }
+        }
+        if (
+          type === "plan:step_done" &&
+          Array.isArray(event.stepSegments) &&
+          event.stepSegments.length
+        ) {
+          segments = mergeSubagentStepSegments(segments, event.stepSegments);
         }
         steps[stepIndex] = {
           ...existing,

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 import {
   applyPlanEventToMessage,
+  mergeSubagentStepSegments,
   applyStreamEventToPlanRun,
   findMessageOwningPlanCard,
   findPlanStepMessageId,
@@ -1056,4 +1057,84 @@ test('tool:end preserves a cancelled planRun phase after plan:step_done', () => 
   const card = message.segments[0].cards[0];
   assert.equal(card.planRun.phase, 'cancelled');
   assert.equal(card.displayName, planPhaseTitle('cancelled'));
+});
+
+test('mergeSubagentStepSegments keeps streamed tools and adds authoritative crew_complete', () => {
+  const streamed = [
+    {
+      type: 'tools',
+      cards: [
+        { id: 'call-bash', name: 'bash', status: 'done', result: 'ok' },
+      ],
+    },
+  ];
+  const authoritative = [
+    {
+      type: 'tools',
+      cards: [
+        { id: 'call-bash', name: 'bash', status: 'done', result: 'ok' },
+        { id: 'call-complete', name: 'crew_complete', status: 'done', result: '{"outcome":"done"}' },
+      ],
+    },
+  ];
+  const merged = mergeSubagentStepSegments(streamed, authoritative);
+  const tools = merged.find((segment) => segment.type === 'tools');
+  assert.equal(tools.cards.length, 2);
+  assert.deepEqual(
+    tools.cards.map((card) => card.name).sort(),
+    ['bash', 'crew_complete'],
+  );
+});
+
+test('plan:step_done applies stepSegments so worker card includes crew_complete', () => {
+  let message = {
+    role: 'assistant',
+    segments: [
+      {
+        type: 'tools',
+        cards: [
+          {
+            id: 'parent-call',
+            name: 'run_subagent',
+            status: 'running',
+            planRun: {
+              phase: 'executing',
+              steps: [
+                {
+                  index: 1,
+                  status: 'running',
+                  toolCallId: 'parent-call',
+                  segments: [
+                    {
+                      type: 'tools',
+                      cards: [{ id: 't1', name: 'read', status: 'done' }],
+                    },
+                  ],
+                },
+              ],
+            },
+          },
+        ],
+      },
+    ],
+  };
+  message = applyPlanEventToMessage(message, {
+    type: 'plan:step_done',
+    toolCallId: 'parent-call',
+    step: 1,
+    status: 'done',
+    stepSegments: [
+      {
+        type: 'tools',
+        cards: [
+          { id: 't1', name: 'read', status: 'done' },
+          { id: 't2', name: 'crew_complete', status: 'done', result: '{}' },
+        ],
+      },
+    ],
+  });
+  const card = message.segments[0].cards[0];
+  const stepTools = card.planRun.steps[0].segments.find((segment) => segment.type === 'tools');
+  assert.equal(stepTools.cards.length, 2);
+  assert.equal(stepTools.cards[1].name, 'crew_complete');
 });

@@ -32,7 +32,7 @@ import {
   inspectOutsideWorkspaceMutation,
   toolRequiresUserApproval
 } from './approval-policy.js';
-import { remapCrewToolArguments } from './crew-worktree.js';
+import { remapCrewToolArguments, crewLedgerArgumentBlock } from './crew-worktree.js';
 import {
   resolveSandboxPolicy,
   validateSandboxEscalationArgs,
@@ -194,6 +194,10 @@ function compactToolResult(result, toolName, args, maxChars = 12000) {
 
   // Task results
   if ('created' in obj && Array.isArray(obj.created)) {
+    const crewMessage = String(obj.message || '').trim();
+    if (crewMessage && (Array.isArray(obj.missions) || obj.created.some?.((item) => item?.id))) {
+      return crewMessage;
+    }
     return `created ${obj.created.length} task(s)`;
   }
   if ('tasks' in obj && Array.isArray(obj.tasks)) {
@@ -973,6 +977,15 @@ export async function runAgentLoop({
       let approved = true;
       let approvalReason = '';
       let approvalArgs = remapCrewToolArguments(args, workspaceRoot);
+      const ledgerBlock = crewLedgerArgumentBlock(args, workspaceRoot);
+      if (ledgerBlock) {
+        approvalResults.set(call.id, {
+          approved: false,
+          args,
+          errorContent: clipToolResult({ error: ledgerBlock }, toolResultMaxChars),
+        });
+        continue;
+      }
       let preflightErrorContent = '';
       let outsideWorkspaceApproval = null;
       if (toolName === 'skill' && typeof skillRoute === 'function') {

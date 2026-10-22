@@ -20,7 +20,7 @@ export function normalizeSoulCategory(value, fallback = 'coding') {
 
 export function soulContextFromExecutionMode(mode = 'normal') {
   const normalized = String(mode || '').trim().toLowerCase();
-  return ['plan', 'code', 'coding', 'spec'].includes(normalized) ? 'coding' : 'daily';
+  return ['plan', 'code', 'coding', 'spec', 'crew'].includes(normalized) ? 'coding' : 'daily';
 }
 
 function normalizeSoulName(value) {

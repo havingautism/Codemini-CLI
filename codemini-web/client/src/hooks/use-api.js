@@ -60,9 +60,12 @@ export async function fetchRuntimeSessions() {
   return res.json();
 }
 
-export async function fetchTokenActivity(signal) {
+export async function fetchTokenActivity(signal, { year, month } = {}) {
   const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-  const res = await api(`/api/usage/activity?${new URLSearchParams({ timeZone })}`, { signal });
+  const params = new URLSearchParams({ timeZone });
+  if (year) params.set('year', String(year));
+  if (month) params.set('month', String(month));
+  const res = await api(`/api/usage/activity?${params}`, { signal });
   return readJsonOrThrow(res);
 }
 

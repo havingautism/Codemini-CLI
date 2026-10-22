@@ -197,6 +197,8 @@ test('applyCrewParentToolPolicy strips mutation tools only when crew is on', () 
   assert.equal(crew.includes('crew_status'), true);
   assert.equal(crew.includes('crew_send'), true);
   assert.equal(crew.includes('crew_inbox'), true);
+  assert.equal(crew.includes('crew_plan'), true);
+  assert.equal(crew.includes('crew_finish'), true);
   assert.equal(crew.includes('run'), true);
 });
 

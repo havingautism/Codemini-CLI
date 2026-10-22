@@ -85,15 +85,125 @@ export function normalizeCrewWorkerRecord(value) {
     ...(value.integrated === true ? { integrated: true } : {}),
     ...(rebaseOnto ? { rebaseOnto } : {}),
     ...(landBase ? { landBase } : {}),
-    ...(runStatus === 'queued' || runStatus === 'running' || runStatus === 'completed' || runStatus === 'failed'
+    ...(runStatus === 'queued' || runStatus === 'running' || runStatus === 'completed' || runStatus === 'failed' || runStatus === 'awaiting_submit'
       ? { runStatus }
       : {}),
     ...(runError ? { runError } : {}),
     ...(value.dirty === true || value.dirty === false ? { dirty: value.dirty === true } : {}),
     ...(String(value.kind || '').trim().toLowerCase() === 'survey' ? { kind: 'survey' } : {}),
+    ...(String(value.missionId || '').trim() ? { missionId: String(value.missionId).trim() } : {}),
     ...(task ? { task } : {}),
     ...(name ? { name } : {}),
+    ...(['planned', 'active', 'completed', 'merged', 'abandoned'].includes(String(value.missionStatus || '').trim().toLowerCase())
+      ? { missionStatus: String(value.missionStatus).trim().toLowerCase() }
+      : {}),
   };
+}
+
+export function isCrewMissionTerminal(worker) {
+  const status = String(worker?.missionStatus || '').trim().toLowerCase();
+  if (status === 'merged' || status === 'abandoned') return true;
+  return worker?.integrated === true && !String(worker?.rebaseOnto || '').trim();
+}
+
+const CREW_TASK_STATUSES = new Set(['planned', 'active', 'completed', 'merged', 'abandoned']);
+
+export function isWholeRepoCrewGlob(value) {
+  const glob = String(value || '').replace(/\\/g, '/').trim().replace(/^\.\//, '');
+  return !glob || glob === '*' || glob === '**' || glob === '**/*' || glob === '.' || glob === './**';
+}
+
+export function normalizeCrewMissionRecord(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const id = String(value.id || '').trim();
+  const title = String(value.title || '').replace(/\s+/g, ' ').trim().slice(0, 120);
+  if (!id || !title) return null;
+  const kind = String(value.kind || '').trim().toLowerCase() === 'survey' ? 'survey' : 'build';
+  const statusRaw = String(value.status || 'planned').trim().toLowerCase();
+  const status = CREW_TASK_STATUSES.has(statusRaw) ? statusRaw : 'planned';
+  const paths = normalizeCrewPaths(value.paths);
+  const dependsOn = normalizeCrewDependsOn(value.dependsOn);
+  const workerId = String(value.workerId || '').trim();
+  const context = String(value.context || '').trim().slice(0, 2000);
+  const report = String(value.report || '').trim().slice(0, 4000);
+  const outcomeRaw = String(value.outcome || '').trim().toLowerCase();
+  const outcome = outcomeRaw === 'blocked' || outcomeRaw === 'failed' || outcomeRaw === 'ok'
+    ? outcomeRaw
+    : '';
+  return {
+    id,
+    title,
+    kind,
+    status,
+    ...(paths.length ? { paths } : {}),
+    ...(dependsOn.length ? { dependsOn } : {}),
+    ...(workerId ? { workerId } : {}),
+    ...(context ? { context } : {}),
+    ...(report ? { report } : {}),
+    ...(outcome ? { outcome } : {}),
+  };
+}
+
+export function isCrewTaskTerminal(mission) {
+  const status = String(mission?.status || '').trim().toLowerCase();
+  if (status === 'abandoned') return true;
+  if (String(mission?.kind || '').trim().toLowerCase() === 'survey') return status === 'completed';
+  return status === 'merged';
+}
+
+export function synthesizeCrewMissionFromWorker(worker) {
+  const kind = worker?.kind === 'survey' ? 'survey' : 'build';
+  let status = 'active';
+  if (worker?.missionStatus === 'abandoned') status = 'abandoned';
+  else if (worker?.missionStatus === 'merged' || worker?.integrated === true) status = 'merged';
+  else if (kind === 'survey' && worker?.runStatus === 'completed' && worker?.dirty !== true) status = 'completed';
+  else if (worker?.reviewPassed === true || worker?.missionStatus === 'completed') status = 'completed';
+  return normalizeCrewMissionRecord({
+    id: `m_${worker.id}`,
+    title: worker.name || worker.task || worker.id,
+    kind,
+    status,
+    paths: worker.paths,
+    workerId: worker.id,
+  });
+}
+
+export function dedupeCrewMissionRecords(missions = []) {
+  const list = (Array.isArray(missions) ? missions : [])
+    .map(normalizeCrewMissionRecord)
+    .filter(Boolean);
+  const plannedByWorker = new Map();
+  for (const mission of list) {
+    const workerId = String(mission.workerId || '').trim();
+    if (!workerId) continue;
+    if (/^m\d+$/i.test(String(mission.id || ''))) plannedByWorker.set(workerId, mission.id);
+  }
+  return list.filter((mission) => {
+    const workerId = String(mission.workerId || '').trim();
+    if (!workerId) return true;
+    const plannedId = plannedByWorker.get(workerId);
+    if (!plannedId || mission.id === plannedId) return true;
+    if (mission.id === `m_${workerId}`) return false;
+    return true;
+  });
+}
+
+export function listCrewMissionsFromState(state) {
+  const recorded = Array.isArray(state?.missions)
+    ? dedupeCrewMissionRecords(state.missions)
+    : null;
+  const workers = listCrewWorkersFromState(state);
+  if (!recorded) return workers.map(synthesizeCrewMissionFromWorker).filter(Boolean);
+  const covered = new Set(recorded.map((mission) => mission.workerId).filter(Boolean));
+  const extra = workers
+    .filter((worker) => {
+      if (covered.has(worker.id)) return false;
+      const paths = normalizeCrewPaths(worker.paths).join('\n');
+      return !recorded.some((mission) => normalizeCrewPaths(mission.paths).join('\n') === paths && paths);
+    })
+    .map(synthesizeCrewMissionFromWorker)
+    .filter(Boolean);
+  return dedupeCrewMissionRecords([...recorded, ...extra]);
 }
 
 export function workerLandBaseRef(worker, fallback = '') {
@@ -240,8 +350,11 @@ export async function applyCrewReviewOutcome({
       reviewedCommit: commit,
       reviewPassed: false,
       reviewText: formatCrewReviewText({ passed: false, findings: outcome.findings }),
+      missionStatus: 'active',
       ...loop,
     }).catch(() => null);
+    const { reopenCrewMission } = await import('./crew-missions.js');
+    await reopenCrewMission(cwd, id).catch(() => null);
     return {
       outcome,
       reviewPassed: false,
@@ -414,6 +527,7 @@ export function parseCrewWakeNotification(wakeText = '') {
   else if (type === 'crew.worker.completed') kind = 'worker.completed';
   else if (type === 'crew.worker.failed') kind = 'worker.failed';
   else if (type === 'crew.worker.interrupted') kind = 'worker.interrupted';
+  else if (type === 'crew.worker.awaiting_submit') kind = 'worker.awaiting_submit';
   return { type, workerId, kind: kind || undefined };
 }
 
@@ -477,7 +591,12 @@ export function composeCrewStateDocument(current = {}, patch = {}) {
   const inbox = overlay.inbox !== undefined
     ? listCrewInboxFromState({ inbox: overlay.inbox })
     : listCrewInboxFromState(base);
-  return { ...base, ...overlay, workers, events, inbox };
+  const missions = overlay.missions !== undefined
+    ? dedupeCrewMissionRecords(overlay.missions)
+    : listCrewMissionsFromState(base);
+  const document = { ...base, ...overlay, workers, events, inbox, missions };
+  delete document.batchClosed;
+  return document;
 }
 
 export function buildCrewCompletionEvent(input = {}) {
@@ -699,12 +818,19 @@ export function buildCrewModePromptBlock(crewState) {
     'When a turn includes both a user message and a Crew notification, handle the notification workflow first (review sealed coders, land when ready), then answer any user status question in the same reply.',
     'Coder workers get a git worktree each. Do not create worktrees, extra branches, or merge into the user branch yourself.',
     'New coder workers require paths: disjoint relative globs such as docs/** or src/foo.ts. Overlapping paths are rejected unless that other worker is already integrated onto the base branch. run_subagent returns a worker id. name is only a nickname. Resume, review, cancel_worker, and crew_send use that worker id from the tool result or crew_status, not the nickname or task_id. task_id is only for depends_on in the same response. Omit paths on resume to keep the stored list, or pass a new disjoint list to change it.',
-    'Read-only investigation uses role: "survey". Survey workers still get a worktree, do not take exclusive paths, must not edit or commit, and are not reviewed or landed.',
+    'Read-only investigation uses role: "survey". Survey workers still get a worktree, do not take exclusive paths, must not edit or commit, and are not reviewed or landed. A finished survey is not merged.',
+    'Call crew_plan before the first worker. New build and survey workers require mission_id from that plan. Reviewers use review and do not take a mission_id. The tool result is the next step.',
+    'Workers call crew_complete before their mission can be completed. Stopping without that tool leaves the mission active.',
+    'land_workers merges one completed build mission onto the recorded base branch with git merge --no-ff. Pass that mission id. It does not delete worktrees and it does not finish the crew. If the base moved, resume the worker to rebase, then review again.',
+    'When crew_status says every mission is terminal, call crew_finish. That removes clean worktrees only. Records stay and Crew mode stays on. A later request can call crew_plan again.',
     'Crew workers run in the background. Capacity is bounded; excess workers remain queued and still count as in flight. run_subagent returns immediately with status running or queued; completion wakes you in a new turn via a Crew notification. Use crew_status and the wake notification — not the original tool result — to decide the next step. dirty means the worker did not git commit — do not review or land that worker. After a coder is sealed, dispatch a separate run_subagent with role: "reviewer" and review set to that worker id. Reviewers also run in the background. Do not resume the author to review themselves. The reviewer is not a roster worker and does not get paths or a new worktree. Do not review survey workers. fork_task is not available; do not use it.',
     'If the user changes, narrows, or revokes a worker assignment (different path, file type, or scope), call cancel_worker for that roster id, then run_subagent with the updated task. This applies while the worker is running, queued, or sealed before review/land. Do not answer that in-flight workers cannot be interrupted, and do not defer with "wait for completion then resume" when cancel_worker can apply the change now.',
     'cancel_worker aborts that worker or its in-flight review. Cancelling a coder (running, queued, or idle) deletes its worktree, branch, and roster slot so those paths can be reused. Cancelling while a review is in flight only stops the reviewer and keeps the author worktree; call cancel_worker again to remove the worker. Do not use it for ordinary coding-mode subagents.',
-    'land_workers merges each passing worker directly onto the recorded base branch with git merge --no-ff (one merge commit per worker). Workers still in review stay on their worktrees until they pass. When everyone on the roster is integrated, worker branches and worktrees are deleted. The user still controls push. If review did not pass, resume that worker with the review text, then review the new commit. If a review loop stops (5 rounds still failing, or two consecutive identical failed findings), tell the user; resume with a new task or paths, or spawn a new worker; do not keep fixing the same findings.',
+    'land_workers merges one passing build mission onto the recorded base branch with git merge --no-ff. Workers still in review stay on their worktrees. The user still controls push. If review did not pass, the mission returns to active; resume that worker with the review text, then review the new commit. If a review loop stops (5 rounds still failing, or two consecutive identical failed findings), tell the user; resume with a new task or paths, or spawn a new worker; do not keep fixing the same findings.',
     'Parent run is inspect-only: git status, log, diff, and other read-only commands. Do not git merge, checkout, worktree, or copy into the main checkout; land_workers is the only merge path.',
+    'Name disjoint paths and dispatch. Do not read the repository in depth before dispatch; a survey mission does that.',
+    'After you dispatch, end the turn. Do not keep investigating in the parent.',
+    'Merged and abandoned missions cannot take another worker. crew_finish removes clean worktrees after every mission is terminal. It does not turn Crew off.',
     'Tell workers to use paths relative to their worktree cwd. Do not pass absolute paths from the parent checkout.'
   ].join('\n');
 }
@@ -777,6 +903,16 @@ export function writeCrewStateFile(cwd, state) {
   return withCrewStateLock(cwd, async () => {
     const current = (await readCrewStateFile(cwd)) || {};
     return writeCrewStateFileUnlocked(cwd, composeCrewStateDocument(current, state));
+  });
+}
+
+export function updateCrewState(cwd, mutate) {
+  return withCrewStateLock(cwd, async () => {
+    const current = (await readCrewStateFile(cwd)) || {};
+    const patch = await mutate(current);
+    if (!patch) return current;
+    await writeCrewStateFileUnlocked(cwd, composeCrewStateDocument(current, patch));
+    return (await readCrewStateFile(cwd)) || patch;
   });
 }
 

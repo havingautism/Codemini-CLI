@@ -239,6 +239,38 @@ test('suggestCrewNextAction waits for queued wakes instead of landing', () => {
   assert.doesNotMatch(suggestion, /land_workers/i);
 });
 
+test('suggestCrewNextAction tells the coordinator to dispatch planned missions', () => {
+  const suggestion = suggestCrewNextAction({
+    workers: [],
+    missions: [{
+      id: 'm1',
+      kind: 'survey',
+      status: 'completed',
+      title: 'Scout',
+    }, {
+      id: 'm2',
+      kind: 'build',
+      status: 'planned',
+      title: 'List',
+    }],
+    inFlight: [],
+  });
+  assert.match(suggestion, /mission_id/);
+  assert.match(suggestion, /m2/);
+  assert.doesNotMatch(suggestion, /crew_finish/);
+});
+
+test('suggestCrewNextAction asks for a plan when no missions are recorded', () => {
+  const suggestion = suggestCrewNextAction({
+    workers: [],
+    missions: [],
+    inFlight: [],
+    pendingWakes: 0,
+  });
+  assert.match(suggestion, /crew_plan/);
+  assert.doesNotMatch(suggestion, /roster is empty/i);
+});
+
 test('crew progress dock describes reviewing and hides after full merge', () => {
   const reviewing = describeCrewWorkerProgress(
     { id: 'lena', kind: 'coder', sealed: true, runStatus: 'completed', reviewPassed: undefined },
@@ -264,6 +296,30 @@ test('crew progress dock describes reviewing and hides after full merge', () => 
     workers: [{ id: 'lena', integrated: true, kind: 'coder' }],
     inFlightIds: [],
   }), false);
+  const survey = describeCrewWorkerProgress({
+    id: 'scout',
+    kind: 'survey',
+    runStatus: 'completed',
+    dirty: false,
+    integrated: true,
+  });
+  assert.equal(survey.phase, 'survey_done');
+  assert.equal(shouldShowCrewProgressDock({
+    crewActive: true,
+    workers: [{ id: 'scout', kind: 'survey', runStatus: 'completed', dirty: false, integrated: true }],
+    inFlightIds: [],
+  }), true);
+  const roster = formatCrewRosterSnapshot([{
+    id: 'scout',
+    kind: 'survey',
+    branch: 'codemini-crew/scout',
+    worktreePath: '/tmp/scout',
+    runStatus: 'completed',
+    dirty: false,
+    integrated: true,
+  }]);
+  assert.match(roster, /survey-complete/);
+  assert.doesNotMatch(roster, /integrated/);
 });
 
 test('resolveSubAgentToolAllowList adds crew_status in crew sessions', () => {

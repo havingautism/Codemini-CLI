@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   resolveSubAgentToolAllowList,
   resolveSubAgentRolePolicy,
+  resolveCrewTurnPersona,
   SUBAGENT_FORBIDDEN_TOOLS,
   normalizeSubAgentPersonaName,
   getSubAgentPersonaPrompt,
@@ -97,6 +98,18 @@ test('a persona name that collides with a role keyword stays a coder persona', (
   assert.deepEqual(resolveSubAgentRolePolicy('', 'writer'), { persona: 'Writer', policyKey: 'writer', taskRole: 'writer' });
   assert.deepEqual(resolveSubAgentRolePolicy('', 'explorer'), { persona: 'Explorer', policyKey: 'explorer', taskRole: 'explorer' });
   assert.deepEqual(resolveSubAgentRolePolicy('David', ''), { persona: 'David', policyKey: 'coder', taskRole: 'David' });
+  assert.deepEqual(
+    resolveCrewTurnPersona({ resume: 'wkr_mvdntmk0_u06swg', rosterName: 'Iris' }),
+    { persona: 'Iris', policyKey: 'coder', taskRole: 'Iris' },
+  );
+  assert.deepEqual(
+    resolveCrewTurnPersona({ name: 'Alex', resume: 'wkr_mvdntmk0_u06swg', rosterName: 'Iris' }),
+    { persona: 'Alex', policyKey: 'coder', taskRole: 'Alex' },
+  );
+  assert.deepEqual(
+    resolveCrewTurnPersona({ name: 'Rhea', role: 'reviewer', review: 'wkr_mvdntmk0_u06swg', rosterName: 'Iris' }),
+    { persona: 'Rhea', policyKey: 'reviewer', taskRole: 'reviewer' },
+  );
 });
 
 test('unix subagent baselines drop staged write and promote glob/grep', () => {

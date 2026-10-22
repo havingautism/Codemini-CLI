@@ -6,9 +6,11 @@ import { fileMatchesCrewPaths, isCrewLandableWorker, normalizeCrewDependsOn, ord
 import {
   formatCrewReviewLoopStoppedError,
   archiveCrewInbox,
+  isCrewMissionTerminal,
   listCrewWorkersFromState,
   patchCrewWorkerRecord,
   readCrewStateFile,
+  writeCrewStateFile,
   workerLandBaseRef,
   workerReviewMatchesCommit,
 } from './crew-store.js';
@@ -218,8 +220,14 @@ async function classifyWorker(root, baseBranch, worker) {
 async function mergeWorkerOntoBase(root, worker) {
   if (await isCrewCommitAncestor(root, worker.branch)) {
     const head = String((await tryGit(root, ['rev-parse', 'HEAD'])).stdout || '').trim();
-    await patchCrewWorkerRecord(root, worker.id, { integrated: true, landBase: head, rebaseOnto: '' }).catch(() => null);
+    await patchCrewWorkerRecord(root, worker.id, {
+      integrated: true,
+      missionStatus: 'merged',
+      landBase: head,
+      rebaseOnto: '',
+    }).catch(() => null);
     worker.integrated = true;
+    worker.missionStatus = 'merged';
     worker.landBase = head;
     return { ok: true, alreadyMerged: true };
   }
@@ -262,12 +270,164 @@ async function mergeWorkerOntoBase(root, worker) {
   }
   const head = String((await tryGit(root, ['rev-parse', 'HEAD'])).stdout || '').trim();
   worker.integrated = true;
+  worker.missionStatus = 'merged';
   worker.landBase = head;
-  await patchCrewWorkerRecord(root, worker.id, { integrated: true, landBase: head, rebaseOnto: '' }).catch(() => null);
+  await patchCrewWorkerRecord(root, worker.id, {
+    integrated: true,
+    missionStatus: 'merged',
+    landBase: head,
+    rebaseOnto: '',
+  }).catch(() => null);
   return { ok: true, alreadyMerged: false };
 }
 
+export async function finishCrewBatchIfSettled(cwd, { skipLock = false } = {}) {
+  const run = async () => {
+    const root = path.resolve(cwd);
+    const workers = listCrewWorkersFromState(await readCrewStateFile(root));
+    const buildWorkers = workers.filter((worker) => worker.kind !== 'survey');
+    const openBuild = buildWorkers.filter((worker) => !isCrewMissionTerminal(worker));
+    // A finished survey is not the end of the batch. Close only after every build mission is terminal.
+    if (!buildWorkers.length || openBuild.length) {
+      return { settled: false, kept: [], removed: [] };
+    }
+    await archiveCrewInbox(root).catch(() => null);
+    const cleaned = await removeCrewWorktrees({ cwd: root, skipLock: true, force: true });
+    const checkedOut = await listCheckedOutBranches(root);
+    const kept = [];
+    for (const worker of cleaned.kept || []) kept.push(worker.id);
+    for (const worker of cleaned.removed || []) {
+      const deleted = await deleteCrewWorkerBranch(root, worker.branch, checkedOut);
+      if (!deleted.ok) kept.push(worker.id);
+    }
+    await writeCrewStateFile(root, { batchClosed: true });
+    return { settled: true, kept: [...new Set(kept)], removed: cleaned.removed || [] };
+  };
+  return skipLock ? run() : withCrewGitLock(cwd, run);
+}
+
 export async function landCrewWorkers({
+  cwd = process.cwd(),
+  base,
+  missionId = '',
+} = {}) {
+  const root = path.resolve(cwd);
+  const baseBranch = String(base || '').trim();
+  const requestedMission = String(missionId || '').trim();
+  if (!requestedMission) {
+    return landLegacyRoster({ cwd: root, base: baseBranch });
+  }
+  if (!baseBranch || baseBranch === 'HEAD') {
+    return { ok: false, code: 'NO_BASE', error: 'Crew land needs a recorded git base branch.' };
+  }
+  return withCrewGitLock(root, async () => {
+    const { listCrewMissionsFromState, isCrewTaskTerminal, formatOpenMissionHint, setCrewMissionStatus } = await import('./crew-missions.js');
+    const currentBranchResult = await tryGit(root, ['branch', '--show-current']);
+    const currentBranch = String(currentBranchResult.stdout || '').trim();
+    if (currentBranchResult.code !== 0 || currentBranch !== baseBranch) {
+      return {
+        ok: false,
+        code: 'BASE_BRANCH_MISMATCH',
+        error: currentBranch
+          ? `Crew started on "${baseBranch}", but the current branch is "${currentBranch}". Switch back before landing.`
+          : `Crew started on "${baseBranch}", but the current checkout is detached. Switch back before landing.`,
+        base: baseBranch,
+        currentBranch,
+      };
+    }
+    await removeLegacyMergeTmp(root).catch(() => null);
+    const state = await readCrewStateFile(root);
+    const missions = listCrewMissionsFromState(state);
+    const mission = missions.find((item) => item.id === requestedMission);
+    if (!mission) {
+      return {
+        ok: false,
+        code: 'UNKNOWN_MISSION',
+        error: `Unknown mission "${requestedMission}". ${formatOpenMissionHint(missions)}`,
+      };
+    }
+    if (mission.kind === 'survey') {
+      return {
+        ok: false,
+        code: 'SURVEY_NO_LAND',
+        error: `Mission ${mission.id} is a survey. Surveys are not merged. ${formatOpenMissionHint(missions)}`,
+      };
+    }
+    if (mission.status === 'merged') {
+      return {
+        ok: true,
+        alreadyMerged: true,
+        message: `Mission ${mission.id} is already merged. ${formatOpenMissionHint(missions)}`,
+      };
+    }
+    if (mission.status !== 'completed') {
+      return {
+        ok: false,
+        code: 'NOT_COMPLETED',
+        error: `Mission ${mission.id} is ${mission.status}. Only a completed build mission can be landed. ${formatOpenMissionHint(missions)}`,
+      };
+    }
+    if (String(mission.outcome || 'ok').trim().toLowerCase() !== 'ok') {
+      return {
+        ok: false,
+        code: 'NOT_SUBMITTED',
+        error: `Mission ${mission.id} was not submitted successfully (outcome ${mission.outcome}). Resume or abandon before landing.`,
+      };
+    }
+    const unmet = (mission.dependsOn || []).filter((dep) => {
+      const other = missions.find((item) => item.id === dep);
+      return other && !isCrewTaskTerminal(other);
+    });
+    if (unmet.length) {
+      return {
+        ok: false,
+        code: 'DEPS_UNMERGED',
+        error: `Mission ${mission.id} depends on ${unmet.join(', ')}, which are not terminal. Land or abandon those first.`,
+      };
+    }
+    const workers = listCrewWorkersFromState(state).filter(isCrewLandableWorker);
+    const worker = workers.find((item) => item.id === mission.workerId || item.missionId === mission.id);
+    if (!worker) {
+      return {
+        ok: false,
+        code: 'NO_WORKER',
+        error: `Mission ${mission.id} has no build worker to land.`,
+      };
+    }
+    const baseHead = String((await tryGit(root, ['rev-parse', 'HEAD'])).stdout || '').trim();
+  const containsBase = await isCrewCommitAncestor(root, baseHead, worker.branch);
+    if (!containsBase) {
+      await patchCrewWorkerRecord(root, worker.id, { rebaseOnto: baseHead, reviewPassed: false, reviewedCommit: '' }).catch(() => null);
+      return {
+        ok: false,
+        code: 'REBASE_REQUIRED',
+        error: `Mission ${mission.id} is behind base "${baseBranch}". Resume "${worker.id}" to rebase onto ${baseHead}, then review the new commit. Do not land.`,
+        workerId: worker.id,
+        onto: baseHead,
+      };
+    }
+    const classified = await classifyWorker(root, baseBranch, worker);
+    if (classified.kind !== 'ready') {
+      const { kind, worker: ignored, ...error } = classified;
+      return { ok: false, ...error };
+    }
+    const merged = await mergeWorkerOntoBase(root, worker);
+    if (!merged.ok) return merged;
+    await setCrewMissionStatus(root, mission.id, 'merged');
+    const after = listCrewMissionsFromState(await readCrewStateFile(root));
+    const commitSha = String((await tryGit(root, ['rev-parse', 'HEAD'])).stdout || '').trim();
+    return {
+      ok: true,
+      committed: true,
+      commit: commitSha,
+      landed: [worker.id],
+      missionId: mission.id,
+      message: `Merged mission ${mission.id} (${worker.id}) onto ${baseBranch} (tip ${commitSha.slice(0, 12)}). The user still controls push. ${formatOpenMissionHint(after)}`,
+    };
+  });
+}
+
+async function landLegacyRoster({
   cwd = process.cwd(),
   base,
 } = {}) {
