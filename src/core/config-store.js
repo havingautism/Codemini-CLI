@@ -241,23 +241,31 @@ function isObject(v) {
   return v !== null && typeof v === 'object' && !Array.isArray(v);
 }
 
-function validateConfigObject(value) {
+function isInvalidConfigKey(key, parentPath) {
+  // `prototype` is also a valid skill name. Only exempt the skill ID itself;
+  // nested objects still receive the same prototype-pollution checks.
+  if (key === 'prototype' && parentPath.length === 2
+    && parentPath[0] === 'skills' && ['enabled', 'contexts'].includes(parentPath[1])) return false;
+  return ['__proto__', 'constructor', 'prototype'].includes(key);
+}
+
+function validateConfigObject(value, keyPath = []) {
   if (!value || typeof value !== 'object') return;
   for (const [key, item] of Object.entries(value)) {
-    if (['__proto__', 'constructor', 'prototype'].includes(key)) throw new Error('Invalid configuration key');
-    validateConfigObject(item);
+    if (isInvalidConfigKey(key, keyPath)) throw new Error(`Invalid configuration key: ${[...keyPath, key].join('.')}`);
+    validateConfigObject(item, [...keyPath, key]);
   }
 }
 
-function deepMerge(base, extra) {
-  validateConfigObject(extra);
+function deepMerge(base, extra, keyPath = []) {
+  validateConfigObject(extra, keyPath);
   if (!isObject(base) || !isObject(extra)) {
     return extra;
   }
   const out = { ...base };
   for (const [k, v] of Object.entries(extra)) {
-    if (k in out) {
-      out[k] = deepMerge(out[k], v);
+    if (Object.hasOwn(out, k)) {
+      out[k] = deepMerge(out[k], v, [...keyPath, k]);
     } else {
       out[k] = v;
     }
@@ -574,8 +582,8 @@ function parseValue(input) {
 function setNested(obj, keyPath, rawValue) {
   const value = parseValue(rawValue);
   const parts = String(keyPath).split('.');
-  if (parts.some(p => !p || ['__proto__', 'constructor', 'prototype'].includes(p))) throw new Error('Invalid configuration path');
-  validateConfigObject(value);
+  if (parts.some((p, index) => !p || isInvalidConfigKey(p, parts.slice(0, index)))) throw new Error('Invalid configuration path');
+  validateConfigObject(value, parts);
   let cursor = obj;
   for (let i = 0; i < parts.length - 1; i += 1) {
     const p = parts[i];

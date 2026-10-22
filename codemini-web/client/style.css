@@ -2821,6 +2821,11 @@ samp {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .msg-body [data-sd-animate],
+  .msg-body [data-sd-animate-marker]::marker {
+    animation: none;
+  }
+
   .streaming-cursor::after {
     animation: none;
     opacity: 0.85;

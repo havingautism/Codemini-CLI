@@ -59,6 +59,43 @@ test('malformed config is preserved instead of being replaced with defaults', as
   });
 });
 
+test('a skill named prototype survives loading and config updates without rewriting the original', async () => {
+  await withConfigDir(async ({ configPath }) => {
+    const raw = JSON.stringify({ skills: { enabled: { prototype: true }, contexts: { prototype: ['coding'] } } });
+    await fs.writeFile(configPath, raw, 'utf8');
+    const config = await loadConfig();
+    assert.equal(config.skills.enabled.prototype, true);
+    assert.deepEqual(config.skills.contexts.prototype, ['coding']);
+    assert.equal(await fs.readFile(configPath, 'utf8'), raw);
+
+    await setConfigValue('skills.enabled.prototype', false);
+    await setConfigValue('skills.contexts.prototype', '["daily"]');
+    await setConfigValue('skills.enabled', '{"prototype":true}');
+    const updated = await loadConfig();
+    assert.equal(updated.skills.enabled.prototype, true);
+    assert.deepEqual(updated.skills.contexts.prototype, ['daily']);
+  });
+});
+
+test('skill name exception does not permit prototype pollution or nested unsafe keys', async () => {
+  await withConfigDir(async ({ configPath }) => {
+    for (const raw of [
+      '{"skills":{"enabled":{"__proto__":{"polluted":true}}}}',
+      '{"skills":{"enabled":{"constructor":{"prototype":{"polluted":true}}}}}',
+      '{"skills":{"contexts":{"prototype":{"__proto__":{"polluted":true}}}}}',
+      '{"gateway":{"prototype":true}}',
+    ]) {
+      await fs.writeFile(configPath, raw, 'utf8');
+      await assert.rejects(loadConfig(), /Invalid configuration key:/);
+      assert.equal(await fs.readFile(configPath, 'utf8'), raw);
+    }
+    await fs.writeFile(configPath, '{}', 'utf8');
+    await assert.rejects(setConfigValue('skills.contexts.prototype', '{"__proto__":{"polluted":true}}'), /Invalid configuration/);
+    await assert.rejects(setConfigValue('skills.enabled.prototype.constructor', true), /Invalid configuration/);
+    assert.equal(Object.prototype.polluted, undefined);
+  });
+});
+
 test('saving config atomically keeps the previous valid file as a backup', async () => {
   await withConfigDir(async ({ dir, configPath }) => {
     const previous = { gateway: { base_url: 'https://old.example/v1', api_key: 'old-secret' } };
