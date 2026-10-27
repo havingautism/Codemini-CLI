@@ -1081,6 +1081,7 @@ export const zh = {
   crewPhaseQueued: "排队中",
   crewPhaseReviewing: "审核中",
   crewPhaseAwaitingReview: "待审核",
+  crewPhaseAwaitingSubmit: "待提交",
   crewPhaseReady: "可合回",
   crewPhaseDirty: "未提交",
   crewPhaseMerged: "已合并",

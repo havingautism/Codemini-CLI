@@ -7,6 +7,7 @@ export const TOOL_DISPLAY_LABELS = {
   create_spec: 'Create Spec',
   run_subagent: 'Subagent',
   land_workers: 'Land',
+  crew_rebase: 'Crew Rebase',
   cancel_worker: 'Cancel Worker',
   crew_status: 'Crew Status',
   fork_task: 'Fork',

@@ -17,7 +17,9 @@ import { withCodeminiGlobalDir } from './helpers/codemini-global-dir.js';
 import {
   enterCrewMode,
   formatCrewReviewText,
+  listCrewMissionsFromState,
   listCrewWorkersFromState,
+  writeCrewStateFile,
   nextCrewReviewLoopState,
   normalizeCrewReviewVerdict,
   patchCrewWorkerRecord,
@@ -68,6 +70,23 @@ async function withRepo(task) {
   } finally {
     await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 50 });
   }
+}
+
+async function spawnPlannedBuild(dir, { name, paths }) {
+  const planned = await planCrewMissions(dir, {
+    missions: [{ title: name, kind: 'build', paths }],
+  });
+  assert.equal(planned.ok, true, planned.error);
+  const mission = planned.created[0];
+  const spawned = await addCrewWorktree({
+    cwd: dir,
+    base: 'main',
+    name,
+    paths,
+    missionId: mission.id,
+  });
+  assert.equal(spawned.ok, true, spawned.error);
+  return { mission, worker: spawned.worker };
 }
 
 test('normalizeCrewReviewVerdict is the review gate, not free text', () => {
@@ -171,12 +190,7 @@ test('composeCrewReviewTask names the worker and commit', () => {
 
 test('resolveCrewReviewTarget reuses the author worktree and does not add a worker', async () => {
   await withRepo(async (dir) => {
-    const spawned = await addCrewWorktree({
-      cwd: dir,
-      base: 'main',
-      name: 'Alisa',
-      paths: ['notes.md'],
-    });
+    const spawned = await spawnPlannedBuild(dir, { name: 'Alisa', paths: ['notes.md'] });
     await fs.writeFile(path.join(spawned.worker.worktreePath, 'notes.md'), 'hello\n');
     await git(spawned.worker.worktreePath, ['add', 'notes.md']);
     await git(spawned.worker.worktreePath, ['commit', '-m', 'notes']);
@@ -215,12 +229,7 @@ test('resolveCrewReviewTarget reuses the author worktree and does not add a work
 
 test('resolveCrewSubagentWorkspace still resumes after the review loop stops', async () => {
   await withRepo(async (dir) => {
-    const spawned = await addCrewWorktree({
-      cwd: dir,
-      base: 'main',
-      name: 'Alisa',
-      paths: ['notes.md'],
-    });
+    const spawned = await spawnPlannedBuild(dir, { name: 'Alisa', paths: ['notes.md'] });
     await patchCrewWorkerRecord(dir, spawned.worker.id, {
       reviewPassed: false,
       reviewText: 'Findings:\n- missing tests',
@@ -252,16 +261,20 @@ test('resolveCrewSubagentWorkspace still resumes after the review loop stops', a
 
 test('resolveCrewReviewTarget refuses a worker already on the merge tmp', async () => {
   await withRepo(async (dir) => {
-    const spawned = await addCrewWorktree({
-      cwd: dir,
-      base: 'main',
-      name: 'Alisa',
-      paths: ['notes.md'],
-    });
+    const spawned = await spawnPlannedBuild(dir, { name: 'Alisa', paths: ['notes.md'] });
     await fs.writeFile(path.join(spawned.worker.worktreePath, 'notes.md'), 'hello\n');
     await git(spawned.worker.worktreePath, ['add', 'notes.md']);
     await git(spawned.worker.worktreePath, ['commit', '-m', 'notes']);
-    await patchCrewWorkerRecord(dir, spawned.worker.id, { integrated: true });
+    await writeCrewStateFile(dir, {
+      missions: [{
+        id: spawned.mission.id,
+        title: 'Alisa',
+        kind: 'build',
+        status: 'merged',
+        workerId: spawned.worker.id,
+        paths: ['notes.md'],
+      }],
+    });
     const reviewed = await resolveCrewReviewTarget({ cwd: dir, base: 'main', review: 'alisa' });
     assert.equal(reviewed.ok, false);
     assert.equal(reviewed.code, 'WORKER_INTEGRATED');
@@ -270,12 +283,7 @@ test('resolveCrewReviewTarget refuses a worker already on the merge tmp', async 
 
 test('resolveCrewReviewTarget refuses a dirty author worktree', async () => {
   await withRepo(async (dir) => {
-    const spawned = await addCrewWorktree({
-      cwd: dir,
-      base: 'main',
-      name: 'Alisa',
-      paths: ['notes.md'],
-    });
+    const spawned = await spawnPlannedBuild(dir, { name: 'Alisa', paths: ['notes.md'] });
     await fs.writeFile(path.join(spawned.worker.worktreePath, 'notes.md'), 'draft\n');
     const reviewed = await resolveCrewReviewTarget({ cwd: dir, base: 'main', review: 'alisa' });
     assert.equal(reviewed.ok, false);
@@ -540,7 +548,9 @@ test('crew reviewer reuses the author worktree, stays off the roster, and record
     const spawnResult = session.messages.find((message) => message.tool_call_id === 'call-spawn');
     assert.match(String(spawnResult?.content || ''), /spawned \(running\)|background/i);
 
-    const landed = await landCrewWorkers({ cwd: dir, base: 'main' });
+    const { setCrewMissionStatus } = await import('../src/core/crew-missions.js');
+    await setCrewMissionStatus(dir, 'm1', 'completed');
+    const landed = await landCrewWorkers({ cwd: dir, base: 'main', missionId: 'm1' });
     assert.equal(landed.ok, true, landed.error);
   });
 });
@@ -590,7 +600,9 @@ test('crew review prose with no findings and pass language infers pass without s
     await runtime.submitMessage({ text: 'REVIEW_ALISA' });
     const reviewed = await waitForWorkerField(dir, 'alisa', (item) => item.reviewPassed === true);
     assert.equal(reviewed.reviewPassed, true);
-    const landed = await landCrewWorkers({ cwd: dir, base: 'main' });
+    const { setCrewMissionStatus } = await import('../src/core/crew-missions.js');
+    await setCrewMissionStatus(dir, 'm1', 'completed');
+    const landed = await landCrewWorkers({ cwd: dir, base: 'main', missionId: 'm1' });
     assert.equal(landed.ok, true, landed.error);
   });
 });
@@ -631,7 +643,9 @@ test('crew review without submit_crew_review or pass prose stays incomplete', as
     await runtime.submitMessage({ text: 'REVIEW_ALISA' });
     const worker = await waitForWorkerField(dir, 'alisa', (item) => String(item.reviewText || '').includes('Still checking'));
     assert.equal(worker.reviewPassed, undefined);
-    const landed = await landCrewWorkers({ cwd: dir, base: 'main' });
+    const { setCrewMissionStatus } = await import('../src/core/crew-missions.js');
+    await setCrewMissionStatus(dir, 'm1', 'completed');
+    const landed = await landCrewWorkers({ cwd: dir, base: 'main', missionId: 'm1' });
     assert.equal(landed.ok, false);
     assert.equal(landed.code, 'REVIEW_REQUIRED');
   });
@@ -689,9 +703,12 @@ test('failed review stays bound to that commit; resume injects the findings', as
     assert.equal(reviewed.reviewLoopStopped, undefined);
     assert.deepEqual(await fs.readdir(getProjectCrewWorktreesDir(dir)), [reviewed.id]);
 
-    const landed = await landCrewWorkers({ cwd: dir, base: 'main' });
+    const { setCrewMissionStatus } = await import('../src/core/crew-missions.js');
+    await setCrewMissionStatus(dir, 'm1', 'completed');
+    const landed = await landCrewWorkers({ cwd: dir, base: 'main', missionId: 'm1' });
     assert.equal(landed.ok, false);
     assert.equal(landed.code, 'REVIEW_FAILED');
+    await setCrewMissionStatus(dir, 'm1', 'active');
 
     await runtime.submitMessage({ text: 'RESUME_ALISA' });
     await waitUntilBodies(bodies, (text) => text.includes('Latest review'));
@@ -766,9 +783,12 @@ test('identical failed reviews stop the loop and allow a redirected resume', asy
     assert.equal(worker.reviewLoopStopped, true);
     assert.equal(worker.lastFindingsKey, 'missing tests');
 
-    const landed = await landCrewWorkers({ cwd: dir, base: 'main' });
+    const { setCrewMissionStatus } = await import('../src/core/crew-missions.js');
+    await setCrewMissionStatus(dir, 'm1', 'completed');
+    const landed = await landCrewWorkers({ cwd: dir, base: 'main', missionId: 'm1' });
     assert.equal(landed.ok, false);
     assert.equal(landed.code, 'REVIEW_FAILED');
+    await setCrewMissionStatus(dir, 'm1', 'active');
 
     await waitForSessionMatch(session, /Resume "/);
     await waitForSessionMatch(session, /loop stopped/);
@@ -917,7 +937,6 @@ async function markCleanReview(dir, worker) {
     reviewedCommit: sha,
     reviewPassed: true,
     reviewText: 'Findings:\n- none',
-    missionStatus: 'completed',
   });
 }
 
@@ -1054,12 +1073,13 @@ test('runtime resumes a conflicted worker, then reviews and lands after rebase',
     await runtime.submitMessage({ text: 'LAND_NOAH' });
     const landFail = session.messages.find((message) => message.tool_call_id === 'call-land-noah');
     assert.ok(landFail, `missing first land_workers result; ids=${session.messages.map((m) => m.tool_call_id).filter(Boolean).join(',')}`);
-    assert.match(String(landFail.content || ''), /behind base|REBASE_REQUIRED|conflicts with the current base tip/);
+    assert.match(String(landFail.content || ''), /crew_rebase|behind base|behind the current base tip|REBASE_REQUIRED|conflicts with the current base tip/);
     const afterConflict = listCrewWorkersFromState(JSON.parse(await fs.readFile(getProjectCrewStatePath(dir), 'utf8')));
     const noahState = afterConflict.find((item) => item.id === noah.id);
-    assert.equal(afterConflict.find((item) => item.id === mia.id)?.integrated, true);
+    const afterState = JSON.parse(await fs.readFile(getProjectCrewStatePath(dir), 'utf8'));
+    assert.equal(listCrewMissionsFromState(afterState).find((item) => item.id === 'm2')?.status, 'merged');
     assert.ok(String(noahState.rebaseOnto || '').trim());
-    assert.notEqual(noahState.reviewPassed, true);
+    assert.equal(noahState.reviewPassed, true);
 
     await runtime.submitMessage({ text: 'RESUME_NOAH' });
     await waitUntilBodies(bodies, (text) => text.includes(noahState.rebaseOnto));
@@ -1074,12 +1094,13 @@ test('runtime resumes a conflicted worker, then reviews and lands after rebase',
     await runtime.submitMessage({ text: 'REVIEW_NOAH' });
     await waitForWorkerField(dir, 'noah', (item) => item.reviewPassed === true);
 
+    await setCrewMissionStatus(dir, 'm3', 'completed');
     await runtime.submitMessage({ text: 'LAND_AGAIN' });
     const landOk = session.messages.find((message) => message.tool_call_id === 'call-land-2');
     assert.ok(landOk, `missing second land_workers result; ids=${session.messages.map((m) => m.tool_call_id).filter(Boolean).join(',')}`);
     assert.match(String(landOk.content || ''), /Merged mission m3|onto the current branch/);
     assert.equal(await fs.readFile(path.join(dir, 'README.md'), 'utf8'), 'from-noah-rebased\n');
     const saved = listCrewWorkersFromState(JSON.parse(await fs.readFile(getProjectCrewStatePath(dir), 'utf8')));
-    assert.equal(saved.find((item) => item.id === noah.id)?.integrated, true);
+    assert.equal(listCrewMissionsFromState(JSON.parse(await fs.readFile(getProjectCrewStatePath(dir), 'utf8'))).find((item) => item.id === 'm3')?.status, 'merged');
   });
 });

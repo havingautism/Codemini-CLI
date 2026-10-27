@@ -136,8 +136,17 @@ test('crew_status lists unread completion events without treating them as pendin
         id: 'mia',
         branch: 'codemini-crew/mia',
         worktreePath: path.join(dir, 'wt-mia'),
+        missionId: 'm1',
         runStatus: 'completed',
         dirty: false,
+      }],
+      missions: [{
+        id: 'm1',
+        title: 'docs',
+        kind: 'build',
+        status: 'completed',
+        workerId: 'mia',
+        paths: ['docs/**'],
       }],
       events: [event],
     }, null, 2)}\n`);
@@ -147,7 +156,7 @@ test('crew_status lists unread completion events without treating them as pendin
     assert.equal(payload.pendingWakes, 0);
     assert.equal(payload.counts.unreadEvents, 1);
     assert.equal(payload.events[0].from, 'mia');
-    assert.match(payload.suggestedNext, /Dispatch reviewer/);
+    assert.match(payload.suggestedNext, /Dispatch a reviewer/);
     const summary = formatCrewStatusSummary(payload);
     assert.match(summary, /Unread events: 1/);
     assert.match(summary, /worker\.completed/);
@@ -199,7 +208,7 @@ test('runCrewWorkerJob records a completion event before waking Crew', async () 
     assert.equal(wakes.length, 1);
     const events = listCrewEventsFromState(await readCrewStateFile(dir));
     assert.equal(events.length, 1);
-    assert.equal(events[0].kind, 'worker.completed');
+    assert.equal(events[0].kind, 'worker.interrupted');
     assert.equal(events[0].from, 'mia');
     assert.equal(events[0].delivered, false);
   });

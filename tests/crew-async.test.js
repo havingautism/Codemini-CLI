@@ -210,6 +210,7 @@ test('suggestCrewNextAction prefers rebase only when rebaseOnto is set', () => {
   const suggestion = suggestCrewNextAction({
     workers: [{
       id: 'noah',
+      missionId: 'm2',
       sealed: true,
       kind: 'coder',
       reviewPassed: undefined,
@@ -218,9 +219,9 @@ test('suggestCrewNextAction prefers rebase only when rebaseOnto is set', () => {
     }],
     inFlight: [],
   });
-  assert.match(suggestion, /Resume and rebase/);
-  assert.match(suggestion, /noah/);
-  assert.match(suggestion, /reviewer/);
+  assert.match(suggestion, /crew_rebase/);
+  assert.match(suggestion, /m2/);
+  assert.match(suggestion, /RESUME_REQUIRED|land_workers/i);
 });
 
 test('suggestCrewNextAction waits for queued wakes instead of landing', () => {
@@ -282,6 +283,16 @@ test('crew progress dock describes reviewing and hides after full merge', () => 
     { inFlightIds: ['lena'] },
   );
   assert.equal(overwritten.phase, 'reviewing');
+  const shiftDone = describeCrewWorkerProgress(
+    { id: 'mira', kind: 'coder', runStatus: 'awaiting_submit', dirty: false },
+    { inFlightIds: ['mira'] },
+  );
+  assert.equal(shiftDone.phase, 'awaiting_submit');
+  const staleRunning = describeCrewWorkerProgress(
+    { id: 'mira', kind: 'coder', runStatus: 'completed', sealed: false, dirty: false },
+    { inFlightIds: ['mira'] },
+  );
+  assert.equal(staleRunning.phase, 'reviewing');
   const items = buildCrewProgressItems({
     workers: [
       { id: 'lena', kind: 'coder', sealed: true, runStatus: 'completed', reviewPassed: true },
@@ -308,16 +319,19 @@ test('crew progress dock describes reviewing and hides after full merge', () => 
     crewActive: true,
     workers: [{ id: 'scout', kind: 'survey', runStatus: 'completed', dirty: false, integrated: true }],
     inFlightIds: [],
-  }), true);
-  const roster = formatCrewRosterSnapshot([{
-    id: 'scout',
-    kind: 'survey',
-    branch: 'codemini-crew/scout',
-    worktreePath: '/tmp/scout',
-    runStatus: 'completed',
-    dirty: false,
-    integrated: true,
-  }]);
+  }), false);
+  const roster = formatCrewRosterSnapshot({
+    workers: [{
+      id: 'scout',
+      kind: 'survey',
+      branch: 'codemini-crew/scout',
+      worktreePath: '/tmp/scout',
+      runStatus: 'completed',
+      dirty: false,
+      missionId: 'm1',
+    }],
+    missions: [{ id: 'm1', title: 'scout', kind: 'survey', status: 'merged', workerId: 'scout' }],
+  });
   assert.match(roster, /survey-complete/);
   assert.doesNotMatch(roster, /integrated/);
 });
