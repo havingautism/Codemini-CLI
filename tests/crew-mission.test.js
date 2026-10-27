@@ -25,6 +25,8 @@ test('crew is its own execution mode and still uses the engineering runtime', ()
 test('crew briefings keep coordinator notes behind the fixed role text', () => {
   const build = composeCrewBriefing({ kind: 'build', additional: 'Do not run the build.' });
   assert.match(build, /^Crew build mission/);
+  assert.match(build, /package\.json/);
+  assert.match(build, /lockfile/);
   assert.match(build, /Additional instructions:\nDo not run the build/);
   const survey = composeCrewBriefing({ kind: 'survey' });
   assert.match(survey, /Do not modify files/);

@@ -135,7 +135,7 @@ export function suggestCrewNextAction({
     return `Dispatch reviewer for: ${sealedAwaiting.map((worker) => worker.id).join(', ')}.`;
   }
   if (missionList.every((mission) => isCrewTaskTerminal(mission))) {
-    return 'Every mission is terminal. Call crew_finish to remove clean worktrees. Crew mode stays on.';
+    return 'Every mission is terminal. Call crew_finish to remove clean worktrees and worker branches. Crew mode stays on.';
   }
   return 'Review crew_status before the next action.';
 }

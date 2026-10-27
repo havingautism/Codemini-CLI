@@ -7427,10 +7427,14 @@ export function getBuiltinTools({
       const inFlight = typeof config?.runtime?.getCrewInFlightWorkers === "function"
         ? config.runtime.getCrewInFlightWorkers()
         : [];
-      return finishCrewMissions({
+      const result = await finishCrewMissions({
         cwd: config?.runtime?.crew_project_root || workspaceRoot,
         inFlight,
       });
+      if (result?.ok && typeof config?.runtime?.publishCrewWorkersChanged === "function") {
+        config.runtime.publishCrewWorkersChanged();
+      }
+      return result;
     },
     crew_complete: async (args = {}) => {
       const { crewWorkerIdFromWorktreePath } = await import("./crew-worktree.js");

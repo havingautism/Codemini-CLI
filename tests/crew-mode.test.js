@@ -404,6 +404,10 @@ test('setCrewMode from daily switches into the crew mode and allows a dirty work
     assert.equal(entered.crew.base, 'main');
     assert.equal(runtime.getRuntimeState().crewActive, true);
     assert.equal(runtime.getRuntimeState().mode, 'crew');
+    const stopped = await runtime.setCrewMode(false);
+    assert.equal(stopped.ok, true);
+    assert.equal(runtime.getRuntimeState().crewActive, false);
+    assert.equal(runtime.getRuntimeState().mode, 'normal');
   });
 
   await withRuntime({ mode: 'plan' }, async ({ dir, runtime }) => {

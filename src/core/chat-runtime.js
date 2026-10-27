@@ -91,7 +91,7 @@ import {
 } from './context-compact.js';
 import { getReplyLanguage, getReplyLanguageName, stripReplyLanguageDirective, buildSystemPromptWithReplyLanguage, appendStructuredOutputLanguageRule } from './reply-language.js';
 import { composeSystemPrompt } from './system-prompt-composer.js';
-import { buildTurnContextPrefix, buildTurnUserPrompt } from './turn-context.js';
+import { buildExecutionModeSwitchNotice, buildTurnContextPrefix, buildTurnUserPrompt } from './turn-context.js';
 import { buildSubAgentShellRulesPrompt, buildSubAgentRuntimeNote, resolveShellContext } from './shell-profile.js';
 import { getBaseConfigDir, getProjectIndexDir, getProjectPlansDir, getProjectSpecsDir, getProjectWorkspaceDir, getSessionsDir, getSkillsDir } from './paths.js';
 import {
@@ -1061,7 +1061,7 @@ export function getSubAgentRolePrompt(role) {
     return [
       'You are a Crew build worker. You implement one mission in your own git worktree.',
       'Change only files inside your assigned paths. Do not merge into the user branch and do not create extra worktrees.',
-      'Run the project\'s existing build or test commands in this worktree when they apply, then git add and git commit the source changes. Do not commit node_modules or build output.',
+      'This worktree does not share the parent node_modules. Install dependencies here with the project package manager when you need to build or test. Commit package.json and lockfile changes together; do not commit node_modules or build output.',
       'When the commit is on your branch, stop. The parent reviews and lands. Do not review yourself.',
       'Report what changed, the commands you ran, and their results.',
     ].join('\n');
@@ -4687,6 +4687,8 @@ async function askModelInSession({
   onCancelWorker = null,
   crewEventSink = null,
   publishCrewWorkersChanged = () => {},
+  releaseCrewWorkerInFlight = async () => {},
+  rememberExecutionMode = true,
 }) {
   let compacted = compactedInput;
   const modelInputText = typeof modelText === 'string' && modelText ? modelText : text;
@@ -4862,7 +4864,9 @@ async function askModelInSession({
       derivedTitle = true;
     }
     session.model = model || config.model.name;
-    session.mode = executionMode || config.execution?.mode || 'normal';
+    if (rememberExecutionMode !== false) {
+      session.mode = executionMode || config.execution?.mode || 'normal';
+    }
     if (persistSession) {
       await saveSession(session);
       if (derivedTitle) titleCoordinator?.emit(session.id, session.title);
@@ -4949,6 +4953,7 @@ async function askModelInSession({
           : Number(config?.runtime?.getCrewPendingWakes?.() || 0)
       ),
       ...(notifyCrewWorkerWake ? { onCrewWorkerWake: notifyCrewWorkerWake } : {}),
+      publishCrewWorkersChanged,
     },
     workspaceRoot,
     policy: {
@@ -5505,10 +5510,7 @@ async function askModelInSession({
                 mergeModelUsage,
                 emit,
                 onWake: (wakeText) => crewCoordinator?.enqueueWake(wakeText),
-                releaseInFlight: (workerId) => {
-                  if (workerId) inFlightCrewWorkers.delete(workerId);
-                  publishCrewWorkersChanged();
-                },
+                releaseInFlight: (workerId) => releaseCrewWorkerInFlight(workerId),
                 callId,
                 persona,
                 policyKey,
@@ -6324,7 +6326,9 @@ async function askModelInSession({
     }
     if (persistSession) {
       session.model = model || config.model.name;
-      session.mode = executionMode || config.execution?.mode || 'normal';
+      if (rememberExecutionMode !== false) {
+        session.mode = executionMode || config.execution?.mode || 'normal';
+      }
       await saveSession(session).catch(() => {});
     }
     return true;
@@ -6372,7 +6376,9 @@ async function askModelInSession({
     }
     if (persistSession) {
       session.model = model || config.model.name;
-      session.mode = executionMode || config.execution?.mode || 'normal';
+      if (rememberExecutionMode !== false) {
+        session.mode = executionMode || config.execution?.mode || 'normal';
+      }
       await saveSession(session).catch(() => {});
     }
   };
@@ -6668,7 +6674,9 @@ async function askModelInSession({
       if (onCompactedUpdate) onCompactedUpdate(compacted);
     }
     session.model = model || config.model.name;
-    session.mode = executionMode || config.execution?.mode || 'normal';
+    if (rememberExecutionMode !== false) {
+      session.mode = executionMode || config.execution?.mode || 'normal';
+    }
     await flushScheduledSave();
     await saveSession(session);
     // Generate a better title asynchronously after saving.
@@ -9003,17 +9011,38 @@ export async function createChatRuntime({
   let lastCrewProgress = { workers: [], inFlightIds: [] };
   const refreshCrewProgressCache = async () => {
     const disk = crewState ? await readCrewStateFile(root).catch(() => null) : null;
+    const missions = listCrewMissionsFromState(disk);
     lastCrewProgress = {
       workers: crewState
-        ? listCrewWorkersFromState(disk).map(buildCrewWorkerStatusRecord)
+        ? listCrewWorkersFromState(disk).map((worker) => (
+          buildCrewWorkerStatusRecord(worker, {
+            mission: findCrewMissionForWorker(missions, worker),
+          })
+        ))
         : [],
       inFlightIds: [...crewWorkersInFlight],
     };
     return lastCrewProgress;
   };
   const publishCrewWorkersChanged = () => {
+    void refreshCrewProgressCache().then((progress) => {
+      lastCrewProgress = {
+        ...progress,
+        inFlightIds: [...crewWorkersInFlight],
+      };
+      crewEventSink?.({
+        type: 'crew:workers_changed',
+        inFlight: lastCrewProgress.inFlightIds.length,
+        inFlightIds: lastCrewProgress.inFlightIds,
+        workers: lastCrewProgress.workers,
+      });
+    }).catch(() => {});
+  };
+  const releaseCrewWorkerInFlight = async (workerId) => {
+    if (workerId) crewWorkersInFlight.delete(workerId);
+    const progress = await refreshCrewProgressCache();
     lastCrewProgress = {
-      ...lastCrewProgress,
+      ...progress,
       inFlightIds: [...crewWorkersInFlight],
     };
     crewEventSink?.({
@@ -9022,14 +9051,6 @@ export async function createChatRuntime({
       inFlightIds: lastCrewProgress.inFlightIds,
       workers: lastCrewProgress.workers,
     });
-    void refreshCrewProgressCache().then((progress) => {
-      crewEventSink?.({
-        type: 'crew:workers_changed',
-        inFlight: progress.inFlightIds.length,
-        inFlightIds: progress.inFlightIds,
-        workers: progress.workers,
-      });
-    }).catch(() => {});
   };
   const crewWakeBridge = { submit: async () => {} };
   const crewCoordinator = createCrewCoordinator({
@@ -9217,9 +9238,15 @@ export async function createChatRuntime({
     });
     await persistCrewState(null);
     if (normalizeExecutionMode(executionMode) === 'crew') {
-      executionMode = 'plan';
-      if (config.execution) config.execution.mode = 'plan';
-      await setConfigValue('execution.mode', 'plan');
+      const saved = String(currentSession?.preCrewExecutionMode || '').trim();
+      const restore = saved === 'normal' ? 'normal' : 'plan';
+      executionMode = restore;
+      if (config.execution) config.execution.mode = restore;
+      await setConfigValue('execution.mode', restore);
+      if (currentSession && typeof currentSession === 'object') {
+        delete currentSession.preCrewExecutionMode;
+        await saveSession(currentSession).catch(() => {});
+      }
     }
     lastCrewProgress = { workers: [], inFlightIds: [] };
     await refreshCrewGitInspect();
@@ -9264,6 +9291,10 @@ export async function createChatRuntime({
       return result;
     }
     await persistCrewState(result.crew);
+    if (previousMode !== 'crew' && currentSession && typeof currentSession === 'object') {
+      currentSession.preCrewExecutionMode = previousMode === 'normal' ? 'normal' : 'plan';
+      await saveSession(currentSession).catch(() => {});
+    }
     await refreshCrewProgressCache();
     publishCrewWorkersChanged();
     lastCrewGitInspect = {
@@ -10264,9 +10295,13 @@ export async function createChatRuntime({
       : '';
     const memoryHint = buildMemoryRouteHintBlock(memoryRoute);
     const codingPolicyBlock = isCodingMode || isCrewMode ? buildCodingTurnPolicyBlock(codingPolicy) : '';
+    const modeSwitchNotice = options?.crewWake
+      ? ''
+      : buildExecutionModeSwitchNotice(currentSession?.mode, executionMode, config);
     // Per-turn routing / skill / hook context belongs in the user turn, not the
     // system prompt, so the system prompt stays a stable, cacheable prefix.
     const turnRoutingContext = [
+      modeSwitchNotice,
       alwaysSkillPrompt,
       memoryHint,
       codingPolicyBlock,
@@ -10319,6 +10354,8 @@ export async function createChatRuntime({
       onCancelWorker: cancelCrewWorker,
       crewEventSink,
       publishCrewWorkersChanged,
+      releaseCrewWorkerInFlight,
+      rememberExecutionMode: options?.crewWake !== true,
     });
     syncExecutionModeWithSession();
     void captureUserPromptForDream(expandedText);

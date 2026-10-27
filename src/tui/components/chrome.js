@@ -3,8 +3,8 @@ import { SelectList, matchesKey, truncateToWidth, visibleWidth } from '@earendil
 import { bold, color, sealAnsi, selectTheme, TEXT_FG } from '../theme.js';
 import { oneLine } from './messages.js';
 import {
-  buildCrewProgressItems,
   formatCrewProgressLine,
+  listCrewDockItems,
   shouldShowCrewProgressDock,
 } from '../../core/crew-progress.js';
 
@@ -135,7 +135,7 @@ export class CrewProgressPanel {
     const workers = Array.isArray(state.crewWorkers) ? state.crewWorkers : [];
     const inFlightIds = Array.isArray(state.crewInFlightIds) ? state.crewInFlightIds : [];
     if (!shouldShowCrewProgressDock({ crewActive: true, workers, inFlightIds })) return [];
-    const items = buildCrewProgressItems({ workers, inFlightIds });
+    const items = listCrewDockItems({ workers, inFlightIds });
     const labels = {
       running: this.copy.crewPhaseRunning,
       queued: this.copy.crewPhaseQueued,

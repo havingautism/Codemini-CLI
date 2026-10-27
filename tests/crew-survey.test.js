@@ -10,7 +10,7 @@ import { runGit } from '../src/core/process-run.js';
 import { runAgentLoop } from '../src/core/agent-loop.js';
 import { compactSubAgentResultForParent } from '../src/core/chat-runtime.js';
 import { describeCrewRunSubagent } from '../src/core/tool-display.js';
-import { planCrewMissions, setCrewMissionStatus } from '../src/core/crew-missions.js';
+import { finishCrewMissions, planCrewMissions, setCrewMissionStatus } from '../src/core/crew-missions.js';
 import { enterCrewMode, listCrewWorkersFromState, patchCrewWorkerRecord } from '../src/core/crew-store.js';
 import {
   addCrewWorktree,
@@ -54,6 +54,30 @@ async function withRepo(task) {
     await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 50 });
   }
 }
+
+test('crew_finish removes survey worktree and worker branch when the mission is terminal', async () => {
+  await withRepo(async (dir) => {
+    const surveyPlan = await planCrewMissions(dir, { missions: [{ title: 'Scout', kind: 'survey' }] });
+    const missionId = surveyPlan.created[0].id;
+    const survey = await addCrewWorktree({
+      cwd: dir,
+      base: 'main',
+      name: 'Scout',
+      kind: 'survey',
+      missionId,
+    });
+    assert.equal(survey.ok, true, survey.error);
+    const branch = survey.worker.branch;
+    await setCrewMissionStatus(dir, missionId, 'completed');
+    const finish = await finishCrewMissions({ cwd: dir, inFlight: [] });
+    assert.equal(finish.ok, true, finish.message);
+    assert.deepEqual(finish.removed, [missionId]);
+    assert.equal(finish.branchesRemoved.includes(branch), true);
+    const branches = String((await git(dir, ['branch', '--list', 'codemini-crew/*'])).stdout || '').trim();
+    assert.equal(branches, '');
+    await assert.rejects(() => fs.access(survey.worker.worktreePath));
+  });
+});
 
 test('survey workers spawn without paths and do not occupy coder scope', async () => {
   await withRepo(async (dir) => {

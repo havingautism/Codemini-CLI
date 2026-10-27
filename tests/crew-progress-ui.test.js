@@ -26,6 +26,19 @@ test('getCrewStatusBarText shows crew worker phases when the parent turn is idle
   assert.equal(text.includes('wkr_'), false);
 });
 
+test('getCrewStatusBarText hides finished surveyors while other workers stay', () => {
+  const text = getCrewStatusBarText({
+    crewActive: true,
+    crewWorkers: [
+      { id: 'scout', name: 'Survey', kind: 'survey', runStatus: 'completed', dirty: false },
+      { id: 'header', name: 'Header', kind: 'coder', runStatus: 'completed', sealed: true },
+    ],
+    crewInFlightIds: [],
+  }, t);
+  assert.equal(text.includes('Survey'), false);
+  assert.match(text, /Header/);
+});
+
 test('getCrewStatusBarText stays empty when crew is inactive or roster is merged', () => {
   assert.equal(getCrewStatusBarText({ crewActive: false }, t), '');
   assert.equal(getCrewStatusBarText({

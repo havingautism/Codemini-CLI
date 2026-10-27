@@ -846,6 +846,17 @@ export async function removeCrewWorktree({
   return { ok: true, removed: true, worker };
 }
 
+export async function deleteCrewWorkerBranch(cwd = process.cwd(), worker = {}) {
+  const root = path.resolve(cwd);
+  const branch = String(worker?.branch || '').trim();
+  const workerId = String(worker?.id || '').trim();
+  if (!branch.startsWith(BRANCH_PREFIX) || RESERVED_WORKER_IDS.has(workerId)) {
+    return false;
+  }
+  const deleted = await tryGit(root, ['branch', '-D', branch]);
+  return deleted.code === 0;
+}
+
 export async function teardownCrewWorker({
   cwd = process.cwd(),
   id = '',
@@ -859,10 +870,7 @@ export async function teardownCrewWorker({
     const worker = workers.find((item) => item.id === workerId);
     if (!worker) return { ok: false, code: 'NOT_FOUND', error: `Unknown Crew worker "${workerId}".` };
     const worktree = await removeCrewWorktree({ cwd: root, worker, force });
-    const branch = String(worker.branch || '').trim();
-    if (branch.startsWith(BRANCH_PREFIX) && !RESERVED_WORKER_IDS.has(worker.id)) {
-      await tryGit(root, ['branch', '-D', branch]);
-    }
+    await deleteCrewWorkerBranch(root, worker);
     await writeCrewWorkerRecords(root, workers.filter((item) => item.id !== workerId));
     await tryGit(root, ['worktree', 'prune']);
     return {

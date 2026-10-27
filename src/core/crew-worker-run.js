@@ -162,6 +162,7 @@ export async function runCrewWorkerJob({
   let missionGate = null;
   let missionSubmittedDuringRun = false;
   let workerWakeStatus = '';
+  let releasedInFlight = false;
   try {
     const reviewBox = { verdict: null };
     const crewActor = reviewingWorkerId
@@ -301,6 +302,13 @@ export async function runCrewWorkerJob({
       reviewRound = applied.reviewRound;
       reviewIncomplete = applied.reviewIncomplete === true;
     }
+    const releaseWorkerId = lockedCrewWorkerId || reviewingWorkerId;
+    const releaseShiftInFlight = async () => {
+      if (releasedInFlight || typeof releaseInFlight !== 'function') return;
+      releasedInFlight = true;
+      await releaseInFlight(releaseWorkerId);
+    };
+    await releaseShiftInFlight();
     const stepSegments = buildSubagentToolSegmentsFromMessages(output.messages || []);
     emit({
       type: 'plan:step_done',
@@ -461,8 +469,8 @@ export async function runCrewWorkerJob({
       ...(childUsage ? { usage: childUsage } : {}),
     };
   } finally {
-    if (typeof releaseInFlight === 'function') {
-      releaseInFlight(lockedCrewWorkerId || reviewingWorkerId);
+    if (typeof releaseInFlight === 'function' && !releasedInFlight) {
+      await releaseInFlight(lockedCrewWorkerId || reviewingWorkerId);
     }
   }
 }

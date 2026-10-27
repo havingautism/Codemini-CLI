@@ -1,6 +1,6 @@
 import {
-  buildCrewProgressItems,
   formatCrewProgressLine,
+  listCrewDockItems,
   shouldShowCrewProgressDock,
 } from "../../../../src/core/crew-progress.js";
 
@@ -9,6 +9,7 @@ export const CREW_PHASE_LABEL_KEY = {
   running: "crewPhaseRunning",
   reviewing: "crewPhaseReviewing",
   awaiting_review: "crewPhaseAwaitingReview",
+  awaiting_submit: "crewPhaseAwaitingSubmit",
   ready: "crewPhaseReady",
   dirty: "crewPhaseDirty",
   merged: "crewPhaseMerged",
@@ -38,9 +39,7 @@ export function getCrewStatusBarText(runtimeState, t) {
   if (!shouldShowCrewProgressDock({ crewActive, workers, inFlightIds })) {
     return "";
   }
-  const items = buildCrewProgressItems({ workers, inFlightIds }).filter(
-    (item) => item.phase !== "merged",
-  );
+  const items = listCrewDockItems({ workers, inFlightIds });
   if (!items.length) return "";
   return formatCrewProgressLine(items, crewPhaseLabels(t));
 }

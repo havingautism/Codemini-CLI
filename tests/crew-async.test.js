@@ -283,6 +283,16 @@ test('crew progress dock describes reviewing and hides after full merge', () => 
     { inFlightIds: ['lena'] },
   );
   assert.equal(overwritten.phase, 'reviewing');
+  const shiftDone = describeCrewWorkerProgress(
+    { id: 'mira', kind: 'coder', runStatus: 'awaiting_submit', dirty: false },
+    { inFlightIds: ['mira'] },
+  );
+  assert.equal(shiftDone.phase, 'awaiting_submit');
+  const staleRunning = describeCrewWorkerProgress(
+    { id: 'mira', kind: 'coder', runStatus: 'completed', sealed: false, dirty: false },
+    { inFlightIds: ['mira'] },
+  );
+  assert.equal(staleRunning.phase, 'reviewing');
   const items = buildCrewProgressItems({
     workers: [
       { id: 'lena', kind: 'coder', sealed: true, runStatus: 'completed', reviewPassed: true },
@@ -309,7 +319,7 @@ test('crew progress dock describes reviewing and hides after full merge', () => 
     crewActive: true,
     workers: [{ id: 'scout', kind: 'survey', runStatus: 'completed', dirty: false, integrated: true }],
     inFlightIds: [],
-  }), true);
+  }), false);
   const roster = formatCrewRosterSnapshot({
     workers: [{
       id: 'scout',

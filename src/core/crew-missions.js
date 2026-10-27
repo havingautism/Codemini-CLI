@@ -12,7 +12,12 @@ import {
   updateCrewState,
   writeCrewStateFile,
 } from './crew-store.js';
-import { isCrewWorktreeDirty, listCrewChangedFiles, removeCrewWorktree } from './crew-worktree.js';
+import {
+  deleteCrewWorkerBranch,
+  isCrewWorktreeDirty,
+  listCrewChangedFiles,
+  removeCrewWorktree,
+} from './crew-worktree.js';
 
 export {
   findCrewMissionForWorker,
@@ -362,21 +367,30 @@ export async function finishCrewMissions({ cwd, inFlight = [] } = {}) {
   }
   const workers = listCrewWorkersFromState(state);
   const removed = [];
+  const branchesRemoved = [];
   const kept = [];
   for (const mission of missions) {
     const worker = workers.find((item) => item.id === mission.workerId || item.missionId === mission.id);
     if (!worker) continue;
     const result = await removeCrewWorktree({ cwd, worker, force: false });
-    if (result.ok && (result.removed || result.missing)) removed.push(mission.id);
-    else kept.push(`${mission.id}${result.dirty ? ' (dirty)' : ''}`);
+    if (result.ok && (result.removed || result.missing)) {
+      removed.push(mission.id);
+      if (await deleteCrewWorkerBranch(cwd, worker)) {
+        branchesRemoved.push(String(worker.branch || worker.id).trim());
+      }
+    } else {
+      kept.push(`${mission.id}${result.dirty ? ' (dirty)' : ''}`);
+    }
   }
   return {
     ok: true,
     removed,
+    branchesRemoved,
     kept,
     message: [
-      'Crew finish removed clean worktrees. Records stay. Crew mode stays on.',
-      removed.length ? `Removed: ${removed.join(', ')}.` : 'No worktrees removed.',
+      'Crew finish removed clean worktrees and worker branches. Records stay. Crew mode stays on.',
+      removed.length ? `Worktrees removed: ${removed.join(', ')}.` : 'No worktrees removed.',
+      branchesRemoved.length ? `Branches deleted: ${branchesRemoved.join(', ')}.` : '',
       kept.length ? `Kept: ${kept.join(', ')}.` : '',
       'A later request can call crew_plan again.',
     ].filter(Boolean).join(' '),
