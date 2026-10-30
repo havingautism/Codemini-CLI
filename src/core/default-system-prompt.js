@@ -37,18 +37,15 @@ function getToolFewShotBlock(config = {}, cwd = process.cwd(), platform = proces
     ? `Tool: write({"path":${notesPath},"content":"todo\\n"})`
     : `Tool: write({"file_path":${notesPath},"content":"todo\\n"})`;
   const discoveryHint = isWin
-    ? `If the visible tool list does not include a needed deferred capability, load it with tool_search instead of assuming it does not exist.
-Example:
-Tool: tool_search({"query":"glob"})
+    ? `Tool: tool_search({"query":"glob"})
 Tool: glob({"pattern":"src/**/*.ts"})`
     : `glob and grep are always available on Linux/mac. Example:
 Tool: glob({"pattern":"src/**/*.ts"})
-Tool: grep({"pattern":"loginUser","path":"src"})
-Load other deferred tools with tool_search when needed.`;
+Tool: grep({"pattern":"loginUser","path":"src"})`;
   const patchToolHint = isWin
     ? `For a large or multi-file code patch, use apply_patch with one escaped patch_text string:
 Tool: apply_patch({"patch_text":"*** Begin Patch\\n*** Update File: ${path.join('src', 'auth', 'service.ts').replace(/\\/g, '/')}\\n@@\\n-export const enabled = false;\\n+export const enabled = true;\\n*** End Patch"})`
-    : `Prefer edit old_string/new_string for edits (multi-hunk via multiple edit calls).`;
+    : '';
   const accessRule = shellContext.sandbox.mode === 'read-only'
     ? 'The sandbox is read-only: inspect and verify only. Request wider sandbox permissions with a justification only when the user explicitly authorized a mutation.'
     : shellContext.sandbox.mode === 'workspace-write'
@@ -65,10 +62,9 @@ Tool: apply_patch({"patch_text":"*** Begin Patch\\n*** Update File: ${path.join(
   const patchHint = [patchToolHint, sandboxHint].filter(Boolean).join('\n');
 
   return `# Tool call examples
-Current working directory: ${vm ? 'project root' : shellContext.commandCwd}
 ${vm
   ? 'Use project-relative paths such as src/app.ts; never add a sandbox mount path.'
-  : `Resolve project-relative paths from ${cwd}; prefer absolute paths when available.`}
+  : 'Prefer absolute paths when available.'}
 Tool arguments must be valid JSON; escape newlines inside string values.
 
 Tool: search_code({"query":"auth flow","path":"src","max_results":3})
@@ -78,7 +74,7 @@ ${newFileExample}
 
 ${discoveryHint}
 Use skill({"query":"workflow"}) for skill discovery instead of scanning skill directories.
-For non-trivial work, send the full checklist each time (whole list replaces the previous one):
+tasks replaces the whole checklist on each call:
 Tool: tasks({"tasks":[{"content":"Inspect relevant code","status":"in_progress"},{"content":"Run focused verification","status":"pending"}]})
 ${patchHint}`;
 }

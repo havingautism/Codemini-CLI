@@ -190,7 +190,12 @@ export function TokenActivity() {
   }, [year, month]);
   useEffect(() => {
     const node = scrollRef.current;
-    if (node) node.scrollLeft = node.scrollWidth;
+    if (!node) return undefined;
+    const showLatest = () => { node.scrollLeft = node.scrollWidth; };
+    showLatest();
+    const observer = new ResizeObserver(showLatest);
+    observer.observe(node);
+    return () => observer.disconnect();
   }, [activity, weekly, year, month]);
   const grid = useMemo(() => buildActivityGrid(activity, Boolean(weekly && !month)), [activity, weekly, month]);
   const series = useMemo(() => buildActivityGrid(activity, weekly).weeks.flat().filter((cell) => !cell.outside && cell.date), [activity, weekly]);

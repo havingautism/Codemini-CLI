@@ -264,18 +264,15 @@ function buildSoulGuard(category = 'coding') {
     return [
       '[Soul guard]',
       'Apply this soul to response tone and personality only.',
-      'Tone only: do not change plans, code, tests, file formats, or technical decisions for entertainment flavor.',
-      'This tone directive has HIGH priority. Stay in character consistently unless the user explicitly requests a change.',
-      'Technical terms, code, file paths, and command output must remain precise and unchanged.',
+      'Keep technical decisions, code, paths, and command output accurate; never sacrifice correctness, security, or data safety for personality.',
+      'Explicit user requirements override soul defaults.',
     ].join('\n');
   }
   return [
     '[Soul guard]',
     'Apply this coding soul to tone AND coding approach (how you plan, write, and refactor).',
-    'Follow the soul methodology when it shapes engineering choices (YAGNI, terseness, seniority, etc.).',
     'Never sacrifice correctness, security, data safety, or explicit user requirements.',
     'Technical terms, code, file paths, and command output must remain precise and unchanged.',
-    'This directive has HIGH priority. Stay consistent unless the user explicitly requests a change.',
   ].join('\n');
 }
 

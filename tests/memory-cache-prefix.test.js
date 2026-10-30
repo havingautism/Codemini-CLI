@@ -10,8 +10,9 @@ import { initializeProjectIndex } from '../src/core/project-index.js';
 import { rememberMemory } from '../src/core/memory-store.js';
 import { closeSqliteDatabasesForTests } from '../src/core/sqlite-database.js';
 import { createSession, loadSession } from '../src/core/session-store.js';
+import { buildDefaultSystemPrompt } from '../src/core/default-system-prompt.js';
 
-async function withRuntime(task, mode = 'normal', indexed = false) {
+async function withRuntime(task, mode = 'normal', indexed = false, fullPrompt = false) {
   closeSqliteDatabasesForTests();
   const previous = process.env.CODEMINI_GLOBAL_DIR;
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-memory-cache-'));
@@ -55,8 +56,15 @@ async function withRuntime(task, mode = 'normal', indexed = false) {
       await fs.writeFile(path.join(dir, 'index.js'), 'export const example = 1;');
       await initializeProjectIndex(dir);
     }
+    if (fullPrompt) {
+      config.sandbox = { enabled: false };
+      config.soul = { coding: 'Default', daily: 'Soft' };
+    }
     const session = await createSession(dir);
-    const runtime = await createChatRuntime({ session, config, model: 'test-model', systemPrompt: 'stable', workspaceRoot: dir });
+    const runtime = await createChatRuntime({
+      session, config, model: 'test-model', workspaceRoot: dir,
+      systemPrompt: fullPrompt ? buildDefaultSystemPrompt(config, { workspaceRoot: dir }) : 'stable',
+    });
     await task({
       dir,
       bodies,
@@ -74,6 +82,32 @@ async function withRuntime(task, mode = 'normal', indexed = false) {
     else process.env.CODEMINI_GLOBAL_DIR = previous;
     await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 50 });
   }
+}
+
+for (const mode of ['normal', 'plan']) {
+  test(`${mode} final model requests keep mode and base rules single and cacheable`, async () => {
+    await withRuntime(async ({ bodies, runtime, config, dir }) => {
+      config.context.project_instructions_enabled = true;
+      await fs.writeFile(path.join(dir, 'AGENTS.md'), 'Unique project contract fixture.');
+      await rememberMemory({
+        scope: 'project', family: 'repo', kind: 'convention',
+        content: 'Unique stable memory fixture.', workspaceRoot: dir, config,
+      });
+      await runtime.submitMessage({ text: 'explain this project' });
+      await runtime.submitMessage({ text: 'continue explaining' });
+      assert.equal(bodies.length, 2);
+      const system = bodies[0].messages.find((message) => message.role === 'system').content;
+      assert.equal(bodies[1].messages.find((message) => message.role === 'system').content, system);
+      for (const marker of ['Execution Mode:', '# Tool discipline', '[Soul guard]', '[Reply language]', 'Unique project contract fixture.']) {
+        assert.equal(system.split(marker).length - 1, 1, marker);
+      }
+      assert.match(system, /<relevant_memory>/);
+      assert.ok(system.indexOf('Execution Mode:') < system.indexOf('[Reply language]'));
+      assert.ok(system.trimEnd().endsWith('</relevant_memory>'));
+      if (mode === 'plan') assert.match(system, /Implementation quality:/);
+      else assert.doesNotMatch(system, /Implementation quality:|coding approach/);
+    }, mode, false, true);
+  });
 }
 
 test('bootstrap memory stays byte-identical for the lifetime of a session', async () => {

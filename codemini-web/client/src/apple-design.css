@@ -23,7 +23,6 @@
 }
 
 
-
 .codemini-sidebar,
 [data-slot="dialog-content"],
 [data-slot="sheet-content"],
@@ -44,17 +43,6 @@
   background: var(--apple-material-raised);
 }
 
-:where(button, a, input, textarea, select, [role="button"], [role="option"]):focus-visible {
-  outline: none;
-  /* box-shadow: 0 0 0 2px color-mix(in srgb, var(--text-primary) 28%, transparent); */
-}
-
-@media (prefers-contrast: more), (forced-colors: active) {
-  :where(button, a, input, textarea, select, [role="button"], [role="option"]):focus-visible {
-    outline: 2px solid Highlight;
-    outline-offset: 2px;
-  }
-}
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {

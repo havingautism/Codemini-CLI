@@ -11,9 +11,12 @@ import {
   routingGraphFromEvent,
   memoryInjectFromEvent,
   settleIncompleteTranscriptMessage,
+  removeEmptyAssistantPlaceholders,
+  latestRetryableMessageId,
   updateSkillInSegments,
 } from '../shared/transcript-segments.js';
 import { buildHookSegmentEvent } from '../shared/hook-ui.js';
+import { prepareRetryTurn } from '../../src/core/retry-turn.js';
 import { stripPlanProgressText } from '../shared/plan-progress-text.js';
 import {
   applyPlanEventToMessage,
@@ -644,6 +647,22 @@ export class RuntimeBridge {
 
   #publish(event) {
     const incomingSessionId = String(event?.sessionId || '').trim();
+    if (event?.type === 'submit:done' && (!incomingSessionId || incomingSessionId === this.#sessionId)) {
+      if (event.result?.type === 'error') {
+        const lastUserIndex = this.#uiMessages.findLastIndex((message) => message.role === 'you');
+        let errorMessage = this.#uiMessages.slice(lastUserIndex + 1).findLast((message) => message.role === 'error');
+        if (!errorMessage) {
+          const user = this.#uiMessages[lastUserIndex];
+          const errorId = this.#addUiRunStatusMessage(`Failed: ${event.result.text || 'Request failed'}`, {
+            retryPrompt: event.result.retryPrompt || user?.text || 'Retry',
+          });
+          errorMessage = this.#uiMessages.find((message) => message.id === errorId);
+        }
+        event = { ...event, result: { ...event.result, errorMessageId: errorMessage?.id } };
+      }
+      this.#uiMessages = removeEmptyAssistantPlaceholders(this.#uiMessages, { turnFinished: true });
+      this.#persistUiTranscriptSoon();
+    }
     const tagged = {
       ...event,
       // Keep explicit session ids (e.g. async session:title) so pooled
@@ -755,6 +774,8 @@ export class RuntimeBridge {
           this.#uiMessages = messages;
         }
       }
+      messages = removeEmptyAssistantPlaceholders(messages);
+      this.#uiMessages = messages;
       saveUiTranscriptToSqlite(sessionId, messages);
     } catch {}
   }
@@ -924,7 +945,7 @@ export class RuntimeBridge {
       timestamp: new Date().toISOString(),
       responseStatus: status,
       retryPrompt: String(retryPrompt || ''),
-      retryable: status === 'error' && Boolean(String(retryPrompt || '').trim())
+      retryable: status === 'error' && Boolean(this.#lastUserMessageId())
     });
   }
 
@@ -1458,6 +1479,7 @@ export class RuntimeBridge {
     }
     this.#ensureUiTranscriptLoaded();
     this.#resetActiveAssistantTarget();
+    this.#runStatusRecorded = false;
     const selectedSkills = [...new Set(
       (Array.isArray(selectedSkillNames) ? selectedSkillNames : [])
         .map((name) => String(name || '').trim())
@@ -1541,6 +1563,7 @@ export class RuntimeBridge {
   }
 
   handleSubmitMessage(message = {}) {
+    if (message.retryMessageId) return this.handleRetryMessage(message.retryMessageId);
     const text = String(message.text || '');
     return this.#handleStructuredRun(
       (onAgentEvent) => this.#runtime.submitMessage(message, onAgentEvent),
@@ -1555,6 +1578,32 @@ export class RuntimeBridge {
         retryPrompt: text
       }
     );
+  }
+
+  handleRetryMessage(messageId) {
+    this.#ensureUiTranscriptLoaded();
+    const errorIndex = this.#uiMessages.findIndex((message) => message.id === messageId);
+    const error = this.#uiMessages[errorIndex];
+    if (!error) {
+      throw new Error('The original reply is no longer available.');
+    }
+    if (this.#uiMessages.slice(errorIndex + 1).some((message) => message.role === 'you')) {
+      throw new Error('Only the latest user turn can be retried.');
+    }
+    if (messageId !== latestRetryableMessageId(this.#uiMessages)) {
+      throw new Error('Only the latest reply without file changes can be retried.');
+    }
+    const userIndex = this.#uiMessages.findLastIndex((message, index) => index < errorIndex && message.role === 'you');
+    if (userIndex < 0) throw new Error('The original user message is unavailable.');
+    const user = this.#uiMessages[userIndex];
+    const userTurnIndex = this.#uiMessages.slice(0, userIndex + 1).filter((message) => message.role === 'you').length - 1;
+    const coreMessages = this.#runtime.getSessionMessages?.();
+    if (Array.isArray(coreMessages)) prepareRetryTurn(coreMessages, userTurnIndex);
+    return this.#handleStructuredRun((onAgentEvent) => {
+      this.#uiMessages = this.#uiMessages.slice(0, userIndex + 1);
+      this.#persistUiTranscriptSoon();
+      return this.#runtime.retryMessage({ userTurnIndex }, onAgentEvent);
+    }, { retryPrompt: user.text });
   }
 
   handleAction(action = {}) {

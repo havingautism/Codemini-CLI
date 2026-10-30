@@ -7,6 +7,7 @@ import { buildHookSegmentEvent } from "./hook-ui.js";
 import { formatToolLabel as coreFormatToolLabel } from "../../src/core/tool-display.js";
 import { settleTodoCardsInSegments } from "../../src/core/todo-state.js";
 import { mergeTiming, sanitizeTiming } from "../../src/core/usage-timing.js";
+import { hasRecordedFileChanges } from "../../src/core/retry-turn.js";
 
 const USAGE_KEYS = [
   "inputTokens",
@@ -446,8 +447,43 @@ export function settleIncompleteTranscriptMessage(message, { reason = "aborted" 
   };
 }
 
+export function latestRetryableMessageId(messages = []) {
+  const lastUserIndex = messages.findLastIndex((message) => message?.role === "you");
+  if (lastUserIndex < 0 || hasRecordedFileChanges(messages.slice(lastUserIndex + 1))) return "";
+  const reply = messages.slice(lastUserIndex + 1).findLast((message) =>
+    message && !["you", "system", "divider", "plan-overview"].includes(message.role));
+  if (!reply || reply.retryable === false || reply.manualAborted || reply.planStep || reply.transientKey) return "";
+  const failed = reply.role === "error" && reply.responseStatus === "error";
+  return failed || reply.isComplete === true ? reply.id || "" : "";
+}
+
+export function removeEmptyAssistantPlaceholders(messages = [], { turnFinished = false } = {}) {
+  const transcript = Array.isArray(messages) ? messages : [];
+  // Older failed transcripts may never have marked the placeholder complete.
+  // A later error or user turn still proves that placeholder is no longer live.
+  const settledBoundary = transcript.findLastIndex((message) => message?.role === "you" || message?.role === "error");
+  return transcript.filter((message, index) => {
+    if (!message || !["general", "agent", "assistant"].includes(message.role)) return true;
+    if (!turnFinished && message.isComplete !== true && index >= settledBoundary) return true;
+    if (message.planStep || message.planOverview || message.transientKey) return true;
+    if ([message.text, message.content].some((text) => String(text || "").trim())) return true;
+    if (["skillBadges", "fileChanges", "attachments", "fileReferences", "startupTodos"]
+      .some((key) => Array.isArray(message[key]) && message[key].length)) return true;
+    return (message.segments || []).some((segment) => {
+      if (!segment) return false;
+      if (segment.type === "loop") return false;
+      if (segment.type === "text" || segment.type === "thinking") {
+        return Boolean(String(segment.text || "").trim());
+      }
+      if (segment.type === "tools") return Boolean(segment.cards?.length);
+      // Preserve skill, plan and other structured activity, including new types.
+      return true;
+    });
+  });
+}
+
 export function repairSettledTranscriptMessages(messages = []) {
-  return (Array.isArray(messages) ? messages : []).map((message) => {
+  return removeEmptyAssistantPlaceholders((Array.isArray(messages) ? messages : []).map((message) => {
     if (!message || typeof message !== "object") return message;
     const settled =
       message.manualAborted === true ||
@@ -459,7 +495,7 @@ export function repairSettledTranscriptMessages(messages = []) {
         ? "aborted"
         : "completed",
     });
-  });
+  }));
 }
 
 export function hasThinkingSegment(segments) {

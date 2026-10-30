@@ -94,6 +94,7 @@ import { composeSystemPrompt } from './system-prompt-composer.js';
 import { buildTurnContextPrefix, buildTurnUserPrompt } from './turn-context.js';
 import { buildSubAgentShellRulesPrompt, buildSubAgentRuntimeNote, resolveShellContext } from './shell-profile.js';
 import { getBaseConfigDir, getProjectIndexDir, getProjectPlansDir, getProjectSpecsDir, getProjectWorkspaceDir, getSessionsDir, getSkillsDir } from './paths.js';
+import { prepareRetryTurn } from './retry-turn.js';
 import {
   buildCrewModePromptBlock,
   enterCrewMode,
@@ -563,40 +564,29 @@ export function applyCrewParentToolPolicy(allowedTools, { crewActive = false } =
 export function buildExecutionModePromptBlock(executionMode, platform = process.platform, shell = '') {
   const commandToolName = shellToolName({ platform, shell });
   if (normalizeExecutionMode(executionMode) === 'plan') {
-    const unixCrud = platform !== 'win32';
     return [
       'Execution Mode: coding',
-      'Implement only when requested. Preserve public contracts, project conventions, unrelated user changes, and platform compatibility.',
+      'Implement only when requested. Preserve public contracts, project conventions, and platform compatibility.',
       '',
-      'Workflow: inspect relevant source and callers → clarify only material choices → make the smallest complete change → run focused verification → inspect the diff.',
+      'Workflow: inspect source and callers → resolve material choices → make the smallest complete change → verify → inspect the diff.',
       'Choose skills, planning, and delegation from inspected context; respect user restrictions and tool permissions.',
       'For bugs, establish a failing signal and fix the shared root cause. Never claim completion without fresh evidence.',
       '',
-      'Subagent tool (run_subagent):',
-      '- Prefer delegation for non-trivial coding work only when a bounded, independently verifiable chunk benefits from clean context or parallel read-only evidence.',
-      '- The parent agent owns decomposition, integration, and the final answer. Workers use the configured Lite/Fast model.',
-      `- Pass a one- or two-sentence summary plus concrete task, success criteria, and scope. Give read-only workers explicit tools; include ${commandToolName} only for execution they own.`,
-      '- Do not copy the parent transcript into the worker. Pass a task envelope: goal, file paths, constraints, and known facts.',
-      '- Workers return a short conclusion and a handoff path under .codemini/handoffs/. Read that file only when details are required; do not copy the raw dump forward.',
+      'Implementation quality:',
+      '- Validate untrusted input at its owning boundary; reuse established guarantees internally. Keep checks needed for persisted data and external integrations.',
+      '- Keep simple logic inline. Extract helpers for meaningful concepts, complex flow, or reuse; avoid speculative robustness outside the task.',
+      '- Test observable behavior through the real implementation, not duplicated logic. Mock only where isolation requires it.',
+      '- Regenerate derived files through the documented project workflow.',
       '',
-      'Fork tool (fork_task):',
-      '- Prefer fork_task over run_subagent when branches share the full state and prompt prefix (same identity/model): parallel investigation, option comparison, or bounded same-identity chunks. Issue several fork_task calls in one response to run branches concurrently.',
-      '- Branches inherit the whole conversation prefix, so pass only the branch task and a short name; do not restate history. Branches share one worktree: prefer read-only investigation or disjoint file ownership.',
-      '- For a clean context, a different role/model, or role-specific tools, use run_subagent. Branches cannot fork or ask the user questions.',
+      'Delegation:',
+      '- Prefer delegation for non-trivial coding work when a bounded, independently verifiable chunk benefits from it. The parent agent owns decomposition, integration, and the final answer.',
+      `- run_subagent: clean context, different role/model, or scoped tools; configured Lite/Fast model. Send a one- or two-sentence summary, task, paths, constraints, known facts, and success criteria, not the transcript. Give read-only workers explicit tools; include ${commandToolName} only for execution they own.`,
+      '- Read .codemini/handoffs/ details only when needed; carry forward conclusions, not raw dumps.',
+      '- fork_task: shared identity/model and full conversation prefix. Send only a task and short name; call several together for concurrency. Same worktree: use read-only work or disjoint files. Branches cannot fork or ask the user questions.',
       '',
       'User input workflow:',
-      '- Inspect first. Use request_user_input when preference, scope, target, or constraints materially change the work.',
-      '- Prefer a structured form for 1-3 choices when it would substantially improve the usefulness or fit; continue with safe reversible defaults for incidental details.',
-      '',
-      'Design documents:',
-      '- Create a design document only when implementation is blocked by a material product/architecture decision, multiple viable approaches have meaningfully different tradeoffs, or the change affects public contracts, data migration, security, cost, or broad scope.',
-      '- Do not create a design document for routine fixes. Record only material decisions and wait for confirmation before implementing those material choices.',
-      '',
-      'Tool discipline:',
-      unixCrud
-        ? '- Read before editing; use edit old_string/new_string for existing files and write for new files.'
-        : '- Use edit for precise changes, apply_patch for coherent multi-file work, and begin_write/write_chunk/commit_write only for long whole-file output.',
-      `- Use ${commandToolName} for focused tests, builds, generators, and git inspection—not ordinary source reading.`
+      '- Inspect first. Use request_user_input with a structured form for 1-3 material choices; use safe reversible defaults for incidental details.',
+      '- Create a design document only for unresolved material decisions or tradeoffs involving architecture, public contracts, migration, security, cost, or broad scope. Confirm those choices before implementation unless already authorized. Skip design docs for routine fixes.',
     ].join('\n');
   }
   return [
@@ -604,7 +594,7 @@ export function buildExecutionModePromptBlock(executionMode, platform = process.
     'Handle everyday questions and lightweight tasks conversationally. Answer without changing state unless the user asks for an action.',
       '',
     'User input workflow:',
-    '- Keep request_user_input available. Use a short structured form when 1-3 preference, scope, format, or outcome choices would materially improve the answer.',
+    '- Use request_user_input for 1-3 material preference, scope, format, or outcome choices.',
     '- Make safe reversible assumptions for incidental details. Preserve user data and avoid external side effects without clear authorization.',
       '',
     'Web research workflow:',
@@ -9757,7 +9747,7 @@ export async function createChatRuntime({
     includeMemoryGuide = true,
     userQuery = '',
   } = {}) => {
-    const memoryGuide = `Use save_memory only for explicit lasting preferences or stable project conventions; never store secrets or duplicates. Write it in ${getReplyLanguageName(config)}. Coding discoveries go through later Dream/session review.`;
+    const memoryGuide = 'Use save_memory only for explicit lasting preferences or stable project conventions; never store secrets or duplicates. Coding discoveries go through later Dream/session review.';
     const [skillsPrompt, memorySnapshot, recalled] = await Promise.all([
       includeSkillIndex ? getSkillIndexPrompt() : Promise.resolve(''),
       getSessionMemoryBootstrap(),
@@ -10521,6 +10511,20 @@ export async function createChatRuntime({
   return {
     submit,
     submitMessage,
+    retryMessage: async ({ userTurnIndex }, onAgentEvent) => {
+      if (activeTurnCount > 0) throw new Error('A request is already in progress');
+      const retry = prepareRetryTurn(currentSession.messages, userTurnIndex);
+      currentSession.messages = retry.messages;
+      // The compacted view may contain the failed attempt; rebuild from the
+      // authoritative history rather than replaying stale errors/tool results.
+      setCompactedView(null);
+      await saveSession(currentSession);
+      return executeSubmission(retry.user.content, onAgentEvent, {
+        modelText: retry.user.model_content || retry.user.content,
+        modelImages: retry.user.model_images || [],
+        selectedSkillNames: retry.user.selected_skill_names || [],
+      });
+    },
     isTurnActive: () => activeTurnCount > 0,
     drainCrewPendingWakes: () => crewCoordinator.drainPendingWakes(),
     getCrewWorkersInFlight: () => crewWorkersInFlight.size,

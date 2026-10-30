@@ -35,6 +35,7 @@ import { TrajectoryPanel } from "@/components/TrajectoryPanel.jsx";
 import "../style.css";
 import "./apple-design.css";
 import "./conversation-design.css";
+import "./focus.css";
 
 const SessionContextPanel = lazy(() => import("@/components/SessionContextPanel.jsx").then((module) => ({ default: module.SessionContextPanel })));
 
@@ -252,7 +253,7 @@ function Shell() {
   const openScrapbook = useCallback(() => actions.switchView("scrapbook"), [actions]);
   const openResearch = useCallback(() => actions.openResearchHome(), [actions]);
   const openSouls = useCallback(() => actions.setSoulsOpen(true), [actions]);
-  const retryMessage = useCallback((prompt) => actions.submit(prompt), [actions]);
+  const retryMessage = useCallback((messageId) => actions.retryMessage(messageId), [actions]);
   const openAbout = useCallback(() => actions.setAboutOpen(true), [actions]);
   const openProjectSelector = useCallback(
     () => actions.setProjectOpen(true),
@@ -685,7 +686,10 @@ function Shell() {
             )}
 
             {/* Plan Review / Input Area */}
-            <div className="w-[calc(100%_-_32px)] max-w-[var(--composer-width)] sm:w-[calc(100%_-_48px)] mx-auto mb-3 sm:mb-5 shrink-0 z-30 bg-transparent relative">
+            <div
+              hidden={chatPageTab !== "conversation"}
+              className="w-[calc(100%_-_32px)] max-w-[var(--composer-width)] sm:w-[calc(100%_-_48px)] mx-auto mb-3 sm:mb-5 shrink-0 z-30 bg-transparent relative"
+            >
               <RuntimeActivityStrip
                 activities={state.runtimeActivities}
               />

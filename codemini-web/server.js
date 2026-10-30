@@ -1378,6 +1378,7 @@ export function createWebRuntimeApi({
           target.handleSubmitMessage({
             text: body.text,
             messageId: body.messageId,
+            retryMessageId: body.retryMessageId,
             skillNames: body.skillNames,
             attachmentIds: body.attachmentIds,
             dismissedAlwaysSkills: body.dismissedAlwaysSkills,
@@ -1903,6 +1904,7 @@ export async function handleStructuredChatRequest(req, res, bridge) {
         await bridge.handleSubmitMessage({
           text: body?.text,
           messageId: body?.messageId,
+          retryMessageId: body?.retryMessageId,
           skillNames: body?.skillNames,
           attachmentIds: body?.attachmentIds,
           dismissedAlwaysSkills: body?.dismissedAlwaysSkills,

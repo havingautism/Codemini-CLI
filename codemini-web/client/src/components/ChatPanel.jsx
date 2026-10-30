@@ -17,6 +17,7 @@ import { t } from "../../i18n/index.js";
 import { useGitWorkspace } from "@/hooks/use-git-workspace.js";
 import { HomeEmptyVisual } from "./HomeEmptyVisual.jsx";
 import { HomeEmptyCaption } from "./HomeEmptyCaption.jsx";
+import { latestRetryableMessageId } from "../../../shared/transcript-segments.js";
 
 const MessageBubble = lazy(() =>
   import("./MessageBubble").then((module) => ({
@@ -250,6 +251,7 @@ function ChatPanelContent({
     () => hasConversationContent(messages),
     [messages],
   );
+  const retryableMessageId = useMemo(() => latestRetryableMessageId(messages), [messages]);
 
   const userMessages = useMemo(
     () =>
@@ -496,6 +498,7 @@ function ChatPanelContent({
                         onRetry={onRetryMessage}
                         dockTodo={Boolean(dockedTodoMessageId) && msg.id === dockedTodoMessageId}
                         turnActive={busy}
+                        retryAllowed={!busy && msg.id === retryableMessageId}
                       />
                     </MessageScrollerItem>
                   );

@@ -4,7 +4,7 @@
 .session-context h3 { font-size: 14px; font-weight: 600; margin: 0 0 20px; }
 .session-context__header p, .session-context__note { color: var(--text-muted); font-size: 12px; line-height: 1.7; margin: 8px 0 0; }
 .session-context__header button { border: 1px solid var(--border-default); border-radius: 8px; padding: 7px 12px; cursor: pointer; background: var(--bg-secondary); color: var(--text-primary); flex-shrink: 0; }
-.session-context button:focus-visible, .session-context [tabindex]:focus-visible { outline: 2px solid var(--accent-blue); outline-offset: 3px; }
+
 .session-context__overview { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 18px; }
 .session-context__metric { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
 .session-context__metric > span, .session-context small { color: var(--text-muted); font-size: 11px; }

@@ -1025,7 +1025,7 @@ function HookProfilesPane({ onDirtyChange }) {
                             <button
                               type="button"
                               onClick={() => selectProfile(profile.id)}
-                              className="min-w-0 flex-1 px-2 py-2 text-left outline-none focus-visible:shadow-[0_0_0_3px_var(--control-focus-ring)]"
+                              className="min-w-0 flex-1 px-2 py-2 text-left outline-none "
                             >
                               <span className="flex items-center gap-2">
                                 <span className="truncate text-sm font-semibold text-foreground">

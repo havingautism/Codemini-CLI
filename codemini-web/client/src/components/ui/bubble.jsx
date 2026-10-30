@@ -70,7 +70,7 @@ function BubbleContent({
     <Comp
       data-slot="bubble-content"
       className={cn(
-        "w-fit max-w-full min-w-0 overflow-hidden rounded-xl border border-(--message-edge) bg-(--message-surface) px-3 py-2 text-sm leading-relaxed shadow-[var(--message-shadow)] wrap-break-word group-data-[align=end]/bubble:self-end [button]:text-left [button,a]:transition-[background-color,border-color,box-shadow] [button,a]:outline-none [button,a]:focus-visible:shadow-[inset_0_0_0_1px_var(--control-border-hover)]",
+        "w-fit max-w-full min-w-0 overflow-hidden rounded-xl border border-(--message-edge) bg-(--message-surface) px-3 py-2 text-sm leading-relaxed shadow-[var(--message-shadow)] wrap-break-word group-data-[align=end]/bubble:self-end [button]:text-left [button,a]:transition-[background-color,border-color,box-shadow] [button,a]:outline-none [button,a]:",
         className
       )}
       {...props} />

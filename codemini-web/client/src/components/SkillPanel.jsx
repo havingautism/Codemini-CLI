@@ -1049,7 +1049,7 @@ function SkillCard({ skill, selected, onSelect }) {
         if (event.key === "Enter" || event.key === " ") onSelect(skill);
       }}
       className={cn(
-        "flex cursor-pointer flex-col gap-2 rounded-lg border px-3 py-2.5 text-left outline-none transition-[background-color,border-color,box-shadow] focus-visible:shadow-[0_0_0_3px_var(--control-focus-ring)]",
+        "flex cursor-pointer flex-col gap-2 rounded-lg border px-3 py-2.5 text-left outline-none transition-[background-color,border-color,box-shadow] ",
         selected
           ? "border-transparent bg-(--bg-active)"
           : enabled

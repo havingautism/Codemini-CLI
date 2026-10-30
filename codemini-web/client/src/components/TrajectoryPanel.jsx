@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { TASK_DECISION_ASSISTANT_AVAILABLE } from '@core/harness/availability.js';
 import { Download, Eye, MagnifyingGlass, X } from "@/lib/icons";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -324,7 +325,7 @@ export function TrajectoryPanel({
   const [toolReliability, setToolReliability] = useState([]);
 
   useEffect(() => {
-    if (!sessionId) {
+    if (!TASK_DECISION_ASSISTANT_AVAILABLE || !sessionId) {
       setHarnessEpisodes([]);
       return undefined;
     }
@@ -339,6 +340,7 @@ export function TrajectoryPanel({
   }, [sessionId, harnessRevision]);
 
   useEffect(() => {
+    if (!TASK_DECISION_ASSISTANT_AVAILABLE) return undefined;
     let active = true;
     fetch("/api/harness/tool-reliability")
       .then((response) => (response.ok ? response.json() : { tools: [] }))
@@ -543,7 +545,7 @@ export function TrajectoryPanel({
           <AlertDescription>{exportError}</AlertDescription>
         </Alert>
       ) : null}
-      <section className="mx-3 mt-2 rounded border border-(--border-default) bg-(--bg-secondary)/40 px-3 py-3 text-[12px] sm:mx-5">
+      {TASK_DECISION_ASSISTANT_AVAILABLE && <section className="mx-3 mt-2 rounded border border-(--border-default) bg-(--bg-secondary)/40 px-3 py-3 text-[12px] sm:mx-5">
         <div className="flex flex-wrap items-center gap-2">
           <strong className="text-(--text-primary)">任务决策助手实际效果</strong>
           <span className="text-[11px] text-(--text-muted)">
@@ -606,7 +608,7 @@ export function TrajectoryPanel({
         ) : (
           <div className="mt-2 text-[11px] text-(--text-muted)">规则模式不启用任务决策助手。请配置 Jev 或 Laya 并开启助手；若仍无记录，请检查主模型连接及灰度范围。</div>
         )}
-      </section>
+      </section>}
       <div className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto">
         {visible.length === 0 ? (
           <div className="px-3 py-10 text-center text-[13px] text-(--text-muted) sm:px-5">

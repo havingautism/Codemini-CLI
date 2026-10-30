@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises';
 import { normalizeDistillationConfig } from './harness/distillation.js';
+import { TASK_DECISION_ASSISTANT_AVAILABLE } from './harness/availability.js';
 import { getConfigFilePath } from './paths.js';
 import { atomicWriteUtf8 } from './staged-write.js';
 import { normalizeReplyLanguage } from './reply-language.js';
@@ -501,7 +502,7 @@ function normalizePolicyLists(config) {
   );
   next.harness = next.harness || {};
   next.harness.distillation = normalizeDistillationConfig(next.harness.distillation);
-  next.harness.enabled = next.harness.enabled === true;
+  next.harness.enabled = TASK_DECISION_ASSISTANT_AVAILABLE && next.harness.enabled === true;
   next.harness.mode = String(next.harness.mode || 'shadow').trim().toLowerCase() === 'shadow'
     ? 'shadow'
     : 'shadow';

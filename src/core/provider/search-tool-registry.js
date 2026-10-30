@@ -163,12 +163,7 @@ export function getWebToolGuidance(config) {
 }
 
 function getHttpSearchFewShotBlock() {
-  return `9. Search the web
-User: search the web for latest pnpm release
-Assistant: load the web search tool and run a targeted search
-Tool: tool_search({"query":"web_search"})
-Tool: web_search({"query":"latest pnpm release","max_results":5})
-If web_search returns direct image URLs, select the most relevant ones and embed only those chosen images in the final answer with Markdown image syntax: ![description](https://example.com/image.jpg)`;
+  return `Tool: web_search({"query":"latest pnpm release","max_results":5})`;
 }
 
 export function getSearchFewShotBlock(config) {

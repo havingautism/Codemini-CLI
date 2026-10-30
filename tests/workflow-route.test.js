@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { buildDefaultSystemPrompt } from '../src/core/default-system-prompt.js';
 import {
   buildPreviousTurnToolTrace,
   buildExecutionModePromptBlock,
@@ -75,7 +76,7 @@ test('coding prompt actively uses structured user input for material choices', (
   const prompt = buildExecutionModePromptBlock('coding');
   assert.match(prompt, /User input workflow:/);
   assert.match(prompt, /structured form/);
-  assert.match(prompt, /substantially improve the usefulness or fit/);
+  assert.match(prompt, /safe reversible defaults for incidental details/);
   assert.match(prompt, /inspect first/i);
 });
 
@@ -87,23 +88,30 @@ test('run_subagent UI receives the complete task instead of a clipped label', ()
 
 test('coding prompt creates design docs only for material decisions', () => {
   const prompt = buildExecutionModePromptBlock('coding');
-  assert.match(prompt, /only when implementation is blocked by a material product\/architecture decision/);
-  assert.match(prompt, /Do not create a design document for routine fixes/);
-  assert.match(prompt, /wait for confirmation before implementing those material choices/);
+  assert.match(prompt, /only for unresolved material decisions or tradeoffs/);
+  assert.match(prompt, /Skip design docs for routine fixes/);
+  assert.match(prompt, /Confirm those choices before implementation unless already authorized/);
 });
 
-test('coding prompt describes the platform-specific write tools', () => {
-  const unixPrompt = buildExecutionModePromptBlock('coding', 'linux');
+function assembledCodingPrompt(platform, shell = '') {
+  const config = { sandbox: { enabled: false }, shell: { default: shell || 'bash' } };
+  return [buildDefaultSystemPrompt(config, { platform }), buildExecutionModePromptBlock('coding', platform, shell)].join('\n\n');
+}
+
+test('assembled coding prompt gets platform-specific write rules from the base only', () => {
+  const unixPrompt = assembledCodingPrompt('linux');
   assert.match(unixPrompt, /old_string\/new_string/);
   assert.doesNotMatch(unixPrompt, /apply_patch|staged writes/);
 
-  const windowsPrompt = buildExecutionModePromptBlock('coding', 'win32');
+  const windowsPrompt = assembledCodingPrompt('win32');
   assert.match(windowsPrompt, /apply_patch/);
-  assert.match(windowsPrompt, /begin_write/);
+  assert.match(windowsPrompt, /staged writes/);
+  assert.equal((windowsPrompt.match(/# Tool discipline/g) || []).length, 1);
+  assert.doesNotMatch(buildExecutionModePromptBlock('coding', 'win32'), /apply_patch|old_string|# Tool discipline/);
 });
 
 test('coding prompt can follow the effective sandbox command platform', () => {
-  const vmPrompt = buildExecutionModePromptBlock('coding', 'linux', 'bash');
+  const vmPrompt = assembledCodingPrompt('linux', 'bash');
   assert.match(vmPrompt, /old_string\/new_string/);
   assert.doesNotMatch(vmPrompt, /apply_patch|begin_write/);
   assert.match(
@@ -113,8 +121,17 @@ test('coding prompt can follow the effective sandbox command platform', () => {
 });
 
 test('execution-mode injections stay compact', () => {
-  assert.ok(buildExecutionModePromptBlock('coding', 'win32').length < 3000);
+  assert.ok(buildExecutionModePromptBlock('coding', 'win32').length < 2500);
   assert.ok(buildExecutionModePromptBlock('normal', 'win32').length < 1500);
+});
+
+test('implementation quality is coding-only and preserves necessary boundary checks', () => {
+  const coding = buildExecutionModePromptBlock('coding');
+  assert.match(coding, /persisted data and external integrations/);
+  assert.match(coding, /Extract helpers for meaningful concepts/);
+  assert.match(coding, /real implementation, not duplicated logic/);
+  assert.match(coding, /Regenerate derived files/);
+  assert.doesNotMatch(buildExecutionModePromptBlock('normal'), /Implementation quality:|Delegation:|design document/);
 });
 
 test('coding mode does not expose legacy update_plan without existing plan state', () => {

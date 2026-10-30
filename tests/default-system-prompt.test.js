@@ -10,7 +10,7 @@ test('buildDefaultSystemPrompt uses workspaceRoot instead of process.cwd()', () 
   const escapedRoot = resolvedRoot.replace(/[\\.^$*+?()[\]{}|]/g, '\\$&');
   const prompt = buildDefaultSystemPrompt({ sandbox: { enabled: false } }, { workspaceRoot: projectRoot });
   assert.match(prompt, new RegExp(`Working directory: ${escapedRoot}`, 'i'));
-  assert.match(prompt, new RegExp(`Current working directory: ${escapedRoot}`, 'i'));
+  assert.doesNotMatch(prompt, /Current working directory:/);
   assert.doesNotMatch(
     prompt,
     /codemini-global[\\/]+workspace/i,
@@ -66,7 +66,7 @@ test('Windows prompt follows sandbox state instead of the host platform alone', 
   assert.match(confined, /ordinary code failures/i);
   assert.match(confined, /missing project dependencies/i);
   assert.match(confined, /timeouts/i);
-  assert.match(confined, /Current working directory: project root/);
+  assert.match(confined, /Working directory: project root/);
   assert.match(confined, /"file_path":"src\/auth\/service\.ts"/);
   assert.match(confined, /old_string/);
   assert.doesNotMatch(confined, /apply_patch|begin_write/);

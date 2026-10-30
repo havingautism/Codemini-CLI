@@ -16,6 +16,48 @@ test('runtime-only model context is replayed to the model but hidden from fallba
   ]).map((message) => message.content), ['visible', 'done']);
 });
 
+test('network failure removes its empty placeholder from live and persisted UI history', async () => {
+  closeSqliteDatabasesForTests();
+  const previousGlobalDir = process.env.CODEMINI_GLOBAL_DIR;
+  const globalDir = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-network-error-ui-'));
+  process.env.CODEMINI_GLOBAL_DIR = globalDir;
+  const sessionId = 'network-error-session';
+  const done = Promise.withResolvers();
+  const runtime = {
+    getCurrentSessionId: () => sessionId,
+    getRuntimeState: () => ({ sessionId }),
+    getLastSystemPrompt: () => '',
+    setRequestToolApproval() {},
+    setRequestUserInput() {},
+    setOnTitleUpdate() {},
+    setOnTitleStatus() {},
+    async submit(_line, onEvent) {
+      onEvent({ type: 'assistant:start', messageId: 'empty-reply' });
+      onEvent({ type: 'step:start', step: 1 });
+      throw new Error('fetch failed');
+    },
+  };
+  const bridge = new RuntimeBridge(runtime, {
+    sessionId,
+    onEvent(event) { if (event.type === 'submit:done') done.resolve(); },
+  });
+  try {
+    bridge.handleSubmit('question');
+    await done.promise;
+    const live = await bridge.getUiMessages();
+    assert.deepEqual(live.map((message) => message.role), ['you', 'error']);
+    assert.equal(live[1].text, 'Failed: fetch failed');
+    await bridge.dispose();
+    assert.deepEqual(loadUiTranscriptFromSqlite(sessionId).map((message) => message.role), ['you', 'error']);
+  } finally {
+    await bridge.dispose();
+    closeSqliteDatabasesForTests();
+    if (previousGlobalDir === undefined) delete process.env.CODEMINI_GLOBAL_DIR;
+    else process.env.CODEMINI_GLOBAL_DIR = previousGlobalDir;
+    await fs.rm(globalDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 50 });
+  }
+});
+
 test('abort continuation keeps the settled partial reply in its UI transcript', async () => {
   closeSqliteDatabasesForTests();
   const previousGlobalDir = process.env.CODEMINI_GLOBAL_DIR;

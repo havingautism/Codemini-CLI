@@ -1,6 +1,7 @@
 import { SettingsSecretField } from '@/components/settings/SettingsSecretField.jsx';
 import { hasConfiguredSecret, secretSettingWrite } from '@/lib/secret-settings.js';
 import { getDecisionProviderStatus } from '@/lib/decision-provider-status.js';
+import { TASK_DECISION_ASSISTANT_AVAILABLE } from '@core/harness/availability.js';
 import { isWebConfigReadOnly, validateWebConfigValue } from '../../../shared/web-config-policy.js';
 import { useState, useEffect, useMemo } from "react";
 import {
@@ -145,6 +146,14 @@ export function ConfigDialog({
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState("");
   const [activeTab, setActiveTab] = useState("connection");
+  const [compactLayout, setCompactLayout] = useState(() => window.matchMedia("(max-width: 639px)").matches);
+  useEffect(() => {
+    const media = window.matchMedia("(max-width: 639px)");
+    const updateLayout = () => setCompactLayout(media.matches);
+    updateLayout();
+    media.addEventListener("change", updateLayout);
+    return () => media.removeEventListener("change", updateLayout);
+  }, []);
   const [appearanceBaseline, setAppearanceBaseline] = useState(readAppearance);
   const [appearanceDraft, setAppearanceDraft] = useState(readAppearance);
   const [configLoading, setConfigLoading] = useState(false);
@@ -522,7 +531,7 @@ export function ConfigDialog({
           <SettingsSection title={t("commandDecisionSection")} description={t("commandDecisionSectionHelp")}>
             {fields.filter((field) => !isTaskDecisionField(field)).map(renderField)}
           </SettingsSection>
-          <SettingsSection title={t("harness")} description={t("taskDecisionSectionHelp")}>
+          {TASK_DECISION_ASSISTANT_AVAILABLE && <SettingsSection title={t("harness")} description={t("taskDecisionSectionHelp")}>
             {!decisionProviderStatus.ready && (
               <Alert>
                 <AlertTitle>{t("harnessProviderNotReady")}</AlertTitle>
@@ -530,7 +539,7 @@ export function ConfigDialog({
               </Alert>
             )}
             {fields.filter(isTaskDecisionField).map(renderField)}
-          </SettingsSection>
+          </SettingsSection>}
         </div>
       );
     }
@@ -583,7 +592,7 @@ export function ConfigDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-[720px] h-[666px] max-h-[85vh] flex flex-col p-0 gap-0">
+      <DialogContent className="codemini-settings sm:max-w-[720px] h-[666px] max-h-[85dvh] flex flex-col p-0 gap-0">
         <DialogHeader className="shrink-0 px-6">
           <DialogTitle>{t("settingsTitle")}</DialogTitle>
         </DialogHeader>
@@ -600,8 +609,8 @@ export function ConfigDialog({
         <Tabs
           value={activeTab}
           onValueChange={setActiveTab}
-          orientation="vertical"
-          className="flex min-h-0 flex-1 flex-row gap-0 px-6 pb-4"
+          orientation={compactLayout ? "horizontal" : "vertical"}
+          className="codemini-settings-layout flex min-h-0 flex-1 flex-row gap-0 px-6 pb-4"
         >
           <TabsList
             variant="line"
@@ -624,7 +633,7 @@ export function ConfigDialog({
             ))}
           </TabsList>
 
-          <div className="min-h-0 flex-1 overflow-y-auto pl-4 scroll-smooth pr-3 [scrollbar-gutter:stable]">
+          <div className="codemini-settings-body min-h-0 min-w-0 flex-1 overflow-y-auto pl-4 scroll-smooth pr-3 [scrollbar-gutter:stable]">
             {SETTINGS_TABS.map((tab) => (
               <TabsContent
                 key={tab.id}

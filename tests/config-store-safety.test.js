@@ -49,6 +49,22 @@ test('distillation settings survive config reload and malformed limits fall back
   });
 });
 
+test('paused task assistant stays disabled for existing configs and config updates', async () => {
+  await withConfigDir(async ({ configPath }) => {
+    const raw = JSON.stringify({ harness: { enabled: true, provider: 'jev',
+      providers: { jev: { base_url: 'https://example.com', api_key: 'test-key' } },
+      distillation: { memory_enabled: true, skill_enabled: true } } });
+    await fs.writeFile(configPath, raw, 'utf8');
+    const config = await loadConfig();
+    assert.equal(config.harness.enabled, false);
+    assert.equal(config.harness.providers.jev.api_key, 'test-key');
+    assert.equal(config.harness.distillation.memory_enabled, true);
+    assert.equal(await fs.readFile(configPath, 'utf8'), raw);
+    await setConfigValue('harness.enabled', true);
+    assert.equal((await loadConfig()).harness.enabled, false);
+  });
+});
+
 test('malformed config is preserved instead of being replaced with defaults', async () => {
   await withConfigDir(async ({ configPath }) => {
     const malformed = '{"gateway":{"api_key":"keep-me"';

@@ -590,7 +590,7 @@ export function Sidebar({
   return (
     <aside className="codemini-sidebar h-full w-[260px] shrink-0 flex flex-col">
       {/* Fixed top action buttons */}
-      <div className="shrink-0 px-2.5 pt-2.5 flex flex-col gap-0.5">
+      <div className="codemini-sidebar-actions shrink-0 px-2.5 pt-2.5 flex flex-col gap-0.5">
         <div className="mb-1.5 flex h-9 items-center gap-2 px-2">
           <img
             src="/logos/codemini_logo.png"
@@ -614,7 +614,7 @@ export function Sidebar({
           ) : null}
         </div>
         <button
-          className="w-full border-0 bg-transparent flex items-center gap-2.5 h-[30px] px-2 rounded-md cursor-pointer text-left text-[13px] text-(--text-primary)"
+          className="codemini-sidebar-action codemini-sidebar-action--new w-full border-0 bg-transparent flex items-center gap-2.5 h-9 px-2.5 rounded-lg cursor-pointer text-left text-[13px] text-(--text-primary)"
           onClick={openGeneralNewSession}
         >
           <Plus
@@ -627,7 +627,7 @@ export function Sidebar({
 
         <button
           className={cn(
-            "w-full border-0 bg-transparent flex items-center gap-2.5 h-[30px] px-2 rounded-md cursor-pointer text-left text-[13px]",
+            "codemini-sidebar-action w-full border-0 bg-transparent flex items-center gap-2.5 h-9 px-2.5 rounded-lg cursor-pointer text-left text-[13px]",
             currentView === "scrapbook" ? "bg-(--bg-active) text-(--text-primary)" : "text-(--text-primary)",
           )}
           onClick={onOpenScrapbook}
@@ -641,7 +641,7 @@ export function Sidebar({
         </button>
         <button
           className={cn(
-            "w-full border-0 bg-transparent flex items-center gap-2.5 h-[30px] px-2 rounded-md cursor-pointer text-left text-[13px]",
+            "codemini-sidebar-action w-full border-0 bg-transparent flex items-center gap-2.5 h-9 px-2.5 rounded-lg cursor-pointer text-left text-[13px]",
             currentView === "research" ? "bg-(--bg-active) text-(--text-primary)" : "text-(--text-primary)",
           )}
           onClick={onOpenResearch}
@@ -657,7 +657,7 @@ export function Sidebar({
         <Separator className="mx-2 my-2 bg-(--border-default)/40" />
 
         <button
-          className="w-full border-0 bg-transparent flex items-center gap-2.5 h-[30px] px-2 rounded-md cursor-pointer text-left text-[13px] text-(--text-primary)"
+          className="codemini-sidebar-action w-full border-0 bg-transparent flex items-center gap-2.5 h-9 px-2.5 rounded-lg cursor-pointer text-left text-[13px] text-(--text-primary)"
           onClick={onOpenSkills}
         >
           <Hammer
@@ -669,7 +669,7 @@ export function Sidebar({
         </button>
 
         <button
-          className="w-full border-0 bg-transparent flex items-center gap-2.5 h-[30px] px-2 rounded-md cursor-pointer text-left text-[13px] text-(--text-primary)"
+          className="codemini-sidebar-action w-full border-0 bg-transparent flex items-center gap-2.5 h-9 px-2.5 rounded-lg cursor-pointer text-left text-[13px] text-(--text-primary)"
           onClick={onOpenMcp}
         >
           <PlugsConnected
@@ -681,7 +681,7 @@ export function Sidebar({
         </button>
 
         <button
-          className="w-full border-0 bg-transparent flex items-center gap-2.5 h-[30px] px-2 rounded-md cursor-pointer text-left text-[13px] text-(--text-primary)"
+          className="codemini-sidebar-action w-full border-0 bg-transparent flex items-center gap-2.5 h-9 px-2.5 rounded-lg cursor-pointer text-left text-[13px] text-(--text-primary)"
           onClick={onOpenHooks}
         >
           <Lightning
@@ -693,7 +693,7 @@ export function Sidebar({
         </button>
 
         <button
-          className="w-full border-0 bg-transparent flex items-center gap-2.5 h-[30px] px-2 rounded-md cursor-pointer text-left text-[13px] text-(--text-primary)"
+          className="codemini-sidebar-action w-full border-0 bg-transparent flex items-center gap-2.5 h-9 px-2.5 rounded-lg cursor-pointer text-left text-[13px] text-(--text-primary)"
           onClick={onOpenSouls}
         >
           <MaskHappy
@@ -704,7 +704,7 @@ export function Sidebar({
           <span className="truncate">{t("souls")}</span>
         </button>
         <button
-          className="w-full border-0 bg-transparent flex items-center gap-2.5 h-[30px] px-2 rounded-md cursor-pointer text-left text-[13px] text-(--text-primary)"
+          className="codemini-sidebar-action w-full border-0 bg-transparent flex items-center gap-2.5 h-9 px-2.5 rounded-lg cursor-pointer text-left text-[13px] text-(--text-primary)"
           onClick={onOpenMemory}
         >
           <Brain

@@ -20,6 +20,7 @@ import { parseUserBannerAttachmentsFromModelContent, enrichUiMessagesWithScrapbo
 import { CHAT_ACTION_NAMES, LOCAL_SPEC_REVIEW_ACTIONS } from "../lib/chat-action-names.js";
 import {
   operationKey,
+  reportedOperationError,
   waitForAcceptedOperation,
 } from "../lib/chat-operation-waiter.js";
 import {
@@ -74,6 +75,8 @@ import {
   normalizeUsage,
   settleIncompleteTranscriptMessage,
   repairSettledTranscriptMessages,
+  removeEmptyAssistantPlaceholders,
+  latestRetryableMessageId,
   updateSkillInSegments,
 } from "../../../shared/transcript-segments.js";
 import { buildHookSegmentEvent } from "../../../shared/hook-ui.js";
@@ -2041,7 +2044,7 @@ export function AppProvider({ children }) {
         if (waiter) {
           operationWaitersRef.current.delete(key);
           if (result.type === "error") {
-            waiter.reject(new Error(result.text || t("actionFailed")));
+            waiter.reject(reportedOperationError(result.text || t("actionFailed")));
           } else {
             waiter.resolve(result);
           }
@@ -2750,10 +2753,11 @@ export function AppProvider({ children }) {
             addMessage({
               role: "error",
               text: `Failed: ${result.text}`,
+              id: result.errorMessageId,
               timestamp: new Date().toISOString(),
               responseStatus: "error",
               retryPrompt: result.retryPrompt || "",
-              retryable: Boolean(String(result.retryPrompt || "").trim()),
+              retryable: Boolean(result.errorMessageId || String(result.retryPrompt || "").trim()),
             });
           }
           if (isAbortRelatedResult(result) && result.text && !activeId) {
@@ -2762,6 +2766,10 @@ export function AppProvider({ children }) {
               messages: markPreviousAssistantManualAborted(prev.messages),
             }));
           }
+          setState((prev) => ({
+            ...prev,
+            messages: removeEmptyAssistantPlaceholders(prev.messages, { turnFinished: true }),
+          }));
           setActiveMsg(null);
           planRunPendingRef.current = false;
           planStepMessagesRef.current = new Map();
@@ -3367,6 +3375,7 @@ export function AppProvider({ children }) {
           const res = await api.submitMessage(sessionId, {
             text: line,
             messageId: userMessageId,
+            ...(options.retryMessageId ? { retryMessageId: options.retryMessageId } : {}),
             skillNames: Array.isArray(message.skillNames) ? message.skillNames : [],
             attachmentIds: Array.isArray(message.attachmentIds)
               ? message.attachmentIds
@@ -3401,10 +3410,16 @@ export function AppProvider({ children }) {
           }
           if (result?.error)
             throw new Error(result.message || "Request failed");
-          addMessage(youMessage, { anchorId: messageAnchorId });
+          if (options.retryMessageId) {
+            const removed = new Set(options.retryRemovedIds || []);
+            setState((prev) => ({ ...prev, messages: prev.messages.filter((m) => !removed.has(m.id)) }));
+          } else {
+            addMessage(youMessage, { anchorId: messageAnchorId });
+          }
           // Sidebar bubbles appear when the conversation starts, not when the
           // empty draft is created/reused.
           setState((prev) => {
+            if (options.retryMessageId) return prev;
             const existing = prev.sessions.find((s) => s.id === sessionId);
             if (existing && Number(existing.messageCount || 0) > 0) {
               return {
@@ -3457,16 +3472,27 @@ export function AppProvider({ children }) {
         } catch (err) {
           if (
             !isAbortRelatedText(err.message) &&
-            err?.name !== "AbortError"
+            err?.name !== "AbortError" &&
+            !err.reportedByRuntime
           ) {
-            addMessage({
+            const errorMessage = {
               role: "error",
               text: `Failed: ${err.message}`,
               timestamp: new Date().toISOString(),
               responseStatus: "error",
               retryPrompt: line,
               retryable: Boolean(line.trim()),
-            });
+            };
+            if (options.retryMessageId) {
+              setState((prev) => ({
+                ...prev,
+                messages: prev.messages.map((message) => message.id === options.retryMessageId
+                  ? { ...message, ...errorMessage, segments: [{ type: "text", text: errorMessage.text, isStreaming: false }] }
+                  : message),
+              }));
+            } else {
+              addMessage(errorMessage);
+            }
           }
           update({ busy: false, live: false });
           throw err;
@@ -3528,6 +3554,7 @@ export function AppProvider({ children }) {
         // the composer queue (Cursor-style) instead of sending it into the
         // transcript. Enter appends; jump aborts the current turn and drains.
         if (sessionBusy) {
+          if (options.retryMessageId) return { type: "busy", sessionBusy: true };
           enqueueComposer(queued);
           return queued ? { type: "busy", sessionBusy: true } : undefined;
         }
@@ -3636,6 +3663,27 @@ export function AppProvider({ children }) {
 
     return {
       submit,
+      retryMessage: async (messageId) => {
+        const messages = stateRef.current.messages;
+        if (messageId !== latestRetryableMessageId(messages)) return;
+        const errorIndex = messages.findIndex((message) => message.id === messageId);
+        if (errorIndex < 0) return;
+        if (messages.slice(errorIndex + 1).some((message) => message.role === "you")) {
+          return { error: true, message: "Only the latest user turn can be retried." };
+        }
+        const userIndex = messages.findLastIndex((message, index) => index < errorIndex && message.role === "you");
+        if (userIndex < 0) return;
+        const user = messages[userIndex];
+        return submit({
+          text: user.text || user.segments?.filter((segment) => segment.type === "text").map((segment) => segment.text).join("") || "",
+          skillNames: (user.skillBadges || []).filter((badge) => badge.status === "selected").map((badge) => badge.name),
+          attachments: user.attachments || [],
+          fileReferences: user.fileReferences || [],
+        }, {
+          retryMessageId: messageId,
+          retryRemovedIds: messages.slice(userIndex + 1).map((message) => message.id),
+        });
+      },
       loadMoreSessions,
       removeQueuedPrompt,
       moveQueuedPrompt,

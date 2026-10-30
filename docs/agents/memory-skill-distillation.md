@@ -1,6 +1,8 @@
 # 记忆与 Skill 沉淀判断
 
-在 Web UI 的「设置 → 决策」配置 Jev 或 Laya，启用任务决策助手，再分别开启「记忆沉淀判断」和「Skill 沉淀判断」。两项默认关闭；开启后默认使用观察模式。
+任务决策助手暂时停用，相关设置和轨迹区域已隐藏，记忆和 Skill 的决策沉淀评估也随之停用。普通记忆提取、Reflect 和命令审批仍沿用原有流程。恢复入口为 `src/core/harness/availability.js` 中的 `TASK_DECISION_ASSISTANT_AVAILABLE`。
+
+恢复后，可在 Web UI 的「设置 → 决策」配置 Jev 或 Laya，启用任务决策助手，再分别开启「记忆沉淀判断」和「Skill 沉淀判断」。两项默认关闭；开启后默认使用观察模式。
 
 CLI 对应配置：
 

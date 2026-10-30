@@ -75,12 +75,35 @@
   --font-chat: system-ui, "Segoe UI", "Microsoft YaHei UI", sans-serif;
 }
 
+::selection {
+  background: var(--selected-bg);
+  color: var(--text-primary);
+}
+
+textarea, input {
+  caret-color: var(--primary);
+}
+
+/* Navigation has a clear entry point and room for both pointer and keyboard. */
+.codemini-sidebar-actions > button {
+  min-height: 36px;
+}
+
+.codemini-sidebar-action:hover {
+  background: var(--bg-hover);
+}
+
+.codemini-sidebar-action--new {
+  font-weight: 500;
+}
+
+
 :root[data-theme][data-palette] {
   --conversation-width: 780px;
   --composer-width: 800px;
   --input-shell-bg: var(--bg-input);
   --input-shell-border: color-mix(in srgb, var(--text-primary) 14%, transparent);
-  --input-shell-shadow: 0 2px 8px color-mix(in srgb, black 4%, transparent);
+  --input-shell-shadow: none;
   --text-process: var(--text-secondary);
   --text-process-detail: var(--text-muted);
 }
@@ -145,7 +168,7 @@
 :root[data-theme] .codemini-home-empty-title {
   margin: 0;
   font-family: var(--font-chat);
-  font-size: clamp(25px, 3.2vw, 36px);
+  font-size: 2rem;
   font-weight: 400;
   line-height: 1.45;
   letter-spacing: -0.025em;
@@ -167,16 +190,19 @@
 :root[data-theme] .codemini-token-activity {
   width: min(680px, 100%);
   margin-top: 12px;
-  border-color: var(--separator);
+  border: 0;
+  border-top: 1px solid var(--border-default);
+  border-radius: 0;
+  padding: 24px 0 0;
   background: transparent;
   box-shadow: none;
 }
 
-/* The composer stays quiet during work; running/stop controls carry status. */
+/* The original colored edge and halo appear on hover or focus. */
 :root[data-theme] .codemini-input-shell {
   background: var(--input-shell-bg);
   border: 1px solid var(--input-shell-border);
-  border-radius: 20px;
+  border-radius: 16px;
   padding: 12px 16px;
   gap: 12px;
   backdrop-filter: none;
@@ -185,14 +211,34 @@
 }
 
 :root[data-theme] .codemini-input-shell::before {
-  content: none;
-  animation: none;
+  content: "";
+  opacity: 0;
+  animation: input-shell-border-spin 8.5s linear infinite;
+  transition: opacity 220ms ease;
 }
 
+:root[data-theme] .codemini-input-shell:hover,
 :root[data-theme] .codemini-input-shell:focus-within {
   background: var(--input-shell-bg);
-  border-color: var(--primary);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 12%, transparent);
+  border-color: var(--input-shell-rim);
+  outline: none;
+  box-shadow:
+    0 1px 2px color-mix(in srgb, black 4%, transparent),
+    0 12px 32px color-mix(in srgb, black 10%, transparent),
+    0 0 24px color-mix(in srgb, #818cf8 16%, transparent),
+    inset 0 1px 0 color-mix(in srgb, white 8%, transparent);
+}
+
+:root[data-theme] .codemini-input-shell:hover::before,
+:root[data-theme] .codemini-input-shell:focus-within::before {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root[data-theme] .codemini-input-shell::before {
+    animation: none;
+    transition: none;
+  }
 }
 
 :root[data-theme] .codemini-chat-session .msg-body,
@@ -230,10 +276,6 @@
   min-height: 32px;
 }
 
-:where(button, a, input, textarea, select, [role="button"], [role="option"]):focus-visible {
-  outline: 2px solid var(--primary);
-  outline-offset: 3px;
-}
 
 .codemini-input-shell textarea:focus-visible {
   outline: none;
@@ -245,21 +287,20 @@
     padding: 28px 16px 32px;
   }
 
+  :root[data-theme] .codemini-home-empty-title {
+    font-size: 1.5rem;
+  }
+
+  .codemini-token-activity__chart {
+    min-width: 560px;
+  }
+
   :root[data-theme] .codemini-chat-session .msg-body,
   :root[data-theme] .codemini-chat-session .msg-body.codemini-assistant-markdown {
     font-size: 15px;
   }
 }
 
-@media (forced-colors: active) {
-  :where(button, a, input, textarea, select, [role="button"], [role="option"]):focus-visible {
-    outline-color: Highlight;
-  }
-
-  :root[data-theme] .codemini-input-shell:focus-within {
-    outline: 2px solid Highlight;
-  }
-}
 
 /* Palette cards show the actual light/dark tokens, independent of the active UI. */
 .settings-palette-grid {
@@ -314,7 +355,7 @@
 
 .settings-palette-card__mode {
   flex: none;
-  font-size: 10px;
+  font-size: 12px;
   color: var(--text-secondary);
 }
 
@@ -334,5 +375,88 @@
 @media (max-width: 520px) {
   .settings-palette-grid {
     grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* Settings use the same selection and control vocabulary in both modes. */
+:root[data-theme] .settings-nav-trigger {
+  color: var(--text-secondary);
+  flex: none;
+}
+
+:root[data-theme] .settings-nav-trigger[data-state="active"] {
+  background: var(--selected-bg);
+  color: var(--text-primary);
+}
+
+:root[data-theme] .settings-nav-trigger::after {
+  display: none;
+}
+
+:root[data-theme] .codemini-settings [data-slot="input"],
+:root[data-theme] .codemini-settings [data-slot="textarea"] {
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  box-shadow: none;
+  min-height: 36px;
+  background: var(--bg-input);
+}
+
+.codemini-token-activity__footer strong,
+.codemini-token-activity__tooltip {
+  font-variant-numeric: tabular-nums;
+}
+
+@media (pointer: coarse) {
+  .codemini-sidebar :is(button, a),
+  .codemini-input-shell button,
+  .codemini-token-activity__filter-trigger,
+  .codemini-token-activity__controls button,
+  .codemini-settings button {
+    min-height: 44px;
+    min-width: 44px;
+  }
+}
+
+@media (max-width: 639px) {
+  .codemini-settings [data-slot="dialog-header"],
+  .codemini-settings [data-slot="dialog-footer"] {
+    padding-inline: 16px;
+  }
+
+  .codemini-settings-layout {
+    flex-direction: column;
+    padding-inline: 16px;
+  }
+
+  .codemini-settings .settings-nav-tabs {
+    flex-direction: row;
+    width: 100%;
+    max-width: 100%;
+    overflow-x: auto;
+    border-right: 0;
+    border-bottom: 1px solid var(--border-default);
+    padding: 0 2px 10px;
+    margin-bottom: 16px;
+  }
+
+  .codemini-settings .settings-nav-trigger {
+    width: auto;
+    min-height: 40px;
+  }
+
+  .codemini-settings-body {
+    padding-inline: 2px;
+  }
+
+  .codemini-settings [data-slot="dialog-footer"] {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: flex-end;
+  }
+
+  .codemini-settings [data-slot="dialog-footer"] > span {
+    flex-basis: 100%;
   }
 }

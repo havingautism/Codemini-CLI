@@ -210,7 +210,7 @@ export function getShellSystemPrompt(value) {
 - Prefer ${sourceTools} over ${commandToolName} for source work; use ${commandToolName} for tests, builds, scripts, package commands, git inspection, and servers.
 - Load deferred capabilities with tool_search instead of assuming they are unavailable.
 - Inspect relevant source before editing. ${editRule}
-- Tool arguments are JSON. Resolve relative paths from the working directory and preserve unrelated user changes.
+- Resolve relative paths from the working directory and preserve unrelated user changes.
 - Use tasks for multi-step, multi-file, debugging, or implementation-plus-verification work; keep one item in_progress and settle it before a completion claim.
 - Before substantial tool work, send one short progress update. If a tool fails, inspect the error; if the user declines a command, do not retry it unless asked.
 - Verify with the narrowest relevant check and state anything not verified. Do not broaden the requested scope.`;

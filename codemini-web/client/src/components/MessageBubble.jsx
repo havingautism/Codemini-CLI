@@ -2042,8 +2042,8 @@ function MessageActions({
       {canRetry && (
         <MessageActionButton
           label={t("retry")}
-          disabled={!retryPrompt}
-          onClick={() => onRetry?.(retryPrompt)}
+          disabled={!messageId}
+          onClick={() => onRetry?.(messageId)}
         >
           <ArrowCounterClockwise size={17} />
         </MessageActionButton>
@@ -2198,6 +2198,7 @@ export const MessageBubble = memo(function MessageBubble({
   onRetry,
   dockTodo = false,
   turnActive = false,
+  retryAllowed = false,
 }) {
   const { state } = useApp();
   const crewActive = Boolean(state.runtimeState?.crewActive);
@@ -2453,9 +2454,8 @@ export const MessageBubble = memo(function MessageBubble({
     message.retryPrompt || message.retry_prompt || "",
   ).trim();
   const canRetry =
-    displayRole === "error" &&
-    responseStatus === "error" &&
-    Boolean(retryPrompt) &&
+    retryAllowed &&
+    Boolean(message.id) &&
     message.retryable !== false;
   const canSaveToScrapbook =
     role !== "you" &&
@@ -2528,6 +2528,7 @@ export const MessageBubble = memo(function MessageBubble({
             model={model}
             showUsage={messageComplete}
             retryPrompt={retryPrompt}
+            messageId={message.id}
             canRetry={canRetry}
             canSaveToScrapbook={false}
             onRetry={onRetry}

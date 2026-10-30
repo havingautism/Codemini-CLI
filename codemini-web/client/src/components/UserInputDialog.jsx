@@ -29,7 +29,7 @@ function initialAnswers(questions = []) {
 
 function OptionLabel({ option }) {
   return (
-    <span className="flex min-w-0 flex-col gap-0.5">
+    <span className="flex min-w-0 flex-col gap-0.5 break-words">
       <span className="text-[13px] font-medium leading-5 text-(--text-primary)">{option.label}</span>
       {option.description && (
         <span data-option-description className="text-[12px] leading-5 text-(--text-secondary)">{option.description}</span>
@@ -44,7 +44,7 @@ function ChoiceRow({ control, id, option, disabled, selected }) {
       htmlFor={disabled ? undefined : id}
       data-selected={selected}
       className={cn(
-        "w-full min-h-11 items-start gap-3 rounded-lg border px-3 py-2.5 font-normal has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-(--accent-blue)",
+        "grid w-full min-h-11 grid-cols-[1rem_minmax(0,1fr)] items-start gap-3 rounded-lg border px-3 py-2.5 font-normal has-[:focus-visible]:shadow-[var(--focus-shadow)]",
         selected
           ? "border-(--accent-blue) bg-(--accent-blue-bg)"
           : "border-(--border-default) bg-(--bg-primary)",
@@ -65,12 +65,12 @@ function QuestionField({ question, index, value, other, onChange, onOtherChange,
   );
 
   return (
-    <fieldset className="min-w-0 space-y-2.5">
-      <legend className="mb-1 flex w-full items-start gap-2.5 text-[13px] font-semibold leading-5 text-(--text-primary)">
-        <span aria-hidden="true" className="flex size-5 shrink-0 items-center justify-center rounded-md bg-(--bg-hover) text-[11px] text-(--text-secondary)">{index + 1}</span>
+    <fieldset className="min-w-0">
+      <legend className="mb-1.5 flex w-full items-start gap-3 px-3 text-[13px] font-semibold leading-5 text-(--text-primary)">
+        <span aria-hidden="true" className="mt-0.5 flex size-4 shrink-0 items-center justify-center rounded bg-(--bg-hover) text-[10px] text-(--text-secondary)">{index + 1}</span>
         <span className="min-w-0 flex-1">{question.label}</span>
       </legend>
-      <div className="flex gap-2 text-[11px] leading-4 text-(--text-muted)">
+      <div className="mb-3 flex flex-wrap gap-2 pl-10 text-[11px] leading-4 text-(--text-muted)">
         {['radio', 'select', 'checkbox'].includes(question.type) && <span>{t(question.type === 'checkbox' ? 'userInputMultiple' : 'userInputSingle')}</span>}
         {question.required && <span className="text-(--accent-orange)">{t('userInputRequired')}</span>}
       </div>
@@ -270,9 +270,9 @@ export function UserInputCard({ request, result = null, onRespond }) {
     : t(readOnly ? 'userInputUnavailable' : 'userInputWaiting');
   return (
     <section className="codemini-message-surface overflow-hidden rounded-2xl border border-(--border-default)">
-      <div className="flex items-start gap-3 border-b border-(--border-default) px-4 py-3.5">
-        <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-(--accent-blue-bg) text-(--accent-blue)">
-          {done ? <Check size={16} /> : <ChatCircle size={16} />}
+      <div className="flex items-center gap-3 border-b border-(--border-default) px-4 py-3.5">
+        <span className="flex size-7 shrink-0 items-center justify-center text-(--text-secondary)">
+          {done ? <Check size={20} /> : <ChatCircle size={20} />}
         </span>
         <div className="min-w-0 flex-1">
           <div className="text-[13px] font-semibold leading-5 text-(--text-primary)">
@@ -294,8 +294,8 @@ export function UserInputCard({ request, result = null, onRespond }) {
         )}
         {!readOnly && questions.length > 0 && (
           <div className="flex w-fit max-w-full flex-wrap gap-1 rounded-lg bg-(--bg-hover) p-1" role="group" aria-label={t('userInputAnswerMode')}>
-            <Button variant="ghost" size="sm" disabled={submitting} aria-pressed={!customResponseOpen} className={cn("h-8 text-[12px]", !customResponseOpen && "bg-(--bg-primary) shadow-sm")} onClick={() => setCustomResponseOpen(false)}>{t('userInputChooseOptions')}</Button>
-            <Button variant="ghost" size="sm" disabled={submitting} aria-pressed={customResponseOpen} className={cn("h-8 text-[12px]", customResponseOpen && "bg-(--bg-primary) shadow-sm")} onClick={() => setCustomResponseOpen(true)}>{t('userInputCustom')}</Button>
+            <Button variant="tab" size="sm" disabled={submitting} aria-pressed={!customResponseOpen} className="h-8 text-[12px]" onClick={() => setCustomResponseOpen(false)}>{t('userInputChooseOptions')}</Button>
+            <Button variant="tab" size="sm" disabled={submitting} aria-pressed={customResponseOpen} className="h-8 text-[12px]" onClick={() => setCustomResponseOpen(true)}>{t('userInputCustom')}</Button>
           </div>
         )}
         {done && result.status !== 'skipped' && !formCustom && (

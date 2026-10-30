@@ -3,6 +3,7 @@ import {
   isTranscriptStreamEvent,
   routingGraphFromEvent,
   memoryInjectFromEvent,
+  removeEmptyAssistantPlaceholders,
 } from "../../../shared/transcript-segments.js";
 import { stripPlanProgressText } from "../../../shared/plan-progress-text.js";
 import {
@@ -420,6 +421,15 @@ export function reduceSessionTranscriptEvent(state, event) {
 
   let sessionMessagesById = state.sessionMessagesById;
   const messages = state.sessionMessagesById[sessionId] || [];
+  if (event.type === "submit:done") {
+    return {
+      ...state,
+      sessionMessagesById: {
+        ...sessionMessagesById,
+        [sessionId]: removeEmptyAssistantPlaceholders(messages, { turnFinished: true }),
+      },
+    };
+  }
   if (event.type === "crew:wake") {
     const headline = String(event.headline || event.text || "").trim();
     if (!headline) return state;

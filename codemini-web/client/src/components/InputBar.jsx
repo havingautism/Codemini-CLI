@@ -1896,6 +1896,7 @@ export function InputBar({
                     : t(isGeneralChat ? "sendMessageToCodemini" : "projectMessagePlaceholder")
             }
             disabled={composerLocked}
+            aria-label={t(isGeneralChat ? "sendMessageToCodemini" : "projectMessagePlaceholder")}
             rows={1}
             className="flex-1 min-w-0 resize-none border-0 outline-none bg-transparent text-(--text-primary) min-h-[38px] max-h-[150px] p-1 leading-[1.65] text-[15px] placeholder:text-(--text-muted) cursor-text disabled:opacity-50 disabled:cursor-not-allowed"
             style={{ height: "auto" }}
@@ -1922,6 +1923,7 @@ export function InputBar({
               type="button"
               className="border-0 bg-transparent text-(--text-secondary) min-w-8 h-8 rounded-md inline-flex items-center justify-center shrink-0 cursor-pointer transition-colors hover:bg-(--bg-hover) hover:text-(--text-primary)"
               title={t("addContext")}
+              aria-label={t("addContext")}
               disabled={inputLocked}
               onClick={() => fileInputRef.current?.click()}
             >
@@ -1954,7 +1956,7 @@ export function InputBar({
                 side="top"
                 align="start"
                 sideOffset={8}
-                className="w-96 overflow-hidden rounded-xl p-0"
+                className="w-96 max-w-[calc(100vw-2rem)] overflow-hidden rounded-xl p-0"
               >
                 <div className="border-b border-(--border-default) bg-(--bg-primary) px-3 py-3">
                   <div className="flex items-center justify-between gap-3">
@@ -2128,6 +2130,7 @@ export function InputBar({
                 className="border-0 text-(--accent-red) min-w-8 h-8 rounded-md inline-flex items-center justify-center shrink-0 cursor-pointer bg-(--accent-red-bg) transition-opacity hover:opacity-80"
                 onClick={onAbort}
                 title={t("abort")}
+                aria-label={t("abort")}
               >
                 <Minus size={14} />
               </button>
@@ -2143,6 +2146,7 @@ export function InputBar({
                 onClick={() => submitCurrent(false)}
                 disabled={!hasComposerContent || inputLocked}
                 title={t("sending")}
+                aria-label={t("sending")}
               >
                 <ArrowUp size={16} />
               </button>
