@@ -44,7 +44,10 @@ export function normalizeSkillBadges(badges = []) {
 
 export function userSkillChipBadges(badges = [], promptSkillNames = []) {
   return normalizeSkillBadges([
-    ...(Array.isArray(badges) ? badges : []),
+    // Older turn settlement rewrote user context badges as done/error. These
+    // badges represent attached skills, so keep them visible in saved chats.
+    ...(Array.isArray(badges) ? badges : []).map((badge) =>
+      ["done", "error"].includes(badge?.status) ? { ...badge, status: "selected" } : badge),
     ...selectedSkillBadges(promptSkillNames),
   ]);
 }
@@ -61,7 +64,7 @@ export function skillBadgesFromSessionMessage(message = {}) {
       status: String(badge?.status || "selected").trim() || "selected",
     }))
     .filter((badge) => badge.name);
-  if (normalizedExplicit.length) return normalizeSkillBadges(normalizedExplicit);
+  if (normalizedExplicit.length) return userSkillChipBadges(normalizedExplicit);
 
   const names = Array.isArray(message.selectedSkillNames)
     ? message.selectedSkillNames

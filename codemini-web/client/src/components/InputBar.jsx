@@ -31,7 +31,7 @@ import {
   X,
 } from "@/lib/icons";
 import { cn } from "@/lib/utils";
-import { t } from "../../i18n/index.js";
+import { getLocale, t } from "../../i18n/index.js";
 import { DOCUMENT_ACCEPT } from "../../../shared/document-formats.js";
 import * as api from "@/hooks/use-api";
 import { useApp } from "@/context/app-context.jsx";
@@ -78,27 +78,24 @@ const ACTION_COMMANDS = [
   {
     name: "dream",
     icon: Moon,
-    description:
-      "Run memory consolidation now. Auto dream still runs in the background when needed.",
+    descriptionKey: "composerDreamDescription",
   },
   {
     name: "compact",
     icon: Archive,
     requiresConversation: true,
-    description:
-      "Compress the current conversation context while keeping the useful working summary.",
+    descriptionKey: "composerCompactDescription",
   },
   {
     name: "capture",
     icon: Camera,
-    description:
-      "Capture an explicit note into the memory inbox for later consolidation.",
+    descriptionKey: "composerCaptureDescription",
   },
   {
     name: "reflect",
     icon: Sparkle,
     requiresConversation: true,
-    description: "Draft or update a reusable skill from the current workflow.",
+    descriptionKey: "composerReflectDescription",
   },
 ];
 
@@ -765,10 +762,14 @@ function ActionSkillPalette({
     if (visible && !slashMode && !mentionMode) searchRef.current?.focus();
   }, [visible, slashMode, mentionMode]);
 
+  const locale = getLocale();
   const needle = query.trim().toLowerCase();
   const actionItems = useMemo(
     () =>
-      ACTION_COMMANDS.filter(
+      ACTION_COMMANDS.map((command) => ({
+        ...command,
+        description: t(command.descriptionKey),
+      })).filter(
         (command) =>
           !needle ||
           command.name.includes(needle) ||
@@ -779,7 +780,7 @@ function ActionSkillPalette({
         kind: "action",
         key: `action-${command.name}`,
       })),
-    [needle, hasConversation],
+    [needle, hasConversation, locale],
   );
 
   const skillItems = useMemo(
@@ -798,12 +799,12 @@ function ActionSkillPalette({
         .map((skill) => ({
           name: skill.name,
           icon: Hammer,
-          description: skill.description || "Manual skill",
+          description: skill.description || t("composerManualSkill"),
           contexts: skill.contexts,
           kind: "skill",
           key: `skill-${skill.name}`,
         })),
-    [catalog, mode, needle, defaultSkillNames],
+    [catalog, mode, needle, defaultSkillNames, locale],
   );
 
   const commandItems = useMemo(
@@ -816,11 +817,11 @@ function ActionSkillPalette({
       .map((item) => ({
         ...item,
         icon: TreeStructure,
-        description: item.description || "Project command",
+        description: item.description || t("composerProjectCommand"),
         kind: "command",
         key: `command-${item.name}`,
       })),
-    [catalog, needle],
+    [catalog, needle, locale],
   );
 
   const fileItems = useMemo(
@@ -980,7 +981,7 @@ function ActionSkillPalette({
                         : "border-(--accent-purple)/25 text-(--accent-purple)",
                     )}
                   >
-                    {item.kind}
+                    {t(`composerKind_${item.kind}`)}
                   </span>
                 )}
               </button>
@@ -1043,18 +1044,18 @@ function ActionSkillPalette({
         </div>
       )}
       {renderSection(
-        mentionMode ? t("workspaceFiles") : "Actions",
+        mentionMode ? t("workspaceFiles") : t("composerActions"),
         mentionMode ? fileItems : actionItems,
       )}
       {!mentionMode &&
         actionItems.length > 0 && (commandItems.length > 0 || skillItems.length > 0) && (
         <Separator className=" my-1 bg-(--border-default)" />
       )}
-      {!mentionMode && renderSection("Commands", commandItems)}
+      {!mentionMode && renderSection(t("composerCommands"), commandItems)}
       {!mentionMode && commandItems.length > 0 && skillItems.length > 0 && (
         <Separator className=" my-1 bg-(--border-default)" />
       )}
-      {!mentionMode && renderSection("Skills", skillItems)}
+      {!mentionMode && renderSection(t("composerSkills"), skillItems)}
       {mentionMode && hasItems ? (
         <div className="sticky bottom-0 flex items-center justify-between gap-3 border-t border-(--border-default) bg-(--bg-primary)/95 px-2.5 py-1.5 text-[10px] text-(--text-muted) backdrop-blur-sm">
           <span>{t("workspaceFilePickerHint")}</span>
@@ -1754,18 +1755,19 @@ export function InputBar({
               <span
                 key={`default-${name}`}
                 className="codemini-input-chip inline-flex max-w-full items-center gap-1.5 px-2 py-1 text-[12px] text-(--text-secondary)"
-                title={`Always-loaded skill: ${name}`}
+                title={`${t("composerDefaultSkill")}: ${name}`}
               >
                 <Hammer size={14} className="shrink-0" />
                 <span className="max-w-[180px] truncate font-mono">{name}</span>
                 <span className="text-[10px] uppercase text-(--text-muted)">
-                  default
+                  {t("composerDefault")}
                 </span>
                 <button
                   type="button"
                   className="ml-0.5 inline-flex size-4 items-center justify-center rounded hover:bg-(--bg-hover) hover:text-(--text-primary)"
                   onClick={() => removeDefaultSkill(name)}
                   title={t("removeLoadedSkill")}
+                  aria-label={`${t("removeLoadedSkill")}: ${name}`}
                   disabled={inputLocked}
                 >
                   <X size={11} />
@@ -1787,6 +1789,7 @@ export function InputBar({
                   className="ml-0.5 inline-flex size-4 items-center justify-center rounded hover:bg-(--bg-hover) hover:text-(--text-primary)"
                   onClick={() => removeSelectedSkill(selectedSkill.name)}
                   title={t("removeLoadedSkill")}
+                  aria-label={`${t("removeLoadedSkill")}: ${selectedSkill.name}`}
                   disabled={inputLocked}
                 >
                   <X size={11} />
@@ -1811,6 +1814,7 @@ export function InputBar({
                     className="ml-0.5 inline-flex size-4 items-center justify-center rounded hover:bg-(--bg-hover) hover:text-(--text-primary)"
                     onClick={() => removeAttachment(item.id)}
                     title={t("removeAttachment")}
+                    aria-label={`${t("removeAttachment")}: ${item.name}`}
                     disabled={inputLocked}
                   >
                     <X size={11} />
@@ -1837,7 +1841,8 @@ export function InputBar({
                   type="button"
                   className="ml-0.5 inline-flex size-4 items-center justify-center rounded hover:bg-(--bg-hover) hover:text-(--text-primary)"
                   onClick={removeScrapbookContext}
-                  title={t("removeAttachment")}
+                  title={t("composerRemoveNote")}
+                  aria-label={`${t("composerRemoveNote")}: ${scrapbookContext.attachment.name}`}
                   disabled={inputLocked}
                 >
                   <X size={11} />
@@ -1888,7 +1893,7 @@ export function InputBar({
             }}
             placeholder={
               actionParameter.activeAction === "capture"
-                ? "Capture summary (required; Esc to cancel)"
+                ? t("composerCapturePlaceholder")
                 : busy
                   ? t("queueWhileBusy")
                   : disabled
@@ -1922,8 +1927,8 @@ export function InputBar({
             <button
               type="button"
               className="border-0 bg-transparent text-(--text-secondary) min-w-8 h-8 rounded-md inline-flex items-center justify-center shrink-0 cursor-pointer transition-colors hover:bg-(--bg-hover) hover:text-(--text-primary)"
-              title={t("addContext")}
-              aria-label={t("addContext")}
+              title={t("addAttachment")}
+              aria-label={t("addAttachment")}
               disabled={inputLocked}
               onClick={() => fileInputRef.current?.click()}
             >
@@ -1945,8 +1950,8 @@ export function InputBar({
                 <button
                   type="button"
                   className="border-0 bg-transparent text-(--text-secondary) min-w-8 h-8 rounded-md inline-flex items-center justify-center shrink-0 cursor-pointer transition-colors hover:bg-(--bg-hover) hover:text-(--text-primary)"
-                  title={t("scrapbook")}
-                  aria-label={t("scrapbook")}
+                  title={t("composerAddNote")}
+                  aria-label={t("composerAddNote")}
                   disabled={inputLocked}
                 >
                   <Notebook size={18} />

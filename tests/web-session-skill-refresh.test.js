@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { userSkillChipBadges, skillBadgesFromSessionMessage } from '../codemini-web/client/src/lib/user-skill-prompt.js';
 
 import {
   activateSession,
@@ -44,6 +45,27 @@ test('switching to a pool-only session does not retain the previous runtime stat
   assert.equal(visible.runtimeState.maxContextTokens, undefined);
   assert.equal(visible.approvalRequest, null);
   assert.equal(visible.userInputRequest, null);
+});
+
+test('old user skill badges remain visible after legacy settlement changed their status', () => {
+  const legacy = [{ name: 'ask-matt', status: 'error' }, { name: 'review', status: 'done' }];
+  const expected = [{ name: 'ask-matt', status: 'selected' }, { name: 'review', status: 'selected' }];
+  assert.deepEqual(userSkillChipBadges(legacy), expected);
+  assert.deepEqual(skillBadgesFromSessionMessage({ skill_badges: legacy }), expected);
+  assert.equal(legacy[0].status, 'error');
+});
+
+test('runtime slash selection attaches to its own latest user bubble even for a background session', () => {
+  const state = { sessionMessagesById: {
+    a: [{ id: 'other', role: 'you', text: 'other' }],
+    b: [{ id: 'old', role: 'you', text: 'old' }, { id: 'new', role: 'you', text: '/debug issue' }],
+  } };
+  const event = { type: 'skill:selected', sessionId: 'b', names: ['debug'] };
+  const once = reduceSessionTranscriptEvent(state, event);
+  const twice = reduceSessionTranscriptEvent(once, event);
+  assert.deepEqual(twice.sessionMessagesById.b[1].skillBadges, [{ name: 'debug', status: 'selected' }]);
+  assert.equal(twice.sessionMessagesById.b[0].skillBadges, undefined);
+  assert.equal(twice.sessionMessagesById.a, state.sessionMessagesById.a);
 });
 
 test('refresh keeps manual and always skill badges on their originating user turns', () => {

@@ -421,6 +421,21 @@ export function reduceSessionTranscriptEvent(state, event) {
 
   let sessionMessagesById = state.sessionMessagesById;
   const messages = state.sessionMessagesById[sessionId] || [];
+  if (event.type === "skill:selected") {
+    const target = [...messages].reverse().find((message) => message.role === "you");
+    if (!target) return state;
+    return {
+      ...state,
+      sessionMessagesById: {
+        ...sessionMessagesById,
+        [sessionId]: messages.map((message) => message.id === target.id ? {
+          ...message,
+          skillBadges: appendUniqueSkillBadges(message.skillBadges || [],
+            (event.names || []).map((name) => ({ name, status: "selected" }))),
+        } : message),
+      },
+    };
+  }
   if (event.type === "submit:done") {
     return {
       ...state,

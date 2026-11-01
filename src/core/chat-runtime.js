@@ -10459,6 +10459,9 @@ export async function createChatRuntime({
     });
     if (composed.error) throw new Error(composed.error);
     if (typeof onAgentEvent === 'function') {
+      if (composed.skillNames?.length) {
+        onAgentEvent({ type: 'skill:selected', names: composed.skillNames });
+      }
       for (const name of composed.skillNames || []) {
         const startedAt = new Date().toISOString();
         onAgentEvent({ type: 'skill:start', name, startedAt });

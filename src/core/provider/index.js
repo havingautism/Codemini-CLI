@@ -51,9 +51,17 @@ export async function createChatCompletionStream(options) {
     };
   }
   const provider = getSdkProvider(options?.sdkProvider);
-  const result = await (provider === 'anthropic'
-    ? createAnthropicChatCompletionStream(tracked)
-    : createOpenAICompatibleChatCompletionStream(tracked));
-  timing.completedAt = new Date().toISOString();
-  return recordCompletion(options, provider, result, timing);
+  try {
+    const result = await (provider === 'anthropic'
+      ? createAnthropicChatCompletionStream(tracked)
+      : createOpenAICompatibleChatCompletionStream(tracked));
+    timing.completedAt = new Date().toISOString();
+    return recordCompletion(options, provider, result, timing);
+  } catch (error) {
+    // A stopped stream is still a request. Keep timing/counts without inventing
+    // token usage when the provider did not return a usage report.
+    timing.completedAt = new Date().toISOString();
+    recordCompletion(options, provider, null, timing);
+    throw error;
+  }
 }

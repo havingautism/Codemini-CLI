@@ -25,9 +25,57 @@ export function recordTokenUsage({ id = randomUUID(), createdAt = new Date().toI
     normalized?.reasoningOutputTokens ?? null, duration, split ? first - sent : null, split ? done - first : null);
 }
 
-export function getSessionTokenUsage(sessionId) {
-  const db = getGlobalDatabase();
-  const totals = db.prepare(`SELECT COUNT(*) AS requests, COALESCE(SUM(reported), 0) AS reportedRequests,
+function legacyAbortUsageParent(db, sessionId, createdAt) {
+  // Before usageParent existed, abort continuations copied UI rows verbatim.
+  // Require identical IDs, ordinals and payloads for the entire source prefix,
+  // ending at a stopped assistant. Text/title similarity is not lineage.
+  return db.prepare(`SELECT source.id AS sessionId, ? AS through
+    FROM ui_messages tail
+    JOIN sessions source ON source.id = tail.session_id
+    JOIN ui_messages copy ON copy.session_id = ? AND copy.ordinal = tail.ordinal
+      AND copy.message_id = tail.message_id AND copy.payload_json = tail.payload_json
+    WHERE source.created_at < ? AND source.project_dir = (
+      SELECT project_dir FROM sessions WHERE id = ?
+    ) AND tail.role NOT IN ('you', 'system', 'divider') AND tail.message_id <> ''
+      AND json_extract(tail.payload_json, '$.manualAborted') = 1
+      AND tail.ordinal = (SELECT MAX(ordinal) FROM ui_messages WHERE session_id = source.id)
+      AND NOT EXISTS (
+        SELECT 1 FROM ui_messages original LEFT JOIN ui_messages clone
+          ON clone.session_id = ? AND clone.ordinal = original.ordinal
+        WHERE original.session_id = source.id AND (
+          clone.ordinal IS NULL OR clone.message_id <> original.message_id
+          OR clone.payload_json <> original.payload_json
+        )
+      )
+    ORDER BY source.created_at DESC, source.id DESC LIMIT 1`)
+    .get(createdAt, sessionId, createdAt, sessionId, sessionId);
+}
+
+export function getSessionTokenUsage(sessionId, db = getGlobalDatabase()) {
+  // Abort continuations display the old transcript. Include its requests up to
+  // the fork time, while leaving each paid request stored exactly once.
+  const sources = [];
+  const seen = new Set();
+  let currentId = String(sessionId || '');
+  let through = '9999-12-31T23:59:59.999Z';
+  while (currentId && !seen.has(currentId)) {
+    seen.add(currentId);
+    sources.push({ sessionId: currentId, through });
+    const row = db.prepare('SELECT state_json, created_at FROM sessions WHERE id = ?').get(currentId);
+    if (!row) break;
+    const parent = JSON.parse(row.state_json || '{}').usageParent
+      || legacyAbortUsageParent(db, currentId, row.created_at);
+    if (!parent?.sessionId || !Number.isFinite(Date.parse(parent.through))) break;
+    currentId = parent.sessionId;
+    if (parent.through < through) through = parent.through;
+  }
+  const scope = `WITH usage_scope AS (SELECT json_extract(value, '$.sessionId') AS session_id,
+    json_extract(value, '$.through') AS through FROM json_each(?)), scoped_usage AS (
+    SELECT t.* FROM token_usage_records t WHERE t.session_id IN (SELECT session_id FROM usage_scope)
+      AND EXISTS (SELECT 1 FROM usage_scope s WHERE s.session_id = t.session_id AND t.created_at <= s.through)
+  ) `;
+  const scopeJson = JSON.stringify(sources);
+  const totals = db.prepare(scope + `SELECT COUNT(*) AS requests, COALESCE(SUM(reported), 0) AS reportedRequests,
     COALESCE(SUM(total_tokens), 0) AS totalTokens, COALESCE(SUM(input_tokens), 0) AS inputTokens,
     COALESCE(SUM(output_tokens), 0) AS outputTokens, COALESCE(SUM(cached_input_tokens), 0) AS cachedInputTokens,
     COALESCE(SUM(cache_write_input_tokens), 0) AS cacheWriteInputTokens,
@@ -38,13 +86,13 @@ export function getSessionTokenUsage(sessionId) {
     COUNT(generating_ms) AS splitTimedRequests,
     SUM(CASE WHEN generating_ms > 0 THEN output_tokens ELSE 0 END) AS timedOutputTokens,
     MIN(created_at) AS recordingSince
-    FROM token_usage_records WHERE session_id = ? AND session_id <> ''`).get(String(sessionId || ''));
-  const models = db.prepare(`SELECT model, provider, COUNT(*) AS requests, SUM(total_tokens) AS totalTokens
-    FROM token_usage_records WHERE session_id = ? AND session_id <> '' GROUP BY model, provider
-    ORDER BY totalTokens DESC, model, provider`).all(String(sessionId || ''));
-  const recent = db.prepare(`SELECT id, created_at AS createdAt, model, total_tokens AS totalTokens,
-    reported, duration_ms AS durationMs FROM token_usage_records WHERE session_id = ? AND session_id <> ''
-    ORDER BY created_at DESC, id DESC LIMIT 40`).all(String(sessionId || '')).reverse();
+    FROM scoped_usage`).get(scopeJson);
+  const models = db.prepare(scope + `SELECT model, provider, COUNT(*) AS requests, SUM(total_tokens) AS totalTokens
+    FROM scoped_usage GROUP BY model, provider
+    ORDER BY totalTokens DESC, model, provider`).all(scopeJson);
+  const recent = db.prepare(scope + `SELECT id, created_at AS createdAt, model, total_tokens AS totalTokens,
+    reported, duration_ms AS durationMs FROM scoped_usage
+    ORDER BY created_at DESC, id DESC LIMIT 40`).all(scopeJson).reverse();
   return { sessionId: String(sessionId || ''), totals, models, recent };
 }
 

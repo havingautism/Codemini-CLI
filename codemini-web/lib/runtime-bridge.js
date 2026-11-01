@@ -1204,6 +1204,18 @@ export class RuntimeBridge {
         // surface this via runtime activity.
         break;
       }
+      case 'skill:selected': {
+        const userMsgId = this.#lastUserMessageId();
+        if (userMsgId) {
+          const badges = (event.names || []).map((name) => ({ name, status: 'selected' }));
+          this.#updateUiMessage(userMsgId, (message) => ({
+            ...message,
+            skillBadges: appendUniqueSkillBadges(message.skillBadges || [], badges),
+          }));
+          publishedMessageId = userMsgId;
+        }
+        break;
+      }
       case 'skill:start': {
         if (this.#uiActiveMsgId) {
           this.#updateUiMessage(this.#uiActiveMsgId, (message) => ({

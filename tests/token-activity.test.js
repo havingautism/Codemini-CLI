@@ -8,7 +8,8 @@ import { recordTokenUsage, getTokenActivity, getSessionTokenUsage } from '../src
 import { withTokenUsageSession } from '../src/core/token-usage-context.js';
 import { normalizeModelUsage } from '../src/core/model-usage.js';
 import { createChatRuntime } from '../src/core/chat-runtime.js';
-import { createSession } from '../src/core/session-store.js';
+import { createSession, createContinuationSession, loadSession, saveSession } from '../src/core/session-store.js';
+import { saveUiTranscriptToSqlite } from '../src/core/session-sqlite-store.js';
 import { getGlobalDatabase, closeSqliteDatabasesForTests } from '../src/core/sqlite-database.js';
 import { createChatCompletion, createChatCompletionStream } from '../src/core/provider/index.js';
 import { buildActivityGrid } from '../codemini-web/client/src/lib/token-activity.js';
@@ -213,6 +214,54 @@ test('version 18 usage table migrates without assigning historical records to a 
   recordTokenUsage({ sessionId: 'new', usage: { total_tokens: 3 } });
   assert.equal(getSessionTokenUsage('new').totals.totalTokens, 3);
   assert.equal(getTokenActivity().lifetime.totalTokens, 15);
+});
+
+test('abort continuation usage follows the displayed history without double counting or later parent requests', async (t) => {
+  await isolate(t);
+  const source = await createSession();
+  recordTokenUsage({ id: 'before-stop', sessionId: source.id, createdAt: '2020-01-01T00:00:00Z', usage: { total_tokens: 12 } });
+  const child = await createContinuationSession(source);
+  const restored = await loadSession(child.id);
+  assert.equal(restored.usageParent.sessionId, source.id);
+  recordTokenUsage({ id: 'later-parent', sessionId: source.id, createdAt: '2090-01-01T00:00:00Z', usage: { total_tokens: 100 } });
+  recordTokenUsage({ id: 'child-stop', sessionId: child.id, createdAt: '2020-01-02T00:00:00Z' });
+  const grandchild = await createContinuationSession(restored);
+  recordTokenUsage({ id: 'child-later', sessionId: child.id, createdAt: '2090-01-01T00:00:00Z', usage: { total_tokens: 200 } });
+  recordTokenUsage({ id: 'grandchild', sessionId: grandchild.id, usage: { total_tokens: 3 } });
+  const usage = getSessionTokenUsage(grandchild.id);
+  assert.equal(usage.totals.requests, 3);
+  assert.equal(usage.totals.reportedRequests, 2);
+  assert.equal(usage.totals.totalTokens, 15);
+  assert.deepEqual(new Set(usage.recent.map((request) => request.id)), new Set(['before-stop', 'child-stop', 'grandchild']));
+  assert.equal(usage.models.reduce((sum, model) => sum + model.requests, 0), 3);
+  assert.equal(getSessionTokenUsage(source.id).totals.requests, 2);
+  assert.equal(getTokenActivity().lifetime.requests, 5);
+  assert.equal(getSessionTokenUsage('unrelated').totals.requests, 0);
+});
+
+test('legacy aborted UI copies recover usage only when the entire source prefix matches', async (t) => {
+  await isolate(t);
+  const source = await createSession();
+  source.createdAt = '2020-01-01T00:00:00.000Z';
+  await saveSession(source);
+  const child = await createSession();
+  const unrelated = await createSession();
+  const changed = await createSession();
+  const transcript = [
+    { id: 'old-user', role: 'you', text: 'debug', skillBadges: [{ name: 'ask-matt', status: 'error' }], manualAborted: true },
+    { id: 'old-reply', role: 'general', manualAborted: true, segments: [{ type: 'skill', name: 'ask-matt', status: 'done' }] },
+  ];
+  saveUiTranscriptToSqlite(source.id, transcript);
+  saveUiTranscriptToSqlite(child.id, [...transcript, { id: 'next', role: 'you', text: 'continue' }]);
+  saveUiTranscriptToSqlite(unrelated.id, transcript.map((message) => ({ ...message, id: message.id + '-different' })));
+  saveUiTranscriptToSqlite(changed.id, [{ ...transcript[0], text: 'different context' }, transcript[1]]);
+  recordTokenUsage({ sessionId: source.id, createdAt: '2020-01-02T00:00:00Z', usage: { total_tokens: 15 } });
+  recordTokenUsage({ sessionId: source.id, createdAt: '2090-01-01T00:00:00Z', usage: { total_tokens: 100 } });
+  assert.equal(getSessionTokenUsage(child.id).totals.totalTokens, 15);
+  assert.equal(getSessionTokenUsage(child.id).recent.length, 1);
+  assert.equal(getSessionTokenUsage(unrelated.id).totals.requests, 0);
+  assert.equal(getSessionTokenUsage(changed.id).totals.requests, 0);
+  assert.equal(getTokenActivity().lifetime.requests, 2);
 });
 
 test('parallel provider calls keep their own session association and record timing', async (t) => {

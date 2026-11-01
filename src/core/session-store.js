@@ -249,6 +249,13 @@ function sanitizeMessage(msg) {
   }
   if (msg?.model_visible === false) out.model_visible = false;
   if (msg?.local_only === true) out.local_only = true;
+  if (Array.isArray(msg?.selected_skill_names)) {
+    out.selected_skill_names = [...new Set(msg.selected_skill_names.map((name) => String(name || '').trim()).filter(Boolean))];
+  }
+  if (Array.isArray(msg?.skill_badges)) {
+    out.skill_badges = msg.skill_badges.filter((badge) => badge && typeof badge.name === 'string' && badge.name.trim())
+      .map((badge) => ({ name: badge.name.trim(), status: String(badge.status || 'selected') }));
+  }
   if (typeof msg?.response_status === 'string' && msg.response_status.trim()) {
     out.response_status = msg.response_status.trim();
   }
@@ -350,6 +357,9 @@ function sanitizeSession(session, fallbackId = '') {
   }
   if (session?.model) out.model = String(session.model);
   if (session?.mode) out.mode = String(session.mode);
+  if (typeof session?.usageParent?.sessionId === 'string' && Number.isFinite(Date.parse(session.usageParent.through))) {
+    out.usageParent = { sessionId: session.usageParent.sessionId, through: session.usageParent.through };
+  }
   const legacySpecState = session?.planState?.status === 'pending_spec_approval'
     ? normalizeSpecState(session.planState)
     : null;
@@ -748,6 +758,7 @@ function cloneSessionMessages(messages = []) {
 /** Copy completed history into a new session so a manual stop can continue without appending under the aborted turn. */
 export async function createContinuationSession(source, { messages = [], compactView = null } = {}) {
   const created = await createSession(source?.projectDir);
+  if (source?.id) created.usageParent = { sessionId: source.id, through: created.createdAt };
   created.messages = cloneSessionMessages(messages);
   if (typeof source?.title === 'string' && source.title.trim()) created.title = source.title;
   if (source?.model) created.model = source.model;
