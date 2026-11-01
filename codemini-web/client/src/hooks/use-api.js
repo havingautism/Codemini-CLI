@@ -1,5 +1,28 @@
 const JSON_HEADERS = { 'Content-Type': 'application/json' };
 
+export async function fetchScheduledTasks(taskId = '') {
+  const query = taskId ? `?taskId=${encodeURIComponent(taskId)}` : '';
+  return readJsonOrThrow(await api(`/api/scheduled-tasks${query}`));
+}
+
+export async function saveScheduledTask(task, id = '') {
+  return readJsonOrThrow(await api(`/api/scheduled-tasks${id ? `/${encodeURIComponent(id)}` : ''}`, {
+    method: id ? 'PUT' : 'POST', headers: JSON_HEADERS, body: JSON.stringify(task),
+  }));
+}
+
+export async function deleteScheduledTask(id) {
+  return readJsonOrThrow(await api(`/api/scheduled-tasks/${encodeURIComponent(id)}`, { method: 'DELETE' }));
+}
+
+export async function runScheduledTask(id) {
+  return readJsonOrThrow(await api(`/api/scheduled-tasks/${encodeURIComponent(id)}/run`, { method: 'POST' }));
+}
+
+export async function startScheduledWorker() {
+  return readJsonOrThrow(await api('/api/scheduled-tasks/worker/start', { method: 'POST' }));
+}
+
 async function api(path, opts = {}) {
   const res = await fetch(path, opts);
   if (res.status === 401 && typeof window !== 'undefined' && window.location.pathname !== '/login') {
@@ -927,8 +950,9 @@ export async function fetchSouls() {
   return res.json();
 }
 
-export async function fetchSoulContent(name) {
-  const res = await api(`/api/souls/${encodeURIComponent(name)}/content`);
+export async function fetchSoulContent(name, category = '') {
+  const query = category ? `?category=${encodeURIComponent(category)}` : '';
+  const res = await api(`/api/souls/${encodeURIComponent(name)}/content${query}`);
   return res.json();
 }
 
@@ -963,7 +987,7 @@ export async function activateSoul(name, category) {
     headers: JSON_HEADERS,
     body: JSON.stringify({ name, category })
   });
-  return res.json();
+  return readJsonOrThrow(res);
 }
 
 // ── CodeWiki ──

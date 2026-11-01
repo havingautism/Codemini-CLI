@@ -1743,7 +1743,10 @@ body {
 
 .codemini-disclosure-row:hover,
 .codemini-disclosure-row:active,
-
+.codemini-disclosure-row:focus-visible {
+  background: transparent;
+  color: var(--text-process-hover);
+}
 
 .codemini-disclosure-row:hover > :not(.codemini-disclosure-leading):not(.codemini-disclosure-sep),
 .codemini-disclosure-row:active > :not(.codemini-disclosure-leading):not(.codemini-disclosure-sep),

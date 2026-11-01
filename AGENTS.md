@@ -13,6 +13,7 @@ This repo is Codemini CLI, a local-first coding agent with a CLI, Web UI, projec
 
 - CLI command dispatch: start in `src/cli.js`, then `src/commands/`.
 - Chat/session runtime behavior: start in `src/core/chat-runtime.js`.
+- Scheduled tasks: `src/core/scheduled-task-store.js`, `src/core/scheduled-worker.js`; see `docs/agents/scheduled-tasks.md`.
 - System prompt composition: start in `src/core/system-prompt-composer.js` and `src/core/default-system-prompt.js`.
 - Project map and file index behavior: start in `src/core/project-index.js`.
 - Skill discovery, routing, and rendering: start in `src/core/command-loader.js`, then `src/core/skill-registry.js`.

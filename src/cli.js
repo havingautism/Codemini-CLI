@@ -5,6 +5,7 @@ import { handleDoctor } from './commands/doctor.js';
 import { handleSkill } from './commands/skill.js';
 import { handleWeb } from './commands/web.js';
 import { handleHarness } from './commands/harness.js';
+import { handleSchedule } from './commands/schedule.js';
 import { VERSION } from './core/version.js';
 
 function printHelp() {
@@ -21,6 +22,7 @@ Usage:
   codemini harness replay <episode-id>
   codemini harness metrics [--limit <n>]
   codemini doctor
+  codemini schedule start|status
   codemini skill list|install|enable|disable|inspect|reindex
   codemini --version
   codemini --help`);
@@ -28,7 +30,7 @@ Usage:
 
 export async function runCli(args) {
   const [command, ...rest] = args;
-  const knownCommands = new Set(['chat', 'run', 'config', 'doctor', 'skill', 'web', 'harness']);
+  const knownCommands = new Set(['chat', 'run', 'config', 'doctor', 'skill', 'web', 'harness', 'schedule']);
 
   if (!command || command === '--help' || command === '-h') {
     if (!command) {
@@ -55,6 +57,9 @@ export async function runCli(args) {
   }
 
   switch (command) {
+    case 'schedule':
+      await handleSchedule(rest);
+      return;
     case 'chat':
       await handleChat(rest);
       return;

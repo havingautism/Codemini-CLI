@@ -211,6 +211,7 @@ function parseRoute() {
       targetMessageId: params.get("message") || "",
     };
   if (path === "/sessions") return { view: "sessions" };
+  if (path === "/scheduled-tasks") return { view: "scheduled-tasks" };
   if (scrapbookMatch) {
     return {
       view: "scrapbook",
@@ -232,6 +233,7 @@ function parseRoute() {
 
 function routeFor(view, sessionId, options = {}) {
   if (view === "sessions") return "/sessions";
+  if (view === "scheduled-tasks") return "/scheduled-tasks";
   if (view === "scrapbook") {
     const scrapbookEntryId = String(options.scrapbookEntryId || "").trim();
     return scrapbookEntryId
@@ -4611,6 +4613,7 @@ export function AppProvider({ children }) {
           updateRoute(view, null, { projectPath: codewikiProjectPath });
         }
         if (view === "sessions") updateRoute(view, null);
+          if (view === "scheduled-tasks") updateRoute(view, null);
         if (view === "scrapbook") {
           updateRoute(view, null, { scrapbookEntryId });
         }

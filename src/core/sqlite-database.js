@@ -4,7 +4,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { getBaseConfigDir, getProjectIndexDir } from './paths.js';
 import { insertMemoryFtsRow, MEMORY_FTS_DDL } from './memory-fts.js';
 
-const GLOBAL_SCHEMA_VERSION = 19;
+const GLOBAL_SCHEMA_VERSION = 20;
 const PROJECT_SCHEMA_VERSION = 6;
 const databases = new Map();
 
@@ -54,6 +54,26 @@ function openDatabase(filePath, schema, version) {
 }
 
 function createGlobalSchema(db, currentVersion = 0) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS scheduled_tasks (
+      id TEXT PRIMARY KEY, name TEXT NOT NULL, prompt TEXT NOT NULL,
+      project_dir TEXT NOT NULL, mode TEXT NOT NULL, schedule_json TEXT NOT NULL,
+      enabled INTEGER NOT NULL, next_run_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    ) STRICT;
+    CREATE INDEX IF NOT EXISTS scheduled_tasks_due_idx ON scheduled_tasks(enabled, next_run_at);
+    CREATE TABLE IF NOT EXISTS scheduled_task_runs (
+      id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES scheduled_tasks(id) ON DELETE CASCADE,
+      scheduled_for TEXT, trigger_kind TEXT NOT NULL, status TEXT NOT NULL,
+      session_id TEXT NOT NULL DEFAULT '', owner_id TEXT NOT NULL DEFAULT '',
+      snapshot_json TEXT NOT NULL, created_at TEXT NOT NULL, started_at TEXT, finished_at TEXT,
+      error TEXT NOT NULL DEFAULT '', UNIQUE(task_id, scheduled_for)
+    ) STRICT;
+    CREATE INDEX IF NOT EXISTS scheduled_runs_task_idx ON scheduled_task_runs(task_id, created_at DESC);
+    CREATE TABLE IF NOT EXISTS scheduled_worker (
+      id INTEGER PRIMARY KEY CHECK(id = 1), owner_id TEXT NOT NULL, pid INTEGER NOT NULL,
+      lease_until TEXT NOT NULL, heartbeat_at TEXT NOT NULL
+    ) STRICT;
+  `);
   db.exec(`
     CREATE TABLE IF NOT EXISTS token_usage_records (
       id TEXT PRIMARY KEY,

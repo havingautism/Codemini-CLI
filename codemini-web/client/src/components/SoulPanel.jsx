@@ -172,6 +172,7 @@ function SoulDetailPane({ soul, disabled = false, onSave }) {
   const [saving, setSaving] = useState(false);
   const soulName = soul?.name || "";
   const soulScope = soul?.scope || "";
+  const soulCategory = soul?.category || "";
 
   useEffect(() => {
     setEditing(false);
@@ -183,7 +184,7 @@ function SoulDetailPane({ soul, disabled = false, onSave }) {
     let cancelled = false;
     setLoading(true);
     api
-      .fetchSoulContent(soulName)
+      .fetchSoulContent(soulName, soulCategory)
       .then((data) => {
         if (cancelled) return;
         const next = data.content || "";
@@ -201,7 +202,7 @@ function SoulDetailPane({ soul, disabled = false, onSave }) {
     return () => {
       cancelled = true;
     };
-  }, [soulName, soulScope]);
+  }, [soulName, soulScope, soulCategory]);
 
   if (!soul) {
     return (

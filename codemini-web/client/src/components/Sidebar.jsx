@@ -6,6 +6,7 @@ import {
   CaretDown,
   CaretRight,
   Compass,
+  Clock,
   DotsThree,
   Folder,
   GearSix,
@@ -252,6 +253,7 @@ export function Sidebar({
   onOpenMemory,
   onOpenScrapbook,
   onOpenResearch,
+  onOpenScheduledTasks,
   onOpenSouls,
   onOpenAbout,
   gitBatch,
@@ -654,6 +656,16 @@ export function Sidebar({
           <span className="truncate">{t("deepResearch")}</span>
         </button>
 
+        <button
+          className={cn(
+            "codemini-sidebar-action w-full border-0 bg-transparent flex items-center gap-2.5 h-9 px-2.5 rounded-lg cursor-pointer text-left text-[13px] text-(--text-primary)",
+            currentView === "scheduled-tasks" && "bg-(--bg-active)",
+          )}
+          onClick={onOpenScheduledTasks}
+        >
+          <Clock size={15} strokeWidth={2} className="text-(--text-secondary) shrink-0" />
+          <span className="truncate">{t("scheduledTasks")}</span>
+        </button>
         <Separator className="mx-2 my-2 bg-(--border-default)/40" />
 
         <button

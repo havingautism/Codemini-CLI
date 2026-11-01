@@ -990,6 +990,21 @@ test('aborted settle does not mark leftover tasks completed', () => {
   assert.equal(settled.segments[0].cards[0].arguments.tasks[0].status, 'in_progress');
 });
 
+test('settling a turn preserves skill selection metadata while closing running badges', () => {
+  for (const reason of ['aborted', 'failed', 'completed']) {
+    const badges = [
+      { name: 'manual', status: 'selected' },
+      { name: 'default', status: 'always' },
+      { name: 'read', status: 'done' },
+      { name: 'running', status: 'running' },
+    ];
+    const settled = settleIncompleteTranscriptMessage({ skillBadges: badges }, { reason });
+    assert.deepEqual(settled.skillBadges.slice(0, 3), badges.slice(0, 3));
+    assert.equal(settled.skillBadges[3].status, reason === 'completed' ? 'done' : 'error');
+    assert.equal(badges[3].status, 'running');
+  }
+});
+
 test('abort settles running tools, thinking, and hooks so loaders do not stay open', () => {
   const settled = settleIncompleteTranscriptMessage(
     {

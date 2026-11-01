@@ -35,6 +35,7 @@ import { t } from "../../i18n/index.js";
 import { DOCUMENT_ACCEPT } from "../../../shared/document-formats.js";
 import * as api from "@/hooks/use-api";
 import { useApp } from "@/context/app-context.jsx";
+import { useComposerDraft } from "@/hooks/use-composer-draft.js";
 import { ReasoningQuickControl } from "@/components/ReasoningControls.jsx";
 import {
   Popover,
@@ -562,6 +563,7 @@ function SoulQuickSwitch({ disabled = false, mode = "normal" }) {
   const [souls, setSouls] = useState([]);
   const [active, setActive] = useState("");
   const [open, setOpen] = useState(false);
+  const [activationError, setActivationError] = useState("");
   const category = executionModeSkillContext(mode);
 
   const loadSouls = useCallback(async () => {
@@ -588,11 +590,16 @@ function SoulQuickSwitch({ disabled = false, mode = "normal" }) {
 
   const handleActivate = async (soul) => {
     if (disabled || !soul?.name) return;
-    await api.activateSoul(soul.name, soul.category || category);
-    setActive(soul.name);
-    setOpen(false);
-    await loadSouls();
-    actions.notifySoulsChanged();
+    setActivationError("");
+    try {
+      await api.activateSoul(soul.name, soul.category || category);
+      setActive(soul.name);
+      setOpen(false);
+      await loadSouls();
+      actions.notifySoulsChanged();
+    } catch (error) {
+      setActivationError(error?.message || t("actionFailed"));
+    }
   };
 
   return (
@@ -625,6 +632,11 @@ function SoulQuickSwitch({ disabled = false, mode = "normal" }) {
             ? t("skillContextDaily")
             : t("skillContextCoding")}
         </div>
+        {activationError && (
+          <p role="alert" className="px-2 py-1.5 text-[12px] text-(--accent-red)">
+            {activationError}
+          </p>
+        )}
         <div className="flex flex-col gap-0.5">
           {souls.map((soul) => (
             <button
@@ -1054,6 +1066,8 @@ function ActionSkillPalette({
 }
 
 export function InputBar({
+  sessionId,
+  draftStore,
   onSubmit,
   onAction,
   onActionStart,
@@ -1068,7 +1082,15 @@ export function InputBar({
   hasConversation = false,
 }) {
   const { state, actions } = useApp();
-  const [value, setValue] = useState("");
+  const {
+    draft,
+    setValue, setAttachments, setReferencedFiles, setSelectedSkills, setScrapbookContext,
+    setDismissedDefaultSkills, setActionParameter, setAttachmentError,
+  } = useComposerDraft(draftStore, sessionId);
+  const {
+    value, attachments, referencedFiles, selectedSkills, scrapbookContext,
+    dismissedDefaultSkills, actionParameter, attachmentError, uploadingAttachments,
+  } = draft;
   const [history, setHistory] = useState([]);
   const [historyIndex, setHistoryIndex] = useState(-1);
   const [draftBeforeHistory, setDraftBeforeHistory] = useState("");
@@ -1078,13 +1100,6 @@ export function InputBar({
   const [paletteMentionMode, setPaletteMentionMode] = useState(false);
   const [paletteError, setPaletteError] = useState("");
   const [actionSubmitting, setActionSubmitting] = useState(false);
-  const [actionParameter, setActionParameter] = useState(() =>
-    createComposerState(),
-  );
-  const [attachments, setAttachments] = useState([]);
-  const [referencedFiles, setReferencedFiles] = useState([]);
-  const [selectedSkills, setSelectedSkills] = useState([]);
-  const [scrapbookContext, setScrapbookContext] = useState(null);
   const [scrapbookPickerOpen, setScrapbookPickerOpen] = useState(false);
   const [scrapbookEntries, setScrapbookEntries] = useState([]);
   const [scrapbookLoading, setScrapbookLoading] = useState(false);
@@ -1092,11 +1107,6 @@ export function InputBar({
   const [scrapbookVisibleCount, setScrapbookVisibleCount] = useState(
     SCRAPBOOK_PICKER_PAGE_SIZE,
   );
-  const [dismissedDefaultSkills, setDismissedDefaultSkills] = useState(
-    new Set(),
-  );
-  const [attachmentError, setAttachmentError] = useState("");
-  const [uploadingAttachments, setUploadingAttachments] = useState(false);
   const textareaRef = useRef(null);
   const fileInputRef = useRef(null);
   const actionSubmissionRef = useRef(false);
@@ -1152,10 +1162,10 @@ export function InputBar({
     () => selectedSkills.map((skill) => skill.name).filter(Boolean),
     [selectedSkills],
   );
-  const inputLocked = busy || disabled || uploadingAttachments;
+  const inputLocked = !sessionId || busy || disabled || uploadingAttachments;
   // While a turn is running the composer stays unlocked so new prompts can be
   // queued; only hard blockers lock it.
-  const composerLocked = disabled || uploadingAttachments;
+  const composerLocked = !sessionId || disabled || uploadingAttachments;
   const isGeneralChat = projectCwd === "__codemini_general__";
   const hasComposerContent = Boolean(
     value.trim() ||
@@ -1166,10 +1176,18 @@ export function InputBar({
   );
 
   useEffect(() => {
-    setSelectedSkills((current) =>
-      current.filter((skill) => skillIsVisibleInExecutionMode(skill, mode)),
-    );
-  }, [mode]);
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    textarea.style.height = "auto";
+    textarea.style.height = `${Math.min(textarea.scrollHeight, 160)}px`;
+  }, [value]);
+
+  useEffect(() => {
+    setSelectedSkills((current) => {
+      const visible = current.filter((skill) => skillIsVisibleInExecutionMode(skill, mode));
+      return visible.length === current.length ? current : visible;
+    });
+  }, [mode, setSelectedSkills]);
 
   useEffect(() => {
     if (externalHistory && externalHistory.length && history.length === 0) {
@@ -1230,7 +1248,7 @@ export function InputBar({
 
       const dismissedSkills = [...dismissedDefaultSkills];
       try {
-        await onSubmit(
+        const result = await onSubmit(
           {
             text: fallbackText,
             skillNames: selectedSkillNames,
@@ -1248,23 +1266,17 @@ export function InputBar({
               ? { modelText: modelContext }
               : {}),
           },
-          { priority },
+          { priority, sessionId },
         );
+        if (result?.sessionBusy || result?.type === "busy" || result?.error) return;
       } catch {
         return;
       }
-      setValue("");
-      setAttachments([]);
-      setReferencedFiles([]);
-      setScrapbookContext(null);
-      setSelectedSkills([]);
-      setDismissedDefaultSkills(new Set());
-      setAttachmentError("");
+      draftStore.clearSubmitted(sessionId, draft);
       setPaletteOpen(false);
       setPaletteSlashMode(false);
       setPaletteMentionMode(false);
       setHistoryIndex(-1);
-      if (textareaRef.current) textareaRef.current.style.height = "auto";
     },
     [
       value,
@@ -1276,6 +1288,9 @@ export function InputBar({
       dismissedDefaultSkills,
       composerLocked,
       onSubmit,
+      draftStore,
+      sessionId,
+      draft,
     ],
   );
 
@@ -1513,9 +1528,7 @@ export function InputBar({
     async (fileList) => {
       const files = Array.from(fileList || []);
       if (!files.length || inputLocked) return;
-      setAttachmentError("");
-      setUploadingAttachments(true);
-      try {
+      await draftStore.upload(sessionId, async () => {
         const prepared = [];
         for (const file of files.slice(0, 8)) {
           try {
@@ -1524,25 +1537,12 @@ export function InputBar({
             prepared.push(file);
           }
         }
-        const result = await api.uploadAttachments(rs.sessionId, prepared);
-        if (result?.error) {
-          throw new Error(result.message || t("attachmentUploadFailed"));
-        }
-        setAttachments((current) =>
-          [
-            ...current,
-            ...(Array.isArray(result.attachments) ? result.attachments : []),
-          ].slice(0, 8),
-        );
-      } catch (error) {
-        setAttachmentError(error?.message || t("attachmentUploadFailed"));
-      } finally {
-        setUploadingAttachments(false);
-        if (fileInputRef.current) fileInputRef.current.value = "";
-        textareaRef.current?.focus();
-      }
+        return api.uploadAttachments(sessionId, prepared);
+      }, t("attachmentUploadFailed"));
+      if (fileInputRef.current) fileInputRef.current.value = "";
+      textareaRef.current?.focus();
     },
-    [inputLocked, rs.sessionId],
+    [inputLocked, draftStore, sessionId],
   );
 
   const handlePaste = useCallback((event) => {

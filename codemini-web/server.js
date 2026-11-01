@@ -1,4 +1,7 @@
 import { getTokenActivity, getSessionTokenUsage } from '../src/core/token-usage-store.js';
+import { isScheduledSessionActive } from '../src/core/scheduled-task-store.js';
+import { startScheduledWorker } from '../src/core/scheduled-worker-process.js';
+import { registerScheduledTaskRoutes } from './lib/scheduled-task-api.js';
 import { decodeSessionCursor, getSessionGroupPage, getSessionSidebarSnapshot } from './lib/session-pages.js';
 import { validateWebConfigValue } from './shared/web-config-policy.js';
 import { DOCUMENT_EXTENSIONS, SCRAPBOOK_TEXT_EXTENSIONS } from './shared/document-formats.js';
@@ -991,6 +994,10 @@ export function createWebRuntimeApi({
   const loadBridge = async (res, sessionId) => {
     const id = requireSessionId(res, sessionId);
     if (!id) return null;
+    if (isScheduledSessionActive(id)) {
+      jsonResponse(res, { error: true, code: "SESSION_BUSY", message: "A background scheduled task is writing this session. Check Scheduled Tasks and open it after the run finishes." }, 409);
+      return null;
+    }
     try {
       await ensureSession(id);
     } catch (error) {
@@ -1228,6 +1235,10 @@ export function createWebRuntimeApi({
             { error: true, message: "Missing attachment file" },
             400,
           );
+          return true;
+        }
+        if (files.length > 8) {
+          jsonResponse(res, { error: true, message: "Maximum 8 attachments per upload." }, 400);
           return true;
         }
         const attachments = [];
@@ -1796,6 +1807,10 @@ export function createWebRuntimeApi({
         decodeURIComponent(url.pathname.slice("/api/sessions/".length)),
       );
       if (!sessionId) return true;
+      if (isScheduledSessionActive(sessionId)) {
+        jsonResponse(res, { error: true, message: "A background scheduled task is writing this session." }, 409);
+        return true;
+      }
       const state = pool.getSessionState(sessionId);
       if (
         state &&
@@ -2011,6 +2026,17 @@ async function saveUploadedAttachment({ file, sessionId }) {
   }
   const arrayBuffer = await file.arrayBuffer();
   const buffer = Buffer.from(arrayBuffer);
+  let imageMime = "";
+  if (IMAGE_ATTACHMENT_EXTENSIONS.has(ext)) {
+    try {
+      const metadata = await sharp(buffer, { animated: false }).metadata();
+      const imageTypes = { png: "image/png", jpeg: "image/jpeg", webp: "image/webp", gif: "image/gif" };
+      imageMime = imageTypes[metadata.format] || "";
+      if (!imageMime) throw new Error("Unsupported image format");
+    } catch {
+      throw new Error("Invalid image attachment. Use a valid PNG, JPEG, WebP, or GIF image.");
+    }
+  }
   const id = randomUUID();
   const sessionDir = attachmentSessionDir(sessionId);
   await fs.mkdir(sessionDir, { recursive: true });
@@ -2025,7 +2051,7 @@ async function saveUploadedAttachment({ file, sessionId }) {
   const meta = {
     id,
     name: originalName,
-    mime: file?.type || "",
+    mime: imageMime || file?.type || "",
     extension: ext,
     kind: IMAGE_ATTACHMENT_EXTENSIONS.has(ext) ? "image" : "document",
     size: buffer.length,
@@ -2051,10 +2077,12 @@ async function saveUploadedAttachment({ file, sessionId }) {
 }
 
 async function loadAttachmentMetas(sessionId, ids = []) {
-  const cleanIds = (Array.isArray(ids) ? ids : [])
+  if (!Array.isArray(ids) || ids.length > 8) {
+    throw new Error("Attachment IDs must be an array with at most 8 items.");
+  }
+  const cleanIds = [...new Set(ids
     .map((id) => String(id || "").trim())
-    .filter(Boolean)
-    .slice(0, 8);
+    .filter(Boolean))];
   const metas = [];
   for (const id of cleanIds) {
     const metaFile = attachmentMetaPath(sessionId, id);
@@ -2065,8 +2093,12 @@ async function loadAttachmentMetas(sessionId, ids = []) {
         if (parsed?.id === id && parsed?.path)
           saveAttachmentMetadata(sessionId, parsed);
       }
-      if (parsed?.id === id && parsed?.path) metas.push(parsed);
-    } catch {}
+      if (parsed?.id !== id || !parsed?.path) throw new Error("Invalid attachment metadata");
+      await fs.access(parsed.path);
+      metas.push(parsed);
+    } catch {
+      throw new Error("Attachment not found in this session. Please upload it again.");
+    }
   }
   return metas;
 }
@@ -3016,6 +3048,8 @@ async function main() {
   };
 
   const routes = createNodeRouter();
+  registerScheduledTaskRoutes({ routes, nodeRoute, readBody, jsonResponse, generalDir: GENERAL_PROJECT_DIR });
+  startScheduledWorker().catch(error => console.error('Scheduled worker startup:', error?.message || String(error)));
   routes.get("/api/embed", nodeRoute(async (req, res, url) => {
       const target = String(url.searchParams.get("url") || "").trim();
       if (!target) {
@@ -4596,6 +4630,7 @@ async function main() {
         // Keep legacy preset in sync for older readers.
         config.soul.preset = getActiveSoulName(config, resolvedCategory);
         await saveConfig(config);
+        await pool.reloadConfig();
         jsonResponse(res, {
           ok: true,
           category: resolvedCategory,
@@ -5775,7 +5810,9 @@ async function main() {
         url.pathname.slice("/api/souls/".length, -"/content".length),
       );
       try {
-        jsonResponse(res, await readSoulContent(sname));
+        jsonResponse(res, await readSoulContent(sname, {
+          preferCategory: url.searchParams.get("category") || "",
+        }));
       } catch (err) {
         jsonResponse(res, { error: true, message: err.message }, 500);
       }
@@ -5814,9 +5851,10 @@ async function main() {
           config.soul.coding = "Default";
         }
         if (soulNameEquals(config.soul.daily, sname)) {
-          config.soul.daily = "Playful";
+          config.soul.daily = "Default";
         }
         await saveConfig(config);
+        await pool.reloadConfig();
         jsonResponse(res, { ok: true });
       } catch (err) {
         const status = /Cannot delete/i.test(err.message)

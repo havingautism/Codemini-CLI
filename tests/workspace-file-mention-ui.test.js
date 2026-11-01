@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import { createComposerDraftStore } from '../codemini-web/client/src/lib/composer-drafts.js';
 
 test('workspace file mentions expose responsive search and file-first result rows', async () => {
   const source = await fs.readFile(
@@ -21,7 +22,13 @@ test('workspace file mentions expose responsive search and file-first result row
     source,
     /removeComposerMentionToken\(\s*current,\s*mentionCursorRef\.current,?\s*\)/,
   );
-  assert.match(source, /setReferencedFiles\(\[\]\)/);
+  assert.match(source, /draftStore\.clearSubmitted\(sessionId, draft\)/);
+  const drafts = createComposerDraftStore();
+  drafts.update('submitted', current => ({ ...current, referencedFiles: [{ path: 'src/app.js' }] }));
+  drafts.update('other', current => ({ ...current, referencedFiles: [{ path: 'src/other.js' }] }));
+  drafts.clearSubmitted('submitted', drafts.get('submitted'));
+  assert.deepEqual(drafts.get('submitted').referencedFiles, []);
+  assert.deepEqual(drafts.get('other').referencedFiles, [{ path: 'src/other.js' }]);
   assert.match(source, /removeReferencedFile/);
   assert.match(source, /referencedFiles\.length > 0/);
   assert.match(source, /disabled=\{!hasComposerContent \|\| inputLocked\}/);

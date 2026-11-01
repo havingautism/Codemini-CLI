@@ -914,6 +914,19 @@ export class RuntimeBridge {
   }
 
   #settleIncompleteUiMessages(reason = 'aborted') {
+    // Skill reads can finish before the first assistant/step event. Persist
+    // those pending records before abort/fork clears the active turn state.
+    if (this.#uiPendingSkillSegments.length || this.#uiPendingSkillBadges.length) {
+      this.#addUiMessage({
+        role: 'general',
+        text: '',
+        timestamp: new Date().toISOString(),
+        segments: this.#uiPendingSkillSegments,
+        skillBadges: this.#uiPendingSkillBadges,
+      });
+      this.#uiPendingSkillSegments = [];
+      this.#uiPendingSkillBadges = [];
+    }
     this.#uiMessages = this.#uiMessages.map((message) =>
       settleRunningCreatePlanCards(
         settleIncompleteTranscriptMessage(message, { reason }),

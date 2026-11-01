@@ -18,6 +18,7 @@ import { t } from "../i18n/index.js";
 import { Sidebar } from "@/components/Sidebar.jsx";
 import { ChatPanel } from "@/components/ChatPanel.jsx";
 import { InputBar } from "@/components/InputBar.jsx";
+import { createComposerDraftStore } from "@/lib/composer-drafts.js";
 import { StatusBar } from "@/components/StatusBar.jsx";
 import { ApprovalDialog } from "@/components/ApprovalDialog.jsx";
 import { ReflectApprovalDialog } from "@/components/ReflectApprovalDialog.jsx";
@@ -38,6 +39,7 @@ import "./conversation-design.css";
 import "./focus.css";
 
 const SessionContextPanel = lazy(() => import("@/components/SessionContextPanel.jsx").then((module) => ({ default: module.SessionContextPanel })));
+const ScheduledTasksPanel = lazy(() => import("@/components/ScheduledTasksPanel.jsx"));
 
 const CodeWikiPanel = lazy(() =>
   import("@/components/CodeWikiPanel.jsx").then((module) => ({
@@ -195,6 +197,7 @@ class ErrorBoundary extends Component {
 }
 
 function Shell() {
+  const [composerDraftStore] = useState(createComposerDraftStore);
   const { state, actions } = useApp();
   const approvalRequest = interactiveRequestForSession(state, "approval");
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
@@ -354,6 +357,7 @@ function Shell() {
         onOpenMemory={openMemory}
         onOpenScrapbook={openScrapbook}
         onOpenResearch={openResearch}
+        onOpenScheduledTasks={() => actions.switchView("scheduled-tasks")}
         onOpenSouls={openSouls}
         onOpenAbout={openAbout}
         gitBatch={state.gitBatch}
@@ -395,7 +399,35 @@ function Shell() {
       </Sheet>
 
       <div className="flex-1 flex flex-col min-w-0 min-h-0 p-1.5 sm:p-2">
-        {state.currentView === "sessions" ? (
+        {state.currentView === "scheduled-tasks" ? (
+          <div className="codemini-workspace-panel flex flex-1 flex-col min-h-0 overflow-hidden">
+            <div className="flex h-12 shrink-0 items-center gap-2.5 border-b border-(--border-default) px-3 sm:px-5">
+              <button
+                type="button"
+                className="inline-flex size-8 shrink-0 items-center justify-center rounded-md border-0 bg-transparent text-(--text-muted) hover:bg-(--bg-hover) hover:text-(--text-primary) md:hidden"
+                aria-label="Open sidebar"
+                onClick={() => setMobileSidebarOpen(true)}
+              >
+                <List size={17} />
+              </button>
+              {sidebarCollapsed ? (
+                <button
+                  type="button"
+                  className="hidden size-8 shrink-0 items-center justify-center rounded-md border-0 bg-transparent text-(--text-muted) hover:bg-(--bg-hover) hover:text-(--text-primary) md:inline-flex"
+                  aria-label={t("expandSidebar")}
+                  title={t("expandSidebar")}
+                  onClick={() => setSidebarCollapsedAndPersist(false)}
+                >
+                  <SidebarSimple size={16} />
+                </button>
+              ) : null}
+              <span className="truncate text-[14px] font-medium text-(--text-primary)">{t("scheduledTasks")}</span>
+            </div>
+            <Suspense fallback={<div className="p-6 text-[13px] text-(--text-muted)">{t("loading")}</div>}>
+              <ScheduledTasksPanel projectDir={state.isGeneral ? "" : state.runtimeState?.cwd || ""} onOpenSession={handleSwitchSession} />
+            </Suspense>
+          </div>
+        ) : state.currentView === "sessions" ? (
           <div className="codemini-workspace-panel flex flex-1 flex-col min-h-0 overflow-hidden">
             <SessionPanel
               sessions={state.sessions}
@@ -723,6 +755,9 @@ function Shell() {
                 onRetry={() => actions.runChatAction("dream")}
               />
               <MemoInputBar
+                key={state.currentSessionId || "no-session"}
+                sessionId={state.currentSessionId || ""}
+                draftStore={composerDraftStore}
                 onSubmit={actions.submit}
                 onAction={actions.runChatAction}
                 onActionStart={actions.prepareChatAction}

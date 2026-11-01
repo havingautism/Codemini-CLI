@@ -415,7 +415,8 @@ export function settleIncompleteTranscriptMessage(message, { reason = "aborted" 
     reason === "aborted" ? "Aborted" : reason === "failed" ? "Failed" : "";
   const skillBadges = Array.isArray(message.skillBadges)
     ? message.skillBadges.map((badge) =>
-        isOpenWorkStatus(badge?.status)
+        // Selection/loading badges describe prompt context, not running work.
+        !["selected", "always"].includes(badge?.status) && isOpenWorkStatus(badge?.status)
           ? { ...badge, status: status === "done" ? "done" : "error" }
           : badge,
       )

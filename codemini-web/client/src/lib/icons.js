@@ -28,6 +28,7 @@ import {
   IconBulb,
   IconBulbFilled,
   IconCamera,
+  IconClock,
   IconCameraFilled,
   IconChartLine,
   IconCheck,
@@ -180,6 +181,7 @@ function wrap(Outline, Filled) {
 
 export const Archive = wrap(IconArchive);
 export const ArrowClockwise = wrap(IconRefresh);
+export const Clock = wrap(IconClock);
 export const ArrowCounterClockwise = wrap(IconArrowBackUp);
 export const ArrowDown = wrap(IconArrowDown);
 export const ArrowLeft = wrap(IconArrowLeft);

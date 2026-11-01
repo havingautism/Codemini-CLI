@@ -129,7 +129,7 @@ export function getActiveSoulName(config = {}, category = 'coding') {
   if (fromCategory) return normalizeSoulName(fromCategory);
   const legacy = String(soul?.preset || '').trim();
   if (legacy) return normalizeSoulName(legacy);
-  return key === 'daily' ? 'Playful' : 'Default';
+  return 'Default';
 }
 
 export async function listSouls(config = {}) {
@@ -250,7 +250,7 @@ export async function loadSoulPrompt(config = {}, { context } = {}) {
     } catch {}
   }
 
-  const fallbackName = category === 'daily' ? 'Playful' : 'Default';
+  const fallbackName = 'Default';
   const fallback = await readSoulPreset(BUNDLED_SOULS_DIR, fallbackName, category);
   return {
     prompt: `[Soul preset: ${fallbackName} · ${fallback.category || category}]\n${String(fallback.content || '').trim()}`,

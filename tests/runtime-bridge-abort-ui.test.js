@@ -7,6 +7,77 @@ import path from 'node:path';
 import { RuntimeBridge, serializeSessionMessages } from '../codemini-web/lib/runtime-bridge.js';
 import { closeSqliteDatabasesForTests } from '../src/core/sqlite-database.js';
 import { loadUiTranscriptFromSqlite } from '../src/core/session-sqlite-store.js';
+import { repairSettledTranscriptMessages } from '../codemini-web/shared/transcript-segments.js';
+import { userSkillChipBadges } from '../codemini-web/client/src/lib/user-skill-prompt.js';
+
+for (const startedReply of [false, true]) {
+  test(`manual abort preserves selected skills and skill reads after reload (reply started: ${startedReply})`, async () => {
+    closeSqliteDatabasesForTests();
+    const previousGlobalDir = process.env.CODEMINI_GLOBAL_DIR;
+    const globalDir = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-abort-skills-'));
+    process.env.CODEMINI_GLOBAL_DIR = globalDir;
+    let sessionId = 'skills-before-abort';
+    let emit;
+    const ready = Promise.withResolvers();
+    const runtime = {
+      getCurrentSessionId: () => sessionId,
+      getRuntimeState: () => ({ sessionId }),
+      getLastSystemPrompt: () => '',
+      setRequestToolApproval() {},
+      setRequestUserInput() {},
+      setOnTitleUpdate() {},
+      setOnTitleStatus() {},
+      submitMessage(_message, onEvent) {
+        emit = onEvent;
+        onEvent({ type: 'skill:start', name: 'diagnosing-bugs' });
+        onEvent({ type: 'skill:end', name: 'diagnosing-bugs' });
+        if (startedReply) {
+          onEvent({ type: 'step:start', step: 1 });
+          onEvent({ type: 'assistant:start' });
+          onEvent({ type: 'assistant:reasoning_delta', text: 'checking' });
+        }
+        ready.resolve();
+        return new Promise(() => {});
+      },
+      abort() { return true; },
+    };
+    const bridge = new RuntimeBridge(runtime, { sessionId });
+    let restoredBridge;
+    try {
+      bridge.handleSubmitMessage({ text: 'debug', skillNames: ['diagnosing-bugs'] });
+      await ready.promise;
+      await bridge.handleAbort();
+      // The runtime finishes creating its continuation after handleAbort returns.
+      sessionId = 'skills-after-abort';
+      emit({ type: 'session:forked', previousSessionId: 'skills-before-abort', sessionId });
+      await bridge.dispose();
+      restoredBridge = new RuntimeBridge(runtime, { sessionId });
+      for (const id of ['skills-before-abort', 'skills-after-abort']) {
+        const restored = repairSettledTranscriptMessages(loadUiTranscriptFromSqlite(id));
+        assert.deepEqual(userSkillChipBadges(restored[0].skillBadges), [
+          { name: 'diagnosing-bugs', status: 'selected' },
+        ]);
+        const reads = restored.flatMap((message) => message.segments || [])
+          .filter((segment) => segment.type === 'skill');
+        assert.equal(reads.length, 1);
+        assert.equal(reads[0].name, 'diagnosing-bugs');
+        assert.equal(reads[0].status, 'done');
+      }
+      const reloaded = repairSettledTranscriptMessages(await restoredBridge.getUiMessages());
+      assert.deepEqual(userSkillChipBadges(reloaded[0].skillBadges), [
+        { name: 'diagnosing-bugs', status: 'selected' },
+      ]);
+      assert.equal(reloaded[1].segments.filter((segment) => segment.type === 'skill').length, 1);
+    } finally {
+      await restoredBridge?.dispose();
+      await bridge.dispose();
+      closeSqliteDatabasesForTests();
+      if (previousGlobalDir === undefined) delete process.env.CODEMINI_GLOBAL_DIR;
+      else process.env.CODEMINI_GLOBAL_DIR = previousGlobalDir;
+      await fs.rm(globalDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 50 });
+    }
+  });
+}
 
 test('runtime-only model context is replayed to the model but hidden from fallback UI history', () => {
   assert.deepEqual(serializeSessionMessages([

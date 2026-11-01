@@ -1,230 +1,91 @@
-import { useState, useEffect } from "react";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { ScrollArea } from "@/components/ui/scroll-area";
-import {
-  Select,
-  SelectContent,
-  SelectGroup,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import { cn } from "@/lib/utils";
-import * as api from "@/hooks/use-api";
-import { t } from "../../i18n/index.js";
+import { useEffect, useRef, useState } from 'react';
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { ArrowUp, ArrowRight, FolderSimple, MagnifyingGlass, Check, X, GitLogo } from '@/lib/icons';
+import { parentDirectory } from '@/lib/workspace-picker';
+import * as api from '@/hooks/use-api';
+import { t } from '../../i18n/index.js';
+import './project-selector.css';
 
-function formatRootLabel(root) {
-  if (!root) return "";
-  const name = String(root.name || "").trim();
-  if (root.isDrive || /^[A-Za-z]:$/i.test(name)) {
-    const letter = (name.charAt(0) || String(root.path || "").charAt(0)).toUpperCase();
-    return letter ? `${letter}:\\` : name;
-  }
-  if (name === "/" || String(root.path || "") === "/") return "/";
-  return name || String(root.path || "");
-}
-
-export function ProjectSelector({ open, onOpenChange, onOpenProject }) {
-  const [pathInput, setPathInput] = useState("");
-  const [dirData, setDirData] = useState(null);
-  const [currentDir, setCurrentDir] = useState("");
-
-  useEffect(() => {
-    if (open) {
-      api
-        .fetchProject()
-        .then((data) => {
-          const cwd = data.isGeneral ? "" : data.cwd || "";
-          setPathInput(cwd);
-          setCurrentDir(cwd);
-          browseDir(cwd);
-        })
-        .catch(() => {
-          setPathInput("");
-          setCurrentDir("");
-          browseDir("");
-        });
-    }
-  }, [open]);
-
-  const browseDir = async (dir) => {
+export function ProjectSelector({ open, onOpenChange, onOpenProject, initialPath }) {
+  const [pathInput, setPathInput] = useState('');
+  const [data, setData] = useState(null);
+  const [query, setQuery] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [selected, setSelected] = useState(null);
+  const request = useRef(0);
+  const searchInput = useRef(null);
+  const browse = async dir => {
+    const id = ++request.current;
+    setLoading(true); setError(''); setQuery(''); setSelected(null);
     try {
-      const data = await api.browseDir(dir);
-      const defaultRoot = !dir && !data.path && data.roots?.[0]?.path;
-      if (defaultRoot) {
-        const rootData = await api.browseDir(defaultRoot);
-        setDirData(rootData);
-        setCurrentDir(rootData.path ?? defaultRoot);
-        setPathInput(rootData.path ?? defaultRoot);
-        return;
+      const result = await api.browseDir(dir);
+      if (id !== request.current) return;
+      if (result.error) throw new Error(result.error);
+      setData(result); setPathInput(result.path || '');
+    } catch (err) { if (id === request.current) setError(err.message); }
+    finally { if (id === request.current) setLoading(false); }
+  };
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    setData(null); setError(''); setPathInput(initialPath || ''); setLoading(true);
+    const start = async () => {
+      let dir = initialPath;
+      if (dir === undefined) {
+        try { const project = await api.fetchProject(); dir = project.isGeneral ? '' : project.cwd || ''; }
+        catch { dir = ''; }
       }
-      setDirData(data);
-      setCurrentDir(data.path ?? dir);
-    } catch {}
+      if (!cancelled) browse(dir || '');
+    };
+    start();
+    return () => { cancelled = true; ++request.current; };
+  }, [open, initialPath]);
+  const confirm = async () => {
+    if (busy || loading || !data?.path || pathInput !== data.path || error) return;
+    setBusy(true);
+    try { await onOpenProject(selected?.path || data.path, { newSession: true }); onOpenChange(false); }
+    catch (err) { setError(err.message); }
+    finally { setBusy(false); }
   };
-
-  const handleOpen = () => {
-    const p = pathInput.trim();
-    if (!p) return;
-    onOpenChange(false);
-    onOpenProject(p, { newSession: true });
-  };
-
-  const normalizedPath = (currentDir || "").replace(/\\/g, "/");
-  const isDrivePath = /^[A-Za-z]:($|\/)/.test(normalizedPath);
-  const isAbsolute = normalizedPath.startsWith("/") || isDrivePath;
-  const parts = normalizedPath.split("/").filter(Boolean);
-  const makePathFromParts = (nextParts) => {
-    if (!nextParts.length) return "";
-    if (/^[A-Za-z]:$/.test(nextParts[0])) {
-      return nextParts.length === 1
-        ? `${nextParts[0]}/`
-        : `${nextParts[0]}/${nextParts.slice(1).join("/")}`;
-    }
-    return `${isAbsolute ? "/" : ""}${nextParts.join("/")}`;
-  };
-  const roots = dirData?.roots || [];
-  const normalizeRootMatch = (value) =>
-    String(value || "")
-      .replace(/\\/g, "/")
-      .toLowerCase();
-  const activeRoot = roots
-    .slice()
-    .sort(
-      (a, b) =>
-        normalizeRootMatch(b.path).length - normalizeRootMatch(a.path).length,
-    )
-    .find((root) => {
-      const rootPath = normalizeRootMatch(root.path);
-      const dirPath = normalizeRootMatch(currentDir || pathInput);
-      return (
-        rootPath &&
-        (dirPath === rootPath ||
-          dirPath.startsWith(
-            rootPath.endsWith("/") ? rootPath : `${rootPath}/`,
-          ))
-      );
-    });
-
+  const dirs = (data?.path ? data.dirs || [] : data?.roots || []).filter(dir => dir.name.toLocaleLowerCase().includes(query.toLocaleLowerCase()));
+  const parent = parentDirectory(data?.path || '');
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-lg">
-        <DialogHeader>
-          <DialogTitle>{t("selectProject")}</DialogTitle>
-        </DialogHeader>
-
-        <div className="flex gap-2">
-          {roots.length > 0 && (
-            <Select
-              value={activeRoot?.path || roots[0]?.path}
-              onValueChange={(nextPath) => {
-                setPathInput(nextPath);
-                browseDir(nextPath);
-              }}
-            >
-              <SelectTrigger className="w-[4.75rem] shrink-0 px-2.5">
-                <SelectValue>{formatRootLabel(activeRoot || roots[0])}</SelectValue>
-              </SelectTrigger>
-              <SelectContent align="start" className="min-w-[4.75rem]">
-                <SelectGroup>
-                  {roots.map((root) => (
-                    <SelectItem
-                      key={root.path}
-                      value={root.path}
-                      textValue={root.path}
-                    >
-                      {formatRootLabel(root)}
-                    </SelectItem>
-                  ))}
-                </SelectGroup>
-              </SelectContent>
-            </Select>
-          )}
-          <Input
-            value={pathInput}
-            onChange={(e) => setPathInput(e.target.value)}
-            placeholder={t("enterOrBrowse")}
-            onKeyDown={(e) => e.key === "Enter" && handleOpen()}
-            className="flex-1 h-8 text-[13px]"
-          />
-          <Button onClick={handleOpen} size="default">
-            {t("select")}
-          </Button>
-        </div>
-        <div className="border border-(--border-default) rounded-lg overflow-hidden">
-          <div className="flex items-center gap-1 text-[12px] px-3 py-2 border-b border-(--border-default) bg-(--bg-secondary) flex-wrap text-(--text-secondary)">
-            {parts.map((part, i) => {
-              const segPath = makePathFromParts(parts.slice(0, i + 1));
-              return (
-                <span key={i} className="flex items-center gap-1">
-                  {i > 0 && <span className="text-(--text-muted)">/</span>}
-                  <button
-                    onClick={() => {
-                      setPathInput(segPath);
-                      browseDir(segPath);
-                    }}
-                    className={cn(
-                      "hover:underline cursor-pointer border-0 bg-transparent",
-                      i === parts.length - 1
-                        ? "text-(--text-primary) font-medium"
-                        : "text-(--accent-blue)",
-                    )}
-                  >
-                    {part}
-                  </button>
-                </span>
-              );
-            })}
+    <Dialog open={open} onOpenChange={value => { if (!busy) onOpenChange(value); }}>
+      <DialogContent className="project-picker">
+        <DialogHeader><DialogTitle>{t('selectProject')}</DialogTitle></DialogHeader>
+        <div className="project-picker-toolbar">
+          <button type="button" className="project-picker-icon" aria-label={t('projectParent')} disabled={loading || busy || !data?.path} onClick={() => browse(parent)}><ArrowUp size={17} /></button>
+          <div className="project-picker-address">
+            <FolderSimple size={16} aria-hidden="true" />
+            <Input aria-label={t('scheduledProject')} value={pathInput} onChange={event => setPathInput(event.target.value)} placeholder={t('enterOrBrowse')} disabled={busy} onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); event.stopPropagation(); browse(pathInput.trim()); } }} />
+            <button type="button" className="project-picker-icon" disabled={loading || busy} onClick={() => browse(pathInput.trim())} aria-label={t('projectGo')}><ArrowRight size={16} /></button>
           </div>
-          <ScrollArea className="h-[240px]">
-            {dirData && (
-              <div className="p-2">
-                {parts.length > 0 && (
-                  <button
-                    className="w-full text-left px-2 py-1.5 text-[13px] hover:bg-(--bg-hover) rounded cursor-pointer flex items-center gap-2 border-0 bg-transparent text-(--text-secondary)"
-                    onClick={() => {
-                      const parentPath = makePathFromParts(parts.slice(0, -1));
-                      setPathInput(parentPath);
-                      browseDir(parentPath);
-                    }}
-                  >
-                    <span>..</span>
-                  </button>
-                )}
-                {(dirData.dirs || []).map((d) => (
-                  <button
-                    key={d.path}
-                    className="w-full text-left px-2 py-1.5 text-[13px] hover:bg-(--bg-hover) rounded cursor-pointer flex items-center gap-2 border-0 bg-transparent text-(--text-secondary)"
-                    onClick={() => {
-                      setPathInput(d.path);
-                      browseDir(d.path);
-                    }}
-                  >
-                    <span className="flex-1 truncate">{d.name}</span>
-                    {d.isGit && (
-                      <span className="text-[11px] text-(--text-muted) bg-(--bg-tertiary) px-1.5 py-0.5 rounded">
-                        git
-                      </span>
-                    )}
-                  </button>
-                ))}
-                {!(dirData.roots || []).length &&
-                  !(dirData.dirs || []).length &&
-                  !dirData.error && (
-                    <div className="text-center text-[12px] text-(--text-muted) py-4">
-                      {t("noSubDirs")}
-                    </div>
-                  )}
-              </div>
-            )}
-          </ScrollArea>
+        </div>
+        <div className="project-picker-browser">
+          <section className="project-picker-main" aria-label={t('projectFolders')}>
+            <div className="project-picker-search" data-disabled={busy || loading}>
+              <MagnifyingGlass size={16} aria-hidden="true" />
+              <Input ref={searchInput} value={query} onChange={event => { setQuery(event.target.value); setSelected(null); }} placeholder={t('projectFilter')} aria-label={t('projectFilter')} disabled={busy || loading} onKeyDown={event => { if (event.key === 'Enter') event.preventDefault(); }} />
+              {query && <button type="button" className="project-picker-clear" aria-label={t('projectClearSearch')} disabled={busy || loading} onClick={() => { setQuery(''); searchInput.current?.focus(); }}><X size={14} /></button>}
+            </div>
+            <div aria-busy={loading} className="project-picker-list">
+              {loading ? <p role="status" className="project-picker-empty">{t('loading')}</p> : dirs.map(dir => <div key={dir.path} className="project-picker-row" data-selected={selected?.path === dir.path}>
+                <button type="button" className="project-picker-file" aria-pressed={selected?.path === dir.path} disabled={busy} onClick={() => setSelected(dir)} onDoubleClick={() => browse(dir.path)} onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); event.stopPropagation(); browse(dir.path); } }}>
+                  <FolderSimple size={18} /><span>{dir.name}</span>{dir.isGit && <GitLogo size={16} aria-label="Git" className="text-(--text-muted)" />}{selected?.path === dir.path && <Check size={15} />}
+                </button>
+                <button type="button" className="project-picker-enter" aria-label={`${t('projectEnter')}: ${dir.name}`} disabled={busy} onClick={() => browse(dir.path)}><ArrowRight size={15} /></button>
+              </div>)}
+              {!loading && !error && !dirs.length && <div className="project-picker-empty"><FolderSimple size={27} aria-hidden="true" /><p>{query ? t('projectNoMatches') : t('noSubDirs')}</p></div>}
+            </div>
+          </section>
+        </div>
+        {error && <p role="alert" className="project-picker-error" title={error}>{t('projectPickerError')}</p>}
+        <div className="project-picker-bottom">
+          <DialogFooter><Button type="button" variant="tab" disabled={busy} onClick={() => onOpenChange(false)}>{t('cancel')}</Button><Button type="button" disabled={loading || busy || !data?.path || pathInput !== data.path || Boolean(error)} onClick={confirm}>{busy ? t('loading') : t('projectSelectFolder')}</Button></DialogFooter>
         </div>
       </DialogContent>
     </Dialog>

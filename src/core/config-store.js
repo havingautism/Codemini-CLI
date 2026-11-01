@@ -153,7 +153,7 @@ const DEFAULT_CONFIG = {
   },
   soul: {
     coding: 'Default',
-    daily: 'Playful',
+    daily: 'Default',
     custom_path: ''
   },
   web: {
