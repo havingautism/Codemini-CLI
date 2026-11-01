@@ -60,10 +60,19 @@ async function initCrew(dir) {
       id: 'ada',
       branch: 'codemini-crew/ada',
       worktreePath: path.join(dir, '.codemini', 'crew', 'worktrees', 'ada'),
+      missionId: 'm1',
       paths: ['web/**'],
       task: '收藏夹前端',
       runStatus: 'completed',
       dirty: false,
+    }],
+    missions: [{
+      id: 'm1',
+      title: 'ada',
+      kind: 'build',
+      status: 'active',
+      workerId: 'ada',
+      paths: ['web/**'],
     }],
   });
 }
@@ -104,9 +113,9 @@ test('crew_send rejects self, unknown, integrated, and empty body', async () => 
     assert.equal(missing.code, 'UNKNOWN_RECIPIENT');
     const empty = await tools(dir, 'coordinator').crew_send({ to: 'ada', body: '  ' });
     assert.equal(empty.code, 'EMPTY');
-    const state = await readCrewStateFile(dir);
-    state.workers[0].integrated = true;
-    await writeCrewStateFile(dir, { workers: state.workers });
+    await writeCrewStateFile(dir, {
+      missions: [{ id: 'm1', title: 'ada', kind: 'build', status: 'merged', workerId: 'ada', paths: ['web/**'] }],
+    });
     const landed = await tools(dir, 'coordinator').crew_send({ to: 'ada', body: 'late' });
     assert.equal(landed.code, 'INTEGRATED');
   });

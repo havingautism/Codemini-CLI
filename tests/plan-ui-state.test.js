@@ -1059,6 +1059,25 @@ test('tool:end preserves a cancelled planRun phase after plan:step_done', () => 
   assert.equal(card.displayName, planPhaseTitle('cancelled'));
 });
 
+test('mergeSubagentStepSegments places submit_crew_review and crew_complete after other tools', () => {
+  const merged = mergeSubagentStepSegments(
+    [{ type: 'tools', cards: [{ id: 'a', name: 'read', status: 'done' }] }],
+    [{
+      type: 'tools',
+      cards: [
+        { id: 'b', name: 'submit_crew_review', status: 'done' },
+        { id: 'a', name: 'read', status: 'done' },
+        { id: 'c', name: 'crew_complete', status: 'done' },
+      ],
+    }],
+  );
+  const tools = merged.find((segment) => segment.type === 'tools');
+  assert.deepEqual(
+    tools.cards.map((card) => card.name),
+    ['read', 'submit_crew_review', 'crew_complete'],
+  );
+});
+
 test('mergeSubagentStepSegments keeps streamed tools and adds authoritative crew_complete', () => {
   const streamed = [
     {

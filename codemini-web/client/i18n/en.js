@@ -1165,6 +1165,7 @@ export const en = {
   crewPhaseQueued: "Queued",
   crewPhaseReviewing: "Reviewing",
   crewPhaseAwaitingReview: "Awaiting review",
+  crewPhaseAwaitingSubmit: "Awaiting submit",
   crewPhaseReady: "Ready to land",
   crewPhaseDirty: "Uncommitted",
   crewPhaseMerged: "Merged",

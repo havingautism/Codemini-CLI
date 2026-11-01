@@ -60,12 +60,19 @@ export function describeCrewWorkerProgress(worker = {}, { inFlightIds = [] } = {
   else if (worker.integrated === true) phase = 'merged';
   else if (runStatus === 'failed' && !flying) phase = 'failed';
   else if (String(worker.runStatus || '').toLowerCase() === 'queued') phase = 'queued';
+  else if (runStatus === 'awaiting_submit') {
+    phase = worker.dirty === true ? 'dirty' : 'awaiting_submit';
+  }
   else if (kind !== 'survey' && flying && (
     worker.sealed
     || worker.dirty === false
     || runStatus === 'completed'
   )) phase = 'reviewing';
-  else if (flying || runStatus === 'running') phase = 'running';
+  else if (
+    (flying || runStatus === 'running')
+    && runStatus !== 'awaiting_submit'
+    && runStatus !== 'completed'
+  ) phase = 'running';
   else if (worker.dirty === true) phase = 'dirty';
   else if (worker.sealed && worker.reviewPassed === true) phase = 'ready';
   else if (worker.sealed) phase = 'awaiting_review';
@@ -90,11 +97,20 @@ export function buildCrewProgressItems({ workers = [], inFlightIds = [] } = {}) 
   return items;
 }
 
+const CREW_DOCK_IDLE_PHASES = new Set(['merged', 'survey_done']);
+
+export function listCrewDockItems({ workers = [], inFlightIds = [] } = {}) {
+  return buildCrewProgressItems({ workers, inFlightIds })
+    .filter((item) => !CREW_DOCK_IDLE_PHASES.has(item.phase));
+}
+
 export function shouldShowCrewProgressDock({ crewActive, workers = [], inFlightIds = [] } = {}) {
   if (!crewActive) return false;
-  const items = buildCrewProgressItems({ workers, inFlightIds });
+  const flying = [...new Set((Array.isArray(inFlightIds) ? inFlightIds : []).map((item) => String(item || '').trim()).filter(Boolean))];
+  if (flying.length) return true;
+  const items = buildCrewProgressItems({ workers, inFlightIds: flying });
   if (!items.length) return false;
-  return items.some((item) => item.phase !== 'merged');
+  return items.some((item) => !CREW_DOCK_IDLE_PHASES.has(item.phase));
 }
 
 export function formatCrewProgressLine(items = [], labels = {}) {

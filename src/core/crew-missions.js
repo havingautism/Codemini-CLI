@@ -1,5 +1,6 @@
 import { crewGlobsOverlap, normalizeCrewDependsOn, normalizeCrewPaths } from './crew-scope.js';
 import {
+  findCrewMissionForWorker,
   isCrewTaskTerminal,
   isWholeRepoCrewGlob,
   listCrewMissionsFromState,
@@ -11,9 +12,19 @@ import {
   updateCrewState,
   writeCrewStateFile,
 } from './crew-store.js';
-import { isCrewWorktreeDirty, listCrewChangedFiles, removeCrewWorktree } from './crew-worktree.js';
+import {
+  deleteCrewWorkerBranch,
+  isCrewWorktreeDirty,
+  listCrewChangedFiles,
+  removeCrewWorktree,
+} from './crew-worktree.js';
 
-export { isCrewTaskTerminal, isWholeRepoCrewGlob, listCrewMissionsFromState };
+export {
+  findCrewMissionForWorker,
+  isCrewTaskTerminal,
+  isWholeRepoCrewGlob,
+  listCrewMissionsFromState,
+};
 
 function nextMissionId(missions) {
   let max = 0;
@@ -162,17 +173,6 @@ export async function planCrewMissions(cwd, { missions = [], abandonId = '' } = 
   return { ok: true, missions: listCrewMissionsFromState(result), created, message };
 }
 
-export function findCrewMissionForWorker(missions, worker) {
-  const list = Array.isArray(missions) ? missions : [];
-  const missionId = String(worker?.missionId || '').trim();
-  if (missionId) {
-    const match = list.find((mission) => mission.id === missionId);
-    if (match) return match;
-  }
-  const workerId = String(worker?.id || '').trim();
-  return list.find((mission) => mission.workerId === workerId) || null;
-}
-
 export function crewMissionAcceptsSpawn(mission, { resume = false, rebaseOnto = '' } = {}) {
   if (!mission) {
     return {
@@ -298,7 +298,6 @@ export async function completeCrewMission({ cwd, workerId, report = '', outcome 
     runStatus: 'completed',
     dirty: dirty === true,
     runError: submissionOutcome === 'ok' ? '' : text.slice(0, 400),
-    missionStatus: submissionOutcome === 'ok' ? 'completed' : 'active',
   };
   await patchCrewWorkerRecord(root, worker.id, workerPatch).catch(() => null);
   let next = missions;
@@ -358,31 +357,40 @@ export async function finishCrewMissions({ cwd, inFlight = [] } = {}) {
       error: 'crew_finish refused — the mission list is empty. An empty list is not a finished crew. Call crew_plan.',
     };
   }
-  const open = missions.filter((mission) => mission.status === 'planned' || mission.status === 'active');
-  if (open.length) {
+  const unfinished = missions.filter((mission) => !isCrewTaskTerminal(mission));
+  if (unfinished.length) {
     return {
       ok: false,
       code: 'MISSIONS_OPEN',
-      error: `crew_finish refused — still open: ${open.map((mission) => `${mission.id} (${mission.status})`).join(', ')}. Dispatch them with run_subagent, or abandon a mission you will not do.`,
+      error: `crew_finish refused — not terminal: ${unfinished.map((mission) => `${mission.id} (${mission.status})`).join(', ')}. Build missions must be merged with land_workers or abandoned; surveys must be completed or abandoned.`,
     };
   }
   const workers = listCrewWorkersFromState(state);
   const removed = [];
+  const branchesRemoved = [];
   const kept = [];
   for (const mission of missions) {
     const worker = workers.find((item) => item.id === mission.workerId || item.missionId === mission.id);
     if (!worker) continue;
     const result = await removeCrewWorktree({ cwd, worker, force: false });
-    if (result.ok && (result.removed || result.missing)) removed.push(mission.id);
-    else kept.push(`${mission.id}${result.dirty ? ' (dirty)' : ''}`);
+    if (result.ok && (result.removed || result.missing)) {
+      removed.push(mission.id);
+      if (await deleteCrewWorkerBranch(cwd, worker)) {
+        branchesRemoved.push(String(worker.branch || worker.id).trim());
+      }
+    } else {
+      kept.push(`${mission.id}${result.dirty ? ' (dirty)' : ''}`);
+    }
   }
   return {
     ok: true,
     removed,
+    branchesRemoved,
     kept,
     message: [
-      'Crew finish removed clean worktrees. Records stay. Crew mode stays on.',
-      removed.length ? `Removed: ${removed.join(', ')}.` : 'No worktrees removed.',
+      'Crew finish removed clean worktrees and worker branches. Records stay. Crew mode stays on.',
+      removed.length ? `Worktrees removed: ${removed.join(', ')}.` : 'No worktrees removed.',
+      branchesRemoved.length ? `Branches deleted: ${branchesRemoved.join(', ')}.` : '',
       kept.length ? `Kept: ${kept.join(', ')}.` : '',
       'A later request can call crew_plan again.',
     ].filter(Boolean).join(' '),

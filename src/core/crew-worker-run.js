@@ -29,7 +29,6 @@ export async function settleCrewMission({ workspaceRoot, workerId, dirty = false
   const kind = worker?.kind === 'survey' ? 'survey' : 'build';
   if (dirty) {
     return {
-      missionStatus: 'active',
       runError: kind === 'survey'
         ? 'Survey worktree is dirty. Revert edits. Do not commit.'
         : 'Worktree is dirty. Commit the source changes before finishing.',
@@ -38,7 +37,6 @@ export async function settleCrewMission({ workspaceRoot, workerId, dirty = false
   const unread = listUnreadCrewInbox(state, { to: workerId });
   if (unread.length) {
     return {
-      missionStatus: 'active',
       runError: `Unread crew mail (${unread.length}). Read it before finishing.`,
     };
   }
@@ -46,28 +44,24 @@ export async function settleCrewMission({ workspaceRoot, workerId, dirty = false
   const missions = listCrewMissionsFromState(state);
   const mission = missions.find((item) => item.workerId === workerId || item.id === worker?.missionId);
   if (mission?.status === 'completed' || mission?.status === 'merged') {
-    return { missionStatus: mission.status === 'merged' ? 'merged' : 'completed', runError: '' };
+    return { runError: '' };
   }
   if (kind === 'survey') {
     if (changed.length) {
       return {
-        missionStatus: 'active',
         runError: `Survey changed ${changed.slice(0, 5).join(', ')}. Revert those files, then call crew_complete.`,
       };
     }
     return {
-      missionStatus: 'active',
       runError: 'Call crew_complete with the survey report before this mission can be completed.',
     };
   }
   if (!changed.length) {
     return {
-      missionStatus: 'active',
       runError: 'Build mission has no commits against the base. Commit the work, then call crew_complete.',
     };
   }
   return {
-    missionStatus: 'active',
     runError: 'Call crew_complete with a report before this mission can be completed.',
   };
 }
@@ -168,6 +162,7 @@ export async function runCrewWorkerJob({
   let missionGate = null;
   let missionSubmittedDuringRun = false;
   let workerWakeStatus = '';
+  let releasedInFlight = false;
   try {
     const reviewBox = { verdict: null };
     const crewActor = reviewingWorkerId
@@ -252,7 +247,6 @@ export async function runCrewWorkerJob({
             runStatus: 'completed',
             dirty: crewDirty === true,
             runError: '',
-            missionStatus: 'completed',
             ...(savedHandoff?.path ? { lastHandoffPath: savedHandoff.path } : {}),
           }).catch(() => null);
         } else {
@@ -266,7 +260,6 @@ export async function runCrewWorkerJob({
             runStatus: 'awaiting_submit',
             dirty: crewDirty === true,
             runError: gate.runError,
-            missionStatus: 'active',
             ...(savedHandoff?.path ? { lastHandoffPath: savedHandoff.path } : {}),
           }).catch(() => null);
         }
@@ -309,6 +302,13 @@ export async function runCrewWorkerJob({
       reviewRound = applied.reviewRound;
       reviewIncomplete = applied.reviewIncomplete === true;
     }
+    const releaseWorkerId = lockedCrewWorkerId || reviewingWorkerId;
+    const releaseShiftInFlight = async () => {
+      if (releasedInFlight || typeof releaseInFlight !== 'function') return;
+      releasedInFlight = true;
+      await releaseInFlight(releaseWorkerId);
+    };
+    await releaseShiftInFlight();
     const stepSegments = buildSubagentToolSegmentsFromMessages(output.messages || []);
     emit({
       type: 'plan:step_done',
@@ -469,8 +469,8 @@ export async function runCrewWorkerJob({
       ...(childUsage ? { usage: childUsage } : {}),
     };
   } finally {
-    if (typeof releaseInFlight === 'function') {
-      releaseInFlight(lockedCrewWorkerId || reviewingWorkerId);
+    if (typeof releaseInFlight === 'function' && !releasedInFlight) {
+      await releaseInFlight(lockedCrewWorkerId || reviewingWorkerId);
     }
   }
 }

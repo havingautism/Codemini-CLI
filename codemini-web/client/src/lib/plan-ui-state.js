@@ -749,6 +749,24 @@ export function appendPlanRunStreamingText(message, text) {
   });
 }
 
+const CREW_SUBAGENT_TAIL_TOOLS = ["submit_crew_review", "crew_complete"];
+
+function orderSubagentToolCards(cards = []) {
+  const list = Array.isArray(cards) ? cards : [];
+  return [...list].sort((left, right) => {
+    const leftName = String(left?.name || "").trim();
+    const rightName = String(right?.name || "").trim();
+    const leftRank = CREW_SUBAGENT_TAIL_TOOLS.indexOf(leftName);
+    const rightRank = CREW_SUBAGENT_TAIL_TOOLS.indexOf(rightName);
+    const leftTail = leftRank >= 0;
+    const rightTail = rightRank >= 0;
+    if (!leftTail && !rightTail) return 0;
+    if (leftTail && !rightTail) return 1;
+    if (!leftTail && rightTail) return -1;
+    return leftRank - rightRank;
+  });
+}
+
 /** Merge streamed worker tools with the sub-session transcript (e.g. crew_complete). */
 export function mergeSubagentStepSegments(streamed = [], authoritative = []) {
   const streamedList = Array.isArray(streamed) ? streamed : [];
@@ -769,7 +787,7 @@ export function mergeSubagentStepSegments(streamed = [], authoritative = []) {
   }
   const merged = [...streamedProcess];
   if (cardsById.size > 0) {
-    merged.push({ type: "tools", cards: [...cardsById.values()] });
+    merged.push({ type: "tools", cards: orderSubagentToolCards([...cardsById.values()]) });
   } else if (streamedTools) {
     merged.push(streamedTools);
   }

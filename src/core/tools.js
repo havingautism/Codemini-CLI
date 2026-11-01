@@ -4222,6 +4222,7 @@ export function getBuiltinTools({
   platform = process.platform,
   crewActive = false,
   onLandWorkers,
+  onRebaseCrewMission,
   onCancelWorker,
   onCrewWorkerWake,
 }) {
@@ -5461,13 +5462,33 @@ export function getBuiltinTools({
       function: {
         name: "land_workers",
         description:
-          "Merge one completed Crew build mission onto the current branch with git merge --no-ff. Pass mission_id. Does not delete worktrees or finish the crew. If the base moved, resume that worker to rebase, then review the new commit.",
+          "Merge one completed Crew build mission onto the current branch with git merge --no-ff. Pass mission_id. Does not delete worktrees or finish the crew. If the base moved, call crew_rebase for that mission first; land_workers refuses with REBASE_REQUIRED until the branch contains the current base tip. MAIN_WORKTREE_DIRTY means uncommitted edits on the main checkout — ask the user to fix, do not resume the worker. LAND_MERGE_CONFLICT means merge failed while already up to date with base — do not call crew_rebase.",
         parameters: {
           type: "object",
           properties: {
             mission_id: {
               type: "string",
               description: "Mission id from crew_status, such as m1.",
+            },
+          },
+          required: ["mission_id"],
+        },
+      },
+    });
+  }
+  if (typeof onRebaseCrewMission === "function") {
+    workflowToolDefinitions.push({
+      type: "function",
+      function: {
+        name: "crew_rebase",
+        description:
+          "Rebase one completed build mission branch onto the current base tip inside its worktree. Use after land_workers returns REBASE_REQUIRED. On a clean rebase, a passing review is kept when the tree is unchanged. On conflict, returns RESUME_REQUIRED — resume that worker to fix, then review before land_workers.",
+        parameters: {
+          type: "object",
+          properties: {
+            mission_id: {
+              type: "string",
+              description: "Mission id from crew_status, such as m2.",
             },
           },
           required: ["mission_id"],
@@ -7377,6 +7398,23 @@ export function getBuiltinTools({
       }
       return onLandWorkers({ missionId });
     },
+    crew_rebase: async (args = {}) => {
+      if (typeof onRebaseCrewMission !== "function") {
+        return {
+          ok: false,
+          error: "crew_rebase is only available in Crew mode.",
+        };
+      }
+      const missionId = String(args?.mission_id || "").trim();
+      if (!missionId) {
+        return {
+          ok: false,
+          code: "MISSION_REQUIRED",
+          error: "crew_rebase requires a mission id from crew_status.",
+        };
+      }
+      return onRebaseCrewMission({ missionId });
+    },
     crew_plan: async (args = {}) => {
       if (!crewActive) return { ok: false, error: "crew_plan is only available in Crew mode." };
       return planCrewMissions(config?.runtime?.crew_project_root || workspaceRoot, {
@@ -7389,10 +7427,14 @@ export function getBuiltinTools({
       const inFlight = typeof config?.runtime?.getCrewInFlightWorkers === "function"
         ? config.runtime.getCrewInFlightWorkers()
         : [];
-      return finishCrewMissions({
+      const result = await finishCrewMissions({
         cwd: config?.runtime?.crew_project_root || workspaceRoot,
         inFlight,
       });
+      if (result?.ok && typeof config?.runtime?.publishCrewWorkersChanged === "function") {
+        config.runtime.publishCrewWorkersChanged();
+      }
+      return result;
     },
     crew_complete: async (args = {}) => {
       const { crewWorkerIdFromWorktreePath } = await import("./crew-worktree.js");
@@ -8117,6 +8159,21 @@ export function getBuiltinTools({
           : '';
         const onto = String(result.onto || '').trim()
           ? `\nRebase onto: ${String(result.onto).trim()}`
+          : '';
+        return `${result.error}${files}${onto}`;
+      }
+      if (result.message) return String(result.message);
+      return JSON.stringify(result);
+    },
+
+    crew_rebase(result) {
+      if (!result || typeof result !== "object") return String(result);
+      if (result.error) {
+        const files = Array.isArray(result.files) && result.files.length
+          ? `\nFiles: ${result.files.join(', ')}`
+          : '';
+        const onto = String(result.onto || '').trim()
+          ? `\nOnto: ${String(result.onto).trim()}`
           : '';
         return `${result.error}${files}${onto}`;
       }

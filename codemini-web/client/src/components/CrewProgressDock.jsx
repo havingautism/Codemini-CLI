@@ -5,7 +5,7 @@ import {
 } from "@/lib/crew-progress-ui.js";
 import { t } from "../../i18n/index.js";
 import {
-  buildCrewProgressItems,
+  listCrewDockItems,
   shouldShowCrewProgressDock,
 } from "../../../../src/core/crew-progress.js";
 
@@ -42,7 +42,8 @@ export function CrewProgressDock({ runtimeState }) {
   if (!shouldShowCrewProgressDock({ crewActive, workers, inFlightIds })) {
     return null;
   }
-  const items = buildCrewProgressItems({ workers, inFlightIds });
+  const items = listCrewDockItems({ workers, inFlightIds });
+  if (!items.length) return null;
 
   return (
     <section

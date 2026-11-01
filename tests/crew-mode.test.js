@@ -287,6 +287,9 @@ test('crew prompt is present only when the overlay is active', () => {
   assert.match(prompt, /inspect-only/);
   assert.match(prompt, /fork_task is not available/);
   assert.match(prompt, /land_workers is the only merge path/);
+  assert.match(prompt, /MAIN_WORKTREE_DIRTY/);
+  assert.match(prompt, /LAND_MERGE_CONFLICT/);
+  assert.match(prompt, /REBASE_REQUIRED/);
   assert.match(prompt, /cancel_worker/);
   assert.match(prompt, /cancel_worker for that roster id/);
   assert.match(prompt, /Do not answer that in-flight workers cannot be interrupted/);
@@ -401,6 +404,10 @@ test('setCrewMode from daily switches into the crew mode and allows a dirty work
     assert.equal(entered.crew.base, 'main');
     assert.equal(runtime.getRuntimeState().crewActive, true);
     assert.equal(runtime.getRuntimeState().mode, 'crew');
+    const stopped = await runtime.setCrewMode(false);
+    assert.equal(stopped.ok, true);
+    assert.equal(runtime.getRuntimeState().crewActive, false);
+    assert.equal(runtime.getRuntimeState().mode, 'normal');
   });
 
   await withRuntime({ mode: 'plan' }, async ({ dir, runtime }) => {
