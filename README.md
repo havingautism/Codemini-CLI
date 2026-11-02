@@ -245,6 +245,7 @@ npm run build:web
 
 - [Operator Guide](./OPERATIONS.md)
 - [Deployment Guide](./deployment.md)
+- [Desktop app](./DESKTOP.md)
 - [Releases](https://github.com/havingautism/Codemini-CLI/releases)
 
 ### License
@@ -471,6 +472,7 @@ npm run build:web
 
 - [使用手册](./OPERATIONS.md)
 - [部署指南](./deployment.md)
+- [桌面应用](./DESKTOP.md)
 - [Token 活动与用量记录](./docs/adr/token-activity.md)
 - [Releases](https://github.com/havingautism/Codemini-CLI/releases)
 

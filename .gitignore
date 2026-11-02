@@ -28,6 +28,7 @@ codemini-codewiki-web/
 # Build/package artifacts
 *.tgz
 dist/
+desktop-dist/
 coverage/
 # Repo docs: keep contents ignored, but track agent-skill config and ADRs
 /docs/*

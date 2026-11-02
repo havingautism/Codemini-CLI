@@ -59,18 +59,3 @@ web examples, and removal of generic writing rules repeated in the default Soul.
 
 Use `node scripts/run-tests.js <test paths>` for focused checks and `npm test`
 for the full suite; the wrapper isolates the real user configuration.
-
-Validation for this change:
-
-- Final prompt-focused run: 76 passed, zero failures.
-- Additional composition/cache/Crew-mode run: 48 passed, zero failures (overlaps
-  the prompt-focused run).
-- Full-suite snapshot: 1,427 passed, five failed, five skipped. The two Crew
-  failures (`crew-events` and `crew-review`), disclosure-tree assertion, and
-  shell-wrapper exit 127 also reproduce in a temporary export of the original
-  HEAD, without these changes.
-- The remaining PowerShell ANSI assertion fails in the workspace and passes
-  in the temporary HEAD directory. Its terminal-layout/environment sensitivity
-  remains unresolved; the full suite is not clean.
-- Sandboxed loopback connections returned EACCES; local HTTP integration checks
-  passed when rerun outside confinement with the same isolated test wrapper.

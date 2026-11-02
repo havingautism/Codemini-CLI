@@ -25,6 +25,7 @@ This repo is Codemini CLI, a local-first coding agent with a CLI, Web UI, projec
 - Built-in tool behavior: start in `src/core/tools.js`.
 - Subagent delegation (`run_subagent`): start in `src/core/chat-runtime.js` (`runSubAgentTask` + `onRunSubAgent`), `src/core/subagent-orchestrator.js`, and `src/core/subagent-handoff-store.js`.
 - Fork branches (`fork_task`, same-state parallel branches sharing the parent prefix): fork-point capture in `src/core/agent-loop.js`, branch execution in `src/core/chat-runtime.js` (`runForkTask` + `onForkTask`).
+- Desktop shell and GitHub Release artifacts: `desktop/main.cjs`, `desktop/electron-builder.config.cjs`, `.github/workflows/desktop-release.yml`; see `DESKTOP.md`.
 - Web UI API routes: start in `codemini-web/server.js`.
 - Web UI state and chat behavior: start in `codemini-web/client/src/context/app-context.jsx` and relevant components under `codemini-web/client/src/components/`.
 

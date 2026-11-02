@@ -307,4 +307,4 @@ From the `/help` dialog:
 
 ### Release Checklist
 
-For information on how to perform a release, please see the [Release Checklist](RELEASE_CHECKLIST.md) document.
+For information on how to perform a release, please see the [Release Checklist](RELEASE_CHECKLIST.md) document. Desktop installers are described in [DESKTOP.md](./DESKTOP.md).

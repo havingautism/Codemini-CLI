@@ -1,0 +1,49 @@
+name: Publish npm
+
+# Manual only. A desktop git tag does not publish to npm.
+# Add an npm Automation token as the NPM_TOKEN repository secret, then run
+# this workflow from the release commit. See RELEASE_CHECKLIST.md.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: npm publish
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          registry-url: https://registry.npmjs.org
+
+      - name: Require NPM_TOKEN
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "$NPM_TOKEN" ]; then
+            echo "NPM_TOKEN repository secret is not set."
+            echo "Create an npm Automation token for the codemini-cli package, store it as NPM_TOKEN, and re-run this workflow."
+            exit 1
+          fi
+
+      - name: Install
+        run: npm ci --omit=dev
+
+      - name: Build Web UI
+        run: npm run build:web
+
+      - name: Check pack imports
+        run: node scripts/check-pack-imports.mjs
+
+      - name: Publish
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
