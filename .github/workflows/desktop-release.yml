@@ -59,7 +59,9 @@ jobs:
           # still emits an unsigned artifact. CSC_LINK / WIN_CSC_LINK, when
           # added later, are explicit certificates and still apply.
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
-        run: npm run ${{ matrix.script }}
+        # --publish never: electron-builder treats a v* tag as a publish and
+        # exits without GH_TOKEN. The release job below attaches the artifacts.
+        run: npm run ${{ matrix.script }} -- --publish never
 
       - name: Upload installers
         uses: actions/upload-artifact@v4

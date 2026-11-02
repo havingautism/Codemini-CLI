@@ -33,7 +33,7 @@ Pushing a tag `vX.Y.Z` that matches `package.json` runs `.github/workflows/deskt
 | `macos-latest` (Apple Silicon) | `desktop:dist:mac` | `Codemini-0.10.0-mac-arm64.dmg` |
 | `macos-15-intel` | `desktop:dist:mac:x64` | `Codemini-0.10.0-mac-x64.dmg` |
 
-The release job attaches those four files to the GitHub Release for that tag. Download links follow:
+The packager is invoked with `--publish never`, and `desktop/electron-builder.config.cjs` sets `publish` to `null`. A `v*` tag does not make electron-builder upload anything. The release job attaches those four files to the GitHub Release. Download links follow:
 
 ```text
 https://github.com/havingautism/Codemini-CLI/releases/download/v<version>/<asset>

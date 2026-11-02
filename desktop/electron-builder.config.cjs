@@ -14,6 +14,8 @@ module.exports = {
   npmRebuild: true,
   buildDependenciesFromSource: false,
   forceCodeSigning: false,
+  // A v* checkout otherwise turns on GitHub publishing. The release workflow uploads artifacts itself.
+  publish: null,
   directories: {
     output: 'desktop-dist',
   },
