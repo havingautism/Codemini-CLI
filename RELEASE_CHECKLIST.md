@@ -83,6 +83,6 @@ See [DESKTOP.md](./DESKTOP.md).
 2. Tag that commit `v` plus the `package.json` version, for example `v0.10.0`.
 3. `git push origin v0.10.0`.
 
-`.github/workflows/desktop-release.yml` builds Windows x64 and macOS (Apple Silicon on `macos-latest`) and attaches the installers to the GitHub Release. The workflow refuses a tag that does not match `package.json`.
+`.github/workflows/desktop-release.yml` builds four installers and attaches them to the GitHub Release: Windows NSIS Setup x64, Windows NSIS Setup ARM64, macOS DMG Apple Silicon, and macOS DMG Intel x64. The workflow refuses a tag that does not match `package.json`. Asset names are listed in [DESKTOP.md](./DESKTOP.md).
 
 Mac and Windows builds are unsigned until the signing secrets in `DESKTOP.md` are added.

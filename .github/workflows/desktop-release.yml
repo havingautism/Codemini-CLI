@@ -23,8 +23,16 @@ jobs:
         include:
           - os: windows-latest
             script: desktop:dist:win
+            artifact: win-x64
+          - os: windows-11-arm
+            script: desktop:dist:win:arm64
+            artifact: win-arm64
           - os: macos-latest
             script: desktop:dist:mac
+            artifact: mac-arm64
+          - os: macos-15-intel
+            script: desktop:dist:mac:x64
+            artifact: mac-x64
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -56,12 +64,11 @@ jobs:
       - name: Upload installers
         uses: actions/upload-artifact@v4
         with:
-          name: codemini-desktop-${{ matrix.os }}
+          name: codemini-desktop-${{ matrix.artifact }}
           if-no-files-found: error
           path: |
             desktop-dist/*.exe
             desktop-dist/*.dmg
-            desktop-dist/*.zip
 
   release:
     name: Publish GitHub Release

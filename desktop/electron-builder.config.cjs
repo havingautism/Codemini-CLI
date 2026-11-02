@@ -38,20 +38,22 @@ module.exports = {
     'codemini-web/client/src/lib/crew-ui-state.js',
     'codemini-web/client/src/lib/message-context-parsers.js',
   ],
-  artifactName: 'Codemini-${version}-${os}-${arch}.${ext}',
   mac: {
     category: 'public.app-category.developer-tools',
     icon: 'codemini-web/codemini_logo.png',
-    target: ['dmg', 'zip'],
+    target: ['dmg'],
     gatekeeperAssess: false,
+    artifactName: 'Codemini-${version}-mac-${arch}.${ext}',
   },
   win: {
     icon: 'codemini-web/codemini_logo.png',
-    target: ['nsis', 'zip'],
+    target: ['nsis'],
+    artifactName: 'Codemini-Setup-${version}-win-${arch}.${ext}',
   },
   nsis: {
     oneClick: false,
     perMachine: false,
     allowToChangeInstallationDirectory: true,
+    artifactName: 'Codemini-Setup-${version}-win-${arch}.${ext}',
   },
 };

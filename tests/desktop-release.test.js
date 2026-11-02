@@ -56,8 +56,11 @@ test('findFreePort returns a loopback port', async () => {
 test('electron-builder config ships unsigned win and mac artifacts', () => {
   assert.equal(builder.forceCodeSigning, false);
   assert.equal(builder.appId, 'dev.codemini.desktop');
-  assert.deepEqual(builder.mac.target, ['dmg', 'zip']);
-  assert.deepEqual(builder.win.target, ['nsis', 'zip']);
+  assert.deepEqual(builder.mac.target, ['dmg']);
+  assert.deepEqual(builder.win.target, ['nsis']);
+  assert.equal(builder.mac.artifactName, 'Codemini-${version}-mac-${arch}.${ext}');
+  assert.equal(builder.win.artifactName, 'Codemini-Setup-${version}-win-${arch}.${ext}');
+  assert.equal(builder.nsis.artifactName, 'Codemini-Setup-${version}-win-${arch}.${ext}');
   assert.equal(builder.mac.sign, undefined);
   assert.equal(builder.directories.output, 'desktop-dist');
   assert.ok(builder.files.includes('codemini-web/dist/**/*'));
@@ -66,8 +69,10 @@ test('electron-builder config ships unsigned win and mac artifacts', () => {
   assert.equal(pkg.main, 'desktop/main.cjs');
   assert.equal(pkg.devDependencies.electron, '45.2.1');
   assert.equal(pkg.devDependencies['electron-builder'], '26.18.0');
-  assert.equal(pkg.scripts['desktop:dist:win'], 'electron-builder --config desktop/electron-builder.config.cjs --win --x64');
-  assert.equal(pkg.scripts['desktop:dist:mac'], 'electron-builder --config desktop/electron-builder.config.cjs --mac');
+  assert.equal(pkg.scripts['desktop:dist:win'], 'electron-builder --config desktop/electron-builder.config.cjs --win nsis --x64');
+  assert.equal(pkg.scripts['desktop:dist:win:arm64'], 'electron-builder --config desktop/electron-builder.config.cjs --win nsis --arm64');
+  assert.equal(pkg.scripts['desktop:dist:mac'], 'electron-builder --config desktop/electron-builder.config.cjs --mac dmg --arm64');
+  assert.equal(pkg.scripts['desktop:dist:mac:x64'], 'electron-builder --config desktop/electron-builder.config.cjs --mac dmg --x64');
 });
 
 test('release tag check follows package.json', () => {
@@ -83,7 +88,12 @@ test('release workflows stay manual for npm and attach desktop artifacts', () =>
   const desktop = fs.readFileSync(path.join(root, '.github/workflows/desktop-release.yml'), 'utf8');
   const publish = fs.readFileSync(path.join(root, '.github/workflows/npm-publish.yml'), 'utf8');
   assert.match(desktop, /windows-latest/);
+  assert.match(desktop, /windows-11-arm/);
   assert.match(desktop, /macos-latest/);
+  assert.match(desktop, /macos-15-intel/);
+  assert.match(desktop, /desktop:dist:win:arm64/);
+  assert.match(desktop, /desktop:dist:mac:x64/);
+  assert.doesNotMatch(desktop, /portable/);
   assert.match(desktop, /CSC_IDENTITY_AUTO_DISCOVERY: "false"/);
   assert.match(desktop, /softprops\/action-gh-release@v2/);
   assert.match(desktop, /check-release-tag\.js/);

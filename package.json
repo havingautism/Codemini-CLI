@@ -38,8 +38,10 @@
     "bump:major": "npm version major --no-git-tag-version",
     "desktop:start": "electron .",
     "desktop:dir": "electron-builder --config desktop/electron-builder.config.cjs --dir",
-    "desktop:dist:win": "electron-builder --config desktop/electron-builder.config.cjs --win --x64",
-    "desktop:dist:mac": "electron-builder --config desktop/electron-builder.config.cjs --mac"
+    "desktop:dist:win": "electron-builder --config desktop/electron-builder.config.cjs --win nsis --x64",
+    "desktop:dist:win:arm64": "electron-builder --config desktop/electron-builder.config.cjs --win nsis --arm64",
+    "desktop:dist:mac": "electron-builder --config desktop/electron-builder.config.cjs --mac dmg --arm64",
+    "desktop:dist:mac:x64": "electron-builder --config desktop/electron-builder.config.cjs --mac dmg --x64"
   },
   "files": [
     "bin",

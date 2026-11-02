@@ -24,11 +24,20 @@ The window signs in with the one-time local token created by the Web UI. That to
 
 ## Release artifacts
 
-Pushing a tag `vX.Y.Z` that matches `package.json` runs `.github/workflows/desktop-release.yml`:
+Pushing a tag `vX.Y.Z` that matches `package.json` runs `.github/workflows/desktop-release.yml`. Each architecture is built on a runner of that architecture. Windows artifacts are NSIS Setup installers, not portable executables. macOS artifacts are DMG images.
 
-- `windows-latest` runs `npm run desktop:dist:win` and uploads an NSIS installer and a zip (x64).
-- `macos-latest` runs `npm run desktop:dist:mac` and uploads a DMG and a zip for the runner architecture. Current GitHub-hosted `macos-latest` images are Apple Silicon, so the macOS artifact is arm64.
-- The release job attaches those files to the GitHub Release for that tag.
+| Runner | Script | Release asset for 0.10.0 |
+| --- | --- | --- |
+| `windows-latest` (x64) | `desktop:dist:win` | `Codemini-Setup-0.10.0-win-x64.exe` |
+| `windows-11-arm` | `desktop:dist:win:arm64` | `Codemini-Setup-0.10.0-win-arm64.exe` |
+| `macos-latest` (Apple Silicon) | `desktop:dist:mac` | `Codemini-0.10.0-mac-arm64.dmg` |
+| `macos-15-intel` | `desktop:dist:mac:x64` | `Codemini-0.10.0-mac-x64.dmg` |
+
+The release job attaches those four files to the GitHub Release for that tag. Download links follow:
+
+```text
+https://github.com/havingautism/Codemini-CLI/releases/download/v<version>/<asset>
+```
 
 `workflow_dispatch` builds the same artifacts onto the Actions run without creating a Release. Use that to confirm packaging before tagging.
 
@@ -43,11 +52,11 @@ git push origin v0.10.0
 
 Later releases: bump `package.json` on a branch, merge that bump, then tag `v` plus the version that landed on `main`.
 
-Intel macOS and Windows ARM are not in the matrix. Add a runner for that architecture before promising a universal binary. Native modules (`sharp`, `node-pty`, `@ast-grep/napi`) are rebuilt for the runner that produces the artifact.
+`windows-11-arm` and `macos-15-intel` are standard GitHub-hosted runners for this public repository (4 vCPU; 16 GB on Windows ARM, 14 GB on Intel Mac). They are not larger runners. `windows-latest` is x64 only, and `macos-latest` is Apple Silicon only, so those two labels cannot produce the other installers. `macos-26-intel` is an alternate Intel image if `macos-15-intel` is retired. Native modules (`sharp`, `node-pty`, `@ast-grep/napi`) are rebuilt on the runner that produces each artifact.
 
 ## macOS without a certificate
 
-The workflow sets `CSC_IDENTITY_AUTO_DISCOVERY=false`. With no `CSC_LINK`, electron-builder prints a signing warning and still writes the DMG and zip.
+The workflow sets `CSC_IDENTITY_AUTO_DISCOVERY=false`. With no `CSC_LINK`, electron-builder prints a signing warning and still writes the DMG.
 
 Gatekeeper will block the unsigned app the first time it is opened. A local user can open it with the system prompt (right-click the app, then Open) or clear the quarantine flag:
 
