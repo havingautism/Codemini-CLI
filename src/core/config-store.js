@@ -1,4 +1,6 @@
 import fs from 'node:fs/promises';
+import { normalizeDistillationConfig } from './harness/distillation.js';
+import { TASK_DECISION_ASSISTANT_AVAILABLE } from './harness/availability.js';
 import { getConfigFilePath } from './paths.js';
 import { atomicWriteUtf8 } from './staged-write.js';
 import { normalizeReplyLanguage } from './reply-language.js';
@@ -45,6 +47,7 @@ const DEFAULT_CONFIG = {
     read_file_default_lines: 120,
     read_file_max_chars: 12000,
     prompt_budget_audit: false,
+    prompt_request_audit: false,
     microcompact_enabled: true,
     microcompact_keep_recent: 5,
     aggressive_tool_prune_beta: false,
@@ -58,8 +61,10 @@ const DEFAULT_CONFIG = {
   },
   execution: {
     mode: 'normal',
-    // Auto: run recoverable workspace mutations and explicit routine commands; keep hard gates.
-    approval_mode: 'auto',
+    // Review is the default; auto and full_access require explicit configuration.
+    approval_mode: 'review',
+    max_steps: 500,
+    incomplete_retries: 3,
     always_allow_tools: [
       'read',
       'search_code',
@@ -73,10 +78,6 @@ const DEFAULT_CONFIG = {
     max_parallel_calls: 10,
     write_chunk_max_chars: 12000,
     staged_write_max_chars: 4194304
-  },
-  sessions: {
-    max_sessions: 100,
-    retention_days: 30
   },
   shell: {
     default: 'bash',
@@ -152,7 +153,7 @@ const DEFAULT_CONFIG = {
   },
   soul: {
     coding: 'Default',
-    daily: 'Playful',
+    daily: 'Default',
     custom_path: ''
   },
   web: {
@@ -164,9 +165,49 @@ const DEFAULT_CONFIG = {
     firecrawl_api_key: ''
   },
   webui: {
+    terminal_enabled: true,
     sidebar: {
       active_project_dirs: []
     }
+  },
+  crew: {
+    max_workers: 4
+  },
+  harness: {
+    enabled: false,
+    distillation: normalizeDistillationConfig(),
+    mode: 'shadow',
+    decision_mode: 'advisory',
+    provider: 'rules',
+    timeout_ms: 1500,
+    providers: {
+      jev: { enabled: false, base_url: '', api_key: '', model: '' },
+      laya: { enabled: false, base_url: 'http://127.0.0.1:8765', model: '' }
+    },
+    policy: {
+      finish_probability: 0.98,
+      retry_probability: 0.70,
+      missing_info_probability: 0.55,
+    abstain_max_probability: 0.60,
+    abstain_margin: 0.15,
+    context_keep_probability: 0.70,
+    completion_probability: 0.90,
+    route_min_probability: 0.55,
+    route_min_margin: 0.12
+    },
+    rollout: {
+      enabled: false,
+      percentage: 0,
+      risk_tiers: ['low'],
+      projects: [],
+      sessions: [],
+      salt: 'harness-v1'
+    }
+  },
+  jev: {
+    enabled: false,
+    api_key: '',
+    model: 'jev-latest'
   },
   policy: {
     safe_mode: true,
@@ -175,10 +216,11 @@ const DEFAULT_CONFIG = {
     command_allowlist: [],
     blocked_commands: [],
     blocked_path_patterns: [],
-    blocked_command_patterns: ['rm -rf /', 'format c:', 'del /f /s /q C:\\\\']
+    blocked_command_patterns: ['rm -rf /', 'format c:', 'del /f /s /q C:\\']
   },
   // Cross-platform Linux microVM when available; Linux/macOS fall back to OS confinement.
   sandbox: {
+    network: 'none',
     enabled: 'auto',
     backend: 'auto',
     mode: 'workspace-write',
@@ -200,14 +242,31 @@ function isObject(v) {
   return v !== null && typeof v === 'object' && !Array.isArray(v);
 }
 
-function deepMerge(base, extra) {
+function isInvalidConfigKey(key, parentPath) {
+  // `prototype` is also a valid skill name. Only exempt the skill ID itself;
+  // nested objects still receive the same prototype-pollution checks.
+  if (key === 'prototype' && parentPath.length === 2
+    && parentPath[0] === 'skills' && ['enabled', 'contexts'].includes(parentPath[1])) return false;
+  return ['__proto__', 'constructor', 'prototype'].includes(key);
+}
+
+function validateConfigObject(value, keyPath = []) {
+  if (!value || typeof value !== 'object') return;
+  for (const [key, item] of Object.entries(value)) {
+    if (isInvalidConfigKey(key, keyPath)) throw new Error(`Invalid configuration key: ${[...keyPath, key].join('.')}`);
+    validateConfigObject(item, [...keyPath, key]);
+  }
+}
+
+function deepMerge(base, extra, keyPath = []) {
+  validateConfigObject(extra, keyPath);
   if (!isObject(base) || !isObject(extra)) {
     return extra;
   }
   const out = { ...base };
   for (const [k, v] of Object.entries(extra)) {
-    if (k in out) {
-      out[k] = deepMerge(out[k], v);
+    if (Object.hasOwn(out, k)) {
+      out[k] = deepMerge(out[k], v, [...keyPath, k]);
     } else {
       out[k] = v;
     }
@@ -258,10 +317,10 @@ function normalizePolicyLists(config) {
   const rawApprovalMode = String(next.execution.approval_mode || '').toLowerCase().replace(/-/g, '_');
   next.execution.mode = rawExecutionMode === 'spec'
     ? 'plan'
-    : (['normal', 'plan'].includes(rawExecutionMode) ? rawExecutionMode : 'normal');
+    : (['normal', 'plan', 'crew'].includes(rawExecutionMode) ? rawExecutionMode : 'normal');
   next.execution.approval_mode = ['review', 'auto', 'full_access'].includes(rawApprovalMode)
     ? rawApprovalMode
-    : 'auto';
+    : 'review';
   delete next.execution.plan_execution_model;
   const rawTools = Array.isArray(next.execution.always_allow_tools)
     ? next.execution.always_allow_tools
@@ -361,6 +420,7 @@ function normalizePolicyLists(config) {
   next.memory.background_review.lease_ms = Math.max(30000, Number(next.memory.background_review.lease_ms || 120000));
   next.context = next.context || {};
   next.context.prompt_budget_audit = next.context.prompt_budget_audit === true;
+  next.context.prompt_request_audit = next.context.prompt_request_audit === true;
   next.context.aggressive_tool_prune_beta = next.context.aggressive_tool_prune_beta === true;
   next.context.aggressive_tool_prune_keep_recent = normalizedNumber(
     next.context.aggressive_tool_prune_keep_recent,
@@ -435,12 +495,73 @@ function normalizePolicyLists(config) {
   next.sandbox.image = String(next.sandbox.image || DEFAULT_CONFIG.sandbox.image).trim() || DEFAULT_CONFIG.sandbox.image;
   next.sandbox.cpus = normalizedNumber(next.sandbox.cpus, DEFAULT_CONFIG.sandbox.cpus, 1, { integer: true });
   next.sandbox.memory_mb = normalizedNumber(next.sandbox.memory_mb, DEFAULT_CONFIG.sandbox.memory_mb, 128, { integer: true });
+  next.crew = next.crew || {};
+  next.crew.max_workers = Math.min(
+    32,
+    normalizedNumber(next.crew.max_workers, DEFAULT_CONFIG.crew.max_workers, 1, { integer: true }),
+  );
+  next.harness = next.harness || {};
+  next.harness.distillation = normalizeDistillationConfig(next.harness.distillation);
+  next.harness.enabled = TASK_DECISION_ASSISTANT_AVAILABLE && next.harness.enabled === true;
+  next.harness.mode = String(next.harness.mode || 'shadow').trim().toLowerCase() === 'shadow'
+    ? 'shadow'
+    : 'shadow';
+  const harnessProvider = String(next.harness.provider || 'rules').trim().toLowerCase();
+  next.harness.provider = ['rules', 'jev', 'laya'].includes(harnessProvider) ? harnessProvider : 'rules';
+  next.harness.decision_mode = String(next.harness.decision_mode || 'advisory').trim().toLowerCase() === 'external_authority'
+    ? 'external_authority' : 'advisory';
+  if (next.harness.decision_mode === 'external_authority' && !['jev', 'laya'].includes(next.harness.provider)) {
+    next.harness.decision_mode = 'advisory';
+  }
+  next.harness.timeout_ms = normalizedNumber(next.harness.timeout_ms, 1500, 50, { integer: true });
+  next.harness.providers = next.harness.providers && typeof next.harness.providers === 'object'
+    ? next.harness.providers
+    : {};
+  for (const name of ['jev', 'laya']) {
+    const provider = next.harness.providers[name] && typeof next.harness.providers[name] === 'object'
+      ? next.harness.providers[name]
+      : {};
+    provider.enabled = provider.enabled === true;
+    provider.base_url = String(provider.base_url || (name === 'laya' ? 'http://127.0.0.1:8765' : '')).trim();
+    provider.api_key = String(provider.api_key || '').trim();
+    provider.model = String(provider.model || '').trim();
+    next.harness.providers[name] = provider;
+  }
+  next.harness.policy = next.harness.policy && typeof next.harness.policy === 'object'
+    ? next.harness.policy
+    : {};
+  for (const [key, fallback] of Object.entries({
+    finish_probability: 0.98,
+    retry_probability: 0.70,
+    missing_info_probability: 0.55,
+    abstain_max_probability: 0.60,
+    abstain_margin: 0.15,
+    context_keep_probability: 0.70,
+    completion_probability: 0.90,
+    route_min_probability: 0.55,
+    route_min_margin: 0.12,
+  })) {
+    next.harness.policy[key] = Math.max(0, Math.min(1, Number(next.harness.policy[key] ?? fallback)));
+  }
+  next.harness.rollout = next.harness.rollout && typeof next.harness.rollout === 'object' ? next.harness.rollout : {};
+  next.harness.rollout.enabled = next.harness.rollout.enabled === true;
+  next.harness.rollout.percentage = Math.max(0, Math.min(100, Number(next.harness.rollout.percentage ?? 0)));
+  next.harness.rollout.risk_tiers = Array.isArray(next.harness.rollout.risk_tiers)
+    ? next.harness.rollout.risk_tiers.map((item) => String(item).toLowerCase()).filter(Boolean)
+    : ['low'];
+  next.harness.rollout.projects = Array.isArray(next.harness.rollout.projects) ? next.harness.rollout.projects.map(String) : [];
+  next.harness.rollout.sessions = Array.isArray(next.harness.rollout.sessions) ? next.harness.rollout.sessions.map(String) : [];
+  next.harness.rollout.salt = String(next.harness.rollout.salt || 'harness-v1');
+  next.jev = next.jev && typeof next.jev === 'object' ? next.jev : {};
+  next.jev.enabled = next.jev.enabled === true || String(next.jev.enabled || '').toLowerCase() === 'true';
+  next.jev.api_key = String(next.jev.api_key || '').trim();
+  next.jev.model = String(next.jev.model || DEFAULT_CONFIG.jev.model).trim() || DEFAULT_CONFIG.jev.model;
   next.shell.default = resolveShellContext(next, { platform: process.platform }).shell;
   return next;
 }
 
 function getNested(obj, keyPath) {
-  return keyPath.split('.').reduce((acc, k) => (acc && k in acc ? acc[k] : undefined), obj);
+  return keyPath.split('.').reduce((acc, k) => (acc && Object.hasOwn(acc, k) ? acc[k] : undefined), obj);
 }
 
 function parseValue(input) {
@@ -461,7 +582,9 @@ function parseValue(input) {
 
 function setNested(obj, keyPath, rawValue) {
   const value = parseValue(rawValue);
-  const parts = keyPath.split('.');
+  const parts = String(keyPath).split('.');
+  if (parts.some((p, index) => !p || isInvalidConfigKey(p, parts.slice(0, index)))) throw new Error('Invalid configuration path');
+  validateConfigObject(value, parts);
   let cursor = obj;
   for (let i = 0; i < parts.length - 1; i += 1) {
     const p = parts[i];
@@ -489,11 +612,14 @@ function migrateSoulConfig(parsed = {}) {
 }
 
 export async function loadConfig() {
-  const configPath = getConfigFilePath();
+  return loadConfigAtPath(getConfigFilePath());
+}
+
+async function loadConfigAtPath(configPath) {
   const stat = await fs.stat(configPath).catch(() => null);
   const mtime = stat ? stat.mtimeMs : 0;
   const size = stat ? stat.size : 0;
-  if (cachedConfig && cachedConfigStat && cachedConfigStat.mtime === mtime && cachedConfigStat.size === size) {
+  if (cachedConfig && cachedConfigStat && cachedConfigStat.path === configPath && cachedConfigStat.mtime === mtime && cachedConfigStat.size === size) {
     return structuredClone(cachedConfig);
   }
   let raw;
@@ -504,7 +630,7 @@ export async function loadConfig() {
       throw new Error(`Failed to read configuration at ${configPath}; existing file was preserved.`, { cause: error });
     }
     const defaultConfig = normalizePolicyLists(structuredClone(DEFAULT_CONFIG));
-    await saveConfig(defaultConfig);
+    await saveConfigAtPath(configPath, defaultConfig);
     return defaultConfig;
   }
   let parsed;
@@ -515,7 +641,7 @@ export async function loadConfig() {
   }
   const config = normalizePolicyLists(deepMerge(DEFAULT_CONFIG, parsed));
   cachedConfig = config;
-  cachedConfigStat = { mtime, size };
+  cachedConfigStat = { path: configPath, mtime, size };
   return structuredClone(config);
 }
 
@@ -536,18 +662,22 @@ async function backupValidConfig(configPath) {
 }
 
 export async function saveConfig(config) {
-  const configPath = getConfigFilePath();
+  return saveConfigAtPath(getConfigFilePath(), config);
+}
+
+async function saveConfigAtPath(configPath, config) {
   await backupValidConfig(configPath);
   await atomicWriteUtf8(configPath, `${JSON.stringify(config, null, 2)}\n`);
   cachedConfig = normalizePolicyLists(structuredClone(config));
   const stat = await fs.stat(configPath).catch(() => null);
-  cachedConfigStat = stat ? { mtime: stat.mtimeMs, size: stat.size } : null;
+  cachedConfigStat = stat ? { path: configPath, mtime: stat.mtimeMs, size: stat.size } : null;
 }
 
 export async function setConfigValue(keyPath, value) {
-  const config = await loadConfig();
+  const configPath = getConfigFilePath();
+  const config = await loadConfigAtPath(configPath);
   setNested(config, keyPath, value);
-  await saveConfig(normalizePolicyLists(config));
+  await saveConfigAtPath(configPath, normalizePolicyLists(config));
 }
 
 export async function getConfigValue(keyPath) {

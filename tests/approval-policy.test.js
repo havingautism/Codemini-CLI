@@ -317,6 +317,17 @@ test('Windows auto mode skips LLM review only for explicit routine project comma
   }
 });
 
+test('opaque syntax requires model review even inside a confining sandbox', () => {
+  const config = { shell: { default: 'bash' }, sandbox: { enabled: false },
+    policy: { safe_mode: true, command_allowlist: [], blocked_commands: [], blocked_path_patterns: [], blocked_command_patterns: [] } };
+  for (const command of ['echo $(printf ok)', 'echo `printf ok`', 'cat <(printf ok)', 'bash -lc "printf ok"']) {
+    const strategy = resolveShellApprovalStrategy({ command, config, osSandboxConfining: true, approvalMode: 'auto' });
+    assert.equal(strategy.deterministicGate, false, command);
+    assert.equal(strategy.sandboxFirst, false, command);
+    assert.equal(strategy.needsLlmReview, true, command);
+  }
+});
+
 test('outside-workspace inspection reports resolved absolute targets', async () => {
   const parent = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-outside-approval-'));
   const project = path.join(parent, 'project');

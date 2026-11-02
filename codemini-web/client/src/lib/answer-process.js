@@ -21,7 +21,13 @@ function isCreatePlanCard(card) {
   const name = String(card?.name || "")
     .toLowerCase()
     .replace(/\(.*$/, "");
-  return name === "create_plan" || name === "run_subagent" || name === "fork_task" || Boolean(card?.planRun);
+  return (
+    name === "create_plan" ||
+    name === "run_subagent" ||
+    name === "fork_task" ||
+    name === "preview_html" ||
+    Boolean(card?.planRun)
+  );
 }
 
 function isTodoCard(card) {
@@ -87,7 +93,7 @@ function extractTodoFromGroup(group) {
 }
 
 /**
- * Pull create_plan cards out of a tools/process group so they never stay inside a fold.
+ * Pull persistent visual cards out of a tools/process group so they never stay inside a fold.
  * Returns { planCards, rest } where rest is null when the group is empty after extraction.
  */
 export function extractCreatePlanFromGroup(group) {
@@ -216,7 +222,7 @@ function todoLayoutItem(latestTodo) {
     : null;
 }
 
-/** Fold process groups; keep create_plan cards in chronological order before the final answer. */
+/** Fold process groups; keep persistent visual cards in chronological order before the final answer. */
 export function layoutAnswerProcessWithPlans(
   groups = [],
   fallbackStartedAt = null,

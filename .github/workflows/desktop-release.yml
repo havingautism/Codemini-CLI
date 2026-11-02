@@ -1,0 +1,94 @@
+name: Desktop release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Package (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            script: desktop:dist:win
+            artifact: win-x64
+          - os: windows-11-arm
+            script: desktop:dist:win:arm64
+            artifact: win-arm64
+          - os: macos-latest
+            script: desktop:dist:mac
+            artifact: mac-arm64
+          - os: macos-15-intel
+            script: desktop:dist:mac:x64
+            artifact: mac-x64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Require the tag to match package.json
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: node scripts/check-release-tag.js "${{ github.ref_name }}"
+
+      - name: Build Web UI
+        run: npm run build:web
+
+      - name: Package Electron app
+        env:
+          # Skip macOS keychain discovery so a runner without a Developer ID
+          # still emits an unsigned artifact. CSC_LINK / WIN_CSC_LINK, when
+          # added later, are explicit certificates and still apply.
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: npm run ${{ matrix.script }}
+
+      - name: Upload installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: codemini-desktop-${{ matrix.artifact }}
+          if-no-files-found: error
+          path: |
+            desktop-dist/*.exe
+            desktop-dist/*.dmg
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download installers
+        uses: actions/download-artifact@v4
+        with:
+          pattern: codemini-desktop-*
+          merge-multiple: true
+          path: release-assets
+
+      - name: Attach installers to the GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: release-assets/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

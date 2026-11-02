@@ -3,6 +3,10 @@ export function operationKey(sessionId, operationId) {
   return sessionId ? `${String(sessionId)}:${id}` : id;
 }
 
+export function reportedOperationError(text) {
+  return Object.assign(new Error(text), { reportedByRuntime: true });
+}
+
 export function waitForAcceptedOperation(
   accepted,
   { sessionId, waiters, earlyResults, fallbackError = "Request failed" },
@@ -15,7 +19,7 @@ export function waitForAcceptedOperation(
   if (earlyResult) {
     earlyResults.delete(key);
     if (earlyResult.type === "error") {
-      return Promise.reject(new Error(earlyResult.text || fallbackError));
+      return Promise.reject(reportedOperationError(earlyResult.text || fallbackError));
     }
     return Promise.resolve(earlyResult);
   }

@@ -1,5 +1,4 @@
-import os from 'node:os';
-import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import { resolveSandboxPolicy, writableRootsForMode, normalizeSandboxNetwork } from './sandbox-policy.js';
 import { SandboxUnavailableError } from './sandbox-runtime.js';
@@ -67,7 +66,7 @@ function buildSrtConfig(policy, config = {}) {
   const allowWrite =
     policy.mode === 'read-only'
       ? []
-      : [policy.workspaceRoot, path.resolve(os.tmpdir())].filter(Boolean);
+      : (writableRootsForMode(policy) || []).filter(Boolean);
 
   // Mirror the VM backend's sandbox.network knob. The srt package filters by
   // domain; `deniedDomains: ['*']` is a best-effort deny-all mapping for the
@@ -105,13 +104,13 @@ async function loadSandboxManager() {
 
 async function ensureInitialized(policy, config = {}) {
   const SandboxManager = await loadSandboxManager();
-  const key = `${policy.mode}|${policy.workspaceRoot}`;
+  const key = `${policy.mode}|${policy.workspaceRoot}|${normalizeSandboxNetwork(config?.sandbox?.network)}`;
   if (initializedKey === key && SandboxManager.isSandboxingEnabled?.()) {
     return SandboxManager;
   }
   const runtimeConfig = buildSrtConfig(policy, config);
   try {
-    await SandboxManager.initialize(runtimeConfig, async () => true);
+    await SandboxManager.initialize(runtimeConfig, async () => normalizeSandboxNetwork(config?.sandbox?.network) !== 'none');
   } catch (error) {
     throw new SandboxUnavailableError(
       `sandbox mode "${policy.mode}" is requested but sandbox-runtime failed to initialize; refusing to run the command unconfined. ${error instanceof Error ? error.message : String(error)}`,
@@ -145,7 +144,17 @@ export async function wrapShellCommandForSandbox({
     return { command: String(command || ''), wrapped: false, policy };
   }
 
-  if (platform === 'linux') {
+  if (platform === 'darwin' && config?.sandbox?.network_isolated === true) {
+    // Keep this command's permissive proxy out of the shared deny-network manager.
+    return {
+      command: String(command || ''), executable: process.execPath,
+      args: [fileURLToPath(new URL('./sandbox-os-command-host.js', import.meta.url)),
+        JSON.stringify({ command: String(command || ''), binShell: binShell || 'bash', runtimeConfig: buildSrtConfig(policy, config) })],
+      wrapped: true, policy: { ...policy, backend: 'os' },
+    };
+  }
+
+  if (platform === 'linux' && normalizeSandboxNetwork(config?.sandbox?.network) === 'allow-all') {
     const spawnSpec = buildLandlockSpawn(policy, command, binShell);
     return {
       command: String(command || ''),

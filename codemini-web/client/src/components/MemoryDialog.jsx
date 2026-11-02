@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import DistillationSummary from './DistillationSummary.jsx';
 import {
   ArrowClockwise,
   CaretDown,
@@ -214,7 +215,7 @@ function MemoryDetailPane({ memory, scope }) {
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto scroll-smooth p-5">
         <div className="flex flex-col gap-5 text-[13px] leading-6 text-(--text-primary)">
-          <pre className="whitespace-pre-wrap break-words font-sans">{content}</pre>
+          <pre className="codemini-resource-detail-prose whitespace-pre-wrap break-words">{content}</pre>
           {isCoding && (toolName || environmentKey) ? (
             <section className="flex flex-col gap-1 text-[12px] text-(--text-muted)">
               {toolName ? <span>{t("memoryTool")}: {toolName}</span> : null}
@@ -304,7 +305,7 @@ function InboxDetailPane({ entry }) {
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto scroll-smooth p-5">
         <div className="flex flex-col gap-5 text-[13px] leading-6 text-(--text-primary)">
-          <pre className="whitespace-pre-wrap break-words font-sans">{details}</pre>
+          <pre className="codemini-resource-detail-prose whitespace-pre-wrap break-words">{details}</pre>
           {entry.suggestedAction ? (
             <section className="flex flex-col gap-1">
               <h4 className="text-[11px] font-medium uppercase tracking-wide text-(--text-muted)">
@@ -313,6 +314,7 @@ function InboxDetailPane({ entry }) {
               <p>{entry.suggestedAction}</p>
             </section>
           ) : null}
+          <DistillationSummary decision={entry.evidence?.distillation} />
           {entry.evidence?.reason ? (
             <section className="flex flex-col gap-1">
               <h4 className="text-[11px] font-medium uppercase tracking-wide text-(--text-muted)">
@@ -382,15 +384,23 @@ function MemoryCard({ memory, inbox = false, selected, deleting, onSelect, onDel
   );
   const updatedLabel = formatMemoryTime(itemTimestamp(memory, inbox));
 
-  const handleDeleteClick = () => {
+  const handleDeleteClick = (event) => {
+    event.stopPropagation();
     if (deleting) return;
     onDelete(memory);
   };
 
   return (
     <div
+      role="button"
+      tabIndex={0}
+      onClick={() => onSelect(memory)}
+      onKeyDown={(event) => {
+        if (event.target !== event.currentTarget) return;
+        if (event.key === "Enter" || event.key === " ") onSelect(memory);
+      }}
       className={cn(
-        "flex flex-col gap-2 rounded-lg border px-3 py-2.5 text-left transition-[background-color,border-color,box-shadow]",
+        "flex cursor-pointer flex-col gap-2 rounded-lg border px-3 py-2.5 text-left outline-none transition-[background-color,border-color,box-shadow] ",
         selected
           ? "border-(--selected-edge) bg-(--selected-bg)"
           : pinned
@@ -398,11 +408,7 @@ function MemoryCard({ memory, inbox = false, selected, deleting, onSelect, onDel
             : "border-transparent bg-transparent hover:bg-(--bg-hover)",
       )}
     >
-      <button
-        type="button"
-        onClick={() => onSelect(memory)}
-        className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1 rounded-md text-left outline-none focus-visible:shadow-[0_0_0_3px_var(--control-focus-ring)]"
-      >
+      <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1 text-left">
           <span className="min-w-0 flex-1 truncate text-[15px] font-semibold leading-5 text-foreground">
             {title}
           </span>
@@ -429,7 +435,7 @@ function MemoryCard({ memory, inbox = false, selected, deleting, onSelect, onDel
               {preview}
             </span>
           ) : null}
-      </button>
+      </div>
 
       {/* Footer: time + actions */}
       <Separator />
@@ -437,10 +443,7 @@ function MemoryCard({ memory, inbox = false, selected, deleting, onSelect, onDel
         {updatedLabel && (
           <span className="text-[11px] leading-4 text-muted-foreground">{updatedLabel}</span>
         )}
-        <div
-          className="ml-auto flex items-center gap-0.5"
-          onClick={(event) => event.stopPropagation()}
-        >
+        <div className="ml-auto flex items-center gap-0.5">
           <Button
             variant="ghost"
             size="icon-sm"

@@ -6,6 +6,7 @@ import {
   CaretDown,
   CaretRight,
   Compass,
+  Clock,
   DotsThree,
   Folder,
   GearSix,
@@ -238,6 +239,8 @@ function formatRelativeTime(value) {
 export function Sidebar({
   sessions,
   sessionsLoading,
+  sessionPages = {},
+  onLoadMoreSessions,
   currentSessionId,
   onNewSession,
   onSwitchSession,
@@ -250,6 +253,7 @@ export function Sidebar({
   onOpenMemory,
   onOpenScrapbook,
   onOpenResearch,
+  onOpenScheduledTasks,
   onOpenSouls,
   onOpenAbout,
   gitBatch,
@@ -505,19 +509,30 @@ export function Sidebar({
     }
   };
 
-  const loadMoreProjectSessions = (projectKey, total) => {
+  const loadMoreProjectSessions = async (projectKey, total) => {
+    const currentLimit = projectSessionLimits[projectKey] || PROJECT_SESSION_PREVIEW_LIMIT;
+    let added = 0;
+    if (currentLimit + PROJECT_SESSION_PREVIEW_LIMIT > total && sessionPages[projectKey]?.hasMore) {
+      added = await onLoadMoreSessions?.(projectKey);
+      if (added == null) return;
+    }
     setProjectSessionLimits((prev) => {
       const current = prev[projectKey] || PROJECT_SESSION_PREVIEW_LIMIT;
       return {
         ...prev,
-        [projectKey]: Math.min(current + PROJECT_SESSION_PREVIEW_LIMIT, total),
+        [projectKey]: Math.min(current + PROJECT_SESSION_PREVIEW_LIMIT, total + added),
       };
     });
   };
 
-  const loadMoreGeneralSessions = () => {
+  const loadMoreGeneralSessions = async () => {
+    let added = 0;
+    if (generalSessionLimit + GENERAL_SESSION_PREVIEW_LIMIT > generalSessions.length && sessionPages[GENERAL_PROJECT_MARKER]?.hasMore) {
+      added = await onLoadMoreSessions?.(GENERAL_PROJECT_MARKER);
+      if (added == null) return;
+    }
     setGeneralSessionLimit((current) =>
-      Math.min(current + GENERAL_SESSION_PREVIEW_LIMIT, generalSessions.length),
+      Math.min(current + GENERAL_SESSION_PREVIEW_LIMIT, generalSessions.length + added),
     );
   };
 
@@ -577,7 +592,7 @@ export function Sidebar({
   return (
     <aside className="codemini-sidebar h-full w-[260px] shrink-0 flex flex-col">
       {/* Fixed top action buttons */}
-      <div className="shrink-0 px-2.5 pt-2.5 flex flex-col gap-0.5">
+      <div className="codemini-sidebar-actions shrink-0 px-2.5 pt-2.5 flex flex-col gap-0.5">
         <div className="mb-1.5 flex h-9 items-center gap-2 px-2">
           <img
             src="/logos/codemini_logo.png"
@@ -601,7 +616,7 @@ export function Sidebar({
           ) : null}
         </div>
         <button
-          className="w-full border-0 bg-transparent flex items-center gap-2.5 h-[30px] px-2 rounded-md cursor-pointer text-left text-[13px] text-(--text-primary)"
+          className="codemini-sidebar-action codemini-sidebar-action--new w-full border-0 bg-transparent flex items-center gap-2.5 h-9 px-2.5 rounded-lg cursor-pointer text-left text-[13px] text-(--text-primary)"
           onClick={openGeneralNewSession}
         >
           <Plus
@@ -614,7 +629,7 @@ export function Sidebar({
 
         <button
           className={cn(
-            "w-full border-0 bg-transparent flex items-center gap-2.5 h-[30px] px-2 rounded-md cursor-pointer text-left text-[13px]",
+            "codemini-sidebar-action w-full border-0 bg-transparent flex items-center gap-2.5 h-9 px-2.5 rounded-lg cursor-pointer text-left text-[13px]",
             currentView === "scrapbook" ? "bg-(--bg-active) text-(--text-primary)" : "text-(--text-primary)",
           )}
           onClick={onOpenScrapbook}
@@ -628,7 +643,7 @@ export function Sidebar({
         </button>
         <button
           className={cn(
-            "w-full border-0 bg-transparent flex items-center gap-2.5 h-[30px] px-2 rounded-md cursor-pointer text-left text-[13px]",
+            "codemini-sidebar-action w-full border-0 bg-transparent flex items-center gap-2.5 h-9 px-2.5 rounded-lg cursor-pointer text-left text-[13px]",
             currentView === "research" ? "bg-(--bg-active) text-(--text-primary)" : "text-(--text-primary)",
           )}
           onClick={onOpenResearch}
@@ -641,10 +656,20 @@ export function Sidebar({
           <span className="truncate">{t("deepResearch")}</span>
         </button>
 
+        <button
+          className={cn(
+            "codemini-sidebar-action w-full border-0 bg-transparent flex items-center gap-2.5 h-9 px-2.5 rounded-lg cursor-pointer text-left text-[13px] text-(--text-primary)",
+            currentView === "scheduled-tasks" && "bg-(--bg-active)",
+          )}
+          onClick={onOpenScheduledTasks}
+        >
+          <Clock size={15} strokeWidth={2} className="text-(--text-secondary) shrink-0" />
+          <span className="truncate">{t("scheduledTasks")}</span>
+        </button>
         <Separator className="mx-2 my-2 bg-(--border-default)/40" />
 
         <button
-          className="w-full border-0 bg-transparent flex items-center gap-2.5 h-[30px] px-2 rounded-md cursor-pointer text-left text-[13px] text-(--text-primary)"
+          className="codemini-sidebar-action w-full border-0 bg-transparent flex items-center gap-2.5 h-9 px-2.5 rounded-lg cursor-pointer text-left text-[13px] text-(--text-primary)"
           onClick={onOpenSkills}
         >
           <Hammer
@@ -656,7 +681,7 @@ export function Sidebar({
         </button>
 
         <button
-          className="w-full border-0 bg-transparent flex items-center gap-2.5 h-[30px] px-2 rounded-md cursor-pointer text-left text-[13px] text-(--text-primary)"
+          className="codemini-sidebar-action w-full border-0 bg-transparent flex items-center gap-2.5 h-9 px-2.5 rounded-lg cursor-pointer text-left text-[13px] text-(--text-primary)"
           onClick={onOpenMcp}
         >
           <PlugsConnected
@@ -668,7 +693,7 @@ export function Sidebar({
         </button>
 
         <button
-          className="w-full border-0 bg-transparent flex items-center gap-2.5 h-[30px] px-2 rounded-md cursor-pointer text-left text-[13px] text-(--text-primary)"
+          className="codemini-sidebar-action w-full border-0 bg-transparent flex items-center gap-2.5 h-9 px-2.5 rounded-lg cursor-pointer text-left text-[13px] text-(--text-primary)"
           onClick={onOpenHooks}
         >
           <Lightning
@@ -680,7 +705,7 @@ export function Sidebar({
         </button>
 
         <button
-          className="w-full border-0 bg-transparent flex items-center gap-2.5 h-[30px] px-2 rounded-md cursor-pointer text-left text-[13px] text-(--text-primary)"
+          className="codemini-sidebar-action w-full border-0 bg-transparent flex items-center gap-2.5 h-9 px-2.5 rounded-lg cursor-pointer text-left text-[13px] text-(--text-primary)"
           onClick={onOpenSouls}
         >
           <MaskHappy
@@ -691,7 +716,7 @@ export function Sidebar({
           <span className="truncate">{t("souls")}</span>
         </button>
         <button
-          className="w-full border-0 bg-transparent flex items-center gap-2.5 h-[30px] px-2 rounded-md cursor-pointer text-left text-[13px] text-(--text-primary)"
+          className="codemini-sidebar-action w-full border-0 bg-transparent flex items-center gap-2.5 h-9 px-2.5 rounded-lg cursor-pointer text-left text-[13px] text-(--text-primary)"
           onClick={onOpenMemory}
         >
           <Brain
@@ -931,9 +956,10 @@ export function Sidebar({
                         />
                       </div>
                     ))}
-                    {projectSessionLimit < projectSessions.length && (
+                    {(projectSessionLimit < projectSessions.length || sessionPages[projectKey]?.hasMore) && (
                       <button
                         type="button"
+                        disabled={sessionPages[projectKey]?.loading}
                         className="h-[26px] rounded-md border-0 bg-transparent px-2 text-left text-[12px] font-medium text-(--text-muted) hover:text-(--text-primary)"
                         onClick={() =>
                           loadMoreProjectSessions(
@@ -942,7 +968,7 @@ export function Sidebar({
                           )
                         }
                       >
-                        {t("showMoreSessions")}
+                        {sessionPages[projectKey]?.loading ? <Spinner /> : t(sessionPages[projectKey]?.error ? "loadMoreSessionsError" : "showMoreSessions")}
                       </button>
                     )}
                   </div>
@@ -1059,13 +1085,14 @@ export function Sidebar({
                 </div>
               );
             })}
-            {generalSessionLimit < generalSessions.length && (
+            {(generalSessionLimit < generalSessions.length || sessionPages[GENERAL_PROJECT_MARKER]?.hasMore) && (
               <button
                 type="button"
+                disabled={sessionPages[GENERAL_PROJECT_MARKER]?.loading}
                 className="h-[28px] rounded-md border-0 bg-transparent px-2 text-left text-[12px] font-medium text-(--text-muted) hover:text-(--text-primary)"
                 onClick={loadMoreGeneralSessions}
               >
-                {t("showMoreSessions")}
+                {sessionPages[GENERAL_PROJECT_MARKER]?.loading ? <Spinner /> : t(sessionPages[GENERAL_PROJECT_MARKER]?.error ? "loadMoreSessionsError" : "showMoreSessions")}
               </button>
             )}
             {!sessionsLoading && generalSessions.length === 0 && (

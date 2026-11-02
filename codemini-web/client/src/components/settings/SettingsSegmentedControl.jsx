@@ -7,10 +7,13 @@ export function SettingsSegmentedControl({
   options = [],
   disabled = false,
   idPrefix = "settings-segmented",
+  label,
   className,
 }) {
   return (
     <ToggleGroup
+      id={idPrefix}
+      aria-label={label}
       type="single"
       value={value}
       onValueChange={(next) => next && onValueChange?.(next)}
@@ -28,7 +31,7 @@ export function SettingsSegmentedControl({
           className={cn(
             "settings-segmented-item h-8 flex-1 rounded-lg border-0 text-[12px] font-medium transition-[background-color,color]",
             "data-[state=on]:bg-accent data-[state=on]:text-accent-foreground data-[state=on]:shadow-sm",
-            "data-[state=off]:text-muted-foreground",
+            "data-[state=off]:border-0 data-[state=off]:shadow-none data-[state=off]:text-muted-foreground",
           )}
         >
           {opt.label}

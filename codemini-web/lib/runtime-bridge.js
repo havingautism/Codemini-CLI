@@ -11,19 +11,30 @@ import {
   routingGraphFromEvent,
   memoryInjectFromEvent,
   settleIncompleteTranscriptMessage,
+  removeEmptyAssistantPlaceholders,
+  latestRetryableMessageId,
   updateSkillInSegments,
 } from '../shared/transcript-segments.js';
 import { buildHookSegmentEvent } from '../shared/hook-ui.js';
+import { prepareRetryTurn } from '../../src/core/retry-turn.js';
 import { stripPlanProgressText } from '../shared/plan-progress-text.js';
 import {
   applyPlanEventToMessage,
   applyStreamEventToPlanRun,
+  findMessageOwningPlanCard,
   isCreatePlanToolEvent,
   isLegacyFinalPlanStep,
   messageHasActivePlanRun,
+  reconcileLeakedPlanDispatchCards,
   shouldNestStreamEventInPlan,
   settleRunningCreatePlanCards,
 } from '../client/src/lib/plan-ui-state.js';
+import {
+  isCrewDispatchCard,
+  repairCrewSessionMessages,
+  settleCrewCancelledWorkerCards,
+} from '../client/src/lib/crew-ui-state.js';
+import { cancelWorkerIdFromPayload } from '../../src/core/crew-progress.js';
 import fs from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
@@ -33,6 +44,7 @@ import {
   saveUiTranscriptToSqlite
 } from '../../src/core/session-sqlite-store.js';
 import { CHAT_ACTIONS } from '../../src/core/chat-action-dispatcher.js';
+import { parseCrewWakeHeadline } from '../../src/core/crew-snapshot.js';
 
 const CODEWIKI_GENERATE_TIMEOUT_MS = 35 * 60 * 1000;
 
@@ -100,6 +112,22 @@ function selectedSkillBadgesFromNames(names = []) {
   )].map((name) => ({ name, status: 'selected' }));
 }
 
+export function normalizeFileReferences(references = []) {
+  const normalized = [];
+  const seen = new Set();
+  for (const reference of Array.isArray(references) ? references.slice(0, 20) : []) {
+    const filePath = String(reference?.path || '').trim().slice(0, 2048);
+    if (!filePath || seen.has(filePath)) continue;
+    seen.add(filePath);
+    normalized.push({
+      path: filePath,
+      name: String(reference?.name || '').trim().slice(0, 255),
+      dir: String(reference?.dir || '').trim().slice(0, 2048)
+    });
+  }
+  return normalized;
+}
+
 function skillBadgesFromSessionMessage(message = {}) {
   const explicit = Array.isArray(message.skillBadges)
     ? message.skillBadges
@@ -127,7 +155,7 @@ function skillBadgesFromSessionMessage(message = {}) {
 export function serializeSessionMessages(messages) {
   if (!Array.isArray(messages)) return [];
   return messages
-    .filter((message) => message.role !== 'system')
+    .filter((message) => message.role !== 'system' && message.model_context !== true)
     .map((message) => {
       const selectedSkillNames = Array.isArray(message.selectedSkillNames)
         ? message.selectedSkillNames
@@ -177,12 +205,14 @@ export function serializeSessionMessages(messages) {
 export function loadPersistedUiMessages(sessionId) {
   try {
     const messages = loadUiTranscriptFromSqlite(sessionId);
-    if (Array.isArray(messages) && messages.length > 0) return messages;
+    if (Array.isArray(messages) && messages.length > 0) {
+      return repairCrewSessionMessages(messages);
+    }
   } catch {}
   try {
     const raw = readFileSync(webTranscriptPath(sessionId), 'utf8');
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed?.messages) ? parsed.messages : [];
+    return repairCrewSessionMessages(Array.isArray(parsed?.messages) ? parsed.messages : []);
   } catch {
     return [];
   }
@@ -325,6 +355,7 @@ export class RuntimeBridge {
   #runtime = null;
   #clients = new Set();
   #approval = new ApprovalManager();
+  #approvalRequests = new Map();
   #userInput = new UserInputManager();
   #busy = false;
   #codeWikiGenerating = false;
@@ -383,13 +414,17 @@ export class RuntimeBridge {
     runtime.setOnTitleStatus?.((sessionId, generating) => {
       this.#publish({ type: 'session:title_status', sessionId, generating });
     });
+    runtime.setCrewEventSink?.((event) => this.#forwardCrewBackgroundEvent(event));
+    runtime.setCrewWakeSubmit?.((wakeText, item) => this.#handleCrewWake(wakeText, item));
   }
 
   #installApprovalHandler() {
     this.#runtime.setRequestToolApproval((request) => {
       const { id, name, displayName, arguments: args, approvalDetails } = request;
       const pending = this.#approval.create(id);
-      this.#publish({ type: 'approval:request', id, toolName: name, displayName, arguments: args, details: approvalDetails });
+      const event = { type: 'approval:request', id, toolName: name, displayName, arguments: args, details: approvalDetails };
+      this.#approvalRequests.set(id, event);
+      this.#publish(event);
       return pending;
     });
     this.#runtime.setRequestUserInput?.((form) => {
@@ -456,8 +491,178 @@ export class RuntimeBridge {
     }
   }
 
+  #findPlanParentMessageId(toolCallId = '') {
+    const id = String(toolCallId || '').trim();
+    if (!id) return this.#uiPlanParentMsgId || this.#uiActiveMsgId || null;
+    const owner = findMessageOwningPlanCard(this.#uiMessages, id);
+    if (owner?.id) return owner.id;
+    for (let index = this.#uiMessages.length - 1; index >= 0; index -= 1) {
+      const message = this.#uiMessages[index];
+      const segments = Array.isArray(message?.segments) ? message.segments : [];
+      for (const segment of segments) {
+        if (segment?.type !== 'tools') continue;
+        for (const card of Array.isArray(segment.cards) ? segment.cards : []) {
+          const steps = Array.isArray(card?.planRun?.steps) ? card.planRun.steps : [];
+          if (steps.some((step) => String(step.toolCallId || '') === id)) return message.id;
+        }
+      }
+    }
+    return this.#uiPlanParentMsgId || this.#uiActiveMsgId || null;
+  }
+
+  #forwardCrewBackgroundEvent(event) {
+    if (!event?.type) return;
+    if (event.type === 'crew:workers_changed') {
+      this.#publish(event);
+      this.#broadcastRuntimeState();
+      return;
+    }
+    if (event.type === 'crew:wake') {
+      this.#ensureCrewWakeDivider(event);
+      this.#publish(event);
+      return;
+    }
+    if (event.type !== 'plan:step_start' && event.type !== 'plan:progress' && event.type !== 'plan:step_done') {
+      return;
+    }
+    this.#ensureUiTranscriptLoaded();
+    const parentId = this.#findPlanParentMessageId(event.toolCallId);
+    let messageId = null;
+    if (parentId) {
+      this.#updateUiMessage(parentId, (message) => applyPlanEventToMessage(message, event));
+      this.#uiMessages = reconcileLeakedPlanDispatchCards(this.#uiMessages);
+      messageId = parentId;
+      this.#persistUiTranscriptSoon();
+    }
+    this.#publish(messageId ? { ...event, messageId } : event);
+    if (event.type === 'plan:step_done') {
+      this.#broadcastRuntimeState();
+    }
+  }
+
+  #settleCrewWakeTurn(submitToken, result) {
+    if (!this.#isSubmitActive(submitToken)) return;
+    if (this.#uiActiveMsgId) {
+      this.#updateUiMessage(this.#uiActiveMsgId, (message) =>
+        settleIncompleteTranscriptMessage(
+          {
+            ...message,
+            segments: finishStreamingTextSegments(
+              finishThinkingSegments(message.segments)
+            )
+          },
+          { reason: result?.aborted ? 'aborted' : 'completed' },
+        ),
+      );
+    }
+    this.#uiActiveMsgId = null;
+    this.#uiPlanStepIds = new Map();
+    this.#uiPlanParentMsgId = null;
+    this.#settleCreatePlanToolCard(undefined, result?.aborted ? 'aborted' : 'completed');
+    this.#publish({
+      type: 'submit:done',
+      result: {
+        type: result?.type || 'assistant',
+        aborted: !!result?.aborted,
+        text: result?.text || '',
+        crewWake: true,
+      },
+    });
+    this.#publishLifecycle(result?.aborted ? 'aborted' : 'completed');
+  }
+
+  #ensureCrewWakeDivider(event = {}) {
+    const headline = String(event.headline || parseCrewWakeHeadline(event.text || '')).trim();
+    if (!headline) return '';
+    this.#ensureUiTranscriptLoaded();
+    const messageId = String(event.messageId || '').trim();
+    if (messageId && this.#uiMessages.some((message) => message.id === messageId)) {
+      return messageId;
+    }
+    const timestamp = event.timestamp || new Date().toISOString();
+    return this.#addUiMessage({
+      id: messageId || undefined,
+      role: 'divider',
+      dividerType: 'crew-wake',
+      text: headline,
+      timestamp,
+    });
+  }
+
+  #handleCrewWake(wakeText, item = {}) {
+    const text = String(wakeText || '').trim();
+    if (!text) return Promise.resolve({ type: 'noop' });
+    if (!this.#claimSessionTurn()) {
+      return Promise.reject(new Error('Crew wake blocked while another turn is active'));
+    }
+    this.#ensureUiTranscriptLoaded();
+    this.#resetActiveAssistantTarget();
+    const headline = parseCrewWakeHeadline(text);
+    const timestamp = item.timestamp || new Date().toISOString();
+    const wakeMessageId = this.#ensureCrewWakeDivider({
+      headline,
+      messageId: item.messageId,
+      timestamp,
+      text,
+    });
+    this.#publish({
+      type: 'crew:wake',
+      headline,
+      messageId: wakeMessageId,
+      timestamp,
+      pending: false,
+    });
+    this.#publishLifecycle('running');
+    this.#uiPendingSkillBadges = [];
+    this.#uiPendingSkillSegments = [];
+    const submitToken = this.#invalidateSubmit();
+    return this.#runtime.submit(text, (event) => {
+      this.#forwardRuntimeEvent(event, submitToken);
+    }, { crewWake: true }).then((result) => {
+      this.#settleCrewWakeTurn(submitToken, result);
+      return result;
+    }).catch(async (err) => {
+      if (!this.#isSubmitActive(submitToken)) throw err;
+      if (isAbortLikeError(err)) {
+        this.#settleCrewWakeTurn(submitToken, { type: 'aborted', aborted: true, text: 'Request aborted.' });
+        return { type: 'aborted', aborted: true, text: 'Request aborted.' };
+      }
+      const message = String(err?.message || err);
+      await this.#recordRunStatus(`Failed: ${message}`, { status: 'error' });
+      this.#publish({
+        type: 'submit:done',
+        result: { type: 'error', text: message, crewWake: true },
+      });
+      this.#publishLifecycle('failed');
+      throw err;
+    }).finally(() => {
+      if (!this.#isSubmitActive(submitToken)) return;
+      this.#busy = false;
+      this.#broadcastRuntimeState();
+      // After a wake, do not chain the next wake here. The Web composer may
+      // have a queued follow-up that should occupy the next idle slot.
+      // submit:done lets the UI drain that queue or ask for the next wake.
+    });
+  }
+
   #publish(event) {
     const incomingSessionId = String(event?.sessionId || '').trim();
+    if (event?.type === 'submit:done' && (!incomingSessionId || incomingSessionId === this.#sessionId)) {
+      if (event.result?.type === 'error') {
+        const lastUserIndex = this.#uiMessages.findLastIndex((message) => message.role === 'you');
+        let errorMessage = this.#uiMessages.slice(lastUserIndex + 1).findLast((message) => message.role === 'error');
+        if (!errorMessage) {
+          const user = this.#uiMessages[lastUserIndex];
+          const errorId = this.#addUiRunStatusMessage(`Failed: ${event.result.text || 'Request failed'}`, {
+            retryPrompt: event.result.retryPrompt || user?.text || 'Retry',
+          });
+          errorMessage = this.#uiMessages.find((message) => message.id === errorId);
+        }
+        event = { ...event, result: { ...event.result, errorMessageId: errorMessage?.id } };
+      }
+      this.#uiMessages = removeEmptyAssistantPlaceholders(this.#uiMessages, { turnFinished: true });
+      this.#persistUiTranscriptSoon();
+    }
     const tagged = {
       ...event,
       // Keep explicit session ids (e.g. async session:title) so pooled
@@ -503,13 +708,29 @@ export class RuntimeBridge {
     }
   }
 
+  #sessionTurnActive() {
+    return this.#busy === true || this.#runtime.isTurnActive?.() === true;
+  }
+
+  #claimSessionTurn() {
+    if (this.#sessionTurnActive()) return false;
+    this.#busy = true;
+    return true;
+  }
+
+  drainCrewPendingWakes() {
+    return this.#runtime.drainCrewPendingWakes?.() || Promise.resolve();
+  }
+
   #buildRuntimeStatePayload() {
     const state = this.#runtime.getRuntimeState();
     const serializableState = typeof state?.toJSON === 'function' ? state.toJSON() : state;
+    const turnActive = this.#sessionTurnActive();
     return {
       ...serializableState,
-      busy: this.#busy,
+      busy: turnActive,
       requestInFlight: this.#busy,
+      crewWorkersInFlight: this.#runtime.getCrewWorkersInFlight?.() ?? 0,
       codeWikiGenerating: this.#codeWikiGenerating,
       pendingReflectSkill: serializableState.pendingReflectSkill,
       pendingSpecApproval: serializableState.pendingSpecApproval,
@@ -553,6 +774,8 @@ export class RuntimeBridge {
           this.#uiMessages = messages;
         }
       }
+      messages = removeEmptyAssistantPlaceholders(messages);
+      this.#uiMessages = messages;
       saveUiTranscriptToSqlite(sessionId, messages);
     } catch {}
   }
@@ -628,7 +851,10 @@ export class RuntimeBridge {
         )?.id;
     if (!targetId) return;
     this.#updateUiMessage(targetId, (message) =>
-      settleRunningCreatePlanCards(message, { reason })
+      settleRunningCreatePlanCards(message, {
+        reason,
+        match: (card) => !isCrewDispatchCard(card),
+      })
     );
     this.#uiPlanParentMsgId = null;
   }
@@ -658,6 +884,7 @@ export class RuntimeBridge {
         ? message.segments
         : (message.text ? [{ type: 'text', text: message.text, isStreaming: false }] : []),
       skillBadges: Array.isArray(message.skillBadges) ? message.skillBadges : [],
+      fileReferences: normalizeFileReferences(message.fileReferences),
       fileChanges: Array.isArray(message.fileChanges) ? message.fileChanges : []
     };
     this.#uiMessages = [...this.#uiMessages, next];
@@ -687,6 +914,19 @@ export class RuntimeBridge {
   }
 
   #settleIncompleteUiMessages(reason = 'aborted') {
+    // Skill reads can finish before the first assistant/step event. Persist
+    // those pending records before abort/fork clears the active turn state.
+    if (this.#uiPendingSkillSegments.length || this.#uiPendingSkillBadges.length) {
+      this.#addUiMessage({
+        role: 'general',
+        text: '',
+        timestamp: new Date().toISOString(),
+        segments: this.#uiPendingSkillSegments,
+        skillBadges: this.#uiPendingSkillBadges,
+      });
+      this.#uiPendingSkillSegments = [];
+      this.#uiPendingSkillBadges = [];
+    }
     this.#uiMessages = this.#uiMessages.map((message) =>
       settleRunningCreatePlanCards(
         settleIncompleteTranscriptMessage(message, { reason }),
@@ -718,7 +958,7 @@ export class RuntimeBridge {
       timestamp: new Date().toISOString(),
       responseStatus: status,
       retryPrompt: String(retryPrompt || ''),
-      retryable: status === 'error' && Boolean(String(retryPrompt || '').trim())
+      retryable: status === 'error' && Boolean(this.#lastUserMessageId())
     });
   }
 
@@ -776,6 +1016,9 @@ export class RuntimeBridge {
         break;
       }
       case 'assistant:start': {
+        if (String(event.parentToolCallId || '').trim()) {
+          break;
+        }
         this.#removeUiTransientWaiting();
         const pendingSkillBadges = this.#uiPendingSkillBadges;
         const pendingSkillSegments = this.#uiPendingSkillSegments;
@@ -822,6 +1065,9 @@ export class RuntimeBridge {
         const toolName = String(event.name || event.toolName || '').trim();
         if (event.type === 'tool:start' && isPlanCardToolName(toolName) && this.#uiActiveMsgId) {
           this.#uiPlanParentMsgId = this.#uiActiveMsgId;
+        }
+        if (String(event.parentToolCallId || '').trim()) {
+          break;
         }
         const createPlanTargetId =
           ['tool:end', 'tool:result', 'tool:error', 'tool:blocked'].includes(event.type) &&
@@ -923,7 +1169,9 @@ export class RuntimeBridge {
       case 'plan:step_start':
       case 'plan:progress':
       case 'plan:step_done': {
-        const parentId = this.#uiPlanParentMsgId || this.#uiActiveMsgId;
+        const parentId = this.#findPlanParentMessageId(event.toolCallId)
+          || this.#uiPlanParentMsgId
+          || this.#uiActiveMsgId;
         if (parentId) {
           this.#updateUiMessage(parentId, (message) =>
             applyPlanEventToMessage(message, event)
@@ -954,6 +1202,18 @@ export class RuntimeBridge {
         // Beta aggressive prune runs proactively every step; stay silent in the
         // transcript to avoid divider spam. Callers that want visibility can
         // surface this via runtime activity.
+        break;
+      }
+      case 'skill:selected': {
+        const userMsgId = this.#lastUserMessageId();
+        if (userMsgId) {
+          const badges = (event.names || []).map((name) => ({ name, status: 'selected' }));
+          this.#updateUiMessage(userMsgId, (message) => ({
+            ...message,
+            skillBadges: appendUniqueSkillBadges(message.skillBadges || [], badges),
+          }));
+          publishedMessageId = userMsgId;
+        }
         break;
       }
       case 'skill:start': {
@@ -1116,6 +1376,19 @@ export class RuntimeBridge {
       default:
         break;
     }
+    if (
+      (event.type === 'tool:end' || event.type === 'tool:result') &&
+      String(event.name || event.toolName || '').toLowerCase().replace(/\(.*$/, '') === 'cancel_worker'
+    ) {
+      const workerId = cancelWorkerIdFromPayload(event);
+      if (workerId) {
+        this.#uiMessages = settleCrewCancelledWorkerCards(this.#uiMessages, workerId);
+        this.#persistUiTranscriptSoon();
+      }
+    }
+    if (event.type === 'plan:step_start' || event.type === 'plan:progress' || event.type === 'plan:step_done') {
+      this.#uiMessages = reconcileLeakedPlanDispatchCards(this.#uiMessages);
+    }
     return publishedMessageId;
   }
 
@@ -1142,7 +1415,7 @@ export class RuntimeBridge {
   }
 
   handleSubmit(line, options = {}) {
-    if (this.#busy) return { error: true, message: 'A request is already in progress' };
+    if (!this.#claimSessionTurn()) return { error: true, message: 'A request is already in progress' };
     this.#ensureUiTranscriptLoaded();
     this.#resetActiveAssistantTarget();
     const trimmed = String(line || '').trim();
@@ -1154,7 +1427,6 @@ export class RuntimeBridge {
         timestamp: new Date().toISOString()
       });
     }
-    this.#busy = true;
     this.#publishLifecycle('running');
     this.#uiPendingSkillBadges = [];
     this.#uiPendingSkillSegments = [];
@@ -1220,16 +1492,19 @@ export class RuntimeBridge {
       this.#busy = false;
       this.#activeSubmitLine = '';
       this.#broadcastRuntimeState();
+      // Do not drain wakes here. The Web composer may have a queued follow-up
+      // that should occupy this idle slot; submit:done decides user vs wake.
     });
     return { accepted: true };
   }
 
   #handleStructuredRun(run, { userMessage = null, retryPrompt = '', selectedSkillNames = [] } = {}) {
-    if (this.#busy) {
+    if (!this.#claimSessionTurn()) {
       return { accepted: false, error: true, code: 'BUSY', message: 'A request is already in progress' };
     }
     this.#ensureUiTranscriptLoaded();
     this.#resetActiveAssistantTarget();
+    this.#runStatusRecorded = false;
     const selectedSkills = [...new Set(
       (Array.isArray(selectedSkillNames) ? selectedSkillNames : [])
         .map((name) => String(name || '').trim())
@@ -1245,11 +1520,11 @@ export class RuntimeBridge {
         role: 'you',
         text: userMessage.text,
         attachments: userMessage.attachments || [],
+        fileReferences: normalizeFileReferences(userMessage.fileReferences),
         skillBadges: selectedBadges,
         timestamp: new Date().toISOString()
       });
     }
-    this.#busy = true;
     this.#publishLifecycle('running');
     this.#uiPendingSkillBadges = [];
     this.#uiPendingSkillSegments = [];
@@ -1306,12 +1581,14 @@ export class RuntimeBridge {
       }
       this.#busy = false;
       this.#broadcastRuntimeState();
+      // Same as #handleSubmit: leave the next idle slot to submit:done.
     });
     this.#broadcastRuntimeState();
     return { accepted: true, operationId };
   }
 
   handleSubmitMessage(message = {}) {
+    if (message.retryMessageId) return this.handleRetryMessage(message.retryMessageId);
     const text = String(message.text || '');
     return this.#handleStructuredRun(
       (onAgentEvent) => this.#runtime.submitMessage(message, onAgentEvent),
@@ -1319,12 +1596,39 @@ export class RuntimeBridge {
         userMessage: {
           id: message.messageId,
           text,
-          attachments: Array.isArray(message.attachments) ? message.attachments : []
+          attachments: Array.isArray(message.attachments) ? message.attachments : [],
+          fileReferences: normalizeFileReferences(message.fileReferences)
         },
         selectedSkillNames: message.skillNames,
         retryPrompt: text
       }
     );
+  }
+
+  handleRetryMessage(messageId) {
+    this.#ensureUiTranscriptLoaded();
+    const errorIndex = this.#uiMessages.findIndex((message) => message.id === messageId);
+    const error = this.#uiMessages[errorIndex];
+    if (!error) {
+      throw new Error('The original reply is no longer available.');
+    }
+    if (this.#uiMessages.slice(errorIndex + 1).some((message) => message.role === 'you')) {
+      throw new Error('Only the latest user turn can be retried.');
+    }
+    if (messageId !== latestRetryableMessageId(this.#uiMessages)) {
+      throw new Error('Only the latest reply without file changes can be retried.');
+    }
+    const userIndex = this.#uiMessages.findLastIndex((message, index) => index < errorIndex && message.role === 'you');
+    if (userIndex < 0) throw new Error('The original user message is unavailable.');
+    const user = this.#uiMessages[userIndex];
+    const userTurnIndex = this.#uiMessages.slice(0, userIndex + 1).filter((message) => message.role === 'you').length - 1;
+    const coreMessages = this.#runtime.getSessionMessages?.();
+    if (Array.isArray(coreMessages)) prepareRetryTurn(coreMessages, userTurnIndex);
+    return this.#handleStructuredRun((onAgentEvent) => {
+      this.#uiMessages = this.#uiMessages.slice(0, userIndex + 1);
+      this.#persistUiTranscriptSoon();
+      return this.#runtime.retryMessage({ userTurnIndex }, onAgentEvent);
+    }, { retryPrompt: user.text });
   }
 
   handleAction(action = {}) {
@@ -1360,7 +1664,7 @@ export class RuntimeBridge {
   }
 
   handleCodeWikiGenerate(line, { operationId = '' } = {}) {
-    if (this.#busy) return { error: true, message: 'A request is already in progress' };
+    if (this.#sessionTurnActive()) return { error: true, message: 'A request is already in progress' };
     const operationMeta = operationId ? { operationId } : {};
     this.#busy = true;
     this.#publishLifecycle('running');
@@ -1452,7 +1756,7 @@ export class RuntimeBridge {
   }
 
   async handleCodeWikiAsk(line, onEvent = null) {
-    if (this.#busy) return { error: true, message: 'A request is already in progress' };
+    if (this.#sessionTurnActive()) return { error: true, message: 'A request is already in progress' };
     this.#busy = true;
     const submitToken = this.#invalidateSubmit();
     const emit = (event) => {
@@ -1491,6 +1795,7 @@ export class RuntimeBridge {
     this.#activeStructuredOperationId = null;
     this.#userInput.resolveAll({ status: 'skipped', answers: {} });
     this.#approval.resolveAll({ approved: false, reason: 'aborted' });
+    this.#approvalRequests.clear();
     if (wasBusy) this.#invalidateSubmit();
     const aborted = this.#runtime.abort(options);
     if (wasBusy) {
@@ -1522,6 +1827,17 @@ export class RuntimeBridge {
     const ok = await this.#runtime.setExecutionMode(mode);
     if (ok) this.#publish({ type: 'mode:changed', mode, ...this.getState() });
     return ok;
+  }
+
+  async setCrewMode(active) {
+    if (this.#busy) {
+      return { ok: false, error: true, code: 'BUSY', message: 'Cannot switch crew while a request is running' };
+    }
+    const result = await this.#runtime.setCrewMode?.(active);
+    if (result?.ok) this.#publish({ type: 'crew:changed', ...this.getState() });
+    return result && typeof result === 'object'
+      ? { ...result, error: result.ok === false }
+      : { ok: false, error: true, message: 'Crew mode is unavailable' };
   }
 
   async setApprovalMode(mode) {
@@ -1598,8 +1914,11 @@ export class RuntimeBridge {
     });
     const resolved = bridgeResolved || runtimeResolved?.ok === true;
     if (!resolved) return false;
+    this.#approvalRequests.delete(requestId);
     this.#publish({ type: 'approval:resolved', id: requestId, approved: Boolean(approved) });
-    this.#publishLifecycle('running', requestId);
+    const next = this.#approvalRequests.values().next().value;
+    if (next) this.#publishLifecycle('waiting_approval', next.id);
+    else this.#publishLifecycle('running', requestId);
     this.#broadcastRuntimeState();
     return true;
   }
@@ -1674,14 +1993,14 @@ export class RuntimeBridge {
   }
 
   async undoChangeSet(id) {
-    if (this.#busy) return { error: true, message: 'A request is already in progress' };
+    if (this.#sessionTurnActive()) return { error: true, message: 'A request is already in progress' };
     const result = await this.#runtime.undoChangeSet?.(id);
     this.#publish({ type: 'change:undone', result });
     return result || { error: true, message: 'File change checkpoint is not available' };
   }
 
   async undoChangeSets(ids) {
-    if (this.#busy) return { error: true, message: 'A request is already in progress' };
+    if (this.#sessionTurnActive()) return { error: true, message: 'A request is already in progress' };
     const result = await this.#runtime.undoChangeSets?.(ids);
     this.#publish({ type: 'change:undone', result });
     return result || { error: true, message: 'File change checkpoint is not available' };
@@ -1718,7 +2037,9 @@ export class RuntimeBridge {
   }
 
   getCommands() {
-    return this.#runtime.listCommandNames();
+    return this.#runtime.getCommandCatalog?.()
+      || this.#runtime.listCommandNames?.()
+      || [];
   }
 
   getSessionId() {

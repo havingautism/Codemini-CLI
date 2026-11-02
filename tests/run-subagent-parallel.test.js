@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   resolveSubAgentToolAllowList,
   resolveSubAgentRolePolicy,
+  resolveCrewTurnPersona,
   SUBAGENT_FORBIDDEN_TOOLS,
   normalizeSubAgentPersonaName,
   getSubAgentPersonaPrompt,
@@ -45,7 +46,7 @@ test('explicit empty or forbidden-only allow-lists still grant tasks', () => {
 });
 
 test('every subagent role keeps tasks even with an explicit read-only allow-list', () => {
-  for (const role of ['explorer', 'architect', 'reviewer', 'tester', 'debugger', 'writer', 'summarizer']) {
+  for (const role of ['explorer', 'architect', 'reviewer', 'survey', 'tester', 'debugger', 'writer', 'summarizer']) {
     const defaults = resolveSubAgentToolAllowList({ role });
     const explicit = resolveSubAgentToolAllowList({ role, tools: ['read'] });
     assert.equal(defaults.includes('tasks'), true, `${role} defaults`);
@@ -97,6 +98,18 @@ test('a persona name that collides with a role keyword stays a coder persona', (
   assert.deepEqual(resolveSubAgentRolePolicy('', 'writer'), { persona: 'Writer', policyKey: 'writer', taskRole: 'writer' });
   assert.deepEqual(resolveSubAgentRolePolicy('', 'explorer'), { persona: 'Explorer', policyKey: 'explorer', taskRole: 'explorer' });
   assert.deepEqual(resolveSubAgentRolePolicy('David', ''), { persona: 'David', policyKey: 'coder', taskRole: 'David' });
+  assert.deepEqual(
+    resolveCrewTurnPersona({ resume: 'wkr_mvdntmk0_u06swg', rosterName: 'Iris' }),
+    { persona: 'Iris', policyKey: 'coder', taskRole: 'Iris' },
+  );
+  assert.deepEqual(
+    resolveCrewTurnPersona({ name: 'Alex', resume: 'wkr_mvdntmk0_u06swg', rosterName: 'Iris' }),
+    { persona: 'Alex', policyKey: 'coder', taskRole: 'Alex' },
+  );
+  assert.deepEqual(
+    resolveCrewTurnPersona({ name: 'Rhea', role: 'reviewer', review: 'wkr_mvdntmk0_u06swg', rosterName: 'Iris' }),
+    { persona: 'Rhea', policyKey: 'reviewer', taskRole: 'reviewer' },
+  );
 });
 
 test('unix subagent baselines drop staged write and promote glob/grep', () => {
@@ -110,6 +123,10 @@ test('unix subagent baselines drop staged write and promote glob/grep', () => {
   const explorer = resolveSubAgentToolAllowList({ role: 'explorer', platform: 'linux' });
   assert.ok(explorer.includes('glob'));
   assert.ok(explorer.includes('grep'));
+  const survey = resolveSubAgentToolAllowList({ role: 'survey', platform: 'linux' });
+  assert.equal(survey.includes('read'), true);
+  assert.equal(survey.includes('edit'), false);
+  assert.equal(survey.includes('write'), false);
   assert.equal(
     resolveSubAgentToolAllowList({
       role: 'coder',
@@ -222,6 +239,7 @@ test('parent turn usage accumulator merges parallel subagents exactly once', () 
     cachedInputTokens: 40,
     cacheMissInputTokens: 0,
     cacheWriteInputTokens: 0,
+    cacheUsageStatus: 'reported',
     reasoningOutputTokens: 0,
     requests: 2,
     raw: [],
@@ -536,4 +554,10 @@ test('subagent system shell rules stay isomorphic across roles and allow-lists',
   assert.match(coderNote, /Own implementation/);
   assert.doesNotMatch(explorerNote, /Own implementation/);
   assert.notEqual(coderNote, explorerNote);
+
+  const reviewerNote = buildSubAgentRuntimeNote(['read', 'submit_crew_review'], {
+    role: 'reviewer',
+    workspaceRoot,
+  });
+  assert.match(reviewerNote, /Mandatory: call submit_crew_review/);
 });

@@ -20,7 +20,7 @@ export function normalizeSoulCategory(value, fallback = 'coding') {
 
 export function soulContextFromExecutionMode(mode = 'normal') {
   const normalized = String(mode || '').trim().toLowerCase();
-  return ['plan', 'code', 'coding', 'spec'].includes(normalized) ? 'coding' : 'daily';
+  return ['plan', 'code', 'coding', 'spec', 'crew'].includes(normalized) ? 'coding' : 'daily';
 }
 
 function normalizeSoulName(value) {
@@ -129,7 +129,7 @@ export function getActiveSoulName(config = {}, category = 'coding') {
   if (fromCategory) return normalizeSoulName(fromCategory);
   const legacy = String(soul?.preset || '').trim();
   if (legacy) return normalizeSoulName(legacy);
-  return key === 'daily' ? 'Playful' : 'Default';
+  return 'Default';
 }
 
 export async function listSouls(config = {}) {
@@ -250,7 +250,7 @@ export async function loadSoulPrompt(config = {}, { context } = {}) {
     } catch {}
   }
 
-  const fallbackName = category === 'daily' ? 'Playful' : 'Default';
+  const fallbackName = 'Default';
   const fallback = await readSoulPreset(BUNDLED_SOULS_DIR, fallbackName, category);
   return {
     prompt: `[Soul preset: ${fallbackName} · ${fallback.category || category}]\n${String(fallback.content || '').trim()}`,
@@ -264,18 +264,15 @@ function buildSoulGuard(category = 'coding') {
     return [
       '[Soul guard]',
       'Apply this soul to response tone and personality only.',
-      'Tone only: do not change plans, code, tests, file formats, or technical decisions for entertainment flavor.',
-      'This tone directive has HIGH priority. Stay in character consistently unless the user explicitly requests a change.',
-      'Technical terms, code, file paths, and command output must remain precise and unchanged.',
+      'Keep technical decisions, code, paths, and command output accurate; never sacrifice correctness, security, or data safety for personality.',
+      'Explicit user requirements override soul defaults.',
     ].join('\n');
   }
   return [
     '[Soul guard]',
     'Apply this coding soul to tone AND coding approach (how you plan, write, and refactor).',
-    'Follow the soul methodology when it shapes engineering choices (YAGNI, terseness, seniority, etc.).',
     'Never sacrifice correctness, security, data safety, or explicit user requirements.',
     'Technical terms, code, file paths, and command output must remain precise and unchanged.',
-    'This directive has HIGH priority. Stay consistent unless the user explicitly requests a change.',
   ].join('\n');
 }
 

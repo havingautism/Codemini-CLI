@@ -1,7 +1,33 @@
 const JSON_HEADERS = { 'Content-Type': 'application/json' };
 
+export async function fetchScheduledTasks(taskId = '') {
+  const query = taskId ? `?taskId=${encodeURIComponent(taskId)}` : '';
+  return readJsonOrThrow(await api(`/api/scheduled-tasks${query}`));
+}
+
+export async function saveScheduledTask(task, id = '') {
+  return readJsonOrThrow(await api(`/api/scheduled-tasks${id ? `/${encodeURIComponent(id)}` : ''}`, {
+    method: id ? 'PUT' : 'POST', headers: JSON_HEADERS, body: JSON.stringify(task),
+  }));
+}
+
+export async function deleteScheduledTask(id) {
+  return readJsonOrThrow(await api(`/api/scheduled-tasks/${encodeURIComponent(id)}`, { method: 'DELETE' }));
+}
+
+export async function runScheduledTask(id) {
+  return readJsonOrThrow(await api(`/api/scheduled-tasks/${encodeURIComponent(id)}/run`, { method: 'POST' }));
+}
+
+export async function startScheduledWorker() {
+  return readJsonOrThrow(await api('/api/scheduled-tasks/worker/start', { method: 'POST' }));
+}
+
 async function api(path, opts = {}) {
   const res = await fetch(path, opts);
+  if (res.status === 401 && typeof window !== 'undefined' && window.location.pathname !== '/login') {
+    window.location.replace('/login');
+  }
   return res;
 }
 
@@ -57,6 +83,20 @@ export async function fetchRuntimeSessions() {
   return res.json();
 }
 
+export async function fetchTokenActivity(signal, { year, month } = {}) {
+  const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const params = new URLSearchParams({ timeZone });
+  if (year) params.set('year', String(year));
+  if (month) params.set('month', String(month));
+  const res = await api(`/api/usage/activity?${params}`, { signal });
+  return readJsonOrThrow(res);
+}
+
+export async function fetchSessionTokenUsage(sessionId, signal) {
+  const res = await api(`/api/usage/session?${new URLSearchParams({ sessionId })}`, { signal });
+  return readJsonOrThrow(res);
+}
+
 export async function fetchState(sessionId) {
   const res = await api(withSessionQuery('/api/state', sessionId));
   return res.json();
@@ -78,6 +118,16 @@ export async function fetchSessions(limit = 200) {
   if (Number.isFinite(numericLimit) && numericLimit > 0) params.set('limit', String(Math.round(numericLimit)));
   const res = await api(params.size ? `/api/sessions?${params.toString()}` : '/api/sessions');
   return res.json();
+}
+
+export async function fetchSessionSidebar() {
+  return readJsonOrThrow(await api('/api/sessions/sidebar'));
+}
+
+export async function fetchSessionPage(groupKey, cursor) {
+  const params = new URLSearchParams({ groupKey });
+  if (cursor) params.set('cursor', cursor);
+  return readJsonOrThrow(await api(`/api/sessions/page?${params}`));
 }
 
 export async function fetchSessionMessages(sessionId) {
@@ -126,6 +176,15 @@ export async function submitMessage(sessionId, body = {}) {
     headers: JSON_HEADERS,
     body: JSON.stringify({ sessionId, ...body })
   });
+}
+
+export async function drainCrewPendingWakes(sessionId) {
+  const res = await api('/api/chat/crew-wakes/drain', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ sessionId })
+  });
+  return readJsonResponse(res);
 }
 
 export async function submitChatAction(sessionId, name, payload = {}) {
@@ -179,6 +238,15 @@ export async function setExecutionMode(sessionId, mode) {
     body: JSON.stringify({ sessionId, mode })
   });
   return res.json();
+}
+
+export async function setCrewMode(sessionId, active) {
+  const res = await api('/api/crew-mode', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ sessionId, active: !!active })
+  });
+  return readJsonResponse(res);
 }
 
 export async function setApprovalMode(sessionId, mode) {
@@ -460,6 +528,14 @@ function withProjectDirQuery(path, projectDir) {
 export async function fetchSkills() {
   const res = await api('/api/skills');
   return res.json();
+}
+
+export async function fetchCommands(sessionId) {
+  const params = new URLSearchParams();
+  if (sessionId) params.set('sessionId', sessionId);
+  const suffix = params.toString();
+  const res = await api(`/api/commands${suffix ? `?${suffix}` : ''}`);
+  return readJsonResponse(res);
 }
 
 export async function fetchSkillIndex(projectDir) {
@@ -874,8 +950,9 @@ export async function fetchSouls() {
   return res.json();
 }
 
-export async function fetchSoulContent(name) {
-  const res = await api(`/api/souls/${encodeURIComponent(name)}/content`);
+export async function fetchSoulContent(name, category = '') {
+  const query = category ? `?category=${encodeURIComponent(category)}` : '';
+  const res = await api(`/api/souls/${encodeURIComponent(name)}/content${query}`);
   return res.json();
 }
 
@@ -910,7 +987,7 @@ export async function activateSoul(name, category) {
     headers: JSON_HEADERS,
     body: JSON.stringify({ name, category })
   });
-  return res.json();
+  return readJsonOrThrow(res);
 }
 
 // ── CodeWiki ──
@@ -1019,6 +1096,14 @@ export async function runTerminalCommand(sessionId, command) {
   return readJsonResponse(res);
 }
 
+export async function resolveTerminalApproval(sessionId, id, approved) {
+  const res = await api('/api/terminal/approve', {
+    method: 'POST', headers: JSON_HEADERS,
+    body: JSON.stringify({ sessionId, id, approved }),
+  });
+  return readJsonResponse(res);
+}
+
 export async function stopTerminalCommand(sessionId) {
   const res = await api('/api/terminal/stop', {
     method: 'POST',
@@ -1074,10 +1159,26 @@ export async function fetchWorkspaceTree(sessionId, relativePath = '') {
   return readJsonResponse(res);
 }
 
+export async function searchWorkspaceFiles(sessionId, query = '') {
+  const params = new URLSearchParams();
+  if (sessionId) params.set('sessionId', sessionId);
+  params.set('q', String(query || '').trim());
+  const res = await api(`/api/workspace/search?${params.toString()}`);
+  return readJsonResponse(res);
+}
+
 export async function fetchWorkspacePreview(sessionId, relativePath = '') {
   const params = new URLSearchParams();
   if (sessionId) params.set('sessionId', sessionId);
   params.set('path', String(relativePath || '').trim());
   const res = await api(`/api/workspace/preview?${params.toString()}`);
   return readJsonResponse(res);
+}
+
+export function buildHtmlArtifactUrl(sessionId, relativePath, revision = 0) {
+  const params = new URLSearchParams();
+  if (sessionId) params.set('sessionId', sessionId);
+  params.set('path', String(relativePath || '').trim());
+  if (revision) params.set('revision', String(revision));
+  return `/api/artifacts/html?${params.toString()}`;
 }

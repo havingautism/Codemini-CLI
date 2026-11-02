@@ -26,9 +26,16 @@ export function isTodoToolCard(card) {
   return name === "tasks" || name === "update_todos";
 }
 
+export function isHtmlArtifactCard(card) {
+  return (
+    extractToolName(card?.name) === "preview_html" &&
+    card?.resultMeta?.embedType === "html_artifact"
+  );
+}
+
 /** Conversation-page widgets (todo board, ask-user form). Trajectory inspect should skip these. */
 export function isConversationVisualToolCard(card) {
-  return isRequestUserInputCard(card) || isTodoToolCard(card);
+  return isRequestUserInputCard(card) || isTodoToolCard(card) || isHtmlArtifactCard(card);
 }
 
 export function parseMaybeJson(value) {

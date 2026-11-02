@@ -1,3 +1,11 @@
+import { getTokenActivity, getSessionTokenUsage } from '../src/core/token-usage-store.js';
+import { isScheduledSessionActive } from '../src/core/scheduled-task-store.js';
+import { startScheduledWorker } from '../src/core/scheduled-worker-process.js';
+import { registerScheduledTaskRoutes } from './lib/scheduled-task-api.js';
+import { decodeSessionCursor, getSessionGroupPage, getSessionSidebarSnapshot } from './lib/session-pages.js';
+import { validateWebConfigValue } from './shared/web-config-policy.js';
+import { DOCUMENT_EXTENSIONS, SCRAPBOOK_TEXT_EXTENSIONS } from './shared/document-formats.js';
+import { createWebSecurity, publicConfig, isSecretConfigKey, assertConfigPath, assertWebConfigWritable } from './lib/web-security.js';
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -34,6 +42,9 @@ import {
   deleteSession,
   saveSession,
 } from "../src/core/session-store.js";
+import { hasUiTranscriptInSqlite } from "../src/core/session-sqlite-store.js";
+import { createHarnessSqliteStore } from "../src/core/harness/audit/harness-sqlite-store.js";
+import { createToolReliabilityStore } from "../src/core/harness/tool-reliability.js";
 import {
   forkIdleSession,
   sessionForkBlockedReason,
@@ -62,6 +73,7 @@ import {
   resizeTerminal,
   restartTerminal,
   runTerminalCommand,
+  disposeTerminals,
   stopTerminal,
   subscribeTerminal,
   writeTerminalInput,
@@ -69,14 +81,16 @@ import {
 import {
   listWorkspaceChildren,
   previewWorkspaceFile,
+  readWorkspaceHtmlArtifact,
   resolveWorkspacePath,
+  searchWorkspaceFiles,
   isPreviewableImagePath,
 } from "./lib/workspace-files.js";
 import {
   parseScrapbookAttachmentFromModelContent,
   pickScrapbookAttachments,
 } from "./lib/message-context-parsers.js";
-import { extractPdfText } from "./lib/pdf-text.js";
+import { extractDocumentText } from "./lib/document-text.js";
 import {
   addScrapbookSource,
   buildScrapbookAskPayload,
@@ -569,21 +583,22 @@ const MAX_ATTACHMENT_TEXT_CHARS = 80_000;
 const MODEL_IMAGE_MAX_DIMENSION = 1568;
 const MODEL_IMAGE_WEBP_QUALITY = 80;
 const ATTACHMENT_UPLOAD_DIR = path.join(getBaseConfigDir(), "web-ui-uploads");
-const SUPPORTED_ATTACHMENT_EXTENSIONS = new Set([
-  ".png",
-  ".jpg",
-  ".jpeg",
-  ".webp",
-  ".gif",
-  ".pdf",
-  ".docx",
-]);
 const IMAGE_ATTACHMENT_EXTENSIONS = new Set([
   ".png",
   ".jpg",
   ".jpeg",
   ".webp",
   ".gif",
+]);
+const DOCUMENT_ATTACHMENT_EXTENSIONS = new Set(DOCUMENT_EXTENSIONS);
+const SUPPORTED_ATTACHMENT_EXTENSIONS = new Set([
+  ...IMAGE_ATTACHMENT_EXTENSIONS,
+  ...DOCUMENT_ATTACHMENT_EXTENSIONS,
+]);
+const scrapbookTextExtensions = new Set(SCRAPBOOK_TEXT_EXTENSIONS);
+const SCRAPBOOK_SOURCE_EXTENSIONS = new Set([
+  ...DOCUMENT_ATTACHMENT_EXTENSIONS,
+  ...scrapbookTextExtensions,
 ]);
 
 function normalizeBaseUrl(value) {
@@ -808,6 +823,7 @@ function createPooledEmptySessionAllocator(
     listSessions: listFn = listSessions,
     loadSession: loadFn = loadSession,
     createSession: createFn = createSession,
+    isSessionDisplayEmpty,
   } = {},
 ) {
   return createEmptySessionAllocator({
@@ -821,6 +837,7 @@ function createPooledEmptySessionAllocator(
     matchesProject: matchesEmptySessionProject,
     isBusy: (sessionId) =>
       ACTIVE_RUNTIME_STATUSES.has(pool.getSessionState(sessionId)?.status),
+    isSessionDisplayEmpty,
   });
 }
 
@@ -882,12 +899,14 @@ export function createServerCleanup({
   runtimeStatusStore,
   server,
   exit = () => process.exit(0),
+  disposeTerminals = async () => {},
 }) {
   let cleanupPromise = null;
   return () => {
     if (cleanupPromise) return cleanupPromise;
     cleanupPromise = (async () => {
       runtimeEvictionTimer.stop();
+      await disposeTerminals();
       await Promise.allSettled(
         [...pool.entries.values()].map((entry) => entry.bridge?.dispose?.()),
       );
@@ -970,10 +989,15 @@ export function createWebRuntimeApi({
   loadConfig: loadRuntimeConfig = loadConfig,
   getConfigStatus: getRuntimeConfigStatus = getConfigStatus,
   allocateEmptySession = null,
+  isSessionDisplayEmpty = (sessionId) => !hasUiTranscriptInSqlite(sessionId),
 }) {
   const loadBridge = async (res, sessionId) => {
     const id = requireSessionId(res, sessionId);
     if (!id) return null;
+    if (isScheduledSessionActive(id)) {
+      jsonResponse(res, { error: true, code: "SESSION_BUSY", message: "A background scheduled task is writing this session. Check Scheduled Tasks and open it after the run finishes." }, 409);
+      return null;
+    }
     try {
       await ensureSession(id);
     } catch (error) {
@@ -1000,6 +1024,7 @@ export function createWebRuntimeApi({
       listSessions: listStoredSessions,
       loadSession: loadStoredSession,
       createSession: createStoredSession,
+      isSessionDisplayEmpty,
     });
   const submitOperation = (sessionId, invoke) =>
     pool.submit(sessionId, (bridge) =>
@@ -1016,6 +1041,58 @@ export function createWebRuntimeApi({
     });
 
   const runtimeRoutes = createNodeRouter();
+  runtimeRoutes.get("/api/sessions/sidebar", nodeRoute(async (req, res) => {
+    await listStoredSessions(1); // Preserve legacy-session import before SQLite pagination.
+    const { active } = await loadActiveProjects();
+    const snapshot = getSessionSidebarSnapshot(active);
+    snapshot.sessions = snapshot.sessions.map((session) => ({ ...session, runtime: pool.getSessionState(session.id) }));
+    jsonResponse(res, snapshot);
+    return true;
+  }));
+  runtimeRoutes.get("/api/sessions/page", nodeRoute(async (req, res, url) => {
+    let cursor;
+    try { cursor = decodeSessionCursor(url.searchParams.get('cursor')); }
+    catch (error) { jsonResponse(res, { error: true, message: error.message }, 400); return true; }
+    const { active } = await loadActiveProjects();
+    const page = getSessionGroupPage({ groupKey: url.searchParams.get('groupKey') || '__codemini_general__', active, cursor });
+    page.sessions = page.sessions.map((session) => ({ ...session, runtime: pool.getSessionState(session.id) }));
+    jsonResponse(res, page);
+    return true;
+  }));
+  runtimeRoutes.get("/api/usage/session", nodeRoute(async (req, res, url) => {
+    const sessionId = url.searchParams.get('sessionId')?.trim();
+    if (!sessionId) {
+      jsonResponse(res, { error: true, message: 'sessionId is required' }, 400);
+      return true;
+    }
+    jsonResponse(res, getSessionTokenUsage(sessionId));
+    return true;
+  }));
+  runtimeRoutes.get("/api/usage/activity", nodeRoute(async (req, res, url) => {
+    const timeZone = url.searchParams.get("timeZone") || Intl.DateTimeFormat().resolvedOptions().timeZone;
+    try {
+      new Intl.DateTimeFormat('en', { timeZone });
+    } catch {
+      jsonResponse(res, { error: true, message: "Invalid time zone" }, 400);
+      return true;
+    }
+    const year = url.searchParams.get('year');
+    const month = url.searchParams.get('month');
+    try {
+      jsonResponse(res, getTokenActivity({
+        timeZone,
+        ...(year ? { year: Number(year) } : {}),
+        ...(month ? { month: Number(month) } : {}),
+      }));
+    } catch (error) {
+      if (error instanceof RangeError) {
+        jsonResponse(res, { error: true, message: error.message }, 400);
+        return true;
+      }
+      throw error;
+    }
+    return true;
+  }));
   runtimeRoutes.get("/api/events", nodeRoute(async (req, res, url) => {
       eventBroker.addClient(res);
       return true;
@@ -1034,6 +1111,22 @@ export function createWebRuntimeApi({
       });
       return true;
 
+  }));
+  runtimeRoutes.get("/api/harness/episodes", nodeRoute(async (req, res, url) => {
+      const sessionId = String(url.searchParams.get("session_id") || "").trim();
+      const store = createHarnessSqliteStore();
+      const episodes = store.listEpisodes({ sessionId, limit: 100 });
+      const payload = episodes.map((episode) => ({
+        ...episode,
+        events: store.listEpisodeEvents(episode.id),
+      }));
+      jsonResponse(res, { episodes: payload });
+      return true;
+  }));
+  runtimeRoutes.get("/api/harness/tool-reliability", nodeRoute(async (req, res) => {
+      const store = createToolReliabilityStore();
+      jsonResponse(res, { tools: store.list() });
+      return true;
   }));
   runtimeRoutes.get("/api/sessions", nodeRoute(async (req, res, url) => {
       const requestedLimit = Number(url.searchParams.get("limit") || 200);
@@ -1142,6 +1235,10 @@ export function createWebRuntimeApi({
             { error: true, message: "Missing attachment file" },
             400,
           );
+          return true;
+        }
+        if (files.length > 8) {
+          jsonResponse(res, { error: true, message: "Maximum 8 attachments per upload." }, 400);
           return true;
         }
         const attachments = [];
@@ -1292,9 +1389,11 @@ export function createWebRuntimeApi({
           target.handleSubmitMessage({
             text: body.text,
             messageId: body.messageId,
+            retryMessageId: body.retryMessageId,
             skillNames: body.skillNames,
             attachmentIds: body.attachmentIds,
             dismissedAlwaysSkills: body.dismissedAlwaysSkills,
+            fileReferences: body.fileReferences,
             attachments,
             modelImages: attachmentData.modelImages,
             ...(mergedModelText ? { modelText: mergedModelText } : {}),
@@ -1303,6 +1402,26 @@ export function createWebRuntimeApi({
         jsonResponse(res, accepted, accepted.accepted ? 202 : 409);
       } catch (error) {
         chatErrorResponse(res, error, "INVALID_REQUEST");
+      }
+      return true;
+
+  }));
+  runtimeRoutes.post("/api/chat/crew-wakes/drain", nodeRoute(async (req, res) => {
+      const body = await readBody(req);
+      const bridge = await loadBridge(res, body?.sessionId);
+      if (!bridge) return true;
+      try {
+        await bridge.drainCrewPendingWakes();
+        jsonResponse(res, { ok: true });
+      } catch (error) {
+        jsonResponse(
+          res,
+          {
+            error: true,
+            message: error?.message || "Failed to drain crew wakes",
+          },
+          500,
+        );
       }
       return true;
 
@@ -1531,6 +1650,15 @@ export function createWebRuntimeApi({
         },
       ],
       [
+        "/api/crew-mode",
+        async ({ bridge, body }) => {
+          const active = body.active === true || body.active === "on" || body.active === "true";
+          const result = await bridge.setCrewMode(active);
+          if (result && typeof result === "object") return result;
+          return { ok: Boolean(result), crew: result?.crew || null };
+        },
+      ],
+      [
         "/api/approval-mode",
         async ({ bridge, body }) => ({
           ok: await bridge.setApprovalMode(body.mode),
@@ -1588,7 +1716,7 @@ export function createWebRuntimeApi({
         body.mode = sandboxMode;
       }
       if (
-        ["/api/execution-mode", "/api/approval-mode", "/api/sandbox-mode"].includes(url.pathname) &&
+        ["/api/execution-mode", "/api/approval-mode", "/api/sandbox-mode", "/api/crew-mode"].includes(url.pathname) &&
         (ACTIVE_RUNTIME_STATUSES.has(
           pool.getSessionState(body.sessionId)?.status,
         ) ||
@@ -1599,6 +1727,8 @@ export function createWebRuntimeApi({
             ? "Cannot switch execution mode while a request is running"
             : url.pathname === "/api/sandbox-mode"
               ? "Cannot switch sandbox mode while a request is running"
+              : url.pathname === "/api/crew-mode"
+                ? "Cannot switch crew while a request is running"
             : "Cannot switch approval mode while a request is running";
         jsonResponse(res, { error: true, message }, 409);
         return true;
@@ -1677,6 +1807,10 @@ export function createWebRuntimeApi({
         decodeURIComponent(url.pathname.slice("/api/sessions/".length)),
       );
       if (!sessionId) return true;
+      if (isScheduledSessionActive(sessionId)) {
+        jsonResponse(res, { error: true, message: "A background scheduled task is writing this session." }, 409);
+        return true;
+      }
       const state = pool.getSessionState(sessionId);
       if (
         state &&
@@ -1785,9 +1919,11 @@ export async function handleStructuredChatRequest(req, res, bridge) {
         await bridge.handleSubmitMessage({
           text: body?.text,
           messageId: body?.messageId,
+          retryMessageId: body?.retryMessageId,
           skillNames: body?.skillNames,
           attachmentIds: body?.attachmentIds,
           dismissedAlwaysSkills: body?.dismissedAlwaysSkills,
+          fileReferences: body?.fileReferences,
           ...attachmentData,
         }),
       );
@@ -1874,14 +2010,8 @@ async function readMultipartForm(req) {
 }
 
 async function extractAttachmentText(buffer, ext) {
-  if (ext === ".pdf") {
-    return extractPdfText(buffer);
-  }
-  if (ext === ".docx") {
-    const mammoth = await import("mammoth");
-    const parsed = await mammoth.extractRawText({ buffer });
-    return String(parsed?.value || "").trim();
-  }
+  if (DOCUMENT_ATTACHMENT_EXTENSIONS.has(ext))
+    return extractDocumentText(buffer);
   return "";
 }
 
@@ -1889,13 +2019,24 @@ async function saveUploadedAttachment({ file, sessionId }) {
   const originalName = safeUploadFileName(file?.name || "attachment");
   const ext = path.extname(originalName).toLowerCase();
   if (!SUPPORTED_ATTACHMENT_EXTENSIONS.has(ext)) {
-    throw new Error("Unsupported attachment type. Use images, PDF, or DOCX.");
+    throw new Error("Unsupported attachment type. Use images, PDF, Word, PowerPoint, or Excel.");
   }
   if (Number(file?.size || 0) > MAX_ATTACHMENT_BYTES) {
     throw new Error("Attachment is too large. Maximum size is 20 MB.");
   }
   const arrayBuffer = await file.arrayBuffer();
   const buffer = Buffer.from(arrayBuffer);
+  let imageMime = "";
+  if (IMAGE_ATTACHMENT_EXTENSIONS.has(ext)) {
+    try {
+      const metadata = await sharp(buffer, { animated: false }).metadata();
+      const imageTypes = { png: "image/png", jpeg: "image/jpeg", webp: "image/webp", gif: "image/gif" };
+      imageMime = imageTypes[metadata.format] || "";
+      if (!imageMime) throw new Error("Unsupported image format");
+    } catch {
+      throw new Error("Invalid image attachment. Use a valid PNG, JPEG, WebP, or GIF image.");
+    }
+  }
   const id = randomUUID();
   const sessionDir = attachmentSessionDir(sessionId);
   await fs.mkdir(sessionDir, { recursive: true });
@@ -1910,7 +2051,7 @@ async function saveUploadedAttachment({ file, sessionId }) {
   const meta = {
     id,
     name: originalName,
-    mime: file?.type || "",
+    mime: imageMime || file?.type || "",
     extension: ext,
     kind: IMAGE_ATTACHMENT_EXTENSIONS.has(ext) ? "image" : "document",
     size: buffer.length,
@@ -1936,10 +2077,12 @@ async function saveUploadedAttachment({ file, sessionId }) {
 }
 
 async function loadAttachmentMetas(sessionId, ids = []) {
-  const cleanIds = (Array.isArray(ids) ? ids : [])
+  if (!Array.isArray(ids) || ids.length > 8) {
+    throw new Error("Attachment IDs must be an array with at most 8 items.");
+  }
+  const cleanIds = [...new Set(ids
     .map((id) => String(id || "").trim())
-    .filter(Boolean)
-    .slice(0, 8);
+    .filter(Boolean))];
   const metas = [];
   for (const id of cleanIds) {
     const metaFile = attachmentMetaPath(sessionId, id);
@@ -1950,8 +2093,12 @@ async function loadAttachmentMetas(sessionId, ids = []) {
         if (parsed?.id === id && parsed?.path)
           saveAttachmentMetadata(sessionId, parsed);
       }
-      if (parsed?.id === id && parsed?.path) metas.push(parsed);
-    } catch {}
+      if (parsed?.id !== id || !parsed?.path) throw new Error("Invalid attachment metadata");
+      await fs.access(parsed.path);
+      metas.push(parsed);
+    } catch {
+      throw new Error("Attachment not found in this session. Please upload it again.");
+    }
   }
   return metas;
 }
@@ -2161,6 +2308,37 @@ export async function serveStatic(res, filePath, req) {
     res.writeHead(404, { "Content-Type": "text/plain" });
     res.end("Not found");
   }
+}
+
+export const HTML_ARTIFACT_CSP = [
+  "sandbox allow-scripts",
+  "default-src 'none'",
+  "script-src 'unsafe-inline' blob:",
+  "style-src 'unsafe-inline'",
+  "img-src data: blob:",
+  "font-src data:",
+  "media-src data: blob:",
+  "connect-src 'none'",
+  "object-src 'none'",
+  "base-uri 'none'",
+  "form-action 'none'",
+  "frame-src 'none'",
+  "frame-ancestors 'self'",
+].join("; ");
+
+export async function serveHtmlArtifact(res, workspaceRoot, relativePath) {
+  const artifact = await readWorkspaceHtmlArtifact(workspaceRoot, relativePath);
+  const body = Buffer.from(artifact.content, "utf8");
+  res.writeHead(200, {
+    "Content-Type": "text/html; charset=utf-8",
+    "Content-Length": body.length,
+    "Cache-Control": "no-store",
+    "Content-Security-Policy": HTML_ARTIFACT_CSP,
+    "Referrer-Policy": "no-referrer",
+    "X-Content-Type-Options": "nosniff",
+  });
+  res.end(body);
+  return artifact;
 }
 
 function normalizeProjectPath(value) {
@@ -2619,6 +2797,8 @@ export async function buildRuntimeForSession({ sessionId, model, projectDir }) {
 
 async function main() {
   const args = parseArgs(process.argv);
+  const startupConfig = await loadConfig();
+  const webSecurity = await createWebSecurity({ directory: getBaseConfigDir(), host: args.host, port: args.port, terminalEnabled: startupConfig.webui?.terminal_enabled === true, devOrigin: process.env.CODEMINI_DEV_ORIGIN || "" });
   const readGitInfoAsync = createGitInfoReader();
 
   // Ensure general workspace directory exists
@@ -2683,7 +2863,27 @@ async function main() {
         },
         onLifecycle: (lifecycle) => {
           const status = lifecycle?.status;
-          if (status === "running") return;
+          if (status === "running") {
+            // Pool writes running itself when a turn starts. A later running
+            // signal is the approval/input queue becoming empty. Ignore it
+            // while that same turn is still in progress. If the parent turn
+            // has already finished, settle the leftover wait so the session
+            // does not stay busy.
+            if (
+              sessionBridge.hasPendingApproval?.() ||
+              sessionBridge.hasPendingUserInput?.() ||
+              sessionBridge.isBusy?.()
+            ) {
+              return;
+            }
+            const resolve = lifecycleWaiters.get(sessionId);
+            pool.releaseIdleWait(sessionId);
+            if (resolve) {
+              lifecycleWaiters.delete(sessionId);
+              resolve({ status: "completed" });
+            }
+            return;
+          }
 
           // Waiting must win even when the Pool RUN already settled (completed
           // consumed the waiter). Otherwise approval UI appears while Pool is
@@ -2784,13 +2984,17 @@ async function main() {
       else await runtimeStatusStore.set(session.id, "idle");
     },
   });
-  const allocateEmptySession = createPooledEmptySessionAllocator(pool);
+  const isSessionDisplayEmpty = (sessionId) => !hasUiTranscriptInSqlite(sessionId);
+  const allocateEmptySession = createPooledEmptySessionAllocator(pool, {
+    isSessionDisplayEmpty,
+  });
   const runtimeApi = createWebRuntimeApi({
     pool,
     eventBroker,
     ensureSession: ensurePooledSession,
     runtimeStatusStore,
     allocateEmptySession,
+    isSessionDisplayEmpty,
     getDefaultProjectDir: () => currentProjectDir,
     setDefaultProjectDir: (dir) => {
       const next = String(dir || "").trim();
@@ -2844,6 +3048,8 @@ async function main() {
   };
 
   const routes = createNodeRouter();
+  registerScheduledTaskRoutes({ routes, nodeRoute, readBody, jsonResponse, generalDir: GENERAL_PROJECT_DIR });
+  startScheduledWorker().catch(error => console.error('Scheduled worker startup:', error?.message || String(error)));
   routes.get("/api/embed", nodeRoute(async (req, res, url) => {
       const target = String(url.searchParams.get("url") || "").trim();
       if (!target) {
@@ -3193,6 +3399,22 @@ async function main() {
       return;
 
   }));
+  routes.get("/api/workspace/search", nodeRoute(async (req, res, url) => {
+      const cwd = await resolveTerminalCwd(url);
+      try {
+        const query = String(url.searchParams.get("q") || "").trim();
+        const result = await searchWorkspaceFiles(cwd, query);
+        jsonResponse(res, result);
+      } catch (err) {
+        const message = String(err?.message || "Unable to search workspace");
+        const status = /outside|does not exist|not a directory/i.test(message)
+          ? 400
+          : 500;
+        jsonResponse(res, { error: true, message }, status);
+      }
+      return;
+
+  }));
   routes.get("/api/workspace/preview", nodeRoute(async (req, res, url) => {
       const cwd = await resolveTerminalCwd(url);
       try {
@@ -3207,6 +3429,25 @@ async function main() {
           )
             ? 400
             : 500;
+        jsonResponse(res, { error: true, message }, status);
+      }
+      return;
+
+  }));
+  routes.get("/api/artifacts/html", nodeRoute(async (req, res, url) => {
+      const cwd = await resolveTerminalCwd(url);
+      try {
+        const relativePath = String(url.searchParams.get("path") || "").trim();
+        if (!relativePath) {
+          jsonResponse(res, { error: true, message: "HTML artifact path required" }, 400);
+          return;
+        }
+        await serveHtmlArtifact(res, cwd, relativePath);
+      } catch (error) {
+        const message = String(error?.message || "Unable to load HTML artifact");
+        const status = /outside|does not exist|not a file|require|exceeds/i.test(message)
+          ? 400
+          : 500;
         jsonResponse(res, { error: true, message }, status);
       }
       return;
@@ -3542,7 +3783,7 @@ async function main() {
   }));
   routes.get("/api/config", nodeRoute(async (req, res, url) => {
       const config = await loadConfig();
-      jsonResponse(res, config);
+      jsonResponse(res, publicConfig(config));
       return;
 
   }));
@@ -3552,13 +3793,21 @@ async function main() {
         jsonResponse(res, { error: true, message: "Missing key" }, 400);
         return;
       }
+      try { assertWebConfigWritable(key); } catch (err) {
+        jsonResponse(res, { error: true, message: err.message }, 403);
+        return;
+      }
+      try { validateWebConfigValue(key, value); } catch (err) {
+        jsonResponse(res, { error: true, message: err.message }, 400);
+        return;
+      }
       try {
         await setConfigValue(key, value);
         const config = await loadConfig();
         await pool.reloadConfig(
           key === "model.name" ? { model: config.model?.name } : {},
         );
-        jsonResponse(res, { ok: true, config });
+        jsonResponse(res, { ok: true, config: publicConfig(config) });
       } catch (err) {
         jsonResponse(res, { error: true, message: err.message }, 500);
       }
@@ -3819,13 +4068,13 @@ async function main() {
           }
           const name = safeUploadFileName(file.name || "source");
           const ext = path.extname(name).toLowerCase();
-          if (![".pdf", ".docx", ".txt", ".md", ".markdown"].includes(ext)) {
+          if (!SCRAPBOOK_SOURCE_EXTENSIONS.has(ext)) {
             throw new Error(
-              "Unsupported source type. Use PDF, DOCX, TXT, or Markdown.",
+              "Unsupported source type. Use PDF, Word, PowerPoint, Excel, TXT, or Markdown.",
             );
           }
           const buffer = Buffer.from(await file.arrayBuffer());
-          const extractedText = [".txt", ".md", ".markdown"].includes(ext)
+          const extractedText = scrapbookTextExtensions.has(ext)
             ? buffer.toString("utf8").trim()
             : await extractAttachmentText(buffer, ext);
           if (!extractedText)
@@ -4381,6 +4630,7 @@ async function main() {
         // Keep legacy preset in sync for older readers.
         config.soul.preset = getActiveSoulName(config, resolvedCategory);
         await saveConfig(config);
+        await pool.reloadConfig();
         jsonResponse(res, {
           ok: true,
           category: resolvedCategory,
@@ -4396,14 +4646,7 @@ async function main() {
   const handleRequest = async (req, res) => {
     const url = new URL(req.url, `http://localhost:${args.port}`);
 
-    res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-    if (req.method === "OPTIONS") {
-      res.writeHead(204);
-      res.end();
-      return;
-    }
+    if (await webSecurity.handle(req, res, url)) return;
 
     if (await runtimeApi(req, res)) return;
     if (await dispatchNodeRouter(routes, req, res)) return;
@@ -4609,7 +4852,16 @@ async function main() {
 
     if (req.method === "GET" && url.pathname.startsWith("/api/config/get/")) {
       const key = url.pathname.slice("/api/config/get/".length);
-      const value = await getConfigValue(key);
+      try { assertConfigPath(key); } catch (err) {
+        jsonResponse(res, { error: true, message: err.message }, 400);
+        return;
+      }
+      if (isSecretConfigKey(key.split(".").at(-1))) {
+        jsonResponse(res, { key, hasApiKey: Boolean(await getConfigValue(key)) });
+        return;
+      }
+      const safeConfig = publicConfig(await loadConfig());
+      const value = key.split(".").reduce((obj, part) => obj && Object.hasOwn(obj, part) ? obj[part] : undefined, safeConfig);
       jsonResponse(res, { key, value });
       return;
     }
@@ -4905,13 +5157,13 @@ async function main() {
           }
           const name = safeUploadFileName(file.name || "source");
           const ext = path.extname(name).toLowerCase();
-          if (![".pdf", ".docx", ".txt", ".md", ".markdown"].includes(ext)) {
+          if (!SCRAPBOOK_SOURCE_EXTENSIONS.has(ext)) {
             throw new Error(
-              "Unsupported source type. Use PDF, DOCX, TXT, or Markdown.",
+              "Unsupported source type. Use PDF, Word, PowerPoint, Excel, TXT, or Markdown.",
             );
           }
           const buffer = Buffer.from(await file.arrayBuffer());
-          const contentText = [".txt", ".md", ".markdown"].includes(ext)
+          const contentText = scrapbookTextExtensions.has(ext)
             ? buffer.toString("utf8").trim()
             : await extractAttachmentText(buffer, ext);
           if (!contentText)
@@ -5558,7 +5810,9 @@ async function main() {
         url.pathname.slice("/api/souls/".length, -"/content".length),
       );
       try {
-        jsonResponse(res, await readSoulContent(sname));
+        jsonResponse(res, await readSoulContent(sname, {
+          preferCategory: url.searchParams.get("category") || "",
+        }));
       } catch (err) {
         jsonResponse(res, { error: true, message: err.message }, 500);
       }
@@ -5597,9 +5851,10 @@ async function main() {
           config.soul.coding = "Default";
         }
         if (soulNameEquals(config.soul.daily, sname)) {
-          config.soul.daily = "Playful";
+          config.soul.daily = "Default";
         }
         await saveConfig(config);
+        await pool.reloadConfig();
         jsonResponse(res, { ok: true });
       } catch (err) {
         const status = /Cannot delete/i.test(err.message)
@@ -5629,8 +5884,12 @@ async function main() {
     () => {
     const displayHost = args.host === "0.0.0.0" ? "localhost" : args.host;
     console.log(
-      `\n  Codemini Web UI\n  http://${displayHost}:${args.port}\n  Project: ${currentProjectDir}\n`,
+      `\n  Codemini Web UI\n  http://${displayHost}:${args.port}\n  Project: ${currentProjectDir}\n  Login token file: ${webSecurity.tokenPath}\n`,
     );
+    if (!process.env.CODEMINI_DEV_ORIGIN) {
+      console.log(webSecurity.loginInstructions(`http://${displayHost}:${args.port}`) + "\n");
+    }
+    process.send?.({ type: "web:ready", tokenPath: webSecurity.tokenPath });
     if (!args.open) return;
     const openCmd =
       process.platform === "darwin"
@@ -5648,6 +5907,7 @@ async function main() {
 
   const cleanup = createServerCleanup({
     runtimeEvictionTimer,
+    disposeTerminals,
     pool,
     runtimeStatusStore,
     server,

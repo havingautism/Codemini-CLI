@@ -172,6 +172,7 @@ function SoulDetailPane({ soul, disabled = false, onSave }) {
   const [saving, setSaving] = useState(false);
   const soulName = soul?.name || "";
   const soulScope = soul?.scope || "";
+  const soulCategory = soul?.category || "";
 
   useEffect(() => {
     setEditing(false);
@@ -183,7 +184,7 @@ function SoulDetailPane({ soul, disabled = false, onSave }) {
     let cancelled = false;
     setLoading(true);
     api
-      .fetchSoulContent(soulName)
+      .fetchSoulContent(soulName, soulCategory)
       .then((data) => {
         if (cancelled) return;
         const next = data.content || "";
@@ -201,7 +202,7 @@ function SoulDetailPane({ soul, disabled = false, onSave }) {
     return () => {
       cancelled = true;
     };
-  }, [soulName, soulScope]);
+  }, [soulName, soulScope, soulCategory]);
 
   if (!soul) {
     return (
@@ -318,7 +319,10 @@ function SoulDetailPane({ soul, disabled = false, onSave }) {
             placeholder={t("soulPlaceholder")}
           />
         ) : (
-          <MarkdownPreview value={content} className="flex-1" />
+          <MarkdownPreview
+            value={content}
+            className="codemini-resource-detail-prose flex-1"
+          />
         )}
       </div>
     </div>
@@ -369,6 +373,7 @@ function SoulChoiceCard({
       tabIndex={0}
       onClick={() => onSelect(soul)}
       onKeyDown={(event) => {
+        if (event.target !== event.currentTarget) return;
         if (event.key === "Enter" || event.key === " ") onSelect(soul);
       }}
       className={cn(
@@ -410,7 +415,6 @@ function SoulChoiceCard({
         <Switch
           checked={active}
           onCheckedChange={handleToggle}
-          onClick={(event) => event.stopPropagation()}
           disabled={disabled}
           aria-label={
             active
@@ -422,16 +426,14 @@ function SoulChoiceCard({
 
       {/* Footer: actions (custom only) */}
       {isCustom && (
-        <div
-          className="flex items-center gap-0.5"
-          onClick={(event) => event.stopPropagation()}
-        >
+        <div className="flex items-center gap-0.5">
           <Button
             variant="ghost"
             size="icon-sm"
             disabled={disabled}
             className="text-(--accent-red) hover:bg-(--accent-red-bg) hover:text-(--accent-red)"
-            onClick={() => {
+            onClick={(event) => {
+              event.stopPropagation();
               if (disabled) return;
               onDelete(soul);
             }}

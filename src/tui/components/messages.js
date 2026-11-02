@@ -3,6 +3,7 @@ import { pathToFileURL } from 'node:url';
 import { Image, Markdown, TuiAltScreen, visibleWidth, wrapTextWithAnsi } from '@earendil-works/pi-tui';
 
 import { bold, color, markdownTheme, sealAnsi, CURSOR_COLOR, CURSOR_COLOR_RESET, CURSOR_SHAPE, CURSOR_SHAPE_RESET, SURFACE_BG, TEXT_FG } from '../theme.js';
+import { crewIdentityMatchesWorker } from '../../core/crew-progress.js';
 
 export function messageText(content) {
   if (typeof content === 'string') return content;
@@ -338,7 +339,8 @@ export class PlanProgress {
       index: Number(step.index || index + 1),
       title: String(step.title || step.role || `Step ${index + 1}`),
       role: String(step.role || ''),
-      status: String(step.status || 'pending')
+      status: String(step.status || 'pending'),
+      crewKind: String(step.crewKind || '')
     }));
   }
 
@@ -351,14 +353,49 @@ export class PlanProgress {
     step.status = event.type === 'plan:step_done' ? String(event.status || 'done') : String(event.status || 'running');
     if (event.title) step.title = String(event.title);
     if (event.role) step.role = String(event.role);
+    if (event.crewKind) step.crewKind = String(event.crewKind);
+  }
+
+  markWorkerCancelled(workerId) {
+    const id = String(workerId || '').trim();
+    if (!id) return false;
+    let changed = false;
+    for (const step of this.steps) {
+      if (!crewIdentityMatchesWorker(step, id)) continue;
+      step.status = 'cancelled';
+      changed = true;
+    }
+    return changed;
   }
 
   render(width) {
-    const done = this.steps.filter((step) => step.status === 'done' || step.status === 'completed').length;
-    const header = surfaceLine(`${bold(color.accent(this.copy.plan))}  ${color.muted(`${done}/${this.steps.length}`)}${this.goal ? `  ${color.dim(oneLine(this.goal, 72))}` : ''}`, width, color.surfaceRaisedBg);
+    const done = this.steps.filter((step) => {
+      const status = String(step.status || '').toLowerCase();
+      return status === 'done' || status === 'completed' || status === 'cancelled' || status === 'canceled' || status === 'aborted';
+    }).length;
+    const headerLabel = this.steps.some((step) => /^(?:Crew|Crew) /i.test(String(step.title || '')) || step.crewKind)
+      ? 'Crew'
+      : this.copy.plan;
+    const header = surfaceLine(`${bold(color.accent(headerLabel))}  ${color.muted(`${done}/${this.steps.length}`)}${this.goal ? `  ${color.dim(oneLine(this.goal, 72))}` : ''}`, width, color.surfaceRaisedBg);
     const lines = this.steps.map((step) => {
-      const icon = step.status === 'running' ? color.purple('●') : step.status === 'done' || step.status === 'completed' ? color.success('✓') : step.status === 'failed' || step.status === 'error' ? color.error('✗') : color.dim('○');
-      return ` ${icon} ${color.text(oneLine(step.title, Math.max(20, width - 18)))}${step.role ? color.dim(`  ${step.role}`) : ''}`;
+      const status = String(step.status || '').toLowerCase();
+      const cancelled = status === 'cancelled' || status === 'canceled' || status === 'aborted';
+      const icon = status === 'running'
+        ? color.purple('●')
+        : status === 'done' || status === 'completed'
+          ? color.success('✓')
+          : status === 'failed' || status === 'error'
+            ? color.error('✗')
+            : cancelled
+              ? color.warning('○')
+              : color.dim('○');
+      const kind = String(step.crewKind || '').trim();
+      const kindTag = kind === 'review' ? 'review' : kind === 'survey' ? 'survey' : kind === 'worker' ? 'worker' : '';
+      const roleBit = kindTag || step.role;
+      const cancelledBit = cancelled
+        ? color.warning(`  ${this.copy.crewPhaseCancelled || 'cancelled'}`)
+        : '';
+      return ` ${icon} ${color.text(oneLine(step.title, Math.max(20, width - 28)))}${roleBit ? color.dim(`  ${roleBit}`) : ''}${cancelledBit}`;
     });
     return [...header, ...lines.map((line) => paintBackground(line, width))];
   }

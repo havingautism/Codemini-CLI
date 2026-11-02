@@ -4,13 +4,13 @@ import { getSessionsDir } from './paths.js';
 import { normalizePlanState } from './plan-state.js';
 import { normalizeSpecState } from './spec-state.js';
 import { normalizeTodos } from './todo-state.js';
+import { normalizeCrewState } from './crew-store.js';
 import { ensureSessionTitleEmoji, stripInternalTitleContext } from './session-title.js';
 import { sanitizeTiming } from './usage-timing.js';
 import {
   deleteSessionFromSqlite,
   listSessionsFromSqlite,
   loadSessionFromSqlite,
-  pruneSessionsFromSqlite,
   rememberSessionMessageRefs,
   saveSessionToSqlite,
   sessionMessageWriteStart
@@ -106,6 +106,9 @@ function sanitizeUsage(usage) {
   copyNumber('cacheWriteInputTokens');
   copyNumber('reasoningOutputTokens');
   copyNumber('requests');
+  if (['reported', 'unreported', 'partial'].includes(usage?.cacheUsageStatus)) {
+    out.cacheUsageStatus = usage.cacheUsageStatus;
+  }
   if (Array.isArray(usage.raw) && usage.raw.length > 0) {
     out.raw = usage.raw.filter((item) => item && typeof item === 'object').map((item) => ({ ...item }));
   } else if (usage.raw && typeof usage.raw === 'object') {
@@ -189,7 +192,7 @@ export function resolveTitleUserText(source = {}) {
 
 export function deriveSessionTitle(messages = []) {
   const firstUser = Array.isArray(messages)
-    ? messages.find((msg) => msg?.role === 'user' && normalizeWhitespace(msg?.content))
+    ? messages.find((msg) => msg?.role === 'user' && msg?.model_context !== true && normalizeWhitespace(msg?.content))
     : null;
   const text = stripMarkdown(resolveTitleUserText(firstUser || {}));
   if (!text) return `💬 ${DEFAULT_SESSION_TITLE}`;
@@ -208,7 +211,7 @@ export function resolveLatestTitleExchange(messages = []) {
     if (!assistantText.trim()) continue;
     for (let userIndex = assistantIndex - 1; userIndex >= 0; userIndex--) {
       const user = list[userIndex];
-      if (user?.role !== 'user') continue;
+      if (user?.role !== 'user' || user?.model_context === true) continue;
       const userText = resolveTitleUserText(user);
       if (userText) return { userText, assistantText: assistantText.trim() };
     }
@@ -229,8 +232,30 @@ function sanitizeMessage(msg) {
 
   if (typeof msg?.model_content === 'string' && msg.model_content) out.model_content = msg.model_content;
   if (msg?.model_content_scope === 'current_turn') out.model_content_scope = 'current_turn';
+  if (Array.isArray(msg?.model_images) && msg.model_images.length > 0) {
+    out.model_images = msg.model_images
+      .filter((image) => image && typeof image === 'object' && typeof image.data === 'string' && image.data)
+      .map((image) => ({
+        mime: String(image.mime || 'image/jpeg'),
+        data: image.data,
+      }));
+  }
+  if (msg?.model_context === true) out.model_context = true;
+  if (typeof msg?.model_context_source === 'string' && msg.model_context_source.trim()) {
+    out.model_context_source = msg.model_context_source.trim();
+  }
+  if (typeof msg?.model_context_reason === 'string' && msg.model_context_reason.trim()) {
+    out.model_context_reason = msg.model_context_reason.trim();
+  }
   if (msg?.model_visible === false) out.model_visible = false;
   if (msg?.local_only === true) out.local_only = true;
+  if (Array.isArray(msg?.selected_skill_names)) {
+    out.selected_skill_names = [...new Set(msg.selected_skill_names.map((name) => String(name || '').trim()).filter(Boolean))];
+  }
+  if (Array.isArray(msg?.skill_badges)) {
+    out.skill_badges = msg.skill_badges.filter((badge) => badge && typeof badge.name === 'string' && badge.name.trim())
+      .map((badge) => ({ name: badge.name.trim(), status: String(badge.status || 'selected') }));
+  }
   if (typeof msg?.response_status === 'string' && msg.response_status.trim()) {
     out.response_status = msg.response_status.trim();
   }
@@ -332,6 +357,9 @@ function sanitizeSession(session, fallbackId = '') {
   }
   if (session?.model) out.model = String(session.model);
   if (session?.mode) out.mode = String(session.mode);
+  if (typeof session?.usageParent?.sessionId === 'string' && Number.isFinite(Date.parse(session.usageParent.through))) {
+    out.usageParent = { sessionId: session.usageParent.sessionId, through: session.usageParent.through };
+  }
   const legacySpecState = session?.planState?.status === 'pending_spec_approval'
     ? normalizeSpecState(session.planState)
     : null;
@@ -366,6 +394,27 @@ function sanitizeSession(session, fallbackId = '') {
   if (typeof session?.memoryBootstrapSnapshot === 'string') {
     out.memoryBootstrapSnapshot = session.memoryBootstrapSnapshot;
   }
+  if (Array.isArray(session?.activatedToolNames)) {
+    out.activatedToolNames = [...new Set(
+      session.activatedToolNames.map((name) => String(name || '').trim()).filter(Boolean),
+    )];
+  }
+  if (session?.promptRequestSnapshot && typeof session.promptRequestSnapshot === 'object') {
+    const snapshot = session.promptRequestSnapshot;
+    const messageHashes = Array.isArray(snapshot.messageHashes)
+      ? snapshot.messageHashes.map((hash) => String(hash || '')).filter(Boolean)
+      : [];
+    out.promptRequestSnapshot = {
+      promptRevision: Math.max(1, Math.round(Number(snapshot.promptRevision || 1))),
+      systemHash: String(snapshot.systemHash || ''),
+      toolsHash: String(snapshot.toolsHash || ''),
+      toolCount: Math.max(0, Math.round(Number(snapshot.toolCount || 0))),
+      messageHashes,
+    };
+  }
+
+  const crew = normalizeCrewState(session?.crew);
+  if (crew) out.crew = crew;
 
   return out;
 }
@@ -709,6 +758,7 @@ function cloneSessionMessages(messages = []) {
 /** Copy completed history into a new session so a manual stop can continue without appending under the aborted turn. */
 export async function createContinuationSession(source, { messages = [], compactView = null } = {}) {
   const created = await createSession(source?.projectDir);
+  if (source?.id) created.usageParent = { sessionId: source.id, through: created.createdAt };
   created.messages = cloneSessionMessages(messages);
   if (typeof source?.title === 'string' && source.title.trim()) created.title = source.title;
   if (source?.model) created.model = source.model;
@@ -722,6 +772,19 @@ export async function createContinuationSession(source, { messages = [], compact
   if (typeof source?.memoryBootstrapSnapshot === 'string') {
     created.memoryBootstrapSnapshot = source.memoryBootstrapSnapshot;
   }
+  if (Array.isArray(source?.activatedToolNames)) {
+    created.activatedToolNames = [...source.activatedToolNames];
+  }
+  if (source?.promptRequestSnapshot && typeof source.promptRequestSnapshot === 'object') {
+    created.promptRequestSnapshot = {
+      ...source.promptRequestSnapshot,
+      messageHashes: Array.isArray(source.promptRequestSnapshot.messageHashes)
+        ? [...source.promptRequestSnapshot.messageHashes]
+        : [],
+    };
+  }
+  const crew = normalizeCrewState(source?.crew);
+  if (crew) created.crew = crew;
   if (Array.isArray(compactView) && compactView.length) {
     created.compact = {
       ...(source?.compact && typeof source.compact === 'object' ? source.compact : {}),
@@ -808,13 +871,4 @@ export async function deleteSession(sessionId) {
   }
 
   return { removed };
-}
-
-export async function pruneSessions(policy = {}) {
-  await importLegacySessions();
-  const removed = pruneSessionsFromSqlite({
-    maxSessions: Number(policy.max_sessions || 100),
-    retentionDays: Number(policy.retention_days || 30)
-  });
-  return { removed, kept: listSessionsFromSqlite(10000, { includeEmpty: true }).length };
 }

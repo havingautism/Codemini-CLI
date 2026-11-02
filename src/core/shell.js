@@ -1,3 +1,4 @@
+import { parse as parseShell } from 'shell-quote';
 import { spawn, spawnSync } from 'node:child_process';
 
 const LONG_RUNNING_COMMAND_RE =
@@ -249,8 +250,25 @@ export function resolveSandboxShell(defaultShell) {
 }
 
 export function isDangerousCommand(command, blockedPatterns = []) {
-  const lowered = command.toLowerCase();
-  return blockedPatterns.some((pattern) => lowered.includes(String(pattern).toLowerCase()));
+  const text = String(command || '').toLowerCase();
+  let tokens;
+  try { tokens = parseShell(text, name => '$' + name); } catch { return true; }
+  const words = tokens.map(t => typeof t === 'string' ? t : t.op || '');
+  for (let i = 0; i < words.length; i++) {
+    const cmd = words[i].split(/[\\/]/).pop();
+    if (cmd === 'rm') {
+      const args = words.slice(i + 1).join(' ');
+      const flags = words.slice(i + 1).filter(w => /^-[^-]/.test(w)).join('');
+      if ((flags.includes('r') || /--recursive\b/.test(args)) &&
+          words.slice(i + 1).some(w => /^(?:\/|\/\*|~(?:\/.*)?|\$\{?home\}?(?:\/.*)?|\$env:userprofile(?:\\.*)?)$/.test(w))) return true;
+    }
+    if (['del', 'erase', 'rd', 'rmdir', 'remove-item'].includes(cmd) && /(?:[a-z]:[\\/]|%userprofile%|\$env:userprofile)/i.test(text)) return true;
+  }
+  return blockedPatterns.some(pattern => {
+    let expected;
+    try { expected = parseShell(String(pattern).toLowerCase(), name => '$' + name).map(t => typeof t === 'string' ? t : t.op || ''); } catch { return false; }
+    return expected.length > 0 && words.some((_, i) => expected.every((word, j) => words[i + j] === word));
+  });
 }
 
 function spawnShellChild({ shellSpec, shellCommand, cwd }) {
@@ -268,15 +286,15 @@ export async function runShellCommand({
   signal,
   config,
   sandboxMode,
+  onOutput,
 }) {
   if (signal?.aborted) {
     return Promise.reject(Object.assign(new Error('Command aborted before dispatch'), { code: 'ABORT_ERR' }));
   }
   const shellSpec = resolveShell(shell);
-  const shellCommand =
-    process.platform !== 'win32' && /(?:^|\/)bash(?:\.exe)?$/i.test(shellSpec.command)
-      ? `exec ${command}`
-      : command;
+  // Preserve the full reviewed command list; exec before its first command
+  // would discard subsequent newline/semicolon-separated commands.
+  const shellCommand = command;
 
   let sandboxChild = null;
   let sandboxMeta = { wrapped: false, mode: '', backend: 'none' };
@@ -439,6 +457,7 @@ export async function runShellCommand({
     };
 
     child.stdout.on('data', (chunk) => {
+      onOutput?.(chunk.toString(), 'stdout');
       stdout = appendOutputWithCap(stdout, chunk, stdoutState);
       stdoutReadyWindow = (stdoutReadyWindow + chunk.toString()).slice(-READY_OUTPUT_WINDOW_CHARS);
       if (longRunningCommand && hasReadyOutput(stdoutReadyWindow)) {
@@ -447,6 +466,7 @@ export async function runShellCommand({
     });
 
     child.stderr.on('data', (chunk) => {
+      onOutput?.(chunk.toString(), 'stderr');
       stderr = appendOutputWithCap(stderr, chunk, stderrState);
       stderrReadyWindow = (stderrReadyWindow + chunk.toString()).slice(-READY_OUTPUT_WINDOW_CHARS);
       if (longRunningCommand && hasReadyOutput(stderrReadyWindow)) {

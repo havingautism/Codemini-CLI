@@ -136,7 +136,7 @@ test('agent loop bounds parallel tool bodies, preserves result order, and passes
   );
 });
 
-test('agent loop nudges a live task checklist after two tool batches without progress', async () => {
+test('agent loop does not interrupt consecutive reads to maintain the task checklist', async () => {
   let requests = 0;
   const result = await runAgentLoop({
     systemPrompt: 'test',
@@ -156,7 +156,8 @@ test('agent loop nudges a live task checklist after two tool batches without pro
           toolCalls: [{ id: `read-${requests}`, name: 'read', arguments: '{}' }],
         };
       }
-      assert.match(messages.at(-1)?.content || '', /update the tasks checklist now/i);
+      assert.equal(messages.at(-1)?.role, 'tool');
+      assert.doesNotMatch(JSON.stringify(messages), /Progress checkpoint/i);
       return { text: 'done', toolCalls: [] };
     },
   });
@@ -305,4 +306,23 @@ test('agent loop emits step start and end around each model round', async () => 
   );
   assert.equal(typeof steps[1].durationMs, 'number');
   assert.ok(steps[1].durationMs >= 0);
+});
+
+
+test('repository analysis can conclude from provided evidence without mandatory index requests', async () => {
+  let requests = 0;
+  const result = await runAgentLoop({
+    systemPrompt: 'Relevant source was supplied by the user.',
+    userPrompt: 'Analyze the entire repository architecture using the supplied source.',
+    model: 'test-model',
+    toolDefinitions: [],
+    toolHandlers: {},
+    config: { memory: { enabled: false } },
+    requestCompletion: async () => {
+      requests += 1;
+      return { text: 'The supplied source shows that the server owns persistence and the client only renders state.', toolCalls: [] };
+    },
+  });
+  assert.equal(requests, 1);
+  assert.doesNotMatch(JSON.stringify(result.messages), /not inspected enough relevant source/);
 });

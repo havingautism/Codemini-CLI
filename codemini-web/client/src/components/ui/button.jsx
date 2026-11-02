@@ -4,7 +4,7 @@ import { Slot } from "radix-ui"
 import { cn } from "@/lib/utils"
 
 const buttonVariants = variants(
-  "inline-flex shrink-0 items-center justify-center gap-2 rounded-lg text-sm font-medium whitespace-nowrap transition-[background-color,color,border-color,box-shadow,opacity,transform] outline-none cursor-pointer focus-visible:shadow-[inset_0_0_0_1px_var(--control-border-hover)] disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
+  "inline-flex shrink-0 items-center justify-center gap-2 rounded-lg text-sm font-medium whitespace-nowrap transition-[background-color,color,border-color,box-shadow,opacity,transform] outline-none cursor-pointer disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
   {
     variants: {
       variant: {
@@ -13,6 +13,7 @@ const buttonVariants = variants(
         outline: "border-0 bg-(--badge-bg) text-(--text-primary) shadow-[inset_0_0_0_1px_var(--badge-edge)] hover:bg-(--bg-hover) hover:text-(--text-primary)",
         secondary: "bg-(--badge-bg) text-(--text-primary) shadow-[inset_0_0_0_1px_var(--badge-edge)] hover:bg-(--bg-hover)",
         ghost: "bg-(--badge-bg) text-(--text-secondary) shadow-[inset_0_0_0_1px_var(--badge-edge)] hover:bg-(--bg-hover) hover:text-(--text-primary) active:scale-[0.97]",
+        tab: "border-0 bg-transparent text-(--text-secondary) shadow-none hover:bg-(--bg-hover) hover:text-(--text-primary) aria-pressed:bg-(--bg-primary) aria-pressed:text-(--text-primary) aria-pressed:shadow-sm",
         // Square dismiss / icon-close — unified corner + inset border with other buttons
         close: "border-0 bg-(--badge-bg) text-(--text-secondary) shadow-[inset_0_0_0_1px_var(--badge-edge)] hover:bg-(--bg-hover) hover:text-(--text-primary) active:scale-95",
         link: "text-primary underline-offset-4 hover:underline",

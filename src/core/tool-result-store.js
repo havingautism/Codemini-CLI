@@ -175,6 +175,10 @@ export function summarizeToolResult(result) {
       return p ? `diff preview for ${p}` : 'diff preview';
     }
     if ('created' in obj && Array.isArray(obj.created)) {
+      const crewMessage = String(obj.message || '').trim();
+      if (crewMessage && (Array.isArray(obj.missions) || obj.created.some?.((item) => item?.id))) {
+        return crewMessage;
+      }
       return `created ${obj.created.length} task(s)`;
     }
     if ('tasks' in obj && Array.isArray(obj.tasks)) {

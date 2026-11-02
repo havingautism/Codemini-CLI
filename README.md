@@ -20,10 +20,34 @@
 <p align="center">
   <a href="#english">English</a> ·
   <a href="#简体中文">简体中文</a> ·
+  <a href="#download">Download</a> ·
   <a href="#terminal-tui--web-ui">Web UI</a> ·
   <a href="./OPERATIONS.md">Operator Guide</a> ·
   <a href="./deployment.md">Deployment</a>
 </p>
+
+## Download
+
+**下载**
+
+Desktop installers for **v0.10.0**. The desktop app bundles its own runtime, so these installs do not need Node.js. The npm CLI (`npm install -g codemini-cli`) is separate and still needs Node.js 22.19 or newer.
+
+Buttons below point at the `v0.10.0` GitHub Release assets. They start working when that release is published. The asset names are stable: `Codemini-Setup-<version>-win-<arch>.exe` and `Codemini-<version>-mac-<arch>.dmg`.
+
+桌面安装包对应 **v0.10.0**。安装包自带运行时，不需要另外安装 Node.js。npm CLI（`npm install -g codemini-cli`）是另一条安装路径，仍然需要 Node.js 22.19 或更高版本。
+
+下面的按钮指向 `v0.10.0` 的 GitHub Release 附件，发布之后即可下载。文件名保持为 `Codemini-Setup-<version>-win-<arch>.exe` 和 `Codemini-<version>-mac-<arch>.dmg`。
+
+| OS / 系统 | Requirements / 环境 | Download / 下载 |
+| --- | --- | --- |
+| Windows | Windows 10 or later, 64-bit<br>Windows 10 或更高版本，64 位 | <a href="https://github.com/havingautism/Codemini-CLI/releases/download/v0.10.0/Codemini-Setup-0.10.0-win-x64.exe"><img alt="Setup x64" src="https://img.shields.io/badge/Setup-x64-0078D4?style=for-the-badge&logo=windows&logoColor=white"></a> |
+| Windows | Windows 11 on ARM<br>Windows 11 ARM64 | <a href="https://github.com/havingautism/Codemini-CLI/releases/download/v0.10.0/Codemini-Setup-0.10.0-win-arm64.exe"><img alt="Setup ARM64" src="https://img.shields.io/badge/Setup-ARM64-0078D4?style=for-the-badge&logo=windows&logoColor=white"></a> |
+| macOS | Apple Silicon, macOS 13 Ventura or later<br>Apple 芯片，macOS 13 Ventura 或更高版本 | <a href="https://github.com/havingautism/Codemini-CLI/releases/download/v0.10.0/Codemini-0.10.0-mac-arm64.dmg"><img alt="DMG Apple Silicon" src="https://img.shields.io/badge/DMG-Apple_Silicon-000000?style=for-the-badge&logo=apple&logoColor=white"></a> |
+| macOS | Intel x64, macOS 13 Ventura or later<br>Intel 芯片，macOS 13 Ventura 或更高版本 | <a href="https://github.com/havingautism/Codemini-CLI/releases/download/v0.10.0/Codemini-0.10.0-mac-x64.dmg"><img alt="DMG Intel x64" src="https://img.shields.io/badge/DMG-Intel_x64-000000?style=for-the-badge&logo=apple&logoColor=white"></a> |
+
+Unsigned builds: Windows SmartScreen and macOS Gatekeeper warn until signing certificates are added. Details are in [DESKTOP.md](./DESKTOP.md). All releases: [github.com/havingautism/Codemini-CLI/releases](https://github.com/havingautism/Codemini-CLI/releases).
+
+未签名构建在补上证书之前，Windows SmartScreen 和 macOS Gatekeeper 会提示风险。说明见 [DESKTOP.md](./DESKTOP.md)。全部发布页：[Releases](https://github.com/havingautism/Codemini-CLI/releases)。
 
 ---
 
@@ -245,6 +269,8 @@ npm run build:web
 
 - [Operator Guide](./OPERATIONS.md)
 - [Deployment Guide](./deployment.md)
+- [Desktop app](./DESKTOP.md)
+- [Desktop downloads](#download)
 - [Releases](https://github.com/havingautism/Codemini-CLI/releases)
 
 ### License
@@ -471,6 +497,9 @@ npm run build:web
 
 - [使用手册](./OPERATIONS.md)
 - [部署指南](./deployment.md)
+- [桌面应用](./DESKTOP.md)
+- [桌面版下载](#download)
+- [Token 活动与用量记录](./docs/adr/token-activity.md)
 - [Releases](https://github.com/havingautism/Codemini-CLI/releases)
 
 ### 许可证

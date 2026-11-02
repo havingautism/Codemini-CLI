@@ -7,8 +7,50 @@ import {
   replaceLastTextSegment,
   settleIncompleteTranscriptMessage,
   repairSettledTranscriptMessages,
+  removeEmptyAssistantPlaceholders,
 } from '../codemini-web/shared/transcript-segments.js';
 import { reduceSessionTranscriptEvent } from '../codemini-web/client/src/lib/session-state.js';
+
+test('finished turns remove empty assistant placeholders but preserve content and activity', () => {
+  const empty = { id: 'empty', role: 'general', isComplete: false, segments: [
+    { type: 'text', text: '  ', isStreaming: true },
+    { type: 'thinking', text: '' },
+    { type: 'tools', cards: [] },
+    { type: 'loop', phase: 'start', step: 1 },
+  ] };
+  const retained = [
+    { id: 'user', role: 'you', text: 'question' },
+    { id: 'error', role: 'error', text: 'Failed: fetch failed' },
+    { id: 'partial', role: 'general', segments: [{ type: 'text', text: 'partial reply' }] },
+    { id: 'thinking', role: 'general', segments: [{ type: 'thinking', text: 'reasoning' }] },
+    { id: 'tools', role: 'general', segments: [{ type: 'tools', cards: [{ id: 'tool-1' }] }] },
+    { id: 'skill', role: 'general', skillBadges: [{ name: 'debug' }] },
+    { id: 'change', role: 'general', fileChanges: [{ path: 'app.js' }] },
+    { id: 'plan', role: 'general', planStep: { step: 1 } },
+    { id: 'attachment', role: 'general', attachments: [{ id: 'file-1' }] },
+    { id: 'structured', role: 'general', segments: [{ type: 'skill', name: 'debug' }] },
+  ];
+  assert.deepEqual(removeEmptyAssistantPlaceholders([empty]), [empty]);
+  assert.deepEqual(removeEmptyAssistantPlaceholders([empty, ...retained], { turnFinished: true }), retained);
+  assert.deepEqual(repairSettledTranscriptMessages([
+    { ...empty, isComplete: true }, retained[1],
+  ]).map((message) => message.id), ['error']);
+  assert.deepEqual(repairSettledTranscriptMessages([empty, retained[1]]).map((message) => message.id), ['error']);
+});
+
+test('network failure removes the background session placeholder without touching other sessions', () => {
+  const otherMessages = [{ id: 'other-live', role: 'general', segments: [], isComplete: false }];
+  let state = { sessionMessagesById: { failed: [], other: otherMessages } };
+  state = reduceSessionTranscriptEvent(state, {
+    type: 'assistant:start', sessionId: 'failed', messageId: 'empty-reply',
+  });
+  assert.equal(state.sessionMessagesById.failed.length, 1);
+  state = reduceSessionTranscriptEvent(state, {
+    type: 'submit:done', sessionId: 'failed', result: { type: 'error', text: 'fetch failed' },
+  });
+  assert.deepEqual(state.sessionMessagesById.failed, []);
+  assert.equal(state.sessionMessagesById.other, otherMessages);
+});
 
 test('assistant usage events add tokens to the parent message', () => {
   const message = applyStreamEventToMessage(
@@ -946,6 +988,21 @@ test('aborted settle does not mark leftover tasks completed', () => {
   );
 
   assert.equal(settled.segments[0].cards[0].arguments.tasks[0].status, 'in_progress');
+});
+
+test('settling a turn preserves skill selection metadata while closing running badges', () => {
+  for (const reason of ['aborted', 'failed', 'completed']) {
+    const badges = [
+      { name: 'manual', status: 'selected' },
+      { name: 'default', status: 'always' },
+      { name: 'read', status: 'done' },
+      { name: 'running', status: 'running' },
+    ];
+    const settled = settleIncompleteTranscriptMessage({ skillBadges: badges }, { reason });
+    assert.deepEqual(settled.skillBadges.slice(0, 3), badges.slice(0, 3));
+    assert.equal(settled.skillBadges[3].status, reason === 'completed' ? 'done' : 'error');
+    assert.equal(badges[3].status, 'running');
+  }
 });
 
 test('abort settles running tools, thinking, and hooks so loaders do not stay open', () => {

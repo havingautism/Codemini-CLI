@@ -103,8 +103,7 @@ async function createSandbox({ key, policy, config, port }) {
 
   const { NetworkPolicy, Sandbox } = await loadMicrosandbox();
   const image = String(config?.sandbox?.image || 'node:22-bookworm').trim() || 'node:22-bookworm';
-  // Network confinement knob: 'none' denies all egress, anything else (default)
-  // keeps the current allow-all behavior so npm/pip/git keep working unchanged.
+  // Default to no egress; allow-all must be explicitly configured.
   const networkMode = normalizeSandboxNetwork(config?.sandbox?.network);
   const networkPolicy = networkMode === 'none'
     ? NetworkPolicy.none()

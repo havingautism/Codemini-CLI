@@ -1,0 +1,76 @@
+/* A small, soft lift marks focus without adding another visible rim. */
+:root {
+  --focus-indicator: color-mix(in srgb, var(--text-primary) 65%, var(--bg-primary));
+  --focus-shadow: 0 2px 8px color-mix(in srgb, black 12%, transparent);
+}
+
+:root[data-theme="dark"] {
+  --focus-shadow: 0 2px 8px color-mix(in srgb, black 32%, transparent);
+}
+
+:is(button, a, select, summary, [tabindex], [role="button"], [role="option"]):focus-visible {
+  outline: none;
+  box-shadow: var(--focus-shadow);
+}
+
+/* Keep the existing field edge and add only a soft shadow. */
+:root[data-theme] :is(input, textarea, select):not([type="checkbox"]):not([type="radio"]):focus {
+  outline: none;
+  box-shadow: var(--focus-shadow);
+}
+
+:root[data-theme] :is(input, textarea, select)[aria-invalid="true"]:focus {
+  border-color: var(--accent-red);
+}
+
+/* The composer owns its original halo; search wrappers use the shared shadow.
+   Inner text fields never add a second focus treatment. */
+.scrapbook-picker-search-shell:focus-within,
+.action-skill-palette-search-shell:focus-within {
+  outline: none;
+  box-shadow: var(--focus-shadow);
+}
+
+:root[data-theme] :is(.codemini-input-shell, .scrapbook-picker-search-shell, .action-skill-palette-search-shell) :is(input, textarea):not([type="checkbox"]):not([type="radio"]):focus {
+  outline: none;
+  box-shadow: none;
+}
+
+/* Menu rows already convey focus with their highlighted background. */
+[role="option"]:focus-visible,
+[role^="menuitem"]:focus-visible,
+.action-skill-palette-item:focus-visible {
+  background: var(--selected-bg);
+  outline: none;
+  box-shadow: none;
+}
+
+@media (prefers-contrast: more) {
+  :root { --focus-indicator: var(--text-primary); }
+
+  :is(button, a, select, summary, [tabindex], [role="button"], [role="option"]):focus-visible {
+    outline: 2px solid var(--focus-indicator);
+    outline-offset: -2px;
+  }
+}
+
+@media (forced-colors: active) {
+  :root { --focus-indicator: Highlight; }
+
+  :is(button, a, select, summary, [tabindex], [role="button"], [role="option"]):focus-visible {
+    outline: 2px solid Highlight;
+    outline-offset: -2px;
+  }
+
+  :root[data-theme] :is(input, textarea, select):focus,
+  :root[data-theme] .codemini-input-shell:has(textarea:focus),
+  .scrapbook-picker-search-shell:focus-within,
+  .action-skill-palette-search-shell:focus-within {
+    outline: 2px solid Highlight;
+    outline-offset: -2px;
+  }
+
+  :root[data-theme] :is(.codemini-input-shell, .scrapbook-picker-search-shell, .action-skill-palette-search-shell) :is(input, textarea):not([type="checkbox"]):not([type="radio"]):focus {
+    outline: none;
+  }
+}

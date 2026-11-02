@@ -22,7 +22,7 @@ function unique(values) {
 function graphVersion(fileIndex = {}) {
   const digest = createHash('sha256');
   digest.update(`schema:${GRAPH_SCHEMA_VERSION}\n`);
-  for (const entry of fileIndex.files || []) {
+  for (const entry of [...(fileIndex.files || [])].sort((left, right) => left.file.localeCompare(right.file))) {
     digest.update(`${entry.file}:${entry.hash || entry.mtimeMs || ''}\n`);
   }
   return digest.digest('hex').slice(0, 16);

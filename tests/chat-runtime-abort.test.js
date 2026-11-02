@@ -8,6 +8,10 @@ import path from 'node:path';
 import { createChatRuntime } from '../src/core/chat-runtime.js';
 import { closeSqliteDatabasesForTests } from '../src/core/sqlite-database.js';
 import { createSession, loadSession } from '../src/core/session-store.js';
+import { RuntimeBridge } from '../codemini-web/lib/runtime-bridge.js';
+import { loadUiTranscriptFromSqlite } from '../src/core/session-sqlite-store.js';
+import { getSessionTokenUsage } from '../src/core/token-usage-store.js';
+import { userSkillChipBadges } from '../codemini-web/client/src/lib/user-skill-prompt.js';
 
 async function withGlobalDir(task) {
   closeSqliteDatabasesForTests();
@@ -96,6 +100,41 @@ function baseConfig(port) {
 }
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+test('slash skill survives a real streamed abort in the user bubble, core history and context tab', async (t) => {
+  await withGlobalDir(async (dir) => {
+    const { server, port } = await startGateway();
+    t.after(() => { server.closeAllConnections?.(); server.close(); });
+    const skillDir = path.join(dir, 'skills', 'abort-skill');
+    await fs.mkdir(skillDir, { recursive: true });
+    await fs.writeFile(path.join(skillDir, 'SKILL.md'), '---\nname: abort-skill\ndescription: test\n---\nABORT_SKILL_CONTEXT');
+    const session = await createSession(dir);
+    const runtime = await createChatRuntime({ session, config: baseConfig(port), model: 'test-model', systemPrompt: 'Test.', workspaceRoot: dir });
+    const streamed = Promise.withResolvers();
+    const forked = Promise.withResolvers();
+    const bridge = new RuntimeBridge(runtime, { sessionId: session.id, onEvent(event) {
+      if (event.type === 'assistant:delta') streamed.resolve();
+      if (event.type === 'session:forked') forked.resolve(event.nextSessionId);
+    } });
+    try {
+      bridge.handleSubmitMessage({ text: '/abort-skill debug' });
+      await streamed.promise;
+      await bridge.handleAbort();
+      const continuationId = await forked.promise;
+      const stored = await loadSession(session.id);
+      assert.deepEqual(stored.messages[0].selected_skill_names, ['abort-skill']);
+      for (const id of [session.id, continuationId]) {
+        const messages = loadUiTranscriptFromSqlite(id);
+        assert.deepEqual(userSkillChipBadges(messages[0].skillBadges), [{ name: 'abort-skill', status: 'selected' }]);
+        assert.equal(messages.flatMap((message) => message.segments || []).filter((segment) => segment.type === 'skill').length, 1);
+        const usage = getSessionTokenUsage(id);
+        assert.ok(usage.totals.requests >= 1);
+        assert.equal(usage.totals.reportedRequests, 0);
+        assert.ok(usage.totals.timedRequests >= 1);
+      }
+    } finally { await bridge.dispose(); }
+  });
+});
 
 test('manual stop discards partial turn messages and keeps the next turn clean', async (t) => {
   await withGlobalDir(async (dir) => {

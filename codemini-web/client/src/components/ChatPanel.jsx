@@ -17,6 +17,7 @@ import { t } from "../../i18n/index.js";
 import { useGitWorkspace } from "@/hooks/use-git-workspace.js";
 import { HomeEmptyVisual } from "./HomeEmptyVisual.jsx";
 import { HomeEmptyCaption } from "./HomeEmptyCaption.jsx";
+import { latestRetryableMessageId } from "../../../shared/transcript-segments.js";
 
 const MessageBubble = lazy(() =>
   import("./MessageBubble").then((module) => ({
@@ -250,6 +251,7 @@ function ChatPanelContent({
     () => hasConversationContent(messages),
     [messages],
   );
+  const retryableMessageId = useMemo(() => latestRetryableMessageId(messages), [messages]);
 
   const userMessages = useMemo(
     () =>
@@ -457,20 +459,20 @@ function ChatPanelContent({
         </div>
       )}
       {!messagesLoading && !hasConversation && (
-        <div className="absolute inset-0 pointer-events-none overflow-hidden">
+        <div className="absolute inset-0 z-10 overflow-y-auto">
           {isGeneral ? (
             <HomeEmptyVisual>
               <HomeEmptyCaption
                 promptKey="askAnythingGeneralPrompts"
-                className="codemini-home-empty-title mx-auto max-w-[320px] sm:max-w-none text-[20px] sm:text-[26px] font-medium leading-tight tracking-normal text-(--text-primary) break-words"
+                className="codemini-home-empty-title"
               />
             </HomeEmptyVisual>
           ) : (
             <HomeEmptyVisual>
               <HomeEmptyCaption
                 promptKey="buildInProjectPrompts"
-                vars={{ project: projectCwd || t("currentProject") }}
-                className="codemini-home-empty-title mx-auto max-w-[320px] sm:max-w-none text-[20px] sm:text-[26px] font-medium leading-tight tracking-normal text-(--text-primary) break-words"
+                vars={{ project: String(projectCwd || "").split(/[/\\]/).filter(Boolean).pop() || t("currentProject") }}
+                className="codemini-home-empty-title"
               />
               <GitWorkspaceHint />
             </HomeEmptyVisual>
@@ -480,7 +482,7 @@ function ChatPanelContent({
       <MessageScroller>
         <MessageScrollerViewport ref={scrollRef}>
           <MessageScrollerContent className="gap-0 py-[32px_0_24px]">
-            <div className="w-[calc(100%_-_32px)] max-w-[920px] sm:w-[calc(100%_-_64px)] mx-auto">
+            <div className="w-[calc(100%_-_32px)] max-w-[var(--conversation-width)] sm:w-[calc(100%_-_64px)] mx-auto">
               <Suspense fallback={null}>
                 {messages.map((msg, index) => {
                   if (isSupersededWaitingResponse(messages, index)) return null;
@@ -496,6 +498,7 @@ function ChatPanelContent({
                         onRetry={onRetryMessage}
                         dockTodo={Boolean(dockedTodoMessageId) && msg.id === dockedTodoMessageId}
                         turnActive={busy}
+                        retryAllowed={!busy && msg.id === retryableMessageId}
                       />
                     </MessageScrollerItem>
                   );

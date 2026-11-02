@@ -13,6 +13,7 @@ This repo is Codemini CLI, a local-first coding agent with a CLI, Web UI, projec
 
 - CLI command dispatch: start in `src/cli.js`, then `src/commands/`.
 - Chat/session runtime behavior: start in `src/core/chat-runtime.js`.
+- Scheduled tasks: `src/core/scheduled-task-store.js`, `src/core/scheduled-worker.js`; see `docs/agents/scheduled-tasks.md`.
 - System prompt composition: start in `src/core/system-prompt-composer.js` and `src/core/default-system-prompt.js`.
 - Project map and file index behavior: start in `src/core/project-index.js`.
 - Skill discovery, routing, and rendering: start in `src/core/command-loader.js`, then `src/core/skill-registry.js`.
@@ -20,9 +21,11 @@ This repo is Codemini CLI, a local-first coding agent with a CLI, Web UI, projec
 - Hook Profiles (custom/global/project plus skill-backed profiles): `src/core/hook-profiles.js` and `src/core/project-hooks.js`; Web UI entry under Skills in the sidebar.
 - Tool matcher aliases (Claude Bash→run etc.): `src/core/skill-hooks-tool-aliases.js`.
 - Reflect-to-skill behavior: start in `src/core/reflect-skill.js`.
+- Memory / Skill distillation decisions: `src/core/harness/distillation.js`, wired from `memory-session-review.js` and `reflect-skill.js`; see `docs/agents/memory-skill-distillation.md`.
 - Built-in tool behavior: start in `src/core/tools.js`.
 - Subagent delegation (`run_subagent`): start in `src/core/chat-runtime.js` (`runSubAgentTask` + `onRunSubAgent`), `src/core/subagent-orchestrator.js`, and `src/core/subagent-handoff-store.js`.
 - Fork branches (`fork_task`, same-state parallel branches sharing the parent prefix): fork-point capture in `src/core/agent-loop.js`, branch execution in `src/core/chat-runtime.js` (`runForkTask` + `onForkTask`).
+- Desktop shell and GitHub Release artifacts: `desktop/main.cjs`, `desktop/electron-builder.config.cjs`, `.github/workflows/desktop-release.yml`; see `DESKTOP.md`.
 - Web UI API routes: start in `codemini-web/server.js`.
 - Web UI state and chat behavior: start in `codemini-web/client/src/context/app-context.jsx` and relevant components under `codemini-web/client/src/components/`.
 
@@ -41,3 +44,17 @@ This repo is Codemini CLI, a local-first coding agent with a CLI, Web UI, projec
 - Do not treat `skills/`, `souls/`, or `templates/` as source architecture unless the task is about those features.
 - Do not manually edit generated build output in `codemini-web/dist`.
 - Preserve Windows and PowerShell compatibility in commands, docs, and shell-facing behavior.
+
+## Agent skills
+
+### Issue tracker
+
+Issues, specs, and tickets live as markdown files under `.scratch/<feature-slug>/`. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Five canonical triage roles, label strings equal to their names. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context — root `CONTEXT.md` plus `docs/adr/`. See `docs/agents/domain.md`.

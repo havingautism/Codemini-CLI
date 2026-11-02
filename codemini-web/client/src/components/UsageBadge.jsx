@@ -30,12 +30,14 @@ export function getUsageSummary(usage) {
   const model = buildUsagePanelModel(usage);
   if (!model) return null;
   const { tokens } = model;
-  const pct = tokens.cacheHitRate * 100;
   const labelParts = [`${formatUsageNumber(tokens.total)} ${t("usageTokens")}`];
-  if (tokens.cached > 0 || tokens.input > 0) {
+  if (tokens.cacheUsageStatus === "reported") {
+    const pct = (tokens.cacheHitRate || 0) * 100;
     labelParts.push(
       `${t("usageCache")} ${formatUsageNumber(tokens.cached)} (${pct.toFixed(1)}%)`,
     );
+  } else if (tokens.input > 0) {
+    labelParts.push(`${t("usageCache")} ${t("usageNotReported")}`);
   }
   return { label: labelParts.join(" · "), model };
 }
@@ -77,7 +79,13 @@ function UsagePanel({ model }) {
   const tokenLegend = [
     { key: "input", label: t("usageInput"), value: tokens.input, dot: "bg-(--accent-orange)" },
     { key: "output", label: t("usageOutput"), value: tokens.output, dot: "bg-(--accent-blue)" },
-    { key: "cached", label: t("usageCache"), value: tokens.cached, dot: "bg-(--accent-green)" },
+    {
+      key: "cached",
+      label: t("usageCache"),
+      value: tokens.cached,
+      reported: tokens.cacheUsageStatus === "reported",
+      dot: "bg-(--accent-green)",
+    },
   ];
   const extraRows = [
     tokens.cacheWrite > 0 && [t("usageCacheWrite"), `${formatGrouped(tokens.cacheWrite)} ${t("usageTokens")}`],
@@ -99,14 +107,19 @@ function UsagePanel({ model }) {
           {tokenLegend.map((item) => (
             <span key={item.key} className="inline-flex items-center gap-1">
               <span className={`size-1.5 rounded-full ${item.dot}`} />
-              {item.label} {formatGrouped(item.value)}
+              {item.label} {item.reported === false ? t("usageNotReported") : formatGrouped(item.value)}
             </span>
           ))}
         </div>
         <div className="flex flex-col gap-0.5">
           <MetricRow label={t("usageInput")} value={`${formatGrouped(tokens.input)} ${t("usageTokens")}`} />
           <MetricRow label={t("usageOutput")} value={`${formatGrouped(tokens.output)} ${t("usageTokens")}`} />
-          <MetricRow label={t("usageCacheRead")} value={`${formatGrouped(tokens.cached)} ${t("usageTokens")}`} />
+          <MetricRow
+            label={t("usageCacheRead")}
+            value={tokens.cacheUsageStatus === "reported"
+              ? `${formatGrouped(tokens.cached)} ${t("usageTokens")}`
+              : t("usageNotReported")}
+          />
           <MetricRow label={t("usageTotal")} value={`${formatGrouped(tokens.total)} ${t("usageTokens")}`} />
           {extraRows.map((row) => (
             <MetricRow key={row[0]} label={row[0]} value={row[1]} />

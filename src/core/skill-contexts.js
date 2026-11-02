@@ -10,7 +10,7 @@ export function normalizeSkillContexts(value) {
 
 export function executionModeSkillContext(mode = 'normal') {
   const normalized = String(mode || '').trim().toLowerCase();
-  return ['plan', 'code', 'coding', 'spec'].includes(normalized) ? 'coding' : 'daily';
+  return ['plan', 'code', 'coding', 'spec', 'crew'].includes(normalized) ? 'coding' : 'daily';
 }
 
 export function skillAppliesToExecutionMode(contexts, executionMode) {

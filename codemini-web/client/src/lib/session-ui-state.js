@@ -117,7 +117,7 @@ export function activeSessionIds(runtimeById = {}) {
 export function interactiveRequestForSession(state, kind) {
   const runtime = state.sessionRuntimeById?.[state.currentSessionId];
   return kind === "approval"
-    ? runtime?.pendingApproval || null
+    ? runtime?.pendingApproval || runtime?.pendingApprovals?.[0] || null
     : runtime?.pendingUserInput || null;
 }
 
@@ -131,7 +131,7 @@ export function projectSessionRuntime(sessions = [], runtimeById = {}) {
       queuePosition: runtime.queuePosition,
       needsAttention:
         runtime.needsAttention === true ||
-        Boolean(runtime.pendingApproval || runtime.pendingUserInput),
+        Boolean(runtime.pendingApproval || runtime.pendingApprovals?.length || runtime.pendingUserInput),
       parallelWriteRisk: runtime.parallelWriteRisk === true,
     };
   });
@@ -242,6 +242,24 @@ export function mergeFetchedSessions(
     return merged;
   });
   return [...addedDuringRequest, ...mergedFetched];
+}
+
+/** Insert or refresh a sidebar session so started chats appear immediately. */
+export function mergeSessionPage(current = [], fetched = [], groupKeys = null) {
+  const allowed = groupKeys ? new Set(groupKeys) : null;
+  const retained = allowed ? current.filter((session) => allowed.has(session.isGeneral
+    ? '__codemini_general__' : normalizeProjectDirKey(session.projectKey || session.projectDir))) : current;
+  return mergeFetchedSessions(retained, fetched).sort((a, b) =>
+    String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')) || String(b.id).localeCompare(String(a.id)));
+}
+
+export function mergeSessionPageMetadata(current = {}, fetched = {}) {
+  const next = {};
+  for (const [key, page] of Object.entries(fetched)) {
+    // A first-page refresh must not rewind an already expanded group's cursor.
+    next[key] = current[key]?.expanded || current[key]?.loading ? current[key] : { ...page, loading: false, error: false };
+  }
+  return next;
 }
 
 /** Insert or refresh a sidebar session so started chats appear immediately. */

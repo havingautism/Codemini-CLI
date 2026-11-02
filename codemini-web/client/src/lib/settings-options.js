@@ -170,6 +170,19 @@ const OPTION_GETTERS = {
   searchProvider: getSearchProviderOptions,
   shell: getShellOptions,
   replyLanguage: getReplyLanguageOptions,
+  harnessProvider: () => [
+    { value: "rules", label: t("harnessProviderRules") },
+    { value: "jev", label: "Jev" },
+    { value: "laya", label: "Laya" },
+  ],
+  harnessDecisionMode: () => [
+    { value: "advisory", label: "建议模式" },
+    { value: "external_authority", label: "外部决策接管（高风险）" },
+  ],
+  distillationMode: () => [
+    { value: "shadow", label: t("distillationShadow") },
+    { value: "filter", label: t("distillationFilter") },
+  ],
 };
 
 export function getSettingsOptions(key, context) {
@@ -180,10 +193,12 @@ export function getSettingsOptions(key, context) {
 export const SETTINGS_TABS = [
   { id: "connection", labelKey: "gateway" },
   { id: "model", labelKey: "model" },
+  { id: "decision", labelKey: "decision" },
   { id: "execution", labelKey: "execution" },
   { id: "web", labelKey: "webSearch" },
   { id: "context", labelKey: "context" },
   { id: "shell", labelKey: "shell" },
   { id: "storage", labelKey: "storage" },
   { id: "policy", labelKey: "policy" },
+  { id: "appearance", labelKey: "appearanceSettings" },
 ];

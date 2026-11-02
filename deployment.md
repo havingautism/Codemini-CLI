@@ -1,6 +1,8 @@
 # Deployment Guide
 
-This document describes how to package, copy, install, configure, and verify `codemini-cli` from a `.tgz` file.
+Windows and macOS desktop installers are attached to [GitHub Releases](https://github.com/havingautism/Codemini-CLI/releases). See [DESKTOP.md](./DESKTOP.md) for what those builds include and how signing works.
+
+This document is the Node `.tgz` path: package, copy, install, configure, and verify `codemini-cli` on a machine that already has Node.js. `<version>` is the `version` field in `package.json`.
 
 ## 1. Build The TGZ Package
 
@@ -13,13 +15,13 @@ npm pack
 Expected output:
 
 ```text
-codemini-cli-0.5.5.tgz
+codemini-cli-<version>.tgz
 ```
 
 If you want to verify the package contents:
 
 ```bash
-tar -tf codemini-cli-0.5.5.tgz
+tar -tf codemini-cli-<version>.tgz
 ```
 
 ## 2. Copy To The Target Machine
@@ -34,7 +36,7 @@ Copy the generated `.tgz` file to the Win10 machine by one of these methods:
 Recommended target path:
 
 ```powershell
-C:\temp\codemini-cli-0.5.5.tgz
+C:\temp\codemini-cli-<version>.tgz
 ```
 
 ## 3. Environment Requirements
@@ -58,7 +60,7 @@ npm -v
 Global install:
 
 ```powershell
-npm install -g C:\temp\codemini-cli-0.5.5.tgz
+npm install -g C:\temp\codemini-cli-<version>.tgz
 ```
 
 If global install is blocked by company policy, install in a working directory instead:
@@ -66,7 +68,7 @@ If global install is blocked by company policy, install in a working directory i
 ```powershell
 mkdir C:\temp\coder-test
 cd C:\temp\coder-test
-npm install C:\temp\codemini-cli-0.5.5.tgz
+npm install C:\temp\codemini-cli-<version>.tgz
 ```
 
 ## 5. Confirm Installation

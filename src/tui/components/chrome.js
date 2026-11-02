@@ -2,6 +2,11 @@ import { SelectList, matchesKey, truncateToWidth, visibleWidth } from '@earendil
 
 import { bold, color, sealAnsi, selectTheme, TEXT_FG } from '../theme.js';
 import { oneLine } from './messages.js';
+import {
+  formatCrewProgressLine,
+  listCrewDockItems,
+  shouldShowCrewProgressDock,
+} from '../../core/crew-progress.js';
 
 const SPINNER = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 const LIVE_STATES = new Set(['thinking', 'generating', 'tool', 'sending', 'stopping']);
@@ -116,6 +121,41 @@ export class QueuePanel {
   }
 }
 
+export class CrewProgressPanel {
+  constructor({ runtime, copy }) {
+    this.runtime = runtime;
+    this.copy = copy;
+  }
+
+  invalidate() {}
+
+  render(width) {
+    const state = this.runtime.getRuntimeState?.() || {};
+    if (!state.crewActive) return [];
+    const workers = Array.isArray(state.crewWorkers) ? state.crewWorkers : [];
+    const inFlightIds = Array.isArray(state.crewInFlightIds) ? state.crewInFlightIds : [];
+    if (!shouldShowCrewProgressDock({ crewActive: true, workers, inFlightIds })) return [];
+    const items = listCrewDockItems({ workers, inFlightIds });
+    const labels = {
+      running: this.copy.crewPhaseRunning,
+      queued: this.copy.crewPhaseQueued,
+      reviewing: this.copy.crewPhaseReviewing,
+      awaiting_review: this.copy.crewPhaseAwaitingReview,
+      ready: this.copy.crewPhaseReady,
+      dirty: this.copy.crewPhaseDirty,
+      merged: this.copy.crewPhaseMerged,
+      merging: this.copy.crewPhaseMerging,
+      failed: this.copy.crewPhaseFailed,
+      cancelled: this.copy.crewPhaseCancelled,
+      survey_done: this.copy.crewPhaseSurveyDone,
+      idle: this.copy.crewPhaseIdle,
+    };
+    const line = formatCrewProgressLine(items, labels);
+    if (!line) return [];
+    return [fill(`${color.warning(this.copy.crewProgress)}  ${color.muted(line)}`, width, color.surfaceBg)];
+  }
+}
+
 export class Footer {
   constructor({ runtime, model, sessionId, safeMode }) {
     this.runtime = runtime;
@@ -132,7 +172,11 @@ export class Footer {
     const approval = String(state.approvalMode || (this.safeMode ? 'auto' : 'full_access'));
     const sandbox = String(state.sandboxMode || 'workspace-write');
     const shell = String(state.shell || 'bash').toUpperCase();
-    const modeTag = mode === 'coding' ? `${color.accent('◆')} ${bold(color.accent('CODE'))}` : `${color.cyan('◆')} ${bold(color.cyan('DAILY'))}`;
+    const modeTag = state.crewActive
+      ? `${color.warning('◆')} ${bold(color.warning('CREW'))}`
+      : mode === 'coding'
+        ? `${color.accent('◆')} ${bold(color.accent('CODE'))}`
+        : `${color.cyan('◆')} ${bold(color.cyan('DAILY'))}`;
     const accessTag = approval === 'full_access'
       ? `${color.error('●')} ${color.error('OPEN')}`
       : approval === 'review'
@@ -283,7 +327,8 @@ export class SettingsDialog {
   constructor({ copy, values, souls = [], onChange, onClose }) {
     this.copy = copy;
     this.index = 0;
-    this.values = { ...values };
+    this.values = { ...values, jevKey: '' };
+    this.jevHasKey = values.jevHasKey === true;
     this.souls = souls;
     this.onChange = onChange;
     this.onClose = onClose;
@@ -295,10 +340,12 @@ export class SettingsDialog {
     const category = this.values.mode === 'daily' ? 'daily' : 'coding';
     const souls = this.souls.filter((soul) => soul.category === category).map((soul) => soul.name);
     return [
-      { key: 'mode', label: `🧭 ${this.copy.settingMode}`, options: ['coding', 'daily'] },
+      { key: 'mode', label: `🧭 ${this.copy.settingMode}`, options: ['coding', 'daily', 'crew'] },
       { key: 'reasoning', label: `🧠 ${this.copy.settingReasoning}`, options: ['off', 'auto', 'low', 'medium', 'high'] },
       { key: 'approval', label: `✅ ${this.copy.settingApproval}`, options: ['review', 'auto', 'full_access'] },
       { key: 'sandbox', label: `🔒 ${this.copy.settingSandbox}`, options: ['read-only', 'workspace-write', 'danger-full-access'] },
+      { key: 'jev', label: `⚡ ${this.copy.settingJev}`, options: ['off', 'on'] },
+      { key: 'jevKey', label: `🔑 ${this.copy.settingJevKey}`, text: true },
       { key: 'soul', label: `🎭 ${this.copy.settingSoul}`, options: souls.length ? souls : [this.values.soul || '-'] }
     ];
   }
@@ -318,6 +365,34 @@ export class SettingsDialog {
   }
 
   handleInput(data) {
+    const field = this.fields[this.index];
+    if (field?.text) {
+      if (matchesKey(data, 'escape') || matchesKey(data, 'ctrl+g')) return this.onClose();
+      if (matchesKey(data, 'up') || matchesKey(data, 'shift+tab')) {
+        this.index = (this.index + this.fields.length - 1) % this.fields.length;
+        return;
+      }
+      if (matchesKey(data, 'down') || matchesKey(data, 'tab')) {
+        this.index = (this.index + 1) % this.fields.length;
+        return;
+      }
+      if (matchesKey(data, 'return')) {
+        const draft = String(this.values.jevKey || '').trim();
+        if (!draft) return;
+        this.jevHasKey = true;
+        this.values.jevKey = '';
+        void Promise.resolve(this.onChange('jevKey', draft)).catch(() => {});
+        return;
+      }
+      if (matchesKey(data, 'backspace') || data === '\x7f' || data === '\b') {
+        this.values.jevKey = String(this.values.jevKey || '').slice(0, -1);
+        return;
+      }
+      if (typeof data === 'string' && data.length === 1 && data >= ' ') {
+        this.values.jevKey = `${this.values.jevKey || ''}${data}`;
+      }
+      return;
+    }
     if (matchesKey(data, 'escape') || matchesKey(data, 'ctrl+g')) return this.onClose();
     const count = this.fields.length;
     if (matchesKey(data, 'up') || matchesKey(data, 'shift+tab')) this.index = (this.index + count - 1) % count;
@@ -328,7 +403,13 @@ export class SettingsDialog {
 
   render(width) {
     const innerWidth = Math.max(1, width - 2);
-    const rows = this.fields.map((field) => joinSides(field.label, this.copy.settingValues[this.values[field.key]] || this.values[field.key], innerWidth - 4));
+    const rows = this.fields.map((field) => {
+      const draft = String(this.values.jevKey || '');
+      const value = field.text
+        ? (draft ? '•'.repeat(Math.min(draft.length, 12)) : (this.jevHasKey ? this.copy.settingJevKeySet : this.copy.settingJevKeyEmpty))
+        : (this.copy.settingValues[this.values[field.key]] || this.values[field.key]);
+      return joinSides(field.label, value, innerWidth - 4);
+    });
     return modalFrame([
       fill(bold(color.accent(this.copy.startupSettings)), innerWidth, color.overlayBg),
       color.overlayBg(' '.repeat(innerWidth)),

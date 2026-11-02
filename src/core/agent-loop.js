@@ -1,18 +1,23 @@
+import { reviewCommandAccess } from './command-access-review.js';
 import path from 'node:path';
-import { trimInline as _trimInline, normalizePath } from './string-utils.js';
+import { trimInline as _trimInline } from './string-utils.js';
 import { captureToInbox, listInbox } from './memory-store.js';
 import { createExperienceTracker } from './memory-experience-tracker.js';
 import { retrieveMemories, renderRecoveryMemory, buildFailureMemoryQuery, compactMemoryHit, budgetRecoveryMemoryItems } from './memory-retriever.js';
 import { isVerificationCommand, shouldSkipFailureRecall } from './memory-policy.js';
 import {
   isRoutineProjectCommand,
+  isLowRiskCommandApproval,
+  requiresCommandModelReview,
   requiresApprovalEvaluation,
   requiresDeterministicCommandApproval,
 } from './command-risk.js';
 import { evaluateCommandPolicy } from './command-policy.js';
+import { evaluateCrewParentCommand } from './crew-shell.js';
 import { buildRunFailureMessage, getToolOutputSanitizeOptions, sanitizeTextForModel } from './tool-output.js';
 import { createToolRuntime, buildInvalidToolArgumentsResult } from './tool-runtime.js';
 import { createToolResultStore, summarizeToolResult } from './tool-result-store.js';
+import { rankToolDefinitions } from './harness/tool-reliability.js';
 import { applyAggressiveToolPruneBeta } from './context-compact.js';
 import {
   markOutsideWorkspaceMutationApproved,
@@ -27,6 +32,7 @@ import {
   inspectOutsideWorkspaceMutation,
   toolRequiresUserApproval
 } from './approval-policy.js';
+import { remapCrewToolArguments, crewLedgerArgumentBlock } from './crew-worktree.js';
 import {
   resolveSandboxPolicy,
   validateSandboxEscalationArgs,
@@ -36,6 +42,7 @@ import {
   isCompletionTruncated,
 } from './provider/completion-status.js';
 import { isShellToolName } from './shell-tool-name.js';
+import { normalizeDecisionState } from './harness/normalize.js';
 
 export { buildInvalidToolArgumentsResult } from './tool-runtime.js';
 
@@ -187,6 +194,10 @@ function compactToolResult(result, toolName, args, maxChars = 12000) {
 
   // Task results
   if ('created' in obj && Array.isArray(obj.created)) {
+    const crewMessage = String(obj.message || '').trim();
+    if (crewMessage && (Array.isArray(obj.missions) || obj.created.some?.((item) => item?.id))) {
+      return crewMessage;
+    }
     return `created ${obj.created.length} task(s)`;
   }
   if ('tasks' in obj && Array.isArray(obj.tasks)) {
@@ -416,7 +427,7 @@ function normalizeFileChanges(changes) {
     .filter(Boolean);
 }
 
-function extractToolResultMeta(toolName, result) {
+export function extractToolResultMeta(toolName, result) {
   if (!result || typeof result !== 'object') return null;
   const name = String(toolName || '');
 
@@ -451,6 +462,18 @@ function extractToolResultMeta(toolName, result) {
         title: String(result.title || targetUrl).trim(),
         description: String(result.description || '').trim()
       }]
+    };
+  }
+
+  if (name === 'preview_html' && result.artifactType === 'html') {
+    const artifactPath = String(result.path || '').trim();
+    if (!artifactPath) return null;
+    return {
+      embedType: 'html_artifact',
+      path: artifactPath,
+      title: String(result.title || artifactPath).trim(),
+      height: Number(result.height || 560),
+      byteLength: Number(result.byteLength || 0),
     };
   }
 
@@ -496,12 +519,14 @@ export function resolveShellApprovalStrategy({
   const policyCheck = evaluateCommandPolicy(command, config, workspaceRoot, platform);
   const policyHardGate = !policyCheck.allowed && /^(?:absolute path outside|relative path escapes|cd escapes|blocked protected system path|blocked command:)/i.test(policyCheck.reason || '');
   const deterministicGate = policyHardGate || requiresDeterministicCommandApproval(command);
-  const sandboxFirst = Boolean(osSandboxConfining && approvalMode !== 'review' && !deterministicGate);
+  const modelReviewRequired = requiresCommandModelReview(command);
+  const sandboxFirst = Boolean(osSandboxConfining && approvalMode !== 'review' && !deterministicGate && !modelReviewRequired && policyCheck.allowed);
   const windowsFastLane = Boolean(
     platform === 'win32'
     && projectIsGit
     && approvalMode !== 'review'
     && !deterministicGate
+    && !modelReviewRequired
     && policyCheck.allowed
     && isRoutineProjectCommand(command)
   );
@@ -563,117 +588,6 @@ function shouldAskForConcreteFinalAnswer(text, messages = []) {
   return isGenericCompletionText(normalized);
 }
 
-function isBroadRepositoryAnalysisTask(text) {
-  const normalized = String(text || '').trim().toLowerCase();
-  if (!normalized) return false;
-  return (
-    /optimi|improve|analy[sz]e|audit|review|overview|architecture|codebase|repository|repo/.test(normalized) ||
-    /项目.*优化|项目.*问题|可优化|分析这个项目|看看.*项目|代码库|仓库/.test(String(text || ''))
-  );
-}
-
-function parseProjectIndexSummary(text) {
-  const sourceRoots = [];
-  const entryCandidates = [];
-  const candidateFiles = [];
-  for (const line of String(text || '').split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (trimmed.startsWith('source_roots:')) {
-      sourceRoots.push(
-        ...String(trimmed.slice('source_roots:'.length))
-          .split(',')
-          .map((value) => value.trim())
-          .filter(Boolean)
-      );
-    } else if (trimmed.startsWith('entry_candidates:')) {
-      entryCandidates.push(
-        ...String(trimmed.slice('entry_candidates:'.length))
-          .split(',')
-          .map((value) => value.trim())
-          .filter(Boolean)
-      );
-    } else if (trimmed.startsWith('- ')) {
-      const match = trimmed.match(/^- ([^ ]+)/);
-      if (match?.[1]) candidateFiles.push(match[1].trim());
-    }
-  }
-  return { sourceRoots, entryCandidates, candidateFiles };
-}
-
-function createAnalysisGuardState(userPrompt) {
-  return {
-    active: isBroadRepositoryAnalysisTask(userPrompt),
-    indexQueried: false,
-    sourceRoots: new Set(),
-    entryCandidates: new Set(),
-    candidateFiles: new Set(),
-    relevantSourceReads: new Set(),
-    blockedExplorations: 0
-  };
-}
-
-function topLevelPath(value) {
-  const normalized = normalizePath(value).trim();
-  return normalized.split('/')[0] || '';
-}
-
-function isRelevantSourcePath(filePath, state) {
-  const normalized = normalizePath(filePath).trim();
-  if (!normalized) return false;
-  if (state.candidateFiles.has(normalized) || state.entryCandidates.has(normalized)) return true;
-  for (const root of state.sourceRoots) {
-    if (normalized === root || normalized.startsWith(`${root}/`)) return true;
-  }
-  return false;
-}
-
-function blockedExplorationReason(toolName, args, state) {
-  if (!state.active) return '';
-
-  // Always note when query_project_index is used, but never force it
-  if (toolName === 'query_project_index') return '';
-
-  const target = normalizePath(String(args?.path || args?.pattern || args?.query || '')).trim();
-  const top = topLevelPath(target);
-  if (!top) return '';
-
-  if (['skills', 'souls', 'templates', '.codemini', '.codemini-global'].includes(top)) {
-    return `Skip ${top}/ for broad repository analysis unless the user explicitly asks for it. Inspect relevant source files first.`;
-  }
-  return '';
-}
-
-function noteAnalysisEvidence(state, toolName, args, toolResult) {
-  if (!state.active) return;
-  if (toolName === 'query_project_index') {
-    state.indexQueried = true;
-    const summary = parseProjectIndexSummary(JSON.stringify(toolResult));
-    for (const root of summary.sourceRoots) state.sourceRoots.add(root);
-    for (const entry of summary.entryCandidates) state.entryCandidates.add(entry);
-    for (const file of summary.candidateFiles) state.candidateFiles.add(file);
-    const projectMap = toolResult?.project_map || {};
-    for (const root of projectMap.source_roots || []) state.sourceRoots.add(String(root));
-    for (const entry of projectMap.entry_candidates || []) state.entryCandidates.add(String(entry));
-    for (const match of toolResult?.matches || []) {
-      if (match?.file) state.candidateFiles.add(String(match.file));
-    }
-    return;
-  }
-
-  if (toolName === 'read') {
-    const filePath = String(toolResult?.path || args?.path || '').split(':')[0];
-    if (isRelevantSourcePath(filePath, state)) {
-      state.relevantSourceReads.add(filePath);
-    }
-  }
-}
-
-function needsMoreAnalysisEvidence(state) {
-  if (!state.active) return false;
-  if (!state.indexQueried) return true;
-  return state.relevantSourceReads.size < 2;
-}
-
 function normalizeToolCallName(name) {
   return String(name || '').trim();
 }
@@ -731,10 +645,21 @@ export async function runAgentLoop({
   toolDisplayLabels = {},
   toolMetadata = {},
   shouldCheckpoint = null,
+  maxSteps = config?.execution?.max_steps ?? 500,
+  maxIncompleteRetries = config?.execution?.incomplete_retries ?? 3,
   getTasks = null,
   onForkJoin = null,
+  shouldContinueAfterText = null,
   workspaceRoot = config?.workspaceRoot || process.cwd(),
-  sessionId = ''
+  sessionId = '',
+  decisionController = null,
+  episodeId = '',
+  onDecision = null,
+  toolReliabilityStore = null,
+  toolGuard = null,
+  completionReview = null,
+  skillRoute = null,
+  contextSelector = null
 }) {
   const experienceTracker = config?.memory?.enabled === false || config?.memory?.experience?.enabled === false
     ? null
@@ -755,6 +680,10 @@ export async function runAgentLoop({
   });
   const activeToolResultStore = toolResultStore || createToolResultStore();
   const formatDisplayName = (toolName, args) => toolRuntime.displayName(toolName, args);
+  const toolDefinitionsForModel = () => rankToolDefinitions(
+    toolRuntime.definitions(),
+    toolReliabilityStore?.list?.() || [],
+  );
   const messages = [];
   if (systemPrompt) {
     messages.push({ role: 'system', content: systemPrompt });
@@ -765,12 +694,25 @@ export async function runAgentLoop({
   if (userPrompt) {
     messages.push({ role: 'user', content: userPrompt });
   }
+  const appendModelContextMessage = (content, {
+    source = 'runtime',
+    reason = '',
+  } = {}) => {
+    const message = {
+      role: 'user',
+      content: String(content || ''),
+      model_context: true,
+      model_context_source: source,
+      ...(reason ? { model_context_reason: reason } : {}),
+    };
+    messages.push(message);
+    onEvent?.({ type: 'model:context', message });
+    return message;
+  };
 
   let finalText = '';
   let lastAssistantText = '';
   let pendingSummaryNudges = 0;
-  let toolBatchesSinceTaskUpdate = 0;
-  const analysisGuard = createAnalysisGuardState(userPrompt);
   const alwaysAllowSet = new Set([
     ...MEMORY_ALWAYS_ALLOW_TOOLS,
     ...STAGED_WRITE_ALWAYS_ALLOW_TOOLS,
@@ -809,9 +751,9 @@ export async function runAgentLoop({
     if (!force && lastAutoDreamCheckStep > 0 && normalizedStep - lastAutoDreamCheckStep < interval) return;
     if (force && lastAutoDreamCheckStep === normalizedStep) return;
     lastAutoDreamCheckStep = normalizedStep;
+    if (!toolRuntime.has('dream_consolidate') || config?.memory?.enabled === false) return;
     const autoDreamResult = await checkAutoDreamThreshold(config);
     if (!autoDreamResult) return;
-    if (!toolRuntime.has('dream_consolidate')) return;
     if (onEvent) onEvent({ type: 'dream:auto', message: 'inbox threshold reached' });
     try {
       const report = await toolRuntime.execute('dream_consolidate', {}, {
@@ -861,7 +803,21 @@ export async function runAgentLoop({
     }
   };
 
+  const stepLimit = Number.isFinite(Number(maxSteps)) ? Math.max(1, Math.min(1000, Math.floor(Number(maxSteps)))) : 500;
+  const retryLimit = Number.isFinite(Number(maxIncompleteRetries)) ? Math.max(0, Math.min(10, Math.floor(Number(maxIncompleteRetries)))) : 3;
+  let incompleteRetries = 0;
+  let lastToolError = false;
+  let lastToolName = '';
+  let lastFailureReason = '';
+  let retries = 0;
+  let retrySucceeded = null;
   while (true) {
+    if (step >= stepLimit) {
+      const text = 'Step limit reached. Continue in a new turn to resume.';
+      if (onEvent) onEvent({ type: 'checkpoint', step, reason: 'max_steps' });
+      await fireStopHooks(text);
+      return settleLoop({ text, messages, steps: step, checkpoint: true, stopReason: 'max_steps' });
+    }
     step += 1;
     // 检查是否已被用户中止
     if (signal?.aborted) {
@@ -869,6 +825,28 @@ export async function runAgentLoop({
       break;
     }
     emitStepStart();
+    if (decisionController?.enabled) {
+      await decisionController.evaluate({
+        episodeId,
+        step,
+        state: normalizeDecisionState({
+          stage: 'act',
+          executionMode,
+          stepsLeft: Math.max(0, stepLimit - step),
+          budget: { stepsLeft: Math.max(0, stepLimit - step) },
+          riskTier: 'low',
+          toolError: lastToolError,
+          lastToolError: lastFailureReason,
+          lastToolName,
+          retries,
+          retrySucceeded,
+          retryBenefit: lastToolError && !/permission|access denied|invalid.*schema|权限/i.test(lastFailureReason),
+          retryLimit,
+        }),
+        signal,
+        onDecision,
+      }).catch(() => {});
+    }
     const pruneResult = applyAggressiveToolPruneBeta(messages, config);
     if (pruneResult.changed) {
       messages.splice(0, messages.length, ...pruneResult.messages);
@@ -879,10 +857,14 @@ export async function runAgentLoop({
         });
       }
     }
+    if (typeof contextSelector === 'function') {
+      const selected = await contextSelector({ messages, step }).catch(() => null);
+      if (Array.isArray(selected) && selected.length > 0) messages.splice(0, messages.length, ...selected);
+    }
     const completion = await requestCompletion({
       model,
       messages,
-      tools: toolRuntime.definitions(),
+      tools: toolDefinitionsForModel(),
       signal
     });
 
@@ -895,9 +877,11 @@ export async function runAgentLoop({
 
     if (completion?.incomplete) {
       emitStepEnd('incomplete');
+      if (++incompleteRetries > retryLimit) return settleLoop({ text: 'Completion retry limit reached.', messages, steps: step, checkpoint: true, stopReason: 'incomplete_retries' });
       continue;
     }
 
+    incompleteRetries = 0;
     const toolCalls = Array.isArray(completion.toolCalls) ? completion.toolCalls : [];
     const assistantText = completion.text || '';
     lastAssistantText = assistantText || lastAssistantText;
@@ -929,35 +913,41 @@ export async function runAgentLoop({
     }
 
     if (toolCalls.length === 0) {
-      if (!skipAnalysisNudge && needsMoreAnalysisEvidence(analysisGuard) && pendingSummaryNudges < 2) {
-        pendingSummaryNudges += 1;
-        messages.push({
-          role: 'user',
-          content:
-            'You have not inspected enough relevant source files yet. Query the project index if needed, then inspect the next relevant source files before concluding. Do not stop after unrelated directories, tests, skills, souls, or templates.'
-        });
-        emitStepEnd('nudge');
-        continue;
-      }
       if (!skipAnalysisNudge && shouldAskForConcreteFinalAnswer(assistantText, messages.slice(0, -1)) && pendingSummaryNudges < 2) {
         pendingSummaryNudges += 1;
-        messages.push({
-          role: 'user',
-          content:
-            'You have already inspected tool results. Before stopping, check whether the task is actually complete. If it is, provide a concise final answer with specific findings or concrete next steps. If it is not, continue with the next tool call.'
-        });
+        appendModelContextMessage(
+          'You have already inspected tool results. Before stopping, check whether the task is actually complete. If it is, provide a concise final answer with specific findings or concrete next steps. If it is not, continue with the next tool call.',
+          { reason: 'completion-check-nudge' },
+        );
         emitStepEnd('nudge');
         continue;
       }
       finalText = assistantText;
       const stopResult = await fireStopHooks(assistantText);
       if (stopResult?.denied) {
-        messages.push({
-          role: 'user',
-          content: stopResult.reason || 'A Stop hook requires more work before this turn can finish.'
-        });
+        appendModelContextMessage(
+          stopResult.reason || 'A Stop hook requires more work before this turn can finish.',
+          { source: 'hook', reason: 'stop-hook' },
+        );
         emitStepEnd('stop_hook');
         continue;
+      }
+      if (typeof shouldContinueAfterText === 'function') {
+        const sealNudge = await shouldContinueAfterText(assistantText);
+        const content = typeof sealNudge === 'string' ? sealNudge.trim() : String(sealNudge?.content || '').trim();
+        if (content) {
+          appendModelContextMessage(content, { reason: 'continue-after-text' });
+          emitStepEnd('nudge');
+          continue;
+        }
+      }
+      if (typeof completionReview === 'function') {
+        const review = await completionReview({ objective: userPrompt, completedWork: messages.slice(-8), step, assistantText }).catch(() => ({ choice: 'complete' }));
+        if (review?.choice === 'verify_more') {
+          appendModelContextMessage(review.reason || '完成度复核要求继续验证任务结果。', { reason: 'completion-review' });
+          emitStepEnd('completion_review');
+          continue;
+        }
       }
       void maybeRunAutoDream(step, { force: true });
       emitStepEnd('final');
@@ -986,9 +976,25 @@ export async function runAgentLoop({
     for (const { call, toolName, displayName, args, isModelVisible } of callsWithMeta) {
       let approved = true;
       let approvalReason = '';
-      let approvalArgs = args;
+      let approvalArgs = remapCrewToolArguments(args, workspaceRoot);
+      const ledgerBlock = crewLedgerArgumentBlock(args, workspaceRoot);
+      if (ledgerBlock) {
+        approvalResults.set(call.id, {
+          approved: false,
+          args,
+          errorContent: clipToolResult({ error: ledgerBlock }, toolResultMaxChars),
+        });
+        continue;
+      }
       let preflightErrorContent = '';
       let outsideWorkspaceApproval = null;
+      if (toolName === 'skill' && typeof skillRoute === 'function') {
+        const route = await skillRoute({ skillName: args?.name || '', args, step }).catch(() => ({ choice: args?.name || '', reason: 'route_error' }));
+        if (route?.choice && route.choice !== args?.name && route.choice !== 'none') {
+          approvalResults.set(call.id, { approved: false, args: approvalArgs, errorContent: clipToolResult({ error: `Skill route selected ${route.choice}; requested skill was not selected.`, selected_skill: route.choice }, toolResultMaxChars) });
+          continue;
+        }
+      }
       if (!isModelVisible) {
         approvalResults.set(call.id, {
           approved: false,
@@ -1007,6 +1013,17 @@ export async function runAgentLoop({
           errorContent: clipToolResult(buildInvalidToolArgumentsResult(toolName, args), toolResultMaxChars)
         });
         continue;
+      }
+      if (isShellToolName(toolName) && config?.runtime?.crew_parent_shell === true) {
+        const crewShell = evaluateCrewParentCommand(String(approvalArgs?.command || args?.command || ''));
+        if (!crewShell.allowed) {
+          approvalResults.set(call.id, {
+            approved: false,
+            args: approvalArgs,
+            errorContent: clipToolResult({ error: crewShell.reason }, toolResultMaxChars),
+          });
+          continue;
+        }
       }
       let sandboxEscalation = null;
       try {
@@ -1040,16 +1057,13 @@ export async function runAgentLoop({
       const isSafeModePolicyBlocked = shellApproval?.policyBlocked === true;
       const isSafeModeRun = shellApproval?.needsLlmReview === true;
       const isDeterministicCommandGate = shellApproval?.deterministicGate === true;
-      if (shellApproval?.sandboxFirst && isSafeModePolicyBlocked) {
-        approvalArgs = markRunCommandSafeModeApproved(approvalArgs);
-      }
       try {
         // OS sandbox already fences outside writes; skip the soft outside-dir review.
         if (!osSandboxConfining) {
           outsideWorkspaceApproval = await inspectOutsideWorkspaceMutation({
             workspaceRoot,
             toolName,
-            arguments: args
+            arguments: approvalArgs
           });
         }
       } catch (error) {
@@ -1057,7 +1071,8 @@ export async function runAgentLoop({
           error: `Could not inspect file mutation target: ${error instanceof Error ? error.message : String(error)}`
         }, toolResultMaxChars);
       }
-      const needsApproval = Boolean(preflightErrorContent) || toolRequiresUserApproval({
+      const deferredNetworkReview = isShellToolName(toolName) && args?.network_access === true && !isSandboxEscalation && !outsideWorkspaceApproval;
+      const needsApproval = Boolean(preflightErrorContent) || !deferredNetworkReview && toolRequiresUserApproval({
         approvalMode: normalizedApprovalMode,
         projectIsGit,
         toolName,
@@ -1072,10 +1087,10 @@ export async function runAgentLoop({
         approved = false;
         if (toolName === 'delete') {
           try {
-            const approval = await toolRuntime.prepareApproval(toolName, args);
+            const approval = await toolRuntime.prepareApproval(toolName, approvalArgs);
             if (approval !== undefined) {
-              const normalizedApproval = buildDeleteApprovalDetails({ approval }, args?.path);
-              if (normalizedApproval) approvalArgs = { ...args, approval: normalizedApproval };
+              const normalizedApproval = buildDeleteApprovalDetails({ approval }, approvalArgs?.path);
+              if (normalizedApproval) approvalArgs = { ...approvalArgs, approval: normalizedApproval };
             }
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
@@ -1098,10 +1113,8 @@ export async function runAgentLoop({
                 evaluation = { ...evaluation, failureReason: 'evaluator_error' };
               }
               approvalArgs = {
-                ...args,
-                _risk: evaluation.failed
-                  ? ''
-                  : (isSafeModePolicyBlocked && evaluation.risk === 'low' ? 'medium' : evaluation.risk),
+                ...approvalArgs,
+                _risk: evaluation.failed ? '' : evaluation.risk,
                 _evaluation: evaluation,
                 _policyBlock: isSafeModePolicyBlocked
                   ? { reason: runPolicyCheck.reason, suggestion: runPolicyCheck.suggestion || '' }
@@ -1119,13 +1132,13 @@ export async function runAgentLoop({
                 });
                 continue;
               }
-              /* Auto mode: allow low/medium + allow without a panel; high still needs review. */
+              /* Only a successful, certain low-risk allow verdict can skip the panel. */
               if (
                 !isSandboxEscalation
+                && !isDeterministicCommandGate
                 && projectIsGit
                 && normalizedApprovalMode !== 'review'
-                && evaluation.recommendation === 'allow'
-                && evaluation.risk !== 'high'
+                && isLowRiskCommandApproval(evaluation)
               ) {
                 if (isSafeModePolicyBlocked) {
                   approvalArgs = markRunCommandSafeModeApproved(approvalArgs);
@@ -1135,7 +1148,7 @@ export async function runAgentLoop({
               }
             } catch (_) {
               approvalArgs = {
-                ...args,
+                ...approvalArgs,
                 _risk: '',
                 _evaluation: {
                   risk: 'high',
@@ -1200,6 +1213,13 @@ export async function runAgentLoop({
           }
         }
       }
+      if (approved && typeof toolGuard === 'function') {
+        const guard = await toolGuard({ toolName, displayName, args: approvalArgs, callId: call.id, step }).catch(() => ({ action: 'review', reason: 'guard_error' }));
+        if (guard?.action === 'deny' || guard?.action === 'review' || guard?.action === 'confirm') {
+          approved = false;
+          approvalReason = String(guard.reason || guard.action);
+        }
+      }
       approvalResults.set(call.id, { approved, args: approvalArgs, reason: approvalReason });
     }
 
@@ -1217,7 +1237,7 @@ export async function runAgentLoop({
         const lastAssistant = messages[messages.length - 1];
         stepForkPoint = {
           messages: structuredClone(messages.slice(0, -1)),
-          toolDefinitions: toolRuntime.definitions(),
+          toolDefinitions: toolDefinitionsForModel(),
           parentNote: String(lastAssistant?.content || '').trim().slice(0, 600),
         };
       }
@@ -1301,24 +1321,6 @@ export async function runAgentLoop({
         };
       }
 
-      const blockedReason = blockedExplorationReason(toolName, effectiveArgs, analysisGuard);
-      if (blockedReason) {
-        analysisGuard.blockedExplorations += 1;
-        const content = clipToolResult({ error: blockedReason }, toolResultMaxChars);
-        const summary = trimInline(blockedReason, 120);
-        if (onEvent) {
-          onEvent({ type: 'tool:error', name: toolName, displayName, id: call.id, arguments: effectiveArgs, durationMs: 0, summary });
-        }
-        return {
-          callId: call.id,
-          content,
-          error: true,
-          durationMs: 0,
-          summary,
-          status: 'error'
-        };
-      }
-
       // PreToolUse must run (and appear in the UI) before tool:start.
       let preToolContexts = [];
       if (skillHooksSession) {
@@ -1372,9 +1374,6 @@ export async function runAgentLoop({
               summary: reason,
               status: 'blocked'
             };
-          }
-          if (updatedShellApproval?.sandboxFirst && updatedShellApproval.policyBlocked) {
-            effectiveArgs = markRunCommandSafeModeApproved(effectiveArgs);
           }
           hookRequiresApproval = hookRequiresApproval || toolRequiresUserApproval({
             approvalMode: normalizedApprovalMode,
@@ -1453,6 +1452,22 @@ export async function runAgentLoop({
         };
       }
 
+      let networkAccessApproved = false;
+      if (isShellToolName(toolName) && effectiveArgs?.network_access === true) {
+        const decision = await reviewCommandAccess({
+          command: effectiveArgs.command, config, workspaceRoot,
+          capability: 'Network access for this command and its child processes only',
+          requestApproval: requestToolApproval, evaluate: evaluateCommand, signal,
+          onReview: details => onEvent?.({ type: 'access:review', ...details }),
+        });
+        if (!decision.approved) {
+          return { callId: call.id, content: clipToolResult({ error: decision.reason || 'Network access denied' }, toolResultMaxChars), blocked: true, status: 'blocked' };
+        }
+        networkAccessApproved = true;
+        // The gate reviewed the final command after any hook rewrites.
+        effectiveArgs = markRunCommandSafeModeApproved(effectiveArgs);
+      }
+
       if (onEvent) onEvent({ type: 'tool:start', name: toolName, displayName, id: call.id, arguments: effectiveArgs });
 
       let captureScope = null;
@@ -1472,6 +1487,7 @@ export async function runAgentLoop({
           workspaceRoot,
           executionMode,
           approvalMode: normalizedApprovalMode,
+          networkAccessApproved,
           ...(toolName === 'fork_task' ? { forkPoint: getStepForkPoint() } : {}),
         });
       } catch (error) {
@@ -1645,7 +1661,6 @@ export async function runAgentLoop({
           onEvent
         });
       }
-      noteAnalysisEvidence(analysisGuard, toolName, effectiveArgs, toolResult);
 
       // A loaded deferred schema becomes visible on the next model response.
       if (toolName === 'tool_search' && toolResult && Array.isArray(toolResult.schemas)) {
@@ -1680,6 +1695,22 @@ export async function runAgentLoop({
       execute: executeOne,
     });
     for (const result of orderedResults) resultEntries.set(result.callId, result);
+    const failedCall = callsWithMeta.find(({ call }) => resultEntries.get(call.id)?.error);
+    const successfulCall = callsWithMeta.find(({ call }) => !resultEntries.get(call.id)?.error && !resultEntries.get(call.id)?.blocked);
+    const previousFailedTool = lastToolName;
+    const previousHadError = lastToolError;
+    lastToolError = Boolean(failedCall);
+    lastToolName = failedCall?.toolName || successfulCall?.toolName || '';
+    lastFailureReason = failedCall ? String(resultEntries.get(failedCall.call.id)?.summary || '') : '';
+    if (previousHadError && successfulCall?.toolName === previousFailedTool) {
+      retries += 1;
+      retrySucceeded = true;
+    } else if (failedCall && failedCall.toolName === previousFailedTool) {
+      retries += 1;
+      retrySucceeded = false;
+    } else {
+      retrySucceeded = null;
+    }
     if (typeof onForkJoin === 'function') {
       const candidates = callsWithMeta
         .filter(({ toolName }) => toolName === 'fork_task')
@@ -1732,31 +1763,6 @@ export async function runAgentLoop({
       });
       if (onEvent) {
         onEvent({ type: 'tool:result', name: toolName, displayName, id: call.id, arguments: args, content: entry.content });
-      }
-    }
-
-    const calledTasks = callsWithMeta.some(({ toolName }) =>
-      ["tasks", "update_todos"].includes(String(toolName || "").toLowerCase()),
-    );
-    if (calledTasks) {
-      toolBatchesSinceTaskUpdate = 0;
-    } else {
-      const completedWork = callsWithMeta.some(({ call }) => {
-        const entry = resultEntries.get(call.id);
-        return entry && !entry.blocked && !entry.error;
-      });
-      const currentTasks = typeof getTasks === "function" ? getTasks() : [];
-      const hasActiveTask = Array.isArray(currentTasks)
-        && currentTasks.some((task) => task?.status === "in_progress");
-      toolBatchesSinceTaskUpdate = completedWork && hasActiveTask
-        ? toolBatchesSinceTaskUpdate + 1
-        : 0;
-      if (toolBatchesSinceTaskUpdate >= 2) {
-        messages.push({
-          role: "user",
-          content: "Progress checkpoint: update the tasks checklist now to reflect completed work and the next active item, then continue.",
-        });
-        toolBatchesSinceTaskUpdate = 0;
       }
     }
 

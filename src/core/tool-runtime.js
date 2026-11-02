@@ -111,14 +111,33 @@ async function mapWithConcurrencyLimit(items, limit, worker) {
 }
 
 export class ToolRuntime {
-  constructor({ registry, maxParallelCalls = 10 }) {
+  constructor({
+    registry,
+    maxParallelCalls = 10,
+    activeDeferredNames = [],
+    onSchemasActivated = null,
+  }) {
     this._registry = registry;
     this._maxParallelCalls = resolveMaxParallelCalls(maxParallelCalls);
     this._activeDefinitions = registry.definitions();
     this._activeNames = new Set(
       this._activeDefinitions.map((tool) => normalizeToolName(tool?.function?.name)).filter(Boolean),
     );
+    this._onSchemasActivated = typeof onSchemasActivated === 'function'
+      ? onSchemasActivated
+      : null;
+    this._restoreSchemas(activeDeferredNames);
     this._legacyHandlerOnly = this._activeNames.size === 0;
+  }
+
+  _restoreSchemas(names = []) {
+    for (const rawName of Array.isArray(names) ? names : []) {
+      const name = normalizeToolName(rawName);
+      const spec = this._registry.get(name);
+      if (!name || spec?.exposure !== 'deferred' || this._activeNames.has(name)) continue;
+      this._activeNames.add(name);
+      this._activeDefinitions.push(spec.definition);
+    }
   }
 
   definitions() {
@@ -213,6 +232,7 @@ export class ToolRuntime {
       this._activeDefinitions.push(spec.definition);
       activated.push(spec.definition);
     }
+    if (activated.length) this._onSchemasActivated?.(activated);
     return activated;
   }
 
@@ -246,6 +266,8 @@ export function createToolRuntime({
   displayLabels,
   metadata,
   maxParallelCalls,
+  activeDeferredNames,
+  onSchemasActivated,
 } = {}) {
   const registry = toolRegistry || createToolRegistry({
     definitions,
@@ -255,5 +277,5 @@ export function createToolRuntime({
     displayLabels,
     metadata,
   });
-  return new ToolRuntime({ registry, maxParallelCalls });
+  return new ToolRuntime({ registry, maxParallelCalls, activeDeferredNames, onSchemasActivated });
 }

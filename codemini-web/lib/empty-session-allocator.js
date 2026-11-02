@@ -1,6 +1,6 @@
 export function findReusableEmptySession(
   sessions,
-  { matchesProject, isBusy } = {},
+  { matchesProject, isBusy, isSessionDisplayEmpty } = {},
 ) {
   return (
     (Array.isArray(sessions) ? sessions : []).find((session) => {
@@ -10,6 +10,15 @@ export function findReusableEmptySession(
         return false;
       }
       if (typeof isBusy === "function" && isBusy(session.id) === true) {
+        return false;
+      }
+      // An aborted turn can roll core messages back to zero while its Web UI
+      // transcript still holds the (settled) request_user_input card. Reusing
+      // such a session as "new" surfaces that stale card as residue.
+      if (
+        typeof isSessionDisplayEmpty === "function" &&
+        isSessionDisplayEmpty(session.id) === false
+      ) {
         return false;
       }
       return true;
@@ -24,6 +33,7 @@ export function createEmptySessionAllocator({
   projectKeyOf,
   matchesProject,
   isBusy,
+  isSessionDisplayEmpty,
 } = {}) {
   if (typeof listSessions !== "function") {
     throw new TypeError("listSessions must be a function");
@@ -57,6 +67,7 @@ export function createEmptySessionAllocator({
             ? matchesProject(session, projectDir)
             : true,
         isBusy,
+        isSessionDisplayEmpty,
       });
       if (reusable?.id) {
         return {

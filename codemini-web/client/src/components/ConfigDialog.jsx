@@ -1,3 +1,8 @@
+import { SettingsSecretField } from '@/components/settings/SettingsSecretField.jsx';
+import { hasConfiguredSecret, secretSettingWrite } from '@/lib/secret-settings.js';
+import { getDecisionProviderStatus } from '@/lib/decision-provider-status.js';
+import { TASK_DECISION_ASSISTANT_AVAILABLE } from '@core/harness/availability.js';
+import { isWebConfigReadOnly, validateWebConfigValue } from '../../../shared/web-config-policy.js';
 import { useState, useEffect, useMemo } from "react";
 import {
   Dialog,
@@ -11,6 +16,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Switch } from "@/components/ui/switch";
+import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   CheckCircle,
@@ -38,6 +44,9 @@ import { SettingsChoiceList } from "@/components/settings/SettingsChoiceList.jsx
 import { SettingsProviderCards } from "@/components/settings/SettingsProviderCards.jsx";
 import { SettingsPercentField } from "@/components/settings/SettingsPercentField.jsx";
 import { SettingsStorage } from "@/components/settings/SettingsStorage.jsx";
+import { ConfirmDialog } from "@/components/ConfirmDialog.jsx";
+import { SettingsAppearance } from "@/components/settings/SettingsAppearance.jsx";
+import { applyAppearance, readAppearance } from "@/lib/ui-appearance.js";
 
 function getNestedValue(obj, path) {
   return path.split(".").reduce((o, k) => o?.[k], obj);
@@ -45,6 +54,12 @@ function getNestedValue(obj, path) {
 
 function isSwitchField(field) {
   return field.control === "switch";
+}
+
+function isTaskDecisionField(field) {
+  return field.path.startsWith("harness.")
+    && field.path !== "harness.provider"
+    && !field.path.startsWith("harness.providers.");
 }
 
 function buildFieldsByPath(fields) {
@@ -92,6 +107,7 @@ function getBaselineValue(path, config, fieldsByPath) {
 }
 
 function isSameAsBaseline(path, value, config, fieldsByPath) {
+  if (fieldsByPath.get(path)?.type === "password") return secretSettingWrite(value) === undefined;
   if (!config) return false;
   return (
     normalizeDraftValue(path, value, fieldsByPath) ===
@@ -127,10 +143,23 @@ export function ConfigDialog({
 
   const [config, setConfig] = useState(null);
   const [changes, setChanges] = useState({});
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState("");
   const [activeTab, setActiveTab] = useState("connection");
+  const [compactLayout, setCompactLayout] = useState(() => window.matchMedia("(max-width: 639px)").matches);
+  useEffect(() => {
+    const media = window.matchMedia("(max-width: 639px)");
+    const updateLayout = () => setCompactLayout(media.matches);
+    updateLayout();
+    media.addEventListener("change", updateLayout);
+    return () => media.removeEventListener("change", updateLayout);
+  }, []);
+  const [appearanceBaseline, setAppearanceBaseline] = useState(readAppearance);
+  const [appearanceDraft, setAppearanceDraft] = useState(readAppearance);
   const [configLoading, setConfigLoading] = useState(false);
   const [playwrightStatus, setPlaywrightStatus] = useState(null);
   const [playwrightLoading, setPlaywrightLoading] = useState(false);
+  const [pendingWarning, setPendingWarning] = useState(null);
 
   useEffect(() => {
     if (!open) return;
@@ -139,7 +168,12 @@ export function ConfigDialog({
     setPlaywrightLoading(true);
     setPlaywrightStatus(null);
     setChanges({});
+    setPendingWarning(null);
+    setSaveError("");
     setActiveTab("connection");
+    const appearance = readAppearance();
+    setAppearanceBaseline(appearance);
+    setAppearanceDraft(appearance);
     api
       .fetchConfig()
       .then((cfg) => {
@@ -212,6 +246,17 @@ export function ConfigDialog({
     return value === true || value === "true";
   };
 
+  const jevKeyDraft = changes["harness.providers.jev.api_key"];
+  const hasJevKey = jevKeyDraft === null
+    ? false
+    : Boolean(secretSettingWrite(jevKeyDraft)) || hasConfiguredSecret(config, "harness.providers.jev.api_key");
+  const decisionProvider = getValue("harness.provider");
+  const decisionProviderStatus = getDecisionProviderStatus({
+    provider: decisionProvider,
+    baseUrl: getValue(`harness.providers.${decisionProvider}.base_url`),
+    hasApiKey: hasJevKey,
+  });
+
   const getReasoningEnabled = () => {
     if ("model.reasoning_enabled" in changes) {
       return normalizeReasoningEnabled(changes["model.reasoning_enabled"]);
@@ -226,11 +271,16 @@ export function ConfigDialog({
     return normalizeReasoningEffort(config?.model?.reasoning_effort);
   };
 
-  const hasChanges = Object.keys(changes).length > 0;
+  const hasConfigChanges = Object.keys(changes).length > 0;
+  const hasAppearanceChanges = Object.keys(appearanceDraft).some(
+    (key) => appearanceDraft[key] !== appearanceBaseline[key],
+  );
+  const hasChanges = hasConfigChanges || hasAppearanceChanges;
   const shouldShowField = (field) =>
     typeof field.visibleWhen !== "function" || field.visibleWhen({ getValue });
 
   const tabHasChanges = (tabId) =>
+    (tabId === "appearance" && hasAppearanceChanges) ||
     SETTINGS_FIELDS.some(
       (field) =>
         field.tab === tabId &&
@@ -265,9 +315,15 @@ export function ConfigDialog({
         : "text-(--text-muted)";
 
   const handleSave = async () => {
+    if (saving) return;
+    setSaving(true);
+    setSaveError("");
     try {
       let savedConfig = config;
-      for (const [path, value] of Object.entries(changes)) {
+      const pendingChanges = hasConfigChanges && !decisionProviderStatus.ready && getBooleanValue("harness.enabled")
+        ? { ...changes, "harness.enabled": false }
+        : changes;
+      for (const [path, value] of Object.entries(pendingChanges)) {
         let normalizedValue = value;
         if (path === "model.reasoning_enabled") {
           normalizedValue = value === true || value === "true";
@@ -281,18 +337,44 @@ export function ConfigDialog({
               ? Number(value)
               : value;
         }
+        if (fieldsByPath.get(path)?.type === "password") {
+          normalizedValue = secretSettingWrite(value);
+          if (normalizedValue === undefined) continue;
+        }
+        validateWebConfigValue(path, normalizedValue);
         const result = await api.setConfig(path, normalizedValue);
+        if (result?.error) throw new Error(result.message || t("settingsSaveFailed"));
         if (result?.config) savedConfig = result.config;
       }
-      await onSaved?.(savedConfig);
+      if (hasAppearanceChanges) applyAppearance(appearanceDraft);
+      if (hasConfigChanges) await onSaved?.(savedConfig);
+      setConfig(savedConfig);
       setChanges({});
       onOpenChange(false);
     } catch (err) {
-      console.error("Config save failed:", err);
+      setSaveError(String(err?.message || t("settingsSaveFailed")));
+    } finally {
+      setSaving(false);
     }
   };
 
   const renderControl = (field) => {
+    if (isWebConfigReadOnly(field.path)) {
+      const raw = getValue(field.path);
+      const label = field.valueLabels?.[raw]
+        || (field.control === "switch" ? t(getBooleanValue(field.path) ? "enabled" : "disabled") : null)
+        || getSettingsOptions(field.optionsKey).find(option => option.value === raw)?.label
+        || String(raw ?? "");
+      return <div className="text-sm text-(--text-muted)">
+        <div>{label}</div>
+        <p className="mt-1 text-xs">{t("settingsReadOnlyCli")}</p>
+        {field.cliExample ? <code className="mt-1 block break-all text-xs">{field.cliExample}</code> : null}
+      </div>;
+    }
+    const disabled = saving || (isTaskDecisionField(field) && !decisionProviderStatus.ready);
+    if (field.type === "password") return <SettingsSecretField
+      key={`${field.path}-${open}`} id={field.path} configured={hasConfiguredSecret(config, field.path)}
+      draft={changes[field.path]} disabled={disabled} onChange={value => handleChange(field.path, value)} />;
     const sandboxMode = getValue("sandbox.mode");
     const sandboxConfined = sandboxMode !== "danger-full-access";
     const value =
@@ -306,7 +388,8 @@ export function ConfigDialog({
         <div className="flex justify-end">
           <Switch
             id={field.path}
-            checked={getBooleanValue(field.path)}
+            checked={field.path === "harness.enabled" && !decisionProviderStatus.ready ? false : getBooleanValue(field.path)}
+            disabled={disabled}
             onCheckedChange={(checked) => handleChange(field.path, checked)}
           />
         </div>
@@ -324,13 +407,37 @@ export function ConfigDialog({
       );
     }
 
+    if (field.control === "select") {
+      return (
+        <Select value={value} disabled={disabled} onValueChange={(next) => handleChange(field.path, next)}>
+          <SelectTrigger id={field.path} className="w-full">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectGroup>
+              {getSettingsOptions(field.optionsKey).map((option) => (
+                <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+              ))}
+            </SelectGroup>
+          </SelectContent>
+        </Select>
+      );
+    }
+
     if (field.control === "choiceList") {
       return (
         <SettingsChoiceList
           idPrefix={idPrefix}
           value={value}
           options={getSettingsOptions(field.optionsKey, { sandboxMode })}
-          onValueChange={(next) => handleChange(field.path, next)}
+          disabled={disabled}
+          onValueChange={(next) => {
+            if (field.warning && next === "external_authority") {
+              setPendingWarning({ path: field.path, value: next, title: field.label, description: field.warning });
+              return;
+            }
+            handleChange(field.path, next);
+          }}
         />
       );
     }
@@ -354,6 +461,7 @@ export function ConfigDialog({
           min={field.min}
           max={field.max}
           placeholder={field.placeholder}
+          disabled={disabled}
           onChange={(next) => handleChange(field.path, next)}
         />
       );
@@ -367,6 +475,7 @@ export function ConfigDialog({
           onChange={(e) => handleChange(field.path, e.target.value)}
           placeholder={field.placeholder || ""}
           rows={3}
+          disabled={disabled}
           className="font-mono text-[12px]"
         />
       );
@@ -377,13 +486,20 @@ export function ConfigDialog({
         id={field.path}
         type={field.type ?? (field.control === "number" ? "number" : "text")}
         value={value}
+        min={field.min}
+        max={field.max}
+        step={field.step}
+        disabled={disabled}
         onChange={(e) => handleChange(field.path, e.target.value)}
-        placeholder={field.placeholder || ""}
+        placeholder={field.type === "password" ? "Enter a new key to replace the stored key" : field.placeholder || ""}
       />
     );
   };
 
   const renderTabContent = (tabId) => {
+    if (tabId === "appearance") {
+      return <SettingsAppearance value={appearanceDraft} onChange={setAppearanceDraft} disabled={saving} />;
+    }
     if (tabId === "storage") {
       return <SettingsStorage active={activeTab === "storage"} />;
     }
@@ -391,25 +507,46 @@ export function ConfigDialog({
       (field) => field.tab === tabId && shouldShowField(field),
     );
 
+    const renderField = (field) => (
+      <SettingsField
+        key={field.path}
+        id={field.path}
+        label={field.label}
+        help={field.help}
+        description={
+          field.path === "shell.default" && getValue("sandbox.mode") !== "danger-full-access"
+            ? t("shellSandboxLockedDesc")
+            : undefined
+        }
+        inline={field.control === "switch"}
+        className={isTaskDecisionField(field) && !decisionProviderStatus.ready ? "opacity-60" : undefined}
+      >
+        {renderControl(field)}
+      </SettingsField>
+    );
+
+    if (tabId === "decision") {
+      return (
+        <div className="flex flex-col gap-8">
+          <SettingsSection title={t("commandDecisionSection")} description={t("commandDecisionSectionHelp")}>
+            {fields.filter((field) => !isTaskDecisionField(field)).map(renderField)}
+          </SettingsSection>
+          {TASK_DECISION_ASSISTANT_AVAILABLE && <SettingsSection title={t("harness")} description={t("taskDecisionSectionHelp")}>
+            {!decisionProviderStatus.ready && (
+              <Alert>
+                <AlertTitle>{t("harnessProviderNotReady")}</AlertTitle>
+                <AlertDescription>{t(`harnessProvider_${decisionProviderStatus.reason}`)}</AlertDescription>
+              </Alert>
+            )}
+            {fields.filter(isTaskDecisionField).map(renderField)}
+          </SettingsSection>}
+        </div>
+      );
+    }
+
     return (
       <SettingsSection>
-        {fields.map((field) => (
-          <SettingsField
-            key={field.path}
-            id={field.path}
-            label={field.label}
-            help={field.help}
-            description={
-              field.path === "shell.default" &&
-              getValue("sandbox.mode") !== "danger-full-access"
-                ? t("shellSandboxLockedDesc")
-                : undefined
-            }
-            inline={field.control === "switch"}
-          >
-            {renderControl(field)}
-          </SettingsField>
-        ))}
+        {fields.map(renderField)}
 
         {tabId === "model" && (
           <SettingsField
@@ -455,12 +592,12 @@ export function ConfigDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-[720px] h-[666px] max-h-[85vh] flex flex-col p-0 gap-0">
+      <DialogContent className="codemini-settings sm:max-w-[720px] h-[666px] max-h-[85dvh] flex flex-col p-0 gap-0">
         <DialogHeader className="shrink-0 px-6">
           <DialogTitle>{t("settingsTitle")}</DialogTitle>
         </DialogHeader>
 
-        {status?.setupRequired && (
+        {status?.setupRequired && activeTab !== "appearance" && (
           <div className="px-6 pb-2">
             <Alert>
               <AlertTitle>{t("configRequiredTitle")}</AlertTitle>
@@ -469,52 +606,49 @@ export function ConfigDialog({
           </div>
         )}
 
-        {configLoading ? (
-          <div className="flex items-center justify-center py-16">
-            <Spinner />
-          </div>
-        ) : (
-          <Tabs
-            value={activeTab}
-            onValueChange={setActiveTab}
-            orientation="vertical"
-            className="flex min-h-0 flex-1 flex-row gap-0 px-6 pb-4"
+        <Tabs
+          value={activeTab}
+          onValueChange={setActiveTab}
+          orientation={compactLayout ? "horizontal" : "vertical"}
+          className="codemini-settings-layout flex min-h-0 flex-1 flex-row gap-0 px-6 pb-4"
+        >
+          <TabsList
+            variant="line"
+            className="settings-nav-tabs h-auto w-[100px] sm:w-[148px] shrink-0 flex-col items-stretch justify-start gap-1 border-r border-(--border-default) bg-transparent pr-3"
           >
-            <TabsList
-              variant="line"
-              className="settings-nav-tabs h-auto w-[148px] shrink-0 flex-col items-stretch justify-start gap-1 border-r border-(--border-default) bg-transparent pr-3"
-            >
-              {SETTINGS_TABS.map((tab) => (
-                <TabsTrigger
-                  key={tab.id}
-                  value={tab.id}
-                  className="settings-nav-trigger h-9 justify-start px-2.5 text-[13px] data-[state=active]:font-medium"
-                >
-                  <span className="truncate">{t(tab.labelKey)}</span>
-                  {tabHasChanges(tab.id) && (
-                    <span
-                      className="ml-auto size-1.5 shrink-0 rounded-full bg-[var(--input-shell-accent)]"
-                      aria-label={t("settingsUnsavedChanges")}
-                    />
-                  )}
-                </TabsTrigger>
-              ))}
-            </TabsList>
+            {SETTINGS_TABS.map((tab) => (
+              <TabsTrigger
+                key={tab.id}
+                value={tab.id}
+                className="settings-nav-trigger h-9 justify-start px-2.5 text-[13px] data-[state=active]:font-medium"
+              >
+                <span className="truncate">{t(tab.labelKey)}</span>
+                {tabHasChanges(tab.id) && (
+                  <span
+                    className="ml-auto size-1.5 shrink-0 rounded-full bg-[var(--input-shell-accent)]"
+                    aria-label={t("settingsUnsavedChanges")}
+                  />
+                )}
+              </TabsTrigger>
+            ))}
+          </TabsList>
 
-            <div className="min-h-0 flex-1 overflow-y-auto pl-4 scroll-smooth pr-3 [scrollbar-gutter:stable]">
-              {SETTINGS_TABS.map((tab) => (
-                <TabsContent
-                  key={tab.id}
-                  value={tab.id}
-                  className="mt-0 focus-visible:outline-none"
-                >
-                  {renderTabContent(tab.id)}
-                </TabsContent>
-              ))}
-            </div>
-          </Tabs>
-        )}
+          <div className="codemini-settings-body min-h-0 min-w-0 flex-1 overflow-y-auto pl-4 scroll-smooth pr-3 [scrollbar-gutter:stable]">
+            {SETTINGS_TABS.map((tab) => (
+              <TabsContent
+                key={tab.id}
+                value={tab.id}
+                className="mt-0 focus-visible:outline-none"
+              >
+                {configLoading && tab.id !== "appearance" ? (
+                  <div className="flex items-center justify-center py-16"><Spinner /></div>
+                ) : renderTabContent(tab.id)}
+              </TabsContent>
+            ))}
+          </div>
+        </Tabs>
 
+        {saveError ? <p role="alert" className="px-6 py-2 text-sm text-(--accent-red)">{saveError}</p> : null}
         <DialogFooter className="gap-2 shrink-0 border-t border-(--border-default) px-6 py-4">
           {hasChanges && (
             <span className="mr-auto text-[12px] text-(--text-muted)">
@@ -524,11 +658,24 @@ export function ConfigDialog({
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             {t("cancel")}
           </Button>
-          <Button onClick={handleSave} disabled={!hasChanges}>
+          <Button onClick={handleSave} disabled={!hasChanges || saving}>
             {t("saveChanges")}
           </Button>
         </DialogFooter>
       </DialogContent>
+      <ConfirmDialog
+        open={!!pendingWarning}
+        title={pendingWarning?.title}
+        description={pendingWarning?.description}
+        confirmLabel={t("enable")}
+        confirmVariant="default"
+        onOpenChange={(nextOpen) => !nextOpen && setPendingWarning(null)}
+        onConfirm={() => {
+          if (!pendingWarning) return;
+          handleChange(pendingWarning.path, pendingWarning.value);
+          setPendingWarning(null);
+        }}
+      />
     </Dialog>
   );
 }

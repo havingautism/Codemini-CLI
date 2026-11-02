@@ -1,6 +1,6 @@
 {
   "name": "codemini-cli",
-  "version": "0.9.5",
+  "version": "0.10.0",
   "description": "An extremely restrained coding + tasks CLI. Every platform. Every terminal. Minimal by design.",
   "keywords": [
     "cli",
@@ -12,6 +12,7 @@
     "powershell"
   ],
   "type": "module",
+  "main": "desktop/main.cjs",
   "homepage": "https://github.com/havingautism/Codemini-CLI#readme",
   "bugs": {
     "url": "https://github.com/havingautism/Codemini-CLI/issues"
@@ -26,14 +27,21 @@
   },
   "scripts": {
     "start": "node bin/coder.js",
-    "test": "node --test tests/*.test.js",
+    "test": "node scripts/run-tests.js",
     "build:web": "npm install --prefix codemini-web && npm run build --prefix codemini-web",
     "check:encoding": "node scripts/check-text-encoding.js",
+    "proto:goal": "node .scratch/goal-mode/prototypes/goal-command-prototype.js",
     "prepack": "npm run build:web && node scripts/check-pack-imports.mjs",
     "pack:offline": "npm pack",
     "bump:patch": "npm version patch --no-git-tag-version",
     "bump:minor": "npm version minor --no-git-tag-version",
-    "bump:major": "npm version major --no-git-tag-version"
+    "bump:major": "npm version major --no-git-tag-version",
+    "desktop:start": "electron .",
+    "desktop:dir": "electron-builder --config desktop/electron-builder.config.cjs --dir",
+    "desktop:dist:win": "electron-builder --config desktop/electron-builder.config.cjs --win nsis --x64",
+    "desktop:dist:win:arm64": "electron-builder --config desktop/electron-builder.config.cjs --win nsis --arm64",
+    "desktop:dist:mac": "electron-builder --config desktop/electron-builder.config.cjs --mac dmg --arm64",
+    "desktop:dist:mac:x64": "electron-builder --config desktop/electron-builder.config.cjs --mac dmg --x64"
   },
   "files": [
     "bin",
@@ -42,6 +50,7 @@
     "codemini-web/lib",
     "codemini-web/shared",
     "codemini-web/client/src/lib/plan-ui-state.js",
+    "codemini-web/client/src/lib/crew-ui-state.js",
     "codemini-web/client/src/lib/message-context-parsers.js",
     "codemini-web/dist",
     "codemini-web/codemini_logo.png",
@@ -49,7 +58,8 @@
     "templates",
     "README.md",
     "OPERATIONS.md",
-    "deployment.md"
+    "deployment.md",
+    "DESKTOP.md"
   ],
   "engines": {
     "node": ">=22.19.0"
@@ -58,36 +68,40 @@
     "access": "public"
   },
   "dependencies": {
-    "@anthropic-ai/sandbox-runtime": "^0.0.73",
-    "@ast-grep/napi": "^0.45.2",
-    "@cursorless/tree-sitter-wasms": "^0.10.0",
-    "@earendil-works/pi-tui": "^0.84.3",
-    "@hono/node-server": "^2.1.1",
-    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@anthropic-ai/sandbox-runtime": "^0.0.81",
+    "@ast-grep/napi": "^0.51.0",
+    "@cursorless/tree-sitter-wasms": "^0.12.0",
+    "@earendil-works/pi-tui": "^1.4.0",
+    "@firecrawl/anydoc": "0.2.4",
+    "@hono/node-server": "^2.1.5",
+    "@modelcontextprotocol/sdk": "^1.32.2",
     "@vscode/ripgrep": "^1.18.0",
-    "cheerio": "^1.1.2",
+    "cheerio": "^1.2.0",
     "cli-truncate": "^6.1.1",
-    "eventsource-parser": "^4.1.0",
-    "execa": "^10.0.1",
+    "eventsource-parser": "^4.1.3",
+    "execa": "^10.2.1",
     "fast-glob": "^3.3.3",
-    "hono": "^4.13.4",
-    "ignore": "^7.0.6",
+    "hono": "^4.13.14",
+    "ignore": "^7.0.14",
     "jsonrepair": "^3.15.0",
-    "lru-cache": "^11.5.2",
-    "mammoth": "^1.12.1",
-    "microsandbox": "0.6.15",
+    "lru-cache": "^11.5.3",
+    "microsandbox": "0.7.11",
     "node-addon-landlock-run": "^0.0.1",
     "node-pty": "^1.1.0",
-    "p-limit": "^7.3.1",
-    "pdf-parse": "2.4.5",
-    "sharp": "^0.35.3",
-    "shell-quote": "^1.10.0",
+    "p-limit": "^7.3.3",
+    "sharp": "^0.35.5",
+    "shell-quote": "^1.12.0",
     "strip-ansi": "^7.2.0",
-    "web-tree-sitter": "^0.26.13",
-    "yaml": "^2.9.0",
-    "zod": "^4.4.3"
+    "undici": "^7.30.1",
+    "web-tree-sitter": "^0.27.1",
+    "yaml": "^2.9.1",
+    "zod": "^4.6.7"
   },
   "license": "MIT",
+  "devDependencies": {
+    "electron": "45.2.1",
+    "electron-builder": "26.18.0"
+  },
   "optionalDependencies": {
     "@ast-grep/lang-bash": "^0.0.8",
     "@ast-grep/lang-c": "^0.0.6",

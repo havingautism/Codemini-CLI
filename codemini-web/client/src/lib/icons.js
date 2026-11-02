@@ -21,12 +21,14 @@ import {
   IconBookFilled,
   IconBook2,
   IconBrain,
+  IconBrandGit,
   IconBrandWindows,
   IconBrandWindowsFilled,
   IconBug,
   IconBulb,
   IconBulbFilled,
   IconCamera,
+  IconClock,
   IconCameraFilled,
   IconChartLine,
   IconCheck,
@@ -179,6 +181,7 @@ function wrap(Outline, Filled) {
 
 export const Archive = wrap(IconArchive);
 export const ArrowClockwise = wrap(IconRefresh);
+export const Clock = wrap(IconClock);
 export const ArrowCounterClockwise = wrap(IconArrowBackUp);
 export const ArrowDown = wrap(IconArrowDown);
 export const ArrowLeft = wrap(IconArrowLeft);
@@ -225,6 +228,7 @@ export const Folder = wrap(IconFolder, IconFolderFilled);
 export const FolderOpen = wrap(IconFolderOpen, IconFolderOpenFilled);
 export const FolderSimple = wrap(IconFolder, IconFolderFilled);
 export const GearSix = wrap(IconSettings, IconSettingsFilled);
+export const GitLogo = wrap(IconBrandGit);
 export const GitBranch = wrap(IconGitBranch);
 export const GitDiff = wrap(IconFileDiff, IconFileDiffFilled);
 export const Globe = wrap(IconWorld, IconWorldFilled);

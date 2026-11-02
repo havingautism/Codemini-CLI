@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { getBuiltinTools } from '../src/core/tools.js';
-import { resolvePendingApproval } from '../src/core/chat-runtime.js';
+import { peekPendingApproval, resolvePendingApproval, takePendingApproval } from '../src/core/chat-runtime.js';
 import { UserInputManager } from '../codemini-web/lib/user-input-manager.js';
 
 test('request_user_input offers an other answer for choice questions by default', async () => {
@@ -83,6 +83,33 @@ test('tool approval rejection preserves custom feedback for the agent loop', () 
     approved: false,
     reason: 'Use the existing helper instead.',
   });
+});
+
+test('pending approvals stay addressable when a second request arrives', () => {
+  const resolutions = [];
+  const state = { current: null, byId: new Map() };
+  const first = {
+    id: 'approval-a',
+    resolve(value) { resolutions.push(['a', value]); },
+  };
+  const second = {
+    id: 'approval-b',
+    resolve(value) { resolutions.push(['b', value]); },
+  };
+  state.byId.set('approval-a', first);
+  state.byId.set('approval-b', second);
+  state.current = first;
+
+  assert.equal(peekPendingApproval(state).id, 'approval-a');
+  assert.equal(peekPendingApproval(state, 'approval-b').id, 'approval-b');
+  takePendingApproval(state, 'approval-a').resolve({ approved: true });
+  assert.equal(peekPendingApproval(state).id, 'approval-b');
+  resolvePendingApproval(state, 'approval-b', { approved: false, reason: 'no' });
+  assert.equal(peekPendingApproval(state), null);
+  assert.deepEqual(resolutions, [
+    ['a', { approved: true }],
+    ['b', { approved: false, reason: 'no' }],
+  ]);
 });
 
 test('user input manager preserves a global custom response', async () => {

@@ -538,7 +538,7 @@ function McpPanel() {
                     type="button"
                     onClick={() => setSelectedServerId(server.id)}
                     className={cn(
-                      'flex w-full min-w-0 max-w-full items-start gap-3 rounded-lg border border-transparent px-3 py-3 text-left outline-none transition-[background-color,border-color,box-shadow] focus-visible:shadow-[0_0_0_3px_var(--control-focus-ring)]',
+                      'flex w-full min-w-0 max-w-full items-start gap-3 rounded-lg border border-transparent px-3 py-3 text-left outline-none transition-[background-color,border-color,box-shadow] ',
                       selected ? 'bg-(--bg-active)' : 'hover:bg-(--bg-hover)',
                       !server.enabled && 'text-(--text-muted)',
                     )}

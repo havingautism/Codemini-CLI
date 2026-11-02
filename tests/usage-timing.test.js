@@ -9,6 +9,7 @@ import {
   formatDurationMs,
   formatTokensPerSecond,
 } from '../src/core/usage-timing.js';
+import { normalizeModelUsage } from '../src/core/chat-runtime.js';
 
 test('sanitizeTiming drops objects without requestSentAt', () => {
   assert.equal(sanitizeTiming(null), null);
@@ -190,6 +191,38 @@ test('buildUsagePanelModel omits timing when usage has no timestamps', () => {
   assert.equal(model.tokens.cacheWrite, 4);
   assert.equal(model.tokens.reasoning, 3);
   assert.equal(model.tokens.requests, 2);
+  assert.equal(model.tokens.cacheUsageStatus, 'reported');
+});
+
+test('cache usage distinguishes an unreported field from a reported zero hit', () => {
+  const unreported = buildUsagePanelModel({
+    inputTokens: 100,
+    outputTokens: 10,
+    totalTokens: 110,
+  });
+  assert.equal(unreported.tokens.cacheUsageStatus, 'unreported');
+  assert.equal(unreported.tokens.cacheHitRate, null);
+  assert.equal(unreported.tokens.cacheMiss, 0);
+  assert.equal(unreported.tokens.barInput, 100);
+
+  const zeroHit = buildUsagePanelModel({
+    inputTokens: 100,
+    outputTokens: 10,
+    totalTokens: 110,
+    cachedInputTokens: 0,
+    cacheUsageStatus: 'reported',
+  });
+  assert.equal(zeroHit.tokens.cacheUsageStatus, 'reported');
+  assert.equal(zeroHit.tokens.cacheHitRate, 0);
+  assert.equal(zeroHit.tokens.cacheMiss, 100);
+});
+
+test('usage normalization preserves whether the provider reported cache fields', () => {
+  assert.equal(normalizeModelUsage({ prompt_tokens: 100 }).cacheUsageStatus, 'unreported');
+  assert.equal(normalizeModelUsage({
+    prompt_tokens: 100,
+    prompt_tokens_details: { cached_tokens: 0 },
+  }).cacheUsageStatus, 'reported');
 });
 
 test('buildUsagePanelModel barInput excludes cached tokens already counted in input', () => {

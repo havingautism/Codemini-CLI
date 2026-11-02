@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { getSkillsDir } from './paths.js';
 import { selectSandboxBackend } from './sandbox-probe.js';
+import { crewGitWritableRoots } from './crew-worktree.js';
 
 export const SANDBOX_MODES = Object.freeze([
   'read-only',
@@ -10,15 +11,9 @@ export const SANDBOX_MODES = Object.freeze([
   'danger-full-access',
 ]);
 
-/**
- * VM network confinement knob. `'none'` (aliases: `deny-all`, `deny`) denies
- * all egress from the microVM; anything else keeps the default allow-all
- * behavior so network-dependent tools (npm, pip, git, curl) keep working.
- */
+/** Network access must be explicitly enabled. */
 export function normalizeSandboxNetwork(value) {
-  const raw = String(value || 'allow-all').trim().toLowerCase().replace(/_/g, '-');
-  if (raw === 'none' || raw === 'deny-all' || raw === 'deny') return 'none';
-  return 'allow-all';
+  return String(value || '').trim().toLowerCase().replace(/_/g, '-') === 'allow-all' ? 'allow-all' : 'none';
 }
 
 export function normalizeSandboxMode(value, { platform = process.platform } = {}) {
@@ -159,6 +154,12 @@ export function writableRootsForMode(policy) {
   // Also grant the unresolved tmpdir spelling for in-process file tools.
   const tmp = path.resolve(os.tmpdir());
   if (!roots.includes(tmp)) roots.push(tmp);
+  // Crew worktrees are not a separate git repo: commit writes the parent
+  // objects/worktree gitdir/crew refs. Do not grant the parent checkout,
+  // hooks, or config.
+  for (const extra of crewGitWritableRoots(policy.workspaceRoot)) {
+    if (extra && !roots.includes(extra)) roots.push(extra);
+  }
   return roots;
 }
 

@@ -252,7 +252,7 @@ export function hookProfileIsActive(profile, executionMode = 'normal') {
   if (profile?.enabled === false) return false;
   const activation = normalizeActivation(profile?.activation);
   if (activation === 'always') return true;
-  const active = ['plan', 'code', 'coding', 'spec'].includes(String(executionMode || '').toLowerCase())
+  const active = ['plan', 'code', 'coding', 'spec', 'crew'].includes(String(executionMode || '').toLowerCase())
     ? 'coding'
     : 'daily';
   return activation === active;

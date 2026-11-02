@@ -21,6 +21,17 @@ import { t } from '../../i18n/index.js';
 
 const codePlugin = createCodePlugin();
 
+// Character splitting also gives unspaced CJK prose a gentle reveal. Keep the
+// backlog short so bursts of tokens never leave the display far behind.
+const streamingTextAnimation = {
+  animation: 'blurIn',
+  duration: 240,
+  easing: 'ease-out',
+  sep: 'char',
+  stagger: 5,
+  maxBacklogMs: 80,
+};
+
 const streamdownControls = {
   tables: true,
   codeBlocks: true,
@@ -118,6 +129,7 @@ function MarkdownStreamdown({
     <Streamdown
       mode={mode}
       isAnimating={streaming}
+      animated={streaming ? streamingTextAnimation : false}
       parseIncompleteMarkdown
       showLineNumbers={false}
       plugins={{ code: codePlugin, mermaid }}

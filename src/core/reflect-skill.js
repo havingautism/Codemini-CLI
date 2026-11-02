@@ -5,6 +5,8 @@ import { computeFileSha256, upsertSkillRegistryEntry } from './skill-registry.js
 import { createChatCompletion } from './provider/index.js';
 import { appendStructuredOutputLanguageRule } from './reply-language.js';
 import { parseModelJson } from './model-json.js';
+import { createDistillationJudge } from './harness/distillation.js';
+import { loadIndexedSkills } from './command-loader.js';
 
 const REFLECT_TIMEOUT_MS = 45000;
 
@@ -108,6 +110,7 @@ export function normalizeReflectDraft(raw = {}) {
     description,
     confidence,
     context: normalizeReflectContext(raw.context),
+    ...(raw.distillation ? { distillation: raw.distillation } : {}),
     content: renderSkillContent({ name, description, content: raw.content || raw.markdown || raw.body || structuredBody })
   };
 }
@@ -182,8 +185,20 @@ export async function buildReflectSkillDraft({
   model,
   systemPrompt = '',
   previousDraft = null,
-  feedback = ''
+  feedback = '',
+  complete = createChatCompletion,
+  judge = createDistillationJudge({ config, kind: 'skill', sessionId: session?.id, projectDir: session?.projectDir }),
+  loadExisting = async () => [...(await loadIndexedSkills(session?.projectDir || process.cwd())).values()]
+    .filter((item) => item.metadata?.type === 'skill')
+    .map((item) => ({ name: item.name, description: item.metadata?.description || item.description || '' })),
 } = {}) {
+  // Explicit requests and revisions always reach the draft model. The decision
+  // layer may observe them but must not silently cancel the requested work.
+  const directed = Boolean(String(request || '').trim() || previousDraft || String(feedback || '').trim());
+  if (!directed) {
+    const preflight = await judge.preflight(Array.isArray(session?.messages) ? session.messages : []);
+    if (!preflight.extract) return [];
+  }
   const reflectTool = {
     type: 'function',
     function: {
@@ -231,7 +246,7 @@ export async function buildReflectSkillDraft({
     'Do not write memory or inbox content. This is only a skill draft.'
   ].filter(Boolean).join('\n\n');
 
-  const result = await createChatCompletion({
+  const result = await complete({
     sdkProvider: config?.sdk?.provider,
     baseUrl: config?.gateway?.base_url,
     apiKey: config?.gateway?.api_key,
@@ -252,7 +267,10 @@ export async function buildReflectSkillDraft({
     timeoutMs: REFLECT_TIMEOUT_MS
   });
 
-  return parseToolDrafts(result?.toolCalls) ?? parseReflectModelDrafts(result?.text || '');
+  const drafts = parseToolDrafts(result?.toolCalls) ?? parseReflectModelDrafts(result?.text || '');
+  if (!judge.enabled || !drafts.length) return drafts;
+  try { return await judge.assess(drafts, await loadExisting(), { observeOnly: directed, messages: session?.messages || [] }); }
+  catch { return drafts; }
 }
 
 export function attachReflectTargets({ candidates = [] } = {}) {
@@ -282,4 +300,3 @@ export async function writeReflectSkillDraft({ draft } = {}) {
   });
   return { filePath, draft: normalized };
 }
-

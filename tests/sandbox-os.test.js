@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import path from 'node:path';
 import {
   __setSandboxOsTestHooks,
   wrapShellCommandForSandbox,
@@ -26,7 +27,7 @@ test('wrapShellCommandForSandbox skips on win32', async () => {
   try {
     const out = await wrapShellCommandForSandbox({
       command: 'echo hi',
-      config: { sandbox: { enabled: 'auto', mode: 'workspace-write' } },
+      config: { sandbox: { enabled: 'auto', mode: 'workspace-write', network: 'allow-all' } },
       cwd: process.cwd(),
       platform: 'win32',
     });
@@ -52,7 +53,7 @@ test('workspace-write sandbox uses the npm Landlock launcher and leaves network 
   try {
     const out = await wrapShellCommandForSandbox({
       command: 'echo hi',
-      config: { sandbox: { enabled: true, mode: 'workspace-write' } },
+      config: { sandbox: { enabled: true, mode: 'workspace-write', network: 'allow-all' } },
       cwd: '/tmp/project',
       platform: 'linux',
       binShell: 'bash',
@@ -63,6 +64,39 @@ test('workspace-write sandbox uses the npm Landlock launcher and leaves network 
     assert.deepEqual(grants.readOnly, ['/']);
     assert.ok(grants.readWrite.includes(out.policy.workspaceRoot));
     assert.equal(out.enforcement, 'full');
+  } finally {
+    __setSandboxOsTestHooks(null);
+  }
+});
+
+test('Landlock workspace-write grants crew git commit dirs but not the parent checkout', async () => {
+  let grants = null;
+  __setSandboxOsTestHooks({
+    Landlock: {
+      launcherPath: () => '/npm/bin/landlock-run',
+      probe: () => 'full',
+      grantArgs(value) {
+        grants = value;
+        return ['--grant-test'];
+      },
+    },
+  });
+  try {
+    const parent = path.resolve('/tmp/codemini-landlock-crew-parent');
+    const worktree = path.join(parent, '.codemini', 'crew', 'worktrees', 'alisa');
+    const out = await wrapShellCommandForSandbox({
+      command: 'git commit -m sealed',
+      config: { sandbox: { enabled: true, mode: 'workspace-write', network: 'allow-all' } },
+      cwd: worktree,
+      platform: 'linux',
+      binShell: 'bash',
+    });
+    assert.equal(out.wrapped, true);
+    assert.ok(grants.readWrite.includes(out.policy.workspaceRoot));
+    assert.ok(grants.readWrite.includes(path.join(parent, '.git', 'objects')));
+    assert.ok(grants.readWrite.includes(path.join(parent, '.git', 'worktrees', 'alisa')));
+    assert.equal(grants.readWrite.includes(parent), false);
+    assert.equal(grants.readWrite.includes(path.join(parent, '.git', 'hooks')), false);
   } finally {
     __setSandboxOsTestHooks(null);
   }
@@ -83,13 +117,49 @@ test('read-only Landlock grants only /dev/null for writes', async () => {
   try {
     const out = await wrapShellCommandForSandbox({
       command: 'echo hi',
-      config: { sandbox: { enabled: true, mode: 'read-only' } },
+      config: { sandbox: { enabled: true, mode: 'read-only', network: 'allow-all' } },
       cwd: '/tmp/project',
       platform: 'linux',
       binShell: 'bash',
     });
     assert.deepEqual(grants, { readOnly: ['/'], readWrite: ['/dev/null'] });
     assert.equal(out.enforcement, 'partial');
+  } finally {
+    __setSandboxOsTestHooks(null);
+  }
+});
+
+test('macOS Seatbelt allowWrite includes crew git commit dirs', async () => {
+  let allowWrite = null;
+  __setSandboxOsTestHooks({
+    SandboxManager: {
+      async initialize() {},
+      isSandboxingEnabled: () => true,
+      isSupportedPlatform: () => true,
+      async wrapWithSandbox(_command, _shell, config) {
+        allowWrite = config?.filesystem?.allowWrite;
+        return 'sandbox-exec -- git commit';
+      },
+    },
+  });
+  try {
+    const parent = path.resolve('/tmp/codemini-seatbelt-crew-parent');
+    const worktree = path.join(parent, '.codemini', 'crew', 'worktrees', 'alisa');
+    const out = await wrapShellCommandForSandbox({
+      command: 'git commit -m sealed',
+      config: { sandbox: { enabled: true, mode: 'workspace-write', network: 'allow-all' } },
+      cwd: worktree,
+      platform: 'darwin',
+      binShell: 'bash',
+    });
+    assert.equal(out.wrapped, true);
+    assert.ok(allowWrite.includes(out.policy.workspaceRoot));
+    assert.ok(allowWrite.includes(path.join(parent, '.git', 'objects')));
+    assert.ok(allowWrite.includes(path.join(parent, '.git', 'worktrees', 'alisa')));
+    assert.ok(allowWrite.includes(path.join(parent, '.git', 'refs', 'heads', 'codemini-crew')));
+    assert.equal(allowWrite.includes(parent), false);
+    assert.equal(allowWrite.includes(path.join(parent, '.git')), false);
+    assert.equal(allowWrite.includes(path.join(parent, '.git', 'hooks')), false);
   } finally {
     __setSandboxOsTestHooks(null);
   }
@@ -112,7 +182,7 @@ test('macOS keeps the built-in Seatbelt backend and allows network', async () =>
   try {
     const out = await wrapShellCommandForSandbox({
       command: 'echo hi',
-      config: { sandbox: { enabled: true, mode: 'workspace-write' } },
+      config: { sandbox: { enabled: true, mode: 'workspace-write', network: 'allow-all' } },
       cwd: '/tmp/project',
       platform: 'darwin',
       binShell: 'bash',
@@ -138,7 +208,7 @@ test('wrapShellCommandForSandbox fail-closed when Landlock is unavailable', asyn
       () =>
         wrapShellCommandForSandbox({
           command: 'echo hi',
-          config: { sandbox: { enabled: true, mode: 'read-only' } },
+          config: { sandbox: { enabled: true, mode: 'read-only', network: 'allow-all' } },
           cwd: '/tmp/project',
           platform: 'linux',
         }),
@@ -177,4 +247,38 @@ test('danger-full-access does not wrap', async () => {
   } finally {
     __setSandboxOsTestHooks(null);
   }
+});
+
+test('default OS sandbox denies network on Linux and macOS, including approval callback', async () => {
+  for (const platform of ['linux', 'darwin']) {
+    let callback;
+    let configured;
+    __setSandboxOsTestHooks({ SandboxManager: {
+      async initialize(config, approve) { configured = config; callback = approve; },
+      isSandboxingEnabled: () => true,
+      isSupportedPlatform: () => true,
+      async wrapWithSandbox(command) { return command; },
+    }});
+    try {
+      const result = await wrapShellCommandForSandbox({ command: 'echo hi', config: { sandbox: { enabled: true, mode: 'workspace-write' } }, cwd: '/tmp/project', platform });
+      assert.equal(result.wrapped, true);
+      assert.deepEqual(configured.network.deniedDomains, ['*']);
+      assert.equal(await callback({ host: 'example.com', port: 443 }), false);
+    } finally { __setSandboxOsTestHooks(null); }
+  }
+});
+
+test('reviewed macOS network grants use a private manager without relaxing shared proxies', async () => {
+  let initializations = 0;
+  __setSandboxOsTestHooks({ SandboxManager: { async initialize() { initializations++; } } });
+  try {
+    const result = await wrapShellCommandForSandbox({ command: 'echo granted', cwd: '/tmp/project', platform: 'darwin', binShell: 'bash',
+      config: { sandbox: { enabled: true, mode: 'workspace-write', network: 'allow-all', network_isolated: true } },
+    });
+    assert.equal(initializations, 0);
+    assert.equal(result.executable, process.execPath);
+    assert.match(result.args[0], /sandbox-os-command-host\.js$/);
+    assert.equal(JSON.parse(result.args[1]).command, 'echo granted');
+    assert.equal(result.policy.mode, 'workspace-write');
+  } finally { __setSandboxOsTestHooks(null); }
 });

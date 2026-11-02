@@ -9,6 +9,7 @@ import {
   getActiveSoulName,
   listSouls,
   loadSoulPrompt,
+  readSoulContent,
   soulContextFromExecutionMode,
 } from '../src/core/soul.js';
 
@@ -16,13 +17,15 @@ test('soulContextFromExecutionMode maps plan/code to coding', () => {
   assert.equal(soulContextFromExecutionMode('plan'), 'coding');
   assert.equal(soulContextFromExecutionMode('code'), 'coding');
   assert.equal(soulContextFromExecutionMode('normal'), 'daily');
+  assert.equal(soulContextFromExecutionMode('crew'), 'coding');
 });
 
 test('getActiveSoulName prefers category then legacy preset', () => {
   assert.equal(getActiveSoulName({ soul: { coding: 'Ponytail', daily: 'Anime' } }, 'coding'), 'Ponytail');
   assert.equal(getActiveSoulName({ soul: { coding: 'Ponytail', daily: 'Anime' } }, 'daily'), 'Anime');
   assert.equal(getActiveSoulName({ soul: { preset: 'CEO' } }, 'coding'), 'CEO');
-  assert.equal(getActiveSoulName({ soul: {} }, 'daily'), 'Playful');
+  assert.equal(getActiveSoulName({ soul: {} }, 'daily'), 'Default');
+  assert.equal(getActiveSoulName({ soul: { daily: 'Playful' } }, 'daily'), 'Playful');
 });
 
 test('bundled souls live under coding/ and daily/', async () => {
@@ -32,6 +35,31 @@ test('bundled souls live under coding/ and daily/', async () => {
   assert.ok(coding.includes('Caveman.md'));
   assert.ok(daily.includes('Tsundere.md'));
   assert.ok(daily.includes('Chaos.md'));
+  assert.ok(daily.includes('Default.md'));
+});
+
+test('Default resolves in each category and daily fallback keeps the daily guard', async () => {
+  for (const category of ['daily', 'coding']) {
+    const content = await readSoulContent('Default', { preferCategory: category });
+    assert.equal(content.category, category);
+    const loaded = await loadSoulPrompt({ soul: { [category]: 'Default' } }, { context: category });
+    assert.equal(loaded.category, category);
+    assert.equal(loaded.name, 'Default');
+  }
+  const prompt = await buildSystemPromptWithSoul('BASE', { soul: { daily: 'missing-preset' } }, { context: 'daily' });
+  assert.match(prompt, /Soul preset: Default · daily/);
+  assert.match(prompt, /tone and personality only/);
+  assert.doesNotMatch(prompt, /coding approach/);
+});
+
+test('every bundled Soul loads with exactly one guard for its own category', async () => {
+  const presets = (await listSouls()).filter(item => item.scope === 'builtin');
+  for (const { name, category } of presets) {
+    const prompt = await buildSystemPromptWithSoul('BASE', { soul: { [category]: name } }, { context: category });
+    assert.equal(prompt.split('[Soul guard]').length - 1, 1, `${category}/${name}`);
+    assert.ok(prompt.includes(`[Soul preset: ${name} · ${category}]`), `${category}/${name}`);
+    assert.match(prompt, category === 'daily' ? /tone and personality only/ : /coding approach/);
+  }
 });
 
 test('listSouls tags categories and active flags', async () => {

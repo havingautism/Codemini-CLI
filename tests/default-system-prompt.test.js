@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { buildDefaultSystemPrompt } from '../src/core/default-system-prompt.js';
+import { buildSubAgentShellRulesPrompt } from '../src/core/shell-profile.js';
 
 test('buildDefaultSystemPrompt uses workspaceRoot instead of process.cwd()', () => {
   const projectRoot = 'E:\\Git Projects\\demo-app';
@@ -9,7 +10,7 @@ test('buildDefaultSystemPrompt uses workspaceRoot instead of process.cwd()', () 
   const escapedRoot = resolvedRoot.replace(/[\\.^$*+?()[\]{}|]/g, '\\$&');
   const prompt = buildDefaultSystemPrompt({ sandbox: { enabled: false } }, { workspaceRoot: projectRoot });
   assert.match(prompt, new RegExp(`Working directory: ${escapedRoot}`, 'i'));
-  assert.match(prompt, new RegExp(`Current working directory: ${escapedRoot}`, 'i'));
+  assert.doesNotMatch(prompt, /Current working directory:/);
   assert.doesNotMatch(
     prompt,
     /codemini-global[\\/]+workspace/i,
@@ -65,7 +66,7 @@ test('Windows prompt follows sandbox state instead of the host platform alone', 
   assert.match(confined, /ordinary code failures/i);
   assert.match(confined, /missing project dependencies/i);
   assert.match(confined, /timeouts/i);
-  assert.match(confined, /Current working directory: project root/);
+  assert.match(confined, /Working directory: project root/);
   assert.match(confined, /"file_path":"src\/auth\/service\.ts"/);
   assert.match(confined, /old_string/);
   assert.doesNotMatch(confined, /apply_patch|begin_write/);
@@ -137,4 +138,31 @@ test('buildDefaultSystemPrompt includes compact natural-writing defaults', () =>
 test('buildDefaultSystemPrompt stays compact enough for layered turn context', () => {
   const prompt = buildDefaultSystemPrompt({}, { workspaceRoot: process.cwd() });
   assert.ok(prompt.length < 5000, `default prompt grew to ${prompt.length} characters`);
+});
+
+test('web tool discovery and research preference reach CLI and Web UI default prompts', () => {
+  for (const platform of ['win32', 'darwin', 'linux']) {
+    const prompt = buildDefaultSystemPrompt({}, { platform });
+    assert.match(prompt, /prefer dedicated web tools over shell commands for online research/);
+    assert.match(prompt, /tool_search\(\{"query":"web_search"\}\)/);
+    assert.match(prompt, /tool_search\(\{"query":"web_fetch"\}\)/);
+    assert.match(prompt, /Tool: web_search\(/);
+    assert.match(prompt, /API debugging, downloads, explicit user requests/);
+  }
+});
+
+test('disabled search is not advertised or rediscovered in default prompts', () => {
+  const prompt = buildDefaultSystemPrompt({ web: { search_enabled: false } });
+  assert.doesNotMatch(prompt, /tool_search\(\{"query":"web_search"\}\)|Tool: web_search\(|- web_search:/);
+  assert.match(prompt, /tool_search\(\{"query":"web_fetch"\}\)/);
+  assert.match(prompt, /do not bypass disabled search or denied network access/);
+});
+
+test('subagents receive web guidance without changing their stable prefix by role scope', () => {
+  const explorer = buildSubAgentShellRulesPrompt(['web_search', 'web_fetch']);
+  const coder = buildSubAgentShellRulesPrompt(['read', 'run']);
+  assert.equal(explorer, coder);
+  assert.match(explorer, /Within your allowed tool scope/);
+  assert.match(explorer, /tool_search\(\{"query":"web_search"\}\)/);
+  assert.match(explorer, /prefer it over curl for reading web pages/);
 });

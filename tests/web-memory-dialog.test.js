@@ -15,6 +15,8 @@ test('memory dialog supports family filters, coding detail, and search debounce'
   assert.match(dialog, /evidence\.working_approach/);
   assert.match(dialog, /memoryHits/);
   assert.match(dialog, /memoryWhyRecalled/);
+  assert.match(dialog, /role="button"\s+tabIndex=\{0\}\s+onClick=\{\(\) => onSelect\(memory\)\}/);
+  assert.match(dialog, /const handleDeleteClick = \(event\) => \{\s*event\.stopPropagation\(\)/);
   assert.match(dialog, /idPrefix=\{`\$\{view\}-family`\}/);
 
   for (const source of [en, zh]) {

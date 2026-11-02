@@ -2,6 +2,7 @@ import path from 'node:path';
 import { getReadOnlyCommandTokens } from './read-only-command-tokens.js';
 import { shellToolName } from './shell-tool-name.js';
 import { isVmSandbox, resolveSandboxPolicy } from './sandbox-policy.js';
+import { getWebToolGuidance } from './provider/search-tool-registry.js';
 
 const DEFAULT_SHELL = 'bash';
 
@@ -209,7 +210,7 @@ export function getShellSystemPrompt(value) {
 - Prefer ${sourceTools} over ${commandToolName} for source work; use ${commandToolName} for tests, builds, scripts, package commands, git inspection, and servers.
 - Load deferred capabilities with tool_search instead of assuming they are unavailable.
 - Inspect relevant source before editing. ${editRule}
-- Tool arguments are JSON. Resolve relative paths from the working directory and preserve unrelated user changes.
+- Resolve relative paths from the working directory and preserve unrelated user changes.
 - Use tasks for multi-step, multi-file, debugging, or implementation-plus-verification work; keep one item in_progress and settle it before a completion claim.
 - Before substantial tool work, send one short progress update. If a tool fails, inspect the error; if the user declines a command, do not retry it unless asked.
 - Verify with the narrowest relevant check and state anything not verified. Do not broaden the requested scope.`;
@@ -237,6 +238,7 @@ export function buildSubAgentShellRulesPrompt(_allowedTools = [], { shell, works
     'You may ONLY call tools present in this request. Other tools fail.',
     `Use source tools for code context and ${commandToolName} only for execution when it is present.`,
     'Load an allowed deferred tool with tool_search when needed.',
+    getWebToolGuidance(config),
     '',
     '# Doing tasks',
     '- Use the supplied handoff and plan context before exploring.',
@@ -254,6 +256,9 @@ export function buildSubAgentRuntimeNote(allowedTools = [], { shell, workspaceRo
     lines.push(`Own implementation, not verification, unless the task explicitly requires ${commandToolName}; otherwise hand off with Verified: deferred.`);
   } else if (role === 'tester') {
     lines.push('You own verification. Run the narrowest relevant checks when the environment supports them, and say clearly when checks could not run.');
+  }
+  if (allowed.includes('submit_crew_review')) {
+    lines.push('Mandatory: call submit_crew_review once before stopping. Prose Findings alone do not count as a formal verdict.');
   }
   return lines.join('\n');
 }

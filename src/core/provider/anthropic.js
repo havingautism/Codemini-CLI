@@ -1,3 +1,4 @@
+import { fetchWithRetry } from './fetch-with-retry.js';
 import { resolveAnthropicReasoning } from './reasoning-effort.js';
 import { isCompletionTruncated } from './completion-status.js';
 import { stringifyGatewayJson } from './json-body.js';
@@ -341,14 +342,17 @@ function emptyToolCall(index) {
   };
 }
 
-function buildFinalStreamResult(text, toolCallsByIndex, usage, messages, thinkingBlocks = [], finishReason = '') {
+function buildFinalStreamResult(text, toolCallsByIndex, usage, messages, thinkingBlocks = [], finishReason = '', messageStopped = false) {
+  // A closed block alone is not authority to execute tools: EOF can precede
+  // message completion. Gateways must also provide the Anthropic terminal events.
+  const messageComplete = messageStopped && Boolean(finishReason.trim()) && !isCompletionTruncated(finishReason);
   const toolCalls = Array.from(toolCallsByIndex.entries())
     .sort((a, b) => a[0] - b[0])
     .map(([, tc], i) => ({
       id: tc.id || `tc-${i + 1}`,
       name: tc.name,
       arguments: tc.arguments || '{}',
-      argumentsComplete: tc.closed === true && !isCompletionTruncated(finishReason)
+      argumentsComplete: tc.closed === true && messageComplete
     }))
     .filter((tc) => tc.name);
   const normalizedText = String(text || '').trim();
@@ -402,21 +406,24 @@ export async function createChatCompletion({
   tools,
   toolChoice,
   reasoningEffort,
+  onPayloadPrepared,
   timeoutMs = 1800000,
   maxTokens = 16384,
+  maxRetries = 2,
   signal: externalSignal
 }) {
   const payload = buildPayload({ model, temperature, messages, tools, maxTokens, toolChoice, reasoningEffort });
+  onPayloadPrepared?.(payload);
   const timeoutSignal = AbortSignal.timeout(timeoutMs);
   const signal = externalSignal
     ? AbortSignal.any([timeoutSignal, externalSignal])
     : timeoutSignal;
-  const response = await fetch(buildMessagesUrl(baseUrl), {
+  const response = await fetchWithRetry(buildMessagesUrl(baseUrl), {
     method: 'POST',
     headers: createHeaders(apiKey),
     body: stringifyGatewayJson(payload),
     signal
-  });
+  }, { maxRetries });
   const data = await parseJsonResponse(response);
   return extractAssistantResult(data, messages);
 }
@@ -430,21 +437,27 @@ export async function createChatCompletionStream({
   tools,
   toolChoice,
   reasoningEffort,
+  onPayloadPrepared,
   onTextDelta,
   onReasoningDelta,
   onToolCallDelta,
   timeoutMs = 1800000,
   maxTokens = 16384,
-  signal: externalSignal
+  maxRetries = 2,
+  signal: externalSignal,
 }) {
   // 合并超时信号与外部中止信号
   const timeoutSignal = AbortSignal.timeout(timeoutMs);
   const controller = new AbortController();
-  const onTimeoutAbort = () => controller.abort(
-    new Error(`Gateway request timed out after ${timeoutMs}ms`)
-  );
+  const onTimeoutAbort = () => {
+    controller.abort(
+      new Error(`Gateway request timed out after ${timeoutMs}ms`)
+    );
+  };
   timeoutSignal.addEventListener('abort', onTimeoutAbort, { once: true });
-  const onExternalAbort = () => controller.abort();
+  const onExternalAbort = () => {
+    controller.abort();
+  };
   if (externalSignal) {
     if (externalSignal.aborted) {
       controller.abort();
@@ -454,12 +467,13 @@ export async function createChatCompletionStream({
   }
   try {
     const payload = buildPayload({ model, temperature, messages, tools, stream: true, maxTokens, toolChoice, reasoningEffort });
-    const response = await fetch(buildMessagesUrl(baseUrl), {
+    onPayloadPrepared?.(payload);
+    const response = await fetchWithRetry(buildMessagesUrl(baseUrl), {
       method: 'POST',
       headers: createHeaders(apiKey),
       body: stringifyGatewayJson(payload),
       signal: controller.signal
-    });
+    }, { maxRetries });
 
     if (!response.ok || !response.body) {
       const text = await response.text().catch(() => '');
@@ -469,6 +483,7 @@ export async function createChatCompletionStream({
     let text = '';
     let usage = null;
     let finishReason = '';
+    let messageStopped = false;
     const toolCallsByIndex = new Map();
     const thinkingBlocksByIndex = new Map();
 
@@ -476,6 +491,11 @@ export async function createChatCompletionStream({
       if (chunk.done) continue;
       usage = mergeUsage(usage, chunk?.data?.usage);
       usage = mergeUsage(usage, chunk?.data?.message?.usage);
+
+      if (chunk.event === 'message_stop' && chunk?.data?.type === 'message_stop') {
+        messageStopped = true;
+        break;
+      }
 
       if (chunk.event === 'message_delta') {
         const stopReason = chunk?.data?.delta?.stop_reason || chunk?.data?.stop_reason;
@@ -570,7 +590,7 @@ export async function createChatCompletionStream({
       .map(([, block]) => cloneAnthropicContentBlock(block))
       .filter(Boolean);
 
-    return buildFinalStreamResult(text, toolCallsByIndex, usage, messages, thinkingBlocks, finishReason);
+    return buildFinalStreamResult(text, toolCallsByIndex, usage, messages, thinkingBlocks, finishReason, messageStopped);
   } finally {
     timeoutSignal.removeEventListener('abort', onTimeoutAbort);
     if (externalSignal) externalSignal.removeEventListener('abort', onExternalAbort);

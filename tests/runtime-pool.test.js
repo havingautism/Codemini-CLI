@@ -96,3 +96,44 @@ test('rekeySession moves a live pool entry to the continuation id', async () => 
   await pool.abort('session-new');
   await pool.abort('session-queued-next');
 });
+
+test('releaseIdleWait completes a leftover approval wait without touching a live run', async () => {
+  const pool = new RuntimePool({
+    runtimeFactory: async () => ({}),
+    maxConcurrent: 1,
+  });
+  await pool.ensureSession({
+    sessionId: 'session-a',
+    projectDir: '/tmp/project',
+    model: 'model',
+  });
+  let releaseRun;
+  const runDone = new Promise((resolve) => {
+    releaseRun = resolve;
+  });
+  pool.submit('session-a', () => runDone);
+  assert.equal(pool.getSessionState('session-a').status, 'running');
+  assert.equal(pool.releaseIdleWait('session-a'), false);
+  assert.equal(pool.getSessionState('session-a').status, 'running');
+
+  pool.markWaiting('session-a', 'waiting_approval');
+  assert.equal(pool.getSessionState('session-a').status, 'waiting_approval');
+  assert.equal(pool.releaseIdleWait('session-a'), true);
+  assert.equal(pool.getSessionState('session-a').status, 'completed');
+  assert.equal(pool.getSessionState('session-a').busy, false);
+
+  const queued = pool.submit('session-a', () => new Promise(() => {}));
+  assert.equal(queued.state, 'running');
+  await pool.ensureSession({
+    sessionId: 'session-b',
+    projectDir: '/tmp/project-b',
+    model: 'model',
+  });
+  const blocked = pool.submit('session-b', () => new Promise(() => {}));
+  assert.equal(blocked.state, 'queued');
+  assert.equal(pool.releaseIdleWait('session-b'), true);
+  assert.equal(pool.getSessionState('session-b').status, 'completed');
+  assert.equal(pool.getSessionState('session-b').busy, false);
+
+  releaseRun({ status: 'completed' });
+});
