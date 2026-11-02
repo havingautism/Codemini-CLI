@@ -62,6 +62,7 @@ test('electron-builder config ships unsigned win and mac artifacts', () => {
   assert.equal(builder.win.artifactName, 'Codemini-Setup-${version}-win-${arch}.${ext}');
   assert.equal(builder.nsis.artifactName, 'Codemini-Setup-${version}-win-${arch}.${ext}');
   assert.equal(builder.mac.sign, undefined);
+  assert.equal(builder.publish, null);
   assert.equal(builder.directories.output, 'desktop-dist');
   assert.ok(builder.files.includes('codemini-web/dist/**/*'));
   assert.ok(builder.files.includes('codemini-web/server.js'));
@@ -69,10 +70,10 @@ test('electron-builder config ships unsigned win and mac artifacts', () => {
   assert.equal(pkg.main, 'desktop/main.cjs');
   assert.equal(pkg.devDependencies.electron, '45.2.1');
   assert.equal(pkg.devDependencies['electron-builder'], '26.18.0');
-  assert.equal(pkg.scripts['desktop:dist:win'], 'electron-builder --config desktop/electron-builder.config.cjs --win nsis --x64');
-  assert.equal(pkg.scripts['desktop:dist:win:arm64'], 'electron-builder --config desktop/electron-builder.config.cjs --win nsis --arm64');
-  assert.equal(pkg.scripts['desktop:dist:mac'], 'electron-builder --config desktop/electron-builder.config.cjs --mac dmg --arm64');
-  assert.equal(pkg.scripts['desktop:dist:mac:x64'], 'electron-builder --config desktop/electron-builder.config.cjs --mac dmg --x64');
+  assert.equal(pkg.scripts['desktop:dist:win'], 'electron-builder --config desktop/electron-builder.config.cjs --win nsis --x64 --publish never');
+  assert.equal(pkg.scripts['desktop:dist:win:arm64'], 'electron-builder --config desktop/electron-builder.config.cjs --win nsis --arm64 --publish never');
+  assert.equal(pkg.scripts['desktop:dist:mac'], 'electron-builder --config desktop/electron-builder.config.cjs --mac dmg --arm64 --publish never');
+  assert.equal(pkg.scripts['desktop:dist:mac:x64'], 'electron-builder --config desktop/electron-builder.config.cjs --mac dmg --x64 --publish never');
 });
 
 test('release tag check follows package.json', () => {
@@ -95,6 +96,7 @@ test('release workflows stay manual for npm and attach desktop artifacts', () =>
   assert.match(desktop, /desktop:dist:mac:x64/);
   assert.doesNotMatch(desktop, /portable/);
   assert.match(desktop, /CSC_IDENTITY_AUTO_DISCOVERY: "false"/);
+  assert.match(desktop, /--publish never/);
   assert.match(desktop, /softprops\/action-gh-release@v2/);
   assert.match(desktop, /check-release-tag\.js/);
   assert.match(publish, /workflow_dispatch:/);
