@@ -25,21 +25,21 @@ function settleWithin(promise, ms = 1500) {
   return Promise.race([promise, timeout(ms).then(() => 'timeout')]);
 }
 
-function makeBundle(workspaceRoot) {
+function makeBundle(workspaceRoot, { platform = 'linux', shell = 'bash' } = {}) {
   return getBuiltinTools({
     workspaceRoot,
     config: {
       policy: { allowed_paths: [] },
       sandbox: { enabled: false, mode: 'danger-full-access' },
-      shell: { default: 'bash', timeout_ms: 15000 },
+      shell: { default: shell, timeout_ms: 15000 },
     },
-    platform: 'linux',
+    platform,
   });
 }
 
-async function withBundle(fn) {
+async function withBundle(fn, options) {
   const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-write-coord-'));
-  const bundle = makeBundle(workspaceRoot);
+  const bundle = makeBundle(workspaceRoot, options);
   try {
     await fn(bundle, workspaceRoot);
   } finally {
@@ -307,15 +307,17 @@ test('parallel subagent writes to different files both apply', async () => {
 
 test('shell handler stays callable through the coordination wrapper', async () => {
   await withBundle(async (bundle) => {
-    assert.equal(typeof bundle.handlers.Bash, 'function');
+    const commandTool = bundle.definitions.find(tool => /^(bash|powershell)$/i.test(tool.function?.name))?.function.name;
+    assert.ok(commandTool, 'the native shell tool must be exposed');
+    assert.equal(typeof bundle.handlers[commandTool], 'function');
     // `node` is never classified read-only, so this exercises the exclusive
     // run-lock path; it must still complete normally.
-    const result = await bundle.handlers.Bash(
+    const result = await bundle.handlers[commandTool](
       { command: 'node -e "process.exit(0)"' },
       {},
     );
-    assert.equal(result?.code, 0);
-  });
+    assert.equal(result?.code, 0, result?.stderr || result?.stdout);
+  }, { platform: process.platform, shell: process.platform === 'win32' ? 'powershell' : 'bash' });
 });
 
 test('Windows redirection writes are guarded even though classifyCommandRisk reports read-only', () => {

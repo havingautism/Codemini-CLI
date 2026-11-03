@@ -1,11 +1,13 @@
 import fs from 'node:fs/promises';
+import { generateSessionTitle } from '../../src/core/chat-runtime.js';
+import { loadConfig } from '../../src/core/config-store.js';
 import {
   getScheduledTask, listScheduledTasks, listScheduledRuns, saveScheduledTask,
   deleteScheduledTask, queueScheduledTask, scheduledWorkerStatus,
 } from '../../src/core/scheduled-task-store.js';
 import { startScheduledWorker } from '../../src/core/scheduled-worker-process.js';
 
-export function registerScheduledTaskRoutes({ routes, nodeRoute, readBody, jsonResponse, generalDir, startWorker = startScheduledWorker }) {
+export function registerScheduledTaskRoutes({ routes, nodeRoute, readBody, jsonResponse, generalDir, startWorker = startScheduledWorker, generateTitle = generateSessionTitle }) {
   const wrap = action => nodeRoute(async (req, res, url) => {
     try { await action(req, res, url); }
     catch (error) {
@@ -22,6 +24,11 @@ export function registerScheduledTaskRoutes({ routes, nodeRoute, readBody, jsonR
       ? (input.projectDir || generalDir)
       : (id ? getScheduledTask(id)?.projectDir : generalDir);
     if (!(await fs.stat(projectDir)).isDirectory()) throw new Error('Project directory is unavailable.');
+    const previous = id ? getScheduledTask(id) : null;
+    if ((!id || (typeof input.prompt === 'string' && input.prompt !== previous?.prompt)) && !input.name?.trim()) {
+      if (!String(input.prompt || '').trim() || input.prompt.length > 50000) throw new Error('A prompt (1–50000 characters) is required.');
+      input.name = await generateTitle({ userText: input.prompt, config: await loadConfig() });
+    }
     const task = saveScheduledTask({ ...input, projectDir }, id);
     const worker = await startWorker();
     jsonResponse(res, { task, worker }, id ? 200 : 201);

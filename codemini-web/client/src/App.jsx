@@ -30,6 +30,7 @@ import { SessionPanel } from "@/components/SessionPanel.jsx";
 import { TodoCard } from "@/components/TodoList.jsx";
 import { findLiveTodoDock } from "@/lib/live-todo-dock.js";
 import { interactiveRequestForSession } from "@/lib/session-ui-state.js";
+import { scheduledAttentionKey } from "@/lib/scheduled-task-ui.js";
 import { DotsThree, FolderSimple, GitDiff, List, SidebarSimple, Terminal } from "@/lib/icons";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { TrajectoryPanel } from "@/components/TrajectoryPanel.jsx";
@@ -424,7 +425,7 @@ function Shell() {
               <span className="truncate text-[14px] font-medium text-(--text-primary)">{t("scheduledTasks")}</span>
             </div>
             <Suspense fallback={<div className="p-6 text-[13px] text-(--text-muted)">{t("loading")}</div>}>
-              <ScheduledTasksPanel projectDir={state.isGeneral ? "" : state.runtimeState?.cwd || ""} onOpenSession={handleSwitchSession} />
+              <ScheduledTasksPanel revision={state.scheduledRevision} projectDir={state.isGeneral ? "" : state.runtimeState?.cwd || ""} onOpenSession={handleSwitchSession} />
             </Suspense>
           </div>
         ) : state.currentView === "sessions" ? (
@@ -725,6 +726,15 @@ function Shell() {
               <RuntimeActivityStrip
                 activities={state.runtimeActivities}
               />
+              {state.runtimeState?.scheduledAttention && !state.busy && (
+                <div role="status" className="mb-3 flex flex-wrap items-center gap-3 rounded-xl bg-(--bg-secondary) px-4 py-3 text-[13px]">
+                  <div className="min-w-0 flex-1 basis-48">
+                    <p className="font-medium text-(--text-primary)">{t('scheduledPausedForYou')}</p>
+                    <p className="mt-1 leading-5 text-(--text-secondary)">{t(scheduledAttentionKey(state.runtimeState.scheduledAttention.reason))}</p>
+                  </div>
+                  <button type="button" className="rounded-lg bg-(--text-primary) px-4 py-2 font-medium text-(--bg-primary) hover:opacity-90" onClick={() => actions.submit({ text: t('scheduledContinueText'), modelText: t('scheduledContinuePrompt') })}>{t('scheduledContinueReview')}</button>
+                </div>
+              )}
               <CrewProgressDock runtimeState={state.runtimeState} />
               {liveTodoDock ? (
                 <div className="mb-2">

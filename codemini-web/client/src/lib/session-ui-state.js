@@ -48,7 +48,7 @@ export function buildVisibleProjectGroups({
   const groups = new Map();
   for (const session of Array.isArray(sessions) ? sessions : []) {
     if (session?.isGeneral) continue;
-    if (Number(session.messageCount || 0) <= 0) continue;
+    if (Number(session.messageCount || 0) <= 0 && !session.scheduledStatus) continue;
     const key = normalizeProjectDirKey(
       session.projectKey || session.projectDir,
     );
@@ -124,12 +124,15 @@ export function interactiveRequestForSession(state, kind) {
 export function projectSessionRuntime(sessions = [], runtimeById = {}) {
   return sessions.map((session) => {
     const runtime = runtimeById[session.id] || {};
-    const runtimeStatus = runtime.status || "idle";
+    const scheduledRunning = session.scheduledStatus === 'running';
+    const scheduledAttention = session.scheduledStatus === 'needs_attention';
+    const runtimeStatus = scheduledRunning ? 'running' : runtime.status || (scheduledAttention ? 'needs_attention' : 'idle');
     return {
       ...session,
       runtimeStatus,
       queuePosition: runtime.queuePosition,
       needsAttention:
+        scheduledAttention ||
         runtime.needsAttention === true ||
         Boolean(runtime.pendingApproval || runtime.pendingApprovals?.length || runtime.pendingUserInput),
       parallelWriteRisk: runtime.parallelWriteRisk === true,

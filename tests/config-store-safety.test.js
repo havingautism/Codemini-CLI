@@ -15,7 +15,9 @@ async function withConfigDir(task) {
   } finally {
     if (previous === undefined) delete process.env.CODEMINI_GLOBAL_DIR;
     else process.env.CODEMINI_GLOBAL_DIR = previous;
-    await fs.rm(dir, { recursive: true, force: true });
+    // Windows can briefly hold a just-written config/backup during teardown,
+    // especially while the full suite is doing concurrent filesystem work.
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 50 });
   }
 }
 

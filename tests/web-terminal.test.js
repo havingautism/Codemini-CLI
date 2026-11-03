@@ -55,6 +55,28 @@ test('PowerShell bootstrap configures semantic command and file colors', () => {
   assert.match(bootstrap, /Set-PSReadLineOption -Colors/);
 });
 
+function foregroundAt(raw, text) {
+  const index = raw.indexOf(text);
+  assert.ok(index >= 0, `missing terminal text: ${text}`);
+  let foreground;
+  // ConPTY may insert cursor controls and move the reset to the next line.
+  // Check the SGR state at the filename, rather than its exact byte layout.
+  for (const match of raw.slice(0, index).matchAll(/\u001b\[([0-9;]*)m/g)) {
+    for (const code of match[1].split(';').map(Number)) {
+      if (code === 0 || code === 39) foreground = undefined;
+      else if ((code >= 30 && code <= 37) || (code >= 90 && code <= 97)) foreground = code;
+    }
+  }
+  return foreground;
+}
+
+test('terminal color assertions follow active color across cursor movement and delayed resets', () => {
+  assert.equal(foregroundAt('\u001b[94m\u001b[16Csample-folder\r\n\u001b[m', 'sample-folder'), 94);
+  assert.equal(foregroundAt('\u001b[94m\u001b[0msample-folder', 'sample-folder'), undefined);
+  assert.equal(foregroundAt('\u001b[94m\u001b[39msample-folder', 'sample-folder'), undefined);
+  assert.equal(foregroundAt('\u001b[1;96msample.ts', 'sample.ts'), 96);
+});
+
 test(
   'PowerShell 7 terminal emits ANSI colors for directory listings',
   { skip: process.platform !== 'win32' },
@@ -81,12 +103,9 @@ test(
         await new Promise((resolve) => setTimeout(resolve, 50));
       }
 
-      assert.match(
-        raw,
-        /\u001b\[94m(?:\u001b\[[0-9;]*C)?sample-folder\u001b\[[0-9;]*m/,
-      );
-      assert.match(raw, /\u001b\[96msample\.ts\u001b\[[0-9;]*m/);
-      assert.match(raw, /\u001b\[93mconfig\.json\u001b\[[0-9;]*m/);
+      assert.equal(foregroundAt(raw, 'sample-folder'), 94, 'directories must be bright blue');
+      assert.equal(foregroundAt(raw, 'sample.ts'), 96, 'TypeScript files must be bright cyan');
+      assert.equal(foregroundAt(raw, 'config.json'), 93, 'JSON files must be bright yellow');
     });
   },
 );

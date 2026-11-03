@@ -78,7 +78,7 @@ test('conversation folds use a disclosure tree instead of nested surface cards',
   assert.match(plan, /formatToolGroupSummaryLabel/);
   assert.match(
     bubble,
-    /codemini-answer-fold codemini-disclosure my-2", PROCESS_META_CLASS/,
+    /codemini-answer-fold codemini-disclosure my-2"\s*,\s*PROCESS_META_CLASS/,
   );
   assert.doesNotMatch(
     bubble,

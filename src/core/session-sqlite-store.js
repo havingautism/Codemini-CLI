@@ -136,14 +136,15 @@ export function listSessionsFromSqlite(limit = 30, { includeEmpty = false } = {}
 }
 
 export function sessionProjectDirsFromSqlite() {
-  return getGlobalDatabase().prepare('SELECT DISTINCT project_dir FROM sessions WHERE message_count > 0').all().map((row) => row.project_dir);
+  return getGlobalDatabase().prepare(`SELECT DISTINCT project_dir FROM sessions WHERE message_count > 0
+    UNION SELECT s.project_dir FROM scheduled_task_runs r JOIN sessions s ON s.id=r.session_id`).all().map((row) => row.project_dir);
 }
 
 export function listSessionPageFromSqlite({ projectDirs, limit = 10, cursor = null }) {
   if (!projectDirs.length) return { sessions: [], hasMore: false, nextCursor: null };
   const db = getGlobalDatabase();
   const count = Math.max(1, Math.min(100, Math.floor(limit)));
-  const conditions = ['s.message_count > 0', `s.project_dir IN (${projectDirs.map(() => '?').join(',')})`];
+  const conditions = ['(s.message_count > 0 OR s.id IN (SELECT session_id FROM scheduled_task_runs))', `s.project_dir IN (${projectDirs.map(() => '?').join(',')})`];
   const params = [...projectDirs];
   if (cursor) {
     conditions.push('(s.updated_at < ? OR (s.updated_at = ? AND s.id < ?))');
@@ -154,6 +155,7 @@ export function listSessionPageFromSqlite({ projectDirs, limit = 10, cursor = nu
     ORDER BY s.updated_at DESC, s.id DESC LIMIT ?
     ) SELECT s.id, s.title, s.updated_at AS updatedAt, s.message_count AS messageCount,
     s.project_dir AS projectDir, s.model, s.mode,
+    (SELECT status FROM scheduled_task_runs WHERE session_id=s.id ORDER BY created_at DESC LIMIT 1) AS scheduledStatus,
     COALESCE(substr(replace(replace(m.content_text, char(10), ' '), char(13), ' '), 1, 80), '') AS preview
     FROM page s LEFT JOIN session_messages m ON m.session_id = s.id AND m.ordinal = (
       SELECT ordinal FROM session_messages WHERE session_id = s.id ORDER BY ordinal DESC LIMIT 1

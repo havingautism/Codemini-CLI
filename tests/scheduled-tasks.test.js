@@ -9,7 +9,13 @@ import {
   saveScheduledTask, listScheduledTasks, getScheduledTask, queueScheduledTask, claimScheduledRun,
   listScheduledRuns, deleteScheduledTask, acquireScheduledWorker, recoverScheduledRuns,
   finishScheduledRun, releaseScheduledWorker, scheduledWorkerStatus, bindScheduledSession, isScheduledSessionActive,
+  getScheduledSessionInfo, markScheduledSessionContinued,
+  getScheduledChangeState,
 } from '../src/core/scheduled-task-store.js';
+import { registerScheduledTaskRoutes } from '../codemini-web/lib/scheduled-task-api.js';
+import { buildRuntimeStateSnapshot } from '../src/core/chat-runtime.js';
+import { createSession, saveSession } from '../src/core/session-store.js';
+import { getSessionSidebarSnapshot } from '../codemini-web/lib/session-pages.js';
 
 async function isolated(t) {
   closeSqliteDatabasesForTests();
@@ -27,6 +33,94 @@ async function isolated(t) {
 const clock = Date.parse('2026-10-31T00:00:00Z');
 const taskInput = projectDir => ({ name: 'Daily review', prompt: 'Review recent changes.', mode: 'normal', projectDir,
   schedule: { type: 'interval', minutes: 10 } });
+
+test('scheduler revisions ignore chat writes and heartbeats; empty running sessions appear immediately', async t => {
+  const directory = await isolated(t);
+  const task = saveScheduledTask(taskInput(directory), '', clock);
+  const initial = getScheduledChangeState(clock);
+  const session = await createSession(directory);
+  await saveSession(session);
+  assert.deepEqual(getScheduledChangeState(clock), initial);
+  queueScheduledTask(task.id, clock);
+  acquireScheduledWorker('worker', 1, clock);
+  const run = claimScheduledRun('worker', clock);
+  const claimed = getScheduledChangeState(clock);
+  assert.equal(claimed.sessionRevision, initial.sessionRevision);
+  bindScheduledSession(run.id, session.id);
+  const bound = getScheduledChangeState(clock);
+  assert.ok(bound.sessionRevision > claimed.sessionRevision);
+  const sidebar = getSessionSidebarSnapshot([directory]);
+  assert.equal(sidebar.sessions.find(entry => entry.id === session.id).scheduledStatus, 'running');
+  acquireScheduledWorker('worker', 1, clock + 1000);
+  assert.deepEqual(getScheduledChangeState(clock + 1000), bound);
+  finishScheduledRun(run.id, 'needs_attention', 'Needs approval', clock + 2000);
+  const paused = getScheduledChangeState(clock + 2000);
+  assert.ok(paused.sessionRevision > bound.sessionRevision);
+  // A task that pauses before writing its first message must not disappear or
+  // leave a stale running row in the browser's merged sidebar.
+  assert.equal(getSessionSidebarSnapshot([directory]).sessions.find(entry => entry.id === session.id).scheduledStatus, 'needs_attention');
+  session.messages.push({ role: 'user', content: 'task prompt' });
+  await saveSession(session);
+  assert.deepEqual(getScheduledChangeState(clock + 2000), paused);
+  assert.equal(getSessionSidebarSnapshot([directory]).sessions.find(entry => entry.id === session.id).scheduledStatus, 'needs_attention');
+  releaseScheduledWorker('worker');
+  assert.equal(getScheduledChangeState(clock + 2000).workerRunning, false);
+});
+
+test('approval modes survive edits, reopen and queued snapshots; attention hands off to chat', async t => {
+  const directory = await isolated(t);
+  const task = saveScheduledTask({ ...taskInput(directory), approvalMode: 'review' }, '', clock);
+  const queued = queueScheduledTask(task.id, clock);
+  saveScheduledTask({ approvalMode: 'full_access' }, task.id, clock);
+  assert.equal(queued.task.approvalMode, 'review');
+  assert.throws(() => saveScheduledTask({ approvalMode: 'invalid' }, task.id, clock), /approval mode/);
+  closeSqliteDatabasesForTests();
+  assert.equal(getScheduledTask(task.id).approvalMode, 'full_access');
+  acquireScheduledWorker('worker', 1, clock);
+  const run = claimScheduledRun('worker', clock);
+  bindScheduledSession(run.id, 'scheduled-session');
+  finishScheduledRun(run.id, 'needs_attention', 'This task needs tool approval.', clock + 1000);
+  assert.equal(getScheduledSessionInfo('scheduled-session').task.approvalMode, 'review');
+  const state = buildRuntimeStateSnapshot({ currentSession: { id: 'scheduled-session', messages: [] }, config: { execution: {} } });
+  assert.match(state.scheduledAttention.reason, /tool approval/);
+  markScheduledSessionContinued('scheduled-session');
+  assert.equal(getScheduledSessionInfo('scheduled-session').status, 'continued');
+  assert.equal(buildRuntimeStateSnapshot({ currentSession: { id: 'scheduled-session', messages: [] }, config: { execution: {} } }).scheduledAttention, null);
+});
+
+test('schema 20 tasks migrate without silently replacing the existing global approval policy', async t => {
+  const directory = await isolated(t);
+  const task = saveScheduledTask(taskInput(directory), '', clock);
+  getGlobalDatabase().exec("ALTER TABLE scheduled_tasks DROP COLUMN approval_mode; UPDATE schema_meta SET value='20' WHERE key='schema_version'");
+  closeSqliteDatabasesForTests();
+  assert.equal(getScheduledTask(task.id).approvalMode, '');
+  saveScheduledTask({ enabled: false }, task.id, clock);
+  assert.equal(getScheduledTask(task.id).approvalMode, '');
+  assert.equal(queueScheduledTask(task.id, clock).task.approvalMode, '');
+});
+
+test('task API generates emoji titles for new prompts and preserves titles on schedule-only edits', async t => {
+  const directory = await isolated(t);
+  const handlers = new Map();
+  const routes = Object.fromEntries(['get', 'post', 'put', 'delete'].map(method => [method, (path, handler) => handlers.set(`${method} ${path}`, handler)]));
+  const generated = [];
+  let response;
+  registerScheduledTaskRoutes({ routes, nodeRoute: fn => fn, readBody: req => req.body,
+    jsonResponse: (_res, data, status) => { response = { data, status }; }, generalDir: directory,
+    startWorker: async () => ({ running: false }), generateTitle: async ({ userText }) => { generated.push(userText); return '📷 最新照片'; } });
+  const input = { ...taskInput(directory), enabled: false, approvalMode: 'review' };
+  delete input.name;
+  await handlers.get('post /api/scheduled-tasks')({ body: input }, {}, new URL('http://local/api/scheduled-tasks'));
+  assert.equal(response.status, 201);
+  const task = response.data.task;
+  assert.equal(task.name, '📷 最新照片');
+  assert.equal(task.approvalMode, 'review');
+  await handlers.get('put /api/scheduled-tasks/:id')({ body: { enabled: false } }, {}, new URL(`http://local/api/scheduled-tasks/${task.id}`));
+  assert.equal(response.data.task.name, task.name);
+  assert.deepEqual(generated, [task.prompt]);
+  await handlers.get('put /api/scheduled-tasks/:id')({ body: { prompt: 'A different task' } }, {}, new URL(`http://local/api/scheduled-tasks/${task.id}`));
+  assert.equal(generated.length, 2);
+});
 
 test('schedules validate intervals, explicit one-time offsets and timezone names', () => {
   for (const schedule of [{ type: 'cron' }, { type: 'interval', minutes: 0 }, { type: 'interval', minutes: 1.5 },
@@ -61,7 +155,7 @@ test('saved tasks survive database reopen, preserve pause, and validate partial 
   closeSqliteDatabasesForTests();
   assert.equal(getScheduledTask(task.id).prompt, task.prompt);
   assert.equal(listScheduledTasks().length, 1);
-  assert.equal(getGlobalDatabase().prepare("SELECT value FROM schema_meta WHERE key='schema_version'").get().value, '20');
+  assert.equal(getGlobalDatabase().prepare("SELECT value FROM schema_meta WHERE key='schema_version'").get().value, '22');
   saveScheduledTask({ enabled: false }, task.id, clock + 1000);
   assert.equal(getScheduledTask(task.id).nextRunAt, null);
   saveScheduledTask({ name: 'Renamed' }, task.id, clock + 2000);

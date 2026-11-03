@@ -1,4 +1,5 @@
 import { ApprovalManager } from './approval-manager.js';
+import { stripInternalTitleContext } from '../../src/core/session-title.js';
 import { UserInputManager } from './user-input-manager.js';
 import { summarizeToolResult } from '../../src/core/tool-result-store.js';
 import { formatToolLabel } from '../../src/core/tool-display.js';
@@ -164,7 +165,9 @@ export function serializeSessionMessages(messages) {
           : [];
       return {
         role: message.role,
-        content: typeof message.content === 'string'
+        content: message.role === 'user' && typeof message.content === 'string'
+          ? stripInternalTitleContext(message.content)
+          : typeof message.content === 'string'
           ? message.content
           : (Array.isArray(message.content) ? message.content.map((part) => part.text || '').join('') : ''),
         reasoningContent: typeof message.reasoning_content === 'string' ? message.reasoning_content : '',

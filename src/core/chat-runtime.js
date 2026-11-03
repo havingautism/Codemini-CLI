@@ -52,6 +52,7 @@ import { parseModelJsonObject } from './model-json.js';
 import { trimInline, normalizePath } from './string-utils.js';
 import { normalizeAssumptionItems } from './tool-args-helpers.js';
 import fs from 'node:fs/promises';
+import { getScheduledSessionInfo, markScheduledSessionContinued } from './scheduled-task-store.js';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -4047,6 +4048,10 @@ export function resolveLatestContextMeasurement(messages = [], fallbackOverhead 
 }
 
 export function buildRuntimeStateSnapshot({ currentSession, config, model, executionMode, extraSession, workspaceRoot, alwaysSkillNames = [], crewState, crewWorkers = [], crewInFlightIds = [], crewDirtyCount = 0 } = {}) {
+  const scheduledRun = getScheduledSessionInfo(currentSession?.id);
+  const scheduledAttention = scheduledRun?.status === 'needs_attention'
+    && !(currentSession?.messages || []).some(message => message.role === 'user' && Date.parse(message.at) > Date.parse(scheduledRun.finishedAt))
+    ? { reason: scheduledRun.error, taskName: scheduledRun.task.name } : null;
   const activeMessages = extraSession
     ? extraSession.messages || []
     : Array.isArray(currentSession?.compact?.view) && currentSession.compact.view.length > 0
@@ -4075,6 +4080,7 @@ export function buildRuntimeStateSnapshot({ currentSession, config, model, execu
     projectIsGit: Boolean(config?.runtime?.project_is_git),
     sessionId: currentSession?.id || '',
     sessionTitle: currentSession?.title || '',
+    scheduledAttention,
     messageCount: Array.isArray(currentSession?.messages) ? currentSession.messages.length : 0,
     mode: resolvedMode,
     approvalMode: config.execution?.approval_mode || 'auto',
@@ -4201,7 +4207,7 @@ export function resolveSubAgentModel(config, fallbackModel = '') {
   ).trim();
 }
 
-async function generateSessionTitle({ userText, assistantText = '', config, signal }) {
+export async function generateSessionTitle({ userText, assistantText = '', config, signal }) {
   // Some reasoning-capable Anthropic-compatible models consume ~100 output
   // tokens before emitting the short final label. A 64-token cap can therefore
   // produce an empty assistant response and silently fall back to raw user text.
@@ -8969,6 +8975,8 @@ export async function createChatRuntime({
   let currentSession = session;
   const titleCoordinator = createSessionTitleTaskCoordinator();
   let config = initialConfig;
+  const scheduledRun = getScheduledSessionInfo(currentSession?.id);
+  if (scheduledRun) config = { ...config, execution: { ...config.execution, approval_mode: scheduledRun.task.approvalMode || config.execution?.approval_mode || 'auto' } };
   model = model || currentSession?.model || resolveDefaultModel(config);
   scheduleMemoryReviewBacklog({ config, currentSessionId: currentSession?.id });
   if (currentSession && typeof currentSession === 'object') {
@@ -9833,6 +9841,7 @@ export async function createChatRuntime({
     withTokenUsageSession(currentSession.id, () => executeSubmissionTurnInSession(line, onAgentEvent, options));
 
   const executeSubmissionTurnInSession = async (line, onAgentEvent, options = {}) => {
+    if (getScheduledSessionInfo(currentSession.id)?.status === 'needs_attention') markScheduledSessionContinued(currentSession.id);
     const endMemoryActivity = beginSessionMemoryActivity(currentSession.id);
     activeTurnCount += 1;
     try {

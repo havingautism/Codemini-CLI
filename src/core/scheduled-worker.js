@@ -22,7 +22,7 @@ export async function executeScheduledRun(run, { onRuntime = () => {}, isInterru
     const loaded = await loadConfig();
     // This copy is local to the task. Never call setExecutionMode, which saves
     // a global preference and would change the user's interactive sessions.
-    const config = { ...loaded, execution: { ...loaded.execution, mode: run.task.mode } };
+    const config = { ...loaded, execution: { ...loaded.execution, mode: run.task.mode, approval_mode: run.task.approvalMode || loaded.execution?.approval_mode || 'auto' } };
     const session = await createSession(root);
     session.title = run.task.name;
     session.mode = run.task.mode;

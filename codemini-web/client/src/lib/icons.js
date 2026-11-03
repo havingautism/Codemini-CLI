@@ -1,5 +1,6 @@
 import { createElement, forwardRef } from "react";
 import {
+  IconAlarm,
   IconAdjustmentsHorizontal,
   IconAlertCircle,
   IconAlertCircleFilled,
@@ -286,3 +287,4 @@ export const WindowsLogo = wrap(IconBrandWindows, IconBrandWindowsFilled);
 export const Wrench = wrap(IconTool);
 export const X = wrap(IconX, IconXFilled);
 export const XCircle = wrap(IconCircleX, IconCircleXFilled);
+export const Alarm = wrap(IconAlarm);

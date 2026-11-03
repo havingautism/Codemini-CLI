@@ -37,7 +37,8 @@ test('empty session uses a quiet welcome that unmounts once conversation starts'
   );
   const css = await fs.readFile('codemini-web/client/src/conversation-design.css', 'utf8');
 
-  assert.match(visual, /codemini-welcome-brand/);
+  assert.match(visual, /codemini-home-empty-stage/);
+  assert.match(visual, /children\s*\?\s*\([\s\S]*?codemini-home-empty-caption/);
   assert.match(visual, /welcomeDescription/);
   assert.match(visual, /<TokenActivity/);
   assert.doesNotMatch(visual, /codemini-home-aurora/);
@@ -59,7 +60,10 @@ test('empty session uses a quiet welcome that unmounts once conversation starts'
     'welcome must not stay mounted after messages render',
   );
 
-  assert.match(css, /\.codemini-welcome-mark\s*\{[^}]*background: var\(--primary\)/);
+  assert.match(emptyOverlay, /<HomeEmptyCaption/);
+  assert.match(emptyOverlay, /askAnythingGeneralPrompts/);
+  assert.match(emptyOverlay, /buildInProjectPrompts/);
+  assert.match(css, /\.codemini-home-empty-title\s*\{[^}]*color: var\(--text-primary\)/);
   assert.doesNotMatch(css, /@keyframes/);
 });
 

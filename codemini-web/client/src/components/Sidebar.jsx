@@ -7,6 +7,7 @@ import {
   CaretRight,
   Compass,
   Clock,
+  Alarm,
   DotsThree,
   Folder,
   GearSix,
@@ -406,7 +407,7 @@ export function Sidebar({
         general.push(session);
         continue;
       }
-      if (Number(session.messageCount || 0) <= 0) continue;
+      if (Number(session.messageCount || 0) <= 0 && !session.scheduledStatus) continue;
       projectOnly.push(session);
     }
     const entries = buildVisibleProjectGroups({
@@ -919,7 +920,10 @@ export function Sidebar({
                     {visibleProjectSessions.map((session) => (
                       <div
                         key={session.id}
+                        aria-disabled={session.scheduledStatus === 'running'}
+                        title={session.scheduledStatus === 'running' ? t('scheduledSessionRunningHint') : undefined}
                         onClick={() => {
+                          if (session.scheduledStatus === 'running') return;
                           if (session.id !== currentSessionId) {
                             onSwitchSession(session.id);
                           } else if (currentView !== "chat") {
@@ -943,6 +947,7 @@ export function Sidebar({
                           ) && <Spinner className="size-3 shrink-0" />}
                           <SessionTitle session={session} />
                         </span>
+                        {session.scheduledTask && <span title={t(`scheduledStatus_${session.scheduledStatus}`)}><Alarm size={14} className={cn('shrink-0', session.needsAttention ? 'text-(--accent-orange)' : session.scheduledStatus === 'running' ? 'text-(--accent-blue)' : 'text-(--text-muted)')} aria-label={t('scheduledTasks')} /></span>}
                         {session.updatedAt && (
                           <span className="text-[11px] text-(--text-muted) shrink-0 tabular-nums">
                             {formatRelativeTime(session.updatedAt)}
@@ -1051,7 +1056,10 @@ export function Sidebar({
               return (
                 <div
                   key={session.id}
+                  aria-disabled={session.scheduledStatus === 'running'}
+                  title={session.scheduledStatus === 'running' ? t('scheduledSessionRunningHint') : undefined}
                   onClick={() => {
+                    if (session.scheduledStatus === 'running') return;
                     if (session.id !== currentSessionId) {
                       onSwitchSession(session.id);
                     } else if (currentView !== "chat") {
@@ -1071,6 +1079,7 @@ export function Sidebar({
                     ) && <Spinner className="size-3 shrink-0" />}
                     <SessionTitle session={session} className="font-medium" />
                   </span>
+                  {session.scheduledTask && <span title={t(`scheduledStatus_${session.scheduledStatus}`)}><Alarm size={14} className={cn('shrink-0', session.needsAttention ? 'text-(--accent-orange)' : session.scheduledStatus === 'running' ? 'text-(--accent-blue)' : 'text-(--text-muted)')} aria-label={t('scheduledTasks')} /></span>}
                   {session.updatedAt && (
                     <span className="shrink-0 text-[11px] tabular-nums text-(--text-muted)">
                       {formatRelativeTime(session.updatedAt)}

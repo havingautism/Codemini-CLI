@@ -6,14 +6,29 @@ import { normalizeTaskSchedule, nextTaskTime } from './task-schedule.js';
 const iso = now => new Date(now).toISOString();
 const active = "status IN ('queued', 'running')";
 const taskFromRow = row => row ? ({ id: row.id, name: row.name, prompt: row.prompt, projectDir: row.project_dir,
-  mode: row.mode, schedule: JSON.parse(row.schedule_json), enabled: Boolean(row.enabled), nextRunAt: row.next_run_at,
+  mode: row.mode, approvalMode: row.approval_mode || '', schedule: JSON.parse(row.schedule_json), enabled: Boolean(row.enabled), nextRunAt: row.next_run_at,
   createdAt: row.created_at, updatedAt: row.updated_at }) : null;
 const runFromRow = row => row ? ({ id: row.id, taskId: row.task_id, scheduledFor: row.scheduled_for,
   trigger: row.trigger_kind, status: row.status, sessionId: row.session_id, createdAt: row.created_at,
   startedAt: row.started_at, finishedAt: row.finished_at, error: row.error, task: JSON.parse(row.snapshot_json) }) : null;
 
+export function getScheduledChangeState(now = Date.now()) {
+  const row = getGlobalDatabase().prepare(`SELECT c.revision, c.session_revision,
+    COALESCE(w.lease_until > ?, 0) AS worker_running
+    FROM scheduled_changes c LEFT JOIN scheduled_worker w ON w.id=1 WHERE c.id=1`).get(iso(now));
+  return { revision: row.revision, sessionRevision: row.session_revision, workerRunning: Boolean(row.worker_running) };
+}
+
 export function getScheduledTask(id) {
   return taskFromRow(getGlobalDatabase().prepare('SELECT * FROM scheduled_tasks WHERE id = ?').get(id));
+}
+export function getScheduledSessionInfo(sessionId) {
+  if (!sessionId) return null;
+  const row = getGlobalDatabase().prepare('SELECT * FROM scheduled_task_runs WHERE session_id=? ORDER BY created_at DESC LIMIT 1').get(sessionId);
+  return row ? runFromRow(row) : null;
+}
+export function markScheduledSessionContinued(sessionId) {
+  getGlobalDatabase().prepare("UPDATE scheduled_task_runs SET status='continued' WHERE session_id=? AND status='needs_attention'").run(sessionId);
 }
 export function listScheduledTasks() {
   return getGlobalDatabase().prepare('SELECT * FROM scheduled_tasks ORDER BY created_at DESC, id').all().map(taskFromRow);
@@ -32,6 +47,8 @@ export function saveScheduledTask(input, id = '', now = Date.now()) {
     const prompt = String(merged.prompt || '').trim();
     if (!name || name.length > 120 || !prompt || prompt.length > 50000) throw new Error('A name (1–120 characters) and prompt (1–50000 characters) are required.');
     if (!['normal', 'plan'].includes(merged.mode)) throw new Error('Choose daily or coding mode.');
+    const approvalMode = merged.approvalMode ?? 'auto';
+    if (!['review', 'auto', 'full_access'].includes(approvalMode) && !(previous && approvalMode === '')) throw new Error('Invalid approval mode.');
     if (typeof merged.projectDir !== 'string' || !path.isAbsolute(merged.projectDir)) throw new Error('Project directory must be an absolute path.');
     if (merged.enabled !== undefined && typeof merged.enabled !== 'boolean') throw new Error('Enabled must be a boolean.');
     const schedule = normalizeTaskSchedule(merged.schedule);
@@ -40,10 +57,10 @@ export function saveScheduledTask(input, id = '', now = Date.now()) {
     if (enabled && changed && schedule.type === 'once' && Date.parse(schedule.at) <= now) throw new Error('Choose a future time for this one-time task.');
     const nextRunAt = enabled ? (changed ? nextTaskTime(schedule, now) : previous.nextRunAt) : null;
     const taskId = id || randomUUID();
-    db.prepare(`INSERT INTO scheduled_tasks VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    db.prepare(`INSERT INTO scheduled_tasks (id, name, prompt, project_dir, mode, schedule_json, enabled, next_run_at, created_at, updated_at, approval_mode) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET name=excluded.name, prompt=excluded.prompt, project_dir=excluded.project_dir,
-      mode=excluded.mode, schedule_json=excluded.schedule_json, enabled=excluded.enabled, next_run_at=excluded.next_run_at, updated_at=excluded.updated_at`)
-      .run(taskId, name, prompt, path.resolve(merged.projectDir), merged.mode, JSON.stringify(schedule), Number(enabled), nextRunAt, previous?.createdAt || iso(now), iso(now));
+      mode=excluded.mode, approval_mode=excluded.approval_mode, schedule_json=excluded.schedule_json, enabled=excluded.enabled, next_run_at=excluded.next_run_at, updated_at=excluded.updated_at`)
+      .run(taskId, name, prompt, path.resolve(merged.projectDir), merged.mode, JSON.stringify(schedule), Number(enabled), nextRunAt, previous?.createdAt || iso(now), iso(now), approvalMode);
     return getScheduledTask(taskId);
   });
 }

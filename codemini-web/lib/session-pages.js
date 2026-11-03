@@ -23,7 +23,7 @@ export function getSessionGroupPage({ groupKey, active, cursor = null, projectDi
     : !isGeneralWorkspaceProjectDir(dir) && normalizeProjectDirKey(dir) === key);
   const page = listSessionPageFromSqlite({ projectDirs: dirs, limit: key === GENERAL_SESSION_GROUP ? 10 : 5, cursor });
   return { ...page, nextCursor: page.nextCursor ? Buffer.from(JSON.stringify(page.nextCursor)).toString('base64url') : null,
-    sessions: page.sessions.map((session) => ({ ...session, projectKey: normalizeProjectDirKey(session.projectDir), isGeneral: key === GENERAL_SESSION_GROUP })) };
+    sessions: page.sessions.map((session) => ({ ...session, scheduledTask: Boolean(session.scheduledStatus), projectKey: normalizeProjectDirKey(session.projectDir), isGeneral: key === GENERAL_SESSION_GROUP })) };
 }
 
 export function getSessionSidebarSnapshot(active) {

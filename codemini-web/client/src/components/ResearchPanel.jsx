@@ -71,6 +71,7 @@ import {
   updateResearchPlan,
 } from "@/hooks/use-api.js";
 import { cn } from "@/lib/utils";
+import { markdownExcerpt } from "@/lib/markdown-excerpt.js";
 
 const PHASE_FILTERS = [
   ["all", "deepResearchFilterAll"],
@@ -530,7 +531,7 @@ function ResearchLibraryCard({
           </h3>
           {session.goal ? (
             <p className="mt-1 line-clamp-1 text-[12px] text-(--text-secondary)">
-              {session.goal}
+              {markdownExcerpt(session.goal)}
             </p>
           ) : null}
           <div className="mt-3 flex min-w-0 flex-wrap items-center gap-1.5 text-[11px] text-(--text-muted)">
@@ -2244,7 +2245,7 @@ function EvidenceList({ evidence = [], title, countLabel }) {
                     ) : null}
                   </div>
                   <p className="line-clamp-4 text-[11px] leading-5 text-(--text-secondary) [overflow-wrap:anywhere]">
-                    {ev.claim}
+                    {markdownExcerpt(ev.claim)}
                   </p>
                   {ev.url ? (
                     <a
