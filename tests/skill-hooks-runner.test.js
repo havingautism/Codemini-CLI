@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { runCommandHook } from '../src/core/skill-hooks-runner.js';
+import { expandHookCommandPlaceholders, runCommandHook } from '../src/core/skill-hooks-runner.js';
 
 async function withFixture(fn) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-hooks-runner-'));
@@ -95,6 +95,9 @@ test('allow decision path parses hook output fields', async () => {
     assert.equal(result.reason, 'ok');
     assert.equal(result.additionalContext, 'extra context');
     assert.equal(result.systemMessage, 'system note');
+    assert.equal(result.execution.exitCode, 0);
+    assert.match(result.execution.stdout, /extra context/);
+    assert.match(result.execution.stdout, /system note/);
   });
 });
 
@@ -119,6 +122,62 @@ test('expands CLAUDE_PROJECT_DIR placeholder in command', async () => {
 
     assert.equal(result.ok, true);
     assert.equal(result.decision, 'allow');
+  });
+});
+
+test('expands CODEMINI_PLUGIN_ROOT and falls back to CLAUDE_PLUGIN_ROOT', async () => {
+  await withFixture(async (root) => {
+    const hookPath = path.join(root, 'plugin-root.mjs');
+    await writeNodeFixture(
+      hookPath,
+      `process.stdout.write(JSON.stringify({ decision: 'allow', marker: 'plugin-root' }));`,
+    );
+    const pluginRoot = root.replace(/\\/g, '/');
+    assert.equal(
+      expandHookCommandPlaceholders('node "${CODEMINI_PLUGIN_ROOT}/plugin-root.mjs"', {
+        CODEMINI_PLUGIN_ROOT: '',
+        CLAUDE_PLUGIN_ROOT: pluginRoot,
+      }),
+      `node "${pluginRoot}/plugin-root.mjs"`,
+    );
+    assert.equal(
+      expandHookCommandPlaceholders('node "${CLAUDE_PLUGIN_ROOT}/plugin-root.mjs"', {
+        CODEMINI_PLUGIN_ROOT: pluginRoot,
+        CLAUDE_PLUGIN_ROOT: '',
+      }),
+      `node "${pluginRoot}/plugin-root.mjs"`,
+    );
+
+    const result = await runCommandHook({
+      command: 'node "${CODEMINI_PLUGIN_ROOT}/plugin-root.mjs"',
+      timeout: 5,
+      failClosed: false,
+      input: { hook_event_name: 'SessionStart' },
+      env: { CODEMINI_PLUGIN_ROOT: pluginRoot },
+    });
+    assert.equal(result.ok, true);
+    assert.equal(result.decision, 'allow');
+  });
+});
+
+test('fail-open keeps non-json stdout and stderr for debugging', async () => {
+  await withFixture(async (root) => {
+    const fixture = path.join(root, 'plain.mjs');
+    await writeNodeFixture(
+      fixture,
+      "process.stdout.write('not-json'); process.stderr.write('boom'); process.exit(1);",
+    );
+    const result = await runCommandHook({
+      command: `node "${fixture}"`,
+      timeout: 5,
+      failClosed: false,
+      input: { hook_event_name: 'UserPromptSubmit' },
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.failOpen, true);
+    assert.equal(result.execution.exitCode, 1);
+    assert.match(result.execution.stdout, /not-json/);
+    assert.match(result.execution.stderr, /boom/);
   });
 });
 

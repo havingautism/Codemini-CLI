@@ -45,6 +45,7 @@ const KIND_CLASS = {
   assistant: "bg-(--accent-purple-bg) text-(--accent-purple)",
   tool: "bg-(--accent-orange-bg) text-(--accent-orange)",
   skill: "bg-(--accent-teal-bg) text-(--accent-teal)",
+  hook: "bg-(--accent-amber-bg) text-(--accent-amber)",
   error: "bg-(--accent-red-bg) text-(--accent-red)",
   memory: "bg-(--bg-secondary) text-(--accent-blue)",
 };
@@ -58,6 +59,7 @@ const KIND_I18N = {
   assistant: "trajectoryKindAssistant",
   tool: "trajectoryKindTool",
   skill: "trajectoryKindSkill",
+  hook: "trajectoryKindHook",
   error: "trajectoryKindError",
 };
 
@@ -79,7 +81,7 @@ const INSPECT_SECTION_I18N = {
 function kindLabel(event) {
   const titleKey = TITLE_I18N[event?.title];
   if (titleKey) return t(titleKey);
-  if (event?.status === "error" && event?.kind !== "tool" && event?.kind !== "skill") {
+  if (event?.status === "error" && event?.kind !== "tool" && event?.kind !== "skill" && event?.kind !== "hook") {
     return t("trajectoryKindError");
   }
   return t(KIND_I18N[event?.kind] || "trajectoryKindAssistant");
@@ -95,6 +97,7 @@ function isInspectable(event) {
     "assistant",
     "tool",
     "skill",
+    "hook",
     "error",
   ].includes(event?.kind);
 }
@@ -244,8 +247,8 @@ function TrajectoryInspectDialog({ event, onClose }) {
   if (!event) return null;
   const input = event.input || (event.kind !== "tool" ? event.body : "");
   const output = event.output || (event.kind === "tool" ? event.preview : "");
-  const summary = event.kind === "tool" || event.kind === "skill" ? event.preview : "";
-  const showIo = event.kind === "skill" || event.kind === "user";
+  const summary = event.kind === "tool" || event.kind === "skill" || event.kind === "hook" ? event.preview : "";
+  const showIo = event.kind === "skill" || event.kind === "hook" || event.kind === "user";
   const meta = inspectMetaLine(event);
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
@@ -283,11 +286,17 @@ function TrajectoryInspectDialog({ event, onClose }) {
                   value={output}
                 />
               ) : null}
-              {event.kind === "skill" && summary && summary !== output ? (
+              {(event.kind === "skill" || event.kind === "hook") && summary && summary !== output ? (
                 <InspectSection label={t("trajectoryInspectSummary")} value={summary} />
               ) : null}
-              {event.kind === "skill" ? (
+              {event.kind === "skill" || (event.kind === "hook" && output) ? (
                 <InspectSection label={t("trajectoryInspectResult")} value={output} />
+              ) : null}
+              {event.kind === "hook" && event.executionText ? (
+                <InspectSection
+                  label={t("trajectoryInspectReturn")}
+                  value={event.executionText}
+                />
               ) : null}
             </div>
           ) : (

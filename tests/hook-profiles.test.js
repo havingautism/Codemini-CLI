@@ -97,7 +97,7 @@ test('package hook profiles persist and arm after workspace, before skills', asy
     }, cwd);
 
     assert.equal(saved.kind, 'package');
-    assert.equal(saved.editable, false);
+    assert.equal(saved.editable, true);
     const packages = await listPackageHookProfiles(cwd);
     assert.equal(packages.length, 1);
     assert.equal(packages[0].hooks.SessionStart[0].hooks[0].command, 'pkg-start.sh');
@@ -127,6 +127,20 @@ test('package hook profiles persist and arm after workspace, before skills', asy
       ['project', 'package', 'skill'],
     );
     assert.equal(handlers[1].skillName, packageHooksArmName('pkg-demo'));
+    const edited = await savePackageHookProfile({
+      ...packages[0],
+      hooks: {
+        ...packages[0].hooks,
+        SessionStart: [{ hooks: [{ type: 'command', command: 'node "${CODEMINI_PLUGIN_ROOT}/hooks/start.js"' }] }],
+      },
+    }, cwd);
+    assert.equal(
+      edited.hooks.SessionStart[0].hooks[0].command,
+      'node "${CODEMINI_PLUGIN_ROOT}/hooks/start.js"',
+    );
+    assert.equal(edited.hooks.PreToolUse[0].hooks[0].command, 'pkg.sh');
+    assert.equal(edited.packageRoot, packages[0].packageRoot);
+    assert.equal(edited.packageSource, 'https://example.com/demo');
     await deleteCustomHookProfile({ id: 'pkg-demo', scope: 'project' }, cwd);
     await assert.rejects(fs.access(managedRoot));
   } finally {

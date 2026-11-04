@@ -69,9 +69,11 @@ export async function fireSkillHookEvent({
     const command = String(handler?.command || '').trim();
     if (!command) continue;
 
+    const resolvedPluginRoot = pluginRoot || workspaceRoot || '';
     const env = {
       CLAUDE_PROJECT_DIR: workspaceRoot || '',
-      CLAUDE_PLUGIN_ROOT: pluginRoot || workspaceRoot || '',
+      CLAUDE_PLUGIN_ROOT: resolvedPluginRoot,
+      CODEMINI_PLUGIN_ROOT: resolvedPluginRoot,
     };
 
     const displayName =
@@ -133,6 +135,7 @@ export async function fireSkillHookEvent({
           ok: false,
           decision: 'deny',
           reason: result.reason,
+          ...hookContextEventFields(result),
         });
       }
       return {
@@ -153,6 +156,7 @@ export async function fireSkillHookEvent({
           endedAt: new Date().toISOString(),
           ok: false,
           reason: result.reason,
+          ...hookContextEventFields(result),
         });
       }
       continue;
@@ -180,6 +184,7 @@ export async function fireSkillHookEvent({
           endedAt: new Date().toISOString(),
           decision: result.decision === 'block' ? 'block' : 'deny',
           reason: blockReason,
+          ...hookContextEventFields(result),
         });
       }
       return {
@@ -199,11 +204,22 @@ export async function fireSkillHookEvent({
         ...hookEventBase,
         endedAt: new Date().toISOString(),
         decision: result.decision || 'allow',
+        ...hookContextEventFields(result),
       });
     }
   }
 
   return { ok: true, denied: false, contexts, ran, updatedInput, decision };
+}
+
+function hookContextEventFields(result) {
+  const fields = {};
+  const text = String(result?.additionalContext || '').trim();
+  if (text) fields.additionalContext = text;
+  if (result?.execution && typeof result.execution === 'object') {
+    fields.execution = result.execution;
+  }
+  return fields;
 }
 
 /** Lines injected into tool results / prompts so the model can see which hooks ran. */

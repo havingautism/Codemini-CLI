@@ -20,6 +20,8 @@ test("trajectory reuses persisted session system prompt instead of recomposing",
   assert.doesNotMatch(panel, /fetchSessionSystemPrompt/);
   assert.match(panel, /trajectoryLoopLabel/);
   assert.match(panel, /trajectoryFilterKind/);
+  assert.match(panel, /trajectoryKindHook/);
+  assert.match(panel, /trajectoryInspectReturn/);
   assert.match(panel, /trajectoryFilterTurn/);
   assert.match(panel, /kindOptions/);
   assert.match(panel, /trajectoryEventCount/);
@@ -37,6 +39,8 @@ test("trajectory kind labels use title case", async () => {
     assert.match(source, /trajectoryKindSystem: "System Prompt"/);
     assert.match(source, /trajectoryKindUser: "User Message"/);
     assert.match(source, /trajectoryKindTool: "Tool Call"/);
+    assert.match(source, /trajectoryKindHook: "Hook"/);
+    assert.match(source, /trajectoryInspectReturn: "Return"/);
     assert.match(source, /trajectoryKindRouting: "Graph Routing"/);
     assert.match(source, /trajectoryKindMemory: "Memory Inject"/);
     assert.match(source, /trajectoryKindSystemNotice: "System Notice"/);

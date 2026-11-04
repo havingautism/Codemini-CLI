@@ -4408,13 +4408,14 @@ samp {
 
 /* The light input shell is nearly white, so keep its quick controls visually quiet. */
 :root:not([data-theme="dark"]) .codemini-input-pill {
-  background: var(--bg-subtle) !important;
-  box-shadow: none !important;
+  background: transparent;
+  box-shadow: none;
 }
 
-:root:not([data-theme="dark"]) .codemini-input-pill:hover {
-  background: var(--bg-hover) !important;
-  box-shadow: none !important;
+:root:not([data-theme="dark"]) .codemini-input-pill:hover,
+:root:not([data-theme="dark"]) .codemini-input-pill[data-state="open"] {
+  background: transparent;
+  box-shadow: none;
 }
 
 :root:not([data-theme="dark"]) .codemini-input-chip {

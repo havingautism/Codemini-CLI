@@ -2560,6 +2560,11 @@ export function AppProvider({ children }) {
               event.command ||
               segment.summary,
             reason: event.reason || segment.reason,
+            decision: event.decision || segment.decision,
+            additionalContext: event.additionalContext || segment.additionalContext,
+            execution: event.execution && typeof event.execution === "object"
+              ? event.execution
+              : segment.execution,
             endedAt: event.endedAt || new Date().toISOString(),
           });
           if (!activeId) {

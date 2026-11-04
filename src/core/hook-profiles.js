@@ -114,7 +114,7 @@ function normalizeStoredProfile(raw, fallback = {}) {
     enabled: source.enabled !== false,
     hooks: unwrapHooksContainer(hooksRaw),
     kind,
-    editable: kind !== 'package',
+    editable: true,
     packageSource: String(source.packageSource || fallback.packageSource || '').trim(),
     packageName: String(source.packageName || fallback.packageName || '').trim(),
     packageRoot: String(source.packageRoot || fallback.packageRoot || '').trim(),

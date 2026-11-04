@@ -1,5 +1,8 @@
+import { parseLegacyHookSegmentName } from "../../../shared/hook-ui.js";
+
 const USER_ROLES = new Set(["you", "user"]);
 const ERROR_STATUSES = new Set(["failed", "error", "blocked", "aborted"]);
+const CALL_KINDS = new Set(["tool", "skill", "hook"]);
 
 function normalizeRole(message) {
   return String(message?.role || "").toLowerCase();
@@ -116,6 +119,11 @@ export function formatTrajectoryRowPreview(event) {
   if (event.kind === "system") {
     return oneLinePreview(event.input || event.body, 160);
   }
+  if (event.kind === "hook") {
+    const header = [event.title, event.preview].filter(Boolean).join(" ");
+    const output = oneLinePreview(event.output);
+    return output ? `${header} -> ${output}` : header;
+  }
   if (event.kind === "tool" || event.kind === "skill") {
     const name = String(event.title || "").trim();
     const input = compactOneLine(event.input || event.body);
@@ -202,6 +210,7 @@ function makeEvent(partial) {
     preview: partial.preview || "",
     input: partial.input || "",
     output: partial.output || "",
+    executionText: partial.executionText || "",
     status: Object.prototype.hasOwnProperty.call(partial, "status")
       ? partial.status
       : null,
@@ -350,6 +359,27 @@ function emitModelSegments(events, message, index, turn) {
       });
       return;
     }
+    if (segment?.type === "skill" && isTrajectoryHookSegment(segment)) {
+      const detail = buildHookInput(segment);
+      const output = hookTrajectoryOutput(segment);
+      const executionText = formatHookExecution(segment.execution);
+      pushEvent({
+        id: `trajectory-hook-${message.id || index}-${segmentIndex}`,
+        kind: "hook",
+        turn,
+        title: hookTrajectoryTitle(segment),
+        body: segment.summary || output || detail,
+        preview: hookTrajectoryPreview(segment),
+        input: detail,
+        output,
+        executionText,
+        status: normalizeStatus(segment.status, segment.isStreaming),
+        startedAt: segment.startedAt || null,
+        endedAt: segment.endedAt || null,
+        durationMs: segment.durationMs,
+      });
+      return;
+    }
     if (segment?.type === "skill") {
       const detail = buildSkillDetail(segment);
       pushEvent({
@@ -406,6 +436,75 @@ function emitModelSegments(events, message, index, turn) {
       });
     }
   }
+}
+
+function isTrajectoryHookSegment(segment = {}) {
+  if (segment?.kind === "hook") return true;
+  return Boolean(parseLegacyHookSegmentName(segment?.name));
+}
+
+function hookIdentity(segment = {}) {
+  const legacy = parseLegacyHookSegmentName(segment?.name) || {};
+  return {
+    event: String(segment.event || legacy.event || "").trim(),
+    source: String(segment.sourceLabel || segment.source || legacy.sourceLabel || "").trim(),
+    tool: String(segment.toolName || legacy.toolName || "").trim(),
+  };
+}
+
+function hookTrajectoryTitle(segment = {}) {
+  return hookIdentity(segment).event || "hook";
+}
+
+function hookTrajectoryPreview(segment = {}) {
+  const { source, tool } = hookIdentity(segment);
+  return [tool, source].filter(Boolean).join(" · ");
+}
+
+function buildHookInput(segment = {}) {
+  const lines = [];
+  const push = (label, value) => {
+    const text = String(value || "").trim();
+    if (text) lines.push(`${label}: ${text}`);
+  };
+  const identity = hookIdentity(segment);
+  push("event", identity.event);
+  push("source", identity.source);
+  push("tool", identity.tool);
+  push("matcher", segment.matcher);
+  push("command", segment.command);
+  push("decision", segment.decision);
+  return lines.join("\n");
+}
+
+function hookTrajectoryOutput(segment = {}) {
+  const context = String(segment.additionalContext || "").trim();
+  const reason = String(segment.reason || "").trim();
+  return [context, reason].filter(Boolean).join("\n");
+}
+
+function formatHookStream(value) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  try {
+    return JSON.stringify(JSON.parse(text), null, 2);
+  } catch {
+    return text;
+  }
+}
+
+export function formatHookExecution(execution) {
+  if (!execution || typeof execution !== "object") return "";
+  const parts = [];
+  if (execution.exitCode != null && execution.exitCode !== "") {
+    parts.push(`exit ${execution.exitCode}`);
+  }
+  if (execution.timedOut) parts.push("timed out");
+  const stdout = formatHookStream(execution.stdout);
+  const stderr = formatHookStream(execution.stderr);
+  if (stdout) parts.push(`stdout:\n${stdout}`);
+  if (stderr) parts.push(`stderr:\n${stderr}`);
+  return parts.join("\n\n");
 }
 
 function buildSkillDetail(segment = {}) {
@@ -685,7 +784,7 @@ export function filterTrajectoryEvents(
   return list.filter((event) => {
     if (kindFilter) {
       if (event.kind !== kindFilter) return false;
-    } else if (!includeCalls && (event.kind === "tool" || event.kind === "skill")) {
+    } else if (!includeCalls && CALL_KINDS.has(event.kind)) {
       return false;
     }
     if (
@@ -703,6 +802,7 @@ export function filterTrajectoryEvents(
       event.preview,
       event.input,
       event.output,
+      event.executionText,
       event.model,
       event.sdkProvider,
       formatTrajectoryUsage(event.usage),

@@ -152,11 +152,18 @@ test('applyStreamEventToMessage persists hook start/end as skill segments', () =
     source: 'package',
     matcher: 'startup|resume',
     ok: true,
+    decision: 'allow',
+    additionalContext: 'prefer short diffs',
+    execution: { exitCode: 0, stdout: '{"ok":true}', stderr: 'warn' },
     endedAt: '2026-07-22T12:00:03.000Z',
   });
   assert.equal(message.segments[0].status, 'done');
   assert.equal(message.segments[0].event, 'UserPromptSubmit');
   assert.equal(message.segments[0].endedAt, '2026-07-22T12:00:03.000Z');
+  assert.equal(message.segments[0].decision, 'allow');
+  assert.equal(message.segments[0].additionalContext, 'prefer short diffs');
+  assert.equal(message.segments[0].execution.stdout, '{"ok":true}');
+  assert.equal(message.segments[0].execution.stderr, 'warn');
 });
 
 test('hook errors preserve their reason for the disclosure details', () => {

@@ -1,12 +1,16 @@
 import { spawn, spawnSync } from 'node:child_process';
 
 const DEFAULT_TIMEOUT_SEC = 30;
+const HOOK_EXECUTION_LIMIT = 16000;
 
 export function expandHookCommandPlaceholders(command, env = {}) {
   const merged = { ...process.env, ...env };
+  const pluginRoot = merged.CODEMINI_PLUGIN_ROOT || merged.CLAUDE_PLUGIN_ROOT || '';
+  const claudePluginRoot = merged.CLAUDE_PLUGIN_ROOT || pluginRoot;
   return String(command ?? '')
     .replace(/\$\{CLAUDE_PROJECT_DIR\}/g, merged.CLAUDE_PROJECT_DIR ?? '')
-    .replace(/\$\{CLAUDE_PLUGIN_ROOT\}/g, merged.CLAUDE_PLUGIN_ROOT ?? '');
+    .replace(/\$\{CLAUDE_PLUGIN_ROOT\}/g, claudePluginRoot)
+    .replace(/\$\{CODEMINI_PLUGIN_ROOT\}/g, pluginRoot);
 }
 
 function parseStdout(stdout) {
@@ -67,6 +71,27 @@ function resolveDecision(exitCode, parsedDecision, eventName = '') {
     return parsedDecision;
   }
   return 'allow';
+}
+
+function clipHookText(value) {
+  const text = String(value ?? '');
+  if (text.length <= HOOK_EXECUTION_LIMIT) return text;
+  return `${text.slice(0, HOOK_EXECUTION_LIMIT)}\n…[truncated]`;
+}
+
+function executionFromShell(shell) {
+  if (!shell || typeof shell !== 'object') return null;
+  return {
+    exitCode: shell.exitCode ?? null,
+    stdout: clipHookText(shell.stdout),
+    stderr: clipHookText(shell.stderr),
+    ...(shell.timedOut ? { timedOut: true } : {}),
+  };
+}
+
+function withExecution(payload, shell) {
+  const execution = executionFromShell(shell);
+  return execution ? { ...payload, execution } : payload;
 }
 
 function failClosedResult(reason) {
@@ -242,18 +267,18 @@ export async function runCommandHook({
 
   if (result.error) {
     if (failClosed) {
-      return failClosedResult(result.error.message || 'Hook command failed');
+      return withExecution(failClosedResult(result.error.message || 'Hook command failed'), result);
     }
-    return failOpenResult();
+    return withExecution(failOpenResult(), result);
   }
 
   if (result.timedOut || result.killed) {
     if (failClosed) {
-      return failClosedResult(
+      return withExecution(failClosedResult(
         result.timedOut ? 'Hook command timed out' : 'Hook command was terminated',
-      );
+      ), result);
     }
-    return failOpenResult();
+    return withExecution(failOpenResult(), result);
   }
 
   const exitCode = result.exitCode ?? 1;
@@ -262,10 +287,13 @@ export async function runCommandHook({
 
   if (exitCode !== 0 && exitCode !== 2) {
     if (failClosed) {
-      return failClosedResult(fields.reason || `Hook command exited with code ${exitCode}`);
+      return withExecution(
+        failClosedResult(fields.reason || `Hook command exited with code ${exitCode}`),
+        result,
+      );
     }
-    return failOpenResult();
+    return withExecution(failOpenResult(), result);
   }
 
-  return buildHookResult(exitCode, fields, eventName);
+  return withExecution(buildHookResult(exitCode, fields, eventName), result);
 }

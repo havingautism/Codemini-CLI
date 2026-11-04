@@ -37,7 +37,8 @@ test('fireSkillHookEvent runs UserPromptSubmit handlers and aggregates additiona
     return {
       ok: true,
       decision: 'allow',
-      additionalContext: `context from ${command}`
+      additionalContext: `context from ${command}`,
+      execution: { exitCode: 0, stdout: `{"from":"${command}"}`, stderr: '' },
     };
   };
 
@@ -57,12 +58,21 @@ test('fireSkillHookEvent runs UserPromptSubmit handlers and aggregates additiona
   assert.equal(calls.length, 2);
   assert.equal(calls[0].env.CLAUDE_PROJECT_DIR, '/workspace');
   assert.ok(calls[0].env.CLAUDE_PLUGIN_ROOT.startsWith('/plugins/'));
+  assert.equal(calls[0].env.CODEMINI_PLUGIN_ROOT, calls[0].env.CLAUDE_PLUGIN_ROOT);
 
   const startEvents = events.filter((event) => event.type === 'hook:start');
   const endEvents = events.filter((event) => event.type === 'hook:end');
   assert.equal(startEvents.length, 2);
   assert.equal(endEvents.length, 2);
   assert.ok(endEvents.every((event) => event.decision === 'allow'));
+  assert.deepEqual(
+    endEvents.map((event) => event.additionalContext).sort(),
+    ['context from alpha.sh', 'context from beta.sh'].sort(),
+  );
+  assert.deepEqual(
+    endEvents.map((event) => event.execution.stdout).sort(),
+    ['{"from":"alpha.sh"}', '{"from":"beta.sh"}'].sort(),
+  );
 });
 
 test('fireSkillHookEvent PreToolUse start/end share toolName for UI matching', async () => {

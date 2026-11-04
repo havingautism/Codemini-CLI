@@ -4492,6 +4492,10 @@ async function main() {
               ...existing,
               enabled: profile.enabled !== false,
               activation: profile.activation || existing.activation,
+              hooks:
+                profile.hooks && typeof profile.hooks === "object" && !Array.isArray(profile.hooks)
+                  ? profile.hooks
+                  : existing.hooks,
             },
             cwd,
           );
