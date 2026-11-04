@@ -26,12 +26,12 @@ The window signs in with the one-time local token created by the Web UI. That to
 
 Pushing a tag `vX.Y.Z` that matches `package.json` runs `.github/workflows/desktop-release.yml`. Each architecture is built on a runner of that architecture. Windows artifacts are NSIS Setup installers, not portable executables. macOS artifacts are DMG images.
 
-| Runner | Script | Release asset for 0.10.0 |
+| Runner | Script | Release asset for 0.10.1 |
 | --- | --- | --- |
-| `windows-latest` (x64) | `desktop:dist:win` | `Codemini-Setup-0.10.0-win-x64.exe` |
-| `windows-11-arm` | `desktop:dist:win:arm64` | `Codemini-Setup-0.10.0-win-arm64.exe` |
-| `macos-latest` (Apple Silicon) | `desktop:dist:mac` | `Codemini-0.10.0-mac-arm64.dmg` |
-| `macos-15-intel` | `desktop:dist:mac:x64` | `Codemini-0.10.0-mac-x64.dmg` |
+| `windows-latest` (x64) | `desktop:dist:win` | `Codemini-Setup-0.10.1-win-x64.exe` |
+| `windows-11-arm` | `desktop:dist:win:arm64` | `Codemini-Setup-0.10.1-win-arm64.exe` |
+| `macos-latest` (Apple Silicon) | `desktop:dist:mac` | `Codemini-0.10.1-mac-arm64.dmg` |
+| `macos-15-intel` | `desktop:dist:mac:x64` | `Codemini-0.10.1-mac-x64.dmg` |
 
 The packager is invoked with `--publish never`, and `desktop/electron-builder.config.cjs` sets `publish` to `null`. A `v*` tag does not make electron-builder upload anything. The release job attaches those four files to the GitHub Release. Download links follow:
 
