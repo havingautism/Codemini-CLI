@@ -34,6 +34,7 @@ import {
 } from './approval-policy.js';
 import { remapCrewToolArguments, crewLedgerArgumentBlock } from './crew-worktree.js';
 import {
+  isVmSandbox,
   resolveSandboxPolicy,
   validateSandboxEscalationArgs,
 } from './sandbox-policy.js';
@@ -594,13 +595,16 @@ function normalizeToolCallName(name) {
 
 const FULL_CONTEXT_TOOL_RESULTS = new Set(['skill', 'tasks', 'web_search']);
 
-function shouldPersistLargeToolResult(toolName) {
+function shouldPersistLargeToolResult(toolName, result) {
+  // File tools already enforce a continuous output window. Replacing it with a
+  // generic disk preview loses code and forces redundant reads.
+  if (['read', 'read_ast_node'].includes(normalizeToolCallName(toolName)) && result?.bounded_read === true) return false;
   return !FULL_CONTEXT_TOOL_RESULTS.has(normalizeToolCallName(toolName));
 }
 
 // ─── Format a single tool result using per-tool formatter or fallback ──
 
-function formatToolResult(toolResult, toolName, args, toolRuntime, toolResultMaxChars) {
+export function formatToolResult(toolResult, toolName, args, toolRuntime, toolResultMaxChars) {
   const sanitizeOptions = getToolOutputSanitizeOptions(toolName);
   const formattedByRegistry = toolRuntime.format(toolName, toolResult, args);
   if (typeof formattedByRegistry === 'string') {
@@ -1106,7 +1110,28 @@ export async function runAgentLoop({
                 : (await import('./command-evaluator.js')).evaluateCommandWithLLM;
               let evaluation = await evaluateCommandFn({
                 command: args?.command || '',
-                config,
+                // Review the requested execution boundary, not the sandbox
+                // being left. Full host access also removes network confinement.
+                config: isSandboxEscalation ? {
+                  ...config,
+                  sandbox: {
+                    ...config.sandbox,
+                    ...sandboxEscalation.policy,
+                    network: sandboxEscalation.policy.enabled
+                      ? config?.sandbox?.network
+                      : 'allow-all',
+                  },
+                  shell: {
+                    ...config.shell,
+                    default: process.platform === 'win32'
+                      && !sandboxEscalation.policy.enabled
+                      && isVmSandbox(resolveSandboxPolicy({ config, cwd: workspaceRoot }))
+                      ? 'powershell' : config?.shell?.default,
+                  },
+                } : config,
+                capability: isSandboxEscalation
+                  ? `Sandbox escalation to ${sandboxEscalation.mode}: ${sandboxEscalation.justification}`
+                  : 'shell command',
                 workspaceRoot: config?.workspaceRoot || process.cwd()
               });
               if (evaluation?.failed && !evaluation.failureReason) {
@@ -1553,7 +1578,7 @@ export async function runAgentLoop({
           experienceTracker,
           onEvent
         });
-        if (shouldPersistLargeToolResult(toolName)) {
+        if (shouldPersistLargeToolResult(toolName, toolResult)) {
           formatted = await activeToolResultStore.storeResultIfNeeded(call.id, formatted, toolResult);
         }
         return {
@@ -1668,7 +1693,7 @@ export async function runAgentLoop({
       }
 
       // P0: Persist to disk if still large
-      if (shouldPersistLargeToolResult(toolName)) {
+      if (shouldPersistLargeToolResult(toolName, toolResult)) {
         formatted = await activeToolResultStore.storeResultIfNeeded(call.id, formatted, toolResult);
       }
 

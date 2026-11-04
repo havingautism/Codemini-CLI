@@ -36,7 +36,6 @@ export function createToolResultStore({ resultDir } = {}) {
       if (value?.filePath) fs.unlink(value.filePath).catch(() => {});
     }
   });
-  const readCache = new LRUCache({ max: 128, ttl: 10 * 60 * 1000 });
 
   async function ensureResultDir() {
     if (!resultDirReady) {
@@ -73,18 +72,10 @@ Summary: ${summary}
     const files = [];
     for (const [, value] of storedResults.entries()) files.push(value.filePath);
     storedResults.clear();
-    readCache.clear();
     return Promise.allSettled(files.map((filePath) => fs.unlink(filePath).catch(() => {})));
   }
 
-  function checkReadDedup(filePath, startLine, endLine, mtimeMs) {
-    const key = `${filePath}:${startLine || 0}:${endLine || 0}:${mtimeMs}`;
-    if (readCache.has(key)) return true;
-    readCache.set(key, true);
-    return false;
-  }
-
-  return { storeResultIfNeeded, checkReadDedup, clear };
+  return { storeResultIfNeeded, clear };
 }
 
 export function summarizeToolResult(result) {

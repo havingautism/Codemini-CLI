@@ -1294,11 +1294,17 @@ function FileChangesSummary({ changes }) {
           return (
             <div
               key={key}
-              className="border-t border-(--border-default) first:border-t-0"
+              className="codemini-disclosure border-t border-(--border-default) first:border-t-0"
             >
               <div
                 role="button"
                 tabIndex={hasPreview ? 0 : -1}
+                aria-expanded={hasPreview ? fileOpen : undefined}
+                onKeyDown={(event) => {
+                  if (!hasPreview || event.target !== event.currentTarget || !["Enter", " "].includes(event.key)) return;
+                  event.preventDefault();
+                  event.currentTarget.click();
+                }}
                 onClick={() => {
                   if (!hasPreview) return;
                   setOpenFiles((prev) => {

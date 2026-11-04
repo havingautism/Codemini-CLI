@@ -190,6 +190,8 @@ export const en = {
   approvalFieldRecommend: "Recommend",
   approvalFieldReview: "Review",
   approvalEvaluationFailed: "LLM review failed; manual confirmation is required",
+  approvalOutsideSandboxNotice: "This command runs outside the sandbox and requires manual review.",
+  approvalWiderSandboxNotice: "This command requests wider sandbox permissions and requires manual review.",
   approvalRiskLow: "Low",
   approvalRiskMedium: "Medium",
   approvalRiskHigh: "High",

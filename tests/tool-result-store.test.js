@@ -17,7 +17,7 @@ test('tool result stores keep concurrent session outputs in their own directorie
   const storeA = createToolResultStore({ resultDir: sessionA });
   const storeB = createToolResultStore({ resultDir: sessionB });
   const largeFormatted = 'preview'.repeat(1000);
-  const rawA = `session-a:${'a'.repeat(7000)}`;
+  const rawA = Array.from({ length: 100 }, () => `session-a:${'a'.repeat(70)}`).join('\n');
   const rawB = `session-b:${'b'.repeat(7000)}`;
 
   const [outputA, outputB] = await Promise.all([
@@ -46,17 +46,8 @@ test('tool result stores keep concurrent session outputs in their own directorie
   const readResult = await builtinTools.handlers.read({
     path: fileA,
     include_content: true,
-    end_line: 1,
+    end_line: 100,
   });
   assert.equal(readResult.content, rawA);
   await builtinTools.dispose();
-});
-
-test('read deduplication is isolated per session store', () => {
-  const storeA = createToolResultStore();
-  const storeB = createToolResultStore();
-
-  assert.equal(storeA.checkReadDedup('shared.txt', 1, 20, 123), false);
-  assert.equal(storeB.checkReadDedup('shared.txt', 1, 20, 123), false);
-  assert.equal(storeA.checkReadDedup('shared.txt', 1, 20, 123), true);
 });

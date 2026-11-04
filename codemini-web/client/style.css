@@ -1878,6 +1878,61 @@ body {
   overflow-y: auto;
 }
 
+.codemini-read-tool-preview {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--border-default);
+  border-radius: 14px;
+  background: var(--tool-detail-bg);
+}
+
+.codemini-read-tool-meta,
+.codemini-read-tool-footer {
+  padding: 10px 12px;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.codemini-read-tool-meta {
+  border-bottom: 1px solid var(--border-default);
+}
+
+.codemini-read-tool-footer {
+  border-top: 1px solid var(--border-default);
+}
+
+.codemini-read-tool-preview .codemini-file-preview-scroll {
+  max-height: 400px;
+  padding-right: 0;
+  padding-left: 0;
+  overscroll-behavior-x: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+
+.codemini-read-tool-preview .codemini-file-preview-code {
+  font-size: 12px;
+  line-height: 1.75;
+}
+
+.codemini-read-tool-preview .codemini-file-preview-gutter {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  padding-left: 12px;
+  color: var(--text-secondary);
+  background: var(--tool-detail-bg);
+}
+
+.codemini-file-preview-scroll:focus-visible {
+  outline: 2px solid var(--accent-blue);
+  outline-offset: -2px;
+}
+
 .codemini-inspect-pane {
   margin: 0;
   max-height: min(60vh, 32rem);
@@ -3147,6 +3202,11 @@ samp {
   color: var(--text-muted);
 }
 
+.msg-body [data-streamdown="code-block-header"][data-language=""] span::before,
+.msg-body [data-streamdown="code-block-header"]:not([data-language]) span::before {
+  content: "text";
+}
+
 .msg-body [data-streamdown="code-block"]>div:nth-child(2):has([data-streamdown="code-block-actions"]) {
   position: absolute !important;
   top: 3px !important;
@@ -3169,6 +3229,7 @@ samp {
 
 .msg-body [data-streamdown="code-block-body"] {
   margin-top: 0 !important;
+  padding: 0 !important;
   border: 0 !important;
   border-radius: 0 !important;
   background: transparent !important;
@@ -3177,7 +3238,7 @@ samp {
 
 .msg-body [data-streamdown="code-block-body"] pre {
   margin: 0 !important;
-  padding: 14px 14px 16px !important;
+  padding: 8px 14px !important;
   background: transparent !important;
   color: var(--text-primary) !important;
   font-family: var(--font-mono) !important;
@@ -3246,7 +3307,7 @@ samp {
 }
 
 .msg-body.codemini-assistant-markdown [data-streamdown="code-block-body"] pre {
-  padding: 14px !important;
+  padding: 8px 14px !important;
   line-height: 1.58 !important;
 }
 

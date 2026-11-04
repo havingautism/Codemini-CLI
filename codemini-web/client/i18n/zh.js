@@ -193,6 +193,8 @@ export const zh = {
   approvalFieldRecommend: "建议",
   approvalFieldReview: "审阅",
   approvalEvaluationFailed: "LLM 审阅失败，已转为人工确认",
+  approvalOutsideSandboxNotice: "当前使用沙箱外命令，需要人工审阅。",
+  approvalWiderSandboxNotice: "当前命令申请扩大沙箱权限，需要人工审阅。",
   approvalRiskLow: "低",
   approvalRiskMedium: "中",
   approvalRiskHigh: "高",

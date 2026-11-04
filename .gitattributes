@@ -1,0 +1,12 @@
+# Normalize text to LF in the repository and on checkout.
+# Overrides core.autocrlf so a Windows editor saving CRLF does not
+# mark the whole worktree as modified.
+* text=auto eol=lf
+
+*.png binary
+*.webp binary
+*.ico binary
+*.lottie binary
+*.pptx binary
+*.docx binary
+*.xlsx binary

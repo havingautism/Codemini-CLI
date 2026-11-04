@@ -270,9 +270,9 @@ test('Linux promotes grep/glob and drops staged write + apply_patch', () => {
   assert.deepEqual(del?.function?.parameters?.required, ['file_path']);
   assert.ok(del?.function?.parameters?.properties?.sandbox_permissions);
   const grep = bundle.definitions.find((d) => d?.function?.name === 'grep');
-  assert.deepEqual(Object.keys(grep.function.parameters.properties), ['pattern', 'path', 'include']);
+  assert.deepEqual(Object.keys(grep.function.parameters.properties), ['pattern', 'path', 'include', 'max_results']);
   const glob = bundle.definitions.find((d) => d?.function?.name === 'glob');
-  assert.deepEqual(Object.keys(glob.function.parameters.properties), ['pattern', 'path']);
+  assert.deepEqual(Object.keys(glob.function.parameters.properties), ['pattern', 'path', 'max_results']);
   const shell = bundle.definitions.find((d) => d?.function?.name === 'Bash');
   assert.ok(shell?.function?.parameters?.properties?.sandbox_permissions);
 });

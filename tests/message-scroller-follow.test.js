@@ -145,3 +145,17 @@ test('message scroller pins disclosure toggles before following the end', async 
   assert.match(src, /commitElementPin/);
   assert.match(src, /addEventListener\("click"/);
 });
+
+test('file change rows participate in downward expansion with keyboard support', async () => {
+  const src = await fs.readFile('codemini-web/client/src/components/MessageBubble.jsx', 'utf8');
+  assert.match(src, /codemini-disclosure border-t/);
+  assert.match(src, /aria-expanded=\{hasPreview \? fileOpen : undefined\}/);
+  assert.match(src, /event\.currentTarget\.click\(\)/);
+});
+
+test('nested file actions do not pin the disclosure or interfere with following', () => {
+  const action = {};
+  const toggle = { contains: node => node === action };
+  const target = { closest: selector => selector === '[aria-expanded]' ? toggle : action };
+  assert.equal(findPinnedDisclosure(target), null);
+});

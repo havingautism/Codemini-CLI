@@ -202,19 +202,33 @@ export function createStagedWriteStore({
   return { begin, append, prepareCommit, finish, abort, clear };
 }
 
-export async function atomicWriteUtf8(target, content, writeId = '') {
+export async function atomicWriteUtf8(target, content, writeId = '', { createOnly = false, mode } = {}) {
   const directory = path.dirname(target);
   const baseName = path.basename(target);
   const safeId = String(writeId || randomUUID()).replace(/[^a-zA-Z0-9_-]/g, '');
   const temporaryPath = path.join(directory, `.${baseName}.codemini-${safeId}.tmp`);
   await fs.mkdir(directory, { recursive: true });
+  const previous = await fs.stat(target).catch((error) => {
+    if (error.code === 'ENOENT') return null;
+    throw error;
+  });
+  let handle;
+  let created = false;
   try {
-    await fs.writeFile(temporaryPath, String(content ?? ''), {
-      encoding: 'utf8',
-      flag: 'wx',
-    });
-    await fs.rename(temporaryPath, target);
+    handle = await fs.open(temporaryPath, 'wx', 0o600);
+    created = true;
+    await handle.writeFile(String(content ?? ''), 'utf8');
+    const preservedMode = mode ?? (previous ? previous.mode & 0o777 : undefined);
+    if (process.platform !== 'win32' && preservedMode !== undefined) await handle.chmod(preservedMode);
+    await handle.sync();
+    await handle.close();
+    handle = null;
+    // A no-replace publication prevents a concurrent creator from being
+    // overwritten between the caller's preflight and this commit point.
+    if (createOnly) await fs.link(temporaryPath, target);
+    else await fs.rename(temporaryPath, target);
   } finally {
-    await fs.rm(temporaryPath, { force: true }).catch(() => {});
+    await handle?.close().catch(() => {});
+    if (created) await fs.rm(temporaryPath, { force: true }).catch(() => {});
   }
 }

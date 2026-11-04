@@ -25,6 +25,7 @@ export function FilePreviewCode({
   path = "",
   content = "",
   truncated = false,
+  startLine = 1,
 }) {
   const language = useMemo(() => languageFromPath(path), [path]);
   const [lines, setLines] = useState(() => plainLines(content));
@@ -45,7 +46,7 @@ export function FilePreviewCode({
     };
   }, [content, language]);
 
-  const gutterWidth = String(Math.max(lines.length, 1)).length;
+  const gutterWidth = String(startLine + Math.max(lines.length, 1) - 1).length;
 
   return (
     <div className="codemini-file-preview flex min-h-0 flex-1 flex-col">
@@ -54,11 +55,9 @@ export function FilePreviewCode({
           {t("workspacePreviewTruncated")}
         </div>
       ) : null}
-      <div className="codemini-file-preview-scroll min-h-0 flex-1 overflow-auto px-2 py-2">
+      <div className="codemini-file-preview-scroll min-h-0 min-w-0 flex-1 overflow-auto px-2 py-2" tabIndex={0} role="region" aria-label={path || t("workspacePreview")}>
         <div
-          className="codemini-file-preview-code inline-block min-w-full font-mono text-[11px] leading-5"
-          role="region"
-          aria-label={path || t("workspacePreview")}
+          className="codemini-file-preview-code inline-block w-max min-w-full font-mono text-[11px] leading-5"
         >
           {lines.map((tokens, index) => (
             <div
@@ -70,7 +69,7 @@ export function FilePreviewCode({
                 style={{ minWidth: `${gutterWidth + 1}ch` }}
                 aria-hidden="true"
               >
-                {index + 1}
+                {startLine + index}
               </span>
               <span className="codemini-file-preview-source min-w-0 grow whitespace-pre text-(--text-secondary)">
                 {(tokens || []).length === 0 ? (

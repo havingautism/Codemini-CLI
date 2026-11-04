@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { resolveFileTypeIconName } from "@/lib/file-type-icon.js";
 import { cn } from "@/lib/utils";
 
 const ICON_BASE_PATH = "/icons/material";
@@ -37,30 +38,6 @@ function loadIconMap() {
   return iconMapPromise;
 }
 
-function getFileName(path = "") {
-  return (
-    String(path || "")
-      .replace(/\\/g, "/")
-      .split("/")
-      .filter(Boolean)
-      .pop() || ""
-  ).split(/[?#]/)[0];
-}
-
-function getExtensionIconName(fileName = "", iconMap = FALLBACK_ICON_MAP) {
-  const value = String(fileName || "").toLowerCase();
-  const dotIndexes = [];
-  for (let i = 0; i < value.length; i += 1) {
-    if (value[i] === "." && i > 0 && i < value.length - 1) dotIndexes.push(i);
-  }
-  for (const dotIndex of dotIndexes) {
-    const extension = value.slice(dotIndex + 1);
-    const iconName = iconMap.fileExtensions[extension];
-    if (iconName) return iconName;
-  }
-  return "";
-}
-
 export function FileTypeIcon({ path, className, size = "md" }) {
   const [iconMap, setIconMap] = useState(cachedIconMap || FALLBACK_ICON_MAP);
 
@@ -75,11 +52,7 @@ export function FileTypeIcon({ path, className, size = "md" }) {
     };
   }, []);
 
-  const fileName = getFileName(path).toLowerCase();
-  const iconName =
-    iconMap.fileNames[fileName] ||
-    getExtensionIconName(fileName, iconMap) ||
-    iconMap.defaultFileIcon;
+  const iconName = resolveFileTypeIconName(path, iconMap);
   const sizeClass = size === "sm" ? "size-4" : "size-5";
 
   return (
