@@ -1,4 +1,5 @@
 import { ApprovalManager } from './approval-manager.js';
+import { stripInternalTitleContext } from '../../src/core/session-title.js';
 import { UserInputManager } from './user-input-manager.js';
 import { summarizeToolResult } from '../../src/core/tool-result-store.js';
 import { formatToolLabel } from '../../src/core/tool-display.js';
@@ -164,7 +165,9 @@ export function serializeSessionMessages(messages) {
           : [];
       return {
         role: message.role,
-        content: typeof message.content === 'string'
+        content: message.role === 'user' && typeof message.content === 'string'
+          ? stripInternalTitleContext(message.content)
+          : typeof message.content === 'string'
           ? message.content
           : (Array.isArray(message.content) ? message.content.map((part) => part.text || '').join('') : ''),
         reasoningContent: typeof message.reasoning_content === 'string' ? message.reasoning_content : '',
@@ -1324,6 +1327,11 @@ export class RuntimeBridge {
           summary:
             event.error || event.reason || event.summary || event.command || segment.summary,
           reason: event.reason || event.error || segment.reason,
+          decision: event.decision || segment.decision,
+          additionalContext: event.additionalContext || segment.additionalContext,
+          execution: event.execution && typeof event.execution === 'object'
+            ? event.execution
+            : segment.execution,
           endedAt,
         });
         if (this.#uiActiveMsgId) {

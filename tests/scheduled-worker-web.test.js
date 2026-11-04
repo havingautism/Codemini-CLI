@@ -83,6 +83,31 @@ test('scheduled work survives Web shutdown, isolates modes and stops for user in
   const token = (await fs.readFile(ready.tokenPath, 'utf8')).trim();
   const auth = await fetch(origin + '/auth', { method: 'POST', headers: { origin, 'content-type': 'application/json' }, body: JSON.stringify({ token }) });
   const cookie = auth.headers.get('set-cookie').split(';')[0];
+  const stream = await fetch(origin + '/api/events', { headers: { cookie } });
+  const eventReader = stream.body.getReader();
+  t.after(() => eventReader.cancel().catch(() => {}));
+  const decoder = new TextDecoder();
+  let eventText = '';
+  const readEvent = async type => {
+    const deadline = AbortSignal.timeout(8000);
+    while (true) {
+      const boundary = eventText.indexOf('\n\n');
+      if (boundary >= 0) {
+        const frame = eventText.slice(0, boundary);
+        eventText = eventText.slice(boundary + 2);
+        const data = frame.split('\n').find(line => line.startsWith('data: '));
+        if (data) { const event = JSON.parse(data.slice(6)); if (event.type === type) return event; }
+        continue;
+      }
+      const chunk = await Promise.race([eventReader.read(), new Promise((_, reject) => {
+        deadline.addEventListener('abort', () => reject(new Error('Scheduled SSE event timed out')), { once: true });
+      })]);
+      if (chunk.done) throw new Error('Scheduled SSE stream closed');
+      eventText += decoder.decode(chunk.value, { stream: true });
+    }
+  };
+  const connectedEvent = await readEvent('connected');
+  assert.equal(typeof connectedEvent.scheduled.sessionRevision, 'number');
   const api = async (url, method = 'GET', body) => {
     const response = await fetch(origin + url, { method, headers: { cookie, origin, 'content-type': 'application/json' }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
     return { status: response.status, data: await response.json() };
@@ -91,6 +116,10 @@ test('scheduled work survives Web shutdown, isolates modes and stops for user in
   assert.equal(invalid.status, 400);
   const created = await api('/api/scheduled-tasks', 'POST', { name: 'Background daily task', prompt: 'SCHEDULE_DAILY_FIXTURE', mode: 'normal', projectDir: project, schedule: { type: 'once', at: new Date(Date.now() + 4000).toISOString() } });
   assert.equal(created.status, 201, JSON.stringify(created));
+  const changedEvent = await readEvent('scheduled:changed');
+  assert.ok(changedEvent.revision > connectedEvent.scheduled.revision);
+  assert.equal(Object.hasOwn(changedEvent, 'tasks'), false);
+  await eventReader.cancel();
   if (created.data.worker.pid) workerPids.add(created.data.worker.pid);
   await until(() => scheduledWorkerStatus().running, 'Worker did not start');
   assert.equal((await api(`/api/scheduled-tasks/${created.data.task.id}`, 'PUT', { enabled: false })).data.task.enabled, false);

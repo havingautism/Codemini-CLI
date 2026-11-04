@@ -926,6 +926,11 @@ export function applyStreamEventToMessage(message, event, options = {}) {
               event.command ||
               segment.summary,
             reason: event.reason || event.error || segment.reason,
+            decision: event.decision || segment.decision,
+            additionalContext: event.additionalContext || segment.additionalContext,
+            execution: event.execution && typeof event.execution === "object"
+              ? event.execution
+              : segment.execution,
             endedAt,
           }),
         ),

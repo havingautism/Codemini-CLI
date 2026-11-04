@@ -21,6 +21,9 @@ export function resolveFollowEnd(prevFollow, { atEnd, isUserDriven, reason = '' 
 export function findPinnedDisclosure(target) {
   const toggle = target?.closest?.('[aria-expanded]');
   if (!toggle) return null;
+  // File rows also contain open/reveal/undo buttons. Those are not disclosures.
+  const action = target?.closest?.('button, a, input, textarea, select');
+  if (action && action !== toggle && toggle.contains?.(action)) return null;
   return toggle.closest('.codemini-disclosure') || toggle;
 }
 

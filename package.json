@@ -28,6 +28,7 @@
   "scripts": {
     "start": "node bin/coder.js",
     "test": "node scripts/run-tests.js",
+    "bench:tools": "node scripts/bench-tools.mjs",
     "build:web": "npm install --prefix codemini-web && npm run build --prefix codemini-web",
     "check:encoding": "node scripts/check-text-encoding.js",
     "proto:goal": "node .scratch/goal-mode/prototypes/goal-command-prototype.js",

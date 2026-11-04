@@ -13,7 +13,7 @@ export function latestScheduledRuns(runs = []) {
 
 export function scheduledTaskState(task, latestRun) {
   if (latestRun && (['queued', 'running'].includes(latestRun.status) || ATTENTION.has(latestRun.status))) return latestRun.status;
-  if (!task.enabled && task.schedule.type === 'once' && latestRun?.status === 'completed') return 'completed';
+  if (!task.enabled && task.schedule.type === 'once' && ['completed', 'continued'].includes(latestRun?.status)) return latestRun.status;
   return task.enabled ? 'enabled' : 'paused';
 }
 
@@ -26,7 +26,7 @@ export function visibleScheduledTasks(tasks, runs, { query = '', filter = 'all',
   const needle = query.trim().toLocaleLowerCase();
   return tasks.filter(task => {
     if (filter === 'enabled' && !task.enabled) return false;
-    if (filter === 'paused' && (task.enabled || scheduledTaskState(task, latest.get(task.id)) === 'completed')) return false;
+    if (filter === 'paused' && (task.enabled || ['completed', 'continued'].includes(scheduledTaskState(task, latest.get(task.id))))) return false;
     if (filter === 'attention' && !ATTENTION.has(latest.get(task.id)?.status)) return false;
     return !needle || [task.name, task.prompt, task.projectDir].join('\n').toLocaleLowerCase().includes(needle);
   }).sort((left, right) => {
@@ -67,6 +67,7 @@ export function createScheduledTaskForm(task, projectDir = '', now = Date.now())
   const at = localDateTime(task?.schedule.at || now + 3600000);
   return {
     name: task?.name || '', prompt: task?.prompt || '', projectDir: task?.projectDir || projectDir,
+    approvalMode: task?.approvalMode || 'auto',
     mode: task?.mode || 'normal', type: task?.schedule.type || 'daily', at,
     minutes: String(task?.schedule.minutes || 60), time: task?.schedule.time || '09:00',
     timeZone: task?.schedule.timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone,
@@ -81,5 +82,11 @@ export function scheduledTaskFormPayload(form, task) {
   const schedule = form.type === 'once' ? { type: 'once', at: originalInstant || new Date(form.at).toISOString() }
     : form.type === 'interval' ? { type: 'interval', minutes: Number(form.minutes) }
     : { type: form.type, time: form.time, timeZone: form.timeZone, ...(form.type === 'weekly' ? { days: [...form.days].sort((a, b) => a - b) } : {}) };
-  return { name: form.name.trim(), prompt: form.prompt.trim(), projectDir: form.projectDir.trim(), mode: form.mode, schedule, enabled: task?.enabled ?? true };
+  return { ...(task && form.prompt.trim() === task.prompt ? { name: task.name } : {}), prompt: form.prompt.trim(), projectDir: form.projectDir.trim(), mode: form.mode, approvalMode: form.approvalMode || 'auto', schedule, enabled: task?.enabled ?? true };
+}
+
+export function scheduledAttentionKey(error = '') {
+  return /tool approval/i.test(error) ? 'scheduledApprovalNeeded'
+    : /your input/i.test(error) ? 'scheduledInputNeeded'
+      : /draft|checkpoint/i.test(error) ? 'scheduledReviewNeeded' : 'scheduledAttentionHint';
 }

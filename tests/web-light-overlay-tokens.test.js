@@ -124,7 +124,7 @@ test("light input and settings chrome use overlay tokens instead of one-off gray
 
   assert.match(
     css,
-    /:root:not\(\[data-theme="dark"\]\) \.codemini-input-pill:hover \{[\s\S]*?background: var\(--bg-hover\)/,
+    /:root:not\(\[data-theme="dark"\]\) \.codemini-input-pill:hover,[\s\S]*?background: transparent/,
   );
   assert.match(
     css,

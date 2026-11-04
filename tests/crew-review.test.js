@@ -54,6 +54,10 @@ async function initCleanGit(dir) {
   const template = path.join(dir, '.git-template');
   await fs.mkdir(template, { recursive: true });
   await git(dir, ['init', `--template=${template}`]);
+  // Worktree/rebase content assertions must not depend on the user's global
+  // Windows checkout conversion policy. Linked worktrees share this config.
+  await git(dir, ['config', 'core.autocrlf', 'false']);
+  await git(dir, ['config', 'core.eol', 'lf']);
   await fs.writeFile(path.join(dir, '.gitignore'), '.codemini/\n');
   await fs.writeFile(path.join(dir, 'README.md'), 'hello\n');
   await git(dir, ['add', '.']);

@@ -10,6 +10,16 @@ import { loadUiTranscriptFromSqlite } from '../src/core/session-sqlite-store.js'
 import { repairSettledTranscriptMessages } from '../codemini-web/shared/transcript-segments.js';
 import { userSkillChipBadges } from '../codemini-web/client/src/lib/user-skill-prompt.js';
 
+test('history hides retrieved memories from user bubbles without mutating model history', () => {
+  const content = '<retrieved_memory>private recalled context</retrieved_memory>\n\nFind new photos';
+  const source = [{ role: 'user', content, model_content: content }];
+  const [message] = serializeSessionMessages(source);
+  assert.equal(message.content, 'Find new photos');
+  assert.equal(message.model_content, content);
+  assert.equal(source[0].content, content);
+  assert.equal(serializeSessionMessages([{ role: 'assistant', content }])[0].content, content);
+});
+
 for (const startedReply of [false, true]) {
   test(`manual abort preserves selected skills and skill reads after reload (reply started: ${startedReply})`, async () => {
     closeSqliteDatabasesForTests();

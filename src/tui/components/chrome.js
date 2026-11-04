@@ -341,7 +341,7 @@ export class SettingsDialog {
     const souls = this.souls.filter((soul) => soul.category === category).map((soul) => soul.name);
     return [
       { key: 'mode', label: `🧭 ${this.copy.settingMode}`, options: ['coding', 'daily', 'crew'] },
-      { key: 'reasoning', label: `🧠 ${this.copy.settingReasoning}`, options: ['off', 'auto', 'low', 'medium', 'high'] },
+      { key: 'reasoning', label: `🧠 ${this.copy.settingReasoning}`, options: ['off', 'auto', 'low', 'medium', 'high', 'xhigh', 'max'] },
       { key: 'approval', label: `✅ ${this.copy.settingApproval}`, options: ['review', 'auto', 'full_access'] },
       { key: 'sandbox', label: `🔒 ${this.copy.settingSandbox}`, options: ['read-only', 'workspace-write', 'danger-full-access'] },
       { key: 'jev', label: `⚡ ${this.copy.settingJev}`, options: ['off', 'on'] },

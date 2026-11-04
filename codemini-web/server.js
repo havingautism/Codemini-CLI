@@ -1,5 +1,6 @@
 import { getTokenActivity, getSessionTokenUsage } from '../src/core/token-usage-store.js';
-import { isScheduledSessionActive } from '../src/core/scheduled-task-store.js';
+import { isScheduledSessionActive, getScheduledChangeState } from '../src/core/scheduled-task-store.js';
+import { createScheduledTaskNotifier } from './lib/scheduled-task-notifier.js';
 import { startScheduledWorker } from '../src/core/scheduled-worker-process.js';
 import { registerScheduledTaskRoutes } from './lib/scheduled-task-api.js';
 import { decodeSessionCursor, getSessionGroupPage, getSessionSidebarSnapshot } from './lib/session-pages.js';
@@ -737,7 +738,7 @@ function ensureAcceptedBridgeResult(result) {
   return result;
 }
 
-export function createEventBroker() {
+export function createEventBroker({ getConnectionData = () => ({}) } = {}) {
   const clients = new Set();
   const publish = (event) => {
     const tagged =
@@ -755,6 +756,7 @@ export function createEventBroker() {
   };
   return {
     publish,
+    get clientCount() { return clients.size; },
     addClient(res) {
       res.writeHead(200, {
         "Content-Type": "text/event-stream",
@@ -762,7 +764,7 @@ export function createEventBroker() {
         Connection: "keep-alive",
         "X-Accel-Buffering": "no",
       });
-      res.write(`data: ${JSON.stringify({ type: "connected" })}\n\n`);
+      res.write(`data: ${JSON.stringify({ type: "connected", ...getConnectionData() })}\n\n`);
       clients.add(res);
       const ping = setInterval(() => {
         try {
@@ -2820,7 +2822,8 @@ async function main() {
       sessionId: args.session,
       model: args.model,
     });
-  const eventBroker = createEventBroker();
+  const eventBroker = createEventBroker({ getConnectionData: () => ({ scheduled: getScheduledChangeState() }) });
+  const scheduledNotifier = createScheduledTaskNotifier({ publish: eventBroker.publish, hasClients: () => eventBroker.clientCount > 0 });
   const runtimeStatusStore = createRuntimeStatusStore();
   const recoveredSessionIds = new Set(
     await runtimeStatusStore.recoverInterrupted(),
@@ -4489,6 +4492,10 @@ async function main() {
               ...existing,
               enabled: profile.enabled !== false,
               activation: profile.activation || existing.activation,
+              hooks:
+                profile.hooks && typeof profile.hooks === "object" && !Array.isArray(profile.hooks)
+                  ? profile.hooks
+                  : existing.hooks,
             },
             cwd,
           );
@@ -5912,6 +5919,7 @@ async function main() {
     runtimeStatusStore,
     server,
   });
+  server.once('close', scheduledNotifier.stop);
   process.on("SIGINT", cleanup);
   process.on("SIGTERM", cleanup);
 }

@@ -1,9 +1,19 @@
-import { t } from "../../i18n/index.js";
-import { normalizeReasoningEffort } from "../../../../src/core/provider/reasoning-effort.js";
+import {
+  normalizeReasoningAuto,
+  normalizeReasoningEffort,
+} from "../../../../src/core/provider/reasoning-effort.js";
 
-export { normalizeReasoningEffort };
+export { normalizeReasoningAuto, normalizeReasoningEffort };
 
-export const REASONING_EFFORT_LEVELS = ["auto", "low", "medium", "high"];
+export const REASONING_EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"];
+
+const REASONING_EFFORT_LABELS = {
+  low: "low",
+  medium: "medium",
+  high: "high",
+  xhigh: "xhigh",
+  max: "max",
+};
 
 /**
  * Effort colors follow the active palette accent (`--input-shell-accent`),
@@ -11,43 +21,46 @@ export const REASONING_EFFORT_LEVELS = ["auto", "low", "medium", "high"];
  * intensity of the same hue, not by unrelated semantic colors.
  */
 export const REASONING_EFFORT_ACCENTS = {
-  auto: "color-mix(in srgb, var(--input-shell-accent) 42%, var(--bg-secondary))",
-  low: "color-mix(in srgb, var(--input-shell-accent) 58%, var(--bg-secondary))",
-  medium: "color-mix(in srgb, var(--input-shell-accent) 74%, var(--bg-secondary))",
-  high: "color-mix(in srgb, var(--input-shell-accent) 90%, var(--bg-secondary))",
+  low: "color-mix(in srgb, var(--input-shell-accent) 48%, var(--bg-secondary))",
+  medium: "color-mix(in srgb, var(--input-shell-accent) 64%, var(--bg-secondary))",
+  high: "color-mix(in srgb, var(--input-shell-accent) 78%, var(--bg-secondary))",
+  xhigh: "color-mix(in srgb, var(--input-shell-accent) 90%, var(--bg-secondary))",
+  max: "var(--input-shell-accent)",
 };
 
 /** Label / emphasis tint — same theme accent, stepped for readability. */
 export const REASONING_EFFORT_ACCENT_TEXT = {
-  auto: "color-mix(in srgb, var(--input-shell-accent) 62%, var(--text-secondary))",
-  low: "color-mix(in srgb, var(--input-shell-accent) 74%, var(--text-secondary))",
-  medium: "color-mix(in srgb, var(--input-shell-accent) 88%, var(--text-primary))",
-  high: "var(--input-shell-accent)",
+  low: "color-mix(in srgb, var(--input-shell-accent) 70%, var(--text-secondary))",
+  medium: "color-mix(in srgb, var(--input-shell-accent) 82%, var(--text-secondary))",
+  high: "color-mix(in srgb, var(--input-shell-accent) 92%, var(--text-primary))",
+  xhigh: "var(--input-shell-accent)",
+  max: "var(--input-shell-accent)",
 };
 
 /** Flow animation duration — higher effort = faster flow. */
 export const REASONING_EFFORT_FLOW_DURATION = {
-  auto: "2.8s",
-  low: "2.1s",
-  medium: "1.45s",
-  high: "0.95s",
+  low: "2.4s",
+  medium: "1.8s",
+  high: "1.3s",
+  xhigh: "0.95s",
+  max: "0.7s",
 };
 
 export function getReasoningEffortIndex(value) {
   const normalized = normalizeReasoningEffort(value);
   const index = REASONING_EFFORT_LEVELS.indexOf(normalized);
-  return index >= 0 ? index : 0;
+  return index >= 0 ? index : REASONING_EFFORT_LEVELS.indexOf("high");
 }
 
 export function getReasoningEffortAccent(value) {
   const normalized = normalizeReasoningEffort(value);
-  return REASONING_EFFORT_ACCENTS[normalized] || REASONING_EFFORT_ACCENTS.auto;
+  return REASONING_EFFORT_ACCENTS[normalized] || REASONING_EFFORT_ACCENTS.high;
 }
 
 export function getReasoningEffortAccentText(value) {
   const normalized = normalizeReasoningEffort(value);
   return (
-    REASONING_EFFORT_ACCENT_TEXT[normalized] || REASONING_EFFORT_ACCENT_TEXT.auto
+    REASONING_EFFORT_ACCENT_TEXT[normalized] || REASONING_EFFORT_ACCENT_TEXT.high
   );
 }
 
@@ -55,11 +68,11 @@ export function getReasoningEffortFlowDuration(value) {
   const normalized = normalizeReasoningEffort(value);
   return (
     REASONING_EFFORT_FLOW_DURATION[normalized] ||
-    REASONING_EFFORT_FLOW_DURATION.auto
+    REASONING_EFFORT_FLOW_DURATION.high
   );
 }
 
-/** Fill ratio ending at the selected thumb center (0 at auto … 1 at high). */
+/** Fill ratio ending at the selected thumb center (0 at low … 1 at max). */
 export function getReasoningEffortFillRatio(value) {
   const index = getReasoningEffortIndex(value);
   const count = REASONING_EFFORT_LEVELS.length;
@@ -99,37 +112,26 @@ export function normalizeReasoningEnabled(value) {
 
 export function getReasoningEffortLabel(effort) {
   const normalized = normalizeReasoningEffort(effort);
-  const labels = {
-    auto: t("reasoningEffortAuto"),
-    low: t("reasoningEffortLow"),
-    medium: t("reasoningEffortMedium"),
-    high: t("reasoningEffortHigh"),
-  };
-  return labels[normalized] || labels.auto;
+  return REASONING_EFFORT_LABELS[normalized] || REASONING_EFFORT_LABELS.high;
 }
 
 export function extractReasoningFromConfig(config) {
   return {
     enabled: normalizeReasoningEnabled(config?.model?.reasoning_enabled),
+    auto: normalizeReasoningAuto(config?.model?.reasoning_auto),
     effort: normalizeReasoningEffort(config?.model?.reasoning_effort),
   };
 }
 
 export function extractReasoningRuntimePatch(config) {
-  const { enabled, effort } = extractReasoningFromConfig(config);
+  const { enabled, auto, effort } = extractReasoningFromConfig(config);
   return {
     reasoningEnabled: enabled,
+    reasoningAuto: auto,
     reasoningEffort: effort,
   };
 }
 
 export function getReasoningEffortShortLabel(effort) {
-  const normalized = normalizeReasoningEffort(effort);
-  const labels = {
-    auto: t("reasoningEffortAutoShort"),
-    low: t("reasoningEffortLowShort"),
-    medium: t("reasoningEffortMediumShort"),
-    high: t("reasoningEffortHighShort"),
-  };
-  return labels[normalized] || labels.auto;
+  return getReasoningEffortLabel(effort);
 }

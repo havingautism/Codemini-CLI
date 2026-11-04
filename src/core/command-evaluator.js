@@ -20,6 +20,7 @@ Rules:
 - Destructive commands (rm -rf, format, sudo, dd) are high risk and deny.
 - Do not mark pure inspection as medium: searching for words like install/rm/commit inside rg/grep/find/git log arguments is still low risk.
 - Consider the workspace context: the command runs in the project directory.
+- Use the supplied effective sandbox settings. When enabled is false, do not claim filesystem or network confinement; the command runs on the host. Review requested escalations under their requested permissions.
 - Write description and sideEffects in ${replyLanguage}. Keep risk and recommendation enum values in English exactly as specified.
 - Be concise. Maximum 1 sentence per field.`;
 }

@@ -2,7 +2,6 @@ import { useCallback, useEffect, useState } from 'react';
 import {
   ArrowClockwise,
   CheckCircle,
-  FloppyDisk,
   Folder,
   PencilSimple,
   PlugsConnected,
@@ -281,10 +280,10 @@ function McpServerEditorDialog({ open, server, onOpenChange, onSaved }) {
           <DialogFooter className="shrink-0 border-t border-(--border-default) px-5 py-4 sm:px-6">
             <Button variant="outline" onClick={() => requestClose(false)} disabled={saving || testing}>{t('cancel')}</Button>
             <Button variant="outline" onClick={testConnection} disabled={saving || testing}>
-              <PlugsConnected />{testing ? t('mcpTesting') : t('mcpTestConnection')}
+              {testing ? t('mcpTesting') : t('mcpTestConnection')}
             </Button>
             <Button onClick={save} disabled={saving || testing || !dirty}>
-              <FloppyDisk />{saving ? t('saving') : t('save')}
+              {saving ? t('saving') : t('save')}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -357,7 +356,6 @@ function McpToolSyncDialog({ preview, selectedNames, applying, onSelectedNamesCh
         <DialogFooter className="shrink-0 border-t border-(--border-default) px-5 py-4 sm:px-6">
           <Button variant="outline" disabled={applying} onClick={() => onOpenChange(false)}>{t('cancel')}</Button>
           <Button disabled={applying || selectedNames.size === 0} onClick={onApply}>
-            <ArrowClockwise className={cn(applying && 'animate-spin')} />
             {applying ? t('saving') : t('mcpApplySelectedUpdates')}
           </Button>
         </DialogFooter>

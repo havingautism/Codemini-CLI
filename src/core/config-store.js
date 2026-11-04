@@ -9,7 +9,7 @@ import {
   MEMORY_ALWAYS_ALLOW_TOOLS,
   STAGED_WRITE_ALWAYS_ALLOW_TOOLS
 } from './constants.js';
-import { normalizeReasoningEffort } from './provider/reasoning-effort.js';
+import { normalizeReasoningAuto, normalizeReasoningEffort } from './provider/reasoning-effort.js';
 import { normalizeSkillContexts } from './skill-contexts.js';
 import { normalizeSandboxMode } from './sandbox-policy.js';
 import { normalizeSandboxBackend } from './sandbox-probe.js';
@@ -36,7 +36,8 @@ const DEFAULT_CONFIG = {
     name: 'gpt-4.1-mini',
     fast_name: '',
     reasoning_enabled: true,
-    reasoning_effort: 'auto',
+    reasoning_auto: false,
+    reasoning_effort: 'high',
     max_context_tokens: 202752
   },
   context: {
@@ -44,8 +45,8 @@ const DEFAULT_CONFIG = {
     preflight_trigger_pct: 60,
     hard_limit_pct: 98,
     tool_result_max_chars: 12000,
-    read_file_default_lines: 120,
-    read_file_max_chars: 12000,
+    read_file_default_lines: 2000,
+    read_file_max_chars: 51200,
     prompt_budget_audit: false,
     prompt_request_audit: false,
     microcompact_enabled: true,
@@ -312,6 +313,9 @@ function normalizePolicyLists(config) {
   next.model.reasoning_enabled = legacyReasoningOff
     ? false
     : next.model.reasoning_enabled !== false && next.model.reasoning_enabled !== 'false';
+  // A stored "auto" effort is the old slider stop. The auto switch now defaults off,
+  // and an unspecified or legacy auto effort falls back to high.
+  next.model.reasoning_auto = normalizeReasoningAuto(next.model.reasoning_auto);
   next.model.reasoning_effort = normalizeReasoningEffort(next.model.reasoning_effort);
   const rawExecutionMode = String(next.execution.mode || '').toLowerCase();
   const rawApprovalMode = String(next.execution.approval_mode || '').toLowerCase().replace(/-/g, '_');

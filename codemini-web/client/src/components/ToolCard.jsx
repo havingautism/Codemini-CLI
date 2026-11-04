@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import {
   Archive,
   ArrowSquareOut,
@@ -44,6 +44,20 @@ import {
 import { t } from "../../i18n/index.js";
 import { cn } from "@/lib/utils";
 import { PatchDiff } from "@pierre/diffs/react";
+
+const ReadToolPreview = lazy(() => import("./ReadToolPreview.jsx"));
+
+function ReadToolOutput({ output, path }) {
+  return (
+    <Suspense fallback={
+      <div className="codemini-disclosure-payload codemini-disclosure-scroll mt-1">
+        <pre className="m-0 max-h-100 overflow-auto whitespace-pre p-3 font-mono text-xs leading-relaxed text-(--text-primary)">{output}</pre>
+      </div>
+    }>
+      <ReadToolPreview output={output} path={String(path || "").replace(/:\d+(?:-\d+)?$/, "")} />
+    </Suspense>
+  );
+}
 
 const TOOL_ICONS = {
   read: FileText,
@@ -552,6 +566,8 @@ export function ToolCard({
                 <BackupNotice meta={fileMeta} />
                 <FilePreview meta={fileMeta} />
               </>
+            ) : toolName === "read" ? (
+              <ReadToolOutput output={conversationOutput} path={filePath} />
             ) : (
               <div className="codemini-disclosure-payload codemini-disclosure-scroll mt-1">
                 <pre className={DETAIL_PRE_CLASS}>{conversationOutput}</pre>
@@ -664,7 +680,7 @@ export function ToolCard({
       {showBody && (
         <div
           className={cn(
-            hasFilePreview
+            hasFilePreview || toolName === "read"
               ? "codemini-fold-body px-1 pb-1"
               : "codemini-disclosure-payload",
           )}
@@ -674,6 +690,8 @@ export function ToolCard({
               <BackupNotice meta={fileMeta} />
               <FilePreview meta={fileMeta} />
             </>
+          ) : toolName === "read" ? (
+            <ReadToolOutput output={conversationOutput} path={filePath} />
           ) : (
             <pre className={DETAIL_PRE_CLASS}>{conversationOutput}</pre>
           )}

@@ -4,7 +4,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { getBaseConfigDir, getProjectIndexDir } from './paths.js';
 import { insertMemoryFtsRow, MEMORY_FTS_DDL } from './memory-fts.js';
 
-const GLOBAL_SCHEMA_VERSION = 20;
+const GLOBAL_SCHEMA_VERSION = 22;
 const PROJECT_SCHEMA_VERSION = 6;
 const databases = new Map();
 
@@ -74,6 +74,30 @@ function createGlobalSchema(db, currentVersion = 0) {
       lease_until TEXT NOT NULL, heartbeat_at TEXT NOT NULL
     ) STRICT;
   `);
+  if (!db.prepare("SELECT name FROM pragma_table_info('scheduled_tasks') WHERE name='approval_mode'").get()) {
+    // Existing tasks keep following the configured policy until explicitly edited.
+    db.exec("ALTER TABLE scheduled_tasks ADD COLUMN approval_mode TEXT NOT NULL DEFAULT ''");
+  }
+  db.exec('CREATE INDEX IF NOT EXISTS scheduled_runs_session_idx ON scheduled_task_runs(session_id)');
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS scheduled_changes (
+      id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL, session_revision INTEGER NOT NULL
+    ) STRICT;
+    INSERT OR IGNORE INTO scheduled_changes VALUES (1, 0, 0);
+  `);
+  for (const operation of ['INSERT', 'UPDATE', 'DELETE']) {
+    db.exec(`CREATE TRIGGER IF NOT EXISTS scheduled_tasks_changed_${operation}
+      AFTER ${operation} ON scheduled_tasks BEGIN
+        UPDATE scheduled_changes SET revision=revision+1 WHERE id=1;
+      END;`);
+    const hasSession = operation === 'INSERT' ? "NEW.session_id <> ''"
+      : operation === 'DELETE' ? "OLD.session_id <> ''" : "NEW.session_id <> '' OR OLD.session_id <> ''";
+    db.exec(`CREATE TRIGGER IF NOT EXISTS scheduled_runs_changed_${operation}
+      AFTER ${operation} ON scheduled_task_runs BEGIN
+        UPDATE scheduled_changes SET revision=revision+1,
+          session_revision=session_revision + CASE WHEN ${hasSession} THEN 1 ELSE 0 END WHERE id=1;
+      END;`);
+  }
   db.exec(`
     CREATE TABLE IF NOT EXISTS token_usage_records (
       id TEXT PRIMARY KEY,

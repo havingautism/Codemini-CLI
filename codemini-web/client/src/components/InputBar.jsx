@@ -100,7 +100,7 @@ const ACTION_COMMANDS = [
 ];
 
 const INPUT_PILL_CLASS =
-  "codemini-input-pill border-0 bg-(--badge-bg) text-(--text-secondary) h-7 rounded-md inline-flex items-center justify-center gap-1.5 shrink-0 cursor-pointer text-[11px] sm:text-[12px] whitespace-nowrap transition-all shadow-[0_1px_2px_color-mix(in_srgb,black_5%,transparent)] hover:bg-(--bg-hover) hover:text-(--text-primary) hover:shadow-[0_1px_3px_color-mix(in_srgb,black_10%,transparent)]";
+  "codemini-input-pill border-0 bg-transparent text-(--text-secondary) h-7 rounded-md inline-flex items-center justify-center gap-1.5 shrink-0 cursor-pointer text-[11px] sm:text-[12px] whitespace-nowrap transition-colors hover:bg-transparent hover:text-(--text-primary) data-[state=open]:bg-transparent data-[state=open]:text-(--text-primary)";
 
 const ATTACHMENT_ACCEPT =
   `image/png,image/jpeg,image/webp,image/gif,.png,.jpg,.jpeg,.webp,.gif,${DOCUMENT_ACCEPT}`;
@@ -1123,7 +1123,8 @@ export function InputBar({
   const sandboxMode = rs.sandboxMode || "workspace-write";
   const sandboxUiEnabled = rs.sandboxUiEnabled === true;
   const reasoningEnabled = rs.reasoningEnabled !== false;
-  const reasoningEffort = rs.reasoningEffort || "auto";
+  const reasoningAuto = rs.reasoningAuto === true;
+  const reasoningEffort = rs.reasoningEffort || "high";
   const defaultSkillNames = useMemo(
     () =>
       (Array.isArray(rs.alwaysSkillNames) ? rs.alwaysSkillNames : [])
@@ -1911,7 +1912,7 @@ export function InputBar({
           <div className="flex min-w-0 flex-1 basis-full sm:basis-auto items-center gap-1.5 overflow-x-auto pb-0.5 sm:flex-wrap sm:overflow-visible sm:pb-0">
             <button
               type="button"
-              className="border-0 bg-transparent text-(--text-secondary) min-w-8 h-8 rounded-md inline-flex items-center justify-center shrink-0 cursor-pointer transition-colors hover:bg-(--bg-hover) hover:text-(--text-primary)"
+              className="border-0 bg-transparent text-(--text-secondary) min-w-8 h-8 rounded-md inline-flex items-center justify-center shrink-0 cursor-pointer transition-colors hover:bg-transparent hover:text-(--text-primary)"
               title={t("addActionOrSkill")}
               aria-label={t("addActionOrSkill")}
               disabled={inputLocked}
@@ -1926,7 +1927,7 @@ export function InputBar({
             </button>
             <button
               type="button"
-              className="border-0 bg-transparent text-(--text-secondary) min-w-8 h-8 rounded-md inline-flex items-center justify-center shrink-0 cursor-pointer transition-colors hover:bg-(--bg-hover) hover:text-(--text-primary)"
+              className="border-0 bg-transparent text-(--text-secondary) min-w-8 h-8 rounded-md inline-flex items-center justify-center shrink-0 cursor-pointer transition-colors hover:bg-transparent hover:text-(--text-primary)"
               title={t("addAttachment")}
               aria-label={t("addAttachment")}
               disabled={inputLocked}
@@ -1949,7 +1950,7 @@ export function InputBar({
               <PopoverTrigger asChild>
                 <button
                   type="button"
-                  className="border-0 bg-transparent text-(--text-secondary) min-w-8 h-8 rounded-md inline-flex items-center justify-center shrink-0 cursor-pointer transition-colors hover:bg-(--bg-hover) hover:text-(--text-primary)"
+                  className="border-0 bg-transparent text-(--text-secondary) min-w-8 h-8 rounded-md inline-flex items-center justify-center shrink-0 cursor-pointer transition-colors hover:bg-transparent hover:text-(--text-primary) data-[state=open]:bg-transparent data-[state=open]:text-(--text-primary)"
                   title={t("composerAddNote")}
                   aria-label={t("composerAddNote")}
                   disabled={inputLocked}
@@ -2103,6 +2104,7 @@ export function InputBar({
             />
             <ReasoningQuickControl
               enabled={reasoningEnabled}
+              auto={reasoningAuto}
               effort={reasoningEffort}
               disabled={inputLocked}
             />

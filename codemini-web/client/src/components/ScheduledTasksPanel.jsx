@@ -12,9 +12,11 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { ConfirmDialog } from '@/components/ConfirmDialog.jsx';
 import { CheckCircle, Clock, DotsThreeVertical, FolderSimple, GridFour, Info, ListBullets, MagnifyingGlass, PencilSimple, Play, Plus, Trash, WarningCircle } from '@/lib/icons';
 import { cn } from '@/lib/utils';
+import { getApprovalModeOptions } from '@/lib/settings-options';
+import { splitEmojiTitle } from '@/lib/emoji-title';
 import {
   createScheduledTaskForm, latestScheduledRuns, scheduledFrequencyLabel, scheduledTaskFormPayload,
-  scheduledTaskNeedsReschedule, scheduledTaskState, scheduledTaskTone, visibleScheduledRuns, visibleScheduledTasks,
+  scheduledTaskNeedsReschedule, scheduledTaskState, scheduledTaskTone, visibleScheduledRuns, visibleScheduledTasks, scheduledAttentionKey,
 } from '@/lib/scheduled-task-ui';
 import * as api from '@/hooks/use-api';
 import { getLocale, t } from '../../i18n/index.js';
@@ -85,8 +87,10 @@ function TaskEditor({ task, projectDir, busy, error, onSave, onCancel }) {
     <form onSubmit={submit} className="flex min-h-0 flex-1 flex-col overflow-hidden">
       <fieldset disabled={busy} className="min-h-0 flex-1 space-y-5 overflow-y-auto px-6 pb-6 pt-1">
         {(error || validationError) && <p role="alert" className="rounded-xl bg-(--accent-red-bg) px-4 py-3 text-[12px] text-(--accent-red)">{validationError || error}</p>}
-        {field('name', t('scheduledName'), <Input id={`${prefix}-name`} value={form.name} maxLength={120} required autoFocus onChange={event => set('name', event.target.value)} />)}
-        {field('prompt', t('scheduledPrompt'), <Textarea id={`${prefix}-prompt`} value={form.prompt} rows={5} required maxLength={50000} placeholder={t('scheduledPromptHint')} onChange={event => set('prompt', event.target.value)} />)}
+        {field('prompt', t('scheduledPrompt'), <Textarea id={`${prefix}-prompt`} value={form.prompt} rows={5} required autoFocus maxLength={50000} placeholder={t('scheduledPromptHint')} onChange={event => set('prompt', event.target.value)} />)}
+        <p className="text-[12px] leading-5 text-(--text-muted)">{t('scheduledAutoTitleHint')}</p>
+        {field('approval', t('approvalMode'), <TaskChoice id={`${prefix}-approval`} value={form.approvalMode} onChange={value => set('approvalMode', value)} options={getApprovalModeOptions().map(option => [option.value, option.label])} />)}
+        <p className="text-[12px] leading-5 text-(--text-muted)">{getApprovalModeOptions().find(option => option.value === form.approvalMode)?.description} {t('scheduledApprovalHint')}</p>
         <div className="grid gap-4 sm:grid-cols-2">
           {field('mode', t('executionMode'), <TaskChoice id={`${prefix}-mode`} value={form.mode} onChange={value => set('mode', value)} options={['normal', 'plan'].map(mode => [mode, t(`scheduledMode_${mode}`)])} />)}
           {field('project', t('scheduledProject'), <SearchableSelect id={`${prefix}-project`} value={form.projectDir} options={workspaces} onChange={value => set('projectDir', value)} searchPlaceholder={t('projectSearch')} emptyText={t('scheduledNoResults')} footer={{ label: t('projectBrowse'), onClick: () => setProjectPickerOpen(true) }} />)}
@@ -127,6 +131,7 @@ function TaskEditor({ task, projectDir, busy, error, onSave, onCancel }) {
 
 function TaskCard({ task, run, viewMode, busy, menuOpen, onMenuChange, onOpen, onEdit, onToggle, onRun, onDelete }) {
   const list = viewMode === 'list';
+  const titleParts = splitEmojiTitle(task.name);
   const tone = scheduledTaskTone(task.id);
   const state = scheduledTaskState(task, run);
   const menuAction = action => { onMenuChange(''); action(task); };
@@ -135,11 +140,11 @@ function TaskCard({ task, run, viewMode, busy, menuOpen, onMenuChange, onOpen, o
       style={{ '--task-tint': tone, backgroundColor: 'color-mix(in srgb, var(--task-tint) 22%, var(--bg-secondary))' }}>
       <button type="button" onClick={() => onOpen(task.id)} className="absolute inset-0 z-0 rounded-2xl" aria-label={`${t('scheduledOpenTask')}: ${task.name}`} />
       <div className={cn('pointer-events-none relative z-[1] flex h-full gap-4 px-5 py-5 pr-14', list ? 'items-center' : 'min-h-56 flex-col')}>
-        <span className={cn('size-11 shrink-0 items-center justify-center rounded-xl', list ? 'hidden sm:flex' : 'flex')} style={{ color: tone, backgroundColor: 'color-mix(in srgb, var(--task-tint) 20%, transparent)' }}>
+        {titleParts.emoji ? <span className={cn('flex shrink-0 items-center justify-center', list ? 'size-11 text-[30px]' : 'size-14 text-[42px]')} aria-hidden="true">{titleParts.emoji}</span> : <span className={cn('size-11 shrink-0 items-center justify-center rounded-xl', list ? 'hidden sm:flex' : 'flex')} style={{ color: tone, backgroundColor: 'color-mix(in srgb, var(--task-tint) 20%, transparent)' }}>
           <Clock size={25} aria-hidden="true" />
-        </span>
+        </span>}
         <div className={cn('min-w-0 flex-1', !list && 'mt-auto')}>
-          <h2 className={cn('line-clamp-2 break-words font-medium tracking-[-0.015em] text-(--text-primary)', list ? 'text-[15px] leading-5' : 'text-[18px] leading-6')}>{task.name}</h2>
+          <h2 className={cn('line-clamp-2 break-words font-medium tracking-[-0.015em] text-(--text-primary)', list ? 'text-[15px] leading-5' : 'text-[18px] leading-6')}>{titleParts.title}</h2>
           <p className="mt-1.5 line-clamp-1 text-[12px] leading-5 text-(--text-secondary)">{task.prompt}</p>
           <p className="mt-3 truncate text-[11px] text-(--text-muted)" title={frequencyLabel(task.schedule)}>{t(`scheduledMode_${task.mode}`)} · {frequencyLabel(task.schedule)}</p>
           <p className="mt-1 text-[11px] text-(--text-muted)">{task.nextRunAt ? t('scheduledNext') : run ? t('scheduledLastRun') : t('scheduledPaused')} · {dateLabel(task.nextRunAt || run?.finishedAt || run?.createdAt)}</p>
@@ -179,17 +184,17 @@ function RunList({ runs, onOpenSession }) {
           <div className="min-w-0 flex-1 basis-40">
             <h3 className="break-words text-[13px] font-medium text-(--text-primary)">{run.task.name}</h3>
             <p className="mt-1 text-[11px] leading-5 text-(--text-muted)">{fullDateLabel(run.startedAt || run.createdAt)} · {t(`scheduledMode_${run.task.mode}`)}</p>
-            {run.error && <p className="mt-2 whitespace-pre-wrap break-words text-[12px] leading-5 text-(--accent-red)">{run.error}</p>}
+            {run.error && run.status !== 'continued' && <p className={cn('mt-2 whitespace-pre-wrap break-words text-[12px] leading-5', run.status === 'needs_attention' ? 'text-(--text-secondary)' : 'text-(--accent-red)')}>{run.status === 'needs_attention' ? t(scheduledAttentionKey(run.error)) : run.error}</p>}
           </div>
           <TaskStatus status={run.status} />
-          {run.sessionId && !isActive(run) && <Button variant="ghost" size="sm" onClick={() => onOpenSession(run.sessionId)}>{t('scheduledOpenSession')}</Button>}
+          {run.sessionId && !isActive(run) && <Button variant={run.status === 'needs_attention' ? 'default' : 'ghost'} size="sm" onClick={() => onOpenSession(run.sessionId)}>{t(run.status === 'needs_attention' ? 'scheduledHandleRun' : 'scheduledOpenSession')}</Button>}
         </article>
       ))}
     </div>
   );
 }
 
-function TaskDetail({ task, recentRun, busy, error, onOpenSession, onRun, onToggle, onEdit }) {
+function TaskDetail({ task, recentRun, revision, busy, error, onOpenSession, onRun, onToggle, onEdit }) {
   const [runs, setRuns] = useState([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
@@ -205,9 +210,8 @@ function TaskDetail({ task, recentRun, busy, error, onOpenSession, onRun, onTogg
       finally { if (!cancelled && request === requestId) setLoading(false); }
     };
     load();
-    const timer = setInterval(load, 5000);
-    return () => { cancelled = true; clearInterval(timer); };
-  }, [task.id]);
+    return () => { cancelled = true; };
+  }, [task.id, revision]);
   const active = runs.some(isActive) || isActive(recentRun);
   return (
     <div className="min-h-0 overflow-y-auto px-6 pb-6">
@@ -228,6 +232,7 @@ function TaskDetail({ task, recentRun, busy, error, onOpenSession, onRun, onTogg
       <dl className="grid gap-4 border-y border-(--separator) py-5 text-[12px] sm:grid-cols-2">
         {[
           ['scheduledFrequency', frequencyLabel(task.schedule)],
+          ['approvalMode', getApprovalModeOptions().find(option => option.value === (task.approvalMode || 'auto'))?.label],
           ['scheduledNext', fullDateLabel(task.nextRunAt)],
           ['scheduledProject', task.projectDir],
           ['scheduledTimezone', task.schedule.timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone],
@@ -241,7 +246,7 @@ function TaskDetail({ task, recentRun, busy, error, onOpenSession, onRun, onTogg
   );
 }
 
-export default function ScheduledTasksPanel({ projectDir = '', onOpenSession }) {
+export default function ScheduledTasksPanel({ projectDir = '', onOpenSession, revision }) {
   const [data, setData] = useState({ tasks: [], runs: [], worker: {} });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -274,9 +279,8 @@ export default function ScheduledTasksPanel({ projectDir = '', onOpenSession }) 
       finally { if (!cancelled) setLoading(false); }
     };
     load();
-    const timer = setInterval(load, 5000);
-    return () => { cancelled = true; ++requestRef.current; clearInterval(timer); };
-  }, [refresh]);
+    return () => { cancelled = true; ++requestRef.current; };
+  }, [refresh, revision]);
   const mutate = async action => {
     if (mutationRef.current) return false;
     mutationRef.current = true;
@@ -379,7 +383,7 @@ export default function ScheduledTasksPanel({ projectDir = '', onOpenSession }) 
       <Dialog open={Boolean(selectedTask)} onOpenChange={open => { if (!open) { setSelectedId(''); setError(''); } }}>
         <DialogContent className="flex max-h-[90dvh] flex-col overflow-hidden rounded-2xl p-0 sm:max-w-[800px]" onCloseAutoFocus={event => { if (editor !== undefined) event.preventDefault(); }}>
           <DialogHeader className="px-6"><DialogTitle className="break-words pr-2 text-[20px] leading-7">{selectedTask?.name}</DialogTitle><DialogDescription className="flex items-center gap-1.5"><FolderSimple size={13} className="shrink-0" /><span className="truncate" title={selectedTask?.projectDir}>{selectedTask?.projectDir}</span></DialogDescription></DialogHeader>
-          {selectedTask && <TaskDetail key={selectedTask.id} task={selectedTask} recentRun={latest.get(selectedTask.id)} busy={busy} error={error} onOpenSession={onOpenSession} onRun={runNow} onToggle={toggle} onEdit={openEditor} />}
+          {selectedTask && <TaskDetail key={selectedTask.id} task={selectedTask} recentRun={latest.get(selectedTask.id)} revision={revision} busy={busy} error={error} onOpenSession={onOpenSession} onRun={runNow} onToggle={toggle} onEdit={openEditor} />}
         </DialogContent>
       </Dialog>
       <ConfirmDialog

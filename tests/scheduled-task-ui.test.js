@@ -59,6 +59,18 @@ test('editing a paused task preserves its state, mode, project and timezone', ()
   assert.deepEqual(payload.schedule, task.schedule);
 });
 
+test('the editor saves approval choice and requests a new automatic title only when prompt changes', () => {
+  const task = { ...tasks[0], approvalMode: 'review' };
+  const form = createScheduledTaskForm(task);
+  assert.equal(form.approvalMode, 'review');
+  form.approvalMode = 'full_access';
+  assert.equal(scheduledTaskFormPayload(form, task).approvalMode, 'full_access');
+  assert.equal(scheduledTaskFormPayload(form, task).name, task.name);
+  form.prompt = 'New request';
+  assert.equal(Object.hasOwn(scheduledTaskFormPayload(form, task), 'name'), false);
+  assert.equal(Object.hasOwn(scheduledTaskFormPayload(createScheduledTaskForm(null)), 'name'), false);
+});
+
 test('editing a one-time task without touching its clock preserves the absolute instant', () => {
   const form = createScheduledTaskForm(tasks[3]);
   form.name = 'Rename only';

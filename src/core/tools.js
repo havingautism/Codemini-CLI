@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
-import { createReadStream, existsSync, realpathSync } from "node:fs";
-import { createInterface } from "node:readline";
+import { existsSync, realpathSync } from "node:fs";
+import { collectReadWindow, readTextWindow, readWindowOptions, formatReadWindow } from "./read-window.js";
 import path from "node:path";
 import os from "node:os";
 import { execFileSync, spawn } from "node:child_process";
@@ -53,7 +53,6 @@ import {
 import { resolveShellContext } from "./shell-profile.js";
 import { isShellToolName } from "./shell-tool-name.js";
 import {
-  findEnclosingSymbol,
   queryAst,
   queryAstGrep,
   readAstNode,
@@ -66,7 +65,6 @@ import {
   refreshIndexedFiles,
 } from "./project-index.js";
 import { queryProjectKnowledgeGraph } from "./project-knowledge-graph.js";
-import { createToolResultStore } from "./tool-result-store.js";
 import {
   TOOL_SKIP_DIRS as SKIP_DIRS,
   TEXT_EXTENSIONS,
@@ -139,8 +137,6 @@ import {
 } from "./staged-write.js";
 const BACKGROUND_TASK_RECENT_OUTPUT_LIMIT = 80;
 const BACKGROUND_TASK_POLL_MS = 150;
-const MAX_AST_ENCLOSING_BYTES = 300_000;
-const MAX_AST_ENCLOSING_LINES = 5_000;
 const SKILL_ALIASES = new Map();
 const RUN_COMMAND_SAFE_MODE_APPROVED = Symbol("runCommandSafeModeApproved");
 const OUTSIDE_WORKSPACE_MUTATION_APPROVED = Symbol("outsideWorkspaceMutationApproved");
@@ -1662,110 +1658,29 @@ async function getFileState(root, relativePath, config = {}) {
   };
 }
 
-async function readFile(root, args, config = {}, toolResultStore = null) {
-  const normalizedArgs = normalizeReadArgs(args);
-  const target = await resolveInWorkspace(root, normalizedArgs?.path, config);
+async function readFile(root, args, config = {}, unix = false) {
+  const normalized = normalizeReadArgs(args);
+  const options = readWindowOptions(normalized, config.context);
+  const target = await resolveInWorkspace(root, normalized.path, config);
   const stat = await fs.stat(target);
   if (stat.isDirectory()) {
-    const listing = await builtinList(
-      root,
-      { path: normalizedArgs?.path },
-      config,
-    );
+    return { ...await builtinList(root, { path: normalized.path }, config), phase: "directory_listing" };
+  }
+  if (!stat.isFile()) throw new Error(`cannot read "${normalized.path}": not a regular file`);
+  const window = await readTextWindow(target, options);
+  if (normalized.metadata_only === true || normalized.include_content === false) {
     return {
-      ...listing,
-      phase: "directory_listing",
-      note: "Path is a directory. Returned a listing instead of file contents. Prefer list for directory discovery, or read a specific file path inside it.",
+      path: normalized.path, phase: "metadata", size_bytes: stat.size,
+      modified_at: new Date(stat.mtimeMs).toISOString(), total_lines: window.total_lines,
+      suggested_start_line: window.start_line, suggested_end_line: window.end_line,
+      read_token: sha256Hash(`${normalized.path}|${stat.size}|${stat.mtimeMs}`).slice(0, 16),
+      next: "Call read with this path to retrieve content",
     };
   }
-  const text = await fs.readFile(target, "utf8");
-  const lines = splitLines(text);
-  const totalLines = lines.length;
-  const startLineRaw = Number(normalizedArgs?.start_line);
-  const endLineRaw = Number(normalizedArgs?.end_line);
-  const defaultLines = Number(normalizedArgs?.default_lines || 220);
-  const maxChars = Number(normalizedArgs?.max_chars || 24000);
-  const wantsMetadataOnly =
-    normalizedArgs?.metadata_only === true ||
-    normalizedArgs?.include_content === false;
-
-  let startLine =
-    Number.isFinite(startLineRaw) && startLineRaw > 0 ? startLineRaw : 1;
-  let endLine =
-    Number.isFinite(endLineRaw) && endLineRaw >= startLine
-      ? endLineRaw
-      : Math.min(totalLines, startLine + Math.max(1, defaultLines) - 1);
-  startLine = Math.max(1, Math.min(startLine, totalLines));
-  endLine = Math.max(startLine, Math.min(endLine, totalLines));
-
-  const tokenSeed = `${normalizedArgs?.path}|${stat.size}|${stat.mtimeMs}|${startLine}|${endLine}`;
-  const readToken = sha256Hash(tokenSeed).slice(0, 16);
-
-  if (wantsMetadataOnly) {
-    return {
-      path: normalizedArgs?.path,
-      phase: "metadata",
-      size_bytes: stat.size,
-      modified_at: new Date(stat.mtimeMs).toISOString(),
-      total_lines: totalLines,
-      suggested_start_line: startLine,
-      suggested_end_line: endLine,
-      read_token: readToken,
-      next: "Call read again with include_content=true and this read_token",
-    };
-  }
-
-  let content = lines.slice(startLine - 1, endLine).join("\n");
-  let truncated = false;
-  if (maxChars > 0 && content.length > maxChars) {
-    content = `${content.slice(0, maxChars)}\n... [truncated by max_chars]`;
-    truncated = true;
-  }
-
-  // Read deduplication: if same path+range+mtime was read before, return a short stub
-  const isDuplicate = toolResultStore?.checkReadDedup(
-    target,
-    startLine,
-    endLine,
-    stat.mtimeMs,
-  );
-  if (isDuplicate) {
-    return {
-      path: normalizedArgs?.path,
-      phase: "content",
-      start_line: startLine,
-      end_line: endLine,
-      total_lines: totalLines,
-      truncated: false,
-      unchanged: true,
-      content: `File unchanged since last read. The content from the earlier read tool_result in this conversation is still current -- refer to that instead of re-reading.`,
-    };
-  }
-
-  // Resolve enclosing structural symbol via Tree-sitter (best-effort, skipped for large files)
-  const shouldResolveEnclosing =
-    text.length <= MAX_AST_ENCLOSING_BYTES &&
-    totalLines <= MAX_AST_ENCLOSING_LINES;
-  const anchorLine = Math.floor((startLine + endLine) / 2);
-  const enclosing = shouldResolveEnclosing
-    ? await findEnclosingSymbol(text, normalizedArgs?.path, anchorLine)
-    : null;
-
   return {
-    path: normalizedArgs?.path,
-    phase: "content",
-    start_line: startLine,
-    end_line: endLine,
-    total_lines: totalLines,
-    truncated,
-    content,
-    ...(enclosing
-      ? {
-          enclosing_symbol: enclosing.name,
-          enclosing_kind: enclosing.kind,
-          enclosing_line: enclosing.start_line,
-        }
-      : {}),
+    path: normalized.path, phase: unix ? "dsh_content" : "content",
+    ...window, offset: window.start_line, bounded_read: true,
+    content: window.lines.map((line) => line.text).join("\n"),
   };
 }
 
@@ -1776,70 +1691,6 @@ async function writeTextFile(target, content, config = {}) {
   return fs.writeFile(target, content, "utf8");
 }
 
-async function readDshFile(root, args, config = {}) {
-  const normalizedArgs = normalizeReadArgs(args);
-  const relativePath = String(normalizedArgs?.path || "").trim();
-  if (!relativePath) throw new Error("file_path must be a non-empty string");
-  const offset = args?.offset === undefined ? 1 : Number(args.offset);
-  const limit = args?.limit === undefined ? 2000 : Number(args.limit);
-  if (!Number.isSafeInteger(offset) || offset < 1) {
-    throw new Error("offset must be a positive integer");
-  }
-  if (!Number.isSafeInteger(limit) || limit < 1) {
-    throw new Error("limit must be a positive integer");
-  }
-  if (limit > 2000) throw new Error("limit must be less than or equal to 2000");
-
-  const target = await resolveInWorkspace(root, relativePath, config);
-  let stat;
-  try {
-    stat = await fs.stat(target);
-  } catch (error) {
-    if (error?.code === "ENOENT") {
-      const notFound = new Error(`cannot read "${relativePath}": not found`);
-      notFound.code = "FS_NOT_FOUND";
-      throw notFound;
-    }
-    throw error;
-  }
-  if (!stat.isFile()) {
-    const notFile = new Error(`cannot read "${relativePath}": not a regular file`);
-    notFile.code = "FS_NOT_REGULAR_FILE";
-    throw notFile;
-  }
-
-  const lines = [];
-  let totalLines = 0;
-  let outputBytes = 0;
-  let capped = false;
-  const input = createReadStream(target, { encoding: "utf8" });
-  const reader = createInterface({ input, crlfDelay: Infinity });
-  for await (const rawLine of reader) {
-    totalLines += 1;
-    if (totalLines < offset || lines.length >= limit || capped) continue;
-    const text = rawLine.length > 2000
-      ? `${rawLine.slice(0, 2000)}... (line truncated to 2000 chars)`
-      : rawLine;
-    const nextBytes = Buffer.byteLength(`${totalLines}: ${text}\n`, "utf8");
-    if (outputBytes + nextBytes > 51200) {
-      capped = true;
-      continue;
-    }
-    outputBytes += nextBytes;
-    lines.push({ number: totalLines, text });
-  }
-  if (offset > Math.max(1, totalLines)) {
-    throw new Error(`offset ${offset} is out of range for "${relativePath}" (${totalLines} lines)`);
-  }
-  return {
-    path: relativePath,
-    phase: "dsh_content",
-    offset,
-    lines,
-    total_lines: totalLines,
-    capped,
-  };
-}
 
 async function writeFile(root, args, config = {}) {
   const normalizedArgs = normalizeWriteArgs(args);
@@ -1877,7 +1728,7 @@ async function writeFile(root, args, config = {}) {
   const nextContent = String(normalizedArgs.content ?? "");
   await fs.mkdir(path.dirname(target), { recursive: true });
   try {
-    await fs.writeFile(target, nextContent, { encoding: "utf8", flag: "wx" });
+    await atomicWriteUtf8(target, nextContent, '', { createOnly: true });
   } catch (error) {
     if (error?.code === "EEXIST") {
       throw new Error(
@@ -1935,7 +1786,7 @@ async function writeAnyFile(root, args, config = {}) {
   }
   const nextContent = String(normalizedArgs.content ?? "");
   await fs.mkdir(path.dirname(target), { recursive: true });
-  await writeTextFile(target, nextContent, config);
+  await atomicWriteUtf8(target, nextContent, '', { createOnly: !existed });
   const beforeLines = splitLines(beforeContent);
   const afterLines = splitLines(nextContent);
   return {
@@ -2009,13 +1860,15 @@ function parsePatchText(rawPatchText = "") {
         i += 1;
         const oldLines = [];
         const newLines = [];
+        let eof = false;
         while (
           i < lines.length - 1 &&
           !lines[i].startsWith("@@") &&
-          !lines[i].startsWith("*** ")
+          (!lines[i].startsWith("*** ") || lines[i] === "*** End of File")
         ) {
           const changeLine = lines[i];
           if (changeLine === "*** End of File") {
+            eof = true;
             i += 1;
             break;
           }
@@ -2034,7 +1887,7 @@ function parsePatchText(rawPatchText = "") {
           }
           i += 1;
         }
-        chunks.push({ context, oldText: oldLines.join("\n"), newText: newLines.join("\n") });
+        chunks.push({ context, eof, oldText: oldLines.join("\n"), newText: newLines.join("\n") });
       }
       hunks.push({ type: movePath ? "move" : "update", path: filePath, movePath, chunks });
       continue;
@@ -2056,7 +1909,9 @@ function applyPatchChunksToContent(content, chunks, relativePath) {
       current = `${current}${applyEol(newText, detectEol(current))}`;
       continue;
     }
-    const matches = findFlexibleTextMatches(current, oldText);
+    const matches = findFlexibleTextMatches(current, oldText).filter((match) =>
+      !chunk.eof || /^(?:\r\n|\n|\r)?$/.test(current.slice(match.end)),
+    );
     if (matches.length === 0) {
       throw new Error(`apply_patch old text not found in ${relativePath}`);
     }
@@ -2073,12 +1928,19 @@ function applyPatchChunksToContent(content, chunks, relativePath) {
 }
 
 async function applyPatchText(root, args, config = {}, { beforeMutation } = {}) {
-  const patchText = String(args?.patch_text ?? "").trim();
+  const patchText = String(args?.patch_text ?? args?.input ?? "").trim();
   const hunks = parsePatchText(patchText);
   const changes = [];
+  const plannedTargets = new Set();
+  const claim = (target) => {
+    const key = process.platform === "win32" ? target.toLowerCase() : target;
+    if (plannedTargets.has(key)) throw new Error("Patch targets a path more than once; combine its hunks in one Update File section");
+    plannedTargets.add(key);
+  };
   for (const hunk of hunks) {
     if (!hunk.path) throw new Error("patch file path is required");
     const target = await resolveInWorkspace(root, hunk.path, config);
+    claim(target);
     if (hunk.type === "add") {
       try {
         const stat = await fs.stat(target);
@@ -2087,7 +1949,7 @@ async function applyPatchText(root, args, config = {}, { beforeMutation } = {}) 
       } catch (error) {
         if (!error?.code || error.code !== "ENOENT") throw error;
       }
-      const afterContent = String(hunk.content ?? "");
+      const afterContent = `${String(hunk.content ?? "")}\n`;
       changes.push({
         type: "add",
         path: hunk.path,
@@ -2113,7 +1975,17 @@ async function applyPatchText(root, args, config = {}, { beforeMutation } = {}) 
     const beforeContent = await fs.readFile(target, "utf8");
     const applied = applyPatchChunksToContent(beforeContent, hunk.chunks, hunk.path);
     const moveTarget = hunk.movePath ? await resolveInWorkspace(root, hunk.movePath, config) : "";
+    if (moveTarget) {
+      claim(moveTarget);
+      const destination = await fs.lstat(moveTarget).catch((error) => {
+        if (error.code === "ENOENT") return null;
+        throw error;
+      });
+      if (destination) throw new Error(`apply_patch move destination already exists: ${hunk.movePath}`);
+    }
+    const sourceMode = (await fs.stat(target)).mode & 0o777;
     changes.push({
+      sourceMode,
       type: hunk.type,
       path: hunk.path,
       target,
@@ -2126,20 +1998,41 @@ async function applyPatchText(root, args, config = {}, { beforeMutation } = {}) 
   }
 
   await beforeMutation?.();
+  const appliedChanges = [];
+  let failure = null;
+  let failedPath = "";
   for (const change of changes) {
-    if (change.type === "delete") {
-      await fs.rm(change.target, { force: false });
-      continue;
-    }
-    const writeTarget = change.moveTarget || change.target;
-    await fs.mkdir(path.dirname(writeTarget), { recursive: true });
-    await fs.writeFile(writeTarget, change.afterContent, "utf8");
-    if (change.moveTarget) {
-      await fs.rm(change.target, { force: false });
+    try {
+      if (change.type !== "add" && await fs.readFile(change.target, "utf8") !== change.beforeContent) {
+        throw new Error(`File changed during patch: ${change.path}; read it and retry`);
+      }
+      if (change.type === "delete") {
+        await fs.rm(change.target, { force: false });
+        appliedChanges.push(change);
+        continue;
+      }
+      const writeTarget = change.moveTarget || change.target;
+      await atomicWriteUtf8(writeTarget, change.afterContent, '', {
+        createOnly: change.type === "add" || Boolean(change.moveTarget),
+        mode: change.sourceMode,
+      });
+      // Publication succeeded even if a later source removal fails. Keep this
+      // known effect in the result so a retry cannot pretend nothing changed.
+      appliedChanges.push(change);
+      if (change.moveTarget) {
+        if (await fs.readFile(change.target, "utf8") !== change.beforeContent) {
+          throw new Error(`Move source changed during patch: ${change.path}; destination was created, source retained`);
+        }
+        await fs.rm(change.target, { force: false });
+      }
+    } catch (error) {
+      failure = error;
+      failedPath = change.path;
+      break;
     }
   }
 
-  const diffPreview = changes
+  const diffPreview = appliedChanges
     .map((change) => {
       const label = change.movePath ? `${change.path} -> ${change.movePath}` : change.path;
       return [`# ${change.type} ${label}`, buildDiffPreview(change.beforeContent, change.afterContent)]
@@ -2147,14 +2040,19 @@ async function applyPatchText(root, args, config = {}, { beforeMutation } = {}) 
         .join("\n");
     })
     .join("\n");
-  const linesAdded = changes.reduce((sum, change) => sum + splitLines(change.afterContent).length, 0);
-  const linesRemoved = changes.reduce((sum, change) => sum + splitLines(change.beforeContent).length, 0);
+  const linesAdded = appliedChanges.reduce((sum, change) => sum + splitLines(change.afterContent).length, 0);
+  const linesRemoved = appliedChanges.reduce((sum, change) => sum + splitLines(change.beforeContent).length, 0);
   return {
-    ok: true,
+    ok: !failure,
+    ...(failure ? {
+      error: `Patch stopped at ${failedPath}: ${failure.message}. ${appliedChanges.length} operation(s) published; inspect affected files before retrying.`,
+      partial: appliedChanges.length > 0,
+      failed_path: failedPath,
+    } : {}),
     action: "apply_patch",
-    path: changes.length === 1 ? (changes[0].movePath || changes[0].path) : "",
-    files: changes.map((change) => change.movePath || change.path),
-    changed_line: changes[0]?.changedLine || 1,
+    path: appliedChanges.length === 1 ? (appliedChanges[0].movePath || appliedChanges[0].path) : "",
+    files: appliedChanges.map((change) => change.movePath || change.path),
+    changed_line: appliedChanges[0]?.changedLine || 1,
     diff_preview: diffPreview,
     lines_added: linesAdded,
     lines_removed: linesRemoved,
@@ -3005,10 +2903,11 @@ async function runRipgrepGlob(root, args, config = {}) {
     .map((value) => value.trim())
     .filter(Boolean)
     .map((value) => toWorkspaceRelative(root, path.resolve(root, value)));
+  const maxResults = Math.max(1, Math.min(1000, Number(args?.max_results) || 100));
   return {
     pattern,
-    matches: allMatches.slice(0, 100),
-    truncated: allMatches.length > 100,
+    matches: allMatches.slice(0, maxResults),
+    truncated: allMatches.length > maxResults,
     total: allMatches.length,
     engine: "ripgrep",
   };
@@ -3046,7 +2945,7 @@ async function builtinGlob(root, args, config = {}, dshMode = false) {
   });
   return {
     pattern,
-    matches: result.matches,
+    matches: result.matches.map((file) => toWorkspaceRelative(root, path.resolve(abs, file))),
     truncated: result.truncated,
     engine: "fast-glob",
   };
@@ -3546,18 +3445,25 @@ function findTrailingWhitespaceTolerantMatches(content, oldText) {
   }
 }
 
-function buildOldTextNotFoundHint(content, oldText, relativePath) {
-  const firstLine = String(oldText || "")
-    .split("\n")[0]
-    .substring(0, 100);
-  const snippetLines = splitLines(String(content || "")).slice(0, 15);
-  const snippet = snippetLines.map((l, i) => `${i + 1}| ${l}`).join("\n");
-  return [
-    `old_text not found in ${relativePath || "file"}.`,
-    `Searched for: "${firstLine}${firstLine.length < (oldText || "").length ? "..." : ""}"`,
-    `File starts with:\n${snippet}${snippetLines.length < splitLines(content).length ? "\n..." : ""}`,
-    `Hint: read output normalizes CRLF and trailing spaces; edit now tolerates those plus tabs/indent drift. If this still fails, read the file and copy old_text exactly from the read result.`,
-  ].join("\n");
+function buildOldTextNotFoundHint(content, oldText, relativePath, newText = "", baseLine = 1) {
+  const prefix = `old_text not found in ${relativePath || "file"}.`;
+  if (newText.trim().length >= 20 && content.includes(newText)) {
+    return `${prefix} new_text is already present; this edit may already be applied.`;
+  }
+  const key = (line) => normalizeProbeLine(line).trim();
+  const wanted = splitLines(oldText).map(key).filter(Boolean);
+  const lines = splitLines(content);
+  let best = -1;
+  let score = 0;
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = key(lines[i]);
+    const value = wanted.reduce((sum, probe) => sum + (line === probe ? 2 : (probe.length >= 8 && line.includes(probe) ? 1 : 0)), 0);
+    if (value > score) { best = i; score = value; }
+  }
+  if (best < 0) return `${prefix} Read the relevant range and provide exact text with surrounding context.`;
+  const start = Math.max(0, best - 2);
+  const snippet = lines.slice(start, start + 12).map((line, i) => `${baseLine + start + i}: ${line.slice(0, 200)}`).join("\n");
+  return `${prefix} Closest context:\n${snippet}\nUse the current text and enough context to identify one match.`;
 }
 
 async function replaceBlock(root, args, config = {}) {
@@ -3589,9 +3495,11 @@ async function replaceBlock(root, args, config = {}) {
 }
 
 async function replaceText(root, args, config = {}) {
+  if (args?.new_text == null && args?.new_string == null) throw new Error("replace_text requires new_text/new_string; use an empty string to delete");
   const relativePath = String(args?.path || "").trim();
   const oldText = String(args?.old_text ?? args?.old_string ?? "");
   const newText = String(args?.new_text ?? args?.new_string ?? "");
+  if (oldText === newText) throw new Error("old_string and new_string must differ");
   const replaceAll = semanticBoolean(args?.replace_all);
   const state = await getFileState(root, relativePath, config);
   if (!oldText) {
@@ -3659,14 +3567,14 @@ async function replaceText(root, args, config = {}) {
 
   if (matchCount === 0) {
     throw new Error(
-      buildOldTextNotFoundHint(searchContent, oldText, relativePath),
+      buildOldTextNotFoundHint(searchContent, oldText, relativePath, newText, range?.startLine || 1),
     );
   }
 
   const baseLine = effectiveRange ? effectiveRange.startLine : 1;
   const baseOffset = effectiveRange ? effectiveRange.startOffset : 0;
   const lineDetails = [];
-  for (const match of matches) {
+  for (const match of matches.slice(0, 8)) {
     const pos = match.start;
     const lineNum =
       baseLine + splitLines(effectiveSearchContent.slice(0, pos)).length - 1;
@@ -3676,7 +3584,7 @@ async function replaceText(root, args, config = {}) {
     const lineText = state.content
       .slice(lStart, lEnd >= 0 ? lEnd : void 0)
       .trim();
-    lineDetails.push(`  Line ${lineNum}: ${lineText}`);
+    lineDetails.push(`  Line ${lineNum}: ${lineText.slice(0, 200)}`);
   }
   const lineHint =
     lineDetails.length > 0 ? `\n${lineDetails.join("\n")}\n` : " ";
@@ -4218,7 +4126,6 @@ export function getBuiltinTools({
   beforeApplyPatchMutation,
   fffAdapter,
   backupManager,
-  toolResultStore,
   platform = process.platform,
   crewActive = false,
   onLandWorkers,
@@ -4320,6 +4227,7 @@ export function getBuiltinTools({
       pattern: { type: "string", description: "Ripgrep regular expression." },
       path: { type: "string", description: "Optional file or directory target." },
       include: { type: "string", description: "Optional single positive glob filter." },
+      max_results: { type: "integer", minimum: 1, maximum: 250, description: "Maximum matches. Defaults to 250." },
     },
     required: ["pattern"],
   };
@@ -4328,6 +4236,7 @@ export function getBuiltinTools({
     properties: {
       pattern: { type: "string", description: "Ripgrep file glob pattern." },
       path: { type: "string", description: "Optional directory search root." },
+      max_results: { type: "integer", minimum: 1, maximum: 1000, description: "Maximum paths. Defaults to 100." },
     },
     required: ["pattern"],
   };
@@ -4356,7 +4265,6 @@ export function getBuiltinTools({
       throw error;
     }
   };
-  const activeToolResultStore = toolResultStore || createToolResultStore();
   const replyLanguageName = getReplyLanguageName(config);
   const fileObservations = providedFileObservations instanceof Map
     ? providedFileObservations
@@ -4661,9 +4569,7 @@ export function getBuiltinTools({
       type: "function",
       function: {
         name: "read",
-        description: `${isWin
-          ? 'Inspect code or text files before generating or editing code. Use search_code first to locate the file/range or ast_target, then read that precise context. Use {path} for normal reads; file_path/file are accepted aliases. Use start_line/end_line or path:"src/app.ts:10-40" for ranges. If ast_target comes from search_code structure results, read returns the exact structural node. Normal code reads include enclosing symbol metadata when available; read with query is a Tree-sitter-query fallback that returns the matched AST node and ast_target.'
-          : 'Read a UTF-8 text file and return line-numbered content. Use offset and limit to continue reading large files.'}${fileToolPathHint}`,
+        description: `Read UTF-8 text or list a directory. Prefer one sufficient read over many small slices; search_code locates unknown code. Up to 2000 lines/50 KiB with continuation offset. Line-number prefixes are not file content.${fileToolPathHint}`,
         parameters: isWin ? {
           type: "object",
           properties: {
@@ -4674,23 +4580,25 @@ export function getBuiltinTools({
             },
             file_path: { type: "string", description: "Alias for path" },
             file: { type: "string", description: "Alias for path" },
-            start_line: { type: "number", description: "1-based start line" },
-            end_line: { type: "number", description: "Inclusive end line" },
-            max_chars: { type: "number", description: "Max chars to return" },
+            offset: { type: "integer", minimum: 1, description: "First line (1-based). Defaults to 1." },
+            limit: { type: "integer", minimum: 1, maximum: 2000, description: "Line count. Defaults to 2000." },
+            start_line: { type: "integer", minimum: 1, description: "Alias for offset" },
+            end_line: { type: "integer", minimum: 1, description: "Inclusive range end" },
+            max_chars: { type: "integer", minimum: 128, description: "Optional smaller output budget" },
             ast_target: {
               type: "object",
               description:
-                "AST target from search_code structure results, ast_grep, ast_query, or a prior AST selection. When provided, read returns that node instead of a line window.",
+                "Read the selected AST node from search_code or ast_query, subject to the same output limits.",
             },
             query: {
               type: "string",
               description:
-                "Optional Tree-sitter query to run inline before reading the first matched AST node. Prefer search_code for normal search; use query when you need Tree-sitter capture syntax.",
+                "Optional Tree-sitter query; reads the first matched node.",
             },
             capture_name: {
               type: "string",
               description:
-                "Optional capture name to select when query is provided.",
+                "Capture to select for query.",
             },
             include_ast_context: {
               type: "boolean",
@@ -4700,7 +4608,7 @@ export function getBuiltinTools({
             language: {
               type: "string",
               description:
-                "Optional Tree-sitter language override for AST reads or inline queries.",
+                "AST language override.",
             },
           },
           required: [],
@@ -4712,7 +4620,7 @@ export function getBuiltinTools({
       function: {
         name: "search_code",
         description:
-          "Find code locations before reading or editing. This is the default search entry point: it routes plain text to ripgrep, symbols to the project index, and structure patterns to ast-grep. Results are concise locations with ranges/previews; follow with read on the returned file/range or ast_target.",
+          "Locate text, symbols, files, or AST patterns. Read enough surrounding code at the returned locations; known files can be read directly.",
         parameters: {
           type: "object",
           properties: {
@@ -4721,32 +4629,21 @@ export function getBuiltinTools({
               description:
                 "Search text, symbol name, or structural ast-grep pattern.",
             },
-            q: { type: "string", description: "Alias for query" },
             mode: {
               type: "string",
               enum: ["auto", "text", "symbol", "structure", "file"],
               description: "Search mode. Defaults to auto.",
             },
-            intent: {
-              type: "string",
-              enum: ["auto", "text", "symbol", "structure", "file"],
-              description: "Alias for mode.",
-            },
             path: {
               type: "string",
               description:
-                "Optional directory or file to search. file_path/file/dir/directory/cwd are accepted aliases.",
+                "Directory or file to search. Defaults to the workspace.",
             },
-            file_path: { type: "string", description: "Alias for path" },
-            file: { type: "string", description: "Alias for path" },
-            dir: { type: "string", description: "Alias for path" },
-            directory: { type: "string", description: "Alias for path" },
             language: {
               type: "string",
               description:
                 "Optional language filter such as js, ts, java, python, or go.",
             },
-            lang: { type: "string", description: "Alias for language" },
             max_results: {
               type: "number",
               description: "Max locations to return. Defaults to 20.",
@@ -4764,9 +4661,7 @@ export function getBuiltinTools({
       type: "function",
       function: {
         name: "edit",
-        description: `${isWin
-          ? 'Edit an existing file after reading enough surrounding code. Tool arguments must be valid JSON; escape file-content newlines as \\n in JSON strings. Use exactly one canonical shape: {path, old_text, new_text} for text replacement; {path, new_content} for a small full-file rewrite; {path, anchor_text, content, position:"before"|"after"} for inserts; or {path, kind:"replace_block", target|ast_target, new_content} for structural replacement. Keep generated content fields near the end of the object. For a long whole-file rewrite, use begin_write/write_chunk/commit_write instead. If old_text is repeated, use path:"file:10-30" or rely on the most recent read range. Set replace_all=true to replace every match.'
-          : 'Edit an existing file after reading it. Prefer {path|file_path, old_string, new_string, replace_all?} for unique literal replacement (DeepSeek/Claude-compatible). old_text/new_text remain accepted aliases. Tool arguments must be valid JSON; escape newlines as \\n. Also supports {path, new_content} full rewrite and insert/replace_block shapes. Set replace_all=true to replace every match.'}${fileToolPathHint}`,
+        description: `Replace unique old_string with new_string; replace_all=true changes every match. Read sufficient context first.${isWin ? " old_text/new_text are aliases. Also: new_content for rewrite; anchor_text/content/position for insertion; kind=replace_block with ast_target. Use apply_patch for multi-file changes." : ""}${fileToolPathHint}`,
         parameters: isWin ? {
           type: "object",
           properties: {
@@ -4834,9 +4729,7 @@ export function getBuiltinTools({
       type: "function",
       function: {
         name: "write",
-        description: `${isWin
-          ? "Write an entire small file. Use for new files, or for an intentional full-file overwrite of an existing file with overwrite=true. Always include exactly {path, overwrite?, content}, with content last. Tool arguments must be valid JSON; escape file-content newlines as \\n in JSON strings. For long content that might approach the model output limit, use begin_write, sequential write_chunk calls, then commit_write. For small changes in existing files, prefer edit with {path, old_text, new_text}."
-          : "Create or overwrite a file with {path|file_path, content, overwrite?}. Prefer edit with old_string/new_string for small edits. Tool arguments must be valid JSON; escape newlines as \\n."}${fileToolPathHint}`,
+        description: `Create or fully replace a UTF-8 file; content last. Read existing files before replacement${isWin ? "; overwrite=true is required" : ""}. Prefer edit for partial changes.${isWin ? " Use staged writes near the output limit." : ""}${fileToolPathHint}`,
         parameters: isWin ? {
           type: "object",
           properties: {
@@ -4916,7 +4809,7 @@ export function getBuiltinTools({
       function: {
         name: "write_chunk",
         description:
-          "Stage one bounded content chunk without modifying the target file. Send sequence values contiguously from 0. Repeating the same sequence with identical content is idempotent. Keep content as the final JSON field. If a call is truncated or invalid, retry that sequence with a smaller chunk.",
+          "Stage one bounded content chunk without modifying the target file. Send sequence values contiguously from 0. Repeating the same sequence with identical content is idempotent. Keep content as the final JSON field. If arguments are truncated or invalid, split the unsent content into smaller chunks starting at the same sequence.",
         parameters: {
           type: "object",
           properties: {
@@ -4962,7 +4855,7 @@ export function getBuiltinTools({
             },
             expected_sha256: {
               type: "string",
-              description: "Optional SHA-256 hex digest of the assembled UTF-8 content.",
+              description: "Optional precomputed SHA-256 of assembled content; omit unless supplied by trusted tooling.",
             },
           },
           required: ["write_id", "path", "total_chunks"],
@@ -4992,14 +4885,15 @@ export function getBuiltinTools({
       function: {
         name: "apply_patch",
         description:
-          "Apply one or more explicit file patches. Use this for large or multi-file changes when exact edit calls would be unwieldy. The patch_text string must be valid JSON string content, with newlines escaped as \\n. Patch format: *** Begin Patch, then hunks using *** Add File:, *** Update File:, optional *** Move to:, or *** Delete File:, then *** End Patch. Update hunks use @@ chunks with space context lines, - removed lines, and + added lines.",
+          "Apply a Codex-style patch across files or separated regions. Preflights all hunks; commit failures report known partial effects. Prefer this over many edit calls. Read existing files first.",
         parameters: {
           type: "object",
           properties: {
+            ...sandboxEscalationProperties,
             patch_text: {
               type: "string",
               description:
-                "Patch text beginning with *** Begin Patch and ending with *** End Patch. In JSON text, encode newlines as \\n.",
+                "*** Begin Patch ... *** End Patch. Use Add/Update/Delete File: path, optional Move to: path, @@ hunks with space context, - old and + new lines. *** End of File anchors the final match.",
             },
           },
           required: ["patch_text"],
@@ -5250,7 +5144,7 @@ export function getBuiltinTools({
           properties: {
             query: {
               type: "string",
-              description: 'Tool name to load, or "all"',
+              description: "Exact deferred tool name",
             },
           },
           required: ["query"],
@@ -6280,7 +6174,7 @@ export function getBuiltinTools({
           path: args?.path,
           regex: true,
           case_sensitive: true,
-          max_results: 250,
+          max_results: args?.max_results ?? 250,
           file_types: include ? [include] : [],
         },
         config,
@@ -6352,7 +6246,7 @@ export function getBuiltinTools({
       return `read({path:"${result.path}", start_line:${result.start_line}, end_line:${result.end_line}})`;
     }
     if (Number.isFinite(Number(result.line))) {
-      return `read({path:"${result.path}", start_line:${result.line}, end_line:${result.line}})`;
+      return `read({path:"${result.path}", offset:${Math.max(1, result.line - 40)}, limit:160})`;
     }
     return `read({path:"${result.path}"})`;
   }
@@ -6461,7 +6355,7 @@ export function getBuiltinTools({
         score: 0,
         preview: includePreview ? match.preview : undefined,
         next: match.path
-          ? `read({path:"${match.path}", start_line:${match.line}, end_line:${match.line}})`
+          ? `read({path:"${match.path}", offset:${Math.max(1, match.line - 40)}, limit:160})`
           : undefined,
       }));
   }
@@ -6663,6 +6557,23 @@ export function getBuiltinTools({
     return builtinList(workspaceRoot, args, config);
   }
 
+  const readBoundedAstNode = async (args) => {
+    const readPath = args?.path || args?.ast_target?.path;
+    const target = await resolveInWorkspace(workspaceRoot, readPath, config);
+    const result = await readAstNode(workspaceRoot, { ...args, path: readPath });
+    const window = await collectReadWindow([result.content], readWindowOptions({ max_chars: args?.max_chars }, config.context));
+    const base = result.node.start_line - 1;
+    const shifted = {
+      ...window, path: readPath, ast_selection: true,
+      lines: window.lines.map((line) => ({ ...line, number: line.number + base })),
+      start_line: window.start_line + base, end_line: window.end_line + base,
+      total_lines: result.node.end_line,
+      ...(window.next_offset ? { next_offset: window.next_offset + base } : {}),
+    };
+    await observeFile(target);
+    return { ...result, content: window.lines.map((line) => line.text).join("\n"), read_window: shifted, bounded_read: true };
+  };
+
   const handlers = {
     preview_html: async (args) =>
       previewHtmlArtifact(workspaceRoot, args, config),
@@ -6671,7 +6582,7 @@ export function getBuiltinTools({
       const directAstTarget = args?.ast_target;
 
       if (directAstTarget) {
-        const result = await readAstNode(workspaceRoot, {
+        const result = await readBoundedAstNode({
           ...args,
           path: args?.path || directAstTarget?.path,
           ast_target: directAstTarget,
@@ -6693,6 +6604,7 @@ export function getBuiltinTools({
       }
 
       if (inlineQuery) {
+        await resolveInWorkspace(workspaceRoot, normalizeReadArgs(args).path, config);
         const queryResult = await queryAst(workspaceRoot, args);
         const firstTarget = queryResult?.matches?.[0]?.ast_target;
         if (!firstTarget) {
@@ -6706,7 +6618,7 @@ export function getBuiltinTools({
           };
         }
         rememberAstSelection(firstTarget.path, firstTarget);
-        const result = await readAstNode(workspaceRoot, {
+        const result = await readBoundedAstNode({
           ...args,
           path: firstTarget.path,
           ast_target: firstTarget,
@@ -6720,6 +6632,8 @@ export function getBuiltinTools({
         }
         return {
           path: result.path,
+          read_window: result.read_window,
+          bounded_read: true,
           language: result.language,
           node: result.node,
           content: result.content,
@@ -6745,30 +6659,11 @@ export function getBuiltinTools({
         };
       }
 
-      const result = isWin
-        ? await readFile(
-            workspaceRoot,
-            {
-              ...args,
-              default_lines: config.context?.read_file_default_lines ?? 120,
-              max_chars:
-                typeof args?.max_chars === "number"
-                  ? args.max_chars
-                  : (config.context?.read_file_max_chars ?? 12000),
-            },
-            config,
-            activeToolResultStore,
-          )
-        : await readDshFile(workspaceRoot, args, config);
+      const result = await readFile(workspaceRoot, args, config, !isWin);
       const readPath = normalizePath(result?.path || args?.path || "").trim();
-      // The dedup/unchanged stub only fires when the mtime-based dedup already
-      // proved this exact path+range is unchanged since an earlier read in this
-      // turn (which recorded the full-file observation). Re-observing here would
-      // re-read and SHA-256 the entire file for no new information, so skip it;
-      // the existing observation entry stays valid for later change detection.
-      if (readPath && result?.phase !== "directory_listing" && result?.unchanged !== true) {
+      if (readPath && result?.phase !== "directory_listing" && result?.phase !== "metadata") {
         const readTarget = await resolveInWorkspace(workspaceRoot, readPath, config);
-        await observeFile(readTarget);
+        fileObservations.set(readTarget, result.observed_hash);
       }
       if (readPath) {
         lastReadPath = readPath;
@@ -6810,7 +6705,7 @@ export function getBuiltinTools({
           "read_ast_node requires ast_target or a prior ast_query on the same file",
         );
       if (astTarget.path) rememberAstSelection(astTarget.path, astTarget);
-      return readAstNode(workspaceRoot, { ...args, ast_target: astTarget });
+      return readBoundedAstNode({ ...args, ast_target: astTarget });
     },
     web_fetch: (args) => webFetchPage(args),
     add_code_comment: async (args) => {
@@ -6861,23 +6756,21 @@ export function getBuiltinTools({
       }
       await ensureProjectIndex();
       if (!isWin) {
-        if (!String(args?.file_path || "").trim()) {
+        if (!String(args?.file_path || args?.path || "").trim()) {
           throw new Error("file_path must be a non-empty string");
         }
-        if (String(args?.old_string ?? "").length === 0) {
+        if (String(args?.old_string ?? args?.old_text ?? "").length === 0) {
           throw new Error("old_string must be a non-empty string");
         }
-        if (String(args.old_string) === String(args?.new_string ?? "")) {
+        if (String(args?.old_string ?? args?.old_text) === String(args?.new_string ?? args?.new_text ?? "")) {
           throw new Error("old_string and new_string must differ");
         }
       }
       const baseMutationConfig = configWithApprovedMutationPaths(config, args);
-      const mutationConfig = isWin
-        ? baseMutationConfig
-        : {
-            ...baseMutationConfig,
-            runtime: { ...baseMutationConfig?.runtime, atomic_file_mutations: true },
-          };
+      const mutationConfig = {
+        ...baseMutationConfig,
+        runtime: { ...baseMutationConfig?.runtime, atomic_file_mutations: true },
+      };
       const normalizedKind = String(args?.kind || "").trim();
       const hasReplaceTextArgs =
         args?.old_text != null || args?.old_string != null;
@@ -6974,12 +6867,10 @@ export function getBuiltinTools({
         throw new Error("file_path must be a non-empty string");
       }
       const baseMutationConfig = configWithApprovedMutationPaths(config, args);
-      const mutationConfig = isWin
-        ? baseMutationConfig
-        : {
-            ...baseMutationConfig,
-            runtime: { ...baseMutationConfig?.runtime, atomic_file_mutations: true },
-          };
+      const mutationConfig = {
+        ...baseMutationConfig,
+        runtime: { ...baseMutationConfig?.runtime, atomic_file_mutations: true },
+      };
       const writePath = normalizeFilePathValue(
         args?.path || args?.file_path || "",
         { stripInlineRange: true },
@@ -7085,6 +6976,7 @@ export function getBuiltinTools({
             transaction.target,
             content,
             transaction.writeId,
+            { createOnly: !transaction.existed },
           );
           const beforeLines = splitLines(beforeContent);
           const afterLines = splitLines(content);
@@ -7110,13 +7002,13 @@ export function getBuiltinTools({
     },
     abort_write: async (args) => stagedWrites.abort(args?.write_id),
     apply_patch: async (args) => {
-      if (crewActive && String(args?.patch || args?.patch_text || '').includes('.codemini/crew')) {
+      if (crewActive && String(args?.patch || args?.patch_text || args?.input || '').includes('.codemini/crew')) {
         throw new Error(crewLedgerWriteRefusal('.codemini/crew/state.json', workspaceRoot));
       }
       await ensureProjectIndex();
       const mutationConfig = configWithApprovedMutationPaths(config, args);
       const patchText = String(
-        args?.patch_text ?? "",
+        args?.patch_text ?? args?.input ?? "",
       );
       const parsedHunks = parsePatchText(patchText);
       const observedTargets = [];
@@ -7131,6 +7023,7 @@ export function getBuiltinTools({
         }
       }
       for (const target of observedTargets) {
+        assertFsSandbox(target.target, args, true);
         await assertObservedVersion(target.target, target.path);
       }
       const backupPaths = [];
@@ -7160,7 +7053,7 @@ export function getBuiltinTools({
         },
       });
       for (const target of observedTargets) {
-        await observeFile(target.target);
+        if (result.ok || result.files.includes(target.path)) await observeFile(target.target);
       }
       await refreshProjectFiles(result?.files || []);
       return attachBackups(result, backups);
@@ -7604,11 +7497,21 @@ export function getBuiltinTools({
         const evaluation = args?._evaluation || null;
         const risk = String(args?._risk || "").trim() ||
           (evaluation && evaluation.failed !== true ? String(evaluation.risk || "").trim() : "");
+        const escalation = validateSandboxEscalationArgs(args, { config, cwd: workspaceRoot });
+        const english = getReplyLanguageName(config) === "English";
+        const escalationReason = !escalation ? "" : !escalation.policy.enabled
+          ? (english ? "This request disables the sandbox and runs on the host without filesystem or network confinement; explicit approval is required."
+            : "本次请求关闭沙箱，在宿主机执行，不再受文件和网络沙箱限制；需要人工确认。")
+          : (english ? `This request widens sandbox access to ${escalation.mode}; explicit approval is required.`
+            : `本次请求扩大沙箱权限至 ${escalation.mode}；需要人工确认。`);
         return {
           command: args?.command || "",
           risk,
           evaluation,
-          policyBlock: args?._policyBlock || null,
+          policyBlock: escalation ? {
+            ...args?._policyBlock,
+            reason: [args?._policyBlock?.reason, escalationReason, escalation.justification].filter(Boolean).join(" "),
+          } : args?._policyBlock || null,
         };
       },
     }),
@@ -7901,24 +7804,29 @@ export function getBuiltinTools({
     },
   };
 
+  const searchLimitNote = (shown, available, truncated, kind) => {
+    if (!truncated && shown >= available) return "";
+    return `\n[Results truncated: showing ${shown}${truncated ? "" : ` of ${available}`} ${kind}. Narrow the path or query.]`;
+  };
+
   const rawFormatters = {
+    tool_search(result) {
+      if (!result || typeof result !== "object") return String(result);
+      if (result.error) return `Error: ${result.error}`;
+      // The registry advertises activated schemas on the next response. Echoing
+      // them here duplicates tokens and generic JSON sanitization can clip them.
+      return result.message || `Loaded ${(result.loaded || []).join(", ")}; call from the next tool list.`;
+    },
     read(result) {
       if (typeof result === "string") return result;
       if (!result || typeof result !== "object") return String(result);
-      if (!isWin && result.phase === "dsh_content") {
-        const lines = Array.isArray(result.lines) ? result.lines : [];
-        const first = lines[0]?.number ?? result.offset ?? 1;
-        const last = lines.at(-1)?.number ?? Math.max(0, first - 1);
-        let footer;
-        if (result.capped) {
-          footer = `(Output capped. Showing lines ${first}-${last}. Use offset=${last + 1} to continue.)`;
-        } else if (last < Number(result.total_lines || 0)) {
-          footer = `(Showing lines ${first}-${last} of ${result.total_lines}. Use offset=${last + 1} to continue.)`;
-        } else {
-          footer = `(End of file - total ${Number(result.total_lines || 0)} lines)`;
-        }
-        const body = lines.map((line) => `${line.number}: ${line.text}`).join("\n");
-        return `<path>${result.path}</path>\n<type>file</type>\n<content>\n${body}${body ? "\n\n" : ""}${footer}\n</content>`;
+      if (Array.isArray(result.lines) && ["content", "dsh_content"].includes(result.phase)) {
+        return formatReadWindow(result);
+      }
+      if (result.read_window) {
+        const context = [result.parent_summary ? `Parent: ${String(result.parent_summary).slice(0, 200)}` : "",
+          result.child_summaries?.length ? `Children: ${result.child_summaries.join(" | ").slice(0, 400)}` : ""].filter(Boolean);
+        return [formatReadWindow(result.read_window), ...context].join("\n");
       }
       if (result.node && typeof result.content === "string") {
         const header = `[AST: ${result.path || "?"} ${result.node.node_type || "node"} ${result.node.start_line || "?"}-${result.node.end_line || "?"}${result.matches ? `, matches ${result.matches}` : ""}]`;
@@ -7949,19 +7857,8 @@ export function getBuiltinTools({
       if (result.phase === "metadata") {
         return JSON.stringify(result);
       }
-      // Phase 2 content: structured header + head/tail content
       if (result.phase === "content") {
-        const enclosing = result.enclosing_symbol
-          ? `, inside ${result.enclosing_kind || "symbol"} ${result.enclosing_symbol}`
-          : "";
-        const header = `[File: ${result.path}, lines ${result.start_line || 1}-${result.end_line || "?"}${result.total_lines ? ` of ${result.total_lines}` : ""}${result.truncated ? ", truncated" : ""}${enclosing}]`;
-        const content = result.content || "";
-        if (typeof content !== "string" || content.length <= 3000) {
-          return `${header}\n${content}`;
-        }
-        const headLen = 1800;
-        const tailLen = 800;
-        return `${header}\n${content.slice(0, headLen)}\n... [omitted ${content.length - headLen - tailLen} chars] ...\n${content.slice(-tailLen)}`;
+        return `[File: ${result.path}, lines ${result.start_line || 1}-${result.end_line || "?"}]\n${result.content || ""}`;
       }
       return JSON.stringify(result);
     },
@@ -7990,35 +7887,17 @@ export function getBuiltinTools({
           : "";
         return `${match.path || match.file || "?"}:${range}${type}${symbol}${engine}${preview}`;
       });
-      const more =
-        results.length > 30
-          ? `\n... and ${results.length - 30} more location(s) [total: ${results.length}${result.truncated ? ", results were truncated" : ""}]`
-          : "";
-      return `${header}\n${lines.join("\n")}${more}`;
+      return `${header}\n${lines.join("\n")}${searchLimitNote(lines.length, results.length, result.truncated, "locations")}`;
     },
 
     grep(result) {
       if (!result || typeof result !== "object") return String(result);
+      if (result.error) return `Error: ${result.error}`;
       const { pattern, matches, truncated, engine } = result;
-      const header = pattern
-        ? `[grep: "${pattern}"${engine ? ` via ${engine}` : ""}]`
-        : "";
-      if (!Array.isArray(matches) || matches.length === 0)
-        return `${header}\nNo matches found.`;
-      if (matches.length <= 30) {
-        const lines = matches.map(
-          (m) =>
-            `${m.path}:${m.line}: ${String(m.preview || "").slice(0, 120)}`,
-        );
-        return `${header}\n${lines.join("\n")}`;
-      }
-      const shown = matches
-        .slice(0, 30)
-        .map(
-          (m) =>
-            `${m.path}:${m.line}: ${String(m.preview || "").slice(0, 120)}`,
-        );
-      return `${header}\n${shown.join("\n")}\n... and ${matches.length - 30} more matches [total: ${matches.length}${truncated ? ", results were truncated" : ""}]`;
+      const header = pattern ? `[grep: "${pattern}"${engine ? ` via ${engine}` : ""}]` : "";
+      if (!Array.isArray(matches) || matches.length === 0) return `${header}\nNo matches found.`;
+      const shown = matches.slice(0, 30).map((m) => `${m.path}:${m.line}: ${String(m.preview || "").slice(0, 120)}`);
+      return `${header}\n${shown.join("\n")}${searchLimitNote(shown.length, matches.length, truncated, "matches")}`;
     },
 
     ast_grep(result) {
@@ -8041,15 +7920,12 @@ export function getBuiltinTools({
 
     glob(result) {
       if (!result || typeof result !== "object") return String(result);
+      if (result.error) return `Error: ${result.error}`;
       const { pattern, matches, truncated } = result;
       const header = pattern ? `[glob: "${pattern}"]` : "";
-      if (!Array.isArray(matches) || matches.length === 0)
-        return `${header}\nNo files found.`;
-      if (matches.length <= 50) {
-        return `${header}\n${matches.join("\n")}`;
-      }
+      if (!Array.isArray(matches) || matches.length === 0) return `${header}\nNo files found.`;
       const shown = matches.slice(0, 50);
-      return `${header}\n${shown.join("\n")}\n... and ${matches.length - 50} more files [total: ${matches.length}${truncated ? ", results were truncated" : ""}]`;
+      return `${header}\n${shown.join("\n")}${searchLimitNote(shown.length, matches.length, truncated, "files")}`;
     },
 
     list(result) {
@@ -8289,59 +8165,16 @@ export function getBuiltinTools({
 
     edit(result) {
       if (!result || typeof result !== "object") return String(result);
-      const p = result.path || "";
-      const action = result.action || "";
-      const line = result.changed_line || 0;
-      const backup = result.backupPath
-        ? `\nbackup: ${result.backupPath}${result.backupReused ? " (reused)" : ""}`
-        : "";
-      const summary = `${action} ${p}${line > 0 ? ` @L${line}` : ""}${backup}`;
-      const diffPreview = result.diff_preview || "";
-      if (diffPreview) {
-        const trimmed =
-          diffPreview.length > 600
-            ? `${diffPreview.slice(0, 597)}...`
-            : diffPreview;
-        return `${summary}\n${trimmed}`;
-      }
-      return (
-        summary +
-        (result.ok !== false ? "" : ` [FAILED: ${result.error || "unknown"}]`)
-      );
+      if (result.error || result.ok === false) return `Error: ${result.error || "Edit failed"}`;
+      return `${result.action || "edited"} ${result.path || ""}${result.changed_line ? ` @L${result.changed_line}` : ""}`;
     },
-
     create(result) {
       if (!result || typeof result !== "object") return String(result);
-      const p = result.path || "";
-      const action = result.action || "create";
-      const line = result.changed_line || 0;
-      const backup = result.backupPath
-        ? `\nbackup: ${result.backupPath}${result.backupReused ? " (reused)" : ""}`
-        : "";
-      const summary = `${action} ${p}${line > 0 ? ` @L${line}` : ""}${backup}`;
-      const diffPreview = result.diff_preview || "";
-      if (diffPreview) {
-        const trimmed =
-          diffPreview.length > 600
-            ? `${diffPreview.slice(0, 597)}...`
-            : diffPreview;
-        return `${summary}\n${trimmed}`;
-      }
-      return summary;
+      return result.error || result.ok === false ? `Error: ${result.error || "Create failed"}` : `Created ${result.path || ""}`;
     },
-
     write(result) {
       if (!result || typeof result !== "object") return String(result);
-      const p = result.path || "";
-      const action = result.action || "write";
-      const backup = result.backupPath
-        ? `\nbackup: ${result.backupPath}${result.backupReused ? " (reused)" : ""}`
-        : "";
-      const summary = `${action} ${p}${backup}`;
-      const diffPreview = result.diff_preview || "";
-      return diffPreview
-        ? `${summary}\n${diffPreview.length > 600 ? `${diffPreview.slice(0, 597)}...` : diffPreview}`
-        : summary;
+      return result.error || result.ok === false ? `Error: ${result.error || "Write failed"}` : `${result.action || "Wrote"} ${result.path || ""}`;
     },
 
     begin_write(result) {
@@ -8356,11 +8189,15 @@ export function getBuiltinTools({
 
     commit_write(result) {
       if (!result || typeof result !== "object") return String(result);
-      const summary = `${result.action || "write"} ${result.path || "?"} atomically from ${result.chunks_committed ?? 0} chunk(s); sha256 ${result.sha256 || "?"}`;
-      const diffPreview = result.diff_preview || "";
-      return diffPreview
-        ? `${summary}\n${diffPreview.length > 600 ? `${diffPreview.slice(0, 597)}...` : diffPreview}`
-        : summary;
+      return `Committed ${result.path || "?"} (${result.chunks_committed ?? 0} chunks).`;
+    },
+
+    apply_patch(result) {
+      if (!result || typeof result !== "object") return String(result);
+      const files = Array.isArray(result.files) ? result.files : [];
+      const paths = files.slice(0, 20).map((file) => String(file).length > 200 ? `${String(file).slice(0, 197)}...` : String(file));
+      return [result.error || `Patched ${files.length} file(s).`, ...paths,
+        files.length > 20 ? `... ${files.length - 20} more file(s).` : ""].filter(Boolean).join("\n");
     },
 
     abort_write(result) {
@@ -8380,6 +8217,7 @@ export function getBuiltinTools({
     },
 
     run(result) {
+      if (result?.error && result.code === undefined && !result.stdout && !result.stderr) return `Error: ${result.error}`;
       if (!result || typeof result !== "object") return String(result);
       const sandboxBackend = result?.sandbox?.backend || sandboxPolicy.backend;
       const execution = result?.sandbox?.wrapped
@@ -8479,6 +8317,7 @@ export function getBuiltinTools({
     },
 
     read_ast_node(result) {
+      if (result?.read_window) return formatReadWindow(result.read_window);
       if (typeof result === "string") return result;
       if (!result || typeof result !== "object") return String(result);
       const name = result.name || "";

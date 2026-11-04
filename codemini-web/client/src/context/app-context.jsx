@@ -1141,6 +1141,7 @@ export function AppProvider({ children }) {
   const activeMsgRef = useRef(null);
   const pendingChangesRef = useRef([]);
   const sessionsLoadPromiseRef = useRef(null);
+  const scheduledSessionRevisionRef = useRef(null);
   const sessionPagePromisesRef = useRef(new Map());
   const pendingSkillBadgesRef = useRef([]);
   const pendingSkillSegmentsRef = useRef([]);
@@ -1466,7 +1467,10 @@ export function AppProvider({ children }) {
     async (options = {}) => {
       const force = options?.force === true;
       const isAlive = options?.isAlive || (() => true);
-      if (force) sessionsLoadPromiseRef.current = null;
+      // A forced refresh waits for the current request, then coalesces with
+      // other waiters. Older responses can never overwrite a newer snapshot.
+      if (force && sessionsLoadPromiseRef.current) await sessionsLoadPromiseRef.current;
+      if (!isAlive()) return;
       if (sessionsLoadPromiseRef.current) return sessionsLoadPromiseRef.current;
       if (isAlive()) update({ sessionsLoading: true });
       const promise = (async () => {
@@ -1480,7 +1484,7 @@ export function AppProvider({ children }) {
             sessionPages: mergeSessionPageMetadata(prev.sessionPages, snapshot.pages),
             sessionsLoading: false,
           }));
-          loadGitBatch(list, { isAlive });
+          if (options.includeGit !== false) loadGitBatch(list, { isAlive });
         } catch {
           if (isAlive()) update({ sessionsLoading: false });
         } finally {
@@ -2039,6 +2043,16 @@ export function AppProvider({ children }) {
       if (!event?.type) return;
       if (isProjectIndexEvent(event)) return;
       const s = stateRef.current;
+      const scheduledChange = event.type === 'scheduled:changed' ? event : event.type === 'connected' ? event.scheduled : null;
+      if (scheduledChange) {
+        const revision = `${scheduledChange.revision}:${scheduledChange.workerRunning}`;
+        if (revision !== s.scheduledRevision) update({ scheduledRevision: revision });
+        if (scheduledSessionRevisionRef.current !== scheduledChange.sessionRevision) {
+          scheduledSessionRevisionRef.current = scheduledChange.sessionRevision;
+          void loadSessions({ force: true, includeGit: false });
+        }
+        if (event.type === 'scheduled:changed') return;
+      }
       if (event.type === "submit:done" && event.operationId) {
         const result = event.result || {};
         const key = operationKey(event.sessionId, event.operationId);
@@ -2546,6 +2560,11 @@ export function AppProvider({ children }) {
               event.command ||
               segment.summary,
             reason: event.reason || segment.reason,
+            decision: event.decision || segment.decision,
+            additionalContext: event.additionalContext || segment.additionalContext,
+            execution: event.execution && typeof event.execution === "object"
+              ? event.execution
+              : segment.execution,
             endedAt: event.endedAt || new Date().toISOString(),
           });
           if (!activeId) {
@@ -2918,6 +2937,10 @@ export function AppProvider({ children }) {
           if (rs.reasoningEnabled == null) {
             runtimeState.reasoningEnabled =
               stateRef.current.runtimeState?.reasoningEnabled;
+          }
+          if (rs.reasoningAuto == null) {
+            runtimeState.reasoningAuto =
+              stateRef.current.runtimeState?.reasoningAuto;
           }
           update({
             runtimeState,

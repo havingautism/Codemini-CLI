@@ -670,6 +670,88 @@ test("omits a memory trajectory event when the turn retrieved nothing", () => {
   assert.equal(result.events.some((event) => event.kind === "memory"), false);
 });
 
+test("records hook segments separately and keeps injected context", () => {
+  const result = buildTrajectory({
+    messages: [
+      { id: "u1", role: "you", text: "go" },
+      {
+        id: "a1",
+        role: "agent",
+        segments: [
+          {
+            type: "skill",
+            kind: "hook",
+            name: "UserPromptSubmit::ponytail::",
+            event: "UserPromptSubmit",
+            source: "package",
+            sourceLabel: "ponytail",
+            command: "node hook.js",
+            matcher: "*",
+            status: "done",
+            summary: "UserPromptSubmit ← ponytail",
+            decision: "allow",
+            additionalContext: "prefer short diffs",
+            execution: {
+              exitCode: 0,
+              stdout: '{"additionalContext":"prefer short diffs","marker":"debug"}',
+              stderr: "hook warning",
+            },
+            startedAt: "2026-08-19T01:00:01.000Z",
+            endedAt: "2026-08-19T01:00:02.000Z",
+          },
+          {
+            type: "skill",
+            name: "PreToolUse · read ← guard",
+            status: "error",
+            reason: "blocked",
+          },
+          {
+            type: "skill",
+            name: "explore",
+            summary: "loaded SKILL.md",
+            status: "done",
+          },
+        ],
+      },
+    ],
+  });
+
+  const hooks = result.events.filter((event) => event.kind === "hook");
+  const skill = result.events.find((event) => event.kind === "skill");
+  assert.equal(hooks.length, 2);
+  assert.equal(hooks[0].title, "UserPromptSubmit");
+  assert.equal(hooks[0].preview, "ponytail");
+  assert.match(hooks[0].input, /command: node hook.js/);
+  assert.match(hooks[0].input, /decision: allow/);
+  assert.equal(hooks[0].output, "prefer short diffs");
+  assert.match(hooks[0].executionText, /exit 0/);
+  assert.match(hooks[0].executionText, /"marker": "debug"/);
+  assert.match(hooks[0].executionText, /stderr:\nhook warning/);
+  assert.equal(hooks[0].durationMs, 1000);
+  assert.equal(hooks[1].title, "PreToolUse");
+  assert.equal(hooks[1].preview, "read · guard");
+  assert.equal(hooks[1].output, "blocked");
+  assert.equal(hooks[1].status, "error");
+  assert.equal(skill.title, "explore");
+  assert.equal(result.metrics.calls, 0);
+  const preview = formatTrajectoryRowPreview(hooks[0]);
+  assert.equal(preview.includes("\n"), false);
+  assert.equal(preview, "UserPromptSubmit ponytail -> prefer short diffs");
+  assert.equal(preview.includes("marker"), false);
+  assert.deepEqual(
+    filterTrajectoryEvents(result.events, { query: "marker" }).map((event) => event.title),
+    ["UserPromptSubmit"],
+  );
+  assert.deepEqual(
+    filterTrajectoryEvents(result.events, { includeCalls: false }).map((event) => event.kind),
+    ["system", "user"],
+  );
+  assert.deepEqual(
+    filterTrajectoryEvents(result.events, { kind: "hook" }).map((event) => event.title),
+    ["UserPromptSubmit", "PreToolUse"],
+  );
+});
+
 test("filterTrajectoryEvents hides calls and matches search", () => {
   const events = [
     { id: "1", kind: "user", title: "USER", body: "hello", preview: "" },

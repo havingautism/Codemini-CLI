@@ -1001,6 +1001,9 @@ test('cancel_worker removes an idle Crew worker after it finishes', async () => 
     await planBuildMissions(dir, [{ title: 'Idle', paths: ['idle/**'] }]);
     await runtime.submitMessage({ text: '使用子代理执行任务' });
     await waitForWorkerStatus(dir, 'idle', 'completed');
+    // The worker can finish before its completion wake finishes in the parent.
+    // This scenario cancels an idle worker, so wait for that turn to settle too.
+    await runtime.waitForCrewIdle();
     await runtime.submitMessage({ text: '取消工人 idle' });
     const cancelResult = session.messages.find((message) => message.tool_call_id === 'call-cancel-idle');
     assert.ok(cancelResult, `missing cancel_worker result; ids=${session.messages.map((m) => m.tool_call_id).filter(Boolean).join(',')}`);

@@ -130,6 +130,12 @@ function ApprovalBody({ variant, args, details }) {
   if (variant === 'run') {
     return (
       <>
+        {parsed.sandbox_permissions && (
+          <div className="mb-3 rounded-lg border border-(--accent-amber) bg-(--bg-secondary) p-3 text-[12px] font-medium leading-5 text-(--text-primary)">
+            {t(String(parsed.sandbox_permissions).replaceAll('_', '-') === 'danger-full-access'
+              ? 'approvalOutsideSandboxNotice' : 'approvalWiderSandboxNotice')}
+          </div>
+        )}
         <ReviewSection label={t('approvalFieldCommand')}>
           <ReviewCommandBlock
             command={parsed.command || '-'}

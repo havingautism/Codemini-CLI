@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { splitEmojiTitle } from '@/lib/emoji-title';
 import {
   Article,
   ArrowsOutSimple,
@@ -38,6 +39,7 @@ import { useApp } from "@/context/app-context.jsx";
 import { ConfirmDialog } from "@/components/ConfirmDialog.jsx";
 import { MarkdownPreview } from "@/components/MarkdownEditor.jsx";
 import { StreamdownRenderer } from "@/components/StreamdownRenderer.jsx";
+import { markdownExcerpt } from "@/lib/markdown-excerpt.js";
 import {
   Dialog,
   DialogContent,
@@ -74,34 +76,11 @@ function entryTitle(entry) {
 
 function entryPreview(entry) {
   return (
-    entry?.summary ||
-    entry?.contentText ||
+    markdownExcerpt(entry?.summary) ||
+    markdownExcerpt(entry?.contentText) ||
     entry?.sourceUrl ||
     t("scrapbookNoContent")
   );
-}
-
-function splitEmojiTitle(value) {
-  const fullTitle = String(value || "").trim();
-  if (!fullTitle) return { emoji: "", title: "" };
-
-  const firstGrapheme =
-    typeof Intl !== "undefined" && typeof Intl.Segmenter === "function"
-      ? [
-          ...new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(
-            fullTitle,
-          ),
-        ][0]?.segment || ""
-      : Array.from(fullTitle)[0] || "";
-  const isEmoji =
-    /\p{Extended_Pictographic}/u.test(firstGrapheme) ||
-    /\p{Regional_Indicator}/u.test(firstGrapheme);
-
-  if (!isEmoji) return { emoji: "", title: fullTitle };
-  return {
-    emoji: firstGrapheme,
-    title: fullTitle.slice(firstGrapheme.length).trimStart() || fullTitle,
-  };
 }
 
 function sourceHostname(raw) {

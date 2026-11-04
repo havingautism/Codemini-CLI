@@ -52,6 +52,7 @@ import { parseModelJsonObject } from './model-json.js';
 import { trimInline, normalizePath } from './string-utils.js';
 import { normalizeAssumptionItems } from './tool-args-helpers.js';
 import fs from 'node:fs/promises';
+import { getScheduledSessionInfo, markScheduledSessionContinued } from './scheduled-task-store.js';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -194,7 +195,7 @@ import {
 import {
   normalizeToolPolicy,
 } from './provider/search-tool-registry.js';
-import { normalizeReasoningEffort, resolveConfiguredReasoningEffort } from './provider/reasoning-effort.js';
+import { normalizeReasoningAuto, normalizeReasoningEffort, resolveConfiguredReasoningEffort } from './provider/reasoning-effort.js';
 import { getActiveSoulName, listSouls, normalizeSoulCategory, soulContextFromExecutionMode, soulNameEquals } from './soul.js';
 import { appendAttachmentContext, composeSelectedSkills, normalizeChatSubmission } from './chat-message.js';
 import { CHAT_ACTIONS, validateChatAction } from './chat-action-dispatcher.js';
@@ -4047,6 +4048,10 @@ export function resolveLatestContextMeasurement(messages = [], fallbackOverhead 
 }
 
 export function buildRuntimeStateSnapshot({ currentSession, config, model, executionMode, extraSession, workspaceRoot, alwaysSkillNames = [], crewState, crewWorkers = [], crewInFlightIds = [], crewDirtyCount = 0 } = {}) {
+  const scheduledRun = getScheduledSessionInfo(currentSession?.id);
+  const scheduledAttention = scheduledRun?.status === 'needs_attention'
+    && !(currentSession?.messages || []).some(message => message.role === 'user' && Date.parse(message.at) > Date.parse(scheduledRun.finishedAt))
+    ? { reason: scheduledRun.error, taskName: scheduledRun.task.name } : null;
   const activeMessages = extraSession
     ? extraSession.messages || []
     : Array.isArray(currentSession?.compact?.view) && currentSession.compact.view.length > 0
@@ -4075,6 +4080,7 @@ export function buildRuntimeStateSnapshot({ currentSession, config, model, execu
     projectIsGit: Boolean(config?.runtime?.project_is_git),
     sessionId: currentSession?.id || '',
     sessionTitle: currentSession?.title || '',
+    scheduledAttention,
     messageCount: Array.isArray(currentSession?.messages) ? currentSession.messages.length : 0,
     mode: resolvedMode,
     approvalMode: config.execution?.approval_mode || 'auto',
@@ -4096,6 +4102,7 @@ export function buildRuntimeStateSnapshot({ currentSession, config, model, execu
     maxContextTokens,
     alwaysSkillNames: visibleAlwaysSkillNames,
     reasoningEnabled: config.model?.reasoning_enabled !== false,
+    reasoningAuto: normalizeReasoningAuto(config.model?.reasoning_auto),
     reasoningEffort: normalizeReasoningEffort(config.model?.reasoning_effort),
     activeSoul: getActiveSoulName(config, soulCategory),
     soulCategory,
@@ -4201,7 +4208,7 @@ export function resolveSubAgentModel(config, fallbackModel = '') {
   ).trim();
 }
 
-async function generateSessionTitle({ userText, assistantText = '', config, signal }) {
+export async function generateSessionTitle({ userText, assistantText = '', config, signal }) {
   // Some reasoning-capable Anthropic-compatible models consume ~100 output
   // tokens before emitting the short final label. A 64-token cap can therefore
   // produce an empty assistant response and silently fall back to raw user text.
@@ -6589,6 +6596,7 @@ async function askModelInSession({
             tools,
             reasoningEffort: resolveConfiguredReasoningEffort({
               enabled: config.model?.reasoning_enabled,
+              auto: config.model?.reasoning_auto,
               effort: config.model?.reasoning_effort
             }),
             timeoutMs: config.gateway.timeout_ms || 1800000,
@@ -8969,6 +8977,8 @@ export async function createChatRuntime({
   let currentSession = session;
   const titleCoordinator = createSessionTitleTaskCoordinator();
   let config = initialConfig;
+  const scheduledRun = getScheduledSessionInfo(currentSession?.id);
+  if (scheduledRun) config = { ...config, execution: { ...config.execution, approval_mode: scheduledRun.task.approvalMode || config.execution?.approval_mode || 'auto' } };
   model = model || currentSession?.model || resolveDefaultModel(config);
   scheduleMemoryReviewBacklog({ config, currentSessionId: currentSession?.id });
   if (currentSession && typeof currentSession === 'object') {
@@ -9833,6 +9843,7 @@ export async function createChatRuntime({
     withTokenUsageSession(currentSession.id, () => executeSubmissionTurnInSession(line, onAgentEvent, options));
 
   const executeSubmissionTurnInSession = async (line, onAgentEvent, options = {}) => {
+    if (getScheduledSessionInfo(currentSession.id)?.status === 'needs_attention') markScheduledSessionContinued(currentSession.id);
     const endMemoryActivity = beginSessionMemoryActivity(currentSession.id);
     activeTurnCount += 1;
     try {
@@ -10677,10 +10688,19 @@ export async function createChatRuntime({
       return true;
     },
     setReasoningEffort: async (next) => {
-      const normalized = String(next || '').trim().toLowerCase();
-      if (!['off', 'auto', 'low', 'medium', 'high'].includes(normalized)) return false;
-      await setConfigValue('model.reasoning_enabled', normalized !== 'off');
-      if (normalized !== 'off') await setConfigValue('model.reasoning_effort', normalized);
+      const raw = String(next || '').trim().toLowerCase();
+      if (!['off', 'auto', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'].includes(raw)) return false;
+      const normalized = raw === 'ultra' ? 'max' : raw;
+      if (normalized === 'off') {
+        await setConfigValue('model.reasoning_enabled', false);
+      } else if (normalized === 'auto') {
+        await setConfigValue('model.reasoning_enabled', true);
+        await setConfigValue('model.reasoning_auto', true);
+      } else {
+        await setConfigValue('model.reasoning_enabled', true);
+        await setConfigValue('model.reasoning_auto', false);
+        await setConfigValue('model.reasoning_effort', normalized);
+      }
       config = attachRuntimeState(await loadConfig());
       return true;
     },

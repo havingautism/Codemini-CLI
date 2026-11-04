@@ -71,24 +71,6 @@ function extractPathCandidates(args = {}, declaredChanges = [], options = {}) {
   return out;
 }
 
-function parseStatusPaths(text) {
-  const parts = String(text || '').split('\0').filter(Boolean);
-  const paths = [];
-  for (let i = 0; i < parts.length; i += 1) {
-    const entry = parts[i];
-    if (entry.length < 4) continue;
-    const status = entry.slice(0, 2);
-    const filePath = normalizeRelativePath(entry.slice(3));
-    if (filePath) paths.push(filePath);
-    if (status.includes('R') || status.includes('C')) {
-      i += 1;
-      const renamedPath = normalizeRelativePath(parts[i] || '');
-      if (renamedPath) paths.push(renamedPath);
-    }
-  }
-  return [...new Set(paths)];
-}
-
 async function readWorktreeSnapshot(root, relativePath) {
   const abs = path.resolve(root, relativePath);
   if (!abs.startsWith(`${root}${path.sep}`) && abs !== root) {
@@ -100,20 +82,6 @@ async function readWorktreeSnapshot(root, relativePath) {
   } catch (error) {
     if (error?.code === 'ENOENT') return { exists: false, content: Buffer.alloc(0), hash: '' };
     throw error;
-  }
-}
-
-async function readHeadSnapshot(root, relativePath) {
-  try {
-    const result = await runGit(['show', `HEAD:${relativePath}`], {
-      cwd: root,
-      allowFailure: true,
-      timeoutMs: 60_000
-    });
-    if (result.code !== 0) return { exists: false, content: Buffer.alloc(0), hash: '' };
-    return { exists: true, content: result.stdoutBuffer, hash: hashBuffer(result.stdoutBuffer) };
-  } catch {
-    return { exists: false, content: Buffer.alloc(0), hash: '' };
   }
 }
 
@@ -259,12 +227,6 @@ export function isGitOplogChangeTrackerAvailable(tracker) {
   return Boolean(tracker?.enabled && (tracker.mode === 'git-oplog' || tracker.mode === 'file-oplog'));
 }
 
-async function listDirtyPaths(tracker) {
-  if (tracker.mode !== 'git-oplog') return [];
-  const status = await runGit(['status', '--porcelain=v1', '-z'], { cwd: tracker.workspaceRoot, allowFailure: true });
-  return parseStatusPaths(status.stdout);
-}
-
 function gitApplyArgs(tracker, ...args) {
   return tracker.mode === 'file-oplog'
     ? ['-c', 'core.autocrlf=false', 'apply', ...args]
@@ -274,43 +236,33 @@ function gitApplyArgs(tracker, ...args) {
 export async function beginGitOplogCapture(tracker, { toolName = '', args = {} } = {}) {
   if (!isGitOplogChangeTrackerAvailable(tracker)) return null;
   const normalizedToolName = String(toolName || '');
-  if (!FILE_TOOLS.has(normalizedToolName) && normalizedToolName !== 'run' && normalizedToolName !== 'Bash') {
-    return null;
-  }
-  const explicitPaths = FILE_TOOLS.has(normalizedToolName) ? extractPathCandidates(args, [], { root: tracker.workspaceRoot }) : [];
-  const dirtyPaths = await listDirtyPaths(tracker);
-  const paths = explicitPaths.length ? explicitPaths : dirtyPaths;
+  // A worktree diff proves a file changed, not which session/process changed it.
+  // Only file tools with explicit targets can establish an owned checkpoint.
+  if (!FILE_TOOLS.has(normalizedToolName)) return null;
+  const paths = extractPathCandidates(args, [], { root: tracker.workspaceRoot });
+  if (!paths.length) return null;
   const snapshots = new Map();
   for (const filePath of paths) {
     snapshots.set(filePath, await readWorktreeSnapshot(tracker.workspaceRoot, filePath));
   }
   return {
     toolName,
-    explicit: explicitPaths.length > 0,
-    beforeDirtyPaths: dirtyPaths,
     paths,
     snapshots
   };
 }
 
-export async function captureGitOplogChanges(tracker, capture, { toolName = '', toolCallId = '', summary = '', args = {}, declaredFileChanges = [] } = {}) {
+export async function captureGitOplogChanges(tracker, capture, { toolName = '', toolCallId = '', summary = '' } = {}) {
   if (!isGitOplogChangeTrackerAvailable(tracker) || !capture) return null;
-  const afterDirtyPaths = capture.explicit ? [] : await listDirtyPaths(tracker);
-  const declaredPaths = extractPathCandidates(args, declaredFileChanges, { root: tracker.workspaceRoot });
-  const candidates = new Set([
-    ...capture.paths,
-    ...declaredPaths,
-    ...(capture.explicit ? [] : capture.beforeDirtyPaths),
-    ...(capture.explicit ? [] : afterDirtyPaths)
-  ]);
+  const candidates = new Set(capture.paths);
 
   const files = [];
   const patches = [];
   for (const filePath of candidates) {
     const normalized = normalizeRelativePath(filePath, { root: tracker.workspaceRoot });
     if (!normalized) continue;
-    let before = capture.snapshots.get(normalized);
-    if (!before) before = await readHeadSnapshot(tracker.workspaceRoot, normalized);
+    const before = capture.snapshots.get(normalized);
+    if (!before) continue;
     const after = await readWorktreeSnapshot(tracker.workspaceRoot, normalized);
     const patch = await buildPatchForFile(tracker.workspaceRoot, normalized, before, after);
     if (!patch.trim()) continue;

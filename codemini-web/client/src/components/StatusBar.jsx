@@ -3,10 +3,10 @@ import {
   ChartLine,
   Code,
   Coffee,
+  Lightning,
   LockOpen,
   Plug,
   ShieldWarning,
-  Sparkle,
 } from "@/lib/icons";
 import { cn } from "@/lib/utils";
 import { getModelLogo } from "@/lib/message-model-identity.js";
@@ -63,7 +63,7 @@ export function StatusBar({ runtimeState, live, stageLabel }) {
     approvalMode === "full_access"
       ? LockOpen
       : approvalMode === "auto"
-        ? Sparkle
+        ? Lightning
         : ShieldWarning;
   const approvalLabel =
     approvalMode === "full_access"

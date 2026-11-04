@@ -3,7 +3,6 @@ import {
   ArrowClockwise,
   CaretDown,
   CaretRight,
-  FloppyDisk,
   Folder,
   Lightning,
   MagnifyingGlass,
@@ -248,7 +247,6 @@ function HooksEditorFooter({
         </span>
       ) : null}
       <Button onClick={onSave} disabled={loading || saving || disabled || !dirty || invalid}>
-        <FloppyDisk size={14} className="mr-1.5" />
         {saving ? t('saving') : t('save')}
       </Button>
     </div>
@@ -1105,12 +1103,12 @@ function HookProfilesPane({ onDirtyChange }) {
               {invalid ? <Alert variant="destructive" className="sm:col-span-2"><WarningCircle /><AlertDescription>{t('hooksCommandRequired')}</AlertDescription></Alert> : null}
             </div>
             <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3 sm:px-5">
-              <HooksEventEditor hooksState={hooksState} onHooksStateChange={setHooksState} disabled={saving || draft.editable === false || draft.kind === 'package'} />
+              <HooksEventEditor hooksState={hooksState} onHooksStateChange={setHooksState} disabled={saving || draft.editable === false} />
             </div>
             <div className="flex items-center border-t border-(--border-default)">
               {(draft.editable !== false || draft.kind === 'package') && !isNew ? (
                 <Button variant="ghost" className="ml-4 text-(--accent-red)" onClick={() => setPendingDelete(draft)} disabled={saving}>
-                  <Trash />{t('delete')}
+                  {t('delete')}
                 </Button>
               ) : null}
               <div className="ml-auto">
