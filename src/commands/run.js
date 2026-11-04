@@ -71,6 +71,7 @@ function makeCompletionFn(config) {
       tools,
       reasoningEffort: resolveConfiguredReasoningEffort({
         enabled: config.model?.reasoning_enabled,
+        auto: config.model?.reasoning_auto,
         effort: config.model?.reasoning_effort
       }),
       timeoutMs: config.gateway.timeout_ms || 1800000,

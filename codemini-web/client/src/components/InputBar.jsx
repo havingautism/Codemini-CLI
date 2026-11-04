@@ -1123,7 +1123,8 @@ export function InputBar({
   const sandboxMode = rs.sandboxMode || "workspace-write";
   const sandboxUiEnabled = rs.sandboxUiEnabled === true;
   const reasoningEnabled = rs.reasoningEnabled !== false;
-  const reasoningEffort = rs.reasoningEffort || "auto";
+  const reasoningAuto = rs.reasoningAuto === true;
+  const reasoningEffort = rs.reasoningEffort || "high";
   const defaultSkillNames = useMemo(
     () =>
       (Array.isArray(rs.alwaysSkillNames) ? rs.alwaysSkillNames : [])
@@ -2103,6 +2104,7 @@ export function InputBar({
             />
             <ReasoningQuickControl
               enabled={reasoningEnabled}
+              auto={reasoningAuto}
               effort={reasoningEffort}
               disabled={inputLocked}
             />

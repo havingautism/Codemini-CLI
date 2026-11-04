@@ -164,7 +164,7 @@ export async function runLive(factory = getBuiltinTools) {
         const request = { number: requests.length + 1, messageChars: JSON.stringify(messages).length, schemaChars: JSON.stringify(tools).length };
         requests.push(request);
         const completion = await createChatCompletionStream({ sdkProvider: saved.sdk?.provider, baseUrl: saved.gateway.base_url, apiKey: saved.gateway.api_key,
-          model, messages, tools, reasoningEffort: resolveConfiguredReasoningEffort({ enabled: saved.model.reasoning_enabled, effort: saved.model.reasoning_effort }),
+          model, messages, tools, reasoningEffort: resolveConfiguredReasoningEffort({ enabled: saved.model.reasoning_enabled, auto: saved.model.reasoning_auto, effort: saved.model.reasoning_effort }),
           maxTokens: Math.min(Number(saved.model.max_output_tokens) || 8192, 8192), maxRetries: 0, timeoutMs: 60000, signal: timer });
         request.usage = completion.usage;
         return completion;

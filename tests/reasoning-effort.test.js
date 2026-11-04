@@ -3,7 +3,10 @@ import test from 'node:test';
 
 import {
   modelUsesFixedKimiSampling,
+  normalizeReasoningAuto,
+  normalizeReasoningEffort,
   resolveAnthropicReasoning,
+  resolveConfiguredReasoningEffort,
   resolveOpenAICompatibleReasoning,
 } from '../src/core/provider/reasoning-effort.js';
 
@@ -152,6 +155,77 @@ test('Qwen hybrid and thinking-only generations are separated', () => {
   assert.deepEqual(
     resolveAnthropicReasoning({ model: 'qwen3.7-plus', effort: 'low', maxTokens: 1024 }),
     {},
+  );
+});
+
+test('auto stays off the request and intensity defaults to high', () => {
+  assert.equal(normalizeReasoningEffort('auto'), 'high');
+  assert.equal(normalizeReasoningEffort('max'), 'max');
+  assert.equal(normalizeReasoningEffort('ultra'), 'max');
+  assert.equal(normalizeReasoningEffort(''), 'high');
+  assert.equal(normalizeReasoningAuto(undefined), false);
+  assert.equal(normalizeReasoningAuto(true), true);
+  assert.equal(resolveConfiguredReasoningEffort({ auto: true, effort: 'low' }), 'auto');
+  assert.equal(resolveConfiguredReasoningEffort({ enabled: false, auto: true, effort: 'max' }), 'off');
+  assert.equal(resolveConfiguredReasoningEffort({ effort: 'xhigh' }), 'xhigh');
+  assert.deepEqual(
+    resolveOpenAICompatibleReasoning({ model: 'gpt-5.4', effort: 'auto' }),
+    {},
+  );
+});
+
+test('xhigh and max clamp to the effort each model actually accepts', () => {
+  assert.deepEqual(
+    resolveOpenAICompatibleReasoning({ model: 'gpt-5.2', effort: 'xhigh' }),
+    { reasoning_effort: 'xhigh' },
+  );
+  assert.deepEqual(
+    resolveOpenAICompatibleReasoning({ model: 'openai/gpt-5.4', effort: 'max' }),
+    { reasoning_effort: 'xhigh' },
+  );
+  assert.deepEqual(
+    resolveOpenAICompatibleReasoning({ model: 'gpt-5', effort: 'max' }),
+    { reasoning_effort: 'high' },
+  );
+  assert.deepEqual(
+    resolveOpenAICompatibleReasoning({ model: 'gpt-5.6-sol', effort: 'max' }),
+    { reasoning_effort: 'max' },
+  );
+  assert.deepEqual(
+    resolveOpenAICompatibleReasoning({ model: 'gpt-6-astra', effort: 'xhigh' }),
+    { reasoning_effort: 'xhigh' },
+  );
+  assert.deepEqual(
+    resolveOpenAICompatibleReasoning({ model: 'gpt-5-pro', effort: 'max' }),
+    { reasoning_effort: 'high' },
+  );
+  assert.deepEqual(
+    resolveAnthropicReasoning({ model: 'claude-opus-4.7', effort: 'xhigh', maxTokens: 128000 }),
+    { thinking: { type: 'adaptive' }, output_config: { effort: 'xhigh' } },
+  );
+  assert.deepEqual(
+    resolveAnthropicReasoning({ model: 'claude-opus-4.7', effort: 'max', maxTokens: 128000 }),
+    { thinking: { type: 'adaptive' }, output_config: { effort: 'max' } },
+  );
+  assert.deepEqual(
+    resolveAnthropicReasoning({ model: 'claude-sonnet-4.6', effort: 'xhigh', maxTokens: 128000 }),
+    { thinking: { type: 'adaptive' }, output_config: { effort: 'high' } },
+  );
+  assert.deepEqual(
+    resolveAnthropicReasoning({ model: 'claude-opus-4-6', effort: 'max', maxTokens: 128000 }),
+    { thinking: { type: 'adaptive' }, output_config: { effort: 'max' } },
+  );
+  assert.deepEqual(
+    resolveAnthropicReasoning({ model: 'claude-opus-4-5-20251101', effort: 'max', maxTokens: 128000 }),
+    { thinking: { type: 'enabled', budget_tokens: 16384 }, output_config: { effort: 'high' } },
+  );
+  assert.deepEqual(
+    resolveAnthropicReasoning({ model: 'claude-sonnet-4.5', effort: 'max', maxTokens: 80000 }),
+    { thinking: { type: 'enabled', budget_tokens: 65536 } },
+  );
+  assert.deepEqual(
+    resolveOpenAICompatibleReasoning({ model: 'deepseek-v4-pro', effort: 'max' }),
+    { thinking: { type: 'enabled' }, reasoning_effort: 'high' },
   );
 });
 

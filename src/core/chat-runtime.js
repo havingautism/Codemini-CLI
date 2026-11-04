@@ -195,7 +195,7 @@ import {
 import {
   normalizeToolPolicy,
 } from './provider/search-tool-registry.js';
-import { normalizeReasoningEffort, resolveConfiguredReasoningEffort } from './provider/reasoning-effort.js';
+import { normalizeReasoningAuto, normalizeReasoningEffort, resolveConfiguredReasoningEffort } from './provider/reasoning-effort.js';
 import { getActiveSoulName, listSouls, normalizeSoulCategory, soulContextFromExecutionMode, soulNameEquals } from './soul.js';
 import { appendAttachmentContext, composeSelectedSkills, normalizeChatSubmission } from './chat-message.js';
 import { CHAT_ACTIONS, validateChatAction } from './chat-action-dispatcher.js';
@@ -4102,6 +4102,7 @@ export function buildRuntimeStateSnapshot({ currentSession, config, model, execu
     maxContextTokens,
     alwaysSkillNames: visibleAlwaysSkillNames,
     reasoningEnabled: config.model?.reasoning_enabled !== false,
+    reasoningAuto: normalizeReasoningAuto(config.model?.reasoning_auto),
     reasoningEffort: normalizeReasoningEffort(config.model?.reasoning_effort),
     activeSoul: getActiveSoulName(config, soulCategory),
     soulCategory,
@@ -6595,6 +6596,7 @@ async function askModelInSession({
             tools,
             reasoningEffort: resolveConfiguredReasoningEffort({
               enabled: config.model?.reasoning_enabled,
+              auto: config.model?.reasoning_auto,
               effort: config.model?.reasoning_effort
             }),
             timeoutMs: config.gateway.timeout_ms || 1800000,
@@ -10686,10 +10688,19 @@ export async function createChatRuntime({
       return true;
     },
     setReasoningEffort: async (next) => {
-      const normalized = String(next || '').trim().toLowerCase();
-      if (!['off', 'auto', 'low', 'medium', 'high'].includes(normalized)) return false;
-      await setConfigValue('model.reasoning_enabled', normalized !== 'off');
-      if (normalized !== 'off') await setConfigValue('model.reasoning_effort', normalized);
+      const raw = String(next || '').trim().toLowerCase();
+      if (!['off', 'auto', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'].includes(raw)) return false;
+      const normalized = raw === 'ultra' ? 'max' : raw;
+      if (normalized === 'off') {
+        await setConfigValue('model.reasoning_enabled', false);
+      } else if (normalized === 'auto') {
+        await setConfigValue('model.reasoning_enabled', true);
+        await setConfigValue('model.reasoning_auto', true);
+      } else {
+        await setConfigValue('model.reasoning_enabled', true);
+        await setConfigValue('model.reasoning_auto', false);
+        await setConfigValue('model.reasoning_effort', normalized);
+      }
       config = attachRuntimeState(await loadConfig());
       return true;
     },

@@ -243,8 +243,8 @@ function Shell() {
 
   const reasoningSyncKey = useMemo(
     () =>
-      `${rs.reasoningEnabled !== false ? "1" : "0"}:${rs.reasoningEffort || "auto"}`,
-    [rs.reasoningEnabled, rs.reasoningEffort],
+      `${rs.reasoningEnabled !== false ? "1" : "0"}:${rs.reasoningAuto === true ? "auto" : "manual"}:${rs.reasoningEffort || "high"}`,
+    [rs.reasoningEnabled, rs.reasoningAuto, rs.reasoningEffort],
   );
   const openSettings = useCallback(
     () => actions.setConfigOpen(true),

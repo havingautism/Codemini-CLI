@@ -26,7 +26,7 @@ const EN = {
   settingJevKeySet: 'Saved',
   settingSoul: 'Persona',
   settingValues: {
-    coding: 'Coding', daily: 'Daily', crew: 'Crew', workspace: 'Default workspace', cwd: 'Current directory', off: 'Off', auto: 'Auto', low: 'Low', medium: 'Medium', high: 'High',
+    coding: 'Coding', daily: 'Daily', crew: 'Crew', workspace: 'Default workspace', cwd: 'Current directory', off: 'Off', auto: 'Auto', low: 'low', medium: 'medium', high: 'high', xhigh: 'xhigh', max: 'max',
     review: 'Review', full_access: 'Full access', 'read-only': 'Read only', 'workspace-write': 'Workspace write', 'danger-full-access': 'Full system access',
     on: 'On'
   },
@@ -153,7 +153,7 @@ const ZH = {
   settingJevKeySet: '已保存',
   settingSoul: '人格',
   settingValues: {
-    coding: '编码', daily: '日常', crew: '协作组', workspace: '默认 Workspace', cwd: '当前目录', off: '关闭', auto: '自动', low: '低', medium: '中', high: '高',
+    coding: '编码', daily: '日常', crew: '协作组', workspace: '默认 Workspace', cwd: '当前目录', off: '关闭', auto: '自动', low: 'low', medium: 'medium', high: 'high', xhigh: 'xhigh', max: 'max',
     review: '逐项审批', full_access: '完全放行', 'read-only': '只读', 'workspace-write': '工作区写入', 'danger-full-access': '完整系统权限',
     on: '开启'
   },

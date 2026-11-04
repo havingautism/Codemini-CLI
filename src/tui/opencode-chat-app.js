@@ -608,7 +608,11 @@ export async function runOpenCodeTui({ runtime, sessionId, model, safeMode = tru
       copy,
       values: {
         mode: state.crewActive ? 'crew' : home.mode,
-        reasoning: state.reasoningEnabled === false ? 'off' : state.reasoningEffort || 'auto',
+        reasoning: state.reasoningEnabled === false
+          ? 'off'
+          : state.reasoningAuto
+            ? 'auto'
+            : state.reasoningEffort || 'high',
         approval: state.approvalMode || 'auto',
         sandbox: state.sandboxMode || 'workspace-write',
         jev: state.jevReviewEnabled ? 'on' : 'off',

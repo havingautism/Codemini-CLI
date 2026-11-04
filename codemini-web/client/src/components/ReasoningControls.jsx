@@ -19,6 +19,7 @@ import {
   getReasoningEffortLabel,
   getReasoningEffortRatioFromClientX,
   getReasoningEffortShortLabel,
+  normalizeReasoningAuto,
   normalizeReasoningEffort,
   normalizeReasoningEnabled,
 } from "@/lib/reasoning-controls.js";
@@ -281,8 +282,10 @@ export function ReasoningEffortStepper({
 
 export function ReasoningControlsPanel({
   enabled,
+  auto = false,
   effort,
   onEnabledChange,
+  onAutoChange,
   onEffortChange,
   disabled = false,
   showHelp = false,
@@ -290,6 +293,7 @@ export function ReasoningControlsPanel({
   idPrefix = "reasoning",
 }) {
   const reasoningEnabled = normalizeReasoningEnabled(enabled);
+  const reasoningAuto = normalizeReasoningAuto(auto);
   const reasoningEffort = normalizeReasoningEffort(effort);
 
   return (
@@ -313,31 +317,58 @@ export function ReasoningControlsPanel({
         />
       </div>
       {reasoningEnabled && (
-        <div className="flex flex-col gap-2">
-          <div className="text-[11px] font-medium text-(--text-muted)">
-            {t("reasoningEffort")}
-          </div>
-          <ReasoningEffortStepper
-            idPrefix={`${idPrefix}-effort`}
-            value={reasoningEffort}
-            onChange={onEffortChange}
-            disabled={disabled}
-            compact={compactStepper}
-          />
-          {showHelp && (
-            <div className="text-[11px] leading-snug text-(--text-muted)">
-              {t("reasoningEffortHelp")}
+        <>
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <div className="text-[12px] font-medium text-(--text-primary)">
+                {t("reasoningAuto")}
+              </div>
+              {showHelp && (
+                <div className="mt-0.5 text-[11px] leading-snug text-(--text-muted)">
+                  {t("reasoningAutoHelp")}
+                </div>
+              )}
             </div>
-          )}
-        </div>
+            <Switch
+              id={`${idPrefix}-auto`}
+              checked={reasoningAuto}
+              disabled={disabled}
+              onCheckedChange={(checked) => onAutoChange?.(checked)}
+            />
+          </div>
+          <div className={cn("flex flex-col gap-2", reasoningAuto && "opacity-50")}>
+            <div className="text-[11px] font-medium text-(--text-muted)">
+              {t("reasoningEffort")}
+            </div>
+            <ReasoningEffortStepper
+              idPrefix={`${idPrefix}-effort`}
+              value={reasoningEffort}
+              onChange={onEffortChange}
+              disabled={disabled || reasoningAuto}
+              compact={compactStepper}
+            />
+            {showHelp && (
+              <div className="text-[11px] leading-snug text-(--text-muted)">
+                {t("reasoningEffortHelp")}
+              </div>
+            )}
+          </div>
+        </>
       )}
     </div>
   );
 }
 
-async function persistReasoningConfig({ enabled, effort }) {
+async function persistReasoningConfig({ enabled, auto, effort }) {
   const enabledResult = await api.setConfig("model.reasoning_enabled", enabled);
   let latestConfig = enabledResult?.config || null;
+  if (auto != null) {
+    const autoResult = await api.setConfig(
+      "model.reasoning_auto",
+      normalizeReasoningAuto(auto),
+    );
+    latestConfig = autoResult?.config || latestConfig;
+  }
   if (effort != null) {
     const effortResult = await api.setConfig(
       "model.reasoning_effort",
@@ -348,18 +379,22 @@ async function persistReasoningConfig({ enabled, effort }) {
   return latestConfig;
 }
 
-export function ReasoningQuickControl({ enabled, effort, disabled = false }) {
+export function ReasoningQuickControl({ enabled, auto = false, effort, disabled = false }) {
   const { actions } = useApp();
   const [open, setOpen] = useState(false);
   const [saving, setSaving] = useState(false);
-  // Optimistic effort so the stepper doesn't flash while config persists.
+  // Optimistic values so the controls don't flash while config persists.
   const [optimisticEffort, setOptimisticEffort] = useState(null);
+  const [optimisticAuto, setOptimisticAuto] = useState(null);
   const reasoningEnabled = normalizeReasoningEnabled(enabled);
+  const reasoningAuto = optimisticAuto ?? normalizeReasoningAuto(auto);
   const reasoningEffort = normalizeReasoningEffort(effort);
   const displayEffort = optimisticEffort ?? reasoningEffort;
-  const triggerLabel = reasoningEnabled
-    ? getReasoningEffortShortLabel(displayEffort)
-    : t("reasoningOffShort");
+  const triggerLabel = !reasoningEnabled
+    ? t("reasoningOffShort")
+    : reasoningAuto
+      ? t("reasoningEffortAutoShort")
+      : getReasoningEffortShortLabel(displayEffort);
 
   useEffect(() => {
     if (optimisticEffort != null && reasoningEffort === optimisticEffort) {
@@ -367,12 +402,19 @@ export function ReasoningQuickControl({ enabled, effort, disabled = false }) {
     }
   }, [reasoningEffort, optimisticEffort]);
 
-  const applyChange = async (nextEnabled, nextEffort) => {
+  useEffect(() => {
+    if (optimisticAuto != null && normalizeReasoningAuto(auto) === optimisticAuto) {
+      setOptimisticAuto(null);
+    }
+  }, [auto, optimisticAuto]);
+
+  const applyChange = async (nextEnabled, nextAuto, nextEffort) => {
     if (saving || disabled) return;
     setSaving(true);
     try {
       const savedConfig = await persistReasoningConfig({
         enabled: nextEnabled,
+        auto: nextAuto,
         effort: nextEffort,
       });
       if (savedConfig) {
@@ -380,25 +422,27 @@ export function ReasoningQuickControl({ enabled, effort, disabled = false }) {
       }
       await actions.refreshRuntimeState();
     } catch {
-      // Roll back optimistic effort if persist failed.
       setOptimisticEffort(null);
+      setOptimisticAuto(null);
     } finally {
       setSaving(false);
     }
   };
 
   const handleEnabledChange = async (checked) => {
-    await applyChange(checked, displayEffort);
+    await applyChange(checked, reasoningAuto, displayEffort);
+  };
+
+  const handleAutoChange = async (checked) => {
+    setOptimisticAuto(checked);
+    await applyChange(true, checked, displayEffort);
   };
 
   const handleEffortChange = async (level) => {
     const next = normalizeReasoningEffort(level);
     setOptimisticEffort(next);
-    if (!reasoningEnabled) {
-      await applyChange(true, next);
-      return;
-    }
-    await applyChange(true, next);
+    setOptimisticAuto(false);
+    await applyChange(true, false, next);
   };
 
   return (
@@ -423,14 +467,16 @@ export function ReasoningQuickControl({ enabled, effort, disabled = false }) {
         align="start"
         sideOffset={6}
         collisionPadding={12}
-        className="w-[min(20rem,calc(100vw-1.5rem))] p-3.5 sm:w-80 sm:p-4 md:w-96"
+        className="w-[min(24rem,calc(100vw-1.5rem))] p-3.5 sm:w-96 sm:p-4"
       >
         <div className={cn(saving && "pointer-events-none")}>
           <ReasoningControlsPanel
             idPrefix="input-reasoning"
             enabled={reasoningEnabled}
+            auto={reasoningAuto}
             effort={displayEffort}
             onEnabledChange={handleEnabledChange}
+            onAutoChange={handleAutoChange}
             onEffortChange={handleEffortChange}
             disabled={disabled}
             compactStepper

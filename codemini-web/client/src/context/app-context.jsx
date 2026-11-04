@@ -2938,6 +2938,10 @@ export function AppProvider({ children }) {
             runtimeState.reasoningEnabled =
               stateRef.current.runtimeState?.reasoningEnabled;
           }
+          if (rs.reasoningAuto == null) {
+            runtimeState.reasoningAuto =
+              stateRef.current.runtimeState?.reasoningAuto;
+          }
           update({
             runtimeState,
             pendingSpecApproval: rs?.pendingSpecApproval || null,

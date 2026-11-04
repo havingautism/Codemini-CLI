@@ -29,6 +29,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { t } from "../../i18n/index.js";
 import { ReasoningControlsPanel } from "@/components/ReasoningControls.jsx";
 import {
+  normalizeReasoningAuto,
   normalizeReasoningEffort,
   normalizeReasoningEnabled,
 } from "@/lib/reasoning-controls.js";
@@ -70,6 +71,9 @@ function normalizeDraftValue(path, value, fieldsByPath) {
   if (path === "model.reasoning_enabled") {
     return normalizeReasoningEnabled(value);
   }
+  if (path === "model.reasoning_auto") {
+    return normalizeReasoningAuto(value);
+  }
   if (path === "model.reasoning_effort") {
     return normalizeReasoningEffort(value);
   }
@@ -88,6 +92,9 @@ function getBaselineValue(path, config, fieldsByPath) {
   if (!config) return undefined;
   if (path === "model.reasoning_enabled") {
     return normalizeReasoningEnabled(config?.model?.reasoning_enabled);
+  }
+  if (path === "model.reasoning_auto") {
+    return normalizeReasoningAuto(config?.model?.reasoning_auto);
   }
   if (path === "model.reasoning_effort") {
     return normalizeReasoningEffort(config?.model?.reasoning_effort);
@@ -209,6 +216,7 @@ export function ConfigDialog({
         setChanges((prev) => {
           const hasReasoningDraft =
             "model.reasoning_enabled" in prev ||
+            "model.reasoning_auto" in prev ||
             "model.reasoning_effort" in prev;
           if (!hasReasoningDraft) {
             setConfig(cfg);
@@ -264,6 +272,13 @@ export function ConfigDialog({
     return normalizeReasoningEnabled(config?.model?.reasoning_enabled);
   };
 
+  const getReasoningAuto = () => {
+    if ("model.reasoning_auto" in changes) {
+      return normalizeReasoningAuto(changes["model.reasoning_auto"]);
+    }
+    return normalizeReasoningAuto(config?.model?.reasoning_auto);
+  };
+
   const getReasoningEffort = () => {
     if ("model.reasoning_effort" in changes) {
       return normalizeReasoningEffort(changes["model.reasoning_effort"]);
@@ -288,6 +303,7 @@ export function ConfigDialog({
     ) ||
     (tabId === "model" &&
       ("model.reasoning_enabled" in changes ||
+        "model.reasoning_auto" in changes ||
         "model.reasoning_effort" in changes));
 
   const playwrightReady =
@@ -327,6 +343,8 @@ export function ConfigDialog({
         let normalizedValue = value;
         if (path === "model.reasoning_enabled") {
           normalizedValue = value === true || value === "true";
+        } else if (path === "model.reasoning_auto") {
+          normalizedValue = normalizeReasoningAuto(value);
         } else if (path === "model.reasoning_effort") {
           normalizedValue = normalizeReasoningEffort(value);
         } else {
@@ -557,9 +575,13 @@ export function ConfigDialog({
             <ReasoningControlsPanel
               idPrefix="settings-reasoning"
               enabled={getReasoningEnabled()}
+              auto={getReasoningAuto()}
               effort={getReasoningEffort()}
               onEnabledChange={(checked) =>
                 handleChange("model.reasoning_enabled", checked)
+              }
+              onAutoChange={(checked) =>
+                handleChange("model.reasoning_auto", checked)
               }
               onEffortChange={(level) =>
                 handleChange("model.reasoning_effort", level)

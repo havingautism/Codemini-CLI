@@ -1,4 +1,5 @@
-const REASONING_EFFORTS = new Set(['auto', 'low', 'medium', 'high']);
+const REASONING_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
+const DEFAULT_REASONING_EFFORT = 'high';
 
 function normalizeModelName(value = '') {
   const raw = String(value || '').trim().toLowerCase();
@@ -7,11 +8,16 @@ function normalizeModelName(value = '') {
 }
 
 function isOpenAIReasoningModel(model) {
-  return /^(?:gpt-5(?:[.-]|$)|o[134](?:-|$)|codex-mini(?:-|$))/i.test(model);
+  return /^(?:gpt-(?:5|6)(?:[.-]|$)|o[134](?:-|$)|codex-mini(?:-|$))/i.test(model);
 }
 
 function isOpenAINoneEffortModel(model) {
-  return /^gpt-5\.(?:[1-9]\d*)(?:[.-]|$)/i.test(model);
+  if (/^gpt-5\.(?:[1-9]\d*)(?:[.-]|$)/i.test(model)) return true;
+  if (!/^gpt-6(?:[.-]|$)/i.test(model)) return false;
+  // Astra and GPT-6.1 Sol reject reasoning_effort "none".
+  if (/^gpt-6(?:[.-]|$)astra(?:[.-]|$)/i.test(model)) return false;
+  if (/^gpt-6\.1[.-]sol(?:[.-]|$)/i.test(model)) return false;
+  return true;
 }
 
 function isOpenAIHighOnlyModel(model) {
@@ -88,18 +94,65 @@ function isQwenHybridThinkingModel(model) {
 }
 
 export function normalizeReasoningEffort(value) {
-  const normalized = String(value || 'auto').trim().toLowerCase();
-  return REASONING_EFFORTS.has(normalized) ? normalized : 'auto';
+  const normalized = String(value || '').trim().toLowerCase();
+  if (normalized === 'ultra') return 'max';
+  return REASONING_EFFORTS.has(normalized) ? normalized : DEFAULT_REASONING_EFFORT;
 }
 
-export function resolveConfiguredReasoningEffort({ enabled = true, effort } = {}) {
-  return enabled === false ? 'off' : normalizeReasoningEffort(effort);
+export function normalizeReasoningAuto(value) {
+  return value === true || value === 'true' || value === 'on' || value === 'auto';
+}
+
+export function resolveConfiguredReasoningEffort({ enabled = true, auto = false, effort } = {}) {
+  if (enabled === false || enabled === 'false') return 'off';
+  if (normalizeReasoningAuto(auto)) return 'auto';
+  return normalizeReasoningEffort(effort);
+}
+
+// Product levels are low / medium / high / xhigh / max.
+// Several models stop at high or xhigh. Clamp before the request so an
+// unsupported level cannot 400.
+function mapEffortToCeiling(effort, ceiling) {
+  if (effort === 'low' || effort === 'medium') return effort;
+  if (ceiling === 'max') return effort;
+  if (ceiling === 'xhigh') return effort === 'high' ? 'high' : 'xhigh';
+  return 'high';
+}
+
+function openAIEffortCeiling(model) {
+  if (/^(?:gpt-6(?:[.-]|$)|gpt-5\.(?:[5-9]|\d{2,})(?:[.-]|$))/i.test(model)) return 'max';
+  if (/^gpt-5\.[2-4](?:[.-]|$)/i.test(model)) return 'xhigh';
+  return 'high';
+}
+
+function claudeSupportsXHigh(model) {
+  if (/^claude-mythos(?:-preview|[.-]preview)/i.test(model)) return false;
+  if (/^claude-(?:fable|mythos)-5(?:[.-]|$)/i.test(model)) return true;
+  if (/^claude-opus-4[.-][78](?:[.-]|$)/i.test(model)) return true;
+  if (/^claude-(?:opus|sonnet|haiku)-5(?:[.-]|$)/i.test(model)) return true;
+  return false;
+}
+
+function claudeSupportsMax(model) {
+  if (claudeSupportsXHigh(model)) return true;
+  if (/^claude-mythos(?:-preview|[.-]preview)/i.test(model)) return true;
+  return /^claude-(?:opus|sonnet)-4[.-]6(?:[.-]|$)/i.test(model);
+}
+
+function mapClaudeEffort(model, effort) {
+  if (effort === 'max') {
+    if (claudeSupportsMax(model)) return 'max';
+    if (claudeSupportsXHigh(model)) return 'xhigh';
+    return 'high';
+  }
+  if (effort === 'xhigh') return claudeSupportsXHigh(model) ? 'xhigh' : 'high';
+  return effort;
 }
 
 function normalizeResolvedReasoningEffort(value) {
-  return String(value || '').trim().toLowerCase() === 'off'
-    ? 'off'
-    : normalizeReasoningEffort(value);
+  const normalized = String(value || '').trim().toLowerCase();
+  if (normalized === 'off' || normalized === 'auto') return normalized;
+  return normalizeReasoningEffort(value);
 }
 
 function enabledType(effort) {
@@ -113,9 +166,11 @@ function resolveOpenAIEffort(model, effort) {
   }
   if (effort === 'off') {
     if (isOpenAINoneEffortModel(model)) return { reasoning_effort: 'none' };
+    if (/^gpt-6(?:[.-]|$)/i.test(model)) return { reasoning_effort: 'low' };
     return /^gpt-5(?:[.-]|$)/i.test(model) ? { reasoning_effort: 'minimal' } : {};
   }
-  return { reasoning_effort: effort };
+  if (effort === 'auto') return {};
+  return { reasoning_effort: mapEffortToCeiling(effort, openAIEffortCeiling(model)) };
 }
 
 export function resolveOpenAICompatibleReasoning({ model, effort } = {}) {
@@ -128,7 +183,11 @@ export function resolveOpenAICompatibleReasoning({ model, effort } = {}) {
 
   if (isClaudeModel(normalizedModel)) {
     if (isClaudeAlwaysThinkingModel(normalizedModel) && normalizedEffort === 'off') return {};
-    return { reasoning: { effort: normalizedEffort === 'off' ? 'none' : normalizedEffort } };
+    return {
+      reasoning: {
+        effort: normalizedEffort === 'off' ? 'none' : mapClaudeEffort(normalizedModel, normalizedEffort)
+      }
+    };
   }
 
   if (isDeepSeekToggleModel(normalizedModel)) {
@@ -156,7 +215,13 @@ export function resolveOpenAICompatibleReasoning({ model, effort } = {}) {
 function manualThinkingBudget(effort, maxTokens) {
   const outputLimit = Math.max(0, Math.floor(Number(maxTokens) || 4096));
   if (outputLimit <= 1024) return 0;
-  const requested = { low: 1024, medium: 4096, high: 16384 }[effort];
+  const requested = {
+    low: 1024,
+    medium: 4096,
+    high: 16384,
+    xhigh: 32768,
+    max: 65536
+  }[effort];
   return Math.min(requested, outputLimit - 1);
 }
 
@@ -173,18 +238,21 @@ export function resolveAnthropicReasoning({ model, effort, maxTokens = 4096 } = 
     }
     return {
       thinking: { type: 'adaptive' },
-      output_config: { effort: normalizedEffort }
+      output_config: { effort: mapClaudeEffort(normalizedModel, normalizedEffort) }
     };
   }
 
   if (isClaudeManualThinkingModel(normalizedModel)) {
     if (normalizedEffort === 'off') return {};
-    const budgetTokens = manualThinkingBudget(normalizedEffort, maxTokens);
+    const budgetEffort = isClaudeOpus45Model(normalizedModel)
+      ? mapClaudeEffort(normalizedModel, normalizedEffort)
+      : normalizedEffort;
+    const budgetTokens = manualThinkingBudget(budgetEffort, maxTokens);
     if (budgetTokens <= 0) return {};
     return {
       thinking: { type: 'enabled', budget_tokens: budgetTokens },
       ...(isClaudeOpus45Model(normalizedModel)
-        ? { output_config: { effort: normalizedEffort } }
+        ? { output_config: { effort: mapClaudeEffort(normalizedModel, normalizedEffort) } }
         : {})
     };
   }
