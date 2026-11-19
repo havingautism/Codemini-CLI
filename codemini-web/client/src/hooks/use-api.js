@@ -307,6 +307,15 @@ export async function submitUserInput(sessionId, id, response = {}) {
   return res.json().catch(() => ({}));
 }
 
+export async function cancelCrewWorker(sessionId, workerId) {
+  const res = await api('/api/crew-cancel', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ sessionId, workerId }),
+  });
+  return res.json().catch(() => ({}));
+}
+
 export async function switchSession(sessionId) {
   const res = await api('/api/sessions/switch', {
     method: 'POST',

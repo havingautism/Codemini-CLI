@@ -1161,6 +1161,8 @@ export const zh = {
   crewMaxWorkersHelp: "同时执行的协作组工人或审查员上限，超出的任务会排队。",
   crewWorkersInFlight: "协作组工人 · {count} 个在后台运行",
   crewProgressTitle: "协作组进度",
+  crewCancel: "取消",
+  crewCancelConfirm: "取消后会删除尚未合并的工作树和分支，不能再继续。确定取消",
   crewPhaseRunning: "工作中",
   crewPhaseQueued: "排队中",
   crewPhaseReviewing: "审核中",

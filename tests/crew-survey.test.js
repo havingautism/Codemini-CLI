@@ -75,7 +75,13 @@ test('crew_finish removes survey worktree and worker branch when the mission is 
     assert.equal(finish.branchesRemoved.includes(branch), true);
     const branches = String((await git(dir, ['branch', '--list', 'codemini-crew/*'])).stdout || '').trim();
     assert.equal(branches, '');
-    await assert.rejects(() => fs.access(survey.worker.worktreePath));
+    assert.equal(await fs.access(survey.worker.worktreePath).then(() => true, () => false), false);
+    const state = JSON.parse(await fs.readFile(path.join(dir, '.codemini', 'crew', 'state.json'), 'utf8'));
+    assert.equal((state.missions || []).length, 0);
+    assert.equal((state.workers || []).length, 0);
+    const again = await finishCrewMissions({ cwd: dir, inFlight: [] });
+    assert.equal(again.ok, true);
+    assert.match(again.message, /already clean/i);
   });
 });
 

@@ -1185,6 +1185,8 @@ export const en = {
   crewMaxWorkersHelp: "Maximum Crew workers or reviewers executing at once; extra work stays queued.",
   crewWorkersInFlight: "Crew workers · {count} running in background",
   crewProgressTitle: "Crew progress",
+  crewCancel: "Cancel",
+  crewCancelConfirm: "This deletes the unmerged worktree and branch. It cannot be resumed. Cancel",
   crewPhaseRunning: "Working",
   crewPhaseQueued: "Queued",
   crewPhaseReviewing: "Reviewing",

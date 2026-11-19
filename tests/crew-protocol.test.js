@@ -10,6 +10,7 @@ import { classifyCommandRisk } from '../src/core/command-risk.js';
 import { finishCrewMissions, planCrewMissions } from '../src/core/crew-missions.js';
 import { landCrewWorkers } from '../src/core/crew-land.js';
 import { enterCrewMode, readCrewStateFile } from '../src/core/crew-store.js';
+import { formatCrewStatusSummary, readCrewStatusPayload } from '../src/core/crew-snapshot.js';
 import { resolveCrewSubagentWorkspace, addCrewWorktree } from '../src/core/crew-worktree.js';
 import { runGit } from '../src/core/process-run.js';
 
@@ -30,6 +31,21 @@ test('coding mode tool list does not gain crew mission tools', () => {
   assert.ok(run);
   const properties = run.function?.parameters?.properties || run.parameters?.properties;
   assert.equal(properties.mission_id, undefined);
+});
+
+test('crew_finish tool description deletes finished ledger records', () => {
+  const tools = getBuiltinTools({
+    workspaceRoot: process.cwd(),
+    config: { runtime: {} },
+    crewActive: true,
+    onRunSubAgent: async () => ({ ok: true }),
+  });
+  const finish = tools.definitions.find((item) => (item?.function?.name || item?.name) === 'crew_finish');
+  assert.ok(finish);
+  const description = finish.function?.description || finish.description || '';
+  assert.match(description, /delete those finished mission and worker records/);
+  assert.doesNotMatch(description, /does not delete the ledger/);
+  assert.match(description, /already clean/);
 });
 
 test('crew parent shell blocks ledger writes without changing command risk classes', () => {
@@ -201,4 +217,62 @@ test('landing one mission leaves the others dispatchable', async () => {
 
 test('spawn still works without mission_id outside the crew resolver', () => {
   assert.equal(typeof addCrewWorktree, 'function');
+});
+
+test('crew_status keeps open missions and the latest eight finished ones', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-crew-status-'));
+  const previous = process.env.CODEMINI_GLOBAL_DIR;
+  process.env.CODEMINI_GLOBAL_DIR = path.join(dir, 'global');
+  try {
+    const missions = [];
+    const workers = [];
+    for (let index = 1; index <= 12; index += 1) {
+      const id = `m${index}`;
+      const workerId = `w${index}`;
+      missions.push({
+        id,
+        title: `Done ${index}`,
+        kind: 'build',
+        status: 'merged',
+        paths: [`f${index}.md`],
+        workerId,
+      });
+      workers.push({
+        id: workerId,
+        branch: `codemini-crew/${workerId}`,
+        worktreePath: `/tmp/${workerId}`,
+        missionId: id,
+        name: `N${index}`,
+      });
+    }
+    missions.push({
+      id: 'm13',
+      title: 'Still open',
+      kind: 'build',
+      status: 'planned',
+      paths: ['open.md'],
+    });
+    await fs.mkdir(path.join(dir, '.codemini', 'crew'), { recursive: true });
+    await fs.writeFile(path.join(dir, '.codemini', 'crew', 'state.json'), JSON.stringify({
+      version: 1,
+      active: true,
+      base: 'main',
+      missions,
+      workers,
+    }));
+    const payload = await readCrewStatusPayload(dir, { limit: 8 });
+    assert.match(payload.suggestedNext, /crew_plan|Dispatch/);
+    assert.equal(payload.missions.some((mission) => mission.id === 'm13'), true);
+    assert.equal(payload.missions.some((mission) => mission.id === 'm1'), false);
+    assert.equal(payload.missions.some((mission) => mission.id === 'm12'), true);
+    assert.equal(payload.counts.omittedMissions, 4);
+    const summary = formatCrewStatusSummary(payload);
+    assert.match(summary, /^Next:/);
+    const wider = await readCrewStatusPayload(dir, { limit: 20 });
+    assert.equal(wider.missions.some((mission) => mission.id === 'm1'), true);
+  } finally {
+    if (previous === undefined) delete process.env.CODEMINI_GLOBAL_DIR;
+    else process.env.CODEMINI_GLOBAL_DIR = previous;
+    await fs.rm(dir, { recursive: true, force: true });
+  }
 });

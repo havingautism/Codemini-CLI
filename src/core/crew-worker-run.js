@@ -23,6 +23,21 @@ import {
   compactCrewWorkerTurnResultForParent,
 } from './crew-snapshot.js';
 
+function formatCrewSubmissionWake({ text = '', handoffPath = '', workerId = '', name = '' } = {}) {
+  const body = String(text || '').trim();
+  const clipped = body.length <= 1500 ? body : `${body.slice(0, 1500).trimEnd()}\n\n[truncated]`;
+  const id = String(workerId || '').trim();
+  const nickname = String(name || '').trim();
+  return [
+    `Crew worker "${nickname && id ? `${nickname} (${id})` : (id || nickname || 'worker')}" submitted.`,
+    'Use this conclusion; read the handoff file only if you need details.',
+    clipped || '(empty)',
+    id ? `Worker id: ${id}.` : '',
+    handoffPath ? `Handoff: ${handoffPath}` : '',
+    'Call crew_status before review or land.',
+  ].filter(Boolean).join('\n');
+}
+
 export async function settleCrewMission({ workspaceRoot, workerId, dirty = false } = {}) {
   const state = await readCrewStateFile(workspaceRoot);
   const worker = listCrewWorkersFromState(state).find((item) => item.id === workerId);
@@ -378,6 +393,23 @@ export async function runCrewWorkerJob({
         name: reviewingWorkerId
           ? String(reviewingWorkerRecord?.name || '').trim()
           : String(persona || '').trim(),
+      }));
+    }
+    if (!cancelled && missionSubmittedDuringRun && typeof onWake === 'function') {
+      const conclusion = String(output.text || '').trim();
+      await persistCrewCompletionEvent(workspaceRoot, {
+        workerId: lockedCrewWorkerId,
+        status: 'completed',
+        dirty: crewDirty,
+        workerKind: isCrewSurvey ? 'survey' : '',
+        summary: conclusion.slice(0, 200),
+        handoffPath: savedHandoff?.path,
+      });
+      onWake(formatCrewSubmissionWake({
+        text: conclusion,
+        handoffPath: savedHandoff?.path,
+        workerId: lockedCrewWorkerId,
+        name: persona,
       }));
     }
     const parentMessage = lockedCrewWorkerId && !reviewingWorkerId

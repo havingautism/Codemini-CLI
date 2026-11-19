@@ -118,7 +118,7 @@ import {
 } from './crew-store.js';
 import { composeCrewResumeTask, composeCrewReviewTask, crewTaskSummary, findCrewWorker, isCrewCommitAncestor, isCrewWorktreeDirty, resolveCrewReviewTarget, resolveCrewSubagentWorkspace, shouldContinueCrewWorkerSeal, teardownCrewWorker } from './crew-worktree.js';
 import { composeCrewBriefing } from './crew-briefing.js';
-import { findCrewMissionForWorker, formatCrewMissionBrief, listCrewMissionsFromState } from './crew-missions.js';
+import { findCrewMissionForWorker, formatCrewMissionBrief, listCrewMissionsFromState, dropCrewWorkerFromLedger } from './crew-missions.js';
 import { landCrewWorkers } from './crew-land.js';
 import { rebaseCrewMission } from './crew-rebase.js';
 import { createCrewCoordinator } from './crew-coordinator.js';
@@ -9038,6 +9038,21 @@ export async function createChatRuntime({
       });
     }).catch(() => {});
   };
+  const refreshCrewProgress = async () => {
+    if (normalizeExecutionMode(executionMode) !== 'crew') return lastCrewProgress;
+    const progress = await refreshCrewProgressCache();
+    lastCrewProgress = {
+      ...progress,
+      inFlightIds: [...crewWorkersInFlight],
+    };
+    crewEventSink?.({
+      type: 'crew:workers_changed',
+      inFlight: lastCrewProgress.inFlightIds.length,
+      inFlightIds: lastCrewProgress.inFlightIds,
+      workers: lastCrewProgress.workers,
+    });
+    return lastCrewProgress;
+  };
   const releaseCrewWorkerInFlight = async (workerId) => {
     if (workerId) crewWorkersInFlight.delete(workerId);
     const progress = await refreshCrewProgressCache();
@@ -9120,7 +9135,7 @@ export async function createChatRuntime({
       if (timer) clearTimeout(timer);
     }
   };
-  const cancelCrewWorker = async ({ workerId } = {}) => {
+  const cancelCrewWorker = async ({ workerId, notify = false } = {}) => {
     const requested = String(workerId || '').trim();
     if (!requested) {
       return { ok: false, code: 'MISSING_ID', error: 'worker_id is required.' };
@@ -9135,16 +9150,6 @@ export async function createChatRuntime({
     await waitForCrewJob(job);
     if (crewJobRegistry.get(id) === job) crewJobRegistry.delete(id);
     crewWorkersInFlight.delete(id);
-    if (job?.kind === 'reviewer') {
-      publishCrewWorkersChanged();
-      return {
-        ok: true,
-        cancelled: 'review',
-        workerId: id,
-        worktreeRemoved: false,
-        message: `Cancelled the in-flight review of "${matched?.name || id}". The worker worktree was kept. Call cancel_worker again to remove that worker.`,
-      };
-    }
     const disk = await readCrewStateFile(root).catch(() => null);
     const worker = listCrewWorkersFromState(disk).find((item) => item.id === id);
     if (!worker && !job) {
@@ -9172,13 +9177,20 @@ export async function createChatRuntime({
         };
       }
     }
+    await dropCrewWorkerFromLedger(root, id);
+    crewCoordinator.dropPendingWakes?.((item) => {
+      const text = String(item?.text || '');
+      return text.includes(`workerId="${id}"`) || text.includes(`Worker id: ${id}`);
+    });
     publishCrewWorkersChanged();
+    const message = `Cancelled Crew worker "${matched?.name || id}" (${id}). Unmerged worktree and branch were removed. Do not review, land, or resume it. Call crew_status for the next step.`;
+    if (notify) crewCoordinator.enqueueWake(message);
     return {
       ok: true,
       cancelled: 'worker',
       workerId: id,
       worktreeRemoved: true,
-      message: `Cancelled Crew worker "${matched?.name || id}" and removed its worktree.`,
+      message,
     };
   };
   const markStaleCrewWorkers = async () => {
@@ -10590,6 +10602,8 @@ export async function createChatRuntime({
     },
     isTurnActive: () => activeTurnCount > 0,
     drainCrewPendingWakes: () => crewCoordinator.drainPendingWakes(),
+    refreshCrewProgress: () => refreshCrewProgress(),
+    cancelCrewWorker: (args) => cancelCrewWorker(args),
     getCrewWorkersInFlight: () => crewWorkersInFlight.size,
     waitForCrewIdle: async ({ timeoutMs = 10_000 } = {}) => {
       const started = Date.now();

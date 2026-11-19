@@ -850,7 +850,7 @@ test('review with paths is rejected; coding reviewer still runs without a crew r
   });
 });
 
-test('cancel_worker aborts an in-flight review and keeps the author worktree', async () => {
+test('cancel_worker aborts an in-flight review and removes the author worktree', async () => {
   await withReviewRuntime({}, async (body, blob) => {
     if (isParentUserTurn(body, /SPAWN_ALISA/)) {
       return sseToolCalls([{
@@ -882,13 +882,6 @@ test('cancel_worker aborts an in-flight review and keeps the author worktree', a
         arguments: JSON.stringify({ worker_id: 'alisa' }),
       }]);
     }
-    if (isParentUserTurn(body, /REMOVE_ALISA/)) {
-      return sseToolCalls([{
-        id: 'call-cancel-author',
-        name: 'cancel_worker',
-        arguments: JSON.stringify({ worker_id: 'alisa' }),
-      }]);
-    }
     if (blob.includes('You are reviewing Crew worker')) {
       await new Promise((resolve) => setTimeout(resolve, 800));
       const submitted = reviewerVerdict(body, blob, { passed: true, findings: [] });
@@ -906,24 +899,17 @@ test('cancel_worker aborts an in-flight review and keeps the author worktree', a
       await new Promise((resolve) => setTimeout(resolve, 20));
     }
     assert.ok(runtime.getCrewWorkersInFlight() > 0, 'reviewer should be in flight');
+    const before = listCrewWorkersFromState(JSON.parse(await fs.readFile(getProjectCrewStatePath(dir), 'utf8')));
+    const author = before.find((item) => item.name === 'Alisa');
+    assert.ok(author);
     await runtime.submitMessage({ text: 'CANCEL_REVIEW' });
     const cancelResult = session.messages.find((message) => message.tool_call_id === 'call-cancel-review');
     assert.ok(cancelResult, `missing cancel_worker result; ids=${session.messages.map((m) => m.tool_call_id).filter(Boolean).join(',')}`);
-    assert.match(String(cancelResult.content || ''), /in-flight review of "Alisa"/);
-    assert.match(String(cancelResult.content || ''), /worktree was kept/);
-    const afterReview = listCrewWorkersFromState(JSON.parse(await fs.readFile(getProjectCrewStatePath(dir), 'utf8')));
-    const author = afterReview.find((item) => item.name === 'Alisa');
-    assert.ok(author);
-    assert.equal(await fs.access(path.join(getProjectCrewWorktreesDir(dir), author.id)).then(() => true, () => false), true);
-    assert.equal(runtime.getCrewWorkersInFlight(), 0);
-
-    await runtime.submitMessage({ text: 'REMOVE_ALISA' });
-    const removeResult = session.messages.find((message) => message.tool_call_id === 'call-cancel-author');
-    assert.ok(removeResult, `missing second cancel_worker result; ids=${session.messages.map((m) => m.tool_call_id).filter(Boolean).join(',')}`);
-    assert.match(String(removeResult.content || ''), /Cancelled Crew worker "Alisa"/);
+    assert.match(String(cancelResult.content || ''), /Cancelled Crew worker "Alisa"/);
     const afterRemove = listCrewWorkersFromState(JSON.parse(await fs.readFile(getProjectCrewStatePath(dir), 'utf8')));
     assert.equal(afterRemove.some((item) => item.name === 'Alisa'), false);
     assert.equal(await fs.access(path.join(getProjectCrewWorktreesDir(dir), author.id)).then(() => true, () => false), false);
+    assert.equal(runtime.getCrewWorkersInFlight(), 0);
   });
 });
 

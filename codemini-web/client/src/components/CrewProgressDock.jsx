@@ -31,7 +31,7 @@ function phaseLabel(phase) {
   return t(CREW_PHASE_LABEL_KEY[phase] || "crewPhaseIdle");
 }
 
-export function CrewProgressDock({ runtimeState }) {
+export function CrewProgressDock({ runtimeState, onCancelWorker }) {
   const crewActive = Boolean(runtimeState?.crewActive);
   const workers = Array.isArray(runtimeState?.crewWorkers)
     ? runtimeState.crewWorkers
@@ -74,7 +74,10 @@ export function CrewProgressDock({ runtimeState }) {
                 />
               )}
               <span className="min-w-0 truncate font-medium text-(--text-primary)">
-                {item.name || item.id}
+                {[item.name, item.missionTitle].filter(Boolean).join(" · ") || item.id}
+              </span>
+              <span className="shrink-0 font-mono text-[11px] text-(--text-muted)">
+                {item.id}
               </span>
               <span className="shrink-0 text-[11px] uppercase tracking-[0.04em] text-(--text-muted)">
                 {t(kindKey)}
@@ -82,6 +85,19 @@ export function CrewProgressDock({ runtimeState }) {
               <span className="ml-auto shrink-0 text-(--text-secondary)">
                 {phaseLabel(item.phase)}
               </span>
+              {onCancelWorker && item.phase !== "merged" ? (
+                <button
+                  type="button"
+                  className="shrink-0 rounded-md px-2 py-0.5 text-[12px] text-(--accent-red) hover:bg-(--bg-hover)"
+                  onClick={() => {
+                    const label = [item.name, item.missionTitle, item.id].filter(Boolean).join(" · ");
+                    if (!window.confirm(`${t("crewCancelConfirm")} ${label}?`)) return;
+                    onCancelWorker(item.id);
+                  }}
+                >
+                  {t("crewCancel")}
+                </button>
+              ) : null}
             </li>
           );
         })}

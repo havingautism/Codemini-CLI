@@ -11,6 +11,7 @@ import {
   readCrewStateFile,
   updateCrewState,
   writeCrewStateFile,
+  clearLiveCrewInbox,
 } from './crew-store.js';
 import {
   deleteCrewWorkerBranch,
@@ -78,13 +79,17 @@ export function formatCrewMissionBrief(mission) {
 
 export function formatOpenMissionHint(missions = []) {
   const open = (Array.isArray(missions) ? missions : []).filter((mission) => !isCrewTaskTerminal(mission));
-  if (!open.length) return 'Every mission is terminal. Call crew_finish to remove clean worktrees. Crew mode stays on.';
+  if (!open.length) return CREW_FINISH_NEXT;
   const planned = open.filter((mission) => mission.status === 'planned').map((mission) => mission.id);
   if (planned.length) {
     return `Dispatch with run_subagent mission_id for: ${planned.join(', ')}.`;
   }
   return `Open missions remain: ${open.map((mission) => `${mission.id} (${mission.status})`).join(', ')}.`;
 }
+
+export const CREW_FINISH_NEXT = 'Every mission is terminal. Call crew_finish to remove clean worktrees, worker branches, and those finished mission and worker records. Crew mode stays on.';
+export const CREW_IDLE_NEXT = 'No open missions. Answer the user. Call crew_plan only when they give a new objective. Do not call crew_finish.';
+export const CREW_ALREADY_CLEAN = 'Crew is already clean. Call crew_plan when there is a new objective.';
 
 export async function planCrewMissions(cwd, { missions = [], abandonId = '' } = {}) {
   const created = [];
@@ -245,9 +250,6 @@ function normalizeCrewCompleteOutcome(value = '') {
 
 export async function completeCrewMission({ cwd, workerId, report = '', outcome = 'ok' } = {}) {
   const text = String(report || '').trim();
-  if (!text) {
-    return { ok: false, code: 'REPORT_REQUIRED', error: 'crew_complete requires a report.' };
-  }
   const submissionOutcome = normalizeCrewCompleteOutcome(outcome);
   const root = cwd;
   const state = (await readCrewStateFile(root)) || {};
@@ -297,13 +299,13 @@ export async function completeCrewMission({ cwd, workerId, report = '', outcome 
   const workerPatch = {
     runStatus: 'completed',
     dirty: dirty === true,
-    runError: submissionOutcome === 'ok' ? '' : text.slice(0, 400),
+    runError: submissionOutcome === 'ok' ? '' : (text.slice(0, 400) || submissionOutcome),
   };
   await patchCrewWorkerRecord(root, worker.id, workerPatch).catch(() => null);
   let next = missions;
   if (submissionOutcome === 'ok') {
     next = missions.map((item) => (
-      item.id === mission.id ? { ...item, status: 'completed', report: text.slice(0, 4000), outcome: 'ok' } : item
+      item.id === mission.id ? { ...item, status: 'completed', outcome: 'ok' } : item
     ));
     await writeCrewStateFile(root, { missions: next });
     await patchCrewWorkerRecord(root, worker.id, { missionId: mission.id }).catch(() => null);
@@ -326,6 +328,25 @@ export async function completeCrewMission({ cwd, workerId, report = '', outcome 
         : `Mission ${mission.id} submitted. Next: dispatch a reviewer with review set to ${worker.id}, then land_workers for ${mission.id}.`)
       : `Mission ${mission.id} stays active (${submissionOutcome}). Coordinator: read the report, then resume or abandon.`,
   };
+}
+
+export async function dropCrewWorkerFromLedger(cwd, workerId) {
+  const id = String(workerId || '').trim();
+  await updateCrewState(cwd, async (current) => {
+    const missions = listCrewMissionsFromState(current);
+    const workers = listCrewWorkersFromState(current);
+    const worker = workers.find((item) => item.id === id);
+    const mission = findCrewMissionForWorker(missions, worker)
+      || missions.find((item) => item.workerId === id);
+    const missionId = mission?.id || '';
+    return {
+      missions: missions.filter((item) => item.id !== missionId && item.workerId !== id),
+      workers: workers.filter((item) => item.id !== id && item.missionId !== missionId),
+    };
+  });
+  const state = (await readCrewStateFile(cwd)) || {};
+  if (!listCrewMissionsFromState(state).length) await clearLiveCrewInbox(cwd);
+  return { ok: true };
 }
 
 export async function reopenCrewMission(cwd, workerId) {
@@ -352,9 +373,11 @@ export async function finishCrewMissions({ cwd, inFlight = [] } = {}) {
   const missions = listCrewMissionsFromState(state);
   if (!missions.length) {
     return {
-      ok: false,
-      code: 'NO_MISSIONS',
-      error: 'crew_finish refused — the mission list is empty. An empty list is not a finished crew. Call crew_plan.',
+      ok: true,
+      removed: [],
+      branchesRemoved: [],
+      kept: [],
+      message: CREW_ALREADY_CLEAN,
     };
   }
   const unfinished = missions.filter((mission) => !isCrewTaskTerminal(mission));
@@ -382,17 +405,48 @@ export async function finishCrewMissions({ cwd, inFlight = [] } = {}) {
       kept.push(`${mission.id}${result.dirty ? ' (dirty)' : ''}`);
     }
   }
+  const dropIds = new Set(removed);
+  for (const mission of missions) {
+    if (!isCrewTaskTerminal(mission)) continue;
+    const worker = workers.find((item) => item.id === mission.workerId || item.missionId === mission.id);
+    if (!worker) dropIds.add(mission.id);
+  }
+  const keptMissionIds = new Set(
+    missions
+      .filter((mission) => mission.id && !dropIds.has(mission.id))
+      .map((mission) => mission.id),
+  );
+  await updateCrewState(cwd, async (current) => {
+    const currentMissions = listCrewMissionsFromState(current);
+    const currentWorkers = listCrewWorkersFromState(current);
+    const droppedWorkerIds = new Set();
+    for (const mission of currentMissions) {
+      if (!dropIds.has(mission.id)) continue;
+      if (mission.workerId) droppedWorkerIds.add(mission.workerId);
+    }
+    return {
+      missions: currentMissions.filter((mission) => !dropIds.has(mission.id)),
+      workers: currentWorkers.filter((worker) => (
+        !droppedWorkerIds.has(worker.id) && !dropIds.has(worker.missionId)
+      )),
+    };
+  });
+  const remaining = keptMissionIds.size;
+  if (remaining === 0) await clearLiveCrewInbox(cwd);
+  const cleaned = remaining === 0 && removed.length === 0 && kept.length === 0;
   return {
     ok: true,
     removed,
     branchesRemoved,
     kept,
     message: [
-      'Crew finish removed clean worktrees and worker branches. Records stay. Crew mode stays on.',
-      removed.length ? `Worktrees removed: ${removed.join(', ')}.` : 'No worktrees removed.',
+      cleaned
+        ? CREW_ALREADY_CLEAN
+        : 'Crew finish removed clean worktrees, worker branches, and finished records. Crew mode stays on.',
+      removed.length ? `Worktrees removed: ${removed.join(', ')}.` : '',
       branchesRemoved.length ? `Branches deleted: ${branchesRemoved.join(', ')}.` : '',
       kept.length ? `Kept: ${kept.join(', ')}.` : '',
-      'A later request can call crew_plan again.',
+      remaining === 0 ? CREW_IDLE_NEXT : 'A later request can call crew_plan again.',
     ].filter(Boolean).join(' '),
   };
 }

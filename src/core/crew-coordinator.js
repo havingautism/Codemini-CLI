@@ -35,6 +35,17 @@ export function createCrewCoordinator({
     }
   };
 
+  const dropPendingWakes = (predicate) => {
+    if (typeof predicate !== 'function') return 0;
+    let removed = 0;
+    for (let index = pendingWakes.length - 1; index >= 0; index -= 1) {
+      if (!predicate(pendingWakes[index])) continue;
+      pendingWakes.splice(index, 1);
+      removed += 1;
+    }
+    return removed;
+  };
+
   const drainPendingWakes = async () => {
     if (draining || typeof submitWake !== 'function') return;
     if (isTurnActive?.()) return;
@@ -71,6 +82,7 @@ export function createCrewCoordinator({
 
   return {
     enqueueWake,
+    dropPendingWakes,
     drainPendingWakes,
     registerInFlight,
     releaseInFlight,

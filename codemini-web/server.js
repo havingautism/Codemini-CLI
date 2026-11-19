@@ -1661,6 +1661,10 @@ export function createWebRuntimeApi({
         },
       ],
       [
+        "/api/crew-cancel",
+        async ({ bridge, body }) => bridge.cancelCrewWorker(body?.workerId),
+      ],
+      [
         "/api/approval-mode",
         async ({ bridge, body }) => ({
           ok: await bridge.setApprovalMode(body.mode),

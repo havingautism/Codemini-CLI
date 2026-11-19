@@ -261,6 +261,22 @@ test('suggestCrewNextAction tells the coordinator to dispatch planned missions',
   assert.doesNotMatch(suggestion, /crew_finish/);
 });
 
+test('suggestCrewNextAction tells crew_finish to drop finished records', () => {
+  const suggestion = suggestCrewNextAction({
+    workers: [],
+    missions: [{
+      id: 'm1',
+      kind: 'build',
+      status: 'merged',
+      title: 'List',
+    }],
+    inFlight: [],
+  });
+  assert.match(suggestion, /crew_finish/);
+  assert.match(suggestion, /finished mission and worker records/);
+  assert.match(suggestion, /Crew mode stays on/);
+});
+
 test('suggestCrewNextAction asks for a plan when no missions are recorded', () => {
   const suggestion = suggestCrewNextAction({
     workers: [],

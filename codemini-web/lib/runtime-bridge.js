@@ -757,6 +757,20 @@ export class RuntimeBridge {
     this.#broadcastRuntimeState();
   }
 
+  async refreshCrewProgress() {
+    await this.#runtime.refreshCrewProgress?.();
+    this.#broadcastRuntimeState();
+  }
+
+  async cancelCrewWorker(workerId) {
+    const result = await this.#runtime.cancelCrewWorker?.({
+      workerId: String(workerId || '').trim(),
+      notify: true,
+    });
+    this.#broadcastRuntimeState();
+    return result || { ok: false, error: 'cancel_worker is unavailable.' };
+  }
+
   async #writeUiTranscriptSnapshot() {
     const sessionId = this.#uiTranscriptSessionId || this.#sessionId;
     if (!sessionId) return;

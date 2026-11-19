@@ -5,7 +5,7 @@ export function composeCrewBriefing({ kind = 'build', additional = '' } = {}) {
       'Crew survey mission.',
       'Read the worktree. Do not modify files and do not commit.',
       'A changed file blocks completion.',
-      'Before you stop, call crew_complete with the survey report (outcome ok, or blocked/failed if you cannot finish).',
+      'Before you stop, call crew_complete (outcome ok, or blocked/failed if you cannot finish). The final message is the handoff. Handoff text alone does not submit the mission.',
     ]
     : role === 'reviewer'
       ? [
@@ -19,8 +19,8 @@ export function composeCrewBriefing({ kind = 'build', additional = '' } = {}) {
         'Implement the task in this worktree, inside your paths.',
         'This worktree is an isolated checkout (no node_modules from the parent). Install dependencies here with the project package manager when you need to build or test.',
         'If you add or change dependencies, commit package.json and the lockfile together. Do not commit node_modules or build output. A branch with no changes cannot be completed.',
-        'If install or build fails, say so in your report; static checks (syntax, imports) are fine but do not claim a build passed when it did not.',
-        'Before you stop, call crew_complete with a report. Use outcome ok when ready for review, or blocked/failed when you cannot finish. Handoff text alone does not submit the mission.',
+        'If install or build fails, say so in your final handoff; static checks (syntax, imports) are fine but do not claim a build passed when it did not.',
+        'Before you stop, call crew_complete. Use outcome ok when ready for review, or blocked/failed when you cannot finish. Handoff text alone does not submit the mission.',
       ];
   const extra = String(additional || '').trim();
   return extra

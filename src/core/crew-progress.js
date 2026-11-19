@@ -77,7 +77,13 @@ export function describeCrewWorkerProgress(worker = {}, { inFlightIds = [] } = {
   else if (worker.sealed && worker.reviewPassed === true) phase = 'ready';
   else if (worker.sealed) phase = 'awaiting_review';
   else if (worker.runStatus) phase = String(worker.runStatus);
-  return { id, ...(worker.name ? { name: worker.name } : {}), kind, phase };
+  return {
+    id,
+    ...(worker.name ? { name: worker.name } : {}),
+    ...(worker.missionTitle ? { missionTitle: worker.missionTitle } : {}),
+    kind,
+    phase,
+  };
 }
 
 export function buildCrewProgressItems({ workers = [], inFlightIds = [] } = {}) {
@@ -115,6 +121,12 @@ export function shouldShowCrewProgressDock({ crewActive, workers = [], inFlightI
 
 export function formatCrewProgressLine(items = [], labels = {}) {
   return (Array.isArray(items) ? items : [])
-    .map((item) => `${item.name || item.id} ${labels[item.phase] || item.phase}`)
-    .join(' · ');
+    .map((item) => {
+      const phase = labels[item.phase] || item.phase;
+      const title = String(item.missionTitle || '').trim();
+      const name = String(item.name || '').trim();
+      const id = String(item.id || '').trim();
+      return [name && name !== id ? name : '', title, id, phase].filter(Boolean).join(' · ');
+    })
+    .join(' | ');
 }

@@ -26,6 +26,7 @@ import { DreamDialog } from "@/components/DreamDialog.jsx";
 import { SpecApprovalDialog } from "@/components/SpecApprovalDialog.jsx";
 import { RuntimeActivityStrip } from "@/components/RuntimeActivityStrip.jsx";
 import { CrewProgressDock } from "@/components/CrewProgressDock.jsx";
+import { cancelCrewWorker } from "@/hooks/use-api.js";
 import { SessionPanel } from "@/components/SessionPanel.jsx";
 import { TodoCard } from "@/components/TodoList.jsx";
 import { findLiveTodoDock } from "@/lib/live-todo-dock.js";
@@ -735,7 +736,10 @@ function Shell() {
                   <button type="button" className="rounded-lg bg-(--text-primary) px-4 py-2 font-medium text-(--bg-primary) hover:opacity-90" onClick={() => actions.submit({ text: t('scheduledContinueText'), modelText: t('scheduledContinuePrompt') })}>{t('scheduledContinueReview')}</button>
                 </div>
               )}
-              <CrewProgressDock runtimeState={state.runtimeState} />
+              <CrewProgressDock
+                runtimeState={state.runtimeState}
+                onCancelWorker={(workerId) => cancelCrewWorker(currentId, workerId)}
+              />
               {liveTodoDock ? (
                 <div className="mb-2">
                   <TodoCard

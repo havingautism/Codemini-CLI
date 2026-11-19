@@ -19,6 +19,10 @@ import {
   shouldShowCrewProgressDock,
 } from './crew-progress.js';
 import {
+  CREW_FINISH_NEXT,
+  CREW_IDLE_NEXT,
+} from './crew-missions.js';
+import {
   parseCrewReviewCompletedWake,
   parseCrewWakeHeadline,
 } from './crew-notification.js';
@@ -46,7 +50,8 @@ export function buildCrewWorkerStatusRecord(worker = {}, { mission } = {}) {
   const integrated = mission?.status === 'merged' && !String(worker.rebaseOnto || '').trim();
   return {
     id: worker.id,
-    ...(worker.missionId ? { missionId: worker.missionId } : {}),
+    ...(worker.missionId || mission?.id ? { missionId: worker.missionId || mission.id } : {}),
+    ...(mission?.title ? { missionTitle: mission.title } : {}),
     ...(worker.name ? { name: worker.name } : {}),
     kind,
     paths: Array.isArray(worker.paths) ? worker.paths : [],
@@ -102,7 +107,7 @@ export function suggestCrewNextAction({
     if (sealedAwaiting.length) {
       return `Dispatch reviewer for: ${sealedAwaiting.map((worker) => worker.id).join(', ')}.`;
     }
-    return 'No missions are recorded. Call crew_plan before dispatching. An empty mission list is not a finished crew.';
+    return CREW_IDLE_NEXT;
   }
   const planned = missionList.filter((mission) => mission.status === 'planned');
   if (planned.length) {
@@ -135,14 +140,39 @@ export function suggestCrewNextAction({
     return `Dispatch reviewer for: ${sealedAwaiting.map((worker) => worker.id).join(', ')}.`;
   }
   if (missionList.every((mission) => isCrewTaskTerminal(mission))) {
-    return 'Every mission is terminal. Call crew_finish to remove clean worktrees and worker branches. Crew mode stays on.';
+    return CREW_FINISH_NEXT;
   }
   return 'Review crew_status before the next action.';
+}
+
+export const CREW_STATUS_RECENT_TERMINAL = 8;
+
+function selectCrewStatusWindow(missions = [], workers = [], limit = CREW_STATUS_RECENT_TERMINAL) {
+  const missionList = Array.isArray(missions) ? missions : [];
+  const workerList = Array.isArray(workers) ? workers : [];
+  const cap = Number.isFinite(Number(limit)) ? Math.max(0, Math.floor(Number(limit))) : CREW_STATUS_RECENT_TERMINAL;
+  const openMissions = missionList.filter((mission) => !isCrewTaskTerminal(mission));
+  const terminalMissions = missionList.filter((mission) => isCrewTaskTerminal(mission));
+  const recentTerminal = terminalMissions.slice(-cap);
+  const visibleMissions = [...openMissions, ...recentTerminal];
+  const visibleIds = new Set(visibleMissions.map((mission) => mission.id));
+  const visibleWorkers = workerList.filter((worker) => {
+    const mission = findCrewMissionForWorker(missionList, worker);
+    if (!mission) return !worker.integrated;
+    return visibleIds.has(mission.id);
+  });
+  return {
+    missions: visibleMissions,
+    workers: visibleWorkers,
+    omittedMissions: missionList.length - visibleMissions.length,
+    omittedWorkers: workerList.length - visibleWorkers.length,
+  };
 }
 
 export async function readCrewStatusPayload(cwd = process.cwd(), {
   inFlight = [],
   pendingWakes = 0,
+  limit = CREW_STATUS_RECENT_TERMINAL,
 } = {}) {
   const projectRoot = resolveCrewProjectRoot(cwd);
   const raw = await readCrewStateFile(projectRoot);
@@ -174,7 +204,15 @@ export async function readCrewStatusPayload(cwd = process.cwd(), {
       eventIds: events.map((item) => item.id),
     }).catch(() => null);
   }
+  const suggestedNext = suggestCrewNextAction({
+    workers,
+    missions,
+    inFlight: inFlightIds,
+    pendingWakes: Number(pendingWakes) || 0,
+  });
+  const windowed = selectCrewStatusWindow(missions, workers, limit);
   return {
+    suggestedNext,
     ok: true,
     active: true,
     fetchedAt: new Date().toISOString(),
@@ -189,27 +227,28 @@ export async function readCrewStatusPayload(cwd = process.cwd(), {
       awaitingReview,
       unreadEvents: events.length,
       unreadInbox: inbox.length,
+      omittedMissions: windowed.omittedMissions,
+      omittedWorkers: windowed.omittedWorkers,
     },
-    workers,
-    missions,
+    workers: windowed.workers,
+    missions: windowed.missions,
     events,
     inbox,
-    suggestedNext: suggestCrewNextAction({
-      workers,
-      missions,
-      inFlight: inFlightIds,
-      pendingWakes: Number(pendingWakes) || 0,
-    }),
   };
 }
 
 export function formatCrewStatusSummary(result = {}) {
   if (!result || typeof result !== 'object') return String(result ?? '');
   if (!result.ok) return String(result.error || 'Crew status unavailable.');
-  const lines = [
+  const lines = [];
+  if (result.suggestedNext) lines.push(`Next: ${result.suggestedNext}`);
+  lines.push(
     `Crew base: ${result.base} · fetched ${result.fetchedAt}`,
     `Roster: ${result.counts?.roster ?? 0} · running ${result.counts?.running ?? 0} · sealed ${result.counts?.sealed ?? 0} · integrated ${result.counts?.integrated ?? 0}`,
-  ];
+  );
+  if (result.counts?.omittedMissions || result.counts?.omittedWorkers) {
+    lines.push(`Omitted: ${result.counts?.omittedMissions ?? 0} missions, ${result.counts?.omittedWorkers ?? 0} workers. Raise limit to see more.`);
+  }
   if (result.inFlight?.length) lines.push(`In flight: ${result.inFlight.join(', ')}`);
   if (result.pendingWakes) lines.push(`Pending wakes: ${result.pendingWakes}`);
   if (result.events?.length) {
@@ -231,7 +270,6 @@ export function formatCrewStatusSummary(result = {}) {
       lines.push(`  - ${message.from} -> ${message.to}${message.subject ? `: ${message.subject}` : ''}`);
     }
   }
-  if (result.suggestedNext) lines.push(`Next: ${result.suggestedNext}`);
   for (const mission of result.missions || []) {
     lines.push(`- mission ${mission.id} | ${mission.status} | ${mission.kind} | ${mission.title}`);
   }

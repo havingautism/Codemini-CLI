@@ -5396,7 +5396,7 @@ export function getBuiltinTools({
       function: {
         name: "cancel_worker",
         description:
-          "Abort a Crew worker or its in-flight reviewer. Use when the user changes or revokes that worker's task (path, file type, scope) while running, queued, or sealed before review/land: cancel, then run_subagent with the new task. Cancelling a coder removes its worktree, branch, and roster slot. Cancelling while a review is running only stops that reviewer and keeps the author worktree. Use the worker id from crew_status.",
+          "Cancel one unmerged Crew worker in a single call. Stops that worker and any in-flight review, deletes its worktree and branch, and removes the mission. Already merged workers are refused. Use the worker id from crew_status. This discards unmerged work.",
         parameters: {
           type: "object",
           properties: {
@@ -5416,10 +5416,15 @@ export function getBuiltinTools({
       function: {
         name: "crew_status",
         description:
-          "Read the latest Crew roster, unread completion events, and workflow state from disk. Call before dispatching, reviewing, landing, or answering progress — including after a restart, when a wake may be missing.",
+          "Read the latest Crew roster, unread completion events, and workflow state from disk. Call before dispatching, reviewing, landing, or answering progress — including after a restart, when a wake may be missing. Open missions are always included. limit is how many finished missions to include after those (default 8).",
         parameters: {
           type: "object",
-          properties: {},
+          properties: {
+            limit: {
+              type: "number",
+              description: "How many finished missions to include besides the open ones. Default 8.",
+            },
+          },
           required: [],
         },
       },
@@ -5487,7 +5492,7 @@ export function getBuiltinTools({
       function: {
         name: "crew_finish",
         description:
-          "Remove clean worktrees after every mission is terminal. Refuses while any mission is planned or active, or a worker is in flight. Does not turn Crew off and does not delete the ledger.",
+          "After every mission is terminal, remove clean worktrees and their worker branches, then delete those finished mission and worker records. Refuses while any mission is planned or active, or a worker is in flight. Dirty worktrees stay. Does not turn Crew off. If the ledger is already empty, returns already clean — do not call it again just because nothing is left.",
         parameters: { type: "object", properties: {}, required: [] },
       },
     });
@@ -5498,18 +5503,17 @@ export function getBuiltinTools({
       function: {
         name: "crew_complete",
         description:
-          "Submit this worker's mission before stopping. Requires a report. outcome ok needs a clean worktree and build commits (or zero survey diff). outcome blocked or failed keeps the mission active. Unread crew mail must be read first.",
+          "Submit this worker's mission before stopping. outcome ok needs a clean worktree and build commits (or zero survey diff). outcome blocked or failed keeps the mission active. Unread crew mail must be read first. The final handoff is the conclusion; a separate report is not required.",
         parameters: {
           type: "object",
           properties: {
-            report: { type: "string", description: "Completion report for the coordinator." },
             outcome: {
               type: "string",
               enum: ["ok", "blocked", "failed"],
               description: "ok when work is ready for review; blocked or failed when the worker cannot finish.",
             },
           },
-          required: ["report"],
+          required: ["outcome"],
         },
       },
     });
@@ -7331,26 +7335,17 @@ export function getBuiltinTools({
     },
     crew_complete: async (args = {}) => {
       const { crewWorkerIdFromWorktreePath } = await import("./crew-worktree.js");
-      const { emitCrewMissionSubmitWake } = await import("./crew-worker-run.js");
       const workerId = crewWorkerIdFromWorktreePath(workspaceRoot);
       if (!workerId) {
         return { ok: false, error: "crew_complete is only for the worker that owns a mission." };
       }
       const projectRoot = config?.runtime?.crew_project_root || workspaceRoot;
-      const result = await completeCrewMission({
+      return completeCrewMission({
         cwd: projectRoot,
         workerId,
         report: args?.report,
         outcome: args?.outcome,
       });
-      if (result?.ok && typeof crewWorkerWake === "function") {
-        await emitCrewMissionSubmitWake({
-          workspaceRoot: projectRoot,
-          result,
-          onWake: crewWorkerWake,
-        });
-      }
-      return result;
     },
     cancel_worker: async (args = {}) => {
       if (typeof onCancelWorker !== "function") {
@@ -7365,7 +7360,7 @@ export function getBuiltinTools({
       }
       return onCancelWorker({ workerId });
     },
-    crew_status: async () => {
+    crew_status: async (args = {}) => {
       if (!crewActive && !config?.runtime?.crew_session) {
         return {
           ok: false,
@@ -7381,7 +7376,11 @@ export function getBuiltinTools({
       const pendingWakes = typeof config?.runtime?.getCrewPendingWakes === "function"
         ? config.runtime.getCrewPendingWakes()
         : 0;
-      return readCrewStatusPayload(projectRoot, { inFlight, pendingWakes });
+      return readCrewStatusPayload(projectRoot, {
+        inFlight,
+        pendingWakes,
+        limit: args?.limit,
+      });
     },
     crew_send: async (args = {}) => {
       if (!crewActive && !config?.runtime?.crew_session) {

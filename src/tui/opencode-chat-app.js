@@ -445,6 +445,20 @@ export async function runOpenCodeTui({ runtime, sessionId, model, safeMode = tru
   const submit = async (text, alreadyShown = false, priority = false) => {
     const value = String(text || '').trim();
     if (!value) return;
+    const crewCancel = value.match(/^\/crew-cancel(?:\s+(\S+))?(?:\s+(--yes))?$/i);
+    if (crewCancel) {
+      const workerId = crewCancel[1] || '';
+      const confirmed = crewCancel[2] === '--yes';
+      if (!workerId || !confirmed) {
+        transcript.addChild(createSystemMessage(`${copy.crewCancelConfirm}\n${copy.crewCancelUsage}`, color.warning));
+        requestRender();
+        return;
+      }
+      const result = await runtime.cancelCrewWorker?.({ workerId, notify: true });
+      transcript.addChild(createSystemMessage(result?.message || result?.error || copy.crewFailed, result?.ok ? color.warning : color.error));
+      requestRender();
+      return;
+    }
     const commandName = value.match(/^\/([A-Za-z0-9_-]+)\s*$/)?.[1]?.toLowerCase();
     const command = TUI_COMMANDS.find((item) => item.name === commandName);
     if (!alreadyShown) {

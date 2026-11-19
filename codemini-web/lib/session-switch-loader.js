@@ -20,6 +20,7 @@ export async function loadSessionForSwitch({
 }) {
   const liveEntry = pool.entries.get(sessionId);
   if (liveEntry?.bridge) {
+    await liveEntry.bridge.refreshCrewProgress?.();
     const projectDir = pool.getSessionState(sessionId)?.projectDir || liveEntry.projectDir;
     const resolvedProjectDir = normalizeProjectPath(projectDir) || projectDir;
     if (resolvedProjectDir) setDefaultProjectDir?.(resolvedProjectDir);

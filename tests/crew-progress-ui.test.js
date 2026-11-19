@@ -21,9 +21,10 @@ test('getCrewStatusBarText shows crew worker phases when the parent turn is idle
     ],
     crewInFlightIds: ['wkr_ivy'],
   }, t);
-  assert.match(text, /Mira 工作中/);
-  assert.match(text, /Ivy 审核中/);
-  assert.equal(text.includes('wkr_'), false);
+  assert.match(text, /Mira · wkr_mira · 工作中/);
+  assert.match(text, /Ivy · wkr_ivy · 审核中/);
+  assert.equal(text.includes('wkr_mira'), true);
+  assert.equal(text.includes('wkr_ivy'), true);
 });
 
 test('getCrewStatusBarText hides finished surveyors while other workers stay', () => {
