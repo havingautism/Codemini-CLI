@@ -7,6 +7,7 @@ import {
   listCrewWorkersFromState,
   listUnreadCrewInbox,
   normalizeCrewMissionRecord,
+  wrapCrewToolText,
   patchCrewWorkerRecord,
   readCrewStateFile,
   updateCrewState,
@@ -85,11 +86,16 @@ export function formatCrewMissionDispatchFields(mission) {
   const deps = Array.isArray(mission.dependsOn) && mission.dependsOn.length
     ? mission.dependsOn.join(', ')
     : '(none)';
-  return [
+  const lines = [
     `Paths: ${paths}`,
     `Depends on: ${deps}`,
-    mission.context ? `Context: ${mission.context}` : '',
-  ].filter(Boolean).join('\n');
+  ];
+  if (mission.context) {
+    const [first, ...rest] = wrapCrewToolText(mission.context).split('\n');
+    lines.push(`Context: ${first}`);
+    for (const line of rest) lines.push(`  ${line}`);
+  }
+  return lines.join('\n');
 }
 
 export function formatCrewMissionPlanBlock(mission) {
