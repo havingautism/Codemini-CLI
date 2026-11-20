@@ -113,6 +113,10 @@ test('crew_send rejects self, unknown, integrated, and empty body', async () => 
     assert.equal(missing.code, 'UNKNOWN_RECIPIENT');
     const empty = await tools(dir, 'coordinator').crew_send({ to: 'ada', body: '  ' });
     assert.equal(empty.code, 'EMPTY');
+    const tooLong = await tools(dir, 'coordinator').crew_send({ to: 'ada', body: 'x'.repeat(2001) });
+    assert.equal(tooLong.code, 'BODY_TOO_LARGE');
+    const maxed = await tools(dir, 'coordinator').crew_send({ to: 'ada', body: 'x'.repeat(2000) });
+    assert.equal(maxed.ok, true);
     await writeCrewStateFile(dir, {
       missions: [{ id: 'm1', title: 'ada', kind: 'build', status: 'merged', workerId: 'ada', paths: ['web/**'] }],
     });

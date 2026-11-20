@@ -153,7 +153,7 @@ export function composeCrewReviewTask(task, {
     `You are reviewing Crew worker "${workerId}" at commit ${commit} against base ${base}.`,
     `Scope: ${scope}. Stay inside that scope.`,
     'Do not edit files or git commit.',
-    'You may crew_send the author or the coordinator. Sending mail does not wake the coordinator.',
+    'You may crew_send the author or the coordinator. A letter is at most 2000 characters. Say the point only. Sending mail does not wake the coordinator.',
     buildCrewReviewVerdictPrompt(),
     diff ? `Diff vs base:\n${diff}` : 'No diff vs base was available; inspect the worktree.',
   ].join('\n\n');

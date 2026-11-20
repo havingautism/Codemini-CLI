@@ -5434,13 +5434,13 @@ export function getBuiltinTools({
       function: {
         name: "crew_send",
         description:
-          "Write a Crew inbox message. Recipients are a worker id from crew_status that is not yet integrated, \"coordinator\", or \"all\". Use the worker id, not the nickname. Does not wake the coordinator; they read crew_inbox on the next completion or user wake. Do not edit .codemini/crew/inbox files yourself.",
+          "Write a short Crew inbox message. Recipients are a worker id from crew_status that is not yet integrated, \"coordinator\", or \"all\". Use the worker id, not the nickname. body is at most 2000 characters and is refused when longer. Say the point only. Does not wake the coordinator; they read crew_inbox on the next completion or user wake. Do not edit .codemini/crew/inbox files yourself.",
         parameters: {
           type: "object",
           properties: {
             to: { type: "string", description: "Worker id from crew_status, coordinator, or all. Not a nickname." },
             subject: { type: "string", description: "Short subject." },
-            body: { type: "string", description: "Full message. Not truncated." },
+            body: { type: "string", description: "The letter, at most 2000 characters. Say the point only. Longer bodies are refused and not truncated." },
           },
           required: ["to", "body"],
         },

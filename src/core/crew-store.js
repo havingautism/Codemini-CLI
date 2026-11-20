@@ -622,7 +622,7 @@ export function buildCrewCompletionEvent(input = {}) {
   };
 }
 
-const CREW_INBOX_BODY_MAX = 200_000;
+const CREW_INBOX_BODY_MAX = 2_000;
 
 function crewNicknameKey(value) {
   return String(value || '')
@@ -649,7 +649,7 @@ export async function sendCrewInboxMessage(cwd, { from = '', to = '', subject = 
   if (recipient === sender) return { ok: false, code: 'SELF', error: 'Cannot send crew mail to yourself.' };
   if (!text) return { ok: false, code: 'EMPTY', error: 'crew_send body is empty.' };
   if (text.length > CREW_INBOX_BODY_MAX) {
-    return { ok: false, code: 'BODY_TOO_LARGE', error: 'crew_send body is too large. Shorten it; the tool does not truncate.' };
+    return { ok: false, code: 'BODY_TOO_LARGE', error: 'crew_send body is longer than 2000 characters. Shorten the letter; the tool does not truncate.' };
   }
   return withCrewStateLock(cwd, async () => {
     const current = (await readCrewStateFile(cwd)) || {};

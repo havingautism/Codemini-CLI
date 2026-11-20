@@ -6837,7 +6837,7 @@ export async function runSubAgentTask({
       : [
           'Your cwd is this git worktree. Use paths relative to this directory. Do not write to the parent checkout with its absolute path.',
           'When the assigned slice is done, git commit on this worktree branch. If you cannot finish, do not commit. Your final message must state the outcome: done, blocked, or failed.',
-          'If your slice depends on another worker and that interface is not already fixed, crew_send them or all and read crew_inbox before you lock the shape. If it is already determined, do not wait for mail. Address workers by the id from crew_status, not their nickname. Sending mail does not wake the coordinator.',
+          'If your slice depends on another worker and that interface is not already fixed, crew_send them or all and read crew_inbox before you lock the shape. If it is already determined, do not wait for mail. A letter is at most 2000 characters. Say the point only. Address workers by the id from crew_status, not their nickname. Sending mail does not wake the coordinator.',
         ].join('\n');
   const scopedTask = [
     'Role:',
