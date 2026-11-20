@@ -11,7 +11,7 @@ import {
   readCrewStateFile,
   updateCrewState,
   writeCrewStateFile,
-  clearLiveCrewInbox,
+  clearIdleCrewSideState,
 } from './crew-store.js';
 import {
   deleteCrewWorkerBranch,
@@ -345,7 +345,7 @@ export async function dropCrewWorkerFromLedger(cwd, workerId) {
     };
   });
   const state = (await readCrewStateFile(cwd)) || {};
-  if (!listCrewMissionsFromState(state).length) await clearLiveCrewInbox(cwd);
+  if (!listCrewMissionsFromState(state).length) await clearIdleCrewSideState(cwd);
   return { ok: true };
 }
 
@@ -372,6 +372,7 @@ export async function finishCrewMissions({ cwd, inFlight = [] } = {}) {
   const state = (await readCrewStateFile(cwd)) || {};
   const missions = listCrewMissionsFromState(state);
   if (!missions.length) {
+    await clearIdleCrewSideState(cwd);
     return {
       ok: true,
       removed: [],
@@ -432,7 +433,7 @@ export async function finishCrewMissions({ cwd, inFlight = [] } = {}) {
     };
   });
   const remaining = keptMissionIds.size;
-  if (remaining === 0) await clearLiveCrewInbox(cwd);
+  if (remaining === 0) await clearIdleCrewSideState(cwd);
   const cleaned = remaining === 0 && removed.length === 0 && kept.length === 0;
   return {
     ok: true,

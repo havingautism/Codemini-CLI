@@ -20,6 +20,7 @@ import {
 } from '../src/core/crew-store.js';
 import { runGit } from '../src/core/process-run.js';
 import { runCrewWorkerJob } from '../src/core/crew-worker-run.js';
+import { dropCrewWorkerFromLedger, finishCrewMissions } from '../src/core/crew-missions.js';
 
 async function withTempDir(task) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-crew-events-'));
@@ -211,5 +212,155 @@ test('runCrewWorkerJob records a completion event before waking Crew', async () 
     assert.equal(events[0].kind, 'worker.interrupted');
     assert.equal(events[0].from, 'mia');
     assert.equal(events[0].delivered, false);
+  });
+});
+
+function crewEvent(id, from, delivered) {
+  return {
+    id,
+    kind: 'worker.completed',
+    from,
+    to: 'coordinator',
+    at: '2026-11-17T18:00:00.000Z',
+    delivered,
+    payload: { summary: id },
+  };
+}
+
+test('crew_finish drops completion events once no missions remain', async () => {
+  await withTempDir(async (dir) => {
+    const crewDir = path.join(dir, '.codemini', 'crew');
+    await fs.mkdir(crewDir, { recursive: true });
+    await fs.writeFile(path.join(crewDir, 'state.json'), JSON.stringify({
+      version: 1,
+      active: true,
+      base: 'main',
+      workers: [{
+        id: 'w1',
+        branch: 'codemini-crew/w1',
+        worktreePath: path.join(dir, 'missing-wt'),
+        missionId: 'm1',
+      }],
+      missions: [{
+        id: 'm1',
+        title: 'Done',
+        kind: 'build',
+        status: 'merged',
+        workerId: 'w1',
+        paths: ['src/**'],
+      }],
+      events: [crewEvent('e1', 'w1', true), crewEvent('e2', 'w1', false)],
+    }));
+    const finish = await finishCrewMissions({ cwd: dir, inFlight: [] });
+    assert.equal(finish.ok, true, finish.error || finish.message);
+    const state = await readCrewStateFile(dir);
+    assert.equal(state.missions.length, 0);
+    assert.equal(state.workers.length, 0);
+    assert.equal(listCrewEventsFromState(state).length, 0);
+  });
+});
+
+test('crew_finish on an already empty ledger drops leftover events', async () => {
+  await withTempDir(async (dir) => {
+    const crewDir = path.join(dir, '.codemini', 'crew');
+    await fs.mkdir(crewDir, { recursive: true });
+    await fs.writeFile(path.join(crewDir, 'state.json'), JSON.stringify({
+      version: 1,
+      active: true,
+      base: 'main',
+      workers: [],
+      missions: [],
+      events: [crewEvent('old', 'wkr_gone', true)],
+    }));
+    const finish = await finishCrewMissions({ cwd: dir, inFlight: [] });
+    assert.equal(finish.ok, true);
+    assert.match(finish.message, /already clean/i);
+    assert.equal(listCrewEventsFromState(await readCrewStateFile(dir)).length, 0);
+  });
+});
+
+test('crew_finish keeps events while a mission remains', async () => {
+  await withTempDir(async (dir) => {
+    const kept = path.join(dir, 'kept-wt');
+    await fs.mkdir(kept, { recursive: true });
+    await git(kept, ['init']);
+    await fs.writeFile(path.join(kept, 'dirty.txt'), 'x\n');
+    const crewDir = path.join(dir, '.codemini', 'crew');
+    await fs.mkdir(crewDir, { recursive: true });
+    await fs.writeFile(path.join(crewDir, 'state.json'), JSON.stringify({
+      version: 1,
+      active: true,
+      base: 'main',
+      workers: [
+        {
+          id: 'gone',
+          branch: 'codemini-crew/gone',
+          worktreePath: path.join(dir, 'missing-wt'),
+          missionId: 'm1',
+        },
+        {
+          id: 'kept',
+          branch: 'codemini-crew/kept',
+          worktreePath: kept,
+          missionId: 'm2',
+        },
+      ],
+      missions: [
+        {
+          id: 'm1',
+          title: 'Gone',
+          kind: 'build',
+          status: 'merged',
+          workerId: 'gone',
+          paths: ['src/**'],
+        },
+        {
+          id: 'm2',
+          title: 'Kept',
+          kind: 'build',
+          status: 'merged',
+          workerId: 'kept',
+          paths: ['docs/**'],
+        },
+      ],
+      events: [crewEvent('e-gone', 'gone', true), crewEvent('e-kept', 'kept', false)],
+    }));
+    const finish = await finishCrewMissions({ cwd: dir, inFlight: [] });
+    assert.equal(finish.ok, true, finish.error || finish.message);
+    assert.equal(finish.kept.length, 1);
+    const state = await readCrewStateFile(dir);
+    assert.equal(state.missions.length, 1);
+    assert.deepEqual(listCrewEventsFromState(state).map((event) => event.id), ['e-gone', 'e-kept']);
+  });
+});
+
+test('cancelling the last worker drops its completion events', async () => {
+  await withTempDir(async (dir) => {
+    const crewDir = path.join(dir, '.codemini', 'crew');
+    await fs.mkdir(crewDir, { recursive: true });
+    await fs.writeFile(path.join(crewDir, 'state.json'), JSON.stringify({
+      version: 1,
+      active: true,
+      base: 'main',
+      workers: [{
+        id: 'w1',
+        branch: 'codemini-crew/w1',
+        worktreePath: path.join(dir, 'missing-wt'),
+        missionId: 'm1',
+      }],
+      missions: [{
+        id: 'm1',
+        title: 'Drop',
+        kind: 'build',
+        status: 'active',
+        workerId: 'w1',
+        paths: ['src/**'],
+      }],
+      events: [crewEvent('e1', 'w1', true)],
+    }));
+    await dropCrewWorkerFromLedger(dir, 'w1');
+    const state = await readCrewStateFile(dir);
+    assert.equal(state.missions.length, 0);
+    assert.equal(listCrewEventsFromState(state).length, 0);
   });
 });

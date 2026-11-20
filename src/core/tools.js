@@ -5492,7 +5492,7 @@ export function getBuiltinTools({
       function: {
         name: "crew_finish",
         description:
-          "After every mission is terminal, remove clean worktrees and their worker branches, then delete those finished mission and worker records. Refuses while any mission is planned or active, or a worker is in flight. Dirty worktrees stay. Does not turn Crew off. If the ledger is already empty, returns already clean — do not call it again just because nothing is left.",
+          "After every mission is terminal, remove clean worktrees and their worker branches, then delete those finished mission and worker records. Once no missions remain, completion events for removed workers are deleted too. Refuses while any mission is planned or active, or a worker is in flight. Dirty worktrees stay. Does not turn Crew off. If the ledger is already empty, returns already clean — do not call it again just because nothing is left.",
         parameters: { type: "object", properties: {}, required: [] },
       },
     });

@@ -741,18 +741,44 @@ export function archiveCrewInboxInState(state) {
   return { inbox, marked };
 }
 
+async function unlinkCrewInboxFiles(cwd, inbox) {
+  const root = getProjectCrewDir(cwd);
+  await Promise.all(inbox.map(async (item) => {
+    const relativePath = String(item?.path || '').trim();
+    if (!relativePath || relativePath.includes('..')) return;
+    await fs.unlink(path.join(root, relativePath)).catch(() => {});
+  }));
+}
+
+export function keepCrewEventsForRoster(state) {
+  const workerIds = new Set(listCrewWorkersFromState(state).map((worker) => worker.id));
+  return listCrewEventsFromState(state).filter((event) => (
+    event.delivered !== true && workerIds.has(event.from)
+  ));
+}
+
 export async function clearLiveCrewInbox(cwd) {
   return withCrewStateLock(cwd, async () => {
     const current = (await readCrewStateFile(cwd)) || {};
     const inbox = listCrewInboxFromState(current);
-    const root = getProjectCrewDir(cwd);
-    await Promise.all(inbox.map(async (item) => {
-      const relativePath = String(item?.path || '').trim();
-      if (!relativePath || relativePath.includes('..')) return;
-      await fs.unlink(path.join(root, relativePath)).catch(() => {});
-    }));
+    await unlinkCrewInboxFiles(cwd, inbox);
     await writeCrewStateFileUnlocked(cwd, composeCrewStateDocument(current, { inbox: [] }));
     return { ok: true, removed: inbox.length };
+  });
+}
+
+export async function clearIdleCrewSideState(cwd) {
+  return withCrewStateLock(cwd, async () => {
+    const current = (await readCrewStateFile(cwd)) || {};
+    if (listCrewMissionsFromState(current).length) {
+      return { ok: true, skipped: true, removedInbox: 0, removedEvents: 0 };
+    }
+    const inbox = listCrewInboxFromState(current);
+    await unlinkCrewInboxFiles(cwd, inbox);
+    const events = keepCrewEventsForRoster(current);
+    const removedEvents = listCrewEventsFromState(current).length - events.length;
+    await writeCrewStateFileUnlocked(cwd, composeCrewStateDocument(current, { inbox: [], events }));
+    return { ok: true, removedInbox: inbox.length, removedEvents };
   });
 }
 
@@ -818,7 +844,7 @@ export function buildCrewModePromptBlock(crewState) {
     'Call crew_plan before the first worker. New build and survey workers require mission_id from that plan. Reviewers use review and do not take a mission_id. The tool result is the next step.',
     'Workers call crew_complete before their mission can be completed. Stopping without that tool leaves the mission active.',
     'land_workers merges one completed build mission onto the recorded base branch with git merge --no-ff. Pass that mission id. It does not delete worktrees and it does not finish the crew. Read the tool result code: REBASE_REQUIRED means the base moved — call crew_rebase for that mission_id, then land again (crew_rebase conflict → RESUME_REQUIRED, then review, then land). MAIN_WORKTREE_DIRTY means uncommitted edits on the main checkout — ask the user to commit, stash, or remove them; do not resume the worker. LAND_MERGE_CONFLICT means the worker branch already contains the base tip but merge still failed — do not call crew_rebase; fix the main checkout or git state and retry land_workers.',
-    'When crew_status says every mission is terminal, call crew_finish. That removes clean worktrees and their codemini-crew branches, then deletes those finished mission and worker records. Dirty worktrees stay. Crew mode stays on. After the ledger is empty, answer the user. Call crew_plan only when they give a new objective. Do not call crew_finish again just because the ledger is empty.',
+    'When crew_status says every mission is terminal, call crew_finish. That removes clean worktrees and their codemini-crew branches, then deletes those finished mission and worker records. Once no missions remain, completion events for removed workers are deleted too. Dirty worktrees stay. Crew mode stays on. After the ledger is empty, answer the user. Call crew_plan only when they give a new objective. Do not call crew_finish again just because the ledger is empty.',
     'Crew workers run in the background. Capacity is bounded; excess workers remain queued and still count as in flight. run_subagent returns immediately with status running or queued; completion wakes you in a new turn via a Crew notification. Use crew_status and the wake notification — not the original tool result — to decide the next step. dirty means the worker did not git commit — do not review or land that worker. After a coder is sealed, dispatch a separate run_subagent with role: "reviewer" and review set to that worker id. Reviewers also run in the background. Do not resume the author to review themselves. The reviewer is not a roster worker and does not get paths or a new worktree. Do not review survey workers. fork_task is not available; do not use it.',
     'If the user clearly cancels a worker assignment, call cancel_worker for that roster id. One call stops the worker and any in-flight review, deletes the unmerged worktree and branch, and removes the mission. Do not call it twice. Do not cancel a worker that is already merged. Do not use cancel_worker for a mere pause. Do not answer that in-flight workers cannot be interrupted. After cancel_worker, call crew_status and follow Next.',
     'cancel_worker discards that worker\'s unmerged work. It is not available for ordinary coding-mode subagents. Merged workers are refused; crew_finish removes their records later.',
