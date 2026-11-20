@@ -270,6 +270,64 @@ test('crew_status keeps open missions and the latest eight finished ones', async
     assert.match(summary, /^Next:/);
     const wider = await readCrewStatusPayload(dir, { limit: 20 });
     assert.equal(wider.missions.some((mission) => mission.id === 'm1'), true);
+    assert.match(summary, /mission m13 \| planned \| build \| Still open/);
+    assert.match(summary, /Paths: open\.md/);
+    assert.match(summary, /Depends on: \(none\)/);
+    assert.doesNotMatch(summary, /Paths: f12\.md/);
+  } finally {
+    if (previous === undefined) delete process.env.CODEMINI_GLOBAL_DIR;
+    else process.env.CODEMINI_GLOBAL_DIR = previous;
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('crew_plan returns ledger fields and status expands only undispatched missions', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-crew-plan-fields-'));
+  const previous = process.env.CODEMINI_GLOBAL_DIR;
+  process.env.CODEMINI_GLOBAL_DIR = path.join(dir, 'global');
+  try {
+    await enterCrewMode({ cwd: dir, sessionId: 'plan-fields' }).catch(() => null);
+    await fs.mkdir(path.join(dir, '.codemini', 'crew'), { recursive: true });
+    await fs.writeFile(path.join(dir, '.codemini', 'crew', 'state.json'), JSON.stringify({
+      version: 1,
+      active: true,
+      base: 'main',
+      workers: [],
+      missions: [],
+    }));
+    const planned = await planCrewMissions(dir, {
+      missions: [
+        { title: 'API', kind: 'build', paths: ['backend/**'], context: 'add the flag' },
+        { title: 'UI', kind: 'build', paths: ['frontend/**'], depends_on: ['m1'], context: 'wait for the flag' },
+      ],
+    });
+    assert.equal(planned.ok, true, planned.error);
+    assert.match(planned.message, /Planned m1 \(API\), m2 \(UI\)/);
+    assert.match(planned.message, /m1 \| build \| API/);
+    assert.match(planned.message, /Paths: backend\/\*\*/);
+    assert.match(planned.message, /Depends on: \(none\)/);
+    assert.match(planned.message, /Context: add the flag/);
+    assert.match(planned.message, /m2 \| build \| UI/);
+    assert.match(planned.message, /Paths: frontend\/\*\*/);
+    assert.match(planned.message, /Depends on: m1/);
+    assert.match(planned.message, /Context: wait for the flag/);
+    const summary = formatCrewStatusSummary({
+      ok: true,
+      suggestedNext: 'Dispatch with run_subagent mission_id for: m1.',
+      base: 'main',
+      fetchedAt: 't',
+      counts: {},
+      missions: [
+        { id: 'm1', status: 'active', kind: 'build', title: 'API', paths: ['backend/**'], context: 'add the flag' },
+        { id: 'm2', status: 'planned', kind: 'build', title: 'UI', paths: ['frontend/**'], dependsOn: ['m1'], context: 'wait for the flag' },
+      ],
+    });
+    assert.match(summary, /- mission m1 \| active \| build \| API/);
+    assert.doesNotMatch(summary, /add the flag/);
+    assert.match(summary, /- mission m2 \| planned \| build \| UI/);
+    assert.match(summary, /Paths: frontend\/\*\*/);
+    assert.match(summary, /Depends on: m1/);
+    assert.match(summary, /Context: wait for the flag/);
   } finally {
     if (previous === undefined) delete process.env.CODEMINI_GLOBAL_DIR;
     else process.env.CODEMINI_GLOBAL_DIR = previous;

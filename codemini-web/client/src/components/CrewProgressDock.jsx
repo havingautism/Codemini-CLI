@@ -1,4 +1,6 @@
+import { useState } from "react";
 import { SessionOrb } from "@/components/ui/spinner";
+import { ConfirmDialog } from "@/components/ConfirmDialog.jsx";
 import { cn } from "@/lib/utils";
 import {
   CREW_PHASE_LABEL_KEY,
@@ -32,6 +34,8 @@ function phaseLabel(phase) {
 }
 
 export function CrewProgressDock({ runtimeState, onCancelWorker }) {
+  const [pendingCancel, setPendingCancel] = useState(null);
+  const [cancelling, setCancelling] = useState(false);
   const crewActive = Boolean(runtimeState?.crewActive);
   const workers = Array.isArray(runtimeState?.crewWorkers)
     ? runtimeState.crewWorkers
@@ -39,11 +43,13 @@ export function CrewProgressDock({ runtimeState, onCancelWorker }) {
   const inFlightIds = Array.isArray(runtimeState?.crewInFlightIds)
     ? runtimeState.crewInFlightIds
     : [];
-  if (!shouldShowCrewProgressDock({ crewActive, workers, inFlightIds })) {
-    return null;
-  }
-  const items = listCrewDockItems({ workers, inFlightIds });
+  const items = shouldShowCrewProgressDock({ crewActive, workers, inFlightIds })
+    ? listCrewDockItems({ workers, inFlightIds })
+    : [];
   if (!items.length) return null;
+  const pendingLabel = [pendingCancel?.name, pendingCancel?.missionTitle, pendingCancel?.id]
+    .filter(Boolean)
+    .join(" · ");
 
   return (
     <section
@@ -88,12 +94,9 @@ export function CrewProgressDock({ runtimeState, onCancelWorker }) {
               {onCancelWorker && item.phase !== "merged" ? (
                 <button
                   type="button"
-                  className="shrink-0 rounded-md px-2 py-0.5 text-[12px] text-(--accent-red) hover:bg-(--bg-hover)"
-                  onClick={() => {
-                    const label = [item.name, item.missionTitle, item.id].filter(Boolean).join(" · ");
-                    if (!window.confirm(`${t("crewCancelConfirm")} ${label}?`)) return;
-                    onCancelWorker(item.id);
-                  }}
+                  className="shrink-0 rounded-md px-2 py-0.5 text-[12px] text-(--accent-red) hover:bg-(--bg-hover) disabled:opacity-50"
+                  disabled={cancelling}
+                  onClick={() => setPendingCancel(item)}
                 >
                   {t("crewCancel")}
                 </button>
@@ -102,6 +105,29 @@ export function CrewProgressDock({ runtimeState, onCancelWorker }) {
           );
         })}
       </ul>
+      <ConfirmDialog
+        open={Boolean(pendingCancel)}
+        title={t("crewCancelTitle")}
+        description={pendingLabel ? `${t("crewCancelConfirm")} ${pendingLabel}` : t("crewCancelConfirm")}
+        confirmLabel={t("crewCancelAction")}
+        confirmVariant="destructive"
+        loading={cancelling}
+        loadingLabel={t("crewCancelAction")}
+        onOpenChange={(open) => {
+          if (!open && !cancelling) setPendingCancel(null);
+        }}
+        onConfirm={async () => {
+          const workerId = pendingCancel?.id;
+          if (!workerId) return;
+          setCancelling(true);
+          try {
+            await onCancelWorker(workerId);
+          } finally {
+            setCancelling(false);
+            setPendingCancel(null);
+          }
+        }}
+      />
     </section>
   );
 }

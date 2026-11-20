@@ -123,7 +123,7 @@ export function isCrewLandableWorker(worker) {
 export function workerHoldsCrewScope(worker, mission) {
   if (!worker || isCrewSurveyWorker(worker)) return false;
   if (!mission) return true;
-  if (mission.status === 'merged' || mission.status === 'abandoned') return false;
+  if (mission.status === 'merged' || mission.status === 'abandoned' || mission.status === 'cancelled') return false;
   if (mission.kind === 'survey' && mission.status === 'completed') return false;
   return true;
 }

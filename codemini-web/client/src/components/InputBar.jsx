@@ -200,7 +200,7 @@ function ModeSelector({
   const dirtyWarning =
     crewActive && dirtyCount > 0 ? formatCrewDirtyWarning(dirtyCount) : "";
   const MODE_OPTIONS = [
-    ...getExecutionModeOptions(),
+    ...getExecutionModeOptions().filter((option) => option.value !== "crew"),
     {
       value: "crew",
       label: t("crewMode"),

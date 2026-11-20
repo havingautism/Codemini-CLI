@@ -489,7 +489,7 @@ async function spawnCrewWorkerOnMission({
     name,
     callId,
     paths: mission.kind === 'build' ? missionPaths : requested,
-    dependsOn,
+    dependsOn: mission.dependsOn,
     kind,
     task,
     missionId: mission.id,
@@ -510,6 +510,12 @@ function pathIsWithinRoot(root, candidate) {
 
 export function isCrewWorktreePath(root) {
   return posixPath(root).includes('/.codemini/crew/worktrees/');
+}
+
+export const CREW_WORKTREE_REVIEW_NOTE = 'This workspace is a Crew worker git worktree, not the main checkout. Installs and generated dependency files stay in that worktree. node_modules is not committed and the main checkout stays unchanged until the worker is reviewed and landed. Judge the command for this worktree. Still deny destructive, privileged, or out-of-scope commands.';
+
+export function crewCommandReviewNote(workspaceRoot = '') {
+  return isCrewWorktreePath(workspaceRoot) ? CREW_WORKTREE_REVIEW_NOTE : '';
 }
 
 export function resolveCrewParentRoot(worktreePath) {

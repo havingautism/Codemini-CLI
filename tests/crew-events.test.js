@@ -20,7 +20,7 @@ import {
 } from '../src/core/crew-store.js';
 import { runGit } from '../src/core/process-run.js';
 import { runCrewWorkerJob } from '../src/core/crew-worker-run.js';
-import { dropCrewWorkerFromLedger, finishCrewMissions } from '../src/core/crew-missions.js';
+import { finishCrewMissions, markCrewWorkerCancelled } from '../src/core/crew-missions.js';
 
 async function withTempDir(task) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-crew-events-'));
@@ -334,7 +334,7 @@ test('crew_finish keeps events while a mission remains', async () => {
   });
 });
 
-test('cancelling the last worker drops its completion events', async () => {
+test('cancelling a worker keeps a cancelled mission until finish', async () => {
   await withTempDir(async (dir) => {
     const crewDir = path.join(dir, '.codemini', 'crew');
     await fs.mkdir(crewDir, { recursive: true });
@@ -358,7 +358,13 @@ test('cancelling the last worker drops its completion events', async () => {
       }],
       events: [crewEvent('e1', 'w1', true)],
     }));
-    await dropCrewWorkerFromLedger(dir, 'w1');
+    await markCrewWorkerCancelled(dir, 'w1');
+    const marked = await readCrewStateFile(dir);
+    assert.equal(marked.missions[0].status, 'cancelled');
+    assert.equal(marked.workers.length, 0);
+    assert.equal(listCrewEventsFromState(marked).length, 1);
+    const finish = await finishCrewMissions({ cwd: dir, inFlight: [] });
+    assert.equal(finish.ok, true, finish.error || finish.message);
     const state = await readCrewStateFile(dir);
     assert.equal(state.missions.length, 0);
     assert.equal(listCrewEventsFromState(state).length, 0);

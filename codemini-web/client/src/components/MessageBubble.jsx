@@ -2300,11 +2300,11 @@ export const MessageBubble = memo(function MessageBubble({
     (message.dividerType === "manual-abort" ||
       message.dividerType === "abort" ||
       rawResponseStatus === "aborted");
-  const renderDivider = (label) => (
+  const renderDivider = (label, { wrap = false } = {}) => (
     <div data-message-id={message.id} className="py-3 px-6 text-center">
       <div className="max-w-[860px] mx-auto relative">
         <div className="border-t border-border" />
-        <span className="text-xs text-(--text-muted) bg-(--bg-primary) px-2 absolute -top-2.5 left-1/2 -translate-x-1/2 whitespace-nowrap">
+        <span className={`text-xs text-(--text-muted) bg-(--bg-primary) px-2 absolute -top-2.5 left-1/2 -translate-x-1/2 ${wrap ? "max-w-[min(100%,36rem)] whitespace-normal text-center leading-5" : "whitespace-nowrap"}`}>
           {label}
         </span>
       </div>
@@ -2319,6 +2319,7 @@ export const MessageBubble = memo(function MessageBubble({
     if (message.dividerType === "crew-wake") {
       return renderDivider(
         rawMessageText || legacyText || t("crewWakeDivider"),
+        { wrap: true },
       );
     }
     return renderDivider(legacyText || "以上内容已压缩");

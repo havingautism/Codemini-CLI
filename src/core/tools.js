@@ -5296,7 +5296,7 @@ export function getBuiltinTools({
       function: {
         name: "run_subagent",
         description: crewActive
-          ? "Delegate isolated work to a git-worktree subagent. Same-response independent calls run in parallel; use task_id/depends_on for dependencies. Every objective, including a single task, must go to a worker. New coder workers need disjoint paths. name is a nickname. The returned worker id is what resume, review, cancel_worker, and crew_send use. Read-only investigation uses role: \"survey\" (no exclusive paths, no review, no land). After a coder commits, dispatch role: \"reviewer\" with review set to that worker id before land_workers."
+          ? "Delegate isolated work to a git-worktree subagent. Pass mission_id from crew_plan. Paths and depends_on are loaded from that mission. prompt is the worker task. A mission whose dependency is unfinished or cancelled is refused. name is a nickname. The returned worker id is what resume, review, cancel_worker, and crew_send use. Read-only investigation uses role: \"survey\" (no exclusive paths, no review, no land). After a coder commits, dispatch role: \"reviewer\" with review set to that worker id before land_workers."
           : "Delegate a bounded task to a clean-context subagent. Same-response independent calls run in parallel; use task_id/depends_on for dependencies and disjoint file ownership for parallel edits. Invent a short worker name such as David. Use fork_task instead when shared prompt prefix/state is more useful.",
         parameters: {
           type: "object",
@@ -5396,7 +5396,7 @@ export function getBuiltinTools({
       function: {
         name: "cancel_worker",
         description:
-          "Cancel one unmerged Crew worker in a single call. Stops that worker and any in-flight review, deletes its worktree and branch, and removes the mission. Already merged workers are refused. Use the worker id from crew_status. This discards unmerged work.",
+          "Cancel one unmerged Crew worker in a single call. Stops that worker and any in-flight review, deletes its worktree and branch, and marks the mission cancelled until crew_finish. Already merged workers are refused. Use the worker id from crew_status. This discards unmerged work.",
         parameters: {
           type: "object",
           properties: {

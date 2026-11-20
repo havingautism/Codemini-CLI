@@ -240,6 +240,27 @@ test('suggestCrewNextAction waits for queued wakes instead of landing', () => {
   assert.doesNotMatch(suggestion, /land_workers/i);
 });
 
+test('dispatch follows a cancelled plan dependency instead of starting the downstream mission', () => {
+  const suggestion = suggestCrewNextAction({
+    workers: [],
+    missions: [{
+      id: 'm1',
+      kind: 'build',
+      status: 'cancelled',
+      title: 'Backend',
+    }, {
+      id: 'm2',
+      kind: 'build',
+      status: 'planned',
+      title: 'Frontend',
+      dependsOn: ['m1'],
+    }],
+    inFlight: [],
+  });
+  assert.match(suggestion, /depends on m1, which is cancelled/);
+  assert.doesNotMatch(suggestion, /Dispatch with run_subagent mission_id for: m2/);
+});
+
 test('suggestCrewNextAction tells the coordinator to dispatch planned missions', () => {
   const suggestion = suggestCrewNextAction({
     workers: [],
@@ -259,6 +280,38 @@ test('suggestCrewNextAction tells the coordinator to dispatch planned missions',
   assert.match(suggestion, /mission_id/);
   assert.match(suggestion, /m2/);
   assert.doesNotMatch(suggestion, /crew_finish/);
+});
+
+test('suggestCrewNextAction tells the user about cancelled missions before finish', () => {
+  const suggestion = suggestCrewNextAction({
+    workers: [],
+    missions: [{
+      id: 'm1',
+      kind: 'build',
+      status: 'cancelled',
+      title: 'Backend',
+    }],
+    inFlight: [],
+  });
+  assert.match(suggestion, /Cancelled missions: m1/);
+  assert.match(suggestion, /then call crew_finish/);
+  assert.doesNotMatch(suggestion, /Dispatch/);
+});
+
+test('suggestCrewNextAction does not finish after surveys alone', () => {
+  const suggestion = suggestCrewNextAction({
+    workers: [],
+    missions: [{
+      id: 'm1',
+      kind: 'survey',
+      status: 'completed',
+      title: 'Scout',
+    }],
+    inFlight: [],
+  });
+  assert.match(suggestion, /crew_plan/);
+  assert.match(suggestion, /call crew_finish, then answer the user/);
+  assert.doesNotMatch(suggestion, /Every mission is terminal/);
 });
 
 test('suggestCrewNextAction tells crew_finish to drop finished records', () => {

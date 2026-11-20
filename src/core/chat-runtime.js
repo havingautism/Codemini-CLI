@@ -118,7 +118,7 @@ import {
 } from './crew-store.js';
 import { composeCrewResumeTask, composeCrewReviewTask, crewTaskSummary, findCrewWorker, isCrewCommitAncestor, isCrewWorktreeDirty, resolveCrewReviewTarget, resolveCrewSubagentWorkspace, shouldContinueCrewWorkerSeal, teardownCrewWorker } from './crew-worktree.js';
 import { composeCrewBriefing } from './crew-briefing.js';
-import { findCrewMissionForWorker, formatCrewMissionBrief, listCrewMissionsFromState, dropCrewWorkerFromLedger } from './crew-missions.js';
+import { crewMissionDispatchGate, findCrewMissionForWorker, formatCrewMissionBrief, listCrewMissionsFromState, markCrewWorkerCancelled } from './crew-missions.js';
 import { landCrewWorkers } from './crew-land.js';
 import { rebaseCrewMission } from './crew-rebase.js';
 import { createCrewCoordinator } from './crew-coordinator.js';
@@ -5346,6 +5346,35 @@ async function askModelInSession({
                 workerChangeTracker = null;
                 workerBackupManager = null;
               } else {
+                if (!resume && String(missionId || '').trim()) {
+                  const planned = listCrewMissionsFromState(await readCrewStateFile(workspaceRoot));
+                  const plannedMission = planned.find((item) => item.id === String(missionId).trim());
+                  const dependencyGate = crewMissionDispatchGate(plannedMission, planned);
+                  if (plannedMission && !dependencyGate.ok) {
+                    emit({
+                      type: 'plan:step_done',
+                      toolCallId: callId,
+                      step: 1,
+                      total: 1,
+                      role: persona,
+                      title,
+                      status: 'failed',
+                      taskId: dependencyTaskId,
+                      dependsOn: dependencyRegistration.dependencies,
+                      summary: dependencyGate.error,
+                      sdkProvider: stepSdkProvider,
+                      model: stepModel,
+                    });
+                    const blockedResult = {
+                      ok: false,
+                      code: dependencyGate.code,
+                      error: dependencyGate.error,
+                      text: '',
+                    };
+                    dependencyRegistration.settle(blockedResult);
+                    return blockedResult;
+                  }
+                }
                 const spawned = await resolveCrewSubagentWorkspace({
                   cwd: workspaceRoot,
                   base: crewState.base,
@@ -9150,8 +9179,6 @@ export async function createChatRuntime({
       job.controller.abort(createCrewCancelReason());
     }
     await waitForCrewJob(job);
-    if (crewJobRegistry.get(id) === job) crewJobRegistry.delete(id);
-    crewWorkersInFlight.delete(id);
     const disk = await readCrewStateFile(root).catch(() => null);
     const worker = listCrewWorkersFromState(disk).find((item) => item.id === id);
     if (!worker && !job) {
@@ -9166,10 +9193,17 @@ export async function createChatRuntime({
       };
     }
     if (worker) {
-      const removed = await teardownCrewWorker({ cwd: root, id, force: true }).catch((error) => ({
+      const removeWorker = () => teardownCrewWorker({ cwd: root, id, force: true }).catch((error) => ({
         ok: false,
         error: String(error?.message || error),
       }));
+      let removed = await removeWorker();
+      // A review still inside the worktree can make the first remove fail.
+      // Wait for that aborted job to leave, then remove once more in this same cancel.
+      if (!removed?.ok && removed?.code !== 'NOT_FOUND') {
+        await waitForCrewJob(job, 45_000);
+        removed = await removeWorker();
+      }
       if (!removed?.ok && removed?.code !== 'NOT_FOUND') {
         publishCrewWorkersChanged();
         return {
@@ -9179,13 +9213,18 @@ export async function createChatRuntime({
         };
       }
     }
-    await dropCrewWorkerFromLedger(root, id);
+    if (crewJobRegistry.get(id) === job) crewJobRegistry.delete(id);
+    crewWorkersInFlight.delete(id);
+    await markCrewWorkerCancelled(root, id);
     crewCoordinator.dropPendingWakes?.((item) => {
       const text = String(item?.text || '');
       return text.includes(`workerId="${id}"`) || text.includes(`Worker id: ${id}`);
     });
     publishCrewWorkersChanged();
-    const message = `Cancelled Crew worker "${matched?.name || id}" (${id}). Unmerged worktree and branch were removed. Do not review, land, or resume it. Call crew_status for the next step.`;
+    const message = [
+      `Cancelled Crew worker "${matched?.name || id}" (${id}).`,
+      'The user cancelled this worker only. Its unmerged worktree and branch were removed. The mission stays on crew_status as cancelled until crew_finish. Do not review, land, resume, or replace this worker. Call crew_status and follow Next for any other mission.',
+    ].join('\n');
     if (notify) crewCoordinator.enqueueWake(message);
     return {
       ok: true,

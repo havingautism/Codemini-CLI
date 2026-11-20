@@ -16,6 +16,7 @@ import {
   buildCrewModePromptBlock,
   enterCrewMode,
   inspectCrewGit,
+  listCrewMissionsFromState,
   listCrewWorkersFromState,
   normalizeCrewState,
   normalizeCrewWorkerRecord,
@@ -915,8 +916,10 @@ test('cancel_worker aborts a running Crew worker and removes its worktree', asyn
     const cancelResult = session.messages.find((message) => message.tool_call_id === 'call-cancel');
     assert.ok(cancelResult, `missing cancel_worker result; ids=${session.messages.map((m) => m.tool_call_id).filter(Boolean).join(',')}`);
     assert.match(String(cancelResult.content || ''), /Cancelled Crew worker "slow"/);
-    const workers = listCrewWorkersFromState(await readCrewStateFile(dir));
+    const state = await readCrewStateFile(dir);
+    const workers = listCrewWorkersFromState(state);
     assert.equal(workers.some((item) => item.name === 'slow'), false);
+    assert.equal(listCrewMissionsFromState(state).find((mission) => mission.workerId === slow.id)?.status, 'cancelled');
     assert.equal(await fs.access(path.join(getProjectCrewWorktreesDir(dir), slow.id)).then(() => true, () => false), false);
     const reused = await addCrewWorktree({
       cwd: dir,

@@ -77,9 +77,66 @@ export function formatCrewMissionBrief(mission) {
   ].filter(Boolean).join('\n');
 }
 
+export function formatCrewMissionDispatchFields(mission) {
+  if (!mission) return '';
+  const paths = Array.isArray(mission.paths) && mission.paths.length
+    ? mission.paths.join(', ')
+    : '(none)';
+  const deps = Array.isArray(mission.dependsOn) && mission.dependsOn.length
+    ? mission.dependsOn.join(', ')
+    : '(none)';
+  return [
+    `Paths: ${paths}`,
+    `Depends on: ${deps}`,
+    mission.context ? `Context: ${mission.context}` : '',
+  ].filter(Boolean).join('\n');
+}
+
+export function formatCrewMissionPlanBlock(mission) {
+  if (!mission) return '';
+  const fields = formatCrewMissionDispatchFields(mission);
+  const head = `${mission.id} | ${mission.kind} | ${mission.title}`;
+  return fields ? `${head}\n${fields}` : head;
+}
+
+export function crewMissionDispatchGate(mission, missions = []) {
+  if (!mission) return { ok: true };
+  const deps = Array.isArray(mission.dependsOn) ? mission.dependsOn : [];
+  const list = Array.isArray(missions) ? missions : [];
+  for (const depId of deps) {
+    const upstream = list.find((item) => item.id === depId);
+    if (!upstream) {
+      return {
+        ok: false,
+        code: 'DEPENDENCY_MISSING',
+        error: `Mission ${mission.id} depends on ${depId}, which is not on the ledger. Do not dispatch it.`,
+      };
+    }
+    const status = String(upstream.status || '').toLowerCase();
+    if (status === 'cancelled' || status === 'abandoned') {
+      return {
+        ok: false,
+        code: 'DEPENDENCY_CANCELLED',
+        error: `Mission ${mission.id} depends on ${depId}, which is ${status}. Do not dispatch or replace it. Ask the user.`,
+      };
+    }
+    const ready = String(upstream.kind || '').toLowerCase() === 'survey'
+      ? status === 'completed'
+      : status === 'completed' || status === 'merged';
+    if (!ready) {
+      return {
+        ok: false,
+        code: 'DEPENDENCY_PENDING',
+        error: `Mission ${mission.id} depends on ${depId}, which is ${status}. Wait until that mission finishes before dispatching.`,
+      };
+    }
+  }
+  return { ok: true };
+}
+
 export function formatOpenMissionHint(missions = []) {
   const open = (Array.isArray(missions) ? missions : []).filter((mission) => !isCrewTaskTerminal(mission));
-  if (!open.length) return CREW_FINISH_NEXT;
+  if (!open.length) return nextAfterTerminalMissions(missions);
   const planned = open.filter((mission) => mission.status === 'planned').map((mission) => mission.id);
   if (planned.length) {
     return `Dispatch with run_subagent mission_id for: ${planned.join(', ')}.`;
@@ -88,6 +145,24 @@ export function formatOpenMissionHint(missions = []) {
 }
 
 export const CREW_FINISH_NEXT = 'Every mission is terminal. Call crew_finish to remove clean worktrees, worker branches, and those finished mission and worker records. Crew mode stays on.';
+export const CREW_SURVEY_DONE_NEXT = 'Surveys are complete. If the user still wants implementation, call crew_plan for those build missions. If every mission is a completed survey and that survey was the whole request, call crew_finish, then answer the user.';
+
+export function nextAfterTerminalMissions(missions = []) {
+  const list = Array.isArray(missions) ? missions : [];
+  const cancelled = list.filter((mission) => String(mission?.status || '').toLowerCase() === 'cancelled');
+  const rest = list.filter((mission) => String(mission?.status || '').toLowerCase() !== 'cancelled');
+  if (cancelled.length && rest.every((mission) => String(mission?.kind || '').toLowerCase() === 'survey')) {
+    const ids = cancelled.map((mission) => mission.id).filter(Boolean).join(', ');
+    if (!rest.length) {
+      return `Cancelled missions: ${ids}. Tell the user which missions were cancelled, then call crew_finish. Do not dispatch a replacement.`;
+    }
+    return `Cancelled missions: ${ids}. ${CREW_SURVEY_DONE_NEXT} Do not replace a cancelled mission.`;
+  }
+  if (list.length && list.every((mission) => String(mission?.kind || '').toLowerCase() === 'survey')) {
+    return CREW_SURVEY_DONE_NEXT;
+  }
+  return CREW_FINISH_NEXT;
+}
 export const CREW_IDLE_NEXT = 'No open missions. Answer the user. Call crew_plan only when they give a new objective. Do not call crew_finish.';
 export const CREW_ALREADY_CLEAN = 'Crew is already clean. Call crew_plan when there is a new objective.';
 
@@ -175,7 +250,13 @@ export async function planCrewMissions(cwd, { missions = [], abandonId = '' } = 
   if (message.includes('overlap') || message.startsWith('Unknown') || message.startsWith('Build') || message.startsWith('crew_plan') || message.includes('depends on unknown') || (message.startsWith('Mission') && message.includes('is merged'))) {
     return { ok: false, code: message.includes('overlap') ? 'SCOPE_OVERLAP' : 'PLAN_REJECTED', error: message };
   }
-  return { ok: true, missions: listCrewMissionsFromState(result), created, message };
+  const planned = created.map((mission) => formatCrewMissionPlanBlock(mission)).filter(Boolean).join('\n');
+  return {
+    ok: true,
+    missions: listCrewMissionsFromState(result),
+    created,
+    message: planned ? `${message}\n${planned}` : message,
+  };
 }
 
 export function crewMissionAcceptsSpawn(mission, { resume = false, rebaseOnto = '' } = {}) {
@@ -328,6 +409,25 @@ export async function completeCrewMission({ cwd, workerId, report = '', outcome 
         : `Mission ${mission.id} submitted. Next: dispatch a reviewer with review set to ${worker.id}, then land_workers for ${mission.id}.`)
       : `Mission ${mission.id} stays active (${submissionOutcome}). Coordinator: read the report, then resume or abandon.`,
   };
+}
+
+export async function markCrewWorkerCancelled(cwd, workerId) {
+  const id = String(workerId || '').trim();
+  await updateCrewState(cwd, async (current) => {
+    const missions = listCrewMissionsFromState(current);
+    const workers = listCrewWorkersFromState(current);
+    const worker = workers.find((item) => item.id === id);
+    const mission = findCrewMissionForWorker(missions, worker)
+      || missions.find((item) => item.workerId === id);
+    const missionId = mission?.id || '';
+    return {
+      missions: missions.map((item) => (
+        item.id === missionId ? { ...item, status: 'cancelled' } : item
+      )),
+      workers: workers.filter((item) => item.id !== id && item.missionId !== missionId),
+    };
+  });
+  return { ok: true };
 }
 
 export async function dropCrewWorkerFromLedger(cwd, workerId) {

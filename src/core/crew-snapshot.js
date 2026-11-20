@@ -19,7 +19,9 @@ import {
   shouldShowCrewProgressDock,
 } from './crew-progress.js';
 import {
-  CREW_FINISH_NEXT,
+  crewMissionDispatchGate,
+  formatCrewMissionDispatchFields,
+  nextAfterTerminalMissions,
   CREW_IDLE_NEXT,
 } from './crew-missions.js';
 import {
@@ -111,7 +113,17 @@ export function suggestCrewNextAction({
   }
   const planned = missionList.filter((mission) => mission.status === 'planned');
   if (planned.length) {
-    return `Dispatch with run_subagent mission_id for: ${planned.map((mission) => mission.id).join(', ')}.`;
+    const ready = [];
+    let blocked = null;
+    for (const mission of planned) {
+      const gate = crewMissionDispatchGate(mission, missionList);
+      if (gate.ok) ready.push(mission);
+      else if (!blocked) blocked = gate;
+    }
+    if (ready.length) {
+      return `Dispatch with run_subagent mission_id for: ${ready.map((mission) => mission.id).join(', ')}.`;
+    }
+    if (blocked) return blocked.error;
   }
   const awaitingReview = missionList.filter((mission) => (
     mission.kind === 'build'
@@ -140,7 +152,7 @@ export function suggestCrewNextAction({
     return `Dispatch reviewer for: ${sealedAwaiting.map((worker) => worker.id).join(', ')}.`;
   }
   if (missionList.every((mission) => isCrewTaskTerminal(mission))) {
-    return CREW_FINISH_NEXT;
+    return nextAfterTerminalMissions(missionList);
   }
   return 'Review crew_status before the next action.';
 }
@@ -271,7 +283,13 @@ export function formatCrewStatusSummary(result = {}) {
     }
   }
   for (const mission of result.missions || []) {
-    lines.push(`- mission ${mission.id} | ${mission.status} | ${mission.kind} | ${mission.title}`);
+    const line = `- mission ${mission.id} | ${mission.status} | ${mission.kind} | ${mission.title}`;
+    if (String(mission.status || '').toLowerCase() !== 'planned') {
+      lines.push(line);
+      continue;
+    }
+    const fields = formatCrewMissionDispatchFields(mission);
+    lines.push(fields ? `${line}\n${fields}` : line);
   }
   for (const worker of result.workers || []) {
     const review = worker.reviewPassed === true
