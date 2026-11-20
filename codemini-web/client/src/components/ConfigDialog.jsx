@@ -37,6 +37,7 @@ import { buildSettingsFields } from "@/lib/settings-config.js";
 import {
   SETTINGS_TABS,
   getSettingsOptions,
+  shellLockedToMicroVm,
 } from "@/lib/settings-options.js";
 import { SettingsField } from "@/components/settings/SettingsField.jsx";
 import { SettingsSection } from "@/components/settings/SettingsSection.jsx";
@@ -48,6 +49,18 @@ import { SettingsStorage } from "@/components/settings/SettingsStorage.jsx";
 import { ConfirmDialog } from "@/components/ConfirmDialog.jsx";
 import { SettingsAppearance } from "@/components/settings/SettingsAppearance.jsx";
 import { applyAppearance, readAppearance } from "@/lib/ui-appearance.js";
+
+function sandboxFieldNote(sandboxMode, availability) {
+  if (shellLockedToMicroVm({ sandboxMode, availability })) return t("shellSandboxLockedDesc");
+  if (!availability || sandboxMode === "danger-full-access") return "";
+  if (availability.backend === "os") {
+    return availability.osKind === "landlock"
+      ? t("shellSandboxOsLandlockDesc")
+      : t("shellSandboxOsSeatbeltDesc");
+  }
+  if (availability.confineAvailable === false) return t("shellSandboxUnavailableDesc");
+  return "";
+}
 
 function getNestedValue(obj, path) {
   return path.split(".").reduce((o, k) => o?.[k], obj);
@@ -394,9 +407,10 @@ export function ConfigDialog({
       key={`${field.path}-${open}`} id={field.path} configured={hasConfiguredSecret(config, field.path)}
       draft={changes[field.path]} disabled={disabled} onChange={value => handleChange(field.path, value)} />;
     const sandboxMode = getValue("sandbox.mode");
-    const sandboxConfined = sandboxMode !== "danger-full-access";
+    const availability = status?.sandboxAvailability || null;
+    const shellLocked = shellLockedToMicroVm({ sandboxMode, availability });
     const value =
-      field.path === "shell.default" && sandboxConfined
+      field.path === "shell.default" && shellLocked
         ? "bash"
         : getValue(field.path);
     const idPrefix = field.path.replace(/\./g, "-");
@@ -447,7 +461,7 @@ export function ConfigDialog({
         <SettingsChoiceList
           idPrefix={idPrefix}
           value={value}
-          options={getSettingsOptions(field.optionsKey, { sandboxMode })}
+          options={getSettingsOptions(field.optionsKey, { sandboxMode, availability })}
           disabled={disabled}
           onValueChange={(next) => {
             if (field.warning && next === "external_authority") {
@@ -531,11 +545,17 @@ export function ConfigDialog({
         id={field.path}
         label={field.label}
         help={field.help}
-        description={
-          field.path === "shell.default" && getValue("sandbox.mode") !== "danger-full-access"
-            ? t("shellSandboxLockedDesc")
-            : undefined
-        }
+        description={(() => {
+          const sandboxMode = getValue("sandbox.mode");
+          const availability = status?.sandboxAvailability || null;
+          if (field.path === "shell.default") return sandboxFieldNote(sandboxMode, availability) || undefined;
+          if (field.path !== "sandbox.mode") return undefined;
+          if (availability?.confineAvailable === false && sandboxMode !== "danger-full-access") {
+            return t("sandboxModeUnavailableDesc");
+          }
+          if (availability?.backend === "os") return sandboxFieldNote(sandboxMode, availability) || undefined;
+          return undefined;
+        })()}
         inline={field.control === "switch"}
         className={isTaskDecisionField(field) && !decisionProviderStatus.ready ? "opacity-60" : undefined}
       >

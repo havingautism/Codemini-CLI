@@ -192,6 +192,7 @@ import {
   resolveApprovalUiEnabled,
   resolveSandboxPolicy,
 } from './sandbox-policy.js';
+import { inspectSandboxAvailability } from './sandbox-probe.js';
 import {
   normalizeToolPolicy,
 } from './provider/search-tool-registry.js';
@@ -4085,6 +4086,7 @@ export function buildRuntimeStateSnapshot({ currentSession, config, model, execu
     mode: resolvedMode,
     approvalMode: config.execution?.approval_mode || 'auto',
     sandboxMode: config.sandbox?.mode || 'workspace-write',
+    sandboxAvailability: inspectSandboxAvailability(),
     shell: config.shell?.default || 'bash',
     sandboxUiEnabled: true,
     approvalUiEnabled: resolveApprovalUiEnabled({

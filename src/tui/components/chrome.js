@@ -182,11 +182,13 @@ export class Footer {
       : approval === 'review'
         ? `${color.warning('●')} ${color.warning('REVIEW')}`
         : `${color.success('●')} ${color.success('AUTO')}`;
+    const sandboxUnavailable = state.sandboxAvailability?.confineAvailable === false && sandbox !== 'danger-full-access';
+    const unavailableMark = sandboxUnavailable ? ` ${color.warning(this.copy.sandboxUnavailableTag || 'NO SANDBOX')}` : '';
     const sandboxTag = sandbox === 'danger-full-access'
       ? `${color.error('◇')} ${color.error('UNSANDBOXED')}`
       : sandbox === 'read-only'
-        ? `${color.cyan('◇')} ${color.cyan('READ ONLY')}`
-        : `${color.purple('◇')} ${color.purple('WORKSPACE')}`;
+        ? `${color.cyan('◇')} ${color.cyan('READ ONLY')}${unavailableMark}`
+        : `${color.purple('◇')} ${color.purple('WORKSPACE')}${unavailableMark}`;
     const divider = color.dim('  │  ');
     const modelName = String(state.model || this.model || '-');
     const session = String(this.sessionId || state.sessionId || '').slice(-8);
@@ -343,7 +345,14 @@ export class SettingsDialog {
       { key: 'mode', label: `🧭 ${this.copy.settingMode}`, options: ['coding', 'daily', 'crew'] },
       { key: 'reasoning', label: `🧠 ${this.copy.settingReasoning}`, options: ['off', 'auto', 'low', 'medium', 'high', 'xhigh', 'max'] },
       { key: 'approval', label: `✅ ${this.copy.settingApproval}`, options: ['review', 'auto', 'full_access'] },
-      { key: 'sandbox', label: `🔒 ${this.copy.settingSandbox}`, options: ['read-only', 'workspace-write', 'danger-full-access'] },
+      {
+        key: 'sandbox',
+        label: `🔒 ${this.copy.settingSandbox}`,
+        options: ['read-only', 'workspace-write', 'danger-full-access'],
+        blocked: this.values.sandboxAvailability?.confineAvailable === false
+          ? ['read-only', 'workspace-write']
+          : [],
+      },
       { key: 'jev', label: `⚡ ${this.copy.settingJev}`, options: ['off', 'on'] },
       { key: 'jevKey', label: `🔑 ${this.copy.settingJevKey}`, text: true },
       { key: 'soul', label: `🎭 ${this.copy.settingSoul}`, options: souls.length ? souls : [this.values.soul || '-'] }
@@ -352,8 +361,16 @@ export class SettingsDialog {
 
   change(direction = 1) {
     const field = this.fields[this.index];
-    const current = field.options.indexOf(this.values[field.key]);
-    const next = field.options[(Math.max(0, current) + direction + field.options.length) % field.options.length];
+    const blocked = new Set(field.blocked || []);
+    const options = field.options;
+    let index = options.indexOf(this.values[field.key]);
+    let next = options[Math.max(0, index)];
+    for (let step = 0; step < options.length; step += 1) {
+      index = (Math.max(-1, index) + direction + options.length) % options.length;
+      next = options[index];
+      if (!blocked.has(next)) break;
+    }
+    if (blocked.has(next)) return;
     this.values[field.key] = next;
     if (field.key === 'mode') {
       const category = next === 'daily' ? 'daily' : 'coding';
@@ -408,13 +425,18 @@ export class SettingsDialog {
       const value = field.text
         ? (draft ? '•'.repeat(Math.min(draft.length, 12)) : (this.jevHasKey ? this.copy.settingJevKeySet : this.copy.settingJevKeyEmpty))
         : (this.copy.settingValues[this.values[field.key]] || this.values[field.key]);
-      return joinSides(field.label, value, innerWidth - 4);
+      const blocked = new Set(field.blocked || []);
+      const unavailable = blocked.has(this.values[field.key]);
+      const shown = unavailable ? `${value} · ${this.copy.sandboxUnavailableTag || 'NO SANDBOX'}` : value;
+      return joinSides(field.label, shown, innerWidth - 4);
     });
+    const sandboxBlocked = this.values.sandboxAvailability?.confineAvailable === false;
     return modalFrame([
       fill(bold(color.accent(this.copy.startupSettings)), innerWidth, color.overlayBg),
       color.overlayBg(' '.repeat(innerWidth)),
       ...rows.map((text, index) => fill(index === this.index ? color.selectionBg(bold(color.text(`› ${text}`))) : `  ${color.muted(text)}`, innerWidth, color.overlayBg)),
       color.overlayBg(' '.repeat(innerWidth)),
+      ...(sandboxBlocked ? [fill(color.warning(truncateToWidth(this.copy.sandboxUnavailableHint || '', innerWidth, '…')), innerWidth, color.overlayBg)] : []),
       fill(color.dim(this.copy.settingsClose), innerWidth, color.overlayBg)
     ], width);
   }

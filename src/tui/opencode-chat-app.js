@@ -629,6 +629,7 @@ export async function runOpenCodeTui({ runtime, sessionId, model, safeMode = tru
             : state.reasoningEffort || 'high',
         approval: state.approvalMode || 'auto',
         sandbox: state.sandboxMode || 'workspace-write',
+        sandboxAvailability: state.sandboxAvailability || null,
         jev: state.jevReviewEnabled ? 'on' : 'off',
         jevHasKey: state.jevReviewHasKey === true,
         soul: state.activeSoul || souls.find((soul) => soul.category === soulCategory && soul.active)?.name || '-'

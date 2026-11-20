@@ -790,7 +790,7 @@ export const zh = {
   execution: "执行",
   mode: "模式",
   executionModeHelp:
-    "日常：通用对话与轻量任务。编码：面向代码任务，支持直接编辑与按需调用 Subagent。",
+    "日常：通用对话与轻量任务。编码：面向代码任务，支持直接编辑与按需调用 Subagent。协作组：派工人到隔离 worktree，过审再合回。",
   maxSteps: "最大步数",
   webSearch: "联网搜索",
   decision: "决策",
@@ -913,6 +913,10 @@ export const zh = {
   defaultShell: "默认 Shell",
   defaultShellHelp: "run 工具使用的 Shell（bash、PowerShell、zsh 或 cmd）。",
   shellSandboxLockedDesc: "沙箱命令在 Linux 微虚拟机中运行，因此只能使用 Bash。",
+  shellSandboxOsSeatbeltDesc: "命令在本机 shell 上运行，并由 macOS Seatbelt 隔离。",
+  shellSandboxOsLandlockDesc: "命令在本机 shell 上运行，并由 Linux Landlock 隔离。",
+  shellSandboxUnavailableDesc: "当前沙箱档无法执行。装上 Microsandbox 之前，命令不会在本机运行。",
+  sandboxModeUnavailableDesc: "本机没有可用沙箱，此档无法执行。安装 Microsandbox，或改用危险完全访问。",
   shellBashDesc: "Linux 与 macOS 常用默认 Shell。",
   shellPowershellDesc: "Windows 推荐使用。",
   shellZshDesc: "macOS 与 Linux 上的增强 Bourne Shell。",
@@ -937,7 +941,7 @@ export const zh = {
   approvalModeHelp:
     "审阅：常规文件改动和非只读命令先确认。自动：可恢复文件改动、Windows 上明确的测试/构建/格式化命令，以及受 OS 沙箱约束的常规命令直接执行，不再逐条调用 LLM 审阅；安装/发布、推送、系统操作、递归删除、工作区外路径和沙箱提权仍需确认，作用域不透明的脚本命令仍会审阅。完全访问：跳过常规审阅，但确定性硬门禁仍需确认。Git 使用变更记录，非 Git 使用会话 checkpoint，均可从变更卡撤销。沙箱为只读时隐藏常规审阅（写操作已被围栏挡住）。",
   sandboxModeHelp:
-    "仅 Linux/macOS 生效。只读：命令无法写盘。工作区可写：可写当前工作区。危险完全访问：关闭 OS 沙箱围栏。Windows 忽略此设置。",
+    "只读：命令无法写盘。工作区可写：可写当前工作区。危险完全访问：关闭沙箱，命令在本机运行。没有 Microsandbox 时，Windows 上前两档不可用；macOS 和 Linux 会改用 Seatbelt 或 Landlock。",
 
   // Misc
   backToTop: "回到顶部",

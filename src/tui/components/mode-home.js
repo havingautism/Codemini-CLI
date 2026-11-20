@@ -94,10 +94,12 @@ export class ModeHome {
     const logo = width >= 68 && height >= 20 ? LOGO : ['◆ CODEMINI ◆'];
     const access = String(this.state.approvalMode || (this.safeMode ? 'auto' : 'full_access'));
     const accessStyle = access === 'full_access' ? color.error : access === 'review' ? color.warning : color.success;
+    const sandbox = String(this.state.sandboxMode || '-');
+    const sandboxUnavailable = this.state.sandboxAvailability?.confineAvailable === false && sandbox !== 'danger-full-access';
     const meta = [
       badge(color.accent('◆'), this.state.model || this.model || '-'),
       badge(accessStyle('●'), access.toUpperCase(), accessStyle),
-      badge(color.purple('◇'), this.state.sandboxMode || '-'),
+      badge(sandboxUnavailable ? color.warning('◇') : color.purple('◇'), sandboxUnavailable ? `${sandbox} · ${this.copy.sandboxUnavailableTag || 'NO SANDBOX'}` : sandbox, sandboxUnavailable ? color.warning : color.text),
       badge(color.cyan('›'), this.state.shell || '-')
     ].join('  ');
     const workspace = String(this.locationPath || this.state.workspaceRoot || process.cwd());
@@ -107,6 +109,9 @@ export class ModeHome {
       lines.push(center(row(this.actions[index], panelWidth, index === this.index), width));
     }
     lines.push('', center(truncateToWidth(meta, panelWidth, '…'), width));
+    if (sandboxUnavailable) {
+      lines.push(center(color.warning(truncateToWidth(this.copy.sandboxUnavailableHint || '', panelWidth, '…')), width));
+    }
     if (height >= 18) lines.push(center(`${color.dim('⌂')} ${color.muted(truncateToWidth(workspace, panelWidth - 2, '…'))}`, width));
     lines.push('', center(color.dim(this.loading ? this.copy.entering : this.copy.homeKeys), width));
     const padding = [...Array(Math.max(0, Math.floor((height - lines.length) / 2))).fill(''), ...lines];

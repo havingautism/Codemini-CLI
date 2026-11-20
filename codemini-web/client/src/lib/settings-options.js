@@ -9,6 +9,7 @@ import {
   ShieldWarning,
   Terminal,
   TerminalWindow,
+  TreeStructure,
   Warning,
   WindowsLogo,
 } from "./icons.js";
@@ -27,6 +28,13 @@ export function getExecutionModeOptions() {
       label: t("planMode"),
       description: t("planModeDesc"),
       icon: Code,
+    },
+    {
+      value: "crew",
+      label: t("crewMode"),
+      description: t("crewModeDesc"),
+      icon: TreeStructure,
+      disabled: true,
     },
   ];
 }
@@ -54,7 +62,12 @@ export function getApprovalModeOptions() {
   ];
 }
 
-export function getSandboxModeOptions() {
+export function shellLockedToMicroVm({ sandboxMode = "danger-full-access", availability = null } = {}) {
+  return sandboxMode !== "danger-full-access" && availability?.backend === "vm";
+}
+
+export function getSandboxModeOptions({ availability = null } = {}) {
+  const confineUnavailable = availability?.confineAvailable === false;
   return [
     {
       value: "read-only",
@@ -74,7 +87,14 @@ export function getSandboxModeOptions() {
       description: t("sandboxDangerFullAccessModeDesc"),
       icon: Warning,
     },
-  ];
+  ].map((option) => {
+    if (!confineUnavailable || option.value === "danger-full-access") return option;
+    return {
+      ...option,
+      disabled: true,
+      description: t("sandboxModeUnavailableDesc"),
+    };
+  });
 }
 
 export function getProviderOptions() {
@@ -123,7 +143,8 @@ export function getSearchProviderOptions() {
   ];
 }
 
-export function getShellOptions({ sandboxMode = "danger-full-access" } = {}) {
+export function getShellOptions({ sandboxMode = "danger-full-access", availability = null } = {}) {
+  const lockBash = shellLockedToMicroVm({ sandboxMode, availability });
   return [
     {
       value: "bash",
@@ -151,7 +172,7 @@ export function getShellOptions({ sandboxMode = "danger-full-access" } = {}) {
     },
   ].map((option) => ({
     ...option,
-    disabled: sandboxMode !== "danger-full-access" && option.value !== "bash",
+    disabled: lockBash && option.value !== "bash",
   }));
 }
 

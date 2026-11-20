@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   __setSandboxProbeTestHooks,
   canUseOsConfine,
+  inspectSandboxAvailability,
   rememberOsFallback,
   selectSandboxBackend,
 } from '../src/core/sandbox-probe.js';
@@ -13,7 +14,10 @@ import { __setSandboxOsTestHooks } from '../src/core/sandbox-os.js';
 import { __setSandboxRuntimeTestHooks, SandboxUnavailableError } from '../src/core/sandbox-runtime.js';
 
 test('selectSandboxBackend uses OS confine when msb is missing on unix', () => {
-  __setSandboxProbeTestHooks({ resolveMsbBinary: () => null });
+  __setSandboxProbeTestHooks({
+    resolveMsbBinary: () => null,
+    osConfineReady: (platform) => platform === 'darwin' || platform === 'linux',
+  });
   try {
     assert.equal(selectSandboxBackend({ preferred: 'auto', platform: 'darwin', arch: 'x64' }), 'os');
     assert.equal(selectSandboxBackend({ preferred: 'auto', platform: 'linux', arch: 'x64' }), 'os');
@@ -22,6 +26,43 @@ test('selectSandboxBackend uses OS confine when msb is missing on unix', () => {
     assert.equal(selectSandboxBackend({ preferred: 'os', platform: 'win32' }), 'none');
     assert.equal(canUseOsConfine('darwin'), true);
     assert.equal(canUseOsConfine('win32'), false);
+  } finally {
+    __setSandboxProbeTestHooks(null);
+  }
+});
+
+test('inspectSandboxAvailability reports the backend the UI can show', () => {
+  __setSandboxProbeTestHooks({
+    resolveMsbBinary: () => null,
+    osConfineReady: (platform) => platform === 'darwin' || platform === 'linux',
+  });
+  try {
+    const windows = inspectSandboxAvailability({ platform: 'win32', arch: 'x64' });
+    assert.equal(windows.backend, 'none');
+    assert.equal(windows.confineAvailable, false);
+    const mac = inspectSandboxAvailability({ platform: 'darwin', arch: 'arm64' });
+    assert.equal(mac.backend, 'os');
+    assert.equal(mac.osKind, 'seatbelt');
+    assert.equal(mac.confineAvailable, true);
+  } finally {
+    __setSandboxProbeTestHooks(null);
+  }
+  __setSandboxProbeTestHooks({ resolveMsbBinary: () => null, osConfineReady: () => false });
+  try {
+    const mac = inspectSandboxAvailability({ platform: 'darwin', arch: 'arm64' });
+    const linux = inspectSandboxAvailability({ platform: 'linux', arch: 'x64' });
+    assert.equal(mac.backend, 'none');
+    assert.equal(mac.confineAvailable, false);
+    assert.equal(linux.backend, 'none');
+    assert.equal(linux.confineAvailable, false);
+  } finally {
+    __setSandboxProbeTestHooks(null);
+  }
+  __setSandboxProbeTestHooks({ resolveMsbBinary: () => '/usr/local/bin/msb' });
+  try {
+    const vm = inspectSandboxAvailability({ platform: 'win32', arch: 'x64' });
+    assert.equal(vm.backend, 'vm');
+    assert.equal(vm.confineAvailable, true);
   } finally {
     __setSandboxProbeTestHooks(null);
   }

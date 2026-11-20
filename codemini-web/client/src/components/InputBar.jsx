@@ -455,19 +455,22 @@ function ApprovalModeSelector({ sessionId, current, disabled = false }) {
 function SandboxModeSelector({
   sessionId,
   current,
+  availability = null,
   onChange,
   disabled = false,
 }) {
   const [open, setOpen] = useState(false);
   const [switching, setSwitching] = useState(false);
   const [error, setError] = useState("");
-  const MODE_OPTIONS = getSandboxModeOptions();
+  const MODE_OPTIONS = getSandboxModeOptions({ availability });
   const active =
     MODE_OPTIONS.find((m) => m.value === current) || MODE_OPTIONS[0];
   const ActiveIcon = active.icon;
+  const unavailable = active.disabled === true;
 
   const handleSelect = async (mode) => {
     if (!mode || mode === current || switching || disabled) return;
+    if (MODE_OPTIONS.find((item) => item.value === mode)?.disabled) return;
     setSwitching(true);
     setError("");
     try {
@@ -495,14 +498,20 @@ function SandboxModeSelector({
           )}
           disabled={disabled || switching}
           aria-busy={switching}
-          title={disabled ? t("switchModeDisabled") : t("switchSandboxMode")}
+          title={
+            unavailable
+              ? active.description
+              : disabled
+                ? t("switchModeDisabled")
+                : t("switchSandboxMode")
+          }
         >
           {switching ? (
             <CircleNotch size={13} className="animate-spin" />
           ) : (
             <ActiveIcon size={13} />
           )}
-          <span className="truncate">{active.label}</span>
+          <span className={cn("truncate", unavailable && "text-amber-700 dark:text-amber-400")}>{active.label}</span>
           <CaretDown size={11} />
         </button>
       </PopoverTrigger>
@@ -515,6 +524,11 @@ function SandboxModeSelector({
         <div className="px-0.5 pb-1.5 text-[11px] font-medium text-muted-foreground">
           {t("sandboxMode")}
         </div>
+        {unavailable ? (
+          <div className="px-0.5 pb-1.5 text-[11px] leading-snug text-amber-700 dark:text-amber-400">
+            {t("sandboxModeUnavailableDesc")}
+          </div>
+        ) : null}
         <ToggleGroup
           type="single"
           value={current}
@@ -529,6 +543,7 @@ function SandboxModeSelector({
               <ToggleGroupItem
                 key={opt.value}
                 value={opt.value}
+                disabled={opt.disabled}
                 className="gap-2 rounded-md data-[state=on]:shadow-none"
               >
                 <Icon data-icon="inline-start" className="mt-0.5" />
@@ -2112,6 +2127,7 @@ export function InputBar({
               <SandboxModeSelector
                 sessionId={rs.sessionId}
                 current={sandboxMode}
+                availability={rs.sandboxAvailability || null}
                 onChange={actions.setSandboxMode}
                 disabled={inputLocked}
               />
