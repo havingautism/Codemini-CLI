@@ -85,20 +85,6 @@ function tools(dir, actor) {
   }).handlers;
 }
 
-test('crew_inbox wraps a one-line letter so each line stays readable', async () => {
-  await withTempDir(async (dir) => {
-    await initCrew(dir);
-    const body = '甲'.repeat(400);
-    const sent = await tools(dir, 'coordinator').crew_send({ to: 'ada', subject: 'long', body });
-    assert.equal(sent.ok, true);
-    const inbox = await tools(dir, 'ada').crew_inbox();
-    assert.equal(inbox.text.replace(/\n/g, ''), `From coordinator to ada: long${body}`);
-    for (const line of inbox.text.split('\n')) {
-      assert.ok(line.length <= 220, line.length);
-    }
-  });
-});
-
 test('crew_send stores the full body and does not mark it delivered', async () => {
   await withTempDir(async (dir) => {
     await initCrew(dir);

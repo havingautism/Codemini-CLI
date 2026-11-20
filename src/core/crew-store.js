@@ -802,32 +802,14 @@ export function markCrewInboxDelivered(cwd, ids = [], { actor = '' } = {}) {
   });
 }
 
-export const CREW_TOOL_LINE_WIDTH = 200;
-
-export function wrapCrewToolText(value, width = CREW_TOOL_LINE_WIDTH) {
-  const text = String(value || '').replace(/\r\n?/g, '\n');
-  const limit = Number.isFinite(Number(width)) ? Math.max(1, Math.floor(Number(width))) : CREW_TOOL_LINE_WIDTH;
-  const lines = [];
-  for (const line of text.split('\n')) {
-    if (line.length <= limit) {
-      lines.push(line);
-      continue;
-    }
-    for (let index = 0; index < line.length; index += limit) {
-      lines.push(line.slice(index, index + limit));
-    }
-  }
-  return lines.join('\n');
-}
-
 export async function formatCrewInboxMessages(cwd, records = []) {
   const blocks = [];
   for (const record of records) {
     const body = await readCrewInboxFile(cwd, record);
-    blocks.push(wrapCrewToolText([
+    blocks.push([
       `From ${record.from} to ${record.to}${record.subject ? `: ${record.subject}` : ''}`,
       body || '(message file missing)',
-    ].join('\n')));
+    ].join('\n'));
   }
   return blocks.join('\n\n');
 }

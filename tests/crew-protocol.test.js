@@ -328,18 +328,6 @@ test('crew_plan returns ledger fields and status expands only undispatched missi
     assert.match(summary, /Paths: frontend\/\*\*/);
     assert.match(summary, /Depends on: m1/);
     assert.match(summary, /Context: wait for the flag/);
-    const long = '约'.repeat(400);
-    const wrapped = formatCrewStatusSummary({
-      ok: true,
-      base: 'main',
-      fetchedAt: 't',
-      counts: {},
-      missions: [{ id: 'm9', status: 'planned', kind: 'build', title: 'Long', paths: ['a.ts'], context: long }],
-    });
-    assert.equal(wrapped.replace(/Context: /, '').replace(/\n {2}/g, '').includes(long), true);
-    for (const line of wrapped.split('\n')) {
-      assert.ok(line.length <= 220, line.length);
-    }
   } finally {
     if (previous === undefined) delete process.env.CODEMINI_GLOBAL_DIR;
     else process.env.CODEMINI_GLOBAL_DIR = previous;
