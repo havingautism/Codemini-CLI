@@ -854,7 +854,7 @@ export function buildCrewModePromptBlock(crewState) {
     'After you dispatch, end the turn. Do not keep investigating in the parent.',
     'Merged and abandoned missions cannot take another worker. crew_finish removes clean worktrees and those finished mission and worker records after every mission is terminal. Dirty worktrees stay. It does not turn Crew off.',
     'Tell workers to use paths relative to their worktree cwd. Do not pass absolute paths from the parent checkout.',
-    'Worker tasks should ask for real build/test verification when the project has scripts. Do not tell workers to skip installing dependencies — they install only inside their worktree, never in the parent checkout. New dependencies must update package.json and the lockfile in the commit; node_modules is never committed. After land, the user installs on the main checkout themselves.',
+    'Worker tasks should ask for real build/test verification when the project has scripts. Do not tell workers to skip installing dependencies — they install only inside their worktree, never in the parent checkout. New dependencies must update the dependency manifest and lockfile in the commit; installed dependency directories (such as node_modules or .venv) and build output are never committed. After land, the user installs on the main checkout themselves.',
   ].join('\n');
 }
 

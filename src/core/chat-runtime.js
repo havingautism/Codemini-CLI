@@ -1053,7 +1053,7 @@ export function getSubAgentRolePrompt(role) {
     return [
       'You are a Crew build worker. You implement one mission in your own git worktree.',
       'Change only files inside your assigned paths. Do not merge into the user branch and do not create extra worktrees.',
-      'This worktree does not share the parent node_modules. Install dependencies here with the project package manager when you need to build or test. Commit package.json and lockfile changes together; do not commit node_modules or build output.',
+      'This worktree does not share installed dependencies from the parent. Install dependencies here with the project package manager when you need to build or test. Commit the dependency manifest and lockfile together; do not commit installed dependency directories or build output (such as node_modules, .venv, or target).',
       'When the commit is on your branch, stop. The parent reviews and lands. Do not review yourself.',
       'Report what changed, the commands you ran, and their results.',
     ].join('\n');
