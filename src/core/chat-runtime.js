@@ -6672,9 +6672,15 @@ async function askModelInSession({
       }
     });
   } catch (error) {
-    finishHarnessEpisode(signal?.aborted || error?.name === 'AbortError' ? 'aborted' : 'failed', error?.message || String(error));
-    if (signal?.aborted || error?.name === 'AbortError') {
+    finishHarnessEpisode(signal?.aborted ? 'aborted' : 'failed', error?.message || String(error));
+    // A provider can abort its own request while our turn is still active.
+    // Only cancellation of the turn itself can create a continuation session.
+    if (signal?.aborted) {
       await handleAbortAftermath();
+    } else if (error?.name === 'AbortError') {
+      throw Object.assign(new Error(`Model request interrupted: ${error.message}`, { cause: error }), {
+        code: 'MODEL_REQUEST_INTERRUPTED',
+      });
     }
     throw error;
   }

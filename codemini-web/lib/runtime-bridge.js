@@ -77,7 +77,7 @@ function summarizeHistoricalToolMessage(message) {
 }
 
 function isAbortLikeError(err) {
-  if (!err) return false;
+  if (!err || err.code === 'MODEL_REQUEST_INTERRUPTED') return false;
   if (err.name === 'AbortError') return true;
   const message = String(err.message || err || '').trim();
   return /operation was aborted|request aborted|request released/i.test(message);
