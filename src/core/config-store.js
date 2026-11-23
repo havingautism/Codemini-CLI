@@ -4,7 +4,7 @@ import { TASK_DECISION_ASSISTANT_AVAILABLE } from './harness/availability.js';
 import { getConfigFilePath } from './paths.js';
 import { atomicWriteUtf8 } from './staged-write.js';
 import { normalizeReplyLanguage } from './reply-language.js';
-import { normalizeShellName, resolveShellContext } from './shell-profile.js';
+import { normalizeShellName } from './shell-profile.js';
 import {
   MEMORY_ALWAYS_ALLOW_TOOLS,
   STAGED_WRITE_ALWAYS_ALLOW_TOOLS
@@ -560,7 +560,6 @@ function normalizePolicyLists(config) {
   next.jev.enabled = next.jev.enabled === true || String(next.jev.enabled || '').toLowerCase() === 'true';
   next.jev.api_key = String(next.jev.api_key || '').trim();
   next.jev.model = String(next.jev.model || DEFAULT_CONFIG.jev.model).trim() || DEFAULT_CONFIG.jev.model;
-  next.shell.default = resolveShellContext(next, { platform: process.platform }).shell;
   return next;
 }
 

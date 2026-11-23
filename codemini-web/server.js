@@ -28,7 +28,7 @@ import {
   setConfigValue,
   getConfigValue,
 } from "../src/core/config-store.js";
-import { inspectSandboxAvailability } from "../src/core/sandbox-probe.js";
+import { resolveSandboxAvailability } from "../src/core/sandbox-policy.js";
 import {
   loadWebuiActiveProjects,
   normalizeProjectDirKey,
@@ -619,7 +619,7 @@ function getConfigStatus(config) {
     baseUrl,
     hasApiKey: !!apiKey,
     reason: setupRequired ? "gateway_not_configured" : "",
-    sandboxAvailability: inspectSandboxAvailability(),
+    sandboxAvailability: resolveSandboxAvailability(config),
   };
 }
 

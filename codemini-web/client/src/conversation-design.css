@@ -247,6 +247,15 @@ textarea, input {
   line-height: 1.85;
 }
 
+/* Keep more of the conversation visible on standard and short desktop viewports. */
+@media (max-width: 1920px), (max-height: 1080px) {
+  :root[data-theme] .codemini-chat-session .msg-body,
+  :root[data-theme] .codemini-chat-session .msg-body.codemini-assistant-markdown {
+    font-size: 15px;
+    line-height: 1.7;
+  }
+}
+
 .codemini-chat-session .msg-body.codemini-assistant-markdown {
   font-family: var(--font-chat);
   font-weight: 400;
@@ -293,11 +302,6 @@ textarea, input {
 
   .codemini-token-activity__chart {
     min-width: 560px;
-  }
-
-  :root[data-theme] .codemini-chat-session .msg-body,
-  :root[data-theme] .codemini-chat-session .msg-body.codemini-assistant-markdown {
-    font-size: 15px;
   }
 }
 

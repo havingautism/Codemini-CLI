@@ -462,15 +462,23 @@ function SandboxModeSelector({
   const [open, setOpen] = useState(false);
   const [switching, setSwitching] = useState(false);
   const [error, setError] = useState("");
-  const MODE_OPTIONS = getSandboxModeOptions({ availability });
-  const active =
-    MODE_OPTIONS.find((m) => m.value === current) || MODE_OPTIONS[0];
-  const ActiveIcon = active.icon;
-  const unavailable = active.disabled === true;
+  const MODE_OPTIONS = getSandboxModeOptions({ sandboxMode: current, availability });
+  const selected =
+    MODE_OPTIONS.find((m) => m.value === current)
+    || getSandboxModeOptions().find((m) => m.value === current)
+    || MODE_OPTIONS[0];
+  const unavailable = availability?.confineAvailable === false && current !== "danger-full-access";
+  const activeLabel = availability?.hostFallback
+    ? t("sandboxHostFallbackMode")
+    : unavailable ? t("sandboxUnavailableMode") : selected.label;
+  const ActiveIcon = selected.icon;
+  const sandboxNotice = availability?.hostFallback
+    ? t("shellSandboxHostFallbackDesc")
+    : unavailable ? t("sandboxModeUnavailableDesc") : "";
 
   const handleSelect = async (mode) => {
     if (!mode || mode === current || switching || disabled) return;
-    if (MODE_OPTIONS.find((item) => item.value === mode)?.disabled) return;
+    if (!MODE_OPTIONS.some((item) => item.value === mode)) return;
     setSwitching(true);
     setError("");
     try {
@@ -500,7 +508,7 @@ function SandboxModeSelector({
           aria-busy={switching}
           title={
             unavailable
-              ? active.description
+              ? sandboxNotice
               : disabled
                 ? t("switchModeDisabled")
                 : t("switchSandboxMode")
@@ -511,7 +519,7 @@ function SandboxModeSelector({
           ) : (
             <ActiveIcon size={13} />
           )}
-          <span className={cn("truncate", unavailable && "text-amber-700 dark:text-amber-400")}>{active.label}</span>
+          <span className={cn("truncate", unavailable && "text-amber-700 dark:text-amber-400")}>{activeLabel}</span>
           <CaretDown size={11} />
         </button>
       </PopoverTrigger>
@@ -524,9 +532,9 @@ function SandboxModeSelector({
         <div className="px-0.5 pb-1.5 text-[11px] font-medium text-muted-foreground">
           {t("sandboxMode")}
         </div>
-        {unavailable ? (
+        {sandboxNotice ? (
           <div className="px-0.5 pb-1.5 text-[11px] leading-snug text-amber-700 dark:text-amber-400">
-            {t("sandboxModeUnavailableDesc")}
+            {sandboxNotice}
           </div>
         ) : null}
         <ToggleGroup
@@ -543,7 +551,6 @@ function SandboxModeSelector({
               <ToggleGroupItem
                 key={opt.value}
                 value={opt.value}
-                disabled={opt.disabled}
                 className="gap-2 rounded-md data-[state=on]:shadow-none"
               >
                 <Icon data-icon="inline-start" className="mt-0.5" />

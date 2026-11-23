@@ -852,6 +852,8 @@ function Shell() {
             open={state.configOpen}
             onOpenChange={actions.setConfigOpen}
             status={state.configStatus}
+            sandboxAvailability={rs.sandboxAvailability}
+            sandboxMode={rs.sandboxMode}
             reasoningSyncKey={reasoningSyncKey}
             onSaved={async () => {
               await Promise.all([

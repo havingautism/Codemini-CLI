@@ -1,5 +1,4 @@
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
 import * as pty from 'node-pty';
 import { resolveShell } from '../../src/core/shell.js';
 import { ensureNodePtySpawnHelperExecutable } from './node-pty-spawn-helper.js';
@@ -11,20 +10,6 @@ import {
 ensureNodePtySpawnHelperExecutable();
 
 const terminals = new Map();
-let detectedPwshCommand;
-
-function findPowerShell7() {
-  if (detectedPwshCommand !== undefined) return detectedPwshCommand;
-  const result = spawnSync('where.exe', ['pwsh.exe'], {
-    encoding: 'utf8',
-    windowsHide: true,
-  });
-  detectedPwshCommand =
-    result.status === 0
-      ? String(result.stdout || '').split(/\r?\n/).find(Boolean) || ''
-      : '';
-  return detectedPwshCommand;
-}
 
 function shellLabel(shellDefault) {
   const spec = resolveShell(shellDefault);
@@ -40,9 +25,8 @@ function interactiveShell(shellDefault) {
   if (process.platform === 'win32') {
     if (label === 'cmd') return { command: spec.command, args: ['/d'] };
     if (label === 'bash') return { command: spec.command, args: ['--login'] };
-    const powerShell7 = findPowerShell7();
     return {
-      command: powerShell7 || spec.command,
+      command: spec.command,
       args: [
         '-NoLogo',
         '-NoProfile',

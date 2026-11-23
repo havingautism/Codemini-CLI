@@ -35,7 +35,7 @@ test('Git auto review auto-allows the screenshot command unless it requests host
         assert.equal(reviewed.sandbox.enabled, !escalate);
         assert.equal(reviewed.sandbox.mode, escalate ? 'danger-full-access' : 'workspace-write');
         assert.equal(reviewed.sandbox.network, escalate ? 'allow-all' : 'none');
-        assert.equal(reviewed.shell.default, escalate && process.platform !== 'win32' ? 'bash' : 'powershell');
+        assert.equal(reviewed.shell.default, escalate && process.platform === 'win32' ? 'powershell' : 'bash');
         if (escalate) assert.match(capability, /Sandbox escalation.*Run tests on the host/);
         return low;
       },

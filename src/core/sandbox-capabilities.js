@@ -130,7 +130,7 @@ export function sandboxCapabilityKey(config = {}, { cwd = process.cwd(), platfor
   const image = context.sandbox.backend === 'vm'
     ? String(config?.sandbox?.image || 'node:22-bookworm').trim() || 'node:22-bookworm'
     : 'host';
-  return `${context.sandbox.backend || 'none'}|${context.sandbox.mode || 'none'}|${execPlatform}|${image}`;
+  return `${context.sandbox.backend || 'none'}|${context.sandbox.mode || 'none'}|${execPlatform}|${image}|${context.shell}`;
 }
 
 /**

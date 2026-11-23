@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { canUseOsConfine, rememberOsFallback } from './sandbox-probe.js';
+import { canUseOsConfine, rememberOsFallback, rememberWindowsVmFailure } from './sandbox-probe.js';
 import { resolveSandboxPolicy } from './sandbox-policy.js';
 import {
   SandboxUnavailableError,
@@ -61,13 +61,16 @@ export async function prepareSandboxExecution({
 } = {}) {
   const policy = resolveSandboxPolicy({ config, cwd, platform, mode });
   if (!policy.enabled) {
+    if (policy.hostFallback && binShell !== 'pwsh') {
+      throw unavailableError(policy, 'The shell switched to Windows PowerShell. Start a new turn so the command can be generated and reviewed for the host.');
+    }
     return { kind: 'host', policy, wrapped: false };
   }
 
   if (policy.backend === 'vm') {
     try {
       await ensureVmSandbox({ policy, config, port });
-      const wrapped = createSandboxProcess({ command, config, cwd, mode, port });
+      const wrapped = createSandboxProcess({ command, config, policy, port });
       if (!wrapped) throw unavailableError(policy);
       return {
         kind: 'vm',
@@ -88,6 +91,13 @@ export async function prepareSandboxExecution({
           mode,
         });
       }
+      if (platform === 'win32' && error instanceof SandboxUnavailableError) {
+        rememberWindowsVmFailure({ workspaceRoot: policy.workspaceRoot, image: config?.sandbox?.image });
+        if (resolveSandboxPolicy({ config, cwd, platform, mode }).hostFallback) {
+          throw unavailableError(policy, 'Microsandbox failed to start. Start a new turn to run and review commands in Windows PowerShell.');
+        }
+        throw unavailableError(policy, 'Microsandbox failed to start. PowerShell is selected for Windows host commands. Choose full system access to run on the host.');
+      }
       throw error;
     }
   }
@@ -107,7 +117,7 @@ export async function prepareSandboxExecution({
   throw unavailableError(
     policy,
     platform === 'win32'
-      ? ' Windows has no Landlock/Seatbelt fallback; install Microsandbox or set sandbox.enabled false.'
+      ? ' Windows has no Landlock/Seatbelt fallback. Choose full system access to run in PowerShell on the host.'
       : '',
   );
 }

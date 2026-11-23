@@ -72,8 +72,8 @@ import * as api from "@/hooks/use-api.js";
 import { useRotatingLabel } from "@/hooks/use-rotating-label.js";
 import { executionModeSkillContext } from "@/lib/skill-visibility.js";
 import {
-  useApp,
   useAppActions,
+  useCrewActive,
   useCurrentSessionId,
   useRuntimeMode,
 } from "@/context/app-context.jsx";
@@ -2206,8 +2206,7 @@ export const MessageBubble = memo(function MessageBubble({
   turnActive = false,
   retryAllowed = false,
 }) {
-  const { state } = useApp();
-  const crewActive = Boolean(state.runtimeState?.crewActive);
+  const crewActive = useCrewActive();
   const suppressCrewTodos = shouldSuppressCrewTaskTodos({ crewActive });
   const actions = useAppActions();
   const {

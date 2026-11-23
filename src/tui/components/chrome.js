@@ -348,7 +348,10 @@ export class SettingsDialog {
       {
         key: 'sandbox',
         label: `🔒 ${this.copy.settingSandbox}`,
-        options: ['read-only', 'workspace-write', 'danger-full-access'],
+        options: ['read-only', 'workspace-write', 'danger-full-access'].filter((option) =>
+          option === 'danger-full-access'
+          || (this.values.sandboxAvailability?.confineAvailable !== false
+            && (option !== 'workspace-write' || this.values.sandbox !== 'danger-full-access'))),
         blocked: this.values.sandboxAvailability?.confineAvailable === false
           ? ['read-only', 'workspace-write']
           : [],
@@ -430,13 +433,15 @@ export class SettingsDialog {
       const shown = unavailable ? `${value} · ${this.copy.sandboxUnavailableTag || 'NO SANDBOX'}` : value;
       return joinSides(field.label, shown, innerWidth - 4);
     });
-    const sandboxBlocked = this.values.sandboxAvailability?.confineAvailable === false;
+    const sandboxHint = this.values.sandboxAvailability?.hostFallback
+      ? this.copy.sandboxHostFallbackHint
+      : this.values.sandboxAvailability?.confineAvailable === false ? this.copy.sandboxUnavailableHint : '';
     return modalFrame([
       fill(bold(color.accent(this.copy.startupSettings)), innerWidth, color.overlayBg),
       color.overlayBg(' '.repeat(innerWidth)),
       ...rows.map((text, index) => fill(index === this.index ? color.selectionBg(bold(color.text(`› ${text}`))) : `  ${color.muted(text)}`, innerWidth, color.overlayBg)),
       color.overlayBg(' '.repeat(innerWidth)),
-      ...(sandboxBlocked ? [fill(color.warning(truncateToWidth(this.copy.sandboxUnavailableHint || '', innerWidth, '…')), innerWidth, color.overlayBg)] : []),
+      ...(sandboxHint ? [fill(color.warning(truncateToWidth(sandboxHint, innerWidth, '…')), innerWidth, color.overlayBg)] : []),
       fill(color.dim(this.copy.settingsClose), innerWidth, color.overlayBg)
     ], width);
   }

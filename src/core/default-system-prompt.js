@@ -46,19 +46,24 @@ Tool: grep({"pattern":"loginUser","path":"src"})`;
     ? `For a large or multi-file code patch, use apply_patch with one escaped patch_text string:
 Tool: apply_patch({"patch_text":"*** Begin Patch\\n*** Update File: ${path.join('src', 'auth', 'service.ts').replace(/\\/g, '/')}\\n@@\\n-export const enabled = false;\\n+export const enabled = true;\\n*** End Patch"})`
     : '';
-  const accessRule = shellContext.sandbox.mode === 'read-only'
+  const unavailable = shellContext.sandbox.enabled && shellContext.sandbox.backend === 'none';
+  const accessRule = unavailable
+    ? 'The requested shell sandbox is unavailable. Shell commands are blocked in this mode. Continue with available file tools or ask the user to choose full system access for host shell commands.'
+    : shellContext.sandbox.mode === 'read-only'
     ? 'The sandbox is read-only: inspect and verify only. Request wider sandbox permissions with a justification only when the user explicitly authorized a mutation.'
     : shellContext.sandbox.mode === 'workspace-write'
       ? 'Writes are confined to the project workspace and temporary directory. Request wider sandbox permissions with a justification only when the task explicitly requires access outside them.'
       : 'No filesystem sandbox is active. Keep writes and destructive commands narrowly scoped to the user request.';
   const windowsVmEscalationHint = vm && platform === 'win32'
-    ? 'Current environment uses a Windows host and a Linux microVM for ordinary Bash commands. Host-installed native dependencies (for example node_modules bindings, Python wheels, or compiled Rust/C/C++ tools) may fail in the guest because of an OS/ABI mismatch. When that mismatch blocks a build, test, lint, or typecheck, retry the exact verification command with sandbox_permissions: "danger-full-access" and a concise justification; it will run on the Windows host through Windows PowerShell after LLM risk advice and explicit user approval. Do not escalate for ordinary code failures, missing project dependencies, or timeouts.'
+    ? `Current environment uses a Windows host and a Linux microVM. Host-installed native dependencies (for example node_modules bindings, Python wheels, or compiled Rust/C/C++ tools) may fail in the guest because of an OS/ABI mismatch. ${config.execution?.approval_mode === 'full_access'
+      ? 'When that mismatch blocks verification, ask the user to choose host sandbox permissions before running Windows PowerShell.'
+      : 'When that mismatch blocks verification, request sandbox_permissions: "danger-full-access" with justification to run the command in Windows PowerShell after approval.'} Treat ordinary code failures, missing project dependencies, and timeouts as separate issues.`
     : '';
   const sandboxHint = vm
     ? `Shell commands run inside a Linux microVM sandbox (${shellContext.sandbox.mode}); use project-relative paths and treat [sandbox: ...] errors as confinement failures. ${accessRule} ${windowsVmEscalationHint}`.trim()
     : osConfine
       ? `Shell commands run on the host under OS confinement (${platform === 'darwin' ? 'Seatbelt' : 'Landlock'}, ${shellContext.sandbox.mode}); use host paths and treat [sandbox: ...] errors as confinement failures. ${accessRule}`
-      : `Shell commands run directly on the host. ${accessRule}`;
+      : unavailable ? accessRule : `Shell commands run directly on the host. ${accessRule}`;
   const patchHint = [patchToolHint, sandboxHint].filter(Boolean).join('\n');
 
   return `# Tool call examples
@@ -92,7 +97,9 @@ function getEnvBlock(cwd = process.cwd(), config = {}, platform = process.platfo
   const commandPlatform = vm ? 'linux (Microsandbox guest)' : context.commandPlatform;
   const sandboxLabel = osConfine
     ? `${context.sandbox.mode} (${platform === 'darwin' ? 'Seatbelt' : 'Landlock'})`
-    : context.sandbox.mode;
+    : context.sandbox.enabled && context.sandbox.backend === 'none'
+      ? `${context.sandbox.mode} (unavailable)`
+      : context.sandbox.mode;
 
   if (vm) {
     return `<environment>
@@ -101,7 +108,7 @@ Is directory a git repo: ${isGitRepo ? 'Yes' : 'No'}
 Host platform: ${platform}
 Platform: ${commandPlatform}
 Shell: bash
-Network: unrestricted outbound access
+Network: ${config.sandbox?.network === 'allow-all' ? 'unrestricted outbound access' : 'restricted'}
 Sandbox: ${context.sandbox.mode}
 </environment>`;
   }
@@ -141,7 +148,7 @@ export function buildDefaultSystemPrompt(config = {}, options = {}) {
   const platform = options.platform || process.platform;
   const shellContext = resolveShellContext(config, { cwd, platform });
   return [
-    getShellSystemPrompt(shellContext.shell),
+    getShellSystemPrompt(shellContext.shell, shellContext.commandPlatform),
     getToolFewShotBlock(config, cwd, platform),
     getWebToolGuidance(config),
     getSearchFewShotBlock(config),

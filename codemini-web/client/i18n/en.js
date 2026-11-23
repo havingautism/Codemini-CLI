@@ -922,15 +922,18 @@ export const en = {
   shell: "Shell",
   defaultShell: "Default Shell",
   defaultShellHelp:
-    "Shell executable used by the run tool (bash, PowerShell, zsh, or cmd).",
+    "Shell used by the agent to run commands.",
   shellSandboxOsSeatbeltDesc: "Commands run in the host shell under macOS Seatbelt.",
   shellSandboxOsLandlockDesc: "Commands run in the host shell under Linux Landlock.",
   shellSandboxUnavailableDesc: "This sandbox mode cannot run commands. They stay refused until Microsandbox is installed.",
   sandboxModeUnavailableDesc: "No sandbox is available, so this mode cannot run commands. Install Microsandbox, or switch to danger full access.",
-  shellSandboxLockedDesc:
-    "Sandboxed commands run in a Linux microVM, so only Bash is available.",
+  shellSandboxMicroVmDesc: "Commands run inside the Linux sandbox image.",
+  shellSandboxHostFallbackDesc: "The sandbox is unavailable. Commands run in host PowerShell under the current approval mode.",
+  sandboxHostFallbackMode: "Host fallback",
+  sandboxUnavailableMode: "Sandbox unavailable",
+  shellSandboxWindowsFallbackDesc: "Windows PowerShell is selected. Choose Danger Full Access under Sandbox Access to run commands on the host.",
   shellBashDesc: "Default on Linux and macOS.",
-  shellPowershellDesc: "Recommended on Windows.",
+  shellPowershellDesc: "Use host PowerShell 7 (pwsh), or Windows PowerShell when pwsh is unavailable.",
   shellZshDesc: "Extended Bourne shell on macOS and Linux.",
   shellCmdDesc: "Classic Windows command prompt.",
   policy: "Policy",
@@ -952,7 +955,7 @@ export const en = {
   replyLanguageEn: "English",
   settingsUnsavedChanges: "Unsaved changes",
   approvalModeHelp:
-    "Review: confirm routine file changes and non-read-only commands. Auto: run recoverable file changes, explicit test/build/format commands on Windows, and routine commands confined by the OS sandbox directly, without per-command LLM review; installs and publishing, pushes, system operations, recursive deletion, outside-workspace paths, and sandbox escalation still need confirmation, while opaque script commands remain reviewed. Full access: skip routine review while deterministic hard gates still require confirmation. Git uses change history and non-Git uses session checkpoints; both can be undone from change cards. Read-only sandbox mode hides routine review because writes are already blocked.",
+    "Review asks for confirmation before routine writes and non-read-only commands. Auto runs routine project operations directly and reviews commands with broader effects. Full Access skips automated review and confirmation. The selected sandbox permissions still apply. Git history and session checkpoints support undo from change cards.",
   sandboxModeHelp:
     "Read-only: commands cannot write disk. Workspace-write: can write the current workspace. Danger full access: turn the sandbox off and run on the host. Without Microsandbox, the first two modes are unavailable on Windows; macOS and Linux use Seatbelt or Landlock instead.",
 
@@ -1173,7 +1176,7 @@ export const en = {
   autoMode: "Auto",
   autoModeDesc: "Run routine project commands; review opaque scripts and hard gates",
   fullAccessMode: "Full Access",
-  fullAccessModeDesc: "Skip routine review; keep deterministic hard gates",
+  fullAccessModeDesc: "Run without command review. The selected sandbox permissions still apply.",
   sandboxMode: "Sandbox",
   sandboxReadOnlyMode: "Read-only",
   sandboxReadOnlyModeDesc: "Run commands in a sandbox with no disk writes",

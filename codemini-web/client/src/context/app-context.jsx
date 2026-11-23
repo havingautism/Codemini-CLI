@@ -90,6 +90,7 @@ import {
 const AppContext = createContext(null);
 const AppActionsContext = createContext(null);
 const RuntimeModeContext = createContext("normal");
+const CrewActiveContext = createContext(false);
 const CurrentSessionIdContext = createContext(null);
 
 function isAbortRelatedText(text = "") {
@@ -2919,6 +2920,8 @@ export function AppProvider({ children }) {
             runtimeState: {
               ...stateRef.current.runtimeState,
               sandboxMode: rs.sandboxMode,
+              ...(rs.shell ? { shell: rs.shell } : {}),
+              ...(rs.sandboxAvailability ? { sandboxAvailability: rs.sandboxAvailability } : {}),
               ...(rs.approvalUiEnabled !== undefined
                 ? { approvalUiEnabled: rs.approvalUiEnabled }
                 : {}),
@@ -4857,9 +4860,11 @@ export function AppProvider({ children }) {
         <RuntimeModeContext.Provider
           value={projectedState.runtimeState?.mode || "normal"}
         >
-          <CurrentSessionIdContext.Provider value={projectedState.currentSessionId}>
-            {children}
-          </CurrentSessionIdContext.Provider>
+          <CrewActiveContext.Provider value={Boolean(projectedState.runtimeState?.crewActive)}>
+            <CurrentSessionIdContext.Provider value={projectedState.currentSessionId}>
+              {children}
+            </CurrentSessionIdContext.Provider>
+          </CrewActiveContext.Provider>
         </RuntimeModeContext.Provider>
       </AppActionsContext.Provider>
     </AppContext.Provider>
@@ -4880,6 +4885,10 @@ export function useAppActions() {
 
 export function useRuntimeMode() {
   return useContext(RuntimeModeContext);
+}
+
+export function useCrewActive() {
+  return useContext(CrewActiveContext);
 }
 
 export function useCurrentSessionId() {

@@ -16,6 +16,7 @@ import {
   hasSandboxEscalationApproval,
 } from '../src/core/tools.js';
 import { closeSqliteDatabasesForTests } from '../src/core/sqlite-database.js';
+import { __setSandboxProbeTestHooks } from '../src/core/sandbox-probe.js';
 import { resolvePlanSubAgentApprovalOptions, ROLE_TOOL_POLICY } from '../src/core/chat-runtime.js';
 
 test('resolveApprovalProjectIsGit treats workspace .git as git even when tracker disabled', () => {
@@ -121,7 +122,7 @@ test('outside-workspace mutations require approval unless OS sandbox confines', 
         isOutsideWorkspaceMutation: true,
         alwaysAllowTools: ['write']
       }),
-      true
+      approvalMode !== 'full_access'
     );
   }
   // OS sandbox already fences outside writes — soft outside-dir review is skipped.
@@ -141,7 +142,7 @@ test('outside-workspace mutations require approval unless OS sandbox confines', 
   }
 });
 
-test('sandbox escalation always requires explicit approval', () => {
+test('sandbox escalation opens approval only in review and auto modes', () => {
   for (const approvalMode of ['review', 'auto', 'full_access']) {
     assert.equal(
       toolRequiresUserApproval({
@@ -151,7 +152,7 @@ test('sandbox escalation always requires explicit approval', () => {
         isSandboxEscalation: true,
         alwaysAllowTools: ['run'],
       }),
-      true,
+      approvalMode !== 'full_access',
       approvalMode,
     );
   }
@@ -204,7 +205,7 @@ test('sandbox escalation gives the user LLM risk advice before approval', async 
         return { ok: true };
       },
     },
-    approvalMode: 'full_access',
+    approvalMode: 'auto',
     alwaysAllowTools: ['run'],
     requestToolApproval: async (request) => {
       approvalRequests += 1;
@@ -221,14 +222,98 @@ test('sandbox escalation gives the user LLM risk advice before approval', async 
   assert.equal(hasSandboxEscalationApproval(handlerArgs), true);
 });
 
-test('deterministic command gates survive every approval mode', () => {
+test('deterministic command gates do not open review in full access', () => {
   for (const approvalMode of ['review', 'auto', 'full_access']) {
     assert.equal(toolRequiresUserApproval({
       approvalMode,
       toolName: 'Bash',
       isDeterministicCommandGate: true,
       alwaysAllowTools: ['run'],
-    }), true, approvalMode);
+    }), approvalMode !== 'full_access', approvalMode);
+  }
+});
+
+test('full access executes commands without review and does not widen active sandbox settings', async () => {
+  let completionCount = 0;
+  const executed = [];
+  const result = await runAgentLoop({
+    systemPrompt: 'test',
+    userPrompt: 'test',
+    model: 'test-model',
+    workspaceRoot: process.cwd(),
+    approvalMode: 'full_access',
+    config: {
+      memory: { enabled: false },
+      sandbox: { enabled: true, mode: 'workspace-write', backend: 'microsandbox', network: 'none' },
+      policy: { safe_mode: true },
+    },
+    skipAnalysisNudge: true,
+    requestCompletion: async () => {
+      if (completionCount++) return { text: 'done' };
+      const calls = [
+        { command: 'npm install' },
+        { command: 'git status', network_access: true },
+        { command: 'npm test', sandbox_permissions: 'danger-full-access', justification: 'Run on the host.' },
+      ];
+      return { toolCalls: calls.map((args, index) => ({
+        id: `full-access-${index}`,
+        name: 'Bash',
+        arguments: JSON.stringify(args),
+      })) };
+    },
+    evaluateCommand: async () => assert.fail('unexpected model review'),
+    requestToolApproval: async () => {
+      assert.fail('unexpected approval dialog');
+    },
+    toolHandlers: { Bash: async ({ command }) => { executed.push(command); return { ok: true }; } },
+  });
+  assert.equal(result.text, 'done');
+  assert.deepEqual(executed, ['npm install']);
+});
+
+test('auto reviews host commands as unconfined with and without Windows sandbox fallback', async () => {
+  for (const enabled of process.platform === 'win32' ? [false, 'auto'] : [false]) {
+    let completionCount = 0;
+    let review;
+    let executionCount = 0;
+    const config = {
+      memory: { enabled: false },
+      sandbox: { enabled, mode: 'workspace-write', network: 'none' },
+      execution: { approval_mode: 'auto' },
+      policy: { safe_mode: true },
+    };
+    __setSandboxProbeTestHooks({ resolveMsbBinary: () => null });
+    try {
+      await runAgentLoop({
+        systemPrompt: 'test',
+        userPrompt: 'test',
+        model: 'test-model',
+        approvalMode: 'auto',
+        projectIsGit: true,
+        config,
+        skipAnalysisNudge: true,
+        requestCompletion: async () => completionCount++ ? { text: 'done' } : {
+          toolCalls: [{
+            id: 'review-host',
+            name: 'Powershell',
+            arguments: JSON.stringify({ command: 'node -e "console.log(1)" | wc -l' }),
+          }],
+        },
+        evaluateCommand: async ({ config: actual }) => {
+          review = actual;
+          return { risk: 'low', recommendation: 'allow', failed: false };
+        },
+        requestToolApproval: async () => assert.fail('low-risk Git command should not open a dialog'),
+        toolHandlers: { Powershell: async () => { executionCount++; return { ok: true }; } },
+      });
+      assert.equal(review?.sandbox?.enabled, false);
+      assert.equal(review?.sandbox?.mode, 'danger-full-access');
+      assert.equal(review?.sandbox?.network, 'allow-all');
+      if (process.platform === 'win32') assert.equal(review?.shell?.default, 'powershell');
+      assert.equal(executionCount, 1);
+    } finally {
+      __setSandboxProbeTestHooks(null);
+    }
   }
 });
 
@@ -354,7 +439,7 @@ test('outside-workspace inspection reports resolved absolute targets', async () 
   }
 });
 
-test('agent loop requests review before a full-access outside write', async () => {
+test('agent loop requests review before an auto-mode outside write', async () => {
   const parent = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-outside-loop-'));
   const previousGlobalDir = process.env.CODEMINI_GLOBAL_DIR;
   process.env.CODEMINI_GLOBAL_DIR = parent;
@@ -391,7 +476,7 @@ test('agent loop requests review before a full-access outside write', async () =
           return { ok: true };
         }
       },
-      approvalMode: 'full_access',
+      approvalMode: 'auto',
       alwaysAllowTools: ['write'],
       requestToolApproval: async (request) => {
         approvalRequest = request;
@@ -453,7 +538,7 @@ test('approval grants one exact outside write without changing allowed_paths', a
           : { text: 'done', toolCalls: [] };
       },
       toolHandlers: tools.handlers,
-      approvalMode: 'full_access',
+      approvalMode: 'auto',
       alwaysAllowTools: ['write'],
       requestToolApproval: async () => ({ approved: true }),
       skipAnalysisNudge: true,

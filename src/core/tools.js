@@ -2207,9 +2207,7 @@ async function runCommand(root, config, args, context = {}) {
     throw new Error("sandbox escalation requires explicit user approval");
   }
   const sandboxMode = escalation?.mode;
-  const hostPowerShellEscalation = process.platform === "win32"
-    && sandboxMode === "danger-full-access"
-    && isVmSandbox(resolveSandboxPolicy({ config, cwd: root }));
+  const hostPowerShellEscalation = process.platform === "win32" && sandboxMode === "danger-full-access";
   const executionShell = hostPowerShellEscalation ? "powershell" : config.shell.default;
 
   if (shouldBackground) {
@@ -2497,7 +2495,7 @@ async function startBackgroundTask(root, config, args) {
     command,
     cwd: root,
     child,
-    shell: vmSandbox ? "bash" : config.shell.default,
+    shell: config.shell.default,
     sandbox: activeSandboxPolicy
       ? { wrapped: true, mode: activeSandboxPolicy.mode, backend: activeSandboxPolicy.backend }
       : { wrapped: false, mode: "danger-full-access" },
@@ -4145,9 +4143,11 @@ export function getBuiltinTools({
   const sandboxPolicy = shellContext.sandbox;
   const vmSandbox = isVmSandbox(sandboxPolicy);
   const osSandbox = isOsSandbox(sandboxPolicy);
+  const commandShellLabel = shellContext.shell === "powershell" ? "PowerShell" : "Bash";
+  const commandLookup = shellContext.shell === "powershell" ? "Get-Command <tool>" : "command -v <tool>";
   const osKind = platform === "darwin" ? "Seatbelt" : "Landlock";
   const sandboxCapabilityNote = vmSandbox || osSandbox
-    ? ` Network access can be requested with network_access=true for this command only (lite review, then user fallback). The sandbox command baseline (${SANDBOX_CAPABILITY_COMMANDS.join(", ")}) is probed once per image; the live manifest is shown as a \`sandbox commands:\` line in each output. Verify an uncommon tool with \`command -v <tool>\` before relying on it.`
+    ? ` The sandbox command baseline (${SANDBOX_CAPABILITY_COMMANDS.join(", ")}) is probed once per image and shell; the live manifest is shown as a \`sandbox commands:\` line in each output. Verify an uncommon tool with \`${commandLookup}\` before relying on it.`
     : "";
   config = {
     ...(config || {}),
@@ -5085,11 +5085,13 @@ export function getBuiltinTools({
         name: commandToolName,
         description: `${crewActive ? "Crew parent inspect-only: git status/log/diff and other read-only commands. Do not merge, checkout, worktree, or copy into the main checkout; use land_workers. " : ""}${vmSandbox
           ? platform === "win32"
-            ? `Run a compact Bash command inside the Linux microVM sandbox (${sandboxPolicy.mode}) from the project root. If a build or test cannot use Windows-native dependencies because the guest is Linux, retry that exact verification command with sandbox_permissions="danger-full-access" and justification; the escalated command must be Windows PowerShell-compatible and runs on the host only after LLM risk advice and user approval. Do not escalate ordinary code failures, missing dependencies, or timeouts. Use project-relative paths and run_in_background=true only for long-running sandboxed commands. Put command last.`
-            : `Run a compact Bash command inside the Linux microVM sandbox (${sandboxPolicy.mode}) from the project root with network disabled unless explicitly configured or network_access=true is approved for this command. Use project-relative paths. Commands with destructive or external side effects may still require approval. On denial, stderr includes [sandbox: ...]; retry with a wider sandbox_permissions plus justification when needed. Use run_in_background=true for long-running commands. Put command last.`
+            ? `Run a compact ${commandShellLabel} command inside the Linux microVM sandbox (${sandboxPolicy.mode}) from the project root. For Windows-native dependencies, use Windows PowerShell on the host only with the required sandbox permissions. Use project-relative paths and run_in_background=true only for long-running sandboxed commands. Put command last.`
+            : `Run a compact ${commandShellLabel} command inside the Linux microVM sandbox (${sandboxPolicy.mode}) from the project root. Use project-relative paths and run_in_background=true for long-running commands. Put command last.`
           : osSandbox
             ? `Run a compact ${shellContext.shell === "powershell" ? "PowerShell" : "Bash"} command on the host under OS confinement (${osKind}, ${sandboxPolicy.mode}) with network disabled unless explicitly configured or network_access=true is approved for this command. Use host paths from the current working directory. Commands with destructive or external side effects may still require approval. On denial, stderr includes [sandbox: ...]; retry with a wider sandbox_permissions plus justification when needed. Use run_in_background=true for long-running commands. Put command last.`
-            : `Run a compact ${shellContext.shell === "powershell" ? "PowerShell" : "Bash"} command directly on the ${platform === "win32" ? "Windows" : "host"} system without microVM confinement. Use run_in_background=true for long-running commands. Put command last.`}${sandboxCapabilityNote}`,
+            : sandboxPolicy.enabled
+              ? "The configured shell sandbox is unavailable. Execution requires an available sandbox or host permissions."
+              : `Run a compact ${commandShellLabel} command directly on the ${platform === "win32" ? "Windows" : "host"} system without microVM confinement. Use run_in_background=true for long-running commands. Put command last.`}${sandboxCapabilityNote}`,
         parameters: {
           type: "object",
           properties: {

@@ -18,11 +18,21 @@ export const SANDBOX_BACKENDS = Object.freeze(['auto', 'microsandbox', 'os']);
 let testHooks = null;
 let osFallbackForced = false;
 let linuxConfineCache = null;
+const failedWindowsVms = new Set();
 
 export function __setSandboxProbeTestHooks(hooks = null) {
   testHooks = hooks;
   osFallbackForced = false;
   linuxConfineCache = null;
+  failedWindowsVms.clear();
+}
+
+function windowsVmKey({ workspaceRoot = '', image = '' } = {}) {
+  return JSON.stringify([workspaceRoot.toLowerCase(), image]);
+}
+
+export function rememberWindowsVmFailure(options) {
+  failedWindowsVms.add(windowsVmKey(options));
 }
 
 export function rememberOsFallback() {
@@ -112,8 +122,11 @@ export function hasMicrosandboxBinary(options = {}) {
 export function inspectSandboxAvailability({
   platform = process.platform,
   arch = process.arch,
+  preferred = 'auto',
+  workspaceRoot,
+  image,
 } = {}) {
-  const backend = selectSandboxBackend({ preferred: 'auto', platform, arch });
+  const backend = selectSandboxBackend({ preferred, platform, arch, workspaceRoot, image });
   return {
     backend,
     vm: backend === 'vm',
@@ -128,10 +141,14 @@ export function selectSandboxBackend({
   preferred = 'auto',
   platform = process.platform,
   arch = process.arch,
+  workspaceRoot,
+  image,
 } = {}) {
   if (osFallbackForced && canUseOsConfine(platform)) return 'os';
   const normalized = normalizeSandboxBackend(preferred);
   if (normalized === 'os') return canUseOsConfine(platform) ? 'os' : 'none';
+  if (platform === 'win32' && failedWindowsVms.has(windowsVmKey({ workspaceRoot, image }))) return 'none';
+  if (platform === 'win32' && platform === process.platform && normalized === 'microsandbox' && !hasMicrosandboxBinary({ platform, arch })) return 'none';
   if (normalized === 'microsandbox') return 'vm';
   if (hasMicrosandboxBinary({ platform, arch })) return 'vm';
   if (osConfineReady(platform)) return 'os';

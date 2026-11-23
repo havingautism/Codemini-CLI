@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { getSkillsDir } from './paths.js';
-import { selectSandboxBackend } from './sandbox-probe.js';
+import { inspectSandboxAvailability, selectSandboxBackend } from './sandbox-probe.js';
 import { crewGitWritableRoots } from './crew-worktree.js';
 
 export const SANDBOX_MODES = Object.freeze([
@@ -36,6 +36,27 @@ export function isVmSandbox(policy) {
 
 export function isOsSandbox(policy) {
   return Boolean(policy?.enabled && policy.backend === 'os');
+}
+
+function sandboxBackendOptions(config, workspaceRoot, platform) {
+  return {
+    preferred: config?.sandbox?.backend,
+    image: config?.sandbox?.image,
+    workspaceRoot,
+    platform,
+  };
+}
+
+export function resolveSandboxAvailability(config = {}, {
+  cwd = process.cwd(),
+  platform = process.platform,
+  policy = resolveSandboxPolicy({ config, cwd, platform }),
+} = {}) {
+  return {
+    ...inspectSandboxAvailability(sandboxBackendOptions(config, policy.workspaceRoot, platform)),
+    mode: policy.mode,
+    hostFallback: policy.hostFallback === true,
+  };
 }
 
 /**
@@ -73,10 +94,13 @@ export function resolveSandboxPolicy({
       platform,
     };
   }
-  const backend = selectSandboxBackend({
-    preferred: config?.sandbox?.backend,
-    platform,
-  });
+  const backend = selectSandboxBackend(sandboxBackendOptions(config, workspaceRoot, platform));
+  const automaticSandbox = String(config.sandbox?.enabled ?? 'auto').trim().toLowerCase() === 'auto';
+  const approvalMode = config.execution?.approval_mode || 'review';
+  if (platform === 'win32' && backend === 'none' && mode === 'workspace-write'
+      && automaticSandbox && ['auto', 'review'].includes(approvalMode)) {
+    return { enabled: false, mode: 'danger-full-access', backend, workspaceRoot, platform, hostFallback: true };
+  }
   return {
     enabled: true,
     mode,
@@ -138,7 +162,7 @@ export function resolveApprovalUiEnabled({
   platform = process.platform,
 } = {}) {
   const policy = resolveSandboxPolicy({ config, cwd, platform });
-  return !(policy.enabled && policy.mode === 'read-only');
+  return !(policy.enabled && policy.backend !== 'none' && policy.mode === 'read-only');
 }
 
 export function writableRootsForMode(policy) {

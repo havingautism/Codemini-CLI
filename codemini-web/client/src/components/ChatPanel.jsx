@@ -46,7 +46,7 @@ function isAnchorReady(viewport, anchorId) {
   const anchorEl = viewport?.querySelector(`[data-message-id="${anchorId}"]`);
   if (!anchorEl) return false;
   const itemEl = anchorEl.closest('[data-slot="message-scroller-item"]');
-  return (itemEl?.getBoundingClientRect().height || anchorEl.getBoundingClientRect().height) > 48;
+  return (itemEl?.getBoundingClientRect().height || anchorEl.getBoundingClientRect().height) > 0;
 }
 
 function UserMessageNav({ userMessages, activeNavIndex, scrollToMessage }) {
@@ -114,7 +114,7 @@ function UserMessageNav({ userMessages, activeNavIndex, scrollToMessage }) {
                   aria-current={isActive ? "location" : undefined}
                   aria-label={`${i + 1}. ${messageText}`}
                   title={messageText}
-                  onClick={() => scrollToMessage(um.id)}
+                  onClick={() => scrollToMessage(um.id, { navIndex: i })}
                   onMouseEnter={() => setHoveredIndex(i)}
                   onMouseLeave={() => setHoveredIndex(-1)}
                   className={cn(
@@ -148,7 +148,7 @@ function UserMessageNav({ userMessages, activeNavIndex, scrollToMessage }) {
             aria-current={i === activeNavIndex ? "location" : undefined}
             aria-label={`${t("quickJump")} ${i + 1}: ${um.text || "..."}`}
             title={um.text || "..."}
-            onClick={() => scrollToMessage(um.id)}
+            onClick={() => scrollToMessage(um.id, { navIndex: i })}
             onMouseEnter={() => setHoveredIndex(i)}
             onMouseLeave={() => setHoveredIndex(-1)}
             className="group flex h-4 w-7 cursor-pointer items-center justify-end rounded-full focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary/50"
@@ -239,13 +239,10 @@ function ChatPanelContent({
   onRetryMessage,
 }) {
   const scrollRef = useRef(null);
-  const settleTimerRef = useRef(0);
-  const jumpFinishTimerRef = useRef(0);
   const scrollRafRef = useRef(0);
-  const measureCacheRef = useRef({ scrollTop: 0, rects: new Map() });
+  const messageRectsRef = useRef(new Map());
   const [activeNavIndex, setActiveNavIndex] = useState(-1);
   const [pendingScrollTargetId, setPendingScrollTargetId] = useState("");
-  const [layoutSettled, setLayoutSettled] = useState(false);
   const { pauseFollowEnd } = useMessageScroller();
   const hasConversation = useMemo(
     () => hasConversationContent(messages),
@@ -286,43 +283,48 @@ function ChatPanelContent({
     return byReplyId;
   }, [messages]);
 
-  const scrollToMessage = useCallback((msgId, { behavior = "smooth" } = {}) => {
+  const scrollToMessage = useCallback((msgId, { behavior = "smooth", navIndex } = {}) => {
     const el = scrollRef.current?.querySelector(`[data-message-id="${msgId}"]`);
     if (!el) return;
     pauseFollowEnd();
-    const targetIndex = userMessages.findIndex((message) => message.id === msgId);
-    if (targetIndex >= 0) setActiveNavIndex(targetIndex);
+    if (navIndex !== undefined) setActiveNavIndex(navIndex);
     el.scrollIntoView({ behavior, block: "center" });
-  }, [pauseFollowEnd, userMessages]);
+  }, [pauseFollowEnd]);
 
+  const userMessageCount = userMessages.length;
   const measureScrollState = useCallback(() => {
     const el = scrollRef.current;
     if (!el) return;
+    const { scrollTop, clientHeight, scrollHeight } = el;
+    const isAtTop = scrollTop <= 2;
+    const isAtBottom = scrollTop + clientHeight >= scrollHeight - 2;
+    const cache = messageRectsRef.current;
+    if (!userMessageCount || isAtTop || isAtBottom) {
+      if (cache.size) cache.clear();
+      setActiveNavIndex(!userMessageCount ? -1 : isAtTop ? 0 : userMessageCount - 1);
+      return;
+    }
     const userEls = el.querySelectorAll(
       '[data-message-id][class*="justify-end"]',
     );
-    const isAtTop = el.scrollTop <= 2;
-    const isAtBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 2;
     // Use getBoundingClientRect instead of offsetTop because
     // MessageScrollerItem has content-visibility:auto which skips
     // layout for off-screen items, causing offsetTop to return 0
     // for elements inside skipped containers.
     const viewportRect = el.getBoundingClientRect();
-    const cache = measureCacheRef.current;
-    const delta = el.scrollTop - cache.scrollTop;
-    cache.scrollTop = el.scrollTop;
     // Only (re)measure user messages near the viewport: off-screen entries
     // reuse their cached client rect translated by the scroll delta, so we
     // avoid forcing layout on far-away messages on every scroll. Translated
     // rects of far-off-screen messages never win the closest-to-center pick;
     // anything near the viewport is measured fresh.
-    const margin = Math.max(el.clientHeight * 2, 480);
+    const margin = Math.max(clientHeight * 2, 480);
     const messageRects = [];
     const seenIds = new Set();
     userEls.forEach((userEl) => {
       const id = userEl.getAttribute("data-message-id");
       seenIds.add(id);
-      const prev = cache.rects.get(id);
+      const prev = cache.get(id);
+      const delta = prev ? scrollTop - prev.scrollTop : 0;
       const prevTop = prev ? prev.top - delta : null;
       const prevBottom = prev ? prev.bottom - delta : null;
       const nearViewport =
@@ -331,26 +333,24 @@ function ChatPanelContent({
           prevTop <= viewportRect.bottom + margin);
       if (nearViewport) {
         const rect = userEl.getBoundingClientRect();
-        cache.rects.set(id, rect);
+        cache.set(id, { top: rect.top, bottom: rect.bottom, scrollTop });
         messageRects.push(rect);
       } else {
         messageRects.push({ top: prevTop, bottom: prevBottom });
       }
     });
     // Drop cache entries for messages that left the conversation.
-    for (const id of cache.rects.keys()) {
-      if (!seenIds.has(id)) cache.rects.delete(id);
+    for (const id of cache.keys()) {
+      if (!seenIds.has(id)) cache.delete(id);
     }
     setActiveNavIndex(
       getActiveMessageIndex({
         viewportTop: viewportRect.top,
         viewportHeight: viewportRect.height,
-        isAtTop,
-        isAtBottom,
         messageRects,
       }),
     );
-  }, []);
+  }, [userMessageCount]);
 
   // rAF-throttled scroll handler: at most one measurement per frame, so
   // bursts of scroll events do not each trigger full layout work.
@@ -375,39 +375,10 @@ function ChatPanelContent({
     };
   }, [handleScroll]);
 
+  const messageCount = messages.length;
   useEffect(() => {
-    requestAnimationFrame(() => {
-      requestAnimationFrame(measureScrollState);
-    });
-  }, [messages, messagesLoading, measureScrollState]);
-
-  useEffect(() => {
-    const viewport = scrollRef.current;
-    if (!viewport || messagesLoading) {
-      setLayoutSettled(false);
-      return;
-    }
-    setLayoutSettled(false);
-    const markSettledSoon = () => {
-      window.clearTimeout(settleTimerRef.current);
-      settleTimerRef.current = window.setTimeout(() => {
-        setLayoutSettled(true);
-      }, 80);
-    };
-    const observer = new ResizeObserver(() => {
-      setLayoutSettled(false);
-      markSettledSoon();
-    });
-    observer.observe(viewport);
-    if (viewport.firstElementChild) observer.observe(viewport.firstElementChild);
-    requestAnimationFrame(() => {
-      requestAnimationFrame(markSettledSoon);
-    });
-    return () => {
-      observer.disconnect();
-      window.clearTimeout(settleTimerRef.current);
-    };
-  }, [messages, messagesLoading]);
+    if (!messagesLoading) handleScroll();
+  }, [handleScroll, messageCount, messagesLoading]);
 
   useEffect(() => {
     const nextTargetId = String(targetMessageId || "").trim();
@@ -415,41 +386,52 @@ function ChatPanelContent({
     setPendingScrollTargetId(nextTargetId);
   }, [targetMessageId]);
 
+  const anchorId = pendingScrollTargetId
+    ? resolveUserAnchorId(messages, pendingScrollTargetId)
+    : "";
   useEffect(() => {
-    const messageId = String(pendingScrollTargetId || "").trim();
-    if (!messageId || messagesLoading || !layoutSettled) return;
-    const anchorId = resolveUserAnchorId(messages, messageId);
+    if (!anchorId || messagesLoading) return;
     const viewport = scrollRef.current;
-    if (!isAnchorReady(viewport, anchorId)) return;
-
-    let cancelled = false;
-    const finishJump = () => {
-      if (cancelled) return;
+    if (!viewport) return;
+    let settleTimer;
+    let jumpFinishTimer;
+    const handleScrollEnd = () => {
+      viewport.removeEventListener("scrollend", handleScrollEnd);
+      clearTimeout(jumpFinishTimer);
+      const anchor = viewport.querySelector(`[data-message-id="${anchorId}"]`);
+      const anchorRect = anchor?.getBoundingClientRect();
+      const viewportRect = viewport.getBoundingClientRect();
+      if (anchorRect && (anchorRect.bottom <= viewportRect.top || anchorRect.top >= viewportRect.bottom)) {
+        // Off-screen messages can change height as the smooth scroll reveals them.
+        const centerOffset = anchorRect.top + anchorRect.height / 2 - (viewportRect.top + viewportRect.height / 2);
+        viewport.scrollTo({ top: viewport.scrollTop + centerOffset, behavior: "instant" });
+      }
       setPendingScrollTargetId("");
       onTargetMessageHandled?.();
     };
-    const handleScrollEnd = () => {
-      window.clearTimeout(jumpFinishTimerRef.current);
-      finishJump();
-    };
 
-    scrollToMessage(anchorId);
-    viewport.addEventListener("scrollend", handleScrollEnd);
-    jumpFinishTimerRef.current = window.setTimeout(handleScrollEnd, 1500);
+    const scheduleJump = () => {
+      clearTimeout(settleTimer);
+      settleTimer = setTimeout(() => {
+        if (!isAnchorReady(viewport, anchorId)) return;
+        observer.disconnect();
+        viewport.addEventListener("scrollend", handleScrollEnd);
+        jumpFinishTimer = setTimeout(handleScrollEnd, 1500);
+        scrollToMessage(anchorId);
+      }, 80);
+    };
+    const observer = new ResizeObserver(scheduleJump);
+    observer.observe(viewport);
+    if (viewport.firstElementChild) observer.observe(viewport.firstElementChild);
+    scheduleJump();
 
     return () => {
-      cancelled = true;
+      observer.disconnect();
       viewport.removeEventListener("scrollend", handleScrollEnd);
-      window.clearTimeout(jumpFinishTimerRef.current);
+      clearTimeout(settleTimer);
+      clearTimeout(jumpFinishTimer);
     };
-  }, [
-    layoutSettled,
-    messages,
-    messagesLoading,
-    onTargetMessageHandled,
-    pendingScrollTargetId,
-    scrollToMessage,
-  ]);
+  }, [anchorId, messagesLoading, onTargetMessageHandled, pendingScrollTargetId, scrollToMessage]);
 
   return (
     <div className="flex-1 relative overflow-hidden">
@@ -489,6 +471,7 @@ function ChatPanelContent({
                   return (
                     <MessageScrollerItem
                       key={msg.id}
+                      disableVirtualization={msg.id === anchorId}
                       data-msg-scroll-id={msg.id}
                       data-scroll-anchor-id={msg.id}
                     >

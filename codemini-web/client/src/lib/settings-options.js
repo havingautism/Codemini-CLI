@@ -1,14 +1,12 @@
 import {
   Code,
   Coffee,
-  Command,
   HardDrives,
   Lightning,
   Lock,
   LockOpen,
   ShieldWarning,
   Terminal,
-  TerminalWindow,
   TreeStructure,
   Warning,
   WindowsLogo,
@@ -62,12 +60,15 @@ export function getApprovalModeOptions() {
   ];
 }
 
-export function shellLockedToMicroVm({ sandboxMode = "danger-full-access", availability = null } = {}) {
+export function usesMicroVm({ sandboxMode, availability } = {}) {
   return sandboxMode !== "danger-full-access" && availability?.backend === "vm";
 }
 
-export function getSandboxModeOptions({ availability = null } = {}) {
-  const confineUnavailable = availability?.confineAvailable === false;
+export function usesWindowsHostShell({ sandboxMode, availability } = {}) {
+  return availability?.platform === "win32" && !usesMicroVm({ sandboxMode, availability });
+}
+
+export function getSandboxModeOptions({ sandboxMode, availability = null } = {}) {
   return [
     {
       value: "read-only",
@@ -87,14 +88,11 @@ export function getSandboxModeOptions({ availability = null } = {}) {
       description: t("sandboxDangerFullAccessModeDesc"),
       icon: Warning,
     },
-  ].map((option) => {
-    if (!confineUnavailable || option.value === "danger-full-access") return option;
-    return {
-      ...option,
-      disabled: true,
-      description: t("sandboxModeUnavailableDesc"),
-    };
-  });
+  ].filter((option) =>
+    option.value === "danger-full-access"
+    || (availability?.confineAvailable !== false
+      && (option.value !== "workspace-write" || sandboxMode !== "danger-full-access")),
+  );
 }
 
 export function getProviderOptions() {
@@ -144,7 +142,8 @@ export function getSearchProviderOptions() {
 }
 
 export function getShellOptions({ sandboxMode = "danger-full-access", availability = null } = {}) {
-  const lockBash = shellLockedToMicroVm({ sandboxMode, availability });
+  const microVm = usesMicroVm({ sandboxMode, availability });
+  const windowsHost = usesWindowsHostShell({ sandboxMode, availability });
   return [
     {
       value: "bash",
@@ -154,26 +153,11 @@ export function getShellOptions({ sandboxMode = "danger-full-access", availabili
     },
     {
       value: "powershell",
-      label: "PowerShell",
+      label: "PowerShell (pwsh)",
       description: t("shellPowershellDesc"),
       icon: WindowsLogo,
     },
-    {
-      value: "zsh",
-      label: "Zsh",
-      description: t("shellZshDesc"),
-      icon: TerminalWindow,
-    },
-    {
-      value: "cmd",
-      label: "CMD",
-      description: t("shellCmdDesc"),
-      icon: Command,
-    },
-  ].map((option) => ({
-    ...option,
-    disabled: lockBash && option.value !== "bash",
-  }));
+  ].filter((option) => microVm ? option.value === "bash" : !windowsHost || option.value === "powershell");
 }
 
 export function getReplyLanguageOptions() {

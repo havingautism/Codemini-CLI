@@ -37,7 +37,8 @@ import { buildSettingsFields } from "@/lib/settings-config.js";
 import {
   SETTINGS_TABS,
   getSettingsOptions,
-  shellLockedToMicroVm,
+  usesMicroVm,
+  usesWindowsHostShell,
 } from "@/lib/settings-options.js";
 import { SettingsField } from "@/components/settings/SettingsField.jsx";
 import { SettingsSection } from "@/components/settings/SettingsSection.jsx";
@@ -51,14 +52,17 @@ import { SettingsAppearance } from "@/components/settings/SettingsAppearance.jsx
 import { applyAppearance, readAppearance } from "@/lib/ui-appearance.js";
 
 function sandboxFieldNote(sandboxMode, availability) {
-  if (shellLockedToMicroVm({ sandboxMode, availability })) return t("shellSandboxLockedDesc");
+  if (availability?.hostFallback) return t("shellSandboxHostFallbackDesc");
+  if (usesMicroVm({ sandboxMode, availability })) return t("shellSandboxMicroVmDesc");
   if (!availability || sandboxMode === "danger-full-access") return "";
   if (availability.backend === "os") {
     return availability.osKind === "landlock"
       ? t("shellSandboxOsLandlockDesc")
       : t("shellSandboxOsSeatbeltDesc");
   }
-  if (availability.confineAvailable === false) return t("shellSandboxUnavailableDesc");
+  if (availability.confineAvailable === false) {
+    return t(availability.platform === "win32" ? "shellSandboxWindowsFallbackDesc" : "shellSandboxUnavailableDesc");
+  }
   return "";
 }
 
@@ -152,6 +156,8 @@ export function ConfigDialog({
   open,
   onOpenChange,
   status = null,
+  sandboxAvailability = null,
+  sandboxMode: runtimeSandboxMode = "",
   onSaved,
   reasoningSyncKey = "",
 }) {
@@ -266,6 +272,8 @@ export function ConfigDialog({
     const value = getValue(path);
     return value === true || value === "true";
   };
+  const availability = sandboxAvailability || status?.sandboxAvailability || null;
+  const sandboxMode = runtimeSandboxMode || availability?.mode || getValue("sandbox.mode");
 
   const jevKeyDraft = changes["harness.providers.jev.api_key"];
   const hasJevKey = jevKeyDraft === null
@@ -391,8 +399,13 @@ export function ConfigDialog({
 
   const renderControl = (field) => {
     if (isWebConfigReadOnly(field.path)) {
-      const raw = getValue(field.path);
-      const label = field.valueLabels?.[raw]
+      const raw = field.path === "sandbox.mode" ? sandboxMode : getValue(field.path);
+      const sandboxStatusLabel = field.path === "sandbox.mode" && (
+        availability?.hostFallback ? t("sandboxHostFallbackMode")
+          : availability?.confineAvailable === false && sandboxMode !== "danger-full-access" ? t("sandboxUnavailableMode") : ""
+      );
+      const label = sandboxStatusLabel
+        || field.valueLabels?.[raw]
         || (field.control === "switch" ? t(getBooleanValue(field.path) ? "enabled" : "disabled") : null)
         || getSettingsOptions(field.optionsKey).find(option => option.value === raw)?.label
         || String(raw ?? "");
@@ -406,13 +419,12 @@ export function ConfigDialog({
     if (field.type === "password") return <SettingsSecretField
       key={`${field.path}-${open}`} id={field.path} configured={hasConfiguredSecret(config, field.path)}
       draft={changes[field.path]} disabled={disabled} onChange={value => handleChange(field.path, value)} />;
-    const sandboxMode = getValue("sandbox.mode");
-    const availability = status?.sandboxAvailability || null;
-    const shellLocked = shellLockedToMicroVm({ sandboxMode, availability });
     const value =
-      field.path === "shell.default" && shellLocked
+      field.path === "shell.default" && usesMicroVm({ sandboxMode, availability })
         ? "bash"
-        : getValue(field.path);
+        : field.path === "shell.default" && usesWindowsHostShell({ sandboxMode, availability })
+          ? "powershell"
+          : getValue(field.path);
     const idPrefix = field.path.replace(/\./g, "-");
 
     if (field.control === "switch") {
@@ -546,8 +558,6 @@ export function ConfigDialog({
         label={field.label}
         help={field.help}
         description={(() => {
-          const sandboxMode = getValue("sandbox.mode");
-          const availability = status?.sandboxAvailability || null;
           if (field.path === "shell.default") return sandboxFieldNote(sandboxMode, availability) || undefined;
           if (field.path !== "sandbox.mode") return undefined;
           if (availability?.confineAvailable === false && sandboxMode !== "danger-full-access") {

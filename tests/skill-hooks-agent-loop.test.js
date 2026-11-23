@@ -127,7 +127,8 @@ test('PreToolUse ask requests approval even when the hook does not update tool i
         },
       },
       toolDefinitions: [],
-      approvalMode: 'full_access',
+      approvalMode: 'auto',
+      alwaysAllowTools: ['test_tool'],
       requestToolApproval: async (request) => {
         approvalRequests.push(request);
         return { approved: true };

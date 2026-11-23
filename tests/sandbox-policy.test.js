@@ -99,7 +99,7 @@ test('resolveSandboxPolicy records vm, os, and none backends', () => {
       'vm',
     );
     const win = resolveSandboxPolicy({
-      config: { sandbox: { enabled: 'auto', mode: 'workspace-write' } },
+      config: { sandbox: { enabled: true, mode: 'workspace-write' } },
       cwd: '/tmp/ws',
       platform: 'win32',
     });

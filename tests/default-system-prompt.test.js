@@ -44,7 +44,7 @@ test('sandboxed prompt presents the Linux guest command environment', () => {
   assert.match(prompt, /Platform: linux \(Microsandbox guest\)/);
   assert.match(prompt, /Working directory: project root/);
   assert.doesNotMatch(prompt, /Working directory: \/workspace/);
-  assert.match(prompt, /Network: unrestricted outbound access/);
+  assert.match(prompt, /Network: restricted/);
 });
 
 test('Windows prompt follows sandbox state instead of the host platform alone', () => {

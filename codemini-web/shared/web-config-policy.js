@@ -7,10 +7,17 @@ export const WEB_CONFIG_INTEGER_LIMITS = Object.freeze({
 
 export function isWebConfigReadOnly(key) {
   return /^(policy|sandbox|execution|shell|webui)(\.|$)/.test(key)
+    && key !== 'shell.default'
     && !Object.hasOwn(WEB_CONFIG_INTEGER_LIMITS, key);
 }
 
 export function validateWebConfigValue(key, value) {
+  if (key === 'shell.default') {
+    if (!['bash', 'powershell'].includes(value)) {
+      throw new Error('shell.default must be bash or powershell');
+    }
+    return;
+  }
   if (key === 'harness.distillation.confidence_threshold') {
     if (typeof value !== 'number' || !Number.isFinite(value) || value < 0.5 || value > 1) {
       throw new Error(`${key} must be a number between 0.5 and 1`);

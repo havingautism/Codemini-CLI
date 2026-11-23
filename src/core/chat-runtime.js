@@ -190,9 +190,8 @@ import {
 } from './approval-policy.js';
 import {
   resolveApprovalUiEnabled,
-  resolveSandboxPolicy,
+  resolveSandboxAvailability,
 } from './sandbox-policy.js';
-import { inspectSandboxAvailability } from './sandbox-probe.js';
 import {
   normalizeToolPolicy,
 } from './provider/search-tool-registry.js';
@@ -4076,6 +4075,7 @@ export function buildRuntimeStateSnapshot({ currentSession, config, model, execu
   const visibleAlwaysSkillNames = shouldInjectAlwaysSkills(resolvedMode)
     ? (Array.isArray(alwaysSkillNames) ? alwaysSkillNames : []).map((name) => String(name || '').trim()).filter(Boolean)
     : [];
+  const shellContext = resolveShellContext(config, { cwd: workspaceRoot });
   const snapshot = {
     workspaceRoot,
     projectIsGit: Boolean(config?.runtime?.project_is_git),
@@ -4085,9 +4085,9 @@ export function buildRuntimeStateSnapshot({ currentSession, config, model, execu
     messageCount: Array.isArray(currentSession?.messages) ? currentSession.messages.length : 0,
     mode: resolvedMode,
     approvalMode: config.execution?.approval_mode || 'auto',
-    sandboxMode: config.sandbox?.mode || 'workspace-write',
-    sandboxAvailability: inspectSandboxAvailability(),
-    shell: config.shell?.default || 'bash',
+    sandboxMode: shellContext.sandbox.mode,
+    sandboxAvailability: resolveSandboxAvailability(config, { policy: shellContext.sandbox }),
+    shell: shellContext.shell,
     sandboxUiEnabled: true,
     approvalUiEnabled: resolveApprovalUiEnabled({
       config,
@@ -6476,16 +6476,7 @@ async function askModelInSession({
       initialMessages: initialMessagesForModel,
       onEvent: wrappedAgentEvent,
       executionMode: normalizedExecutionMode,
-      approvalMode: (() => {
-        const sandbox = resolveSandboxPolicy({
-          config,
-          cwd: workspaceRoot,
-          platform: process.platform,
-        });
-        // Read-only OS sandbox already blocks writes — skip soft approval prompts.
-        if (sandbox.enabled && sandbox.mode === 'read-only') return 'full_access';
-        return config.execution?.approval_mode || 'auto';
-      })(),
+      approvalMode: config.execution?.approval_mode || 'auto',
       projectIsGit: resolveApprovalProjectIsGit({
         projectIsGit,
         changeTrackerEnabled: changeTracker?.mode === 'git-oplog',

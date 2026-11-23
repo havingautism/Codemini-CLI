@@ -33,11 +33,8 @@ import {
   toolRequiresUserApproval
 } from './approval-policy.js';
 import { remapCrewToolArguments, crewLedgerArgumentBlock } from './crew-worktree.js';
-import {
-  isVmSandbox,
-  resolveSandboxPolicy,
-  validateSandboxEscalationArgs,
-} from './sandbox-policy.js';
+import { validateSandboxEscalationArgs } from './sandbox-policy.js';
+import { resolveShellContext } from './shell-profile.js';
 import { fireSkillHookEvent, formatHookContextLines } from './skill-hooks-runtime.js';
 import {
   isCompletionTruncated,
@@ -540,11 +537,11 @@ export function resolveShellApprovalStrategy({
     sandboxFirst,
     windowsFastLane,
     policyBlocked,
-    needsLlmReview: config?.policy?.safe_mode !== false
+    needsLlmReview: approvalMode !== 'full_access' && config?.policy?.safe_mode !== false
       && !deterministicGate
       && !sandboxFirst
       && !windowsFastLane
-      && (policyBlocked || requiresApprovalEvaluation(command, config?.shell?.default)),
+      && (policyBlocked || requiresApprovalEvaluation(command, resolveShellContext(config, { cwd: workspaceRoot, platform }).shell)),
   };
 }
 
@@ -963,11 +960,18 @@ export async function runAgentLoop({
     const normalizedApprovalMode = ['review', 'auto', 'full_access'].includes(String(approvalMode || '').toLowerCase())
       ? String(approvalMode || '').toLowerCase()
       : 'review';
-    const osSandboxConfining = resolveSandboxPolicy({
-      config,
-      cwd: workspaceRoot,
-      platform: process.platform,
-    }).enabled;
+    const skipReview = normalizedApprovalMode === 'full_access';
+    const shellContext = resolveShellContext(config, { cwd: workspaceRoot });
+    const sandboxPolicy = shellContext.sandbox;
+    const shellReviewConfig = {
+      ...config,
+      shell: { ...config.shell, default: shellContext.shell },
+      ...(!sandboxPolicy.enabled && {
+        sandbox: { ...config.sandbox, enabled: false, mode: sandboxPolicy.mode, network: 'allow-all' },
+      }),
+    };
+    const osSandboxConfining = sandboxPolicy.enabled && sandboxPolicy.backend !== 'none';
+    const readOnlySandbox = osSandboxConfining && sandboxPolicy.mode === 'read-only';
 
     const completionTruncated = isCompletionTruncated(completion?.finishReason);
     const {
@@ -1047,11 +1051,31 @@ export async function runAgentLoop({
         continue;
       }
       const isSandboxEscalation = Boolean(sandboxEscalation);
+      if (skipReview && sandboxPolicy.hostFallback && isShellToolName(toolName)) {
+        approvalResults.set(call.id, {
+          approved: false,
+          args: approvalArgs,
+          errorContent: clipToolResult({ error: 'Select host sandbox permissions explicitly before running PowerShell without review.' }, toolResultMaxChars),
+        });
+        continue;
+      }
+      const sandboxUnavailable = isShellToolName(toolName) && sandboxPolicy.enabled && sandboxPolicy.backend === 'none';
+      if ((skipReview && isSandboxEscalation) || (sandboxUnavailable && !isSandboxEscalation)) {
+        const error = sandboxUnavailable && !isSandboxEscalation
+          ? 'The configured shell sandbox is unavailable. Choose full system access to run commands on the host.'
+          : 'Choose the required sandbox permissions in settings before running this command.';
+        approvalResults.set(call.id, {
+          approved: false,
+          args: approvalArgs,
+          errorContent: clipToolResult({ error }, toolResultMaxChars),
+        });
+        continue;
+      }
       const shellApproval = isShellToolName(toolName)
         ? resolveShellApprovalStrategy({
             command: args?.command || '',
             config,
-            workspaceRoot: config?.workspaceRoot || process.cwd(),
+            workspaceRoot,
             osSandboxConfining,
             approvalMode: normalizedApprovalMode,
             projectIsGit,
@@ -1063,7 +1087,7 @@ export async function runAgentLoop({
       const isDeterministicCommandGate = shellApproval?.deterministicGate === true;
       try {
         // OS sandbox already fences outside writes; skip the soft outside-dir review.
-        if (!osSandboxConfining) {
+        if (!skipReview && !osSandboxConfining) {
           outsideWorkspaceApproval = await inspectOutsideWorkspaceMutation({
             workspaceRoot,
             toolName,
@@ -1076,7 +1100,8 @@ export async function runAgentLoop({
         }, toolResultMaxChars);
       }
       const deferredNetworkReview = isShellToolName(toolName) && args?.network_access === true && !isSandboxEscalation && !outsideWorkspaceApproval;
-      const needsApproval = Boolean(preflightErrorContent) || !deferredNetworkReview && toolRequiresUserApproval({
+      const routineReadOnlyCall = readOnlySandbox && !isSandboxEscalation && !isDeterministicCommandGate;
+      const needsApproval = Boolean(preflightErrorContent) || !deferredNetworkReview && !routineReadOnlyCall && toolRequiresUserApproval({
         approvalMode: normalizedApprovalMode,
         projectIsGit,
         toolName,
@@ -1087,6 +1112,9 @@ export async function runAgentLoop({
         osSandboxConfining,
         alwaysAllowTools: [...alwaysAllowSet]
       });
+      if (skipReview && isSafeModePolicyBlocked && !isDeterministicCommandGate) {
+        approvalArgs = markRunCommandSafeModeApproved(approvalArgs);
+      }
       if (needsApproval) {
         approved = false;
         if (toolName === 'delete') {
@@ -1113,7 +1141,7 @@ export async function runAgentLoop({
                 // Review the requested execution boundary, not the sandbox
                 // being left. Full host access also removes network confinement.
                 config: isSandboxEscalation ? {
-                  ...config,
+                  ...shellReviewConfig,
                   sandbox: {
                     ...config.sandbox,
                     ...sandboxEscalation.policy,
@@ -1122,17 +1150,15 @@ export async function runAgentLoop({
                       : 'allow-all',
                   },
                   shell: {
-                    ...config.shell,
-                    default: process.platform === 'win32'
-                      && !sandboxEscalation.policy.enabled
-                      && isVmSandbox(resolveSandboxPolicy({ config, cwd: workspaceRoot }))
-                      ? 'powershell' : config?.shell?.default,
+                    ...shellReviewConfig.shell,
+                    default: process.platform === 'win32' && !sandboxEscalation.policy.enabled
+                      ? 'powershell' : shellContext.shell,
                   },
-                } : config,
+                } : shellReviewConfig,
                 capability: isSandboxEscalation
                   ? `Sandbox escalation to ${sandboxEscalation.mode}: ${sandboxEscalation.justification}`
                   : 'shell command',
-                workspaceRoot: config?.workspaceRoot || process.cwd()
+                workspaceRoot
               });
               if (evaluation?.failed && !evaluation.failureReason) {
                 evaluation = { ...evaluation, failureReason: 'evaluator_error' };
@@ -1238,7 +1264,7 @@ export async function runAgentLoop({
           }
         }
       }
-      if (approved && typeof toolGuard === 'function') {
+      if (approved && !skipReview && typeof toolGuard === 'function') {
         const guard = await toolGuard({ toolName, displayName, args: approvalArgs, callId: call.id, step }).catch(() => ({ action: 'review', reason: 'guard_error' }));
         if (guard?.action === 'deny' || guard?.action === 'review' || guard?.action === 'confirm') {
           approved = false;
@@ -1374,7 +1400,7 @@ export async function runAgentLoop({
             status: 'error'
           };
         }
-        let hookRequiresApproval = preToolUse.decision === 'ask';
+        let hookRequiresApproval = !skipReview && preToolUse.decision === 'ask';
         let updatedShellApproval = null;
         if (preToolUse.updatedInput && typeof preToolUse.updatedInput === 'object') {
           effectiveArgs = preToolUse.updatedInput;
@@ -1382,7 +1408,7 @@ export async function runAgentLoop({
             ? resolveShellApprovalStrategy({
                 command: effectiveArgs?.command || '',
                 config,
-                workspaceRoot: config?.workspaceRoot || process.cwd(),
+                workspaceRoot,
                 osSandboxConfining,
                 approvalMode: normalizedApprovalMode,
                 projectIsGit,
@@ -1400,7 +1426,7 @@ export async function runAgentLoop({
               status: 'blocked'
             };
           }
-          hookRequiresApproval = hookRequiresApproval || toolRequiresUserApproval({
+          hookRequiresApproval = hookRequiresApproval || (!readOnlySandbox || updatedShellApproval?.deterministicGate === true) && toolRequiresUserApproval({
             approvalMode: normalizedApprovalMode,
             projectIsGit,
             toolName,
@@ -1409,6 +1435,9 @@ export async function runAgentLoop({
             osSandboxConfining,
             alwaysAllowTools: [...alwaysAllowSet]
           });
+          if (skipReview && updatedShellApproval?.policyBlocked && !updatedShellApproval.deterministicGate) {
+            effectiveArgs = markRunCommandSafeModeApproved(effectiveArgs);
+          }
         }
         if (hookRequiresApproval) {
           if (typeof requestToolApproval !== 'function') {
@@ -1479,12 +1508,17 @@ export async function runAgentLoop({
 
       let networkAccessApproved = false;
       if (isShellToolName(toolName) && effectiveArgs?.network_access === true) {
-        const decision = await reviewCommandAccess({
-          command: effectiveArgs.command, config, workspaceRoot,
-          capability: 'Network access for this command and its child processes only',
-          requestApproval: requestToolApproval, evaluate: evaluateCommand, signal,
-          onReview: details => onEvent?.({ type: 'access:review', ...details }),
-        });
+        const decision = skipReview
+          ? {
+              approved: !sandboxPolicy.enabled || config?.sandbox?.network === 'allow-all',
+              reason: 'Network access is disabled by the active sandbox settings.',
+            }
+          : await reviewCommandAccess({
+              command: effectiveArgs.command, config: shellReviewConfig, workspaceRoot,
+              capability: 'Network access for this command and its child processes only',
+              requestApproval: requestToolApproval, evaluate: evaluateCommand, signal,
+              onReview: details => onEvent?.({ type: 'access:review', ...details }),
+            });
         if (!decision.approved) {
           return { callId: call.id, content: clipToolResult({ error: decision.reason || 'Network access denied' }, toolResultMaxChars), blocked: true, status: 'blocked' };
         }

@@ -152,11 +152,11 @@ codemini run --pipeline "Run tests, fix failures, and summarize the result"
 
 When the sandbox is enabled, Codemini prefers a [Microsandbox](https://github.com/superradcompany/microsandbox) Linux microVM. If the platform `msb` binary is missing or the VM cannot start, Linux and macOS fall back to host OS confinement (Landlock / Seatbelt). Windows has no OS fallback.
 
-- With Microsandbox, Bash and file tools start at the project root; use project-relative paths such as `src/core/tools.js`.
+- Microsandbox runs Bash at the project root. On Windows, host execution uses PowerShell 7 when available and Windows PowerShell otherwise.
 - OS fallback runs the host shell under Seatbelt or Landlock (not a Linux guest).
 - Network access is available inside the sandbox.
 - The host project is the writable workspace in `workspace-write` mode.
-- If an enabled sandbox cannot start and no OS fallback exists, Codemini fails closed instead of silently running the command on the host.
+- If Microsandbox is unavailable on Windows, automatic workspace-write mode can fall back to PowerShell in Review or Auto approval mode. Read-only, required sandbox mode, and approval-free host execution require an explicit permissions change.
 
 When the sandbox is explicitly disabled:
 
@@ -175,7 +175,7 @@ codemini config set sandbox.enabled false
 codemini config set sandbox.backend auto
 ```
 
-Sandbox policy and approval policy are separate: the sandbox limits where a command can operate, while approvals decide whether it may run.
+Approval mode `full_access` skips model review and manual confirmation. The selected sandbox limits still apply.
 
 ### Skills, Hooks & MCP
 
@@ -380,11 +380,11 @@ codemini run --pipeline "运行测试、修复失败并总结结果"
 
 开启沙箱后，Codemini 优先通过 [Microsandbox](https://github.com/superradcompany/microsandbox) 的 Linux microVM 执行命令。若本机没有对应的 `msb` 二进制或虚拟机无法启动，Linux 与 macOS 会回退到宿主 OS 隔离（Landlock / Seatbelt）。Windows 没有这套 OS 回退。
 
-- 使用 Microsandbox 时，Bash 和文件工具都从项目根目录开始，使用 `src/core/tools.js` 这类项目相对路径。
+- Microsandbox 在项目根目录中使用 Bash。Windows 宿主执行优先使用 PowerShell 7（`pwsh`），缺少时使用系统 PowerShell。
 - OS 回退在宿主 shell 上套 Seatbelt 或 Landlock，不是 Linux guest。
 - 沙箱内允许网络访问。
 - `workspace-write` 模式下，宿主项目是可写工作区。
-- 如果要求启用沙箱但无法启动且没有 OS 回退，Codemini 会拒绝执行，而不会静默回退到无隔离的宿主机。
+- Windows 上 Microsandbox 不可用时，自动启用的工作区可写模式可在「审阅」或「自动」审批模式下回退到本机 PowerShell。只读、强制启用沙箱和宿主免审阅执行需要显式调整权限。
 
 明确关闭沙箱后：
 
@@ -403,7 +403,7 @@ codemini config set sandbox.enabled false
 codemini config set sandbox.backend auto
 ```
 
-沙箱策略与审批策略彼此独立：沙箱限制命令能在哪里操作，审批决定命令能否执行。
+审批模式 `full_access` 跳过模型审阅和人工确认，执行仍受所选沙箱权限约束。
 
 ### Skills、Hooks 与 MCP
 

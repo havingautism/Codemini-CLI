@@ -20,6 +20,7 @@ import {
 import { t } from '../../i18n/index.js';
 
 const codePlugin = createCodePlugin();
+const streamdownPlugins = { code: codePlugin, mermaid };
 
 // Character splitting also gives unspaced CJK prose a gentle reveal. Keep the
 // backlog short so bursts of tokens never leave the display far behind.
@@ -132,7 +133,7 @@ function MarkdownStreamdown({
       animated={streaming ? streamingTextAnimation : false}
       parseIncompleteMarkdown
       showLineNumbers={false}
-      plugins={{ code: codePlugin, mermaid }}
+      plugins={streamdownPlugins}
       controls={streamdownControls}
       components={components}
     >
@@ -251,6 +252,11 @@ export function StreamdownRenderer({ text, streaming, className, inlineEmbeds = 
     linkFallback: t('markdownLinkFallback'),
     imageFallback: t('markdownImageFallback'),
   });
+  const galleryContent = streaming ? '' : content;
+  const messageImages = useMemo(
+    () => galleryContent ? collectMessageImages(galleryContent, { includeLinks: inlineEmbeds }) : [],
+    [galleryContent, inlineEmbeds],
+  );
 
   if (!content && !streaming) return null;
 
@@ -263,11 +269,7 @@ export function StreamdownRenderer({ text, streaming, className, inlineEmbeds = 
     );
   }
 
-  const messageImages = useMemo(
-    () => collectMessageImages(content, { includeLinks: inlineEmbeds }),
-    [content, inlineEmbeds],
-  );
-  const useGallery = !streaming && messageImages.length > 0;
+  const useGallery = messageImages.length > 0;
 
   const body = (
     <StreamdownRendererBody

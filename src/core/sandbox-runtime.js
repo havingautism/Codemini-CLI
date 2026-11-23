@@ -254,8 +254,10 @@ class MicrosandboxProcess extends EventEmitter {
   }
 }
 
-export function createSandboxProcess({ command, config, cwd, mode, port = 0 } = {}) {
-  const policy = resolveSandboxPolicy({ config, cwd, mode });
+export function createSandboxProcess({
+  command, config, cwd, mode, port = 0,
+  policy = resolveSandboxPolicy({ config, cwd, mode }),
+} = {}) {
   if (!policy.enabled) return null;
   return {
     child: new MicrosandboxProcess({ command, policy, config, port }),

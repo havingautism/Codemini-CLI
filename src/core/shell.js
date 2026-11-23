@@ -226,6 +226,16 @@ export function terminateChild(child, signal = 'SIGTERM') {
   } catch {}
 }
 
+let windowsPowerShell;
+
+function resolveWindowsPowerShell() {
+  if (windowsPowerShell === undefined) {
+    const result = spawnSync('where.exe', ['$PATH:pwsh.exe'], { encoding: 'utf8', windowsHide: true });
+    windowsPowerShell = result.status === 0 ? String(result.stdout || '').split(/\r?\n/).find(Boolean) : '';
+  }
+  return windowsPowerShell || 'powershell.exe';
+}
+
 export function resolveShell(defaultShell) {
   if (process.platform === 'win32') {
     if (defaultShell === 'cmd') {
@@ -234,7 +244,7 @@ export function resolveShell(defaultShell) {
     if (defaultShell === 'bash') {
       return { command: 'bash.exe', args: ['-lc'] };
     }
-    return { command: 'powershell.exe', args: ['-NoLogo', '-NoProfile', '-Command'] };
+    return { command: resolveWindowsPowerShell(), args: ['-NoLogo', '-NoProfile', '-Command'] };
   }
 
   if (defaultShell === 'powershell') {
@@ -245,8 +255,7 @@ export function resolveShell(defaultShell) {
 }
 
 export function resolveSandboxShell(defaultShell) {
-  if (String(defaultShell || '').toLowerCase() === 'powershell') return 'pwsh';
-  return 'bash';
+  return ['powershell', 'pwsh'].includes(String(defaultShell || '').toLowerCase()) ? 'pwsh' : 'bash';
 }
 
 export function isDangerousCommand(command, blockedPatterns = []) {

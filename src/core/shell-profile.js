@@ -148,11 +148,7 @@ export function resolveShellContext(
   const sandbox = resolveSandboxPolicy({ config, cwd, platform });
   const vm = isVmSandbox(sandbox);
   const pathApi = platform === 'win32' ? path.win32 : path.posix;
-  const shell = vm
-    ? 'bash'
-    : platform === 'win32'
-      ? 'powershell'
-      : normalizeShellName(config?.shell?.default);
+  const shell = vm ? 'bash' : platform === 'win32' ? 'powershell' : normalizeShellName(config?.shell?.default);
   return {
     sandbox,
     shell,
@@ -186,9 +182,9 @@ export function getEffectivePolicy(config, options = {}) {
   };
 }
 
-export function getShellSystemPrompt(value) {
+export function getShellSystemPrompt(value, platform) {
   const profile = getShellProfile(value);
-  const windowsTools = profile.shell === 'powershell';
+  const windowsTools = platform ? platform === 'win32' : profile.shell === 'powershell';
   const commandToolName = shellToolName({
     platform: windowsTools ? 'win32' : 'linux',
     shell: profile.shell,

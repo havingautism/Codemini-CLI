@@ -7,7 +7,7 @@ import {
   rememberOsFallback,
   selectSandboxBackend,
 } from '../src/core/sandbox-probe.js';
-import { resolveSandboxPolicy } from '../src/core/sandbox-policy.js';
+import { resolveSandboxAvailability, resolveSandboxPolicy } from '../src/core/sandbox-policy.js';
 import { resolveShellContext } from '../src/core/shell-profile.js';
 import { prepareSandboxExecution } from '../src/core/sandbox-backend.js';
 import { __setSandboxOsTestHooks } from '../src/core/sandbox-os.js';
@@ -89,7 +89,8 @@ test('resolveSandboxPolicy records vm vs os vs none backends', () => {
       config: { sandbox: { enabled: 'auto', mode: 'workspace-write' } },
       platform: 'win32',
     });
-    assert.equal(win.enabled, true);
+    assert.equal(win.enabled, false);
+    assert.equal(win.hostFallback, true);
     assert.equal(win.backend, 'none');
   } finally {
     __setSandboxProbeTestHooks(null);
@@ -175,6 +176,53 @@ test('prepareSandboxExecution fail-closed on Windows when VM is unavailable', as
       (err) => err instanceof SandboxUnavailableError && /Windows has no Landlock\/Seatbelt fallback/i.test(err.message),
     );
   } finally {
+    __setSandboxProbeTestHooks(null);
+  }
+});
+
+test('a Windows VM boot failure switches the workspace to the PowerShell host profile', async () => {
+  __setSandboxProbeTestHooks({ resolveMsbBinary: () => '/tmp/msb' });
+  __setSandboxRuntimeTestHooks({ createSandbox: async () => { throw new Error('hypervisor unavailable'); } });
+  const cwd = process.cwd();
+  const platform = 'win32';
+  const config = { sandbox: { backend: 'microsandbox', mode: 'workspace-write' }, shell: { default: 'bash' } };
+  try {
+    assert.equal(resolveShellContext(config, { cwd, platform }).shell, 'bash');
+    await assert.rejects(
+      prepareSandboxExecution({ command: 'echo hi', config, cwd, platform }),
+      (error) => error instanceof SandboxUnavailableError && /PowerShell/.test(error.message),
+    );
+    const availability = resolveSandboxAvailability(config, { cwd, platform });
+    assert.equal(availability.confineAvailable, false);
+    assert.equal(availability.mode, 'danger-full-access');
+    assert.equal(availability.hostFallback, true);
+    assert.equal(resolveShellContext(config, { cwd, platform }).shell, 'powershell');
+    assert.equal(resolveShellContext(config, { cwd: `${cwd}-other`, platform }).shell, 'bash');
+    await assert.rejects(
+      prepareSandboxExecution({ command: 'echo hi', config, cwd, platform, binShell: 'bash' }),
+      /Start a new turn/,
+    );
+    const fallback = await prepareSandboxExecution({
+      command: 'Get-Location', config, cwd, platform, binShell: 'pwsh',
+    });
+    assert.equal(fallback.kind, 'host');
+    assert.equal(fallback.policy.hostFallback, true);
+    for (const strictConfig of [
+      { ...config, sandbox: { ...config.sandbox, enabled: true } },
+      { ...config, sandbox: { ...config.sandbox, mode: 'read-only' } },
+      { ...config, execution: { approval_mode: 'full_access' } },
+    ]) {
+      await assert.rejects(
+        prepareSandboxExecution({ command: 'Get-Location', config: strictConfig, cwd, platform, binShell: 'pwsh' }),
+        SandboxUnavailableError,
+      );
+    }
+    const host = await prepareSandboxExecution({
+      command: 'Get-Location', config, cwd, platform, mode: 'danger-full-access',
+    });
+    assert.equal(host.kind, 'host');
+  } finally {
+    __setSandboxRuntimeTestHooks(null);
     __setSandboxProbeTestHooks(null);
   }
 });

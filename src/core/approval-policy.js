@@ -51,12 +51,12 @@ export function toolRequiresUserApproval({
     (Array.isArray(alwaysAllowTools) ? alwaysAllowTools : []).map((item) => String(item || '').trim()).filter(Boolean)
   );
 
+  if (normalizedApprovalMode === 'full_access') return false;
   // Outside the opened project is a soft trust boundary on Windows / when OS sandbox is off.
   // When OS sandbox is confining, the fence already blocks those writes — skip the prompt.
   if (isOutsideWorkspaceMutation && !osSandboxConfining) return true;
   if (isDeterministicCommandGate) return true;
   if (isSandboxEscalation) return true;
-  if (normalizedApprovalMode === 'full_access') return false;
   if (normalizedApprovalMode === 'auto') {
     return Boolean(isSafeModeRun);
   }
