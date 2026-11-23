@@ -136,7 +136,7 @@ function TaskCard({ task, run, viewMode, busy, menuOpen, onMenuChange, onOpen, o
   const state = scheduledTaskState(task, run);
   const menuAction = action => { onMenuChange(''); action(task); };
   return (
-    <article className={cn('group relative isolate rounded-2xl border border-transparent text-left transition-colors hover:border-(--border-strong)', list ? 'min-h-28' : 'min-h-56')}
+    <article className={cn('codemini-task-row group relative isolate rounded-2xl text-left transition-colors', list ? 'min-h-28' : 'min-h-56')}
       style={{ '--task-tint': tone, backgroundColor: 'color-mix(in srgb, var(--task-tint) 22%, var(--bg-secondary))' }}>
       <button type="button" onClick={() => onOpen(task.id)} className="absolute inset-0 z-0 rounded-2xl" aria-label={`${t('scheduledOpenTask')}: ${task.name}`} />
       <div className={cn('pointer-events-none relative z-[1] flex h-full gap-4 px-5 py-5 pr-14', list ? 'items-center' : 'min-h-56 flex-col')}>

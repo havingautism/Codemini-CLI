@@ -1,8 +1,7 @@
-import { lazy, Suspense, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Archive,
   ArrowSquareOut,
-  CaretDown,
   FileText,
   Folder,
   FolderOpen,
@@ -16,6 +15,8 @@ import {
 } from "@/lib/icons";
 import { LinearRing, Spinner } from "@/components/ui/spinner";
 import { FileTypeIcon } from "@/components/FileTypeIcon.jsx";
+import { CodeOutputPreview, CodePreviewFrame } from "@/components/beautiful-ui/CodeBlockFrame.jsx";
+import ReadToolPreview from "@/components/ReadToolPreview.jsx";
 import {
   DisclosureLeading,
 } from "@/components/DisclosureLeading.jsx";
@@ -45,17 +46,9 @@ import { t } from "../../i18n/index.js";
 import { cn } from "@/lib/utils";
 import { PatchDiff } from "@pierre/diffs/react";
 
-const ReadToolPreview = lazy(() => import("./ReadToolPreview.jsx"));
-
 function ReadToolOutput({ output, path }) {
   return (
-    <Suspense fallback={
-      <div className="codemini-disclosure-payload codemini-disclosure-scroll mt-1">
-        <pre className="m-0 max-h-100 overflow-auto whitespace-pre p-3 font-mono text-xs leading-relaxed text-(--text-primary)">{output}</pre>
-      </div>
-    }>
-      <ReadToolPreview output={output} path={String(path || "").replace(/:\d+(?:-\d+)?$/, "")} />
-    </Suspense>
+    <ReadToolPreview output={output} path={String(path || "").replace(/:\d+(?:-\d+)?$/, "")} />
   );
 }
 
@@ -174,36 +167,34 @@ function buildPreviewLines(meta) {
 
 export function FilePreview({ meta }) {
   const themeType = usePatchThemeType();
+  const label = basename(meta?.path) || "diff";
+  const stats = (
+    <span className="inline-flex shrink-0 gap-2 tabular-nums">
+      {meta?.added > 0 && <span className="text-(--accent-green)">+{meta.added}</span>}
+      {meta?.removed > 0 && <span className="text-(--accent-red)">-{meta.removed}</span>}
+    </span>
+  );
   if (isUnifiedPatch(meta?.diffPreview)) {
     return (
-      <div className="codemini-file-tool-diff max-h-[420px] overflow-auto border border-(--border-default) bg-(--tool-detail-bg) text-xs">
-        <PatchDiff
-          patch={meta.diffPreview}
-          options={{
-            theme: { dark: "pierre-dark", light: "pierre-light" },
-            themeType,
-            diffStyle: "unified",
-            disableFileHeader: true,
-          }}
-        />
-      </div>
+      <CodePreviewFrame label={label} actions={stats} className="mt-1.5">
+        <div className="max-h-[420px] overflow-auto text-xs">
+          <PatchDiff
+            patch={meta.diffPreview}
+            options={{
+              theme: { dark: "pierre-dark", light: "pierre-light" },
+              themeType,
+              diffStyle: "unified",
+              disableFileHeader: true,
+            }}
+          />
+        </div>
+      </CodePreviewFrame>
     );
   }
   const lines = buildPreviewLines(meta);
   if (!lines.length) return null;
   return (
-    <div className="mt-2 overflow-hidden rounded-md border border-(--border-default) bg-(--tool-detail-bg)">
-      <div className="flex items-center gap-2 border-b border-(--border-default) px-3 py-2 font-mono text-xs">
-        <span className="min-w-0 flex-1 truncate text-(--text-primary)">
-          {basename(meta.path) || "file"}
-        </span>
-        {meta.added > 0 && (
-          <span className="text-(--accent-green)">+{meta.added}</span>
-        )}
-        {meta.removed > 0 && (
-          <span className="text-(--accent-red)">-{meta.removed}</span>
-        )}
-      </div>
+    <CodePreviewFrame label={label} actions={stats} className="mt-1.5">
       <div className="max-h-64 overflow-auto font-mono text-xs leading-6">
         {lines.map((line, idx) => (
           <div
@@ -224,7 +215,7 @@ export function FilePreview({ meta }) {
           </div>
         ))}
       </div>
-    </div>
+    </CodePreviewFrame>
   );
 }
 
@@ -284,9 +275,7 @@ const STATUS_STYLES = {
   blocked: "bg-[var(--accent-orange)]",
 };
 const TOOL_ROW_CLASS =
-  "codemini-disclosure-row msg-process-row gap-1";
-const DETAIL_PRE_CLASS =
-  "m-0 max-h-100 overflow-x-auto whitespace-pre-wrap break-words p-3 font-mono text-xs leading-relaxed text-(--text-primary)";
+  "codemini-tool-row codemini-disclosure-row msg-process-row gap-1";
 const TOOL_ICON_CLASS =
   "flex size-4 shrink-0 items-center justify-center text-(--text-process-detail)";
 
@@ -294,7 +283,7 @@ function FilePathArgument({ path, wrapped = false }) {
   const { dir, name } = splitPathForDisplay(path);
   return (
     <span
-      className="msg-process-meta__detail ml-1 flex min-w-0 items-center font-mono text-xs font-normal leading-[18px]"
+      className="codemini-tool-chip msg-process-meta__detail ml-2 flex min-w-0 items-center font-mono text-xs font-normal leading-[18px]"
       title={path}
     >
       {wrapped ? "(" : null}
@@ -335,7 +324,7 @@ function ToolCardHeaderMeta({
               wrapped={wrapArg || Boolean(fileMeta?.path)}
             />
           ) : wrapArg ? (
-            <span className="msg-process-meta__detail ml-1 block min-w-0 flex-1 truncate font-mono text-xs font-normal leading-6">
+            <span className="codemini-tool-chip msg-process-meta__detail ml-2 block min-w-0 truncate font-mono text-xs font-normal">
               ({toolArg})
             </span>
           ) : null
@@ -361,18 +350,18 @@ function ToolCardHeaderMeta({
   );
 }
 
-function FileToolHeaderMeta({ fileMeta, open, toolLabel }) {
+function FileToolHeaderMeta({ fileMeta, toolLabel }) {
   const { dir, name } = splitPathForDisplay(fileMeta?.path);
   return (
     <>
       <span className="shrink-0">{toolLabel}</span>
       <span
-        className="codemini-file-tool-path flex min-w-0 flex-1 items-center gap-1.5 font-mono text-xs font-normal"
+        className="codemini-tool-chip flex min-w-0 items-center gap-1.5 font-mono text-xs font-normal"
         title={fileMeta?.path}
       >
-        <span className="flex shrink-0 items-center gap-1.5 text-(--text-process-hover)">
+        <span className="flex min-w-0 items-center gap-1.5 text-(--text-process-hover)">
           <FileTypeIcon path={fileMeta?.path} size="sm" />
-          <span>{name || "file"}</span>
+          <span className="truncate">{name || "file"}</span>
         </span>
         {dir ? (
           <span className="min-w-0 truncate text-(--text-process-detail)">
@@ -390,15 +379,6 @@ function FileToolHeaderMeta({ fileMeta, open, toolLabel }) {
           -{fileMeta.removed}
         </span>
       )}
-      <CaretDown
-        size={14}
-        aria-hidden="true"
-        className={cn(
-          "codemini-file-tool-caret shrink-0 text-(--text-process-detail)",
-          open && "is-open",
-          !fileMeta && "invisible",
-        )}
-      />
     </>
   );
 }
@@ -497,7 +477,6 @@ export function ToolCard({
             </DisclosureLeading>
             <FileToolHeaderMeta
               fileMeta={fileDisplayMeta}
-              open={open}
               toolLabel={toolLabel}
             />
             {card.status === "running" ? (
@@ -569,9 +548,7 @@ export function ToolCard({
             ) : toolName === "read" ? (
               <ReadToolOutput output={conversationOutput} path={filePath} />
             ) : (
-              <div className="codemini-disclosure-payload codemini-disclosure-scroll mt-1">
-                <pre className={DETAIL_PRE_CLASS}>{conversationOutput}</pre>
-              </div>
+              <CodeOutputPreview content={conversationOutput} wrap />
             )}
           </div>
         ) : null}
@@ -682,7 +659,7 @@ export function ToolCard({
           className={cn(
             hasFilePreview || toolName === "read"
               ? "codemini-fold-body px-1 pb-1"
-              : "codemini-disclosure-payload",
+              : "mt-1",
           )}
         >
           {fileMeta ? (
@@ -693,7 +670,7 @@ export function ToolCard({
           ) : toolName === "read" ? (
             <ReadToolOutput output={conversationOutput} path={filePath} />
           ) : (
-            <pre className={DETAIL_PRE_CLASS}>{conversationOutput}</pre>
+            <CodeOutputPreview content={conversationOutput} wrap />
           )}
         </div>
       )}

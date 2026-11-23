@@ -1,4 +1,5 @@
 import { getGlobalDatabase, transaction } from './sqlite-database.js';
+import { ensureSessionMessageSearchIndex } from './session-message-search.js';
 
 const lastSavedOriginals = new Map();
 const lastSavedCounts = new Map();
@@ -140,26 +141,50 @@ export function sessionProjectDirsFromSqlite() {
     UNION SELECT s.project_dir FROM scheduled_task_runs r JOIN sessions s ON s.id=r.session_id`).all().map((row) => row.project_dir);
 }
 
-export function listSessionPageFromSqlite({ projectDirs, limit = 10, cursor = null }) {
+export function listSessionPageFromSqlite({ projectDirs, limit = 10, cursor = null, searchQuery = '' }) {
   if (!projectDirs.length) return { sessions: [], hasMore: false, nextCursor: null };
   const db = getGlobalDatabase();
   const count = Math.max(1, Math.min(100, Math.floor(limit)));
   const conditions = ['(s.message_count > 0 OR s.id IN (SELECT session_id FROM scheduled_task_runs))', `s.project_dir IN (${projectDirs.map(() => '?').join(',')})`];
   const params = [...projectDirs];
+  const searchContent = Array.from(searchQuery).length >= 3;
+  if (searchQuery) {
+    const titleMatch = "instr(lower(s.title), lower(?)) > 0";
+    conditions.push(searchContent
+      ? `(${titleMatch} OR s.id IN (SELECT session_id FROM content_hits))`
+      : titleMatch);
+    params.push(searchQuery);
+    if (searchContent) {
+      ensureSessionMessageSearchIndex(db);
+      params.unshift(`"${searchQuery.replaceAll('"', '""')}"`);
+    }
+  }
   if (cursor) {
     conditions.push('(s.updated_at < ? OR (s.updated_at = ? AND s.id < ?))');
     params.push(cursor.updatedAt, cursor.updatedAt, cursor.id);
   }
-  const rows = db.prepare(`WITH page AS MATERIALIZED (
+  const contentHits = searchContent ? `content_hits AS MATERIALIZED (
+    SELECT m.session_id, max(m.rowid) AS message_rowid
+    FROM session_message_search(?) f
+    JOIN session_messages m ON m.rowid = f.rowid
+    GROUP BY m.session_id
+  ),` : '';
+  const matchPreview = searchContent ? `, substr(hit.content_text,
+    max(1, instr(lower(hit.content_text), lower(?)) - 24), 100) AS matchPreview` : '';
+  const matchJoin = searchContent ? `LEFT JOIN content_hits ON content_hits.session_id = s.id
+    LEFT JOIN session_messages hit ON hit.rowid = content_hits.message_rowid` : '';
+  const rows = db.prepare(`WITH ${contentHits} page AS MATERIALIZED (
     SELECT * FROM sessions s WHERE ${conditions.join(' AND ')}
     ORDER BY s.updated_at DESC, s.id DESC LIMIT ?
     ) SELECT s.id, s.title, s.updated_at AS updatedAt, s.message_count AS messageCount,
     s.project_dir AS projectDir, s.model, s.mode,
     (SELECT status FROM scheduled_task_runs WHERE session_id=s.id ORDER BY created_at DESC LIMIT 1) AS scheduledStatus,
     COALESCE(substr(replace(replace(m.content_text, char(10), ' '), char(13), ' '), 1, 80), '') AS preview
+    ${matchPreview}
     FROM page s LEFT JOIN session_messages m ON m.session_id = s.id AND m.ordinal = (
       SELECT ordinal FROM session_messages WHERE session_id = s.id ORDER BY ordinal DESC LIMIT 1
-    ) ORDER BY s.updated_at DESC, s.id DESC`).all(...params, count + 1);
+    ) ${matchJoin} ORDER BY s.updated_at DESC, s.id DESC`)
+    .all(...params, count + 1, ...(searchContent ? [searchQuery] : []));
   const sessions = rows.slice(0, count);
   const last = sessions.at(-1);
   return { sessions, hasMore: rows.length > count,

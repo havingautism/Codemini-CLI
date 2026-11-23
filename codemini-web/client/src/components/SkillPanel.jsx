@@ -1,3 +1,4 @@
+import { HorizontalScrollViewport } from "@/components/HorizontalScrollStrip.jsx";
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import {
   ArrowsClockwise,
@@ -1335,9 +1336,9 @@ function SkillIndexPreviewDialog({
               {error}
             </div>
           ) : hasSkills ? (
-            <pre className="overflow-x-auto rounded-md border border-(--border-default) bg-(--bg-secondary) px-3 py-3 font-mono text-[11px] leading-5 whitespace-pre text-(--text-primary)">
+            <HorizontalScrollViewport as="pre" className="overflow-x-auto rounded-md border border-(--border-default) bg-(--bg-secondary) px-3 py-3 font-mono text-[11px] leading-5 whitespace-pre text-(--text-primary)">
               {rawJson}
-            </pre>
+            </HorizontalScrollViewport>
           ) : (
             <Empty className="py-12">
               <EmptyDescription>

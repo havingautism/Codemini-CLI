@@ -26,6 +26,7 @@ export function FilePreviewCode({
   content = "",
   truncated = false,
   startLine = 1,
+  showLineNumbers = true,
 }) {
   const language = useMemo(() => languageFromPath(path), [path]);
   const [lines, setLines] = useState(() => plainLines(content));
@@ -64,13 +65,15 @@ export function FilePreviewCode({
               key={`line-${index}`}
               className="codemini-file-preview-line flex min-w-full"
             >
-              <span
-                className="codemini-file-preview-gutter shrink-0 select-none pr-3 text-right text-(--text-muted) tabular-nums"
-                style={{ minWidth: `${gutterWidth + 1}ch` }}
-                aria-hidden="true"
-              >
-                {startLine + index}
-              </span>
+              {showLineNumbers && (
+                <span
+                  className="codemini-file-preview-gutter shrink-0 select-none pr-3 text-right text-(--text-muted) tabular-nums"
+                  style={{ minWidth: `${gutterWidth + 1}ch` }}
+                  aria-hidden="true"
+                >
+                  {startLine + index}
+                </span>
+              )}
               <span className="codemini-file-preview-source min-w-0 grow whitespace-pre text-(--text-secondary)">
                 {(tokens || []).length === 0 ? (
                   "\u00a0"

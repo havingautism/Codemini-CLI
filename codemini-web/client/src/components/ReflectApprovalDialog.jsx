@@ -1,3 +1,4 @@
+import { HorizontalScrollViewport } from "@/components/HorizontalScrollStrip.jsx";
 import { useState } from "react";
 import DistillationSummary from './DistillationSummary.jsx';
 import { Badge } from "@/components/ui/badge";
@@ -166,9 +167,9 @@ export function ReflectApprovalCard({
         />
       ) : (
         draft.content && (
-          <pre className="max-h-56 overflow-auto rounded-md border border-(--border-default) bg-(--bg-secondary) p-3 font-mono text-[12px] leading-5 text-(--text-secondary) whitespace-pre-wrap">
+          <HorizontalScrollViewport as="pre" className="max-h-56 overflow-auto rounded-md border border-(--border-default) bg-(--bg-secondary) p-3 font-mono text-[12px] leading-5 text-(--text-secondary) whitespace-pre-wrap">
             {draft.content}
-          </pre>
+          </HorizontalScrollViewport>
         )
       )}
 
@@ -213,7 +214,7 @@ export function ReflectApprovalDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[min(760px,calc(100vh-2rem))] overflow-y-auto sm:max-w-2xl">
+      <DialogContent className="codemini-approval-card max-h-[min(760px,calc(100vh-2rem))] overflow-y-auto sm:max-w-2xl">
         <DialogHeader showCloseButton={!generating && !draft}>
           <DialogTitle>
             {draft

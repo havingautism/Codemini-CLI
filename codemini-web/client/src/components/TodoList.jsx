@@ -52,21 +52,22 @@ export function TodoList({ todos }) {
   if (!todos?.length) return null;
 
   return (
-    <div className="flex flex-col" role="list">
+    <div className="codemini-task-list flex flex-col gap-1" role="list">
       {todos.map((todo, i) => {
         const completed = todo.status === "completed";
         const inProgress = todo.status === "in_progress";
         return (
           <div
             key={`${todo.content || todo.activeForm || "todo"}-${i}`}
-            className="flex min-h-11 min-w-0 items-center gap-2.5 py-2.5 text-[13px] leading-5"
+            className="codemini-task-row flex min-h-9 min-w-0 items-center gap-2.5 px-2.5 py-1.5 text-[13px] leading-5"
+            data-task-status={todo.status}
             role="listitem"
           >
             <span
               aria-hidden="true"
               className={cn(
                 "relative flex size-[15px] shrink-0 items-center justify-center",
-                completed && "rounded-full bg-(--text-primary) text-(--bg-primary)",
+                completed && "rounded-full bg-(--accent-green-bg) text-(--accent-green)",
                 !completed && !inProgress && "rounded-full border border-[color:color-mix(in_srgb,var(--text-primary)_22%,transparent)]",
               )}
             >

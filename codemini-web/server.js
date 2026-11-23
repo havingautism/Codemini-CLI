@@ -3,7 +3,8 @@ import { isScheduledSessionActive, getScheduledChangeState } from '../src/core/s
 import { createScheduledTaskNotifier } from './lib/scheduled-task-notifier.js';
 import { startScheduledWorker } from '../src/core/scheduled-worker-process.js';
 import { registerScheduledTaskRoutes } from './lib/scheduled-task-api.js';
-import { decodeSessionCursor, getSessionGroupPage, getSessionSidebarSnapshot } from './lib/session-pages.js';
+import { createProjectFolder } from './lib/project-folder.js';
+import { decodeSessionCursor, getSessionGroupPage, getSessionSidebarSnapshot, searchSessionSidebar } from './lib/session-pages.js';
 import { validateWebConfigValue } from './shared/web-config-policy.js';
 import { DOCUMENT_EXTENSIONS, SCRAPBOOK_TEXT_EXTENSIONS } from './shared/document-formats.js';
 import { createWebSecurity, publicConfig, isSecretConfigKey, assertConfigPath, assertWebConfigWritable } from './lib/web-security.js';
@@ -1061,6 +1062,19 @@ export function createWebRuntimeApi({
     const page = getSessionGroupPage({ groupKey: url.searchParams.get('groupKey') || '__codemini_general__', active, cursor });
     page.sessions = page.sessions.map((session) => ({ ...session, runtime: pool.getSessionState(session.id) }));
     jsonResponse(res, page);
+    return true;
+  }));
+  runtimeRoutes.get("/api/sessions/search", nodeRoute(async (req, res, url) => {
+    const query = String(url.searchParams.get('q') || '').trim().slice(0, 200);
+    if (!query) {
+      jsonResponse(res, { sessions: [], hasMore: false, nextCursor: null });
+      return true;
+    }
+    let cursor;
+    try { cursor = decodeSessionCursor(url.searchParams.get('cursor')); }
+    catch (error) { jsonResponse(res, { error: true, message: error.message }, 400); return true; }
+    const { active } = await loadActiveProjects();
+    jsonResponse(res, searchSessionSidebar({ active, query, cursor }));
     return true;
   }));
   runtimeRoutes.get("/api/usage/session", nodeRoute(async (req, res, url) => {
@@ -3729,6 +3743,18 @@ async function main() {
       }
       return;
 
+  }));
+  routes.post("/api/project/folders", nodeRoute(async (req, res) => {
+    const { dir, name } = await readBody(req);
+    try {
+      jsonResponse(res, { folder: await createProjectFolder(dir, name) });
+    } catch (error) {
+      const status = {
+        INVALID_PARENT: 400, INVALID_NAME: 400, ENAMETOOLONG: 400, EINVAL: 400,
+        EEXIST: 409, ENOENT: 404, ENOTDIR: 404, EACCES: 403, EPERM: 403, EROFS: 403,
+      }[error.code] || 500;
+      jsonResponse(res, { error: true, code: error.code, message: error.message }, status);
+    }
   }));
   routes.get("/api/config/status", nodeRoute(async (req, res, url) => {
       const config = await loadConfig();

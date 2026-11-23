@@ -155,6 +155,7 @@ export function SpecApprovalDialog({
 
   return (
     <WorkflowReviewDialog
+      contentClassName="codemini-approval-card"
       open={open}
       onOpenChange={handleOpenChange}
       title={t("specReviewTitle")}

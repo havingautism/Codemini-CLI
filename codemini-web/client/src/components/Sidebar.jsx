@@ -1,4 +1,6 @@
 import { useState, useEffect, useMemo, useRef } from "react";
+import GlideMenu from "@/components/beautiful-ui/GlideMenu.jsx";
+import { SidebarSessionSearch } from "@/components/SidebarSessionSearch.jsx";
 import {
   ArrowClockwise,
   BookOpenText,
@@ -591,9 +593,9 @@ export function Sidebar({
   };
 
   return (
-    <aside className="codemini-sidebar h-full w-[260px] shrink-0 flex flex-col">
+    <aside className="codemini-sidebar h-full w-[260px] shrink-0 flex flex-col" aria-label={t("brand")}>
       {/* Fixed top action buttons */}
-      <div className="codemini-sidebar-actions shrink-0 px-2.5 pt-2.5 flex flex-col gap-0.5">
+      <GlideMenu className="codemini-sidebar-actions shrink-0 px-2.5 pt-2.5 flex flex-col gap-0.5">
         <div className="mb-1.5 flex h-9 items-center gap-2 px-2">
           <img
             src="/logos/codemini_logo.png"
@@ -617,6 +619,7 @@ export function Sidebar({
           ) : null}
         </div>
         <button
+          data-menu-row
           className="codemini-sidebar-action codemini-sidebar-action--new w-full border-0 bg-transparent flex items-center gap-2.5 h-9 px-2.5 rounded-lg cursor-pointer text-left text-[13px] text-(--text-primary)"
           onClick={openGeneralNewSession}
         >
@@ -629,6 +632,7 @@ export function Sidebar({
         </button>
 
         <button
+          data-menu-row
           className={cn(
             "codemini-sidebar-action w-full border-0 bg-transparent flex items-center gap-2.5 h-9 px-2.5 rounded-lg cursor-pointer text-left text-[13px]",
             currentView === "scrapbook" ? "bg-(--bg-active) text-(--text-primary)" : "text-(--text-primary)",
@@ -643,6 +647,7 @@ export function Sidebar({
           <span className="truncate">{t("scrapbook")}</span>
         </button>
         <button
+          data-menu-row
           className={cn(
             "codemini-sidebar-action w-full border-0 bg-transparent flex items-center gap-2.5 h-9 px-2.5 rounded-lg cursor-pointer text-left text-[13px]",
             currentView === "research" ? "bg-(--bg-active) text-(--text-primary)" : "text-(--text-primary)",
@@ -658,6 +663,7 @@ export function Sidebar({
         </button>
 
         <button
+          data-menu-row
           className={cn(
             "codemini-sidebar-action w-full border-0 bg-transparent flex items-center gap-2.5 h-9 px-2.5 rounded-lg cursor-pointer text-left text-[13px] text-(--text-primary)",
             currentView === "scheduled-tasks" && "bg-(--bg-active)",
@@ -670,6 +676,7 @@ export function Sidebar({
         <Separator className="mx-2 my-2 bg-(--border-default)/40" />
 
         <button
+          data-menu-row
           className="codemini-sidebar-action w-full border-0 bg-transparent flex items-center gap-2.5 h-9 px-2.5 rounded-lg cursor-pointer text-left text-[13px] text-(--text-primary)"
           onClick={onOpenSkills}
         >
@@ -682,6 +689,7 @@ export function Sidebar({
         </button>
 
         <button
+          data-menu-row
           className="codemini-sidebar-action w-full border-0 bg-transparent flex items-center gap-2.5 h-9 px-2.5 rounded-lg cursor-pointer text-left text-[13px] text-(--text-primary)"
           onClick={onOpenMcp}
         >
@@ -694,6 +702,7 @@ export function Sidebar({
         </button>
 
         <button
+          data-menu-row
           className="codemini-sidebar-action w-full border-0 bg-transparent flex items-center gap-2.5 h-9 px-2.5 rounded-lg cursor-pointer text-left text-[13px] text-(--text-primary)"
           onClick={onOpenHooks}
         >
@@ -706,6 +715,7 @@ export function Sidebar({
         </button>
 
         <button
+          data-menu-row
           className="codemini-sidebar-action w-full border-0 bg-transparent flex items-center gap-2.5 h-9 px-2.5 rounded-lg cursor-pointer text-left text-[13px] text-(--text-primary)"
           onClick={onOpenSouls}
         >
@@ -717,6 +727,7 @@ export function Sidebar({
           <span className="truncate">{t("souls")}</span>
         </button>
         <button
+          data-menu-row
           className="codemini-sidebar-action w-full border-0 bg-transparent flex items-center gap-2.5 h-9 px-2.5 rounded-lg cursor-pointer text-left text-[13px] text-(--text-primary)"
           onClick={onOpenMemory}
         >
@@ -728,8 +739,16 @@ export function Sidebar({
           <span className="truncate">{t("memory")}</span>
         </button>
         <Separator className="mx-2 my-2 bg-(--border-default)/40" />
-      </div>
+      </GlideMenu>
 
+      <SidebarSessionSearch
+        currentSessionId={currentSessionId}
+        currentView={currentView}
+        onPick={(sessionId) => {
+          if (sessionId !== currentSessionId) onSwitchSession(sessionId);
+          else if (currentView !== "chat") onSwitchView?.("chat");
+        }}
+      >
       <div
         className="flex-1 min-h-0 overflow-y-auto scroll-smooth"
         // style={{ scrollbarWidth: "thin" }}
@@ -916,10 +935,11 @@ export function Sidebar({
                   </Popover>
                 </div>
                 {isExpanded && (
-                  <div className="flex flex-col gap-1.5 py-1 pl-2">
+                  <GlideMenu className="flex flex-col gap-1 py-1 pl-2">
                     {visibleProjectSessions.map((session) => (
                       <div
                         key={session.id}
+                        data-menu-row
                         aria-disabled={session.scheduledStatus === 'running'}
                         title={session.scheduledStatus === 'running' ? t('scheduledSessionRunningHint') : undefined}
                         onClick={() => {
@@ -976,7 +996,7 @@ export function Sidebar({
                         {sessionPages[projectKey]?.loading ? <Spinner /> : t(sessionPages[projectKey]?.error ? "loadMoreSessionsError" : "showMoreSessions")}
                       </button>
                     )}
-                  </div>
+                  </GlideMenu>
                 )}
               </div>
             );
@@ -1041,7 +1061,7 @@ export function Sidebar({
           </div>
 
           {conversationsSectionOpen ? (
-          <div className="flex flex-col gap-1">
+          <GlideMenu className="flex flex-col gap-1">
             {sessionsLoading && generalSessions.length === 0 && (
               <div className="flex h-[34px] items-center justify-center px-3 text-(--text-muted)">
                 <Spinner />
@@ -1056,6 +1076,7 @@ export function Sidebar({
               return (
                 <div
                   key={session.id}
+                  data-menu-row
                   aria-disabled={session.scheduledStatus === 'running'}
                   title={session.scheduledStatus === 'running' ? t('scheduledSessionRunningHint') : undefined}
                   onClick={() => {
@@ -1113,10 +1134,12 @@ export function Sidebar({
                 {t("noConversations")}
               </button>
             )}
-          </div>
+          </GlideMenu>
           ) : null}
         </section>
       </div>
+
+      </SidebarSessionSearch>
 
       {/* Footer */}
 

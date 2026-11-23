@@ -68,6 +68,35 @@ test('scoped cursor pages reach every session beyond 200, including timestamp ti
   assert.equal(next.data.sessions.length, 5);
   assert.ok(next.data.sessions.every((s) => !initial.data.sessions.some((first) => first.id === s.id)));
   assert.equal((await request('/api/sessions/page?cursor=bad')).status, 400);
+  insert.run('hidden-match', stamp, stamp, 'Project', 'E:\\hidden', 1);
+  insert.run('empty-match', stamp, stamp, 'Project', 'E:\\repo', 0);
+  const searched = await request('/api/sessions/search?q=PROJECT');
+  assert.equal(searched.status, 200);
+  assert.equal(searched.data.sessions.length, 30);
+  const matches = [...searched.data.sessions];
+  let searchPage = searched.data;
+  while (searchPage.hasMore) {
+    const response = await request(`/api/sessions/search?q=PROJECT&cursor=${searchPage.nextCursor}`);
+    assert.equal(response.status, 200);
+    searchPage = response.data;
+    matches.push(...searchPage.sessions);
+  }
+  assert.equal(matches.length, 215);
+  assert.equal(new Set(matches.map((session) => session.id)).size, 215);
+  assert.ok(matches.every((session) => session.id.startsWith('p-')));
+  assert.deepEqual((await request('/api/sessions/search?q=%25')).data.sessions, []);
+
+  db.prepare("INSERT INTO session_messages(session_id, ordinal, role, content_text, payload_json) VALUES ('hidden-match', 0, 'assistant', 'latest preview', '{}'), ('p-213', 0, 'tool', 'latest preview', '{}')").run();
+  const search = async (query) => (await request(`/api/sessions/search?q=${encodeURIComponent(query)}`)).data.sessions;
+  const previewHits = await search('Latest PREVIEW');
+  assert.deepEqual(previewHits.map((session) => session.id), ['p-214']);
+  assert.equal(previewHits[0].matchPreview, 'latest preview');
+  db.prepare("UPDATE session_messages SET content_text = '本地索引已经更新' WHERE session_id = 'p-214' AND ordinal = 1").run();
+  assert.deepEqual(await search('latest preview'), []);
+  assert.equal((await search('索引已'))[0]?.id, 'p-214');
+  assert.deepEqual(await search('索引'), []);
+  db.prepare("DELETE FROM sessions WHERE id = 'p-214'").run();
+  assert.deepEqual(await search('索引已'), []);
 });
 
 test('refresh and pagination preserve expanded history, live titles and in-flight cursors', () => {

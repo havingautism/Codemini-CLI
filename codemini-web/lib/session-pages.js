@@ -39,3 +39,20 @@ export function getSessionSidebarSnapshot(active) {
   sessions.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || b.id.localeCompare(a.id));
   return { sessions, pages };
 }
+
+export function searchSessionSidebar({ active, query, cursor = null }) {
+  const activeKeys = new Set(active.map(normalizeProjectDirKey));
+  const projectDirs = sessionProjectDirsFromSqlite().filter((dir) =>
+    isGeneralWorkspaceProjectDir(dir) || activeKeys.has(normalizeProjectDirKey(dir)));
+  const page = listSessionPageFromSqlite({ projectDirs, searchQuery: query, limit: 30, cursor });
+  return {
+    ...page,
+    nextCursor: page.nextCursor ? Buffer.from(JSON.stringify(page.nextCursor)).toString('base64url') : null,
+    sessions: page.sessions.map((session) => ({
+      ...session,
+      scheduledTask: Boolean(session.scheduledStatus),
+      projectKey: normalizeProjectDirKey(session.projectDir),
+      isGeneral: isGeneralWorkspaceProjectDir(session.projectDir),
+    })),
+  };
+}

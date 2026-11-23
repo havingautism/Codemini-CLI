@@ -1,5 +1,6 @@
 import { ThinkingOrb } from "thinking-orbs";
 import { cn } from "@/lib/utils";
+import { LoadingState } from "@/components/beautiful-ui/LoadingState.jsx";
 
 const SESSION_ORB_STATES = {
   thinking: "composing",
@@ -47,11 +48,5 @@ export function SessionOrb({ state = "working", className, ...props }) {
 }
 
 export function ResponseLoader({ label, className }) {
-  return (
-    <span
-      role="status"
-      aria-label={label}
-      className={cn("msg-body streaming-cursor inline-flex min-h-6 items-center", className)}
-    />
-  );
+  return <LoadingState label={label} className={className} />;
 }

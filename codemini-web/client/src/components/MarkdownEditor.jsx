@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import MDEditor from "@uiw/react-md-editor";
 import { cn } from "@/lib/utils";
+import { useHorizontalScrollEdges } from "@/hooks/use-horizontal-scroll-edges.js";
 import { t } from "../../i18n/index.js";
 
 const INLINE_META_KEY =
@@ -96,10 +97,12 @@ export function MarkdownEditor({
 }
 
 export function MarkdownPreview({ value, className }) {
+  const scrollEdges = useHorizontalScrollEdges(".wmde-markdown table, .wmde-markdown pre > code");
   const colorMode = useColorMode();
   const source = stripMarkdownMetadata(value) || t("noPreview");
   return (
     <div
+      {...scrollEdges}
       data-color-mode={colorMode}
       className={cn(
         "codemini-md-preview min-h-0 overflow-y-auto scroll-smooth",

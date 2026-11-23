@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { projectOptions, parentDirectory, timeZoneOptions } from '../codemini-web/client/src/lib/workspace-picker.js';
 import { registerScheduledTaskRoutes } from '../codemini-web/lib/scheduled-task-api.js';
+import { createProjectFolder } from '../codemini-web/lib/project-folder.js';
 import { saveScheduledTask } from '../src/core/scheduled-task-store.js';
 import { closeSqliteDatabasesForTests } from '../src/core/sqlite-database.js';
 
@@ -23,6 +24,21 @@ test('parent navigation handles Windows drives, UNC shares and POSIX roots', () 
     ['/home/user', '/home'], ['/home', '/'], ['/', ''],
     ['\\\\server\\share\\folder', '//server/share'], ['\\\\server\\share', ''],
   ]) assert.equal(parentDirectory(value), parent, value);
+});
+
+test('the project picker creates one child and refuses collisions and path traversal', async (t) => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'workspace-picker-folder-'));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const folder = await createProjectFolder(directory, '我的项目 1');
+  assert.deepEqual(folder, { name: '我的项目 1', path: path.join(directory, '我的项目 1'), isGit: false });
+  assert.equal((await fs.stat(folder.path)).isDirectory(), true);
+  await assert.rejects(createProjectFolder(directory, folder.name), { code: 'EEXIST' });
+  for (const invalid of ['', '..', '../outside', 'child/sub', 'child\\sub']) {
+    await assert.rejects(createProjectFolder(directory, invalid), { code: 'INVALID_NAME' });
+  }
+  await assert.rejects(createProjectFolder('', 'child'), { code: 'INVALID_PARENT' });
+  await assert.rejects(createProjectFolder(path.join(directory, 'missing'), 'child'), { code: 'ENOENT' });
+  assert.deepEqual(await fs.readdir(directory), [folder.name]);
 });
 
 test('timezone choices preserve legacy aliases, support city search and provide real IANA values', () => {

@@ -132,6 +132,7 @@ function StepProcessFold({ segments }) {
   return (
     <div className="codemini-disclosure my-0.5">
       <DisclosureRowButton
+        className="codemini-process-trigger"
         open={expanded}
         onClick={() => setExpanded((value) => !value)}
         icon={
@@ -368,8 +369,9 @@ function SubagentStepRow({ step, index }) {
   const title = stripDelegationTaskPrefix(step?.title) || `Task ${index + 1}`;
 
   return (
-    <div className="codemini-disclosure overflow-hidden">
+    <div className="codemini-task-row codemini-disclosure overflow-hidden" data-task-status={status}>
       <DisclosureRowButton
+        className="codemini-task-trigger"
         open={open}
         onClick={() => setExpanded((value) => !value)}
         icon={
@@ -491,8 +493,9 @@ export function PlanToolCard({ card }) {
   const expanded = open;
 
   return (
-    <div className="codemini-disclosure msg-process-meta relative w-full">
+    <div className="codemini-task-row codemini-disclosure msg-process-meta relative w-full" data-task-status={phase}>
       <DisclosureRowButton
+        className="codemini-task-trigger"
         open={expanded}
         onClick={() => setOpen((value) => !value)}
         icon={
@@ -533,7 +536,7 @@ export function PlanToolCard({ card }) {
           <span className="min-w-0 flex-1" />
         )}
         <span className="flex shrink-0 items-center gap-1.5 text-[12px] text-(--text-secondary)">
-          <span>
+          <span className="codemini-task-status">
             {isSubagent
               ? statusLabel(phase, "subagent")
               : isFork

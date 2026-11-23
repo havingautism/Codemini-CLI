@@ -84,19 +84,418 @@ textarea, input {
   caret-color: var(--primary);
 }
 
-/* Navigation has a clear entry point and room for both pointer and keyboard. */
+/* Sidebar Nav: one sliding highlight per group, using the active palette. */
+.codemini-sidebar {
+  --sidebar-row-radius: 8px;
+}
+
 .codemini-sidebar-actions > button {
   min-height: 36px;
 }
 
-.codemini-sidebar-action:hover {
+.codemini-sidebar-glide {
+  border-radius: var(--sidebar-row-radius, 8px);
   background: var(--bg-hover);
+  transition: top 220ms cubic-bezier(0.23, 1, 0.32, 1),
+    left 220ms cubic-bezier(0.23, 1, 0.32, 1),
+    width 220ms cubic-bezier(0.23, 1, 0.32, 1),
+    height 220ms cubic-bezier(0.23, 1, 0.32, 1),
+    opacity 150ms ease;
+}
+
+.codemini-sidebar [data-menu-row] {
+  position: relative;
+  border-radius: var(--sidebar-row-radius);
 }
 
 .codemini-sidebar-action--new {
   font-weight: 500;
 }
 
+.codemini-sidebar-search {
+  --sidebar-search-size: 32px;
+  position: relative;
+  display: flex;
+  min-height: var(--sidebar-search-size);
+  align-items: center;
+  justify-content: space-between;
+  padding-inline-start: 6px;
+  color: var(--text-muted);
+}
+
+.codemini-sidebar-search-label {
+  font-size: 12px;
+  font-weight: 500;
+  transition: opacity 140ms ease;
+}
+
+.codemini-sidebar-search-trigger,
+.codemini-sidebar-search-close {
+  display: grid;
+  width: var(--sidebar-search-size);
+  height: var(--sidebar-search-size);
+  flex: none;
+  place-items: center;
+  border-radius: var(--sidebar-row-radius);
+}
+
+.codemini-sidebar-search-trigger:hover,
+.codemini-sidebar-search-close:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.codemini-sidebar-search-field {
+  position: absolute;
+  inset-block-start: 0;
+  inset-inline-end: 0;
+  display: flex;
+  width: var(--sidebar-search-size);
+  height: var(--sidebar-search-size);
+  align-items: center;
+  gap: 7px;
+  overflow: hidden;
+  padding-inline-start: 8px;
+  border-radius: var(--sidebar-row-radius);
+  background: var(--bg-hover);
+  opacity: 0;
+  transition: width 180ms cubic-bezier(0.16, 1, 0.3, 1), opacity 140ms ease;
+}
+
+.codemini-sidebar-search[data-open="true"] .codemini-sidebar-search-field {
+  width: 100%;
+  opacity: 1;
+}
+
+.codemini-sidebar-search[data-open="true"] :is(.codemini-sidebar-search-label, .codemini-sidebar-search-trigger) {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.codemini-sidebar-search-field input {
+  min-width: 0;
+  flex: 1;
+  appearance: none;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 13px;
+  outline: none;
+  box-shadow: none;
+}
+
+:root[data-theme] .codemini-sidebar .codemini-sidebar-search-field input[type="search"]:focus {
+  background: transparent;
+  box-shadow: none;
+}
+
+.codemini-sidebar-search-field input::-webkit-search-cancel-button {
+  display: none;
+}
+
+@media (pointer: coarse) {
+  .codemini-sidebar-search { --sidebar-search-size: 44px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .codemini-sidebar-search-label,
+  .codemini-sidebar-search-field { transition: none; }
+}
+
+/* Code Block: keep Streamdown's renderer and controls inside an editor frame. */
+.codemini-code-frame {
+  position: relative;
+  min-width: 0;
+}
+
+.codemini-code-frame:has(> [data-streamdown="code-block"]) {
+  margin-block: 16px;
+}
+
+.codemini-code-frame-icon {
+  display: none;
+}
+
+.codemini-code-frame:has(> [data-streamdown="code-block"]) > .codemini-code-frame-icon {
+  position: absolute;
+  z-index: 1;
+  inset: 0 auto auto 12px;
+  display: grid;
+  height: 40px;
+  place-items: center;
+  pointer-events: none;
+}
+
+.msg-body .codemini-code-frame > [data-streamdown="code-block"] {
+  margin-block: 0 !important;
+  border-radius: 10px !important;
+}
+
+.msg-body .codemini-code-frame [data-streamdown="code-block-header"],
+.codemini-code-preview-header {
+  min-height: 40px !important;
+  padding-inline: 12px;
+}
+
+.msg-body .codemini-code-frame [data-streamdown="code-block-header"] {
+  padding-inline-start: 31px !important;
+  padding-inline-end: 7em !important;
+}
+
+.msg-body .codemini-code-frame [data-streamdown="code-block-header"] > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.msg-body .codemini-code-frame [data-streamdown="code-block"] > div:has(> [data-streamdown="code-block-actions"]) {
+  top: 6px !important;
+}
+
+.codemini-code-preview {
+  min-width: 0;
+  overflow: hidden;
+  border-radius: 10px;
+  background: var(--message-surface);
+  box-shadow: inset 0 0 0 1px var(--message-edge);
+}
+
+.codemini-code-preview-header {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  border-bottom: 1px solid var(--border-default);
+}
+
+.codemini-code-preview-header,
+.codemini-code-preview-footer {
+  color: var(--text-muted);
+  font: 500 11px/1.6 var(--font-mono);
+}
+
+.codemini-code-preview-footer {
+  padding: 8px 12px;
+  border-top: 1px solid var(--border-default);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.msg-body .codemini-code-frame [data-streamdown="code-block"] button[data-streamdown="code-block-copy-button"],
+.codemini-code-preview-header [data-streamdown="code-block-copy-button"] {
+  display: inline-flex;
+  align-items: center;
+  width: auto !important;
+  height: 24px;
+  gap: 4px !important;
+  padding-inline: 6px !important;
+  border-radius: 6px;
+  color: var(--text-secondary);
+  font: 500 11px/1.2 var(--font-sans);
+  white-space: nowrap;
+}
+
+.codemini-code-preview-header [data-streamdown="code-block-copy-button"]:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.codemini-code-preview [data-streamdown="code-block-copy-button"]::after,
+.codemini-code-frame [data-streamdown="code-block-copy-button"]::after {
+  content: attr(title);
+  font-size: 11px;
+}
+
+.codemini-code-preview .codemini-file-preview-scroll {
+  max-height: 400px;
+  padding: 8px 0;
+  overscroll-behavior: contain;
+}
+
+.msg-body .codemini-code-frame [data-streamdown="code-block-body"],
+.codemini-code-preview .codemini-file-preview-scroll {
+  margin-inline: 12px;
+}
+
+.codemini-markdown-table-strip {
+  border-radius: 10px;
+  background: var(--message-surface);
+}
+
+:is([data-scroll-overflow-left], [data-scroll-overflow-right]) {
+  --scroll-fade-left: 0px;
+  --scroll-fade-right: 0px;
+  mask-image: linear-gradient(
+    to right,
+    transparent,
+    black var(--scroll-fade-left),
+    black calc(100% - var(--scroll-fade-right)),
+    transparent
+  );
+}
+
+[data-scroll-overflow-left] {
+  --scroll-fade-left: 18px;
+}
+
+[data-scroll-overflow-right] {
+  --scroll-fade-right: 18px;
+}
+
+.codemini-code-preview .codemini-file-preview-code,
+.msg-body .codemini-code-frame [data-streamdown="code-block-body"] pre {
+  font-size: 13px;
+  line-height: 1.58;
+}
+
+.msg-body .codemini-code-frame [data-streamdown="code-block-body"] pre {
+  box-sizing: border-box;
+  width: max-content;
+  min-width: 100%;
+  padding-inline: 2px !important;
+}
+
+.codemini-code-preview .codemini-file-preview-code {
+  padding-inline: 2px;
+}
+
+.codemini-code-preview-wrap .codemini-file-preview-code {
+  width: 100%;
+}
+
+.codemini-code-preview-wrap .codemini-file-preview-source {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.msg-body .codemini-code-frame [data-streamdown="code-block-body"] code > span[class*="counter-increment"]::before,
+.codemini-code-preview .codemini-file-preview-gutter {
+  box-sizing: content-box;
+  padding-inline-end: 8px;
+  margin-inline-end: 10px;
+  border-inline-end: 1px solid var(--border-default);
+  color: var(--text-muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.msg-body .codemini-code-frame [data-streamdown="code-block-body"] code > span[class*="counter-increment"]::before {
+  display: inline-block !important;
+  content: counter(line) !important;
+  width: 3ch;
+}
+
+/* Tool Chips, Task Rows and Thinking share the chat's existing disclosures. */
+.codemini-tool-chip {
+  min-height: 22px;
+  padding-inline: 6px;
+  overflow: hidden;
+  border-radius: 6px;
+  background: var(--bg-hover);
+  box-shadow: inset 0 0 0 1px var(--border-default);
+  line-height: 22px;
+}
+
+.codemini-tool-row :is(button:hover, button:focus-visible, button[aria-expanded="true"]) .codemini-tool-chip {
+  background: var(--bg-active);
+}
+
+.codemini-task-row {
+  border-radius: 12px;
+  background: var(--bg-secondary);
+  box-shadow: inset 0 0 0 1px var(--border-default);
+}
+
+.codemini-task-row:has(> button:is(:hover, :focus-visible)),
+.codemini-task-row[data-task-status="in_progress"] {
+  background: var(--bg-hover);
+}
+
+.codemini-task-row .codemini-task-trigger {
+  min-height: 36px;
+  padding-inline: 10px;
+}
+
+.codemini-task-status {
+  border-radius: 999px;
+  background: var(--bg-hover);
+  padding: 1px 8px;
+  white-space: nowrap;
+}
+
+[data-task-status="completed"] .codemini-task-status {
+  background: var(--accent-green-bg);
+  color: var(--accent-green);
+}
+
+[data-task-status="failed"] .codemini-task-status {
+  background: var(--accent-red-bg);
+  color: var(--accent-red);
+}
+
+[data-task-status="executing"] .codemini-task-status {
+  background: var(--accent-blue-bg);
+  color: var(--accent-blue);
+}
+
+.codemini-disclosure :is(.codemini-process-trigger, .codemini-tool-row) {
+  align-self: flex-start;
+  width: fit-content;
+  max-width: 100%;
+  min-height: 32px;
+  gap: 8px;
+  padding: 4px 10px 4px 6px;
+}
+
+.codemini-tool-row > button[aria-expanded] {
+  gap: inherit;
+}
+
+.codemini-disclosure div.codemini-process-trigger {
+  cursor: default;
+}
+
+.codemini-disclosure button.codemini-process-trigger:is(:hover, :focus-visible, [aria-expanded="true"]),
+.codemini-disclosure .codemini-tool-row:has(> button[aria-expanded]):is(:hover, :focus-within),
+.codemini-disclosure .codemini-tool-row:has(> button[aria-expanded="true"]) {
+  background: var(--bg-hover);
+}
+
+.codemini-thinking-trace .codemini-thinking-body {
+  margin: 4px 0 2px 15px;
+  padding-inline-start: 13px;
+  border-inline-start: 1px solid var(--border-default);
+}
+
+/* Approval Card: a quieter surface with a dedicated decision footer. */
+[data-slot="dialog-content"].codemini-approval-card {
+  border: 0;
+  border-radius: 14px;
+  background: var(--bg-primary);
+  box-shadow: 0 0 0 1px var(--border-strong), var(--shadow-elevated);
+}
+
+.codemini-approval-card [data-slot="dialog-title"] {
+  font-size: 15px;
+}
+
+.codemini-approval-body {
+  padding-block: 4px 14px;
+}
+
+.codemini-approval-footer {
+  border-color: var(--border-default);
+  padding-top: 12px;
+}
+
+.codemini-approval-card :is([data-slot="dialog-footer"], .codemini-approval-footer) button {
+  border-radius: 999px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .codemini-sidebar-glide { transition: none; }
+}
 
 :root[data-theme][data-palette] {
   --conversation-width: 780px;
@@ -200,7 +599,7 @@ textarea, input {
 
 /* The original colored edge and halo appear on hover or focus. */
 :root[data-theme] .codemini-input-shell {
-  background: var(--input-shell-bg);
+  background: var(--input-shell-bg) padding-box;
   border: 1px solid var(--input-shell-border);
   border-radius: 16px;
   padding: 12px 16px;
@@ -210,34 +609,24 @@ textarea, input {
   box-shadow: var(--input-shell-shadow);
 }
 
-:root[data-theme] .codemini-input-shell::before {
-  content: "";
-  opacity: 0;
-  animation: input-shell-border-spin 8.5s linear infinite;
-  transition: opacity 220ms ease;
-}
-
 :root[data-theme] .codemini-input-shell:hover,
 :root[data-theme] .codemini-input-shell:focus-within {
-  background: var(--input-shell-bg);
-  border-color: var(--input-shell-rim);
+  background:
+    linear-gradient(var(--input-shell-bg), var(--input-shell-bg)) padding-box,
+    var(--input-shell-stroke) border-box,
+    linear-gradient(var(--input-shell-rim), var(--input-shell-rim)) border-box;
+  border-color: transparent;
   outline: none;
+  animation: input-shell-border-spin 8.5s linear infinite;
   box-shadow:
     0 1px 2px color-mix(in srgb, black 4%, transparent),
     0 12px 32px color-mix(in srgb, black 10%, transparent),
-    0 0 24px color-mix(in srgb, #818cf8 16%, transparent),
-    inset 0 1px 0 color-mix(in srgb, white 8%, transparent);
-}
-
-:root[data-theme] .codemini-input-shell:hover::before,
-:root[data-theme] .codemini-input-shell:focus-within::before {
-  opacity: 1;
+    0 0 24px color-mix(in srgb, #818cf8 16%, transparent);
 }
 
 @media (prefers-reduced-motion: reduce) {
-  :root[data-theme] .codemini-input-shell::before {
+  :root[data-theme] .codemini-input-shell:is(:hover, :focus-within) {
     animation: none;
-    transition: none;
   }
 }
 
@@ -264,6 +653,21 @@ textarea, input {
 
 .codemini-chat-session .msg-body :not(pre) > code {
   font-family: var(--font-mono);
+}
+
+.codemini-chat-session .msg-body.codemini-assistant-markdown :not(pre) > code {
+  display: inline;
+  margin: 0;
+  padding: 0.14em 0.4em;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--text-primary) 4%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text-primary) 6%, transparent);
+  color: color-mix(in srgb, var(--text-primary) 88%, var(--text-secondary));
+  font-size: 0.8em;
+  font-weight: 400;
+  line-height: inherit;
+  white-space: break-spaces;
+  overflow-wrap: anywhere;
 }
 
 :root[data-theme] .codemini-user-bubble {

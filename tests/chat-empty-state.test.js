@@ -67,7 +67,7 @@ test('empty session uses a quiet welcome that unmounts once conversation starts'
   assert.doesNotMatch(css, /@keyframes/);
 });
 
-test('waiting-response is a dots loader and disappears once General starts rendering', async () => {
+test('waiting-response uses the shared response loader and disappears once General starts rendering', async () => {
   const source = await fs.readFile(
     'codemini-web/client/src/components/MessageBubble.jsx',
     'utf8',
@@ -75,7 +75,7 @@ test('waiting-response is a dots loader and disappears once General starts rende
   const start = source.indexOf('transientKey === "waiting-response"');
   assert.ok(start >= 0, 'waiting-response branch must exist');
   const slice = source.slice(start, start + 800);
-  assert.match(slice, /<Spinner/);
+  assert.match(slice, /<ResponseLoader/);
   assert.doesNotMatch(
     slice,
     /ROLE_STYLES\.general/,

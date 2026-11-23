@@ -1,6 +1,7 @@
 import { memo, startTransition, useEffect, useState, useMemo } from "react";
 import { ToolCard } from "./ToolCard";
 import { PlanToolCardGroup } from "./PlanToolCard.jsx";
+import { CodeOutputPreview } from "@/components/beautiful-ui/CodeBlockFrame.jsx";
 import {
   DisclosureLeading,
   DisclosureRowButton,
@@ -15,6 +16,7 @@ import {
 import { formatToolGroupSummaryLabel } from "@/lib/tool-group-summary.js";
 import { StreamdownRenderer } from "./StreamdownRenderer";
 import { EmbedBanner } from "./EmbedBanner.jsx";
+import { ReplyCopyIcon, ReplyRetryIcon } from "@/components/beautiful-ui/ReplyActionIcons.jsx";
 import {
   ImagePreviewDialog,
   MarkdownLightboxImage,
@@ -256,24 +258,27 @@ function ThoughtBlock({ segment }) {
   const thinkingPhrases = resolveModeHintPhrases("thinking", runtimeMode);
 
   return (
-    <div className={cn("codemini-disclosure my-2", PROCESS_META_CLASS)}>
+    <div className={cn("codemini-thinking-trace codemini-disclosure my-2", PROCESS_META_CLASS)}>
       <DisclosureRowButton
+        className="codemini-process-trigger"
         open={open}
         onClick={() => setOpen((value) => !value)}
         icon={streaming ? <SessionOrb state="thinking" /> : <Brain size={14} />}
       >
         {streaming ? (
-          <RotatingStatusLabel phrases={thinkingPhrases} active />
+          <span className="codemini-shimmer-label">
+            <RotatingStatusLabel phrases={thinkingPhrases} active />
+          </span>
         ) : (
           <span>{t("thought")}</span>
         )}
       </DisclosureRowButton>
       {open && (
-        <div className="codemini-disclosure-body">
+        <div className="codemini-disclosure-body codemini-thinking-body">
           <StreamdownRenderer
             text={segment.text}
             streaming={segment.isStreaming}
-            className="msg-process-thought-body text-[13px] italic leading-5"
+            className="msg-process-thought-body text-[13px] leading-5"
             inlineEmbeds={false}
           />
         </div>
@@ -568,6 +573,7 @@ function ToolGroup({ cards }) {
         <DisclosureRowButton
           open={expanded}
           className={cn(
+            "codemini-process-trigger",
             (planCards.length > 0 ||
               userInputCards.length > 0 ||
               htmlArtifactCards.length > 0) &&
@@ -706,75 +712,79 @@ function hookResultLabel(status = "done") {
   return t("hookDetailsDone");
 }
 
-function HookActivityDisclosure({ badge, className }) {
+function SkillActivityRow({ badge, className }) {
   const [open, setOpen] = useState(false);
-  const duration = hookDurationLabel(badge);
-  const hasDetails = Boolean(
+  if (!badge?.name) return null;
+
+  const isHook = isHookSegment(badge);
+  const duration = isHook ? hookDurationLabel(badge) : "";
+  const hasDetails = isHook && Boolean(
     badge.command || badge.matcher || duration || badge.reason || badge.summary,
+  );
+  const label = skillActivityLabel(badge);
+  const icon = <SkillStatusDot status={badge.status} />;
+  const content = (
+    <>
+      <span className="shrink-0">{activityKindLabel(badge)}</span>
+      <span className="codemini-tool-chip min-w-0 truncate text-xs text-(--text-secondary)" title={label}>
+        {label}
+      </span>
+    </>
   );
 
   return (
     <div className={cn("codemini-disclosure", className)}>
-      <DisclosureRowButton
-        open={open}
-        expandable={hasDetails}
-        onClick={() => hasDetails && setOpen((value) => !value)}
-        icon={<SkillStatusDot status={badge.status} />}
-      >
-        <span>{activityKindLabel(badge)}</span>
-        <span className="codemini-disclosure-sep" aria-hidden="true" />
-        <span className="msg-process-meta__detail min-w-0 flex-1 truncate font-mono text-xs">
-          {skillActivityLabel(badge)}
-        </span>
-      </DisclosureRowButton>
+      {hasDetails ? (
+        <DisclosureRowButton
+          className="codemini-process-trigger"
+          open={open}
+          onClick={() => setOpen((value) => !value)}
+          icon={icon}
+        >
+          {content}
+        </DisclosureRowButton>
+      ) : (
+        <div className="codemini-disclosure-row msg-process-row codemini-process-trigger">
+          <DisclosureLeading expandable={false}>{icon}</DisclosureLeading>
+          {content}
+        </div>
+      )}
       {open && hasDetails ? (
-        <div className="codemini-disclosure-tree py-1 text-[12px] text-(--text-secondary)">
-          <dl className="grid gap-2">
-            {badge.command ? (
-              <div className="grid gap-1">
-                <dt className="text-(--text-muted)">
-                  {t("hookDetailsCommand")}
-                </dt>
-                <dd>
-                  <code className="block whitespace-pre-wrap break-all rounded-md bg-(--bg-secondary) px-2.5 py-2 font-mono text-[11px] leading-4 text-(--text-primary)">
-                    {badge.command}
-                  </code>
-                </dd>
-              </div>
-            ) : null}
-            <div className="flex flex-wrap gap-x-5 gap-y-1">
-              <div className="flex gap-2">
-                <dt className="text-(--text-muted)">
-                  {t("hookDetailsResult")}
-                </dt>
-                <dd>{hookResultLabel(badge.status)}</dd>
-              </div>
-              {duration ? (
+        <div className="codemini-disclosure-tree">
+          {badge.command ? (
+            <CodeOutputPreview label={t("hookDetailsCommand")} content={badge.command} wrap />
+          ) : null}
+          <div className="codemini-disclosure-payload space-y-2.5 px-3 py-2.5 text-xs leading-5 text-(--text-secondary)">
+            <dl className="grid min-w-0 gap-2.5">
+              <div className="flex flex-wrap gap-x-5 gap-y-1">
                 <div className="flex gap-2">
-                  <dt className="text-(--text-muted)">
-                    {t("hookDetailsDuration")}
-                  </dt>
-                  <dd className="font-mono">{duration}</dd>
+                  <dt className="text-(--text-muted)">{t("hookDetailsResult")}</dt>
+                  <dd>{hookResultLabel(badge.status)}</dd>
                 </div>
-              ) : null}
-              {badge.matcher ? (
-                <div className="flex min-w-0 gap-2">
-                  <dt className="shrink-0 text-(--text-muted)">
-                    {t("hookDetailsMatcher")}
-                  </dt>
-                  <dd className="min-w-0 break-all font-mono">
-                    {badge.matcher}
-                  </dd>
-                </div>
-              ) : null}
-            </div>
-            {badge.reason ? (
-              <div className="flex gap-2 text-(--accent-red)">
-                <dt className="shrink-0">{t("hookDetailsReason")}</dt>
-                <dd className="break-words">{badge.reason}</dd>
+                {duration ? (
+                  <div className="flex gap-2">
+                    <dt className="text-(--text-muted)">{t("hookDetailsDuration")}</dt>
+                    <dd className="font-mono tabular-nums">{duration}</dd>
+                  </div>
+                ) : null}
+                {badge.matcher ? (
+                  <div className="flex min-w-0 gap-2">
+                    <dt className="shrink-0 text-(--text-muted)">{t("hookDetailsMatcher")}</dt>
+                    <dd className="min-w-0 wrap-anywhere font-mono">{badge.matcher}</dd>
+                  </div>
+                ) : null}
               </div>
+              {badge.reason ? (
+                <div className="flex gap-2 text-(--accent-red)">
+                  <dt className="shrink-0">{t("hookDetailsReason")}</dt>
+                  <dd className="min-w-0 whitespace-pre-wrap wrap-anywhere">{badge.reason}</dd>
+                </div>
+              ) : null}
+            </dl>
+            {badge.summary && badge.summary !== badge.reason && badge.summary !== badge.command ? (
+              <p className="whitespace-pre-wrap wrap-anywhere">{badge.summary}</p>
             ) : null}
-          </dl>
+          </div>
         </div>
       ) : null}
     </div>
@@ -793,55 +803,12 @@ function SkillActivityList({ badges = [] }) {
   if (!visibleBadges.length) return null;
   return (
     <div className={cn("my-2 flex flex-col gap-2", PROCESS_META_CLASS)}>
-      {visibleBadges.map((badge, index) =>
-        isHookSegment(badge) ? (
-          <HookActivityDisclosure
-            key={`${badge.name || "hook"}-${index}`}
-            badge={badge}
-            className="text-[13px]"
-          />
-        ) : (
-          <div
-            key={`${badge.name || "skill"}-${badge.status || "done"}-${index}`}
-            className="codemini-disclosure-row msg-process-row cursor-default"
-          >
-            <DisclosureLeading expandable={false}>
-              <SkillStatusDot status={badge.status} />
-            </DisclosureLeading>
-            <span>{activityKindLabel(badge)}</span>
-            <span className="codemini-disclosure-sep" aria-hidden="true" />
-            <span className="msg-process-meta__detail min-w-0 flex-1 truncate font-mono text-xs">
-              {skillActivityLabel(badge)}
-            </span>
-          </div>
-        ),
-      )}
-    </div>
-  );
-}
-
-function SkillActivityRow({ badge }) {
-  if (!badge?.name) return null;
-  if (isHookSegment(badge)) {
-    return (
-      <HookActivityDisclosure
-        badge={badge}
-        className={cn("my-2", PROCESS_META_CLASS, "text-[13px]")}
-      />
-    );
-  }
-  return (
-    <div className={cn("my-2", PROCESS_META_CLASS)}>
-      <div className="codemini-disclosure-row msg-process-row cursor-default">
-        <DisclosureLeading expandable={false}>
-          <SkillStatusDot status={badge.status} />
-        </DisclosureLeading>
-        <span>{activityKindLabel(badge)}</span>
-        <span className="codemini-disclosure-sep" aria-hidden="true" />
-        <span className="msg-process-meta__detail min-w-0 flex-1 truncate font-mono text-xs">
-          {skillActivityLabel(badge)}
-        </span>
-      </div>
+      {visibleBadges.map((badge, index) => (
+        <SkillActivityRow
+          key={`${badge.name}-${badge.status || "done"}-${index}`}
+          badge={badge}
+        />
+      ))}
     </div>
   );
 }
@@ -900,6 +867,7 @@ function ProcessGroup({ group }) {
           <DisclosureRowButton
             open={expanded}
             className={cn(
+              "codemini-process-trigger",
               (planCards.length > 0 || userInputCards.length > 0) && "mt-4",
             )}
             onClick={() => setExpanded((value) => !value)}
@@ -1972,6 +1940,8 @@ function MessageActions({
   onSaveToScrapbook,
   onRetry,
   align = "left",
+  sources,
+  hideActions = false,
   className,
 }) {
   const actions = useAppActions();
@@ -2014,7 +1984,7 @@ function MessageActions({
         disabled={!text}
         onClick={handleCopy}
       >
-        <Copy size={17} />
+        {align === "right" ? <Copy size={17} /> : <ReplyCopyIcon />}
       </MessageActionButton>
       {showFork && (
         <MessageActionButton
@@ -2051,33 +2021,34 @@ function MessageActions({
           disabled={!messageId}
           onClick={() => onRetry?.(messageId)}
         >
-          <ArrowCounterClockwise size={17} />
+          {align === "right" ? <ArrowCounterClockwise size={17} /> : <ReplyRetryIcon />}
         </MessageActionButton>
       )}
     </>
   );
 
   return (
-    <div className={cn("flex w-full items-center gap-1", className)}>
-      {align !== "right" && (
-        <div className="flex shrink-0 items-center gap-1">{actionButtons}</div>
-      )}
-      {showUsage && (
-        <div
-          className={cn(
-            "flex min-w-0 items-center justify-end gap-1",
-            align !== "right" && "ml-auto",
+    <EmbedBanner
+      items={sources}
+      className={className}
+      renderActions={(sourceToggle) => (
+        <div className="flex min-h-8 w-full flex-wrap items-center gap-1">
+          {align !== "right" && !hideActions && (
+            <div className="flex shrink-0 items-center gap-1">{actionButtons}</div>
           )}
-        >
-          <ModelIdentityBadge sdkProvider={sdkProvider} model={model} />
-          <UsageBadge usage={usage} />
+          {sourceToggle}
+          {showUsage && (
+            <div className={cn("flex min-w-0 items-center justify-end gap-1", align !== "right" && "ml-auto")}>
+              <ModelIdentityBadge sdkProvider={sdkProvider} model={model} />
+              <UsageBadge usage={usage} />
+            </div>
+          )}
+          {align === "right" && (
+            <div className="ml-auto flex shrink-0 items-center gap-1">{actionButtons}</div>
+          )}
         </div>
       )}
-      {align === "right" && (
-        <div className="ml-auto flex shrink-0 items-center gap-1">
-          {actionButtons}
-        </div>
-      )}
+    >
       <Dialog
         open={saveDialogOpen}
         onOpenChange={(open) => !saving && setSaveDialogOpen(open)}
@@ -2120,7 +2091,7 @@ function MessageActions({
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </div>
+    </EmbedBanner>
   );
 }
 
@@ -2133,6 +2104,7 @@ function renderGroupItem(group, i) {
           streaming={group.isStreaming}
           className="codemini-assistant-markdown"
           inlineEmbeds={false}
+          sourceChips
         />
       </div>
     );
@@ -2157,6 +2129,7 @@ function renderGroupItem(group, i) {
       <SkillActivityRow
         key={`sk-${i}-${group.name || "skill"}`}
         badge={group}
+        className={cn("my-2", PROCESS_META_CLASS)}
       />
     );
   }
@@ -2181,6 +2154,7 @@ function AnswerProcessFold({ groups, durationMs }) {
       )}
     >
       <DisclosureRowButton
+        className="codemini-process-trigger"
         open={expanded}
         onClick={() => setExpanded((value) => !value)}
         icon={
@@ -2357,9 +2331,9 @@ export const MessageBubble = memo(function MessageBubble({
     if (message.transientKey === "waiting-response") {
       return (
         <div data-message-id={message.id} className="py-2 group/message">
-          <Spinner
+          <ResponseLoader
             className="min-h-5"
-            aria-label={legacyText || t("waitingResponse")}
+            label={legacyText || t("waitingResponse")}
           />
         </div>
       );
@@ -2616,8 +2590,6 @@ export const MessageBubble = memo(function MessageBubble({
                 />
               )}
 
-            {showRelatedLinks && <EmbedBanner items={messageEmbeds} />}
-
             {showFileChanges && (
               <FileChangesSummary changes={mergedFileChanges} />
             )}
@@ -2637,6 +2609,8 @@ export const MessageBubble = memo(function MessageBubble({
               sdkProvider={sdkProvider || planStep?.sdkProvider}
               model={model || planStep?.model}
               showUsage={showActions}
+              sources={showRelatedLinks ? messageEmbeds : undefined}
+              hideActions={!showActions}
               retryPrompt={retryPrompt}
               canRetry={canRetry}
               canSaveToScrapbook={canSaveToScrapbook}
@@ -2651,7 +2625,7 @@ export const MessageBubble = memo(function MessageBubble({
                 })
               }
               onRetry={onRetry}
-              className={cn("mt-2 min-h-8", !showActions && "hidden")}
+              className={cn("mt-2 min-h-8", !showActions && !showRelatedLinks && "hidden")}
             />
           </div>
         </div>

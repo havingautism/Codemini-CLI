@@ -1,3 +1,4 @@
+import { HorizontalScrollViewport } from "@/components/HorizontalScrollStrip.jsx";
 import { useState } from "react";
 import {
   Dialog,
@@ -188,7 +189,7 @@ export function ReviewTaskPreview({
 
 export function ReviewDocument({ children, className, edit = false }) {
   return (
-    <pre
+    <HorizontalScrollViewport as="pre"
       className={cn(
         "rounded-md border border-(--border-default) bg-(--bg-secondary) p-3 font-mono text-[12px] leading-5 whitespace-pre-wrap text-(--text-primary)",
         edit && "min-h-[320px] overflow-auto",
@@ -196,7 +197,7 @@ export function ReviewDocument({ children, className, edit = false }) {
       )}
     >
       {children}
-    </pre>
+    </HorizontalScrollViewport>
   );
 }
 

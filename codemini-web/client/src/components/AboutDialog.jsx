@@ -1,3 +1,4 @@
+import { HorizontalScrollViewport } from "@/components/HorizontalScrollStrip.jsx";
 import {
   Dialog,
   DialogContent,
@@ -90,9 +91,9 @@ export function AboutDialog({ open, onOpenChange, version }) {
                 <Terminal size={14} />
                 {t("installation")}
               </h3>
-              <pre className="bg-(--bg-secondary) rounded-md border border-(--border-default) px-3 py-2 text-[12px] font-mono overflow-x-auto">
+              <HorizontalScrollViewport as="pre" className="bg-(--bg-secondary) rounded-md border border-(--border-default) px-3 py-2 text-[12px] font-mono overflow-x-auto">
                 npm install -g codemini-cli
-              </pre>
+              </HorizontalScrollViewport>
             </div>
 
             <div>
@@ -100,9 +101,9 @@ export function AboutDialog({ open, onOpenChange, version }) {
                 <Terminal size={14} />
                 {t("startWebUI")}
               </h3>
-              <pre className="bg-(--bg-secondary) rounded-md border border-(--border-default) px-3 py-2 text-[12px] font-mono overflow-x-auto">
+              <HorizontalScrollViewport as="pre" className="bg-(--bg-secondary) rounded-md border border-(--border-default) px-3 py-2 text-[12px] font-mono overflow-x-auto">
                 codemini --web
-              </pre>
+              </HorizontalScrollViewport>
             </div>
           </div>
 
@@ -148,11 +149,11 @@ export function AboutDialog({ open, onOpenChange, version }) {
             <h3 className="text-[13px] font-semibold text-(--text-primary) mb-1.5">
               {t("configureModel")}
             </h3>
-            <pre className="bg-(--bg-secondary) rounded-md border border-(--border-default) px-3 py-2 text-[12px] font-mono overflow-x-auto">
+            <HorizontalScrollViewport as="pre" className="bg-(--bg-secondary) rounded-md border border-(--border-default) px-3 py-2 text-[12px] font-mono overflow-x-auto">
               codemini config set gateway.base_url &lt;url&gt;{"\n"}
               codemini config set gateway.api_key &lt;token&gt;{"\n"}
               codemini config set model.name &lt;model-id&gt;
-            </pre>
+            </HorizontalScrollViewport>
             {/* <p className="mt-1.5 text-[12px] text-(--text-muted)">
               {t("configureModelDesc")}
             </p> */}

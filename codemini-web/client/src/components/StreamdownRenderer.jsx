@@ -1,12 +1,14 @@
 import { Component, useMemo, useRef } from 'react';
-import { Streamdown } from 'streamdown';
+import { defaultComponents, Streamdown } from 'streamdown';
 import { mermaid } from '@streamdown/mermaid';
 import { cn } from '@/lib/utils';
+import { ArrowSquareOut, Check, Copy, Download, X } from '@/lib/icons';
 import { createCodePlugin } from '@/lib/shiki-plugin';
 import {
   collectMessageImages,
   extractInlineImagesFromMarkdown,
   groupGalleryParts,
+  isPublicHttpUrl,
   normalizeMarkdownForDisplay,
   splitMarkdownForEmbeds,
 } from '@/lib/markdown-embeds';
@@ -14,6 +16,8 @@ import { EmbedCard } from '@/components/EmbedCard.jsx';
 import { HorizontalScrollStrip } from '@/components/HorizontalScrollStrip.jsx';
 import { MarkdownLightboxImage } from '@/components/MarkdownLightboxImage.jsx';
 import { ResponseLoader } from '@/components/ui/spinner.jsx';
+import { CodeBlockFrame } from '@/components/beautiful-ui/CodeBlockFrame.jsx';
+import { SourceAvatar, sourceDomain } from '@/components/beautiful-ui/SourceAvatar.jsx';
 import {
   MessageImageGalleryProvider,
 } from '@/components/MessageImageGallery.jsx';
@@ -22,16 +26,38 @@ import { t } from '../../i18n/index.js';
 const codePlugin = createCodePlugin();
 const streamdownPlugins = { code: codePlugin, mermaid };
 
-// Character splitting also gives unspaced CJK prose a gentle reveal. Keep the
-// backlog short so bursts of tokens never leave the display far behind.
 const streamingTextAnimation = {
-  animation: 'blurIn',
-  duration: 240,
+  animation: 'fadeIn',
+  duration: 150,
   easing: 'ease-out',
-  sep: 'char',
-  stagger: 5,
+  sep: 'word',
+  stagger: 55,
   maxBacklogMs: 80,
 };
+
+const streamingCjkAnimation = { ...streamingTextAnimation, sep: 'char', stagger: 12 };
+const streamdownIcons = {
+  CheckIcon: Check,
+  CopyIcon: Copy,
+  DownloadIcon: Download,
+  ExternalLinkIcon: ArrowSquareOut,
+  XIcon: X,
+};
+
+function MarkdownSourceLink({ href, children, className, ...props }) {
+  const Link = defaultComponents.a;
+  if (!isPublicHttpUrl(href) || props.node?.children?.some((child) => child.type === 'element')) {
+    return <Link href={href} className={className} {...props}>{children}</Link>;
+  }
+  const domain = sourceDomain(href);
+  const label = children === href ? domain : children;
+  return (
+    <Link href={href} className={cn('codemini-source-chip', className)} {...props}>
+      <SourceAvatar url={href} />
+      <span className="codemini-source-chip-label">{label || domain}</span>
+    </Link>
+  );
+}
 
 const streamdownControls = {
   tables: true,
@@ -86,7 +112,7 @@ function PersistentMarkdownTable({
 }) {
   return (
     <div className="codemini-markdown-table-strip my-4 max-w-full">
-      <HorizontalScrollStrip contentClassName="block min-w-full gap-0 px-0">
+      <HorizontalScrollStrip fadeEdges contentClassName="block min-w-full gap-0 px-0">
         <table
           {...props}
           className={cn('w-max min-w-full border-collapse', className)}
@@ -104,6 +130,7 @@ function MarkdownStreamdown({
   mode,
   streaming,
   useGallery,
+  sourceChips,
   inlineImageStartIndex = 0,
 }) {
   const inlineImageCounterRef = useRef(0);
@@ -122,19 +149,25 @@ function MarkdownStreamdown({
         );
       },
       table: PersistentMarkdownTable,
+      pre: CodeBlockFrame,
+      ...(sourceChips ? { a: MarkdownSourceLink } : {}),
     }),
-    [inlineImageStartIndex, useGallery],
+    [inlineImageStartIndex, useGallery, sourceChips],
   );
+  const animation = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u.test(content)
+    ? streamingCjkAnimation
+    : streamingTextAnimation;
 
   return (
     <Streamdown
       mode={mode}
       isAnimating={streaming}
-      animated={streaming ? streamingTextAnimation : false}
+      animated={streaming ? animation : false}
       parseIncompleteMarkdown
-      showLineNumbers={false}
       plugins={streamdownPlugins}
       controls={streamdownControls}
+      icons={streamdownIcons}
+      translations={{ copyCode: t('copyCode'), copied: t('copied') }}
       components={components}
     >
       {content}
@@ -182,6 +215,7 @@ function StreamdownRendererBody({
   className,
   inlineEmbeds,
   useGallery,
+  sourceChips,
 }) {
   const mode = streaming ? 'streaming' : 'static';
   const parts = streaming
@@ -200,6 +234,7 @@ function StreamdownRendererBody({
             mode={mode}
             streaming={streaming}
             useGallery={useGallery}
+            sourceChips={sourceChips}
           />
         </div>
       </StreamdownErrorBoundary>
@@ -237,6 +272,7 @@ function StreamdownRendererBody({
               mode={mode}
               streaming={false}
               useGallery={useGallery}
+              sourceChips={sourceChips}
               inlineImageStartIndex={inlineStartIndex}
             />
           </StreamdownErrorBoundary>
@@ -246,7 +282,7 @@ function StreamdownRendererBody({
   );
 }
 
-export function StreamdownRenderer({ text, streaming, className, inlineEmbeds = true }) {
+export function StreamdownRenderer({ text, streaming, className, inlineEmbeds = true, sourceChips = false }) {
   const rawContent = typeof text === 'string' ? text : String(text || '');
   const content = normalizeMarkdownForDisplay(rawContent, {
     linkFallback: t('markdownLinkFallback'),
@@ -278,6 +314,7 @@ export function StreamdownRenderer({ text, streaming, className, inlineEmbeds = 
       className={className}
       inlineEmbeds={inlineEmbeds}
       useGallery={useGallery}
+      sourceChips={sourceChips}
     />
   );
 

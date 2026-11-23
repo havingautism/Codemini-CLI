@@ -1,3 +1,4 @@
+import { HorizontalScrollViewport } from "@/components/HorizontalScrollStrip.jsx";
 import { useEffect, useMemo, useState } from "react";
 import { fetchSessionTokenUsage } from "../hooks/use-api.js";
 import {
@@ -199,7 +200,7 @@ export function SessionContextPanel({ sessionId, messages, busy }) {
             <article className="session-context__card">
               <h3>{t("contextModels")}</h3>
               {data.models.length ? (
-                <div className="session-context__table-scroll">
+                <HorizontalScrollViewport className="session-context__table-scroll">
                   <table>
                     <thead>
                       <tr>
@@ -221,7 +222,7 @@ export function SessionContextPanel({ sessionId, messages, busy }) {
                       ))}
                     </tbody>
                   </table>
-                </div>
+                </HorizontalScrollViewport>
               ) : (
                 <p className="session-context__note">{t("contextNoRecords")}</p>
               )}

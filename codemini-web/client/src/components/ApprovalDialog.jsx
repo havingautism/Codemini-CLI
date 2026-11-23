@@ -1,3 +1,4 @@
+import { HorizontalScrollViewport } from "@/components/HorizontalScrollStrip.jsx";
 import { useEffect, useRef, useState } from 'react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
@@ -92,9 +93,9 @@ function PreviewRow({ label, value }) {
   return (
     <div className="py-1.5 min-w-0">
       <div className="mb-1 text-[11px] font-medium text-(--text-muted)">{label}</div>
-      <pre className="max-h-40 overflow-auto rounded-md border border-(--border-default) bg-(--bg-secondary) px-2.5 py-2 font-mono text-[12px] leading-5 text-(--text-primary) whitespace-pre-wrap break-words">
+      <HorizontalScrollViewport as="pre" className="max-h-40 overflow-auto rounded-md border border-(--border-default) bg-(--bg-secondary) px-2.5 py-2 font-mono text-[12px] leading-5 text-(--text-primary) whitespace-pre-wrap break-words">
         {String(value)}
-      </pre>
+      </HorizontalScrollViewport>
     </div>
   );
 }
@@ -304,7 +305,7 @@ export function ApprovalDialog({ request, open, onDecision }) {
       <DialogContent
         onKeyDownCapture={handleKeyDownCapture}
         className={cn(
-          'max-h-[82vh] grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden',
+          'codemini-approval-card max-h-[82vh] grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden',
           variant === 'run' ? 'sm:max-w-2xl' : 'sm:max-w-xl',
         )}
       >
@@ -315,7 +316,7 @@ export function ApprovalDialog({ request, open, onDecision }) {
               : (titles[variant] || t('approveTitle'))}
           </DialogTitle>
         </DialogHeader>
-        <div className="min-h-0 overflow-y-auto py-1 pr-1">
+        <div className="codemini-approval-body min-h-0 overflow-y-auto py-1 pr-1">
           <OutsideWorkspaceNotice details={details} />
           <ApprovalBody variant={variant} args={args} details={details} />
         </div>
@@ -335,7 +336,7 @@ export function ApprovalDialog({ request, open, onDecision }) {
               />
             </div>
           )}
-          <DialogFooter className="gap-2">
+          <DialogFooter className="codemini-approval-footer gap-2">
             {feedbackOpen ? (
               <>
                 <Button variant="ghost" disabled={submitting} onClick={() => setFeedbackOpen(false)}>

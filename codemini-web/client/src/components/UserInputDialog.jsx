@@ -1,5 +1,5 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
-import { ChatCircle, Check } from '@/lib/icons';
+import { CaretDown, CaretUp, Check, X } from '@/lib/icons';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
@@ -13,12 +13,12 @@ import {
 } from '@/components/ui/select';
 import { Checkbox } from '@/components/ui/checkbox';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
-import { FieldContent, FieldGroup, FieldLabel } from '@/components/ui/field';
+import { FieldContent, FieldGroup } from '@/components/ui/field';
+import GlideMenu from '@/components/beautiful-ui/GlideMenu.jsx';
 import { parseMaybeJson } from '@/lib/tool-card-display.js';
 import { cn } from '@/lib/utils';
 import { t } from '../../i18n/index.js';
-
-const OTHER_VALUE = '__codemini_other__';
+import './beautiful-ui/ApprovalQuestion.css';
 
 function initialAnswers(questions = []) {
   return Object.fromEntries(questions.map((question) => [
@@ -38,42 +38,31 @@ function OptionLabel({ option }) {
   );
 }
 
-function ChoiceRow({ control, id, option, disabled, selected }) {
+function ChoiceRow({ control, id, option, selected }) {
   return (
-    <FieldLabel
-      htmlFor={disabled ? undefined : id}
+    <label
+      htmlFor={id}
       data-selected={selected}
-      className={cn(
-        "grid w-full min-h-11 grid-cols-[1rem_minmax(0,1fr)] items-start gap-3 rounded-lg border px-3 py-2.5 font-normal has-[:focus-visible]:shadow-[var(--focus-shadow)]",
-        selected
-          ? "border-(--accent-blue) bg-(--accent-blue-bg)"
-          : "border-(--border-default) bg-(--bg-primary)",
-        disabled ? "cursor-default" : selected ? "cursor-pointer transition-colors" : "cursor-pointer transition-colors hover:bg-(--bg-hover)",
-      )}
+      data-menu-row
+      className="codemini-question-choice"
     >
       {control}
       <OptionLabel option={option} />
-    </FieldLabel>
+    </label>
   );
 }
 
-function QuestionField({ question, index, value, other, onChange, onOtherChange, disabled = false }) {
+function QuestionField({ question, value, other, onChange, onOtherChange, disabled = false, hideHeading = false }) {
   const fieldId = useId();
   const options = Array.isArray(question.options) ? question.options : [];
-  const showOther = question.allow_other && (
-    question.type === 'checkbox' ? value.includes(OTHER_VALUE) : value === OTHER_VALUE
-  );
 
   return (
     <fieldset className="min-w-0">
-      <legend className="mb-1.5 flex w-full items-start gap-3 px-3 text-[13px] font-semibold leading-5 text-(--text-primary)">
-        <span aria-hidden="true" className="mt-0.5 flex size-4 shrink-0 items-center justify-center rounded bg-(--bg-hover) text-[10px] text-(--text-secondary)">{index + 1}</span>
-        <span className="min-w-0 flex-1">{question.label}</span>
+      <legend className={hideHeading ? "sr-only" : "codemini-question-heading"}>
+        {question.label}
       </legend>
-      <div className="mb-3 flex flex-wrap gap-2 pl-10 text-[11px] leading-4 text-(--text-muted)">
-        {['radio', 'select', 'checkbox'].includes(question.type) && <span>{t(question.type === 'checkbox' ? 'userInputMultiple' : 'userInputSingle')}</span>}
-        {question.required && <span className="text-(--accent-orange)">{t('userInputRequired')}</span>}
-      </div>
+      {question.type === 'checkbox' && <p className="mb-1 text-xs text-(--text-muted)">{t('userInputMultiple')}</p>}
+      {question.required && <span className="sr-only">{t('userInputRequired')}</span>}
       <FieldContent>
 
         {question.type === 'text' && (question.multiline ? (
@@ -92,44 +81,34 @@ function QuestionField({ question, index, value, other, onChange, onOtherChange,
                 {options.map((option) => (
                   <SelectItem key={option.value} value={option.value}><OptionLabel option={option} /></SelectItem>
                 ))}
-                {question.allow_other && <SelectItem value={OTHER_VALUE}>{t('userInputOther')}</SelectItem>}
               </SelectGroup>
             </SelectContent>
           </Select>
         )}
 
         {question.type === 'radio' && (
-          <RadioGroup value={value} onValueChange={disabled ? undefined : onChange} disabled={disabled} className="gap-2">
+          <RadioGroup value={value} onValueChange={onChange} disabled={disabled} aria-label={question.label}>
+            <GlideMenu className="flex flex-col gap-0.5">
+              {options.map((option) => (
+                <ChoiceRow
+                  key={option.value}
+                  id={`${fieldId}-${option.value}`}
+                  option={option}
+                  selected={value === option.value}
+                  control={<RadioGroupItem disabled={disabled} id={`${fieldId}-${option.value}`} value={option.value} className="mt-0.5 border-(--text-muted) text-(--accent-blue) data-[state=checked]:border-(--accent-blue) disabled:opacity-100" />}
+                />
+              ))}
+            </GlideMenu>
+          </RadioGroup>
+        )}
+
+        {question.type === 'checkbox' && (
+          <FieldGroup className="gap-0.5">
             {options.map((option) => (
               <ChoiceRow
                 key={option.value}
                 id={`${fieldId}-${option.value}`}
                 option={option}
-                disabled={disabled}
-                selected={value === option.value}
-                control={<RadioGroupItem disabled={disabled} id={`${fieldId}-${option.value}`} value={option.value} className="mt-0.5 border-(--text-muted) text-(--accent-blue) data-[state=checked]:border-(--accent-blue) disabled:opacity-100" />}
-              />
-            ))}
-            {question.allow_other && (
-              <ChoiceRow
-                id={`${fieldId}-${OTHER_VALUE}`}
-                option={{ label: t('userInputOther') }}
-                disabled={disabled}
-                selected={value === OTHER_VALUE}
-                control={<RadioGroupItem disabled={disabled} id={`${fieldId}-${OTHER_VALUE}`} value={OTHER_VALUE} className="mt-0.5 border-(--text-muted) text-(--accent-blue) data-[state=checked]:border-(--accent-blue) disabled:opacity-100" />}
-              />
-            )}
-          </RadioGroup>
-        )}
-
-        {question.type === 'checkbox' && (
-          <FieldGroup className="gap-2">
-            {[...options, ...(question.allow_other ? [{ label: t('userInputOther'), value: OTHER_VALUE }] : [])].map((option) => (
-              <ChoiceRow
-                key={option.value}
-                id={`${fieldId}-${option.value}`}
-                option={option}
-                disabled={disabled}
                 selected={value.includes(option.value)}
                 control={<Checkbox
                   id={`${fieldId}-${option.value}`}
@@ -147,10 +126,10 @@ function QuestionField({ question, index, value, other, onChange, onOtherChange,
           </FieldGroup>
         )}
 
-        {showOther && (
+        {question.allow_other && (
           <Input
-            aria-label={`${question.label} — ${t('userInputOther')}`}
-            autoFocus={!disabled}
+            aria-label={`${question.label} — ${t('userInputOtherPlaceholder')}`}
+            className="codemini-question-other"
             disabled={disabled}
             value={other}
             placeholder={t('userInputOtherPlaceholder')}
@@ -160,6 +139,29 @@ function QuestionField({ question, index, value, other, onChange, onOtherChange,
       </FieldContent>
     </fieldset>
   );
+}
+
+function settledQuestionValues(question, answer) {
+  const values = (Array.isArray(answer) ? answer : [answer])
+    .filter((value) => value != null && value !== '')
+    .map(String);
+  if (question.type === 'text') return { value: values.join('\n'), other: '' };
+
+  const options = new Set(question.options?.map((option) => option.value));
+  const selected = [];
+  const supplements = [];
+  for (const value of values) {
+    if (options.has(value) && !selected.includes(value) &&
+      (question.type === 'checkbox' || !selected.length)) {
+      selected.push(value);
+    } else {
+      supplements.push(value);
+    }
+  }
+  return {
+    value: question.type === 'checkbox' ? selected : selected[0] || '',
+    other: supplements.join(' · '),
+  };
 }
 
 function normalizeQuestions(questions = []) {
@@ -208,173 +210,179 @@ export function resultFromToolCard(card) {
   return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
 }
 
+// The one-question layout follows Beautiful UI's ApprovalCard. See beautiful-ui/LICENSE.
 export function UserInputCard({ request, result = null, onRespond }) {
-  const customId = useId();
-  const questions = useMemo(() => normalizeQuestions(request?.questions), [request]);
+  const questions = useMemo(() => normalizeQuestions(request?.questions), [request?.questions]);
   const [answers, setAnswers] = useState(() => initialAnswers(questions));
   const [otherAnswers, setOtherAnswers] = useState({});
-  const [customResponseOpen, setCustomResponseOpen] = useState(questions.length === 0);
+  const [page, setPage] = useState(0);
+  const [direction, setDirection] = useState(1);
   const [customResponse, setCustomResponse] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const submittingRef = useRef(false);
   const readOnly = Boolean(result) || typeof onRespond !== 'function';
-  const formCustom = readOnly ? String(result?.custom_response || '').trim() : customResponse;
-  const showCustom = readOnly ? Boolean(formCustom) : customResponseOpen;
 
   useEffect(() => {
-    if (readOnly) return;
     setAnswers(initialAnswers(questions));
     setOtherAnswers({});
-    setCustomResponseOpen(questions.length === 0);
+    setPage(0);
+    setDirection(1);
     setCustomResponse('');
     submittingRef.current = false;
     setSubmitting(false);
-  }, [request?.id, questions, readOnly]);
+  }, [request?.id, questions]);
 
   if (!request) return null;
 
-  const normalizedAnswers = () => Object.fromEntries(questions.flatMap((question) => {
+  const normalizedAnswers = Object.fromEntries(questions.flatMap((question) => {
     const value = answers[question.id];
+    const other = String(otherAnswers[question.id] || '').trim();
     if (question.type === 'checkbox') {
-      const resolved = (Array.isArray(value) ? value : []).flatMap((item) => (
-        item === OTHER_VALUE ? [String(otherAnswers[question.id] || '').trim()].filter(Boolean) : [item]
-      ));
+      const selected = Array.isArray(value) ? value : [];
+      const resolved = other ? [...selected, other] : selected;
       return resolved.length ? [[question.id, resolved]] : [];
     }
-    const resolved = value === OTHER_VALUE ? String(otherAnswers[question.id] || '').trim() : String(value || '').trim();
+    const selected = String(value || '').trim();
+    const resolved = selected && other ? [selected, other] : selected || other;
     return resolved ? [[question.id, resolved]] : [];
   }));
 
-  const missingRequired = questions.some((question) => {
-    if (!question.required) return false;
-    const value = normalizedAnswers()[question.id];
-    return Array.isArray(value) ? value.length === 0 : !value;
-  });
+  const missingRequired = questions.some((question) => question.required && !normalizedAnswers[question.id]);
+  const pageIndex = Math.min(page, Math.max(questions.length - 1, 0));
+  const question = questions[pageIndex];
+  const last = pageIndex >= questions.length - 1;
+  const title = String(request.title || '').trim();
+  const customTitle = /^need your input$/i.test(title) || title === t('userInputTitle') ? '' : title;
+  const label = customTitle || question?.label || t('userInputTitle');
+  const canContinue = !question
+    ? Boolean(customResponse.trim())
+    : last
+      ? !missingRequired
+      : !question.required || Boolean(normalizedAnswers[question.id]);
 
-  const respond = (status, response = {}) => {
+  function goTo(index) {
+    if (index < 0 || index >= questions.length || index === pageIndex) return;
+    setDirection(index > pageIndex ? 1 : -1);
+    setPage(index);
+  }
+
+  function respond(status, response = {}) {
     if (readOnly || submittingRef.current) return;
     submittingRef.current = true;
     setSubmitting(true);
     onRespond(request.id, {
       status,
-      answers: status === 'skipped' ? {} : normalizedAnswers(),
+      answers: status === 'skipped' ? {} : normalizedAnswers,
       ...response,
     });
-  };
+  }
 
-  const done = Boolean(result);
-  const answeredCount = Object.keys(normalizedAnswers()).length;
-  const summaryAnswers = result?.answers || {};
-  const statusLabel = done
-    ? t(result.status === 'skipped' ? 'userInputSkipped' : 'userInputSubmitted')
-    : t(readOnly ? 'userInputUnavailable' : 'userInputWaiting');
-  return (
-    <section className="codemini-message-surface overflow-hidden rounded-2xl border border-(--border-default)">
-      <div className="flex items-center gap-3 border-b border-(--border-default) px-4 py-3.5">
-        <span className="flex size-7 shrink-0 items-center justify-center text-(--text-secondary)">
-          {done ? <Check size={20} /> : <ChatCircle size={20} />}
-        </span>
-        <div className="min-w-0 flex-1">
-          <div className="text-[13px] font-semibold leading-5 text-(--text-primary)">
-            {request.title || t('userInputTitle')}
-          </div>
-          {(request.description || !readOnly) && (
-            <p className="pt-0.5 text-[12px] leading-5 text-(--text-secondary)">
-              {request.description || t('userInputHint')}
-            </p>
-          )}
+  const navigationLocked = !result && submitting;
+  const pager = questions.length > 1 && (
+    <div className="flex items-center gap-1 text-xs tabular-nums text-(--text-muted)">
+      <button type="button" className="codemini-question-icon" aria-label={t('userInputPreviousQuestion')} disabled={pageIndex === 0 || navigationLocked} onClick={() => goTo(pageIndex - 1)}><CaretUp size={14} aria-hidden="true" /></button>
+      <span aria-live="polite">{pageIndex + 1}/{questions.length}</span>
+      <button type="button" className="codemini-question-icon" aria-label={t('userInputNextQuestion')} disabled={last || navigationLocked} onClick={() => goTo(pageIndex + 1)}><CaretDown size={14} aria-hidden="true" /></button>
+    </div>
+  );
+
+  if (result) {
+    const skipped = result.status === 'skipped';
+    const status = t(skipped ? 'userInputSkipped' : 'userInputSubmitted');
+    const custom = String(result.custom_response || '').trim();
+    const heading = customTitle || question?.label || request.description || t('userInputCustom');
+    return (
+      <section className="codemini-question-card" aria-label={label}>
+        <div className="flex items-start justify-between gap-3">
+          <h3 className="min-w-0 wrap-anywhere text-[14px] font-semibold">{heading}</h3>
+          <span className={cn('inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-xs', skipped ? 'bg-(--bg-hover) text-(--text-secondary)' : 'bg-(--accent-green-bg) text-(--accent-green)')}>
+            {!skipped && <Check size={13} aria-hidden="true" />}
+            {status}
+          </span>
         </div>
-        <span className={cn("shrink-0 rounded-full px-2 py-0.5 text-[11px] leading-5", done ? "bg-(--accent-green-bg) text-(--accent-green)" : "bg-(--bg-hover) text-(--text-secondary)")}>
-          {statusLabel}
-        </span>
-      </div>
-      <div className="flex flex-col gap-4 px-4 py-4">
-        {result?.status === 'skipped' && (
-          <p className="text-[13px] leading-5 text-(--text-muted)">{t('userInputSkipped')}</p>
-        )}
-        {!readOnly && questions.length > 0 && (
-          <div className="flex w-fit max-w-full flex-wrap gap-1 rounded-lg bg-(--bg-hover) p-1" role="group" aria-label={t('userInputAnswerMode')}>
-            <Button variant="tab" size="sm" disabled={submitting} aria-pressed={!customResponseOpen} className="h-8 text-[12px]" onClick={() => setCustomResponseOpen(false)}>{t('userInputChooseOptions')}</Button>
-            <Button variant="tab" size="sm" disabled={submitting} aria-pressed={customResponseOpen} className="h-8 text-[12px]" onClick={() => setCustomResponseOpen(true)}>{t('userInputCustom')}</Button>
+        {request.description && request.description !== heading && <p className="mt-1 text-xs text-(--text-muted)">{request.description}</p>}
+        {custom ? (
+          <Textarea className="codemini-question-other mt-3" aria-label={t('userInputCustom')} value={custom} disabled />
+        ) : question ? (
+          <div key={question.id} className="codemini-question-review codemini-question-page mt-3" data-direction={direction}>
+            <QuestionField
+              question={question}
+              hideHeading={question.label === heading}
+              {...settledQuestionValues(question, skipped ? undefined : result.answers?.[question.id])}
+              disabled
+            />
           </div>
-        )}
-        {done && result.status !== 'skipped' && !formCustom && (
-          <dl className="space-y-4">
-            {questions.map((question) => {
-              const raw = summaryAnswers[question.id];
-              const values = Array.isArray(raw) ? raw : raw == null || raw === '' ? [] : [raw];
-              return (
-                <div key={question.id}>
-                  <dt className="text-[12px] leading-5 text-(--text-secondary)">{question.label}</dt>
-                  <dd className="mt-1 whitespace-pre-wrap break-words text-[13px] font-medium leading-5 text-(--text-primary)">
-                    {values.length ? values.map((value) => question.options?.find((option) => option.value === value)?.label || String(value)).join('、') : t('userInputUnanswered')}
-                  </dd>
-                </div>
-              );
-            })}
-          </dl>
-        )}
-        {!done && !showCustom && (
-          <FieldGroup className="gap-5">
-            {questions.map((question, index) => (
-              <QuestionField
-                key={question.id}
-                question={question}
-                index={index}
-                disabled={readOnly || submitting}
-                value={answers[question.id] ?? (question.type === 'checkbox' ? [] : '')}
-                other={otherAnswers[question.id] || ''}
-                onChange={(value) => setAnswers((current) => ({ ...current, [question.id]: value }))}
-                onOtherChange={(value) => setOtherAnswers((current) => ({ ...current, [question.id]: value }))}
-              />
-            ))}
-          </FieldGroup>
-        )}
-        {showCustom && (
-          <div className="rounded-lg border border-(--border-default) bg-(--bg-secondary) p-3">
-            <label htmlFor={customId} className="mb-2 block text-[12px] font-medium text-(--text-secondary)">
-              {readOnly ? t('userInputCustom') : t('userInputCustomPrompt')}
-            </label>
-            {readOnly ? (
-              <p className="whitespace-pre-wrap break-words text-[13px] leading-5 text-(--text-primary)">{formCustom}</p>
-            ) : <Textarea
-              id={customId}
-              autoFocus={!readOnly}
+        ) : null}
+        {!custom && pager && <div className="codemini-question-footer">{pager}</div>}
+      </section>
+    );
+  }
+
+  return (
+    <section className="codemini-question-card relative" aria-label={label}>
+      {!readOnly && (
+        <button type="button" className="codemini-question-icon codemini-question-close" aria-label={t('userInputSkipRequest')} title={t('userInputSkipRequest')} disabled={submitting} onClick={() => respond('skipped')}>
+          <X size={15} aria-hidden="true" />
+        </button>
+      )}
+      <span className="sr-only" aria-live="polite">
+        {question ? `${pageIndex + 1}/${questions.length} ${question.label}` : t('userInputCustom')}
+      </span>
+      <div key={question?.id ?? 'custom'} className="codemini-question-page" data-direction={direction}>
+        {!question ? (
+          <>
+            {request.description && <p className="mb-2 text-xs text-(--text-secondary)">{request.description}</p>}
+            <Textarea
+              aria-label={label}
               disabled={readOnly || submitting}
-              value={formCustom}
+              value={customResponse}
               placeholder={t('userInputCustomPlaceholder')}
               onChange={(event) => setCustomResponse(event.target.value)}
-              className="min-h-24 bg-(--bg-primary)"
-            />}
-          </div>
+              className="codemini-question-other min-h-16"
+            />
+          </>
+        ) : (
+          <>
+            <QuestionField
+              question={question}
+              disabled={readOnly || submitting}
+              value={answers[question.id] ?? (question.type === 'checkbox' ? [] : '')}
+              other={otherAnswers[question.id] || ''}
+              onChange={(value) => setAnswers((current) => ({ ...current, [question.id]: value }))}
+              onOtherChange={(value) => setOtherAnswers((current) => ({ ...current, [question.id]: value }))}
+            />
+            {request.description && <p className="mt-2 text-xs text-(--text-muted)">{request.description}</p>}
+          </>
         )}
-        {!readOnly && (
-          <div className="flex flex-wrap items-center justify-between gap-3 border-t border-(--border-default) pt-3">
-            <span aria-live="polite" className="text-[12px] text-(--text-muted)">{customResponseOpen ? t('userInputCustomModeHint') : `${t('userInputProgress')} ${answeredCount}/${questions.length}${missingRequired ? ` · ${t('userInputRequiredHint')}` : ''}`}</span>
-            <div className="flex flex-wrap items-center gap-2">
-              {customResponseOpen ? (
-                <>
-                  <Button
-                    disabled={submitting || !customResponse.trim()}
-                    onClick={() => respond('submitted', { custom_response: customResponse.trim(), answers: {} })}
-                  >
-                    {t('userInputCustomSubmit')}
-                  </Button>
-                </>
-              ) : (
-                <>
-                  <Button variant="outline" disabled={submitting} onClick={() => respond('skipped')}>
-                    {t('userInputSkip')}
-                  </Button>
-                  <Button disabled={missingRequired || submitting} onClick={() => respond('submitted')}>
-                    {request.submit_label || t('userInputSubmit')}
-                  </Button>
-                </>
-              )}
-            </div>
+      </div>
+      <div className="codemini-question-footer">
+        {pager}
+        {readOnly ? (
+          <span className="text-xs text-(--text-muted)">{t('userInputUnavailable')}</span>
+        ) : (
+          <div className="ml-auto flex items-center gap-2">
+            <Button type="button" variant="secondary" size="sm" className="rounded-full" disabled={submitting} onClick={() => last ? respond('skipped') : goTo(pageIndex + 1)}>
+              {t('userInputSkip')}
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              className="rounded-full"
+              disabled={submitting || !canContinue}
+              onClick={() => {
+                if (!question) respond('submitted', { custom_response: customResponse.trim() });
+                else if (last) respond('submitted');
+                else goTo(pageIndex + 1);
+              }}
+            >
+              {(last && request.submit_label) || t('userInputSubmit')}
+            </Button>
           </div>
         )}
       </div>
+      {!readOnly && question && !canContinue && (
+        <p className="mt-1.5 text-xs text-(--text-muted)">{t('userInputRequiredHint')}</p>
+      )}
     </section>
   );
 }

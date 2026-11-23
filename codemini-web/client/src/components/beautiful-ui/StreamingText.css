@@ -1,0 +1,132 @@
+.codemini-source-avatar {
+  position: relative;
+  display: inline-grid;
+  width: 18px;
+  height: 18px;
+  flex: none;
+  overflow: hidden;
+  place-items: center;
+  border-radius: 5px;
+}
+
+.codemini-source-avatar img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.msg-body .codemini-source-chip {
+  display: inline-flex;
+  max-width: 100%;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 5px;
+  border: 1px solid var(--border-default);
+  border-radius: 6px;
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  font: 500 0.8em/1.45 var(--font-mono);
+  text-decoration: none;
+  vertical-align: 0.05em;
+}
+
+.codemini-source-chip .codemini-source-avatar {
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+}
+
+.codemini-source-chip-label,
+.codemini-source-title,
+.codemini-source-domain {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.codemini-sources-toggle,
+.codemini-source-row {
+  display: flex;
+  min-height: 30px;
+  align-items: center;
+  gap: 8px;
+  border-radius: 6px;
+  padding: 4px 7px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  transition: background-color 150ms, color 150ms;
+}
+
+.codemini-sources-toggle {
+  margin-inline-start: 3px;
+  white-space: nowrap;
+}
+
+.codemini-sources-stack {
+  display: inline-flex;
+}
+
+.codemini-sources-stack .codemini-source-avatar {
+  border-radius: 50%;
+  box-shadow: 0 0 0 1.5px var(--bg-primary);
+}
+
+.codemini-sources-stack .codemini-source-avatar + .codemini-source-avatar {
+  margin-inline-start: -4px;
+}
+
+.msg-body .codemini-source-chip:hover,
+.codemini-sources-toggle:is(:hover, [aria-expanded="true"]),
+.codemini-source-row:is(:hover, :focus-visible) {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.codemini-sources-reveal {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition: grid-template-rows 250ms cubic-bezier(0.23, 1, 0.32, 1), opacity 180ms ease;
+}
+
+.codemini-sources-reveal[data-open="true"] {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+
+.codemini-sources-list {
+  display: flex;
+  width: min(100%, 36rem);
+  flex-direction: column;
+  gap: 2px;
+  margin: 5px 0 1px;
+  padding: 4px;
+  border: 1px solid var(--border-default);
+  border-radius: 10px;
+  background: var(--message-surface);
+}
+
+.codemini-source-title {
+  flex: 1;
+  font-weight: 500;
+}
+
+.codemini-source-domain {
+  max-width: 42%;
+  color: var(--text-muted);
+  font: 11px/1.5 var(--font-mono);
+}
+
+.codemini-source-row:is(:hover, :focus-visible) .codemini-source-title {
+  text-decoration: underline;
+  text-underline-offset: 0.22em;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .codemini-sources-reveal,
+  .codemini-sources-toggle,
+  .codemini-source-row { transition: none; }
+}

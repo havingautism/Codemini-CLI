@@ -130,6 +130,12 @@ export async function fetchSessionPage(groupKey, cursor) {
   return readJsonOrThrow(await api(`/api/sessions/page?${params}`));
 }
 
+export async function fetchSidebarSessionSearch(query, cursor, signal) {
+  const params = new URLSearchParams({ q: query });
+  if (cursor) params.set('cursor', cursor);
+  return readJsonOrThrow(await api(`/api/sessions/search?${params}`, { signal }));
+}
+
 export async function fetchSessionMessages(sessionId) {
   const res = await api(withSessionQuery('/api/session/messages', sessionId));
   return res.json();
@@ -517,6 +523,19 @@ export async function browseDir(dir) {
     body: JSON.stringify({ dir })
   });
   return res.json();
+}
+
+export async function createProjectFolder(dir, name) {
+  const res = await api('/api/project/folders', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ dir, name }),
+  });
+  const result = await readJsonResponse(res);
+  if (!res.ok || result.error) {
+    throw Object.assign(new Error(result.message || 'Could not create folder'), { code: result.code });
+  }
+  return result.folder;
 }
 
 // ── Skills ──
