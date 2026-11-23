@@ -18,13 +18,13 @@ test('file read and mutation tool cards share a compact file disclosure row', as
     /codemini-file-tool-row[\s\S]*?<DisclosureLeading open=\{open\}>[\s\S]*?<ToolCardIcon Icon=\{Icon\} \/>[\s\S]*?<\/DisclosureLeading>/,
   );
   assert.match(source, /<FileTypeIcon[\s\S]*?\{name \|\| "file"\}[\s\S]*?\{dir \?/);
-  assert.match(source, /codemini-file-tool-caret/);
+  assert.doesNotMatch(source, /codemini-file-tool-caret/);
   assert.match(source, /text-\(--text-process-hover\)/);
   assert.match(source, /\(\{dir\}\)/);
   assert.match(source, /handleFileAction\(event, "open"\)/);
   assert.match(source, /handleFileAction\(event, "reveal"\)/);
   assert.match(source, /disableFileHeader: true/);
-  assert.match(source, /hasFilePreview \? \([\s\S]*?<FilePreview[\s\S]*?<pre className=\{DETAIL_PRE_CLASS\}>\{conversationOutput\}<\/pre>/);
+  assert.match(source, /hasFilePreview \? \([\s\S]*?<FilePreview[\s\S]*?<ReadToolOutput[\s\S]*?<CodeOutputPreview content=\{conversationOutput\} wrap/);
   assert.match(css, /\.codemini-file-tool-body \{[\s\S]*?margin: 2px 4px 6px 32px;/);
-  assert.match(css, /\.codemini-file-tool-diff \{[\s\S]*?border-radius: 14px;/);
+  assert.match(source, /<CodePreviewFrame label=\{label\} actions=\{stats\}/);
 });

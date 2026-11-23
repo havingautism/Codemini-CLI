@@ -151,7 +151,7 @@ import {
   ShieldAlertIcon,
   CodeIcon,
   BugIcon,
-} from "./iconoir/glyphs.jsx";
+} from "./iconoir/glyphs.js";
 
 function strokeForWeight(weight) {
   if (weight === "bold") return 2.3;
