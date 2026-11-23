@@ -3469,7 +3469,11 @@ samp {
 .codemini-token-activity__chart { width: 100%; }
 .codemini-token-activity__grid, .codemini-token-activity__months { display: grid; grid-template-columns: repeat(var(--activity-columns), minmax(0, 1fr)); gap: 3px; width: 100%; }
 .codemini-token-activity__months { height: 16px; margin-bottom: 3px; color: var(--text-muted); font-size: 11px; line-height: 16px; }
-.codemini-token-activity__months span { min-width: 0; overflow: visible; white-space: nowrap; }
+.codemini-token-activity__months > span { container-type: inline-size; white-space: nowrap; }
+/* Partial months may have fewer visible weeks than their label needs. */
+@container (inline-size < 2.75em) {
+  .codemini-token-activity__months > span > span { visibility: hidden; }
+}
 .codemini-token-activity__week { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .codemini-token-activity__cell[data-active="true"] { outline: 1px solid var(--text-secondary); outline-offset: 0; }
 .codemini-token-activity__cell { display: block; width: 100%; aspect-ratio: 1; height: auto; border-radius: 2px; background: color-mix(in srgb, var(--text-muted) 16%, transparent); }

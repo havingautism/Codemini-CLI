@@ -44,7 +44,7 @@ C:\temp\codemini-cli-<version>.tgz
 Target machine requirements:
 
 - Windows 10
-- Node.js 22 or newer
+- Node.js 22.19.0 or newer
 - npm available
 - PowerShell available
 
