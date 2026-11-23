@@ -478,12 +478,15 @@ export function TokenActivity() {
                     className="codemini-token-activity__months"
                     aria-hidden="true"
                   >
-                    {grid.months.map(({ column, month: monthNumber }) => (
+                    {grid.months.map(({ column, month: monthNumber }, index) => (
                       <span
                         key={`${column}-${monthNumber}`}
-                        style={{ gridColumn: column + 1 }}
+                        style={{
+                          gridColumnStart: column + 1,
+                          gridColumnEnd: (grid.months[index + 1]?.column ?? grid.weeks.length) + 1,
+                        }}
                       >
-                        {monthLabel(monthNumber)}
+                        <span>{monthLabel(monthNumber)}</span>
                       </span>
                     ))}
                   </div>
