@@ -67,7 +67,8 @@ test('electron-builder config ships unsigned win and mac artifacts', () => {
   assert.ok(builder.files.includes('codemini-web/dist/**/*'));
   assert.ok(builder.files.includes('codemini-web/server.js'));
   assert.equal(pkg.main, 'desktop/main.cjs');
-  assert.equal(pkg.devDependencies.electron, '45.2.1');
+  assert.match(pkg.devDependencies.electron, /^\d+\.\d+\.\d+$/);
+  assert.equal(pkg.devDependencies.electron, require('../package-lock.json').packages['node_modules/electron'].version);
   assert.equal(pkg.devDependencies['electron-builder'], '26.18.0');
   assert.equal(pkg.scripts['desktop:dist:win'], 'electron-builder --config desktop/electron-builder.config.cjs --win nsis --x64 --publish never');
   assert.equal(pkg.scripts['desktop:dist:win:arm64'], 'electron-builder --config desktop/electron-builder.config.cjs --win nsis --arm64 --publish never');

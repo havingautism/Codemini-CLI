@@ -101,6 +101,70 @@ function baseConfig(port) {
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+test('model interruptions during parallel inline tasks keep the parent session and allow retry', async () => {
+  await withGlobalDir(async (dir) => {
+    const session = await createSession(dir);
+    const config = baseConfig(0);
+    config.execution.mode = 'plan';
+    config.model.fast_name = 'lite-model';
+    config.tools.max_parallel_calls = 2;
+    const originalFetch = globalThis.fetch;
+    const events = [];
+    const calls = [
+      { index: 0, id: 'call-sub', function: { name: 'run_subagent', arguments: JSON.stringify({ prompt: 'Inspect gateway', name: 'Inspector', tools: ['read'] }) } },
+      { index: 1, id: 'call-fork', function: { name: 'fork_task', arguments: JSON.stringify({ prompt: 'Check sibling branch', name: 'Sibling' }) } },
+    ];
+    function stream(delta, finishReason) {
+      return new Response(`data: ${JSON.stringify({ choices: [{ delta, finish_reason: finishReason }] })}\n\ndata: [DONE]\n\n`, {
+        headers: { 'content-type': 'text/event-stream' },
+      });
+    }
+    let dispatchCount = 0;
+    const runtime = await createChatRuntime({ session, config, model: 'test-model', systemPrompt: 'Test.', workspaceRoot: dir });
+    let settled = Promise.withResolvers();
+    const bridge = new RuntimeBridge(runtime, {
+      sessionId: session.id,
+      onEvent: (event) => events.push(event),
+      onLifecycle(event) {
+        if (event.status !== 'running') settled.resolve(event);
+      },
+    });
+    globalThis.fetch = async (_url, init) => {
+      const { model, messages } = JSON.parse(init.body);
+      const tail = messages.at(-1);
+      if (model === 'lite-model' || tail.role === 'tool') {
+        throw new DOMException('The operation was aborted.', 'AbortError');
+      }
+      if (String(tail.content).includes('Branch task:\nCheck sibling branch')) {
+        return stream({ content: 'Sibling finished.' }, 'stop');
+      }
+      if (++dispatchCount === 1) return stream({ tool_calls: calls }, 'tool_calls');
+      return stream({ content: 'Retry finished.' }, 'stop');
+    };
+    try {
+      assert.equal(bridge.handleSubmitMessage({ text: 'Check the workspace' }).accepted, true);
+      assert.deepEqual(await settled.promise, { sessionId: session.id, status: 'failed' });
+      assert.ok(events.some((event) => event.type === 'plan:step_done' && event.toolCallId === 'call-sub' && event.status === 'failed'));
+      assert.ok(events.some((event) => event.type === 'plan:step_done' && event.toolCallId === 'call-fork' && event.status === 'done'));
+      assert.equal(runtime.getCurrentSessionId(), session.id);
+      assert.ok(events.every((event) => event.type !== 'session:forked'));
+      await new Promise(setImmediate);
+      const failure = (await bridge.getUiMessages()).find((message) => message.role === 'error');
+      assert.match(failure.text, /Model request interrupted/);
+      assert.equal(failure.retryable, true);
+      settled = Promise.withResolvers();
+      assert.equal(bridge.handleRetryMessage(failure.id).accepted, true);
+      assert.deepEqual(await settled.promise, { sessionId: session.id, status: 'completed' });
+      assert.ok(events.some((event) => event.type === 'submit:done' && event.result?.text === 'Retry finished.'));
+      assert.equal(runtime.getCurrentSessionId(), session.id);
+      assert.deepEqual((await runtime.getSessionHistory()).map((entry) => entry.id), [session.id]);
+    } finally {
+      globalThis.fetch = originalFetch;
+      await bridge.dispose();
+    }
+  });
+});
+
 test('slash skill survives a real streamed abort in the user bubble, core history and context tab', async (t) => {
   await withGlobalDir(async (dir) => {
     const { server, port } = await startGateway();
