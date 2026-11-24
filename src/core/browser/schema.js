@@ -51,7 +51,6 @@ export const BROWSER_TOOL_NAMES = Object.freeze([
   'browser_inspect',
   'browser_act',
   'browser_diagnose',
-  'performance_profile',
 ]);
 
 export const BROWSER_READONLY_TOOLS = Object.freeze([
@@ -77,8 +76,6 @@ export const BROWSER_ERROR_CODES = Object.freeze([
   'EVAL_FAILED',
   'SNAPSHOT_FAILED',
   'SOURCE_NOT_FOUND',
-  'PROFILE_BUSY',
-  'PROFILE_FAILED',
   'BROWSER_ERROR',
 ]);
 
@@ -86,7 +83,6 @@ export const BROWSER_TOOL_LABELS = Object.freeze({
   browser_inspect: 'Browser Inspect',
   browser_act: 'Browser Act',
   browser_diagnose: 'Browser Diagnose',
-  performance_profile: 'Performance Profile',
 });
 
 export const INTERACTION_STYLE_PROPS = Object.freeze([
@@ -221,41 +217,6 @@ export const BROWSER_TOOL_DEFINITIONS = {
     },
     ['action'],
   ),
-  performance_profile: define(
-    'performance_profile',
-    'Profile a page in the current browser. Collects a trace, a sampled CPU profile, and metric deltas, then returns a short report with long tasks and hotspots mapped through source maps. Pass url to open a page, or omit it to use the open page. click and type actions use the same ref, selector, or role plus name as browser_act. Does not return the raw trace. Load it with tool_search.',
-    {
-      url: stringProp('Optional http(s), about:blank, or workspace file. Opens or navigates before capture.', { maxLength: BROWSER_LIMITS.url }),
-      duration: intProp('Capture window in milliseconds. Defaults to 2000. Maximum 8000.', { min: 200, max: 8000 }),
-      capture: {
-        type: 'array',
-        maxItems: 3,
-        items: { type: 'string', enum: ['trace', 'cpu', 'metrics'] },
-        description: 'Channels to collect. Defaults to trace, cpu, and metrics.',
-      },
-      actions: {
-        type: 'array',
-        maxItems: 8,
-        description: 'Steps during the capture window. click and type need one target. scroll uses x and y wheel deltas. wait uses duration.',
-        items: {
-          type: 'object',
-          additionalProperties: false,
-          required: ['type'],
-          properties: {
-            type: { type: 'string', enum: ['click', 'type', 'scroll', 'wait'] },
-            ref: targetProperties.ref,
-            selector: targetProperties.selector,
-            role: targetProperties.role,
-            name: targetProperties.name,
-            text: stringProp('type. Text to insert.', { maxLength: BROWSER_LIMITS.text }),
-            x: { type: 'number', description: 'scroll. Horizontal wheel delta. Defaults to 0.' },
-            y: { type: 'number', description: 'scroll. Vertical wheel delta. Defaults to 400.' },
-            duration: intProp('wait. Milliseconds, up to 5000. Defaults to 200.', { min: 0, max: 5000 }),
-          },
-        },
-      },
-    },
-  ),
 };
 
 export function isCodingExecutionMode(mode) {
@@ -320,4 +281,4 @@ export function filterBrowserToolNames(names, config, executionMode) {
   return names.filter((name) => !drop.has(name));
 }
 
-export const BROWSER_CODING_PROMPT = 'Interaction bugs: tool_search browser_inspect, browser_act, browser_diagnose, or frontend-interaction-debug. Jank: tool_search performance_profile or frontend-performance-profile. Hotspot is a lead.';
+export const BROWSER_CODING_PROMPT = 'For front-end interaction bugs (unclickable controls, wrong styles, which handler or source file), load browser_inspect, browser_act, or browser_diagnose with tool_search, or use the frontend-interaction-debug skill.';

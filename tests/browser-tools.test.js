@@ -40,7 +40,6 @@ const VALID_ARGS = {
   browser_inspect: { action: 'snapshot' },
   browser_act: { action: 'close' },
   browser_diagnose: { action: 'click', ref: '@e1' },
-  performance_profile: {},
 };
 
 function registry() {
@@ -93,8 +92,6 @@ test('browser tool schemas compile and reject unknown fields, enums, and bounds'
   assert.deepEqual(diagnose.sort(), ['action', 'name', 'observe_ms', 'ref', 'role', 'selector', 'timeout_ms']);
   assert.throws(() => tools.validateArguments('browser_inspect', { action: 'snapshot', url: 'https://example.com' }), ToolArgumentsError);
   assert.throws(() => tools.validateArguments('browser_diagnose', { action: 'click', ref: '@e1', expression: '1' }), ToolArgumentsError);
-  assert.throws(() => tools.validateArguments('performance_profile', { duration: 10 }), ToolArgumentsError);
-  assert.throws(() => tools.validateArguments('performance_profile', { extra: true }), ToolArgumentsError);
 });
 
 test('target combinations return INVALID_TARGET before a browser launches', async () => {
@@ -142,7 +139,7 @@ test('formatters and display strings stay compact and bilingual activity still r
   for (const code of ['NOT_A_CODE']) assert.equal(BROWSER_ERROR_CODES.includes(code), false);
   assert.ok(BROWSER_ERROR_CODES.includes('INVALID_TARGET'));
   assert.deepEqual([...BROWSER_READONLY_TOOLS], ['browser_inspect']);
-  assert.deepEqual([...BROWSER_MUTATING_TOOLS], ['browser_act', 'browser_diagnose', 'performance_profile']);
+  assert.deepEqual([...BROWSER_MUTATING_TOOLS], ['browser_act', 'browser_diagnose']);
   assert.equal(BROWSER_READONLY_TOOLS.some((name) => BROWSER_MUTATING_TOOLS.includes(name)), false);
 });
 
@@ -212,7 +209,6 @@ test('coding mode auto-approves browser tools and mentions them only in the codi
   assert.equal(coding.includes('browser_inspect'), true);
   assert.equal(coding.includes('browser_act'), true);
   assert.equal(coding.includes('browser_diagnose'), true);
-  assert.equal(coding.includes('performance_profile'), true);
   assert.equal(coding.includes('run'), true);
   assert.equal(coding.includes('edit'), true);
   assert.equal(toolRequiresUserApproval({
@@ -231,8 +227,7 @@ test('coding mode auto-approves browser tools and mentions them only in the codi
   assert.match(codingPrompt, /browser_act/);
   assert.match(codingPrompt, /browser_diagnose/);
   assert.match(codingPrompt, /frontend-interaction-debug/);
-  assert.match(codingPrompt, /performance_profile/);
-  assert.doesNotMatch(normalPrompt, /browser_inspect|browser_act|browser_diagnose|performance_profile|frontend-interaction-debug|frontend-performance-profile/);
+  assert.doesNotMatch(normalPrompt, /browser_inspect|browser_act|browser_diagnose|frontend-interaction-debug/);
   assert.doesNotMatch(buildDefaultSystemPrompt({ execution: { mode: 'plan' } }), /browser_inspect/);
   assert.doesNotMatch(buildDefaultSystemPrompt({ execution: { mode: 'normal' } }), /browser_inspect/);
 });
@@ -337,7 +332,7 @@ test('settings and i18n expose browser controls in English and Chinese', async (
   const zh = await fs.readFile(path.join(repoRoot, 'codemini-web/client/i18n/zh.js'), 'utf8');
   const settings = await fs.readFile(path.join(repoRoot, 'codemini-web/client/src/lib/settings-config.js'), 'utf8');
   const options = await fs.readFile(path.join(repoRoot, 'codemini-web/client/src/lib/settings-options.js'), 'utf8');
-  for (const key of ['browserChannel', 'browserHeadless', 'hookTool_browser_diagnose', 'hookTool_browser_inspect', 'hookTool_browser_act', 'hookTool_performance_profile']) {
+  for (const key of ['browserChannel', 'browserHeadless', 'hookTool_browser_diagnose', 'hookTool_browser_inspect', 'hookTool_browser_act']) {
     assert.match(en, new RegExp(`${key}:`));
     assert.match(zh, new RegExp(`${key}:`));
   }

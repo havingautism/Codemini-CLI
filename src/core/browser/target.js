@@ -74,50 +74,6 @@ export function targetError(tool, parsed) {
   return browserError(tool, parsed.code || 'INVALID_TARGET', parsed.error);
 }
 
-export async function resolveLocator(session, tool, target) {
-  const page = session.page;
-  let locator;
-  if (target.ref) {
-    const entry = session.refs.get(target.ref);
-    if (!entry) {
-      return { error: browserError(tool, 'TARGET_NOT_FOUND', `Unknown ref ${target.ref}. Call browser_snapshot again.`) };
-    }
-    locator = page.locator(entry.selector);
-  } else if (target.selector) {
-    locator = page.locator(target.selector);
-  } else {
-    locator = page.getByRole(target.role, { name: target.name });
-  }
-  const count = await locator.count();
-  if (count === 0) {
-    return { error: browserError(tool, 'TARGET_NOT_FOUND', `No element matched ${describeTarget(target)}.`) };
-  }
-  if (count > 1) {
-    return { error: browserError(tool, 'AMBIGUOUS_TARGET', `Matched ${count} elements for ${describeTarget(target)}. Use an @eN ref from browser_snapshot.`) };
-  }
-  const resolvedSelector = await locator.evaluate((element) => {
-    if (!element || element.nodeType !== 1) return '';
-    if (element.id && /^[A-Za-z][\w-]*$/.test(element.id)) return `#${CSS.escape(element.id)}`;
-    const parts = [];
-    let node = element;
-    while (node && node.nodeType === 1 && node !== document.documentElement) {
-      let index = 1;
-      let sibling = node;
-      while ((sibling = sibling.previousElementSibling)) {
-        if (sibling.tagName === node.tagName) index += 1;
-      }
-      parts.unshift(`${node.tagName.toLowerCase()}:nth-of-type(${index})`);
-      if (parts.length > 8) break;
-      node = node.parentElement;
-    }
-    return parts.join(' > ');
-  }).catch(() => target.selector || '');
-  return {
-    locator: resolvedSelector ? page.locator(resolvedSelector) : locator,
-    selector: resolvedSelector || target.selector || '',
-  };
-}
-
 export function describeTarget(target) {
   if (!target) return 'page';
   if (target.ref) return target.ref;

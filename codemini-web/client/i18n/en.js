@@ -1578,7 +1578,6 @@ export const en = {
   hookTool_browser_inspect: "browser_inspect (read-only)",
   hookTool_browser_act: "browser_act (change page)",
   hookTool_browser_diagnose: "browser_diagnose (probe click)",
-  hookTool_performance_profile: "performance_profile (performance capture)",
   hookTool_tasks: "tasks",
   todosEmpty: "No active tasks",
   tasksTitle: "Tasks",

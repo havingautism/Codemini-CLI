@@ -1536,7 +1536,6 @@ export const zh = {
   hookTool_browser_inspect: "browser_inspect（只读检查）",
   hookTool_browser_act: "browser_act（改变页面）",
   hookTool_browser_diagnose: "browser_diagnose（点击探测）",
-  hookTool_performance_profile: "performance_profile（性能采集）",
   hookTool_tasks: "tasks（任务）",
   todosEmpty: "暂无任务",
   tasksTitle: "任务",
