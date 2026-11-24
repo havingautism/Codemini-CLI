@@ -5,27 +5,19 @@ const HTTP_WEB_SEARCH_DEFINITION = {
   function: {
     name: 'web_search',
     description:
-      'Search the live web for external facts, documentation, news, and current information. Prefer this tool over shell commands such as curl for keyword search. Returns source titles, URLs, and snippets; use web_fetch to read a result page. Defaults to no-API Bing RSS, or uses config.web.search_provider=tavily|exa|firecrawl when configured with an API key. Respects config.web.search_enabled.',
+      'Search the live web. Prefer this over shell HTTP for keyword search. Returns titles, URLs, and snippets; read a page with web_fetch.',
     parameters: {
       type: 'object',
       properties: {
-        query: { type: 'string', description: 'Search query' },
+        query: { type: 'string', description: 'Search query.' },
         q: { type: 'string', description: 'Alias for query' },
-        max_results: {
-          type: 'number',
-          description: 'Max results to return'
-        },
-        locale: {
-          type: 'string',
-          description: 'Bing market and language such as en-US or zh-CN'
-        },
-        region: {
-          type: 'string',
-          description: 'Bing country code such as US or CN'
-        },
+        max_results: { type: 'number', description: 'Max results.' },
+        locale: { type: 'string', description: 'Market, such as en-US or zh-CN.' },
+        region: { type: 'string', description: 'Country code, such as US or CN.' },
         provider: {
           type: 'string',
-          description: 'Optional search provider override: bing_rss, tavily, exa, or firecrawl'
+          enum: ['bing_rss', 'tavily', 'exa', 'firecrawl'],
+          description: 'Override the configured provider.'
         }
       },
       required: ['query']
@@ -157,8 +149,8 @@ export function getWebToolGuidance(config) {
     'Within your allowed tool scope, prefer dedicated web tools over shell commands for online research.',
     searchHint,
     '- web_fetch: read a known URL or a search result page; prefer it over curl for reading web pages.',
-    `If a web tool is not visible, load it by exact name with ${discoveryExamples}, only when enabled and allowed.`,
-    'Use shell HTTP commands for API debugging, downloads, explicit user requests, or a concrete web-tool failure or limitation. Explain a research fallback; do not bypass disabled search or denied network access.',
+    `If a web tool is not visible, load it by exact name with ${discoveryExamples} when allowed.`,
+    'Shell HTTP is for API debugging, downloads, explicit user requests, or a web-tool failure. Explain that fallback; do not bypass disabled search or denied network access.',
   ].filter(Boolean).join('\n');
 }
 
