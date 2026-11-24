@@ -189,6 +189,28 @@ export function buildSettingsFields() {
       visibleWhen: ({ getValue }) => getValue("web.search_provider") === "firecrawl",
     },
     {
+      tab: "web",
+      path: "browser.channel",
+      control: "select",
+      optionsKey: "browserChannel",
+      label: t("browserChannel"),
+      help: t("browserChannelHelp"),
+    },
+    {
+      tab: "web",
+      path: "browser.headless",
+      control: "switch",
+      label: t("browserHeadless"),
+      help: t("browserHeadlessHelp"),
+    },
+    {
+      tab: "web",
+      path: "browser.executable_path",
+      control: "input",
+      label: t("browserExecutablePath"),
+      help: t("browserExecutablePathHelp"),
+    },
+    {
       tab: "context",
       path: "context.preflight_trigger_pct",
       control: "percent",
