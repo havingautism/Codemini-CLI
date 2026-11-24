@@ -71,9 +71,13 @@ The npm user or automation token needs publish access to `codemini-cli`. The pac
 
 1. Create an npm Automation token that can publish `codemini-cli`.
 2. Add it as the repository secret `NPM_TOKEN`.
-3. Run the **Publish npm** workflow on the release commit.
+3. Run the **Publish npm** workflow on the release commit. Set `dist_tag` to `latest` for a stable version, or `beta` for a prerelease such as `0.10.5-beta.0`. The workflow publishes with `npm publish --access public --tag <dist_tag>` and refuses a version that contains `-` when `dist_tag` is `latest`.
 
 If `NPM_TOKEN` is missing, the workflow stops with that message and does not call the registry.
+
+### Beta
+
+Tag `v0.10.5-beta.0` on the `beta` branch head and push the tag. Run **Publish npm** with ref `beta` and `dist_tag` `beta`. Do not use `latest` for that version. The desktop workflow marks a tag that contains `-` as a GitHub prerelease, so it is not the latest release. This app does not ship an auto-updater.
 
 ## Desktop GitHub Release
 
@@ -83,6 +87,6 @@ See [DESKTOP.md](./DESKTOP.md).
 2. Tag that commit `v` plus the `package.json` version, for example `v0.10.0`.
 3. `git push origin v0.10.0`.
 
-`.github/workflows/desktop-release.yml` builds four installers and attaches them to the GitHub Release: Windows NSIS Setup x64, Windows NSIS Setup ARM64, macOS DMG Apple Silicon, and macOS DMG Intel x64. The workflow refuses a tag that does not match `package.json`. Asset names are listed in [DESKTOP.md](./DESKTOP.md).
+`.github/workflows/desktop-release.yml` builds four installers and attaches them to the GitHub Release: Windows NSIS Setup x64, Windows NSIS Setup ARM64, macOS DMG Apple Silicon, and macOS DMG Intel x64. The workflow refuses a tag that does not match `package.json`, including prerelease tags such as `v0.10.5-beta.0`. A tag whose name contains `-` is published as a GitHub prerelease. Asset names are listed in [DESKTOP.md](./DESKTOP.md). `electron-builder` `publish` stays null, so the build does not emit an update feed.
 
 Mac and Windows builds are unsigned until the signing secrets in `DESKTOP.md` are added.

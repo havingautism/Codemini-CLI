@@ -78,7 +78,8 @@ test('electron-builder config ships unsigned win and mac artifacts', () => {
 
 test('release tag check follows package.json', () => {
   const script = path.join(root, 'scripts', 'check-release-tag.js');
-  const match = spawnSync(process.execPath, [script, `v${pkg.version}`], { encoding: 'utf8' });
+  assert.equal(pkg.version, '0.10.5-beta.0');
+  const match = spawnSync(process.execPath, [script, 'v0.10.5-beta.0'], { encoding: 'utf8' });
   assert.equal(match.status, 0, match.stderr);
   const mismatch = spawnSync(process.execPath, [script, 'v0.0.0-not-a-release'], { encoding: 'utf8' });
   assert.notEqual(mismatch.status, 0);
@@ -98,8 +99,15 @@ test('release workflows stay manual for npm and attach desktop artifacts', () =>
   assert.match(desktop, /CSC_IDENTITY_AUTO_DISCOVERY: "false"/);
   assert.match(desktop, /--publish never/);
   assert.match(desktop, /softprops\/action-gh-release@v2/);
+  assert.match(desktop, /prerelease: \$\{\{ contains\(github\.ref_name, '-'\) \}\}/);
   assert.match(desktop, /check-release-tag\.js/);
+  assert.equal(builder.publish, null);
   assert.match(publish, /workflow_dispatch:/);
+  assert.match(publish, /dist_tag:/);
+  assert.match(publish, /latest/);
+  assert.match(publish, /beta/);
+  assert.match(publish, /npm publish --access public --tag "\$DIST_TAG"/);
+  assert.match(publish, /dist-tag latest/);
   assert.match(publish, /secrets\.NPM_TOKEN/);
   assert.doesNotMatch(publish, /push:\s*\n\s*tags:/);
   assert.equal(fs.existsSync(path.join(root, 'design-qa.md')), false);
