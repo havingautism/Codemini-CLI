@@ -18,12 +18,6 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import {
-  CheckCircle,
-  WarningCircle,
-  XCircle,
-} from "@/lib/icons";
-import { cn } from "@/lib/utils";
 import * as api from "@/hooks/use-api";
 import { Spinner } from "@/components/ui/spinner";
 import { t } from "../../i18n/index.js";
@@ -183,16 +177,12 @@ export function ConfigDialog({
   const [appearanceBaseline, setAppearanceBaseline] = useState(readAppearance);
   const [appearanceDraft, setAppearanceDraft] = useState(readAppearance);
   const [configLoading, setConfigLoading] = useState(false);
-  const [playwrightStatus, setPlaywrightStatus] = useState(null);
-  const [playwrightLoading, setPlaywrightLoading] = useState(false);
   const [pendingWarning, setPendingWarning] = useState(null);
 
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
     setConfigLoading(true);
-    setPlaywrightLoading(true);
-    setPlaywrightStatus(null);
     setChanges({});
     setPendingWarning(null);
     setSaveError("");
@@ -208,17 +198,6 @@ export function ConfigDialog({
       .catch(() => {})
       .finally(() => {
         if (!cancelled) setConfigLoading(false);
-      });
-    api
-      .fetchPlaywrightStatus()
-      .then((status) => {
-        if (!cancelled) setPlaywrightStatus(status);
-      })
-      .catch(() => {
-        if (!cancelled) setPlaywrightStatus(null);
-      })
-      .finally(() => {
-        if (!cancelled) setPlaywrightLoading(false);
       });
     return () => {
       cancelled = true;
@@ -326,31 +305,6 @@ export function ConfigDialog({
       ("model.reasoning_enabled" in changes ||
         "model.reasoning_auto" in changes ||
         "model.reasoning_effort" in changes));
-
-  const playwrightReady = playwrightStatus?.ready === true;
-  const playwrightLabel = playwrightLoading
-    ? t("playwrightChecking")
-    : playwrightReady && playwrightStatus?.engine === "playwright"
-      ? t("playwrightReadyLegacy")
-      : playwrightReady
-        ? t("playwrightReady")
-        : playwrightStatus?.packageInstalled
-          ? t("playwrightBrowserMissing")
-          : t("playwrightNotInstalled");
-  const PlaywrightStatusIcon = playwrightLoading
-    ? null
-    : playwrightReady
-      ? CheckCircle
-      : playwrightStatus?.packageInstalled
-        ? WarningCircle
-        : XCircle;
-  const playwrightStatusClass = playwrightLoading
-    ? "text-(--text-muted)"
-    : playwrightReady
-      ? "text-(--accent-green)"
-      : playwrightStatus?.packageInstalled
-        ? "text-(--accent-amber, #d97706)"
-        : "text-(--text-muted)";
 
   const handleSave = async () => {
     if (saving) return;
@@ -622,23 +576,6 @@ export function ConfigDialog({
           </SettingsField>
         )}
 
-        {tabId === "web" && (
-          <SettingsField id="playwright-status" label={t("playwright")} help={t("playwrightHelp")}>
-            <div
-              className={cn(
-                "flex min-h-[52px] items-center gap-2 rounded-lg border border-(--border-default) px-3 py-2.5 text-[13px]",
-                playwrightStatusClass,
-              )}
-            >
-              {playwrightLoading ? (
-                <Spinner className="size-4" />
-              ) : PlaywrightStatusIcon ? (
-                <PlaywrightStatusIcon size={16} weight="fill" />
-              ) : null}
-              <span>{playwrightLabel}</span>
-            </div>
-          </SettingsField>
-        )}
       </SettingsSection>
     );
   };

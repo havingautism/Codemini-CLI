@@ -2,9 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
-import { findInstalledBrowsers } from './locate-browser.js';
 import { launchPlaywrightCoreBrowser } from './launch.js';
-import { resolveBrowserConfig } from './schema.js';
 
 export const WEB_FETCH_BROWSER_HINT = 'Install Chrome or Edge, or set browser.executable_path, to render JavaScript pages.';
 
@@ -103,60 +101,6 @@ function legacyChromiumPath(playwright) {
   } catch {
     return '';
   }
-}
-
-function coreStatus(browser, executablePath, browserName = browser) {
-  return {
-    engine: 'playwright-core',
-    browser,
-    browserName,
-    ready: true,
-    packageInstalled: true,
-    chromiumReady: true,
-    executablePath,
-    hint: '',
-  };
-}
-
-export async function detectPlaywrightStatus({ config = {}, findBrowsers, loadLegacy } = {}) {
-  const resolved = resolveBrowserConfig(config);
-  const explicit = resolved.executable_path;
-  if (explicit) {
-    if (existsSync(explicit)) return coreStatus('executable', explicit, 'executable');
-    return {
-      engine: 'none',
-      browser: 'executable',
-      browserName: '',
-      ready: false,
-      packageInstalled: false,
-      chromiumReady: false,
-      executablePath: explicit,
-      hint: WEB_FETCH_BROWSER_HINT,
-    };
-  }
-  const installed = (findBrowsers || findInstalledBrowsers)() || [];
-  const wanted = resolved.channel;
-  const pick = wanted === 'chrome' || wanted === 'msedge' || wanted === 'chromium'
-    ? installed.find((item) => item.channel === wanted)
-    : installed.find((item) => item.channel === 'chrome')
-      || installed.find((item) => item.channel === 'msedge')
-      || installed.find((item) => item.channel === 'chromium')
-      || installed[0];
-  if (pick) return coreStatus(pick.channel, pick.path, pick.name || pick.channel);
-
-  const legacy = await (loadLegacy || loadLegacyPlaywright)();
-  const executablePath = legacyChromiumPath(legacy);
-  const chromiumReady = Boolean(legacy) && Boolean(executablePath) && existsSync(executablePath);
-  return {
-    engine: chromiumReady ? 'playwright' : 'none',
-    browser: legacy ? 'chromium' : '',
-    browserName: chromiumReady ? 'Chromium' : '',
-    ready: chromiumReady,
-    packageInstalled: Boolean(legacy),
-    chromiumReady,
-    executablePath,
-    hint: chromiumReady ? '' : WEB_FETCH_BROWSER_HINT,
-  };
 }
 
 export async function openWebFetchBrowser(config = {}, hooks = {}) {

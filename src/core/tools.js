@@ -620,8 +620,6 @@ function shouldTryBrowserRender(html, text) {
   );
 }
 
-export { detectPlaywrightStatus } from "./browser/web-fetch-browser.js";
-
 export async function webFetchPage(args = {}, config = {}, hooks = {}) {
   const normalizedArgs = normalizeWebFetchArgs(args);
   const url = normalizeWebUrl(normalizedArgs.url);

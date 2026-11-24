@@ -888,14 +888,6 @@ export const zh = {
   firecrawlApiKeyPlaceholder: "Firecrawl 需要填写",
   firecrawlApiKeyHelp:
     "保存在本机 Codemini 配置文件中。也可以留空并使用 FIRECRAWL_API_KEY。",
-  playwright: "网页抓取浏览器",
-  playwrightHelp:
-    "JavaScript 页面使用本机 Chrome 或 Edge 渲染。安装其中之一，或设置浏览器可执行文件路径。只有找不到系统浏览器时，才会使用已经安装的 Playwright Chromium。",
-  playwrightReady: "Chrome 或 Edge",
-  playwrightReadyLegacy: "Playwright Chromium",
-  playwrightNotInstalled: "未找到 Chrome 或 Edge",
-  playwrightBrowserMissing: "缺少 Chromium",
-  playwrightChecking: "检测中…",
   storage: "存储",
   storageOverview: "SQLite 存储",
   storageOverviewHelp: "查看 Codemini 全局数据与当前项目索引数据库的位置和磁盘占用。",
