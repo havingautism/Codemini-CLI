@@ -18,6 +18,73 @@ function sameLaunch(left, right) {
     && left.executable_path === right.executable_path;
 }
 
+export function isUsableBrowserPage(session) {
+  const page = session?.page;
+  const browser = session?.browser;
+  if (!page) return false;
+  try {
+    if (typeof page.isClosed === 'function' && page.isClosed()) return false;
+    if (!browser || (typeof browser.isConnected === 'function' && browser.isConnected() === false)) {
+      return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function headedWindowBounds(screen = {}, preferred = {}) {
+  const margin = 16;
+  const availWidth = Math.max(0, Number(screen.availWidth) || 0);
+  const availHeight = Math.max(0, Number(screen.availHeight) || 0);
+  const availLeft = Number.isFinite(Number(screen.availLeft)) ? Number(screen.availLeft) : 0;
+  const availTop = Number.isFinite(Number(screen.availTop)) ? Number(screen.availTop) : 0;
+  const preferredWidth = Number(preferred.width) > 0 ? Number(preferred.width) : 1280;
+  const preferredHeight = Number(preferred.height) > 0 ? Number(preferred.height) : 800;
+  const width = availWidth > 0
+    ? Math.min(preferredWidth, Math.max(Math.min(availWidth, 320), availWidth - margin))
+    : preferredWidth;
+  const height = availHeight > 0
+    ? Math.min(preferredHeight, Math.max(Math.min(availHeight, 240), availHeight - margin))
+    : preferredHeight;
+  const left = availLeft + Math.max(0, Math.min(8, Math.max(0, availWidth - width)));
+  const top = availTop + Math.max(0, Math.min(8, Math.max(0, availHeight - height)));
+  return {
+    width: Math.round(width),
+    height: Math.round(height),
+    left: Math.round(left),
+    top: Math.round(top),
+    windowState: 'normal',
+  };
+}
+
+async function fitHeadedWindow(page, preferred) {
+  if (!page || (typeof page.isClosed === 'function' && page.isClosed())) return null;
+  let screen;
+  try {
+    screen = await page.evaluate(() => ({
+      availWidth: window.screen.availWidth,
+      availHeight: window.screen.availHeight,
+      availLeft: window.screen.availLeft || 0,
+      availTop: window.screen.availTop || 0,
+    }));
+  } catch {
+    return null;
+  }
+  const bounds = headedWindowBounds(screen, preferred);
+  let cdp;
+  try {
+    cdp = await page.context().newCDPSession(page);
+    const { windowId } = await cdp.send('Browser.getWindowForTarget');
+    await cdp.send('Browser.setWindowBounds', { windowId, bounds });
+    return bounds;
+  } catch {
+    return bounds;
+  } finally {
+    try { await cdp?.detach(); } catch { /* already detached */ }
+  }
+}
+
 export function createBrowserSession({ config = {}, workspaceRoot = process.cwd() } = {}) {
   const session = {
     config,
@@ -100,7 +167,33 @@ export function createBrowserSession({ config = {}, workspaceRoot = process.cwd(
     session.cdp = cdp;
   }
 
-  session.isOpen = () => Boolean(session.browser?.isConnected() && session.page && !session.page.isClosed());
+  session.isOpen = () => isUsableBrowserPage(session);
+
+  function clearClosedBrowser() {
+    session.page = null;
+    session.context = null;
+    session.browser = null;
+    session.cdp = null;
+    session.launch = null;
+    session.refs.clear();
+    session.scripts.clear();
+    session.lastSnapshotText = '';
+    if (session.visualFeedback) {
+      session.visualFeedback.bindingInstalled = false;
+      session.visualFeedback.active = false;
+    }
+  }
+
+  function watchBrowserClose(browser, context, page) {
+    const onClosed = () => {
+      if (session.page === page || session.browser === browser || session.context === context) {
+        clearClosedBrowser();
+      }
+    };
+    page.on('close', onClosed);
+    context.on('close', onClosed);
+    browser.on('disconnected', onClosed);
+  }
   session.sourceResolver = () => sourceResolverFor(session);
   session.scriptByUrl = (url) => {
     const target = String(url || '');
@@ -134,7 +227,10 @@ export function createBrowserSession({ config = {}, workspaceRoot = process.cwd(
       channel: String(override.channel || ''),
       executable_path: String(override.executable_path || resolved.executable_path || ''),
     };
-    if (session.isOpen()) {
+    if (session.page && !isUsableBrowserPage(session)) {
+      await session.dispose();
+    }
+    if (isUsableBrowserPage(session)) {
       if (!sameLaunch(session.launch, signature)) {
         const error = new Error('Close the browser before changing channel, executable, headless, or viewport.');
         error.code = 'BROWSER_ALREADY_OPEN';
@@ -152,19 +248,38 @@ export function createBrowserSession({ config = {}, workspaceRoot = process.cwd(
       error.code = 'BROWSER_LAUNCH_FAILED';
       throw error;
     }
-    session.browser = opened.browser;
+    const browser = opened.browser;
+    const used = opened.plan;
+    const label = opened.label;
+    const headed = signature.headless !== true;
+    session.browser = browser;
     try {
-      session.context = await session.browser.newContext({
-        viewport: { width: signature.viewport_width, height: signature.viewport_height },
+      const context = await browser.newContext({
+        viewport: headed
+          ? null
+          : { width: signature.viewport_width, height: signature.viewport_height },
       });
-      const page = await session.context.newPage();
+      const page = await context.newPage();
       page.setDefaultTimeout(resolved.timeout_ms);
       page.setDefaultNavigationTimeout(resolved.timeout_ms);
       attachPage(page);
-      await attachCdp(page);
+      session.context = context;
       session.page = page;
       session.launch = signature;
-      session.lastChannel = opened.plan.channel || opened.label;
+      session.lastChannel = used.channel || label;
+      session.refs.clear();
+      session.lastSnapshotText = '';
+      if (session.visualFeedback) {
+        session.visualFeedback.bindingInstalled = false;
+      }
+      watchBrowserClose(browser, context, page);
+      await attachCdp(page);
+      if (headed) {
+        session.windowBounds = await fitHeadedWindow(page, {
+          width: signature.viewport_width,
+          height: signature.viewport_height,
+        });
+      }
       return { reused: false };
     } catch (error) {
       await session.dispose();
@@ -193,10 +308,44 @@ export function createBrowserSession({ config = {}, workspaceRoot = process.cwd(
     session.scripts.clear();
     session.logs = [];
     session.lastSnapshotText = '';
+    if (session.visualFeedback) {
+      session.visualFeedback.bindingInstalled = false;
+      session.visualFeedback.active = false;
+      session.visualFeedback.lastState = null;
+    }
     if (browser) {
       try { await browser.close(); } catch { /* already closed */ }
     }
   };
 
   return session;
+}
+
+const sharedSessions = new Map();
+
+export function sharedBrowserSessionKey({ sessionId } = {}) {
+  const id = String(sessionId || '').trim();
+  return id ? `session:${id}` : '';
+}
+
+export function getSharedBrowserSession({ config = {}, workspaceRoot = process.cwd(), sessionId } = {}) {
+  const key = sharedBrowserSessionKey({ sessionId });
+  if (!key) return createBrowserSession({ config, workspaceRoot });
+  let session = sharedSessions.get(key);
+  if (!session) {
+    session = createBrowserSession({ config, workspaceRoot });
+    session.sharedKey = key;
+    sharedSessions.set(key, session);
+  }
+  return session;
+}
+
+export async function disposeSharedBrowserSession({ sessionId } = {}) {
+  const key = sharedBrowserSessionKey({ sessionId });
+  if (!key) return false;
+  const session = sharedSessions.get(key);
+  if (!session) return false;
+  sharedSessions.delete(key);
+  await session.dispose();
+  return true;
 }

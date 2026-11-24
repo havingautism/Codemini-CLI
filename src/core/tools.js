@@ -115,6 +115,8 @@ import {
   buildBrowserFormatters,
   buildBrowserHandlers,
   createBrowserSession,
+  getSharedBrowserSession,
+  isVisualFeedbackInProgress,
 } from "./browser/index.js";
 import { getMcpToolBundle } from "./mcp-client.js";
 import { compactToolDefinition } from "./tool-schema-compact.js";
@@ -5593,9 +5595,10 @@ export function getBuiltinTools({
     },
   };
 
-  const browserSession = browserToolsExposed(config)
-    ? createBrowserSession({ config, workspaceRoot })
-    : null;
+  const sharedBrowserSession = Boolean(sessionId);
+  const browserSession = sharedBrowserSession
+    ? getSharedBrowserSession({ config, workspaceRoot, sessionId })
+    : createBrowserSession({ config, workspaceRoot });
   const deferredToolCatalog = {
     ...deferredDefinitions,
     ...buildSearchDeferredEntries(config),
@@ -5620,6 +5623,16 @@ export function getBuiltinTools({
   if (shellContext.commandPlatform !== "win32") {
     const promote = ["grep", "glob"];
     for (const name of promote) {
+      const def = deferredToolCatalog[name];
+      if (def && !definitions.some((d) => d?.function?.name === name)) {
+        definitions.push(def);
+      }
+      delete deferredToolCatalog[name];
+    }
+  }
+
+  if (browserToolsExposed(config) && isVisualFeedbackInProgress(browserSession)) {
+    for (const name of ["browser_inspect", "browser_act"]) {
       const def = deferredToolCatalog[name];
       if (def && !definitions.some((d) => d?.function?.name === name)) {
         definitions.push(def);
@@ -7295,6 +7308,39 @@ export function getBuiltinTools({
           message: `"${query}" is already in your current tool list. Call it directly; do not tool_search for it.`,
         };
       }
+      const wantBrowserFamily = query === "browser" || query === "browser_*";
+      if (wantBrowserFamily) {
+        const alreadyBrowser = definitions
+          .map((item) => String(item?.function?.name || item?.name || ""))
+          .filter((name) => name.startsWith("browser_"));
+        const deferredBrowser = Object.entries(deferredToolCatalog).filter(([name]) =>
+          name.startsWith("browser_"),
+        );
+        if (!alreadyBrowser.length && !deferredBrowser.length) {
+          return {
+            error: `Unknown tool: "browser". Browser tools are not available in this mode.`,
+          };
+        }
+        const loaded = [...alreadyBrowser, ...deferredBrowser.map(([name]) => name)];
+        const schemas = [
+          ...definitions.filter((item) =>
+            String(item?.function?.name || item?.name || "").startsWith("browser_"),
+          ),
+          ...deferredBrowser.map(([, def]) => def),
+        ];
+        const alreadyNote = alreadyBrowser.length
+          ? `${alreadyBrowser.join(", ")} ${alreadyBrowser.length === 1 ? "is" : "are"} already in your current tool list. `
+          : "";
+        const loadedNote = deferredBrowser.length
+          ? `Loaded ${deferredBrowser.map(([name]) => name).join(", ")}. You can now call them directly. `
+          : "Call them directly. ";
+        return {
+          loaded,
+          schemas,
+          message:
+            `${alreadyNote}${loadedNote}Reuse the already-open headed BrowserSession; do not call browser_act open, and do not curl localhost.`,
+        };
+      }
       if (query === "all") {
         const all = Object.values(deferredToolCatalog);
         return {
@@ -7320,7 +7366,7 @@ export function getBuiltinTools({
     },
   };
 
-  if (browserSession) {
+  if (browserToolsExposed(config)) {
     Object.assign(handlers, buildBrowserHandlers(browserSession));
   }
 
@@ -7947,7 +7993,7 @@ export function getBuiltinTools({
       webSearchHandler: (args) => webSearchQuery(config, args)
     })
   );
-  if (browserSession) {
+  if (browserToolsExposed(config)) {
     Object.assign(rawFormatters, buildBrowserFormatters());
   }
 
@@ -7977,7 +8023,7 @@ export function getBuiltinTools({
 
   async function dispose() {
     stagedWrites.clear();
-    if (browserSession) {
+    if (browserSession && !sharedBrowserSession) {
       try {
         await browserSession.dispose();
       } catch {
@@ -8099,6 +8145,7 @@ export function getBuiltinTools({
     formatters,
     deferredDefinitions: deferredToolCatalog,
     displayLabels: mcpTools.displayLabels || {},
+    browserSession,
     dispose,
   };
 }

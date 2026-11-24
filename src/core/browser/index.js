@@ -22,8 +22,24 @@ export {
   isCodingExecutionMode,
   resolveBrowserConfig,
 } from './schema.js';
-export { createBrowserSession, playwrightCoreLoaded, playwrightImportDuration } from './session.js';
+export { createBrowserSession, disposeSharedBrowserSession, getSharedBrowserSession, headedWindowBounds, isUsableBrowserPage, playwrightCoreLoaded, playwrightImportDuration, sharedBrowserSessionKey } from './session.js';
 export { buildBrowserFormatters, buildBrowserHandlers } from './handlers.js';
 export { validateBrowserAction } from './actions.js';
 export { findInstalledBrowsers } from './locate-browser.js';
 export { formatBrowserResult } from './result.js';
+export {
+  VISUAL_FEEDBACK_BINDING,
+  VISUAL_FEEDBACK_PROMPT,
+  createVisualFeedbackController,
+  enrichVisualFeedbackPayload,
+  formatVisualFeedbackMessage,
+  formatVisualFeedbackSourceLocations,
+  formatVisualFeedbackVisibleText,
+  getVisualFeedbackInitScript,
+  installVisualFeedback,
+  isVisualFeedbackInProgress,
+  isVisualFeedbackNoteStale,
+  openVisualFeedback,
+} from './visual-feedback.js';
+export { collectPageDevSignals, collectOriginDevSignals, isDevEnvironment, originSignalsFromResponse, probeDevEnvironment } from './environment.js';
+export { ensureDevServer, extractLoginOpenUrls, findReusableDevServer, listDevScripts, listProjectDevEntries, looksLikeDevResponse, pickLoginOpenUrl } from './dev-server.js';

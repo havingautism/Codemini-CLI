@@ -49,9 +49,11 @@ async function readJsonResponse(res) {
 async function readJsonOrThrow(res) {
   const data = await readJsonResponse(res);
   if (!res.ok || data?.error === true) {
-    throw new Error(
+    const error = new Error(
       String(data?.message || data?.error || `Request failed (${res.status})`),
     );
+    if (data?.code) error.code = data.code;
+    throw error;
   }
   return data;
 }
@@ -182,6 +184,28 @@ export async function submitMessage(sessionId, body = {}) {
     headers: JSON_HEADERS,
     body: JSON.stringify({ sessionId, ...body })
   });
+}
+
+export async function fetchVisualFeedbackStatus(sessionId, options = {}) {
+  const params = new URLSearchParams({ sessionId: sessionId || '' });
+  if (options.locale) params.set('locale', options.locale);
+  return readJsonOrThrow(await api(`/api/visual-feedback/status?${params}`));
+}
+
+export async function openVisualFeedback(sessionId, options = {}) {
+  return readJsonOrThrow(await api('/api/visual-feedback/open', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ sessionId, ...options }),
+  }));
+}
+
+export async function closeVisualFeedback(sessionId, options = {}) {
+  return readJsonOrThrow(await api('/api/visual-feedback/close', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ sessionId, ...options }),
+  }));
 }
 
 export async function drainCrewPendingWakes(sessionId) {

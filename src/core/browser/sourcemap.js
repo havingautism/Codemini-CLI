@@ -74,8 +74,36 @@ function joinSource(source, sourceRoot) {
   return path.posix.join(root, source);
 }
 
+export function normalizeSourcePath(source) {
+  let value = String(source || '').trim();
+  if (!value) return '';
+  value = value.replaceAll('\\', '/');
+  if (/^file:/i.test(value)) return value;
+  value = value.replace(/^(?:webpack(?:-internal)?|rsbuild|rspack|vite):\/+/, '');
+  value = value.replace(/[?#].*$/, '');
+  value = value.replace(/^(\.\/)+/, '');
+  value = value.replace(/^[^/]+\/\.\//, '');
+  return value;
+}
+
+function addWorkspaceCandidates(candidates, workspaceRoot, relative) {
+  if (!workspaceRoot || !relative) return;
+  const cleaned = String(relative).replaceAll('\\', '/').replace(/^(\.\/)+/, '').replace(/^\/+/, '');
+  if (!cleaned || /^[a-z]+:/i.test(cleaned)) return;
+  candidates.push(path.resolve(workspaceRoot, cleaned));
+  const nested = cleaned.match(/((?:frontend|client|web|app|ui|www|packages\/[^/]+)\/(?:src|app|pages)\/.*)$/);
+  if (nested) candidates.push(path.resolve(workspaceRoot, nested[1]));
+  const src = cleaned.match(/(?:^|\/)((?:src|app|pages)\/.*)$/);
+  if (src) {
+    candidates.push(path.resolve(workspaceRoot, src[1]));
+    for (const prefix of ['frontend', 'client', 'web', 'app', 'ui', 'www']) {
+      candidates.push(path.resolve(workspaceRoot, prefix, src[1]));
+    }
+  }
+}
+
 export function resolveMappedFile(source, { mapUrl = '', mapDir = '', workspaceRoot = '', sourceRoot = '' } = {}) {
-  const raw = joinSource(String(source || '').trim(), sourceRoot);
+  const raw = joinSource(normalizeSourcePath(String(source || '').trim()) || String(source || '').trim(), sourceRoot);
   if (!raw) return '';
   const candidates = [];
   if (path.isAbsolute(raw)) candidates.push(raw);
@@ -95,11 +123,8 @@ export function resolveMappedFile(source, { mapUrl = '', mapDir = '', workspaceR
       // Ignore unresolvable source URLs.
     }
   }
-  const normalized = raw.replaceAll('\\', '/');
-  const srcIndex = normalized.lastIndexOf('/src/');
-  if (srcIndex !== -1 && workspaceRoot) {
-    candidates.push(path.resolve(workspaceRoot, normalized.slice(srcIndex + 1)));
-  }
+  const normalized = normalizeSourcePath(raw) || raw.replaceAll('\\', '/');
+  addWorkspaceCandidates(candidates, workspaceRoot, normalized);
   if (workspaceRoot && !/^[a-z]+:/i.test(raw)) {
     candidates.push(path.resolve(workspaceRoot, raw.replace(/^\.\//, '')));
   }
@@ -134,7 +159,31 @@ export function workspaceSourcePath(file, workspaceRoot) {
 
 export function isLibraryPath(file) {
   const value = String(file || '').replaceAll('\\', '/');
-  return /\/node_modules\/|\/react-dom|\/react\/jsx|webpack\/bootstrap|@vite\/client/.test(value);
+  if (/(?:^|\/)(?:src|app|pages|components|views|screens)\//.test(value) && !/(?:^|\/)node_modules(?:\/|_)/.test(value)) {
+    return /(?:^|\/)node_modules(?:\/|_)/.test(value);
+  }
+  return /(?:^|\/)node_modules(?:\/|_)/.test(value)
+    || /(?:^|\/)(?:react-dom(?:\/|\.|$)|react\/jsx)/.test(value)
+    || /webpack\/bootstrap|@vite\/client/.test(value)
+    || /(?:^|\/)(?:lib-react|lib-router|lib-antd|lib-vue|lib-solid)(?:[-.]|$)/.test(value)
+    || /(?:^|\/)static\/js\/lib[-.]/.test(value)
+    || /node_modules_rspack|rspack_core|cssExtractHmr|vendors[-.]node_modules/.test(value);
+}
+
+export function isGeneratedBundlePath(file) {
+  const value = String(file || '').replaceAll('\\', '/').split('?')[0];
+  if (!value || isLibraryPath(value)) return true;
+  if (isOriginalSourcePath(value)) return false;
+  return /(?:^|\/)static\/js\/[^/]+\.js$/.test(value)
+    || /(?:^|\/)assets\/[^/]+\.[a-zA-Z0-9_-]{8,}\.(?:js|css)$/.test(value)
+    || /(?:^|\/)(?:dist|build|output)\/.*\.(?:js|css)$/.test(value);
+}
+
+export function isOriginalSourcePath(file) {
+  const value = String(file || '').replaceAll('\\', '/').split('?')[0];
+  if (!value || isLibraryPath(value)) return false;
+  return /(?:^|\/)(?:src|app|pages|components|views|screens|ui)\//.test(value)
+    || /\.(?:jsx|tsx|vue|svelte|ts)$/.test(value);
 }
 
 export function createSourceResolver({ workspaceRoot, getScript, readText }) {

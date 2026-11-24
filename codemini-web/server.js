@@ -62,6 +62,11 @@ import {
   RuntimeBridge,
   serializeSessionMessages,
 } from "./lib/runtime-bridge.js";
+import {
+  closeVisualFeedbackSession,
+  openVisualFeedbackSession,
+  visualFeedbackStatus,
+} from "./lib/visual-feedback-host.js";
 import { RuntimePool, startRuntimeEvictionTimer } from "./lib/runtime-pool.js";
 import { getAgentTerminal, listAgentTerminals, subscribeAgentTerminals } from "../src/core/agent-terminals.js";
 import { createEmptySessionAllocator } from "./lib/empty-session-allocator.js";
@@ -1569,6 +1574,46 @@ export function createWebRuntimeApi({
       jsonResponse(res, { ok: aborted }, aborted ? 200 : 404);
       return true;
 
+  }));
+  runtimeRoutes.get("/api/visual-feedback/status", nodeRoute(async (req, res, url) => {
+      const bridge = await loadBridge(res, url.searchParams.get("sessionId"));
+      if (!bridge) return true;
+      const status = await visualFeedbackStatus(bridge, url.searchParams.get("sessionId"), {
+        locale: url.searchParams.get("locale") || undefined,
+      });
+      jsonResponse(res, status);
+      return true;
+  }));
+  runtimeRoutes.post("/api/visual-feedback/open", nodeRoute(async (req, res) => {
+      const body = await readBody(req);
+      const bridge = await loadBridge(res, body?.sessionId);
+      if (!bridge) return true;
+      try {
+        const opened = await openVisualFeedbackSession(bridge, body.sessionId, {
+          url: body.url,
+          headless: body.headless === true,
+          startIfMissing: body.startIfMissing !== false,
+          locale: body.locale,
+        });
+        jsonResponse(res, opened, opened.ok || opened.environment ? 200 : 400);
+      } catch (error) {
+        jsonResponse(res, {
+          error: true,
+          code: error?.code || "VISUAL_FEEDBACK_OPEN_FAILED",
+          message: error?.message || "Failed to open Visual Feedback",
+        }, 400);
+      }
+      return true;
+  }));
+  runtimeRoutes.post("/api/visual-feedback/close", nodeRoute(async (req, res) => {
+      const body = await readBody(req);
+      const bridge = await loadBridge(res, body?.sessionId);
+      if (!bridge) return true;
+      const closed = await closeVisualFeedbackSession(bridge, body.sessionId, {
+        stopDevServer: body?.stopDevServer === true,
+      });
+      jsonResponse(res, closed);
+      return true;
   }));
   runtimeRoutes.post("/api/sessions/switch", nodeRoute(async (req, res, url) => {
       const body = await readBody(req);

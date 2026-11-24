@@ -62,6 +62,7 @@ import {
 import { isDangerousCommand, runShellCommand } from './shell.js';
 import { getBuiltinTools } from './tools.js';
 import { BROWSER_CODING_PROMPT, BROWSER_TOOL_NAMES, filterBrowserToolNames } from './browser/schema.js';
+import { disposeSharedBrowserSession, getSharedBrowserSession } from './browser/session.js';
 import { canonicalShellToolName, shellToolName, toolNameAllowed } from './shell-tool-name.js';
 import { createToolRuntime } from './tool-runtime.js';
 import { buildPromptRequestAudit } from './prompt-request-audit.js';
@@ -10695,6 +10696,7 @@ export async function createChatRuntime({
     consumeStartupEvents: () => startupEvents.splice(0, startupEvents.length),
     getInputHistory: () => loadInputHistory(),
     getCurrentSessionId: () => currentSession.id,
+    getBrowserSession: () => getSharedBrowserSession({ config, workspaceRoot: root, sessionId: currentSession.id }),
     getSessionMessages: () => currentSession.messages || [],
     getSessionHistory: async (limit = 30) => (await listSessions(limit)).map((entry) => ({
       ...entry,
@@ -10920,6 +10922,7 @@ export async function createChatRuntime({
       if (typeof disposeTools === 'function') {
         await disposeTools();
       }
+      await disposeSharedBrowserSession({ sessionId: currentSession.id });
       return true;
     },
     getRuntimeState: () =>
