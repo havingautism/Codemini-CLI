@@ -635,7 +635,7 @@ ROLE_TOOL_POLICY.crew_survey = ROLE_TOOL_POLICY.survey;
 ROLE_TOOL_POLICY.crew_reviewer = ROLE_TOOL_POLICY.reviewer;
 
 /** Subagents must never spawn nested agents / workflow orchestrators. */
-export const SUBAGENT_FORBIDDEN_TOOLS = ['run_subagent', 'fork_task', 'land_workers', 'cancel_worker', 'create_plan', 'create_spec'];
+export const SUBAGENT_FORBIDDEN_TOOLS = ['run_subagent', 'fork_task', 'land_workers', 'cancel_worker', 'create_plan'];
 
 /**
  * Fork branches keep the parent's full tool schemas for prefix-cache reuse,
@@ -644,7 +644,7 @@ export const SUBAGENT_FORBIDDEN_TOOLS = ['run_subagent', 'fork_task', 'land_work
  * state while sibling branches are running.
  */
 export const FORK_FORBIDDEN_TOOLS = [
-  'fork_task', 'run_subagent', 'land_workers', 'cancel_worker', 'request_user_input', 'update_plan', 'create_plan', 'create_spec',
+  'fork_task', 'run_subagent', 'land_workers', 'cancel_worker', 'request_user_input', 'update_plan', 'create_plan',
 ];
 
 const WINDOWS_STAGED_WRITE_TOOLS = [
@@ -4472,7 +4472,7 @@ function buildPendingSpecSnapshot(specState) {
   const storedGoal = normalized.goal || '';
   const title = extractSpecTitle(normalized.specText, normalized.summary || '');
   const stripDesign = (value) => String(value || '').replace(/\s+Design$/i, '').trim().toLowerCase();
-  // Legacy create_spec stored the document title as goal; prefer Goals extraction then.
+  // Older spec drafts stored the document title as goal; prefer Goals extraction then.
   const storedLooksLikeTitle = Boolean(
     storedGoal
     && title

@@ -4114,7 +4114,6 @@ export function getBuiltinTools({
   getPlanState,
   onPlanStateUpdate,
   onCreatePlan,
-  onCreateSpec,
   onRunSubAgent,
   onForkTask,
   requestUserInput,
@@ -5338,8 +5337,8 @@ export function getBuiltinTools({
       },
     });
   }
-  // Legacy create_plan / create_spec remain available only when callers still pass handlers
-  // (e.g. older approval flows). Coding mode prefers onRunSubAgent instead.
+  // Legacy create_plan remains available only when callers still pass a handler.
+  // Coding mode prefers onRunSubAgent instead.
   if (typeof onCreatePlan === "function") {
     workflowToolDefinitions.push({
       type: "function",
@@ -5357,50 +5356,6 @@ export function getBuiltinTools({
             steps: { type: "array", items: { type: "object" } },
           },
           required: ["goal", "readiness"],
-        },
-      },
-    });
-  }
-  const specSectionSchema = () => ({
-    type: "object",
-    description: "Optional goal, summary, requirements, acceptance_criteria, and notes. Omit when unknown.",
-    properties: {
-      goal: { type: "string" },
-      summary: { type: "string" },
-      requirements: { type: "array", items: { type: "string" } },
-      acceptance_criteria: { type: "array", items: { type: "string" } },
-      notes: { type: "array", items: { type: "string" } },
-    },
-  });
-  const specSectionProperties = {
-    summary: specSectionSchema(),
-    goals: specSectionSchema(),
-    non_goals: specSectionSchema(),
-    user_experience: specSectionSchema(),
-    architecture: specSectionSchema(),
-    data_state_model: specSectionSchema(),
-    safety_rules: specSectionSchema(),
-    requirements: specSectionSchema(),
-    risks_mitigations: specSectionSchema(),
-    testing_validation: specSectionSchema(),
-  };
-  if (typeof onCreateSpec === "function") {
-    workflowToolDefinitions.push({
-      type: "function",
-      function: {
-        name: "create_spec",
-        description:
-          "Deprecated. Prefer writing markdown under .codemini/workspace/specs/ yourself, then implement. Kept only for legacy callers.",
-        parameters: {
-          type: "object",
-          properties: {
-            topic: { type: "string" },
-            readiness: { type: "string", enum: ["ready"] },
-            assumptions: { type: "array", items: { type: "string" } },
-            context_summary: { type: "string" },
-            ...specSectionProperties,
-          },
-          required: ["topic", "readiness"],
         },
       },
     });
@@ -6846,7 +6801,7 @@ export function getBuiltinTools({
         return {
           ok: false,
           error:
-            "update_plan cannot create plan state. Use create_plan/create_spec in plan mode, or provide a normal text plan without tool calls.",
+            "update_plan cannot create plan state. Provide a normal text plan without tool calls.",
           oldPlan,
           newPlan: oldPlan,
           hasPendingApproval: false,
@@ -7144,48 +7099,6 @@ export function getBuiltinTools({
         submit({ passed: verdict.passed, findings: verdict.findings });
       }
       return { ok: true, passed: verdict.passed, findings: verdict.findings };
-    },
-    create_spec: async (args = {}) => {
-      if (typeof onCreateSpec !== "function") {
-        return {
-          ok: false,
-          error: "create_spec is not available in the current mode.",
-        };
-      }
-      const readiness = String(args?.readiness || "").toLowerCase();
-      if (readiness !== "ready") {
-        return {
-          ok: false,
-          error:
-            'Set readiness to "ready" only when requirements are clear. Otherwise ask the user a clarifying question first.',
-        };
-      }
-      const topic = String(args?.topic || "").trim();
-      if (!topic) {
-        return { ok: false, error: "topic is required" };
-      }
-      const assumptions = normalizeAssumptionItems(args?.assumptions);
-      const sections = {};
-      for (const key of [
-        "summary",
-        "goals",
-        "non_goals",
-        "user_experience",
-        "architecture",
-        "data_state_model",
-        "safety_rules",
-        "requirements",
-        "risks_mitigations",
-        "testing_validation",
-      ]) {
-        if (args?.[key] != null) sections[key] = args[key];
-      }
-      return onCreateSpec({
-        topic,
-        assumptions,
-        contextSummary: String(args?.context_summary || "").trim(),
-        sections,
-      });
     },
     run: Object.assign((args, context) => {
       if (crewActive) {
@@ -7800,14 +7713,6 @@ export function getBuiltinTools({
       if (result.error) return String(result.error);
       if (result.message) return String(result.message);
       if (result.text) return String(result.text);
-      return JSON.stringify(result);
-    },
-
-    create_spec(result) {
-      if (!result || typeof result !== "object") return String(result);
-      if (result.error) return String(result.error);
-      if (result.message) return String(result.message);
-      if (result.filePath) return `Spec draft created: ${result.filePath}`;
       return JSON.stringify(result);
     },
 

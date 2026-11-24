@@ -37,9 +37,8 @@ test('model-facing tool tokens stay within the trimmed ceilings', () => {
   assert.ok(win.get('read').wireTokens <= 310);
   assert.ok(linux.get('Bash').wireTokens <= 310);
   const updatePlan = report.legacy.linux.find((tool) => tool.name === 'update_plan');
-  const createSpec = report.legacy.linux.find((tool) => tool.name === 'create_spec');
   assert.ok(updatePlan.wireTokens <= 220);
-  assert.ok(createSpec.wireTokens <= 1050);
+  assert.equal(report.legacy.linux.some((tool) => tool.name === 'create_spec'), false);
 });
 
 test('alias-only parameters stay out of the model schema', () => {

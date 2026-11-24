@@ -342,10 +342,9 @@ function measureLegacy(platform, config) {
     platform,
     config,
     onCreatePlan: async () => ({}),
-    onCreateSpec: async () => ({}),
     getPlanState: () => ({ status: 'running', goal: 'measure', steps: [] }),
   });
-  const names = new Set(['create_plan', 'create_spec', 'update_plan']);
+  const names = new Set(['create_plan', 'update_plan']);
   return (bundle.definitions || [])
     .filter((definition) => names.has(toolName(definition)))
     .map((definition) => ({ ...measureToolDefinition(definition), exposure: 'legacy-active' }));

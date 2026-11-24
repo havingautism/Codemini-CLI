@@ -231,7 +231,7 @@ Codemini has two execution modes (`execution.mode`): `normal` (Daily) and `plan`
 
 In the Web UI, pending plan and spec reviews appear as dialogs (Plan review / Spec approval) with confirm, edit, and discard actions. In the TUI, switch mode with `/coding` or `/daily`, and approve or reject tool-level approvals with the approval dialog.
 
-`create_spec` is a legacy tool kept for existing callers; prefer writing markdown under `.codemini/workspace/specs/` and implementing directly. `create_plan` has been retired — use `run_subagent` for isolated chunks or implement directly.
+Write specs as markdown under `.codemini/workspace/specs/` and implement directly. `create_plan` has been retired — use `run_subagent` for isolated chunks or implement directly.
 
 ### Session recovery
 
