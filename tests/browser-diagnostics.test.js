@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { getBuiltinTools } from '../src/core/tools.js';
+import { getBuiltinTools, webFetchPage } from '../src/core/tools.js';
 
 const enabled = process.env.CODEMINI_BROWSER_TESTS === '1';
 const fixtureRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 'fixtures', 'browser');
@@ -173,4 +173,25 @@ test('Vue 3 component source', { skip: !enabled, timeout: 180000 }, async () => 
     assert.equal(located.ok, true, JSON.stringify(located));
     assert.ok(located.locations.some((location) => /Button\.vue/.test(location.file) && location.framework === 'vue'), JSON.stringify(located.locations));
   });
+});
+
+test('web_fetch renders JavaScript with playwright-core and system Chrome', { skip: !enabled, timeout: 180000 }, async () => {
+  const html = `<!doctype html><html><head><title>Rendered</title></head><body><div id="app"></div><script>document.getElementById('app').textContent=${JSON.stringify(`RENDERED_TOKEN_12345 ${'x'.repeat(160)}`)};</script></body></html>`;
+  const server = http.createServer((request, response) => {
+    response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+    response.end(html);
+  });
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  try {
+    const url = `http://127.0.0.1:${server.address().port}/`;
+    const result = await webFetchPage({ url, timeout_ms: 30000 }, browserConfig());
+    assert.equal(result.metadata.fetch_mode, 'browser', JSON.stringify(result));
+    assert.equal(result.metadata.browser_engine, 'playwright-core');
+    assert.match(result.text, /RENDERED_TOKEN_12345/);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
 });

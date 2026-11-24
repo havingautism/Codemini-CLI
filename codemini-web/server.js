@@ -3764,7 +3764,7 @@ async function main() {
   }));
   routes.get("/api/playwright/status", nodeRoute(async (req, res, url) => {
       try {
-        jsonResponse(res, await detectPlaywrightStatus());
+        jsonResponse(res, await detectPlaywrightStatus({ config: await loadConfig() }));
       } catch (err) {
         jsonResponse(res, { error: true, message: err.message }, 500);
       }

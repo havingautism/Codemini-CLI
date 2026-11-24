@@ -122,7 +122,7 @@ export async function handleDoctor({
       checks.push({
         name: 'Local Chrome/Edge',
         skip: true,
-        detail: 'Chrome, Edge, or Chromium not found',
+        detail: 'Chrome, Edge, or Chromium not found. web_fetch reads static HTML until one is installed or browser.executable_path is set.',
       });
     }
   }

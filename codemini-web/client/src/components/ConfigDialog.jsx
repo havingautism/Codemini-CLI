@@ -327,15 +327,16 @@ export function ConfigDialog({
         "model.reasoning_auto" in changes ||
         "model.reasoning_effort" in changes));
 
-  const playwrightReady =
-    playwrightStatus?.packageInstalled && playwrightStatus?.chromiumReady;
+  const playwrightReady = playwrightStatus?.ready === true;
   const playwrightLabel = playwrightLoading
     ? t("playwrightChecking")
-    : playwrightReady
-      ? t("playwrightReady")
-      : playwrightStatus?.packageInstalled
-        ? t("playwrightBrowserMissing")
-        : t("playwrightNotInstalled");
+    : playwrightReady && playwrightStatus?.engine === "playwright"
+      ? t("playwrightReadyLegacy")
+      : playwrightReady
+        ? t("playwrightReady")
+        : playwrightStatus?.packageInstalled
+          ? t("playwrightBrowserMissing")
+          : t("playwrightNotInstalled");
   const PlaywrightStatusIcon = playwrightLoading
     ? null
     : playwrightReady
