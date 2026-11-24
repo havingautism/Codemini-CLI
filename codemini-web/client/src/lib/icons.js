@@ -113,6 +113,7 @@ import {
   ArrowUpIcon,
   RefreshIcon,
   RefreshDoubleIcon,
+  UndoIcon,
   PlusIcon,
   XmarkIcon,
   CheckIcon,
@@ -186,6 +187,7 @@ export const Archive = wrap(ArchiveIcon);
 export const ArrowClockwise = wrap(RefreshIcon);
 export const Clock = wrap(ClockIcon);
 export const ArrowCounterClockwise = wrap(RefreshDoubleIcon);
+export const Undo = wrap(UndoIcon);
 export const ArrowDown = wrap(ArrowDownIcon);
 export const ArrowLeft = wrap(ArrowLeftIcon);
 export const ArrowRight = wrap(ArrowRightIcon);

@@ -1421,14 +1421,6 @@ export function ScrapbookPanel() {
 
             <DialogFooter>
               <button
-                type="button"
-                onClick={() => setComposerOpen(false)}
-                disabled={saving}
-                className="h-10 rounded-xl border border-(--border-default) px-4 text-[12px] font-medium text-(--text-secondary) hover:bg-(--bg-hover) disabled:opacity-60"
-              >
-                {t("cancel")}
-              </button>
-              <button
                 type="submit"
                 disabled={createDisabled}
                 className="inline-flex h-10 items-center justify-center gap-2 rounded-xl bg-(--text-primary) px-5 text-[12px] font-semibold text-(--bg-primary) disabled:cursor-not-allowed disabled:opacity-50"

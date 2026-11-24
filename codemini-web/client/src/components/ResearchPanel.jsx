@@ -839,14 +839,6 @@ function GuideComposer({ open, onOpenChange, busy, error, onSubmit }) {
           <div className="flex w-full items-center justify-end gap-2 sm:w-auto">
             <button
               type="button"
-              disabled={busy}
-              className="h-9 rounded-full px-4 text-[12px] font-medium text-(--text-secondary) transition hover:bg-(--bg-hover) disabled:opacity-40"
-              onClick={() => onOpenChange(false)}
-            >
-              {t("cancel")}
-            </button>
-            <button
-              type="button"
               disabled={busy || !trimmedQuestion}
               className="inline-flex h-9 min-w-[112px] items-center justify-center gap-2 rounded-full bg-(--text-primary) px-4 text-[12px] font-semibold text-(--bg-primary) shadow-sm transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
               onClick={handleSubmit}

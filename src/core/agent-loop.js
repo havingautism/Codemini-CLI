@@ -18,7 +18,8 @@ import { buildRunFailureMessage, getToolOutputSanitizeOptions, sanitizeTextForMo
 import { createToolRuntime, buildInvalidToolArgumentsResult } from './tool-runtime.js';
 import { createToolResultStore, summarizeToolResult } from './tool-result-store.js';
 import { rankToolDefinitions } from './harness/tool-reliability.js';
-import { applyAggressiveToolPruneBeta } from './context-compact.js';
+import { applyAggressiveToolPruneBeta, compactInFlightMessages } from './context-compact.js';
+import { normalizeModelUsage } from './model-usage.js';
 import {
   markOutsideWorkspaceMutationApproved,
   markRunCommandSafeModeApproved,
@@ -807,6 +808,8 @@ export async function runAgentLoop({
   const stepLimit = Number.isFinite(Number(maxSteps)) ? Math.max(1, Math.min(1000, Math.floor(Number(maxSteps)))) : 500;
   const retryLimit = Number.isFinite(Number(maxIncompleteRetries)) ? Math.max(0, Math.min(10, Math.floor(Number(maxIncompleteRetries)))) : 3;
   let incompleteRetries = 0;
+  let lastInputTokens = 0;
+  let lastCompletionIncomplete = false;
   let lastToolError = false;
   let lastToolName = '';
   let lastFailureReason = '';
@@ -862,6 +865,20 @@ export async function runAgentLoop({
       const selected = await contextSelector({ messages, step }).catch(() => null);
       if (Array.isArray(selected) && selected.length > 0) messages.splice(0, messages.length, ...selected);
     }
+    if (lastInputTokens > 0 && !lastCompletionIncomplete) {
+      const inflight = await compactInFlightMessages(messages, config, lastInputTokens);
+      if (inflight.changed) {
+        messages.splice(0, messages.length, ...inflight.messages);
+        onEvent?.({
+          type: 'compact:auto',
+          mode: inflight.mode,
+          threshold: inflight.threshold,
+          duringTurn: true,
+          tokensSaved: inflight.tokensSaved,
+          summary: `本轮中已压缩 (${inflight.mode}, ${inflight.threshold}%)`,
+        });
+      }
+    }
     const completion = await requestCompletion({
       model,
       messages,
@@ -877,12 +894,16 @@ export async function runAgentLoop({
     }
 
     if (completion?.incomplete) {
+      lastCompletionIncomplete = true;
       emitStepEnd('incomplete');
       if (++incompleteRetries > retryLimit) return settleLoop({ text: 'Completion retry limit reached.', messages, steps: step, checkpoint: true, stopReason: 'incomplete_retries' });
       continue;
     }
 
     incompleteRetries = 0;
+    lastCompletionIncomplete = false;
+    const reportedUsage = normalizeModelUsage(completion?.usage);
+    if (reportedUsage?.inputTokens > 0) lastInputTokens = reportedUsage.inputTokens;
     const toolCalls = Array.isArray(completion.toolCalls) ? completion.toolCalls : [];
     const assistantText = completion.text || '';
     lastAssistantText = assistantText || lastAssistantText;

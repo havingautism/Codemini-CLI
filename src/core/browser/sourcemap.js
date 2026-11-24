@@ -1,0 +1,346 @@
+import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+
+let traceMappingPromise;
+
+function loadTraceMapping() {
+  if (!traceMappingPromise) {
+    traceMappingPromise = import('@jridgewell/trace-mapping');
+  }
+  return traceMappingPromise;
+}
+
+export function extractSourceMappingUrl(source) {
+  const match = String(source || '').match(/[@#]\s*sourceMappingURL=([^\s*'"]+)/);
+  return match ? match[1].trim() : '';
+}
+
+export function parseStackFrames(stack) {
+  const frames = [];
+  for (const line of String(stack || '').split('\n')) {
+    const match = line.match(/at\s+(?:(.+?)\s+\()?(.*?):(\d+):(\d+)\)?\s*$/);
+    if (!match) continue;
+    const url = String(match[2] || '').trim();
+    if (!url || url === 'native' || url.startsWith('eval')) continue;
+    frames.push({
+      name: String(match[1] || '').replace(/^async\s+/, '').trim(),
+      url,
+      line: Number(match[3]),
+      column: Number(match[4]),
+    });
+  }
+  return frames;
+}
+
+function decodeDataUrl(url) {
+  const comma = url.indexOf(',');
+  if (comma === -1) return '';
+  const meta = url.slice(0, comma);
+  const data = url.slice(comma + 1);
+  if (/;base64/i.test(meta)) return Buffer.from(data, 'base64').toString('utf8');
+  return decodeURIComponent(data);
+}
+
+export async function mapGeneratedPosition({ sourceMap, line, column, oneBased = false }) {
+  const { TraceMap, originalPositionFor } = await loadTraceMapping();
+  const consumer = sourceMap instanceof Object && sourceMap.version
+    ? new TraceMap(sourceMap)
+    : new TraceMap(String(sourceMap || ''));
+  const generatedLine = oneBased ? Number(line) : Number(line) + 1;
+  const generatedColumn = oneBased ? Math.max(0, Number(column) - 1) : Number(column);
+  const position = originalPositionFor(consumer, {
+    line: generatedLine,
+    column: Number.isFinite(generatedColumn) ? generatedColumn : 0,
+  });
+  if (!position?.source) return null;
+  return {
+    source: position.source,
+    line: position.line,
+    column: position.column,
+    name: position.name || '',
+  };
+}
+
+function joinSource(source, sourceRoot) {
+  if (!sourceRoot) return source;
+  if (/^(?:[a-z]+:|\/)/i.test(source) || /^[A-Za-z]:[\\/]/.test(source)) return source;
+  const root = sourceRoot.endsWith('/') ? sourceRoot : `${sourceRoot}/`;
+  try {
+    if (/^[a-z]+:/i.test(root)) return new URL(source, root).href;
+  } catch {
+    // Fall through to a path join.
+  }
+  return path.posix.join(root, source);
+}
+
+export function normalizeSourcePath(source) {
+  let value = String(source || '').trim();
+  if (!value) return '';
+  value = value.replaceAll('\\', '/');
+  if (/^file:/i.test(value)) return value;
+  value = value.replace(/^(?:webpack(?:-internal)?|rsbuild|rspack|vite):\/+/, '');
+  value = value.replace(/[?#].*$/, '');
+  value = value.replace(/^(\.\/)+/, '');
+  value = value.replace(/^[^/]+\/\.\//, '');
+  return value;
+}
+
+function addWorkspaceCandidates(candidates, workspaceRoot, relative) {
+  if (!workspaceRoot || !relative) return;
+  const cleaned = String(relative).replaceAll('\\', '/').replace(/^(\.\/)+/, '').replace(/^\/+/, '');
+  if (!cleaned || /^[a-z]+:/i.test(cleaned)) return;
+  candidates.push(path.resolve(workspaceRoot, cleaned));
+  const nested = cleaned.match(/((?:frontend|client|web|app|ui|www|packages\/[^/]+)\/(?:src|app|pages)\/.*)$/);
+  if (nested) candidates.push(path.resolve(workspaceRoot, nested[1]));
+  const src = cleaned.match(/(?:^|\/)((?:src|app|pages)\/.*)$/);
+  if (src) {
+    candidates.push(path.resolve(workspaceRoot, src[1]));
+    for (const prefix of ['frontend', 'client', 'web', 'app', 'ui', 'www']) {
+      candidates.push(path.resolve(workspaceRoot, prefix, src[1]));
+    }
+  }
+}
+
+export function resolveMappedFile(source, { mapUrl = '', mapDir = '', workspaceRoot = '', sourceRoot = '' } = {}) {
+  const raw = joinSource(normalizeSourcePath(String(source || '').trim()) || String(source || '').trim(), sourceRoot);
+  if (!raw) return '';
+  const candidates = [];
+  if (path.isAbsolute(raw)) candidates.push(raw);
+  if (/^file:/i.test(raw)) {
+    try { candidates.push(fileURLToPath(raw)); } catch { /* ignore */ }
+  }
+  if (mapDir && !/^[a-z]+:/i.test(raw)) candidates.push(path.resolve(mapDir, raw));
+  if (mapUrl && !path.isAbsolute(raw)) {
+    try {
+      const resolved = new URL(raw, mapUrl);
+      if (resolved.protocol === 'file:') candidates.push(fileURLToPath(resolved));
+      const pathname = decodeURIComponent(resolved.pathname || '');
+      if (pathname && workspaceRoot) {
+        candidates.push(path.resolve(workspaceRoot, pathname.replace(/^\/+/, '')));
+      }
+    } catch {
+      // Ignore unresolvable source URLs.
+    }
+  }
+  const normalized = normalizeSourcePath(raw) || raw.replaceAll('\\', '/');
+  addWorkspaceCandidates(candidates, workspaceRoot, normalized);
+  if (workspaceRoot && !/^[a-z]+:/i.test(raw)) {
+    candidates.push(path.resolve(workspaceRoot, raw.replace(/^\.\//, '')));
+  }
+  for (const candidate of candidates) {
+    if (candidate && existsSync(candidate)) return path.resolve(candidate);
+  }
+  return candidates.find(Boolean) || raw;
+}
+
+export function displayPath(file, workspaceRoot) {
+  const value = String(file || '').trim();
+  if (!value) return '';
+  if (!path.isAbsolute(value) || !workspaceRoot) return value.replaceAll('\\', '/');
+  const relative = path.relative(path.resolve(workspaceRoot), value);
+  if (relative === '' || relative.startsWith('..') || path.isAbsolute(relative)) {
+    return value;
+  }
+  return relative.split(path.sep).join('/');
+}
+
+export function workspaceSourcePath(file, workspaceRoot) {
+  if (!workspaceRoot || !path.isAbsolute(file)) return '';
+  try {
+    const realFile = realpathSync(file);
+    const relative = path.relative(realpathSync(workspaceRoot), realFile);
+    if (!relative || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return '';
+    return statSync(realFile).isFile() ? relative.split(path.sep).join('/') : '';
+  } catch {
+    return '';
+  }
+}
+
+export function isLibraryPath(file) {
+  const value = String(file || '').replaceAll('\\', '/');
+  if (/(?:^|\/)(?:src|app|pages|components|views|screens)\//.test(value) && !/(?:^|\/)node_modules(?:\/|_)/.test(value)) {
+    return /(?:^|\/)node_modules(?:\/|_)/.test(value);
+  }
+  return /(?:^|\/)node_modules(?:\/|_)/.test(value)
+    || /(?:^|\/)(?:react-dom(?:\/|\.|$)|react\/jsx)/.test(value)
+    || /webpack\/bootstrap|@vite\/client/.test(value)
+    || /(?:^|\/)(?:lib-react|lib-router|lib-antd|lib-vue|lib-solid)(?:[-.]|$)/.test(value)
+    || /(?:^|\/)static\/js\/lib[-.]/.test(value)
+    || /node_modules_rspack|rspack_core|cssExtractHmr|vendors[-.]node_modules/.test(value);
+}
+
+export function isGeneratedBundlePath(file) {
+  const value = String(file || '').replaceAll('\\', '/').split('?')[0];
+  if (!value || isLibraryPath(value)) return true;
+  if (isOriginalSourcePath(value)) return false;
+  return /(?:^|\/)static\/js\/[^/]+\.js$/.test(value)
+    || /(?:^|\/)assets\/[^/]+\.[a-zA-Z0-9_-]{8,}\.(?:js|css)$/.test(value)
+    || /(?:^|\/)(?:dist|build|output)\/.*\.(?:js|css)$/.test(value);
+}
+
+export function isOriginalSourcePath(file) {
+  const value = String(file || '').replaceAll('\\', '/').split('?')[0];
+  if (!value || isLibraryPath(value)) return false;
+  return /(?:^|\/)(?:src|app|pages|components|views|screens|ui)\//.test(value)
+    || /\.(?:jsx|tsx|vue|svelte|ts)$/.test(value);
+}
+
+export function createSourceResolver({ workspaceRoot, getScript, readText }) {
+  const maps = new Map();
+
+  async function loadMap(script) {
+    if (!script) return null;
+    if (maps.has(script.scriptId)) return maps.get(script.scriptId);
+    let mapUrl = String(script.sourceMapURL || '').trim();
+    if (!mapUrl && script.url) {
+      const source = await readText(script.url).catch(() => '');
+      mapUrl = extractSourceMappingUrl(source);
+    }
+    if (mapUrl && script.url) {
+      try { mapUrl = new URL(mapUrl, script.url).href; } catch { /* use the reported path */ }
+    }
+    if (!mapUrl) {
+      maps.set(script.scriptId, null);
+      return null;
+    }
+    let parsed = null;
+    let mapDir = '';
+    try {
+      if (mapUrl.startsWith('data:')) {
+        parsed = JSON.parse(decodeDataUrl(mapUrl));
+      } else {
+        const text = await readText(mapUrl);
+        parsed = JSON.parse(text);
+        if (mapUrl.startsWith('file:')) mapDir = path.dirname(fileURLToPath(mapUrl));
+        else if (workspaceRoot) {
+          try {
+            const pathname = decodeURIComponent(new URL(mapUrl).pathname || '');
+            const candidate = path.resolve(workspaceRoot, pathname.replace(/^\/+/, ''));
+            if (existsSync(candidate)) mapDir = path.dirname(candidate);
+            else if (existsSync(path.join(workspaceRoot, 'dist', pathname.replace(/^\/+/, '')))) {
+              mapDir = path.dirname(path.join(workspaceRoot, 'dist', pathname.replace(/^\/+/, '')));
+            }
+          } catch {
+            mapDir = '';
+          }
+        }
+      }
+    } catch {
+      parsed = null;
+    }
+    const loaded = parsed ? { map: parsed, mapUrl, mapDir } : null;
+    maps.set(script.scriptId, loaded);
+    return loaded;
+  }
+
+  function scriptPath(value) {
+    try {
+      if (/^[a-z]+:/i.test(value)) return decodeURIComponent(new URL(value).pathname);
+    } catch {
+      return value;
+    }
+    return value;
+  }
+
+  function sameScript(scriptUrl, frameUrl) {
+    if (!scriptUrl || !frameUrl) return false;
+    if (scriptUrl === frameUrl) return true;
+    const left = scriptPath(scriptUrl);
+    const right = scriptPath(frameUrl);
+    return Boolean(left && right && (left === right || left.endsWith(right) || right.endsWith(left)));
+  }
+
+  function diskMap(value) {
+    const relative = scriptPath(value).replace(/^\/+/, '');
+    if (!relative || !workspaceRoot || /^[a-z]+:/i.test(relative)) return null;
+    const candidates = [
+      path.resolve(workspaceRoot, relative),
+      path.resolve(workspaceRoot, 'dist', relative),
+    ];
+    for (const file of candidates) {
+      const mapFile = `${file}.map`;
+      if (!existsSync(mapFile)) continue;
+      try {
+        return {
+          map: JSON.parse(readFileSync(mapFile, 'utf8')),
+          mapUrl: pathToFileURL(mapFile).href,
+          mapDir: path.dirname(mapFile),
+        };
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  }
+
+  async function locate({ scriptId = '', line = 0, column = 0, oneBased = false, url = '' } = {}) {
+    const script = getScript(scriptId) || getScriptsSafe().find((item) => sameScript(item.url, url)) || null;
+    const generatedLine = oneBased ? Number(line) : Number(line) + 1;
+    const generatedColumn = oneBased ? Number(column) : Number(column) + 1;
+    let loaded = script ? await loadMap(script) : null;
+    if (!loaded?.map) loaded = diskMap(script?.url || url);
+    if (loaded?.map) {
+      const mapped = await mapGeneratedPosition({
+        sourceMap: loaded.map,
+        line: generatedLine,
+        column: oneBased ? column : Number(column) + 1,
+        oneBased: true,
+      });
+      if (mapped?.source) {
+        const file = resolveMappedFile(mapped.source, {
+          mapUrl: loaded.mapUrl,
+          mapDir: loaded.mapDir,
+          workspaceRoot,
+          sourceRoot: loaded.map.sourceRoot || '',
+        });
+        return {
+          file: displayPath(file, workspaceRoot),
+          absoluteFile: path.isAbsolute(file) ? file : '',
+          workspaceSource: workspaceSourcePath(file, workspaceRoot),
+          line: mapped.line,
+          column: mapped.column,
+          name: mapped.name || '',
+          generatedUrl: script?.url || url,
+        };
+      }
+    }
+    const fallback = script?.url || url;
+    if (!fallback) return null;
+    const file = resolveMappedFile(fallback, { mapUrl: fallback, workspaceRoot });
+    return {
+      file: displayPath(file, workspaceRoot) || fallback,
+      absoluteFile: path.isAbsolute(file) ? file : '',
+      line: generatedLine,
+      column: generatedColumn,
+      name: '',
+      generatedUrl: fallback,
+    };
+  }
+
+  function getScriptsSafe() {
+    return typeof getScript.all === 'function' ? getScript.all() : [];
+  }
+
+  return { locate };
+}
+
+export function readLocalText(url, workspaceRoot) {
+  if (!url) return Promise.reject(new Error('missing url'));
+  if (url.startsWith('data:')) return Promise.resolve(decodeDataUrl(url));
+  if (url.startsWith('file:')) {
+    return Promise.resolve(readFileSync(fileURLToPath(url), 'utf8'));
+  }
+  if (/^https?:\/\//i.test(url)) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 4000);
+    return fetch(url, { signal: controller.signal })
+      .then((response) => {
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        return response.text();
+      })
+      .finally(() => clearTimeout(timer));
+  }
+  const absolute = path.resolve(workspaceRoot || process.cwd(), url);
+  return Promise.resolve(readFileSync(absolute, 'utf8'));
+}

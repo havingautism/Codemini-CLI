@@ -156,7 +156,6 @@ function SoulEditorDialog({ soul, open, onSave, onOpenChange, defaultCategory = 
             soul={soul}
             defaultCategory={defaultCategory}
             onSave={onSave}
-            onCancel={() => onOpenChange(false)}
           />
         </div>
       </DialogContent>

@@ -171,7 +171,7 @@ export async function listWorkspaceChildren(workspaceRoot, rawRelativePath = '')
 }
 
 const FILE_SEARCH_MAX_RESULTS = 40;
-const FILE_SEARCH_MAX_FILES = 4000;
+const FILE_SEARCH_MAX_ENTRIES = 4000;
 const FILE_SEARCH_CACHE_TTL_MS = 2500;
 const FILE_SEARCH_CACHE_MAX_ROOTS = 8;
 const fileSearchCatalogCache = new Map();
@@ -217,12 +217,11 @@ function scoreFileMatch(relativePath, name, needle) {
 }
 
 async function buildWorkspaceFileCatalog(root) {
-  const files = [];
+  const paths = [];
   const pendingDirectories = [{ absolute: root, relative: '' }];
   let directoryCursor = 0;
-  let visited = 0;
 
-  while (directoryCursor < pendingDirectories.length && visited < FILE_SEARCH_MAX_FILES) {
+  while (directoryCursor < pendingDirectories.length && paths.length < FILE_SEARCH_MAX_ENTRIES) {
     const directory = pendingDirectories[directoryCursor];
     directoryCursor += 1;
     let entries;
@@ -232,23 +231,23 @@ async function buildWorkspaceFileCatalog(root) {
       continue;
     }
     for (const entry of entries) {
-      if (visited >= FILE_SEARCH_MAX_FILES) break;
+      if (paths.length >= FILE_SEARCH_MAX_ENTRIES) break;
       if (!entry.name || INDEX_SKIP_DIRS.has(entry.name) || entry.isSymbolicLink()) continue;
       const relativePath = directory.relative
         ? `${directory.relative}/${entry.name}`
         : entry.name;
       if (entry.isDirectory()) {
+        paths.push({ path: relativePath, name: entry.name, type: 'directory' });
         pendingDirectories.push({
           absolute: path.join(directory.absolute, entry.name),
           relative: relativePath,
         });
       } else if (entry.isFile()) {
-        visited += 1;
-        files.push({ path: relativePath, name: entry.name });
+        paths.push({ path: relativePath, name: entry.name, type: 'file' });
       }
     }
   }
-  return { files, truncated: visited >= FILE_SEARCH_MAX_FILES };
+  return { paths, truncated: paths.length >= FILE_SEARCH_MAX_ENTRIES };
 }
 
 async function getWorkspaceFileCatalog(root) {
@@ -283,9 +282,10 @@ export async function searchWorkspaceFiles(
     .replace(/\\/g, '/')
     .replace(/^\.\//, '');
   const catalog = await getWorkspaceFileCatalog(root);
-  const matches = catalog.files.flatMap((file) => {
-    const score = scoreFileMatch(file.path, file.name, needle);
-    return score == null ? [] : [{ ...file, score }];
+  const matches = catalog.paths.flatMap((entry) => {
+    const suffix = entry.type === 'directory' && needle.endsWith('/') ? '/' : '';
+    const score = scoreFileMatch(entry.path + suffix, entry.name + suffix, needle);
+    return score == null ? [] : [{ ...entry, score }];
   });
   matches.sort(
     (left, right) =>
@@ -295,11 +295,11 @@ export async function searchWorkspaceFiles(
   return {
     rootPath: root,
     query: needle,
-    scanned: catalog.files.length,
+    scanned: catalog.paths.length,
     truncated: catalog.truncated,
     files: matches
       .slice(0, limit)
-      .map(({ path: relativePath, name }) => ({ path: relativePath, name })),
+      .map(({ path: relativePath, name, type }) => ({ path: relativePath, name, type })),
   };
 }
 

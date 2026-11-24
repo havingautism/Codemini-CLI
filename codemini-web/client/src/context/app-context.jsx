@@ -81,6 +81,7 @@ import {
 } from "../../../shared/transcript-segments.js";
 import { buildHookSegmentEvent } from "../../../shared/hook-ui.js";
 import { skillBadgesFromSessionMessage } from "../lib/user-skill-prompt.js";
+import { isSupersededWaitingResponse } from "../lib/chat-empty-state.js";
 import { placeAcceptedUserMessage } from "../lib/user-message-order.js";
 import {
   isCrewBackgroundWorkerToolEvent,
@@ -302,6 +303,7 @@ const initialState = {
   sessionRuntimeById: {},
   sessionMessagesById: {},
   live: false,
+  agentTerminalRevision: 0,
   stageLabel: "",
   messages: [],
   activeMsgId: null,
@@ -1241,10 +1243,18 @@ export function AppProvider({ children }) {
       skillBadges: Array.isArray(msg.skillBadges) ? msg.skillBadges : [],
       fileChanges: [],
     };
-    setState((prev) => ({
-      ...prev,
-      messages: placeAcceptedUserMessage(prev.messages, newMsg, anchorId),
-    }));
+    setState((prev) => {
+      const messages = placeAcceptedUserMessage(prev.messages, newMsg, anchorId);
+      if (newMsg.transientKey === "waiting-response") {
+        const index = messages.findIndex((item) => item?.id === id);
+        // assistant:start can land before this placeholder is appended and
+        // already renders the empty-stream loader. Keeping both shows two.
+        if (index >= 0 && isSupersededWaitingResponse(messages, index)) {
+          return prev;
+        }
+      }
+      return { ...prev, messages };
+    });
     return id;
   }, []);
 
@@ -2044,6 +2054,10 @@ export function AppProvider({ children }) {
       if (!event?.type) return;
       if (isProjectIndexEvent(event)) return;
       const s = stateRef.current;
+      if (event.type === "connected" || (event.type === "agent-terminals:changed" && event.sessionId === s.currentSessionId)) {
+        setState((prev) => ({ ...prev, agentTerminalRevision: (prev.agentTerminalRevision || 0) + 1 }));
+      }
+      if (event.type === "agent-terminals:changed") return;
       const scheduledChange = event.type === 'scheduled:changed' ? event : event.type === 'connected' ? event.scheduled : null;
       if (scheduledChange) {
         const revision = `${scheduledChange.revision}:${scheduledChange.workerRunning}`;
@@ -2606,7 +2620,9 @@ export function AppProvider({ children }) {
           addMessage({
             role: "divider",
             dividerType: "compact",
-            text: `以上内容已压缩 (${event.mode || ""}, ${event.threshold || ""}%)`,
+            text: event.duringTurn
+              ? `本轮中已压缩 (${event.mode || ""}, ${event.threshold || ""}%)`
+              : `以上内容已压缩 (${event.mode || ""}, ${event.threshold || ""}%)`,
             timestamp: new Date().toISOString(),
           });
           break;

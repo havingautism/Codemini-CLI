@@ -11,6 +11,11 @@ module.exports = {
   productName: 'Codemini',
   executableName: 'Codemini',
   asar: true,
+  // playwright-core ships cli entrypoints and wasm that Electron must read
+  // outside the asar when the ELECTRON_RUN_AS_NODE server imports it.
+  asarUnpack: [
+    '**/node_modules/playwright-core/**',
+  ],
   npmRebuild: true,
   buildDependenciesFromSource: false,
   forceCodeSigning: false,

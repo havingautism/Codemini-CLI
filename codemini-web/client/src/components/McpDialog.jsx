@@ -278,7 +278,6 @@ function McpServerEditorDialog({ open, server, onOpenChange, onSaved }) {
           </div>
 
           <DialogFooter className="shrink-0 border-t border-(--border-default) px-5 py-4 sm:px-6">
-            <Button variant="outline" onClick={() => requestClose(false)} disabled={saving || testing}>{t('cancel')}</Button>
             <Button variant="outline" onClick={testConnection} disabled={saving || testing}>
               {testing ? t('mcpTesting') : t('mcpTestConnection')}
             </Button>
@@ -354,7 +353,6 @@ function McpToolSyncDialog({ preview, selectedNames, applying, onSelectedNamesCh
           ) : <Empty className="py-12"><EmptyDescription>{t('mcpNoRemoteTools')}</EmptyDescription></Empty>}
         </div>
         <DialogFooter className="shrink-0 border-t border-(--border-default) px-5 py-4 sm:px-6">
-          <Button variant="outline" disabled={applying} onClick={() => onOpenChange(false)}>{t('cancel')}</Button>
           <Button disabled={applying || selectedNames.size === 0} onClick={onApply}>
             {applying ? t('saving') : t('mcpApplySelectedUpdates')}
           </Button>

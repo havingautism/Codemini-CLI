@@ -20,7 +20,18 @@ test('execution limits are editable only at exact keys with bounded integer valu
     for (const value of [min, max]) assert.doesNotThrow(() => validateWebConfigValue(key, value));
     for (const value of [min - 1, max + 1, 1.5, null, '', '500', {}, Infinity]) assert.throws(() => validateWebConfigValue(key, value));
   }
-  for (const key of ['execution', 'execution.approval_mode', 'execution.max_steps.value', 'sandbox.network', 'webui.terminal_enabled', 'policy.safe_mode', 'execution.__proto__.max_steps']) {
+  for (const key of ['sandbox.network', 'webui.terminal_enabled', 'policy.safe_mode', 'policy.allow_dangerous_commands']) {
+    assert.equal(isWebConfigReadOnly(key), false);
+    assert.doesNotThrow(() => assertWebConfigWritable(key));
+  }
+  assert.doesNotThrow(() => validateWebConfigValue('sandbox.network', 'none'));
+  assert.doesNotThrow(() => validateWebConfigValue('sandbox.network', 'allow-all'));
+  assert.throws(() => validateWebConfigValue('sandbox.network', true));
+  assert.doesNotThrow(() => validateWebConfigValue('policy.safe_mode', false));
+  assert.throws(() => validateWebConfigValue('policy.safe_mode', 'false'));
+  assert.doesNotThrow(() => validateWebConfigValue('policy.allowed_paths', ['D:\\shared']));
+  assert.throws(() => validateWebConfigValue('policy.allowed_paths', '[]'));
+  for (const key of ['execution', 'execution.approval_mode', 'execution.mode', 'sandbox.mode', 'execution.max_steps.value', 'execution.__proto__.max_steps']) {
     assert.throws(() => assertWebConfigWritable(key), undefined, key);
   }
 });
@@ -48,12 +59,18 @@ test('settings show new limits and security status with matching defaults and ra
     assert.equal(steps.tab, 'execution'); assert.equal(steps.min, 1); assert.equal(steps.max, 1000); assert.equal(steps.placeholder, '500');
     const retries = fields.find(f => f.path === 'execution.incomplete_retries');
     assert.equal(retries.min, 0); assert.equal(retries.max, 10); assert.equal(retries.placeholder, '3');
-    for (const key of ['sandbox.network', 'webui.terminal_enabled']) {
+    for (const key of ['execution.mode', 'execution.approval_mode', 'sandbox.mode']) {
+      assert.equal(fields.some(f => f.path === key), false, key);
+    }
+    for (const key of ['sandbox.network', 'webui.terminal_enabled', 'policy.safe_mode', 'policy.allow_dangerous_commands']) {
       const field = fields.find(f => f.path === key);
-      assert.equal(field.tab, 'execution'); assert.equal(isWebConfigReadOnly(key), true);
-      assert.match(field.cliExample, /^codemini config set /);
+      assert.equal(field.control, 'switch');
+      assert.equal(isWebConfigReadOnly(key), false);
+      assert.equal(field.cliExample, undefined);
       assert.ok(field.help.length > 20);
     }
+    assert.equal(fields.find(f => f.path === 'sandbox.network').onValue, 'allow-all');
+    assert.equal(fields.find(f => f.path === 'policy.allowed_paths').control, 'textarea');
     assert.ok(fields.some(f => f.path === 'model.fast_name'));
     for (const key of ['memory_enabled', 'skill_enabled', 'mode', 'confidence_threshold', 'max_candidates']) {
       const field = fields.find(f => f.path === `harness.distillation.${key}`);

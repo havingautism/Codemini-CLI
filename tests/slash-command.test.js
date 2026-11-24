@@ -88,6 +88,7 @@ test('searchWorkspaceFiles ranks name matches and skips ignore dirs', async () =
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-mention-'));
   try {
     await fs.mkdir(path.join(workspace, 'src', 'nested'), { recursive: true });
+    await fs.mkdir(path.join(workspace, 'src', 'empty'));
     await fs.mkdir(path.join(workspace, 'node_modules', 'pkg'), { recursive: true });
     await fs.writeFile(path.join(workspace, 'src', 'app.js'), 'x');
     await fs.writeFile(path.join(workspace, 'src', 'nested', 'app-utils.js'), 'x');
@@ -103,10 +104,17 @@ test('searchWorkspaceFiles ranks name matches and skips ignore dirs', async () =
     const fuzzy = await searchWorkspaceFiles(workspace, 'apu');
     assert.equal(fuzzy.files[0].path, 'src/nested/app-utils.js');
 
+    const directory = await searchWorkspaceFiles(workspace, 'src\\nested\\');
+    assert.deepEqual(directory.files[0], { path: 'src/nested', name: 'nested', type: 'directory' });
+    assert.deepEqual(directory.files[1], { path: 'src/nested/app-utils.js', name: 'app-utils.js', type: 'file' });
+
+    const emptyDirectory = await searchWorkspaceFiles(workspace, 'empty');
+    assert.deepEqual(emptyDirectory.files, [{ path: 'src/empty', name: 'empty', type: 'directory' }]);
+
     const emptyQuery = await searchWorkspaceFiles(workspace, '');
     assert.deepEqual(
       emptyQuery.files.map((file) => file.path),
-      ['README.md', 'src/app.js', 'src/nested/app-utils.js'],
+      ['README.md', 'src', 'src/app.js', 'src/empty', 'src/nested', 'src/nested/app-utils.js'],
     );
   } finally {
     await fs.rm(workspace, { recursive: true, force: true });

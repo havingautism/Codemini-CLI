@@ -13,6 +13,7 @@ import { normalizeReasoningAuto, normalizeReasoningEffort } from './provider/rea
 import { normalizeSkillContexts } from './skill-contexts.js';
 import { normalizeSandboxMode } from './sandbox-policy.js';
 import { normalizeSandboxBackend } from './sandbox-probe.js';
+import { resolveBrowserConfig } from './browser/schema.js';
 
 function normalizeUiLanguage(value) {
   const raw = String(value || '').trim().toLowerCase();
@@ -233,6 +234,15 @@ const DEFAULT_CONFIG = {
   skills: {
     enabled: {},
     contexts: {}
+  },
+  browser: {
+    channel: 'auto',
+    executable_path: '',
+    headless: true,
+    snapshot_max_chars: 6000,
+    timeout_ms: 30000,
+    viewport_width: 1280,
+    viewport_height: 800,
   },
   mcp: {
     servers: []
@@ -557,6 +567,7 @@ function normalizePolicyLists(config) {
   next.harness.rollout.sessions = Array.isArray(next.harness.rollout.sessions) ? next.harness.rollout.sessions.map(String) : [];
   next.harness.rollout.salt = String(next.harness.rollout.salt || 'harness-v1');
   next.jev = next.jev && typeof next.jev === 'object' ? next.jev : {};
+  next.browser = resolveBrowserConfig(next);
   next.jev.enabled = next.jev.enabled === true || String(next.jev.enabled || '').toLowerCase() === 'true';
   next.jev.api_key = String(next.jev.api_key || '').trim();
   next.jev.model = String(next.jev.model || DEFAULT_CONFIG.jev.model).trim() || DEFAULT_CONFIG.jev.model;

@@ -54,7 +54,7 @@ function TaskChoice({ id, value, onChange, options }) {
   );
 }
 
-function TaskEditor({ task, projectDir, busy, error, onSave, onCancel }) {
+function TaskEditor({ task, projectDir, busy, error, onSave }) {
   const prefix = useId();
   const [form, setForm] = useState(() => createScheduledTaskForm(task, projectDir));
   const [validationError, setValidationError] = useState('');
@@ -122,7 +122,6 @@ function TaskEditor({ task, projectDir, busy, error, onSave, onCancel }) {
       {projectError && <p role="status" className="px-6 pb-2 text-[12px] text-(--accent-orange)">{t('projectListFailed')} {projectError}</p>}
       <ProjectSelector open={projectPickerOpen} initialPath={form.projectDir} onOpenChange={setProjectPickerOpen} onOpenProject={path => { set('projectDir', path); }} />
       <DialogFooter className="shrink-0 px-6 py-4">
-        <Button type="button" variant="ghost" disabled={busy} onClick={onCancel}>{t('cancel')}</Button>
         <Button type="submit" disabled={busy || (form.type === 'weekly' && !form.days.length)}>{busy ? t('loading') : t('save')}</Button>
       </DialogFooter>
     </form>

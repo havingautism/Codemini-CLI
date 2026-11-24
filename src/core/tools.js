@@ -1,11 +1,12 @@
 import fs from "node:fs/promises";
-import { existsSync, realpathSync } from "node:fs";
+import { realpathSync } from "node:fs";
 import { collectReadWindow, readTextWindow, readWindowOptions, formatReadWindow } from "./read-window.js";
 import path from "node:path";
 import os from "node:os";
-import { execFileSync, spawn } from "node:child_process";
-import { createRequire } from "node:module";
+import { spawn } from "node:child_process";
+import { WEB_FETCH_BROWSER_HINT, openWebFetchBrowser } from "./browser/web-fetch-browser.js";
 import { createHash } from "node:crypto";
+import { createAgentTerminal } from "./agent-terminals.js";
 import { rgPath } from "@vscode/ripgrep";
 import net from "node:net";
 import {
@@ -108,7 +109,17 @@ import {
   buildSearchFormatters,
   buildSearchHandlers
 } from "./provider/search-tool-registry.js";
+import {
+  browserToolsExposed,
+  buildBrowserDeferredEntries,
+  buildBrowserFormatters,
+  buildBrowserHandlers,
+  createBrowserSession,
+  getSharedBrowserSession,
+  isVisualFeedbackInProgress,
+} from "./browser/index.js";
 import { getMcpToolBundle } from "./mcp-client.js";
+import { compactToolDefinition } from "./tool-schema-compact.js";
 import {
   isSkillIndexEligible,
   isSkillModelInvocationDisabled,
@@ -499,25 +510,22 @@ const SKILL_TOOL_DEFINITION = {
   function: {
     name: "skill",
     description:
-      'Search and load Codemini skills from the indexed skill registry/catalog. To browse skills, call skill({name:"list"}). To find a skill by keywords, call skill({query:"ts generic error"}) or skill({name:"fix-ts-generic-error"}). After you know the exact skill name, call skill({name:"<skill-name>"}) to load its instructions. Do NOT use grep, glob, or list on skills directories to discover skills.',
+      'Search or load an indexed skill. name: exact skill, "list" to browse, or keywords. query searches without loading. Do not scan skill directories.',
     parameters: {
       type: "object",
       properties: {
         name: {
           type: "string",
-          description:
-            'Exact skill name, "list"/"all" to browse all indexed skills, or keywords to search the skill index',
+          description: 'Exact skill, "list", or keywords.',
         },
         query: {
           type: "string",
-          description:
-            "Search indexed skills by name/description keywords without loading one",
+          description: "Search without loading a skill.",
         },
         args: {
           type: "array",
           items: { type: "string" },
-          description:
-            "Optional positional arguments to substitute into the skill prompt",
+          description: "Positional substitutions for the skill prompt.",
         },
       },
     },
@@ -613,130 +621,7 @@ function shouldTryBrowserRender(html, text) {
   );
 }
 
-function playwrightInstallHint() {
-  return "For JavaScript-rendered pages, install Playwright for richer web_fetch results: npm install -g playwright && playwright install chromium";
-}
-
-function isMissingPlaywrightError(error) {
-  const code = String(error?.code || "");
-  const message = String(error?.message || "");
-  return (
-    code === "ERR_MODULE_NOT_FOUND" ||
-    code === "MODULE_NOT_FOUND" ||
-    /Cannot find package 'playwright'|Cannot find module 'playwright'/i.test(message)
-  );
-}
-
-function unwrapPlaywrightModule(mod) {
-  if (mod && typeof mod.chromium?.executablePath === "function") return mod;
-  if (mod?.default && typeof mod.default.chromium?.executablePath === "function") {
-    return mod.default;
-  }
-  return null;
-}
-
-function readNpmGlobalNodeModules() {
-  try {
-    const root = execFileSync("npm", ["root", "-g"], {
-      encoding: "utf8",
-      timeout: 2500,
-      stdio: ["ignore", "pipe", "ignore"],
-    }).trim();
-    return root || "";
-  } catch {
-    return "";
-  }
-}
-
-function playwrightGlobalNodeModulesCandidates() {
-  const extra = String(process.env.CODEMINI_NPM_GLOBAL_NODE_MODULES || "").trim();
-  if (extra) return [extra];
-  const roots = [];
-  const add = (value) => {
-    const root = String(value || "").trim();
-    if (!root || roots.includes(root)) return;
-    roots.push(root);
-  };
-  const execDir = path.dirname(process.execPath);
-  add(path.resolve(execDir, "..", "lib", "node_modules"));
-  add(path.resolve(execDir, "node_modules"));
-  add(readNpmGlobalNodeModules());
-  return roots;
-}
-
-function loadPlaywrightFromNodeModules(nodeModulesDir) {
-  const root = String(nodeModulesDir || "").trim();
-  if (!root) return null;
-  try {
-    const requireFromRoot = createRequire(path.join(root, "package.json"));
-    return unwrapPlaywrightModule(requireFromRoot("playwright"));
-  } catch (error) {
-    if (isMissingPlaywrightError(error)) return null;
-    throw error;
-  }
-}
-
-async function loadOptionalPlaywright() {
-  try {
-    const imported = unwrapPlaywrightModule(await import("playwright"));
-    if (imported) return imported;
-  } catch (error) {
-    if (!isMissingPlaywrightError(error)) throw error;
-  }
-  for (const root of playwrightGlobalNodeModulesCandidates()) {
-    const loaded = loadPlaywrightFromNodeModules(root);
-    if (loaded) return loaded;
-  }
-  return null;
-}
-
-export async function detectPlaywrightStatus() {
-  const installCommand =
-    "npm install -g playwright && playwright install chromium";
-  const playwright = await loadOptionalPlaywright();
-  if (!playwright) {
-    return {
-      packageInstalled: false,
-      chromiumReady: false,
-      installCommand,
-    };
-  }
-  let chromiumReady = false;
-  try {
-    const executablePath = String(playwright.chromium.executablePath() || "").trim();
-    chromiumReady = Boolean(executablePath) && existsSync(executablePath);
-  } catch {}
-  return {
-    packageInstalled: true,
-    chromiumReady,
-    installCommand,
-  };
-}
-
-async function buildPlaywrightLaunchEnv() {
-  const localLibDir = path.join(
-    process.env.HOME || "",
-    ".cache",
-    "codemini",
-    "playwright-libs",
-    "usr",
-    "lib",
-    "x86_64-linux-gnu",
-  );
-  try {
-    await fs.access(localLibDir);
-  } catch {
-    return process.env;
-  }
-
-  const existing = String(process.env.LD_LIBRARY_PATH || "").trim();
-  return {
-    ...process.env,
-    LD_LIBRARY_PATH: existing ? `${localLibDir}:${existing}` : localLibDir,
-  };
-}
-
-export async function webFetchPage(args = {}) {
+export async function webFetchPage(args = {}, config = {}, hooks = {}) {
   const normalizedArgs = normalizeWebFetchArgs(args);
   const url = normalizeWebUrl(normalizedArgs.url);
   const timeoutMs = clampNumber(
@@ -788,26 +673,29 @@ export async function webFetchPage(args = {}) {
     staticError = error;
   }
 
-  const playwright = await loadOptionalPlaywright();
-  if (!playwright) {
+  let opened = null;
+  try {
+    opened = await openWebFetchBrowser(config, hooks);
+  } catch (error) {
     if (staticResult) {
       return {
         ...staticResult,
-        warnings: [playwrightInstallHint()],
+        warnings: [`Browser rendering fallback failed: ${error?.message || error}`],
       };
     }
+    throw error;
+  }
+  if (!opened) {
+    if (staticResult) {
+      return { ...staticResult, warnings: [WEB_FETCH_BROWSER_HINT] };
+    }
     throw new Error(
-      `web_fetch failed and browser rendering is unavailable. ${playwrightInstallHint()}. Static fetch error: ${staticError?.message || staticError}`,
+      `web_fetch failed and browser rendering is unavailable. ${WEB_FETCH_BROWSER_HINT} Static fetch error: ${staticError?.message || staticError}`,
     );
   }
 
-  let browser;
   try {
-    browser = await playwright.chromium.launch({
-      headless: true,
-      env: await buildPlaywrightLaunchEnv(),
-    });
-    const page = await browser.newPage();
+    const page = await opened.browser.newPage();
     const response = await page.goto(url, { waitUntil, timeout: timeoutMs });
     const finalUrl = page.url();
     const html = await page.content();
@@ -821,20 +709,20 @@ export async function webFetchPage(args = {}) {
       }),
     };
     rendered.metadata.wait_until = waitUntil;
+    rendered.metadata.browser_engine = opened.engine;
+    rendered.metadata.browser = opened.browserName;
     rendered.title = rendered.title || trimPreview(await page.title(), 240);
     return rendered;
   } catch (error) {
     if (staticResult) {
       return {
         ...staticResult,
-        warnings: [
-          `Browser rendering fallback failed: ${error?.message || error}`,
-        ],
+        warnings: [`Browser rendering fallback failed: ${error?.message || error}`],
       };
     }
     throw error;
   } finally {
-    if (browser) await browser.close();
+    await opened.browser.close().catch(() => {});
   }
 }
 
@@ -2173,7 +2061,7 @@ async function previewHtmlArtifact(root, args, config = {}) {
   };
 }
 
-async function runCommand(root, config, args, context = {}) {
+async function runCommand(root, config, args, context = {}, sessionId = "") {
   if (args?.network_access === true) {
     if (context.networkAccessApproved !== true) throw new Error("Network access requires command review");
     config = { ...config, sandbox: { ...config.sandbox, network: "allow-all", network_isolated: true } };
@@ -2216,7 +2104,7 @@ async function runCommand(root, config, args, context = {}) {
       shell: { ...(config?.shell || {}), default: executionShell },
     }, Object.assign(Object.defineProperties({}, Object.getOwnPropertyDescriptors(args)), {
       sandbox_mode: sandboxMode,
-    }));
+    }), sessionId);
   }
 
   const result = await runShellCommand({
@@ -2418,7 +2306,7 @@ function queueBackgroundTaskOutputWrite(task, chunk) {
     .catch(() => {});
 }
 
-async function startBackgroundTask(root, config, args) {
+async function startBackgroundTask(root, config, args, sessionId) {
   const command = String(args?.command || args?.cmd || "").trim();
   if (!command) throw new Error("shell command is required");
   if (
@@ -2518,17 +2406,21 @@ async function startBackgroundTask(root, config, args) {
     outputWrite: Promise.resolve(),
   };
   backgroundTaskRegistry.set(taskId, task);
+  const terminal = createAgentTerminal(sessionId, { command, cwd: root });
+  if (terminal) child.once("exit", terminal.finish);
 
   task.closePromise = new Promise((resolve) => {
     task.child.on("close", (code, signal) => {
       task.exitCode = code;
       task.signal = signal;
       task.status = task.status === "stopped" ? "stopped" : "exited";
+      terminal?.finish();
       resolve();
     });
   });
 
   const onOutput = (chunk) => {
+    terminal?.write(chunk);
     appendRecentOutput(task, chunk);
     queueBackgroundTaskOutputWrite(task, chunk);
     if (matchesTaskStartupSuccess(task, chunk)) {
@@ -2539,6 +2431,7 @@ async function startBackgroundTask(root, config, args) {
   task.child.stdout.on("data", onOutput);
   task.child.stderr.on("data", onOutput);
   task.child.on("error", (error) => {
+    terminal?.finish();
     appendRecentOutput(task, error?.message || String(error));
     queueBackgroundTaskOutputWrite(task, error?.message || String(error));
     task.status = "exited";
@@ -2595,6 +2488,9 @@ async function startBackgroundTask(root, config, args) {
 
   if (task.status === "starting") {
     task.status = "running";
+  }
+  if (task.status === "running" && child.exitCode === null && child.signalCode === null) {
+    terminal?.publish();
   }
   return snapshotBackgroundTask(task);
 }
@@ -4116,7 +4012,6 @@ export function getBuiltinTools({
   getPlanState,
   onPlanStateUpdate,
   onCreatePlan,
-  onCreateSpec,
   onRunSubAgent,
   onForkTask,
   requestUserInput,
@@ -4147,7 +4042,7 @@ export function getBuiltinTools({
   const commandLookup = shellContext.shell === "powershell" ? "Get-Command <tool>" : "command -v <tool>";
   const osKind = platform === "darwin" ? "Seatbelt" : "Landlock";
   const sandboxCapabilityNote = vmSandbox || osSandbox
-    ? ` The sandbox command baseline (${SANDBOX_CAPABILITY_COMMANDS.join(", ")}) is probed once per image and shell; the live manifest is shown as a \`sandbox commands:\` line in each output. Verify an uncommon tool with \`${commandLookup}\` before relying on it.`
+    ? ` Baseline tools: ${SANDBOX_CAPABILITY_COMMANDS.join(", ")}. The live \`sandbox commands:\` line is authoritative. Verify others with \`${commandLookup}\`.`
     : "";
   config = {
     ...(config || {}),
@@ -4161,12 +4056,12 @@ export function getBuiltinTools({
           type: "string",
           enum: ["workspace-write", "danger-full-access"],
           description:
-            "The wider sandbox mode this operation needs. Requires justification, LLM risk advice, and explicit user approval.",
+            "Wider sandbox mode. Requires justification and explicit user approval.",
         },
         justification: {
           type: "string",
           description:
-            "Required with sandbox_permissions: why this exact operation needs wider access.",
+            "Why this operation needs that wider mode.",
         },
       } : {};
   const fileToolPathHint = vmSandbox
@@ -4182,13 +4077,13 @@ export function getBuiltinTools({
       offset: {
         type: "integer",
         minimum: 1,
-        description: "1-based first line to return. Defaults to 1.",
+        description: "1-based start. Default 1.",
       },
       limit: {
         type: "integer",
         minimum: 1,
         maximum: 2000,
-        description: "Maximum lines to return. Defaults to 2000.",
+        description: "Line count. Default 2000.",
       },
     },
     required: ["file_path"],
@@ -4197,9 +4092,9 @@ export function getBuiltinTools({
     type: "object",
     properties: {
       file_path: { type: "string", description: `Path to the UTF-8 text file to edit.${fileToolPathHint}` },
-      old_string: { type: "string", description: "Literal text to replace. Must match exactly." },
-      new_string: { type: "string", description: "Literal replacement text. Empty deletes the match." },
-      replace_all: { type: "boolean", description: "Replace every match. Defaults to false." },
+      old_string: { type: "string", description: "Exact non-empty text to replace." },
+      new_string: { type: "string", description: "Replacement text. Empty deletes the match." },
+      replace_all: { type: "boolean", description: "Replace every match. Default false." },
       ...sandboxEscalationProperties,
     },
     required: ["file_path", "old_string", "new_string"],
@@ -4224,19 +4119,19 @@ export function getBuiltinTools({
   const unixGrepParameters = {
     type: "object",
     properties: {
-      pattern: { type: "string", description: "Ripgrep regular expression." },
-      path: { type: "string", description: "Optional file or directory target." },
-      include: { type: "string", description: "Optional single positive glob filter." },
-      max_results: { type: "integer", minimum: 1, maximum: 250, description: "Maximum matches. Defaults to 250." },
+      pattern: { type: "string", description: "Text or regular expression." },
+      path: { type: "string", description: "File or directory. Default workspace." },
+      include: { type: "string", description: "One positive glob, such as *.ts." },
+      max_results: { type: "integer", minimum: 1, maximum: 250, description: "Default 250." },
     },
     required: ["pattern"],
   };
   const unixGlobParameters = {
     type: "object",
     properties: {
-      pattern: { type: "string", description: "Ripgrep file glob pattern." },
-      path: { type: "string", description: "Optional directory search root." },
-      max_results: { type: "integer", minimum: 1, maximum: 1000, description: "Maximum paths. Defaults to 100." },
+      pattern: { type: "string", description: "Glob, such as src/**/*.ts." },
+      path: { type: "string", description: "Directory. Default workspace." },
+      max_results: { type: "integer", minimum: 1, maximum: 1000, description: "Default 100." },
     },
     required: ["pattern"],
   };
@@ -4490,7 +4385,7 @@ export function getBuiltinTools({
       function: {
         name: "add_code_comment",
         description:
-          "Add comment-only documentation to an existing code file. This tool may only insert comment lines; it cannot change executable code. Provide path plus either line or anchor_text, and comment text. Use position before/after to choose insertion side.",
+          "Insert comment lines only. Cannot change executable code. Pass path plus line or anchor_text, and comment. position is before or after (default before).",
         parameters: {
           type: "object",
           properties: {
@@ -4525,7 +4420,7 @@ export function getBuiltinTools({
       function: {
         name: "update_code_comment",
         description:
-          "Replace existing code comments only. The target line or range must already be comment-only lines; the tool formats the replacement as comments and refuses executable-code targets.",
+          "Replace comment-only lines. Refuses executable code. Pass path plus a line, a comment-only range, or anchor_text.",
         parameters: {
           type: "object",
           properties: {
@@ -4569,47 +4464,32 @@ export function getBuiltinTools({
       type: "function",
       function: {
         name: "read",
-        description: `Read UTF-8 text or list a directory. Prefer one sufficient read over many small slices; search_code locates unknown code. Up to 2000 lines/50 KiB with continuation offset. Line-number prefixes are not file content.${fileToolPathHint}`,
+        description: `Read UTF-8 text or list a directory. Prefer one sufficient read; use search_code to locate unknown code. Up to 2000 lines or 50 KiB, then continue with offset. Line-number prefixes are not file content.${fileToolPathHint}`,
         parameters: isWin ? {
           type: "object",
           properties: {
             path: {
               type: "string",
-              description:
-                "File path to read. You can also include an inline range like src/app.ts:10-40.",
+              description: "File path. Inline ranges such as src/app.ts:10-40 are accepted.",
             },
             file_path: { type: "string", description: "Alias for path" },
             file: { type: "string", description: "Alias for path" },
-            offset: { type: "integer", minimum: 1, description: "First line (1-based). Defaults to 1." },
-            limit: { type: "integer", minimum: 1, maximum: 2000, description: "Line count. Defaults to 2000." },
+            offset: { type: "integer", minimum: 1, description: "1-based start. Default 1." },
+            limit: { type: "integer", minimum: 1, maximum: 2000, description: "Line count. Default 2000." },
             start_line: { type: "integer", minimum: 1, description: "Alias for offset" },
-            end_line: { type: "integer", minimum: 1, description: "Inclusive range end" },
-            max_chars: { type: "integer", minimum: 128, description: "Optional smaller output budget" },
+            end_line: { type: "integer", minimum: 1, description: "Inclusive end line." },
+            max_chars: { type: "integer", minimum: 128, description: "Smaller output budget." },
             ast_target: {
               type: "object",
-              description:
-                "Read the selected AST node from search_code or ast_query, subject to the same output limits.",
+              description: "AST node from search_code or ast_query. Same output limits.",
             },
-            query: {
-              type: "string",
-              description:
-                "Optional Tree-sitter query; reads the first matched node.",
-            },
-            capture_name: {
-              type: "string",
-              description:
-                "Capture to select for query.",
-            },
+            query: { type: "string", description: "Tree-sitter query. Reads the first match." },
+            capture_name: { type: "string", description: "Capture name for query." },
             include_ast_context: {
               type: "boolean",
-              description:
-                "For AST reads, include compact parent/child summaries. Defaults to true.",
+              description: "Parent/child summaries for AST reads. Default true.",
             },
-            language: {
-              type: "string",
-              description:
-                "AST language override.",
-            },
+            language: { type: "string", description: "AST language override." },
           },
           required: [],
         } : unixReadParameters,
@@ -4620,37 +4500,34 @@ export function getBuiltinTools({
       function: {
         name: "search_code",
         description:
-          "Locate text, symbols, files, or AST patterns. Read enough surrounding code at the returned locations; known files can be read directly.",
+          "Locate text, symbols, files, or AST patterns. Read surrounding code at the hits. Read known files directly.",
         parameters: {
           type: "object",
           properties: {
             query: {
               type: "string",
-              description:
-                "Search text, symbol name, or structural ast-grep pattern.",
+              description: "Text, symbol, or ast-grep pattern.",
             },
             mode: {
               type: "string",
               enum: ["auto", "text", "symbol", "structure", "file"],
-              description: "Search mode. Defaults to auto.",
+              description: "Default auto.",
             },
             path: {
               type: "string",
-              description:
-                "Directory or file to search. Defaults to the workspace.",
+              description: "File or directory. Default workspace.",
             },
             language: {
               type: "string",
-              description:
-                "Optional language filter such as js, ts, java, python, or go.",
+              description: "Optional, such as js, ts, py, or go.",
             },
             max_results: {
               type: "number",
-              description: "Max locations to return. Defaults to 20.",
+              description: "Default 20.",
             },
             include_preview: {
               type: "boolean",
-              description: "Include short code previews. Defaults to true.",
+              description: "Short previews. Default true.",
             },
           },
           required: ["query"],
@@ -4661,65 +4538,35 @@ export function getBuiltinTools({
       type: "function",
       function: {
         name: "edit",
-        description: `Replace unique old_string with new_string; replace_all=true changes every match. Read sufficient context first.${isWin ? " old_text/new_text are aliases. Also: new_content for rewrite; anchor_text/content/position for insertion; kind=replace_block with ast_target. Use apply_patch for multi-file changes." : ""}${fileToolPathHint}`,
+        description: `Replace one unique old_string with new_string. replace_all changes every match. Read the file first.${isWin ? " new_content rewrites a file; anchor_text/content/position inserts; kind=replace_block uses ast_target. Use apply_patch for multi-file changes." : ""}${fileToolPathHint}`,
         parameters: isWin ? {
           type: "object",
           properties: {
             path: {
               type: "string",
-              description:
-                "File path to edit. Inline ranges like src/app.js:10-30 are accepted.",
+              description: "File to edit. Inline ranges such as src/app.js:10-30 are accepted.",
             },
             file_path: { type: "string", description: "Alias for path" },
-            old_string: {
-              type: "string",
-              description: "Exact text to replace (preferred on Linux/mac)",
-            },
-            new_string: {
-              type: "string",
-              description: "Replacement text for old_string",
-            },
+            old_string: { type: "string", description: "Exact non-empty text to replace." },
+            new_string: { type: "string", description: "Replacement text. Empty deletes the match." },
             old_text: { type: "string", description: "Alias for old_string" },
             new_text: { type: "string", description: "Alias for new_string" },
-            replace_all: {
-              type: "boolean",
-              description: "Replace all matching old_string/old_text occurrences",
-            },
-            start_line: {
-              type: "number",
-              description: "Optional range start for disambiguating old_text",
-            },
-            end_line: {
-              type: "number",
-              description: "Optional range end for disambiguating old_text",
-            },
-            anchor_text: {
-              type: "string",
-              description: "Anchor text for inserts",
-            },
-            position: { type: "string", description: "before or after" },
+            replace_all: { type: "boolean", description: "Replace every match. Default false." },
+            start_line: { type: "number", description: "Optional range start." },
+            end_line: { type: "number", description: "Optional range end." },
+            anchor_text: { type: "string", description: "Anchor text for an insert." },
+            position: { type: "string", description: "before or after." },
             kind: {
               type: "string",
-              description:
-                "replace_block, replace_text, insert_before, insert_after, or rewrite_file",
+              description: "replace_block, replace_text, insert_before, insert_after, or rewrite_file.",
             },
-            target: {
-              type: "object",
-              description: "Location object with symbol or line info",
-            },
-            ast_target: {
-              type: "object",
-              description:
-                "AST target from search_code structure results, ast_grep, ast_query, or a prior AST selection",
-            },
-            symbol: { type: "string", description: "Symbol to target" },
-            line: { type: "number", description: "Line to target" },
-            content: {
-              type: "string",
-              description: "Content to insert with anchor_text/position, placed near the end. Use new_text with old_text replacements, and new_content for full-file rewrites.",
-            },
+            target: { type: "object", description: "Symbol or line location." },
+            ast_target: { type: "object", description: "AST target from search_code, ast_grep, or ast_query." },
+            symbol: { type: "string", description: "Symbol name." },
+            line: { type: "number", description: "Target line." },
+            content: { type: "string", description: "Insert text. Keep this near the end." },
             ...sandboxEscalationProperties,
-            new_content: { type: "string", description: "Small full-file or structural-block replacement content. Keep this field last. For long whole-file output, use the staged write tools. In JSON text, encode newlines as \\n." },
+            new_content: { type: "string", description: "Full-file or structural replacement. Keep this field last. Encode newlines as \\n. Use staged writes for long files." },
           },
           required: ["path"],
         } : unixEditParameters,
@@ -4733,21 +4580,16 @@ export function getBuiltinTools({
         parameters: isWin ? {
           type: "object",
           properties: {
-            path: {
-              type: "string",
-              description:
-                "Required file path like src/app.js or pages/index.html.",
-            },
+            path: { type: "string", description: "File to create or replace." },
             file_path: { type: "string", description: "Alias for path" },
             overwrite: {
               type: "boolean",
-              description:
-                "Set true to intentionally replace an existing file. Defaults to false.",
+              description: "Required to replace an existing file. Default false.",
             },
             ...sandboxEscalationProperties,
             content: {
               type: "string",
-              description: "Complete file content. Keep this field last. In JSON text, encode newlines as \\n.",
+              description: "Full file text. Keep this field last. Encode newlines as \\n.",
             },
           },
           required: ["path", "content"],
@@ -4759,23 +4601,17 @@ export function getBuiltinTools({
       function: {
         name: "preview_html",
         description:
-          "Present a self-contained interactive HTML artifact from the workspace in an isolated preview card. Create or edit the .html/.htm file first, then pass only its path. Inline CSS and JavaScript work; network requests, forms, nested frames, external assets, and access to the Codemini page are blocked. Prefer data: URLs for embedded images.",
+          "Show a workspace .html/.htm file in an isolated preview. Write the file first, then pass its path. Inline CSS/JS only; network, forms, frames, and external assets are blocked. Prefer data: URLs for images.",
         parameters: {
           type: "object",
           properties: {
-            path: {
-              type: "string",
-              description: "Project-relative .html or .htm file path.",
-            },
-            title: {
-              type: "string",
-              description: "Short title shown on the artifact card.",
-            },
+            path: { type: "string", description: "Project-relative .html or .htm path." },
+            title: { type: "string", description: "Card title." },
             height: {
               type: "integer",
               minimum: 320,
               maximum: 900,
-              description: "Preview height in pixels. Defaults to 560.",
+              description: "Pixels. Default 560.",
             },
           },
           required: ["path"],
@@ -4787,17 +4623,14 @@ export function getBuiltinTools({
       function: {
         name: "begin_write",
         description:
-          "Begin a transactional whole-file write for long content. This validates and snapshots the target but does not modify it. Follow with sequential write_chunk calls and exactly one commit_write. Use abort_write to discard the staging state.",
+          "Start a staged whole-file write. Validates and snapshots the target without modifying it. Then send write_chunk in order and one commit_write, or abort_write.",
         parameters: {
           type: "object",
           properties: {
-            path: {
-              type: "string",
-              description: "Target file path inside the workspace.",
-            },
+            path: { type: "string", description: "Workspace file to stage." },
             overwrite: {
               type: "boolean",
-              description: "Set true to intentionally replace an existing file. Defaults to false.",
+              description: "Required to replace an existing file. Default false.",
             },
           },
           required: ["path"],
@@ -4809,22 +4642,15 @@ export function getBuiltinTools({
       function: {
         name: "write_chunk",
         description:
-          "Stage one bounded content chunk without modifying the target file. Send sequence values contiguously from 0. Repeating the same sequence with identical content is idempotent. Keep content as the final JSON field. If arguments are truncated or invalid, split the unsent content into smaller chunks starting at the same sequence.",
+          "Stage one chunk without modifying the file. sequence starts at 0 and must be contiguous. Repeating a sequence with the same content is ok. Put content last. If arguments are truncated, resend a smaller chunk at that sequence.",
         parameters: {
           type: "object",
           properties: {
-            write_id: {
-              type: "string",
-              description: "Transaction id returned by begin_write.",
-            },
-            sequence: {
-              type: "integer",
-              minimum: 0,
-              description: "Zero-based contiguous chunk sequence.",
-            },
+            write_id: { type: "string", description: "Id from begin_write." },
+            sequence: { type: "integer", minimum: 0, description: "Zero-based contiguous index." },
             content: {
               type: "string",
-              description: "Chunk content, placed last. Keep each chunk below the max_chunk_chars returned by begin_write.",
+              description: "Chunk text, last. Stay under max_chunk_chars from begin_write.",
             },
           },
           required: ["write_id", "sequence", "content"],
@@ -4836,27 +4662,14 @@ export function getBuiltinTools({
       function: {
         name: "commit_write",
         description:
-          "Atomically commit a staged whole-file write. The target remains unchanged unless every chunk is present, the optional sha256 matches, the target has not changed since begin_write, and the final rename succeeds.",
+          "Commit a staged whole-file write only when every chunk is present, the optional sha256 matches, and the target is unchanged since begin_write.",
         parameters: {
           type: "object",
           properties: {
-            write_id: {
-              type: "string",
-              description: "Transaction id returned by begin_write.",
-            },
-            path: {
-              type: "string",
-              description: "Target path originally passed to begin_write. Repeated here for approval and audit visibility.",
-            },
-            total_chunks: {
-              type: "integer",
-              minimum: 0,
-              description: "Exact number of chunks staged for this transaction.",
-            },
-            expected_sha256: {
-              type: "string",
-              description: "Optional precomputed SHA-256 of assembled content; omit unless supplied by trusted tooling.",
-            },
+            write_id: { type: "string", description: "Id from begin_write." },
+            path: { type: "string", description: "Same path passed to begin_write." },
+            total_chunks: { type: "integer", minimum: 0, description: "Exact chunk count." },
+            expected_sha256: { type: "string", description: "Optional SHA-256 of the assembled file. Omit unless known." },
           },
           required: ["write_id", "path", "total_chunks"],
         },
@@ -4866,8 +4679,7 @@ export function getBuiltinTools({
       type: "function",
       function: {
         name: "abort_write",
-        description:
-          "Discard an unfinished staged write. This never modifies the target file.",
+        description: "Discard a staged write. Does not modify the file.",
         parameters: {
           type: "object",
           properties: {
@@ -4885,7 +4697,7 @@ export function getBuiltinTools({
       function: {
         name: "apply_patch",
         description:
-          "Apply a Codex-style patch across files or separated regions. Preflights all hunks; commit failures report known partial effects. Prefer this over many edit calls. Read existing files first.",
+          "Apply one multi-file or multi-hunk patch. Every hunk is preflighted. Read existing files first. Prefer this over many edit calls.",
         parameters: {
           type: "object",
           properties: {
@@ -4893,7 +4705,7 @@ export function getBuiltinTools({
             patch_text: {
               type: "string",
               description:
-                "*** Begin Patch ... *** End Patch. Use Add/Update/Delete File: path, optional Move to: path, @@ hunks with space context, - old and + new lines. *** End of File anchors the final match.",
+                "*** Begin Patch / *** End Patch. Add, Update, or Delete File, optional Move to, @@ hunks with space context, - old and + new lines. *** End of File anchors the last match.",
             },
           },
           required: ["patch_text"],
@@ -4905,15 +4717,11 @@ export function getBuiltinTools({
       function: {
         name: "delete",
         description:
-          `Delete a file or directory inside the workspace. Missing targets fail. Workspace escape attempts are rejected.${fileToolPathHint}`,
+          `Delete a file or directory inside the workspace. Missing targets fail.${fileToolPathHint}`,
         parameters: isWin ? {
           type: "object",
           properties: {
-            path: {
-              type: "string",
-              description:
-                "File or directory path to delete. file_path/file/target are accepted aliases.",
-            },
+            path: { type: "string", description: "File or directory to delete." },
             file_path: { type: "string", description: "Alias for path" },
             file: { type: "string", description: "Alias for path" },
             target: { type: "string", description: "Alias for path" },
@@ -4926,15 +4734,13 @@ export function getBuiltinTools({
       type: "function",
       function: {
         name: "read_plan",
-        description:
-          "Read the structured plan state for the current session. Use this to recover plan progress after transient model/tool errors before continuing implementation.",
+        description: "Read this session's plan state after an interruption, if one exists.",
         parameters: {
           type: "object",
           properties: {
             include_steps: {
               type: "boolean",
-              description:
-                "Include normalized plan steps in the output (default: true)",
+              description: "Include steps. Default true.",
             },
           },
           required: [],
@@ -4946,42 +4752,24 @@ export function getBuiltinTools({
       function: {
         name: "update_plan",
         description:
-          "Synchronize progress for an existing structured plan state after an interruption. This tool cannot create a plan or manage spec approvals; use create_plan/create_spec in coding mode for new workflows. Use clear=true only to remove existing plan state.",
+          "Update an existing plan after an interruption. Cannot create a plan or change approval status. clear=true removes it.",
         parameters: {
           type: "object",
           properties: {
-            clear: {
-              type: "boolean",
-              description: "Set true to clear current existing plan state",
-            },
+            clear: { type: "boolean", description: "Remove the existing plan." },
             plan: {
               type: "object",
+              description: "Fields to merge. Top-level goal, status, summary, and steps are also accepted.",
               properties: {
                 status: {
                   type: "string",
-                  description:
-                    "Progress status for an existing plan: draft, ready, running, completed, or failed.",
+                  enum: ["draft", "ready", "running", "completed", "failed"],
                 },
-                source: {
-                  type: "string",
-                  description: "Existing plan source such as auto/manual/tool",
-                },
-                goal: {
-                  type: "string",
-                  description: "Original user goal for the existing plan",
-                },
-                filePath: {
-                  type: "string",
-                  description: "Existing plan markdown file path",
-                },
-                summary: {
-                  type: "string",
-                  description: "Short progress summary for the existing plan",
-                },
-                finalSummary: {
-                  type: "string",
-                  description: "Final progress summary for the existing plan",
-                },
+                source: { type: "string" },
+                goal: { type: "string" },
+                filePath: { type: "string" },
+                summary: { type: "string" },
+                finalSummary: { type: "string" },
                 steps: {
                   type: "array",
                   items: {
@@ -4995,49 +4783,6 @@ export function getBuiltinTools({
                 },
               },
             },
-            status: {
-              type: "string",
-              description:
-                "Top-level alias for plan.status when plan is omitted",
-            },
-            source: {
-              type: "string",
-              description:
-                "Top-level alias for existing plan.source when plan is omitted",
-            },
-            goal: {
-              type: "string",
-              description:
-                "Top-level alias for existing plan.goal when plan is omitted",
-            },
-            filePath: {
-              type: "string",
-              description:
-                "Top-level alias for existing plan.filePath when plan is omitted",
-            },
-            summary: {
-              type: "string",
-              description:
-                "Top-level alias for existing plan.summary when plan is omitted",
-            },
-            finalSummary: {
-              type: "string",
-              description:
-                "Top-level alias for existing plan.finalSummary when plan is omitted",
-            },
-            steps: {
-              type: "array",
-              description:
-                "Top-level alias for existing plan.steps when plan is omitted",
-              items: {
-                type: "object",
-                properties: {
-                  title: { type: "string" },
-                  role: { type: "string" },
-                  task: { type: "string" },
-                },
-              },
-            },
           },
           required: [],
         },
@@ -5048,7 +4793,7 @@ export function getBuiltinTools({
       function: {
         name: "tasks",
         description:
-          "Replace the current task list with the complete list. Use it for multi-step work, keep active work in_progress, and mark finished items completed. Skip trivial single-step work.",
+          "Replace the whole task list. Use it for multi-step work, keep one item in_progress, and mark finished items completed. Skip a single trivial step.",
         parameters: {
           type: "object",
           properties: {
@@ -5057,22 +4802,16 @@ export function getBuiltinTools({
               items: {
                 type: "object",
                 properties: {
-                  content: {
-                    type: "string",
-                    description: "Short imperative step.",
-                  },
+                  content: { type: "string", description: "Imperative step." },
                   status: {
                     type: "string",
                     enum: ["pending", "in_progress", "completed"],
                   },
-                  activeForm: {
-                    type: "string",
-                    description: "Optional present-participle activity label.",
-                  },
+                  activeForm: { type: "string", description: "Present-continuous label." },
                 },
                 required: ["content", "status"],
               },
-              description: "Complete replacement list.",
+              description: "Full replacement list.",
             },
           },
           required: ["tasks"],
@@ -5083,53 +4822,38 @@ export function getBuiltinTools({
       type: "function",
       function: {
         name: commandToolName,
-        description: `${crewActive ? "Crew parent inspect-only: git status/log/diff and other read-only commands. Do not merge, checkout, worktree, or copy into the main checkout; use land_workers. " : ""}${vmSandbox
+        description: `${crewActive ? "Crew parent is inspect-only: git status, log, diff, and other read-only commands. Do not merge, checkout, worktree, or copy into the main checkout; use land_workers. " : ""}${vmSandbox
           ? platform === "win32"
-            ? `Run a compact ${commandShellLabel} command inside the Linux microVM sandbox (${sandboxPolicy.mode}) from the project root. For Windows-native dependencies, use Windows PowerShell on the host only with the required sandbox permissions. Use project-relative paths and run_in_background=true only for long-running sandboxed commands. Put command last.`
-            : `Run a compact ${commandShellLabel} command inside the Linux microVM sandbox (${sandboxPolicy.mode}) from the project root. Use project-relative paths and run_in_background=true for long-running commands. Put command last.`
+            ? `Run one compact ${commandShellLabel} command inside the Linux microVM sandbox (${sandboxPolicy.mode}) from the project root. Use project-relative paths. Windows-native dependencies need host Windows PowerShell plus sandbox_permissions. run_in_background=true only for long-running commands. Put command last.`
+            : `Run one compact ${commandShellLabel} command inside the Linux microVM sandbox (${sandboxPolicy.mode}) from the project root. Use project-relative paths. run_in_background=true for long-running commands. Put command last.`
           : osSandbox
-            ? `Run a compact ${shellContext.shell === "powershell" ? "PowerShell" : "Bash"} command on the host under OS confinement (${osKind}, ${sandboxPolicy.mode}) with network disabled unless explicitly configured or network_access=true is approved for this command. Use host paths from the current working directory. Commands with destructive or external side effects may still require approval. On denial, stderr includes [sandbox: ...]; retry with a wider sandbox_permissions plus justification when needed. Use run_in_background=true for long-running commands. Put command last.`
+            ? `Run one compact ${shellContext.shell === "powershell" ? "PowerShell" : "Bash"} command on the host under OS confinement (${osKind}, ${sandboxPolicy.mode}). Network is off unless configured or network_access=true is approved. Use host paths. On denial, stderr includes [sandbox: ...]; retry with wider sandbox_permissions plus justification. run_in_background=true for long-running commands. Put command last.`
             : sandboxPolicy.enabled
               ? "The configured shell sandbox is unavailable. Execution requires an available sandbox or host permissions."
-              : `Run a compact ${commandShellLabel} command directly on the ${platform === "win32" ? "Windows" : "host"} system without microVM confinement. Use run_in_background=true for long-running commands. Put command last.`}${sandboxCapabilityNote}`,
+              : `Run one compact ${commandShellLabel} command directly on the ${platform === "win32" ? "Windows" : "host"} system without microVM confinement. run_in_background=true for long-running commands. Put command last.`}${sandboxCapabilityNote}`,
         parameters: {
           type: "object",
           properties: {
-            network_access: { type: "boolean", description: "Request outbound network for this command only. Lite model reviews the exact command; uncertain or high-risk operations require user approval. Omit for offline execution. Never broaden sandbox_permissions just to get network access." },
-            timeout: { type: "number", description: "Timeout in milliseconds" },
-            run_in_background: {
-              type: "boolean",
-              description:
-                "Run in the background and return a task handle immediately",
-            },
-            startup_timeout_ms: {
-              type: "number",
-              description: "Background startup wait window in milliseconds",
-            },
+            network_access: { type: "boolean", description: "Outbound network for this command only. Omit for offline. Do not widen sandbox_permissions just for network. Approval may be required." },
+            timeout: { type: "number", description: "Milliseconds." },
+            run_in_background: { type: "boolean", description: "Return a task handle instead of waiting." },
+            startup_timeout_ms: { type: "number", description: "Background startup wait, milliseconds." },
             success_matchers: {
               type: "array",
               items: { type: "string" },
-              description:
-                "Optional startup success phrases to look for in command output",
+              description: "Startup success phrases in the output.",
             },
-            port_probe: {
-              type: "number",
-              description: "Optional localhost port to probe for readiness",
-            },
+            port_probe: { type: "number", description: "Localhost port that should accept connections." },
             http_probe: {
               type: "object",
               properties: {
                 url: { type: "string" },
                 expect_status: { type: "number" },
               },
-              description:
-                "Optional HTTP readiness probe for a background task",
+              description: "HTTP readiness probe.",
             },
             ...sandboxEscalationProperties,
-            command: {
-              type: "string",
-              description: "Compact shell command to execute. Keep this field last.",
-            },
+            command: { type: "string", description: "Shell command. Keep this field last." },
           },
           required: ["command"],
         },
@@ -5140,7 +4864,7 @@ export function getBuiltinTools({
       function: {
         name: "tool_search",
         description:
-          "Load one deferred tool schema by name. Use this when a needed tool is not in the current tool list. Skill discovery uses the always-available skill tool instead of tool_search.",
+          "Load one deferred tool by its exact name when it is not in this request. Skills use the skill tool, not tool_search.",
         parameters: {
           type: "object",
           properties: {
@@ -5163,7 +4887,7 @@ export function getBuiltinTools({
           function: {
             name: "request_user_input",
             description:
-              "Ask 1-3 concise questions only when the answers materially affect the work. The call pauses for the user.",
+              "Ask 1-3 questions only when the answers materially change the work. The call pauses until the user replies.",
             parameters: {
               type: "object",
               properties: {
@@ -5176,16 +4900,13 @@ export function getBuiltinTools({
                     properties: {
                       id: {
                         type: "string",
-                        description: "Stable snake_case answer key.",
+                        description: "Stable answer key.",
                       },
                       question: { type: "string" },
-                      multi_select: {
-                        type: "boolean",
-                        description: "Allow multiple choices.",
-                      },
+                      multi_select: { type: "boolean", description: "Allow multiple choices." },
                       options: {
                         type: "array",
-                        description: "Omit for free text. A custom answer is allowed automatically.",
+                        description: "Omit for free text. A custom answer is always allowed.",
                         items: {
                           type: "object",
                           properties: {
@@ -5210,11 +4931,7 @@ export function getBuiltinTools({
   const workflowToolDefinitions = [];
   if (typeof onRunSubAgent === "function") {
     const subagentProperties = {
-            prompt: {
-              type: "string",
-              description:
-                "Scope, constraints, and known facts.",
-            },
+            prompt: { type: "string", description: "Task, constraints, and known facts." },
             tasks: {
               type: "array",
               items: {
@@ -5229,43 +4946,28 @@ export function getBuiltinTools({
                 },
                 required: ["content"],
               },
-              description: "Concrete work items.",
+              description: "Work items. Same fields as the tasks tool.",
             },
-            summary: {
-              type: "string",
-              description: "One or two sentences for the collapsed card.",
-            },
+            summary: { type: "string", description: "One or two sentences for the card." },
             name: {
               type: "string",
               description: crewActive
-                ? "Nickname shown in crew status, such as Toby. Not the worker id. resume, review, cancel_worker, and crew_send use the worker id returned by run_subagent."
-                : "Short invented worker name, such as David or Mira. Display only.",
+                ? "Nickname only. resume, review, cancel_worker, and crew_send use the returned worker id."
+                : "Short display name, such as Mira.",
             },
-            role: {
-              type: "string",
-              description: "Optional role preset; an explicit tools list overrides it.",
-            },
-            context: {
-              type: "string",
-              description: "Prior findings, paths, or decisions.",
-            },
-            goal: {
-              type: "string",
-              description: "Short UI label.",
-            },
-            task_id: {
-              type: "string",
-              description: "ID referenced by a later depends_on call.",
-            },
+            role: { type: "string", description: "Role preset. An explicit tools list overrides it." },
+            context: { type: "string", description: "Prior findings or paths." },
+            goal: { type: "string", description: "Short UI label." },
+            task_id: { type: "string", description: "Id for a later depends_on." },
             depends_on: {
               type: "array",
               items: { type: "string" },
-              description: "Earlier task IDs to await; their handoffs are injected.",
+              description: "Earlier task ids. Their handoffs are injected.",
             },
             tools: {
               type: "array",
               items: { type: "string" },
-              description: "Optional allow-list overriding the role defaults.",
+              description: "Allow-list overriding the role.",
             },
     };
     if (crewActive) {
@@ -5273,33 +4975,30 @@ export function getBuiltinTools({
         type: "array",
         items: { type: "string" },
         description:
-          "Disjoint relative globs this new coder worker may change, such as docs/** or src/foo.ts. Required for a new coder worker. Not required for role: \"survey\". On resume, omit to keep stored paths, or pass a new disjoint list to change that worker's scope.",
+          "Disjoint relative globs a new coder may change, such as docs/** or src/foo.ts. Required for a new coder. Not used for survey. On resume, omit to keep the stored paths.",
       };
       subagentProperties.resume = {
         type: "string",
-        description:
-          "Worker id from crew_status or the run_subagent result, such as wkr_abc_def. Not the nickname, task_id, call id, or handoff folder. Reuses that worktree and branch. Omit paths to keep the stored scope, or pass new disjoint paths to change it.",
+        description: "Worker id, such as wkr_abc. Not a nickname. Reuses that worktree.",
       };
       subagentProperties.review = {
         type: "string",
-        description:
-          "Worker id from crew_status to review, such as wkr_abc_def. Not the nickname. Use with role: \"reviewer\". Does not create a worktree. Omit paths and resume. Do not review survey workers.",
+        description: "Coder worker id to review. Use with role reviewer. No paths, resume, or survey workers.",
       };
       subagentProperties.mission_id = {
         type: "string",
-        description:
-          "Mission id from crew_plan, such as m1. Required for a new build or survey worker. Not used for reviewers.",
+        description: "Mission id from crew_plan, such as m1. Required for a new build or survey worker.",
       };
       subagentProperties.role.description =
-        'Optional role preset. Use "survey" for read-only investigation (no exclusive paths, no review, no land). Use "reviewer" with review set to a coder worker id.';
+        'survey is read-only and is not reviewed or landed. reviewer requires review set to a coder worker id.';
     }
     workflowToolDefinitions.push({
       type: "function",
       function: {
         name: "run_subagent",
         description: crewActive
-          ? "Delegate isolated work to a git-worktree subagent. Pass mission_id from crew_plan. Paths and depends_on are loaded from that mission. prompt is the worker task. A mission whose dependency is unfinished or cancelled is refused. name is a nickname. The returned worker id is what resume, review, cancel_worker, and crew_send use. Read-only investigation uses role: \"survey\" (no exclusive paths, no review, no land). After a coder commits, dispatch role: \"reviewer\" with review set to that worker id before land_workers."
-          : "Delegate a bounded task to a clean-context subagent. Same-response independent calls run in parallel; use task_id/depends_on for dependencies and disjoint file ownership for parallel edits. Invent a short worker name such as David. Use fork_task instead when shared prompt prefix/state is more useful.",
+          ? "Start or resume a git-worktree worker. Pass mission_id from crew_plan. prompt is the task. name is a nickname. Use the returned worker id for resume, review, cancel_worker, and crew_send. role survey is read-only. After a coder commits, dispatch role reviewer with review set to that worker id before land_workers. Unfinished dependencies are refused."
+          : "Delegate one bounded task to a clean-context subagent. Independent calls in one response run in parallel. Use task_id and depends_on to order work, and disjoint files for parallel edits. Invent a short name such as David. Use fork_task to keep this prompt prefix and model.",
         parameters: {
           type: "object",
           properties: subagentProperties,
@@ -5314,14 +5013,11 @@ export function getBuiltinTools({
       function: {
         name: "fork_task",
         description:
-          "Run a bounded parallel branch that inherits this agent's prompt prefix, state, model, and tools. Same-response calls run concurrently; prefer read-only work or disjoint files. Use run_subagent for clean context, another role/model, or a different tool policy.",
+          "Parallel branch with this prompt prefix, model, and tools. Same-response calls run together. Prefer read-only work or disjoint files. Use run_subagent for a clean context or a different role.",
         parameters: {
           type: "object",
           properties: {
-            prompt: {
-              type: "string",
-              description: "Scope, constraints, and success criteria.",
-            },
+            prompt: { type: "string", description: "Task, constraints, and success criteria." },
             tasks: {
               type: "array",
               items: {
@@ -5338,14 +5034,8 @@ export function getBuiltinTools({
               },
               description: "Concrete work items.",
             },
-            summary: {
-              type: "string",
-              description: "One or two sentences for the collapsed card.",
-            },
-            name: {
-              type: "string",
-              description: "Short branch label, such as frontend or tests.",
-            },
+            summary: { type: "string", description: "One or two sentences for the card." },
+            name: { type: "string", description: "Short branch label." },
           },
           required: [],
         },
@@ -5358,7 +5048,7 @@ export function getBuiltinTools({
       function: {
         name: "land_workers",
         description:
-          "Merge one completed Crew build mission onto the current branch with git merge --no-ff. Pass mission_id. Does not delete worktrees or finish the crew. If the base moved, call crew_rebase for that mission first; land_workers refuses with REBASE_REQUIRED until the branch contains the current base tip. MAIN_WORKTREE_DIRTY means uncommitted edits on the main checkout — ask the user to fix, do not resume the worker. LAND_MERGE_CONFLICT means merge failed while already up to date with base — do not call crew_rebase.",
+          "Merge one completed build mission with git merge --no-ff. Pass mission_id. Does not delete worktrees or finish the crew. REBASE_REQUIRED: call crew_rebase first. MAIN_WORKTREE_DIRTY: the user must clean the main checkout; do not resume the worker. LAND_MERGE_CONFLICT: do not call crew_rebase.",
         parameters: {
           type: "object",
           properties: {
@@ -5378,7 +5068,7 @@ export function getBuiltinTools({
       function: {
         name: "crew_rebase",
         description:
-          "Rebase one completed build mission branch onto the current base tip inside its worktree. Use after land_workers returns REBASE_REQUIRED. On a clean rebase, a passing review is kept when the tree is unchanged. On conflict, returns RESUME_REQUIRED — resume that worker to fix, then review before land_workers.",
+          "Rebase one completed build mission onto the current base. Use after land_workers returns REBASE_REQUIRED. A conflict returns RESUME_REQUIRED: resume that worker, then review, then land.",
         parameters: {
           type: "object",
           properties: {
@@ -5398,7 +5088,7 @@ export function getBuiltinTools({
       function: {
         name: "cancel_worker",
         description:
-          "Cancel one unmerged Crew worker in a single call. Stops that worker and any in-flight review, deletes its worktree and branch, and marks the mission cancelled until crew_finish. Already merged workers are refused. Use the worker id from crew_status. This discards unmerged work.",
+          "Cancel one unmerged worker: stop it and its review, delete its worktree and branch, and mark the mission cancelled until crew_finish. Pass the worker id. Discards unmerged work. Refuses merged workers.",
         parameters: {
           type: "object",
           properties: {
@@ -5418,7 +5108,7 @@ export function getBuiltinTools({
       function: {
         name: "crew_status",
         description:
-          "Read the latest Crew roster, unread completion events, and workflow state from disk. Call before dispatching, reviewing, landing, or answering progress — including after a restart, when a wake may be missing. Open missions are always included. limit is how many finished missions to include after those (default 8).",
+          "Read the live roster, unread completions, and workflow state. Call before dispatch, review, land, or a progress answer, including after a restart. limit is extra finished missions besides the open ones (default 8).",
         parameters: {
           type: "object",
           properties: {
@@ -5436,13 +5126,13 @@ export function getBuiltinTools({
       function: {
         name: "crew_send",
         description:
-          "Write a short Crew inbox message. Recipients are a worker id from crew_status that is not yet integrated, \"coordinator\", or \"all\". Use the worker id, not the nickname. body is at most 2000 characters and is refused when longer. Say the point only. Does not wake the coordinator; they read crew_inbox on the next completion or user wake. Do not edit .codemini/crew/inbox files yourself.",
+          "Send Crew mail to a worker id that is not yet integrated, \"coordinator\", or \"all\". Use the worker id, not the nickname. body is at most 2000 characters and is refused when longer. Does not wake the coordinator. Do not edit inbox files.",
         parameters: {
           type: "object",
           properties: {
-            to: { type: "string", description: "Worker id from crew_status, coordinator, or all. Not a nickname." },
+            to: { type: "string", description: "Worker id, coordinator, or all. Not a nickname." },
             subject: { type: "string", description: "Short subject." },
-            body: { type: "string", description: "The letter, at most 2000 characters. Say the point only. Longer bodies are refused and not truncated." },
+            body: { type: "string", description: "At most 2000 characters. Longer bodies are refused." },
           },
           required: ["to", "body"],
         },
@@ -5453,7 +5143,7 @@ export function getBuiltinTools({
       function: {
         name: "crew_inbox",
         description:
-          "Read unread Crew mail. Direct mail to a worker is marked delivered when that worker reads it. Broadcast mail (to: all) stays unread for everyone else. The coordinator sees unread mail and does not consume it.",
+          "Read unread Crew mail. Direct mail is marked delivered for that reader. Broadcast mail stays for everyone else. The coordinator does not consume mail.",
         parameters: {
           type: "object",
           properties: {},
@@ -5466,7 +5156,7 @@ export function getBuiltinTools({
       function: {
         name: "crew_plan",
         description:
-          "Record Crew missions before dispatching. Pass titles, kind (build or survey), paths, optional depends_on and context. Build scopes that overlap need a dependency. Returns mission ids. Abandon a non-merged mission with abandon.",
+          "Record missions before dispatch. Each needs a title, kind build or survey, paths, and optional depends_on and context. Overlapping build scopes need a dependency. Returns mission ids. abandon marks a non-merged mission abandoned.",
         parameters: {
           type: "object",
           properties: {
@@ -5494,7 +5184,7 @@ export function getBuiltinTools({
       function: {
         name: "crew_finish",
         description:
-          "After every mission is terminal, remove clean worktrees and their worker branches, then delete those finished mission and worker records. Once no missions remain, completion events for removed workers are deleted too. Refuses while any mission is planned or active, or a worker is in flight. Dirty worktrees stay. Does not turn Crew off. If the ledger is already empty, returns already clean — do not call it again just because nothing is left.",
+          "After every mission is terminal, remove clean worktrees and their branches, then delete those finished mission and worker records. Refuses while a mission is open or a worker is in flight. Dirty worktrees stay. Does not turn Crew off. If the ledger is already empty, returns already clean.",
         parameters: { type: "object", properties: {}, required: [] },
       },
     });
@@ -5505,7 +5195,7 @@ export function getBuiltinTools({
       function: {
         name: "crew_complete",
         description:
-          "Submit this worker's mission before stopping. outcome ok needs a clean worktree and build commits (or zero survey diff). outcome blocked or failed keeps the mission active. Unread crew mail must be read first. The final handoff is the conclusion; a separate report is not required.",
+          "Finish this worker mission before stopping. outcome ok needs a clean worktree and the expected commits, or a zero survey diff. blocked or failed leaves the mission active. Read unread mail first.",
         parameters: {
           type: "object",
           properties: {
@@ -5526,7 +5216,7 @@ export function getBuiltinTools({
       function: {
         name: "submit_crew_review",
         description:
-          "Submit the Crew review verdict before stopping. passed true means the commit may land (findings must be []); passed false requires one string per blocking issue. Example pass: { passed: true, findings: [] }. Example fail: { passed: false, findings: [\"missing test for edge case\"] }. Prose Findings: in your message does not count — call this tool once.",
+          "Submit the review verdict once before stopping. passed true requires findings []. passed false requires one string per blocking issue. Prose in the message does not count.",
         parameters: {
           type: "object",
           properties: {
@@ -5545,8 +5235,8 @@ export function getBuiltinTools({
       },
     });
   }
-  // Legacy create_plan / create_spec remain available only when callers still pass handlers
-  // (e.g. older approval flows). Coding mode prefers onRunSubAgent instead.
+  // Legacy create_plan remains available only when callers still pass a handler.
+  // Coding mode prefers onRunSubAgent instead.
   if (typeof onCreatePlan === "function") {
     workflowToolDefinitions.push({
       type: "function",
@@ -5568,70 +5258,6 @@ export function getBuiltinTools({
       },
     });
   }
-  const specSectionSchema = (heading) => ({
-    type: "object",
-    description: `${heading} section. Fill only when supported by exploration evidence; omit when unknown.`,
-    properties: {
-      goal: {
-        type: "string",
-        description: "One concise goal for this section",
-      },
-      summary: {
-        type: "string",
-        description: "Concrete summary for this section",
-      },
-      requirements: {
-        type: "array",
-        items: { type: "string" },
-        description: "Requirements or facts for this section",
-      },
-      acceptance_criteria: {
-        type: "array",
-        items: { type: "string" },
-        description: "Observable acceptance checks",
-      },
-      notes: {
-        type: "array",
-        items: { type: "string" },
-        description:
-          "Optional evidence, file names, constraints, or open points",
-      },
-    },
-    required: [],
-  });
-  const specSectionProperties = {
-    summary: specSectionSchema("Summary"),
-    goals: specSectionSchema("Goals"),
-    non_goals: specSectionSchema("Non-Goals"),
-    user_experience: specSectionSchema("User Experience / Command Behavior"),
-    architecture: specSectionSchema("Architecture"),
-    data_state_model: specSectionSchema("Data / State Model"),
-    safety_rules: specSectionSchema("Safety Rules"),
-    requirements: specSectionSchema("Requirements"),
-    risks_mitigations: specSectionSchema("Risks and Mitigations"),
-    testing_validation: specSectionSchema("Testing / Validation"),
-  };
-  if (typeof onCreateSpec === "function") {
-    workflowToolDefinitions.push({
-      type: "function",
-      function: {
-        name: "create_spec",
-        description:
-          "Deprecated. Prefer writing markdown under .codemini/workspace/specs/ yourself, then implement. Kept only for legacy callers.",
-        parameters: {
-          type: "object",
-          properties: {
-            topic: { type: "string" },
-            readiness: { type: "string", enum: ["ready"] },
-            assumptions: { type: "array", items: { type: "string" } },
-            context_summary: { type: "string" },
-            ...specSectionProperties,
-          },
-          required: ["topic", "readiness"],
-        },
-      },
-    });
-  }
 
   const deferredDefinitions = {
     grep: {
@@ -5639,30 +5265,17 @@ export function getBuiltinTools({
       function: {
         name: "grep",
         description:
-          "Low-level plain text search. Prefer search_code unless you specifically need raw grep/ripgrep-style output.",
+          "Plain text or regex search. Prefer search_code unless you need raw ripgrep output.",
         parameters: isWin ? {
           type: "object",
           properties: {
-            pattern: {
-              type: "string",
-              description: "Plain text or regex search pattern",
-            },
+            pattern: { type: "string", description: "Text or regular expression." },
             query: { type: "string", description: "Alias for pattern" },
-            path: {
-              type: "string",
-              description:
-                "Directory or file to search. file_path/file/dir/directory/cwd are accepted aliases.",
-            },
-            regex: { type: "boolean", description: "Treat pattern as regex" },
-            case_sensitive: {
-              type: "boolean",
-              description: "Case-sensitive matching",
-            },
-            max_results: {
-              type: "number",
-              description: "Max matches to return",
-            },
-            language: { type: "string", description: "Filter by language" },
+            path: { type: "string", description: "File or directory. Default workspace." },
+            regex: { type: "boolean", description: "Treat pattern as a regular expression." },
+            case_sensitive: { type: "boolean", description: "Case-sensitive match." },
+            max_results: { type: "number", description: "Max matches." },
+            language: { type: "string", description: "Language filter." },
             file_types: {
               type: "array",
               items: { type: "string" },
@@ -5678,34 +5291,22 @@ export function getBuiltinTools({
       function: {
         name: "ast_grep",
         description:
-          'Low-level structural ast-grep search. Prefer search_code({mode:"structure"}) unless you need raw ast-grep results or advanced pattern debugging.',
+          'Structural search. Prefer search_code mode "structure" unless you need raw ast-grep matches.',
         parameters: {
           type: "object",
           properties: {
             pattern: {
               type: "string",
-              description:
-                'ast-grep structural pattern, such as "function $A($$$) { $$$ }", "class $A { $$$ }", "$A($$$)", or "<$A $$$ />". query is accepted as an alias.',
+              description: 'ast-grep pattern, such as "function $NAME($$$) { $$$ }".',
             },
             query: { type: "string", description: "Alias for pattern" },
-            path: {
-              type: "string",
-              description:
-                "Directory or file to search. Defaults to workspace root.",
-            },
+            path: { type: "string", description: "File or directory. Default workspace." },
             file_path: { type: "string", description: "Alias for path" },
             file: { type: "string", description: "Alias for path" },
             dir: { type: "string", description: "Alias for path" },
             directory: { type: "string", description: "Alias for path" },
-            language: {
-              type: "string",
-              description:
-                "Optional language filter such as js, ts, tsx, html, css, python, go, c, cpp, bash, java, rust, csharp, php, or ruby.",
-            },
-            max_results: {
-              type: "number",
-              description: "Max structural matches to return",
-            },
+            language: { type: "string", description: "Optional language id, such as js, ts, py, or go." },
+            max_results: { type: "number", description: "Max matches." },
           },
           required: [],
         },
@@ -5716,19 +5317,12 @@ export function getBuiltinTools({
       function: {
         name: "list",
         description:
-          `Low-level directory listing. Prefer search_code for code discovery and load this only when you need to inspect directory contents.${fileToolPathHint}`,
+          `List one directory. Prefer search_code to find code.${fileToolPathHint}`,
         parameters: {
           type: "object",
           properties: {
-            path: {
-              type: "string",
-              description:
-                "Directory path to list. file_path/file/dir/directory are accepted aliases.",
-            },
-            include_hidden: {
-              type: "boolean",
-              description: "Include dotfiles",
-            },
+            path: { type: "string", description: "Directory. Default workspace." },
+            include_hidden: { type: "boolean", description: "Include dotfiles." },
           },
         },
       },
@@ -5738,30 +5332,15 @@ export function getBuiltinTools({
       function: {
         name: "query_project_index",
         description:
-          'Low-level project index query. Prefer search_code({mode:"symbol"}) unless you need raw Symbol Graph summaries.',
+          'Symbol-graph lookup. Prefer search_code mode "symbol" unless you need the raw summary.',
         parameters: {
           type: "object",
           properties: {
-            query: {
-              type: "string",
-              description:
-                'Task or code search phrase such as "login auth" or "tui presenters"',
-            },
-            path: {
-              type: "string",
-              description:
-                "Optional path prefix like src or src/auth to narrow results",
-            },
+            query: { type: "string", description: "Task or symbol phrase." },
+            path: { type: "string", description: "Path prefix, such as src/auth." },
             path_prefix: { type: "string", description: "Alias for path" },
-            language: {
-              type: "string",
-              description:
-                "Optional language filter such as ts, js, python, or go",
-            },
-            max_results: {
-              type: "number",
-              description: "Max result files to return",
-            },
+            language: { type: "string", description: "Optional language id." },
+            max_results: { type: "number", description: "Max files." },
           },
         },
       },
@@ -5771,7 +5350,7 @@ export function getBuiltinTools({
       function: {
         name: "query_project_graph",
         description:
-          "Query the project knowledge graph before reading many files. Supports relevant subgraphs, neighbors, shortest paths, and change impact with source evidence and confidence labels.",
+          "Project knowledge graph: relevant subgraph, neighbors, shortest path, or change impact, with evidence and confidence.",
         parameters: {
           type: "object",
           properties: {
@@ -5779,7 +5358,7 @@ export function getBuiltinTools({
               type: "string",
               enum: ["query", "neighbors", "path", "impact", "overview"],
             },
-            query: { type: "string", description: "Task, concept, symbol, or flow to locate" },
+            query: { type: "string", description: "Task, symbol, or flow." },
             node_id: { type: "string", description: "Exact node ID for neighbors" },
             from: { type: "string", description: "Node ID or label for path start" },
             to: { type: "string", description: "Node ID or label for path end" },
@@ -5798,8 +5377,7 @@ export function getBuiltinTools({
       type: "function",
       function: {
         name: "glob",
-        description:
-          "Find files by glob pattern. Use this when you already know a filename pattern such as src/**/*.ts.",
+        description: "Find files by glob, such as src/**/*.ts.",
         parameters: isWin ? {
           type: "object",
           properties: {
@@ -5820,7 +5398,7 @@ export function getBuiltinTools({
       function: {
         name: "ast_query",
         description:
-          "Run a Tree-sitter query on a code file and return ast_target objects. Use this for advanced AST workflows such as multi-match selection, explicit node caching, or when you plan to reuse ast_target across follow-up reads or edits. For a common one-shot function, class, or method read, prefer read(path, query=...) or read(ast_target=...).",
+          "Run a Tree-sitter query and return ast_target objects for multi-match or cached follow-ups. For one function, class, or method, use read with query or ast_target.",
         parameters: {
           type: "object",
           properties: {
@@ -5839,7 +5417,7 @@ export function getBuiltinTools({
       function: {
         name: "read_ast_node",
         description:
-          "Read a previously selected AST node with compact structural context. Use this after ast_query when you want an explicit follow-up read of a cached node before a scoped structural edit. For common one-shot AST reads, prefer read(ast_target=...) or read(path, query=...).",
+          "Read one cached AST node from ast_query. For a one-shot read, use read with ast_target or query.",
         parameters: {
           type: "object",
           properties: {
@@ -5856,27 +5434,19 @@ export function getBuiltinTools({
       function: {
         name: "web_fetch",
         description:
-          "Fetch and read a live web page. Prefer this tool over shell curl for reading known URLs and web_search result pages. Use web_search for keyword search. Uses a lightweight fetch + Cheerio reader by default, then falls back to optional Playwright browser rendering for JavaScript-heavy pages when Playwright is installed.",
+          "Fetch an http(s) URL and return readable text. Prefer this over curl. Use web_search to find pages. Mode is chosen automatically: static when the response already has readable text, browser when the static body is nearly empty and looks like a client-rendered page. There is no mode argument. metadata.fetch_mode is static or browser. wait_until applies only to the browser fallback.",
         parameters: {
           type: "object",
           properties: {
-            url: {
-              type: "string",
-              description: "Absolute http or https URL to fetch",
-            },
+            url: { type: "string", description: "Absolute http(s) URL." },
             href: { type: "string", description: "Alias for url" },
-            timeout_ms: {
-              type: "number",
-              description: "Navigation timeout in milliseconds",
-            },
+            timeout_ms: { type: "number", description: "Milliseconds." },
             wait_until: {
               type: "string",
-              description: "domcontentloaded, load, or networkidle",
+              enum: ["domcontentloaded", "load", "networkidle"],
+              description: "Browser wait condition when rendering is available.",
             },
-            max_links: {
-              type: "number",
-              description: "Max number of links to extract from the page",
-            },
+            max_links: { type: "number", description: "Max extracted links." },
           },
           required: ["url"],
         },
@@ -5887,39 +5457,28 @@ export function getBuiltinTools({
       function: {
         name: "save_memory",
         description:
-          `Save a durable fact for future sessions. Route leaf: save_memory — lasting preferences, conventions, or reusable lessons only. Do NOT store chatter, one-offs, this-task constraints, brainstorms, or secrets; leave soft task signals for Dream inbox/session-review. Available immediately after save. Write content and summary in ${replyLanguageName}; keep paths, commands, and identifiers exact.`,
+          `Save a durable fact for later sessions. Only lasting preferences, conventions, or lessons. Do not store chatter, one-offs, task constraints, brainstorms, or secrets. Write content and summary in ${replyLanguageName}; keep paths and identifiers exact.`,
         parameters: {
           type: "object",
           properties: {
-            content: {
-              type: "string",
-              description: `The knowledge or observation to remember, written in ${replyLanguageName}`,
-            },
-            summary: {
-              type: "string",
-              description:
-                `Short summary for the memory index (under 80 chars), written in ${replyLanguageName}`,
-            },
+            content: { type: "string", description: `Fact to remember, in ${replyLanguageName}.` },
+            summary: { type: "string", description: `Index line under 80 characters, in ${replyLanguageName}.` },
             scope: {
               type: "string",
-              description:
-                'Where to store this memory. "user" = personal preferences/interests/habits. "project" = this repository only. "global" = cross-project environment/tool knowledge. If omitted: preference → user, otherwise → project.',
+              enum: ["user", "project", "global"],
+              description: "Default: preference to user, otherwise project.",
             },
             kind: {
               type: "string",
-              description:
-                'One of four kinds: "preference" (user tastes/interests/habits), "convention" (workflows/rules), "lesson" (corrections/learnings), "note" (other durable facts). Default: note.',
+              enum: ["preference", "convention", "lesson", "note"],
+              description: "Default note.",
             },
             family: {
               type: "string",
-              description:
-                'Optional knowledge family: "personal", "repo", "coding", or "procedure". Omit to infer from scope/kind.',
+              enum: ["personal", "repo", "coding", "procedure"],
+              description: "Omit to infer.",
             },
-            replace_similar: {
-              type: "boolean",
-              description:
-                "Replace an existing similar memory when true. Default: true.",
-            },
+            replace_similar: { type: "boolean", description: "Replace a similar memory. Default true." },
           },
           required: ["content"],
         },
@@ -5929,14 +5488,14 @@ export function getBuiltinTools({
       type: "function",
       function: {
         name: "list_memory",
-        description: "List stored persistent memories for one scope, optionally filtered by family/kind/lifecycle.",
+        description: "List memories in one scope. Optional family, kind, or lifecycle filter.",
         parameters: {
           type: "object",
           properties: {
-            scope: { type: "string", description: "user, global, or project" },
-            family: { type: "string", description: "Optional family filter: personal, repo, coding, procedure" },
-            kind: { type: "string", description: "Optional kind filter: preference, convention, lesson, note" },
-            lifecycle: { type: "string", description: "Optional lifecycle filter: operational, longterm, archived" },
+            scope: { type: "string", enum: ["user", "global", "project"] },
+            family: { type: "string", enum: ["personal", "repo", "coding", "procedure"] },
+            kind: { type: "string", enum: ["preference", "convention", "lesson", "note"] },
+            lifecycle: { type: "string", enum: ["operational", "longterm", "archived"] },
           },
           required: ["scope"],
         },
@@ -5946,15 +5505,15 @@ export function getBuiltinTools({
       type: "function",
       function: {
         name: "search_memory",
-        description: "Search stored persistent memories with FTS. Scope may be user, global, project, or all.",
+        description: "Full-text search over memories. Scope is user, global, project, or all.",
         parameters: {
           type: "object",
           properties: {
-            query: { type: "string", description: "Search phrase" },
-            scope: { type: "string", description: "user, global, project, or all. Default: all" },
-            family: { type: "string", description: "Optional family: personal, repo, coding, procedure" },
-            kind: { type: "string", description: "Optional kind filter" },
-            limit: { type: "number", description: "Max hits, 1-10. Default: 5" },
+            query: { type: "string", description: "Search phrase." },
+            scope: { type: "string", enum: ["user", "global", "project", "all"], description: "Default all." },
+            family: { type: "string", enum: ["personal", "repo", "coding", "procedure"] },
+            kind: { type: "string", enum: ["preference", "convention", "lesson", "note"] },
+            limit: { type: "number", description: "1-10. Default 5." },
           },
           required: ["query"],
         },
@@ -5980,19 +5539,15 @@ export function getBuiltinTools({
       function: {
         name: "dream_consolidate",
         description:
-          "Run Dream consolidation over inbox entries and memory buckets. Route leaf: dream promotion — evaluate inbox (keep/discard), promote durable insights into user/global/project memory (preference|convention|lesson|note), then LLM-maintain changed buckets. Writes an audit report. Use during off-hours or when the user asks for memory maintenance; do not call mid-task to replace save_memory.",
+          "Consolidate the Dream inbox into durable memories and write an audit report. Use off-hours or when asked. Do not call mid-task instead of save_memory.",
         parameters: {
           type: "object",
           properties: {
             scope: {
               type: "string",
-              description: "Optional filter: user, global, or project (repo/thread aliases map to project)",
+              description: "user, global, or project.",
             },
-            dry_run: {
-              type: "boolean",
-              description:
-                "If true, only preview what would change without making changes",
-            },
+            dry_run: { type: "boolean", description: "Preview only." },
           },
         },
       },
@@ -6040,9 +5595,14 @@ export function getBuiltinTools({
     },
   };
 
+  const sharedBrowserSession = Boolean(sessionId);
+  const browserSession = sharedBrowserSession
+    ? getSharedBrowserSession({ config, workspaceRoot, sessionId })
+    : createBrowserSession({ config, workspaceRoot });
   const deferredToolCatalog = {
     ...deferredDefinitions,
-    ...buildSearchDeferredEntries(config)
+    ...buildSearchDeferredEntries(config),
+    ...buildBrowserDeferredEntries(config),
   };
 
   const enableCodeWikiCommentTools =
@@ -6063,6 +5623,16 @@ export function getBuiltinTools({
   if (shellContext.commandPlatform !== "win32") {
     const promote = ["grep", "glob"];
     for (const name of promote) {
+      const def = deferredToolCatalog[name];
+      if (def && !definitions.some((d) => d?.function?.name === name)) {
+        definitions.push(def);
+      }
+      delete deferredToolCatalog[name];
+    }
+  }
+
+  if (browserToolsExposed(config) && isVisualFeedbackInProgress(browserSession)) {
+    for (const name of ["browser_inspect", "browser_act"]) {
       const def = deferredToolCatalog[name];
       if (def && !definitions.some((d) => d?.function?.name === name)) {
         definitions.push(def);
@@ -6713,7 +6283,7 @@ export function getBuiltinTools({
       if (astTarget.path) rememberAstSelection(astTarget.path, astTarget);
       return readBoundedAstNode({ ...args, ast_target: astTarget });
     },
-    web_fetch: (args) => webFetchPage(args),
+    web_fetch: (args) => webFetchPage(args, config),
     add_code_comment: async (args) => {
       await ensureProjectIndex();
       const commentPath = normalizeFilePathValue(
@@ -7144,7 +6714,7 @@ export function getBuiltinTools({
         return {
           ok: false,
           error:
-            "update_plan cannot create plan state. Use create_plan/create_spec in plan mode, or provide a normal text plan without tool calls.",
+            "update_plan cannot create plan state. Provide a normal text plan without tool calls.",
           oldPlan,
           newPlan: oldPlan,
           hasPendingApproval: false,
@@ -7443,48 +7013,6 @@ export function getBuiltinTools({
       }
       return { ok: true, passed: verdict.passed, findings: verdict.findings };
     },
-    create_spec: async (args = {}) => {
-      if (typeof onCreateSpec !== "function") {
-        return {
-          ok: false,
-          error: "create_spec is not available in the current mode.",
-        };
-      }
-      const readiness = String(args?.readiness || "").toLowerCase();
-      if (readiness !== "ready") {
-        return {
-          ok: false,
-          error:
-            'Set readiness to "ready" only when requirements are clear. Otherwise ask the user a clarifying question first.',
-        };
-      }
-      const topic = String(args?.topic || "").trim();
-      if (!topic) {
-        return { ok: false, error: "topic is required" };
-      }
-      const assumptions = normalizeAssumptionItems(args?.assumptions);
-      const sections = {};
-      for (const key of [
-        "summary",
-        "goals",
-        "non_goals",
-        "user_experience",
-        "architecture",
-        "data_state_model",
-        "safety_rules",
-        "requirements",
-        "risks_mitigations",
-        "testing_validation",
-      ]) {
-        if (args?.[key] != null) sections[key] = args[key];
-      }
-      return onCreateSpec({
-        topic,
-        assumptions,
-        contextSummary: String(args?.context_summary || "").trim(),
-        sections,
-      });
-    },
     run: Object.assign((args, context) => {
       if (crewActive) {
         const crewCheck = evaluateCrewParentCommand(args?.command, platform);
@@ -7492,7 +7020,7 @@ export function getBuiltinTools({
           throw new Error(crewCheck.reason);
         }
       }
-      return runCommand(workspaceRoot, config, args, context);
+      return runCommand(workspaceRoot, config, args, context, config?.runtime?.agentTerminalSessionId || sessionId);
     }, {
       prepareApproval: async (args) => {
         const evaluation = args?._evaluation || null;
@@ -7780,6 +7308,39 @@ export function getBuiltinTools({
           message: `"${query}" is already in your current tool list. Call it directly; do not tool_search for it.`,
         };
       }
+      const wantBrowserFamily = query === "browser" || query === "browser_*";
+      if (wantBrowserFamily) {
+        const alreadyBrowser = definitions
+          .map((item) => String(item?.function?.name || item?.name || ""))
+          .filter((name) => name.startsWith("browser_"));
+        const deferredBrowser = Object.entries(deferredToolCatalog).filter(([name]) =>
+          name.startsWith("browser_"),
+        );
+        if (!alreadyBrowser.length && !deferredBrowser.length) {
+          return {
+            error: `Unknown tool: "browser". Browser tools are not available in this mode.`,
+          };
+        }
+        const loaded = [...alreadyBrowser, ...deferredBrowser.map(([name]) => name)];
+        const schemas = [
+          ...definitions.filter((item) =>
+            String(item?.function?.name || item?.name || "").startsWith("browser_"),
+          ),
+          ...deferredBrowser.map(([, def]) => def),
+        ];
+        const alreadyNote = alreadyBrowser.length
+          ? `${alreadyBrowser.join(", ")} ${alreadyBrowser.length === 1 ? "is" : "are"} already in your current tool list. `
+          : "";
+        const loadedNote = deferredBrowser.length
+          ? `Loaded ${deferredBrowser.map(([name]) => name).join(", ")}. You can now call them directly. `
+          : "Call them directly. ";
+        return {
+          loaded,
+          schemas,
+          message:
+            `${alreadyNote}${loadedNote}Reuse the already-open headed BrowserSession; do not call browser_act open, and do not curl localhost.`,
+        };
+      }
       if (query === "all") {
         const all = Object.values(deferredToolCatalog);
         return {
@@ -7804,6 +7365,10 @@ export function getBuiltinTools({
       };
     },
   };
+
+  if (browserToolsExposed(config)) {
+    Object.assign(handlers, buildBrowserHandlers(browserSession));
+  }
 
   const searchLimitNote = (shown, available, truncated, kind) => {
     if (!truncated && shown >= available) return "";
@@ -8098,14 +7663,6 @@ export function getBuiltinTools({
       if (result.error) return String(result.error);
       if (result.message) return String(result.message);
       if (result.text) return String(result.text);
-      return JSON.stringify(result);
-    },
-
-    create_spec(result) {
-      if (!result || typeof result !== "object") return String(result);
-      if (result.error) return String(result.error);
-      if (result.message) return String(result.message);
-      if (result.filePath) return `Spec draft created: ${result.filePath}`;
       return JSON.stringify(result);
     },
 
@@ -8436,6 +7993,9 @@ export function getBuiltinTools({
       webSearchHandler: (args) => webSearchQuery(config, args)
     })
   );
+  if (browserToolsExposed(config)) {
+    Object.assign(rawFormatters, buildBrowserFormatters());
+  }
 
   const formatters = Object.fromEntries(
     Object.entries({
@@ -8463,6 +8023,13 @@ export function getBuiltinTools({
 
   async function dispose() {
     stagedWrites.clear();
+    if (browserSession && !sharedBrowserSession) {
+      try {
+        await browserSession.dispose();
+      } catch {
+        // The browser process is already gone.
+      }
+    }
     if (activeFffAdapter?.dispose) {
       try {
         await activeFffAdapter.dispose();
@@ -8567,12 +8134,18 @@ export function getBuiltinTools({
         : handler;
   }
 
+  definitions = definitions.map(compactToolDefinition);
+  for (const name of Object.keys(deferredToolCatalog)) {
+    deferredToolCatalog[name] = compactToolDefinition(deferredToolCatalog[name]);
+  }
+
   return {
     definitions,
     handlers: coordinatedHandlers,
     formatters,
     deferredDefinitions: deferredToolCatalog,
     displayLabels: mcpTools.displayLabels || {},
+    browserSession,
     dispose,
   };
 }

@@ -8,6 +8,7 @@ if (!tag) {
   process.exit(1);
 }
 
+// Prerelease versions are accepted. v0.10.5-beta.0 matches package.json 0.10.5-beta.0.
 const expected = `v${version}`;
 if (tag !== expected) {
   console.error(`Tag ${tag} does not match package.json version ${expected}.`);

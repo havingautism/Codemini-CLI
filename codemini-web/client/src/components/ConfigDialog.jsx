@@ -18,12 +18,6 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import {
-  CheckCircle,
-  WarningCircle,
-  XCircle,
-} from "@/lib/icons";
-import { cn } from "@/lib/utils";
 import * as api from "@/hooks/use-api";
 import { Spinner } from "@/components/ui/spinner";
 import { t } from "../../i18n/index.js";
@@ -96,7 +90,9 @@ function normalizeDraftValue(path, value, fieldsByPath) {
   }
   const field = fieldsByPath.get(path);
   if (field && isSwitchField(field)) {
-    return value === true || value === "true";
+    return field.onValue != null
+      ? (value === true || value === field.onValue ? field.onValue : field.offValue)
+      : value === true || value === "true";
   }
   if (field?.control === "number" || field?.control === "percent") {
     const num = Number(value);
@@ -119,6 +115,7 @@ function getBaselineValue(path, config, fieldsByPath) {
   const field = fieldsByPath.get(path);
   const raw = getNestedValue(config, path);
   if (field && isSwitchField(field)) {
+    if (field.onValue != null) return raw === field.onValue ? field.onValue : field.offValue;
     return raw === true || raw === "true";
   }
   if (field?.control === "number" || field?.control === "percent") {
@@ -183,16 +180,12 @@ export function ConfigDialog({
   const [appearanceBaseline, setAppearanceBaseline] = useState(readAppearance);
   const [appearanceDraft, setAppearanceDraft] = useState(readAppearance);
   const [configLoading, setConfigLoading] = useState(false);
-  const [playwrightStatus, setPlaywrightStatus] = useState(null);
-  const [playwrightLoading, setPlaywrightLoading] = useState(false);
   const [pendingWarning, setPendingWarning] = useState(null);
 
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
     setConfigLoading(true);
-    setPlaywrightLoading(true);
-    setPlaywrightStatus(null);
     setChanges({});
     setPendingWarning(null);
     setSaveError("");
@@ -208,17 +201,6 @@ export function ConfigDialog({
       .catch(() => {})
       .finally(() => {
         if (!cancelled) setConfigLoading(false);
-      });
-    api
-      .fetchPlaywrightStatus()
-      .then((status) => {
-        if (!cancelled) setPlaywrightStatus(status);
-      })
-      .catch(() => {
-        if (!cancelled) setPlaywrightStatus(null);
-      })
-      .finally(() => {
-        if (!cancelled) setPlaywrightLoading(false);
       });
     return () => {
       cancelled = true;
@@ -269,7 +251,9 @@ export function ConfigDialog({
   };
 
   const getBooleanValue = (path) => {
+    const field = fieldsByPath.get(path);
     const value = getValue(path);
+    if (field?.onValue != null) return value === field.onValue || value === true;
     return value === true || value === "true";
   };
   const availability = sandboxAvailability || status?.sandboxAvailability || null;
@@ -327,30 +311,6 @@ export function ConfigDialog({
         "model.reasoning_auto" in changes ||
         "model.reasoning_effort" in changes));
 
-  const playwrightReady =
-    playwrightStatus?.packageInstalled && playwrightStatus?.chromiumReady;
-  const playwrightLabel = playwrightLoading
-    ? t("playwrightChecking")
-    : playwrightReady
-      ? t("playwrightReady")
-      : playwrightStatus?.packageInstalled
-        ? t("playwrightBrowserMissing")
-        : t("playwrightNotInstalled");
-  const PlaywrightStatusIcon = playwrightLoading
-    ? null
-    : playwrightReady
-      ? CheckCircle
-      : playwrightStatus?.packageInstalled
-        ? WarningCircle
-        : XCircle;
-  const playwrightStatusClass = playwrightLoading
-    ? "text-(--text-muted)"
-    : playwrightReady
-      ? "text-(--accent-green)"
-      : playwrightStatus?.packageInstalled
-        ? "text-(--accent-amber, #d97706)"
-        : "text-(--text-muted)";
-
   const handleSave = async () => {
     if (saving) return;
     setSaving(true);
@@ -371,10 +331,16 @@ export function ConfigDialog({
         } else {
           const field = fieldsByPath.get(path);
           normalizedValue = isSwitchField(field)
-            ? value === true || value === "true"
+            ? (field.onValue != null
+              ? (value === true || value === field.onValue ? field.onValue : field.offValue)
+              : value === true || value === "true")
             : field?.control === "number" || field?.control === "percent"
               ? Number(value)
               : value;
+          if (path === "policy.allowed_paths") {
+            const parsed = typeof normalizedValue === "string" ? JSON.parse(normalizedValue || "[]") : normalizedValue;
+            normalizedValue = Array.isArray(parsed) ? parsed : [];
+          }
         }
         if (fieldsByPath.get(path)?.type === "password") {
           normalizedValue = secretSettingWrite(value);
@@ -621,23 +587,6 @@ export function ConfigDialog({
           </SettingsField>
         )}
 
-        {tabId === "web" && (
-          <SettingsField id="playwright-status" label={t("playwright")} help={t("playwrightHelp")}>
-            <div
-              className={cn(
-                "flex min-h-[52px] items-center gap-2 rounded-lg border border-(--border-default) px-3 py-2.5 text-[13px]",
-                playwrightStatusClass,
-              )}
-            >
-              {playwrightLoading ? (
-                <Spinner className="size-4" />
-              ) : PlaywrightStatusIcon ? (
-                <PlaywrightStatusIcon size={16} weight="fill" />
-              ) : null}
-              <span>{playwrightLabel}</span>
-            </div>
-          </SettingsField>
-        )}
       </SettingsSection>
     );
   };
@@ -707,9 +656,6 @@ export function ConfigDialog({
               {t("settingsUnsavedChanges")}
             </span>
           )}
-          <Button variant="outline" onClick={() => onOpenChange(false)}>
-            {t("cancel")}
-          </Button>
           <Button onClick={handleSave} disabled={!hasChanges || saving}>
             {t("saveChanges")}
           </Button>

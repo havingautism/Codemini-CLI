@@ -6,6 +6,7 @@ import {
   _resetTerminalSessionsForTests,
   buildPowerShellColorBootstrap,
   buildTerminalColorEnv,
+  closeTerminal,
   formatTerminalPlainText,
   getTerminalSnapshot,
   resizeTerminal,
@@ -183,6 +184,36 @@ test('web terminal runs hand-typed commands through a PTY', async () => {
   });
 });
 
+test('named tabs isolate PTYs and closing a tab prevents stale input from reopening it', async () => {
+  await withTempCwd(async (cwd) => {
+    const powershell = process.platform === 'win32';
+    const shell = powershell ? 'powershell' : 'bash';
+    const command = (word) => powershell ? `Write-Output ('TAB_' + '${word}')` : `printf '%s%s\\n' TAB_ ${word}`;
+    runTerminalCommand({ cwd, command: command('FIRST'), terminalId: 'first', shellDefault: shell });
+    runTerminalCommand({ cwd, command: command('SECOND'), terminalId: 'second', shellDefault: shell });
+    async function waitForOutput(tab, marker) {
+      for (let index = 0; index < 100; index += 1) {
+        const { data } = getTerminalSnapshot(cwd, shell, tab);
+        if (stripAnsi(data).includes(marker)) return stripAnsi(data);
+        await new Promise(resolve => setTimeout(resolve, 50));
+      }
+      assert.fail(`Terminal ${tab} did not produce ${marker}`);
+    }
+    const [first, second] = await Promise.all([
+      waitForOutput('first', 'TAB_FIRST'),
+      waitForOutput('second', 'TAB_SECOND'),
+    ]);
+    assert.doesNotMatch(first, /TAB_SECOND/);
+    assert.doesNotMatch(second, /TAB_FIRST/);
+    assert.equal(closeTerminal(cwd, 'first').ok, true);
+    assert.equal(writeTerminalInput(cwd, 'ignored', shell, 'first').ok, false);
+    assert.equal(getTerminalSnapshot(cwd, shell, 'first'), null);
+    writeTerminalInput(cwd, `${command('AFTER')}\r`, shell, 'second');
+    await waitForOutput('second', 'TAB_AFTER');
+    closeTerminal(cwd, 'second');
+  });
+});
+
 test('web terminal preserves shell state between commands', async () => {
   await withTempCwd(async (cwd) => {
     const shellDefault = process.platform === 'win32' ? 'powershell' : 'bash';
@@ -220,11 +251,11 @@ test('web terminal preserves shell state between commands', async () => {
 test('rapid terminal resizes do not duplicate a hand-typed command', async () => {
   await withTempCwd(async (cwd) => {
     const shellDefault = process.platform === 'win32' ? 'powershell' : 'bash';
-    const marker = 'codemini_resize_marker';
+    const markerFile = path.join(cwd, 'resize-runs.txt');
     const command =
       process.platform === 'win32'
-        ? `$${marker} = 1`
-        : `${marker}=1`;
+        ? "Add-Content -LiteralPath 'resize-runs.txt' -Value 'ran'"
+        : "printf 'ran\\n' >> resize-runs.txt";
 
     getTerminalSnapshot(cwd, shellDefault);
     for (let index = 0; index < 40; index += 1) {
@@ -247,22 +278,14 @@ test('rapid terminal resizes do not duplicate a hand-typed command', async () =>
       );
     }
 
-    let text = '';
     for (let index = 0; index < 40; index += 1) {
-      text = stripAnsi(getTerminalSnapshot(cwd, shellDefault).data);
-      if (text.includes(marker)) {
-        await new Promise((resolve) => setTimeout(resolve, 150));
-        text = stripAnsi(getTerminalSnapshot(cwd, shellDefault).data);
-        break;
-      }
+      if ((await fs.readFile(markerFile, 'utf8').catch(() => '')).includes('ran')) break;
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
-
-    assert.equal(
-      text.match(new RegExp(marker, 'g'))?.length || 0,
-      1,
-      'expected one terminal echo for one submitted command',
-    );
+    // ConPTY can redraw the input while resizing. Check execution itself.
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    const runs = (await fs.readFile(markerFile, 'utf8').catch(() => '')).match(/\bran\b/g) || [];
+    assert.equal(runs.length, 1, 'expected one execution for one submitted command');
   });
 });
 

@@ -63,6 +63,7 @@ import {
   userSkillChipBadges,
 } from "@/lib/user-skill-prompt.js";
 import { formatTimestamp } from "../../utils/time.js";
+import { isVisualFeedbackUserMessage } from "@/lib/visual-feedback-message.js";
 import { t } from "../../i18n/index.js";
 import {
   hookEventI18nKey,
@@ -95,6 +96,7 @@ import {
 } from "@/components/ui/tooltip";
 import {
   ArrowCounterClockwise,
+  Undo,
   ArrowSquareOut,
   Brain,
   CaretDown,
@@ -1411,7 +1413,7 @@ function FileChangesSummary({ changes }) {
                         <span>{t("undoChangeReverted")}</span>
                       </>
                     ) : (
-                      <ArrowCounterClockwise size={13} />
+                      <Undo size={13} />
                     )}
                   </span>
                 )}
@@ -1460,6 +1462,61 @@ function FileChangesSummary({ changes }) {
         onConfirm={confirmUndoChange}
       />
     </>
+  );
+}
+
+function VisualFeedbackScreenshotThumbs({ attachments = [], compact = false }) {
+  const images = (Array.isArray(attachments) ? attachments : []).filter(
+    (item) => item?.kind === "image" && item.url,
+  );
+  if (!images.length) return null;
+  return (
+    <div className={cn("mt-2 flex flex-wrap gap-2", compact && "gap-1.5")}>
+      {images.map((item) => (
+        <img
+          key={item.id || item.url}
+          src={item.url}
+          alt={item.name || t("attachmentImage")}
+          className={cn(
+            "rounded-lg object-contain bg-(--bg-primary)/40",
+            compact ? "h-14 max-w-24" : "max-h-40 max-w-full",
+          )}
+        />
+      ))}
+    </div>
+  );
+}
+
+function VisualFeedbackUserContent({ summaryText, modelText, attachments = [] }) {
+  const [open, setOpen] = useState(false);
+  const payload = String(modelText || "").trim();
+  const canExpand = Boolean(payload);
+  return (
+    <div className="flex w-full min-w-0 flex-col items-stretch">
+      {summaryText ? <UserText text={summaryText} /> : null}
+      {!open ? <VisualFeedbackScreenshotThumbs attachments={attachments} compact /> : null}
+      {canExpand ? (
+        <>
+          <button
+            type="button"
+            className="mt-2 inline-flex items-center gap-1 self-start rounded-md text-[11px] font-medium text-(--text-muted) hover:text-(--text-secondary)"
+            aria-expanded={open}
+            onClick={() => setOpen((value) => !value)}
+          >
+            {open ? <CaretDown size={12} /> : <CaretRight size={12} />}
+            {open ? t("visualFeedbackBubbleCollapse") : t("visualFeedbackBubbleExpand")}
+          </button>
+          {open ? (
+            <>
+              <VisualFeedbackScreenshotThumbs attachments={attachments} />
+              <pre className="mt-2 max-h-[min(320px,50vh)] overflow-auto whitespace-pre-wrap break-words rounded-xl bg-(--bg-primary)/35 px-3 py-2 text-left text-[12px] leading-5 text-(--text-secondary)">
+                {payload}
+              </pre>
+            </>
+          ) : null}
+        </>
+      ) : null}
+    </div>
   );
 }
 
@@ -2493,7 +2550,7 @@ export const MessageBubble = memo(function MessageBubble({
             <div className="codemini-message-surface codemini-user-bubble w-fit max-w-full rounded-2xl px-4 py-2">
               {(userSkillChips.length > 0 ||
                 fileReferences.length > 0 ||
-                attachments.length > 0) && (
+                (!isVisualFeedbackUserMessage(message) && attachments.length > 0)) && (
                 <div
                   className={cn(
                     "flex max-w-full flex-col gap-2",
@@ -2504,10 +2561,22 @@ export const MessageBubble = memo(function MessageBubble({
                     <UserSkillChips badges={userSkillChips} />
                   )}
                   <UserFileReferenceChips references={fileReferences} />
-                  <UserAttachments attachments={attachments} />
+                  {!isVisualFeedbackUserMessage(message) && (
+                    <UserAttachments attachments={attachments} />
+                  )}
                 </div>
               )}
-              {userDisplayText && <UserText text={userDisplayText} />}
+              {userDisplayText && (
+                isVisualFeedbackUserMessage(message) ? (
+                  <VisualFeedbackUserContent
+                    summaryText={userDisplayText}
+                    modelText={message.modelText}
+                    attachments={attachments}
+                  />
+                ) : (
+                  <UserText text={userDisplayText} />
+                )
+              )}
               {startupTodos && <TodoList todos={startupTodos} />}
             </div>
           )}

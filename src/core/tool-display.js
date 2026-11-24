@@ -1,10 +1,10 @@
 import { trimInline as trimInlineText } from './string-utils.js';
+import { BROWSER_TOOL_LABELS } from './browser/schema.js';
 import { isShellToolName } from './shell-tool-name.js';
 import { resolveCrewWorkerDisplayName } from './crew-progress.js';
 
 export const TOOL_DISPLAY_LABELS = {
   create_plan: 'Plan',
-  create_spec: 'Create Spec',
   run_subagent: 'Subagent',
   land_workers: 'Land',
   crew_rebase: 'Crew Rebase',
@@ -43,7 +43,8 @@ export const TOOL_DISPLAY_LABELS = {
   grep: 'Search',
   glob: 'Glob',
   list: 'List',
-  skill: 'Skill'
+  skill: 'Skill',
+  ...BROWSER_TOOL_LABELS,
 };
 
 /** @type {Map<string, string>} MCP tool function name → UI label (browser-safe registry) */
@@ -230,6 +231,18 @@ export function formatToolDisplayName(name, args = {}, options = {}) {
     const query = trimInline(args?.query || args?.q || '', 96);
     return query ? formatToolWithArg(formatToolLabel('web_search'), query) : formatToolLabel('web_search');
   }
+  if (BROWSER_TOOL_LABELS[toolName]) {
+    const action = trimInline(args?.action || '', 24);
+    const target = trimInline(
+      args?.ref
+        || args?.url
+        || args?.selector
+        || (args?.role && args?.name ? `${args.role} "${args.name}"` : ''),
+      72,
+    );
+    const detail = [action, target].filter(Boolean).join(' ');
+    return detail ? formatToolWithArg(formatToolLabel(toolName), detail) : formatToolLabel(toolName);
+  }
   if (toolName === 'skill') {
     const name = trimInline(args?.name || args?.skill || '', 96);
     const query = trimInline(args?.query || '', 96);
@@ -284,10 +297,6 @@ export function formatToolDisplayName(name, args = {}, options = {}) {
     const branch = trimInline(args?.name || 'Fork', 24);
     const label = `Fork · ${branch || 'Fork'}`;
     return goal ? formatToolWithArg(label, goal) : label;
-  }
-  if (toolName === 'create_spec') {
-    const topic = trimInline(args?.topic || '', 96);
-    return topic ? formatToolWithArg(formatToolLabel('create_spec'), topic) : formatToolLabel('create_spec');
   }
   if (toolName === 'tasks' || toolName === 'read_plan' || toolName === 'update_plan') {
     return formatToolLabel(toolName);

@@ -49,7 +49,8 @@
   --accent-purple-bg: color-mix(in srgb, var(--accent-purple) 10%, var(--background));
 }
 
-/* Shared surfaces follow the selected palette, including existing overlays. */
+/* Shared surfaces follow the selected palette, including existing overlays.
+   Radius and hairlines match Beautiful UI: chip 6, control 8, card 10, window 14. */
 :root,
 :root[data-theme],
 :root[data-palette],
@@ -57,7 +58,36 @@
   --apple-text: var(--text-primary);
   --apple-material: var(--bg-primary);
   --apple-material-raised: var(--popover);
-  --material-elevated: var(--popover);
+  --material-elevated: var(--bg-primary);
+  --radius-chip: 6px;
+  --radius-control: 8px;
+  --radius-card: 10px;
+  --radius-window: 14px;
+  --workspace-panel-radius: var(--radius-window);
+  --line: color-mix(in srgb, var(--text-primary) 10%, transparent);
+  --line-strong: color-mix(in srgb, var(--text-primary) 18%, transparent);
+  --line-soft: color-mix(in srgb, var(--text-primary) 6%, transparent);
+  --border: var(--line);
+  --border-default: var(--line);
+  --border-strong: var(--line-strong);
+  --surface-edge: var(--line);
+  --separator: var(--line);
+  --panel-edge: var(--line-soft);
+  --message-edge: var(--line);
+  --workspace-panel-border: var(--line);
+  --shadow-hairline: 0 0 0 1px var(--line);
+  --shadow-btn: 0 0 0 1px var(--line-strong), 0 1px 2px color-mix(in srgb, black 6%, transparent);
+  --shadow-card: 0 0 0 1px var(--line), 0 1px 2px color-mix(in srgb, black 6%, transparent);
+  --shadow-overlay: 0 0 0 1px var(--line), 0 8px 28px color-mix(in srgb, black 12%, transparent);
+}
+
+:root[data-theme="dark"],
+:root[data-theme="dark"][data-palette] {
+  --line: color-mix(in srgb, var(--text-primary) 12%, transparent);
+  --line-strong: color-mix(in srgb, var(--text-primary) 20%, transparent);
+  --shadow-btn: 0 0 0 1px color-mix(in srgb, white 10%, transparent), 0 1px 2px color-mix(in srgb, black 30%, transparent);
+  --shadow-card: 0 0 0 1px color-mix(in srgb, white 11%, transparent), 0 1px 2px color-mix(in srgb, black 20%, transparent), 0 2px 6px color-mix(in srgb, black 20%, transparent);
+  --shadow-overlay: 0 0 0 1px color-mix(in srgb, white 14%, transparent), 0 8px 28px color-mix(in srgb, black 34%, transparent);
 }
 
 :root {
@@ -318,29 +348,98 @@ textarea, input {
   margin-inline: 12px;
 }
 
-.codemini-markdown-table-strip {
-  border-radius: 10px;
-  background: var(--message-surface);
-}
-
-:is([data-scroll-overflow-left], [data-scroll-overflow-right]) {
+/* Same 40px edge as before. The rim stays partly visible so clipped text can still be read. */
+:is(
+  [data-scroll-overflow-left],
+  [data-scroll-overflow-right],
+  [data-scroll-overflow-top],
+  [data-scroll-overflow-bottom]
+) {
+  --scroll-fade-size: 40px;
   --scroll-fade-left: 0px;
   --scroll-fade-right: 0px;
-  mask-image: linear-gradient(
-    to right,
-    transparent,
-    black var(--scroll-fade-left),
-    black calc(100% - var(--scroll-fade-right)),
-    transparent
-  );
+  --scroll-fade-top: 0px;
+  --scroll-fade-bottom: 0px;
+  --scroll-fade-left-alpha: 1;
+  --scroll-fade-right-alpha: 1;
+  --scroll-fade-top-alpha: 1;
+  --scroll-fade-bottom-alpha: 1;
+  -webkit-mask-image:
+    linear-gradient(to right,
+      rgb(0 0 0 / var(--scroll-fade-left-alpha)) 0,
+      rgb(0 0 0 / 0.72) calc(var(--scroll-fade-left) * 0.42),
+      #000 var(--scroll-fade-left),
+      #000 calc(100% - var(--scroll-fade-right)),
+      rgb(0 0 0 / 0.72) calc(100% - var(--scroll-fade-right) * 0.42),
+      rgb(0 0 0 / var(--scroll-fade-right-alpha)) 100%),
+    linear-gradient(to bottom,
+      rgb(0 0 0 / var(--scroll-fade-top-alpha)) 0,
+      rgb(0 0 0 / 0.72) calc(var(--scroll-fade-top) * 0.42),
+      #000 var(--scroll-fade-top),
+      #000 calc(100% - var(--scroll-fade-bottom)),
+      rgb(0 0 0 / 0.72) calc(100% - var(--scroll-fade-bottom) * 0.42),
+      rgb(0 0 0 / var(--scroll-fade-bottom-alpha)) 100%);
+  mask-image:
+    linear-gradient(to right,
+      rgb(0 0 0 / var(--scroll-fade-left-alpha)) 0,
+      rgb(0 0 0 / 0.72) calc(var(--scroll-fade-left) * 0.42),
+      #000 var(--scroll-fade-left),
+      #000 calc(100% - var(--scroll-fade-right)),
+      rgb(0 0 0 / 0.72) calc(100% - var(--scroll-fade-right) * 0.42),
+      rgb(0 0 0 / var(--scroll-fade-right-alpha)) 100%),
+    linear-gradient(to bottom,
+      rgb(0 0 0 / var(--scroll-fade-top-alpha)) 0,
+      rgb(0 0 0 / 0.72) calc(var(--scroll-fade-top) * 0.42),
+      #000 var(--scroll-fade-top),
+      #000 calc(100% - var(--scroll-fade-bottom)),
+      rgb(0 0 0 / 0.72) calc(100% - var(--scroll-fade-bottom) * 0.42),
+      rgb(0 0 0 / var(--scroll-fade-bottom-alpha)) 100%);
+  -webkit-mask-composite: source-in;
+  mask-composite: intersect;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
 }
 
-[data-scroll-overflow-left] {
-  --scroll-fade-left: 18px;
+[data-scroll-overflow-left] { --scroll-fade-left: var(--scroll-fade-size); --scroll-fade-left-alpha: 0.42; }
+[data-scroll-overflow-right] { --scroll-fade-right: var(--scroll-fade-size); --scroll-fade-right-alpha: 0.42; }
+[data-scroll-overflow-top] { --scroll-fade-top: var(--scroll-fade-size); --scroll-fade-top-alpha: 0.42; }
+[data-scroll-overflow-bottom] { --scroll-fade-bottom: var(--scroll-fade-size); --scroll-fade-bottom-alpha: 0.42; }
+
+.codemini-input-shell :is(
+  [data-scroll-overflow-left],
+  [data-scroll-overflow-right],
+  [data-scroll-overflow-top],
+  [data-scroll-overflow-bottom]
+) {
+  -webkit-mask-image: none;
+  mask-image: none;
 }
 
-[data-scroll-overflow-right] {
-  --scroll-fade-right: 18px;
+/* Right-rail tabs scroll sideways only. The bar stays visible while content overflows. */
+.codemini-workspace-tabs {
+  overflow-x: scroll;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+
+.codemini-workspace-tabs:not([data-scroll-overflow-left]):not([data-scroll-overflow-right]) {
+  scrollbar-width: none;
+}
+
+.codemini-workspace-tabs::-webkit-scrollbar {
+  width: 0;
+  height: 8px;
+}
+
+.codemini-workspace-tabs::-webkit-scrollbar:vertical {
+  display: none;
+  width: 0;
+}
+
+.codemini-workspace-tabs:not([data-scroll-overflow-left]):not([data-scroll-overflow-right])::-webkit-scrollbar {
+  height: 0;
 }
 
 .codemini-code-preview .codemini-file-preview-code,
@@ -468,12 +567,87 @@ textarea, input {
   border-inline-start: 1px solid var(--border-default);
 }
 
+/* Windows, menus, and sheets use the same hairline and overlay shadow.
+   The scrim stays the original dark glass, including in dark mode. */
+[data-slot="dialog-overlay"],
+[data-slot="sheet-overlay"] {
+  background: rgb(0 0 0 / 35%);
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+}
+
+[data-slot="dialog-content"],
+[data-slot="popover-content"],
+[data-slot="select-content"],
+[data-slot="tooltip-content"] {
+  border: 0;
+  background: var(--bg-primary);
+  box-shadow: var(--shadow-overlay);
+  backdrop-filter: none;
+}
+
+[data-slot="dialog-content"] {
+  border-radius: var(--radius-window);
+}
+
+[data-slot="popover-content"],
+[data-slot="select-content"] {
+  border-radius: var(--radius-card);
+}
+
+[data-slot="tooltip-content"] {
+  border-radius: var(--radius-control);
+}
+
+[data-slot="sheet-content"] {
+  border-color: var(--line);
+  background: var(--bg-primary);
+  box-shadow: var(--shadow-overlay);
+  backdrop-filter: none;
+}
+
+[data-slot="dialog-content"]:not(.p-0) [data-slot="dialog-header"] {
+  margin-inline: -1.5rem;
+  padding-inline: 1.5rem;
+  border-bottom: 1px solid var(--line);
+}
+
+[data-slot="dialog-header"][data-close="true"],
+[data-slot="dialog-content"]:not(.p-0) [data-slot="dialog-header"][data-close="true"] {
+  padding-inline-end: 3rem;
+}
+
+[data-slot="dialog-close"] {
+  border-radius: 8px;
+  box-shadow: none;
+}
+
+[data-slot="dialog-content"]:not(.p-0) [data-slot="dialog-footer"] {
+  margin-inline: -1.5rem;
+  padding-inline: 1.5rem;
+  border-top: 1px solid var(--line);
+}
+
+[data-slot="dialog-content"] :is(.rounded-md, .rounded-lg, .rounded-xl, .rounded-2xl):is(.border, .border-dashed) {
+  border-radius: var(--radius-card);
+  border-color: var(--line);
+}
+
+:where([data-slot="button"]:not(.rounded-full)) {
+  border-radius: var(--radius-control);
+}
+
+[data-slot="select-trigger"] {
+  border-radius: var(--radius-control);
+  box-shadow: var(--shadow-btn);
+}
+
 /* Approval Card: a quieter surface with a dedicated decision footer. */
 [data-slot="dialog-content"].codemini-approval-card {
   border: 0;
-  border-radius: 14px;
+  border-radius: var(--radius-window);
   background: var(--bg-primary);
-  box-shadow: 0 0 0 1px var(--border-strong), var(--shadow-elevated);
+  box-shadow: var(--shadow-overlay);
 }
 
 .codemini-approval-card [data-slot="dialog-title"] {

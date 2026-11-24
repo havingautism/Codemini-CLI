@@ -266,6 +266,8 @@ export function Sidebar({
   currentView,
   codewikiProjectPath = "",
   onSwitchView,
+  onOpenVisualFeedback,
+  visualFeedbackActive = false,
   onOpenProject,
   onOpenProjectSelector,
   onRefreshSessions,
@@ -558,6 +560,29 @@ export function Sidebar({
       return;
     }
     onSwitchView?.("codewiki", { projectPath: openPath || projectKey });
+  };
+
+
+  const openProjectVisualFeedback = async (event, projectKey, projectSessions = []) => {
+    event.stopPropagation();
+    if (!projectKey || projectKey === "unknown") return;
+    const latest = projectSessions.find((session) => session?.id);
+    if (projectKey !== activeProjectKey) {
+      if (latest?.id && latest.id !== currentSessionId && onSwitchSession) {
+        await onSwitchSession(latest.id);
+        onOpenVisualFeedback?.(latest.id);
+        return;
+      }
+      const openPath = getProjectOpenPath(projectKey, projectSessions);
+      if (openPath && onOpenProject) {
+        const result = await onOpenProject(openPath, { view: "chat" });
+        onOpenVisualFeedback?.(result?.sessionId || result?.id);
+        return;
+      }
+    } else if (currentView && currentView !== "chat") {
+      onSwitchView?.("chat");
+    }
+    onOpenVisualFeedback?.(currentSessionId);
   };
 
   const openProjectNewSession = async (event, projectKey, projectSessions = []) => {
@@ -886,6 +911,24 @@ export function Sidebar({
                       }
                     >
                       <BookOpenText size={13} strokeWidth={1.9} />
+                    </button>
+                  )}
+                  {canOpenCodeWiki && (
+                    <button
+                      type="button"
+                      className={cn(
+                        "inline-flex size-6 shrink-0 items-center justify-center rounded-md border-0 bg-transparent text-(--text-muted) cursor-pointer hover:text-(--text-primary)",
+                        visualFeedbackActive &&
+                          isActive &&
+                          "bg-(--bg-active) text-(--text-primary)",
+                      )}
+                      title={t("openVisualFeedback")}
+                      aria-label={`${t("openVisualFeedback")} ${getProjectName(projectKey)}`}
+                      onClick={(event) =>
+                        openProjectVisualFeedback(event, projectKey, projectSessions)
+                      }
+                    >
+                      <Monitor size={13} strokeWidth={1.9} />
                     </button>
                   )}
                   {projectSessions.length > 0 ? (

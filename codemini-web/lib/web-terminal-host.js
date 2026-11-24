@@ -103,7 +103,10 @@ process.on('message', (message) => {
       return;
     }
     const terminal = terminals.get(message.key);
-    if (message.type === 'input') {
+    if (message.type === 'close') {
+      terminals.delete(message.key);
+      terminal?.kill();
+    } else if (message.type === 'input') {
       terminal?.write(String(message.data ?? ''));
     } else if (message.type === 'resize') {
       terminal?.resize(message.cols, message.rows);

@@ -1,6 +1,7 @@
 import { memo, useState } from "react";
 import { CaretDown, Check, ListBullets } from "@/lib/icons";
 import { DisclosureRowButton } from "@/components/DisclosureLeading.jsx";
+import { useVerticalScrollEdges } from "@/hooks/use-horizontal-scroll-edges.js";
 import { cn } from "@/lib/utils";
 import { t } from "../../i18n/index.js";
 
@@ -52,21 +53,21 @@ export function TodoList({ todos }) {
   if (!todos?.length) return null;
 
   return (
-    <div className="codemini-task-list flex flex-col gap-1" role="list">
+    <div className="codemini-task-list flex flex-col" role="list">
       {todos.map((todo, i) => {
         const completed = todo.status === "completed";
         const inProgress = todo.status === "in_progress";
         return (
           <div
             key={`${todo.content || todo.activeForm || "todo"}-${i}`}
-            className="codemini-task-row flex min-h-9 min-w-0 items-center gap-2.5 px-2.5 py-1.5 text-[13px] leading-5"
+            className="flex min-h-8 min-w-0 items-start gap-2.5 px-1 py-1.5 text-[13px] leading-5"
             data-task-status={todo.status}
             role="listitem"
           >
             <span
               aria-hidden="true"
               className={cn(
-                "relative flex size-[15px] shrink-0 items-center justify-center",
+                "relative mt-0.5 flex size-[15px] shrink-0 items-center justify-center",
                 completed && "rounded-full bg-(--accent-green-bg) text-(--accent-green)",
                 !completed && !inProgress && "rounded-full border border-[color:color-mix(in_srgb,var(--text-primary)_22%,transparent)]",
               )}
@@ -101,6 +102,7 @@ export const TodoCard = memo(function TodoCard({
   const [open, setOpen] = useState(() =>
     persistKey ? todoOpenByKey.get(persistKey) === true : false,
   );
+  const scrollEdges = useVerticalScrollEdges(open && todos.length > 0);
   const summary = formatTodoStatusSummary(todos);
   const toggleOpen = () => {
     setOpen((value) => {
@@ -142,7 +144,7 @@ export const TodoCard = memo(function TodoCard({
         </button>
         {open ? (
           todos.length > 0 ? (
-            <div className="codemini-fold-body codemini-tasks-list max-h-44 overflow-y-auto px-3 pt-2 pb-3">
+            <div {...scrollEdges} className="codemini-fold-body codemini-tasks-list max-h-[min(14rem,35dvh)] overflow-y-auto px-3 py-2">
               <TodoList todos={todos} />
             </div>
           ) : (
@@ -163,6 +165,7 @@ export const TodoCard = memo(function TodoCard({
       <DisclosureRowButton
         open={open}
         onClick={toggleOpen}
+        className="codemini-process-trigger"
         icon={<ListBullets size={14} aria-hidden="true" />}
       >
         <span className="shrink-0">{t("tasksTitle")}</span>
@@ -177,8 +180,10 @@ export const TodoCard = memo(function TodoCard({
       </DisclosureRowButton>
       {open ? (
         todos.length > 0 ? (
-          <div className="codemini-disclosure-tree max-h-44 overflow-y-auto">
-            <TodoList todos={todos} />
+          <div className="codemini-disclosure-tree">
+            <div {...scrollEdges} className="codemini-tasks-list max-h-[min(20rem,55dvh)] overflow-y-auto">
+              <TodoList todos={todos} />
+            </div>
           </div>
         ) : (
           <div className="codemini-disclosure-body text-[13px] text-(--text-muted)">

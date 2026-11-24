@@ -105,6 +105,24 @@ test('waiting-response uses the shared response loader and disappears once Gener
     ),
     true,
   );
+  // Fast turns (Send now, or a reply that starts before the HTTP handler
+  // appends the placeholder) insert the assistant bubble first. That bubble
+  // already renders the empty-stream loader, so the later waiting row must
+  // not add a second one.
+  assert.equal(
+    isSupersededWaitingResponse(
+      [{ id: 'you-1', role: 'you' }, general, waiting],
+      2,
+    ),
+    true,
+  );
+  assert.equal(
+    isSupersededWaitingResponse(
+      [{ id: 'prev', role: 'general', isComplete: true }, { id: 'you-1', role: 'you' }, waiting],
+      2,
+    ),
+    false,
+  );
 });
 
 test('waiting loaders stop when no turn is running, so dead streams do not spin forever', async () => {

@@ -4,6 +4,7 @@ import {
   ArrowsClockwise,
   CaretDown,
   CaretRight,
+  DotsThree,
   Download,
   Folder,
   ListBullets,
@@ -14,6 +15,11 @@ import {
   Trash,
 } from "@/lib/icons";
 import { Button } from "@/components/ui/button";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
@@ -381,12 +387,6 @@ function SkillEditorDialog({ skill, open, onSave, onOpenChange, defaultContext =
           />
         </div>
         <div className="mx-4 flex shrink-0 justify-end gap-2 border-t border-(--border-default) py-4 sm:mx-6">
-          <Button
-            variant="outline"
-            onClick={() => onOpenChange(false)}
-          >
-            {t("cancel")}
-          </Button>
           <Button
             onClick={() => saveRef.current?.()}
             disabled={!footerState.canSave}
@@ -872,13 +872,6 @@ function InstallDialog({
           )}
           <div className="flex justify-end gap-2">
             <Button
-              variant="outline"
-              onClick={() => onOpenChange(false)}
-              disabled={installing}
-            >
-              {t("cancel")}
-            </Button>
-            <Button
               onClick={onContinue}
               disabled={installing || !installSource.trim()}
             >
@@ -1008,9 +1001,6 @@ function SkillPackageSelectDialog({
           </label>
           {error ? <div className="text-[11px] text-(--accent-red)">{error}</div> : null}
           <div className="flex justify-end gap-2">
-            <Button variant="outline" disabled={confirming} onClick={() => onOpenChange?.(false)}>
-              {t("cancel")}
-            </Button>
             <Button
               disabled={confirming || loading || selectedCount === 0}
               onClick={onConfirm}
@@ -1122,6 +1112,59 @@ function SkillCards({ items, selectedSkill, onSelect }) {
   ));
 }
 
+function SkillPackageActions({ updating, disabled, onEdit, onUpdate, onDelete }) {
+  const [open, setOpen] = useState(false);
+  const run = (action) => {
+    setOpen(false);
+    action();
+  };
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          className="inline-flex size-6 shrink-0 items-center justify-center rounded-md border-0 bg-transparent text-(--text-muted) cursor-pointer hover:bg-(--bg-hover) hover:text-(--text-primary)"
+          aria-label={t("skillPackageActions")}
+          onClick={(event) => event.stopPropagation()}
+        >
+          <DotsThree size={14} />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent
+        align="end"
+        className="w-40 rounded-md p-1"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <button
+          type="button"
+          className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-[13px] text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary)"
+          onClick={() => run(onEdit)}
+        >
+          <PencilSimple size={14} />
+          <span>{t("skillPackageBatchEdit")}</span>
+        </button>
+        <button
+          type="button"
+          disabled={disabled}
+          className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-[13px] text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-primary) disabled:cursor-wait disabled:opacity-60"
+          onClick={() => run(onUpdate)}
+        >
+          <ArrowsClockwise size={14} className={updating ? "animate-spin" : undefined} />
+          <span>{t("updateSkillPackage")}</span>
+        </button>
+        <button
+          type="button"
+          className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-[13px] text-(--accent-red) hover:bg-(--accent-red-bg)"
+          onClick={() => run(onDelete)}
+        >
+          <Trash size={14} />
+          <span>{t("deleteSkillPackage")}</span>
+        </button>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
 function SkillGroupHeader({ name, count, collapsed, title, onClick, actions }) {
   return (
     <div className="flex h-8 w-full items-center gap-1 rounded-lg px-1 text-[12px] font-medium text-foreground hover:bg-muted/50">
@@ -1231,13 +1274,6 @@ function PackageBatchDialog({
             </SettingsField>
           </SettingsSection>
           <div className="flex justify-end gap-2">
-            <Button
-              variant="outline"
-              disabled={applying}
-              onClick={() => onOpenChange?.(false)}
-            >
-              {t("cancel")}
-            </Button>
             <Button
               disabled={applying || !packageGroup}
               onClick={() =>
@@ -1728,46 +1764,13 @@ export function SkillPanel({ projectDirs = [] }) {
                     title={pkg.packageSource || pkg.key}
                     onClick={() => toggleSkillGroup(pkg.key)}
                     actions={
-                      <>
-                        <Button
-                          variant="ghost"
-                          size="icon-sm"
-                          onClick={() => setPendingBatchPackage(pkg)}
-                          aria-label={t("skillPackageBatchEdit")}
-                          title={t("skillPackageBatchEdit")}
-                        >
-                          <PencilSimple size={13} />
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="icon-sm"
-                          disabled={!!updatingPackageKey || installing}
-                          onClick={() =>
-                            handleUpdatePackage(pkg.representative, pkg.key)
-                          }
-                          aria-label={t("updateSkillPackage")}
-                          title={t("updateSkillPackage")}
-                        >
-                          <ArrowsClockwise
-                            size={13}
-                            className={
-                              updatingPackageKey === pkg.key
-                                ? "animate-spin"
-                                : undefined
-                            }
-                          />
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="icon-sm"
-                          className="text-(--accent-red) hover:bg-(--accent-red-bg) hover:text-(--accent-red)"
-                          onClick={() => handleDeletePackage(pkg)}
-                          aria-label={t("deleteSkillPackage")}
-                          title={t("deleteSkillPackage")}
-                        >
-                          <Trash size={13} />
-                        </Button>
-                      </>
+                      <SkillPackageActions
+                        updating={updatingPackageKey === pkg.key}
+                        disabled={!!updatingPackageKey || installing}
+                        onEdit={() => setPendingBatchPackage(pkg)}
+                        onUpdate={() => handleUpdatePackage(pkg.representative, pkg.key)}
+                        onDelete={() => handleDeletePackage(pkg)}
+                      />
                     }
                 />
                 {!collapsed && (
