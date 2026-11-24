@@ -1,0 +1,34 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Plain diagnostics</title>
+  <style>
+    button.swatch { color: red; background: white; }
+    button.swatch.primary { color: rgb(0, 0, 255); }
+    #occluded-wrap { position: relative; width: 180px; height: 48px; }
+    #cover { position: absolute; inset: 0; z-index: 2; background: rgba(0, 0, 0, 0.15); }
+  </style>
+</head>
+<body>
+  <div id="occluded-wrap">
+    <button id="occluded" type="button">Occluded</button>
+    <div id="cover">cover</div>
+  </div>
+  <button id="no-pointer" type="button" style="pointer-events: none">No pointer</button>
+  <button id="disabled" type="button" disabled>Disabled</button>
+  <button id="throws" type="button">Throw</button>
+  <button id="styled" class="swatch primary" type="button">Styled</button>
+  <button id="mutates" type="button">Mutate</button>
+  <script src="handler.js"></script>
+  <script>
+    document.getElementById("mutates").addEventListener("click", () => {
+      const added = document.createElement("p");
+      added.id = "added";
+      added.textContent = "added";
+      document.body.appendChild(added);
+      fetch("/probe.json").catch(() => {});
+    });
+  </script>
+</body>
+</html>

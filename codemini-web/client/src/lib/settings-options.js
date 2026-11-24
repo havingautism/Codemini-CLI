@@ -188,6 +188,12 @@ const OPTION_GETTERS = {
     { value: "shadow", label: t("distillationShadow") },
     { value: "filter", label: t("distillationFilter") },
   ],
+  browserChannel: () => [
+    { value: "auto", label: t("browserChannelAuto") },
+    { value: "chrome", label: "Chrome" },
+    { value: "msedge", label: "Edge" },
+    { value: "chromium", label: "Chromium" },
+  ],
 };
 
 export function getSettingsOptions(key, context) {

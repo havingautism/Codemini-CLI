@@ -61,6 +61,7 @@ import {
 } from './provider/index.js';
 import { isDangerousCommand, runShellCommand } from './shell.js';
 import { getBuiltinTools } from './tools.js';
+import { BROWSER_TOOL_NAMES, filterBrowserToolNames } from './browser/schema.js';
 import { canonicalShellToolName, shellToolName, toolNameAllowed } from './shell-tool-name.js';
 import { createToolRuntime } from './tool-runtime.js';
 import { buildPromptRequestAudit } from './prompt-request-audit.js';
@@ -497,7 +498,8 @@ export const EXECUTION_MODE_TOOL_POLICY = {
     'save_memory',
     'tasks',
     'edit', 'write', 'begin_write', 'write_chunk', 'commit_write', 'abort_write', 'apply_patch', 'delete', 'run',
-    'run_subagent', 'fork_task', 'land_workers', 'cancel_worker', 'crew_status', 'crew_send', 'crew_inbox', 'request_user_input'
+    'run_subagent', 'fork_task', 'land_workers', 'cancel_worker', 'crew_status', 'crew_send', 'crew_inbox', 'request_user_input',
+    ...BROWSER_TOOL_NAMES,
   ]
 };
 
@@ -524,20 +526,24 @@ function displayExecutionMode(mode) {
   return normalizeExecutionMode(mode) === 'plan' ? 'code' : 'normal';
 }
 
-function resolveExecutionModeAllowedTools(executionMode, callerAllowedTools, config, commandPlatform = process.platform) {
+export function resolveExecutionModeAllowedTools(executionMode, callerAllowedTools, config, commandPlatform = process.platform) {
   const mode = normalizeExecutionMode(executionMode);
   const modePolicy = adaptToolNamesForPlatform(
     normalizeToolPolicy(EXECUTION_MODE_TOOL_POLICY[mode] || [], config).map(canonicalShellToolName),
     commandPlatform,
   );
-  if (!modePolicy.length) return callerAllowedTools;
+  if (!modePolicy.length) {
+    return Array.isArray(callerAllowedTools)
+      ? filterBrowserToolNames(callerAllowedTools, config)
+      : callerAllowedTools;
+  }
   if (Array.isArray(callerAllowedTools)) {
-    return adaptToolNamesForPlatform(
+    return filterBrowserToolNames(adaptToolNamesForPlatform(
       normalizeToolPolicy(callerAllowedTools, config).map(canonicalShellToolName).filter((name) => modePolicy.includes(name)),
       commandPlatform,
-    );
+    ), config);
   }
-  return modePolicy;
+  return filterBrowserToolNames(modePolicy, config);
 }
 
 const CREW_PARENT_MUTATION_TOOLS = new Set([
@@ -620,12 +626,12 @@ export const ROLE_TOOL_POLICY = {
   explorer: [...SUBAGENT_READ_TOOLS, 'web_fetch', 'web_search'],
   architect: [...SUBAGENT_READ_TOOLS, 'web_search'],
   advisor: [...SUBAGENT_READ_TOOLS],
-  coder: [...SUBAGENT_READ_TOOLS, ...SUBAGENT_EDIT_TOOLS, 'run', 'web_fetch', 'web_search'],
+  coder: [...SUBAGENT_READ_TOOLS, ...SUBAGENT_EDIT_TOOLS, 'run', 'web_fetch', 'web_search', ...BROWSER_TOOL_NAMES],
   refactorer: [...SUBAGENT_READ_TOOLS, ...SUBAGENT_EDIT_TOOLS, 'run'],
   reviewer: [...SUBAGENT_READ_TOOLS],
   survey: [...SUBAGENT_READ_TOOLS, 'web_fetch', 'web_search'],
-  tester: [...SUBAGENT_READ_TOOLS, 'run'],
-  debugger: [...SUBAGENT_READ_TOOLS, 'run', 'web_search'],
+  tester: [...SUBAGENT_READ_TOOLS, 'run', ...BROWSER_TOOL_NAMES],
+  debugger: [...SUBAGENT_READ_TOOLS, 'run', 'web_search', ...BROWSER_TOOL_NAMES],
   writer: [...SUBAGENT_READ_TOOLS, 'web_fetch', 'web_search'],
   summarizer: ['read', 'tool_search', 'skill'],
   codewiki: CODEWIKI_ROLE_TOOLS
@@ -848,12 +854,12 @@ export function resolveSubAgentToolAllowList({
 } = {}) {
   const key = String(role || '').trim().toLowerCase();
   const basePolicy = ROLE_TOOL_POLICY[key] || ROLE_TOOL_POLICY.coder;
-  const roleTools = adaptToolNamesForPlatform(
+  const roleTools = filterBrowserToolNames(adaptToolNamesForPlatform(
     normalizeToolPolicy(basePolicy, config).map(canonicalShellToolName).filter(
       (name) => !SUBAGENT_FORBIDDEN_TOOLS.includes(name)
     ),
     platform,
-  );
+  ), config);
   if (!roleTools.includes('tasks')) roleTools.push('tasks');
   if (crewSession && !roleTools.includes('crew_status')) roleTools.push('crew_status');
   if (crewSession && !roleTools.includes('crew_send')) roleTools.push('crew_send');
@@ -883,7 +889,7 @@ export function resolveSubAgentToolAllowList({
   if (crewSession && key !== 'reviewer' && key !== 'crew_reviewer' && !granted.includes('crew_complete')) {
     granted.push('crew_complete');
   }
-  return granted;
+  return filterBrowserToolNames(granted, config);
 }
 
 export function subAgentAllowListMayMutate(tools = []) {

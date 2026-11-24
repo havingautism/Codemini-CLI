@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   getCommandsDir,
   getProjectCommandsDir,
@@ -11,6 +12,7 @@ import { parseFrontmatter } from './frontmatter.js';
 import { isVmSandbox, resolveSandboxPolicy, toSandboxSkillPath } from './sandbox-policy.js';
 
 const SKILL_CATALOG_FILE = 'codemini.skills.json';
+const BUNDLED_SKILLS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../templates/skills');
 const FRONTMATTER_READ_BYTES = 16 * 1024;
 
 function readFrontmatterMetadata(filePath) {
@@ -391,9 +393,14 @@ function substituteVariables(text, args = []) {
   return out;
 }
 
+function loadBundledSkills(out) {
+  loadLegacySkillsFromDir(BUNDLED_SKILLS_DIR, 'bundled', out);
+}
+
 export async function loadCommandsAndSkills(cwd = process.cwd()) {
   const commands = new Map();
 
+  loadBundledSkills(commands);
   loadMarkdownCommandsFromDir(getCommandsDir(), 'global', commands);
   loadMarkdownCommandsFromDir(getProjectCommandsDir(cwd), 'project', commands);
   loadLegacySkillsFromDir(getSkillsDir(), 'global', commands);
@@ -423,6 +430,7 @@ export function parseSlashCommandInvocation(text) {
 export async function loadIndexedSkills(cwd = process.cwd()) {
   const commands = new Map();
 
+  loadBundledSkills(commands);
   loadIndexedSkillsFromCatalog(getSkillsDir(), 'global-skill', commands);
 
   const registry = await readSkillRegistry();

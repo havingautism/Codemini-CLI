@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { getShellSystemPrompt, resolveShellContext } from './shell-profile.js';
 import { getSearchFewShotBlock, getWebToolGuidance } from './provider/search-tool-registry.js';
+import { getBrowserToolGuidance } from './browser/schema.js';
 
 function resolvePromptCwd(options = {}) {
   const raw = options.workspaceRoot || options.cwd || process.cwd();
@@ -151,6 +152,7 @@ export function buildDefaultSystemPrompt(config = {}, options = {}) {
     getShellSystemPrompt(shellContext.shell, shellContext.commandPlatform),
     getToolFewShotBlock(config, cwd, platform),
     getWebToolGuidance(config),
+    getBrowserToolGuidance(config),
     getSearchFewShotBlock(config),
     getNaturalWritingBlock(),
     getMarkdownImageBlock(),

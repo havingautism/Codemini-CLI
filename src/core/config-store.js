@@ -13,6 +13,7 @@ import { normalizeReasoningAuto, normalizeReasoningEffort } from './provider/rea
 import { normalizeSkillContexts } from './skill-contexts.js';
 import { normalizeSandboxMode } from './sandbox-policy.js';
 import { normalizeSandboxBackend } from './sandbox-probe.js';
+import { BROWSER_READONLY_TOOLS, resolveBrowserConfig } from './browser/schema.js';
 
 function normalizeUiLanguage(value) {
   const raw = String(value || '').trim().toLowerCase();
@@ -234,6 +235,16 @@ const DEFAULT_CONFIG = {
     enabled: {},
     contexts: {}
   },
+  browser: {
+    enabled: false,
+    channel: 'auto',
+    executable_path: '',
+    headless: true,
+    snapshot_max_chars: 6000,
+    timeout_ms: 30000,
+    viewport_width: 1280,
+    viewport_height: 800,
+  },
   mcp: {
     servers: []
   }
@@ -337,6 +348,7 @@ function normalizePolicyLists(config) {
       'get_background_task',
       ...MEMORY_ALWAYS_ALLOW_TOOLS,
       ...STAGED_WRITE_ALWAYS_ALLOW_TOOLS,
+      ...BROWSER_READONLY_TOOLS,
       ...rawTools
     ].filter((name) => String(name) !== 'list_files')
       .filter((name) => !['edit', 'create', 'write', 'commit_write', 'apply_patch', 'delete', 'run', 'stop_background_task'].includes(String(name)))
@@ -557,6 +569,7 @@ function normalizePolicyLists(config) {
   next.harness.rollout.sessions = Array.isArray(next.harness.rollout.sessions) ? next.harness.rollout.sessions.map(String) : [];
   next.harness.rollout.salt = String(next.harness.rollout.salt || 'harness-v1');
   next.jev = next.jev && typeof next.jev === 'object' ? next.jev : {};
+  next.browser = resolveBrowserConfig(next);
   next.jev.enabled = next.jev.enabled === true || String(next.jev.enabled || '').toLowerCase() === 'true';
   next.jev.api_key = String(next.jev.api_key || '').trim();
   next.jev.model = String(next.jev.model || DEFAULT_CONFIG.jev.model).trim() || DEFAULT_CONFIG.jev.model;
