@@ -737,7 +737,7 @@ function Shell() {
             {/* Plan Review / Input Area */}
             <div
               hidden={chatPageTab !== "conversation"}
-              className="w-[calc(100%_-_32px)] max-w-[var(--composer-width)] sm:w-[calc(100%_-_48px)] mx-auto mb-3 sm:mb-5 shrink-0 z-30 bg-transparent relative"
+              className="mt-3 w-[calc(100%_-_32px)] max-w-[var(--composer-width)] sm:w-[calc(100%_-_48px)] mx-auto mb-3 sm:mb-5 shrink-0 z-30 bg-transparent relative"
             >
               <RuntimeActivityStrip
                 activities={state.runtimeActivities}

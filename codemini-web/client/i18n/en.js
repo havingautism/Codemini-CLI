@@ -1429,6 +1429,7 @@ export const en = {
   deleteSkillPackageDescriptionFromTab:
     'Remove package "{{package}}" and its skills ({{skills}}) from the {{context}} context? Global deletes permanently; Coding/Daily only drop that binding and keep skills still bound elsewhere.',
   skillPackageApplyAll: "Apply to all",
+  skillPackageActions: "Package actions",
   skillPackageBatchEdit: "Batch settings",
   skillPackageBatchEditHint:
     'Apply these settings to every skill in package "{{package}}". Individual skills can still be changed afterward.',

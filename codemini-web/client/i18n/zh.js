@@ -1397,6 +1397,7 @@ export const zh = {
   deleteSkillPackageDescriptionFromTab:
     '确定从「{{context}}」场景移除技能包「{{package}}」及其技能（{{skills}}）？全局会彻底删除；编码/日常仅去掉当前绑定，仍绑定另一场景的会保留。',
   skillPackageApplyAll: "应用到全部",
+  skillPackageActions: "技能包操作",
   skillPackageBatchEdit: "批量设置",
   skillPackageBatchEditHint:
     "将以下设置应用到技能包「{{package}}」内的全部技能。单个技能之后仍可单独修改。",
