@@ -184,15 +184,34 @@ export function createBrowserSession({ config = {}, workspaceRoot = process.cwd(
     }
   }
 
+  let browserShutdown = Promise.resolve();
+
+  function requestBrowserClose(browser) {
+    if (!browser) return browserShutdown;
+    // Leave the page-close stack before browser.close(). Closing inline can deadlock
+    // with the Playwright call that emitted this event, and dropping the reference
+    // without close() leaves Chrome alive so the test process never exits.
+    browserShutdown = browserShutdown.then(() => new Promise((resolve) => {
+      setImmediate(() => {
+        browser.close().then(resolve, resolve);
+      });
+    }));
+    return browserShutdown;
+  }
+
   function watchBrowserClose(browser, context, page) {
-    const onClosed = () => {
-      if (session.page === page || session.browser === browser || session.context === context) {
-        clearClosedBrowser();
-      }
+    let handled = false;
+    const onClosed = (source) => {
+      if (handled) return;
+      if (session.page !== page && session.browser !== browser && session.context !== context) return;
+      handled = true;
+      clearClosedBrowser();
+      if (source === 'disconnected') return;
+      requestBrowserClose(browser);
     };
-    page.on('close', onClosed);
-    context.on('close', onClosed);
-    browser.on('disconnected', onClosed);
+    page.on('close', () => onClosed('page'));
+    context.on('close', () => onClosed('context'));
+    browser.on('disconnected', () => onClosed('disconnected'));
   }
   session.sourceResolver = () => sourceResolverFor(session);
   session.scriptByUrl = (url) => {
@@ -219,6 +238,7 @@ export function createBrowserSession({ config = {}, workspaceRoot = process.cwd(
   };
 
   session.launchBrowser = async (override = {}) => {
+    await browserShutdown;
     const resolved = resolveBrowserConfig(config);
     const signature = {
       headless: override.headless == null ? resolved.headless : override.headless !== false,
@@ -313,9 +333,7 @@ export function createBrowserSession({ config = {}, workspaceRoot = process.cwd(
       session.visualFeedback.active = false;
       session.visualFeedback.lastState = null;
     }
-    if (browser) {
-      try { await browser.close(); } catch { /* already closed */ }
-    }
+    await requestBrowserClose(browser);
   };
 
   return session;
