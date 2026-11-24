@@ -27,6 +27,7 @@ import {
   settleCrewReviewDispatchCards,
   settleCrewCancelledWorkerCards,
 } from "./crew-ui-state.js";
+import { placeAcceptedUserMessage } from "./user-message-order.js";
 import { parseCrewReviewCompletedWake } from "../../../../src/core/crew-notification.js";
 import { cancelWorkerIdFromPayload } from "../../../../src/core/crew-progress.js";
 
@@ -433,6 +434,30 @@ export function reduceSessionTranscriptEvent(state, event) {
           skillBadges: appendUniqueSkillBadges(message.skillBadges || [],
             (event.names || []).map((name) => ({ name, status: "selected" }))),
         } : message),
+      },
+    };
+  }
+  if (event.type === "ui:message") {
+    const incoming = event.message;
+    if (!incoming || incoming.role !== "you") return state;
+    const id = String(incoming.id || "").trim();
+    if (!id) return state;
+    const nextMessage = {
+      ...incoming,
+      id,
+      segments: Array.isArray(incoming.segments) && incoming.segments.length
+        ? incoming.segments
+        : incoming.text
+          ? [{ type: "text", text: incoming.text, isStreaming: false }]
+          : [],
+      skillBadges: Array.isArray(incoming.skillBadges) ? incoming.skillBadges : [],
+      fileChanges: Array.isArray(incoming.fileChanges) ? incoming.fileChanges : [],
+    };
+    return {
+      ...state,
+      sessionMessagesById: {
+        ...sessionMessagesById,
+        [sessionId]: placeAcceptedUserMessage(messages, nextMessage),
       },
     };
   }

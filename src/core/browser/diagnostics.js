@@ -4,6 +4,7 @@ import { CSS_PATH_FN } from './snapshot.js';
 import {
   createSourceResolver,
   displayPath,
+  isGeneratedBundlePath,
   isLibraryPath,
   parseStackFrames,
   readLocalText,
@@ -276,8 +277,12 @@ export async function listListeners(cdp, session, backendNodeId, { types = [], m
   }
 }
 
+function isUsableSourceFile(file) {
+  return Boolean(file) && !isLibraryPath(file) && !isGeneratedBundlePath(file);
+}
+
 function pushLocation(locations, seen, location, extra) {
-  if (!location?.file || isLibraryPath(location.file)) return;
+  if (!isUsableSourceFile(location?.file)) return;
   const key = `${extra.framework}|${location.file}|${location.line}|${location.column}`;
   if (seen.has(key)) return;
   seen.add(key);
@@ -339,7 +344,7 @@ export async function locateSource(cdp, session, selector) {
         const located = script
           ? await resolver.locate({ scriptId: script.scriptId, line: frame.line, column: frame.column, oneBased: true })
           : await resolver.locate({ url: frame.url, line: frame.line, column: frame.column, oneBased: true });
-        if (located && !isLibraryPath(located.file)) {
+        if (located && isUsableSourceFile(located.file)) {
           pushLocation(locations, seen, { ...located, name: frame.name || fiber.name }, {
             framework: 'react',
             component: fiber.name || frame.name || '',

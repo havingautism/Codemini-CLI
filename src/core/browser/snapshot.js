@@ -28,8 +28,20 @@ function roleOf(node) {
   return String(node?.role?.value || node?.role || '');
 }
 
+export function axNodeName(node) {
+  const raw = node?.name;
+  let value = '';
+  if (typeof raw === 'string' || typeof raw === 'number') {
+    value = String(raw);
+  } else if (raw && typeof raw === 'object') {
+    const inner = raw.value;
+    if (typeof inner === 'string' || typeof inner === 'number') value = String(inner);
+  }
+  return value.replace(/\s+/g, ' ').trim().slice(0, 80);
+}
+
 function nameOf(node) {
-  return String(node?.name?.value || node?.name || '').replace(/\s+/g, ' ').trim().slice(0, 80);
+  return axNodeName(node);
 }
 
 function flagsOf(node) {

@@ -46,6 +46,7 @@ import {
 } from '../../src/core/session-sqlite-store.js';
 import { CHAT_ACTIONS } from '../../src/core/chat-action-dispatcher.js';
 import { parseCrewWakeHeadline } from '../../src/core/crew-snapshot.js';
+import { isVisualFeedbackUserMessage, visualFeedbackUserMessageFields } from '../client/src/lib/visual-feedback-message.js';
 
 const CODEWIKI_GENERATE_TIMEOUT_MS = 35 * 60 * 1000;
 
@@ -906,6 +907,9 @@ export class RuntimeBridge {
     };
     this.#uiMessages = [...this.#uiMessages, next];
     this.#persistUiTranscriptSoon();
+    if (next.role === 'you') {
+      this.#publish({ type: 'ui:message', message: next });
+    }
     return next.id;
   }
 
@@ -1546,7 +1550,10 @@ export class RuntimeBridge {
         attachments: userMessage.attachments || [],
         fileReferences: normalizeFileReferences(userMessage.fileReferences),
         skillBadges: selectedBadges,
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
+        ...(isVisualFeedbackUserMessage(userMessage)
+          ? visualFeedbackUserMessageFields(userMessage.modelText)
+          : {}),
       });
     }
     this.#publishLifecycle('running');
@@ -1621,7 +1628,10 @@ export class RuntimeBridge {
           id: message.messageId,
           text,
           attachments: Array.isArray(message.attachments) ? message.attachments : [],
-          fileReferences: normalizeFileReferences(message.fileReferences)
+          fileReferences: normalizeFileReferences(message.fileReferences),
+          ...(isVisualFeedbackUserMessage(message)
+            ? visualFeedbackUserMessageFields(message.modelText)
+            : {}),
         },
         selectedSkillNames: message.skillNames,
         retryPrompt: text
@@ -1992,6 +2002,14 @@ export class RuntimeBridge {
 
   getSessionMessages() {
     return serializeSessionMessages(this.#runtime.getSessionMessages());
+  }
+
+  getBrowserSession() {
+    return this.#runtime.getBrowserSession?.() || null;
+  }
+
+  getWorkspaceRoot() {
+    return this.getState()?.workspaceRoot || this.#runtime.getRuntimeState?.()?.workspaceRoot || process.cwd();
   }
 
   async regenerateSessionTitle() {

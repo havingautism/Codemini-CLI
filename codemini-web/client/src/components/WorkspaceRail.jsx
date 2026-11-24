@@ -3,6 +3,7 @@ import {
   DotsSixVertical,
   FolderSimple,
   GitDiff as GitDiffIcon,
+  Monitor,
   Plus,
   Terminal as TerminalIcon,
   X,
@@ -14,6 +15,7 @@ import { t } from "../../i18n/index.js";
 const FileTreePanel = lazy(() => import("@/components/FileTreePanel.jsx").then(({ FileTreePanel }) => ({ default: FileTreePanel })));
 const GitChangesPanel = lazy(() => import("@/components/GitChangesPanel.jsx").then(({ GitChangesPanel }) => ({ default: GitChangesPanel })));
 const TerminalPanel = lazy(() => import("@/components/TerminalPanel.jsx").then(({ TerminalPanel }) => ({ default: TerminalPanel })));
+const VisualFeedbackPanel = lazy(() => import("@/components/VisualFeedbackPanel.jsx").then(({ VisualFeedbackPanel }) => ({ default: VisualFeedbackPanel })));
 const DEFAULT_PANEL_WIDTH = 500;
 const MIN_PANEL_WIDTH = 340;
 const TAB_CLASS = "h-8 shrink-0 flex-none gap-1.5 px-2 text-[12px] focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-(--accent-blue)";
@@ -21,6 +23,7 @@ const PANEL_CLASS = "flex min-h-0 flex-1 flex-col overflow-hidden data-[state=in
 const WORKSPACE_TOOLS = [
   { type: "files", label: "workspaceFilesTab", icon: FolderSimple },
   { type: "terminal", label: "terminalTitle", icon: TerminalIcon },
+  { type: "visual-feedback", label: "visualFeedbackTab", icon: Monitor },
   { type: "git", label: "workspaceGitTab", icon: GitDiffIcon },
 ];
 
@@ -229,6 +232,11 @@ export function WorkspaceRail({
         {activeTool?.type === "terminal" ? (
           <TabsContent value={activeTab} className={PANEL_CLASS}>
             <TerminalPanel key={activeTab} terminalId={activeTab} sessionId={sessionId} projectCwd={projectCwd} disabled={workspaceDisabled} embedded />
+          </TabsContent>
+        ) : null}
+        {activeTool?.type === "visual-feedback" ? (
+          <TabsContent value="visual-feedback" className={PANEL_CLASS}>
+            <VisualFeedbackPanel sessionId={sessionId} projectCwd={projectCwd} disabled={workspaceDisabled} />
           </TabsContent>
         ) : null}
         {activeTool?.type === "git" ? (
