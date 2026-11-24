@@ -244,12 +244,7 @@ Set `CODEMINI_GLOBAL_DIR` to override the global base directory.
 
 `codemini doctor` detects optional local accelerators such as `fff-mcp` and falls back to built-in search when they are unavailable. `search.fff_command` may name a PATH program or an absolute executable outside the workspace; relative and workspace paths are rejected.
 
-For JavaScript-heavy web pages, install Playwright and Chromium:
-
-```bash
-npm install -g playwright
-playwright install chromium
-```
+For JavaScript-heavy web pages, install Chrome or Edge. `web_fetch` uses that browser through `playwright-core` and does not download Chromium. Set `browser.executable_path` when the browser is not on the default path. An existing full Playwright Chromium install is used only when Chrome and Edge are missing.
 
 ### Development
 
@@ -472,12 +467,7 @@ Deep Research 会协调多个聚焦 scout、收集证据并生成可审阅 artif
 
 `codemini doctor` 会检测 `fff-mcp` 等本地可选加速器；不可用时自动回退到内置搜索。`search.fff_command` 只能是 PATH 中的程序名，或工作区之外的绝对路径；相对路径和工作区内的文件会被拒绝。
 
-需要渲染 JavaScript 重度网页时，可以安装 Playwright 与 Chromium：
-
-```bash
-npm install -g playwright
-playwright install chromium
-```
+需要渲染 JavaScript 重度网页时，安装 Chrome 或 Edge。`web_fetch` 通过 `playwright-core` 使用本机浏览器，安装依赖时不会下载 Chromium。浏览器不在默认路径时设置 `browser.executable_path`。只有找不到 Chrome 和 Edge 时，才会使用已经安装好的完整 Playwright Chromium。
 
 ### 开发
 

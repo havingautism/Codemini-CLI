@@ -894,13 +894,6 @@ export const en = {
   firecrawlApiKeyPlaceholder: "Required for Firecrawl",
   firecrawlApiKeyHelp:
     "Stored locally in your Codemini config file. You can also leave this empty and use FIRECRAWL_API_KEY.",
-  playwright: "Playwright",
-  playwrightHelp:
-    "Optional browser runtime for web_fetch. When installed, Codemini can render JavaScript-heavy pages instead of relying on static HTML only. Install: npm install -g playwright && playwright install chromium",
-  playwrightReady: "Ready",
-  playwrightNotInstalled: "Not installed",
-  playwrightBrowserMissing: "Chromium missing",
-  playwrightChecking: "Checking…",
   storage: "Storage",
   storageOverview: "SQLite Storage",
   storageOverviewHelp: "View the locations and disk usage of Codemini's global data and current project index databases.",

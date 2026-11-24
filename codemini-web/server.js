@@ -161,7 +161,6 @@ import { initializeProjectIndex } from "../src/core/project-index.js";
 import { queryProjectKnowledgeGraph } from "../src/core/project-knowledge-graph.js";
 import { INDEX_SKIP_DIRS } from "../src/core/constants.js";
 import { VERSION } from "../src/core/version.js";
-import { detectPlaywrightStatus } from "../src/core/tools.js";
 import {
   getSqliteStorageInfo,
   openSqliteStorageFolder,
@@ -3759,15 +3758,6 @@ async function main() {
   routes.get("/api/config/status", nodeRoute(async (req, res, url) => {
       const config = await loadConfig();
       jsonResponse(res, getConfigStatus(config));
-      return;
-
-  }));
-  routes.get("/api/playwright/status", nodeRoute(async (req, res, url) => {
-      try {
-        jsonResponse(res, await detectPlaywrightStatus());
-      } catch (err) {
-        jsonResponse(res, { error: true, message: err.message }, 500);
-      }
       return;
 
   }));

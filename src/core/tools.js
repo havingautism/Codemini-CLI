@@ -1,10 +1,10 @@
 import fs from "node:fs/promises";
-import { existsSync, realpathSync } from "node:fs";
+import { realpathSync } from "node:fs";
 import { collectReadWindow, readTextWindow, readWindowOptions, formatReadWindow } from "./read-window.js";
 import path from "node:path";
 import os from "node:os";
-import { execFileSync, spawn } from "node:child_process";
-import { createRequire } from "node:module";
+import { spawn } from "node:child_process";
+import { WEB_FETCH_BROWSER_HINT, openWebFetchBrowser } from "./browser/web-fetch-browser.js";
 import { createHash } from "node:crypto";
 import { rgPath } from "@vscode/ripgrep";
 import net from "node:net";
@@ -618,130 +618,7 @@ function shouldTryBrowserRender(html, text) {
   );
 }
 
-function playwrightInstallHint() {
-  return "For JavaScript-rendered pages, install Playwright for richer web_fetch results: npm install -g playwright && playwright install chromium";
-}
-
-function isMissingPlaywrightError(error) {
-  const code = String(error?.code || "");
-  const message = String(error?.message || "");
-  return (
-    code === "ERR_MODULE_NOT_FOUND" ||
-    code === "MODULE_NOT_FOUND" ||
-    /Cannot find package 'playwright'|Cannot find module 'playwright'/i.test(message)
-  );
-}
-
-function unwrapPlaywrightModule(mod) {
-  if (mod && typeof mod.chromium?.executablePath === "function") return mod;
-  if (mod?.default && typeof mod.default.chromium?.executablePath === "function") {
-    return mod.default;
-  }
-  return null;
-}
-
-function readNpmGlobalNodeModules() {
-  try {
-    const root = execFileSync("npm", ["root", "-g"], {
-      encoding: "utf8",
-      timeout: 2500,
-      stdio: ["ignore", "pipe", "ignore"],
-    }).trim();
-    return root || "";
-  } catch {
-    return "";
-  }
-}
-
-function playwrightGlobalNodeModulesCandidates() {
-  const extra = String(process.env.CODEMINI_NPM_GLOBAL_NODE_MODULES || "").trim();
-  if (extra) return [extra];
-  const roots = [];
-  const add = (value) => {
-    const root = String(value || "").trim();
-    if (!root || roots.includes(root)) return;
-    roots.push(root);
-  };
-  const execDir = path.dirname(process.execPath);
-  add(path.resolve(execDir, "..", "lib", "node_modules"));
-  add(path.resolve(execDir, "node_modules"));
-  add(readNpmGlobalNodeModules());
-  return roots;
-}
-
-function loadPlaywrightFromNodeModules(nodeModulesDir) {
-  const root = String(nodeModulesDir || "").trim();
-  if (!root) return null;
-  try {
-    const requireFromRoot = createRequire(path.join(root, "package.json"));
-    return unwrapPlaywrightModule(requireFromRoot("playwright"));
-  } catch (error) {
-    if (isMissingPlaywrightError(error)) return null;
-    throw error;
-  }
-}
-
-async function loadOptionalPlaywright() {
-  try {
-    const imported = unwrapPlaywrightModule(await import("playwright"));
-    if (imported) return imported;
-  } catch (error) {
-    if (!isMissingPlaywrightError(error)) throw error;
-  }
-  for (const root of playwrightGlobalNodeModulesCandidates()) {
-    const loaded = loadPlaywrightFromNodeModules(root);
-    if (loaded) return loaded;
-  }
-  return null;
-}
-
-export async function detectPlaywrightStatus() {
-  const installCommand =
-    "npm install -g playwright && playwright install chromium";
-  const playwright = await loadOptionalPlaywright();
-  if (!playwright) {
-    return {
-      packageInstalled: false,
-      chromiumReady: false,
-      installCommand,
-    };
-  }
-  let chromiumReady = false;
-  try {
-    const executablePath = String(playwright.chromium.executablePath() || "").trim();
-    chromiumReady = Boolean(executablePath) && existsSync(executablePath);
-  } catch {}
-  return {
-    packageInstalled: true,
-    chromiumReady,
-    installCommand,
-  };
-}
-
-async function buildPlaywrightLaunchEnv() {
-  const localLibDir = path.join(
-    process.env.HOME || "",
-    ".cache",
-    "codemini",
-    "playwright-libs",
-    "usr",
-    "lib",
-    "x86_64-linux-gnu",
-  );
-  try {
-    await fs.access(localLibDir);
-  } catch {
-    return process.env;
-  }
-
-  const existing = String(process.env.LD_LIBRARY_PATH || "").trim();
-  return {
-    ...process.env,
-    LD_LIBRARY_PATH: existing ? `${localLibDir}:${existing}` : localLibDir,
-  };
-}
-
-export async function webFetchPage(args = {}) {
+export async function webFetchPage(args = {}, config = {}, hooks = {}) {
   const normalizedArgs = normalizeWebFetchArgs(args);
   const url = normalizeWebUrl(normalizedArgs.url);
   const timeoutMs = clampNumber(
@@ -793,26 +670,29 @@ export async function webFetchPage(args = {}) {
     staticError = error;
   }
 
-  const playwright = await loadOptionalPlaywright();
-  if (!playwright) {
+  let opened = null;
+  try {
+    opened = await openWebFetchBrowser(config, hooks);
+  } catch (error) {
     if (staticResult) {
       return {
         ...staticResult,
-        warnings: [playwrightInstallHint()],
+        warnings: [`Browser rendering fallback failed: ${error?.message || error}`],
       };
     }
+    throw error;
+  }
+  if (!opened) {
+    if (staticResult) {
+      return { ...staticResult, warnings: [WEB_FETCH_BROWSER_HINT] };
+    }
     throw new Error(
-      `web_fetch failed and browser rendering is unavailable. ${playwrightInstallHint()}. Static fetch error: ${staticError?.message || staticError}`,
+      `web_fetch failed and browser rendering is unavailable. ${WEB_FETCH_BROWSER_HINT} Static fetch error: ${staticError?.message || staticError}`,
     );
   }
 
-  let browser;
   try {
-    browser = await playwright.chromium.launch({
-      headless: true,
-      env: await buildPlaywrightLaunchEnv(),
-    });
-    const page = await browser.newPage();
+    const page = await opened.browser.newPage();
     const response = await page.goto(url, { waitUntil, timeout: timeoutMs });
     const finalUrl = page.url();
     const html = await page.content();
@@ -826,20 +706,20 @@ export async function webFetchPage(args = {}) {
       }),
     };
     rendered.metadata.wait_until = waitUntil;
+    rendered.metadata.browser_engine = opened.engine;
+    rendered.metadata.browser = opened.browserName;
     rendered.title = rendered.title || trimPreview(await page.title(), 240);
     return rendered;
   } catch (error) {
     if (staticResult) {
       return {
         ...staticResult,
-        warnings: [
-          `Browser rendering fallback failed: ${error?.message || error}`,
-        ],
+        warnings: [`Browser rendering fallback failed: ${error?.message || error}`],
       };
     }
     throw error;
   } finally {
-    if (browser) await browser.close();
+    await opened.browser.close().catch(() => {});
   }
 }
 
@@ -6381,7 +6261,7 @@ export function getBuiltinTools({
       if (astTarget.path) rememberAstSelection(astTarget.path, astTarget);
       return readBoundedAstNode({ ...args, ast_target: astTarget });
     },
-    web_fetch: (args) => webFetchPage(args),
+    web_fetch: (args) => webFetchPage(args, config),
     add_code_comment: async (args) => {
       await ensureProjectIndex();
       const commentPath = normalizeFilePathValue(

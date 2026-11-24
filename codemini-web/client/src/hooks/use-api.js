@@ -371,11 +371,6 @@ export async function fetchConfigStatus() {
   return res.json();
 }
 
-export async function fetchPlaywrightStatus() {
-  const res = await api('/api/playwright/status');
-  return res.json();
-}
-
 export async function fetchStorageInfo() {
   const res = await api('/api/storage');
   return readJsonResponse(res);

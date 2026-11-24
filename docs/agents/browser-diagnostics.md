@@ -1,6 +1,6 @@
 # Browser diagnostics
 
-The three browser tools are available in coding mode only. Everyday/normal mode does not register them. Even in coding mode they stay out of the default tool list: they live in the deferred catalog and load through `tool_search`. `playwright-core` is imported on the first browser launch, not at CLI startup.
+The three browser tools are available in coding mode only. Everyday/normal mode does not register them. Even in coding mode they stay out of the default tool list: they live in the deferred catalog and load through `tool_search`. `playwright-core` is imported on the first browser launch, not at CLI startup. `web_fetch` uses that same launcher for JavaScript pages: system Chrome or Edge, then an already installed Playwright Chromium when those are missing.
 
 One Chrome, Edge, or Chromium stays open for the session and is closed on shutdown. Playwright launches it with a temporary profile over its remote-debugging pipe. Do not point it at the user's daily profile. Chrome 136+ refuses remote debugging there anyway.
 
