@@ -16,6 +16,7 @@ import {
   CaretUp,
   CircleNotch,
   FileText,
+  Folder,
   GitLogo,
   Hammer,
   ImageSquare,
@@ -36,6 +37,7 @@ import { DOCUMENT_ACCEPT } from "../../../shared/document-formats.js";
 import * as api from "@/hooks/use-api";
 import { useApp } from "@/context/app-context.jsx";
 import { useComposerDraft } from "@/hooks/use-composer-draft.js";
+import { splitWorkspaceFilePath } from "@/lib/composer-drafts.js";
 import { ReasoningQuickControl } from "@/components/ReasoningControls.jsx";
 import {
   Popover,
@@ -110,16 +112,6 @@ const IMAGE_JPEG_QUALITY = 0.82;
 
 function isImageFile(file) {
   return String(file?.type || "").startsWith("image/");
-}
-
-function splitWorkspaceFilePath(pathText = "") {
-  const value = String(pathText || "").replace(/\\/g, "/");
-  const slashIndex = value.lastIndexOf("/");
-  if (slashIndex < 0) return { dir: "", name: value };
-  return {
-    dir: value.slice(0, slashIndex + 1),
-    name: value.slice(slashIndex + 1),
-  };
 }
 
 function compactBytes(bytes = 0) {
@@ -682,6 +674,12 @@ function SoulQuickSwitch({ disabled = false, mode = "normal" }) {
   );
 }
 
+function WorkspaceReferenceIcon({ item }) {
+  return item.type === "directory"
+    ? <Folder size={15} weight="fill" className="shrink-0 text-(--text-muted)" aria-hidden="true" />
+    : <FileTypeIcon path={item.path} size="sm" />;
+}
+
 function ActionSkillPalette({
   query,
   error,
@@ -853,6 +851,7 @@ function ActionSkillPalette({
         return {
           name: name || file.name || file.path,
           path: file.path,
+          type: file.type,
           dir,
           description: "",
           kind: "file",
@@ -941,7 +940,7 @@ function ActionSkillPalette({
               >
                 {isFile ? (
                   <span className="inline-flex size-5 items-center justify-center">
-                    <FileTypeIcon path={item.path} size="sm" />
+                    <WorkspaceReferenceIcon item={item} />
                   </span>
                 ) : (
                   <span
@@ -1091,6 +1090,7 @@ function ActionSkillPalette({
 export function InputBar({
   sessionId,
   draftStore,
+  inputRef,
   onSubmit,
   onAction,
   onActionStart,
@@ -1130,7 +1130,8 @@ export function InputBar({
   const [scrapbookVisibleCount, setScrapbookVisibleCount] = useState(
     SCRAPBOOK_PICKER_PAGE_SIZE,
   );
-  const textareaRef = useRef(null);
+  const ownInputRef = useRef(null);
+  const textareaRef = inputRef || ownInputRef;
   const fileInputRef = useRef(null);
   const actionSubmissionRef = useRef(false);
   const imeComposingRef = useRef(false);
@@ -1450,14 +1451,7 @@ export function InputBar({
           nextCursor = result.cursor;
           return result.text;
         });
-        setReferencedFiles((current) =>
-          current.some((entry) => entry.path === item.path)
-            ? current
-            : [
-                ...current,
-                { path: item.path, ...splitWorkspaceFilePath(item.path) },
-              ],
-        );
+        draftStore.addFileReference(sessionId, item.path, item.type);
         setPaletteOpen(false);
         setPaletteMentionMode(false);
         requestAnimationFrame(() => {
@@ -1533,7 +1527,7 @@ export function InputBar({
         return;
       }
     },
-    [defaultSkillNames, inputLocked, onAction, onActionStart, paletteSlashMode],
+    [defaultSkillNames, draftStore, inputLocked, onAction, onActionStart, paletteSlashMode, sessionId, textareaRef],
   );
 
   const removeSelectedSkill = useCallback((name) => {
@@ -1753,7 +1747,7 @@ export function InputBar({
                 className="codemini-input-chip inline-flex max-w-full items-center gap-1.5 px-2 py-1 text-[12px] text-(--text-secondary)"
                 title={formatComposerFileMention(item.path)}
               >
-                <FileTypeIcon path={item.path} size="sm" />
+                <WorkspaceReferenceIcon item={item} />
                 <span className="max-w-[180px] truncate font-mono text-(--text-primary)">
                   {item.name}
                 </span>

@@ -5,6 +5,21 @@ import { createComposerDraftStore } from '../codemini-web/client/src/lib/compose
 const deferred = () => Promise.withResolvers();
 const edit = (store, id, fields) => store.update(id, draft => ({ ...draft, ...fields }));
 
+test('file tree and mention picker share normalized references in the current draft', () => {
+  const store = createComposerDraftStore();
+  edit(store, 'a', { value: 'read this' });
+  store.addFileReference('a', 'src\\with spaces.js');
+  store.addFileReference('a', 'src/with spaces.js');
+  store.addFileReference('a', 'src/components', 'directory');
+  store.addFileReference('a', 'src\\components', 'directory');
+  assert.deepEqual(store.get('a').referencedFiles, [
+    { path: 'src/with spaces.js', dir: 'src/', name: 'with spaces.js', type: 'file' },
+    { path: 'src/components', dir: 'src/', name: 'components', type: 'directory' },
+  ]);
+  assert.equal(store.get('a').value, 'read this');
+  assert.deepEqual(store.get('b').referencedFiles, []);
+});
+
 test('switching sessions restores each complete draft, including images, files and skill choices', () => {
   const store = createComposerDraftStore();
   const fields = {

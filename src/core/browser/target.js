@@ -22,7 +22,7 @@ export function validateTarget(args = {}, { required = true } = {}) {
     return {
       ok: false,
       code: 'INVALID_TARGET',
-      error: 'name requires role. Example: {"role":"button","name":"Save"}. Or pass ref from browser_snapshot.',
+      error: 'name requires role. Example: {"role":"button","name":"Save"}. Or pass ref from browser_inspect snapshot.',
     };
   }
   if (role && !name) {
@@ -43,7 +43,7 @@ export function validateTarget(args = {}, { required = true } = {}) {
     return {
       ok: false,
       code: 'INVALID_TARGET',
-      error: 'Provide ref (@eN from browser_snapshot), selector, or role plus name.',
+      error: 'Provide ref (@eN from browser_inspect snapshot), selector, or role plus name.',
     };
   }
   if (modes.length > 1) {
@@ -57,7 +57,7 @@ export function validateTarget(args = {}, { required = true } = {}) {
     return {
       ok: false,
       code: 'INVALID_TARGET',
-      error: 'ref must look like @e1. Call browser_snapshot to refresh refs.',
+      error: 'ref must look like @e1. Call browser_inspect snapshot to refresh refs.',
     };
   }
   return {

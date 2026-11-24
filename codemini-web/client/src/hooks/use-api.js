@@ -1101,8 +1101,10 @@ export async function deleteCodeWikiReport(file, project = '') {
   return res.json();
 }
 
-export function openTerminalStream(sessionId) {
-  return new EventSource(withSessionQuery('/api/terminal/stream', sessionId));
+export function openTerminalStream(sessionId, terminalId = '') {
+  const params = new URLSearchParams({ sessionId });
+  if (terminalId) params.set('terminalId', terminalId);
+  return new EventSource(`/api/terminal/stream?${params}`);
 }
 
 export async function fetchTerminalSnapshot(sessionId) {
@@ -1127,49 +1129,65 @@ export async function resolveTerminalApproval(sessionId, id, approved) {
   return readJsonResponse(res);
 }
 
-export async function stopTerminalCommand(sessionId) {
+export async function stopTerminalCommand(sessionId, terminalId = '') {
   const res = await api('/api/terminal/stop', {
     method: 'POST',
     headers: JSON_HEADERS,
-    body: JSON.stringify({ sessionId }),
+    body: JSON.stringify({ sessionId, terminalId }),
   });
   return readJsonResponse(res);
 }
 
-export async function writeTerminalInput(sessionId, data) {
+export async function writeTerminalInput(sessionId, data, terminalId = '') {
   const res = await api('/api/terminal/input', {
     method: 'POST',
     headers: JSON_HEADERS,
-    body: JSON.stringify({ sessionId, data }),
+    body: JSON.stringify({ sessionId, data, terminalId }),
   });
   return readJsonResponse(res);
 }
 
-export async function resizeTerminalSession(sessionId, cols, rows) {
+export async function resizeTerminalSession(sessionId, cols, rows, terminalId = '') {
   const res = await api('/api/terminal/resize', {
     method: 'POST',
     headers: JSON_HEADERS,
-    body: JSON.stringify({ sessionId, cols, rows }),
+    body: JSON.stringify({ sessionId, cols, rows, terminalId }),
   });
   return readJsonResponse(res);
 }
 
-export async function clearTerminalSession(sessionId) {
+export async function clearTerminalSession(sessionId, terminalId = '') {
   const res = await api('/api/terminal/clear', {
     method: 'POST',
     headers: JSON_HEADERS,
-    body: JSON.stringify({ sessionId }),
+    body: JSON.stringify({ sessionId, terminalId }),
   });
   return readJsonResponse(res);
 }
 
-export async function restartTerminalSession(sessionId) {
+export async function restartTerminalSession(sessionId, terminalId = '') {
   const res = await api('/api/terminal/restart', {
     method: 'POST',
     headers: JSON_HEADERS,
-    body: JSON.stringify({ sessionId }),
+    body: JSON.stringify({ sessionId, terminalId }),
   });
   return readJsonResponse(res);
+}
+
+export async function closeTerminalSession(sessionId, terminalId) {
+  return readJsonOrThrow(await api('/api/terminal/close', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ sessionId, terminalId }),
+  }));
+}
+
+export async function fetchAgentTerminals(sessionId, { id, signal } = {}) {
+  const params = new URLSearchParams({ sessionId });
+  if (id) params.set('id', id);
+  const response = await api(`/api/agent-terminals?${params}`, { signal, cache: 'no-store' });
+  if (id && response.status === 404) return { command: null };
+  return readJsonOrThrow(response);
 }
 
 export async function fetchWorkspaceTree(sessionId, relativePath = '') {

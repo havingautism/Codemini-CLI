@@ -6,6 +6,7 @@ import os from "node:os";
 import { spawn } from "node:child_process";
 import { WEB_FETCH_BROWSER_HINT, openWebFetchBrowser } from "./browser/web-fetch-browser.js";
 import { createHash } from "node:crypto";
+import { createAgentTerminal } from "./agent-terminals.js";
 import { rgPath } from "@vscode/ripgrep";
 import net from "node:net";
 import {
@@ -2058,7 +2059,7 @@ async function previewHtmlArtifact(root, args, config = {}) {
   };
 }
 
-async function runCommand(root, config, args, context = {}) {
+async function runCommand(root, config, args, context = {}, sessionId = "") {
   if (args?.network_access === true) {
     if (context.networkAccessApproved !== true) throw new Error("Network access requires command review");
     config = { ...config, sandbox: { ...config.sandbox, network: "allow-all", network_isolated: true } };
@@ -2101,7 +2102,7 @@ async function runCommand(root, config, args, context = {}) {
       shell: { ...(config?.shell || {}), default: executionShell },
     }, Object.assign(Object.defineProperties({}, Object.getOwnPropertyDescriptors(args)), {
       sandbox_mode: sandboxMode,
-    }));
+    }), sessionId);
   }
 
   const result = await runShellCommand({
@@ -2303,7 +2304,7 @@ function queueBackgroundTaskOutputWrite(task, chunk) {
     .catch(() => {});
 }
 
-async function startBackgroundTask(root, config, args) {
+async function startBackgroundTask(root, config, args, sessionId) {
   const command = String(args?.command || args?.cmd || "").trim();
   if (!command) throw new Error("shell command is required");
   if (
@@ -2403,17 +2404,20 @@ async function startBackgroundTask(root, config, args) {
     outputWrite: Promise.resolve(),
   };
   backgroundTaskRegistry.set(taskId, task);
+  const terminal = createAgentTerminal(sessionId, { command, cwd: root });
 
   task.closePromise = new Promise((resolve) => {
     task.child.on("close", (code, signal) => {
       task.exitCode = code;
       task.signal = signal;
       task.status = task.status === "stopped" ? "stopped" : "exited";
+      terminal?.finish();
       resolve();
     });
   });
 
   const onOutput = (chunk) => {
+    terminal?.write(chunk);
     appendRecentOutput(task, chunk);
     queueBackgroundTaskOutputWrite(task, chunk);
     if (matchesTaskStartupSuccess(task, chunk)) {
@@ -2424,6 +2428,7 @@ async function startBackgroundTask(root, config, args) {
   task.child.stdout.on("data", onOutput);
   task.child.stderr.on("data", onOutput);
   task.child.on("error", (error) => {
+    terminal?.finish();
     appendRecentOutput(task, error?.message || String(error));
     queueBackgroundTaskOutputWrite(task, error?.message || String(error));
     task.status = "exited";
@@ -2480,6 +2485,9 @@ async function startBackgroundTask(root, config, args) {
 
   if (task.status === "starting") {
     task.status = "running";
+  }
+  if (task.status === "running" && child.exitCode === null && child.signalCode === null) {
+    terminal?.publish();
   }
   return snapshotBackgroundTask(task);
 }
@@ -6998,7 +7006,7 @@ export function getBuiltinTools({
           throw new Error(crewCheck.reason);
         }
       }
-      return runCommand(workspaceRoot, config, args, context);
+      return runCommand(workspaceRoot, config, args, context, config?.runtime?.agentTerminalSessionId || sessionId);
     }, {
       prepareApproval: async (args) => {
         const evaluation = args?._evaluation || null;

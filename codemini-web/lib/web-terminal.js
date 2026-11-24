@@ -15,6 +15,7 @@ const DEFAULT_COLS = 100;
 const DEFAULT_ROWS = 30;
 const HOST_FILE = fileURLToPath(new URL('./web-terminal-host.js', import.meta.url));
 const sessions = new Map();
+const closedTabs = new Set();
 let terminalHost = null;
 
 export function stripAnsi(text = '') {
@@ -49,8 +50,9 @@ export function formatTerminalPlainText(lines = [], { cwd = '', shell = 'pwsh' }
   return header && !startsWithHeader ? `${header}\n${body}` : body;
 }
 
-function sessionKey(cwd) {
-  return path.resolve(String(cwd || process.cwd()));
+function sessionKey(cwd, terminalId = '') {
+  const directory = path.resolve(String(cwd || process.cwd()));
+  return terminalId ? `${directory}\0${terminalId}` : directory;
 }
 
 function shellLabel(shellDefault) {
@@ -209,13 +211,14 @@ function spawnSession(session) {
   });
 }
 
-function ensureSession(cwd, shellDefault = 'powershell') {
-  const key = sessionKey(cwd);
+function ensureSession(cwd, shellDefault = 'powershell', terminalId = '') {
+  const key = sessionKey(cwd, terminalId);
+  if (closedTabs.has(key)) return null;
   let session = sessions.get(key);
   if (!session) {
     session = {
       key,
-      cwd: key,
+      cwd: path.resolve(String(cwd || process.cwd())),
       shellDefault,
       shell: shellLabel(shellDefault),
       clients: new Set(),
@@ -236,8 +239,8 @@ function ensureSession(cwd, shellDefault = 'powershell') {
   return session;
 }
 
-export function getTerminalSnapshot(cwd, shellDefault = 'powershell') {
-  const session = ensureSession(cwd, shellDefault);
+function snapshot(session) {
+  if (!session) return null;
   return {
     cwd: session.cwd,
     shell: session.shell,
@@ -251,13 +254,21 @@ export function getTerminalSnapshot(cwd, shellDefault = 'powershell') {
   };
 }
 
-export function subscribeTerminal(cwd, res, shellDefault = 'powershell') {
-  const session = ensureSession(cwd, shellDefault);
+export function getTerminalSnapshot(cwd, shellDefault = 'powershell', terminalId = '') {
+  return snapshot(ensureSession(cwd, shellDefault, terminalId));
+}
+
+export function subscribeTerminal(cwd, res, shellDefault = 'powershell', terminalId = '') {
+  const session = ensureSession(cwd, shellDefault, terminalId);
+  if (!session) {
+    res.end();
+    return;
+  }
   session.clients.add(res);
   res.write(
     `data: ${JSON.stringify({
       type: 'snapshot',
-      snapshot: getTerminalSnapshot(cwd, shellDefault),
+      snapshot: snapshot(session),
     })}\n\n`,
   );
   const heartbeat = setInterval(() => {
@@ -276,8 +287,13 @@ export function subscribeTerminal(cwd, res, shellDefault = 'powershell') {
   return cleanup;
 }
 
-export function writeTerminalInput(cwd, data, shellDefault = 'powershell') {
-  const session = ensureSession(cwd, shellDefault);
+function findInteractiveSession(cwd, shellDefault, terminalId) {
+  return terminalId ? sessions.get(sessionKey(cwd, terminalId)) : ensureSession(cwd, shellDefault);
+}
+
+export function writeTerminalInput(cwd, data, shellDefault = 'powershell', terminalId = '') {
+  const session = findInteractiveSession(cwd, shellDefault, terminalId);
+  if (!session) return { ok: false, error: 'Terminal tab is closed' };
   const input = String(data ?? '');
   if (!input) return { ok: true, written: 0 };
   sendToHost({ type: 'input', key: session.key, data: input });
@@ -289,8 +305,10 @@ export function resizeTerminal(
   cols,
   rows,
   shellDefault = 'powershell',
+  terminalId = '',
 ) {
-  const session = ensureSession(cwd, shellDefault);
+  const session = findInteractiveSession(cwd, shellDefault, terminalId);
+  if (!session) return { ok: false, error: 'Terminal tab is closed' };
   const nextCols = Math.max(20, Math.min(500, Number(cols) || DEFAULT_COLS));
   const nextRows = Math.max(5, Math.min(200, Number(rows) || DEFAULT_ROWS));
   session.cols = nextCols;
@@ -304,16 +322,18 @@ export function resizeTerminal(
   return { ok: true, cols: nextCols, rows: nextRows };
 }
 
-export function clearTerminal(cwd, shellDefault = 'powershell') {
-  const session = ensureSession(cwd, shellDefault);
+export function clearTerminal(cwd, shellDefault = 'powershell', terminalId = '') {
+  const session = findInteractiveSession(cwd, shellDefault, terminalId);
+  if (!session) return null;
   session.transcript = '';
   session.lines = [];
   sendToHost({ type: 'clear', key: session.key });
-  return getTerminalSnapshot(cwd, shellDefault);
+  return snapshot(session);
 }
 
-export function restartTerminal(cwd, shellDefault = 'powershell') {
-  const session = ensureSession(cwd, shellDefault);
+export function restartTerminal(cwd, shellDefault = 'powershell', terminalId = '') {
+  const session = findInteractiveSession(cwd, shellDefault, terminalId);
+  if (!session) return { ok: false, error: 'Terminal tab is closed' };
   session.command = '';
   session.transcript = '';
   session.lines = [];
@@ -326,13 +346,14 @@ export function restartTerminal(cwd, shellDefault = 'powershell') {
     cols: session.cols,
     rows: session.rows,
   });
-  const snapshot = getTerminalSnapshot(cwd, shellDefault);
-  broadcast(session, { type: 'snapshot', snapshot });
-  return { ok: true, snapshot };
+  const state = snapshot(session);
+  broadcast(session, { type: 'snapshot', snapshot: state });
+  return { ok: true, snapshot: state };
 }
 
-export function stopTerminal(cwd, shellDefault = 'powershell') {
-  const session = ensureSession(cwd, shellDefault);
+export function stopTerminal(cwd, shellDefault = 'powershell', terminalId = '') {
+  const session = findInteractiveSession(cwd, shellDefault, terminalId);
+  if (!session) return { ok: false, error: 'Terminal tab is closed' };
   const cmd = session.command;
   sendToHost({ type: 'input', key: session.key, data: '\x03' });
   session.command = '';
@@ -346,7 +367,7 @@ export function stopTerminal(cwd, shellDefault = 'powershell') {
   return {
     ok: true,
     stopped: true,
-    snapshot: getTerminalSnapshot(cwd, shellDefault),
+    snapshot: snapshot(session),
   };
 }
 
@@ -358,19 +379,36 @@ export function runTerminalCommand({
   cwd,
   command,
   shellDefault = 'powershell',
+  terminalId = '',
 } = {}) {
   const text = String(command || '').trim();
   if (!text) return { ok: false, error: 'command is required' };
-  const session = ensureSession(cwd, shellDefault);
+  const session = ensureSession(cwd, shellDefault, terminalId);
+  if (!session) return { ok: false, error: 'Terminal tab is closed' };
   session.command = text;
   pushLine(session, { kind: 'in', text, at: Date.now() });
   sendToHost({ type: 'input', key: session.key, data: `${text}\r` });
-  return { ok: true, snapshot: getTerminalSnapshot(cwd, shellDefault) };
+  return { ok: true, snapshot: snapshot(session) };
+}
+
+export function closeTerminal(cwd, terminalId) {
+  if (!terminalId) return { ok: false, error: 'Terminal tab ID is required' };
+  const key = sessionKey(cwd, terminalId);
+  closedTabs.add(key);
+  if (closedTabs.size > 256) closedTabs.delete(closedTabs.values().next().value);
+  const session = sessions.get(key);
+  if (session) {
+    sessions.delete(key);
+    for (const client of session.clients) client.end();
+    if (terminalHost) sendToHost({ type: 'close', key });
+  }
+  return { ok: true };
 }
 
 /** Close the interactive terminal host during server shutdown. */
 export async function disposeTerminals() {
   sessions.clear();
+  closedTabs.clear();
   pendingHostMessages.length = 0;
   const host = terminalHost;
   terminalHost = null;

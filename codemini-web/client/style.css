@@ -2412,6 +2412,10 @@ samp {
   overscroll-behavior-x: contain;
 }
 
+.codemini-markdown-table-strip > .codemini-horizontal-scroll-strip:not(:has(> [data-slot="scroll-area-scrollbar"])) {
+  padding-bottom: 0;
+}
+
 .codemini-markdown-table-strip .codemini-horizontal-scroll-strip__viewport {
   border-radius: 10px;
   background: var(--message-surface);

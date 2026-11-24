@@ -148,7 +148,7 @@ const timeoutProp = intProp(
 export const BROWSER_TOOL_DEFINITIONS = {
   browser_inspect: define(
     'browser_inspect',
-    'Read-only. action: snapshot, screenshot, logs, explain_style, listeners, or locate_source. The last three need one target (ref @eN, selector, or role plus name). Returns { ok, tool, summary, ... }.',
+    'Read-only. action: snapshot, screenshot, logs, explain_style, locate_source, or listeners. locate_source maps a React or Vue node to a workspace file in a dev build with sourcemaps; then edit that file and rebuild with the project command. listeners lists DOM listeners. On React those are the root delegate in react-dom, not the component onClick. explain_style, locate_source, and listeners need one target (ref @eN, selector, or role plus name). Returns { ok, tool, summary, ... }.',
     {
       action: { type: 'string', enum: [...BROWSER_INSPECT_ACTIONS], description: 'Inspection to run.' },
       ...targetProperties,
@@ -175,7 +175,7 @@ export const BROWSER_TOOL_DEFINITIONS = {
         items: { type: 'string', minLength: 1, maxLength: 40 },
         minItems: BROWSER_LIMITS.listenerTypes.min,
         maxItems: BROWSER_LIMITS.listenerTypes.max,
-        description: 'listeners. Event names. Omit for all, up to max_listeners.',
+        description: 'listeners. Event names. On React this is the root delegate, not the component handler. Omit for all, up to max_listeners.',
       },
       max_listeners: intProp(`listeners. Defaults to ${BROWSER_LIMITS.maxListeners.default}.`, BROWSER_LIMITS.maxListeners),
       timeout_ms: intProp('screenshot. Timeout. Defaults to 5000.', BROWSER_LIMITS.actionTimeoutMs),
@@ -281,4 +281,4 @@ export function filterBrowserToolNames(names, config, executionMode) {
   return names.filter((name) => !drop.has(name));
 }
 
-export const BROWSER_CODING_PROMPT = 'For front-end interaction bugs (unclickable controls, wrong styles, which handler or source file), load browser_inspect, browser_act, or browser_diagnose with tool_search, or use the frontend-interaction-debug skill.';
+export const BROWSER_CODING_PROMPT = 'For UI bugs, use tool_search for browser_inspect, browser_act, or browser_diagnose, or load the frontend-interaction-debug skill.';

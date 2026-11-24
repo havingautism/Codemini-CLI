@@ -5870,7 +5870,10 @@ async function askModelInSession({
               forkPointMessages: forkPoint.messages,
               toolDefinitions: forkPoint.toolDefinitions,
               systemPrompt: effectiveSystemPrompt,
-              config,
+              config: {
+                ...config,
+                runtime: { ...config.runtime, agentTerminalSessionId: config.runtime?.agentTerminalSessionId || session.id },
+              },
               model,
               onAgentEvent,
               requestToolApproval,
@@ -6950,6 +6953,7 @@ export async function runSubAgentTask({
       ...config,
       runtime: {
         ...(config.runtime || {}),
+        agentTerminalSessionId: config.runtime?.agentTerminalSessionId || parentSession?.id,
         crew_session: crewSessionActive || Boolean(config?.runtime?.crew_session),
         crew_project_root: resolveCrewProjectRoot(workspaceRoot),
         crew_parent_shell: false,

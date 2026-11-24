@@ -7,6 +7,7 @@ import {
   useState,
 } from "react";
 import { Tree } from "react-arborist";
+import { ContextMenu } from "radix-ui";
 import {
   ArrowClockwise,
   ArrowLeft,
@@ -15,6 +16,7 @@ import {
   CaretUp,
   Folder,
   FolderOpen,
+  LinkSimple,
   MagnifyingGlass,
   X,
 } from "@/lib/icons";
@@ -215,16 +217,11 @@ function PathBar({
   );
 }
 
-function NodeRenderer({ node, style, dragHandle, onEnterDirectory }) {
+function NodeRenderer({ node, style, dragHandle, onEnterDirectory, onAddReference }) {
   const isDirectory = node.data.type === "directory";
   const isOpen = node.isOpen;
 
-  return (
-    <div
-      ref={dragHandle}
-      style={style}
-      className="group flex items-center px-2 text-[13px] text-(--text-secondary)"
-    >
+  const row = (
       <button
         type="button"
         className={
@@ -268,6 +265,32 @@ function NodeRenderer({ node, style, dragHandle, onEnterDirectory }) {
         </span>
         <span className="min-w-0 flex-1 truncate">{node.data.name}</span>
       </button>
+  );
+
+  return (
+    <div
+      ref={dragHandle}
+      style={style}
+      className="group flex items-center px-2 text-[13px] text-(--text-secondary)"
+    >
+      <ContextMenu.Root>
+        <ContextMenu.Trigger asChild>{row}</ContextMenu.Trigger>
+        <ContextMenu.Portal>
+          <ContextMenu.Content
+            className="z-[60] min-w-40 rounded-lg border border-(--surface-edge) bg-(--material-elevated) p-1 text-(--text-primary) shadow-[var(--surface-shadow)] outline-none"
+            onClick={(event) => event.stopPropagation()}
+            onKeyDown={(event) => event.stopPropagation()}
+          >
+            <ContextMenu.Item
+              className="flex cursor-pointer select-none items-center gap-2 rounded-md px-2.5 py-1.5 text-[13px] outline-none data-[highlighted]:bg-(--bg-hover)"
+              onSelect={() => onAddReference?.(node.data.path || node.data.id, node.data.type)}
+            >
+              <LinkSimple size={14} aria-hidden="true" />
+              {t("workspaceAddReference")}
+            </ContextMenu.Item>
+          </ContextMenu.Content>
+        </ContextMenu.Portal>
+      </ContextMenu.Root>
     </div>
   );
 }
@@ -276,6 +299,8 @@ export function FileTreePanel({
   sessionId = "",
   projectCwd = "",
   disabled = false,
+  visible = true,
+  onAddReference,
 }) {
   const [treeData, setTreeData] = useState([]);
   const [rootPath, setRootPath] = useState(projectCwd || "");
@@ -348,7 +373,7 @@ export function FileTreePanel({
 
   useEffect(() => {
     const container = containerRef.current;
-    if (!container || typeof ResizeObserver !== "function") return undefined;
+    if (!visible || !container || typeof ResizeObserver !== "function") return undefined;
     const observer = new ResizeObserver((entries) => {
       const entry = entries[0];
       if (!entry) return;
@@ -362,7 +387,7 @@ export function FileTreePanel({
     });
     observer.observe(container);
     return () => observer.disconnect();
-  }, [mode]);
+  }, [mode, visible]);
 
   const ensureDirectoryLoaded = useCallback(
     async (id, data) => {
@@ -483,9 +508,9 @@ export function FileTreePanel({
 
   const renderNode = useCallback(
     (props) => (
-      <NodeRenderer {...props} onEnterDirectory={handleEnterDirectory} />
+      <NodeRenderer {...props} onEnterDirectory={handleEnterDirectory} onAddReference={onAddReference} />
     ),
-    [handleEnterDirectory],
+    [handleEnterDirectory, onAddReference],
   );
   const loadedItemCount = useMemo(
     () => countTreeItems(treeData),

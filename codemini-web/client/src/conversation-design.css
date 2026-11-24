@@ -318,11 +318,6 @@ textarea, input {
   margin-inline: 12px;
 }
 
-.codemini-markdown-table-strip {
-  border-radius: 10px;
-  background: var(--message-surface);
-}
-
 :is([data-scroll-overflow-left], [data-scroll-overflow-right]) {
   --scroll-fade-left: 0px;
   --scroll-fade-right: 0px;
@@ -341,6 +336,26 @@ textarea, input {
 
 [data-scroll-overflow-right] {
   --scroll-fade-right: 18px;
+}
+
+:is([data-scroll-overflow-top], [data-scroll-overflow-bottom]) {
+  --scroll-fade-top: 0px;
+  --scroll-fade-bottom: 0px;
+  mask-image: linear-gradient(
+    to bottom,
+    transparent,
+    black var(--scroll-fade-top),
+    black calc(100% - var(--scroll-fade-bottom)),
+    transparent
+  );
+}
+
+[data-scroll-overflow-top] {
+  --scroll-fade-top: 18px;
+}
+
+[data-scroll-overflow-bottom] {
+  --scroll-fade-bottom: 18px;
 }
 
 .codemini-code-preview .codemini-file-preview-code,

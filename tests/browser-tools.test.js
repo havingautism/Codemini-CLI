@@ -29,7 +29,7 @@ import {
 import { buildBrowserFormatters, buildBrowserHandlers } from '../src/core/browser/handlers.js';
 import { createBrowserSession, playwrightCoreLoaded } from '../src/core/browser/session.js';
 import { classifyDeclarations, diffSnapshot } from '../src/core/browser/cascade.js';
-import { mapGeneratedPosition } from '../src/core/browser/sourcemap.js';
+import { createSourceResolver, mapGeneratedPosition } from '../src/core/browser/sourcemap.js';
 import { resolvePageUrl, validateTarget } from '../src/core/browser/target.js';
 import { browserCandidates, findInstalledBrowsers } from '../src/core/browser/locate-browser.js';
 import { formatBrowserResult } from '../src/core/browser/result.js';
@@ -325,6 +325,37 @@ test('cascade, snapshot delta, source maps, urls, and browser paths', async () =
     exists: (file) => file === '/usr/bin/google-chrome',
   });
   assert.deepEqual(found.map((item) => item.channel), ['chrome']);
+});
+
+test('a relative CDP sourcemap resolves from the minified script URL', async () => {
+  const workspaceRoot = path.join(repoRoot, 'tests/fixtures/browser/react19');
+  const reads = [];
+  const resolver = createSourceResolver({
+    workspaceRoot,
+    getScript: () => ({ scriptId: 'a', url: 'http://127.0.0.1/assets/app.min.js', sourceMapURL: './maps/ui.map' }),
+    readText: async (url) => {
+      reads.push(url);
+      return JSON.stringify({ version: 3, sources: ['/src/Button.jsx'], names: [], mappings: 'KACA' });
+    },
+  });
+  const location = await resolver.locate({ scriptId: 'a', line: 1, column: 6, oneBased: true });
+  assert.deepEqual(reads, ['http://127.0.0.1/assets/maps/ui.map']);
+  assert.equal(location.workspaceSource, 'src/Button.jsx');
+  assert.equal(location.line, 2);
+  assert.equal(location.column, 0);
+});
+
+test('frontend debug guidance looks up the component before DOM listeners', async () => {
+  const skill = await fs.readFile(path.join(repoRoot, 'templates/skills/frontend-interaction-debug/SKILL.md'), 'utf8');
+  const locate = skill.indexOf('action:"locate_source"');
+  const listeners = skill.indexOf('action:"listeners"');
+  assert.ok(locate > 0 && listeners > locate);
+  assert.match(skill, /edit that file with `edit`/);
+  assert.match(skill, /sourcemaps/i);
+  assert.match(skill, /react-dom/);
+  const description = BROWSER_TOOL_DEFINITIONS.browser_inspect.function.description;
+  assert.match(description, /locate_source maps a React or Vue node/);
+  assert.match(description, /root delegate in react-dom/);
 });
 
 test('settings and i18n expose browser controls in English and Chinese', async () => {

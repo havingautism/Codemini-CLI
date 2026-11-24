@@ -14,7 +14,7 @@ import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { AppProvider, useApp } from "@/context/app-context.jsx";
 import { useGitWorkspace } from "@/hooks/use-git-workspace.js";
-import { t } from "../i18n/index.js";
+import { getLocale, t } from "../i18n/index.js";
 import { Sidebar } from "@/components/Sidebar.jsx";
 import { ChatPanel } from "@/components/ChatPanel.jsx";
 import { InputBar } from "@/components/InputBar.jsx";
@@ -26,13 +26,14 @@ import { DreamDialog } from "@/components/DreamDialog.jsx";
 import { SpecApprovalDialog } from "@/components/SpecApprovalDialog.jsx";
 import { RuntimeActivityStrip } from "@/components/RuntimeActivityStrip.jsx";
 import { CrewProgressDock } from "@/components/CrewProgressDock.jsx";
-import { cancelCrewWorker } from "@/hooks/use-api.js";
+import { cancelCrewWorker, closeTerminalSession, fetchAgentTerminals } from "@/hooks/use-api.js";
 import { SessionPanel } from "@/components/SessionPanel.jsx";
 import { TodoCard } from "@/components/TodoList.jsx";
 import { findLiveTodoDock } from "@/lib/live-todo-dock.js";
 import { interactiveRequestForSession } from "@/lib/session-ui-state.js";
 import { scheduledAttentionKey } from "@/lib/scheduled-task-ui.js";
-import { DotsThree, FolderSimple, GitDiff, List, SidebarSimple, Terminal } from "@/lib/icons";
+import { DotsThree, GitDiff, List, SidebarSimple, Terminal } from "@/lib/icons";
+import { EMPTY_WORKSPACE_TABS, openWorkspacePicker, openWorkspaceTool, removeWorkspaceTab } from "@/lib/workspace-tabs.js";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { TrajectoryPanel } from "@/components/TrajectoryPanel.jsx";
 import "../style.css";
@@ -100,7 +101,7 @@ const AboutDialog = lazy(() =>
 );
 const WorkspaceRail = lazy(() =>
   import("@/components/WorkspaceRail.jsx").then((module) => ({
-    default: module.WorkspaceRail,
+    default: memo(module.WorkspaceRail),
   })),
 );
 
@@ -198,8 +199,24 @@ class ErrorBoundary extends Component {
   }
 }
 
+const EMPTY_AGENT_COMMANDS = [];
+
+function useAgentCommandList(sessionId, revision) {
+  const [snapshot, setSnapshot] = useState(null);
+  useEffect(() => {
+    if (!sessionId) return undefined;
+    const controller = new AbortController();
+    fetchAgentTerminals(sessionId, { signal: controller.signal }).then(({ commands }) => {
+      if (!controller.signal.aborted) setSnapshot({ sessionId, commands });
+    }).catch(() => {});
+    return () => controller.abort();
+  }, [sessionId, revision]);
+  return snapshot?.sessionId === sessionId ? snapshot.commands : EMPTY_AGENT_COMMANDS;
+}
+
 function Shell() {
   const [composerDraftStore] = useState(createComposerDraftStore);
+  const composerInputRef = useRef(null);
   const { state, actions } = useApp();
   const approvalRequest = interactiveRequestForSession(state, "approval");
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
@@ -214,7 +231,7 @@ function Shell() {
     }
   });
   const [sideRailOpen, setSideRailOpen] = useState(false);
-  const [sideRailTab, setSideRailTab] = useState("files");
+  const [workspaceTabsBySession, setWorkspaceTabsBySession] = useState({});
   const [chatPageTab, setChatPageTab] = useState("conversation");
   const prevSessionIdRef = useRef(state.currentSessionId);
   if (prevSessionIdRef.current !== state.currentSessionId) {
@@ -233,14 +250,41 @@ function Shell() {
   }, []);
   const rs = state.runtimeState || {};
   const git = useGitWorkspace();
-  const projectIsGit = git.isLoading || git.isGit === true;
   const currentId = state.currentSessionId || rs.sessionId;
+  const workspaceSessionId = state.currentSessionId || "";
+  const workspaceTabs = workspaceTabsBySession[workspaceSessionId] || EMPTY_WORKSPACE_TABS;
+  const updateWorkspaceTabs = useCallback((updater) => {
+    setWorkspaceTabsBySession((current) => ({
+      ...current,
+      [workspaceSessionId]: updater(current[workspaceSessionId] || EMPTY_WORKSPACE_TABS),
+    }));
+  }, [workspaceSessionId]);
+  const chooseWorkspaceTool = useCallback((type) => {
+    const id = type === "terminal"
+      ? Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) => byte.toString(16).padStart(2, "0")).join("")
+      : "";
+    updateWorkspaceTabs((current) => openWorkspaceTool(current, type, id));
+  }, [updateWorkspaceTabs]);
+  const selectWorkspaceTab = useCallback((activeId) => {
+    updateWorkspaceTabs((current) => ({ ...current, activeId }));
+  }, [updateWorkspaceTabs]);
+  const newWorkspaceTab = useCallback(() => updateWorkspaceTabs(openWorkspacePicker), [updateWorkspaceTabs]);
+  const closeWorkspaceTab = useCallback(async (tab) => {
+    if (tab.type === "terminal") await closeTerminalSession(workspaceSessionId, tab.id);
+    updateWorkspaceTabs((current) => removeWorkspaceTab(current, tab.id));
+  }, [updateWorkspaceTabs, workspaceSessionId]);
+  const agentCommands = useAgentCommandList(state.currentSessionId, state.agentTerminalRevision);
+  const commandStatus = agentCommands.length
+    ? t("agentTerminalRunningCount").replace("{{count}}", agentCommands.length)
+    : "";
+  const workspaceToggleLabel = t(sideRailOpen ? "workspaceCollapseRail" : "workspaceExpandRail");
 
-  useEffect(() => {
-    if (git.isReady && !git.isGit && sideRailTab === "git") {
-      setSideRailTab("files");
-    }
-  }, [git.isReady, git.isGit, sideRailTab]);
+  const addWorkspaceReference = useCallback((path, type) => {
+    composerDraftStore.addFileReference(state.currentSessionId, path, type);
+    setChatPageTab("conversation");
+    if (window.matchMedia("(width < 48rem)").matches) setSideRailOpen(false);
+    requestAnimationFrame(() => composerInputRef.current?.focus());
+  }, [composerDraftStore, state.currentSessionId]);
 
   const reasoningSyncKey = useMemo(
     () =>
@@ -574,7 +618,7 @@ function Shell() {
                   <button
                     type="button"
                     onClick={() => {
-                      setSideRailTab("git");
+                      chooseWorkspaceTool("git");
                       setSideRailOpen(true);
                     }}
                     className="inline-flex items-center gap-1.5 text-[12px] shrink-0 border-0 bg-transparent cursor-pointer hover:text-(--text-primary) p-0 text-(--text-muted)"
@@ -620,71 +664,22 @@ function Shell() {
                 <button
                   type="button"
                   className={
-                    "inline-flex size-8 items-center justify-center rounded-md border-0 cursor-pointer " +
-                    (sideRailOpen && sideRailTab === "files"
+                    "relative inline-flex size-8 items-center justify-center rounded-md border-0 cursor-pointer " +
+                    (sideRailOpen
                       ? "bg-(--bg-hover) text-(--text-primary)"
                       : "bg-transparent text-(--text-muted) hover:bg-(--bg-hover) hover:text-(--text-primary)")
                   }
-                  aria-label={t("workspaceFilesTab")}
-                  title={t("workspaceFilesTab")}
-                  aria-pressed={sideRailOpen && sideRailTab === "files"}
-                  onClick={() => {
-                    if (sideRailOpen && sideRailTab === "files") {
-                      setSideRailOpen(false);
-                      return;
-                    }
-                    setSideRailTab("files");
-                    setSideRailOpen(true);
-                  }}
+                  aria-label={workspaceToggleLabel}
+                  title={commandStatus ? `${workspaceToggleLabel} · ${commandStatus}` : workspaceToggleLabel}
+                  aria-expanded={sideRailOpen}
+                  aria-controls={sideRailOpen ? "chat-workspace-rail" : undefined}
+                  onClick={() => setSideRailOpen((open) => !open)}
                 >
-                  <FolderSimple size={16} />
+                  <SidebarSimple size={16} className="-scale-x-100" />
+                  {commandStatus ? (
+                    <span aria-hidden="true" className="absolute right-1.5 top-1.5 size-1.5 rounded-full bg-(--accent-blue)" />
+                  ) : null}
                 </button>
-                <button
-                  type="button"
-                  className={
-                    "inline-flex size-8 items-center justify-center rounded-md border-0 cursor-pointer " +
-                    (sideRailOpen && sideRailTab === "terminal"
-                      ? "bg-(--bg-hover) text-(--text-primary)"
-                      : "bg-transparent text-(--text-muted) hover:bg-(--bg-hover) hover:text-(--text-primary)")
-                  }
-                  aria-label={t("terminalTitle")}
-                  title={t("terminalTitle")}
-                  aria-pressed={sideRailOpen && sideRailTab === "terminal"}
-                  onClick={() => {
-                    if (sideRailOpen && sideRailTab === "terminal") {
-                      setSideRailOpen(false);
-                      return;
-                    }
-                    setSideRailTab("terminal");
-                    setSideRailOpen(true);
-                  }}
-                >
-                  <Terminal size={16} />
-                </button>
-                {projectIsGit ? (
-                <button
-                  type="button"
-                  className={
-                    "inline-flex size-8 items-center justify-center rounded-md border-0 cursor-pointer " +
-                    (sideRailOpen && sideRailTab === "git"
-                      ? "bg-(--bg-hover) text-(--text-primary)"
-                      : "bg-transparent text-(--text-muted) hover:bg-(--bg-hover) hover:text-(--text-primary)")
-                  }
-                  aria-label={t("workspaceGitTab")}
-                  title={t("workspaceGitTab")}
-                  aria-pressed={sideRailOpen && sideRailTab === "git"}
-                  onClick={() => {
-                    if (sideRailOpen && sideRailTab === "git") {
-                      setSideRailOpen(false);
-                      return;
-                    }
-                    setSideRailTab("git");
-                    setSideRailOpen(true);
-                  }}
-                >
-                  <GitDiff size={16} />
-                </button>
-                ) : null}
               </div>
             </div>
 
@@ -772,6 +767,7 @@ function Shell() {
                 key={state.currentSessionId || "no-session"}
                 sessionId={state.currentSessionId || ""}
                 draftStore={composerDraftStore}
+                inputRef={composerInputRef}
                 onSubmit={actions.submit}
                 onAction={actions.runChatAction}
                 onActionStart={actions.prepareChatAction}
@@ -815,13 +811,20 @@ function Shell() {
             {sideRailOpen ? (
               <Suspense fallback={null}>
                 <WorkspaceRail
-                  tab={sideRailTab}
-                  onTabChange={setSideRailTab}
-                  sessionId={state.currentSessionId || ""}
+                  key={workspaceSessionId}
+                  locale={getLocale()}
+                  tabState={workspaceTabs}
+                  onTabChange={selectWorkspaceTab}
+                  onNewTab={newWorkspaceTab}
+                  onChooseTool={chooseWorkspaceTool}
+                  onCloseTab={closeWorkspaceTab}
+                  sessionId={workspaceSessionId}
                   projectCwd={
                     state.runtimeState?.cwd || state.projectCwd || ""
                   }
                   isGit={git.isReady ? git.isGit : false}
+                  commands={agentCommands}
+                  onAddReference={addWorkspaceReference}
                   onClose={() => setSideRailOpen(false)}
                 />
               </Suspense>

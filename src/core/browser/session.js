@@ -58,7 +58,7 @@ export function createBrowserSession({ config = {}, workspaceRoot = process.cwd(
         kind: 'exception',
         level: 'error',
         text: String(error?.message || error).slice(0, 500),
-        stack: String(error?.stack || '').slice(0, 500),
+        stack: String(error?.stack || '').slice(0, 2000),
       });
     });
     page.on('request', (request) => {
@@ -100,7 +100,7 @@ export function createBrowserSession({ config = {}, workspaceRoot = process.cwd(
     session.cdp = cdp;
   }
 
-  session.isOpen = () => Boolean(session.page);
+  session.isOpen = () => Boolean(session.browser?.isConnected() && session.page && !session.page.isClosed());
   session.sourceResolver = () => sourceResolverFor(session);
   session.scriptByUrl = (url) => {
     const target = String(url || '');
@@ -134,7 +134,7 @@ export function createBrowserSession({ config = {}, workspaceRoot = process.cwd(
       channel: String(override.channel || ''),
       executable_path: String(override.executable_path || resolved.executable_path || ''),
     };
-    if (session.page) {
+    if (session.isOpen()) {
       if (!sameLaunch(session.launch, signature)) {
         const error = new Error('Close the browser before changing channel, executable, headless, or viewport.');
         error.code = 'BROWSER_ALREADY_OPEN';
@@ -142,6 +142,7 @@ export function createBrowserSession({ config = {}, workspaceRoot = process.cwd(
       }
       return { reused: true };
     }
+    if (session.browser) await session.dispose();
     const started = performance.now();
     const opened = await launchPlaywrightCoreBrowser({ config, override });
     session.importMs = playwrightImportDuration();
@@ -151,29 +152,28 @@ export function createBrowserSession({ config = {}, workspaceRoot = process.cwd(
       error.code = 'BROWSER_LAUNCH_FAILED';
       throw error;
     }
-    const browser = opened.browser;
-    const used = opened.plan;
-    const label = opened.label;
-    const context = await browser.newContext({
-      viewport: { width: signature.viewport_width, height: signature.viewport_height },
-    });
-    const page = await context.newPage();
-    page.setDefaultTimeout(resolved.timeout_ms);
-    page.setDefaultNavigationTimeout(resolved.timeout_ms);
-    attachPage(page);
-    session.browser = browser;
-    session.context = context;
-    session.page = page;
-    session.launch = signature;
-    session.lastChannel = used.channel || label;
-    session.refs.clear();
-    session.lastSnapshotText = '';
-    await attachCdp(page);
-    return { reused: false };
+    session.browser = opened.browser;
+    try {
+      session.context = await session.browser.newContext({
+        viewport: { width: signature.viewport_width, height: signature.viewport_height },
+      });
+      const page = await session.context.newPage();
+      page.setDefaultTimeout(resolved.timeout_ms);
+      page.setDefaultNavigationTimeout(resolved.timeout_ms);
+      attachPage(page);
+      await attachCdp(page);
+      session.page = page;
+      session.launch = signature;
+      session.lastChannel = opened.plan.channel || opened.label;
+      return { reused: false };
+    } catch (error) {
+      await session.dispose();
+      throw error;
+    }
   };
 
   session.resetCdp = async () => {
-    if (!session.page) return;
+    if (!session.isOpen()) return;
     try { await session.cdp?.detach(); } catch { /* already detached */ }
     session.scripts.clear();
     await attachCdp(session.page);
@@ -187,6 +187,9 @@ export function createBrowserSession({ config = {}, workspaceRoot = process.cwd(
     session.cdp = null;
     session.launch = null;
     session.refs.clear();
+    session.refKeys.clear();
+    session.roleCounts.clear();
+    session.nextRef = 1;
     session.scripts.clear();
     session.logs = [];
     session.lastSnapshotText = '';

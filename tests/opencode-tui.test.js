@@ -453,7 +453,7 @@ test('chat chrome keeps only the logo on top and runtime details at the bottom',
     copy: createTuiCopy('en')
   }).render(80).join('\n'));
   assert.match(crewDock, /Crew/);
-  assert.match(crewDock, /lena reviewing/);
+  assert.match(crewDock, /lena · reviewing/);
 
   const activity = new ActivityBar({ tui: { requestRender() {} }, copy: createTuiCopy('en') }).render(80).join('\n');
   assert.match(stripAnsi(activity), /● Ready.*\/ commands/);

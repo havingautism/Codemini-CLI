@@ -12,7 +12,13 @@ Coding mode auto-allows the whole plan tool list, which already includes `edit` 
 
 ## Targeting
 
-Pass exactly one of `ref` (`@e1` from the latest `browser_snapshot`), `selector`, or `role` plus `name`. The JSON schema checks types, enums, and bounds. The handler checks the combination and returns `INVALID_TARGET` with a short recovery hint. Results are `{ ok, tool, summary, ... }` or `{ ok: false, tool, code, error }`.
+Pass exactly one of `ref` (`@e1` from the latest `browser_inspect` snapshot), `selector`, or `role` plus `name`. The JSON schema checks types, enums, and bounds. The handler checks the combination and returns `INVALID_TARGET` with a short recovery hint. Results are `{ ok, tool, summary, ... }` or `{ ok: false, tool, code, error }`.
+
+`locate_source` uses framework debug metadata (React 18 `_debugSource`, React 19 `_debugStack`, Vue `__file`) and sourcemaps. Relative map URLs resolve from the generated script, including minified scripts. When verified workspace sources are available, the result lists those files under `workspaceSource`. Use `edit` on the relevant source, then `run` with the project's build command. If only browser locations are available, use a dev build with sourcemaps.
+
+`logs` includes the first application stack frame for each exception when available. Use its URL, line, and column to inspect the compiled script before mapping it back to source.
+
+`listeners` reports DOM listeners. On React 17+ a click listener is the root delegate in `react-dom`, so its location is not the component `onClick`. Use `locate_source` for the component.
 
 ## Tests
 

@@ -5,6 +5,8 @@ import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getBuiltinTools, webFetchPage } from '../src/core/tools.js';
+import { buildBrowserHandlers } from '../src/core/browser/handlers.js';
+import { createBrowserSession } from '../src/core/browser/session.js';
 
 const enabled = process.env.CODEMINI_BROWSER_TESTS === '1';
 const fixtureRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 'fixtures', 'browser');
@@ -71,7 +73,7 @@ async function withPage(workspaceRoot, serverRoot, run) {
   try {
     const opened = await bundle.handlers.browser_act({ action: 'open', url: server.url, timeout_ms: 30000 });
     assert.equal(opened.ok, true, JSON.stringify(opened));
-    await run(bundle.handlers, opened);
+    await run(bundle.handlers, opened, bundle.formatters);
   } finally {
     await bundle.handlers.browser_act({ action: 'close' }).catch(() => {});
     await bundle.dispose?.();
@@ -80,7 +82,16 @@ async function withPage(workspaceRoot, serverRoot, run) {
 }
 
 test('plain page diagnostics', { skip: !enabled, timeout: 180000 }, async () => {
-  await withPage(path.join(fixtureRoot, 'plain'), path.join(fixtureRoot, 'plain'), async (handlers, opened) => {
+  await withPage(path.join(fixtureRoot, 'plain'), path.join(fixtureRoot, 'plain'), async (handlers, opened, formatters) => {
+    const listeners = await handlers.browser_inspect({ action: 'listeners', selector: '#throws', types: ['click'] });
+    assert.equal(listeners.ok, true, JSON.stringify(listeners));
+    assert.ok(listeners.listeners.some((listener) => /handler-source\.js/.test(listener.location?.file || '')), JSON.stringify(listeners.listeners));
+
+    const located = await handlers.browser_inspect({ action: 'locate_source', selector: '#throws' });
+    assert.equal(located.ok, true, JSON.stringify(located));
+    assert.ok(located.locations.some((location) => location.workspaceSource === 'src/handler-source.js'), JSON.stringify(located.locations));
+    assert.match(located.summary, /Workspace source: src\/handler-source\.js/);
+
     const snap = await handlers.browser_inspect({ action: 'snapshot', incremental: false, max_chars: 6000 });
     assert.equal(snap.ok, true, JSON.stringify(snap));
     assert.ok(snap.refs.some((ref) => ref.name === 'Styled'));
@@ -113,14 +124,6 @@ test('plain page diagnostics', { skip: !enabled, timeout: 180000 }, async () => 
     assert.ok(style.winning.some((item) => item.property === 'color' && /0,\s*0,\s*255|blue/.test(item.value)), JSON.stringify(style.winning));
     assert.ok(style.overridden.some((item) => item.property === 'color' && item.value === 'red'), JSON.stringify(style.overridden));
 
-    const listeners = await handlers.browser_inspect({ action: 'listeners', selector: '#throws', types: ['click'] });
-    assert.equal(listeners.ok, true, JSON.stringify(listeners));
-    assert.ok(listeners.listeners.some((listener) => /handler-source\.js/.test(listener.location?.file || '')), JSON.stringify(listeners.listeners));
-
-    const located = await handlers.browser_inspect({ action: 'locate_source', selector: '#throws' });
-    assert.equal(located.ok, true, JSON.stringify(located));
-    assert.ok(located.locations.some((location) => /handler-source\.js/.test(location.file)), JSON.stringify(located.locations));
-
     const mutated = await handlers.browser_diagnose({ action: 'click', selector: '#mutates', observe_ms: 500, timeout_ms: 5000 });
     assert.equal(mutated.click.ok, true, JSON.stringify(mutated));
     assert.ok(mutated.mutations.some((item) => item.added > 0), JSON.stringify(mutated.mutations));
@@ -133,6 +136,7 @@ test('plain page diagnostics', { skip: !enabled, timeout: 180000 }, async () => 
 
     const logs = await handlers.browser_inspect({ action: 'logs', since: 'session', kind: 'exception', limit: 20 });
     assert.ok(logs.entries.some((entry) => /handler blew up/.test(entry.text)), JSON.stringify(logs.entries));
+    assert.match(formatters.browser_inspect(logs), /handler\.js:\d+:\d+/);
 
     if (process.env.CODEMINI_BROWSER_MEASURE === '1') {
       console.log(JSON.stringify({
@@ -143,6 +147,27 @@ test('plain page diagnostics', { skip: !enabled, timeout: 180000 }, async () => 
       }));
     }
   });
+});
+
+test('browser tools reopen the session after the page closes', { skip: !enabled, timeout: 180000 }, async () => {
+  const session = createBrowserSession({ config: browserConfig() });
+  const handlers = buildBrowserHandlers(session);
+  try {
+    const opened = await handlers.browser_act({ action: 'open' });
+    assert.equal(opened.ok, true, JSON.stringify(opened));
+    const previousBrowser = session.browser;
+    await session.page.close();
+    const closed = await handlers.browser_inspect({ action: 'snapshot' });
+    assert.equal(closed.code, 'BROWSER_NOT_OPEN');
+
+    const reopened = await handlers.browser_act({ action: 'open' });
+    assert.equal(reopened.ok, true, JSON.stringify(reopened));
+    assert.equal(reopened.reused, false);
+    assert.equal(previousBrowser.isConnected(), false);
+    assert.equal((await handlers.browser_inspect({ action: 'snapshot' })).ok, true);
+  } finally {
+    await session.dispose();
+  }
 });
 
 test('React 18 component source', { skip: !enabled, timeout: 180000 }, async () => {

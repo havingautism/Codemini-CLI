@@ -78,6 +78,7 @@ function readTheme() {
 
 export function TerminalPanel({
   sessionId = "",
+  terminalId = "",
   projectCwd = "",
   disabled = false,
   embedded = false,
@@ -113,7 +114,7 @@ export function TerminalPanel({
     if (!data) return;
     inputChainRef.current = inputChainRef.current
       .catch(() => {})
-      .then(() => writeTerminalInput(sessionId, data))
+      .then(() => writeTerminalInput(sessionId, data, terminalId))
       .then((result) => {
         if (result?.ok === false) {
           throw new Error(result.error || t("terminalRunFailed"));
@@ -122,7 +123,7 @@ export function TerminalPanel({
       .catch((nextError) => {
         setError(String(nextError?.message || t("terminalRunFailed")));
       });
-  }, [sessionId]);
+  }, [sessionId, terminalId]);
 
   const queueInput = useCallback(
     (data) => {
@@ -148,13 +149,14 @@ export function TerminalPanel({
         const size = { cols: terminal.cols, rows: terminal.rows };
         const previous = lastSyncedSizeRef.current;
         if (size.cols === previous.cols && size.rows === previous.rows) return;
-        lastSyncedSizeRef.current = size;
-        resizeTerminalSession(sessionId, size.cols, size.rows).catch(() => {});
+        resizeTerminalSession(sessionId, size.cols, size.rows, terminalId).then((result) => {
+          if (result?.ok !== false && terminalRef.current === terminal) lastSyncedSizeRef.current = size;
+        }).catch(() => {});
       }, RESIZE_SYNC_MS);
     } catch {
       // The panel can briefly have zero dimensions during responsive layout.
     }
-  }, [disabled, sessionId]);
+  }, [disabled, sessionId, terminalId]);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -202,7 +204,7 @@ export function TerminalPanel({
       terminal.focus();
     });
 
-    const source = openTerminalStream(sessionId);
+    const source = openTerminalStream(sessionId, terminalId);
     source.onopen = () => {
       setConnection("connected");
       setError("");
@@ -258,7 +260,7 @@ export function TerminalPanel({
       terminalRef.current = null;
       fitAddonRef.current = null;
     };
-  }, [disabled, fitAndSync, projectCwd, queueInput, sessionId]);
+  }, [disabled, fitAndSync, projectCwd, queueInput, sessionId, terminalId]);
 
   useEffect(() => {
     livePanelWidthRef.current = panelWidth;
@@ -295,19 +297,19 @@ export function TerminalPanel({
     terminalRef.current?.clear();
     setError("");
     try {
-      await clearTerminalSession(sessionId);
+      await clearTerminalSession(sessionId, terminalId);
     } catch (nextError) {
       setError(String(nextError?.message || t("terminalRunFailed")));
     }
     terminalRef.current?.focus();
-  }, [sessionId]);
+  }, [sessionId, terminalId]);
 
   const restartTerminal = useCallback(async () => {
     terminalRef.current?.reset();
     setConnection("connecting");
     setError("");
     try {
-      const result = await restartTerminalSession(sessionId);
+      const result = await restartTerminalSession(sessionId, terminalId);
       if (result?.ok === false) {
         throw new Error(result.error || t("terminalRunFailed"));
       }
@@ -317,16 +319,16 @@ export function TerminalPanel({
       setError(String(nextError?.message || t("terminalRunFailed")));
     }
     terminalRef.current?.focus();
-  }, [sessionId]);
+  }, [sessionId, terminalId]);
 
   const interruptTerminal = useCallback(async () => {
     try {
-      await stopTerminalCommand(sessionId);
+      await stopTerminalCommand(sessionId, terminalId);
     } catch (nextError) {
       setError(String(nextError?.message || t("terminalRunFailed")));
     }
     terminalRef.current?.focus();
-  }, [sessionId]);
+  }, [sessionId, terminalId]);
 
   const handlePanelResizeStart = useCallback(
     (event) => {

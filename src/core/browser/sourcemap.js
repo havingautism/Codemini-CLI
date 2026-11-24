@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -120,6 +120,18 @@ export function displayPath(file, workspaceRoot) {
   return relative.split(path.sep).join('/');
 }
 
+export function workspaceSourcePath(file, workspaceRoot) {
+  if (!workspaceRoot || !path.isAbsolute(file)) return '';
+  try {
+    const realFile = realpathSync(file);
+    const relative = path.relative(realpathSync(workspaceRoot), realFile);
+    if (!relative || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return '';
+    return statSync(realFile).isFile() ? relative.split(path.sep).join('/') : '';
+  } catch {
+    return '';
+  }
+}
+
 export function isLibraryPath(file) {
   const value = String(file || '').replaceAll('\\', '/');
   return /\/node_modules\/|\/react-dom|\/react\/jsx|webpack\/bootstrap|@vite\/client/.test(value);
@@ -134,10 +146,10 @@ export function createSourceResolver({ workspaceRoot, getScript, readText }) {
     let mapUrl = String(script.sourceMapURL || '').trim();
     if (!mapUrl && script.url) {
       const source = await readText(script.url).catch(() => '');
-      const relative = extractSourceMappingUrl(source);
-      if (relative) {
-        try { mapUrl = new URL(relative, script.url).href; } catch { mapUrl = relative; }
-      }
+      mapUrl = extractSourceMappingUrl(source);
+    }
+    if (mapUrl && script.url) {
+      try { mapUrl = new URL(mapUrl, script.url).href; } catch { /* use the reported path */ }
     }
     if (!mapUrl) {
       maps.set(script.scriptId, null);
@@ -236,6 +248,7 @@ export function createSourceResolver({ workspaceRoot, getScript, readText }) {
         return {
           file: displayPath(file, workspaceRoot),
           absoluteFile: path.isAbsolute(file) ? file : '',
+          workspaceSource: workspaceSourcePath(file, workspaceRoot),
           line: mapped.line,
           column: mapped.column,
           name: mapped.name || '',

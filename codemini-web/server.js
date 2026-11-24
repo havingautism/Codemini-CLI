@@ -63,6 +63,7 @@ import {
   serializeSessionMessages,
 } from "./lib/runtime-bridge.js";
 import { RuntimePool, startRuntimeEvictionTimer } from "./lib/runtime-pool.js";
+import { getAgentTerminal, listAgentTerminals, subscribeAgentTerminals } from "../src/core/agent-terminals.js";
 import { createEmptySessionAllocator } from "./lib/empty-session-allocator.js";
 import { resolveGitCwd, shouldAdoptGitCwd } from "./lib/git-project.js";
 import {
@@ -72,6 +73,7 @@ import {
 } from "./lib/git-status.js";
 import {
   clearTerminal,
+  closeTerminal,
   getTerminalSnapshot,
   resizeTerminal,
   restartTerminal,
@@ -2842,6 +2844,9 @@ async function main() {
       model: args.model,
     });
   const eventBroker = createEventBroker({ getConnectionData: () => ({ scheduled: getScheduledChangeState() }) });
+  const unsubscribeAgentTerminals = subscribeAgentTerminals((sessionId) => {
+    eventBroker.publish({ type: "agent-terminals:changed", sessionId });
+  });
   const scheduledNotifier = createScheduledTaskNotifier({ publish: eventBroker.publish, hasClients: () => eventBroker.clientCount > 0 });
   const runtimeStatusStore = createRuntimeStatusStore();
   const recoveredSessionIds = new Set(
@@ -3067,6 +3072,14 @@ async function main() {
       process.cwd();
     if (shouldAdoptGitCwd(cwd, currentProjectDir)) currentProjectDir = cwd;
     return cwd;
+  };
+
+  const terminalTabId = (url, body = {}) => {
+    const id = body?.terminalId ?? url.searchParams.get("terminalId") ?? "";
+    if (id !== "" && (typeof id !== "string" || !/^[a-zA-Z0-9-]{1,80}$/.test(id))) {
+      throw new Error("Invalid terminal tab ID");
+    }
+    return id;
   };
 
   const routes = createNodeRouter();
@@ -3514,23 +3527,34 @@ async function main() {
       return;
 
   }));
+  routes.get("/api/agent-terminals", nodeRoute((req, res, url) => {
+    const sessionId = url.searchParams.get("sessionId") || "";
+    const id = url.searchParams.get("id");
+    if (!id) {
+      jsonResponse(res, { commands: listAgentTerminals(sessionId) });
+      return;
+    }
+    const command = getAgentTerminal(sessionId, id);
+    jsonResponse(res, { command }, command ? 200 : 404);
+  }));
   routes.get("/api/terminal", nodeRoute(async (req, res, url) => {
       const config = await loadConfig();
       const cwd = await resolveTerminalCwd(url);
-      jsonResponse(res, getTerminalSnapshot(cwd, config.shell?.default));
+      jsonResponse(res, getTerminalSnapshot(cwd, config.shell?.default, terminalTabId(url)));
       return;
 
   }));
   routes.get("/api/terminal/stream", nodeRoute(async (req, res, url) => {
       const config = await loadConfig();
       const cwd = await resolveTerminalCwd(url);
+      const id = terminalTabId(url);
       res.writeHead(200, {
         "Content-Type": "text/event-stream",
         "Cache-Control": "no-cache",
         Connection: "keep-alive",
         "X-Accel-Buffering": "no",
       });
-      subscribeTerminal(cwd, res, config.shell?.default);
+      subscribeTerminal(cwd, res, config.shell?.default, id);
       return;
 
   }));
@@ -3542,6 +3566,7 @@ async function main() {
         cwd,
         command: body?.command,
         shellDefault: config.shell?.default,
+        terminalId: terminalTabId(url, body),
       });
       jsonResponse(res, result, result.ok ? 200 : 400);
       return;
@@ -3553,7 +3578,7 @@ async function main() {
       const cwd = await resolveTerminalCwd(url, body);
       jsonResponse(
         res,
-        writeTerminalInput(cwd, body?.data, config.shell?.default),
+        writeTerminalInput(cwd, body?.data, config.shell?.default, terminalTabId(url, body)),
       );
       return;
 
@@ -3564,7 +3589,7 @@ async function main() {
       const cwd = await resolveTerminalCwd(url, body);
       jsonResponse(
         res,
-        resizeTerminal(cwd, body?.cols, body?.rows, config.shell?.default),
+        resizeTerminal(cwd, body?.cols, body?.rows, config.shell?.default, terminalTabId(url, body)),
       );
       return;
 
@@ -3573,7 +3598,7 @@ async function main() {
       const body = await readBody(req);
       const config = await loadConfig();
       const cwd = await resolveTerminalCwd(url, body);
-      jsonResponse(res, stopTerminal(cwd, config.shell?.default));
+      jsonResponse(res, stopTerminal(cwd, config.shell?.default, terminalTabId(url, body)));
       return;
 
   }));
@@ -3581,10 +3606,8 @@ async function main() {
       const body = await readBody(req);
       const config = await loadConfig();
       const cwd = await resolveTerminalCwd(url, body);
-      jsonResponse(res, {
-        ok: true,
-        snapshot: clearTerminal(cwd, config.shell?.default),
-      });
+      const snapshot = clearTerminal(cwd, config.shell?.default, terminalTabId(url, body));
+      jsonResponse(res, { ok: Boolean(snapshot), snapshot });
       return;
 
   }));
@@ -3592,9 +3615,15 @@ async function main() {
       const body = await readBody(req);
       const config = await loadConfig();
       const cwd = await resolveTerminalCwd(url, body);
-      jsonResponse(res, restartTerminal(cwd, config.shell?.default));
+      jsonResponse(res, restartTerminal(cwd, config.shell?.default, terminalTabId(url, body)));
       return;
 
+  }));
+  routes.post("/api/terminal/close", nodeRoute(async (req, res, url) => {
+      const body = await readBody(req);
+      const cwd = await resolveTerminalCwd(url, body);
+      const result = closeTerminal(cwd, terminalTabId(url, body));
+      jsonResponse(res, result, result.ok ? 200 : 400);
   }));
   routes.get("/api/git-diff", nodeRoute(async (req, res, url) => {
       try {
@@ -5942,6 +5971,7 @@ async function main() {
     server,
   });
   server.once('close', scheduledNotifier.stop);
+  server.once('close', unsubscribeAgentTerminals);
   process.on("SIGINT", cleanup);
   process.on("SIGTERM", cleanup);
 }

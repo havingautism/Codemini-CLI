@@ -8,6 +8,7 @@ import { describeTarget, resolvePageUrl, targetError, validateTarget } from './t
 import { diffSnapshot } from './cascade.js';
 import { captureSnapshot } from './snapshot.js';
 import { backendForSelector, explainStyle, hitTest, listListeners, locateSource, probeClick } from './diagnostics.js';
+import { isLibraryPath, parseStackFrames } from './sourcemap.js';
 
 function fail(tool, error) {
   const code = error?.code && typeof error.code === 'string' ? error.code : 'BROWSER_ERROR';
@@ -23,7 +24,7 @@ async function guard(tool, fn) {
 }
 
 function requirePage(session, tool) {
-  if (!session.page || !session.cdp) {
+  if (!session.isOpen() || !session.cdp) {
     return browserError(tool, 'BROWSER_NOT_OPEN', 'Call browser_act with action "open" before using this tool.');
   }
   return null;
@@ -50,7 +51,7 @@ async function resolveLocator(session, tool, target) {
   if (target.ref) {
     const entry = session.refs.get(target.ref);
     if (!entry) {
-      return { error: browserError(tool, 'TARGET_NOT_FOUND', `Unknown ref ${target.ref}. Call browser_snapshot again.`) };
+      return { error: browserError(tool, 'TARGET_NOT_FOUND', `Unknown ref ${target.ref}. Call browser_inspect snapshot again.`) };
     }
     locator = page.locator(entry.selector);
   } else if (target.selector) {
@@ -63,7 +64,7 @@ async function resolveLocator(session, tool, target) {
     return { error: browserError(tool, 'TARGET_NOT_FOUND', `No element matched ${describeTarget(target)}.`) };
   }
   if (count > 1) {
-    return { error: browserError(tool, 'AMBIGUOUS_TARGET', `Matched ${count} elements for ${describeTarget(target)}. Use an @eN ref from browser_snapshot.`) };
+    return { error: browserError(tool, 'AMBIGUOUS_TARGET', `Matched ${count} elements for ${describeTarget(target)}. Use an @eN ref from browser_inspect snapshot.`) };
   }
   const resolvedSelector = await locator.evaluate((element) => {
     if (!element || element.nodeType !== 1) return '';
@@ -361,7 +362,11 @@ async function logs(session, args = {}) {
       limit: limit.value,
     });
     const summary = entries.length
-      ? entries.map((entry) => `${entry.kind}/${entry.level}: ${entry.text}`).join('\n')
+      ? entries.map((entry) => {
+        const frame = parseStackFrames(entry.stack).find(({ url, name }) => !isLibraryPath(url) && !isLibraryPath(name));
+        const location = frame ? `\n  at ${frame.url}:${frame.line}:${frame.column}` : '';
+        return `${entry.kind}/${entry.level}: ${entry.text}${location}`;
+      }).join('\n')
       : 'No log entries.';
     return browserOk('browser_logs', { summary, entries });
   });
@@ -465,6 +470,17 @@ async function style(session, args = {}) {
   });
 }
 
+function listenerPlace(listener) {
+  const file = String(listener.location?.file || '');
+  if (!file) return 'unknown location';
+  const place = `${file}:${listener.location.line}:${listener.location.column}`;
+  const normalized = file.replaceAll('\\', '/');
+  const delegated = isLibraryPath(normalized)
+    || /\/(?:dist|build|assets)\//.test(normalized)
+    || /(?:^|\/)(?:vendor|bundle|react-dom)[^/]*\.js$/i.test(normalized);
+  return delegated ? `${place} (DOM delegate, not the component handler; use locate_source)` : place;
+}
+
 async function listeners(session, args = {}) {
   return guard('browser_listeners', async () => {
     const parsed = parsedTarget('browser_listeners', args);
@@ -482,12 +498,7 @@ async function listeners(session, args = {}) {
       maxListeners: maxListeners.value,
     });
     const summary = foundListeners.length
-      ? foundListeners.map((listener) => {
-        const place = listener.location?.file
-          ? `${listener.location.file}:${listener.location.line}:${listener.location.column}`
-          : 'unknown location';
-        return `${listener.type} ${place}`;
-      }).join('\n')
+      ? foundListeners.map((listener) => `${listener.type} ${listenerPlace(listener)}`).join('\n')
       : `No listeners on ${describeTarget(found.target)}.`;
     return browserOk('browser_listeners', {
       summary,
@@ -509,8 +520,13 @@ async function locate(session, args = {}) {
     if (!locations.length) {
       return browserError('browser_locate_source', 'SOURCE_NOT_FOUND', `No React, Vue, or listener source was found for ${describeTarget(found.target)}.`);
     }
+    const lines = locations.map((location) => `${location.framework} ${location.component || ''} ${location.file}${location.line ? `:${location.line}` : ''}${location.column != null ? `:${location.column}` : ''}`.replace(/\s+/g, ' ').trim());
+    const workspaceSources = [...new Set(locations.map((location) => location.workspaceSource).filter(Boolean))];
+    lines.push(workspaceSources.length
+      ? `Workspace source: ${workspaceSources.join(', ')}. Edit the relevant source and rebuild with the project command.`
+      : 'Only browser locations were found. Use a dev build with sourcemaps to resolve compiled code to workspace source.');
     return browserOk('browser_locate_source', {
-      summary: locations.map((location) => `${location.framework} ${location.component || ''} ${location.file}${location.line ? `:${location.line}` : ''}${location.column != null ? `:${location.column}` : ''}`.replace(/\s+/g, ' ').trim()).join('\n'),
+      summary: lines.join('\n'),
       target: found.target,
       locations,
     });

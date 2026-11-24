@@ -3,9 +3,12 @@ import { classifyDeclarations } from './cascade.js';
 import { CSS_PATH_FN } from './snapshot.js';
 import {
   createSourceResolver,
+  displayPath,
   isLibraryPath,
   parseStackFrames,
   readLocalText,
+  resolveMappedFile,
+  workspaceSourcePath,
 } from './sourcemap.js';
 
 const CHAIN_FN = `function(selector) {
@@ -120,8 +123,7 @@ export async function backendForSelector(cdp, selector) {
   const objectId = await objectForSelector(cdp, selector);
   if (!objectId) return 0;
   try {
-    const requested = await cdp.send('DOM.requestNode', { objectId });
-    const described = await cdp.send('DOM.describeNode', { nodeId: requested.nodeId });
+    const described = await cdp.send('DOM.describeNode', { objectId });
     return described?.node?.backendNodeId || 0;
   } finally {
     await release(cdp, objectId);
@@ -274,7 +276,7 @@ export async function listListeners(cdp, session, backendNodeId, { types = [], m
   }
 }
 
-async function pushLocation(locations, seen, location, extra) {
+function pushLocation(locations, seen, location, extra) {
   if (!location?.file || isLibraryPath(location.file)) return;
   const key = `${extra.framework}|${location.file}|${location.line}|${location.column}`;
   if (seen.has(key)) return;
@@ -285,6 +287,7 @@ async function pushLocation(locations, seen, location, extra) {
     file: location.file,
     line: location.line || null,
     column: location.column ?? null,
+    ...(location.workspaceSource ? { workspaceSource: location.workspaceSource } : {}),
   });
 }
 
@@ -308,10 +311,10 @@ export async function locateSource(cdp, session, selector) {
   const workspaceRoot = session.workspaceRoot;
 
   if (framework.vue?.file) {
-    const { resolveMappedFile, displayPath } = await import('./sourcemap.js');
     const file = resolveMappedFile(framework.vue.file, { workspaceRoot });
-    await pushLocation(locations, seen, {
+    pushLocation(locations, seen, {
       file: displayPath(file, workspaceRoot),
+      workspaceSource: workspaceSourcePath(file, workspaceRoot),
       line: null,
       column: null,
     }, { framework: 'vue', component: framework.vue.name || '' });
@@ -319,10 +322,10 @@ export async function locateSource(cdp, session, selector) {
 
   for (const fiber of framework.react || []) {
     if (fiber.fileName) {
-      const { resolveMappedFile, displayPath } = await import('./sourcemap.js');
       const file = resolveMappedFile(fiber.fileName, { workspaceRoot });
-      await pushLocation(locations, seen, {
+      pushLocation(locations, seen, {
         file: displayPath(file, workspaceRoot),
+        workspaceSource: workspaceSourcePath(file, workspaceRoot),
         line: fiber.lineNumber || null,
         column: fiber.columnNumber ?? null,
         name: fiber.name,
@@ -337,14 +340,13 @@ export async function locateSource(cdp, session, selector) {
           ? await resolver.locate({ scriptId: script.scriptId, line: frame.line, column: frame.column, oneBased: true })
           : await resolver.locate({ url: frame.url, line: frame.line, column: frame.column, oneBased: true });
         if (located && !isLibraryPath(located.file)) {
-          await pushLocation(locations, seen, { ...located, name: frame.name || fiber.name }, {
+          pushLocation(locations, seen, { ...located, name: frame.name || fiber.name }, {
             framework: 'react',
             component: fiber.name || frame.name || '',
           });
         } else if (/\.(jsx|tsx|vue)(?:$|\?)/.test(frame.url)) {
-          const { resolveMappedFile, displayPath } = await import('./sourcemap.js');
           const file = resolveMappedFile(frame.url, { workspaceRoot });
-          await pushLocation(locations, seen, {
+          pushLocation(locations, seen, {
             file: displayPath(file, workspaceRoot),
             line: frame.line,
             column: frame.column,
@@ -359,11 +361,12 @@ export async function locateSource(cdp, session, selector) {
     if (backendNodeId) {
       const listeners = await listListeners(cdp, session, backendNodeId, { maxListeners: 5 });
       for (const listener of listeners) {
-        await pushLocation(locations, seen, listener.location, { framework: 'dom', component: listener.type });
+        pushLocation(locations, seen, listener.location, { framework: 'dom', component: listener.type });
       }
     }
   }
-  return locations.slice(0, 8);
+  const workspaceLocations = locations.filter((location) => location.workspaceSource);
+  return (workspaceLocations.length ? workspaceLocations : locations).slice(0, 8);
 }
 
 export async function probeClick(page, locator, { timeout, observeMs }) {

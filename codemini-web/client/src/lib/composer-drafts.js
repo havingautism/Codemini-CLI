@@ -5,6 +5,12 @@ export const COMPOSER_DRAFT_FIELDS = [
   'dismissedDefaultSkills', 'actionParameter', 'attachmentError', 'uploadingAttachments',
 ];
 
+export function splitWorkspaceFilePath(pathText = '') {
+  const path = String(pathText || '').replace(/\\/g, '/');
+  const slash = path.lastIndexOf('/');
+  return { dir: path.slice(0, slash + 1), name: path.slice(slash + 1) };
+}
+
 function emptyDraft() {
   return {
     value: '', attachments: [], referencedFiles: [], selectedSkills: [], scrapbookContext: null,
@@ -31,6 +37,15 @@ export function createComposerDraftStore() {
   return {
     get,
     update,
+    addFileReference(sessionId, pathText, type = 'file') {
+      const path = String(pathText || '').trim().replace(/\\/g, '/');
+      if (!path) return;
+      update(sessionId, current => {
+        if (current.referencedFiles.some(entry => entry.path === path)) return current;
+        const reference = { path, ...splitWorkspaceFilePath(path), type };
+        return { ...current, referencedFiles: [...current.referencedFiles, reference] };
+      });
+    },
     subscribe(sessionId, listener) {
       if (!listeners.has(sessionId)) listeners.set(sessionId, new Set());
       listeners.get(sessionId).add(listener);
