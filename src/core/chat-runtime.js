@@ -85,6 +85,7 @@ import { evaluateCommandPolicy } from './command-policy.js';
 import { loadInputHistory } from './input-history-store.js';
 import {
   compactMessagesLocally,
+  compactInFlightMessages,
   estimateMessagesTokens,
   microCompactMessages,
   parseCompactArgs,
@@ -4770,6 +4771,26 @@ async function askModelInSession({
             type: 'compact:auto',
             mode: preflightPct >= hardPct ? 'aggressive' : 'conservative',
             threshold: Math.round(preflightPct)
+          });
+        }
+      }
+    }
+  } else if (persistSession) {
+    // The context meter uses the gateway's last input count. That can cross
+    // the trigger while the local message estimate is still under it.
+    const measured = resolveLatestContextMeasurement(turnVisible, 0);
+    const actualPct = measured.source === 'actual' ? (measured.tokens / maxContextTokens) * 100 : 0;
+    if (actualPct >= triggerPct) {
+      const inflight = await compactInFlightMessages(turnVisible, config, measured.tokens);
+      if (inflight.changed) {
+        compacted = inflight.messages.map((message) => ({ ...message, at: new Date().toISOString() }));
+        if (onCompactedUpdate) onCompactedUpdate(compacted);
+        if (onAgentEvent) {
+          onAgentEvent({
+            type: 'compact:auto',
+            mode: inflight.mode,
+            threshold: inflight.threshold,
+            summary: `以上内容已压缩 (${inflight.mode}, ${inflight.threshold}%)`,
           });
         }
       }

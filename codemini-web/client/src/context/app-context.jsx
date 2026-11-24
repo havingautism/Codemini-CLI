@@ -2620,7 +2620,9 @@ export function AppProvider({ children }) {
           addMessage({
             role: "divider",
             dividerType: "compact",
-            text: `以上内容已压缩 (${event.mode || ""}, ${event.threshold || ""}%)`,
+            text: event.duringTurn
+              ? `本轮中已压缩 (${event.mode || ""}, ${event.threshold || ""}%)`
+              : `以上内容已压缩 (${event.mode || ""}, ${event.threshold || ""}%)`,
             timestamp: new Date().toISOString(),
           });
           break;

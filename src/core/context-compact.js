@@ -559,6 +559,79 @@ export async function compactMessagesLocally(messages, { mode = 'default', force
   };
 }
 
+function contextWindowTokens(config = {}) {
+  const modelCap = Number(config?.model?.max_context_tokens);
+  if (Number.isFinite(modelCap) && modelCap > 0) return modelCap;
+  const legacy = Number(config?.context?.max_tokens);
+  if (Number.isFinite(legacy) && legacy > 0) return legacy;
+  return 32000;
+}
+
+function splitLeadingSystemMessages(messages = []) {
+  let index = 0;
+  while (index < messages.length && messages[index]?.role === 'system') index += 1;
+  return {
+    system: messages.slice(0, index),
+    body: messages.slice(index),
+  };
+}
+
+/**
+ * Compress the live agent transcript between model calls.
+ * The trigger is the previous request's real input tokens, the same figure
+ * the context meter shows. Tool calls that are still waiting for results
+ * stay untouched. A local summary is used so this does not make another
+ * model request.
+ */
+export async function compactInFlightMessages(messages, config = {}, inputTokens = 0) {
+  const source = Array.isArray(messages) ? messages : [];
+  const input = Number(inputTokens);
+  const maxContextTokens = contextWindowTokens(config);
+  const triggerPct = finiteNumber(config?.context?.preflight_trigger_pct, 60, 1);
+  const hardPct = finiteNumber(config?.context?.hard_limit_pct, 98, 1);
+  const unchanged = { messages: source, changed: false, mode: '', threshold: 0, tokensSaved: 0 };
+  if (!(input > 0) || !(maxContextTokens > 0)) return unchanged;
+  const threshold = (input / maxContextTokens) * 100;
+  if (threshold < triggerPct) return unchanged;
+
+  const { system, body } = splitLeadingSystemMessages(source);
+  const pending = body[body.length - 1];
+  if (pending?.role === 'assistant' && Array.isArray(pending.tool_calls) && pending.tool_calls.length > 0) {
+    return unchanged;
+  }
+
+  const rounded = Math.round(threshold);
+  const microEnabled = config?.context?.microcompact_enabled !== false;
+  if (microEnabled) {
+    const micro = microCompactMessages(body, {
+      keepRecent: finiteNumber(config?.context?.microcompact_keep_recent, 5, 1),
+      enabled: true,
+    });
+    if (micro.changed) {
+      return {
+        messages: [...system, ...micro.messages],
+        changed: true,
+        mode: 'micro',
+        threshold: rounded,
+        tokensSaved: micro.tokensSaved,
+      };
+    }
+  }
+
+  const mode = threshold >= hardPct ? 'aggressive' : 'conservative';
+  const macro = await compactMessagesLocally(body, { mode, force: false });
+  if (!macro.changed) return unchanged;
+  const before = estimateMessagesTokens(body);
+  const after = estimateMessagesTokens(macro.compacted);
+  return {
+    messages: [...system, ...macro.compacted],
+    changed: true,
+    mode,
+    threshold: rounded,
+    tokensSaved: Math.max(0, before - after),
+  };
+}
+
 export function parseCompactArgs(args = []) {
   const parsed = {
     mode: 'default',
