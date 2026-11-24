@@ -524,7 +524,7 @@ function displayExecutionMode(mode) {
   return normalizeExecutionMode(mode) === 'plan' ? 'code' : 'normal';
 }
 
-function resolveExecutionModeAllowedTools(executionMode, callerAllowedTools, config, commandPlatform = process.platform) {
+export function resolveExecutionModeAllowedTools(executionMode, callerAllowedTools, config, commandPlatform = process.platform) {
   const mode = normalizeExecutionMode(executionMode);
   const modePolicy = adaptToolNamesForPlatform(
     normalizeToolPolicy(EXECUTION_MODE_TOOL_POLICY[mode] || [], config).map(canonicalShellToolName),
@@ -927,7 +927,7 @@ const SUB_AGENT_CONTEXT_MAX_CHARS = 1200;
 const SUB_AGENT_EVIDENCE_MAX_ITEMS = 3;
 const SUB_AGENT_HANDOFF_MAX_ITEMS = 6;
 const SUB_AGENT_PARENT_RESULT_MAX_CHARS = 4000;
-const SUBAGENT_STABLE_SKILLS_PROMPT = [
+export const SUBAGENT_STABLE_SKILLS_PROMPT = [
   'You are a Codemini subagent.',
   'Do only the assigned task. Do not invent extra scope. Do not spawn other agents.',
   'Use tools as needed, then return a concise handoff to the parent agent and stop.'
