@@ -61,4 +61,4 @@ jobs:
           CODEMINI_BROWSER_TESTS: "1"
           CODEMINI_BROWSER_NO_SANDBOX: "1"
           CODEMINI_BROWSER_MEASURE: "1"
-        run: node --test --test-concurrency=1 tests/browser-tools.test.js tests/browser-diagnostics.test.js
+        run: node --test --test-concurrency=1 --test-force-exit tests/browser-tools.test.js tests/browser-diagnostics.test.js
