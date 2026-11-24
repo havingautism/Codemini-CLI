@@ -33,7 +33,7 @@ import { TodoCard } from "@/components/TodoList.jsx";
 import { findLiveTodoDock } from "@/lib/live-todo-dock.js";
 import { interactiveRequestForSession } from "@/lib/session-ui-state.js";
 import { scheduledAttentionKey } from "@/lib/scheduled-task-ui.js";
-import { DotsThree, GitDiff, List, Monitor, SidebarSimple, Terminal } from "@/lib/icons";
+import { DotsThree, GitDiff, List, SidebarSimple, Terminal } from "@/lib/icons";
 import { dismissAgentTab, EMPTY_WORKSPACE_TABS, openWorkspacePicker, openWorkspaceTool, removeWorkspaceTab, visibleAgentCommands } from "@/lib/workspace-tabs.js";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { TrajectoryPanel } from "@/components/TrajectoryPanel.jsx";
@@ -699,29 +699,6 @@ function Shell() {
                   {commandStatus ? (
                     <span aria-hidden="true" className="absolute right-1.5 top-1.5 size-1.5 rounded-full bg-(--accent-blue)" />
                   ) : null}
-                </button>
-                <button
-                  type="button"
-                  className={
-                    "inline-flex size-8 items-center justify-center rounded-md border-0 cursor-pointer " +
-                    (sideRailOpen && workspaceTabs.tabs.some((tab) => tab.type === "visual-feedback" && tab.id === workspaceTabs.activeId)
-                      ? "bg-(--bg-hover) text-(--text-primary)"
-                      : "bg-transparent text-(--text-muted) hover:bg-(--bg-hover) hover:text-(--text-primary)")
-                  }
-                  aria-label={t("visualFeedbackTab")}
-                  title={t("visualFeedbackTab")}
-                  aria-pressed={sideRailOpen && workspaceTabs.tabs.some((tab) => tab.type === "visual-feedback" && tab.id === workspaceTabs.activeId)}
-                  onClick={() => {
-                    const vfActive = sideRailOpen && workspaceTabs.tabs.some((tab) => tab.type === "visual-feedback" && tab.id === workspaceTabs.activeId);
-                    if (vfActive) {
-                      setSideRailOpen(false);
-                      return;
-                    }
-                    chooseWorkspaceTool("visual-feedback");
-                    setSideRailOpen(true);
-                  }}
-                >
-                  <Monitor size={16} />
                 </button>
               </div>
             </div>

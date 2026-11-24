@@ -60,6 +60,11 @@ export const RefreshIcon = icon(
   createElement("path", { d: "M17 8H21.4C21.7314 8 22 7.73137 22 7.4V3", stroke: "currentColor", strokeLinecap: "round", strokeLinejoin: "round" }),
 );
 
+export const UndoIcon = icon(
+  createElement("path", { d: "M4.5 8H15.5C17.9853 8 20 10.0147 20 12.5C20 14.9853 17.9853 17 15.5 17H8.5", stroke: "currentColor", strokeLinecap: "round", strokeLinejoin: "round" }),
+  createElement("path", { d: "M7.5 11.5L4.5 8L7.5 4.5", stroke: "currentColor", strokeLinecap: "round", strokeLinejoin: "round" }),
+);
+
 export const RefreshDoubleIcon = icon(
   createElement("path", { d: "M21.1679 8C19.6247 4.46819 16.1006 2 11.9999 2C6.81459 2 2.55104 5.94668 2.04932 11", stroke: "currentColor", strokeLinecap: "round", strokeLinejoin: "round" }),
   createElement("path", { d: "M17 8H21.4C21.7314 8 22 7.73137 22 7.4V3", stroke: "currentColor", strokeLinecap: "round", strokeLinejoin: "round" }),

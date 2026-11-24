@@ -96,6 +96,7 @@ import {
 } from "@/components/ui/tooltip";
 import {
   ArrowCounterClockwise,
+  Undo,
   ArrowSquareOut,
   Brain,
   CaretDown,
@@ -1412,7 +1413,7 @@ function FileChangesSummary({ changes }) {
                         <span>{t("undoChangeReverted")}</span>
                       </>
                     ) : (
-                      <ArrowCounterClockwise size={13} />
+                      <Undo size={13} />
                     )}
                   </span>
                 )}
