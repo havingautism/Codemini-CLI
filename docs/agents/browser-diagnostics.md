@@ -10,7 +10,7 @@ The tools are deferred. Load one with `tool_search` before calling it. One Chrom
 
 Read-only tools are added to `execution.always_allow_tools`: `browser_snapshot`, `browser_screenshot`, `browser_logs`, `browser_explain_style`, `browser_listeners`, `browser_locate_source`.
 
-These follow the normal approval flow: `browser_open`, `browser_navigate`, `browser_click`, `browser_type`, `browser_eval`, `browser_diagnose_click`, `browser_close`. In coding mode the plan tool list is auto-allowed, same as `edit` and `run`. Browser tools are not concurrency-safe.
+`browser_act` and `browser_diagnose` follow the normal approval flow. Coding mode auto-allows the whole plan tool list, which already includes `edit` and `run`, so those two browser tools are auto-approved there too. Review mode still prompts because they are not in `always_allow_tools`. Browser tools are not concurrency-safe.
 
 ## Targeting
 
@@ -39,22 +39,12 @@ CODEMINI_BROWSER_TESTS=1 node --test --test-concurrency=1 tests/browser-diagnost
 
 ## Schemas
 
-Every tool uses `type: function`, `additionalProperties: false`, and the `required` list below.
+Each tool is `type: function`, `additionalProperties: false`, and requires `action`. Providers here do not reliably honor `oneOf`, so the schema is flat. The handler checks the fields for the chosen action and returns `INVALID_ARGUMENTS` naming them.
 
-| Tool | Required | Notable enums and bounds |
+| Tool | Actions | Fields the action needs |
 | --- | --- | --- |
-| `browser_open` | none | `channel`: chrome, msedge, chromium. `viewport_width` 320–3840, `viewport_height` 240–2160, `timeout_ms` 1000–120000 |
-| `browser_navigate` | `url` | `wait_until`: commit, domcontentloaded, load, networkidle |
-| `browser_snapshot` | none | `max_chars` 400–20000. `incremental` and `interactive_only` booleans |
-| `browser_click` | none (target required by the handler) | `button`: left, right, middle. `click_count` 1–3. `timeout_ms` 200–30000 |
-| `browser_type` | `text` | `delay_ms` 0–200. `clear` and `submit` booleans |
-| `browser_eval` | `expression` | expression length 1–8000 |
-| `browser_screenshot` | none | `format`: png, jpeg. `quality` 1–100 for jpeg |
-| `browser_logs` | none | `since`: session, last_read. `kind`: all, console, exception, network. `level`: all, warning, error. `limit` 1–100 |
-| `browser_close` | none | no properties |
-| `browser_diagnose_click` | none (target required by the handler) | `observe_ms` 100–3000 |
-| `browser_explain_style` | none (target required by the handler) | `properties` 1–20 names. `max_rules` 1–40 |
-| `browser_listeners` | none (target required by the handler) | `types` 1–10 names. `max_listeners` 1–50 |
-| `browser_locate_source` | none (target required by the handler) | same target fields |
+| `browser_inspect` | snapshot, screenshot, logs, explain_style, listeners, locate_source | explain_style, listeners, and locate_source need one target. screenshot may take a target. |
+| `browser_act` | open, navigate, click, type, eval, close | navigate needs `url`. click and type need one target. type needs `text` or `clear:true`. eval needs `expression`. |
+| `browser_diagnose` | click | one target. `observe_ms` 100–3000. More probe actions can be added on this tool. |
 
-Shared target fields: `ref` matching `^@e[1-9][0-9]*$`, `selector` (1–500), `role` (button, link, textbox, searchbox, checkbox, radio, combobox, switch, tab, menuitem, option, slider, heading, img, listitem, treeitem), and `name` (1–200).
+Shared bounds stay on the flat schema: `channel` chrome|msedge|chromium, `wait_until` commit|domcontentloaded|load|networkidle, `format` png|jpeg, `button` left|right|middle, viewport 320–3840 by 240–2160, `timeout_ms` 200–120000 (the handler tightens this per action), `ref` matching `^@e[1-9][0-9]*$`. Target fields are `ref`, `selector`, `role`, and `name`.

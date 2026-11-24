@@ -7,20 +7,22 @@ mode: agent_requested
 
 # Front-end interaction debugging
 
-Use this when a control does the wrong thing, cannot be clicked, or is styled by an unexpected rule. Browser tools stay deferred until you load them, and they only exist when `browser.enabled` is true.
+Use this when a control does the wrong thing, cannot be clicked, or is styled by an unexpected rule. The browser tools exist only when `browser.enabled` is true. Load each one with `tool_search` before calling it. Pass `action`, and target an element with exactly one of `ref` (`@eN`), `selector`, or `role` plus `name`.
 
-1. Load the tools you need with `tool_search`. Start with `browser_open`, then `browser_snapshot`.
-2. Target the control with the `@eN` ref from the snapshot. Use a CSS selector or `role` plus accessible `name` only when you do not have a ref, and pass only one of those.
-3. If the click does nothing or the wrong element receives it, call `browser_diagnose_click`. Read `hit.reason`:
-   - `occluded` means another element is on top. The chain names that element.
+1. `browser_act` `action:"open"` with the page URL. The browser uses a temporary profile.
+2. `browser_inspect` `action:"snapshot"`. Interactive elements get stable `@eN` refs. Prefer a ref for later calls.
+3. If a click does nothing, `browser_diagnose` `action:"click"` on that ref. Read `hit.reason`:
+   - `occluded` means another element is on top. The chain names it.
    - `pointer-events-none` means the target ignores the pointer.
    - `disabled` means the control is disabled or `aria-disabled`.
-4. If the color, visibility, or stacking looks wrong, call `browser_explain_style`. `computed` is the used value. `winning` is the rule that owns it. `overridden` lists the declarations that lost.
-5. To see which function runs, call `browser_listeners`. `location.file` and `location.line` are workspace coordinates when a source map resolves.
-6. To see which component rendered the node, call `browser_locate_source`. React 18 uses `_debugSource`. React 19 uses `_debugStack` or `_debugInfo` plus the source map. Vue 3 uses `__vueParentComponent.type.__file`.
-7. `browser_screenshot` writes a file path. `browser_logs` returns console errors, exceptions, and failed network entries.
-8. Close with `browser_close` when you are done. The browser uses a temporary profile, not the user's daily Chrome profile.
+4. If color, visibility, or stacking looks wrong, `browser_inspect` `action:"explain_style"`. `computed` is the used value. `winning` is the rule that owns it. `overridden` lists declarations that lost.
+5. To see which function runs, `browser_inspect` `action:"listeners"`. `location.file` and `location.line` are workspace coordinates when a source map resolves.
+6. To see which component rendered the node, `browser_inspect` `action:"locate_source"`. React 18 uses `_debugSource`. React 19 uses `_debugStack` plus the source map. Vue 3 uses `__vueParentComponent.type.__file`.
+7. `browser_inspect` `action:"screenshot"` writes a file path. `action:"logs"` returns console errors, exceptions, and failed network entries.
+8. `browser_act` `action:"close"` when you are done.
 
-Read-only tools do not need approval. `browser_open`, `browser_navigate`, `browser_click`, `browser_type`, `browser_eval`, `browser_diagnose_click`, and `browser_close` follow the normal approval flow.
+`browser_inspect` is read-only and does not need approval. `browser_act` (`open`, `navigate`, `click`, `type`, `eval`, `close`) and `browser_diagnose` follow the normal approval flow. In coding mode they are auto-approved on the same list as `edit` and `run`. In review mode they still prompt.
 
-Do not debug an Electron `webContents` page with these tools. That path is not part of this version.
+`browser_diagnose` currently has one probe, `click`. More probe actions can be added without a new tool.
+
+Do not debug an Electron `webContents` page with these tools.

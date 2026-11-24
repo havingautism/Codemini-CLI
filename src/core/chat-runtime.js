@@ -499,6 +499,9 @@ export const EXECUTION_MODE_TOOL_POLICY = {
     'tasks',
     'edit', 'write', 'begin_write', 'write_chunk', 'commit_write', 'abort_write', 'apply_patch', 'delete', 'run',
     'run_subagent', 'fork_task', 'land_workers', 'cancel_worker', 'crew_status', 'crew_send', 'crew_inbox', 'request_user_input',
+    // Coding mode auto-allows this whole list, including run and edit.
+    // browser_act and browser_diagnose follow that same path. Review mode
+    // still prompts for them because they are not in always_allow_tools.
     ...BROWSER_TOOL_NAMES,
   ]
 };

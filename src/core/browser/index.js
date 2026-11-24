@@ -23,5 +23,6 @@ export {
 } from './schema.js';
 export { createBrowserSession, playwrightCoreLoaded, playwrightImportDuration } from './session.js';
 export { buildBrowserFormatters, buildBrowserHandlers } from './handlers.js';
+export { validateBrowserAction } from './actions.js';
 export { findInstalledBrowsers } from './locate-browser.js';
 export { formatBrowserResult } from './result.js';

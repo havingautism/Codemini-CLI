@@ -233,14 +233,16 @@ export function formatToolDisplayName(name, args = {}, options = {}) {
     return query ? formatToolWithArg(formatToolLabel('web_search'), query) : formatToolLabel('web_search');
   }
   if (BROWSER_TOOL_LABELS[toolName]) {
+    const action = trimInline(args?.action || '', 24);
     const target = trimInline(
       args?.ref
         || args?.url
         || args?.selector
         || (args?.role && args?.name ? `${args.role} "${args.name}"` : ''),
-      96,
+      72,
     );
-    return target ? formatToolWithArg(formatToolLabel(toolName), target) : formatToolLabel(toolName);
+    const detail = [action, target].filter(Boolean).join(' ');
+    return detail ? formatToolWithArg(formatToolLabel(toolName), detail) : formatToolLabel(toolName);
   }
   if (toolName === 'skill') {
     const name = trimInline(args?.name || args?.skill || '', 96);

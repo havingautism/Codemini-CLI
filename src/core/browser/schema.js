@@ -11,6 +11,14 @@ export const BROWSER_CLICK_BUTTONS = Object.freeze(['left', 'right', 'middle']);
 export const BROWSER_LOG_SINCE = Object.freeze(['session', 'last_read']);
 export const BROWSER_LOG_KINDS = Object.freeze(['all', 'console', 'exception', 'network']);
 export const BROWSER_LOG_LEVELS = Object.freeze(['all', 'warning', 'error']);
+export const BROWSER_INSPECT_ACTIONS = Object.freeze([
+  'snapshot', 'screenshot', 'logs', 'explain_style', 'listeners', 'locate_source',
+]);
+export const BROWSER_ACT_ACTIONS = Object.freeze([
+  'open', 'navigate', 'click', 'type', 'eval', 'close',
+]);
+export const BROWSER_DIAGNOSE_ACTIONS = Object.freeze(['click']);
+
 export const BROWSER_ROLES = Object.freeze([
   'button', 'link', 'textbox', 'searchbox', 'checkbox', 'radio', 'combobox',
   'switch', 'tab', 'menuitem', 'option', 'slider', 'heading', 'img', 'listitem', 'treeitem',
@@ -40,28 +48,13 @@ export const BROWSER_LIMITS = Object.freeze({
 });
 
 export const BROWSER_TOOL_NAMES = Object.freeze([
-  'browser_open',
-  'browser_navigate',
-  'browser_snapshot',
-  'browser_click',
-  'browser_type',
-  'browser_eval',
-  'browser_screenshot',
-  'browser_logs',
-  'browser_close',
-  'browser_diagnose_click',
-  'browser_explain_style',
-  'browser_listeners',
-  'browser_locate_source',
+  'browser_inspect',
+  'browser_act',
+  'browser_diagnose',
 ]);
 
 export const BROWSER_READONLY_TOOLS = Object.freeze([
-  'browser_snapshot',
-  'browser_screenshot',
-  'browser_logs',
-  'browser_explain_style',
-  'browser_listeners',
-  'browser_locate_source',
+  'browser_inspect',
 ]);
 
 export const BROWSER_MUTATING_TOOLS = Object.freeze(
@@ -87,19 +80,9 @@ export const BROWSER_ERROR_CODES = Object.freeze([
 ]);
 
 export const BROWSER_TOOL_LABELS = Object.freeze({
-  browser_open: 'Browser Open',
-  browser_navigate: 'Browser Navigate',
-  browser_snapshot: 'Browser Snapshot',
-  browser_click: 'Browser Click',
-  browser_type: 'Browser Type',
-  browser_eval: 'Browser Eval',
-  browser_screenshot: 'Browser Screenshot',
-  browser_logs: 'Browser Logs',
-  browser_close: 'Browser Close',
-  browser_diagnose_click: 'Diagnose Click',
-  browser_explain_style: 'Explain Style',
-  browser_listeners: 'Event Listeners',
-  browser_locate_source: 'Locate Source',
+  browser_inspect: 'Browser Inspect',
+  browser_act: 'Browser Act',
+  browser_diagnose: 'Browser Diagnose',
 });
 
 export const INTERACTION_STYLE_PROPS = Object.freeze([
@@ -108,8 +91,6 @@ export const INTERACTION_STYLE_PROPS = Object.freeze([
   'width', 'height', 'transform', 'filter', 'user-select',
   'content-visibility', 'touch-action', 'color', 'background-color',
 ]);
-
-const TARGET_HINT = 'Target with exactly one of: ref (@eN from the latest browser_snapshot), selector (CSS), or role plus name. Combining them returns INVALID_TARGET.';
 
 function intProp(description, { min, max }) {
   return { type: 'integer', minimum: min, maximum: max, description };
@@ -159,184 +140,112 @@ function define(name, description, properties, required = []) {
   };
 }
 
-const timeoutProp = (fallback) => intProp(
-  `Timeout in milliseconds. Defaults to ${fallback}.`,
-  BROWSER_LIMITS.actionTimeoutMs,
+const wideTimeoutProp = intProp(
+  'Timeout in milliseconds. open and navigate allow 1000-120000 (default 30000). Other actions allow 200-30000 (default 5000). Values outside the chosen action return INVALID_ARGUMENTS.',
+  { min: BROWSER_LIMITS.actionTimeoutMs.min, max: BROWSER_LIMITS.timeoutMs.max },
 );
 
-const navigationTimeoutProp = intProp(
-  `Navigation timeout in milliseconds. Defaults to ${BROWSER_LIMITS.timeoutMs.default}.`,
-  BROWSER_LIMITS.timeoutMs,
-);
+const sharedFields = {
+  ...targetProperties,
+  url: stringProp('http(s) URL, about:blank, or a workspace file. navigate requires it. open uses about:blank when omitted.', { maxLength: BROWSER_LIMITS.url }),
+  channel: {
+    type: 'string',
+    enum: [...BROWSER_CHANNELS],
+    description: 'open only. chrome, msedge, or chromium. Default is config browser.channel, then the first installed browser.',
+  },
+  executable_path: stringProp('open only. Browser executable. Overrides channel. A missing path returns BROWSER_LAUNCH_FAILED.', { minLength: 1, maxLength: 500 }),
+  headless: { type: 'boolean', description: 'open only. Defaults to config browser.headless (true).' },
+  viewport_width: intProp(`open only. Viewport width in CSS pixels. Defaults to ${BROWSER_LIMITS.viewportWidth.default}.`, BROWSER_LIMITS.viewportWidth),
+  viewport_height: intProp(`open only. Viewport height in CSS pixels. Defaults to ${BROWSER_LIMITS.viewportHeight.default}.`, BROWSER_LIMITS.viewportHeight),
+  wait_until: {
+    type: 'string',
+    enum: [...BROWSER_WAIT_UNTIL],
+    description: 'navigate only. Defaults to domcontentloaded. networkidle can hang on long-polling pages.',
+  },
+  button: {
+    type: 'string',
+    enum: [...BROWSER_CLICK_BUTTONS],
+    description: 'click only. Mouse button. Defaults to left.',
+  },
+  click_count: intProp(`click only. Defaults to ${BROWSER_LIMITS.clickCount.default}.`, BROWSER_LIMITS.clickCount),
+  text: stringProp('type only. Text to insert. Empty text requires clear:true.', { maxLength: BROWSER_LIMITS.text }),
+  clear: { type: 'boolean', description: 'type only. Clear the field before typing. Defaults to false.' },
+  submit: { type: 'boolean', description: 'type only. Press Enter after typing. Defaults to false.' },
+  delay_ms: intProp(`type only. Delay between keystrokes. Defaults to ${BROWSER_LIMITS.typeDelayMs.default}.`, BROWSER_LIMITS.typeDelayMs),
+  expression: stringProp('eval only. JavaScript expression evaluated in the page. Do not wrap it in a function.', { maxLength: BROWSER_LIMITS.expression }),
+  incremental: { type: 'boolean', description: 'snapshot only. Return a delta when it is smaller than the full tree. Defaults to true.' },
+  interactive_only: { type: 'boolean', description: 'snapshot only. Omit non-interactive text. Defaults to false.' },
+  max_chars: intProp(`snapshot only. Summary budget. Defaults to ${BROWSER_LIMITS.snapshotChars.default}.`, BROWSER_LIMITS.snapshotChars),
+  full_page: { type: 'boolean', description: 'screenshot only. Capture the full scroll height. Ignored when a target is set. Defaults to false.' },
+  format: {
+    type: 'string',
+    enum: [...BROWSER_SCREENSHOT_FORMATS],
+    description: 'screenshot only. Defaults to png.',
+  },
+  quality: intProp(`screenshot only. JPEG quality. Ignored for png. Defaults to ${BROWSER_LIMITS.jpegQuality.default}.`, BROWSER_LIMITS.jpegQuality),
+  since: {
+    type: 'string',
+    enum: [...BROWSER_LOG_SINCE],
+    description: 'logs only. session reads from open. last_read continues after the previous logs call. Defaults to last_read.',
+  },
+  kind: {
+    type: 'string',
+    enum: [...BROWSER_LOG_KINDS],
+    description: 'logs only. Defaults to all.',
+  },
+  level: {
+    type: 'string',
+    enum: [...BROWSER_LOG_LEVELS],
+    description: 'logs only. warning includes warning and error. Defaults to all.',
+  },
+  limit: intProp(`logs only. Maximum entries. Defaults to ${BROWSER_LIMITS.logLimit.default}.`, BROWSER_LIMITS.logLimit),
+  properties: {
+    type: 'array',
+    items: { type: 'string', minLength: 1, maxLength: 40 },
+    minItems: BROWSER_LIMITS.styleProps.min,
+    maxItems: BROWSER_LIMITS.styleProps.max,
+    description: 'explain_style only. CSS property names. Defaults to the interaction set.',
+  },
+  max_rules: intProp(`explain_style only. Defaults to ${BROWSER_LIMITS.maxRules.default}.`, BROWSER_LIMITS.maxRules),
+  types: {
+    type: 'array',
+    items: { type: 'string', minLength: 1, maxLength: 40 },
+    minItems: BROWSER_LIMITS.listenerTypes.min,
+    maxItems: BROWSER_LIMITS.listenerTypes.max,
+    description: 'listeners only. Event names such as click. Omit for every listener up to max_listeners.',
+  },
+  max_listeners: intProp(`listeners only. Defaults to ${BROWSER_LIMITS.maxListeners.default}.`, BROWSER_LIMITS.maxListeners),
+  observe_ms: intProp(`diagnose click only. Watch window after the click. Defaults to ${BROWSER_LIMITS.observeMs.default}.`, BROWSER_LIMITS.observeMs),
+  timeout_ms: wideTimeoutProp,
+};
 
 export const BROWSER_TOOL_DEFINITIONS = {
-  browser_open: define(
-    'browser_open',
-    [
-      'Open the session browser for front-end interaction diagnostics. One shared Chrome, Edge, or Chromium per session, launched with a temporary profile (never the user\'s daily profile).',
-      'Call this before the other browser tools. Pass url to open an http(s) URL, about:blank, or a file inside the workspace.',
-      'Requires approval. Returns { ok, url, title, channel, headless, viewport }.',
-    ].join(' '),
+  browser_inspect: define(
+    'browser_inspect',
+    'Read-only page inspection. action is snapshot, screenshot, logs, explain_style, listeners, or locate_source. explain_style, listeners, and locate_source need one target: ref (@eN), selector, or role plus name. Returns { ok, tool, summary, ... }. Does not change the page.',
     {
-      url: stringProp('Optional http(s) URL, about:blank, or workspace file path. Defaults to about:blank.', { maxLength: BROWSER_LIMITS.url }),
-      channel: {
-        type: 'string',
-        enum: [...BROWSER_CHANNELS],
-        description: 'Browser channel. Defaults to config browser.channel, then the first installed Chrome, Edge, or Chromium. chromium uses a discovered Chromium binary because playwright-core does not download browsers.',
-      },
-      executable_path: stringProp('Optional browser executable. Overrides channel. A missing path returns BROWSER_LAUNCH_FAILED and does not fall back to another browser.', { minLength: 1, maxLength: 500 }),
-      headless: { type: 'boolean', description: 'Run headless. Defaults to config browser.headless (true).' },
-      viewport_width: intProp(`Viewport width in CSS pixels. Defaults to ${BROWSER_LIMITS.viewportWidth.default}.`, BROWSER_LIMITS.viewportWidth),
-      viewport_height: intProp(`Viewport height in CSS pixels. Defaults to ${BROWSER_LIMITS.viewportHeight.default}.`, BROWSER_LIMITS.viewportHeight),
-      timeout_ms: navigationTimeoutProp,
+      action: { type: 'string', enum: [...BROWSER_INSPECT_ACTIONS], description: 'Which inspection to run.' },
+      ...sharedFields,
     },
+    ['action'],
   ),
-  browser_navigate: define(
-    'browser_navigate',
-    'Navigate the open page. http(s), about:blank, or a workspace file only. Requires approval. Returns { ok, url, title, status, wait_until }. Call browser_open first.',
+  browser_act: define(
+    'browser_act',
+    'Change the page. action is open, navigate, click, type, eval, or close. navigate needs url. click and type need one target. type needs text, or clear:true. eval needs expression. Uses a temporary browser profile. Requires approval. Returns { ok, tool, summary, ... }.',
     {
-      url: stringProp('http(s) URL, about:blank, or a file path inside the workspace.', { minLength: 1, maxLength: BROWSER_LIMITS.url }),
-      wait_until: {
-        type: 'string',
-        enum: [...BROWSER_WAIT_UNTIL],
-        description: 'Navigation wait state. Defaults to domcontentloaded. networkidle waits for a quiet network and can hang on long-polling pages.',
-      },
-      timeout_ms: navigationTimeoutProp,
+      action: { type: 'string', enum: [...BROWSER_ACT_ACTIONS], description: 'Which page change to run.' },
+      ...sharedFields,
     },
-    ['url'],
+    ['action'],
   ),
-  browser_snapshot: define(
-    'browser_snapshot',
-    'Read-only accessibility snapshot of the current page. Interactive elements get stable @eN refs for later tools. incremental (default) returns a line delta when the page changed little. Returns { ok, url, title, incremental, truncated, refs, summary }. Refs stay valid after a delta.',
+  browser_diagnose: define(
+    'browser_diagnose',
+    'Probe an interaction and report what happened. action click hits the target, then records the CDP hit-test, console errors, exceptions, fetch/xhr calls, and DOM mutations. More probe actions can be added later. Needs one target. Requires approval. Returns { ok, tool, summary, click, hit, console, exceptions, network, mutations }.',
     {
-      incremental: { type: 'boolean', description: 'Return a compact delta against the previous snapshot when it is smaller. Defaults to true.' },
-      interactive_only: { type: 'boolean', description: 'Omit non-interactive text such as headings and static text. Defaults to false.' },
-      max_chars: intProp(`Maximum summary characters. Defaults to config browser.snapshot_max_chars (${BROWSER_LIMITS.snapshotChars.default}). Longer output is truncated here; anything still over the tool-result budget spills to the tool-result store.`, BROWSER_LIMITS.snapshotChars),
+      action: { type: 'string', enum: [...BROWSER_DIAGNOSE_ACTIONS], description: 'Probe to run. click is the first probe.' },
+      ...sharedFields,
     },
-  ),
-  browser_click: define(
-    'browser_click',
-    `Click an element. ${TARGET_HINT} Requires approval. Returns { ok, target, action }. A covered, disabled, or pointer-events:none element returns TARGET_NOT_ACTIONABLE; use browser_diagnose_click to see why.`,
-    {
-      ...targetProperties,
-      button: {
-        type: 'string',
-        enum: [...BROWSER_CLICK_BUTTONS],
-        description: 'Mouse button. Defaults to left.',
-      },
-      click_count: intProp(`Number of clicks. Defaults to ${BROWSER_LIMITS.clickCount.default}.`, BROWSER_LIMITS.clickCount),
-      timeout_ms: timeoutProp(BROWSER_LIMITS.actionTimeoutMs.default),
-    },
-  ),
-  browser_type: define(
-    'browser_type',
-    `Type into an element. ${TARGET_HINT} Requires approval. Returns { ok, target, typed_chars, submitted }. Set clear to replace existing text. Set submit to press Enter after typing.`,
-    {
-      ...targetProperties,
-      text: stringProp('Text to type. Use an empty string only together with clear.', { maxLength: BROWSER_LIMITS.text }),
-      clear: { type: 'boolean', description: 'Clear the field before typing. Defaults to false.' },
-      submit: { type: 'boolean', description: 'Press Enter after typing. Defaults to false.' },
-      delay_ms: intProp(`Delay between keystrokes in milliseconds. Defaults to ${BROWSER_LIMITS.typeDelayMs.default}.`, BROWSER_LIMITS.typeDelayMs),
-      timeout_ms: timeoutProp(BROWSER_LIMITS.actionTimeoutMs.default),
-    },
-    ['text'],
-  ),
-  browser_eval: define(
-    'browser_eval',
-    'Evaluate a JavaScript expression in the page. The expression can read or change the page, so this requires approval. Returns { ok, value, truncated }. Value is JSON, truncated to 4000 characters. Errors return EVAL_FAILED.',
-    {
-      expression: stringProp('JavaScript expression. Do not wrap it in a function.', { minLength: 1, maxLength: BROWSER_LIMITS.expression }),
-      timeout_ms: timeoutProp(BROWSER_LIMITS.actionTimeoutMs.default),
-    },
-    ['expression'],
-  ),
-  browser_screenshot: define(
-    'browser_screenshot',
-    `Capture a PNG or JPEG and write it to a temp file. Read-only. ${TARGET_HINT} Omit the target for the viewport, or set full_page. A target captures that element and ignores full_page. Returns { ok, path, format, bytes, width, height }. The image is not inlined.`,
-    {
-      ...targetProperties,
-      full_page: { type: 'boolean', description: 'Capture the full scroll height. Defaults to false. Ignored when a target is set.' },
-      format: {
-        type: 'string',
-        enum: [...BROWSER_SCREENSHOT_FORMATS],
-        description: 'Image format. Defaults to png.',
-      },
-      quality: intProp(`JPEG quality from 1 to 100. Defaults to ${BROWSER_LIMITS.jpegQuality.default}. Ignored for png.`, BROWSER_LIMITS.jpegQuality),
-      timeout_ms: timeoutProp(BROWSER_LIMITS.actionTimeoutMs.default),
-    },
-  ),
-  browser_logs: define(
-    'browser_logs',
-    'Read-only. Return console messages, page exceptions, and document/xhr/fetch network entries buffered since browser_open. Returns { ok, entries }. last_read (default) advances the cursor; session rereads from the start without moving it.',
-    {
-      since: {
-        type: 'string',
-        enum: [...BROWSER_LOG_SINCE],
-        description: 'session reads from browser_open. last_read reads entries after the previous last_read call. Defaults to last_read.',
-      },
-      kind: {
-        type: 'string',
-        enum: [...BROWSER_LOG_KINDS],
-        description: 'Which buffer to include. Defaults to all.',
-      },
-      level: {
-        type: 'string',
-        enum: [...BROWSER_LOG_LEVELS],
-        description: 'Console level filter. warning includes warning and error. Exceptions are errors. Defaults to all.',
-      },
-      limit: intProp(`Maximum entries, newest last. Defaults to ${BROWSER_LIMITS.logLimit.default}.`, BROWSER_LIMITS.logLimit),
-    },
-  ),
-  browser_close: define(
-    'browser_close',
-    'Close the session browser and drop snapshot refs. Requires approval. Returns { ok, closed }. Safe to call when no browser is open.',
-    {},
-  ),
-  browser_diagnose_click: define(
-    'browser_diagnose_click',
-    `Click a control, then watch for about ${BROWSER_LIMITS.observeMs.default}ms. ${TARGET_HINT} Requires approval because it clicks. Reports the CDP hit-test (including pointer-events:none), whether something occludes the target, console errors, exceptions, fetch/xhr calls, and DOM mutations. Returns { ok, target, click, hit, console, exceptions, network, mutations }.`,
-    {
-      ...targetProperties,
-      observe_ms: intProp(`How long to watch after the click, in milliseconds. Defaults to ${BROWSER_LIMITS.observeMs.default}.`, BROWSER_LIMITS.observeMs),
-      timeout_ms: timeoutProp(BROWSER_LIMITS.actionTimeoutMs.default),
-    },
-  ),
-  browser_explain_style: define(
-    'browser_explain_style',
-    `Read-only. Explain the interaction-relevant computed style, the winning CSS rule, and overridden declarations from CSS.getMatchedStylesForNode, plus a CDP hit-test at the element center. ${TARGET_HINT} Returns { ok, target, computed, winning, overridden, hit }.`,
-    {
-      ...targetProperties,
-      properties: {
-        type: 'array',
-        items: { type: 'string', minLength: 1, maxLength: 40 },
-        minItems: BROWSER_LIMITS.styleProps.min,
-        maxItems: BROWSER_LIMITS.styleProps.max,
-        description: 'CSS property names to explain, such as color or pointer-events. Defaults to the interaction set (display, visibility, opacity, pointer-events, position, z-index, overflow, and color).',
-      },
-      max_rules: intProp(`Maximum winning or overridden declarations to return. Defaults to ${BROWSER_LIMITS.maxRules.default}.`, BROWSER_LIMITS.maxRules),
-    },
-  ),
-  browser_listeners: define(
-    'browser_listeners',
-    `Read-only. List DOM event listeners from DOMDebugger.getEventListeners and map scriptId/line/column, or [[FunctionLocation]], through source maps to workspace files. ${TARGET_HINT} Returns { ok, target, listeners: [{ type, capture, passive, once, location }] }.`,
-    {
-      ...targetProperties,
-      types: {
-        type: 'array',
-        items: { type: 'string', minLength: 1, maxLength: 40 },
-        minItems: BROWSER_LIMITS.listenerTypes.min,
-        maxItems: BROWSER_LIMITS.listenerTypes.max,
-        description: 'Optional event type filter, for example ["click"]. Omit to return every listener up to max_listeners.',
-      },
-      max_listeners: intProp(`Maximum listeners. Defaults to ${BROWSER_LIMITS.maxListeners.default}.`, BROWSER_LIMITS.maxListeners),
-    },
-  ),
-  browser_locate_source: define(
-    'browser_locate_source',
-    `Read-only. Map an element to source. React: __reactFiber _debugSource (React 18) or _debugStack/_debugInfo plus source maps (React 19). Vue: __vueParentComponent.type.__file. If the node has no component source, fall back to listener locations. ${TARGET_HINT} Returns { ok, target, locations: [{ framework, component, file, line, column }] } or SOURCE_NOT_FOUND.`,
-    {
-      ...targetProperties,
-    },
+    ['action'],
   ),
 };
 
@@ -401,11 +310,11 @@ export function getBrowserToolGuidance(config) {
   if (!browserToolsEnabled(config)) return '';
   return [
     '# Browser diagnostics',
-    'browser.enabled is on. The browser tools are deferred: load a tool with tool_search before calling it.',
-    'Call browser_open first. It launches Chrome, Edge, or Chromium with a temporary profile, never the daily user profile.',
-    'Then call browser_snapshot. Target later actions with an @eN ref. A CSS selector or role plus accessible name is a fallback; pass only one targeting mode.',
-    'Read-only tools: browser_snapshot, browser_screenshot, browser_logs, browser_explain_style, browser_listeners, browser_locate_source.',
-    'browser_open, browser_navigate, browser_click, browser_type, browser_eval, browser_diagnose_click, and browser_close change state and follow the normal approval flow.',
-    'Use browser_diagnose_click when a control does not respond, browser_explain_style when the computed style looks wrong, and browser_listeners plus browser_locate_source when you need the handler and the workspace file:line.',
+    'browser.enabled is on. Load browser_inspect, browser_act, or browser_diagnose with tool_search, then pass action.',
+    'browser_inspect is read-only: snapshot, screenshot, logs, explain_style, listeners, locate_source.',
+    'browser_act changes the page: open, navigate, click, type, eval, close. It follows approval.',
+    'browser_diagnose probes an interaction. action click clicks and observes. More probes can be added. It follows approval.',
+    'Target with exactly one of ref (@eN from snapshot), selector, or role plus name.',
+    'Use the frontend-interaction-debug skill for the step-by-step workflow. The browser uses a temporary profile.',
   ].join('\n');
 }

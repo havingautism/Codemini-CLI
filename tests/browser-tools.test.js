@@ -36,19 +36,9 @@ import { formatBrowserResult } from '../src/core/browser/result.js';
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 const VALID_ARGS = {
-  browser_open: {},
-  browser_navigate: { url: 'https://example.com' },
-  browser_snapshot: {},
-  browser_click: { ref: '@e1' },
-  browser_type: { ref: '@e1', text: 'hi' },
-  browser_eval: { expression: '1+1' },
-  browser_screenshot: {},
-  browser_logs: {},
-  browser_close: {},
-  browser_diagnose_click: { selector: '#go' },
-  browser_explain_style: { role: 'button', name: 'Save' },
-  browser_listeners: { ref: '@e2' },
-  browser_locate_source: { ref: '@e2' },
+  browser_inspect: { action: 'snapshot' },
+  browser_act: { action: 'close' },
+  browser_diagnose: { action: 'click', ref: '@e1' },
 };
 
 function registry() {
@@ -74,42 +64,47 @@ test('browser tool schemas compile and reject unknown fields, enums, and bounds'
       (error) => error instanceof ToolArgumentsError,
     );
   }
-  assert.throws(() => tools.validateArguments('browser_open', { channel: 'firefox' }), ToolArgumentsError);
-  assert.throws(() => tools.validateArguments('browser_open', { viewport_width: 10 }), ToolArgumentsError);
-  assert.throws(() => tools.validateArguments('browser_navigate', {}), ToolArgumentsError);
-  assert.throws(() => tools.validateArguments('browser_navigate', { url: 'https://example.com', wait_until: 'soon' }), ToolArgumentsError);
-  assert.throws(() => tools.validateArguments('browser_snapshot', { max_chars: 10 }), ToolArgumentsError);
-  assert.throws(() => tools.validateArguments('browser_click', { ref: 'e1' }), ToolArgumentsError);
-  assert.throws(() => tools.validateArguments('browser_click', { ref: '@e1', button: 'back' }), ToolArgumentsError);
-  assert.throws(() => tools.validateArguments('browser_type', { ref: '@e1' }), ToolArgumentsError);
-  assert.throws(() => tools.validateArguments('browser_eval', { expression: '' }), ToolArgumentsError);
-  assert.throws(() => tools.validateArguments('browser_screenshot', { format: 'gif' }), ToolArgumentsError);
-  assert.throws(() => tools.validateArguments('browser_logs', { limit: 0, since: 'last_read' }), ToolArgumentsError);
-  assert.throws(() => tools.validateArguments('browser_diagnose_click', { selector: '#a', observe_ms: 10 }), ToolArgumentsError);
-  assert.throws(() => tools.validateArguments('browser_explain_style', { role: 'button', name: 'Save', max_rules: 0 }), ToolArgumentsError);
-  assert.throws(() => tools.validateArguments('browser_listeners', { ref: '@e1', max_listeners: 0 }), ToolArgumentsError);
-  assert.throws(() => tools.validateArguments('browser_close', { force: true }), ToolArgumentsError);
+  assert.throws(() => tools.validateArguments('browser_inspect', {}), ToolArgumentsError);
+  assert.throws(() => tools.validateArguments('browser_inspect', { action: 'open' }), ToolArgumentsError);
+  assert.throws(() => tools.validateArguments('browser_act', { action: 'open', channel: 'firefox' }), ToolArgumentsError);
+  assert.throws(() => tools.validateArguments('browser_act', { action: 'open', viewport_width: 10 }), ToolArgumentsError);
+  assert.throws(() => tools.validateArguments('browser_act', { action: 'navigate', wait_until: 'soon', url: 'https://example.com' }), ToolArgumentsError);
+  assert.throws(() => tools.validateArguments('browser_inspect', { action: 'snapshot', max_chars: 10 }), ToolArgumentsError);
+  assert.throws(() => tools.validateArguments('browser_act', { action: 'click', ref: 'e1' }), ToolArgumentsError);
+  assert.throws(() => tools.validateArguments('browser_act', { action: 'click', ref: '@e1', button: 'back' }), ToolArgumentsError);
+  assert.throws(() => tools.validateArguments('browser_inspect', { action: 'screenshot', format: 'gif' }), ToolArgumentsError);
+  assert.throws(() => tools.validateArguments('browser_inspect', { action: 'logs', limit: 0 }), ToolArgumentsError);
+  assert.throws(() => tools.validateArguments('browser_diagnose', { action: 'click', selector: '#a', observe_ms: 10 }), ToolArgumentsError);
+  assert.throws(() => tools.validateArguments('browser_inspect', { action: 'explain_style', role: 'button', name: 'Save', max_rules: 0 }), ToolArgumentsError);
+  assert.throws(() => tools.validateArguments('browser_act', { action: 'close', force: true }), ToolArgumentsError);
+  assert.equal(tools.deferredDefinitions().browser_inspect.function.parameters.required.includes('action'), true);
 });
 
 test('target combinations return INVALID_TARGET before a browser launches', async () => {
   const session = createBrowserSession({ config: { browser: { enabled: true } }, workspaceRoot: repoRoot });
   const handlers = buildBrowserHandlers(session);
-  const missing = await handlers.browser_click({});
+  const missing = await handlers.browser_act({ action: 'click' });
   assert.equal(missing.ok, false);
-  assert.equal(missing.tool, 'browser_click');
-  assert.equal(missing.code, 'INVALID_TARGET');
-  assert.match(missing.error, /ref/);
-  const both = await handlers.browser_click({ ref: '@e1', selector: '#a' });
+  assert.equal(missing.tool, 'browser_act');
+  assert.equal(missing.code, 'INVALID_ARGUMENTS');
+  assert.match(missing.error, /action "click" needs ref, selector, or role plus name/);
+  const both = await handlers.browser_act({ action: 'click', ref: '@e1', selector: '#a' });
   assert.equal(both.code, 'INVALID_TARGET');
   assert.match(both.error, /only one/i);
-  const roleOnly = await handlers.browser_click({ role: 'button' });
+  const roleOnly = await handlers.browser_act({ action: 'click', role: 'button' });
   assert.equal(roleOnly.code, 'INVALID_TARGET');
   assert.match(roleOnly.error, /name/);
-  const closed = await handlers.browser_snapshot({});
+  const nav = await handlers.browser_act({ action: 'navigate' });
+  assert.equal(nav.code, 'INVALID_ARGUMENTS');
+  assert.match(nav.error, /needs url/);
+  const typed = await handlers.browser_act({ action: 'type', ref: '@e1' });
+  assert.equal(typed.code, 'INVALID_ARGUMENTS');
+  assert.match(typed.error, /text/);
+  const closed = await handlers.browser_inspect({ action: 'snapshot' });
   assert.equal(closed.code, 'BROWSER_NOT_OPEN');
-  const blocked = await handlers.browser_open({ url: 'file:///etc/passwd' });
+  const blocked = await handlers.browser_act({ action: 'open', url: 'file:///etc/passwd' });
   assert.equal(blocked.code, 'UNSUPPORTED_URL');
-  const remote = await handlers.browser_navigate({ url: 'https://example.com' });
+  const remote = await handlers.browser_act({ action: 'navigate', url: 'https://example.com' });
   assert.equal(remote.code, 'BROWSER_NOT_OPEN');
   assert.equal(playwrightCoreLoaded(), false);
   await session.dispose();
@@ -118,36 +113,36 @@ test('target combinations return INVALID_TARGET before a browser launches', asyn
 test('formatters and display strings stay compact and bilingual activity still renders', () => {
   const formatted = formatBrowserResult({
     ok: false,
-    tool: 'browser_click',
+    tool: 'browser_act',
     code: 'TARGET_NOT_FOUND',
     error: 'No element matched @e9.',
   });
   assert.equal(formatted, 'Error [TARGET_NOT_FOUND]: No element matched @e9.');
-  assert.equal(formatBrowserResult({ ok: true, tool: 'browser_click', summary: 'Clicked @e1.' }), 'Clicked @e1.');
-  assert.equal(formatToolDisplayName('browser_click', { ref: '@e1' }), 'Browser Click (@e1)');
-  const activity = describeToolActivity({ toolActivity: { doingGeneric: 'Doing', doneGeneric: 'Done', blocked: 'Blocked' } }, 'browser_click (@e1)');
-  assert.match(activity, /Browser Click/);
+  assert.equal(formatBrowserResult({ ok: true, tool: 'browser_act', summary: 'Clicked @e1.' }), 'Clicked @e1.');
+  assert.equal(formatToolDisplayName('browser_act', { action: 'click', ref: '@e1' }), 'Browser Act (click @e1)');
+  const activity = describeToolActivity({ toolActivity: { doingGeneric: 'Doing', doneGeneric: 'Done', blocked: 'Blocked' } }, 'browser_act (click @e1)');
+  assert.match(activity, /Browser Act/);
   for (const code of ['NOT_A_CODE']) assert.equal(BROWSER_ERROR_CODES.includes(code), false);
   assert.ok(BROWSER_ERROR_CODES.includes('INVALID_TARGET'));
-  assert.ok(BROWSER_READONLY_TOOLS.includes('browser_snapshot'));
-  assert.ok(BROWSER_MUTATING_TOOLS.includes('browser_click'));
+  assert.deepEqual([...BROWSER_READONLY_TOOLS], ['browser_inspect']);
+  assert.deepEqual([...BROWSER_MUTATING_TOOLS], ['browser_act', 'browser_diagnose']);
   assert.equal(BROWSER_READONLY_TOOLS.some((name) => BROWSER_MUTATING_TOOLS.includes(name)), false);
 });
 
 test('disabled config omits browser tools and does not import playwright-core', () => {
   const bundle = getBuiltinTools({ workspaceRoot: repoRoot, config: {} });
   try {
-    assert.equal(bundle.deferredDefinitions.browser_open, undefined);
-    assert.equal(bundle.handlers.browser_open, undefined);
-    assert.equal(buildBrowserDeferredEntries({}).browser_open, undefined);
+    assert.equal(bundle.deferredDefinitions.browser_inspect, undefined);
+    assert.equal(bundle.handlers.browser_inspect, undefined);
+    assert.equal(buildBrowserDeferredEntries({}).browser_inspect, undefined);
     assert.equal(playwrightCoreLoaded(), false);
     const enabled = getBuiltinTools({ workspaceRoot: repoRoot, config: { browser: { enabled: true } } });
     try {
       const registered = createToolRegistry(enabled);
-      assert.equal(typeof enabled.handlers.browser_open, 'function');
-      assert.equal(enabled.deferredDefinitions.browser_snapshot.function.name, 'browser_snapshot');
-      assert.equal(registered.isConcurrencySafe('browser_snapshot', {}), false);
-      assert.equal(registered.isConcurrencySafe('browser_click', { ref: '@e1' }), false);
+      assert.equal(typeof enabled.handlers.browser_inspect, 'function');
+      assert.equal(enabled.deferredDefinitions.browser_inspect.function.name, 'browser_inspect');
+      assert.equal(registered.isConcurrencySafe('browser_inspect', { action: 'snapshot' }), false);
+      assert.equal(registered.isConcurrencySafe('browser_act', { action: 'click', ref: '@e1' }), false);
     } finally {
       enabled.dispose?.();
     }
@@ -188,16 +183,21 @@ test('approval, prompts, and role lists follow the enabled flag', async () => {
   }
   assert.equal(toolRequiresUserApproval({
     approvalMode: 'review',
-    toolName: 'browser_click',
+    toolName: 'browser_act',
     alwaysAllowTools: config.execution.always_allow_tools,
   }), true);
   assert.doesNotMatch(buildDefaultSystemPrompt({}), /Browser diagnostics/);
-  assert.match(buildDefaultSystemPrompt({ browser: { enabled: true } }), /browser_diagnose_click/);
-  assert.equal(resolveExecutionModeAllowedTools('plan', null, {}).includes('browser_open'), false);
-  assert.equal(resolveExecutionModeAllowedTools('plan', null, { browser: { enabled: true } }).includes('browser_open'), true);
+  assert.match(buildDefaultSystemPrompt({ browser: { enabled: true } }), /browser_diagnose/);
+  assert.equal(resolveExecutionModeAllowedTools('plan', null, {}).includes('browser_act'), false);
+  const coding = resolveExecutionModeAllowedTools('plan', null, { browser: { enabled: true } });
+  assert.equal(coding.includes('browser_inspect'), true);
+  assert.equal(coding.includes('browser_act'), true);
+  assert.equal(coding.includes('browser_diagnose'), true);
+  assert.equal(coding.includes('run'), true);
+  assert.equal(coding.includes('edit'), true);
   assert.equal(resolveExecutionModeAllowedTools('normal', null, { browser: { enabled: true } }), null);
-  assert.equal(resolveSubAgentToolAllowList({ role: 'debugger', config: {} }).includes('browser_listeners'), false);
-  assert.equal(resolveSubAgentToolAllowList({ role: 'debugger', config: { browser: { enabled: true } } }).includes('browser_listeners'), true);
+  assert.equal(resolveSubAgentToolAllowList({ role: 'debugger', config: {} }).includes('browser_diagnose'), false);
+  assert.equal(resolveSubAgentToolAllowList({ role: 'debugger', config: { browser: { enabled: true } } }).includes('browser_diagnose'), true);
 });
 
 test('doctor reports Chrome or Edge without failing when browser tools are off', async () => {
@@ -300,7 +300,7 @@ test('settings and i18n expose browser controls in English and Chinese', async (
   const zh = await fs.readFile(path.join(repoRoot, 'codemini-web/client/i18n/zh.js'), 'utf8');
   const settings = await fs.readFile(path.join(repoRoot, 'codemini-web/client/src/lib/settings-config.js'), 'utf8');
   const options = await fs.readFile(path.join(repoRoot, 'codemini-web/client/src/lib/settings-options.js'), 'utf8');
-  for (const key of ['browserEnabled', 'browserEnabledHelp', 'browserChannel', 'browserHeadless', 'hookTool_browser_diagnose_click']) {
+  for (const key of ['browserEnabled', 'browserEnabledHelp', 'browserChannel', 'browserHeadless', 'hookTool_browser_diagnose', 'hookTool_browser_inspect', 'hookTool_browser_act']) {
     assert.match(en, new RegExp(`${key}:`));
     assert.match(zh, new RegExp(`${key}:`));
   }

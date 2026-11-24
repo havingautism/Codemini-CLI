@@ -1,6 +1,7 @@
 import { mkdir } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { validateBrowserAction } from './actions.js';
 import { BROWSER_LIMITS, BROWSER_TOOL_NAMES, INTERACTION_STYLE_PROPS, resolveBrowserConfig } from './schema.js';
 import { browserError, browserOk, formatBrowserResult } from './result.js';
 import { describeTarget, resolvePageUrl, targetError, validateTarget } from './target.js';
@@ -23,7 +24,7 @@ async function guard(tool, fn) {
 
 function requirePage(session, tool) {
   if (!session.page || !session.cdp) {
-    return browserError(tool, 'BROWSER_NOT_OPEN', 'Call browser_open before using this tool.');
+    return browserError(tool, 'BROWSER_NOT_OPEN', 'Call browser_act with action "open" before using this tool.');
   }
   return null;
 }
@@ -516,21 +517,46 @@ async function locate(session, args = {}) {
   });
 }
 
+function retag(result, tool) {
+  if (!result || typeof result !== 'object') return result;
+  return { ...result, tool };
+}
+
+async function runChecked(tool, session, args, runners) {
+  const checked = validateBrowserAction(tool, args);
+  if (!checked.ok) return browserError(tool, checked.code, checked.error);
+  const run = runners[checked.action];
+  if (!run) {
+    return browserError(tool, 'INVALID_ARGUMENTS', `${tool} action "${checked.action}" is not implemented.`);
+  }
+  return retag(await run(), tool);
+}
+
+const DIAGNOSE_PROBES = {
+  click: (session, args) => diagnose(session, args),
+};
+
 export function buildBrowserHandlers(session) {
   return {
-    browser_open: (args) => open(session, args),
-    browser_navigate: (args) => navigate(session, args),
-    browser_snapshot: (args) => snapshot(session, args),
-    browser_click: (args) => click(session, args),
-    browser_type: (args) => typeText(session, args),
-    browser_eval: (args) => evaluate(session, args),
-    browser_screenshot: (args) => screenshot(session, args),
-    browser_logs: (args) => logs(session, args),
-    browser_close: () => close(session),
-    browser_diagnose_click: (args) => diagnose(session, args),
-    browser_explain_style: (args) => style(session, args),
-    browser_listeners: (args) => listeners(session, args),
-    browser_locate_source: (args) => locate(session, args),
+    browser_inspect: (args = {}) => runChecked('browser_inspect', session, args, {
+      snapshot: () => snapshot(session, args),
+      screenshot: () => screenshot(session, args),
+      logs: () => logs(session, args),
+      explain_style: () => style(session, args),
+      listeners: () => listeners(session, args),
+      locate_source: () => locate(session, args),
+    }),
+    browser_act: (args = {}) => runChecked('browser_act', session, args, {
+      open: () => open(session, args),
+      navigate: () => navigate(session, args),
+      click: () => click(session, args),
+      type: () => typeText(session, args),
+      eval: () => evaluate(session, args),
+      close: () => close(session),
+    }),
+    browser_diagnose: (args = {}) => runChecked('browser_diagnose', session, args, {
+      click: () => DIAGNOSE_PROBES.click(session, args),
+    }),
   };
 }
 
