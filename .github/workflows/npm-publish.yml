@@ -5,6 +5,14 @@ name: Publish npm
 # this workflow from the release commit. See RELEASE_CHECKLIST.md.
 on:
   workflow_dispatch:
+    inputs:
+      dist_tag:
+        description: npm dist-tag
+        type: choice
+        options:
+          - latest
+          - beta
+        default: latest
 
 permissions:
   contents: read
@@ -43,7 +51,23 @@ jobs:
       - name: Check pack imports
         run: node scripts/check-pack-imports.mjs
 
+      - name: Refuse a prerelease version on the latest tag
+        env:
+          DIST_TAG: ${{ inputs.dist_tag || 'latest' }}
+        run: |
+          node --input-type=module -e '
+            import fs from "node:fs";
+            const version = JSON.parse(fs.readFileSync("package.json", "utf8")).version;
+            const tag = process.env.DIST_TAG || "latest";
+            if (tag === "latest" && version.includes("-")) {
+              console.error(`Refusing to publish ${version} with dist-tag latest. Re-run Publish npm with dist_tag=beta.`);
+              process.exit(1);
+            }
+            console.log(`ok ${version} -> ${tag}`);
+          '
+
       - name: Publish
-        run: npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          DIST_TAG: ${{ inputs.dist_tag || 'latest' }}
+        run: npm publish --access public --tag "$DIST_TAG"

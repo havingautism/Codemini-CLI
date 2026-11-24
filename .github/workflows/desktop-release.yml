@@ -91,6 +91,9 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
+          # Hyphenated tags such as v0.10.5-beta.0 are GitHub prereleases.
+          # /releases/latest ignores prereleases, and this app has no auto-updater.
+          prerelease: ${{ contains(github.ref_name, '-') }}
           files: release-assets/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
