@@ -61,7 +61,7 @@ async function downloadChrome() {
   if (!response.ok) throw new Error(`Chrome download HTTP ${response.status}`);
   await pipeline(Readable.fromWeb(response.body), createWriteStream(zipPath));
   if (platform === 'win32') {
-    execFileSync('powershell', ['-NoProfile', '-Command', `Expand-Archive -LiteralPath '${zipPath}' -DestinationPath '${directory}' -Force`], { stdio: 'inherit' });
+    execFileSync('tar', ['-xf', zipPath, '-C', directory], { stdio: 'inherit' });
   } else {
     execFileSync('unzip', ['-q', zipPath, '-d', directory], { stdio: 'inherit' });
   }
