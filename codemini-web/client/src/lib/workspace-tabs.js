@@ -18,7 +18,7 @@ export function openWorkspaceTool(state, type, terminalId) {
     ? { id: terminalId, type, number: state.nextTerminal }
     : { id: type, type };
   tabs.splice(pickerIndex < 0 ? tabs.length : pickerIndex, 0, tab);
-  return { tabs, activeId: tab.id, nextTerminal: state.nextTerminal + (type === 'terminal' ? 1 : 0) };
+  return { ...state, tabs, activeId: tab.id, nextTerminal: state.nextTerminal + (type === 'terminal' ? 1 : 0) };
 }
 
 export function removeWorkspaceTab(state, id) {
@@ -30,5 +30,24 @@ export function removeWorkspaceTab(state, id) {
     ...state,
     tabs,
     activeId: state.activeId === id ? tabs[Math.min(index, tabs.length - 1)].id : state.activeId,
+  };
+}
+
+export function isActiveAgentCommand(command) {
+  return command?.background === true && command.status === 'running';
+}
+
+export function visibleAgentCommands(commands, hidden = []) {
+  return (Array.isArray(commands) ? commands : []).filter(command =>
+    isActiveAgentCommand(command) && !hidden.includes(command.id));
+}
+
+export function dismissAgentTab(state, id) {
+  const hidden = state.hiddenAgentTabs || [];
+  if (hidden.includes(id)) return state;
+  return {
+    ...state,
+    hiddenAgentTabs: [...hidden, id],
+    activeId: state.activeId === id ? state.tabs.at(-1).id : state.activeId,
   };
 }

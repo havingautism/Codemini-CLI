@@ -2405,6 +2405,7 @@ async function startBackgroundTask(root, config, args, sessionId) {
   };
   backgroundTaskRegistry.set(taskId, task);
   const terminal = createAgentTerminal(sessionId, { command, cwd: root });
+  if (terminal) child.once("exit", terminal.finish);
 
   task.closePromise = new Promise((resolve) => {
     task.child.on("close", (code, signal) => {
@@ -5431,7 +5432,7 @@ export function getBuiltinTools({
       function: {
         name: "web_fetch",
         description:
-          "Fetch an http(s) URL and return readable text. Prefer this over curl. Use web_search to find pages.",
+          "Fetch an http(s) URL and return readable text. Prefer this over curl. Use web_search to find pages. Mode is chosen automatically: static when the response already has readable text, browser when the static body is nearly empty and looks like a client-rendered page. There is no mode argument. metadata.fetch_mode is static or browser. wait_until applies only to the browser fallback.",
         parameters: {
           type: "object",
           properties: {

@@ -1752,6 +1752,7 @@ export const en = {
   workspaceCollapseRail: "Collapse right sidebar",
   workspaceNewTab: "New tab",
   workspaceCloseTab: "Close {{name}}",
+  workspaceHideAgentTab: "Hide {{name}} (keeps the command running)",
   workspaceOpenTool: "Open in this tab",
   workspaceToolLoading: "Opening tool…",
   workspaceGitNeedsRepo: "Open a Git repository to view changes",

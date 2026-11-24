@@ -49,6 +49,7 @@ export function createResearchWebFetchDefinition() {
         'Fetch one http(s) page for Deep Research.',
         'Returns artifactId when the body is persisted. Pass that exact id to read_artifact. Never invent ids.',
         'Use after research_web_search, not for keyword search.',
+        'Mode is chosen automatically: static when the page already has readable text, browser when the static body is nearly empty and looks client-rendered. There is no mode argument. metadata.fetch_mode is static or browser.',
       ].join(' '),
       parameters: {
         type: 'object',

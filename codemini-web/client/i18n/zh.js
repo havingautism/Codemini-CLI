@@ -1705,6 +1705,7 @@ export const zh = {
   workspaceCollapseRail: "收起右侧栏",
   workspaceNewTab: "新标签页",
   workspaceCloseTab: "关闭 {{name}}",
+  workspaceHideAgentTab: "隐藏 {{name}}（命令继续运行）",
   workspaceOpenTool: "在此标签页打开",
   workspaceToolLoading: "正在打开工具…",
   workspaceGitNeedsRepo: "打开 Git 仓库后可查看变更",

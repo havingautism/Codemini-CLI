@@ -382,12 +382,6 @@ function SkillEditorDialog({ skill, open, onSave, onOpenChange, defaultContext =
         </div>
         <div className="mx-4 flex shrink-0 justify-end gap-2 border-t border-(--border-default) py-4 sm:mx-6">
           <Button
-            variant="outline"
-            onClick={() => onOpenChange(false)}
-          >
-            {t("cancel")}
-          </Button>
-          <Button
             onClick={() => saveRef.current?.()}
             disabled={!footerState.canSave}
           >
@@ -872,13 +866,6 @@ function InstallDialog({
           )}
           <div className="flex justify-end gap-2">
             <Button
-              variant="outline"
-              onClick={() => onOpenChange(false)}
-              disabled={installing}
-            >
-              {t("cancel")}
-            </Button>
-            <Button
               onClick={onContinue}
               disabled={installing || !installSource.trim()}
             >
@@ -1008,9 +995,6 @@ function SkillPackageSelectDialog({
           </label>
           {error ? <div className="text-[11px] text-(--accent-red)">{error}</div> : null}
           <div className="flex justify-end gap-2">
-            <Button variant="outline" disabled={confirming} onClick={() => onOpenChange?.(false)}>
-              {t("cancel")}
-            </Button>
             <Button
               disabled={confirming || loading || selectedCount === 0}
               onClick={onConfirm}
@@ -1231,13 +1215,6 @@ function PackageBatchDialog({
             </SettingsField>
           </SettingsSection>
           <div className="flex justify-end gap-2">
-            <Button
-              variant="outline"
-              disabled={applying}
-              onClick={() => onOpenChange?.(false)}
-            >
-              {t("cancel")}
-            </Button>
             <Button
               disabled={applying || !packageGroup}
               onClick={() =>

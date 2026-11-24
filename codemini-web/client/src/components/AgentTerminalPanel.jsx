@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { fetchAgentTerminals } from "@/hooks/use-api.js";
+import { isActiveAgentCommand } from "@/lib/workspace-tabs.js";
 import { t } from "../../i18n/index.js";
 
 export function AgentTerminalPanel({ sessionId, command }) {
@@ -15,7 +16,7 @@ export function AgentTerminalPanel({ sessionId, command }) {
     async function refresh() {
       try {
         const result = await fetchAgentTerminals(sessionId, { id, signal: controller.signal });
-        if (controller.signal.aborted || !result.command) return;
+        if (controller.signal.aborted || !isActiveAgentCommand(result.command)) return;
         setSnapshot((current) => current?.revision === result.command.revision ? current : result.command);
         setError(false);
       } catch {

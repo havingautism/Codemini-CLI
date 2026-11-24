@@ -277,7 +277,7 @@ function NodeRenderer({ node, style, dragHandle, onEnterDirectory, onAddReferenc
         <ContextMenu.Trigger asChild>{row}</ContextMenu.Trigger>
         <ContextMenu.Portal>
           <ContextMenu.Content
-            className="z-[60] min-w-40 rounded-lg border border-(--surface-edge) bg-(--material-elevated) p-1 text-(--text-primary) shadow-[var(--surface-shadow)] outline-none"
+            className="z-[60] min-w-40 rounded-[10px] border-0 bg-(--bg-primary) p-1 text-(--text-primary) shadow-[var(--shadow-overlay)] outline-none"
             onClick={(event) => event.stopPropagation()}
             onKeyDown={(event) => event.stopPropagation()}
           >

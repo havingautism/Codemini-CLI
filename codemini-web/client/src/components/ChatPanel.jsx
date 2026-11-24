@@ -97,7 +97,7 @@ function UserMessageNav({ userMessages, activeNavIndex, scrollToMessage }) {
       onBlurCapture={handleBlurCapture}
     >
       {expanded && (
-        <div className="max-h-[60vh] w-48 overflow-hidden rounded-xl bg-(--material-elevated) p-1.5 shadow-[var(--shadow-elevated)] backdrop-blur-xl">
+        <div className="max-h-[60vh] w-48 overflow-hidden rounded-[10px] bg-(--bg-primary) p-1.5 shadow-[var(--shadow-overlay)]">
           <div className="flex h-7 items-center gap-2 px-2 text-[10px] text-(--text-muted)">
             <span className="min-w-0 flex-1 truncate font-medium">{t("quickJump")}</span>
             <span className="shrink-0 tabular-nums">{positionLabel}</span>

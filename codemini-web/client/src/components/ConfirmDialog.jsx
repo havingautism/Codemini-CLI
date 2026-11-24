@@ -15,7 +15,6 @@ export function ConfirmDialog({
   title,
   description,
   confirmLabel,
-  cancelLabel,
   loadingLabel,
   loading = false,
   confirmVariant = "destructive",
@@ -34,14 +33,6 @@ export function ConfirmDialog({
           ) : null}
         </DialogHeader>
         <DialogFooter>
-          <Button
-            type="button"
-            variant="outline"
-            disabled={loading}
-            onClick={() => onOpenChange?.(false)}
-          >
-            {cancelLabel || t('cancel')}
-          </Button>
           <Button
             type="button"
             variant={confirmVariant}

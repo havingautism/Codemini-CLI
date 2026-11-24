@@ -645,9 +645,6 @@ export function ConfigDialog({
               {t("settingsUnsavedChanges")}
             </span>
           )}
-          <Button variant="outline" onClick={() => onOpenChange(false)}>
-            {t("cancel")}
-          </Button>
           <Button onClick={handleSave} disabled={!hasChanges || saving}>
             {t("saveChanges")}
           </Button>

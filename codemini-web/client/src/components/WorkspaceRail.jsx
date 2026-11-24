@@ -24,6 +24,31 @@ const WORKSPACE_TOOLS = [
   { type: "git", label: "workspaceGitTab", icon: GitDiffIcon },
 ];
 
+function ClosableWorkspaceTab({ tab, name, title, onClose, children }) {
+  const closeLabel = t(tab.type === "agent" ? "workspaceHideAgentTab" : "workspaceCloseTab").replace("{{name}}", name);
+  return (
+    <div className="relative flex shrink-0 items-center">
+      <TabsTrigger value={tab.id} title={title} className={`${TAB_CLASS} pr-7`} onKeyDown={(event) => {
+        if (event.key === "Delete") {
+          event.preventDefault();
+          void onClose(tab);
+        }
+      }}>
+        {children}
+      </TabsTrigger>
+      <button
+        type="button"
+        className="absolute right-1 inline-flex size-5 items-center justify-center rounded text-(--text-muted) hover:bg-(--bg-hover) hover:text-(--text-primary) focus-visible:outline-2 focus-visible:outline-(--accent-blue)"
+        title={closeLabel}
+        aria-label={closeLabel}
+        onClick={() => onClose(tab)}
+      >
+        <X size={12} aria-hidden="true" />
+      </button>
+    </div>
+  );
+}
+
 function WorkspacePicker({ onChooseTool, disabled, isGit }) {
   return (
     <div className="flex min-h-0 flex-1 items-center overflow-auto px-5 py-8">
@@ -149,45 +174,29 @@ export function WorkspaceRail({
       </div>
 
       <Tabs value={activeTab} onValueChange={onTabChange} activationMode="manual" className="codemini-workspace-rail-body min-h-0 flex-1 gap-0 overflow-hidden">
-        <div className="flex h-12 shrink-0 items-center gap-1 border-b border-(--border-default) px-2">
-          <TabsList ref={tabsRef} aria-label={t("workspaceRailTitle")} className="w-auto min-w-0 flex-1 justify-start gap-1 overflow-x-auto bg-transparent [scrollbar-width:thin]">
+        <div className="flex min-h-12 shrink-0 items-center gap-1 border-b border-(--border-default) px-2">
+          <TabsList ref={tabsRef} aria-label={t("workspaceRailTitle")} className="codemini-workspace-tabs w-auto min-w-0 flex-1 justify-start gap-1 overflow-x-scroll overflow-y-hidden bg-transparent">
             {tabs.map((tab) => {
               const tool = WORKSPACE_TOOLS.find(({ type }) => tab.type === type);
               const Icon = tool?.icon || Plus;
               const name = tab.type === "terminal" ? `${t("terminalTitle")} ${tab.number}` : t(tool?.label || "workspaceNewTab");
               return (
-                <div key={tab.id} className="relative flex shrink-0 items-center">
-                  <TabsTrigger value={tab.id} className={`${TAB_CLASS} pr-7`} onKeyDown={(event) => {
-                    if (event.key === "Delete") {
-                      event.preventDefault();
-                      void closeTab(tab);
-                    }
-                  }}>
-                    <Icon size={14} aria-hidden="true" />
-                    {name}
-                  </TabsTrigger>
-                  <button
-                    type="button"
-                    className="absolute right-1 inline-flex size-5 items-center justify-center rounded text-(--text-muted) hover:bg-(--bg-hover) hover:text-(--text-primary) focus-visible:outline-2 focus-visible:outline-(--accent-blue)"
-                    title={t("workspaceCloseTab").replace("{{name}}", name)}
-                    aria-label={t("workspaceCloseTab").replace("{{name}}", name)}
-                    onClick={() => closeTab(tab)}
-                  >
-                    <X size={12} aria-hidden="true" />
-                  </button>
-                </div>
+                <ClosableWorkspaceTab key={tab.id} tab={tab} name={name} onClose={closeTab}>
+                  <Icon size={14} aria-hidden="true" />
+                  {name}
+                </ClosableWorkspaceTab>
               );
             })}
             {commands.map((item, index) => {
               const status = t("terminalRunning");
               return (
-                <TabsTrigger key={item.id} value={item.id} title={`${item.command} · ${status}`} className={TAB_CLASS}>
+                <ClosableWorkspaceTab key={item.id} tab={{ id: item.id, type: "agent" }} name={item.command} title={`${item.command} · ${status}`} onClose={closeTab}>
                   <TerminalIcon size={14} />
                   <span className="text-[11px] tabular-nums text-(--text-muted)">{index + 1}</span>
                   <span className="max-w-36 truncate">{item.command}</span>
                   <span aria-hidden="true" className="size-1.5 shrink-0 rounded-full bg-(--accent-blue)" />
                   <span className="sr-only">{status}</span>
-                </TabsTrigger>
+                </ClosableWorkspaceTab>
               );
             })}
           </TabsList>

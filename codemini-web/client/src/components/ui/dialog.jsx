@@ -7,6 +7,22 @@ import { Dialog as DialogPrimitive } from "radix-ui"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 
+function DialogDismiss({ className }) {
+  return (
+    <DialogPrimitive.Close
+      type="button"
+      data-slot="dialog-close"
+      aria-label="Close"
+      className={cn(
+        "absolute top-3 end-3 z-10 inline-flex size-7 items-center justify-center rounded-[8px] text-(--text-muted) transition-colors hover:bg-(--bg-hover) hover:text-(--text-primary) focus-visible:bg-(--bg-hover) focus-visible:outline-none",
+        className,
+      )}
+    >
+      <X size={15} strokeWidth={1.75} />
+    </DialogPrimitive.Close>
+  );
+}
+
 function Dialog({
   ...props
 }) {
@@ -65,7 +81,7 @@ function DialogContent({
           if (!closeOnOutsideClick) e.preventDefault();
         }}
         className={cn(
-          "fixed top-[50%] left-[50%] z-50 grid w-full max-w-[calc(100vw-1.5rem)] translate-x-[-50%] translate-y-[-50%] gap-0 rounded-xl rounded-[20px] border border-(--surface-edge) bg-(--material-elevated) text-(--text-primary) px-6 pt-0 pb-6 shadow-[var(--surface-shadow)] duration-200 outline-none data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 sm:max-w-lg",
+          "fixed top-1/2 left-1/2 z-50 grid w-full max-w-[calc(100vw-1.5rem)] -translate-x-1/2 -translate-y-1/2 gap-0 rounded-[14px] border-0 bg-(--bg-primary) text-(--text-primary) px-6 pt-0 pb-6 shadow-[var(--shadow-overlay)] duration-200 outline-none data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 sm:max-w-lg",
           className
         )}
         {...props}>
@@ -84,25 +100,13 @@ function DialogHeader({
   return (
     <div
       data-slot="dialog-header"
-      className={cn("flex shrink-0 flex-row items-start justify-between gap-4 pt-6 pb-4 text-left", className)}
+      data-close={showCloseButton ? "true" : undefined}
+      className={cn("flex shrink-0 flex-row items-start justify-between gap-3 pt-5 pb-4 text-left", showCloseButton && "pe-10", className)}
       {...props}>
-      <div className="flex-1 min-w-0 flex flex-col gap-2.5">
+      <div className="flex min-w-0 flex-1 flex-col gap-1">
         {children}
       </div>
-      {showCloseButton && (
-        <DialogPrimitive.Close asChild>
-          <Button
-            type="button"
-            data-slot="dialog-close"
-            variant="close"
-            size="icon"
-            aria-label="Close"
-          >
-            <X />
-            <span className="sr-only">Close</span>
-          </Button>
-        </DialogPrimitive.Close>
-      )}
+      {showCloseButton ? <DialogDismiss /> : null}
     </div>
   );
 }
@@ -116,7 +120,7 @@ function DialogFooter({
   return (
     <div
       data-slot="dialog-footer"
-      className={cn("flex flex-col-reverse gap-2 border-t border-(--separator) pt-4 sm:flex-row sm:justify-end", className)}
+      className={cn("flex flex-col-reverse gap-2 border-t border-(--line) pt-4 sm:flex-row sm:justify-end", className)}
       {...props}>
       {children}
       {showCloseButton && (
@@ -135,7 +139,7 @@ function DialogTitle({
   return (
     <DialogPrimitive.Title
       data-slot="dialog-title"
-      className={cn("text-[17px] font-semibold leading-6 tracking-[-0.012em] text-(--text-primary)", className)}
+      className={cn("text-[15px] font-semibold leading-6 tracking-[-0.02em] text-(--text-primary)", className)}
       {...props} />
   );
 }

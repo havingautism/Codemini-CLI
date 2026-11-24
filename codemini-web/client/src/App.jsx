@@ -9,6 +9,7 @@ import React, {
   useRef,
   useState,
 } from "react";
+import { installScrollEdgeObserver } from "@/lib/scroll-fade.js";
 import { createRoot } from "react-dom/client";
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -33,7 +34,7 @@ import { findLiveTodoDock } from "@/lib/live-todo-dock.js";
 import { interactiveRequestForSession } from "@/lib/session-ui-state.js";
 import { scheduledAttentionKey } from "@/lib/scheduled-task-ui.js";
 import { DotsThree, GitDiff, List, SidebarSimple, Terminal } from "@/lib/icons";
-import { EMPTY_WORKSPACE_TABS, openWorkspacePicker, openWorkspaceTool, removeWorkspaceTab } from "@/lib/workspace-tabs.js";
+import { dismissAgentTab, EMPTY_WORKSPACE_TABS, openWorkspacePicker, openWorkspaceTool, removeWorkspaceTab, visibleAgentCommands } from "@/lib/workspace-tabs.js";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { TrajectoryPanel } from "@/components/TrajectoryPanel.jsx";
 import "../style.css";
@@ -270,10 +271,15 @@ function Shell() {
   }, [updateWorkspaceTabs]);
   const newWorkspaceTab = useCallback(() => updateWorkspaceTabs(openWorkspacePicker), [updateWorkspaceTabs]);
   const closeWorkspaceTab = useCallback(async (tab) => {
+    if (tab.type === "agent") {
+      updateWorkspaceTabs((current) => dismissAgentTab(current, tab.id));
+      return;
+    }
     if (tab.type === "terminal") await closeTerminalSession(workspaceSessionId, tab.id);
     updateWorkspaceTabs((current) => removeWorkspaceTab(current, tab.id));
   }, [updateWorkspaceTabs, workspaceSessionId]);
-  const agentCommands = useAgentCommandList(state.currentSessionId, state.agentTerminalRevision);
+  const commands = useAgentCommandList(state.currentSessionId, state.agentTerminalRevision);
+  const agentCommands = useMemo(() => visibleAgentCommands(commands, workspaceTabs.hiddenAgentTabs), [commands, workspaceTabs.hiddenAgentTabs]);
   const commandStatus = agentCommands.length
     ? t("agentTerminalRunningCount").replace("{{count}}", agentCommands.length)
     : "";
@@ -927,11 +933,17 @@ function Shell() {
   );
 }
 
+function ScrollEdgeObserver() {
+  useEffect(() => installScrollEdgeObserver(document), []);
+  return null;
+}
+
 function App() {
   return (
     <ErrorBoundary>
       <TooltipProvider>
         <AppProvider>
+          <ScrollEdgeObserver />
           <Shell />
         </AppProvider>
       </TooltipProvider>

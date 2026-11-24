@@ -148,7 +148,7 @@ export function getWebToolGuidance(config) {
     '# Web tools',
     'Within your allowed tool scope, prefer dedicated web tools over shell commands for online research.',
     searchHint,
-    '- web_fetch: read a known URL or a search result page; prefer it over curl for reading web pages.',
+    '- web_fetch: read a known URL or a search result page; prefer it over curl. It chooses static or browser rendering itself. There is no rendered mode to request.',
     `If a web tool is not visible, load it by exact name with ${discoveryExamples} when allowed.`,
     'Shell HTTP is for API debugging, downloads, explicit user requests, or a web-tool failure. Explain that fallback; do not bypass disabled search or denied network access.',
   ].filter(Boolean).join('\n');

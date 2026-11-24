@@ -170,7 +170,7 @@ export function ProjectSelector({ open, onOpenChange, onOpenProject, initialPath
         </div>
         {error && <p role="alert" className="project-picker-error" title={error}>{t('projectPickerError')}</p>}
         <div className="project-picker-bottom">
-          <DialogFooter><Button type="button" variant="tab" disabled={locked} onClick={() => onOpenChange(false)}>{t('cancel')}</Button><Button type="button" disabled={!canCreate || creatingFormOpen} onClick={confirm}>{busy ? t('loading') : t('projectSelectFolder')}</Button></DialogFooter>
+          <DialogFooter><Button type="button" disabled={!canCreate || creatingFormOpen} onClick={confirm}>{busy ? t('loading') : t('projectSelectFolder')}</Button></DialogFooter>
         </div>
       </DialogContent>
     </Dialog>
