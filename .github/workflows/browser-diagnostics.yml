@@ -4,7 +4,10 @@ on:
   push:
     branches:
       - cursor/browser-diagnostics-8f19
+      - beta
   pull_request:
+    branches:
+      - beta
 
 permissions:
   contents: read
