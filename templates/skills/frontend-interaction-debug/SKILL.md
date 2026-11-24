@@ -7,7 +7,7 @@ mode: agent_requested
 
 # Front-end interaction debugging
 
-Use this when a control does the wrong thing, cannot be clicked, or is styled by an unexpected rule. The browser tools exist only when `browser.enabled` is true. Load each one with `tool_search` before calling it. Pass `action`, and target an element with exactly one of `ref` (`@eN`), `selector`, or `role` plus `name`.
+Use this when a control does the wrong thing, cannot be clicked, or is styled by an unexpected rule. These tools are available in coding mode only. They are not in the default tool list: load `browser_inspect`, `browser_act`, or `browser_diagnose` with `tool_search` before calling it. Pass `action`, and target an element with exactly one of `ref` (`@eN`), `selector`, or `role` plus `name`.
 
 1. `browser_act` `action:"open"` with the page URL. The browser uses a temporary profile.
 2. `browser_inspect` `action:"snapshot"`. Interactive elements get stable `@eN` refs. Prefer a ref for later calls.
@@ -21,7 +21,7 @@ Use this when a control does the wrong thing, cannot be clicked, or is styled by
 7. `browser_inspect` `action:"screenshot"` writes a file path. `action:"logs"` returns console errors, exceptions, and failed network entries.
 8. `browser_act` `action:"close"` when you are done.
 
-`browser_inspect` is read-only and does not need approval. `browser_act` (`open`, `navigate`, `click`, `type`, `eval`, `close`) and `browser_diagnose` follow the normal approval flow. In coding mode they are auto-approved on the same list as `edit` and `run`. In review mode they still prompt.
+In coding mode, `browser_inspect`, `browser_act`, and `browser_diagnose` are auto-approved on the same list as `edit` and `run`.
 
 `browser_diagnose` currently has one probe, `click`. More probe actions can be added without a new tool.
 

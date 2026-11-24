@@ -858,9 +858,6 @@ export const zh = {
   harnessApiKeyHelp: "密钥只保存在本机配置中。",
   webSearchEnabled: "启用联网搜索",
   webSearchEnabledHelp: "允许 web_search 工具执行实时网络搜索。",
-  browserEnabled: "启用浏览器诊断",
-  browserEnabledHelp:
-    "默认关闭。开启后，Codemini 可以用临时的 Chrome、Edge 或 Chromium 配置文件诊断点击、样式、事件监听和源码位置。在真正调用浏览器工具之前，CLI 不会加载 Playwright。",
   browserChannel: "浏览器通道",
   browserChannelHelp: "自动优先使用本机 Chrome，其次 Edge，再次 Chromium。playwright-core 不会下载浏览器。",
   browserChannelAuto: "自动",

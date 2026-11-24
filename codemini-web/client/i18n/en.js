@@ -864,9 +864,6 @@ export const en = {
   webSearchEnabled: "Enable Web Search",
   webSearchEnabledHelp:
     "Allow the web_search tool to run live network searches.",
-  browserEnabled: "Enable browser diagnostics",
-  browserEnabledHelp:
-    "Off by default. When on, Codemini can open a temporary Chrome, Edge, or Chromium profile to diagnose clicks, styles, listeners, and source locations. The CLI does not load Playwright until a browser tool runs.",
   browserChannel: "Browser channel",
   browserChannelHelp: "auto uses the first installed Chrome, then Edge, then Chromium. playwright-core does not download a browser.",
   browserChannelAuto: "Auto",

@@ -11,7 +11,6 @@ import {
   shouldCheckMicrosandbox,
 } from '../core/doctor-sandbox.js';
 import { findInstalledBrowsers } from '../core/browser/locate-browser.js';
-import { resolveBrowserConfig } from '../core/browser/schema.js';
 
 async function checkPathWritable(targetPath) {
   try {
@@ -113,24 +112,17 @@ export async function handleDoctor({
     });
   }
   if (!checks.some((check) => check.name === 'Local Chrome/Edge')) {
-    const browserEnabled = resolveBrowserConfig(config).enabled;
     if (browsers.length > 0) {
       checks.push({
         name: 'Local Chrome/Edge',
         ok: true,
         detail: browsers.map((browser) => `${browser.name}: ${browser.path}`).join('; '),
       });
-    } else if (!browserEnabled) {
-      checks.push({
-        name: 'Local Chrome/Edge',
-        skip: true,
-        detail: 'browser tools disabled; Chrome, Edge, or Chromium not found',
-      });
     } else {
       checks.push({
         name: 'Local Chrome/Edge',
-        ok: false,
-        detail: 'browser.enabled is true but Chrome, Edge, and Chromium were not found',
+        skip: true,
+        detail: 'Chrome, Edge, or Chromium not found',
       });
     }
   }

@@ -1,16 +1,14 @@
 # Browser diagnostics
 
-`browser.enabled` defaults to false. With it off, browser tools are not registered and the CLI does not import `playwright-core`. Turn it on with `codemini config set browser.enabled true`, or the Web UI switch on the Web tab.
+The three browser tools are available in coding mode only. Everyday/normal mode does not register them. Even in coding mode they stay out of the default tool list: they live in the deferred catalog and load through `tool_search`. `playwright-core` is imported on the first browser launch, not at CLI startup.
 
-The tools are deferred. Load one with `tool_search` before calling it. One Chrome, Edge, or Chromium stays open for the session and is closed on shutdown. Playwright launches it with a temporary profile over its remote-debugging pipe. Do not point it at the user's daily profile. Chrome 136+ refuses remote debugging there anyway.
+One Chrome, Edge, or Chromium stays open for the session and is closed on shutdown. Playwright launches it with a temporary profile over its remote-debugging pipe. Do not point it at the user's daily profile. Chrome 136+ refuses remote debugging there anyway.
 
 `playwright-core` does not download a browser. `browser.channel` is `auto`, `chrome`, `msedge`, or `chromium`. `auto` picks the first installed Chrome, then Edge, then Chromium. Set `browser.executable_path` to force a binary. An explicit missing path fails with `BROWSER_LAUNCH_FAILED` and does not fall back.
 
 ## Approval
 
-Read-only tools are added to `execution.always_allow_tools`: `browser_snapshot`, `browser_screenshot`, `browser_logs`, `browser_explain_style`, `browser_listeners`, `browser_locate_source`.
-
-`browser_act` and `browser_diagnose` follow the normal approval flow. Coding mode auto-allows the whole plan tool list, which already includes `edit` and `run`, so those two browser tools are auto-approved there too. Review mode still prompts because they are not in `always_allow_tools`. Browser tools are not concurrency-safe.
+Coding mode auto-allows the whole plan tool list, which already includes `edit` and `run`. `browser_inspect`, `browser_act`, and `browser_diagnose` are on that list, so they are auto-approved in coding mode. Browser tools are not concurrency-safe.
 
 ## Targeting
 
@@ -31,7 +29,7 @@ node tests/fixtures/browser/build.mjs
 CODEMINI_BROWSER_TESTS=1 node --test --test-concurrency=1 tests/browser-diagnostics.test.js
 ```
 
-`codemini doctor` reports a local Chrome, Edge, or Chromium. If browser tools are disabled and none is installed, that check is skipped.
+`codemini doctor` reports a local Chrome, Edge, or Chromium. If none is installed, that check is skipped.
 
 ## Desktop
 
@@ -47,4 +45,4 @@ Each tool is `type: function`, `additionalProperties: false`, and requires `acti
 | `browser_act` | open, navigate, click, type, eval, close | navigate needs `url`. click and type need one target. type needs `text` or `clear:true`. eval needs `expression`. |
 | `browser_diagnose` | click | one target. `observe_ms` 100–3000. More probe actions can be added on this tool. |
 
-Shared bounds stay on the flat schema: `channel` chrome|msedge|chromium, `wait_until` commit|domcontentloaded|load|networkidle, `format` png|jpeg, `button` left|right|middle, viewport 320–3840 by 240–2160, `timeout_ms` 200–120000 (the handler tightens this per action), `ref` matching `^@e[1-9][0-9]*$`. Target fields are `ref`, `selector`, `role`, and `name`.
+Each tool declares only the fields its actions use. `browser_act` carries `channel` chrome|msedge|chromium, `wait_until` commit|domcontentloaded|load|networkidle, `button` left|right|middle, and viewport 320–3840 by 240–2160. `browser_inspect` carries snapshot, screenshot, log, style, and listener fields. `browser_diagnose` carries the target, `observe_ms` 100–3000, and `timeout_ms`. `ref` matches `^@e[1-9][0-9]*$`. The handler tightens `timeout_ms` per action.

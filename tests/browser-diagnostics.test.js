@@ -56,8 +56,8 @@ function startServer(root) {
 
 function browserConfig() {
   return {
+    execution: { mode: 'coding' },
     browser: {
-      enabled: true,
       headless: true,
       channel: process.env.CODEMINI_BROWSER_CHANNEL || 'auto',
       executable_path: process.env.CODEMINI_BROWSER_EXECUTABLE || '',

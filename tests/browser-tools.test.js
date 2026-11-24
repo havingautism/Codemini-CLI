@@ -12,6 +12,7 @@ import { buildDefaultSystemPrompt } from '../src/core/default-system-prompt.js';
 import { formatToolDisplayName } from '../src/core/tool-display.js';
 import { describeToolActivity } from '../src/tui/tool-activity/index.js';
 import {
+  buildExecutionModePromptBlock,
   resolveExecutionModeAllowedTools,
   resolveSubAgentToolAllowList,
 } from '../src/core/chat-runtime.js';
@@ -78,6 +79,19 @@ test('browser tool schemas compile and reject unknown fields, enums, and bounds'
   assert.throws(() => tools.validateArguments('browser_inspect', { action: 'explain_style', role: 'button', name: 'Save', max_rules: 0 }), ToolArgumentsError);
   assert.throws(() => tools.validateArguments('browser_act', { action: 'close', force: true }), ToolArgumentsError);
   assert.equal(tools.deferredDefinitions().browser_inspect.function.parameters.required.includes('action'), true);
+  const keys = (name) => Object.keys(BROWSER_TOOL_DEFINITIONS[name].function.parameters.properties);
+  const inspect = keys('browser_inspect');
+  const act = keys('browser_act');
+  const diagnose = keys('browser_diagnose');
+  for (const foreign of ['url', 'expression', 'observe_ms', 'channel', 'text']) {
+    assert.equal(inspect.includes(foreign), false, foreign);
+  }
+  for (const foreign of ['observe_ms', 'incremental', 'format', 'max_rules', 'max_listeners']) {
+    assert.equal(act.includes(foreign), false, foreign);
+  }
+  assert.deepEqual(diagnose.sort(), ['action', 'name', 'observe_ms', 'ref', 'role', 'selector', 'timeout_ms']);
+  assert.throws(() => tools.validateArguments('browser_inspect', { action: 'snapshot', url: 'https://example.com' }), ToolArgumentsError);
+  assert.throws(() => tools.validateArguments('browser_diagnose', { action: 'click', ref: '@e1', expression: '1' }), ToolArgumentsError);
 });
 
 test('target combinations return INVALID_TARGET before a browser launches', async () => {
@@ -129,25 +143,42 @@ test('formatters and display strings stay compact and bilingual activity still r
   assert.equal(BROWSER_READONLY_TOOLS.some((name) => BROWSER_MUTATING_TOOLS.includes(name)), false);
 });
 
-test('disabled config omits browser tools and does not import playwright-core', () => {
-  const bundle = getBuiltinTools({ workspaceRoot: repoRoot, config: {} });
+test('browser tools are deferred in coding mode and absent in normal mode', async () => {
+  const normal = getBuiltinTools({ workspaceRoot: repoRoot, config: { execution: { mode: 'normal' } } });
   try {
-    assert.equal(bundle.deferredDefinitions.browser_inspect, undefined);
-    assert.equal(bundle.handlers.browser_inspect, undefined);
-    assert.equal(buildBrowserDeferredEntries({}).browser_inspect, undefined);
+    const normalNames = normal.definitions.map((item) => item.function.name);
+    for (const name of BROWSER_TOOL_NAMES) {
+      assert.equal(normalNames.includes(name), false, name);
+      assert.equal(normal.deferredDefinitions[name], undefined, name);
+      assert.equal(normal.handlers[name], undefined, name);
+    }
+    assert.equal(buildBrowserDeferredEntries({ execution: { mode: 'daily' } }).browser_act, undefined);
     assert.equal(playwrightCoreLoaded(), false);
-    const enabled = getBuiltinTools({ workspaceRoot: repoRoot, config: { browser: { enabled: true } } });
+  } finally {
+    normal.dispose?.();
+  }
+  const coding = getBuiltinTools({ workspaceRoot: repoRoot, config: { execution: { mode: 'plan' } } });
+  try {
+    const codingNames = coding.definitions.map((item) => item.function.name);
+    const registered = createToolRegistry(coding);
+    for (const name of BROWSER_TOOL_NAMES) {
+      assert.equal(codingNames.includes(name), false, name);
+      assert.equal(coding.deferredDefinitions[name].function.name, name);
+      assert.equal(typeof coding.handlers[name], 'function');
+      const found = await coding.handlers.tool_search({ query: name });
+      assert.equal(found.loaded.includes(name), true, name);
+    }
+    assert.equal(registered.isConcurrencySafe('browser_inspect', { action: 'snapshot' }), false);
+    assert.equal(registered.isConcurrencySafe('browser_act', { action: 'click', ref: '@e1' }), false);
+    const alsoCoding = getBuiltinTools({ workspaceRoot: repoRoot, config: { execution: { mode: 'coding' } } });
     try {
-      const registered = createToolRegistry(enabled);
-      assert.equal(typeof enabled.handlers.browser_inspect, 'function');
-      assert.equal(enabled.deferredDefinitions.browser_inspect.function.name, 'browser_inspect');
-      assert.equal(registered.isConcurrencySafe('browser_inspect', { action: 'snapshot' }), false);
-      assert.equal(registered.isConcurrencySafe('browser_act', { action: 'click', ref: '@e1' }), false);
+      assert.equal(alsoCoding.deferredDefinitions.browser_diagnose.function.name, 'browser_diagnose');
+      assert.equal(alsoCoding.definitions.some((item) => item.function.name === 'browser_diagnose'), false);
     } finally {
-      enabled.dispose?.();
+      alsoCoding.dispose?.();
     }
   } finally {
-    bundle.dispose?.();
+    coding.dispose?.();
   }
   const child = spawnSync(process.execPath, ['--input-type=module', '-e', `
     import { getBuiltinTools } from './src/core/tools.js';
@@ -165,42 +196,43 @@ test('disabled config omits browser tools and does not import playwright-core', 
   assert.equal(payload.loaded, false);
 });
 
-test('approval, prompts, and role lists follow the enabled flag', async () => {
-  assert.equal(resolveBrowserConfig({}).enabled, false);
-  assert.equal(resolveBrowserConfig({ browser: { enabled: 'true', channel: 'chrome', headless: false } }).channel, 'chrome');
-  assert.equal(resolveBrowserConfig({ browser: { enabled: true, headless: false } }).headless, false);
+test('coding mode auto-approves browser tools and mentions them only in the coding prompt', async () => {
+  assert.equal(resolveBrowserConfig({ browser: { channel: 'chrome', headless: false } }).channel, 'chrome');
+  assert.equal(resolveBrowserConfig({ browser: { headless: false } }).headless, false);
+  assert.equal(Object.hasOwn(resolveBrowserConfig({ browser: { enabled: true } }), 'enabled'), false);
   const config = await loadConfig();
-  assert.equal(config.browser.enabled, false);
+  assert.equal(Object.hasOwn(config.browser, 'enabled'), false);
   assert.equal(config.browser.headless, true);
   assert.equal(config.browser.channel, 'auto');
-  for (const name of BROWSER_READONLY_TOOLS) {
-    assert.equal(config.execution.always_allow_tools.includes(name), true, name);
-    assert.equal(toolRequiresUserApproval({
-      approvalMode: 'review',
-      toolName: name,
-      alwaysAllowTools: config.execution.always_allow_tools,
-    }), false, name);
-  }
-  assert.equal(toolRequiresUserApproval({
-    approvalMode: 'review',
-    toolName: 'browser_act',
-    alwaysAllowTools: config.execution.always_allow_tools,
-  }), true);
-  assert.doesNotMatch(buildDefaultSystemPrompt({}), /Browser diagnostics/);
-  assert.match(buildDefaultSystemPrompt({ browser: { enabled: true } }), /browser_diagnose/);
-  assert.equal(resolveExecutionModeAllowedTools('plan', null, {}).includes('browser_act'), false);
-  const coding = resolveExecutionModeAllowedTools('plan', null, { browser: { enabled: true } });
+  assert.equal(config.execution.always_allow_tools.includes('browser_inspect'), false);
+  const coding = resolveExecutionModeAllowedTools('coding', null, {});
   assert.equal(coding.includes('browser_inspect'), true);
   assert.equal(coding.includes('browser_act'), true);
   assert.equal(coding.includes('browser_diagnose'), true);
   assert.equal(coding.includes('run'), true);
   assert.equal(coding.includes('edit'), true);
-  assert.equal(resolveExecutionModeAllowedTools('normal', null, { browser: { enabled: true } }), null);
-  assert.equal(resolveSubAgentToolAllowList({ role: 'debugger', config: {} }).includes('browser_diagnose'), false);
-  assert.equal(resolveSubAgentToolAllowList({ role: 'debugger', config: { browser: { enabled: true } } }).includes('browser_diagnose'), true);
+  assert.equal(toolRequiresUserApproval({
+    approvalMode: 'review',
+    toolName: 'browser_act',
+    alwaysAllowTools: coding,
+  }), false);
+  assert.equal(resolveExecutionModeAllowedTools('normal', null, { execution: { mode: 'plan' } }), null);
+  assert.equal(resolveSubAgentToolAllowList({ role: 'debugger', config: { execution: { mode: 'normal' } } }).includes('browser_diagnose'), false);
+  assert.equal(resolveSubAgentToolAllowList({ role: 'debugger', config: { execution: { mode: 'plan' } } }).includes('browser_diagnose'), true);
+  assert.equal(resolveSubAgentToolAllowList({ role: 'explorer', config: { execution: { mode: 'plan' } } }).includes('browser_act'), false);
+  const codingPrompt = buildExecutionModePromptBlock('coding');
+  const normalPrompt = buildExecutionModePromptBlock('normal');
+  assert.match(codingPrompt, /tool_search/);
+  assert.match(codingPrompt, /browser_inspect/);
+  assert.match(codingPrompt, /browser_act/);
+  assert.match(codingPrompt, /browser_diagnose/);
+  assert.match(codingPrompt, /frontend-interaction-debug/);
+  assert.doesNotMatch(normalPrompt, /browser_inspect|browser_act|browser_diagnose|frontend-interaction-debug/);
+  assert.doesNotMatch(buildDefaultSystemPrompt({ execution: { mode: 'plan' } }), /browser_inspect/);
+  assert.doesNotMatch(buildDefaultSystemPrompt({ execution: { mode: 'normal' } }), /browser_inspect/);
 });
 
-test('doctor reports Chrome or Edge without failing when browser tools are off', async () => {
+test('doctor reports Chrome or Edge and skips the check when none is installed', async () => {
   const lines = [];
   const previous = process.exitCode;
   try {
@@ -208,7 +240,7 @@ test('doctor reports Chrome or Edge without failing when browser tools are off',
       loadConfigFn: async () => ({
         gateway: { base_url: 'https://example.com/v1', api_key: 'token' },
         sandbox: { enabled: false, mode: 'workspace-write' },
-        browser: { enabled: false },
+        browser: {},
       }),
       checkPathWritableFn: async () => true,
       checkGatewayFn: async () => ({ ok: true, reason: 'reachable' }),
@@ -218,7 +250,7 @@ test('doctor reports Chrome or Edge without failing when browser tools are off',
       shouldCheckMicrosandboxFn: () => false,
       writeLine: (line) => lines.push(line),
     });
-    assert.match(lines.join('\n'), /\[SKIP\] Local Chrome\/Edge: browser tools disabled/);
+    assert.match(lines.join('\n'), /\[SKIP\] Local Chrome\/Edge: Chrome, Edge, or Chromium not found/);
   } finally {
     process.exitCode = previous ?? 0;
   }
@@ -227,7 +259,7 @@ test('doctor reports Chrome or Edge without failing when browser tools are off',
     loadConfigFn: async () => ({
       gateway: { base_url: 'https://example.com/v1', api_key: 'token' },
       sandbox: { enabled: false, mode: 'workspace-write' },
-      browser: { enabled: true },
+      browser: {},
     }),
     checkPathWritableFn: async () => true,
     checkGatewayFn: async () => ({ ok: true, reason: 'reachable' }),
@@ -300,13 +332,13 @@ test('settings and i18n expose browser controls in English and Chinese', async (
   const zh = await fs.readFile(path.join(repoRoot, 'codemini-web/client/i18n/zh.js'), 'utf8');
   const settings = await fs.readFile(path.join(repoRoot, 'codemini-web/client/src/lib/settings-config.js'), 'utf8');
   const options = await fs.readFile(path.join(repoRoot, 'codemini-web/client/src/lib/settings-options.js'), 'utf8');
-  for (const key of ['browserEnabled', 'browserEnabledHelp', 'browserChannel', 'browserHeadless', 'hookTool_browser_diagnose', 'hookTool_browser_inspect', 'hookTool_browser_act']) {
+  for (const key of ['browserChannel', 'browserHeadless', 'hookTool_browser_diagnose', 'hookTool_browser_inspect', 'hookTool_browser_act']) {
     assert.match(en, new RegExp(`${key}:`));
     assert.match(zh, new RegExp(`${key}:`));
   }
-  assert.match(en, /Enable browser diagnostics/);
-  assert.match(zh, /启用浏览器诊断/);
-  assert.match(settings, /path: "browser\.enabled"/);
+  assert.doesNotMatch(en, /browserEnabled:/);
+  assert.doesNotMatch(zh, /browserEnabled:/);
+  assert.doesNotMatch(settings, /path: "browser\.enabled"/);
   assert.match(settings, /path: "browser\.channel"/);
   assert.match(options, /value: "msedge"/);
 });

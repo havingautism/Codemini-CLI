@@ -109,7 +109,7 @@ import {
   buildSearchHandlers
 } from "./provider/search-tool-registry.js";
 import {
-  browserToolsEnabled,
+  browserToolsExposed,
   buildBrowserDeferredEntries,
   buildBrowserFormatters,
   buildBrowserHandlers,
@@ -6047,7 +6047,7 @@ export function getBuiltinTools({
     },
   };
 
-  const browserSession = browserToolsEnabled(config)
+  const browserSession = browserToolsExposed(config)
     ? createBrowserSession({ config, workspaceRoot })
     : null;
   const deferredToolCatalog = {

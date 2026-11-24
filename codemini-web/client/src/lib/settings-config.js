@@ -190,19 +190,11 @@ export function buildSettingsFields() {
     },
     {
       tab: "web",
-      path: "browser.enabled",
-      control: "switch",
-      label: t("browserEnabled"),
-      help: t("browserEnabledHelp"),
-    },
-    {
-      tab: "web",
       path: "browser.channel",
       control: "select",
       optionsKey: "browserChannel",
       label: t("browserChannel"),
       help: t("browserChannelHelp"),
-      visibleWhen: ({ getValue }) => getValue("browser.enabled") === true,
     },
     {
       tab: "web",
@@ -210,7 +202,6 @@ export function buildSettingsFields() {
       control: "switch",
       label: t("browserHeadless"),
       help: t("browserHeadlessHelp"),
-      visibleWhen: ({ getValue }) => getValue("browser.enabled") === true,
     },
     {
       tab: "web",
@@ -218,7 +209,6 @@ export function buildSettingsFields() {
       control: "input",
       label: t("browserExecutablePath"),
       help: t("browserExecutablePathHelp"),
-      visibleWhen: ({ getValue }) => getValue("browser.enabled") === true,
     },
     {
       tab: "context",

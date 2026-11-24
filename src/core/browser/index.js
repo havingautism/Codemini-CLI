@@ -15,10 +15,11 @@ export {
   BROWSER_TOOL_NAMES,
   BROWSER_WAIT_UNTIL,
   INTERACTION_STYLE_PROPS,
-  browserToolsEnabled,
+  BROWSER_CODING_PROMPT,
+  browserToolsExposed,
   buildBrowserDeferredEntries,
   filterBrowserToolNames,
-  getBrowserToolGuidance,
+  isCodingExecutionMode,
   resolveBrowserConfig,
 } from './schema.js';
 export { createBrowserSession, playwrightCoreLoaded, playwrightImportDuration } from './session.js';
