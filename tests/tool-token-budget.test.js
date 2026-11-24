@@ -39,6 +39,16 @@ test('model-facing tool tokens stay within the trimmed ceilings', () => {
   const updatePlan = report.legacy.linux.find((tool) => tool.name === 'update_plan');
   assert.ok(updatePlan.wireTokens <= 220);
   assert.equal(report.legacy.linux.some((tool) => tool.name === 'create_spec'), false);
+
+  const browserTools = ['browser_inspect', 'browser_act', 'browser_diagnose'];
+  for (const mode of report.modes) {
+    const active = new Set(mode.activeTools);
+    const deferred = new Set(mode.deferredTools);
+    for (const name of browserTools) {
+      assert.equal(active.has(name), false, `${mode.id} keeps ${name} out of the active tool list`);
+      assert.equal(deferred.has(name), mode.mode === 'plan', `${mode.id} deferred ${name}`);
+    }
+  }
 });
 
 test('alias-only parameters stay out of the model schema', () => {

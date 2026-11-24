@@ -10,6 +10,7 @@ import {
   describeSandboxDoctorUnavailable,
   shouldCheckMicrosandbox,
 } from '../core/doctor-sandbox.js';
+import { findInstalledBrowsers } from '../core/browser/locate-browser.js';
 
 async function checkPathWritable(targetPath) {
   try {
@@ -53,6 +54,7 @@ export async function handleDoctor({
   checkPathWritableFn = checkPathWritable,
   checkGatewayFn = checkGateway,
   commandExistsFn = commandExists,
+  findInstalledBrowsersFn = findInstalledBrowsers,
   checkMicrosandboxDoctorFn = checkMicrosandboxDoctor,
   shouldCheckMicrosandboxFn = shouldCheckMicrosandbox,
   platform = process.platform,
@@ -97,6 +99,33 @@ export async function handleDoctor({
     ok: gateway.ok,
     detail: gateway.reason
   });
+
+  let browsers = [];
+  try {
+    browsers = findInstalledBrowsersFn();
+  } catch (error) {
+    browsers = [];
+    checks.push({
+      name: 'Local Chrome/Edge',
+      ok: false,
+      detail: error instanceof Error ? error.message : String(error),
+    });
+  }
+  if (!checks.some((check) => check.name === 'Local Chrome/Edge')) {
+    if (browsers.length > 0) {
+      checks.push({
+        name: 'Local Chrome/Edge',
+        ok: true,
+        detail: browsers.map((browser) => `${browser.name}: ${browser.path}`).join('; '),
+      });
+    } else {
+      checks.push({
+        name: 'Local Chrome/Edge',
+        skip: true,
+        detail: 'Chrome, Edge, or Chromium not found',
+      });
+    }
+  }
 
   const hasFff = await commandExistsFn('fff-mcp');
   checks.push({

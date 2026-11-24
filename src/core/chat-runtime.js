@@ -61,6 +61,7 @@ import {
 } from './provider/index.js';
 import { isDangerousCommand, runShellCommand } from './shell.js';
 import { getBuiltinTools } from './tools.js';
+import { BROWSER_CODING_PROMPT, BROWSER_TOOL_NAMES, filterBrowserToolNames } from './browser/schema.js';
 import { canonicalShellToolName, shellToolName, toolNameAllowed } from './shell-tool-name.js';
 import { createToolRuntime } from './tool-runtime.js';
 import { buildPromptRequestAudit } from './prompt-request-audit.js';
@@ -497,7 +498,11 @@ export const EXECUTION_MODE_TOOL_POLICY = {
     'save_memory',
     'tasks',
     'edit', 'write', 'begin_write', 'write_chunk', 'commit_write', 'abort_write', 'apply_patch', 'delete', 'run',
-    'run_subagent', 'fork_task', 'land_workers', 'cancel_worker', 'crew_status', 'crew_send', 'crew_inbox', 'request_user_input'
+    'run_subagent', 'fork_task', 'land_workers', 'cancel_worker', 'crew_status', 'crew_send', 'crew_inbox', 'request_user_input',
+    // Coding mode auto-allows this whole list, including run and edit.
+    // browser_act and browser_diagnose follow that same path. Review mode
+    // still prompts for them because they are not in always_allow_tools.
+    ...BROWSER_TOOL_NAMES,
   ]
 };
 
@@ -530,14 +535,18 @@ export function resolveExecutionModeAllowedTools(executionMode, callerAllowedToo
     normalizeToolPolicy(EXECUTION_MODE_TOOL_POLICY[mode] || [], config).map(canonicalShellToolName),
     commandPlatform,
   );
-  if (!modePolicy.length) return callerAllowedTools;
+  if (!modePolicy.length) {
+    return Array.isArray(callerAllowedTools)
+      ? filterBrowserToolNames(callerAllowedTools, config, mode)
+      : callerAllowedTools;
+  }
   if (Array.isArray(callerAllowedTools)) {
-    return adaptToolNamesForPlatform(
+    return filterBrowserToolNames(adaptToolNamesForPlatform(
       normalizeToolPolicy(callerAllowedTools, config).map(canonicalShellToolName).filter((name) => modePolicy.includes(name)),
       commandPlatform,
-    );
+    ), config, mode);
   }
-  return modePolicy;
+  return filterBrowserToolNames(modePolicy, config, mode);
 }
 
 const CREW_PARENT_MUTATION_TOOLS = new Set([
@@ -590,6 +599,8 @@ export function buildExecutionModePromptBlock(executionMode, platform = process.
       'User input workflow:',
       '- Inspect first. Use request_user_input with a structured form for 1-3 material choices; use safe reversible defaults for incidental details.',
       '- Create a design document only for unresolved material decisions or tradeoffs involving architecture, public contracts, migration, security, cost, or broad scope. Confirm those choices before implementation unless already authorized. Skip design docs for routine fixes.',
+      '',
+      BROWSER_CODING_PROMPT,
     ].join('\n');
   }
   return [
@@ -620,12 +631,12 @@ export const ROLE_TOOL_POLICY = {
   explorer: [...SUBAGENT_READ_TOOLS, 'web_fetch', 'web_search'],
   architect: [...SUBAGENT_READ_TOOLS, 'web_search'],
   advisor: [...SUBAGENT_READ_TOOLS],
-  coder: [...SUBAGENT_READ_TOOLS, ...SUBAGENT_EDIT_TOOLS, 'run', 'web_fetch', 'web_search'],
+  coder: [...SUBAGENT_READ_TOOLS, ...SUBAGENT_EDIT_TOOLS, 'run', 'web_fetch', 'web_search', ...BROWSER_TOOL_NAMES],
   refactorer: [...SUBAGENT_READ_TOOLS, ...SUBAGENT_EDIT_TOOLS, 'run'],
   reviewer: [...SUBAGENT_READ_TOOLS],
   survey: [...SUBAGENT_READ_TOOLS, 'web_fetch', 'web_search'],
-  tester: [...SUBAGENT_READ_TOOLS, 'run'],
-  debugger: [...SUBAGENT_READ_TOOLS, 'run', 'web_search'],
+  tester: [...SUBAGENT_READ_TOOLS, 'run', ...BROWSER_TOOL_NAMES],
+  debugger: [...SUBAGENT_READ_TOOLS, 'run', 'web_search', ...BROWSER_TOOL_NAMES],
   writer: [...SUBAGENT_READ_TOOLS, 'web_fetch', 'web_search'],
   summarizer: ['read', 'tool_search', 'skill'],
   codewiki: CODEWIKI_ROLE_TOOLS
@@ -845,15 +856,17 @@ export function resolveSubAgentToolAllowList({
   config,
   platform = process.platform,
   crewSession = false,
+  executionMode,
 } = {}) {
   const key = String(role || '').trim().toLowerCase();
   const basePolicy = ROLE_TOOL_POLICY[key] || ROLE_TOOL_POLICY.coder;
-  const roleTools = adaptToolNamesForPlatform(
+  const browserMode = executionMode === undefined ? config?.execution?.mode : executionMode;
+  const roleTools = filterBrowserToolNames(adaptToolNamesForPlatform(
     normalizeToolPolicy(basePolicy, config).map(canonicalShellToolName).filter(
       (name) => !SUBAGENT_FORBIDDEN_TOOLS.includes(name)
     ),
     platform,
-  );
+  ), config, browserMode);
   if (!roleTools.includes('tasks')) roleTools.push('tasks');
   if (crewSession && !roleTools.includes('crew_status')) roleTools.push('crew_status');
   if (crewSession && !roleTools.includes('crew_send')) roleTools.push('crew_send');
@@ -883,7 +896,7 @@ export function resolveSubAgentToolAllowList({
   if (crewSession && key !== 'reviewer' && key !== 'crew_reviewer' && !granted.includes('crew_complete')) {
     granted.push('crew_complete');
   }
-  return granted;
+  return filterBrowserToolNames(granted, config, browserMode);
 }
 
 export function subAgentAllowListMayMutate(tools = []) {
@@ -4936,6 +4949,10 @@ async function askModelInSession({
     : parentCrewWorkerWake;
   const toolConfig = {
     ...config,
+    execution: {
+      ...(config.execution || {}),
+      mode: normalizedExecutionMode,
+    },
     runtime: {
       ...(config.runtime || {}),
       codewiki_comment_tools: Array.isArray(allowedTools) && (
@@ -5116,6 +5133,7 @@ async function askModelInSession({
             tools: toolAllowList,
             config,
             crewSession: Boolean(crewState),
+            executionMode: normalizedExecutionMode,
           });
           const stepModel = resolveSubAgentModel(config, model);
           const stepSdkProvider = config.sdk?.provider || '';

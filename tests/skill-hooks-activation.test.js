@@ -74,9 +74,10 @@ test('buildSkillIndexPreview returns raw debug JSON including frontmatter trigge
       },
     });
     assert.equal(preview.coding.context, 'coding');
-    assert.equal(preview.coding.count, 1);
-    assert.equal(preview.coding.skills[0].name, 'with-triggers');
-    assert.deepEqual(preview.coding.skills[0].triggers, ['review since X', 'code review']);
+    const trigger = preview.coding.skills.find((skill) => skill.name === 'with-triggers');
+    assert.ok(trigger);
+    assert.equal(preview.coding.skills.some((skill) => skill.name === 'frontend-interaction-debug'), true);
+    assert.deepEqual(trigger.triggers, ['review since X', 'code review']);
     assert.match(preview.coding.prompt, /<available_skills>/);
     assert.match(
       preview.coding.prompt,
@@ -112,7 +113,8 @@ test('buildSkillIndexPreview global bucket lists skills bound to both contexts',
     assert.equal(preview.global.count, 1);
     assert.equal(preview.global.skills[0].name, 'everywhere');
     // Panel coding/daily tabs must not list global-bound skills.
-    assert.equal(preview.coding.count, 0);
+    // The bundled front-end skill is coding-only, so it belongs on the coding tab.
+    assert.deepEqual(preview.coding.skills.map((skill) => skill.name), ['frontend-interaction-debug']);
     assert.equal(preview.daily.count, 0);
     // Runtime indexes still include them.
     assert.match(preview.coding.executionPrompt, /everywhere/);

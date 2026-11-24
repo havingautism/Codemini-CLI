@@ -108,6 +108,13 @@ import {
   buildSearchFormatters,
   buildSearchHandlers
 } from "./provider/search-tool-registry.js";
+import {
+  browserToolsExposed,
+  buildBrowserDeferredEntries,
+  buildBrowserFormatters,
+  buildBrowserHandlers,
+  createBrowserSession,
+} from "./browser/index.js";
 import { getMcpToolBundle } from "./mcp-client.js";
 import { compactToolDefinition } from "./tool-schema-compact.js";
 import {
@@ -5697,9 +5704,13 @@ export function getBuiltinTools({
     },
   };
 
+  const browserSession = browserToolsExposed(config)
+    ? createBrowserSession({ config, workspaceRoot })
+    : null;
   const deferredToolCatalog = {
     ...deferredDefinitions,
-    ...buildSearchDeferredEntries(config)
+    ...buildSearchDeferredEntries(config),
+    ...buildBrowserDeferredEntries(config),
   };
 
   const enableCodeWikiCommentTools =
@@ -7420,6 +7431,10 @@ export function getBuiltinTools({
     },
   };
 
+  if (browserSession) {
+    Object.assign(handlers, buildBrowserHandlers(browserSession));
+  }
+
   const searchLimitNote = (shown, available, truncated, kind) => {
     if (!truncated && shown >= available) return "";
     return `\n[Results truncated: showing ${shown}${truncated ? "" : ` of ${available}`} ${kind}. Narrow the path or query.]`;
@@ -8043,6 +8058,9 @@ export function getBuiltinTools({
       webSearchHandler: (args) => webSearchQuery(config, args)
     })
   );
+  if (browserSession) {
+    Object.assign(rawFormatters, buildBrowserFormatters());
+  }
 
   const formatters = Object.fromEntries(
     Object.entries({
@@ -8070,6 +8088,13 @@ export function getBuiltinTools({
 
   async function dispose() {
     stagedWrites.clear();
+    if (browserSession) {
+      try {
+        await browserSession.dispose();
+      } catch {
+        // The browser process is already gone.
+      }
+    }
     if (activeFffAdapter?.dispose) {
       try {
         await activeFffAdapter.dispose();

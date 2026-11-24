@@ -129,13 +129,18 @@ function callbacksFor({ engineering, crewActive }) {
   };
 }
 
-function loadBundle({ platform, config, crewActive, engineering, workspaceRoot, codewiki = false }) {
+function loadBundle({ platform, config, crewActive, engineering, workspaceRoot, codewiki = false, executionMode }) {
+  const nextConfig = { ...config };
+  if (executionMode) {
+    nextConfig.execution = { ...(config?.execution || {}), mode: executionMode };
+  }
+  if (codewiki) {
+    nextConfig.runtime = { ...(config?.runtime || {}), codewiki_comment_tools: true };
+  }
   return getBuiltinTools({
     workspaceRoot: workspaceRoot || AUDIT_CWD,
     platform,
-    config: codewiki
-      ? { ...config, runtime: { ...(config?.runtime || {}), codewiki_comment_tools: true } }
-      : config,
+    config: nextConfig,
     crewActive,
     ...callbacksFor({ engineering, crewActive }),
   });
@@ -214,6 +219,7 @@ export function measureParentModes() {
         config: host.config,
         crewActive,
         engineering,
+        executionMode: mode,
       }));
       const allow = parentAllowList({
         mode,

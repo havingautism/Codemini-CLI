@@ -1,5 +1,6 @@
 import { makeBlocked } from '../common.js';
 import { formatToolLabel } from '../../../core/tool-display.js';
+import { BROWSER_TOOL_LABELS, BROWSER_TOOL_NAMES } from '../../../core/browser/schema.js';
 
 export function isCodeGenerationActivityName(name) {
   return String(name || '').trim() === 'Code generation';
@@ -23,6 +24,15 @@ export function describeMiscToolActivity(copy, parsed, rawName, { done = false, 
       ? (copy.toolActivity.doneWebFetch || copy.toolActivity.doneGeneric)
       : (copy.toolActivity.doingWebFetch || copy.toolActivity.doingGeneric);
     return blocked ? makeBlocked(copy, target) : `${label}: ${target}`;
+  }
+  const browserBase = String(parsed.base || '').trim();
+  if (BROWSER_TOOL_NAMES.includes(browserBase) || Object.values(BROWSER_TOOL_LABELS).includes(browserBase)) {
+    const label = Object.values(BROWSER_TOOL_LABELS).includes(browserBase) ? browserBase : formatToolLabel(browserBase);
+    const activity = copy.toolActivity || {};
+    const phase = done ? (activity.doneGeneric || 'Done') : (activity.doingGeneric || 'Working');
+    const target = parsed.target ? `: ${parsed.target}` : '';
+    if (blocked) return `${activity.blocked || 'Blocked'}: ${label}`;
+    return `${phase}: ${label}${target}`;
   }
   if (parsed.base === 'web_search') {
     const target = parsed.target || parsed.raw;
