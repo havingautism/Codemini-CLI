@@ -90,7 +90,9 @@ function normalizeDraftValue(path, value, fieldsByPath) {
   }
   const field = fieldsByPath.get(path);
   if (field && isSwitchField(field)) {
-    return value === true || value === "true";
+    return field.onValue != null
+      ? (value === true || value === field.onValue ? field.onValue : field.offValue)
+      : value === true || value === "true";
   }
   if (field?.control === "number" || field?.control === "percent") {
     const num = Number(value);
@@ -113,6 +115,7 @@ function getBaselineValue(path, config, fieldsByPath) {
   const field = fieldsByPath.get(path);
   const raw = getNestedValue(config, path);
   if (field && isSwitchField(field)) {
+    if (field.onValue != null) return raw === field.onValue ? field.onValue : field.offValue;
     return raw === true || raw === "true";
   }
   if (field?.control === "number" || field?.control === "percent") {
@@ -248,7 +251,9 @@ export function ConfigDialog({
   };
 
   const getBooleanValue = (path) => {
+    const field = fieldsByPath.get(path);
     const value = getValue(path);
+    if (field?.onValue != null) return value === field.onValue || value === true;
     return value === true || value === "true";
   };
   const availability = sandboxAvailability || status?.sandboxAvailability || null;
@@ -326,10 +331,16 @@ export function ConfigDialog({
         } else {
           const field = fieldsByPath.get(path);
           normalizedValue = isSwitchField(field)
-            ? value === true || value === "true"
+            ? (field.onValue != null
+              ? (value === true || value === field.onValue ? field.onValue : field.offValue)
+              : value === true || value === "true")
             : field?.control === "number" || field?.control === "percent"
               ? Number(value)
               : value;
+          if (path === "policy.allowed_paths") {
+            const parsed = typeof normalizedValue === "string" ? JSON.parse(normalizedValue || "[]") : normalizedValue;
+            normalizedValue = Array.isArray(parsed) ? parsed : [];
+          }
         }
         if (fieldsByPath.get(path)?.type === "password") {
           normalizedValue = secretSettingWrite(value);

@@ -124,11 +124,11 @@ export const zh = {
   incompleteRetries: "连续不完整响应重试次数",
   incompleteRetriesHelp: "默认 3，范围 0–10。连续收到不完整响应时最多重试这些次数；0 表示不重试。",
   sandboxNetwork: "沙箱默认联网策略",
-  sandboxNetworkHelp: "默认禁止联网。命令可通过 network_access=true 申请本次联网，由 lite 模型审核，必要时用户确认。全局策略需通过本地 CLI 修改。",
+  sandboxNetworkHelp: "关闭时默认禁止联网，命令仍可通过 network_access=true 逐条申请。打开后，沙箱里的命令默认可访问外网。",
   sandboxNetworkNone: "默认禁止 · 可逐条申请联网",
   sandboxNetworkAll: "默认允许所有出站网络",
   reviewedTerminalEnabled: "Web 交互式终端",
-  reviewedTerminalEnabledHelp: "默认启用。登录后可直接输入命令，保留目录和会话状态，允许联网。开关需通过本地 CLI 修改并重启 Web 服务；LLM 命令仍受沙箱与联网审核约束。",
+  reviewedTerminalEnabledHelp: "打开后，登录即可直接输入命令，并保留目录和会话状态。修改后需要重启 Web 服务才生效。模型发出的命令仍受沙箱与联网审核约束。",
   settingsReadOnlyCli: "只读；请通过本地 CLI 修改。",
   settingsSaveFailed: "配置保存失败",
 

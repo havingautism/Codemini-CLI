@@ -124,11 +124,11 @@ export const en = {
   incompleteRetries: "Consecutive incomplete response retries",
   incompleteRetriesHelp: "Default 3; range 0–10. Maximum retries for consecutive incomplete responses. Zero disables retries.",
   sandboxNetwork: "Default sandbox network policy",
-  sandboxNetworkHelp: "Denied by default. Commands can request network_access=true for lite review and user fallback. Change the global policy using the local CLI.",
+  sandboxNetworkHelp: "Off denies network by default; a command can still request network_access=true. On allows outbound network from sandboxed commands.",
   sandboxNetworkNone: "Denied by default · per-command requests available",
   sandboxNetworkAll: "Allow all outbound network by default",
   reviewedTerminalEnabled: "Web interactive terminal",
-  reviewedTerminalEnabledHelp: "Enabled by default. After sign-in, enter commands directly with persistent shell state and network access. Change this switch through the local CLI and restart the Web server. LLM commands still require sandbox and network review.",
+  reviewedTerminalEnabledHelp: "On lets you type commands after sign-in, keeping the directory and session. Restart the Web server after changing it. Model commands still require sandbox and network review.",
   settingsReadOnlyCli: "Read-only; change using the local CLI.",
   settingsSaveFailed: "Failed to save settings",
 

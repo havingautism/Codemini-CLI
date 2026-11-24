@@ -67,22 +67,6 @@ export function buildSettingsFields() {
     },
     {
       tab: "execution",
-      path: "execution.mode",
-      control: "choiceList",
-      optionsKey: "executionMode",
-      label: t("mode"),
-      help: t("executionModeHelp"),
-    },
-    {
-      tab: "execution",
-      path: "execution.approval_mode",
-      control: "choiceList",
-      optionsKey: "approvalMode",
-      label: t("approvalMode"),
-      help: t("approvalModeHelp"),
-    },
-    {
-      tab: "execution",
       path: "execution.max_steps",
       control: "number",
       label: t("agentMaxSteps"),
@@ -104,11 +88,11 @@ export function buildSettingsFields() {
     {
       tab: "execution",
       path: "sandbox.network",
-      control: "input",
+      control: "switch",
+      onValue: "allow-all",
+      offValue: "none",
       label: t("sandboxNetwork"),
       help: t("sandboxNetworkHelp"),
-      valueLabels: { none: t("sandboxNetworkNone"), "allow-all": t("sandboxNetworkAll") },
-      cliExample: "codemini config set sandbox.network none",
     },
     {
       tab: "execution",
@@ -116,15 +100,6 @@ export function buildSettingsFields() {
       control: "switch",
       label: t("reviewedTerminalEnabled"),
       help: t("reviewedTerminalEnabledHelp"),
-      cliExample: "codemini config set webui.terminal_enabled true",
-    },
-    {
-      tab: "execution",
-      path: "sandbox.mode",
-      control: "choiceList",
-      optionsKey: "sandboxMode",
-      label: t("sandboxMode"),
-      help: t("sandboxModeHelp"),
     },
     {
       tab: "execution",
