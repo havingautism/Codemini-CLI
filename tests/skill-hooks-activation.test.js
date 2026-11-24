@@ -114,7 +114,10 @@ test('buildSkillIndexPreview global bucket lists skills bound to both contexts',
     assert.equal(preview.global.skills[0].name, 'everywhere');
     // Panel coding/daily tabs must not list global-bound skills.
     // The bundled front-end skill is coding-only, so it belongs on the coding tab.
-    assert.deepEqual(preview.coding.skills.map((skill) => skill.name), ['frontend-interaction-debug']);
+    assert.deepEqual(preview.coding.skills.map((skill) => skill.name), [
+      'frontend-interaction-debug',
+      'frontend-performance-profile',
+    ]);
     assert.equal(preview.daily.count, 0);
     // Runtime indexes still include them.
     assert.match(preview.coding.executionPrompt, /everywhere/);

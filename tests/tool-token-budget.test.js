@@ -40,7 +40,7 @@ test('model-facing tool tokens stay within the trimmed ceilings', () => {
   assert.ok(updatePlan.wireTokens <= 220);
   assert.equal(report.legacy.linux.some((tool) => tool.name === 'create_spec'), false);
 
-  const browserTools = ['browser_inspect', 'browser_act', 'browser_diagnose'];
+  const browserTools = ['browser_inspect', 'browser_act', 'browser_diagnose', 'performance_profile'];
   for (const mode of report.modes) {
     const active = new Set(mode.activeTools);
     const deferred = new Set(mode.deferredTools);

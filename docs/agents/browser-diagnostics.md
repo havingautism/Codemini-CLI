@@ -46,3 +46,5 @@ Each tool is `type: function`, `additionalProperties: false`, and requires `acti
 | `browser_diagnose` | click | one target. `observe_ms` 100–3000. More probe actions can be added on this tool. |
 
 Each tool declares only the fields its actions use. `browser_act` carries `channel` chrome|msedge|chromium, `wait_until` commit|domcontentloaded|load|networkidle, `button` left|right|middle, and viewport 320–3840 by 240–2160. `browser_inspect` carries snapshot, screenshot, log, style, and listener fields. `browser_diagnose` carries the target, `observe_ms` 100–3000, and `timeout_ms`. `ref` matches `^@e[1-9][0-9]*$`. The handler tightens `timeout_ms` per action.
+
+`performance_profile` is a separate deferred tool for jank and slow interactions. See `docs/agents/performance-profiler.md`.

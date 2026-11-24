@@ -4,7 +4,8 @@ import path from 'node:path';
 import { validateBrowserAction } from './actions.js';
 import { BROWSER_LIMITS, BROWSER_TOOL_NAMES, INTERACTION_STYLE_PROPS, resolveBrowserConfig } from './schema.js';
 import { browserError, browserOk, formatBrowserResult } from './result.js';
-import { describeTarget, resolvePageUrl, targetError, validateTarget } from './target.js';
+import { describeTarget, resolveLocator, resolvePageUrl, targetError, validateTarget } from './target.js';
+import { runPerformanceProfile } from './performance/run.js';
 import { diffSnapshot } from './cascade.js';
 import { captureSnapshot } from './snapshot.js';
 import { backendForSelector, explainStyle, hitTest, listListeners, locateSource, probeClick } from './diagnostics.js';
@@ -42,50 +43,6 @@ function clip(text, max) {
   const value = String(text || '');
   if (value.length <= max) return { text: value, truncated: false };
   return { text: `${value.slice(0, max)}\n[truncated]`, truncated: true };
-}
-
-async function resolveLocator(session, tool, target) {
-  const page = session.page;
-  let locator;
-  if (target.ref) {
-    const entry = session.refs.get(target.ref);
-    if (!entry) {
-      return { error: browserError(tool, 'TARGET_NOT_FOUND', `Unknown ref ${target.ref}. Call browser_snapshot again.`) };
-    }
-    locator = page.locator(entry.selector);
-  } else if (target.selector) {
-    locator = page.locator(target.selector);
-  } else {
-    locator = page.getByRole(target.role, { name: target.name });
-  }
-  const count = await locator.count();
-  if (count === 0) {
-    return { error: browserError(tool, 'TARGET_NOT_FOUND', `No element matched ${describeTarget(target)}.`) };
-  }
-  if (count > 1) {
-    return { error: browserError(tool, 'AMBIGUOUS_TARGET', `Matched ${count} elements for ${describeTarget(target)}. Use an @eN ref from browser_snapshot.`) };
-  }
-  const resolvedSelector = await locator.evaluate((element) => {
-    if (!element || element.nodeType !== 1) return '';
-    if (element.id && /^[A-Za-z][\w-]*$/.test(element.id)) return `#${CSS.escape(element.id)}`;
-    const parts = [];
-    let node = element;
-    while (node && node.nodeType === 1 && node !== document.documentElement) {
-      let index = 1;
-      let sibling = node;
-      while ((sibling = sibling.previousElementSibling)) {
-        if (sibling.tagName === node.tagName) index += 1;
-      }
-      parts.unshift(`${node.tagName.toLowerCase()}:nth-of-type(${index})`);
-      if (parts.length > 8) break;
-      node = node.parentElement;
-    }
-    return parts.join(' > ');
-  }).catch(() => target.selector || '');
-  return {
-    locator: resolvedSelector ? page.locator(resolvedSelector) : locator,
-    selector: resolvedSelector || target.selector || '',
-  };
 }
 
 function forgetPageState(session) {
@@ -557,6 +514,7 @@ export function buildBrowserHandlers(session) {
     browser_diagnose: (args = {}) => runChecked('browser_diagnose', session, args, {
       click: () => DIAGNOSE_PROBES.click(session, args),
     }),
+    performance_profile: (args = {}) => runPerformanceProfile(session, args),
   };
 }
 

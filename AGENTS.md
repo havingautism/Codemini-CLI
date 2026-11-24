@@ -24,6 +24,7 @@ This repo is Codemini CLI, a local-first coding agent with a CLI, Web UI, projec
 - Memory / Skill distillation decisions: `src/core/harness/distillation.js`, wired from `memory-session-review.js` and `reflect-skill.js`; see `docs/agents/memory-skill-distillation.md`.
 - Built-in tool behavior: start in `src/core/tools.js`.
 - Browser diagnostics (coding-mode deferred tools): start in `src/core/browser/`; see `docs/agents/browser-diagnostics.md`.
+- Performance Profiler (`performance_profile`, coding-mode deferred): start in `src/core/browser/performance/`; see `docs/agents/performance-profiler.md`.
 - Subagent delegation (`run_subagent`): start in `src/core/chat-runtime.js` (`runSubAgentTask` + `onRunSubAgent`), `src/core/subagent-orchestrator.js`, and `src/core/subagent-handoff-store.js`.
 - Fork branches (`fork_task`, same-state parallel branches sharing the parent prefix): fork-point capture in `src/core/agent-loop.js`, branch execution in `src/core/chat-runtime.js` (`runForkTask` + `onForkTask`).
 - Desktop shell and GitHub Release artifacts: `desktop/main.cjs`, `desktop/electron-builder.config.cjs`, `.github/workflows/desktop-release.yml`; see `DESKTOP.md`.

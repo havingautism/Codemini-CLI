@@ -44,6 +44,7 @@ export const CODEMINI_HOOK_TOOLS = Object.freeze([
   { id: 'browser_inspect', labelKey: 'hookTool_browser_inspect' },
   { id: 'browser_act', labelKey: 'hookTool_browser_act' },
   { id: 'browser_diagnose', labelKey: 'hookTool_browser_diagnose' },
+  { id: 'performance_profile', labelKey: 'hookTool_performance_profile' },
   { id: 'tasks', labelKey: 'hookTool_tasks' },
   { id: 'update_plan', labelKey: 'hookTool_update_plan' },
 ]);
