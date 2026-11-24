@@ -103,7 +103,8 @@
   "license": "MIT",
   "devDependencies": {
     "electron": "45.4.1",
-    "electron-builder": "26.18.0"
+    "electron-builder": "26.18.0",
+    "js-tiktoken": "^1.0.21"
   },
   "optionalDependencies": {
     "@ast-grep/lang-bash": "^0.0.8",

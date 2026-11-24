@@ -5,7 +5,6 @@ import { resolveCrewWorkerDisplayName } from './crew-progress.js';
 
 export const TOOL_DISPLAY_LABELS = {
   create_plan: 'Plan',
-  create_spec: 'Create Spec',
   run_subagent: 'Subagent',
   land_workers: 'Land',
   crew_rebase: 'Crew Rebase',
@@ -298,10 +297,6 @@ export function formatToolDisplayName(name, args = {}, options = {}) {
     const branch = trimInline(args?.name || 'Fork', 24);
     const label = `Fork · ${branch || 'Fork'}`;
     return goal ? formatToolWithArg(label, goal) : label;
-  }
-  if (toolName === 'create_spec') {
-    const topic = trimInline(args?.topic || '', 96);
-    return topic ? formatToolWithArg(formatToolLabel('create_spec'), topic) : formatToolLabel('create_spec');
   }
   if (toolName === 'tasks' || toolName === 'read_plan' || toolName === 'update_plan') {
     return formatToolLabel(toolName);

@@ -406,13 +406,10 @@ function createSubmitCandidatesDefinition() {
     function: {
       name: 'submit_criterion_candidates',
       description: [
-        'End search/fetch for the current criterion and deliver candidate findings.',
-        'Include a concise summary of what you found and a gap note for what remains unresolved.',
-        `Submit at most ${MAX_CANDIDATES_PER_CRITERION} strongest claims for this criterion (extras are dropped).`,
-        `For each claim, include at most ${MAX_SOURCES_PER_CLAIM} strongest sources (extras are dropped).`,
-        'Each source must bind its own url, a short support note/snippet, and artifactId when fetched.',
-        'Call this when you have enough attributable evidence, or with an empty candidates array if blocked.',
-        'This tool does not count toward the search/fetch fuse.',
+        'Stop search/fetch for this criterion and deliver findings.',
+        `At most ${MAX_CANDIDATES_PER_CRITERION} claims, strongest first. At most ${MAX_SOURCES_PER_CLAIM} sources per claim. Extras are dropped.`,
+        'Each source needs its own url, a short snippet, and artifactId when fetched.',
+        'Call with an empty candidates array if blocked. This tool does not count toward the search/fetch fuse.',
       ].join(' '),
       parameters: {
         type: 'object',
@@ -477,8 +474,7 @@ function createReadArtifactDefinition() {
     function: {
       name: 'read_artifact',
       description: [
-        'Read more context from a source artifact previously fetched by this Scout run.',
-        'Pass the exact artifactId field returned by research_web_fetch in this criterion — never invent ids.',
+        'Pass the exact artifactId field returned by research_web_fetch in this criterion. Never invent ids.',
         'Successful reads count toward the same per-criterion tool budget as search and fetch.',
         'Missing/invalid artifactId does not consume budget.',
       ].join(' '),
@@ -510,9 +506,8 @@ function createSubmitCriterionReviewDefinition() {
     function: {
       name: 'submit_criterion_review',
       description: [
-        'Finish evaluator review for the current criterion.',
-        'Default to lightweight review of scout output.',
-        `Use read_artifact only for high-risk or doubtful claims, up to ${MAX_EVALUATOR_ARTIFACT_READS} times total for this criterion.`,
+        'Finish review for the current criterion. Default to the scout output.',
+        `Use read_artifact only for high-risk or doubtful claims, at most ${MAX_EVALUATOR_ARTIFACT_READS} times.`,
         'Return plain-prose summary and gap for this criterion only; never write accepted/rejected counts.',
       ].join(' '),
       parameters: {

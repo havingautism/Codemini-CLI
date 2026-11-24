@@ -18,10 +18,6 @@ export function describeMiscToolActivity(copy, parsed, rawName, { done = false, 
     const label = formatToolLabel('create_plan');
     return blocked ? makeBlocked(copy, label) : done ? `${copy.toolActivity.doneGeneric}: ${label}` : `${copy.toolActivity.doingGeneric}: ${label}`;
   }
-  if (parsed.base === 'create_spec') {
-    const label = formatToolLabel('create_spec');
-    return blocked ? makeBlocked(copy, label) : done ? `${copy.toolActivity.doneGeneric}: ${label}` : `${copy.toolActivity.doingGeneric}: ${label}`;
-  }
   if (parsed.base === 'web_fetch') {
     const target = parsed.target || parsed.raw;
     const label = done

@@ -64,7 +64,6 @@ const TOOL_ICONS = {
   land_workers: ListChecks,
   fork_task: ListChecks,
   tasks: ListChecks,
-  create_spec: FileText,
   delete: Trash,
   run: Terminal,
   Bash: Terminal,

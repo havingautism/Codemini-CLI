@@ -7,6 +7,7 @@ import {
   mcpToolName,
 } from './mcp-tool-display.js';
 import { setMcpToolDisplayLabels } from './tool-display.js';
+import { compactToolDefinition } from './tool-schema-compact.js';
 
 export { formatMcpToolDisplayLabel, mcpToolName } from './mcp-tool-display.js';
 
@@ -218,14 +219,14 @@ export function getMcpToolBundle(config = {}) {
       }
       usedNames.add(name);
       displayLabels[name] = formatMcpToolDisplayLabel(server, tool.name);
-      definitions.push({
+      definitions.push(compactToolDefinition({
         type: 'function',
         function: {
           name,
           description: `[MCP: ${server.name}] ${tool.description || tool.name}`,
           parameters: tool.inputSchema || { type: 'object', properties: {} },
         },
-      });
+      }));
       handlers[name] = async (args = {}) => {
         const connection = await getRuntimeConnection(server);
         return timeout(

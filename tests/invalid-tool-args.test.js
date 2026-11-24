@@ -85,7 +85,6 @@ test('buildInvalidToolArgumentsResult covers large-payload tools with specific s
     'run_subagent',
     'fork_task',
     'update_plan',
-    'create_spec',
     'tasks',
     'request_user_input',
     'save_memory',
