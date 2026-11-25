@@ -37,7 +37,7 @@ import {
   packageProfileArmEntry,
 } from './hook-profiles.js';
 import { runAgentLoop } from './agent-loop.js';
-import { GOAL_COMMAND, parseGoalCommand } from './goal-command.js';
+import { GOAL_COMMAND, isGoalSteeringInput, isImmediateGoalControl, parseGoalCommand } from './goal-command.js';
 import { createGoalRunner, recoverInterruptedGoal, waitForGoalInput, withGoalContext } from './goal-runner.js';
 import { withTokenUsageSession, getTokenUsageSession } from './token-usage-context.js';
 import { resolveJevReviewConnection } from './jev-command-review.js';
@@ -4663,6 +4663,7 @@ async function askModelInSession({
   skipAnalysisNudge = false,
   shouldContinueAfterText = null,
   goalHooks = null,
+  watchGoalShell = goalHooks?.watchShell,
   allowGoalDelegation = false,
   onToolStarted = null,
   onRawToolResult = null,
@@ -4979,6 +4980,7 @@ async function askModelInSession({
     config: toolConfig,
     sessionId: session.id,
     onSystemEvent: onAgentEvent,
+    watchGoalShell,
     requestUserInput,
     toolResultStore,
     crewActive: Boolean(crewState),
@@ -5078,6 +5080,13 @@ async function askModelInSession({
           const subagentId = crewState
             ? ''
             : `sub_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+          const workerEvent = goalHooks ? (event) => {
+            goalHooks.workerActivity(callId);
+            onAgentEvent?.(event);
+          } : onAgentEvent;
+          const workerShell = goalHooks
+            ? (name, inspect) => goalHooks.watchShell(name, inspect, callId)
+            : watchGoalShell;
           const emit = (evt) => {
             const tagged = {
               ...evt,
@@ -5560,7 +5569,8 @@ async function askModelInSession({
                 config: toolConfig,
                 stepModel,
                 systemPrompt,
-                onAgentEvent,
+                onAgentEvent: workerEvent,
+                watchGoalShell: workerShell,
                 requestToolApproval,
                 resolvedTools,
                 toolAllowList,
@@ -5646,7 +5656,8 @@ async function askModelInSession({
                 : config,
               model: stepModel,
               systemPrompt,
-              onAgentEvent,
+              onAgentEvent: workerEvent,
+              watchGoalShell: workerShell,
               requestToolApproval,
               signal,
               changeTracker: workerChangeTracker,
@@ -5873,6 +5884,7 @@ async function askModelInSession({
               parentNote: String(forkPoint.parentNote || '').trim(),
               forkPointMessages: forkPoint.messages,
               toolDefinitions: forkPoint.toolDefinitions,
+              watchGoalShell,
               systemPrompt: effectiveSystemPrompt,
               config,
               model,
@@ -6814,6 +6826,7 @@ export async function runSubAgentTask({
   tools = null,
   onToolStarted = null,
   onRawToolResult = null,
+  watchGoalShell,
   onUsage = null,
   projectIsGit = Boolean(config?.runtime?.project_is_git),
   workspaceRoot = process.cwd(),
@@ -6979,6 +6992,7 @@ export async function runSubAgentTask({
     model: subAgentModel,
     systemPrompt: subSystemPrompt,
     onAgentEvent: wrappedOnAgentEvent,
+    watchGoalShell,
     onToolStarted,
     onRawToolResult,
     requestToolApproval,
@@ -7056,6 +7070,7 @@ export async function runForkTask({
   parentNote = '',
   forkPointMessages = [],
   toolDefinitions = [],
+  watchGoalShell,
   systemPrompt,
   config,
   model,
@@ -7110,6 +7125,7 @@ export async function runForkTask({
   const result = await askModel({
     text: taskInstruction,
     session: branchSession,
+    watchGoalShell,
     config: withCandidateMemoryWrites(config, {
       branchId: branchSession.id,
       agentRole,
@@ -10482,9 +10498,10 @@ export async function createChatRuntime({
     busy: () => activeTurnCount > 0,
   });
   const submitGoalControl = (raw) => {
-    const parsed = parseGoalCommand(raw);
-    if (!parsed || !['pause', 'status'].includes(parsed.action)) throw new Error('只支持查询或暂停当前目标。');
-    return goalRunner.command(parsed);
+    if (isImmediateGoalControl(raw)) return goalRunner.command(parseGoalCommand(raw));
+    if (typeof raw !== 'string' || !isGoalSteeringInput(raw)) throw new Error('请输入目标控制命令或对运行中目标的文字补充。');
+    if (!goalRunner.acceptingSteering) return { type: 'noop', goalControl: false };
+    return goalRunner.command({ action: 'steer', text: raw.trim() });
   };
   crewWakeBridge.submit = (wakeText, item) => {
     void markCrewEventsDeliveredForWake(root, wakeText).catch(() => null);
@@ -10562,7 +10579,10 @@ export async function createChatRuntime({
     const displayText = normalized.text;
     const goalCommand = parseGoalCommand(displayText);
     if (goalCommand) return await goalRunner.command(goalCommand, onAgentEvent);
-    if (goalRunner.running) return { type: 'system', text: '目标正在执行，请先暂停再发送新任务。' };
+    if (goalRunner.running) {
+      if (goalRunner.acceptingSteering && isGoalSteeringInput(submission)) return submitGoalControl(displayText);
+      return { type: 'system', text: '当前目标仍在运行。要另外执行命令或发送附件，请先暂停目标。' };
+    }
     await reloadCommandsAndSkills();
     const invocation = parseSlashCommandInvocation(normalized.text);
     const invoked = invocation ? commands.get(invocation.name) : null;
@@ -10693,6 +10713,7 @@ export async function createChatRuntime({
     submit,
     submitMessage,
     submitGoalControl,
+    isGoalRunning: () => goalRunner.acceptingSteering,
     retryMessage: async ({ userTurnIndex }, onAgentEvent) => {
       if (goalRunner.running) throw new Error('目标正在运行，请先暂停再重试历史消息。');
       if (activeTurnCount > 0) throw new Error('A request is already in progress');

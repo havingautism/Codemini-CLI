@@ -35,6 +35,15 @@ const completed = (id) => ({
 });
 const nodePass = { code: 0, stdout: 'ok 1 - 计数\n# tests 1\n# suites 0\n# pass 1\n# fail 0\n# cancelled 0\n# skipped 0\n# todo 0' };
 
+test('相同失败的行耗时变化不产生新证据，失败信息实质改变会保留', async t => {
+  const { run } = await workspace(t);
+  const check = (name, ms) => run('node --test', { code: 1,
+    stdout: '✖ ' + name + ' (' + ms + 'ms)\nAssertionError\n# duration_ms ' + ms });
+  assert.equal((await check('第一项', 16.5)).at(-1).kind, 'fail');
+  assert.deepEqual(await check('第一项', 37.9), []);
+  assert.equal((await check('第二项', 42.4)).at(-1).kind, 'fail');
+});
+
 test('独立验收仅接收机器观测，委派成功、展示事件、伪造检查和空结果均不构成通过', async (t) => {
   const { collector, goal, run, review } = await workspace(t);
   for (const toolName of ['run_subagent', 'fork_task', 'tasks']) {

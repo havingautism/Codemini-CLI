@@ -7,7 +7,7 @@ import {
   createChatCompletionStream as createAnthropicChatCompletionStream
 } from './anthropic.js';
 import { recordTokenUsage } from '../token-usage-store.js';
-import { getTokenUsageSession } from '../token-usage-context.js';
+import { getTokenUsageSession, getGoalUsageMeter } from '../token-usage-context.js';
 
 function recordCompletion(options, provider, result, timing) {
   try {
@@ -33,15 +33,24 @@ export function getSdkProvider(configOrValue) {
 }
 
 export async function createChatCompletion(options) {
+  const meter = getGoalUsageMeter();
+  meter?.beforeRequest();
   const requestSentAt = new Date().toISOString();
   const provider = getSdkProvider(options?.sdkProvider);
-  const result = await (provider === 'anthropic'
-    ? createAnthropicChatCompletion(options)
-    : createOpenAICompatibleChatCompletion(options));
-  return recordCompletion(options, provider, result, { requestSentAt, completedAt: new Date().toISOString() });
+  let result;
+  try {
+    result = await (provider === 'anthropic'
+      ? createAnthropicChatCompletion(options)
+      : createOpenAICompatibleChatCompletion(options));
+    return recordCompletion(options, provider, result, { requestSentAt, completedAt: new Date().toISOString() });
+  } finally {
+    meter?.finishRequest(result?.usage);
+  }
 }
 
 export async function createChatCompletionStream(options) {
+  const meter = getGoalUsageMeter();
+  meter?.beforeRequest();
   const timing = { requestSentAt: new Date().toISOString(), firstTokenAt: null };
   const tracked = { ...options };
   for (const name of ['onTextDelta', 'onReasoningDelta', 'onToolCallDelta']) {
@@ -51,8 +60,9 @@ export async function createChatCompletionStream(options) {
     };
   }
   const provider = getSdkProvider(options?.sdkProvider);
+  let result;
   try {
-    const result = await (provider === 'anthropic'
+    result = await (provider === 'anthropic'
       ? createAnthropicChatCompletionStream(tracked)
       : createOpenAICompatibleChatCompletionStream(tracked));
     timing.completedAt = new Date().toISOString();
@@ -63,5 +73,7 @@ export async function createChatCompletionStream(options) {
     timing.completedAt = new Date().toISOString();
     recordCompletion(options, provider, null, timing);
     throw error;
+  } finally {
+    meter?.finishRequest(result?.usage);
   }
 }

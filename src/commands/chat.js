@@ -7,6 +7,7 @@ import { buildDefaultSystemPrompt } from '../core/default-system-prompt.js';
 import { createSession, resolveSession } from '../core/session-store.js';
 import { getGeneralWorkspaceDir } from '../core/webui-sidebar-config.js';
 import { VERSION } from '../core/version.js';
+import { isGoalSteeringInput, isImmediateGoalControl, parseGoalCommand } from '../core/goal-command.js';
 
 export function parseChatArgs(args) {
   const { values, positionals } = parseArgs({
@@ -52,6 +53,10 @@ export async function submitAndPrint(runtime, line, { output: out = process.stdo
     typeof line === 'string' ? { text: line } : line,
     (event) => {
     if (event?.type === 'assistant:start') streamedAnswer = false;
+    if (event?.type === 'goal:waiting') {
+      writeActivity(event, '目标');
+      return;
+    }
     if (event?.type === 'assistant:delta' && event.text) {
       streamed = true;
       streamedAnswer = true;
@@ -107,22 +112,42 @@ export async function submitAndPrint(runtime, line, { output: out = process.stdo
   return result;
 }
 
-async function runPlainLoop(runtime) {
-  console.log('Codemini CLI plain mode. Press Ctrl+C or send EOF to exit.');
-  const rl = readline.createInterface({ input, output });
+export async function runPlainLoop(runtime, { stdin = input, stdout = output } = {}) {
+  stdout.write('Codemini CLI 文本模式。按 Ctrl+C 或发送 EOF 退出。\n');
+  const rl = readline.createInterface({ input: stdin, output: stdout, prompt: 'codemini> ' });
+  let pending;
+  const printControl = async line => {
+    const result = await runtime.submitGoalControl(line);
+    if (result?.text) stdout.write(result.text + '\n');
+    return result?.goalControl !== false;
+  };
+  rl.on('SIGINT', () => {
+    if (runtime.isGoalRunning?.()) void printControl('/goal pause').catch(error => stdout.write(error.message + '\n'));
+    else rl.close();
+  });
   try {
-    while (true) {
-      let line;
-      try {
-        line = await rl.question('codemini> ');
-      } catch {
+    if (stdin.isTTY) rl.prompt();
+    for await (const line of rl) {
+      if (pending && (isImmediateGoalControl(line) || isGoalSteeringInput(line))) {
+        if (await printControl(line)) {
+          if (stdin.isTTY) rl.prompt();
+          continue;
+        }
+      }
+      if (pending) await pending;
+      const command = parseGoalCommand(line);
+      const turn = submitAndPrint(runtime, line, { output: stdout });
+      if (command?.action === 'create' || command?.action === 'resume') {
+        // 保持读入开放，允许正在执行目标的用户即时纠偏或暂停。
+        pending = turn.catch(error => stdout.write(error.message + '\n')).finally(() => { pending = null; });
+      } else if ((await turn).type === 'exit') {
         break;
       }
-      const result = await submitAndPrint(runtime, line, { output });
-      if (result.type === 'exit') break;
+      if (stdin.isTTY) rl.prompt();
     }
   } finally {
     rl.close();
+    await pending;
   }
 }
 

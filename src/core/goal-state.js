@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 const statuses = new Set(['active', 'paused', 'exhausted', 'completed', 'failed']);
 const activePhases = new Set(['ready', 'executing', 'verifying']);
@@ -47,7 +47,10 @@ function normalizeDefinition(input) {
   if (!Number.isSafeInteger(maxIterations) || maxIterations < 1 || maxIterations > 100) throw new Error('轮次预算必须是 1 到 100 之间的整数。');
   const constraints = Array.isArray(input.constraints) ? textList(input.constraints).join('\n') : cleanText(input.constraints);
   const pending = input.criteriaPending;
+  const { tokenBudget } = input;
+  if (tokenBudget != null && (!Number.isSafeInteger(tokenBudget) || tokenBudget < 1)) throw new Error('Token 预算必须是正整数。');
   return { objective, criteria, constraints, maxIterations,
+    ...(tokenBudget != null ? { tokenBudget } : {}),
     ...(['infer', 'classify'].includes(pending) ? { criteriaPending: pending } : {}) };
 }
 
@@ -55,6 +58,7 @@ export function createGoalState(input) {
   return {
     id: randomUUID(), version: 0, ...normalizeDefinition(input), status: 'active', phase: 'ready',
     iteration: 0, resumePhase: null, reason: '', report: '', observations: [], verdicts: [], delegations: [],
+    tokensUsed: 0, unreportedRequests: 0, activeMs: 0,
   };
 }
 
@@ -74,6 +78,11 @@ export function normalizeGoalState(value) {
     ...(value.status === 'active' && Number.isSafeInteger(value.ownerPid) && value.ownerPid > 0 && cleanText(value.ownerToken)
       ? { ownerPid: value.ownerPid, ownerToken: value.ownerToken } : {}),
     ...definition, status: value.status, phase, iteration: value.iteration,
+    tokensUsed: Number.isSafeInteger(value.tokensUsed) && value.tokensUsed >= 0 ? value.tokensUsed : 0,
+    unreportedRequests: Number.isSafeInteger(value.unreportedRequests) && value.unreportedRequests >= 0 ? value.unreportedRequests : 0,
+    activeMs: Number.isSafeInteger(value.activeMs) && value.activeMs >= 0 ? value.activeMs : 0,
+    ...(value.stall?.key && Number.isSafeInteger(value.stall.count) && value.stall.count > 0
+      ? { stall: { key: value.stall.key, count: value.stall.count } } : {}),
     ...(cleanText(value.executorModel) ? { executorModel: cleanText(value.executorModel) } : {}),
     resumePhase: value.status === 'paused' && activePhases.has(value.resumePhase) ? value.resumePhase : null,
     reason: cleanText(value.reason), report: typeof value.report === 'string' ? value.report : '',
@@ -97,7 +106,8 @@ export function beginGoalIteration(goal) {
 }
 
 export function setInferredGoalCriteria(goal, entries) {
-  if (!goal.criteriaPending || goal.status !== 'active' || goal.phase !== 'ready') return goal;
+  if (!goal.criteriaPending || goal.status !== 'active') return goal;
+  if (goal.phase !== 'ready' && goal.criteriaPending !== 'classify') return goal;
   const criteria = normalizeCriteria(entries);
   if (!criteria.length) throw new Error('未能从目标提取验收条件。');
   const { criteriaPending, ...resolved } = goal;
@@ -117,16 +127,25 @@ export function pauseGoal(goal, reason = '') {
   return stopGoal({ ...goal, delegations }, 'paused', cleanText(reason) || '目标已暂停。', goal.phase);
 }
 
-export function resumeGoal(goal, { extraIterations = 0 } = {}) {
+export function resumeGoal(goal, { extraIterations = 0, extraTokens = 0 } = {}) {
   if (!['paused', 'exhausted'].includes(goal.status)) throw new Error('仅可继续已暂停或预算耗尽的目标。');
   const maxIterations = goal.maxIterations + extraIterations;
   if (!Number.isSafeInteger(extraIterations) || extraIterations < 0 || !Number.isSafeInteger(maxIterations)) {
     throw new Error('增加的轮次必须为非负整数。');
   }
   if (maxIterations > 100) throw new Error('目标的总轮次预算不能超过 100。');
+  if (!Number.isSafeInteger(extraTokens) || extraTokens < 0) throw new Error('追加的 Token 预算必须为非负整数。');
+  const tokenBudget = extraTokens ? (goal.tokenBudget ?? goal.tokensUsed) + extraTokens : goal.tokenBudget;
+  if (tokenBudget != null && !Number.isSafeInteger(tokenBudget)) throw new Error('Token 预算超出有效范围。');
+  if (tokenBudget != null && goal.tokensUsed >= tokenBudget) {
+    const topUp = goal.status === 'exhausted' && extraIterations === 0 ? '+2 --add-tokens' : '--add-tokens';
+    throw new Error(`Token 预算已耗尽，请用 /goal resume ${topUp} 10000 增加预算。`);
+  }
   if (goal.status === 'exhausted' && extraIterations === 0) throw new Error('轮次预算已耗尽，请指定增加的轮次。');
   const phase = goal.status === 'paused' && activePhases.has(goal.resumePhase) ? goal.resumePhase : 'ready';
-  return { ...goal, status: 'active', phase, resumePhase: null, maxIterations, reason: '' };
+  const { stall, ...resumed } = goal;
+  return { ...resumed, status: 'active', phase, resumePhase: null, maxIterations, reason: '',
+    ...(tokenBudget != null ? { tokenBudget } : {}) };
 }
 
 export function recordGoalDelegation(goal, input) {
@@ -226,6 +245,24 @@ function groundedVerdict(goal, record) {
   return unreachable ? Boolean(record.reason) && goal.criteria.some(supported) : goal.criteria.every(supported);
 }
 
+// 跳过旧版本、调用编号和运行时长；同一失败要以新结果、改动或新的有效观测打破。
+function progressFingerprint(goal, record) {
+  const latest = new Map();
+  const cited = new Set(record.checks.flatMap(check => check.evidenceIds));
+  for (const item of goal.observations) {
+    if (item.kind === 'change') { latest.clear(); continue; }
+    // 正文换个说法不能重置停滞计数；须由本轮独立验收引用为实际进展。
+    if (item.source === 'reply' && (record.decision !== 'continue' ||
+        item.iteration !== goal.iteration || !cited.has(item.id))) continue;
+    const key = JSON.stringify([item.source, item.checkKey || item.artifactPath, item.criterionIds]);
+    latest.set(key, [item.kind, item.artifactHash || item.summary, item.exitCode]);
+  }
+  const fingerprint = [...latest.entries()].sort(([a], [b]) => a.localeCompare(b));
+  const evidencedCriteria = record.checks.filter(check => check.evidenceIds.length).map(check => check.criterionId).sort();
+  // 验收理由可以改写；只比较版本、实际观测以及已被证据覆盖的条件。
+  return createHash('sha256').update(JSON.stringify([record.currentRevision, fingerprint, evidencedCriteria])).digest('hex');
+}
+
 export function applyGoalVerdict(goal, input = {}) {
   if (goal.status !== 'active' || goal.phase !== 'verifying') return goal;
   const decision = decisions.has(input.decision) ? input.decision : 'pause';
@@ -251,15 +288,28 @@ export function applyGoalVerdict(goal, input = {}) {
   if (accepted === 'completed' || accepted === 'unreachable') {
     return stopGoal(result, accepted === 'completed' ? 'completed' : 'failed', reason);
   }
+  const key = progressFingerprint(goal, record);
+  result.stall = { key, count: goal.stall?.key === key ? goal.stall.count + 1 : 1 };
+  const stalled = result.stall.count >= 3;
+  const stalledReason = '连续三轮遇到相同阻塞，未取得新的验收证据。' + reason;
   if (goal.iteration >= goal.maxIterations) {
-    return stopGoal(result, 'exhausted', reason || '目标尚待验收，轮次预算已耗尽。');
+    return stopGoal(result, 'exhausted', stalled ? stalledReason + ' 轮次预算已耗尽。' : reason || '目标尚待验收，轮次预算已耗尽。');
+  }
+  if (stalled) {
+    return pauseGoal({ ...result, phase: 'ready' }, stalledReason);
   }
   return { ...result, phase: 'ready' };
 }
 
 export function renderGoalSummary(goal) {
-  const progress = `目标${statusLabels[goal.status]}（轮次 ${goal.iteration}/${goal.maxIterations}）`;
+  const progress = `目标${statusLabels[goal.status]}（轮次 ${goal.iteration}/${goal.maxIterations}）。${usageSummary(goal)}`;
   return goal.reason ? progress + '。' + excerpt(goal.reason, 200) : progress;
+}
+
+function usageSummary(goal) {
+  const tokens = goal.tokenBudget ? `${goal.tokensUsed}/${goal.tokenBudget}` : goal.tokensUsed;
+  const unknown = goal.unreportedRequests ? `（另有 ${goal.unreportedRequests} 次请求未报告用量）` : '';
+  return `已报告 Token：${tokens}${unknown}，活动耗时：${Math.floor(goal.activeMs / 1000)} 秒`;
 }
 
 export function renderGoalContext(goal, { fullReport = false } = {}) {
@@ -290,6 +340,7 @@ export function renderGoalContext(goal, { fullReport = false } = {}) {
     goal.criteriaPending && '正在从目标中提取验收条件。',
     '验收标准：', ...priorities.map(({ criterion, label }) => `- [${criterion.id}] ${criterion.text}（${label}）`),
     goal.constraints && `约束：${goal.constraints}`,
+    usageSummary(goal),
     `轮次：${goal.iteration}/${goal.maxIterations}`, goal.reason && `上次结果：${goal.reason}`,
     goal.status === 'paused' && `恢复阶段：${phaseLabels[goal.resumePhase] || '等待开始下一轮'}。使用 /goal resume 继续。`,
     goal.status === 'exhausted' && '如需继续，可用 /goal resume +2 增加两轮。',

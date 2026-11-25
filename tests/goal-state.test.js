@@ -28,6 +28,67 @@ function review(goal, input = verdict) {
   return applyGoalVerdict(markGoalVerifying(goal, '已执行测试'), input);
 }
 
+test('同一失败连续三轮才暂停；新的失败结果、恢复和工作区变更会重新计数', () => {
+  let goal = createGoalState({ objective: '修复测试', criteria: ['测试通过'], maxIterations: 12 });
+  const check = (summary, revision) => {
+    goal = beginGoalIteration(goal);
+    goal = recordGoalObservation(goal, { ...success, id: '失败-' + goal.iteration, kind: 'fail', revision, summary });
+    goal = review(goal, { ...verdict, decision: 'continue', currentRevision: revision, reason: '第 ' + goal.iteration + ' 次建议重试' });
+  };
+  check('A、B 两项失败', 'r1');
+  check('A、B 两项失败', 'r1');
+  check('B 一项失败', 'r1');
+  assert.equal(goal.stall.count, 1);
+  check('B 一项失败', 'r2');
+  assert.equal(goal.stall.count, 1);
+  check('B 一项失败', 'r2');
+  check('B 一项失败', 'r2');
+  assert.equal(goal.status, 'paused');
+  assert.equal(goal.resumePhase, 'ready');
+  assert.match(goal.reason, /连续三轮/);
+  goal = resumeGoal(normalizeGoalState(goal));
+  check('B 一项失败', 'r2');
+  assert.equal(goal.stall.count, 1);
+});
+
+test('三轮改写完成声明会暂停；验收引用新增交付才打破停滞', () => {
+  const initial = createGoalState({ objective: '在聊天中数到 100',
+    criteria: [{ id: 'c1', text: '列出 1 到 100', evidence: 'reply' }], maxIterations: 8 });
+  const checkReply = (previous, text, cited) => {
+    const round = beginGoalIteration(previous);
+    const id = 'reply-' + round.iteration;
+    const goal = recordGoalObservation(round, { id, kind: 'observation', source: 'reply',
+      checkKey: 'reply', revision: 'reply:goal', summary: text, criterionIds: ['c1'] });
+    return applyGoalVerdict(markGoalVerifying(goal, text), { ...verdict, decision: 'continue',
+      currentRevision: 'reply:goal', checks: cited ? [{ criterionId: 'c1', evidenceIds: [id] }] : [],
+      reason: '本轮交付不完整。' });
+  };
+  const second = checkReply(checkReply(initial, '已数完', false), '已经数完', false);
+  assert.equal(second.stall.count, 2);
+  const claims = checkReply(second, '我已经数完', false);
+  assert.equal(claims.status, 'paused');
+  const partial = checkReply(second, '1、2、3', true);
+  assert.equal(partial.status, 'active');
+  assert.equal(partial.stall.count, 1);
+  assert.equal(checkReply(partial, '1、2、3', true).stall.count, 2);
+  assert.equal(checkReply(partial, '1、2、3、4、5', true).stall.count, 1);
+});
+
+test('旧目标兼容计量，追加预算保留用量及原验收阶段', () => {
+  const legacy = newIteration();
+  delete legacy.tokensUsed; delete legacy.activeMs; delete legacy.unreportedRequests;
+  const old = normalizeGoalState(legacy);
+  assert.equal(old.tokensUsed, 0);
+  assert.equal(old.activeMs, 0);
+  const paused = pauseGoal(markGoalVerifying({ ...old, tokenBudget: 20, tokensUsed: 22, activeMs: 1200,
+    unreportedRequests: 1 }, '交付'));
+  assert.throws(() => resumeGoal(paused), /add-tokens/);
+  const resumed = resumeGoal(paused, { extraTokens: 10 });
+  assert.equal(resumed.phase, 'verifying');
+  assert.equal(resumed.tokenBudget, 30);
+  assert.match(renderGoalContext(resumed), /22\/30.*1 次请求未报告.*1 秒/);
+});
+
 test('目标要求可验证标准及有限预算', () => {
   assert.equal(createGoalState({ objective: '导出', criteria: ['能下载'] }).maxIterations, 5);
   assert.throws(() => createGoalState({ objective: '导出', criteria: [] }), /验收标准/);

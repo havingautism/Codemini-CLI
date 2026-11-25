@@ -42,7 +42,7 @@ import {
   runSessionOperation,
 } from "../lib/session-state.js";
 import { isSessionTurnBusyResult } from "../lib/session-turn-busy.js";
-import { isImmediateGoalControl } from "../../../../src/core/goal-command.js";
+import { isGoalSteeringInput, isImmediateGoalControl } from "../../../../src/core/goal-command.js";
 import { buildMcpToolDisplayLabels } from "../../../../src/core/mcp-tool-display.js";
 import { setMcpToolDisplayLabels } from "../../../../src/core/tool-display.js";
 import {
@@ -2595,6 +2595,14 @@ export function AppProvider({ children }) {
           break;
         }
 
+        case "goal:waiting":
+          upsertRuntimeActivity({
+            key: `goal-wait-${event.sessionId}-${event.id}`,
+            label: event.name,
+            detail: event.summary,
+            status: event.status === "running" ? "running" : event.status === "failed" ? "error" : "done",
+          });
+          break;
         case "compact:auto":
           upsertRuntimeActivity({
             key: "compact",
@@ -3554,7 +3562,10 @@ export function AppProvider({ children }) {
           ? { text: input, skillNames: [], attachmentIds: [], dismissedAlwaysSkills: [] }
           : input || {};
         const line = String(message.text || "");
-        if (isImmediateGoalControl(line)) {
+        const isBusyNow = () => sessionOperationsRef.current.has(sessionId)
+          || isSessionBusyInState(stateRef.current, sessionId);
+        const plainSteering = isBusyNow() && !options.__queued && !options.retryMessageId && isGoalSteeringInput(message);
+        if (isImmediateGoalControl(line) || plainSteering) {
           let result;
           try {
             result = await api.submitGoalControl(sessionId, line);
@@ -3581,7 +3592,7 @@ export function AppProvider({ children }) {
               };
             });
           }
-          return result;
+          if (result.goalControl !== false) return result;
         }
         if (
           !line.trim() &&
@@ -3591,9 +3602,6 @@ export function AppProvider({ children }) {
         ) return;
         const queued = options.__queued === true;
         const priority = options.priority === true || message.priority === true;
-        const sessionBusy =
-          sessionOperationsRef.current.has(sessionId) ||
-          isSessionBusyInState(stateRef.current, sessionId);
         const enqueueComposer = (front = false) => {
           if (stateRef.current.currentView !== "chat" && !options.stayInView) {
             update({ currentView: "chat" });
@@ -3611,7 +3619,7 @@ export function AppProvider({ children }) {
         // While a turn is already running for this session, keep the prompt in
         // the composer queue (Cursor-style) instead of sending it into the
         // transcript. Enter appends; jump aborts the current turn and drains.
-        if (sessionBusy) {
+        if (isBusyNow()) {
           if (options.retryMessageId) return { type: "busy", sessionBusy: true };
           enqueueComposer(queued);
           return queued ? { type: "busy", sessionBusy: true } : undefined;

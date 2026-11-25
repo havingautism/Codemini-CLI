@@ -15,7 +15,7 @@ import { withCodeminiGlobalDir } from './helpers/codemini-global-dir.js';
 const artifact = 'result.txt';
 const expectedText = '项目已就绪';
 const create = { action: 'create', objective: '检查项目状态文件',
-  acceptance: ['result.txt 包含“项目已就绪”'], maxRounds: 1 };
+  acceptance: [{ text: 'result.txt 包含“项目已就绪”', evidence: 'workspace' }], maxRounds: 1 };
 const resume = { action: 'resume', extraRounds: 0 };
 const ownerFlag = '--goal-crash-owner';
 
@@ -185,7 +185,7 @@ if (process.send && process.argv[2] === ownerFlag) {
       const second = makeRunner(saved, (_prompt, _event, { goalHooks }) => observeFile(root, goalHooks),
         async ({ messages }) => {
           const input = JSON.parse(messages.at(-1).content);
-          if (!input.observations) return { text: JSON.stringify({ criteria: [{ text: create.acceptance[0], evidence: 'workspace' }] }) };
+          if (!input.observations) return { text: JSON.stringify({ criteria: create.acceptance }) };
           return { text: JSON.stringify({ decision: 'completed', reason: '文件内容已核对。',
             checks: [{ criterionId: 'c1', evidenceIds: [input.observations[0].id] }] }) };
         });

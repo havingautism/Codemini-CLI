@@ -2216,7 +2216,7 @@ async function runCommand(root, config, args, context = {}) {
       shell: { ...(config?.shell || {}), default: executionShell },
     }, Object.assign(Object.defineProperties({}, Object.getOwnPropertyDescriptors(args)), {
       sandbox_mode: sandboxMode,
-    }));
+    }), context);
   }
 
   const result = await runShellCommand({
@@ -2314,7 +2314,7 @@ function matchesTaskStartupSuccess(task, text) {
 }
 
 function markTaskReady(task, source = "output") {
-  if (task.startupConfirmed) return;
+  if (task.startupConfirmed || task.status === "exited" || task.status === "stopped") return;
   task.startupConfirmed = true;
   task.startupSource = source;
   task.status = "running";
@@ -2418,7 +2418,7 @@ function queueBackgroundTaskOutputWrite(task, chunk) {
     .catch(() => {});
 }
 
-async function startBackgroundTask(root, config, args) {
+async function startBackgroundTask(root, config, args, context = {}) {
   const command = String(args?.command || args?.cmd || "").trim();
   if (!command) throw new Error("shell command is required");
   if (
@@ -2457,6 +2457,8 @@ async function startBackgroundTask(root, config, args) {
   const outputFileAbs = path.join(outputDir, `${taskId}.log`);
   await fs.writeFile(outputFileAbs, "", "utf8");
 
+  const goalOwned = typeof context.watchGoalShell === "function";
+  if (goalOwned) context.signal?.throwIfAborted();
   let sandboxChild = null;
   let activeSandboxPolicy = null;
   {
@@ -2469,6 +2471,7 @@ async function startBackgroundTask(root, config, args) {
       port: publishedPort,
       binShell: resolveSandboxShell(config.shell.default),
     });
+    if (goalOwned) context.signal?.throwIfAborted();
     if (prepared.wrapped) {
       sandboxChild = spawnPreparedSandbox({
         prepared,
@@ -2493,6 +2496,7 @@ async function startBackgroundTask(root, config, args) {
   const task = {
     taskId,
     command,
+    goalOwned,
     cwd: root,
     child,
     shell: config.shell.default,
@@ -2528,7 +2532,10 @@ async function startBackgroundTask(root, config, args) {
     });
   });
 
-  const onOutput = (chunk) => {
+  const finiteGoalCommand = goalOwned && !classifyCommandIntent(command).longRunning && !portProbe && !httpProbe;
+  const output = { stdout: "", stderr: "" };
+  const onOutput = (stream, chunk) => {
+    if (finiteGoalCommand) output[stream] = (output[stream] + chunk).slice(-65536);
     appendRecentOutput(task, chunk);
     queueBackgroundTaskOutputWrite(task, chunk);
     if (matchesTaskStartupSuccess(task, chunk)) {
@@ -2536,8 +2543,8 @@ async function startBackgroundTask(root, config, args) {
       if (task._finishStartup) task._finishStartup();
     }
   };
-  task.child.stdout.on("data", onOutput);
-  task.child.stderr.on("data", onOutput);
+  task.child.stdout.on("data", (chunk) => onOutput("stdout", chunk));
+  task.child.stderr.on("data", (chunk) => onOutput("stderr", chunk));
   task.child.on("error", (error) => {
     appendRecentOutput(task, error?.message || String(error));
     queueBackgroundTaskOutputWrite(task, error?.message || String(error));
@@ -2545,8 +2552,42 @@ async function startBackgroundTask(root, config, args) {
     if (task._finishStartup) task._finishStartup();
   });
 
+  // 仅管理本次工具调用实际创建的进程，暂停目标时不影响其他会话的后台任务。
+  const cancelled = Promise.withResolvers();
+  const stopOwned = () => {
+    stopBackgroundTask(root, { task_id: taskId }).then(cancelled.resolve, cancelled.reject);
+    task._finishStartup?.();
+  };
+  if (goalOwned) {
+    context.signal?.addEventListener("abort", stopOwned, { once: true });
+    if (context.signal?.aborted) stopOwned();
+  }
+  try {
+    if (finiteGoalCommand) {
+      const finish = await context.watchGoalShell("后台命令 " + taskId, () => ({
+        cursor: task.recentLogs.at(-1)?.cursor || 0,
+        detail: `命令：${command.slice(0, 160)}。日志：${task.outputFile}`,
+      }));
+      await Promise.race([task.closePromise, cancelled.promise]);
+      await task.outputWrite;
+      const ok = !context.signal?.aborted && task.status === "exited" && task.exitCode === 0;
+      await finish(ok ? "completed" : "failed", `后台命令 ${taskId} 已结束，退出码 ${task.exitCode ?? "未知"}。日志：${task.outputFile}`);
+      return { command, ...output, code: task.exitCode, failed: !ok, aborted: Boolean(context.signal?.aborted),
+        completed_task_id: taskId, output_file: task.outputFile, sandbox: task.sandbox, shell: task.shell };
+    }
+    return await waitForTaskStartup(task, { startupTimeoutMs, portProbe, httpProbe });
+  } catch (error) {
+    if (goalOwned && !["exited", "stopped"].includes(task.status)) await stopBackgroundTask(root, { task_id: taskId });
+    throw error;
+  } finally {
+    if (goalOwned) context.signal?.removeEventListener("abort", stopOwned);
+  }
+}
+
+async function waitForTaskStartup(task, { startupTimeoutMs, portProbe, httpProbe }) {
   await new Promise((resolve) => {
     let settled = false;
+    let timeoutHandle, portHandle, httpHandle;
     const finish = () => {
       if (settled) return;
       settled = true;
@@ -2557,11 +2598,11 @@ async function startBackgroundTask(root, config, args) {
       resolve();
     };
     task._finishStartup = finish;
-    if (task.startupConfirmed || task.status === "exited") {
+    if (task.startupConfirmed || task.status === "exited" || task.status === "stopped") {
       finish();
       return;
     }
-    const timeoutHandle = setTimeout(() => {
+    timeoutHandle = setTimeout(() => {
       if (task.status === "starting") {
         if (!task.startupConfirmed) {
           markTaskReady(task, "startup_window");
@@ -2571,7 +2612,7 @@ async function startBackgroundTask(root, config, args) {
       }
       finish();
     }, startupTimeoutMs);
-    const portHandle =
+    portHandle =
       portProbe > 0
         ? setInterval(async () => {
             const open = await probePortOnce(portProbe);
@@ -2581,7 +2622,7 @@ async function startBackgroundTask(root, config, args) {
             }
           }, BACKGROUND_TASK_POLL_MS)
         : null;
-    const httpHandle = httpProbe
+    httpHandle = httpProbe
       ? setInterval(async () => {
           const ok = await probeHttpOnce(httpProbe);
           if (ok) {
@@ -2770,8 +2811,12 @@ async function stopBackgroundTask(_root, args) {
     return { ...snapshotBackgroundTask(task), stopped: true };
   }
   task.status = "stopped";
-  terminateChild(task.child, "SIGTERM");
-  setTimeout(() => terminateChild(task.child, "SIGKILL"), 200);
+  terminateChild(task.child, "SIGTERM", { goalOwned: task.goalOwned });
+  setTimeout(() => {
+    if (task.child.exitCode == null && task.child.signalCode == null) {
+      terminateChild(task.child, "SIGKILL", { goalOwned: task.goalOwned });
+    }
+  }, 200).unref?.();
   await Promise.race([
     task.closePromise,
     new Promise((resolve) => setTimeout(resolve, 500)),
@@ -4111,6 +4156,7 @@ export function getBuiltinTools({
   sessionId,
   fileObservations: providedFileObservations,
   onSystemEvent,
+  watchGoalShell,
   getTodos,
   onTodosUpdate,
   getPlanState,
@@ -7492,7 +7538,7 @@ export function getBuiltinTools({
           throw new Error(crewCheck.reason);
         }
       }
-      return runCommand(workspaceRoot, config, args, context);
+      return runCommand(workspaceRoot, config, args, { ...context, watchGoalShell });
     }, {
       prepareApproval: async (args) => {
         const evaluation = args?._evaluation || null;

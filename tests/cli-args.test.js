@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { parseChatArgs, submitAndPrint } from '../src/commands/chat.js';
+import { PassThrough } from 'node:stream';
+import { parseChatArgs, runPlainLoop, submitAndPrint } from '../src/commands/chat.js';
 import { parseRunArgs } from '../src/commands/run.js';
 import { parseScopeArgs } from '../src/commands/skill.js';
 import { parseArgs as parseWebArgs } from '../codemini-web/server.js';
@@ -49,4 +50,36 @@ test('终端在流式目标回复后显示验收状态，只收到工具事件�
   assert.equal(await render([], result), `${result.text}\n`);
   assert.equal(await render([delta, { type: 'assistant:start' }], result), `${answer}\n${result.text}\n`);
   assert.equal(await render([delta], { type: 'assistant', text: answer }), `${answer}\n`);
+});
+
+test('文本模式在目标等待时接收纠偏和暂停，接着处理普通消息', { timeout: 4000 }, async () => {
+  const stdin = new PassThrough();
+  const stdout = new PassThrough();
+  const started = Promise.withResolvers();
+  const finish = Promise.withResolvers();
+  const inputs = [];
+  const controls = [];
+  const runtime = {
+    async submitMessage({ text }) {
+      inputs.push(text);
+      if (text.startsWith('/goal ')) {
+        started.resolve();
+        return finish.promise;
+      }
+      return { type: 'assistant', text: '已收到普通消息' };
+    },
+    async submitGoalControl(text) {
+      if (controls.includes('/goal pause')) return { type: 'noop', goalControl: false };
+      controls.push(text);
+      if (text === '/goal pause') finish.resolve({ type: 'system', text: '目标已暂停' });
+      return { type: 'system', text: '已收到目标指令' };
+    },
+  };
+  const run = runPlainLoop(runtime, { stdin, stdout });
+  stdin.write('/goal 做表格\n');
+  await started.promise;
+  stdin.end('只要三行\n/goal pause\n普通对话\n');
+  await run;
+  assert.deepEqual(controls, ['只要三行', '/goal pause']);
+  assert.deepEqual(inputs, ['/goal 做表格', '普通对话']);
 });

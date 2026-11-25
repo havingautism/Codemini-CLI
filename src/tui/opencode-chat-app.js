@@ -38,7 +38,7 @@ import {
 } from './components/messages.js';
 import { ModeHome } from './components/mode-home.js';
 import { createTuiCopy } from './copy.js';
-import { isImmediateGoalControl } from '../core/goal-command.js';
+import { isGoalSteeringInput, isImmediateGoalControl } from '../core/goal-command.js';
 import { parseCrewWakeHeadline } from '../core/crew-snapshot.js';
 import { cancelWorkerIdFromPayload } from '../core/crew-progress.js';
 import { color, editorTheme } from './theme.js';
@@ -392,6 +392,8 @@ export async function runOpenCodeTui({ runtime, sessionId, model, safeMode = tru
       }
       activePlan = plan;
       setActivity(type === 'plan:step_done' ? 'tool' : 'thinking', event.title || copy.working);
+    } else if (type === 'goal:waiting') {
+      setActivity('tool', [event.name, event.summary].filter(Boolean).join(' · '));
     } else if (type === 'compact:auto' || type === 'dream:auto' || type === 'dream:complete') {
       transcript.addChild(createSystemMessage(event.summary || type.replace(':', ' '), color.warning));
     }
@@ -473,14 +475,19 @@ export async function runOpenCodeTui({ runtime, sessionId, model, safeMode = tru
       editor.addToHistory(value);
       editor.setText('');
     }
-    if (busy && isImmediateGoalControl(value)) {
+    if (busy && (isImmediateGoalControl(value) || (isGoalSteeringInput(value) && runtime.isGoalRunning?.()))) {
       try {
-        appendResult(await runtime.submitGoalControl(value));
+        const result = await runtime.submitGoalControl(value);
+        if (result?.goalControl !== false) {
+          appendResult(result);
+          requestRender();
+          return;
+        }
       } catch (error) {
         transcript.addChild(createSystemMessage(error?.message || '目标命令执行失败', color.error));
+        requestRender();
+        return;
       }
-      requestRender();
-      return;
     }
     if (command?.local) {
       if (command.local === 'help') showHelp();

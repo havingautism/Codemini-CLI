@@ -16,18 +16,96 @@ const constraint = '保持交付清单原文';
 const file = 'release.txt';
 const marker = 'release-id=2026-CURRENT';
 
-function streaming(delta, finish_reason) {
-  const chunk = JSON.stringify({ choices: [{ index: 0, delta, finish_reason }] });
+function streaming(delta, finish_reason, usage) {
+  const chunk = JSON.stringify({ usage, choices: [{ index: 0, delta, finish_reason }] });
   return new Response('data: ' + chunk + '\n\ndata: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } });
 }
 function reply(content) {
   return streaming({ content }, 'stop');
 }
+function classifyCriteria(body, evidence = 'workspace') {
+  if (body.tools?.length || !String(body.messages[0].content).includes('验收条件的证据类型')) return null;
+  const { criteria } = JSON.parse(body.messages.at(-1).content);
+  return reply(JSON.stringify({ criteria: criteria.map(({ id }) => ({ id, evidence })) }));
+}
 function toolCall(id, name, args) {
   return streaming({ tool_calls: [{ id, index: 0, type: 'function', function: { name, arguments: JSON.stringify(args) } }] }, 'tool_calls');
 }
 
-async function fixture(t, { approvalMode = 'auto', context = {} } = {}) {
+test('提取与主回复耗尽 Token 预算后只暂停验收，重开追加预算计入独立验收消耗', async (t) => {
+  const { workspace, open, close } = await fixture(t);
+  const session = await createSession(workspace);
+  session.title = '目标计量';
+  await saveSession(session);
+  let runtime = await open(session);
+  const steps = [];
+  globalThis.fetch = async (_url, init) => {
+    const { messages, tools, model } = JSON.parse(init.body);
+    const system = messages[0].content;
+    let content;
+    if (!tools?.length && system.includes('提取目标验收条件')) {
+      steps.push('提取');
+      content = JSON.stringify({ criteria: [{ text: '聊天中交付两行诗', evidence: 'reply' }] });
+    } else if (!tools?.length && model === secondary && system.includes('目标验收员')) {
+      steps.push('验收');
+      const input = JSON.parse(messages.at(-1).content);
+      content = JSON.stringify({ decision: 'completed', reason: '已交付两行诗', checks: [
+        { criterionId: 'c1', evidenceIds: [input.observations.at(-1).id] },
+      ] });
+    } else {
+      steps.push('执行');
+      content = '春水绿，\n山花红。';
+    }
+    const chunk = { usage: { prompt_tokens: 8, completion_tokens: 2, total_tokens: 10 },
+      choices: [{ index: 0, delta: { content }, finish_reason: 'stop' }] };
+    return new Response('data: ' + JSON.stringify(chunk) + '\n\ndata: [DONE]\n\n',
+      { headers: { 'content-type': 'text/event-stream' } });
+  };
+  await runtime.submitMessage({ text: '/goal 写两行诗 Token预算：15' });
+  const paused = (await loadSession(session.id)).goalState;
+  assert.equal(paused.status, 'paused', paused.reason);
+  assert.equal(paused.resumePhase, 'verifying');
+  assert.equal(paused.tokensUsed, 20);
+  assert.equal(paused.unreportedRequests, 0);
+  assert.ok(paused.activeMs > 0);
+  assert.deepEqual(steps, ['提取', '执行']);
+  await close();
+  runtime = await open(await loadSession(session.id));
+  const unchanged = await runtime.submitMessage({ text: '/goal resume' });
+  assert.match(unchanged.text, /add-tokens/);
+  await runtime.submitMessage({ text: '/goal resume --add-tokens 20' });
+  const done = (await loadSession(session.id)).goalState;
+  assert.equal(done.status, 'completed', done.reason);
+  assert.equal(done.iteration, 1);
+  assert.equal(done.tokensUsed, 30);
+  assert.equal(done.tokenBudget, 35);
+  assert.deepEqual(steps, ['提取', '执行', '验收']);
+});
+
+test('设有预算且提供商未报告 Token 时保存提取结果并在下一次模型调用前暂停', async t => {
+  const { workspace, open } = await fixture(t);
+  const session = await createSession(workspace);
+  session.title = '缺少用量';
+  await saveSession(session);
+  const runtime = await open(session);
+  let requests = 0;
+  globalThis.fetch = async () => {
+    requests++;
+    return reply(JSON.stringify({ criteria: [{ text: '回复中给出两行诗', evidence: 'reply' }] }));
+  };
+  await runtime.submitMessage({ text: '/goal 写两行诗 Token预算：5000' });
+  const paused = (await loadSession(session.id)).goalState;
+  assert.equal(paused.status, 'paused');
+  assert.equal(paused.resumePhase, 'ready');
+  assert.equal(paused.iteration, 0);
+  assert.equal(paused.tokensUsed, 0);
+  assert.equal(paused.unreportedRequests, 1);
+  assert.equal(paused.criteria[0].evidence, 'reply');
+  assert.equal(requests, 1);
+  assert.match(paused.reason, /未报告/);
+});
+
+async function fixture(t, { approvalMode = 'auto', context = {}, shell } = {}) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-goal-e2e-'));
   const workspace = path.join(root, 'project');
   const globalDir = path.join(root, 'global');
@@ -52,6 +130,7 @@ async function fixture(t, { approvalMode = 'auto', context = {} } = {}) {
     model: { name: primary, fast_name: secondary, reasoning_enabled: false },
     context: { project_context_enabled: false, project_instructions_enabled: false, preflight_trigger_pct: 95, microcompact_enabled: false, ...context },
     execution: { mode: 'normal', approval_mode: approvalMode },
+    ...(shell ? { shell, sandbox: { mode: 'danger-full-access' } } : {}),
     tools: { max_parallel_calls: 1 },
     memory: { enabled: false, background_review: { enabled: false, after_turn: false } },
     ui: { language: 'zh', reply_language: 'zh' },
@@ -69,6 +148,55 @@ async function fixture(t, { approvalMode = 'auto', context = {} } = {}) {
     },
   };
 }
+
+test('后台测试实际退出后唤醒执行模型并提供退出码，独立验收在其后进行', { timeout: 30000 }, async (t) => {
+  // 同一个 Node 测试运行器的嵌套标记会让子进程跳过全部用例。
+  const nested = process.env.NODE_TEST_CONTEXT;
+  delete process.env.NODE_TEST_CONTEXT;
+  t.after(() => { if (nested !== undefined) process.env.NODE_TEST_CONTEXT = nested; });
+  const { workspace, open } = await fixture(t, {
+    shell: { default: process.platform === 'win32' ? 'powershell' : 'bash', timeout_ms: 10000 },
+  });
+  await fs.writeFile(path.join(workspace, 'slow.test.cjs'), [
+    "require('node:test')('后台用例', async () => {",
+    '  await new Promise(resolve => setTimeout(resolve, 150));',
+    '});',
+  ].join('\n'));
+  const session = await createSession(workspace);
+  session.title = '后台测试';
+  const runtime = await open(session);
+  runtime.setRequestToolApproval(request => ({ approved: request.args?.command === 'node --test slow.test.cjs' ||
+    request.arguments?.command === 'node --test slow.test.cjs' }));
+  const events = [];
+  let toolOutput;
+  globalThis.fetch = async (_url, init) => {
+    const body = JSON.parse(init.body);
+    if (!body.stream) return Response.json({ choices: [{ message: { role: 'assistant', content: '后台测试' } }] });
+    const classification = classifyCriteria(body);
+    if (classification) return classification;
+    if (body.model === secondary && !body.tools?.length) {
+      const packet = JSON.parse(body.messages.at(-1).content);
+      const evidence = packet.observations.find(item => item.kind === 'pass' && item.exitCode === 0);
+      events.push('验收');
+      return reply(JSON.stringify({ decision: 'completed', reason: '实际测试通过',
+        checks: [{ criterionId: 'c1', evidenceIds: [evidence?.id || '缺少退出结果'] }] }));
+    }
+    if (body.messages.at(-1).role === 'tool') {
+      toolOutput = body.messages.at(-1).content;
+      events.push('模型收到结果');
+      return reply('后台测试已经结束。');
+    }
+    const shell = body.tools?.find(tool => /^(?:bash|powershell|run)$/i.test(tool.function.name));
+    return toolCall('slow-check', shell?.function.name || 'run', { command: 'node --test slow.test.cjs', run_in_background: true });
+  };
+  const result = await runtime.submitMessage({ text: '/goal 验证后台测试 验收：slow.test.cjs 中的测试全部通过 轮数：1' }, event => {
+    if (event.type === 'goal:waiting') events.push(event.status);
+  });
+  const goal = (await loadSession(session.id)).goalState;
+  assert.equal(goal.status, 'completed', result.text + '\n' + toolOutput);
+  assert.deepEqual(events, ['running', 'completed', '模型收到结果', '验收']);
+  assert.ok(goal.delegations.some(item => item.name.startsWith('后台命令') && item.status === 'completed'));
+});
 
 test('普通模式真实委派在暂停、三次压缩和 SQLite 重载后继续，并由独立模型验收', { timeout: 30000 }, async (t) => {
   const { workspace, open, close } = await fixture(t);
@@ -89,6 +217,8 @@ test('普通模式真实委派在暂停、三次压缩和 SQLite 重载后继续
   const failures = [];
   globalThis.fetch = async (_url, init) => {
     const body = JSON.parse(init.body);
+    const classification = classifyCriteria(body);
+    if (classification) return classification;
     const tail = body.messages.at(-1);
     const tools = (body.tools || []).map((tool) => tool.function.name);
     const check = (pass, message) => { if (!pass) failures.push(message); };
@@ -103,7 +233,7 @@ test('普通模式真实委派在暂停、三次压缩和 SQLite 重载后继续
       check(!tools.includes('run_subagent'), '子代理不应能继续委派');
       if (tail.role === 'tool') {
         childFileResults.push(String(tail.content));
-        return reply('核对完成，读取到 ' + marker);
+        return streaming({ content: '核对完成，读取到 ' + marker }, 'stop', { total_tokens: 17 });
       }
       return toolCall('child-read-' + (++childCount), 'read', { path: file });
     }
@@ -142,6 +272,8 @@ test('普通模式真实委派在暂停、三次压缩和 SQLite 重载后继续
   assert.equal(paused.iteration, 1);
   assert.equal(paused.maxIterations, 3);
   assert.equal(paused.delegations[0].id, 'delegate-1');
+  assert.equal(paused.tokensUsed, 17, '父目标计入已委派模型报告的用量');
+  assert.ok(paused.unreportedRequests >= 1, '缺少用量的请求不会被当作已报告的零消耗');
   assert.ok(paused.delegations[0].handoffPath);
   let previousLength = runtime.getSession().messages.length;
   for (const mode of ['--conservative', '--default', '--aggressive']) {
@@ -164,12 +296,15 @@ test('普通模式真实委派在暂停、三次压缩和 SQLite 重载后继续
   assert.equal(goal.maxIterations, 3);
   assert.deepEqual(goal.delegations.map((entry) => [entry.id, entry.status]), [['delegate-1', 'completed'], ['delegate-2', 'completed']]);
   assert.equal(childFileResults.length, 2);
+  assert.equal(goal.tokensUsed, 34, '重开会话后第二次委派的用量继续累计');
   for (const content of childFileResults) assert.match(content, /release-id=2026-CURRENT/);
   assert.ok(events.some((event) => event.type === 'plan:step_done' && event.toolCallId === 'delegate-2'));
   assert.equal(reviews.length, 1);
   assert.equal(reviews[0].model, secondary);
   assert.deepEqual(reviews[0].tools, []);
   assert.equal(reviews[0].packet.constraints, constraint);
+  assert.deepEqual(reviews[0].packet.delegations.map(task => task.id), goal.delegations.map(task => task.id));
+  assert.ok(reviews[0].packet.delegations.every(task => task.status === 'completed' && task.handoffPath));
   assert.ok(goal.observations.some((item) => item.artifactPath === file && item.summary.includes(marker)));
   for (const request of parentRequests) {
     assert.ok(request.tools.includes('run_subagent'));
@@ -243,7 +378,7 @@ test('自然语言目标生成一次验收标准，重开会话后按原标准�
   assert.deepEqual(goal.verdicts.at(-1).checks, [{ criterionId: goal.criteria[0].id, evidenceIds: [observed.id] }]);
 });
 
-test('自然语言数数目标以完整聊天回复通过独立验收，执行者的完成声明仍需重做', { timeout: 15000 }, async (t) => {
+async function verifyCountingGoal(t, countCommand) {
   const { workspace, open } = await fixture(t);
   const session = await createSession(workspace);
   session.title = '从一数到一百';
@@ -256,6 +391,8 @@ test('自然语言数数目标以完整聊天回复通过独立验收，执行�
   const reviews = [];
   globalThis.fetch = async (_url, init) => {
     const body = JSON.parse(init.body);
+    const classification = classifyCriteria(body, 'reply');
+    if (classification) return classification;
     const system = String(body.messages[0].content);
     if (!body.tools?.length && system.includes('提取目标验收条件')) {
       return reply(JSON.stringify({ criteria: [{ text: '回复中完整列出从 1 到 100 的连续整数', evidence: 'reply' }] }));
@@ -274,7 +411,7 @@ test('自然语言数数目标以完整聊天回复通过独立验收，执行�
   };
 
   const toolCalls = [];
-  const result = await runtime.submitMessage({ text: '/goal 从1数到100' }, event => {
+  const result = await runtime.submitMessage({ text: countCommand }, event => {
     if (event.type === 'tool:start') toolCalls.push(event.name);
   });
   const goal = (await loadSession(session.id)).goalState;
@@ -289,7 +426,10 @@ test('自然语言数数目标以完整聊天回复通过独立验收，执行�
   assert.deepEqual(goal.verdicts.at(-1).checks, [{ criterionId: goal.criteria[0].id, evidenceIds: [reviews[1].observation.id] }]);
   assert.deepEqual(toolCalls, []);
   assert.deepEqual(await userFiles(), before);
-});
+}
+for (const command of ['/goal 从1数到100', '/goal 验收：从1数到100', '/goal 从1数到100 验收：在聊天中列出所有数字']) {
+  test(`完整数列以聊天回复验收，仅声明完成仍需重做：${command}`, { timeout: 15000 }, t => verifyCountingGoal(t, command));
+}
 
 test('普通聊天保持工具范围，禁止委派的目标在缺证时预算耗尽，追加预算后才会继续', { timeout: 15000 }, async (t) => {
   const { workspace, open } = await fixture(t);
@@ -299,6 +439,8 @@ test('普通聊天保持工具范围，禁止委派的目标在缺证时预算�
   const requests = [];
   globalThis.fetch = async (_url, init) => {
     const body = JSON.parse(init.body);
+    const classification = classifyCriteria(body);
+    if (classification) return classification;
     if (body.stream) {
       requests.push({ model: body.model, tools: (body.tools || []).map((tool) => tool.function.name) });
       return reply('我认为一切已完成。');
@@ -345,6 +487,8 @@ test('暂停真实目标会清理待审批或待答表单，普通聊天的审�
   } });
   globalThis.fetch = async (_url, init) => {
     const body = JSON.parse(init.body);
+    const classification = classifyCriteria(body);
+    if (classification) return classification;
     if (!body.stream) return Response.json({ choices: [{ message: { role: 'assistant', content: '核对' } }] });
     if (body.messages.at(-1).role === 'tool') return reply('保持现有文件。');
     return mode === 'input'
@@ -392,6 +536,9 @@ test('暂停真实目标会清理待审批或待答表单，普通聊天的审�
 test('目标连续八轮自动压缩，验收异常后重开会话只重试验收', { timeout: 30000 }, async (t) => {
   const roundBudget = 8;
   const { workspace, open, close } = await fixture(t, { context: { preflight_trigger_pct: 1, max_tokens: 32000 } });
+  // 每轮核对清单中的下一项，新行是真实进展；反复读取同一行会触发停滞暂停。
+  await fs.writeFile(path.join(workspace, file),
+    Array.from({ length: roundBudget }, (_, i) => marker + ' 交付项 ' + (i + 1)).join('\n'));
   const session = await createSession(workspace);
   session.title = '自动压缩回归';
   // 首轮压缩保留的最近消息也超过阈值，下一轮会再次进入真实的自动压缩路径。
@@ -411,6 +558,8 @@ test('目标连续八轮自动压缩，验收异常后重开会话只重试验�
   };
   globalThis.fetch = async (_url, init) => {
     const body = JSON.parse(init.body);
+    const classification = classifyCriteria(body);
+    if (classification) return classification;
     if (!body.stream) return Response.json({ choices: [{ message: { role: 'assistant', content: '已整理历史资料。' }, finish_reason: 'stop' }] });
     const tail = body.messages.at(-1);
     if (!body.tools?.length && String(body.messages[0]?.content).includes('独立、只读的目标验收员')) {
@@ -427,7 +576,7 @@ test('目标连续八轮自动压缩，验收异常后重开会话只重试验�
     requests.push({ round, messages: body.messages });
     return tail.role === 'tool'
       ? reply('已读取交付清单并核对编号。'.repeat(75))
-      : toolCall('round-' + round + '-read', 'read', { path: file });
+      : toolCall('round-' + round + '-read', 'read', { path: file, offset: round, limit: 1 });
   };
   await runtime.submitMessage({ text: '/goal ' + objective + '\n验收：' + criterion + '\n约束：' + constraint + '\n轮数：' + roundBudget }, onEvent);
   const saved = await loadSession(session.id);
@@ -490,6 +639,8 @@ test('子代理仍在执行时暂停并立即恢复，复用调用编号可保�
 
   globalThis.fetch = async (_url, init) => {
     const body = JSON.parse(init.body);
+    const classification = classifyCriteria(body);
+    if (classification) return classification;
     const tail = body.messages.at(-1);
     if (!body.tools?.length && String(body.messages[0].content).includes('目标验收员')) {
       reviews++;

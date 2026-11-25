@@ -831,8 +831,9 @@ export function readSessionGoal(sessionId) {
 
 export function saveSessionGoal(session, next, { expected = session.goalState ?? null } = {}) {
   const goalState = normalizeGoalState(next);
-  if (!goalState || !session.id) throw new Error('会话或目标状态无效，无法保存。');
-  goalState.version = (expected?.version ?? 0) + 1;
+  // null 表示显式清除。沿用目标 ID 和版本检查，旧运行不能覆盖或复活已清除的目标。
+  if ((!goalState && next !== null) || !session.id) throw new Error('会话或目标状态无效，无法保存。');
+  if (goalState) goalState.version = (expected?.version ?? 0) + 1;
   if (!writeStoredGoalState(session.id, goalState, expected)) {
     const error = new Error('目标已被其他运行更新，请重新查看目标状态。');
     error.code = 'GOAL_STATE_CONFLICT';

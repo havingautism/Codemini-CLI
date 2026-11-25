@@ -4,10 +4,34 @@ import {
 } from './goal-state.js';
 import { createGoalEvidenceCollector, inferGoalCriteria, reviewGoal } from './goal-verification.js';
 import { randomUUID } from 'node:crypto';
+import { watchGoalWork } from './goal-work.js';
 import { readSessionGoal, saveSessionGoal } from './session-store.js';
+import { withGoalUsageMeter } from './token-usage-context.js';
+import { normalizeModelUsage } from './model-usage.js';
 
 const reply = (text) => ({ type: 'system', text, output: text });
 const localOwners = new Set();
+
+function reviseGoal(previous, parsed) {
+  const steering = parsed.action === 'steer';
+  const objective = steering ? previous.objective + '\n用户补充（冲突时以本次要求为准）：' + parsed.text : parsed.objective;
+  const revised = createGoalState({
+    objective,
+    criteria: steering ? previous.criteria : parsed.acceptance,
+    criteriaPending: steering ? 'infer' : parsed.criteriaPending,
+    constraints: steering ? previous.constraints : parsed.constraints,
+    maxIterations: parsed.maxRounds ?? previous.maxIterations,
+    tokenBudget: parsed.tokenBudget ?? previous.tokenBudget,
+  });
+  // 中断的这一轮按新要求重新执行。已用完的轮次、Token 和时间仍计在同一预算上。
+  const phase = previous.status === 'paused' ? previous.resumePhase : previous.phase;
+  revised.iteration = previous.iteration - (['executing', 'verifying'].includes(phase) ? 1 : 0);
+  if (revised.maxIterations < revised.iteration) throw new Error('新的轮数预算不能小于已经用完的轮数。');
+  revised.tokensUsed = previous.tokensUsed;
+  revised.unreportedRequests = previous.unreportedRequests;
+  revised.activeMs = previous.activeMs;
+  return revised;
+}
 
 export async function waitForGoalInput(observer, form, signal) {
   const skipped = { status: 'skipped', answers: {} };
@@ -54,15 +78,23 @@ export function createGoalRunner({ getSession, execute, settings, workspaceRoot,
   let controller;
   let finished;
   let ownerToken;
+  let activeSince;
+  let revisionPending = false;
 
-  const save = async (next) => {
+  const save = (next) => {
     const session = getSession();
     if (next === session.goalState) return;
+    const now = Math.floor(performance.now());
+    const elapsed = activeSince != null ? now - activeSince : 0;
+    // 只累计本进程实际持有目标的区间，重启后不计入离线等待。
+    next = { ...next, activeMs: next.activeMs + Math.max(0, elapsed) };
     saveSessionGoal(session, next.status === 'active'
       ? { ...next, ownerPid: process.pid, ownerToken } : next);
+    activeSince = next.status === 'active' ? now : undefined;
   };
   const current = () => getSession().goalState;
-  const describe = () => current() ? renderGoalContext(current()) : '当前会话没有目标。';
+  const describe = () => current() ? renderGoalContext({ ...current(),
+    activeMs: current().activeMs + (activeSince == null ? 0 : Math.floor(performance.now()) - activeSince) }) : '当前会话没有目标。';
   const stop = (reason = '用户暂停了目标。') => {
     if (!controller || current()?.status !== 'active') return false;
     controller?.abort({ continueInPlace: true });
@@ -70,19 +102,55 @@ export function createGoalRunner({ getSession, execute, settings, workspaceRoot,
   };
 
   async function drive(signal, onEvent) {
+    const missingAtStart = current().unreportedRequests;
+    let open = true;
+    const meter = {
+      beforeRequest() {
+        if (!open || signal.aborted || current()?.status !== 'active') throw new Error('目标执行已结束。');
+        const goal = current();
+        if (goal.tokenBudget == null) return;
+        const reason = goal.tokensUsed >= goal.tokenBudget
+          ? 'Token 预算已耗尽，请用 /goal resume --add-tokens 10000 增加预算。'
+          : goal.unreportedRequests > missingAtStart
+            ? '提供商未报告本次消耗，无法核对 Token 预算。请检查用量配置后恢复。' : '';
+        if (reason) {
+          stop(reason);
+          throw new Error(reason);
+        }
+      },
+      finishRequest(usage) {
+        const goal = current();
+        if (!open || !goal) return;
+        const normalized = normalizeModelUsage(usage);
+        save(normalized ? { ...goal, tokensUsed: goal.tokensUsed + normalized.totalTokens }
+          : { ...goal, unreportedRequests: goal.unreportedRequests + 1 });
+      },
+    };
+    try { await withGoalUsageMeter(meter, () => runIterations(signal, onEvent, meter)); }
+    finally { open = false; }
+  }
+
+  async function runIterations(signal, onEvent, meter) {
     let recovering = current().phase === 'executing';
     if (current().criteriaPending) {
+      meter.beforeRequest();
       const criteria = await inferGoalCriteria({ goal: current(), ...settings(), signal });
       if (signal.aborted) return;
-      await save(setInferredGoalCriteria(current(), criteria));
+      const resolved = setInferredGoalCriteria(current(), criteria);
+      // 旧版在送审前已把本轮完整答复和工具观测落盘。补登记正文即可复核，无需重放原操作。
+      const replies = resolved.phase === 'verifying' && resolved.report && criteria.some(item => item.evidence === 'reply')
+        ? await createGoalEvidenceCollector({ workspaceRoot, goal: resolved }).recordReply(resolved.report) : [];
+      if (signal.aborted) return;
+      await save(replies.reduce(recordGoalObservation, resolved));
     }
     while (!signal.aborted && current().status === 'active') {
+      meter.beforeRequest();
       if (current().phase === 'ready') await save(beginGoalIteration(current()));
       if (signal.aborted || current().status !== 'active') break;
       if (current().phase === 'executing') {
         const collector = createGoalEvidenceCollector({ workspaceRoot, goal: current() });
         const accept = async (observations) => {
-          if (!observations?.length) return;
+          if (signal.aborted || !observations?.length) return;
           let next = current();
           for (const observation of observations) next = recordGoalObservation(next, observation);
           await save(next);
@@ -90,41 +158,73 @@ export function createGoalRunner({ getSession, execute, settings, workspaceRoot,
         await accept(await collector.start());
         if (signal.aborted) break;
         const delegationIds = new Map();
+        const workers = new Map();
+        const monitors = new AbortController();
+        const watch = (id, name, inspect) => watchGoalWork({
+          signal: AbortSignal.any([signal, monitors.signal]), name, inspect, pause: stop,
+          notifyInterrupted: () => onEvent?.({ type: 'goal:waiting', id, name, status: 'interrupted', summary: '等待已中断，恢复后将核对现场。' }),
+          async report(status, summary, details) {
+            if (signal.aborted || current()?.status !== 'active') return;
+            await save(recordGoalDelegation(current(), { ...details, id, name, status, summary }));
+            onEvent?.({ type: 'goal:waiting', id, name, status, summary });
+          },
+        });
         const hooks = {
-          context: () => renderGoalContext(current()),
+          async watchShell(name, inspect, parentCallId) {
+            const parent = workers.get(parentCallId);
+            parent?.shells.add(inspect);
+            const finish = await watch('shell-' + randomUUID(), name, inspect);
+            return async (...args) => {
+              parent?.shells.delete(inspect);
+              await finish(...args);
+            };
+          },
+          workerActivity(callId) {
+            const worker = workers.get(callId);
+            if (worker) worker.cursor++;
+          },
+          context: () => signal.aborted ? '' : renderGoalContext(current()),
           delegationId: (callId) => delegationIds.get(callId) || callId,
           async started(event) {
             await accept(await collector.beginTool(event));
+            if (signal.aborted) return;
             const { toolName, args, callId } = event;
             if (toolName !== 'run_subagent') return;
             // 部分提供商会在恢复后重用工具调用编号，已有交接必须保留。
             const id = current().delegations.some((item) => item.id === callId) ? randomUUID() : callId;
             delegationIds.set(callId, id);
-            await save(recordGoalDelegation(current(), {
-              id, name: args.name || args.role, summary: args.prompt, status: 'running',
+            const worker = { cursor: 0, shells: new Set() };
+            workers.set(callId, worker);
+            worker.finish = await watch(id, args.name || args.role || '子代理', () => ({
+              cursor: [worker.cursor, ...Array.from(worker.shells, inspect => inspect().cursor)].join('/'),
+              detail: String(args.prompt || '').slice(0, 150),
             }));
           },
           async result(event) {
             await accept(await collector.recordToolResult(event));
+            if (signal.aborted) return;
             if (event.toolName !== 'run_subagent') return;
             const result = event.result || {};
-            await save(recordGoalDelegation(current(), {
-              id: hooks.delegationId(event.callId), name: event.args.name || event.args.role,
-              status: result.ok ? 'completed' : 'failed',
-              summary: result.message || result.error || result.text,
-              handoffPath: result.handoffPath, workerId: result.workerId,
-            }));
+            const worker = workers.get(event.callId);
+            await worker?.finish?.(result.ok ? 'completed' : 'failed', result.message || result.error || result.text,
+              { handoffPath: result.handoffPath, workerId: result.workerId });
+            workers.delete(event.callId);
           },
         };
         const instruction = recovering
           ? '恢复目标。本轮曾中断，请先核对已有改动、子任务与证据，再继续未完成的工作。'
           : '执行目标：' + current().objective;
         const guidance = current().criteria.some(item => item.evidence === 'reply')
-          ? '直接在回复中完整交付要求的文本。涉及文件、运行行为或外部状态的验收项，请另外取得工具证据。'
+          ? '直接在回复中完整交付要求的文本。已有且仍有效的工具证据请沿用，不要重复已验证的外部操作；文件、行为或外部状态缺少证据时再针对性核对。'
           : '请取得与验收项直接相关的工具证据。';
         recovering = false;
         const executorModel = settings().model;
-        const result = await execute(instruction + '\n' + guidance, onEvent, { goalHooks: hooks, signal });
+        let result;
+        try {
+          result = await execute(instruction + '\n' + guidance, onEvent, { goalHooks: hooks, signal });
+        } finally {
+          monitors.abort();
+        }
         await accept(await collector.finish());
         if (signal.aborted || current().status !== 'active') break;
         if (result.aborted || result.workflowComplete || result.type !== 'assistant' || result.stopReason === 'incomplete_retries') {
@@ -137,6 +237,7 @@ export function createGoalRunner({ getSession, execute, settings, workspaceRoot,
         await save(markGoalVerifying(next, result.text, executorModel));
       }
       if (signal.aborted || current().phase !== 'verifying') break;
+      meter.beforeRequest();
       const verdict = await reviewGoal({ goal: current(), workspaceRoot, ...settings(), signal });
       if (signal.aborted || current().status !== 'active') break;
       await save(applyGoalVerdict(current(), verdict));
@@ -145,6 +246,7 @@ export function createGoalRunner({ getSession, execute, settings, workspaceRoot,
 
   return {
     get running() { return Boolean(controller); },
+    get acceptingSteering() { return Boolean(controller && current()?.status === 'active'); },
     stop,
     async close() {
       if (controller) {
@@ -167,8 +269,45 @@ export function createGoalRunner({ getSession, execute, settings, workspaceRoot,
         await stop();
         return reply(describe());
       }
-      if (parsed.action === 'resume' && controller?.signal.aborted && finished) {
+      if (parsed.action === 'clear' || parsed.action === 'edit' || parsed.action === 'steer') {
+        const previous = current();
+        if (parsed.action === 'steer' && (!controller || previous?.status !== 'active')) {
+          return { type: 'noop', goalControl: false };
+        }
+        if (!previous) return reply('当前会话没有目标。');
+        try {
+          if (parsed.action === 'clear') {
+            saveSessionGoal(getSession(), null);
+            revisionPending = false;
+            activeSince = undefined;
+            controller?.abort({ continueInPlace: true });
+            return reply('当前目标已清除。');
+          }
+          const active = Boolean(controller && previous.status === 'active');
+          const revised = reviseGoal(previous, parsed);
+          if (revised.iteration === revised.maxIterations) {
+            const reason = '已修改目标，原有轮数已用完。使用 /goal resume +2 增加两轮后继续。';
+            save({ ...revised, status: 'exhausted', phase: 'stopped', reason });
+            controller?.abort({ continueInPlace: true });
+            return reply(reason);
+          }
+          save(active ? revised : pauseGoal(revised, '已保存新目标，使用 /goal resume 开始执行。'));
+          if (active) {
+            revisionPending = true;
+            controller.abort({ continueInPlace: true });
+          }
+          const action = parsed.action === 'edit' ? '已修改目标' : '已将补充加入目标';
+          return reply(action + (active ? '，正在按新要求继续。' : '。使用 /goal resume 继续。'));
+        } catch (error) { return reply(error.message); }
+      }
+      if (controller?.signal.aborted && finished &&
+          (parsed.action === 'resume' || (parsed.action === 'create' && !current()))) {
         await finished;
+        if (!controller) {
+          const session = getSession();
+          session.goalState = readSessionGoal(session.id);
+          recoverInterruptedGoal(session);
+        }
       }
       if (controller || busy()) return reply('当前会话正在执行任务，请先等待或暂停。');
       const previous = current();
@@ -176,20 +315,21 @@ export function createGoalRunner({ getSession, execute, settings, workspaceRoot,
       try {
         if (parsed.action === 'create') {
           if (previous && ['active', 'paused', 'exhausted'].includes(previous.status)) {
-            return reply('此会话已有可继续的目标。请使用 /goal 查看、/goal resume 恢复，或在新会话中创建另一个目标。');
+            return reply('此会话已有可继续的目标。使用 /goal edit 修改、/goal clear 清除，或 /goal resume 恢复。');
           }
           next = createGoalState({ objective: parsed.objective, criteria: parsed.acceptance,
-            constraints: parsed.constraints?.join('\n'), maxIterations: parsed.maxRounds, criteriaPending: parsed.criteriaPending });
+            constraints: parsed.constraints?.join('\n'), maxIterations: parsed.maxRounds,
+            criteriaPending: parsed.criteriaPending, tokenBudget: parsed.tokenBudget });
         } else {
           if (!previous) return reply('当前会话没有可以恢复的目标。');
           if (!['paused', 'exhausted'].includes(previous.status)) return reply(describe());
-          next = resumeGoal(previous, { extraIterations: parsed.extraRounds });
+          next = resumeGoal(previous, { extraIterations: parsed.extraRounds, extraTokens: parsed.extraTokens });
+          if (!next.criteriaPending && next.criteria.some(item => !item.evidence)) next.criteriaPending = 'classify';
         }
       } catch (error) { return reply(error.message); }
       controller = new AbortController();
       ownerToken = randomUUID();
       localOwners.add(ownerToken);
-      const { signal } = controller;
       finished = (async () => {
         try {
           await save(next);
@@ -199,12 +339,19 @@ export function createGoalRunner({ getSession, execute, settings, workspaceRoot,
           session.goalState = readSessionGoal(session.id);
           return reply('目标状态已被其他运行更新。\n' + describe());
         }
-        try {
-          await drive(signal, onEvent);
-        } catch (error) {
-          if (current().status === 'active') await save(pauseGoal(current(), '目标执行中断：' + error.message));
+        for (;;) {
+          const { signal } = controller;
+          try {
+            if (!signal.aborted) await drive(signal, onEvent);
+          } catch (error) {
+            if (!signal.aborted && current()?.status === 'active') await save(pauseGoal(current(), '目标执行中断：' + error.message));
+          }
+          if (!revisionPending || current()?.status !== 'active') break;
+          revisionPending = false;
+          controller = new AbortController();
         }
         const goal = current();
+        if (!goal) return reply('当前目标已清除。');
         const fullReport = goal.status === 'completed' && goal.criteria.some(item => item.evidence === 'reply');
         return { ...reply(renderGoalContext(goal, { fullReport })), goalSummary: renderGoalSummary(goal) };
       })();
@@ -212,6 +359,7 @@ export function createGoalRunner({ getSession, execute, settings, workspaceRoot,
         localOwners.delete(ownerToken);
         controller = null;
         finished = null;
+        revisionPending = false;
       }
     },
   };

@@ -444,7 +444,7 @@ Web UI 包含并发会话、文件浏览与预览、Git 变更、真实 PTY 终�
 
 TUI 斜杠命令还包括 `/coding`、`/daily`、`/tools`、`/history` 与 `/help`。Web UI 在输入栏也提供记忆动作（Dream、Compact、Capture、Reflect），并设有带 Inbox 与 Library 标签的 Memory 面板。
 
-终端聊天和 Web UI 均支持自然输入，例如 `/goal 从 1 数到 100`。系统会从目标提取验收条件。也可以手写条件和轮数，用 `/goal` 查看进度，或用 `/goal pause` 暂停。[目标模式用法](docs/agents/goal.md)
+终端聊天和 Web UI 均支持自然输入，例如 `/goal 从 1 数到 100`。可以手写验收条件，设置轮数和 Token 预算，也能在运行中直接补充要求。用 `/goal` 查看进度、用量与停止原因，用 `/goal edit` 修改目标，或用 `/goal clear` 清除目标。[目标模式用法](docs/agents/goal.md)
 
 Inbox 被设计为临时区域。Dream 负责晋升有价值的证据；Reflect 将可重复的工作流变成可检查、可复用的明确工具。
 

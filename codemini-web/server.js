@@ -1,5 +1,5 @@
 import { getTokenActivity, getSessionTokenUsage } from '../src/core/token-usage-store.js';
-import { isImmediateGoalControl } from '../src/core/goal-command.js';
+import { isGoalSteeringInput, isImmediateGoalControl } from '../src/core/goal-command.js';
 import { isScheduledSessionActive, getScheduledChangeState } from '../src/core/scheduled-task-store.js';
 import { createScheduledTaskNotifier } from './lib/scheduled-task-notifier.js';
 import { startScheduledWorker } from '../src/core/scheduled-worker-process.js';
@@ -743,8 +743,8 @@ function ensureAcceptedBridgeResult(result) {
 }
 
 async function respondToGoalControl(res, bridge, text) {
-  if (!isImmediateGoalControl(text)) {
-    jsonResponse(res, { error: true, message: '此入口仅支持 /goal、/goal status 和 /goal pause。' }, 400);
+  if (typeof text !== 'string' || (!isImmediateGoalControl(text) && !isGoalSteeringInput(text))) {
+    jsonResponse(res, { error: true, message: '此入口接受查看、暂停、编辑、清除目标的命令，或对运行中目标的文字补充。' }, 400);
     return;
   }
   try {
