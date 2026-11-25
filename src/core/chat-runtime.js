@@ -497,7 +497,7 @@ export const EXECUTION_MODE_TOOL_POLICY = {
     'read', 'search_code', 'grep', 'ast_grep', 'list', 'glob', 'ast_query', 'read_ast_node',
     'query_project_index', 'query_project_graph', 'tool_search', 'skill', 'web_fetch', 'web_search',
     'save_memory',
-    'tasks',
+    'tasks', 'update_goal_plan',
     'edit', 'write', 'begin_write', 'write_chunk', 'commit_write', 'abort_write', 'apply_patch', 'delete', 'run',
     'run_subagent', 'fork_task', 'land_workers', 'cancel_worker', 'crew_status', 'crew_send', 'crew_inbox', 'request_user_input'
   ]
@@ -637,7 +637,7 @@ ROLE_TOOL_POLICY.crew_survey = ROLE_TOOL_POLICY.survey;
 ROLE_TOOL_POLICY.crew_reviewer = ROLE_TOOL_POLICY.reviewer;
 
 /** Subagents must never spawn nested agents / workflow orchestrators. */
-export const SUBAGENT_FORBIDDEN_TOOLS = ['run_subagent', 'fork_task', 'land_workers', 'cancel_worker', 'create_plan', 'create_spec'];
+export const SUBAGENT_FORBIDDEN_TOOLS = ['run_subagent', 'fork_task', 'land_workers', 'cancel_worker', 'create_plan', 'create_spec', 'update_goal_plan'];
 
 /**
  * Fork branches keep the parent's full tool schemas for prefix-cache reuse,
@@ -646,7 +646,7 @@ export const SUBAGENT_FORBIDDEN_TOOLS = ['run_subagent', 'fork_task', 'land_work
  * state while sibling branches are running.
  */
 export const FORK_FORBIDDEN_TOOLS = [
-  'fork_task', 'run_subagent', 'land_workers', 'cancel_worker', 'request_user_input', 'update_plan', 'create_plan', 'create_spec',
+  'fork_task', 'run_subagent', 'land_workers', 'cancel_worker', 'request_user_input', 'update_plan', 'update_goal_plan', 'create_plan', 'create_spec',
 ];
 
 const WINDOWS_STAGED_WRITE_TOOLS = [
@@ -5020,6 +5020,7 @@ async function askModelInSession({
       scheduleSessionSave();
     },
     getPlanState: () => normalizePlanState(session.planState),
+    onGoalPlanUpdate: goalHooks?.updatePlan,
     onPlanStateUpdate: (planState) => {
       session.planState = normalizePlanState(planState);
       scheduleSessionSave();
@@ -5036,6 +5037,7 @@ async function askModelInSession({
           toolCallId = '',
           orchestrationId = '',
           taskId = '',
+          goalTaskId = '',
           dependsOn = [],
           tools = null,
           paths = null,
@@ -5050,7 +5052,9 @@ async function askModelInSession({
           }
           const effectivePrompt = taskPrompt || 'Complete the assigned tasks.';
           const handoff = String(context || '').trim();
-          const declaredGoal = [String(goal || '').trim(), goalHooks?.context()].filter(Boolean).join('\n\n');
+          const declaredGoal = [
+            String(goal || '').trim(), goalTaskId && `本次受派的目标任务编号：${goalTaskId}`, goalHooks?.context(),
+          ].filter(Boolean).join('\n\n');
           const reviewTarget = String(review || '').trim();
           const resumeTarget = String(resume || '').trim();
           const rosterWorkers = listCrewWorkersFromState(crewState);
@@ -5132,6 +5136,9 @@ async function askModelInSession({
             crewSession: Boolean(crewState),
           });
           const stepModel = resolveSubAgentModel(config, model);
+          const runWorkerTask = goalHooks?.workerModel
+            ? options => runSubAgentTask({ ...options, onModelSelected: selected => goalHooks.workerModel(callId, selected) })
+            : runSubAgentTask;
           const stepSdkProvider = config.sdk?.provider || '';
           emit({
             type: 'plan:step_start',
@@ -5544,7 +5551,7 @@ async function askModelInSession({
                   additional: workerTask,
                 });
                 return runCrewWorkerJob({
-                runSubAgentTask,
+                runSubAgentTask: runWorkerTask,
                 subAgentRunFailed,
                 compactSubAgentResultForParent,
                 collectPlanImplementationFileChanges,
@@ -5635,7 +5642,8 @@ async function askModelInSession({
               return runningResult;
             }
             const reviewBox = { verdict: null };
-            const output = await runSubAgentTask({
+            const parentDelegationId = goalHooks?.delegationId?.(callId) || callId;
+            const output = await runWorkerTask({
               role: taskRole,
               task: workerTask,
               initialTasks: assignedTasks,
@@ -5664,10 +5672,10 @@ async function askModelInSession({
               backupManager: workerBackupManager,
               parentToolCallId: callId,
               onToolStarted: goalHooks && sameFsPath(workerWorkspaceRoot, workspaceRoot)
-                ? (event) => goalHooks.started({ ...event, callId: callId + '/' + event.callId })
+                ? (event) => goalHooks.started({ ...event, parentDelegationId, callId: parentDelegationId + '/' + event.callId })
                 : null,
               onRawToolResult: goalHooks && sameFsPath(workerWorkspaceRoot, workspaceRoot)
-                ? (event) => goalHooks.result({ ...event, callId: callId + '/' + event.callId })
+                ? (event) => goalHooks.result({ ...event, parentDelegationId, callId: parentDelegationId + '/' + event.callId })
                 : null,
               tools: reviewingWorkerId
                 ? [...resolvedTools, 'submit_crew_review']
@@ -5694,7 +5702,7 @@ async function askModelInSession({
               : await saveSubAgentHandoff({
                   workspaceRoot,
                   sessionId: session.id,
-                  handoffId: goalHooks?.delegationId(callId) || callId,
+                  handoffId: parentDelegationId,
                   name: persona,
                   task: taskPrompt,
                   summary,
@@ -6819,6 +6827,7 @@ export async function runSubAgentTask({
   extraRolePrompt = '',
   signal,
   onSessionActive,
+  onModelSelected,
   planFileContext = '',
   changeTracker = null,
   backupManager = null,
@@ -6838,7 +6847,7 @@ export async function runSubAgentTask({
     messages: [],
     todos: assignedTasks,
   };
-  const subAgentModel = resolveSubAgentModel(config, model);
+  const subAgentModel = resolveSubAgentModel(config, model) || config.model?.name;
   const rolePrompt = getSubAgentRolePrompt(role);
   const cleanContextRole = role === 'reviewer' || role === 'tester';
   const copyParent = inheritParentContext === true && !cleanContextRole;
@@ -6976,6 +6985,7 @@ export async function runSubAgentTask({
     includeSoul: false,
     includeMemory: false
   });
+  if (onModelSelected) await onModelSelected(subAgentModel);
   const subResult = await askModel({
     text: scopedTask,
     session: subSession,

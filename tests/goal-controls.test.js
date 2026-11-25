@@ -44,6 +44,57 @@ function makeRunner(session, execute, review) {
   });
 }
 
+for (const owner of ['主代理', '子代理']) {
+  test(owner + '领取后继任务前刷新工作区，并利用新证据复验前置交付', async () => {
+    await withSession(async session => {
+      const workspace = path.join(session.projectDir, 'workspace');
+      await fs.mkdir(workspace);
+      session.projectDir = workspace;
+      const file = path.join(workspace, 'config.txt');
+      await fs.writeFile(file, 'ready');
+      let checked = false;
+      const runner = makeRunner(session, async (_instruction, _event, { goalHooks: hooks }) => {
+        const observe = async callId => {
+          const read = await readTextWindow(file);
+          const event = { toolName: 'read', callId, args: { path: file, criterion_ids: ['c1'] } };
+          await hooks.started(event);
+          await hooks.result({ ...event, result: { ...read, path: file, content: read.lines[0].text, phase: 'content' } });
+        };
+        await hooks.updatePlan({ tasks: [
+          { id: 'A', title: '核对配置', criterion_ids: ['c1'] },
+          { id: 'B', title: '交付结果', depends_on: ['A'] },
+        ], main_task: { id: 'A', action: 'start' } });
+        await observe('first-read');
+        await hooks.updatePlan({ main_task: { id: 'A', action: 'deliver' } });
+        assert.equal(session.goalState.tasks[0].status, 'verified');
+        await fs.writeFile(file, 'broken');
+        const event = { toolName: 'run_subagent', callId: 'worker-B', args: { goal_task_id: 'B', prompt: '交付' } };
+        const claim = () => owner === '子代理' ? hooks.started(event) : hooks.updatePlan({ main_task: { id: 'B', action: 'start' } });
+        await assert.rejects(claim, /前置/);
+        assert.equal(session.goalState.tasks[1].attempts.length, 0);
+        assert.equal(session.goalState.tasks[0].status, 'delivered');
+        await fs.writeFile(file, 'ready-again');
+        await observe('fresh-read');
+        await claim();
+        assert.equal(session.goalState.tasks[0].status, 'verified');
+        assert.equal(session.goalState.tasks[0].attempts.length, 1);
+        if (owner === '子代理') await hooks.result({ ...event, result: { ok: true } });
+        else await hooks.updatePlan({ main_task: { id: 'B', action: 'deliver' } });
+        checked = true;
+        return { type: 'assistant', text: '配置核对完毕。' };
+      }, packet => {
+        const observed = packet.observations.findLast(item => item.artifactPath === 'config.txt' && item.summary.includes('ready'));
+        return { text: JSON.stringify({ decision: observed ? 'completed' : 'continue', reason: '按当前文件内容核对。',
+          checks: [{ criterionId: 'c1', evidenceIds: observed ? [observed.id] : [] }] }) };
+      });
+      const result = await runner.command({ action: 'create', objective: '核对配置并安排交付',
+        acceptance: [{ id: 'c1', text: '配置内容为就绪状态', evidence: 'workspace' }] });
+      assert.ok(checked, result.text);
+      assert.equal(session.goalState.status, 'completed', result.text);
+    });
+  });
+}
+
 test('清除和编辑是控制命令，预算仅接受正安全整数', () => {
   assert.deepEqual(parseGoalCommand('/goal clear'), { action: 'clear' });
   assert.equal(parseGoalCommand('/goal edit').action, 'error');

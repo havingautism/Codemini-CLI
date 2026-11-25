@@ -11,6 +11,8 @@ import { readSessionGoal, saveSessionGoal } from './session-store.js';
 import { withGoalUsageMeter } from './token-usage-context.js';
 import { normalizeModelUsage } from './model-usage.js';
 import { goalResolutionHint, resolveGoalOperation, unresolvedGoalOperations, withGoalOperations } from './goal-operations.js';
+import { createGoalTaskRunner } from './goal-task-runner.js';
+import { finishGoalTask } from './goal-tasks.js';
 
 const reply = (text) => ({ type: 'system', text, output: text });
 const localOwners = new Set();
@@ -142,6 +144,7 @@ export function createGoalRunner({ getSession, execute, settings, workspaceRoot,
 
   async function runIterations(signal, onEvent, meter) {
     let recovering = current().phase === 'executing';
+    const tasks = createGoalTaskRunner({ current, save, signal, workspaceRoot, settings });
     if (current().criteriaPending) {
       const criteria = await inferGoalCriteria({ goal: current(), ...settings(), signal });
       if (signal.aborted) return;
@@ -165,20 +168,38 @@ export function createGoalRunner({ getSession, execute, settings, workspaceRoot,
           await save(next);
         };
         await accept(await collector.start());
+        if (recovering) await tasks.reviewPendingDeliveries();
         if (signal.aborted) break;
+        const refreshBeforeClaim = async (id, plan) => {
+          if (!current()?.tasks?.some(task => ['delivered', 'verified'].includes(task.status))) return;
+          // 外部或当前轮次的写入可能发生在上一次验收之后，先同步现场再放行后继。
+          const observations = await collector.finish();
+          await accept(observations);
+          if (!signal.aborted) await tasks.reviewPendingDeliveries(id, plan);
+        };
         const delegationIds = new Map();
         const workers = new Map();
         const monitors = new AbortController();
-        const watch = (id, name, inspect) => watchGoalWork({
+        const watch = (id, name, inspect, taskId) => watchGoalWork({
           signal: AbortSignal.any([signal, monitors.signal]), name, inspect, pause: stop, maxWaitMs: current().maxWaitMs,
           notifyInterrupted: () => onEvent?.({ type: 'goal:waiting', id, name, status: 'interrupted', summary: '等待已中断，恢复后将核对现场。' }),
           async report(status, summary, details) {
             if (signal.aborted || current()?.status !== 'active') return;
-            await save(recordGoalDelegation(current(), { ...details, id, name, status, summary }));
+            let next = recordGoalDelegation(current(), { ...details, id, name, status, summary, goalTaskId: taskId });
+            // 交接和尝试结果一次落库，暂停或崩溃后仍能只重试验收。
+            if (taskId && (status === 'completed' || status === 'failed')) {
+              next = finishGoalTask(next, taskId, id, status === 'completed' ? 'delivered' : 'failed');
+            }
+            save(next);
             onEvent?.({ type: 'goal:waiting', id, name, status, summary });
           },
         });
         const hooks = {
+          async updatePlan(args) {
+            if (args?.main_task?.action === 'start') await refreshBeforeClaim(args.main_task.id, args.tasks);
+            return tasks.updatePlan(args);
+          },
+          workerModel: (callId, model) => tasks.workerModel(delegationIds.get(callId) || callId, model),
           async watchShell(name, inspect, parentCallId) {
             const parent = workers.get(parentCallId);
             parent?.shells.add(inspect);
@@ -199,12 +220,14 @@ export function createGoalRunner({ getSession, execute, settings, workspaceRoot,
           context: () => signal.aborted ? '' : renderGoalContext(current()),
           delegationId: (callId) => delegationIds.get(callId) || callId,
           async started(event) {
-            await accept(await collector.beginTool(event));
-            if (signal.aborted) return;
+            await accept(await collector.beginTool(tasks.evidenceEvent(event)));
+            if (signal.aborted) throw new Error('目标已暂停。');
             const { toolName, args, callId } = event;
             if (toolName !== 'run_subagent') return;
+            if (args.goal_task_id) await refreshBeforeClaim(args.goal_task_id);
             // 部分提供商会在恢复后重用工具调用编号，已有交接必须保留。
             const id = current().delegations.some((item) => item.id === callId) ? randomUUID() : callId;
+            tasks.claimDelegation(args.goal_task_id, id);
             delegationIds.set(callId, id);
             const worker = { cursor: 0, shells: new Set(), finishedShellProgress: 0, completedTools: new Set() };
             workers.set(callId, worker);
@@ -215,10 +238,11 @@ export function createGoalRunner({ getSession, execute, settings, workspaceRoot,
                 progress: shells.reduce((sum, shell) => sum + shell.progress, worker.finishedShellProgress + worker.completedTools.size),
                 detail: String(args.prompt || '').slice(0, 150),
               };
-            });
+            }, args.goal_task_id);
           },
           async result(event) {
-            await accept(await collector.recordToolResult(event));
+            if (signal.aborted) return;
+            await accept(await collector.recordToolResult(tasks.evidenceEvent(event)));
             if (signal.aborted) return;
             if (event.toolName !== 'run_subagent') return;
             const result = event.result || {};
@@ -226,6 +250,9 @@ export function createGoalRunner({ getSession, execute, settings, workspaceRoot,
             await worker?.finish?.(result.ok ? 'completed' : 'failed', result.message || result.error || result.text,
               { handoffPath: result.handoffPath, workerId: result.workerId });
             workers.delete(event.callId);
+            if (result.ok && event.args?.goal_task_id && !signal.aborted) {
+              await tasks.reviewDelivery(event.args.goal_task_id);
+            }
           },
         };
         const instruction = recovering
@@ -239,6 +266,11 @@ export function createGoalRunner({ getSession, execute, settings, workspaceRoot,
           guidance = '仅输出从 ' + limits[0] + ' 到 ' + limits[1] + ' 的连续阿拉伯数字，包含两端，用顿号、逗号或换行分隔。不要加标题、解释、结束语或 Markdown。';
           const previous = current().verdicts.at(-1);
           if (previous?.verifierKind === 'integer_sequence') guidance += '\n上次数列核对结果：' + previous.resultReason;
+        } else {
+          guidance += '\n有多个可分别交付的步骤时，先用 update_goal_plan 保存简短任务计划并关联验收项；简单任务直接做。'
+            + '准备委派的步骤只登记计划，随后直接调用 run_subagent 并传入 goal_task_id，由子代理自动领取。独立任务可在允许委派时并行派发。'
+            + '只有主代理亲自执行的步骤才使用 main_task.start 和 main_task.deliver。'
+            + '根据已保存的任务状态继续：沿用仍然有效的验收和交接，优先处理就绪或中断的任务；需要改变做法时调整剩余计划。';
         }
         recovering = false;
         const executorModel = settings().model;

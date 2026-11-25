@@ -4176,6 +4176,7 @@ export function getBuiltinTools({
   onTodosUpdate,
   getPlanState,
   onPlanStateUpdate,
+  onGoalPlanUpdate,
   onCreatePlan,
   onCreateSpec,
   onRunSubAgent,
@@ -5269,6 +5270,42 @@ export function getBuiltinTools({
     : [];
 
   const workflowToolDefinitions = [];
+  if (typeof onGoalPlanUpdate === "function") {
+    workflowToolDefinitions.push({
+      type: "function",
+      function: {
+        name: "update_goal_plan",
+        description: "为当前目标登记或调整完整计划，后续沿用各任务的 id。要委派任务时，先只传 tasks 登记计划，再用 run_subagent(goal_task_id=任务的 id) 自动领取和交付。main_task 仅用于主代理亲自执行的任务。简单目标可直接执行。",
+        parameters: {
+          type: "object",
+          properties: {
+            tasks: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  id: { type: "string", description: "任务的稳定编号，例如 fix-export。" },
+                  title: { type: "string", description: "可核对的工作内容。" },
+                  depends_on: { type: "array", items: { type: "string" }, description: "前置任务的编号。" },
+                  criterion_ids: { type: "array", items: { type: "string" }, description: "此任务相关的目标验收项，例如 c1。" },
+                },
+                required: ["id", "title"],
+              },
+            },
+            main_task: {
+              type: "object",
+              description: "仅当主代理亲自做这项工作时填写。start 表示主代理独占领取，deliver 表示主代理交付。委派给子代理的任务应省略此参数。",
+              properties: {
+                id: { type: "string" },
+                action: { type: "string", enum: ["start", "deliver"] },
+              },
+              required: ["id", "action"],
+            },
+          },
+        },
+      },
+    });
+  }
   if (typeof onRunSubAgent === "function") {
     const subagentProperties = {
             prompt: {
@@ -5329,6 +5366,12 @@ export function getBuiltinTools({
               description: "Optional allow-list overriding the role defaults.",
             },
     };
+    if (typeof onGoalPlanUpdate === "function") {
+      subagentProperties.goal_task_id = {
+        type: "string",
+        description: "本次委派在目标计划中的任务 id。调用即由子代理领取任务，结束后自动交付，压缩或恢复后沿用此 id。task_id 和 depends_on 仅协调同一批次的调用。",
+      };
+    }
     if (crewActive) {
       subagentProperties.paths = {
         type: "array",
@@ -7158,6 +7201,11 @@ export function getBuiltinTools({
         },
       },
     ),
+    update_goal_plan: async (args = {}) => {
+      // fork 保留父线程的工具描述以复用缓存，实际更新权只在运行目标的主代理。
+      if (typeof onGoalPlanUpdate !== "function") throw new Error("仅运行目标的主代理可更新任务计划。");
+      return onGoalPlanUpdate(args);
+    },
     tasks: async (args = {}) => {
       const oldTodos = normalizeTodos(
         typeof getTodos === "function" ? getTodos() : [],
@@ -7305,6 +7353,7 @@ export function getBuiltinTools({
         toolCallId: String(ctx?.toolCallId || args?.tool_call_id || "").trim(),
         orchestrationId: String(ctx?.orchestrationId || "").trim(),
         taskId: String(args?.task_id || "").trim(),
+        ...(typeof onGoalPlanUpdate === "function" && args.goal_task_id ? { goalTaskId: args.goal_task_id } : {}),
         dependsOn: Array.isArray(args?.depends_on) ? args.depends_on : [],
         tools: Array.isArray(args?.tools) ? args.tools : null,
         paths: Array.isArray(args?.paths) ? args.paths : [],

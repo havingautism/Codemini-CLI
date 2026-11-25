@@ -1539,8 +1539,10 @@ export async function runAgentLoop({
       }
 
       let toolResult;
-      if (onToolStarted) await onToolStarted({ toolName, args: effectiveArgs, callId: call.id });
+      let admitted = false;
       try {
+        if (onToolStarted) await onToolStarted({ toolName, args: effectiveArgs, callId: call.id });
+        admitted = true;
         toolResult = await toolRuntime.execute(toolName, effectiveArgs, {
           rawArguments: call.arguments,
           toolCallId: call.id,
@@ -1555,7 +1557,7 @@ export async function runAgentLoop({
       } catch (error) {
         const durationMs = Date.now() - startedAt;
         const message = error instanceof Error ? error.message : String(error);
-        if (onRawToolResult) await onRawToolResult({ toolName, args: effectiveArgs, callId: call.id, result: { error: message } });
+        if (admitted && onRawToolResult) await onRawToolResult({ toolName, args: effectiveArgs, callId: call.id, result: { error: message } });
         const summary = trimInline(message, 120);
         if (onEvent) {
           onEvent({ type: 'tool:error', name: toolName, displayName, id: call.id, arguments: effectiveArgs, durationMs, summary });

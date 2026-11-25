@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { goalResolutionHint, unresolvedGoalOperations } from './goal-operations.js';
 import { integerSequenceRange, reviewIntegerSequence } from './goal-count-verification.js';
+import { interruptGoalTasks, pendingGoalDependencies, refreshGoalTaskDependencies, renderGoalTasks, withdrawGoalTaskProof } from './goal-tasks.js';
 
 const statuses = new Set(['active', 'paused', 'exhausted', 'completed', 'failed']);
 const activePhases = new Set(['ready', 'executing', 'verifying']);
@@ -63,7 +64,7 @@ export function createGoalState(input) {
   return {
     id: randomUUID(), version: 0, ...normalizeDefinition(input), status: 'active', phase: 'ready',
     iteration: 0, resumePhase: null, reason: '', report: '', observations: [], verdicts: [], delegations: [],
-    tokensUsed: 0, unreportedRequests: 0, activeMs: 0, operations: [],
+    tokensUsed: 0, unreportedRequests: 0, activeMs: 0, operations: [], tasks: [],
   };
 }
 
@@ -93,13 +94,14 @@ export function normalizeGoalState(value) {
     reason: cleanText(value.reason), report: typeof value.report === 'string' ? value.report : '',
     observations: structuredClone(observations),
     operations: structuredClone(Array.isArray(value.operations) ? value.operations : []),
+    tasks: structuredClone(Array.isArray(value.tasks) ? value.tasks : []),
     verdicts: structuredClone(Array.isArray(value.verdicts) ? value.verdicts : []),
     delegations: structuredClone(Array.isArray(value.delegations) ? value.delegations : []),
   };
 }
 
 function stopGoal(goal, status, reason, resumePhase = null) {
-  const { ownerPid, ownerToken, ...rest } = goal;
+  const { ownerPid, ownerToken, ...rest } = interruptGoalTasks(goal);
   return { ...rest, status, phase: 'stopped', reason, resumePhase };
 }
 
@@ -108,7 +110,7 @@ export function beginGoalIteration(goal) {
   if (goal.iteration >= goal.maxIterations) {
     return stopGoal(goal, 'exhausted', '已用完轮次预算。');
   }
-  return { ...goal, iteration: goal.iteration + 1, phase: 'executing' };
+  return refreshGoalTasks({ ...goal, iteration: goal.iteration + 1, phase: 'executing' });
 }
 
 export function setInferredGoalCriteria(goal, entries) {
@@ -165,6 +167,7 @@ export function recordGoalDelegation(goal, input) {
     summary: cleanText(input.summary) || previous?.summary || '',
     handoffPath: cleanText(input.handoffPath) || previous?.handoffPath || '',
     workerId: cleanText(input.workerId) || previous?.workerId || '',
+    ...(input.goalTaskId || previous?.goalTaskId ? { goalTaskId: input.goalTaskId || previous.goalTaskId } : {}),
   };
   const delegations = previous
     ? goal.delegations.map(item => item.id === id ? entry : item)
@@ -187,7 +190,7 @@ export function recordGoalObservation(goal, input) {
     artifactPath: cleanText(input.artifactPath), artifactHash: cleanText(input.artifactHash),
   };
   if (Number.isSafeInteger(input.exitCode)) observation.exitCode = input.exitCode;
-  return { ...goal, observations: [...goal.observations, observation] };
+  return refreshGoalTasks({ ...goal, observations: [...goal.observations, observation] }, observation.revision);
 }
 
 // 重新读取旧观察前检查版本与变更。变更无特定范围时，全部旧观察均需复验。
@@ -200,6 +203,11 @@ function applicableEvidence(goal, criterionId, currentRevision, proposedChecks =
     }
   };
   for (const verdict of goal.verdicts || []) collectReferences(verdict.checks);
+  for (const task of goal.tasks || []) {
+    for (const attempt of task.attempts) {
+      for (const review of attempt.reviews || []) collectReferences(review.checks);
+    }
+  }
   collectReferences(proposedChecks);
   const boundChecks = new Set(goal.observations.filter(item =>
     item.checkKey && (item.criterionIds.includes(criterionId) || bindings.has(item.id))).map(item => item.checkKey));
@@ -252,6 +260,56 @@ export function groundedVerdict(goal, record) {
   return unreachable ? Boolean(record.reason) && goal.criteria.some(supported) : goal.criteria.every(supported);
 }
 
+function taskProofApplies(goal, task, proof) {
+  const all = goal.criteria.filter(item => task.criterionIds.includes(item.id));
+  const criteria = proof.workspaceOnly ? all.filter(item => item.evidence !== 'reply') : all;
+  return criteria.length > 0 && all.length === task.criterionIds.length &&
+    groundedVerdict({ ...goal, criteria }, { ...proof, decision: 'completed' });
+}
+
+function independentTaskReview(task, review) {
+  const attempt = task.attempts.at(-1);
+  const executor = cleanText(review?.executorModel).toLowerCase();
+  const reviewer = cleanText(review?.gatekeeperModel).toLowerCase();
+  return Boolean(executor && reviewer && executor === cleanText(attempt?.model).toLowerCase() && executor !== reviewer &&
+    !(attempt.models || []).some(model => model.toLowerCase() === reviewer));
+}
+
+export function verifyGoalTask(goal, taskId, verdict) {
+  if (goal.status !== 'active' || !decisions.has(verdict?.decision)) return goal;
+  const task = goal.tasks?.find(item => item.id === taskId);
+  if (task?.status !== 'delivered' || !task.criterionIds.length) return goal;
+  const proof = { currentRevision: cleanText(verdict.currentRevision), checks: normalizeChecks(verdict.checks),
+    ...(verdict.workspaceOnly && task.criterionIds.some(id => goal.criteria.find(c => c.id === id)?.evidence === 'reply')
+      ? { workspaceOnly: true } : {}),
+    executorModel: cleanText(verdict.executorModel), gatekeeperModel: cleanText(verdict.gatekeeperModel) };
+  const latestRevision = goal.observations.at(-1)?.revision;
+  const independent = independentTaskReview(task, proof);
+  const passed = verdict.decision === 'completed' && independent && latestRevision === proof.currentRevision &&
+    !pendingGoalDependencies(goal, task).length && taskProofApplies(goal, task, proof);
+  const reviewReason = verdict.decision === 'completed' && !passed
+    ? '本次交付缺少与当前版本和验收条件一致的独立证据。' : cleanText(verdict.reason);
+  const review = { decision: verdict.decision === 'completed' && !passed ? 'continue' : verdict.decision,
+    reason: reviewReason, observedThrough: cleanText(verdict.observedThrough), ...proof };
+  if (!independent || !proof.checks.every(check => task.criterionIds.includes(check.criterionId))) review.checks = [];
+  const last = task.attempts.at(-1);
+  const reviews = last.reviews || [];
+  if (!passed && JSON.stringify(reviews.at(-1)) === JSON.stringify(review)) return goal;
+  const attempts = [...task.attempts.slice(0, -1), { ...last, reviews: [...reviews, review] }];
+  const { verification, ...delivery } = task;
+  const next = { ...delivery, attempts, reviewReason,
+    ...(passed ? { status: proof.workspaceOnly ? 'delivered' : 'verified', verification: proof } : {}) };
+  return refreshGoalTasks({ ...goal, tasks: goal.tasks.map(item => item === task ? next : item) });
+}
+
+export function refreshGoalTasks(goal, currentRevision = goal.observations.at(-1)?.revision) {
+  if (!goal.tasks?.some(item => item.verification)) return goal;
+  const tasks = goal.tasks.map(task => task.verification &&
+    (!independentTaskReview(task, task.verification) || task.verification.currentRevision !== currentRevision ||
+    !taskProofApplies(goal, task, task.verification)) ? withdrawGoalTaskProof(task) : task);
+  return refreshGoalTaskDependencies(tasks.some((task, index) => task !== goal.tasks[index]) ? { ...goal, tasks } : goal);
+}
+
 // 跳过旧版本、调用编号和运行时长；同一失败要以新结果、改动或新的有效观测打破。
 function progressFingerprint(goal, record) {
   const latest = new Map();
@@ -297,7 +355,17 @@ export function applyGoalVerdict(goal, input = {}) {
     accepted = 'continue';
     reason = '验收结论缺少与当前版本和验收项对应的有效机器证据。';
   }
-  const result = { ...goal, verdicts: [...goal.verdicts, { ...record, accepted, resultReason: reason }], reason };
+  let result = refreshGoalTasks({ ...goal, verdicts: [...goal.verdicts, { ...record, accepted, resultReason: reason }], reason },
+    record.currentRevision || goal.observations.at(-1)?.revision);
+  if (accepted === 'completed') {
+    for (const task of result.tasks || []) {
+      // 总验收没有收到任务说明。只有任务本身就是原验收项时，才能直接复用它的结论。
+      if (task.criterionIds.length !== 1 ||
+          goal.criteria.find(item => item.id === task.criterionIds[0])?.text !== task.title) continue;
+      const checks = record.checks.filter(check => task.criterionIds.includes(check.criterionId));
+      result = verifyGoalTask(result, task.id, { ...record, checks });
+    }
+  }
   if (accepted === 'pause') return pauseGoal(result, reason || '验收已暂停。');
   if (accepted === 'completed' || accepted === 'unreachable') {
     return stopGoal(result, accepted === 'completed' ? 'completed' : 'failed', reason);
@@ -372,6 +440,7 @@ export function renderGoalContext(goal, { fullReport = false } = {}) {
     `目标：${goal.objective}`,
     goal.criteriaPending && '正在从目标中提取验收条件。',
     '验收标准：', ...priorities.map(({ criterion, label }) => `- [${criterion.id}] ${criterion.text}（${label}）`),
+    renderGoalTasks(goal),
     goal.constraints && `约束：${goal.constraints}`,
     usageSummary(goal),
     goal.maxWaitMs && `每个后台任务等待上限：${goal.maxWaitMs / 1000} 秒`,
