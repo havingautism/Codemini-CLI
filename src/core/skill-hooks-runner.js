@@ -1,4 +1,4 @@
-import { spawn, spawnSync } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 
 const DEFAULT_TIMEOUT_SEC = 30;
 const HOOK_EXECUTION_LIMIT = 16000;
@@ -124,54 +124,29 @@ function buildHookResult(exitCode, fields, eventName = '') {
   };
 }
 
-// Mirror of src/core/shell.js: walk the descendant tree so a `shell: true`
-// child (which is NOT a process-group leader, so `process.kill(-pid)` would
-// ESRCH) has every descendant killed, not just the /bin/sh wrapper.
-function collectDescendantPids(rootPid, seen = new Set()) {
-  const pid = Number(rootPid);
-  if (!Number.isInteger(pid) || pid <= 0 || seen.has(pid) || process.platform === 'win32') {
-    return [];
-  }
-  seen.add(pid);
-  const result = spawnSync('ps', ['-o', 'pid=', '--ppid', String(pid)], { encoding: 'utf8' });
-  if (result.status !== 0 || !result.stdout) return [];
-  const directChildren = result.stdout
-    .split('\n')
-    .map((value) => Number(String(value || '').trim()))
-    .filter((value) => Number.isInteger(value) && value > 0);
-  const descendants = [];
-  for (const childPid of directChildren) {
-    if (seen.has(childPid)) continue;
-    descendants.push(childPid);
-    descendants.push(...collectDescendantPids(childPid, seen));
-  }
-  return descendants;
-}
-
-function killProcessTree(pid, signal = 'SIGKILL') {
-  const numericPid = Number(pid);
-  if (!Number.isInteger(numericPid) || numericPid <= 0) return;
+function terminateHook(child) {
+  const { pid } = child;
+  if (!pid) return;
+  const killChild = () => {
+    try { child.kill('SIGKILL'); } catch { /* best effort */ }
+  };
   if (process.platform === 'win32') {
     try {
-      spawn('taskkill', ['/pid', String(numericPid), '/T', '/F'], {
+      execFile('taskkill.exe', ['/pid', String(pid), '/T', '/F'], {
+        timeout: 2000,
         windowsHide: true,
-        stdio: 'ignore',
+      }, (error) => {
+        if (error) killChild();
       }).unref();
-    } catch {}
+    } catch {
+      killChild();
+    }
     return;
   }
-  const descendants = collectDescendantPids(numericPid);
-  for (const targetPid of descendants.reverse()) {
-    try {
-      process.kill(targetPid, signal);
-    } catch {
-      // already gone
-    }
-  }
   try {
-    process.kill(numericPid, signal);
+    process.kill(-pid, 'SIGKILL');
   } catch {
-    // already gone
+    killChild();
   }
 }
 
@@ -179,6 +154,8 @@ function runShellCommand(command, { input, env, timeoutMs, cwd }) {
   return new Promise((resolve) => {
     const child = spawn(command, {
       shell: true,
+      // On POSIX a dedicated process group lets us terminate the shell and its children.
+      detached: process.platform !== 'win32',
       windowsHide: true,
       env: { ...process.env, ...env },
       ...(cwd ? { cwd } : {}),
@@ -188,7 +165,6 @@ function runShellCommand(command, { input, env, timeoutMs, cwd }) {
     let stdout = '';
     let stderr = '';
     let settled = false;
-    let timedOut = false;
 
     const finish = (payload) => {
       if (settled) return;
@@ -198,8 +174,12 @@ function runShellCommand(command, { input, env, timeoutMs, cwd }) {
     };
 
     const timer = setTimeout(() => {
-      timedOut = true;
-      killProcessTree(child.pid);
+      finish({ timedOut: true, exitCode: null, stdout, stderr });
+      terminateHook(child);
+      child.stdin.destroy();
+      child.stdout.destroy();
+      child.stderr.destroy();
+      child.unref();
     }, timeoutMs);
 
     child.stdout.on('data', (chunk) => {
@@ -212,7 +192,6 @@ function runShellCommand(command, { input, env, timeoutMs, cwd }) {
     child.on('error', (error) => {
       finish({
         error,
-        timedOut,
         exitCode: null,
         stdout,
         stderr,
@@ -221,8 +200,7 @@ function runShellCommand(command, { input, env, timeoutMs, cwd }) {
 
     child.on('close', (exitCode, signal) => {
       finish({
-        timedOut,
-        killed: timedOut || Boolean(signal),
+        killed: Boolean(signal),
         signal,
         exitCode,
         stdout,
@@ -230,6 +208,8 @@ function runShellCommand(command, { input, env, timeoutMs, cwd }) {
       });
     });
 
+    // A fast-exiting hook can close its input before the parent finishes writing.
+    child.stdin.on('error', () => {});
     if (input != null) {
       child.stdin.end(JSON.stringify(input));
     } else {

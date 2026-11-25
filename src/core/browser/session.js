@@ -1,6 +1,6 @@
 import { performance } from 'node:perf_hooks';
 import { resolveBrowserConfig } from './schema.js';
-import { sourceResolverFor } from './diagnostics.js';
+import { networkLogUrl, sourceResolverFor } from './diagnostics.js';
 import {
   launchPlaywrightCoreBrowser,
   playwrightCoreLoaded,
@@ -131,22 +131,24 @@ export function createBrowserSession({ config = {}, workspaceRoot = process.cwd(
     page.on('request', (request) => {
       const type = request.resourceType();
       if (!['document', 'fetch', 'xhr'].includes(type)) return;
+      const url = networkLogUrl(request.url());
       pushLog({
         kind: 'network',
         level: 'info',
-        text: `${request.method()} ${request.url()}`.slice(0, 300),
-        url: request.url(),
+        text: `${request.method()} ${url}`,
+        url,
       });
     });
     page.on('response', (response) => {
       if (response.status() < 400) return;
       const type = response.request().resourceType();
       if (!['document', 'fetch', 'xhr'].includes(type)) return;
+      const url = networkLogUrl(response.url());
       pushLog({
         kind: 'network',
         level: 'error',
-        text: `${response.status()} ${response.url()}`.slice(0, 300),
-        url: response.url(),
+        text: `${response.status()} ${url}`,
+        url,
       });
     });
     page.on('dialog', (dialog) => {

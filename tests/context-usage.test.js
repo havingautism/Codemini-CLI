@@ -102,3 +102,94 @@ test('runtime CTX uses the active sub-session request without adding the parent'
   assert.equal(snapshot.currentContextTokens, 1200);
   assert.equal(snapshot.contextUsagePct, 12);
 });
+
+test('runtime CTX uses the post-compact estimate until the next request reports usage', () => {
+  const compactAt = Date.now();
+  const snapshot = buildRuntimeStateSnapshot({
+    currentSession: {
+      id: 'session-1',
+      messages: [
+        { role: 'user', content: 'Earlier prompt' },
+        {
+          role: 'assistant',
+          content: 'Earlier answer',
+          at: new Date(compactAt - 20).toISOString(),
+          usage: { inputTokens: 148820 },
+        },
+      ],
+      compact: {
+        estimatedTokens: 11115,
+        estimatedAt: compactAt,
+        view: [
+          {
+            role: 'assistant',
+            content: 'summary',
+            at: new Date(compactAt - 10).toISOString(),
+            usage: { inputTokens: 148820 },
+          },
+          { role: 'user', content: 'Continue the task', at: new Date(compactAt - 5).toISOString() },
+        ],
+      },
+    },
+    config: {
+      model: { max_context_tokens: 202752 },
+      execution: { mode: 'normal' },
+      sandbox: {},
+      sdk: {},
+    },
+    model: 'test-model',
+    executionMode: 'normal',
+    workspaceRoot: 'C:\\workspace',
+  });
+
+  assert.equal(snapshot.currentContextTokens, 11115);
+  assert.equal(snapshot.contextUsageSource, 'estimated');
+  assert.equal(snapshot.maxContextTokens, 202752);
+  assert.ok(Math.abs(snapshot.contextUsagePct - (11115 / 202752) * 100) < 1e-6);
+});
+
+test('runtime CTX follows real input tokens after the next post-compact request', () => {
+  const compactAt = Date.now() - 1000;
+  const snapshot = buildRuntimeStateSnapshot({
+    currentSession: {
+      id: 'session-1',
+      messages: [
+        { role: 'user', content: 'Continue the task' },
+        {
+          role: 'assistant',
+          content: 'Done',
+          at: new Date(compactAt + 500).toISOString(),
+          usage: { inputTokens: 29427 },
+        },
+      ],
+      compact: {
+        estimatedTokens: 11115,
+        estimatedAt: compactAt,
+        view: [
+          { role: 'assistant', content: 'summary', at: new Date(compactAt - 10).toISOString() },
+          { role: 'user', content: 'Continue the task' },
+          {
+            role: 'assistant',
+            content: 'Done',
+            at: new Date(compactAt + 500).toISOString(),
+            usage: { inputTokens: 29427 },
+          },
+        ],
+      },
+    },
+    config: {
+      model: { max_context_tokens: 202752 },
+      execution: { mode: 'normal' },
+      sandbox: {},
+      sdk: {},
+    },
+    model: 'test-model',
+    executionMode: 'normal',
+    workspaceRoot: 'C:\\workspace',
+  });
+
+  assert.equal(snapshot.currentContextTokens, 29427);
+  assert.equal(snapshot.contextUsageSource, 'actual');
+  assert.ok(Math.abs(snapshot.contextUsagePct - (29427 / 202752) * 100) < 1e-6);
+});
+

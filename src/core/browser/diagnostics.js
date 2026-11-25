@@ -374,8 +374,38 @@ export async function locateSource(cdp, session, selector) {
   return (workspaceLocations.length ? workspaceLocations : locations).slice(0, 8);
 }
 
-export async function probeClick(page, locator, { timeout, observeMs }) {
+export function networkLogUrl(value, maxLength = 200) {
+  try {
+    const url = new URL(value);
+    return ['http:', 'https:'].includes(url.protocol)
+      ? `${url.origin}${url.pathname}`.slice(0, maxLength)
+      : url.protocol;
+  } catch {
+    return '[invalid URL]';
+  }
+}
+
+export async function waitForBrowserOutcome(page, expectation, timeout) {
+  const { state, selector, value } = expectation;
+  const started = Date.now();
+  try {
+    if (state === 'url_path') {
+      await page.waitForURL((url) => url.pathname === value, { timeout, waitUntil: 'commit' });
+    } else {
+      const locator = page.locator(selector);
+      const target = state === 'text' ? locator.filter({ hasText: value }) : locator;
+      await target.waitFor({ state: state === 'hidden' ? 'hidden' : 'visible', timeout });
+    }
+    return { ok: true, state, elapsed_ms: Date.now() - started };
+  } catch (error) {
+    const reason = error?.name === 'TimeoutError' ? 'timeout' : page.isClosed() ? 'page_closed' : 'locator_error';
+    return { ok: false, state, elapsed_ms: Date.now() - started, reason };
+  }
+}
+
+export async function probeClick(page, locator, { timeout, observeMs, expectation }) {
   const bucket = { console: [], exceptions: [], network: [] };
+  const requests = new Map();
   const onConsole = (message) => {
     if (bucket.console.length >= 10) return;
     bucket.console.push({ level: message.type(), text: message.text().slice(0, 240) });
@@ -386,14 +416,39 @@ export async function probeClick(page, locator, { timeout, observeMs }) {
   };
   const onRequest = (request) => {
     const type = request.resourceType();
-    if (type !== 'fetch' && type !== 'xhr') return;
+    if (!['document', 'fetch', 'xhr'].includes(type)) return;
     if (bucket.network.length >= 10) return;
-    bucket.network.push({ method: request.method(), url: request.url().slice(0, 200) });
+    const entry = { method: request.method(), url: networkLogUrl(request.url()), outcome: 'pending' };
+    requests.set(request, { entry, started: Date.now() });
+    bucket.network.push(entry);
   };
-  page.on('console', onConsole);
-  page.on('pageerror', onError);
-  page.on('request', onRequest);
-  await locator.evaluate(() => {
+  const onResponse = (response) => {
+    const tracked = requests.get(response.request());
+    if (!tracked) return;
+    tracked.entry.status = response.status();
+    tracked.entry.outcome = 'responded';
+    tracked.entry.elapsed_ms = Date.now() - tracked.started;
+  };
+  const finishRequest = (request, outcome) => {
+    const tracked = requests.get(request);
+    if (!tracked) return;
+    tracked.entry.outcome = outcome;
+    tracked.entry.elapsed_ms = Date.now() - tracked.started;
+    if (outcome === 'failed') {
+      // Chromium network errors are fixed codes. Avoid arbitrary failure strings in the result.
+      const error = request.failure()?.errorText || '';
+      if (/^(?:net::)?ERR_[A-Z0-9_]+$/.test(error)) tracked.entry.failure = error;
+    }
+  };
+  const listeners = {
+    console: onConsole,
+    pageerror: onError,
+    request: onRequest,
+    response: onResponse,
+    requestfinished: (request) => finishRequest(request, 'finished'),
+    requestfailed: (request) => finishRequest(request, 'failed'),
+  };
+  await page.evaluate(() => {
     window.__codeminiMutations = [];
     const observer = new MutationObserver((records) => {
       for (const record of records) {
@@ -412,28 +467,34 @@ export async function probeClick(page, locator, { timeout, observeMs }) {
   }).catch(() => {});
 
   let click = { ok: true };
+  let assertion = null;
+  let mutations = [];
+  for (const [event, listener] of Object.entries(listeners)) page.on(event, listener);
   try {
-    await locator.click({ timeout });
-  } catch (error) {
-    const message = String(error?.message || error).split('\n')[0].slice(0, 300);
-    click = {
-      ok: false,
-      code: /timeout/i.test(message) ? 'TIMEOUT' : 'TARGET_NOT_ACTIONABLE',
-      error: message,
-    };
+    try {
+      await locator.click({ timeout });
+    } catch (error) {
+      const message = String(error?.message || error).split('\n')[0].slice(0, 300);
+      click = {
+        ok: false,
+        code: /timeout/i.test(message) ? 'TIMEOUT' : 'TARGET_NOT_ACTIONABLE',
+        error: message,
+      };
+    }
+    const observation = new Promise((resolve) => setTimeout(resolve, observeMs));
+    if (click.ok && expectation) assertion = await waitForBrowserOutcome(page, expectation, timeout);
+    await observation;
+  } finally {
+    for (const [event, listener] of Object.entries(listeners)) page.off(event, listener);
+    mutations = await page.evaluate(() => {
+      const list = window.__codeminiMutations || [];
+      if (window.__codeminiObserver) window.__codeminiObserver.disconnect();
+      delete window.__codeminiObserver;
+      delete window.__codeminiMutations;
+      return list;
+    }).catch(() => []);
   }
-  await new Promise((resolve) => setTimeout(resolve, observeMs));
-  const mutations = await page.evaluate(() => {
-    const list = window.__codeminiMutations || [];
-    if (window.__codeminiObserver) window.__codeminiObserver.disconnect();
-    delete window.__codeminiObserver;
-    delete window.__codeminiMutations;
-    return list;
-  }).catch(() => []);
-  page.off('console', onConsole);
-  page.off('pageerror', onError);
-  page.off('request', onRequest);
-  return { click, console: bucket.console, exceptions: bucket.exceptions, network: bucket.network, mutations };
+  return { click, ...bucket, mutations, ...(assertion ? { assertion } : {}) };
 }
 
 export function sourceResolverFor(session) {

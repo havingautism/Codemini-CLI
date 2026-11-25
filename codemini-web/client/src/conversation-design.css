@@ -628,6 +628,16 @@ textarea, input {
   border-top: 1px solid var(--line);
 }
 
+[data-slot="dialog-content"][data-compact="true"] [data-slot="dialog-header"] {
+  border-bottom: 0;
+  padding-bottom: 0.25rem;
+}
+
+[data-slot="dialog-content"][data-compact="true"] [data-slot="dialog-footer"] {
+  border-top: 0;
+  padding-top: 0;
+}
+
 [data-slot="dialog-content"] :is(.rounded-md, .rounded-lg, .rounded-xl, .rounded-2xl):is(.border, .border-dashed) {
   border-radius: var(--radius-card);
   border-color: var(--line);

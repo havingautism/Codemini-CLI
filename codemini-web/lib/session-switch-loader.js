@@ -4,6 +4,7 @@ function compactMeta(compact) {
     boundaryIndex: compact.boundaryIndex,
     mode: compact.mode,
     timestamp: compact.timestamp,
+    ...(compact.duringTurn ? { duringTurn: true } : {}),
   };
 }
 

@@ -1,8 +1,14 @@
 import { locateSource } from './diagnostics.js'
-import { ensureDevServer, isLikelyAuthPage } from './dev-server.js'
-import { isDevEnvironment, probeDevEnvironment } from './environment.js'
+import { ensureDevServer, isLikelyAuthPage, stopSpawnedProcess } from './dev-server.js'
+import { probeDevEnvironment } from './environment.js'
 import { isGeneratedBundlePath, isLibraryPath, isOriginalSourcePath } from './sourcemap.js'
-import { getVisualFeedbackInitScript, VISUAL_FEEDBACK_BINDING } from './visual-feedback-overlay.js'
+import {
+  getVisualFeedbackInitScript,
+  groupVisualFeedbackNotesByPage,
+  isVisualFeedbackNoteOnPage,
+  visualFeedbackPageKey,
+  VISUAL_FEEDBACK_BINDING,
+} from './visual-feedback-overlay.js'
 import { normalizeVisualFeedbackLocale } from './visual-feedback-i18n.js'
 import {
   captureVisualFeedbackScreenshots,
@@ -17,11 +23,18 @@ export {
   VISUAL_FEEDBACK_BINDING,
   VISUAL_FEEDBACK_CHILD_LABEL_LIMIT,
   VISUAL_FEEDBACK_MARKUP_LIMIT,
+  VISUAL_FEEDBACK_MAX_PENDING_NOTES,
+  VISUAL_FEEDBACK_STORAGE_KEY,
+  VISUAL_FEEDBACK_STORAGE_KEY_V1,
   getVisualFeedbackInitScript,
+  groupVisualFeedbackNotesByPage,
   isVisualFeedbackInteractiveElement,
+  isVisualFeedbackNoteOnPage,
   visualFeedbackChildLabels,
   visualFeedbackInteractiveAncestorName,
   visualFeedbackOwnName,
+  visualFeedbackPageKey,
+  visualFeedbackPageLabel,
 } from './visual-feedback-overlay.js'
 export { getVisualFeedbackOverlayStrings, normalizeVisualFeedbackLocale, VISUAL_FEEDBACK_OVERLAY_KEYS } from './visual-feedback-i18n.js'
 export {
@@ -76,7 +89,7 @@ export function formatVisualFeedbackVerificationContract(notes = []) {
     '- After you make edits, run existing project tests if present, and verify the change in this same session.',
   ]
   if (hasFunctional) {
-    lines.push('- For functional notes that need a click or live check, click the element and inspect the resulting route, dialog, console, and network. Do not rely on screenshots alone.')
+    lines.push('- For functional notes, click the element with browser_diagnose and verify the business outcome with expect or browser_inspect assert.')
   }
   return lines.join('\n')
 }
@@ -177,25 +190,44 @@ function formatElementIdentityLines(element, { sourceLocations, screenshot } = {
   return lines
 }
 
+function formatVisibleNoteLine(note, index) {
+  const elements = noteElements(note)
+  const selectors = elements.map((item) => item.selector).filter(Boolean)
+  const selector = selectors.length > 1
+    ? `${selectors.length} elements selected together (${selectors.join(', ')})`
+    : (selectors[0] || note.element?.selector || '(no selector)')
+  const text = String(note.text || '').trim() || '(no text)'
+  const stale = note.stale ? ' [stale]' : ''
+  return `${index}. ${text} — ${selector}${stale}`
+}
+
 export function formatVisualFeedbackVisibleText(payload) {
   const notes = Array.isArray(payload?.notes) ? payload.notes : []
-  const url = payload?.url || payload?.environment?.url || ''
-  const lines = [`Visual Feedback: ${notes.length} note${notes.length === 1 ? '' : 's'} on ${url || 'the open page'}`]
-  notes.forEach((note, index) => {
-    const elements = noteElements(note)
-    const selectors = elements.map((item) => item.selector).filter(Boolean)
-    const selector = selectors.length > 1
-      ? `${selectors.length} elements selected together (${selectors.join(', ')})`
-      : (selectors[0] || note.element?.selector || '(no selector)')
-    const text = String(note.text || '').trim() || '(no text)'
-    const stale = note.stale ? ' [stale]' : ''
-    lines.push(`${index + 1}. ${text} — ${selector}${stale}`)
-  })
+  const groups = groupVisualFeedbackNotesByPage(notes)
+  const fallbackUrl = payload?.url || payload?.environment?.url || ''
+  if (groups.length <= 1) {
+    const url = groups[0]?.url || fallbackUrl
+    const lines = [`Visual Feedback: ${notes.length} note${notes.length === 1 ? '' : 's'} on ${url || 'the open page'}`]
+    notes.forEach((note, index) => {
+      lines.push(formatVisibleNoteLine(note, index + 1))
+    })
+    return lines.join('\n')
+  }
+  const lines = [`Visual Feedback: ${notes.length} notes across ${groups.length} pages`]
+  let index = 1
+  for (const group of groups) {
+    lines.push(group.url || group.pageKey)
+    for (const note of group.notes) {
+      lines.push(formatVisibleNoteLine(note, index))
+      index += 1
+    }
+  }
   return lines.join('\n')
 }
 
 export function formatVisualFeedbackMessage(payload) {
   const notes = Array.isArray(payload?.notes) ? payload.notes : []
+  const groups = groupVisualFeedbackNotesByPage(notes)
   const url = payload?.url || payload?.environment?.url || ''
   const envIds = (payload?.environment?.strong || []).map((item) => item.id || item).join(', ')
   const lines = [
@@ -206,16 +238,18 @@ export function formatVisualFeedbackMessage(payload) {
     `URL: ${url || '(unknown)'}`,
     `Title: ${payload?.title || ''}`,
     `Environment: ${payload?.environment?.ok ? 'development' : 'not development'}${envIds ? ` (${envIds})` : ''}`,
-    `Notes: ${notes.length}`,
+    `Notes: ${notes.length}${groups.length > 1 ? ` across ${groups.length} pages` : ''}`,
     '',
   ]
-  notes.forEach((note, index) => {
+  let noteIndex = 0
+  const renderNote = (note, pageUrl) => {
+    noteIndex += 1
     const elements = noteElements(note)
     const shared = elements.length > 1
     const stale = note.stale ? ' (stale: selector, tag, id, or text no longer matches)' : ''
     const title = shared
-      ? `## ${index + 1}. ${note.kind === 'functional' ? 'Functional' : 'Visual'} note (${elements.length} elements selected together)${stale}`
-      : `## ${index + 1}. ${note.kind === 'functional' ? 'Functional' : 'Visual'} note${stale}`
+      ? `## ${noteIndex}. ${note.kind === 'functional' ? 'Functional' : 'Visual'} note (${elements.length} elements selected together)${stale}`
+      : `## ${noteIndex}. ${note.kind === 'functional' ? 'Functional' : 'Visual'} note${stale}`
     lines.push(title)
     lines.push('')
     lines.push(String(note.text || '').trim() || '(no text)')
@@ -243,9 +277,23 @@ export function formatVisualFeedbackMessage(payload) {
         screenshot: element.screenshot || note.screenshot,
       }))
     }
-    if (note.url && note.url !== url) lines.push(`- Note URL: ${note.url}`)
+    const noteUrl = note.url || pageUrl
+    if (noteUrl && noteUrl !== url && groups.length <= 1) lines.push(`- Note URL: ${noteUrl}`)
     lines.push('')
-  })
+  }
+  if (groups.length > 1) {
+    groups.forEach((group, offset) => {
+      const heading = group.title
+        ? `# Page ${offset + 1}. ${group.url || group.pageKey} (${group.title})`
+        : `# Page ${offset + 1}. ${group.url || group.pageKey}`
+      lines.push(heading)
+      lines.push(`${group.notes.length} note${group.notes.length === 1 ? '' : 's'}`)
+      lines.push('')
+      for (const note of group.notes) renderNote(note, group.url)
+    })
+  } else {
+    notes.forEach((note) => renderNote(note, groups[0]?.url || url))
+  }
   lines.push(formatVisualFeedbackVerificationContract(notes))
   const media = visualFeedbackScreenshotAttachments(notes)
   return {
@@ -266,35 +314,82 @@ async function locateElementSource(session, element) {
   }
 }
 
+function preserveOffPageNoteMedia(note) {
+  const elements = noteElements(note)
+  const withShot = (item, fallback) => {
+    if (item?.screenshot?.data || item?.screenshot?.unavailable) return item
+    if (fallback?.data || fallback?.unavailable) return item
+    return { ...item, screenshot: { unavailable: true, reason: 'not-captured' } }
+  }
+  if (elements.length > 1) {
+    const nextElements = elements.map((element) => withShot({ ...element }))
+    const hasAny = nextElements.some((item) => item.screenshot?.data) || note.screenshot?.data
+    return {
+      ...note,
+      shared: true,
+      elements: nextElements,
+      element: nextElements[0] || note.element,
+      screenshot: note.screenshot || (hasAny ? note.screenshot : { unavailable: true, reason: 'not-captured' }),
+    }
+  }
+  if (note.screenshot?.data || note.screenshot?.unavailable) return { ...note }
+  const element = elements[0] || note.element
+  if (element?.screenshot?.data || element?.screenshot?.unavailable) {
+    return { ...note, screenshot: element.screenshot }
+  }
+  return { ...note, screenshot: { unavailable: true, reason: 'not-captured' } }
+}
+
 export async function enrichVisualFeedbackPayload(session, payload = {}, options = {}) {
+  const currentUrl = payload.url || session?.page?.url?.() || ''
   const notes = []
+  const captureList = []
+  const captureIndex = []
   for (const note of payload.notes || []) {
+    const onCurrentPage = isVisualFeedbackNoteOnPage(note, currentUrl)
     const elements = noteElements(note)
     const enrichedElements = []
     for (const element of elements) {
-      const located = await locateElementSource(session, element)
-      const sourceLocations = located.length ? located : (element.sourceLocations || [])
-      enrichedElements.push({ ...element, sourceLocations })
+      if (onCurrentPage) {
+        const located = await locateElementSource(session, element)
+        const sourceLocations = located.length ? located : (element.sourceLocations || [])
+        enrichedElements.push({ ...element, sourceLocations })
+      } else {
+        // Do not re-query the live DOM on a different page. Keep annotation-time context.
+        enrichedElements.push({ ...element })
+      }
     }
     const shared = enrichedElements.length > 1
-    notes.push({
+    const enriched = {
       ...note,
       shared,
       element: enrichedElements[0] || note.element,
       elements: shared ? enrichedElements : undefined,
-      sourceLocations: enrichedElements[0]?.sourceLocations || [],
-    })
+      sourceLocations: enrichedElements[0]?.sourceLocations || note.sourceLocations || [],
+    }
+    if (onCurrentPage) {
+      captureIndex.push(notes.length)
+      captureList.push(enriched)
+      notes.push(enriched)
+    } else {
+      notes.push(preserveOffPageNoteMedia(enriched))
+    }
   }
-  const captured = await captureVisualFeedbackScreenshots(session, notes, options)
+  const captured = captureList.length
+    ? await captureVisualFeedbackScreenshots(session, captureList, options)
+    : []
+  captureIndex.forEach((index, offset) => {
+    notes[index] = captured[offset] || notes[index]
+  })
   const environment = payload.environment?.strong
     ? payload.environment
     : await probeDevEnvironment(session).catch(() => payload.environment || { ok: false, strong: [], weak: [] })
   return {
     ...payload,
-    url: payload.url || session?.page?.url?.() || '',
+    url: payload.url || session?.page?.url?.() || currentUrl,
     title: payload.title || (session?.page ? await session.page.title().catch(() => '') : ''),
     environment,
-    notes: captured,
+    notes,
   }
 }
 
@@ -322,11 +417,24 @@ export async function installVisualFeedback(session, hooks = {}, { locale } = {}
         currentHooks.onState?.(message.payload)
         return { ok: true }
       }
+      if (type === 'enrich-note') {
+        const note = message.payload?.note
+        if (!note) return { ok: false, code: 'NO_NOTES' }
+        const pageUrl = message.payload?.url || session?.page?.url?.() || ''
+        const current = session?.page?.url?.() || ''
+        if (current && pageUrl && visualFeedbackPageKey(current) !== visualFeedbackPageKey(note.url || pageUrl)) {
+          return { ok: false, code: 'PAGE_CHANGED' }
+        }
+        const enriched = await enrichVisualFeedbackPayload(session, {
+          notes: [note],
+          url: pageUrl || current,
+          title: message.payload?.title,
+          environment: message.payload?.environment,
+        })
+        return { ok: true, note: enriched.notes?.[0] || null }
+      }
       if (type === 'submit') {
         const enriched = await enrichVisualFeedbackPayload(session, message.payload || {})
-        if (!isDevEnvironment(enriched.environment)) {
-          return { ok: false, code: 'NOT_DEV_ENVIRONMENT' }
-        }
         if (!enriched.notes?.length) {
           return { ok: false, code: 'NO_NOTES' }
         }
@@ -402,18 +510,19 @@ export async function openVisualFeedback(session, {
   await applyEnvironmentToPage(session, environment)
   session.visualFeedback = {
     ...(session.visualFeedback || {}),
-    active: environment.ok,
+    active: true,
     lastEnvironment: environment,
   }
   const title = await session.page.title().catch(() => '')
   return {
-    ok: environment.ok,
+    ok: true,
     reused: launched?.reused === true,
     url: session.page.url(),
     title,
     headless: session.launch?.headless === true,
     channel: session.lastChannel || '',
     environment,
+    limitedCapabilities: environment?.ok !== true,
   }
 }
 
@@ -464,6 +573,7 @@ export function createVisualFeedbackController({ getSession, workspaceRoot, onSu
       lastOpen = {
         ...opened,
         loginUrl: server.loginUrl || '',
+        limitedCapabilities: server.limitedCapabilities === true || opened.limitedCapabilities === true,
         devServer: {
           url: server.url,
           reused: server.reused === true,
@@ -508,13 +618,17 @@ export function createVisualFeedbackController({ getSession, workspaceRoot, onSu
           open,
         }),
         active: session?.visualFeedback?.active === true,
+        limitedCapabilities: Boolean(
+          lastOpen?.limitedCapabilities === true
+          || (open && environment && environment.ok !== true)
+        ),
       }
     },
     async close({ stopDevServer = false } = {}) {
       const session = await resolveSession().catch(() => null)
       if (session?.isOpen?.()) await session.dispose()
       if (stopDevServer && devServer && devServer.exitCode == null) {
-        devServer.kill('SIGTERM')
+        await stopSpawnedProcess(devServer)
       }
       lastOpen = null
       return { ok: true }

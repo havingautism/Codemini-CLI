@@ -9,6 +9,7 @@ import {
   X,
 } from "@/lib/icons";
 import { AgentTerminalPanel } from "@/components/AgentTerminalPanel.jsx";
+import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { t } from "../../i18n/index.js";
 
@@ -20,6 +21,14 @@ const DEFAULT_PANEL_WIDTH = 500;
 const MIN_PANEL_WIDTH = 340;
 const TAB_CLASS = "h-8 shrink-0 flex-none gap-1.5 px-2 text-[12px] focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-(--accent-blue)";
 const PANEL_CLASS = "flex min-h-0 flex-1 flex-col overflow-hidden data-[state=inactive]:hidden";
+
+function VisualFeedbackBetaBadge() {
+  return (
+    <Badge variant="outline" className="h-4 rounded-md px-1 py-0 text-[9px] font-semibold uppercase leading-none tracking-wide text-(--text-muted)">
+      {t("visualFeedbackBeta")}
+    </Badge>
+  );
+}
 const WORKSPACE_TOOLS = [
   { type: "files", label: "workspaceFilesTab", icon: FolderSimple },
   { type: "terminal", label: "terminalTitle", icon: TerminalIcon },
@@ -55,9 +64,9 @@ function ClosableWorkspaceTab({ tab, name, title, onClose, children }) {
 function WorkspacePicker({ onChooseTool, disabled, isGit }) {
   return (
     <div className="flex min-h-0 flex-1 items-center overflow-auto px-5 py-8">
-      <div className="mx-auto w-full max-w-[23rem]">
+      <div className="mx-auto w-full max-w-[26rem]">
         <h2 className="mb-3 text-sm font-medium text-(--text-primary)">{t("workspaceOpenTool")}</h2>
-        <div className="grid grid-cols-3 gap-2">
+        <div className="grid grid-cols-2 gap-2.5">
           {WORKSPACE_TOOLS.map(({ type, label, icon: Icon }) => {
             const unavailable = disabled ? t("workspaceNeedsProject") : type === "git" && !isGit ? t("workspaceGitNeedsRepo") : "";
             return (
@@ -66,11 +75,14 @@ function WorkspacePicker({ onChooseTool, disabled, isGit }) {
                 type="button"
                 disabled={Boolean(unavailable)}
                 title={unavailable || t(label)}
-                className="flex min-w-0 flex-col items-start gap-3 rounded-lg border border-(--border-default) px-3 py-3 text-left text-[12px] text-(--text-primary) hover:bg-(--bg-hover) focus-visible:outline-2 focus-visible:outline-(--accent-blue) disabled:opacity-50"
+                className="flex min-h-24 flex-col items-start gap-3 rounded-lg border border-(--border-default) px-3.5 py-3.5 text-left text-[13px] text-(--text-primary) hover:bg-(--bg-hover) focus-visible:outline-2 focus-visible:outline-(--accent-blue) disabled:opacity-50"
                 onClick={() => onChooseTool(type)}
               >
-                <Icon size={16} aria-hidden="true" />
-                <span className="w-full truncate">{t(label)}</span>
+                <Icon size={18} aria-hidden="true" />
+                <span className="flex w-full flex-wrap items-center gap-1.5">
+                  <span>{t(label)}</span>
+                  {type === "visual-feedback" ? <VisualFeedbackBetaBadge /> : null}
+                </span>
               </button>
             );
           })}
@@ -187,6 +199,7 @@ export function WorkspaceRail({
                 <ClosableWorkspaceTab key={tab.id} tab={tab} name={name} onClose={closeTab}>
                   <Icon size={14} aria-hidden="true" />
                   {name}
+                  {tab.type === "visual-feedback" ? <VisualFeedbackBetaBadge /> : null}
                 </ClosableWorkspaceTab>
               );
             })}

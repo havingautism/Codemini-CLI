@@ -120,11 +120,12 @@ function sanitizeGatewayMessages(messages) {
           tool_call_id: message.tool_call_id
         };
       }
+      const { compaction: _compaction, model_context: _modelContext, ...wireMessage } = message;
       if (!Array.isArray(message.tool_calls) || message.tool_calls.length === 0) {
-        return message;
+        return wireMessage;
       }
       return {
-        ...message,
+        ...wireMessage,
         tool_calls: message.tool_calls.map((toolCall) => ({
           ...toolCall,
           function: {
@@ -350,15 +351,18 @@ export async function createChatCompletion({
   onPayloadPrepared,
   reasoningEffort,
   timeoutMs = 1800000,
-  maxRetries = 2
+  maxRetries = 2,
+  signal: externalSignal,
 }) {
   const payload = buildPayload({ model, temperature, messages, tools, toolChoice, payloadExtras, reasoningEffort });
   onPayloadPrepared?.(payload);
+  const timeoutSignal = AbortSignal.timeout(timeoutMs);
+  const signal = externalSignal ? AbortSignal.any([timeoutSignal, externalSignal]) : timeoutSignal;
   const response = await fetchWithRetry(buildChatCompletionsUrl(baseUrl), {
     method: 'POST',
     headers: createHeaders(apiKey),
     body: stringifyGatewayJson(payload),
-    signal: AbortSignal.timeout(timeoutMs)
+    signal
   }, { maxRetries });
   const data = await parseJsonResponse(response);
   const message = data?.choices?.[0]?.message || {};

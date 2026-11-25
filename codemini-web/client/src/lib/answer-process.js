@@ -180,6 +180,33 @@ function isUserInputGroup(group) {
   return false;
 }
 
+/**
+ * During a reply, only the newest thinking block stays expanded.
+ * Tool calls, answer text, and plans do not collapse it. The previous
+ * thought collapses when the next thinking block appears.
+ */
+export function findLatestPinnedProcess(groups = []) {
+  let pinned = null;
+  for (const group of Array.isArray(groups) ? groups : []) {
+    if (group?.type !== "thinking") continue;
+    if (!String(group.text || "").trim() && !group.isStreaming) continue;
+    pinned = {
+      kind: "thinking",
+      startedAt: group.startedAt || "",
+      text: String(group.text || ""),
+    };
+  }
+  return pinned;
+}
+
+export function isPinnedThinking(group, pin) {
+  if (!pin || pin.kind !== "thinking" || group?.type !== "thinking") return false;
+  if (pin.startedAt && group.startedAt) return pin.startedAt === group.startedAt;
+  const pinText = String(pin.text || "");
+  const text = String(group.text || "");
+  return Boolean(pinText) && (text === pinText || text.startsWith(pinText));
+}
+
 function peelTrailingTextGroups(pending) {
   const textGroups = [];
   while (pending.at(-1)?.type === "text") {

@@ -12,8 +12,9 @@ export const BROWSER_LOG_SINCE = Object.freeze(['session', 'last_read']);
 export const BROWSER_LOG_KINDS = Object.freeze(['all', 'console', 'exception', 'network']);
 export const BROWSER_LOG_LEVELS = Object.freeze(['all', 'warning', 'error']);
 export const BROWSER_INSPECT_ACTIONS = Object.freeze([
-  'snapshot', 'screenshot', 'logs', 'explain_style', 'listeners', 'locate_source',
+  'snapshot', 'screenshot', 'logs', 'explain_style', 'listeners', 'locate_source', 'assert',
 ]);
+export const BROWSER_ASSERT_STATES = Object.freeze(['visible', 'hidden', 'text', 'url_path']);
 export const BROWSER_ACT_ACTIONS = Object.freeze([
   'open', 'navigate', 'click', 'type', 'eval', 'close',
 ]);
@@ -76,6 +77,7 @@ export const BROWSER_ERROR_CODES = Object.freeze([
   'EVAL_FAILED',
   'SNAPSHOT_FAILED',
   'SOURCE_NOT_FOUND',
+  'ASSERTION_FAILED',
   'BROWSER_ERROR',
 ]);
 
@@ -129,6 +131,15 @@ function parameters(properties, required = []) {
   };
 }
 
+const expectationProp = {
+  ...parameters({
+    state: { type: 'string', enum: [...BROWSER_ASSERT_STATES] },
+    selector: { type: 'string', minLength: 1, maxLength: BROWSER_LIMITS.selector },
+    value: { type: 'string', minLength: 1, maxLength: BROWSER_LIMITS.name },
+  }, ['state']),
+  description: 'visible/hidden need a CSS selector. text adds a substring value. url_path needs an exact pathname value.',
+};
+
 function define(name, description, properties, required = []) {
   return {
     type: 'function',
@@ -148,37 +159,38 @@ const timeoutProp = intProp(
 export const BROWSER_TOOL_DEFINITIONS = {
   browser_inspect: define(
     'browser_inspect',
-    'Read-only. action: snapshot, screenshot, logs, explain_style, locate_source, or listeners. locate_source maps a React or Vue node to a workspace file in a dev build with sourcemaps; then edit that file and rebuild with the project command. listeners lists DOM listeners. On React those are the root delegate in react-dom, not the component onClick. explain_style, locate_source, and listeners need one target (ref @eN, selector, or role plus name). Returns { ok, tool, summary, ... }.',
+    'Read-only. assert waits for expect. locate_source maps a React or Vue node to a workspace file using sourcemaps. React DOM listeners may point to a root delegate in react-dom. explain_style, locate_source, and listeners need one target.',
     {
-      action: { type: 'string', enum: [...BROWSER_INSPECT_ACTIONS], description: 'Inspection to run.' },
+      action: { type: 'string', enum: [...BROWSER_INSPECT_ACTIONS] },
       ...targetProperties,
-      incremental: { type: 'boolean', description: 'snapshot. Delta when smaller. Defaults to true.' },
-      interactive_only: { type: 'boolean', description: 'snapshot. Omit non-interactive text. Defaults to false.' },
-      max_chars: intProp(`snapshot. Summary budget. Defaults to ${BROWSER_LIMITS.snapshotChars.default}.`, BROWSER_LIMITS.snapshotChars),
-      full_page: { type: 'boolean', description: 'screenshot. Full scroll height. Ignored with a target. Defaults to false.' },
-      format: { type: 'string', enum: [...BROWSER_SCREENSHOT_FORMATS], description: 'screenshot. Defaults to png.' },
-      quality: intProp(`screenshot. JPEG quality. Ignored for png. Defaults to ${BROWSER_LIMITS.jpegQuality.default}.`, BROWSER_LIMITS.jpegQuality),
-      since: { type: 'string', enum: [...BROWSER_LOG_SINCE], description: 'logs. session or last_read. Defaults to last_read.' },
-      kind: { type: 'string', enum: [...BROWSER_LOG_KINDS], description: 'logs. Defaults to all.' },
-      level: { type: 'string', enum: [...BROWSER_LOG_LEVELS], description: 'logs. Defaults to all.' },
-      limit: intProp(`logs. Max entries. Defaults to ${BROWSER_LIMITS.logLimit.default}.`, BROWSER_LIMITS.logLimit),
+      expect: expectationProp,
+      incremental: { type: 'boolean', description: 'snapshot delta, default true.' },
+      interactive_only: { type: 'boolean', description: 'snapshot interactive elements only.' },
+      max_chars: intProp(`snapshot budget, default ${BROWSER_LIMITS.snapshotChars.default}.`, BROWSER_LIMITS.snapshotChars),
+      full_page: { type: 'boolean', description: 'screenshot full scroll height without a target.' },
+      format: { type: 'string', enum: [...BROWSER_SCREENSHOT_FORMATS], description: 'screenshot format, default png.' },
+      quality: intProp(`JPEG quality, default ${BROWSER_LIMITS.jpegQuality.default}.`, BROWSER_LIMITS.jpegQuality),
+      since: { type: 'string', enum: [...BROWSER_LOG_SINCE], description: 'logs cursor, default last_read.' },
+      kind: { type: 'string', enum: [...BROWSER_LOG_KINDS], description: 'logs kind, default all.' },
+      level: { type: 'string', enum: [...BROWSER_LOG_LEVELS], description: 'logs level, default all.' },
+      limit: intProp(`logs entries, default ${BROWSER_LIMITS.logLimit.default}.`, BROWSER_LIMITS.logLimit),
       properties: {
         type: 'array',
         items: { type: 'string', minLength: 1, maxLength: 40 },
         minItems: BROWSER_LIMITS.styleProps.min,
         maxItems: BROWSER_LIMITS.styleProps.max,
-        description: 'explain_style. CSS properties. Defaults to the interaction set.',
+        description: 'explain_style CSS properties, defaults to interaction styles.',
       },
-      max_rules: intProp(`explain_style. Defaults to ${BROWSER_LIMITS.maxRules.default}.`, BROWSER_LIMITS.maxRules),
+      max_rules: intProp(`explain_style rules, default ${BROWSER_LIMITS.maxRules.default}.`, BROWSER_LIMITS.maxRules),
       types: {
         type: 'array',
         items: { type: 'string', minLength: 1, maxLength: 40 },
         minItems: BROWSER_LIMITS.listenerTypes.min,
         maxItems: BROWSER_LIMITS.listenerTypes.max,
-        description: 'listeners. Event names. On React this is the root delegate, not the component handler. Omit for all, up to max_listeners.',
+        description: 'listeners event names, omit for all.',
       },
-      max_listeners: intProp(`listeners. Defaults to ${BROWSER_LIMITS.maxListeners.default}.`, BROWSER_LIMITS.maxListeners),
-      timeout_ms: intProp('screenshot. Timeout. Defaults to 5000.', BROWSER_LIMITS.actionTimeoutMs),
+      max_listeners: intProp(`listeners limit, default ${BROWSER_LIMITS.maxListeners.default}.`, BROWSER_LIMITS.maxListeners),
+      timeout_ms: intProp('screenshot or assert. Defaults to 5000.', BROWSER_LIMITS.actionTimeoutMs),
     },
     ['action'],
   ),
@@ -208,12 +220,13 @@ export const BROWSER_TOOL_DEFINITIONS = {
   ),
   browser_diagnose: define(
     'browser_diagnose',
-    'Probe an interaction. action click hits one target, then reports the hit-test, console errors, exceptions, fetch/xhr, and DOM mutations. More probe actions can be added later. Returns { ok, tool, summary, click, hit, console, exceptions, network, mutations }.',
+    'Click one target once and report hit-test, errors, network outcomes, and DOM mutations. Optionally wait for expect after clicking.',
     {
-      action: { type: 'string', enum: [...BROWSER_DIAGNOSE_ACTIONS], description: 'Probe to run. click is the first.' },
+      action: { type: 'string', enum: [...BROWSER_DIAGNOSE_ACTIONS] },
       ...targetProperties,
+      expect: expectationProp,
       observe_ms: intProp(`click. Watch window after the click. Defaults to ${BROWSER_LIMITS.observeMs.default}.`, BROWSER_LIMITS.observeMs),
-      timeout_ms: intProp('click. Click timeout. Defaults to 5000.', BROWSER_LIMITS.actionTimeoutMs),
+      timeout_ms: intProp('Timeout per click or expectation. Defaults to 5000.', BROWSER_LIMITS.actionTimeoutMs),
     },
     ['action'],
   ),

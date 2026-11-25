@@ -47,8 +47,22 @@ Each tool is `type: function`, `additionalProperties: false`, and requires `acti
 
 | Tool | Actions | Fields the action needs |
 | --- | --- | --- |
-| `browser_inspect` | snapshot, screenshot, logs, explain_style, listeners, locate_source | explain_style, listeners, and locate_source need one target. screenshot may take a target. |
+| `browser_inspect` | snapshot, screenshot, logs, explain_style, listeners, locate_source, assert | explain_style, listeners, and locate_source need one target. screenshot may take a target. assert requires `expect`. |
 | `browser_act` | open, navigate, click, type, eval, close | navigate needs `url`. click and type need one target. type needs `text` or `clear:true`. eval needs `expression`. |
-| `browser_diagnose` | click | one target. `observe_ms` 100–3000. More probe actions can be added on this tool. |
+| `browser_diagnose` | click | one target, optional `expect`, and `observe_ms` 100–3000. |
 
 Each tool declares only the fields its actions use. `browser_act` carries `channel` chrome|msedge|chromium, `wait_until` commit|domcontentloaded|load|networkidle, `button` left|right|middle, and viewport 320–3840 by 240–2160. `browser_inspect` carries snapshot, screenshot, log, style, and listener fields. `browser_diagnose` carries the target, `observe_ms` 100–3000, and `timeout_ms`. `ref` matches `^@e[1-9][0-9]*$`. The handler tightens `timeout_ms` per action.
+
+## Business outcome checks
+
+Use `browser_diagnose` to click once and wait for a page outcome in the same call.
+
+```json
+{"action":"click","selector":"#save","expect":{"state":"text","selector":"#result","value":"Saved"}}
+```
+
+Use `browser_inspect` with `action: "assert"` and the same `expect` after a fresh navigation to verify persistence without clicking again. `visible` and `hidden` take a CSS `selector`. `text` also takes a `value` and waits for a visible element containing that text. `url_path` takes a `value` matched against the URL pathname. When a result can already be present, choose a selector or text unique to the expected change.
+
+The assertion has its own `timeout_ms` budget. For `browser_diagnose`, check `click.ok` and `assertion.ok` separately. The diagnostic result can contain evidence even when the assertion fails. A standalone failed assertion returns `ASSERTION_FAILED`.
+
+The click probe tracks up to ten document, fetch, or XHR requests observed during the probe. An entry can be pending, responded, finished, or failed. A responded entry reports time to response headers. A finished or failed entry reports time to completion. HTTP errors still have an HTTP status. Network URLs omit user information, queries, and fragments. Request and response bodies are excluded. The default summary shows up to five request entries.

@@ -18,7 +18,18 @@ import { buildRunFailureMessage, getToolOutputSanitizeOptions, sanitizeTextForMo
 import { createToolRuntime, buildInvalidToolArgumentsResult } from './tool-runtime.js';
 import { createToolResultStore, summarizeToolResult } from './tool-result-store.js';
 import { rankToolDefinitions } from './harness/tool-reliability.js';
-import { applyAggressiveToolPruneBeta, compactInFlightMessages } from './context-compact.js';
+import {
+  applyAggressiveToolPruneBeta,
+  calibrationRatio,
+  compactInFlightMessages,
+  COMPACT_START_SUMMARY,
+  COMPACT_START_SUMMARY_EN,
+  estimateMessagesTokens,
+  estimatePromptUsage,
+  estimateToolDefinitionsTokens,
+  isContextOverflowError,
+  SHRINK_STEPS,
+} from './context-compact.js';
 import { normalizeModelUsage } from './model-usage.js';
 import {
   markOutsideWorkspaceMutationApproved,
@@ -661,7 +672,9 @@ export async function runAgentLoop({
   toolGuard = null,
   completionReview = null,
   skillRoute = null,
-  contextSelector = null
+  contextSelector = null,
+  generateSummary = null,
+  onCompaction = null,
 }) {
   const experienceTracker = config?.memory?.enabled === false || config?.memory?.experience?.enabled === false
     ? null
@@ -686,10 +699,8 @@ export async function runAgentLoop({
     toolRuntime.definitions(),
     toolReliabilityStore?.list?.() || [],
   );
-  const messages = [];
-  if (systemPrompt) {
-    messages.push({ role: 'system', content: systemPrompt });
-  }
+  const generatedSystem = systemPrompt ? { role: 'system', content: systemPrompt } : null;
+  const messages = generatedSystem ? [generatedSystem] : [];
   if (Array.isArray(initialMessages) && initialMessages.length > 0) {
     messages.push(...initialMessages);
   }
@@ -809,6 +820,9 @@ export async function runAgentLoop({
   const retryLimit = Number.isFinite(Number(maxIncompleteRetries)) ? Math.max(0, Math.min(10, Math.floor(Number(maxIncompleteRetries)))) : 3;
   let incompleteRetries = 0;
   let lastInputTokens = 0;
+  let measuredPrefix = [];
+  let promptCalibration = 1;
+  let pendingCompaction = null;
   let lastCompletionIncomplete = false;
   let lastToolError = false;
   let lastToolName = '';
@@ -865,29 +879,98 @@ export async function runAgentLoop({
       const selected = await contextSelector({ messages, step }).catch(() => null);
       if (Array.isArray(selected) && selected.length > 0) messages.splice(0, messages.length, ...selected);
     }
-    if (lastInputTokens > 0 && !lastCompletionIncomplete) {
-      const inflight = await compactInFlightMessages(messages, config, lastInputTokens);
-      if (inflight.changed) {
-        messages.splice(0, messages.length, ...inflight.messages);
-        onEvent?.({
-          type: 'compact:auto',
-          mode: inflight.mode,
-          threshold: inflight.threshold,
-          duringTurn: true,
-          tokensSaved: inflight.tokensSaved,
-          summary: `本轮中已压缩 (${inflight.mode}, ${inflight.threshold}%)`,
-        });
-      }
+    const tools = toolDefinitionsForModel();
+    const overheadTokens = estimateToolDefinitionsTokens(tools);
+    const compactOptions = { generateSummary, overheadTokens, calibrationRatio: promptCalibration, signal };
+    let announcedCompact = false;
+    const emitCompactStart = ({ beforePct }) => {
+      if (announcedCompact || pendingCompaction) return;
+      announcedCompact = true;
+      onEvent?.({
+        type: 'compact:start',
+        duringTurn: true,
+        beforePct,
+        summary: COMPACT_START_SUMMARY,
+        summaryEn: COMPACT_START_SUMMARY_EN,
+      });
+    };
+    const applyCompaction = (inflight) => {
+      messages.splice(0, messages.length, ...inflight.messages);
+      measuredPrefix = [];
+      lastInputTokens = 0;
+      pendingCompaction = {
+        ...inflight,
+        boundaryMessage: inflight.boundaryMessage ?? (inflight.mode === 'prune' ? pendingCompaction?.boundaryMessage : undefined),
+      };
+    };
+    const measurementMatches = lastInputTokens > 0
+      && measuredPrefix.every((message, index) => messages[index] === message);
+    const measuredTokens = measurementMatches ? lastInputTokens : 0;
+    const measuredIndex = measurementMatches ? measuredPrefix.length : -1;
+    if (step > 1 && !lastCompletionIncomplete) {
+      const inflight = await compactInFlightMessages(messages, config, measuredTokens, {
+        ...compactOptions,
+        measuredIndex,
+        onStart: emitCompactStart,
+      });
+      if (inflight.changed) applyCompaction(inflight);
     }
-    const completion = await requestCompletion({
-      model,
-      messages,
-      tools: toolDefinitionsForModel(),
-      signal
-    });
+
+    let retrySource;
+    let summaries;
+    let sentTokens;
+    let rejectedTokens;
+    let overflowAttempt = 0;
+    let completion;
+    try {
+      while (true) {
+        try {
+          completion = await requestCompletion({
+            model, messages, tools, signal,
+            ...(pendingCompaction ? { resumedContextPct: pendingCompaction.afterPct } : {}),
+          });
+          break;
+        } catch (error) {
+          if (signal?.aborted || !isContextOverflowError(error)) throw error;
+          if (!retrySource) {
+            // All retry targets and candidates come from the first rejected request.
+            retrySource = messages.slice();
+            summaries = new Map();
+            rejectedTokens = pendingCompaction?.estimatedTokens ?? estimatePromptUsage({
+              messages, measuredTokens, measuredIndex, overheadTokens, calibrationRatio: promptCalibration,
+            });
+            sentTokens = rejectedTokens;
+          }
+          let retry = false;
+          while (overflowAttempt < SHRINK_STEPS.length) {
+            const target = Math.max(1, Math.floor(rejectedTokens * SHRINK_STEPS[overflowAttempt++]));
+            const candidate = await compactInFlightMessages(retrySource, config, rejectedTokens, {
+              ...compactOptions,
+              force: true,
+              targetTokens: target,
+              aggressive: true,
+              summaryCache: summaries,
+              onStart: emitCompactStart,
+            });
+            if (candidate.changed && candidate.estimatedTokens < sentTokens) {
+              applyCompaction(candidate);
+              sentTokens = candidate.estimatedTokens;
+              retry = true;
+              break;
+            }
+          }
+          if (!retry) throw error;
+        }
+      }
+    } catch (error) {
+      if (announcedCompact || pendingCompaction) onEvent?.({ type: 'compact:skipped' });
+      throw error;
+    }
+    if (announcedCompact && !pendingCompaction) onEvent?.({ type: 'compact:skipped' });
 
     // 流式请求完成后再次检查中止状态
     if (signal?.aborted) {
+      if (pendingCompaction) onEvent?.({ type: 'compact:skipped' });
       emitStepEnd('abort');
       if (onEvent) onEvent({ type: 'aborted', step });
       break;
@@ -896,14 +979,39 @@ export async function runAgentLoop({
     if (completion?.incomplete) {
       lastCompletionIncomplete = true;
       emitStepEnd('incomplete');
-      if (++incompleteRetries > retryLimit) return settleLoop({ text: 'Completion retry limit reached.', messages, steps: step, checkpoint: true, stopReason: 'incomplete_retries' });
+      if (++incompleteRetries > retryLimit) {
+        if (pendingCompaction) onEvent?.({ type: 'compact:skipped' });
+        return settleLoop({ text: 'Completion retry limit reached.', messages, steps: step, checkpoint: true, stopReason: 'incomplete_retries' });
+      }
       continue;
     }
 
     incompleteRetries = 0;
     lastCompletionIncomplete = false;
+    if (pendingCompaction) {
+      const inflight = pendingCompaction;
+      const view = inflight.messages.filter((message) => message !== generatedSystem);
+      onCompaction?.({ ...inflight, messages: view });
+      onEvent?.({
+        type: 'compact:auto',
+        mode: inflight.mode,
+        threshold: inflight.threshold,
+        beforePct: inflight.beforePct,
+        afterPct: inflight.afterPct,
+        duringTurn: true,
+        tokensSaved: inflight.tokensSaved,
+        estimatedTokens: inflight.estimatedTokens,
+        summary: inflight.summary,
+        summaryEn: inflight.summaryEn,
+      });
+      pendingCompaction = null;
+    }
     const reportedUsage = normalizeModelUsage(completion?.usage);
-    if (reportedUsage?.inputTokens > 0) lastInputTokens = reportedUsage.inputTokens;
+    lastInputTokens = reportedUsage?.inputTokens || 0;
+    measuredPrefix = lastInputTokens > 0 ? messages.slice() : [];
+    if (lastInputTokens > 0) {
+      promptCalibration = calibrationRatio(lastInputTokens, estimateMessagesTokens(messages) + overheadTokens);
+    }
     const toolCalls = Array.isArray(completion.toolCalls) ? completion.toolCalls : [];
     const assistantText = completion.text || '';
     lastAssistantText = assistantText || lastAssistantText;

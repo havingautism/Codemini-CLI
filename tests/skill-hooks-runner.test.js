@@ -66,6 +66,7 @@ test('timeout fail-open when failClosed false', async () => {
 
     assert.equal(result.ok, false);
     assert.equal(result.failOpen, true);
+    assert.equal(result.execution.timedOut, true);
     assert.ok(elapsed < 5000, `timeout should abort quickly, took ${elapsed}ms`);
   });
 });

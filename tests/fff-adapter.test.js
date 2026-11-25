@@ -39,18 +39,20 @@ test('resolveTrustedFffCommand rejects relative and workspace paths', async () =
   });
 });
 
-test('resolveTrustedFffCommand rejects workspace files through a symlinked root', async () => {
+test('resolveTrustedFffCommand rejects workspace files through a symlinked root', async (t) => {
   await withTempDir('codemini-fff-symlink-', async (root) => {
     const workspace = path.join(root, 'workspace');
     const linkedWorkspace = path.join(root, 'workspace-link');
     const helper = path.join(workspace, 'helper');
     await fs.mkdir(workspace);
     await fs.writeFile(helper, '#!/bin/sh\n', { mode: 0o755 });
-    await fs.symlink(
-      workspace,
-      linkedWorkspace,
-      process.platform === 'win32' ? 'junction' : 'dir',
-    );
+    try {
+      await fs.symlink(workspace, linkedWorkspace, process.platform === 'win32' ? 'junction' : 'dir');
+    } catch (error) {
+      if (process.platform !== 'win32' || !['EPERM', 'EACCES'].includes(error.code)) throw error;
+      t.skip(`Windows denied junction creation (${error.code})`);
+      return;
+    }
 
     await assert.rejects(
       () => resolveTrustedFffCommand(helper, linkedWorkspace),

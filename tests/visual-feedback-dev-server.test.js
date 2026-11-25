@@ -20,6 +20,7 @@ import {
   looksLikeNonHttpEntrypoint,
   packageManagerCommand,
   pickLoginOpenUrl,
+  stopSpawnedProcess,
 } from '../src/core/browser/dev-server.js';
 
 function viteHtml() {
@@ -137,24 +138,17 @@ test('Vite HTML and realistic rsbuild script filenames can be reused', () => {
   }), false);
 });
 
-test('a typed AirPlay or signal-less URL is not reused', async () => {
+test('a typed AirPlay URL is still rejected', async () => {
   await withTempDir(async (emptyRoot) => {
   const airplay = await startProbeServer((req, res) => send(res, {
     status: 403,
     headers: { server: 'AirTunes/770.11.1', 'content-type': 'text/html' },
     body: '<html><body>AirPlay</body></html>',
   }));
-  const plain = await startProbeServer((req, res) => send(res, {
-    status: 200,
-    headers: { 'content-type': 'text/html' },
-    body: '<!doctype html><html><body>Hello</body></html>',
-  }));
   try {
     const rejected = await findReusableDevServer({ preferredUrl: airplay.url, workspaceRoot: emptyRoot });
     assert.equal(rejected?.url || '', '');
     assert.equal(rejected?.preferredRejected, true);
-    const alsoRejected = await findReusableDevServer({ preferredUrl: plain.url, workspaceRoot: emptyRoot });
-    assert.equal(alsoRejected?.url || '', '');
     await assert.rejects(
       () => ensureDevServer({ preferredUrl: airplay.url, workspaceRoot: emptyRoot, startIfMissing: false }),
       (error) => {
@@ -167,6 +161,27 @@ test('a typed AirPlay or signal-less URL is not reused', async () => {
     );
   } finally {
     await new Promise((resolve) => airplay.server.close(resolve));
+  }
+  });
+});
+
+test('a typed reachable page can be entered without sourcemap or HMR signals', async () => {
+  await withTempDir(async (emptyRoot) => {
+  const plain = await startProbeServer((req, res) => send(res, {
+    status: 200,
+    headers: { 'content-type': 'text/html' },
+    body: '<!doctype html><html><body><form action="/login"><input name="user"></form></body></html>',
+  }));
+  try {
+    const reused = await findReusableDevServer({ preferredUrl: plain.url, workspaceRoot: emptyRoot });
+    assert.equal(reused.reused, true);
+    assert.equal(reused.limitedCapabilities, true);
+    assert.equal(reused.url.replace(/\/$/, ''), plain.url.replace(/\/$/, ''));
+    const opened = await ensureDevServer({ preferredUrl: plain.url, workspaceRoot: emptyRoot, startIfMissing: false });
+    assert.equal(opened.reused, true);
+    assert.equal(opened.limitedCapabilities, true);
+    assert.equal(opened.url.replace(/\/$/, ''), plain.url.replace(/\/$/, ''));
+  } finally {
     await new Promise((resolve) => plain.server.close(resolve));
   }
   });
@@ -277,7 +292,7 @@ test('startup URL selection prefers a frontend log URL over a backend port', () 
     },
   ]);
   assert.equal(chosen.url, 'http://127.0.0.1:3000/');
-  assert.match(DEV_SERVER_USER_HINT, /typed URL is not enough/);
+  assert.match(DEV_SERVER_USER_HINT, /sourcemaps, HMR/);
 });
 
 test('a nested project with package-lock.json is not hijacked by an ancestor pnpm-lock.yaml', async () => {
@@ -418,9 +433,7 @@ server.listen(0, '127.0.0.1', () => {
       assert.ok(started.url);
       assert.match(started.url, /^http:\/\/127\.0\.0\.1:\d+/);
     } finally {
-      if (started?.child && started.child.exitCode == null) {
-        started.child.kill('SIGTERM');
-      }
+      await stopSpawnedProcess(started?.child);
     }
   });
 });

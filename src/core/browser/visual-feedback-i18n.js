@@ -3,10 +3,12 @@ import { zh } from '../../../codemini-web/client/i18n/zh.js'
 
 export const VISUAL_FEEDBACK_OVERLAY_KEYS = [
   'visualFeedbackOverlayTitle',
+  'visualFeedbackBeta',
   'visualFeedbackOverlayEnvOk',
   'visualFeedbackOverlayEnvBlocked',
   'visualFeedbackOverlayHint',
   'visualFeedbackOverlayBlocked',
+  'visualFeedbackCapabilityHint',
   'visualFeedbackOverlayStart',
   'visualFeedbackOverlayStop',
   'visualFeedbackOverlaySubmit',
@@ -24,6 +26,8 @@ export const VISUAL_FEEDBACK_OVERLAY_KEYS = [
   'visualFeedbackOverlaySharedCount',
   'visualFeedbackOverlayPlaceholder',
   'visualFeedbackOverlayAddNote',
+  'visualFeedbackOverlayEditNote',
+  'visualFeedbackOverlaySaveNote',
   'visualFeedbackOverlayCancel',
   'visualFeedbackOverlaySelecting',
   'visualFeedbackOverlaySubmitting',
@@ -39,6 +43,9 @@ export const VISUAL_FEEDBACK_OVERLAY_KEYS = [
   'visualFeedbackOverlayParent',
   'visualFeedbackOverlayChild',
   'visualFeedbackOverlayRetargetHint',
+  'visualFeedbackOverlayThisPage',
+  'visualFeedbackOverlayOtherPage',
+  'visualFeedbackOverlayNoteLimit',
 ]
 
 export function normalizeVisualFeedbackLocale(locale) {

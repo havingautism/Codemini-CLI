@@ -492,6 +492,8 @@ export class RuntimeBridge {
     if (['spec:pending_approval', 'reflect:pending_approval'].includes(event?.type)) {
       this.#busy = false;
       this.#broadcastRuntimeState();
+    } else if (event?.type === 'compact:auto') {
+      this.#broadcastRuntimeState();
     }
   }
 
@@ -1210,13 +1212,17 @@ export class RuntimeBridge {
         }
         break;
       }
+      case 'compact:start':
+        break;
       case 'compact:auto': {
-        this.#addUiMessage({
+        if (event.duringTurn) break;
+        publishedMessageId = this.#addUiMessage({
           role: 'divider',
           dividerType: 'compact',
-          text: event.duringTurn
-            ? `本轮中已压缩 (${event.mode || ''}, ${event.threshold || ''}%)`
-            : `以上内容已压缩 (${event.mode || ''}, ${event.threshold || ''}%)`,
+          text: event.summary || '已压缩上下文',
+          beforePct: event.beforePct,
+          afterPct: event.afterPct,
+          compactMode: event.mode === 'prune' || event.mode === 'summary' ? event.mode : '',
           timestamp: new Date().toISOString()
         });
         break;
@@ -2023,7 +2029,12 @@ export class RuntimeBridge {
   getSessionCompactMeta() {
     const compact = this.#runtime.getSessionCompact();
     if (!compact) return null;
-    return { boundaryIndex: compact.boundaryIndex, mode: compact.mode, timestamp: compact.timestamp };
+    return {
+      boundaryIndex: compact.boundaryIndex,
+      mode: compact.mode,
+      timestamp: compact.timestamp,
+      ...(compact.duringTurn ? { duringTurn: true } : {}),
+    };
   }
 
   getChangeSets() {

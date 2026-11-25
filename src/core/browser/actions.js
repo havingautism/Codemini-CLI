@@ -1,7 +1,9 @@
 import {
   BROWSER_ACT_ACTIONS,
+  BROWSER_ASSERT_STATES,
   BROWSER_DIAGNOSE_ACTIONS,
   BROWSER_INSPECT_ACTIONS,
+  BROWSER_LIMITS,
 } from './schema.js';
 import { validateTarget } from './target.js';
 
@@ -22,6 +24,7 @@ const ACTION_NEEDS = Object.freeze({
     snapshot: { target: false },
     screenshot: { target: false },
     logs: { target: false },
+    assert: { target: false },
     explain_style: { target: true },
     listeners: { target: true },
     locate_source: { target: true },
@@ -51,6 +54,17 @@ function targetPhrase() {
   return 'ref, selector, or role plus name';
 }
 
+function validExpectation(expectation) {
+  if (!expectation || !BROWSER_ASSERT_STATES.includes(expectation.state)) return false;
+  const { state, selector, value } = expectation;
+  if (state === 'url_path') {
+    return selector === undefined && typeof value === 'string' && value.length <= BROWSER_LIMITS.name
+      && /^\/(?!\/)[^?#\s]*$/.test(value);
+  }
+  if (!field(selector) || selector.length > BROWSER_LIMITS.selector) return false;
+  return state === 'text' ? Boolean(field(value)) && value.length <= BROWSER_LIMITS.name : value === undefined;
+}
+
 export function validateBrowserAction(tool, args = {}) {
   const allowed = TOOL_ACTIONS[tool];
   if (!allowed) {
@@ -72,6 +86,14 @@ export function validateBrowserAction(tool, args = {}) {
     };
   }
   const needs = ACTION_NEEDS[tool][action];
+  const usesExpectation = (tool === 'browser_inspect' && action === 'assert') || tool === 'browser_diagnose';
+  if ((action === 'assert' || args.expect !== undefined) && (!usesExpectation || !validExpectation(args.expect))) {
+    return {
+      ok: false,
+      code: 'INVALID_ARGUMENTS',
+      error: 'Use expect on assert or diagnose click: visible/hidden needs selector, text needs selector and value, url_path needs a pathname value.',
+    };
+  }
   const missing = [];
   if (needs.url && !field(args.url)) missing.push('url');
   if (needs.expression && !field(args.expression)) missing.push('expression');

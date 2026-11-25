@@ -1287,6 +1287,7 @@ export function AppProvider({ children }) {
         emoji: activity.emoji || "•",
         label: activity.label || "",
         detail: activity.detail || "",
+        ...(Number.isFinite(activity.contextPct) ? { contextPct: activity.contextPct } : {}),
         sticky: isStickyRuntimeActivity({ ...activity, key }),
         timestamp: new Date().toISOString(),
       };
@@ -1692,7 +1693,7 @@ export function AppProvider({ children }) {
         const processed = [];
         let assistantGroup = null;
         const compactBoundary = compactMeta?.boundaryIndex;
-        let dividerInserted = compactBoundary == null;
+        let dividerInserted = compactBoundary == null || compactMeta.duringTurn === true;
         for (let mi = 0; mi < messages.length; mi++) {
           const msg = messages[mi];
           // Insert compact divider at the boundary position
@@ -1701,7 +1702,7 @@ export function AppProvider({ children }) {
               id: `msg-compact-divider-${Date.now()}`,
               role: "divider",
               dividerType: "compact",
-              text: `以上内容已压缩 (${compactMeta.mode || ""})`,
+              text: t("compactDivider"),
               timestamp: compactMeta.timestamp || new Date().toISOString(),
             });
             dividerInserted = true;
@@ -2158,6 +2159,15 @@ export function AppProvider({ children }) {
         }
 
         case "assistant:start": {
+          if (Number.isFinite(event.resumedContextPct) && !event.parentToolCallId) {
+            upsertRuntimeActivity({
+              key: "compact",
+              status: "running",
+              emoji: "🧳",
+              label: t("runtimeActivityCompactResuming"),
+              contextPct: event.resumedContextPct,
+            });
+          }
           if (
             s.currentView !== "chat" &&
             s.currentView !== "codewiki" &&
@@ -2608,22 +2618,31 @@ export function AppProvider({ children }) {
           break;
         }
 
+        case "compact:skipped":
+          clearRuntimeActivityLater("runtime-compact", 0);
+          break;
+
+        case "compact:start":
+          if (event.duringTurn) update({ stage: "thinking", stageLabel: t("thinking") });
+          upsertRuntimeActivity({
+            key: "compact",
+            status: "running",
+            emoji: "🧳",
+            label: t("runtimeActivityCompacting"),
+            contextPct: event.beforePct,
+          });
+          break;
+
         case "compact:auto":
+          if (event.duringTurn) {
+            clearRuntimeActivityLater("runtime-compact", 0);
+            break;
+          }
           upsertRuntimeActivity({
             key: "compact",
             status: "done",
             emoji: "🧳",
             label: t("runtimeActivityCompactDone"),
-            detail:
-              `${event.mode || "auto"} ${event.threshold ? `${event.threshold}%` : ""}`.trim(),
-          });
-          addMessage({
-            role: "divider",
-            dividerType: "compact",
-            text: event.duringTurn
-              ? `本轮中已压缩 (${event.mode || ""}, ${event.threshold || ""}%)`
-              : `以上内容已压缩 (${event.mode || ""}, ${event.threshold || ""}%)`,
-            timestamp: new Date().toISOString(),
           });
           break;
 
@@ -3107,6 +3126,7 @@ export function AppProvider({ children }) {
       addMessage,
       update,
       upsertRuntimeActivity,
+      clearRuntimeActivityLater,
       loadGitInfo,
       loadHistory,
       loadSessions,

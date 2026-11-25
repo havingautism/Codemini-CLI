@@ -304,7 +304,7 @@ function ModeSelector({
             (disabled ? t("switchModeDisabled") : t("switchMode"))
           }
         >
-          <ActiveIcon size={13} />
+          <ActiveIcon size={14} />
           <span className="truncate">{active.label}</span>
           {dirtyWarning ? <GitLogo size={12} className="shrink-0" /> : null}
           <CaretDown size={11} />
@@ -363,75 +363,38 @@ function ModeSelector({
   );
 }
 
-function ApprovalModeSelector({ sessionId, current, disabled = false }) {
-  const [open, setOpen] = useState(false);
-  const [switching, setSwitching] = useState(false);
-  const MODE_OPTIONS = getApprovalModeOptions();
-  const active =
-    MODE_OPTIONS.find((m) => m.value === current) || MODE_OPTIONS[0];
-  const ActiveIcon = active.icon;
-
-  const handleSelect = async (mode) => {
-    if (mode === current || switching || disabled) return;
-    setSwitching(true);
-    try {
-      const result = await api.setApprovalMode(sessionId, mode);
-      if (result?.error)
-        throw new Error(result.message || "Failed to switch approval mode");
-    } catch {
-    } finally {
-      setSwitching(false);
-    }
-    setOpen(false);
-  };
-
+function AccessChoiceColumn({ title, notice, options, value, onSelect, disabled, error }) {
   return (
-    <Popover open={open} onOpenChange={(next) => !disabled && setOpen(next)}>
-      <PopoverTrigger asChild>
-        <button
-          type="button"
-          className={cn(
-            INPUT_PILL_CLASS,
-            "px-2.5",
-            (switching || disabled) && "opacity-50 pointer-events-none",
-          )}
-          disabled={disabled}
-          title={disabled ? t("switchModeDisabled") : t("switchApprovalMode")}
-        >
-          <ActiveIcon size={13} />
-          <span className="truncate">{active.label}</span>
-          <CaretDown size={11} />
-        </button>
-      </PopoverTrigger>
-      <PopoverContent
-        side="top"
-        align="start"
-        sideOffset={6}
-        className="w-72 max-w-[calc(100vw-32px)] p-2"
-      >
-        <div className="px-0.5 pb-1.5 text-[11px] font-medium text-muted-foreground">
-          {t("approvalMode")}
+    <div className="flex min-w-0 flex-1 flex-col">
+      <div className="px-1 pb-1.5 text-[11px] font-medium text-muted-foreground">
+        {title}
+      </div>
+      {notice ? (
+        <div className="px-1 pb-1.5 text-[11px] leading-snug text-amber-700 dark:text-amber-400">
+          {notice}
         </div>
+      ) : null}
+      <div className="flex min-h-0 flex-1 flex-col rounded-[10px] bg-(--bg-secondary) p-1">
         <ToggleGroup
           type="single"
-          value={current}
-          onValueChange={handleSelect}
-          disabled={disabled || switching}
+          value={value}
+          onValueChange={onSelect}
+          disabled={disabled}
           size="auto"
-          className="flex w-full flex-col items-stretch gap-0.5"
+          className="flex h-full w-full flex-1 flex-col items-stretch gap-0.5"
         >
-          {MODE_OPTIONS.map((opt) => {
+          {options.map((opt) => {
             const Icon = opt.icon;
             return (
               <ToggleGroupItem
                 key={opt.value}
                 value={opt.value}
-                className="gap-2 rounded-md data-[state=on]:shadow-none"
+                className="h-auto flex-1 gap-2 rounded-md data-[state=on]:shadow-none"
               >
                 <Icon data-icon="inline-start" className="mt-0.5" />
                 <span className="min-w-0 flex-1 overflow-hidden">
                   <span className="block truncate">{opt.label}</span>
-                  <span className="block wrap-break-word text-[11px] font-normal leading-snug text-muted-foreground">
+                  <span className="block min-h-[3lh] wrap-break-word text-[11px] font-normal leading-snug text-muted-foreground">
                     {opt.description}
                   </span>
                 </span>
@@ -439,43 +402,55 @@ function ApprovalModeSelector({ sessionId, current, disabled = false }) {
             );
           })}
         </ToggleGroup>
-      </PopoverContent>
-    </Popover>
+      </div>
+      {error ? (
+        <div role="alert" className="px-1 pt-1.5 text-[11px] text-(--accent-red)">
+          {error}
+        </div>
+      ) : null}
+    </div>
   );
 }
 
-function SandboxModeSelector({
+function AccessShuttle({
   sessionId,
-  current,
-  availability = null,
-  onChange,
+  sandboxMode,
+  sandboxAvailability = null,
+  showSandbox = false,
+  onSandboxChange,
+  approvalMode,
+  showApproval = false,
   disabled = false,
 }) {
   const [open, setOpen] = useState(false);
   const [switching, setSwitching] = useState(false);
   const [error, setError] = useState("");
-  const MODE_OPTIONS = getSandboxModeOptions({ sandboxMode: current, availability });
-  const selected =
-    MODE_OPTIONS.find((m) => m.value === current)
-    || getSandboxModeOptions().find((m) => m.value === current)
-    || MODE_OPTIONS[0];
-  const unavailable = availability?.confineAvailable === false && current !== "danger-full-access";
-  const activeLabel = availability?.hostFallback
+  const sandboxOptions = getSandboxModeOptions({ sandboxMode, availability: sandboxAvailability });
+  const approvalOptions = getApprovalModeOptions();
+  const selectedSandbox =
+    sandboxOptions.find((item) => item.value === sandboxMode)
+    || getSandboxModeOptions().find((item) => item.value === sandboxMode)
+    || sandboxOptions[0];
+  const selectedApproval =
+    approvalOptions.find((item) => item.value === approvalMode) || approvalOptions[0];
+  const unavailable = sandboxAvailability?.confineAvailable === false && sandboxMode !== "danger-full-access";
+  const sandboxLabel = sandboxAvailability?.hostFallback
     ? t("sandboxHostFallbackMode")
-    : unavailable ? t("sandboxUnavailableMode") : selected.label;
-  const ActiveIcon = selected.icon;
-  const sandboxNotice = availability?.hostFallback
+    : unavailable ? t("sandboxUnavailableMode") : selectedSandbox?.label || "";
+  const sandboxNotice = sandboxAvailability?.hostFallback
     ? t("shellSandboxHostFallbackDesc")
     : unavailable ? t("sandboxModeUnavailableDesc") : "";
+  const SandboxIcon = selectedSandbox?.icon;
+  const ApprovalIcon = selectedApproval?.icon;
+  const both = showSandbox && showApproval;
 
-  const handleSelect = async (mode) => {
-    if (!mode || mode === current || switching || disabled) return;
-    if (!MODE_OPTIONS.some((item) => item.value === mode)) return;
+  const handleSandbox = async (mode) => {
+    if (!mode || mode === sandboxMode || switching || disabled) return;
+    if (!sandboxOptions.some((item) => item.value === mode)) return;
     setSwitching(true);
     setError("");
     try {
-      await onChange(sessionId, mode);
-      setOpen(false);
+      await onSandboxChange(sessionId, mode);
     } catch (err) {
       setError(err?.message || t("actionFailed"));
     } finally {
@@ -483,11 +458,30 @@ function SandboxModeSelector({
     }
   };
 
+  const handleApproval = async (mode) => {
+    if (!mode || mode === approvalMode || switching || disabled) return;
+    setSwitching(true);
+    try {
+      const result = await api.setApprovalMode(sessionId, mode);
+      if (result?.error) throw new Error(result.message || "Failed to switch approval mode");
+    } catch {
+    } finally {
+      setSwitching(false);
+    }
+  };
+
+  const title = disabled
+    ? t("switchModeDisabled")
+    : unavailable
+      ? sandboxNotice
+      : both
+        ? t("switchAccessShuttle")
+        : showSandbox
+          ? t("switchSandboxMode")
+          : t("switchApprovalMode");
+
   return (
-    <Popover
-      open={open}
-      onOpenChange={(next) => !disabled && !switching && setOpen(next)}
-    >
+    <Popover open={open} onOpenChange={(next) => !disabled && !switching && setOpen(next)}>
       <PopoverTrigger asChild>
         <button
           type="button"
@@ -498,20 +492,25 @@ function SandboxModeSelector({
           )}
           disabled={disabled || switching}
           aria-busy={switching}
-          title={
-            unavailable
-              ? sandboxNotice
-              : disabled
-                ? t("switchModeDisabled")
-                : t("switchSandboxMode")
-          }
+          title={title}
         >
           {switching ? (
-            <CircleNotch size={13} className="animate-spin" />
-          ) : (
-            <ActiveIcon size={13} />
-          )}
-          <span className={cn("truncate", unavailable && "text-amber-700 dark:text-amber-400")}>{activeLabel}</span>
+            <CircleNotch size={14} className="animate-spin" />
+          ) : showSandbox && SandboxIcon ? (
+            <SandboxIcon size={14} />
+          ) : ApprovalIcon ? (
+            <ApprovalIcon size={14} />
+          ) : null}
+          {showSandbox ? (
+            <span className={cn("max-w-28 truncate", unavailable && "text-amber-700 dark:text-amber-400")}>{sandboxLabel}</span>
+          ) : null}
+          {both ? <span aria-hidden="true" className="text-(--text-muted)">·</span> : null}
+          {showApproval && selectedApproval ? (
+            <>
+              {both && ApprovalIcon ? <ApprovalIcon size={14} /> : null}
+              <span className="max-w-24 truncate">{selectedApproval.label}</span>
+            </>
+          ) : null}
           <CaretDown size={11} />
         </button>
       </PopoverTrigger>
@@ -519,51 +518,33 @@ function SandboxModeSelector({
         side="top"
         align="start"
         sideOffset={6}
-        className="w-72 max-w-[calc(100vw-32px)] p-2"
+        className={cn(
+          "max-w-[calc(100vw-32px)] p-2",
+          both ? "w-[36rem]" : "w-72",
+        )}
       >
-        <div className="px-0.5 pb-1.5 text-[11px] font-medium text-muted-foreground">
-          {t("sandboxMode")}
+        <div className={cn("flex items-stretch", both && "gap-2")}>
+          {showSandbox ? (
+            <AccessChoiceColumn
+              title={t("sandboxMode")}
+              notice={sandboxNotice}
+              options={sandboxOptions}
+              value={sandboxMode}
+              onSelect={handleSandbox}
+              disabled={disabled || switching}
+              error={error}
+            />
+          ) : null}
+          {showApproval ? (
+            <AccessChoiceColumn
+              title={t("approvalMode")}
+              options={approvalOptions}
+              value={approvalMode}
+              onSelect={handleApproval}
+              disabled={disabled || switching}
+            />
+          ) : null}
         </div>
-        {sandboxNotice ? (
-          <div className="px-0.5 pb-1.5 text-[11px] leading-snug text-amber-700 dark:text-amber-400">
-            {sandboxNotice}
-          </div>
-        ) : null}
-        <ToggleGroup
-          type="single"
-          value={current}
-          onValueChange={handleSelect}
-          disabled={disabled || switching}
-          size="auto"
-          className="flex w-full flex-col items-stretch gap-0.5"
-        >
-          {MODE_OPTIONS.map((opt) => {
-            const Icon = opt.icon;
-            return (
-              <ToggleGroupItem
-                key={opt.value}
-                value={opt.value}
-                className="gap-2 rounded-md data-[state=on]:shadow-none"
-              >
-                <Icon data-icon="inline-start" className="mt-0.5" />
-                <span className="min-w-0 flex-1 overflow-hidden">
-                  <span className="block truncate">{opt.label}</span>
-                  <span className="block wrap-break-word text-[11px] font-normal leading-snug text-muted-foreground">
-                    {opt.description}
-                  </span>
-                </span>
-              </ToggleGroupItem>
-            );
-          })}
-        </ToggleGroup>
-        {error ? (
-          <div
-            role="alert"
-            className="px-2 pt-1.5 text-[11px] text-(--accent-red)"
-          >
-            {error}
-          </div>
-        ) : null}
       </PopoverContent>
     </Popover>
   );
@@ -626,7 +607,7 @@ function SoulQuickSwitch({ disabled = false, mode = "normal" }) {
           disabled={disabled}
           title={disabled ? t("inputDisabled") : t("soulSwitch")}
         >
-          <MaskHappy size={13} />
+          <MaskHappy size={14} />
           <span className="truncate max-w-[60px]">{active || "default"}</span>
           <CaretDown size={11} />
         </button>
@@ -1924,8 +1905,8 @@ export function InputBar({
             style={{ height: "auto" }}
           />
         </div>
-        <div className="flex items-center gap-1.5 min-h-8 flex-wrap">
-          <div className="flex min-w-0 flex-1 basis-full sm:basis-auto items-center gap-1.5 overflow-x-auto pb-0.5 sm:flex-wrap sm:overflow-visible sm:pb-0">
+        <div className="flex items-end gap-1.5 min-h-8 flex-wrap">
+          <div className="flex min-w-0 flex-1 basis-full sm:basis-auto items-end gap-1.5 overflow-x-auto sm:flex-wrap sm:overflow-visible">
             <button
               type="button"
               className="border-0 bg-transparent text-(--text-secondary) min-w-8 h-8 rounded-md inline-flex items-center justify-center shrink-0 cursor-pointer transition-colors hover:bg-transparent hover:text-(--text-primary)"
@@ -1939,7 +1920,7 @@ export function InputBar({
                 setPaletteOpen((open) => !open);
               }}
             >
-              <Plus size={18} />
+              <Plus size={14} />
             </button>
             <button
               type="button"
@@ -1949,7 +1930,7 @@ export function InputBar({
               disabled={inputLocked}
               onClick={() => fileInputRef.current?.click()}
             >
-              <Paperclip size={18} />
+              <Paperclip size={14} />
             </button>
             <Popover
               open={scrapbookPickerOpen}
@@ -1971,7 +1952,7 @@ export function InputBar({
                   aria-label={t("composerAddNote")}
                   disabled={inputLocked}
                 >
-                  <Notebook size={18} />
+                  <Notebook size={14} />
                 </button>
               </PopoverTrigger>
               <PopoverContent
@@ -2124,26 +2105,22 @@ export function InputBar({
               effort={reasoningEffort}
               disabled={inputLocked}
             />
-            {sandboxUiEnabled ? (
-              <SandboxModeSelector
+            {sandboxUiEnabled || approvalUiEnabled ? (
+              <AccessShuttle
                 sessionId={rs.sessionId}
-                current={sandboxMode}
-                availability={rs.sandboxAvailability || null}
-                onChange={actions.setSandboxMode}
-                disabled={inputLocked}
-              />
-            ) : null}
-            {approvalUiEnabled ? (
-              <ApprovalModeSelector
-                sessionId={rs.sessionId}
-                current={approvalMode}
+                sandboxMode={sandboxMode}
+                sandboxAvailability={rs.sandboxAvailability || null}
+                showSandbox={sandboxUiEnabled}
+                onSandboxChange={actions.setSandboxMode}
+                approvalMode={approvalMode}
+                showApproval={approvalUiEnabled}
                 disabled={inputLocked}
               />
             ) : null}
 
             <SoulQuickSwitch disabled={inputLocked} mode={mode} />
           </div>
-          <div className="flex items-center gap-1.5 ml-auto shrink-0">
+          <div className="flex items-end gap-1.5 ml-auto shrink-0">
             {/* <button type="button" className="border-0 bg-transparent text-(--text-muted) w-auto px-2 h-[30px] rounded-lg inline-flex items-center justify-center gap-1 shrink-0 cursor-pointer text-[12px] whitespace-nowrap hover:bg-(--bg-hover) hover:text-(--text-primary)" title="模型">
               <span className={cn('truncate', !rs.model && 'opacity-50')}>{rs.model || '加载中'}</span>
               <CaretDown size={11} />

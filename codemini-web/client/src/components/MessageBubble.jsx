@@ -23,7 +23,11 @@ import {
 } from "./MarkdownLightboxImage.jsx";
 import { collectMessageEmbeds } from "@/lib/message-embeds.js";
 import { buildRenderGroups } from "@/lib/message-render-groups.js";
-import { layoutAnswerProcessWithPlans } from "@/lib/answer-process.js";
+import {
+  findLatestPinnedProcess,
+  isPinnedThinking,
+  layoutAnswerProcessWithPlans,
+} from "@/lib/answer-process.js";
 import {
   shouldShowCrewModeFileChanges,
   shouldSuppressCrewTaskTodos,
@@ -253,11 +257,14 @@ function RotatingStatusLabel({ phrases, active }) {
   );
 }
 
-function ThoughtBlock({ segment }) {
-  const [open, setOpen] = useState(false);
+function ThoughtBlock({ segment, pinnedOpen = false }) {
+  const [open, setOpen] = useState(pinnedOpen);
   const runtimeMode = useRuntimeMode();
   const streaming = Boolean(segment.isStreaming);
   const thinkingPhrases = resolveModeHintPhrases("thinking", runtimeMode);
+  useEffect(() => {
+    setOpen(pinnedOpen);
+  }, [pinnedOpen]);
 
   return (
     <div className={cn("codemini-thinking-trace codemini-disclosure my-2", PROCESS_META_CLASS)}>
@@ -2152,7 +2159,7 @@ function MessageActions({
   );
 }
 
-function renderGroupItem(group, i) {
+function renderGroupItem(group, i, pin = null) {
   if (group.type === "text") {
     return (
       <div key={`t-${i}-${group.isStreaming ? "s" : "d"}`} className="my-2">
@@ -2176,7 +2183,13 @@ function renderGroupItem(group, i) {
     );
   }
   if (group.type === "thinking") {
-    return <ThoughtBlock key={`th-${i}`} segment={group} />;
+    return (
+      <ThoughtBlock
+        key={`th-${i}`}
+        segment={group}
+        pinnedOpen={isPinnedThinking(group, pin)}
+      />
+    );
   }
   if (group.type === "handoff") {
     return <HandoffBlock key={`ho-${i}`} segment={group} />;
@@ -2316,6 +2329,15 @@ export const MessageBubble = memo(function MessageBubble({
   );
   const hasAnswerFold = answerLayout.hasFold;
   const preAnswerDuration = answerLayout.durationMs;
+  const usesAnswerLayout = answerLayout.hasTodo || hasAnswerFold;
+  const pinnedProcess = useMemo(() => {
+    const groups = usesAnswerLayout
+      ? answerLayout.items.flatMap((item) =>
+          item.type === "group" ? [item.group] : [],
+        )
+      : renderGroups;
+    return findLatestPinnedProcess(groups);
+  }, [answerLayout, renderGroups, usesAnswerLayout]);
   const mergedFileChanges = useMemo(
     () => mergeFileChanges(fileChanges || []),
     [fileChanges],
@@ -2362,7 +2384,22 @@ export const MessageBubble = memo(function MessageBubble({
         rawMessageText || legacyText || t("crewWakeDivider"),
       );
     }
-    return renderDivider(legacyText || "以上内容已压缩");
+    if (message.dividerType === "compact") {
+      const before = Number(message.beforePct);
+      const after = Number(message.afterPct);
+      if (Number.isFinite(before) && Number.isFinite(after)) {
+        const modeLabel = message.compactMode === "prune"
+          ? t("compactModePrune")
+          : message.compactMode === "summary"
+            ? t("compactModeSummary")
+            : "";
+        const lead = t("compactDividerLead");
+        const range = `${Math.round(before)}% → ${Math.round(after)}%`;
+        return renderDivider(modeLabel ? `${lead} · ${range} · ${modeLabel}` : `${lead} · ${range}`);
+      }
+      return renderDivider(rawMessageText || t("compactDivider"));
+    }
+    return renderDivider(legacyText || t("compactDivider"));
   }
 
   if (role === "system") {
@@ -2642,11 +2679,13 @@ export const MessageBubble = memo(function MessageBubble({
                       />
                     );
                   }
-                  return renderGroupItem(item.group, i);
+                  return renderGroupItem(item.group, i, pinnedProcess);
                 })}
               </>
             ) : (
-              renderGroups.map((group, i) => renderGroupItem(group, i))
+              renderGroups.map((group, i) =>
+                renderGroupItem(group, i, pinnedProcess),
+              )
             )}
 
             {turnActive &&

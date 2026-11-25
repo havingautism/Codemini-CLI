@@ -64,12 +64,11 @@ export async function persistPackageHookRoot(sourceRoot, { scope = 'project', cw
 
   const packagesDir = packageRootsDir(normalizedScope, cwd);
   await fs.mkdir(packagesDir, { recursive: true });
-  const stagingDir = await fs.mkdtemp(path.join(packagesDir, `.${normalizeProfileId(id)}-`));
-  const stagedRoot = path.join(stagingDir, 'package');
+  const stagingDir = await fs.mkdtemp(path.join(packagesDir, '.p-'));
   try {
-    await copyPackageRuntimeRoot(source, stagedRoot, packagesDir);
+    await copyPackageRuntimeRoot(source, stagingDir, packagesDir);
     await fs.rm(destination, { recursive: true, force: true });
-    await fs.rename(stagedRoot, destination);
+    await fs.rename(stagingDir, destination);
   } finally {
     await fs.rm(stagingDir, { recursive: true, force: true });
   }
