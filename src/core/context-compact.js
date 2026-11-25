@@ -3,10 +3,24 @@ import { summarizeToolResult } from './tool-result-store.js';
 
 const MICRO_CLEAR_MARKER = '[Old tool result cleared by micro-compact]';
 export const AGGRESSIVE_PRUNE_MARKER = '[Tool result pruned — summary only]';
-export const COMPACT_START_SUMMARY = '上下文压缩中';
-export const COMPACT_START_SUMMARY_EN = 'Compressing context';
-export const COMPACT_DONE_SUMMARY = '以上内容已压缩';
-export const COMPACT_DONE_SUMMARY_EN = 'Previous context compacted';
+export const PRUNE_OUTPUT_PLACEHOLDER = '[Old tool result cleared]';
+export const PRUNE_INPUT_PLACEHOLDER = '[Old tool input cleared]';
+export const COMPACT_START_SUMMARY = '自动压缩中…';
+export const COMPACT_START_SUMMARY_EN = 'Auto-compacting…';
+export const COMPACT_DONE_SUMMARY = '已压缩上下文';
+export const COMPACT_DONE_SUMMARY_EN = 'Context compacted';
+
+// opencode SessionCompaction: keep this share of the window free, and at least
+// RESERVE_MIN when the window is large enough to give it up.
+export const RESERVE_SHARE = 0.15;
+export const RESERVE_MIN = 16_000;
+export const PRUNE_PROTECT = 40_000;
+export const PRUNE_MINIMUM = 20_000;
+export const SUMMARY_KEEP_TOKENS = 15_000;
+export const SUMMARY_KEEP_TOKENS_AGGRESSIVE = 4_000;
+export const SHRINK_STEPS = [0.85, 0.7, 0.5, 0.35];
+const IMAGE_TOKEN_ESTIMATE = 1_500;
+const TRANSCRIPT_CLIP = 2_000;
 
 function textFromContent(content) {
   if (typeof content === 'string') return content;
@@ -15,9 +29,13 @@ function textFromContent(content) {
       .map((part) => {
         if (typeof part === 'string') return part;
         if (part?.type === 'text') return part.text || '';
+        if (part?.type === 'reasoning') return part.text || part.reasoning || '';
         return '';
       })
       .join('');
+  }
+  if (content && typeof content === 'object') {
+    try { return JSON.stringify(content); } catch { return ''; }
   }
   return '';
 }
@@ -27,20 +45,71 @@ function finiteNumber(value, fallback, minimum = 0) {
   return Number.isFinite(parsed) ? Math.max(minimum, parsed) : fallback;
 }
 
+export function estimateTextTokens(value) {
+  const text = typeof value === 'string'
+    ? value
+    : value == null
+      ? ''
+      : (() => { try { return JSON.stringify(value); } catch { return String(value); } })();
+  if (!text) return 0;
+  let asciiChars = 0;
+  let nonAsciiChars = 0;
+  for (const char of text) {
+    if (char.charCodeAt(0) <= 0x7f) asciiChars += 1;
+    else nonAsciiChars += 1;
+  }
+  return Math.ceil(asciiChars / 4) + Math.ceil(nonAsciiChars / 2);
+}
+
+function estimateContentTokens(content) {
+  if (typeof content === 'string') return estimateTextTokens(content);
+  if (Array.isArray(content)) {
+    let total = 0;
+    for (const part of content) {
+      if (typeof part === 'string') total += estimateTextTokens(part);
+      else if (part?.type === 'text' || part?.type === 'reasoning') {
+        total += estimateTextTokens(part.text || part.reasoning || '');
+      } else if (part?.type === 'image_url' || part?.type === 'image' || part?.type === 'input_image') {
+        total += IMAGE_TOKEN_ESTIMATE;
+      }
+    }
+    return total;
+  }
+  if (content && typeof content === 'object') return estimateTextTokens(content);
+  return 0;
+}
+
+function toolCallArgumentText(call) {
+  const args = call?.function?.arguments ?? call?.arguments ?? '';
+  if (typeof args === 'string') return args;
+  if (args == null) return '';
+  try { return JSON.stringify(args); } catch { return ''; }
+}
+
 export function estimateMessagesTokens(messages) {
   let total = 0;
   for (const message of messages || []) {
-    const roleOverhead = 6;
-    const text = textFromContent(message.content);
-    let asciiChars = 0;
-    let nonAsciiChars = 0;
-    for (const char of text) {
-      if (char.charCodeAt(0) <= 0x7f) asciiChars += 1;
-      else nonAsciiChars += 1;
+    if (!message || typeof message !== 'object') continue;
+    total += 6;
+    total += estimateContentTokens(message.content);
+    if (typeof message.reasoning_content === 'string' && message.reasoning_content) {
+      total += estimateTextTokens(message.reasoning_content);
     }
-    total += roleOverhead + Math.ceil(asciiChars / 4) + Math.ceil(nonAsciiChars / 2);
+    if (Array.isArray(message.tool_calls)) {
+      for (const call of message.tool_calls) {
+        total += estimateTextTokens(getToolCallName(call));
+        total += estimateTextTokens(toolCallArgumentText(call));
+      }
+    }
   }
   return total;
+}
+
+export function estimateToolDefinitionsTokens(tools) {
+  if (!tools) return 0;
+  const list = Array.isArray(tools) ? tools : [tools];
+  if (list.length === 0) return 0;
+  return estimateTextTokens(list);
 }
 
 function modeToKeepRecent(mode) {
@@ -552,7 +621,11 @@ export async function compactMessagesLocally(messages, { mode = 'default', force
     summary = buildLocalSummary(older);
   }
 
-  const compacted = [{ role: 'assistant', content: summary }, ...recent];
+  const compacted = [{
+    role: 'assistant',
+    content: summary,
+    compaction: { kind: 'summary', suppress: true },
+  }, ...recent];
   const boundaryIndex = recentStart;
 
   return {
@@ -563,12 +636,375 @@ export async function compactMessagesLocally(messages, { mode = 'default', force
   };
 }
 
-function contextWindowTokens(config = {}) {
+export function contextWindowTokens(config = {}) {
   const modelCap = Number(config?.model?.max_context_tokens);
   if (Number.isFinite(modelCap) && modelCap > 0) return modelCap;
   const legacy = Number(config?.context?.max_tokens);
   if (Number.isFinite(legacy) && legacy > 0) return legacy;
   return 32000;
+}
+
+function positiveRatio(value, fallback = 1) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return Math.min(4, Math.max(0.25, parsed));
+}
+
+export function calibrationRatio(measuredTokens, estimatedTokens) {
+  const measured = Number(measuredTokens);
+  const estimated = Number(estimatedTokens);
+  if (!(measured > 0) || !(estimated > 0)) return 1;
+  return positiveRatio(measured / estimated, 1);
+}
+
+/**
+ * Room kept free below the window before auto-compact, matching opencode
+ * `calculateCeiling`: max(RESERVE_MIN, RESERVE_SHARE of the window) when the
+ * window can spare RESERVE_MIN, otherwise the share only. A configured output
+ * limit replaces that reserve when it is larger and still leaves room.
+ * `context.reserve_share` and `context.reserve_min` override the defaults.
+ */
+export function calculateReserve(window, config = {}) {
+  const size = Number(window);
+  if (!(size > 0)) return 0;
+  const share = finiteNumber(config?.context?.reserve_share, RESERVE_SHARE, 0);
+  const min = finiteNumber(config?.context?.reserve_min, RESERVE_MIN, 0);
+  const shareReserve = Math.floor(size * share);
+  const minReserve = size >= 2 * min ? min : 0;
+  const output = finiteNumber(config?.model?.max_output_tokens, 0, 0);
+  let reserve = Math.max(shareReserve, minReserve);
+  if (output > reserve && output < size) reserve = output;
+  if (!(reserve < size)) {
+    reserve = shareReserve > 0 && shareReserve < size ? shareReserve : Math.floor(size * RESERVE_SHARE);
+  }
+  return Math.max(0, reserve);
+}
+
+export function calculateCeiling(window, config = {}) {
+  const size = Number(window);
+  if (!(size > 0)) return Number.POSITIVE_INFINITY;
+  return Math.max(1, size - calculateReserve(size, config));
+}
+
+/**
+ * Trigger tokens. A positive `context.preflight_trigger_pct` still wins, so
+ * existing configs and tests keep their threshold. `0` / unset uses the ceiling.
+ * Target sits at `compact_target_ratio` (default 60%) of the trigger so a
+ * compact does not immediately fire again.
+ */
+export function resolveCompactBudget(config = {}) {
+  const window = contextWindowTokens(config);
+  const ceiling = calculateCeiling(window, config);
+  const pct = Number(config?.context?.preflight_trigger_pct);
+  const trigger = window > 0 && Number.isFinite(pct) && pct > 0
+    ? Math.max(1, Math.floor(window * pct / 100))
+    : ceiling;
+  const ratio = Math.min(0.95, finiteNumber(config?.context?.compact_target_ratio, 0.6, 0.05));
+  const targetPct = Number(config?.context?.compact_target_pct);
+  const fromPct = window > 0 && Number.isFinite(targetPct) && targetPct > 0
+    ? Math.floor(window * targetPct / 100)
+    : Math.floor(trigger * ratio);
+  const target = Math.max(1, Math.min(trigger - 1, fromPct));
+  return { window, ceiling, trigger, target };
+}
+
+export function isCompactionSummary(message) {
+  return message?.compaction?.kind === 'summary';
+}
+
+export function isContextOverflowError(error) {
+  if (!error) return false;
+  const code = String(error.code || error.error?.code || error.cause?.code || '').toLowerCase();
+  if (
+    code.includes('context_length')
+    || code.includes('context_overflow')
+    || code === 'payload_too_large'
+  ) return true;
+  const status = Number(error.status || error.statusCode || error.error?.status);
+  if (status === 413) return true;
+  const nested = typeof error.error === 'string' ? error.error : error.error?.message;
+  const msg = `${error.message || ''} ${nested || ''}`.toLowerCase();
+  return /context length|context window|maximum context|prompt is too long|too many tokens|max(?:imum)? context|context_length_exceeded|input is too long|exceeds the context|payload too large|request too large|token limit exceeded|reduce the length/.test(msg);
+}
+
+export function measurementDeltaIndex(messages = []) {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index]?.role === 'assistant') return index;
+  }
+  return messages.length;
+}
+
+export function formatCompactDivider({ beforePct = 0, afterPct = 0, mode = '', language = 'zh' } = {}) {
+  const before = Math.max(0, Math.round(Number(beforePct) || 0));
+  const after = Math.max(0, Math.round(Number(afterPct) || 0));
+  const english = language === 'en';
+  const lead = english ? COMPACT_DONE_SUMMARY_EN : COMPACT_DONE_SUMMARY;
+  const modeLabel = mode === 'prune'
+    ? (english ? 'prune' : '裁剪')
+    : mode === 'summary'
+      ? (english ? 'summary' : '摘要')
+      : '';
+  const range = `${before}% → ${after}%`;
+  return modeLabel ? `${lead} · ${range} · ${modeLabel}` : `${lead} · ${range}`;
+}
+
+function isPrunedToolContent(text) {
+  const value = String(text || '');
+  return value === MICRO_CLEAR_MARKER
+    || value === PRUNE_OUTPUT_PLACEHOLDER
+    || value.startsWith(AGGRESSIVE_PRUNE_MARKER);
+}
+
+function stripUsage(messages) {
+  return messages.map((message) => {
+    if (!message || !Object.prototype.hasOwnProperty.call(message, 'usage')) return message;
+    const { usage, ...rest } = message;
+    return rest;
+  });
+}
+
+/**
+ * Usage of the prompt we are about to send.
+ * A provider measurement covers messages before `measuredIndex`; everything
+ * after that, plus `extraTokens` (the pending user turn), is estimated and
+ * scaled by the calibration ratio. With no measurement, the whole transcript
+ * is estimated and `overheadTokens` (system prompt and tool definitions that
+ * are not already in the messages) is added once.
+ */
+export function estimatePromptUsage({
+  messages = [],
+  measuredTokens = 0,
+  measuredIndex = -1,
+  overheadTokens = 0,
+  extraTokens = 0,
+  calibrationRatio: ratioInput = 1,
+} = {}) {
+  const ratio = positiveRatio(ratioInput, 1);
+  const measured = Number(measuredTokens);
+  const extra = Math.max(0, Number(extraTokens) || 0);
+  const overhead = Math.max(0, Number(overheadTokens) || 0);
+  if (measured > 0 && measuredIndex >= 0) {
+    const delta = estimateMessagesTokens(messages.slice(measuredIndex));
+    return Math.round(measured + delta * ratio + extra);
+  }
+  if (measured > 0) return Math.round(measured + extra);
+  return Math.round((estimateMessagesTokens(messages) + overhead) * ratio + extra);
+}
+
+function pruneMinimumTokens(config, window) {
+  const absolute = finiteNumber(config?.context?.prune_minimum, PRUNE_MINIMUM, 0);
+  const pct = finiteNumber(config?.context?.prune_minimum_pct, 0.1, 0);
+  return Math.max(absolute, Math.floor(Math.max(0, Number(window) || 0) * pct));
+}
+
+/**
+ * Clear old tool outputs, and large tool-call inputs that belong to them.
+ * The newest `prune_protect_tokens` (default 40k) of tool output stay verbatim.
+ * Tool output older than `prune_protect_turns` (default 2) user turns is also
+ * eligible, which is what opencode's prune does past the protected tail.
+ * Inside one long turn the token budget still wins, so a single turn can be
+ * pruned once it passes 40k. Nothing is rewritten unless the savings reach
+ * max(prune_minimum, prune_minimum_pct of the window).
+ */
+export function pruneToolPayloads(messages, {
+  protectTurns = 2,
+  protectTokens = PRUNE_PROTECT,
+  minimumSavings = PRUNE_MINIMUM,
+  clearToolInputs = true,
+  inputClearMinTokens = 500,
+  protectedToolNames = ['skill', 'tasks'],
+} = {}) {
+  const source = Array.isArray(messages) ? messages : [];
+  if (source.length === 0) return { messages: source, changed: false, tokensSaved: 0 };
+  const protectedNames = new Set(
+    (Array.isArray(protectedToolNames) ? protectedToolNames : [])
+      .map((name) => String(name || '').trim())
+      .filter(Boolean)
+  );
+  const toolCallNames = mapToolCallNames(source);
+  let userTurns = 0;
+  let toolTokens = 0;
+  const clearIndexes = [];
+  for (let index = source.length - 1; index >= 0; index -= 1) {
+    const message = source[index];
+    if (isCompactionSummary(message)) break;
+    if (message?.role === 'user') {
+      userTurns += 1;
+      continue;
+    }
+    if (message?.role !== 'tool') continue;
+    const text = textFromContent(message.content);
+    if (isPrunedToolContent(text)) break;
+    const toolName = toolCallNames.get(String(message.tool_call_id || '').trim()) || '';
+    const tokens = estimateTextTokens(text);
+    if (protectedNames.has(toolName)) {
+      toolTokens += tokens;
+      continue;
+    }
+    toolTokens += tokens;
+    const beyondTurns = userTurns >= Math.max(0, Number(protectTurns) || 0);
+    const beyondTokens = toolTokens > Math.max(0, Number(protectTokens) || 0);
+    if (beyondTurns || beyondTokens) clearIndexes.push(index);
+  }
+  if (clearIndexes.length === 0) return { messages: [...source], changed: false, tokensSaved: 0 };
+  const clearSet = new Set(clearIndexes);
+  const clearedIds = new Set(
+    clearIndexes
+      .map((index) => String(source[index]?.tool_call_id || '').trim())
+      .filter(Boolean)
+  );
+  const before = estimateMessagesTokens(source);
+  let changed = false;
+  const result = source.map((message, index) => {
+    if (message?.role === 'tool' && clearSet.has(index)) {
+      changed = true;
+      return { ...message, content: PRUNE_OUTPUT_PLACEHOLDER };
+    }
+    if (!clearToolInputs || message?.role !== 'assistant' || !Array.isArray(message.tool_calls)) return message;
+    let callChanged = false;
+    const toolCalls = message.tool_calls.map((call) => {
+      const id = getToolCallId(call);
+      if (!id || !clearedIds.has(id)) return call;
+      const argText = toolCallArgumentText(call);
+      if (argText.includes(PRUNE_INPUT_PLACEHOLDER)) return call;
+      if (estimateTextTokens(argText) < inputClearMinTokens) return call;
+      callChanged = true;
+      const nextArgs = JSON.stringify({ _compacted: PRUNE_INPUT_PLACEHOLDER });
+      if (call?.function) return { ...call, function: { ...call.function, arguments: nextArgs } };
+      return { ...call, arguments: nextArgs };
+    });
+    if (!callChanged) return message;
+    changed = true;
+    return { ...message, tool_calls: toolCalls };
+  });
+  const tokensSaved = before - estimateMessagesTokens(result);
+  if (!changed || tokensSaved < minimumSavings) {
+    return { messages: [...source], changed: false, tokensSaved: 0 };
+  }
+  return { messages: result, changed: true, tokensSaved };
+}
+
+function selectRecentStart(messages, keepTokens) {
+  const budget = Math.max(0, Number(keepTokens) || 0);
+  let total = 0;
+  let start = messages.length;
+  while (start > 0) {
+    const next = total + estimateMessagesTokens([messages[start - 1]]);
+    if (next > budget) break;
+    total = next;
+    start -= 1;
+  }
+  start = expandRecentStartToToolBoundary(messages, start);
+  if (start === 0 && messages.length > 1) {
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      if (messages[index]?.role === 'user') {
+        start = index;
+        break;
+      }
+    }
+    start = expandRecentStartToToolBoundary(messages, start);
+  }
+  return start;
+}
+
+function resolveKeepTokens(budget, config, aggressive) {
+  const configured = finiteNumber(
+    aggressive ? config?.context?.summary_keep_tokens_aggressive : config?.context?.summary_keep_tokens,
+    aggressive ? SUMMARY_KEEP_TOKENS_AGGRESSIVE : SUMMARY_KEEP_TOKENS,
+    200
+  );
+  const cap = Math.max(50, Math.floor(budget.target * (aggressive ? 0.35 : 0.7)));
+  return Math.min(configured, cap);
+}
+
+function clipTranscript(value) {
+  const text = String(value || '');
+  if (text.length <= TRANSCRIPT_CLIP) return text;
+  const half = Math.floor(TRANSCRIPT_CLIP / 2);
+  const omitted = text.length - TRANSCRIPT_CLIP;
+  return `${text.slice(0, half)}\n[… ${omitted} characters omitted …]\n${text.slice(-half)}`;
+}
+
+function renderTranscriptMessage(message, level) {
+  if (!message || level >= 4) return '';
+  if (level >= 3 && message.role !== 'user') return '';
+  const lines = [];
+  const text = textFromContent(message.content).trim();
+  if (message.role === 'user' || message.role === 'assistant') {
+    const body = level >= 3 ? clipTranscript(text) : text;
+    if (body) lines.push(`[${message.role === 'user' ? 'User' : 'Assistant'}]: ${body}`);
+  }
+  if (level < 3 && Array.isArray(message.tool_calls)) {
+    for (const call of message.tool_calls) {
+      const name = getToolCallName(call) || 'tool';
+      const args = toolCallArgumentText(call);
+      const shown = level >= 2 ? clipTranscript(args) : args;
+      lines.push(`[Assistant tool call]: ${name}(${shown})`);
+    }
+  }
+  if (message.role === 'tool' && level < 3) {
+    if (level >= 2) lines.push('[Tool result omitted]');
+    else lines.push(`[Tool result]: ${level >= 1 ? clipTranscript(text) : text}`);
+  }
+  return lines.join('\n');
+}
+
+/**
+ * One transcript for the single summary call. Oldest exchanges are shortened
+ * first (full → clipped outputs → outputs dropped → user text only → omitted),
+ * matching opencode's graded summary fallback, instead of a hard 12k cut.
+ */
+export function buildGradedTranscript(messages, { maxChars = 80_000 } = {}) {
+  const source = Array.isArray(messages) ? messages : [];
+  const groups = [];
+  for (const message of source) {
+    if (!message) continue;
+    if (message.role === 'user' || groups.length === 0) groups.push([message]);
+    else groups[groups.length - 1].push(message);
+  }
+  const renders = groups.map((group) => [0, 1, 2, 3, 4].map((level) => (
+    group.map((message) => renderTranscriptMessage(message, level)).filter(Boolean).join('\n')
+  )));
+  if (renders.length === 0) return '';
+  const chosen = renders.map(() => 0);
+  const size = () => chosen.reduce((sum, level, index) => sum + renders[index][level].length, 0);
+  for (const level of [1, 2, 3, 4]) {
+    for (let index = 0; index < renders.length && size() > maxChars; index += 1) {
+      if (index === renders.length - 1 && level === 4) continue;
+      chosen[index] = level;
+    }
+  }
+  const omitted = chosen.filter((level, index) => !renders[index][level]).length;
+  const note = omitted ? `[${omitted} older exchanges omitted]\n\n` : '';
+  const text = note + renders.map((render, index) => render[chosen[index]]).filter(Boolean).join('\n\n');
+  return text.length <= maxChars ? text : text.slice(0, maxChars);
+}
+
+async function summarizeOnce(older, generateSummary, summaryCache) {
+  const cache = summaryCache && typeof summaryCache === 'object' ? summaryCache : null;
+  if (cache && cache.calls >= 1) return cache.text || buildLocalSummary(older);
+  if (cache) cache.calls = (cache.calls || 0) + 1;
+  let summary = null;
+  if (typeof generateSummary === 'function') {
+    try { summary = await generateSummary(older); } catch { summary = null; }
+  }
+  if (!summary) summary = buildLocalSummary(older);
+  if (cache) cache.text = summary;
+  return summary;
+}
+
+function takeSummary(messages, summary, recentStart) {
+  const older = messages.slice(0, recentStart);
+  if (older.length === 0) return null;
+  const recent = stripUsage(sanitizeRecentMessagesForModel(messages.slice(recentStart)));
+  return {
+    messages: [{
+      role: 'assistant',
+      content: summary,
+      compaction: { kind: 'summary', suppress: true },
+    }, ...recent],
+    boundaryIndex: recentStart,
+  };
 }
 
 function splitLeadingSystemMessages(messages = []) {
@@ -581,24 +1017,52 @@ function splitLeadingSystemMessages(messages = []) {
 }
 
 /**
- * Compress the live agent transcript between model calls.
- * The trigger is the previous request's real input tokens, the same figure
- * the context meter shows. Tool calls that are still waiting for results
- * stay untouched. Micro runs first; if occupancy is still at or above the
- * trigger, macro follows in the same cycle (model summary, local fallback).
+ * Compress the live transcript between model calls.
+ * Prune old tool payloads first. Summarize (one model call, local fallback)
+ * only when the projected result is still above the target. A summary message
+ * is flagged so a stale pre-summary measurement cannot immediately compact again.
+ * Open tool calls that are still waiting for results stay untouched.
  */
 export async function compactInFlightMessages(messages, config = {}, inputTokens = 0, options = {}) {
   const source = Array.isArray(messages) ? messages : [];
-  const input = Number(inputTokens);
-  const maxContextTokens = contextWindowTokens(config);
-  const triggerPct = finiteNumber(config?.context?.preflight_trigger_pct, 60, 1);
-  const hardPct = finiteNumber(config?.context?.hard_limit_pct, 98, 1);
-  const generateSummary = typeof options === 'function' ? options : options?.generateSummary;
-  const onStart = typeof options === 'object' && options ? options.onStart : null;
-  const unchanged = { messages: source, changed: false, mode: '', threshold: 0, tokensSaved: 0 };
-  if (!(input > 0) || !(maxContextTokens > 0)) return unchanged;
-  const threshold = (input / maxContextTokens) * 100;
-  if (threshold < triggerPct) return unchanged;
+  const opts = typeof options === 'function' ? { generateSummary: options } : (options || {});
+  const generateSummary = opts.generateSummary;
+  const onStart = typeof opts.onStart === 'function' ? opts.onStart : null;
+  const force = opts.force === true;
+  const budget = resolveCompactBudget(config);
+  const unchanged = {
+    messages: source,
+    changed: false,
+    mode: '',
+    threshold: 0,
+    beforePct: 0,
+    afterPct: 0,
+    tokensSaved: 0,
+    estimatedTokens: 0,
+    summaryCalls: opts.summaryCache?.calls || 0,
+  };
+  const summaryGuarded = source.some((message) => isCompactionSummary(message));
+  const measuredIndex = Number.isInteger(opts.measuredIndex) ? opts.measuredIndex : -1;
+  if (!force && summaryGuarded && opts.measuredFresh !== true && measuredIndex < 0 && Number(inputTokens) > 0) {
+    return { ...unchanged, skipped: 'summary' };
+  }
+
+  const usage = estimatePromptUsage({
+    messages: source,
+    measuredTokens: Number(inputTokens) || 0,
+    measuredIndex,
+    overheadTokens: opts.overheadTokens,
+    extraTokens: opts.extraTokens,
+    calibrationRatio: opts.calibrationRatio,
+  });
+  const beforePct = budget.window > 0 ? Math.round((usage / budget.window) * 100) : 0;
+  unchanged.threshold = beforePct;
+  unchanged.beforePct = beforePct;
+  unchanged.estimatedTokens = usage;
+  const target = Number.isFinite(Number(opts.targetTokens)) && Number(opts.targetTokens) > 0
+    ? Math.floor(Number(opts.targetTokens))
+    : budget.target;
+  if (!force && (!(usage > 0) || usage < budget.trigger)) return unchanged;
 
   const { system, body } = splitLeadingSystemMessages(source);
   const pending = body[body.length - 1];
@@ -606,55 +1070,134 @@ export async function compactInFlightMessages(messages, config = {}, inputTokens
     return unchanged;
   }
 
-  if (typeof onStart === 'function') onStart();
+  const ratio = positiveRatio(opts.calibrationRatio, 1);
+  const overhead = Math.max(0, Number(opts.overheadTokens) || 0);
+  const localOf = (nextBody) => estimateMessagesTokens([...system, ...nextBody]) + overhead;
+  const project = (beforeLocal, afterLocal) => {
+    if (!(beforeLocal > 0) || !(usage > 0)) return Math.round(afterLocal);
+    const scale = positiveRatio(usage / beforeLocal, 1);
+    return Math.round(afterLocal * scale);
+  };
+  const beforeLocal = localOf(body);
 
-  const rounded = Math.round(threshold);
+  let started = false;
+  const start = () => {
+    if (started) return;
+    started = true;
+    if (typeof onStart === 'function') onStart();
+  };
+
   let working = body;
-  let tokensSaved = 0;
   let mode = '';
   let changed = false;
+  let tokensSaved = 0;
+  let boundaryIndex;
+  let projected = usage;
+  let summaryText = '';
+  const summaryCache = opts.summaryCache && typeof opts.summaryCache === 'object'
+    ? opts.summaryCache
+    : { calls: 0, text: null };
+  summaryText = summaryCache.text || '';
 
-  const microEnabled = config?.context?.microcompact_enabled !== false;
+  const microEnabled = config?.context?.microcompact_enabled !== false && opts.skipPrune !== true;
   if (microEnabled) {
-    const micro = microCompactMessages(working, {
-      keepRecent: finiteNumber(config?.context?.microcompact_keep_recent, 5, 1),
-      enabled: true,
+    const protectedTools = Array.isArray(config?.context?.prune_protected_tools)
+      ? config.context.prune_protected_tools
+      : ['skill', 'tasks'];
+    const pruned = pruneToolPayloads(working, {
+      protectTurns: finiteNumber(config?.context?.prune_protect_turns, 2, 0),
+      protectTokens: finiteNumber(config?.context?.prune_protect_tokens, PRUNE_PROTECT, 0),
+      minimumSavings: force && opts.pruneOnly === true
+        ? 1
+        : pruneMinimumTokens(config, budget.window),
+      protectedToolNames: protectedTools,
+      inputClearMinTokens: finiteNumber(config?.context?.prune_input_min_tokens, 500, 0),
     });
-    if (micro.changed) {
-      working = micro.messages;
-      tokensSaved = micro.tokensSaved;
-      mode = 'micro';
+    if (pruned.changed) {
+      start();
+      working = pruned.messages;
+      tokensSaved = pruned.tokensSaved;
+      mode = 'prune';
       changed = true;
+      projected = project(beforeLocal, localOf(working));
+      if (opts.pruneOnly === true || projected <= target) {
+        return finish();
+      }
     }
   }
 
-  // Occupancy stays on the previous request's real input tokens, so a cycle
-  // that crossed the trigger also runs macro after micro.
-  const macroMode = threshold >= hardPct ? 'aggressive' : 'conservative';
-  const macro = await compactMessagesLocally(working, {
-    mode: macroMode,
-    force: true,
-    generateSummary: typeof generateSummary === 'function' ? generateSummary : null,
-  });
-  if (macro.changed) {
-    const before = estimateMessagesTokens(body);
-    const after = estimateMessagesTokens(macro.compacted);
-    working = macro.compacted;
-    tokensSaved = Math.max(0, before - after);
-    mode = macroMode;
+  if (opts.pruneOnly === true) return changed ? finish() : unchanged;
+
+  const hardPct = finiteNumber(config?.context?.hard_limit_pct, 98, 1);
+  const aggressive = opts.aggressive === true
+    || opts.mode === 'aggressive'
+    || (budget.window > 0 && (usage / budget.window) * 100 >= hardPct);
+  let keep = resolveKeepTokens(budget, config, aggressive);
+  const summaryTarget = Math.min(target, Math.max(1, Number(opts.targetTokens) || target));
+  let guard = 0;
+  while (guard < 5) {
+    guard += 1;
+    const recentStart = selectRecentStart(working, keep);
+    const older = working.slice(0, recentStart);
+    if (older.length === 0) {
+      // The whole tail still fits in `keep`, but the provider usage is over
+      // the target. Shorten the verbatim tail until there is something to summarize.
+      const nextKeep = Math.floor(keep * 0.5);
+      if (nextKeep < 80 || nextKeep === keep) break;
+      keep = nextKeep;
+      continue;
+    }
+    if (!summaryText) {
+      start();
+      summaryText = await summarizeOnce(older, generateSummary, summaryCache);
+    } else if (summaryCache.calls < 1) {
+      summaryCache.calls = 1;
+      summaryCache.text = summaryText;
+    }
+    const taken = takeSummary(working, summaryText, recentStart);
+    if (!taken) break;
+    const nextProjected = project(beforeLocal, localOf(taken.messages));
+    start();
+    working = taken.messages;
+    boundaryIndex = taken.boundaryIndex;
+    mode = 'summary';
     changed = true;
+    tokensSaved = Math.max(0, beforeLocal - localOf(working));
+    projected = nextProjected;
+    if (projected <= summaryTarget) break;
+    const nextKeep = Math.floor(keep * 0.5);
+    if (nextKeep < 80 || nextKeep === keep) break;
+    keep = nextKeep;
   }
 
   if (!changed) return unchanged;
-  const compactedMessages = [...system, ...working];
-  return {
-    messages: compactedMessages,
-    changed: true,
-    mode,
-    threshold: rounded,
-    tokensSaved,
-    estimatedTokens: estimateMessagesTokens(compactedMessages),
-  };
+  return finish();
+
+  function finish() {
+    const compactedMessages = stripUsage([...system, ...working]);
+    const afterUsage = projected;
+    const afterPct = budget.window > 0 ? Math.round((afterUsage / budget.window) * 100) : 0;
+    const divider = {
+      beforePct,
+      afterPct,
+      mode: mode === 'prune' ? 'prune' : 'summary',
+    };
+    return {
+      messages: compactedMessages,
+      changed: true,
+      mode: divider.mode,
+      threshold: beforePct,
+      beforePct,
+      afterPct,
+      tokensSaved,
+      estimatedTokens: afterUsage,
+      boundaryIndex,
+      summaryText: summaryText || '',
+      summaryCalls: summaryCache.calls || 0,
+      summary: formatCompactDivider({ ...divider, language: 'zh' }),
+      summaryEn: formatCompactDivider({ ...divider, language: 'en' }),
+    };
+  }
 }
 
 export function parseCompactArgs(args = []) {

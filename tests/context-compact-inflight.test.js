@@ -49,7 +49,7 @@ test('in-flight compact waits until real input usage crosses the trigger', async
   assert.equal(below.messages, messages);
 });
 
-test('in-flight compact runs micro then macro in one cycle when occupancy stays over the trigger', async () => {
+test('in-flight compact summarizes once when occupancy stays over the trigger', async () => {
   const messages = [
     { role: 'system', content: 'system stays' },
     { role: 'user', content: 'do the task' },
@@ -58,13 +58,15 @@ test('in-flight compact runs micro then macro in one cycle when occupancy stays 
 
   const result = await compactInFlightMessages(messages, config, 900);
   assert.equal(result.changed, true);
-  assert.equal(result.mode, 'conservative');
+  assert.equal(result.mode, 'summary');
   assert.equal(result.threshold, 90);
   assert.equal(result.messages[0].content, 'system stays');
+  assert.equal(result.messages[1].compaction?.kind, 'summary');
   assert.match(result.messages[1].content, /Context Summary|OLD_/);
   assert.match(result.messages.map((message) => message.content).join('\n'), /OLD_7_/);
   assert.equal(result.messages.some((message) => message.tool_call_id === 'old-0' && /OLD_0_/.test(message.content)), false);
   assertToolPairs(result.messages);
+  assert.ok(result.afterPct < result.beforePct);
 });
 
 test('in-flight macro uses a model summary and falls back locally when it fails', async () => {
@@ -78,7 +80,8 @@ test('in-flight macro uses a model summary and falls back locally when it fails'
     generateSummary: async () => 'MODEL_SUMMARY of the older turn',
   });
   assert.equal(summarized.changed, true);
-  assert.equal(summarized.mode, 'conservative');
+  assert.equal(summarized.mode, 'summary');
+  assert.equal(summarized.summaryCalls, 1);
   assert.match(summarized.messages[1].content, /MODEL_SUMMARY/);
 
   const fallback = await compactInFlightMessages(messages, config, 900, {
@@ -90,7 +93,7 @@ test('in-flight macro uses a model summary and falls back locally when it fails'
   assert.match(fallback.messages[1].content, /Context Summary/);
 });
 
-test('in-flight macro uses the hard limit to choose conservative vs aggressive keep', async () => {
+test('in-flight summary keeps a shorter tail once usage reaches the hard limit', async () => {
   const messages = [
     { role: 'system', content: 'system stays' },
     { role: 'user', content: 'do the task' },
@@ -98,10 +101,10 @@ test('in-flight macro uses the hard limit to choose conservative vs aggressive k
   ];
 
   const conservative = await compactInFlightMessages(messages, config, 900);
-  assert.equal(conservative.mode, 'conservative');
+  assert.equal(conservative.mode, 'summary');
 
   const aggressive = await compactInFlightMessages(messages, config, 990);
-  assert.equal(aggressive.mode, 'aggressive');
+  assert.equal(aggressive.mode, 'summary');
   assert.ok(aggressive.messages.length <= conservative.messages.length);
 });
 
@@ -157,19 +160,20 @@ test('the agent loop compacts after a high-usage step and leaves a mid-turn mark
   const start = events.find((event) => event.type === 'compact:start');
   assert.ok(start);
   assert.equal(start.duringTurn, true);
-  assert.match(start.summary, /上下文压缩中/);
-  assert.match(start.summaryEn, /Compressing context/);
+  assert.match(start.summary, /自动压缩中/);
+  assert.match(start.summaryEn, /Auto-compacting/);
   assert.doesNotMatch(start.summary, /micro|macro|conservative|aggressive|\d+%/i);
   assert.equal(events.filter((event) => event.type === 'compact:auto').length, 1);
   const marker = events.find((event) => event.type === 'compact:auto');
   assert.equal(marker.duringTurn, true);
-  assert.equal(marker.mode, 'conservative');
-  assert.equal(marker.threshold, 90);
-  assert.match(marker.summary, /以上内容已压缩/);
-  assert.doesNotMatch(marker.summary, /micro|macro|conservative|aggressive|\d+%/i);
+  assert.equal(marker.mode, 'summary');
+  assert.ok(marker.threshold >= 90);
+  assert.match(marker.summary, /已压缩上下文 · \d+% → \d+% · 摘要/);
+  assert.match(marker.summaryEn, /Context compacted · \d+% → \d+% · summary/);
+  assert.ok(events.findIndex((event) => event.type === 'compact:start') < events.findIndex((event) => event.type === 'compact:auto'));
   assert.ok(marker.estimatedTokens > 0);
   assert.ok(marker.estimatedTokens < 900);
   assert.equal(seen[1][0], 'system stays');
-  assert.equal(seen[1].some((content) => content.includes('OLD_0_')), false);
+  assert.equal(seen[1].some((content) => content.includes('y'.repeat(200))), false);
   assert.equal(seen[1].some((content) => content.includes('LIVE_TOOL_RESULT')), true);
 });

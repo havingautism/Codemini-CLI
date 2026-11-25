@@ -20,11 +20,14 @@ import { createToolResultStore, summarizeToolResult } from './tool-result-store.
 import { rankToolDefinitions } from './harness/tool-reliability.js';
 import {
   applyAggressiveToolPruneBeta,
+  calibrationRatio,
   compactInFlightMessages,
   COMPACT_START_SUMMARY,
   COMPACT_START_SUMMARY_EN,
-  COMPACT_DONE_SUMMARY,
-  COMPACT_DONE_SUMMARY_EN,
+  estimateMessagesTokens,
+  estimateToolDefinitionsTokens,
+  isContextOverflowError,
+  SHRINK_STEPS,
 } from './context-compact.js';
 import { normalizeModelUsage } from './model-usage.js';
 import {
@@ -817,6 +820,11 @@ export async function runAgentLoop({
   const retryLimit = Number.isFinite(Number(maxIncompleteRetries)) ? Math.max(0, Math.min(10, Math.floor(Number(maxIncompleteRetries)))) : 3;
   let incompleteRetries = 0;
   let lastInputTokens = 0;
+  let measuredIndex = -1;
+  let promptCalibration = 1;
+  let measuredFresh = false;
+  let skipCompactCheck = false;
+  const summaryCache = { calls: 0, text: null };
   let lastCompletionIncomplete = false;
   let lastToolError = false;
   let lastToolName = '';
@@ -873,36 +881,95 @@ export async function runAgentLoop({
       const selected = await contextSelector({ messages, step }).catch(() => null);
       if (Array.isArray(selected) && selected.length > 0) messages.splice(0, messages.length, ...selected);
     }
-    if (lastInputTokens > 0 && !lastCompletionIncomplete) {
+    const toolOverheadTokens = () => estimateToolDefinitionsTokens(toolDefinitionsForModel());
+    let announcedCompact = false;
+    const emitCompactStart = () => {
+      if (announcedCompact) return;
+      announcedCompact = true;
+      onEvent?.({
+        type: 'compact:start',
+        duringTurn: true,
+        summary: COMPACT_START_SUMMARY,
+        summaryEn: COMPACT_START_SUMMARY_EN,
+      });
+    };
+    const applyInflight = (inflight) => {
+      if (!inflight?.changed) return false;
+      messages.splice(0, messages.length, ...inflight.messages);
+      measuredIndex = -1;
+      measuredFresh = false;
+      lastInputTokens = inflight.estimatedTokens;
+      skipCompactCheck = true;
+      onEvent?.({
+        type: 'compact:auto',
+        mode: inflight.mode,
+        threshold: inflight.threshold,
+        beforePct: inflight.beforePct,
+        afterPct: inflight.afterPct,
+        duringTurn: true,
+        tokensSaved: inflight.tokensSaved,
+        estimatedTokens: inflight.estimatedTokens,
+        summary: inflight.summary,
+        summaryEn: inflight.summaryEn,
+        messages: inflight.messages,
+      });
+      return true;
+    };
+    if (skipCompactCheck) {
+      // The step after a compact re-measures with the provider's real usage.
+      skipCompactCheck = false;
+    } else if (lastInputTokens > 0 && !lastCompletionIncomplete) {
+      if (measuredFresh && summaryCache.calls > 0) {
+        summaryCache.calls = 0;
+        summaryCache.text = null;
+      }
       const inflight = await compactInFlightMessages(messages, config, lastInputTokens, {
         generateSummary,
-        onStart: () => onEvent?.({
-          type: 'compact:start',
-          duringTurn: true,
-          summary: COMPACT_START_SUMMARY,
-          summaryEn: COMPACT_START_SUMMARY_EN,
-        }),
+        summaryCache,
+        overheadTokens: toolOverheadTokens(),
+        calibrationRatio: promptCalibration,
+        measuredIndex: measuredFresh ? measuredIndex : -1,
+        measuredFresh,
+        onStart: emitCompactStart,
       });
-      if (inflight.changed) {
-        messages.splice(0, messages.length, ...inflight.messages);
-        onEvent?.({
-          type: 'compact:auto',
-          mode: inflight.mode,
-          threshold: inflight.threshold,
-          duringTurn: true,
-          tokensSaved: inflight.tokensSaved,
-          estimatedTokens: inflight.estimatedTokens,
-          summary: COMPACT_DONE_SUMMARY,
-          summaryEn: COMPACT_DONE_SUMMARY_EN,
-        });
+      applyInflight(inflight);
+    }
+    let completion;
+    {
+      let overflowAttempt = 0;
+      while (true) {
+        try {
+          completion = await requestCompletion({
+            model,
+            messages,
+            tools: toolDefinitionsForModel(),
+            signal
+          });
+          break;
+        } catch (error) {
+          if (signal?.aborted || !isContextOverflowError(error) || overflowAttempt >= SHRINK_STEPS.length) throw error;
+          const overhead = toolOverheadTokens();
+          const rejected = Math.max(
+            lastInputTokens,
+            Math.round(estimateMessagesTokens(messages) * promptCalibration + overhead)
+          );
+          const target = Math.max(1, Math.floor(rejected * SHRINK_STEPS[overflowAttempt]));
+          overflowAttempt += 1;
+          const shrunk = await compactInFlightMessages(messages, config, rejected, {
+            force: true,
+            targetTokens: target,
+            aggressive: true,
+            generateSummary,
+            summaryCache,
+            overheadTokens: overhead,
+            calibrationRatio: promptCalibration,
+            measuredFresh: true,
+            onStart: emitCompactStart,
+          });
+          if (!applyInflight(shrunk)) throw error;
+        }
       }
     }
-    const completion = await requestCompletion({
-      model,
-      messages,
-      tools: toolDefinitionsForModel(),
-      signal
-    });
 
     // 流式请求完成后再次检查中止状态
     if (signal?.aborted) {
@@ -921,7 +988,13 @@ export async function runAgentLoop({
     incompleteRetries = 0;
     lastCompletionIncomplete = false;
     const reportedUsage = normalizeModelUsage(completion?.usage);
-    if (reportedUsage?.inputTokens > 0) lastInputTokens = reportedUsage.inputTokens;
+    if (reportedUsage?.inputTokens > 0) {
+      const sentEstimate = estimateMessagesTokens(messages) + toolOverheadTokens();
+      promptCalibration = calibrationRatio(reportedUsage.inputTokens, sentEstimate);
+      lastInputTokens = reportedUsage.inputTokens;
+      measuredIndex = messages.length;
+      measuredFresh = true;
+    }
     const toolCalls = Array.isArray(completion.toolCalls) ? completion.toolCalls : [];
     const assistantText = completion.text || '';
     lastAssistantText = assistantText || lastAssistantText;

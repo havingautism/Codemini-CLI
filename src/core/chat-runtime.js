@@ -85,12 +85,11 @@ import { loadConfig, saveConfig, setConfigValue } from './config-store.js';
 import { evaluateCommandPolicy } from './command-policy.js';
 import { loadInputHistory } from './input-history-store.js';
 import {
-  compactMessagesLocally,
+  buildGradedTranscript,
   compactInFlightMessages,
   estimateMessagesTokens,
-  microCompactMessages,
+  measurementDeltaIndex,
   parseCompactArgs,
-  buildTranscriptForLLM,
   COMPACT_SUMMARY_PROMPT,
   COMPACT_START_SUMMARY,
   COMPACT_START_SUMMARY_EN,
@@ -4085,17 +4084,23 @@ function hasPostCompactActualUsage(messages = [], estimatedAt) {
   return false;
 }
 
-function recordCompactContextEstimate(session, { messages, estimatedTokens, config, executionMode } = {}) {
+export function recordCompactContextEstimate(session, { messages, estimatedTokens, config, executionMode } = {}) {
   if (!session) return 0;
   const raw = Number(estimatedTokens);
-  const messageTokens = Number.isFinite(raw) && raw >= 0
-    ? Math.round(raw)
-    : estimateMessagesTokens(modelVisibleMessages(Array.isArray(messages) ? messages : []));
-  const visible = modelVisibleMessages(Array.isArray(messages) ? messages : []);
-  const overhead = (visible.length > 0 || messageTokens > 0)
-    ? estimateBaselinePromptOverhead(config, executionMode)
-    : 0;
-  const tokens = messageTokens + overhead;
+  let tokens;
+  if (Number.isFinite(raw) && raw >= 0) {
+    // Callers pass the full prompt estimate (messages already counted, plus any
+    // overhead that was not inside them). Adding the baseline again double-counts
+    // the system prompt that the provider figure, or a previous call, already included.
+    tokens = Math.round(raw);
+  } else {
+    const visible = modelVisibleMessages(Array.isArray(messages) ? messages : []);
+    const hasSystem = visible.some((message) => message?.role === 'system');
+    const overhead = !hasSystem && visible.length > 0
+      ? estimateBaselinePromptOverhead(config, executionMode)
+      : 0;
+    tokens = estimateMessagesTokens(visible) + overhead;
+  }
   const estimatedAt = Date.now();
   session.compact = {
     ...(session.compact || {}),
@@ -4409,7 +4414,10 @@ function createCompactSummaryGenerator(config, signal) {
     const effectiveConfig = latestConfig || config;
     const fastModel = resolveFastModel(effectiveConfig);
     if (!fastModel) throw new Error('No fast model');
-    const transcript = buildTranscriptForLLM(olderMessages);
+    const window = effectiveMaxContextTokens(effectiveConfig);
+    const transcript = buildGradedTranscript(olderMessages, {
+      maxChars: Math.min(120_000, Math.max(8_000, window * 4)),
+    });
     const result = await createChatCompletion({
       sdkProvider: effectiveConfig.sdk?.provider,
       baseUrl: effectiveConfig.gateway.base_url,
@@ -4422,7 +4430,7 @@ function createCompactSummaryGenerator(config, signal) {
             fields: 'the entire summary'
           })
         },
-        { role: 'user', content: transcript.slice(0, 12000) }
+        { role: 'user', content: transcript }
       ],
       tools: [],
       timeoutMs: Math.min(Number(effectiveConfig.gateway?.timeout_ms || 30000), 60000),
@@ -4756,15 +4764,7 @@ async function askModelInSession({
   let compacted = compactedInput;
   const modelInputText = typeof modelText === 'string' && modelText ? modelText : text;
   const expectedModelText = typeof modelText === 'string' && modelText && modelText !== text ? modelText : '';
-  const maxContextTokens = effectiveMaxContextTokens(config);
-  const triggerPct = Number(config.context?.preflight_trigger_pct || 60);
-  const hardPct = Number(config.context?.hard_limit_pct || 98);
-  // The visible message list and its token estimate are computed once per turn
-  // and reused by every preflight/compact measurement below.
   const turnVisible = modelVisibleMessages(compacted ?? session.messages);
-  const turnTokens = estimateMessagesTokens(turnVisible);
-  const preflightTokens = turnTokens + estimateMessagesTokens([{ role: 'user', content: String(modelInputText || '') }]);
-  const preflightPct = (preflightTokens / maxContextTokens) * 100;
   const selectedSkillNamesForUi = [...new Set(
     (Array.isArray(selectedSkillNames) ? selectedSkillNames : [])
       .map((name) => String(name || '').trim())
@@ -4780,102 +4780,78 @@ async function askModelInSession({
       summaryEn: COMPACT_START_SUMMARY_EN,
     });
   };
-  const emitCompactDone = ({ mode, threshold, tokensSaved = 0, duringTurn = false } = {}) => {
-    const estimatedTokens = recordCompactContextEstimate(session, {
+  const emitCompactDone = ({
+    mode,
+    threshold,
+    tokensSaved = 0,
+    duringTurn = false,
+    beforePct,
+    afterPct,
+    estimatedTokens,
+    summary,
+    summaryEn,
+  } = {}) => {
+    const storedTokens = recordCompactContextEstimate(session, {
       messages: compacted,
+      estimatedTokens,
       config,
       executionMode,
     });
-    if (!onAgentEvent) return estimatedTokens;
+    if (!onAgentEvent) return storedTokens;
     onAgentEvent({
       type: 'compact:auto',
       mode,
       threshold,
+      beforePct,
+      afterPct,
       duringTurn,
       tokensSaved,
-      estimatedTokens,
-      summary: COMPACT_DONE_SUMMARY,
-      summaryEn: COMPACT_DONE_SUMMARY_EN,
+      estimatedTokens: storedTokens,
+      summary: summary || COMPACT_DONE_SUMMARY,
+      summaryEn: summaryEn || COMPACT_DONE_SUMMARY_EN,
     });
-    return estimatedTokens;
+    return storedTokens;
   };
 
-  if (persistSession && preflightPct >= triggerPct) {
-    // `compacted` is still the original input here, so this equals turnVisible.
-    const compactSource = turnVisible;
-    // Phase 0: try micro-compact first (in-place tool result clearing)
-    const microEnabled = config.context?.microcompact_enabled !== false;
-    const microKeep = Number(config.context?.microcompact_keep_recent || 5);
-    let needsMacro = true;
-    let compactStarted = false;
-    const ensureCompactStart = () => {
-      if (compactStarted) return;
-      compactStarted = true;
-      emitCompactStart(false);
-    };
-    if (microEnabled) {
-      const micro = microCompactMessages(compactSource, { keepRecent: microKeep, enabled: true });
-      if (micro.changed) {
-        ensureCompactStart();
-        compacted = micro.messages.map((m) => ({ ...m, at: new Date().toISOString() }));
-        if (onCompactedUpdate) onCompactedUpdate(compacted, { mode: 'micro' });
-        const afterMicroTokens = estimateMessagesTokens(compacted);
-        const afterMicroPct = (afterMicroTokens / maxContextTokens) * 100;
-        if (afterMicroPct < triggerPct) {
-          needsMacro = false;
-          emitCompactDone({
-            mode: 'micro',
-            threshold: Math.round(preflightPct),
-            tokensSaved: micro.tokensSaved,
-          });
-        }
-      }
-    }
-    if (needsMacro) {
-      const sourceIsCompacted = Boolean(compacted);
-      // After micro-compaction `compacted` may be a new array; only recompute
-      // the visible filter in that case, otherwise reuse the per-turn base.
-      const macroSource = compacted ? modelVisibleMessages(compacted) : turnVisible;
-      const macroMode = preflightPct >= hardPct ? 'aggressive' : 'conservative';
-      ensureCompactStart();
-      const auto = await compactMessagesLocally(macroSource, {
-        mode: macroMode,
-        force: true,
-        generateSummary: createCompactSummaryGenerator(config, signal)
-      });
-      if (auto.changed) {
-        compacted = auto.compacted.map((m) => ({ ...m, at: new Date().toISOString() }));
-        if (onCompactedUpdate) {
-          onCompactedUpdate(compacted, {
-            boundaryIndex: translateCompactBoundaryToOriginal(sourceIsCompacted, session.compact, auto.boundaryIndex),
-            mode: macroMode
-          });
-        }
-        emitCompactDone({
-          mode: macroMode,
-          threshold: Math.round(preflightPct),
-        });
-      }
-    }
-  } else if (persistSession) {
-    // The context meter uses the gateway's last input count. That can cross
-    // the trigger while the local message estimate is still under it.
+  if (persistSession) {
+    const hasSystem = turnVisible.some((message) => message?.role === 'system');
+    const overhead = hasSystem ? 0 : estimateBaselinePromptOverhead(config, executionMode);
     const measured = resolveLatestContextMeasurement(turnVisible, 0);
-    const actualPct = measured.source === 'actual' ? (measured.tokens / maxContextTokens) * 100 : 0;
-    if (actualPct >= triggerPct) {
-      const inflight = await compactInFlightMessages(turnVisible, config, measured.tokens, {
+    const pendingTokens = estimateMessagesTokens([{ role: 'user', content: String(modelInputText || '') }]);
+    const sourceIsCompacted = Boolean(compacted);
+    const inflight = await compactInFlightMessages(
+      turnVisible,
+      config,
+      measured.source === 'actual' ? measured.tokens : 0,
+      {
         generateSummary: createCompactSummaryGenerator(config, signal),
         onStart: () => emitCompactStart(false),
-      });
-      if (inflight.changed) {
-        compacted = inflight.messages.map((message) => ({ ...message, at: new Date().toISOString() }));
-        if (onCompactedUpdate) onCompactedUpdate(compacted, { mode: inflight.mode });
-        emitCompactDone({
+        overheadTokens: overhead,
+        extraTokens: pendingTokens,
+        measuredIndex: measured.source === 'actual' ? measurementDeltaIndex(turnVisible) : -1,
+        measuredFresh: measured.source === 'actual',
+      }
+    );
+    if (inflight.changed) {
+      compacted = inflight.messages.map((message) => ({ ...message, at: new Date().toISOString() }));
+      if (onCompactedUpdate) {
+        onCompactedUpdate(compacted, {
           mode: inflight.mode,
-          threshold: inflight.threshold,
-          tokensSaved: inflight.tokensSaved,
+          ...(Number.isFinite(inflight.boundaryIndex)
+            ? { boundaryIndex: translateCompactBoundaryToOriginal(sourceIsCompacted, session.compact, inflight.boundaryIndex) }
+            : {}),
         });
       }
+      emitCompactDone({
+        mode: inflight.mode,
+        threshold: inflight.threshold,
+        beforePct: inflight.beforePct,
+        afterPct: inflight.afterPct,
+        tokensSaved: inflight.tokensSaved,
+        estimatedTokens: inflight.estimatedTokens,
+        summary: inflight.summary,
+        summaryEn: inflight.summaryEn,
+      });
     }
   }
 
@@ -10320,25 +10296,51 @@ export async function createChatRuntime({
         }
         const source = modelVisibleMessages(compactedForModel ?? currentSession.messages);
         const beforeTokens = estimateMessagesTokens(source);
-        const result = cargs.micro
-          ? (() => {
-              const micro = microCompactMessages(source, {
-                keepRecent: Number(config.context?.microcompact_keep_recent || 5),
-                enabled: true
-              });
-              return { changed: micro.changed, compacted: micro.messages, summary: '', tokensSaved: micro.tokensSaved };
-            })()
-          : await compactMessagesLocally(source, {
-              mode: cargs.mode || compactState.mode,
-              force: true,
-              generateSummary: createCompactSummaryGenerator(config, null)
+        const hasSystem = source.some((message) => message?.role === 'system');
+        const result = await compactInFlightMessages(source, config, 0, {
+          force: true,
+          pruneOnly: cargs.micro === true,
+          aggressive: (cargs.mode || compactState.mode) === 'aggressive',
+          mode: cargs.mode || compactState.mode,
+          generateSummary: cargs.micro ? null : createCompactSummaryGenerator(config, null),
+          overheadTokens: hasSystem ? 0 : estimateBaselinePromptOverhead(config, executionMode),
+          onStart: () => {
+            if (cargs.preview || typeof onAgentEvent !== 'function') return;
+            onAgentEvent({
+              type: 'compact:start',
+              duringTurn: false,
+              summary: COMPACT_START_SUMMARY,
+              summaryEn: COMPACT_START_SUMMARY_EN,
             });
+          },
+        });
         if (!result.changed) return { type: 'system', text: 'Nothing to compact yet' };
-        const afterTokens = estimateMessagesTokens(result.compacted);
-        const report = `Compact ${cargs.preview ? 'preview' : 'applied'}: ${beforeTokens} -> ${afterTokens} tokens`;
+        const report = `Compact ${cargs.preview ? 'preview' : 'applied'}: ${beforeTokens} -> ${result.estimatedTokens} tokens`;
         if (!cargs.preview) {
-          setCompactedView(result.compacted.map((message) => ({ ...message, at: new Date().toISOString() })));
+          setCompactedView(result.messages.map((message) => ({ ...message, at: new Date().toISOString() })));
+          recordCompactContextEstimate(currentSession, {
+            messages: result.messages,
+            estimatedTokens: result.estimatedTokens,
+            config,
+            executionMode,
+          });
           await saveSession(currentSession);
+          if (typeof onAgentEvent === 'function') {
+            onAgentEvent({
+              type: 'compact:auto',
+              mode: result.mode,
+              threshold: result.threshold,
+              beforePct: result.beforePct,
+              afterPct: result.afterPct,
+              duringTurn: false,
+              tokensSaved: result.tokensSaved,
+              estimatedTokens: result.estimatedTokens,
+              summary: result.summary,
+              summaryEn: result.summaryEn,
+              messages: result.messages,
+            });
+            return { type: 'noop' };
+          }
         }
         return { type: 'system', text: report };
       }

@@ -384,7 +384,22 @@ export async function runOpenCodeTui({ runtime, sessionId, model, safeMode = tru
       }
       activePlan = plan;
       setActivity(type === 'plan:step_done' ? 'tool' : 'thinking', event.title || copy.working);
-    } else if (type === 'compact:auto' || type === 'dream:auto' || type === 'dream:complete') {
+    } else if (type === 'compact:start') {
+      setActivity('thinking', copy.compacting);
+    } else if (type === 'compact:auto') {
+      const mode = event.mode === 'prune'
+        ? copy.compactModePrune
+        : event.mode === 'summary'
+          ? copy.compactModeSummary
+          : '';
+      const before = Number(event.beforePct);
+      const after = Number(event.afterPct);
+      const line = Number.isFinite(before) && Number.isFinite(after)
+        ? copy.compacted(Math.round(before), Math.round(after), mode)
+        : (event.summary || copy.compacting);
+      transcript.addChild(createSystemMessage(line, color.warning));
+      setActivity('thinking', copy.thinking);
+    } else if (type === 'dream:auto' || type === 'dream:complete') {
       transcript.addChild(createSystemMessage(event.summary || type.replace(':', ' '), color.warning));
     }
     requestRender();

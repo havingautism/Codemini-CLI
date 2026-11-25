@@ -2363,7 +2363,19 @@ export const MessageBubble = memo(function MessageBubble({
       );
     }
     if (message.dividerType === "compact") {
-      return renderDivider(t("compactDivider"));
+      const before = Number(message.beforePct);
+      const after = Number(message.afterPct);
+      if (Number.isFinite(before) && Number.isFinite(after)) {
+        const modeLabel = message.compactMode === "prune"
+          ? t("compactModePrune")
+          : message.compactMode === "summary"
+            ? t("compactModeSummary")
+            : "";
+        const lead = t("compactDividerLead");
+        const range = `${Math.round(before)}% → ${Math.round(after)}%`;
+        return renderDivider(modeLabel ? `${lead} · ${range} · ${modeLabel}` : `${lead} · ${range}`);
+      }
+      return renderDivider(rawMessageText || t("compactDivider"));
     }
     return renderDivider(legacyText || t("compactDivider"));
   }
