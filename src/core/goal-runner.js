@@ -1,8 +1,8 @@
 import {
   applyGoalVerdict, beginGoalIteration, createGoalState, markGoalVerifying,
-  pauseGoal, recordGoalDelegation, recordGoalObservation, renderGoalContext, resumeGoal,
+  pauseGoal, recordGoalDelegation, recordGoalObservation, renderGoalContext, renderGoalSummary, resumeGoal, setInferredGoalCriteria,
 } from './goal-state.js';
-import { createGoalEvidenceCollector, reviewGoal } from './goal-verification.js';
+import { createGoalEvidenceCollector, inferGoalCriteria, reviewGoal } from './goal-verification.js';
 import { randomUUID } from 'node:crypto';
 import { readSessionGoal, saveSessionGoal } from './session-store.js';
 
@@ -71,6 +71,11 @@ export function createGoalRunner({ getSession, execute, settings, workspaceRoot,
 
   async function drive(signal, onEvent) {
     let recovering = current().phase === 'executing';
+    if (current().criteriaPending) {
+      const criteria = await inferGoalCriteria({ goal: current(), ...settings(), signal });
+      if (signal.aborted) return;
+      await save(setInferredGoalCriteria(current(), criteria));
+    }
     while (!signal.aborted && current().status === 'active') {
       if (current().phase === 'ready') await save(beginGoalIteration(current()));
       if (signal.aborted || current().status !== 'active') break;
@@ -113,17 +118,23 @@ export function createGoalRunner({ getSession, execute, settings, workspaceRoot,
         };
         const instruction = recovering
           ? '恢复目标。本轮曾中断，请先核对已有改动、子任务与证据，再继续未完成的工作。'
-          : '执行目标：' + current().objective + '\n请取得与验收项直接相关的工具证据。';
+          : '执行目标：' + current().objective;
+        const guidance = current().criteria.some(item => item.evidence === 'reply')
+          ? '直接在回复中完整交付要求的文本。涉及文件、运行行为或外部状态的验收项，请另外取得工具证据。'
+          : '请取得与验收项直接相关的工具证据。';
         recovering = false;
         const executorModel = settings().model;
-        const result = await execute(instruction, onEvent, { goalHooks: hooks, signal });
+        const result = await execute(instruction + '\n' + guidance, onEvent, { goalHooks: hooks, signal });
         await accept(await collector.finish());
         if (signal.aborted || current().status !== 'active') break;
         if (result.aborted || result.workflowComplete || result.type !== 'assistant' || result.stopReason === 'incomplete_retries') {
           await save(pauseGoal(current(), result.text || '执行中断，等待恢复。'));
           break;
         }
-        await save(markGoalVerifying(current(), result.text, executorModel));
+        const observations = await collector.recordReply(result.text);
+        if (signal.aborted || current().status !== 'active') break;
+        const next = observations.reduce(recordGoalObservation, current());
+        await save(markGoalVerifying(next, result.text, executorModel));
       }
       if (signal.aborted || current().phase !== 'verifying') break;
       const verdict = await reviewGoal({ goal: current(), workspaceRoot, ...settings(), signal });
@@ -168,7 +179,7 @@ export function createGoalRunner({ getSession, execute, settings, workspaceRoot,
             return reply('此会话已有可继续的目标。请使用 /goal 查看、/goal resume 恢复，或在新会话中创建另一个目标。');
           }
           next = createGoalState({ objective: parsed.objective, criteria: parsed.acceptance,
-            constraints: parsed.constraints?.join('\n'), maxIterations: parsed.maxRounds });
+            constraints: parsed.constraints?.join('\n'), maxIterations: parsed.maxRounds, criteriaPending: parsed.criteriaPending });
         } else {
           if (!previous) return reply('当前会话没有可以恢复的目标。');
           if (!['paused', 'exhausted'].includes(previous.status)) return reply(describe());
@@ -193,7 +204,9 @@ export function createGoalRunner({ getSession, execute, settings, workspaceRoot,
         } catch (error) {
           if (current().status === 'active') await save(pauseGoal(current(), '目标执行中断：' + error.message));
         }
-        return reply(describe());
+        const goal = current();
+        const fullReport = goal.status === 'completed' && goal.criteria.some(item => item.evidence === 'reply');
+        return { ...reply(renderGoalContext(goal, { fullReport })), goalSummary: renderGoalSummary(goal) };
       })();
       try { return await finished; } finally {
         localOwners.delete(ownerToken);

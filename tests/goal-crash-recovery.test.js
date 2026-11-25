@@ -158,6 +158,45 @@ if (process.send && process.argv[2] === ownerFlag) {
   test('跨进程：验收中崩溃后文件已变，旧证据无法完成目标', () => checkCrashRecovery('verifying', { changeArtifact: true }));
   test('跨进程：执行恢复后重用工具调用编号，采纳修复后重新读取的证据', () => checkCrashRecovery('executing', { repeatRead: true }));
 
+  test('提取自然目标时暂停，重开后重新提取并从第一轮执行', async (t) => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-goal-infer-'));
+    t.after(async () => {
+      closeSqliteDatabasesForTests(root);
+      await fs.rm(root, { recursive: true, force: true, maxRetries: 3 });
+    });
+    await withCodeminiGlobalDir(path.join(root, '.codemini'), async () => {
+      const session = await createSession(root);
+      const entered = Promise.withResolvers();
+      const first = makeRunner(session, () => assert.fail('提取期间不应开始执行'), async ({ signal }) => {
+        entered.resolve();
+        await once(signal, 'abort');
+        return { text: '{}' };
+      });
+      const running = first.command({ ...create, criteriaPending: 'infer' });
+      await entered.promise;
+      await first.command({ action: 'pause' });
+      await running;
+      const saved = await loadSession(session.id);
+      assert.equal(saved.goalState.iteration, 0);
+      assert.equal(saved.goalState.criteriaPending, 'infer');
+      assert.equal(saved.goalState.resumePhase, 'ready');
+
+      await fs.writeFile(path.join(root, artifact), expectedText);
+      const second = makeRunner(saved, (_prompt, _event, { goalHooks }) => observeFile(root, goalHooks),
+        async ({ messages }) => {
+          const input = JSON.parse(messages.at(-1).content);
+          if (!input.observations) return { text: JSON.stringify({ criteria: [{ text: create.acceptance[0], evidence: 'workspace' }] }) };
+          return { text: JSON.stringify({ decision: 'completed', reason: '文件内容已核对。',
+            checks: [{ criterionId: 'c1', evidenceIds: [input.observations[0].id] }] }) };
+        });
+      await second.command(resume);
+      const finished = readSessionGoal(session.id);
+      assert.equal(finished.status, 'completed');
+      assert.equal(finished.iteration, 1);
+      assert.equal(finished.criteriaPending, undefined);
+    });
+  });
+
   test('两个实例同时恢复同一版本，竞争方返回当前进度且只有一份验收记录', async (t) => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-goal-race-'));
     t.after(async () => {

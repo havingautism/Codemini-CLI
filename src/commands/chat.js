@@ -33,6 +33,7 @@ export function parseChatArgs(args) {
 
 export async function submitAndPrint(runtime, line, { output: out = process.stdout, showSystemTools = false } = {}) {
   let streamed = false;
+  let streamedAnswer = false;
   let atLineStart = true;
   const write = (text) => {
     const value = String(text || '');
@@ -50,8 +51,10 @@ export async function submitAndPrint(runtime, line, { output: out = process.stdo
   const result = await runtime.submitMessage(
     typeof line === 'string' ? { text: line } : line,
     (event) => {
+    if (event?.type === 'assistant:start') streamedAnswer = false;
     if (event?.type === 'assistant:delta' && event.text) {
       streamed = true;
+      streamedAnswer = true;
       write(event.text);
       return;
     }
@@ -97,6 +100,7 @@ export async function submitAndPrint(runtime, line, { output: out = process.stdo
   if (result.type === 'exit' || result.type === 'noop') return result;
   if (streamed) {
     if (!atLineStart) write('\n');
+    if (result.goalSummary) write(`${streamedAnswer ? result.goalSummary : result.text}\n`);
     return result;
   }
   if (result.text) write(`${result.text}\n`);

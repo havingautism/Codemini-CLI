@@ -2,14 +2,13 @@ export const GOAL_COMMAND = Object.freeze({
   name: 'goal',
   kind: 'command',
   scope: 'builtin',
-  description: '设置当前会话的目标和验收条件，查看、暂停或恢复执行',
+  description: '用一句话设置目标，可选填验收条件，也可查看、暂停或恢复执行',
 });
 
 export const DEFAULT_GOAL_ROUNDS = 5;
 export const MAX_GOAL_ROUNDS = 100;
 
-const USAGE = '请填写目标和至少一项可核对的验收条件。示例：\n/goal 修复导出功能\n验收：导出含中文的文件名时，下载成功且名称完整';
-const SECTION = /(?:^|[\s；;]+)(目标|验收条件|验收标准|验收|约束|轮数)\s*[:：][ \t]*/gu;
+const SECTION = /(?:^|[\s；;]+)(目标|验收条件|验收标准|验收|约束|轮数)\s*[:：]/gu;
 
 function parseRounds(value) {
   const text = String(value).trim();
@@ -20,7 +19,7 @@ function parseRounds(value) {
 
 function listItems(text) {
   return text.split(/[\n；]+/u)
-    .map((item) => item.trim().replace(/^(?:[-*•]\s+|\d+[.、)]\s*)/u, '').trim())
+    .map((item) => item.trim().replace(/^(?:[-*•](?:\s+|$)|\d+[.、)]\s*)/u, '').trim())
     .filter(Boolean);
 }
 
@@ -34,6 +33,9 @@ export function parseGoalCommand(text) {
   const body = (invocation[1] || '').trim();
   if (!body || /^status$/iu.test(body)) return { action: 'status' };
   if (/^pause$/iu.test(body)) return { action: 'pause' };
+  if (/^(?:status|pause)\s+(?:--?\S+|[+-]?\d+)$/iu.test(body)) {
+    return { action: 'error', message: '查看或暂停目标可用 /goal status 或 /goal pause，无需追加参数。' };
+  }
   if (/^resume(?:\s|$)/iu.test(body)) {
     if (/^resume$/iu.test(body)) return { action: 'resume' };
     const arg = /^resume\s+(?:\+|--add-rounds\s+)?(\d+)$/iu.exec(body);
@@ -55,9 +57,23 @@ export function parseGoalCommand(text) {
     else if (header[1] === '轮数') {
       maxRounds = parseRounds(value);
       if (!maxRounds) return { action: 'error', message: '轮数须为 1 至 100 的整数，例如「轮数：5」。' };
-    } else acceptance.push(...listItems(value));
+    } else {
+      const items = listItems(value);
+      if (!items.length) return { action: 'error', message: '请填写验收条件，或直接输入 /goal 和目标描述。' };
+      acceptance.push(...items);
+    }
   }
   const objective = objectiveParts.filter(Boolean).join('\n');
-  if (!objective || !acceptance.length) return { action: 'error', message: USAGE };
-  return { action: 'create', objective, acceptance, constraints, maxRounds };
+  if (!objective && !acceptance.length) {
+    return { action: 'error', message: '请在 /goal 后填写目标，例如「/goal 修复导出功能」。' };
+  }
+  return {
+    action: 'create',
+    objective: objective || acceptance.join('\n'),
+    acceptance: acceptance.length ? acceptance : [objective],
+    constraints,
+    maxRounds,
+    ...(!acceptance.length ? { criteriaPending: 'infer' } : {}),
+    ...(!objective ? { criteriaPending: 'classify' } : {}),
+  };
 }

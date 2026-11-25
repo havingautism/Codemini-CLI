@@ -183,6 +183,114 @@ test('普通模式真实委派在暂停、三次压缩和 SQLite 重载后继续
   assert.deepEqual(failures, []);
 });
 
+test('自然语言目标生成一次验收标准，重开会话后按原标准和文件证据完成验收', { timeout: 15000 }, async (t) => {
+  const { workspace, open, close } = await fixture(t);
+  const session = await createSession(workspace);
+  session.title = '核对版本标记';
+  let runtime = await open(session);
+  const request = `请核对 ${file} 中的版本标记是否为 ${marker}`;
+  const expected = `${file} 中的版本标记为 ${marker}`;
+  const plans = [];
+  const reviews = [];
+  const readResults = [];
+  globalThis.fetch = async (_url, init) => {
+    const body = JSON.parse(init.body);
+    const tail = body.messages.at(-1);
+    const system = String(body.messages[0].content);
+    if (!body.tools?.length && system.includes('提取目标验收条件')) {
+      plans.push(tail.content);
+      return reply(JSON.stringify({ criteria: [{ text: expected, evidence: 'workspace' }] }));
+    }
+    if (!body.tools?.length && system.includes('目标验收员')) {
+      const packet = JSON.parse(tail.content);
+      reviews.push({ model: body.model, packet });
+      if (reviews.length === 1) return reply('验收服务暂时没有返回有效判定');
+      const evidence = packet.observations.find(item => item.artifactPath === file && item.summary.includes(marker));
+      return reply(JSON.stringify({ decision: 'completed', reason: '已对照文件内容核实版本标记。',
+        checks: [{ criterionId: packet.criteria[0].id, evidenceIds: evidence ? [evidence.id] : [] }] }));
+    }
+    if (body.model === primary && body.tools?.length) {
+      if (tail.role !== 'tool') return toolCall('read-release', 'read', { path: file });
+      readResults.push(tail.content);
+      return reply('已核对版本标记。');
+    }
+    return Response.json({ choices: [{ message: { role: 'assistant', content: '核对版本标记' } }] });
+  };
+
+  const created = await runtime.submitMessage({ text: '/goal ' + request });
+  const paused = (await loadSession(session.id)).goalState;
+  assert.equal(paused?.status, 'paused', created.text);
+  assert.equal(paused.resumePhase, 'verifying');
+  assert.equal(paused.objective, request);
+  assert.deepEqual(paused.criteria.map(item => item.text), [expected]);
+  await close();
+  runtime = await open(await loadSession(session.id));
+  const resumed = await runtime.submitMessage({ text: '/goal resume' });
+  const goal = (await loadSession(session.id)).goalState;
+  assert.equal(goal.status, 'completed', resumed.text);
+  assert.equal(goal.iteration, 1);
+  assert.deepEqual(goal.criteria, paused.criteria);
+  assert.equal(plans.length, 1);
+  assert.ok(plans[0].includes(request));
+  assert.equal(readResults.length, 1);
+  assert.ok(readResults[0].includes(marker));
+  assert.deepEqual(reviews.map(item => item.model), [secondary, secondary]);
+  for (const { packet } of reviews) {
+    assert.deepEqual(packet.criteria.map(({ id, text }) => ({ id, text })), [{ id: goal.criteria[0].id, text: expected }]);
+  }
+  const observed = goal.observations.find(item => item.toolCallId === 'read-release' && item.summary.includes(marker));
+  assert.ok(observed);
+  assert.deepEqual(goal.verdicts.at(-1).checks, [{ criterionId: goal.criteria[0].id, evidenceIds: [observed.id] }]);
+});
+
+test('自然语言数数目标以完整聊天回复通过独立验收，执行者的完成声明仍需重做', { timeout: 15000 }, async (t) => {
+  const { workspace, open } = await fixture(t);
+  const session = await createSession(workspace);
+  session.title = '从一数到一百';
+  const runtime = await open(session);
+  const answer = Array.from({ length: 100 }, (_, index) => index + 1).join('、');
+  const claim = '我已经从 1 数到了 100。';
+  const userFiles = () => fs.readdir(workspace).then(names => names.filter(name => name !== '.codemini').sort());
+  const before = await userFiles();
+  let executions = 0;
+  const reviews = [];
+  globalThis.fetch = async (_url, init) => {
+    const body = JSON.parse(init.body);
+    const system = String(body.messages[0].content);
+    if (!body.tools?.length && system.includes('提取目标验收条件')) {
+      return reply(JSON.stringify({ criteria: [{ text: '回复中完整列出从 1 到 100 的连续整数', evidence: 'reply' }] }));
+    }
+    if (!body.tools?.length && system.includes('目标验收员')) {
+      const packet = JSON.parse(body.messages.at(-1).content);
+      const observation = packet.observations.findLast(item => item.source === 'reply');
+      reviews.push({ model: body.model, observation });
+      const complete = observation?.summary.includes(answer);
+      return reply(JSON.stringify({ decision: complete ? 'completed' : 'continue',
+        reason: complete ? '回复逐项列出了全部整数。' : '请在回复中列出每个整数。',
+        checks: [{ criterionId: packet.criteria[0].id, evidenceIds: complete ? [observation.id] : [] }] }));
+    }
+    if (body.model === primary && body.stream) return reply(++executions === 1 ? claim : answer);
+    return Response.json({ choices: [{ message: { role: 'assistant', content: '从一数到一百' } }] });
+  };
+
+  const toolCalls = [];
+  const result = await runtime.submitMessage({ text: '/goal 从1数到100' }, event => {
+    if (event.type === 'tool:start') toolCalls.push(event.name);
+  });
+  const goal = (await loadSession(session.id)).goalState;
+  assert.equal(goal?.status, 'completed', result.text);
+  assert.equal(goal.iteration, 2);
+  assert.equal(goal.report, answer);
+  assert.ok(result.text.includes(answer), '用户能看到完整数列');
+  assert.deepEqual(goal.verdicts.map(item => item.accepted), ['continue', 'completed']);
+  assert.deepEqual(reviews.map(item => item.model), [secondary, secondary]);
+  assert.ok(reviews[0].observation.summary.includes(claim));
+  assert.ok(reviews[1].observation.summary.includes(answer));
+  assert.deepEqual(goal.verdicts.at(-1).checks, [{ criterionId: goal.criteria[0].id, evidenceIds: [reviews[1].observation.id] }]);
+  assert.deepEqual(toolCalls, []);
+  assert.deepEqual(await userFiles(), before);
+});
+
 test('普通聊天保持工具范围，禁止委派的目标在缺证时预算耗尽，追加预算后才会继续', { timeout: 15000 }, async (t) => {
   const { workspace, open } = await fixture(t);
   const session = await createSession(workspace);

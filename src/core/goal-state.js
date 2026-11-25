@@ -33,7 +33,8 @@ function normalizeCriteria(value) {
     const id = cleanText(entry?.id) || `c${criteria.length + 1}`;
     if (seen.has(id)) throw new Error('验收标准标识重复。');
     seen.add(id);
-    criteria.push({ id, text });
+    const evidence = entry?.evidence;
+    criteria.push({ id, text, ...(['workspace', 'reply'].includes(evidence) ? { evidence } : {}) });
   }
   return criteria;
 }
@@ -45,7 +46,9 @@ function normalizeDefinition(input) {
   if (!objective || !criteria.length) throw new Error('请填写目标和至少一项可验证的验收标准。');
   if (!Number.isSafeInteger(maxIterations) || maxIterations < 1 || maxIterations > 100) throw new Error('轮次预算必须是 1 到 100 之间的整数。');
   const constraints = Array.isArray(input.constraints) ? textList(input.constraints).join('\n') : cleanText(input.constraints);
-  return { objective, criteria, constraints, maxIterations };
+  const pending = input.criteriaPending;
+  return { objective, criteria, constraints, maxIterations,
+    ...(['infer', 'classify'].includes(pending) ? { criteriaPending: pending } : {}) };
 }
 
 export function createGoalState(input) {
@@ -73,7 +76,7 @@ export function normalizeGoalState(value) {
     ...definition, status: value.status, phase, iteration: value.iteration,
     ...(cleanText(value.executorModel) ? { executorModel: cleanText(value.executorModel) } : {}),
     resumePhase: value.status === 'paused' && activePhases.has(value.resumePhase) ? value.resumePhase : null,
-    reason: cleanText(value.reason), report: cleanText(value.report),
+    reason: cleanText(value.reason), report: typeof value.report === 'string' ? value.report : '',
     observations: structuredClone(observations),
     verdicts: structuredClone(Array.isArray(value.verdicts) ? value.verdicts : []),
     delegations: structuredClone(Array.isArray(value.delegations) ? value.delegations : []),
@@ -86,16 +89,24 @@ function stopGoal(goal, status, reason, resumePhase = null) {
 }
 
 export function beginGoalIteration(goal) {
-  if (goal.status !== 'active' || goal.phase !== 'ready') return goal;
+  if (goal.status !== 'active' || goal.phase !== 'ready' || goal.criteriaPending) return goal;
   if (goal.iteration >= goal.maxIterations) {
     return stopGoal(goal, 'exhausted', '已用完轮次预算。');
   }
   return { ...goal, iteration: goal.iteration + 1, phase: 'executing' };
 }
 
+export function setInferredGoalCriteria(goal, entries) {
+  if (!goal.criteriaPending || goal.status !== 'active' || goal.phase !== 'ready') return goal;
+  const criteria = normalizeCriteria(entries);
+  if (!criteria.length) throw new Error('未能从目标提取验收条件。');
+  const { criteriaPending, ...resolved } = goal;
+  return { ...resolved, criteria };
+}
+
 export function markGoalVerifying(goal, report = '', executorModel = '') {
   if (goal.status !== 'active' || goal.phase !== 'executing') return goal;
-  return { ...goal, phase: 'verifying', report: cleanText(report),
+  return { ...goal, phase: 'verifying', report: typeof report === 'string' ? report : '',
     ...(cleanText(executorModel) ? { executorModel: cleanText(executorModel) } : {}) };
 }
 
@@ -155,6 +166,7 @@ export function recordGoalObservation(goal, input) {
 
 // 重新读取旧观察前检查版本与变更。变更无特定范围时，全部旧观察均需复验。
 function applicableEvidence(goal, criterionId, currentRevision, proposedChecks = []) {
+  const replyCriterion = goal.criteria.find(item => item.id === criterionId)?.evidence === 'reply';
   const bindings = new Set();
   const collectReferences = checks => {
     for (const check of checks) {
@@ -171,6 +183,8 @@ function applicableEvidence(goal, criterionId, currentRevision, proposedChecks =
       evidence = [];
       continue;
     }
+    if ((item.source === 'reply') !== replyCriterion) continue;
+    if (replyCriterion && (item.iteration !== goal.iteration || !item.criterionIds.includes(criterionId))) continue;
     const linked = item.criterionIds.includes(criterionId) ||
       (!item.criterionIds.length && (bindings.has(item.id) || boundChecks.has(item.checkKey)));
     if (!linked || !item.source || !item.summary || !item.revision) continue;
@@ -243,7 +257,12 @@ export function applyGoalVerdict(goal, input = {}) {
   return { ...result, phase: 'ready' };
 }
 
-export function renderGoalContext(goal) {
+export function renderGoalSummary(goal) {
+  const progress = `目标${statusLabels[goal.status]}（轮次 ${goal.iteration}/${goal.maxIterations}）`;
+  return goal.reason ? progress + '。' + excerpt(goal.reason, 200) : progress;
+}
+
+export function renderGoalContext(goal, { fullReport = false } = {}) {
   if (!goal) return '';
   const priorities = goal.criteria.map(criterion => {
     const applicable = latestChecks(applicableEvidence(goal, criterion.id, ''));
@@ -260,6 +279,7 @@ export function renderGoalContext(goal) {
     if (failed && passed) return result(0, '证据冲突', `证据冲突，复验 [${criterion.id}]`);
     if (failed) return result(1, '检查失败', `修复失败原因后复验 [${criterion.id}]`);
     if (!passed && last?.kind === 'change') return result(2, '证据过期', `版本已变，重新验证 [${criterion.id}]`);
+    if (!passed && criterion.evidence === 'reply') return result(2, '待交付回复', `在本轮回复中直接交付 [${criterion.id}] 所要求的内容`);
     if (!passed) return result(2, '证据不足', `尚缺机器证据，验证 [${criterion.id}]`);
     return result(3, '已有证据，待独立验收', `提交 [${criterion.id}] 的当前证据给独立验收员`);
   });
@@ -267,13 +287,14 @@ export function renderGoalContext(goal) {
   return [
     `状态：${statusLabels[goal.status]}，阶段：${phaseLabels[goal.phase]}`,
     `目标：${goal.objective}`,
+    goal.criteriaPending && '正在从目标中提取验收条件。',
     '验收标准：', ...priorities.map(({ criterion, label }) => `- [${criterion.id}] ${criterion.text}（${label}）`),
     goal.constraints && `约束：${goal.constraints}`,
     `轮次：${goal.iteration}/${goal.maxIterations}`, goal.reason && `上次结果：${goal.reason}`,
     goal.status === 'paused' && `恢复阶段：${phaseLabels[goal.resumePhase] || '等待开始下一轮'}。使用 /goal resume 继续。`,
     goal.status === 'exhausted' && '如需继续，可用 /goal resume +2 增加两轮。',
     next?.text && !['completed', 'failed'].includes(goal.status) && `建议下一步：${next.text}`,
-    goal.report && `最近执行报告：${excerpt(goal.report, 1200)}`,
+    goal.report && (fullReport ? goal.report : `最近执行报告：${excerpt(goal.report, 1200)}`),
     ...goal.delegations.slice(-8).map(item => `子任务 ${item.id}（${workerLabels[item.status] || item.status}）：${excerpt(item.name, 100)} ${excerpt(item.summary, 250)} ${excerpt(item.handoffPath, 180)}`.trimEnd()),
     ...goal.observations.slice(-8).map(item => `观察 ${item.id}（${observationLabels[item.kind]}）：${excerpt(item.summary, 280)}`),
   ].filter(Boolean).join('\n');

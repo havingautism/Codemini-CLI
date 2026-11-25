@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { createGoalEvidenceCollector, reviewGoal } from '../src/core/goal-verification.js';
+import { createGoalEvidenceCollector, inferGoalCriteria, reviewGoal } from '../src/core/goal-verification.js';
 import { runGit } from '../src/core/process-run.js';
 
 async function workspace(t) {
@@ -168,4 +168,103 @@ test('无关文件改动后按原文件的全文散列复用读取，修改原�
   await fs.writeFile(file, '321');
   assert.deepEqual((await collector.finish()).map((item) => item.kind), ['change']);
   assert.equal((await review(completed(rebound[1].id))).decision, 'continue');
+});
+
+test('按原始目标、约束和已有多条条件提取可核对的交付要求', async () => {
+  const goal = { objective: '从1数到100，再检查文件', constraints: '逐个列出', criteria: ['数到100', { text: '文件可读' }] };
+  const criteria = [{ text: '完整列出1至100', evidence: 'reply' }, { text: '文件可读', evidence: 'workspace' }];
+  const result = await inferGoalCriteria({ goal, config: { model: { name: '主模型' } }, requestCompletion: async options => {
+    assert.equal(options.model, '主模型');
+    assert.deepEqual(options.tools, []);
+    assert.ok(options.messages[0].content.startsWith('你负责提取目标验收条件'));
+    assert.deepEqual(JSON.parse(options.messages[1].content), { ...goal, criteria: ['数到100', '文件可读'] });
+    return { text: JSON.stringify({ criteria }) };
+  } });
+  assert.deepEqual(result, criteria);
+});
+
+test('显式验收仅按用户的原编号选择证据类型，保留原文与原始次序', async () => {
+  const criteria = [{ id: 'c1', text: '列出第一行，保留 A。' }, { id: 'c2', text: '在文件内保留 B。' }];
+  const goal = { criteria, criteriaPending: 'classify', constraints: '保持顺序' };
+  const inferred = await inferGoalCriteria({ goal, requestCompletion: async options => {
+    assert.deepEqual(JSON.parse(options.messages[1].content).criteria, criteria);
+    assert.match(options.messages[0].content, /每个输入 id 恰好返回一次/u);
+    return { text: JSON.stringify({ criteria: [
+      { id: 'c2', evidence: 'workspace' }, { id: 'c1', text: '模型尝试换成另一项', evidence: 'reply' },
+    ] }) };
+  } });
+  assert.deepEqual(inferred, [{ ...criteria[0], evidence: 'reply' }, { ...criteria[1], evidence: 'workspace' }]);
+  for (const ids of [['c1'], ['c1', 'c1'], ['c1', 'c3'], ['c1', 'c2', '多余']]) {
+    const requestCompletion = async () => ({ text: JSON.stringify({ criteria: ids.map(id => ({ id, evidence: 'reply' })) }) });
+    await assert.rejects(inferGoalCriteria({ goal, requestCompletion }), /原始编号/u);
+  }
+});
+
+test('提取不完整、模型调用失败、取消和错误内容均不形成新标准', async () => {
+  const goal = { objective: '写一句话' };
+  for (const response of [
+    { text: '随便处理' }, { text: '{"criteria":[]}' }, { text: '{"criteria":[{"text":" ","evidence":"reply"}]}' },
+    { text: '{"criteria":[{"text":"自述","evidence":"other"}]}' },
+    { text: '{"criteria":[{"text":"内容","evidence":"reply","id":"c1"}]}' },
+    { incomplete: true, text: '{"criteria":[{"text":"内容","evidence":"reply"}]}' },
+    { toolCalls: [{}], text: '{"criteria":[{"text":"内容","evidence":"reply"}]}' },
+  ]) {
+    await assert.rejects(inferGoalCriteria({ goal, requestCompletion: async () => response }), /未返回完整|格式无效/u);
+  }
+  await assert.rejects(inferGoalCriteria({ goal, requestCompletion: async () => { throw Error('网关不可用'); } }), /检查模型连接/u);
+  await assert.rejects(inferGoalCriteria({ goal, signal: AbortSignal.abort(), requestCompletion: () => assert.fail() }), /取消/u);
+});
+
+test('验收读取已交付答复的完整正文，摘要不符、之前轮次及已替换答复均不可引用', async (t) => {
+  const { goal, review } = await workspace(t);
+  goal.criteria = [{ id: 'c1', text: '在聊天中重复给定原文，保留末尾空格', evidence: 'reply' }];
+  goal.iteration = 2;
+  const collector = createGoalEvidenceCollector({ workspaceRoot: null, goal });
+  goal.report = ' ' + '原文'.repeat(3000) + '\n ';
+  const [reply] = await collector.recordReply(goal.report);
+  assert.equal(reply.artifactHash, createHash('sha256').update(goal.report).digest('hex'));
+  assert.ok(reply.summary.length < goal.report.length);
+  assert.deepEqual(reply.criterionIds, ['c1']);
+  goal.observations.push(reply);
+  assert.equal((await review(async options => {
+    const { observations } = JSON.parse(options.messages[1].content);
+    assert.equal(observations[0].summary, goal.report);
+    return { text: JSON.stringify(completed(reply.id)) };
+  }, { workspaceRoot: null })).decision, 'completed');
+  goal.iteration++;
+  assert.equal((await review(completed(reply.id))).decision, 'continue');
+  goal.iteration--;
+  goal.report += '新增';
+  assert.equal((await review(completed(reply.id))).decision, 'continue');
+  const [latest] = await collector.recordReply(goal.report);
+  goal.observations.push(latest);
+  assert.equal((await review(completed(reply.id))).decision, 'continue');
+  assert.equal((await review(completed(latest.id))).decision, 'completed');
+});
+
+test('工作区与回复标准分别验证，工具和自述均不能跨类佐证', async (t) => {
+  const { root, goal, review } = await workspace(t);
+  goal.criteria.push({ id: 'c2', text: '列出1、2、3', evidence: 'reply' });
+  goal.iteration = 1;
+  const collector = createGoalEvidenceCollector({ workspaceRoot: root, goal });
+  const event = { toolName: 'run', args: { command: 'node --test' }, callId: 'tests' };
+  await collector.beginTool(event);
+  const [run] = await collector.recordToolResult({ ...event, result: nodePass });
+  goal.report = '1、2、3。我已运行所有测试。';
+  const [reply] = await collector.recordReply(goal.report);
+  assert.deepEqual(run.criterionIds, ['c1']);
+  assert.deepEqual(reply.criterionIds, ['c2']);
+  // 模拟未绑定的旧版工作区候选，仍然不能作为回复证据。
+  goal.observations.push({ ...run, criterionIds: [] }, reply);
+  const verdict = completed(run.id);
+  verdict.checks.push({ criterionId: 'c2', evidenceIds: [reply.id] });
+  assert.equal((await review(verdict)).decision, 'completed');
+  verdict.checks[1].evidenceIds = [run.id];
+  assert.equal((await review(verdict)).decision, 'continue');
+  verdict.checks[0].evidenceIds = [reply.id];
+  verdict.checks[1].evidenceIds = [reply.id];
+  assert.equal((await review(verdict)).decision, 'continue');
+  // 即使旧数据异常地没有限定范围，回复也不能佐证工作区内容。
+  goal.observations[1] = { ...reply, criterionIds: [] };
+  assert.equal((await review(verdict)).decision, 'continue');
 });

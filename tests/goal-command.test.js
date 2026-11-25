@@ -20,15 +20,47 @@ test('目标命令保留多行正文、引号和顺序，并解析验证清单�
   assert.equal(parseGoalCommand('/goal-other'), null);
 });
 
-test('目标命令引导补充验收，拒绝错误预算，并区分可立即执行的控制', () => {
-  assert.match(parseGoalCommand('/goal 修复导出').message, /验收/);
-  assert.match(parseGoalCommand('/goal 验收：测试通过').message, /目标/);
+test('自然目标保留原文作为默认验收，并支持单独填写目标、约束和轮数', () => {
+  const objective = '从1数到100，直到结束\n每行输出一个数字';
+  for (const body of [objective, `目标：${objective}`]) {
+    assert.deepEqual(parseGoalCommand(`/goal ${body}`), {
+      action: 'create', objective, acceptance: [objective], constraints: [], maxRounds: 5, criteriaPending: 'infer',
+    });
+  }
+  assert.deepEqual(parseGoalCommand('/goal 修复导出\n约束：保留 API\n轮数：3'), {
+    action: 'create', objective: '修复导出', acceptance: ['修复导出'], constraints: ['保留 API'], maxRounds: 3,
+    criteriaPending: 'infer',
+  });
+});
+
+test('仅给出验收时使用验收内容作为目标，并保留每条验收条件', () => {
+  const objective = '从1数到100，直到结束';
+  assert.deepEqual(parseGoalCommand(`/goal 验收：${objective}`), {
+    action: 'create', objective, acceptance: [objective], constraints: [], maxRounds: 5, criteriaPending: 'classify',
+  });
+  assert.deepEqual(parseGoalCommand('/goal 验收标准：导出成功；文件名完整 轮数：2'), {
+    action: 'create', objective: '导出成功\n文件名完整', acceptance: ['导出成功', '文件名完整'],
+    constraints: [], maxRounds: 2, criteriaPending: 'classify',
+  });
+});
+
+test('拒绝空验收、缺少目标内容及错误预算，并区分可立即执行的控制', () => {
+  for (const body of ['验收：', '修复导出 验收：', '修复导出 验收：\n- ', '修复导出 验收： 轮数：2']) {
+    assert.match(parseGoalCommand(`/goal ${body}`).message, /验收/);
+  }
+  for (const body of ['目标：', '约束：保留 API 轮数：2']) {
+    assert.match(parseGoalCommand(`/goal ${body}`).message, /目标/);
+  }
+  assert.deepEqual(parseGoalCommand('/goal'), { action: 'status' });
   assert.deepEqual(parseGoalCommand('/goal status'), { action: 'status' });
   assert.deepEqual(parseGoalCommand('/goal pause'), { action: 'pause' });
+  assert.equal(parseGoalCommand('/goal status --verbose').action, 'error');
+  assert.equal(parseGoalCommand('/goal pause +2').action, 'error');
   assert.deepEqual(parseGoalCommand('/goal resume'), { action: 'resume' });
   assert.deepEqual(parseGoalCommand('/goal resume +2'), { action: 'resume', extraRounds: 2 });
   for (const invalid of ['0', '-2', '1.5', '101']) {
     assert.equal(parseGoalCommand(`/goal 导出 验收：文件正确 轮数：${invalid}`).action, 'error');
+    assert.equal(parseGoalCommand(`/goal 导出 轮数：${invalid}`).action, 'error');
     assert.equal(parseGoalCommand(`/goal resume ${invalid}`).action, 'error');
   }
   assert.ok(isImmediateGoalControl(' /goal '));
