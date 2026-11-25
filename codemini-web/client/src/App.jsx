@@ -823,6 +823,9 @@ function Shell() {
                   runtimeState={state.runtimeState}
                   live={state.live}
                   stageLabel={state.stageLabel}
+                  compaction={state.busy ? state.runtimeActivities.find(
+                    (activity) => activity.key === "compact" && activity.status === "running",
+                  ) : undefined}
                 />
               </div>
             </div>

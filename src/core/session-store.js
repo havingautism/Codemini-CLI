@@ -390,6 +390,7 @@ function sanitizeSession(session, fallbackId = '') {
     if (typeof session?.compact?.mode === 'string' && session.compact.mode.trim()) {
       out.compact.mode = session.compact.mode.trim();
     }
+    if (typeof session.compact.duringTurn === 'boolean') out.compact.duringTurn = session.compact.duringTurn;
     for (const key of ['estimatedTokens', 'estimatedAt']) {
       if (Number.isFinite(session.compact[key])) out.compact[key] = session.compact[key];
     }

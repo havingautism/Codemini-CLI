@@ -1215,7 +1215,8 @@ export class RuntimeBridge {
       case 'compact:start':
         break;
       case 'compact:auto': {
-        this.#addUiMessage({
+        if (event.duringTurn) break;
+        publishedMessageId = this.#addUiMessage({
           role: 'divider',
           dividerType: 'compact',
           text: event.summary || '已压缩上下文',
@@ -2028,7 +2029,12 @@ export class RuntimeBridge {
   getSessionCompactMeta() {
     const compact = this.#runtime.getSessionCompact();
     if (!compact) return null;
-    return { boundaryIndex: compact.boundaryIndex, mode: compact.mode, timestamp: compact.timestamp };
+    return {
+      boundaryIndex: compact.boundaryIndex,
+      mode: compact.mode,
+      timestamp: compact.timestamp,
+      ...(compact.duringTurn ? { duringTurn: true } : {}),
+    };
   }
 
   getChangeSets() {

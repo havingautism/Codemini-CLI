@@ -4813,12 +4813,13 @@ async function askModelInSession({
   )];
 
   let preflightStarted = false;
-  const emitCompactStart = (duringTurn = false) => {
+  const emitCompactStart = (beforePct) => {
     preflightStarted = true;
     if (!onAgentEvent) return;
     onAgentEvent({
       type: 'compact:start',
-      duringTurn,
+      duringTurn: false,
+      beforePct,
       summary: COMPACT_START_SUMMARY,
       summaryEn: COMPACT_START_SUMMARY_EN,
     });
@@ -4873,7 +4874,7 @@ async function askModelInSession({
       measured.source === 'actual' ? measured.tokens : 0,
       {
         generateSummary: createCompactSummaryGenerator(config, signal),
-        onStart: () => emitCompactStart(false),
+        onStart: ({ beforePct }) => emitCompactStart(beforePct),
         overheadTokens: overhead,
         extraTokens: pendingTokens,
         measuredIndex: measured.source === 'actual' ? measurementDeltaIndex(turnVisible) : -1,
@@ -4885,6 +4886,7 @@ async function askModelInSession({
       compacted = inflight.messages;
       onCompactedUpdate?.(compacted, {
         mode: inflight.mode,
+        duringTurn: false,
         ...(inflight.mode === 'summary' ? { boundaryIndex: inflight.boundaryMessage?.compact_source_index } : {}),
       });
       emitCompactDone({
@@ -6599,6 +6601,7 @@ async function askModelInSession({
       meta: {
         ...acceptedCompaction?.meta,
         mode: result.mode,
+        duringTurn: true,
         ...(boundary || result.mode === 'summary' ? {
           boundaryIndex: boundary ? originOf(boundary)?.index : nextIndex,
         } : {}),
@@ -6767,7 +6770,7 @@ async function askModelInSession({
             capture: (scope, meta) => captureGitOplogChanges(changeTracker, scope, meta)
           }
         : null,
-      requestCompletion: async ({ messages, tools, model: selectedModel }) => {
+      requestCompletion: async ({ messages, tools, model: selectedModel, resumedContextPct }) => {
         let started = false;
         const startAssistantStream = () => {
           if (!started) {
@@ -6777,7 +6780,8 @@ async function askModelInSession({
               sdkProvider: config.sdk?.provider === 'anthropic'
                 ? 'anthropic'
                 : 'openai-compatible',
-              model: selectedModel
+              model: selectedModel,
+              ...(Number.isFinite(resumedContextPct) ? { resumedContextPct } : {}),
             });
           }
         };
@@ -10390,12 +10394,13 @@ export async function createChatRuntime({
           mode: cargs.mode || compactState.mode,
           generateSummary: cargs.micro ? null : createCompactSummaryGenerator(config, null),
           overheadTokens: overhead,
-          onStart: () => {
+          onStart: ({ beforePct }) => {
             if (cargs.preview || typeof onAgentEvent !== 'function') return;
             started = true;
             onAgentEvent({
               type: 'compact:start',
               duringTurn: false,
+              beforePct,
               summary: COMPACT_START_SUMMARY,
               summaryEn: COMPACT_START_SUMMARY_EN,
             });
@@ -10409,6 +10414,7 @@ export async function createChatRuntime({
         if (!cargs.preview) {
           setCompactedView(result.messages, {
             mode: result.mode,
+            duringTurn: false,
             ...(result.mode === 'summary' ? { boundaryIndex: result.boundaryMessage?.compact_source_index } : {}),
           });
           recordCompactContextEstimate(currentSession, {

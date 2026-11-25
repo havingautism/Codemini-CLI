@@ -384,6 +384,8 @@ export const zh = {
   runtimeActivityDreamDone: "Dream 已完成",
   runtimeActivityDreamError: "Dream 失败",
   runtimeActivityCompacting: "自动压缩中…",
+  runtimeActivityCompactResuming: "正在恢复回复…",
+  compactContextEstimate: "估算上下文占用",
   runtimeActivityCompactDone: "上下文已压缩",
   compactDivider: "已压缩上下文",
   compactDividerLead: "已压缩上下文",

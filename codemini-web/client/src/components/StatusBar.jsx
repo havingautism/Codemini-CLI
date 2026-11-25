@@ -37,17 +37,20 @@ function ModelLogo({ src, size = 13 }) {
   );
 }
 
-export function StatusBar({ runtimeState, live, stageLabel }) {
+export function StatusBar({ runtimeState, live, stageLabel, compaction }) {
   const rs = runtimeState || {};
   const mode = rs.mode || "normal";
   const approvalMode = rs.approvalMode || "auto";
   const used = rs.currentContextTokens || 0;
   const max = rs.maxContextTokens || 0;
-  const pct = Number.isFinite(rs.contextUsagePct)
-    ? Math.round(rs.contextUsagePct)
+  const estimatedPct = compaction?.contextPct;
+  const showEstimate = Number.isFinite(estimatedPct);
+  const livePct = Number.isFinite(rs.contextUsagePct)
+    ? rs.contextUsagePct
     : max
-      ? Math.round((used / max) * 100)
+      ? (used / max) * 100
       : 0;
+  const pct = Math.round(showEstimate ? estimatedPct : livePct);
   const contextColor =
     pct < 40
       ? "bg-(--accent-green)"
@@ -107,7 +110,10 @@ export function StatusBar({ runtimeState, live, stageLabel }) {
       </span>
 
       {max > 0 && (
-        <span className="hidden lg:inline-flex items-center gap-1 whitespace-nowrap">
+        <span
+          className="hidden lg:inline-flex items-center gap-1 whitespace-nowrap"
+          title={showEstimate ? t("compactContextEstimate") : undefined}
+        >
           <ChartLine size={13} className="shrink-0 opacity-70" />
           <span>CTX</span>
           <span className="w-12 h-2 bg-white dark:bg-(--bg-hover) rounded-full overflow-hidden shadow-[inset_0_0_0_1px_var(--border-default)] dark:shadow-none">
@@ -116,10 +122,10 @@ export function StatusBar({ runtimeState, live, stageLabel }) {
                 "block h-full rounded-full transition-all",
                 contextColor,
               )}
-              style={{ width: `${pct}%` }}
+              style={{ width: `${Math.min(100, Math.max(0, pct))}%` }}
             />
           </span>
-          <span>{pct}%</span>
+          <span>{showEstimate ? "≈" : ""}{pct}%</span>
         </span>
       )}
       <span className="inline-flex items-center gap-1 ml-auto whitespace-nowrap">

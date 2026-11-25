@@ -1086,7 +1086,7 @@ export async function compactInFlightMessages(messages, config = {}, inputTokens
   const start = () => {
     if (started) return;
     started = true;
-    if (typeof onStart === 'function') onStart();
+    onStart?.({ beforePct });
   };
 
   let working = body;

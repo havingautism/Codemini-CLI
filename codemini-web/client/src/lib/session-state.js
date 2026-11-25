@@ -422,6 +422,28 @@ export function reduceSessionTranscriptEvent(state, event) {
 
   let sessionMessagesById = state.sessionMessagesById;
   const messages = state.sessionMessagesById[sessionId] || [];
+  if (event.type === "compact:auto") {
+    if (event.duringTurn || !event.messageId || messages.some((message) => message.id === event.messageId)) {
+      return state;
+    }
+    const divider = {
+      id: event.messageId,
+      role: "divider",
+      dividerType: "compact",
+      text: event.summary || "",
+      beforePct: event.beforePct,
+      afterPct: event.afterPct,
+      compactMode: event.mode === "prune" || event.mode === "summary" ? event.mode : "",
+      timestamp: new Date().toISOString(),
+    };
+    return {
+      ...state,
+      sessionMessagesById: {
+        ...sessionMessagesById,
+        [sessionId]: [...messages, divider],
+      },
+    };
+  }
   if (event.type === "skill:selected") {
     const target = [...messages].reverse().find((message) => message.role === "you");
     if (!target) return state;

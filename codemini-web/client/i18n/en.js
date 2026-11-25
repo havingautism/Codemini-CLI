@@ -391,6 +391,8 @@ export const en = {
   runtimeActivityDreamDone: "Dream complete",
   runtimeActivityDreamError: "Dream failed",
   runtimeActivityCompacting: "Auto-compacting…",
+  runtimeActivityCompactResuming: "Resuming response…",
+  compactContextEstimate: "Estimated context usage",
   runtimeActivityCompactDone: "Context compacted",
   compactDivider: "Context compacted",
   compactDividerLead: "Context compacted",

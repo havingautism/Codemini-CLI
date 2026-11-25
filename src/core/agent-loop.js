@@ -883,12 +883,13 @@ export async function runAgentLoop({
     const overheadTokens = estimateToolDefinitionsTokens(tools);
     const compactOptions = { generateSummary, overheadTokens, calibrationRatio: promptCalibration, signal };
     let announcedCompact = false;
-    const emitCompactStart = () => {
+    const emitCompactStart = ({ beforePct }) => {
       if (announcedCompact || pendingCompaction) return;
       announcedCompact = true;
       onEvent?.({
         type: 'compact:start',
         duringTurn: true,
+        beforePct,
         summary: COMPACT_START_SUMMARY,
         summaryEn: COMPACT_START_SUMMARY_EN,
       });
@@ -924,7 +925,10 @@ export async function runAgentLoop({
     try {
       while (true) {
         try {
-          completion = await requestCompletion({ model, messages, tools, signal });
+          completion = await requestCompletion({
+            model, messages, tools, signal,
+            ...(pendingCompaction ? { resumedContextPct: pendingCompaction.afterPct } : {}),
+          });
           break;
         } catch (error) {
           if (signal?.aborted || !isContextOverflowError(error)) throw error;
