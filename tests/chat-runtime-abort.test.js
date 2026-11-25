@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { createChatRuntime } from '../src/core/chat-runtime.js';
+import { saveConfig } from '../src/core/config-store.js';
 import { closeSqliteDatabasesForTests } from '../src/core/sqlite-database.js';
 import { createSession, loadSession } from '../src/core/session-store.js';
 import { RuntimeBridge } from '../codemini-web/lib/runtime-bridge.js';
@@ -100,6 +101,89 @@ function baseConfig(port) {
 }
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+test('overflow recovery persists the compact view and forwards only UI metadata', async () => {
+  await withGlobalDir(async (dir) => {
+    const config = baseConfig(0);
+    config.context.preflight_trigger_pct = 99;
+    config.model.max_context_tokens = 32000;
+    config.model.fast_name = 'compact-model';
+    await saveConfig(config);
+    const session = await createSession(dir);
+    const oldContent = 'OLD_HISTORY ' + 'old work '.repeat(1000);
+    session.messages.push(
+      { role: 'user', content: oldContent },
+      { role: 'assistant', content: 'old reply' },
+    );
+    const runtimeOptions = { config, model: 'test-model', systemPrompt: 'System test marker', workspaceRoot: dir };
+    const runtime = await createChatRuntime({ ...runtimeOptions, session });
+    const events = [];
+    const bodies = [];
+    const summaries = [];
+    const settled = Promise.withResolvers();
+    const bridge = new RuntimeBridge(runtime, {
+      sessionId: session.id,
+      onEvent: (event) => events.push(event),
+      onLifecycle(event) {
+        if (event.status !== 'running') settled.resolve(event.status);
+      },
+    });
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (_url, init) => {
+      const body = JSON.parse(init.body);
+      if (body.model === 'compact-model') {
+        summaries.push(body.messages[1].content);
+        if (summaries.length === 1) {
+          return Response.json({ error: { message: 'maximum context length exceeded' } }, { status: 400 });
+        }
+        return Response.json({ choices: [{ message: { content: 'Summary of the old work' } }] });
+      }
+      bodies.push(body);
+      if (bodies.length === 1) {
+        return Response.json({ error: { message: 'maximum context length exceeded' } }, { status: 400 });
+      }
+      return new Response(sseChunk('ok') + 'data: [DONE]\n\n', {
+        headers: { 'content-type': 'text/event-stream' },
+      });
+    };
+    try {
+      assert.equal(bridge.handleSubmitMessage({ text: 'keep this request' }).accepted, true);
+      assert.equal(await settled.promise, 'completed');
+
+      const loaded = await loadSession(session.id);
+      assert.equal(loaded.messages[0].content, oldContent);
+      assert.equal(loaded.compact.view[0].compaction.kind, 'summary');
+      assert.match(loaded.compact.view[0].content, /Summary of the old work/);
+      assert.equal(summaries.length, 2);
+      assert.ok(summaries[1].length < summaries[0].length);
+      const firstPreserved = loaded.compact.view.find((message) => Number.isInteger(message.compact_source_index));
+      assert.equal(loaded.compact.boundaryIndex, firstPreserved.compact_source_index);
+      assert.equal(loaded.messages[loaded.compact.boundaryIndex].content, firstPreserved.content);
+      assert.ok(loaded.compact.view.some((message) => message.content === 'keep this request'));
+      assert.ok(!loaded.compact.view.some((message) => message.role === 'system' && message.content.includes('System test marker')));
+
+      const compactions = events.filter((event) => event.type === 'compact:auto');
+      assert.equal(compactions.length, 1);
+      assert.equal(Object.hasOwn(compactions[0], 'messages'), false);
+
+      const reopened = await createChatRuntime({ ...runtimeOptions, session: loaded });
+      try {
+        await reopened.submitMessage({ text: 'next request' });
+        await reopened.dispatchAction({ name: 'compact', payload: { args: ['--restore'] } });
+        assert.equal((await loadSession(session.id)).compact, undefined);
+      } finally {
+        await reopened.dispose?.();
+      }
+      assert.equal(bodies.length, 3);
+      assert.deepEqual(bodies.map((body) => body.messages.some((message) => message.content === oldContent)), [true, false, false]);
+      assert.ok(bodies[2].messages.some((message) => String(message.content).includes('<conversation-checkpoint>')));
+      assert.ok(bodies[2].messages.every((message) => !Object.hasOwn(message, 'compaction')));
+    } finally {
+      globalThis.fetch = originalFetch;
+      await bridge.dispose();
+    }
+  });
+});
 
 test('model interruptions during parallel inline tasks keep the parent session and allow retry', async () => {
   await withGlobalDir(async (dir) => {

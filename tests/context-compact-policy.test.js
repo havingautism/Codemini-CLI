@@ -168,14 +168,15 @@ test('a summary does not retrigger compaction from the stale measurement', async
   assert.equal(second.skipped, 'summary');
 });
 
-test('overflow shrink retries down SHRINK_STEPS with a single summary call', async () => {
+test('overflow shrink retries with strictly smaller requests and summarizes each prefix once', async () => {
   const calls = [];
   const messages = [
     { role: 'system', content: 'system stays' },
     { role: 'user', content: 'keep going' },
     ...Array.from({ length: 4 }, (_, index) => pair(`old-${index}`, 'x'.repeat(8000), 'y'.repeat(2000))).flat(),
   ];
-  let attempts = 0;
+  const sent = [];
+  const events = [];
   const result = await runAgentLoop({
     systemPrompt: '',
     userPrompt: '',
@@ -185,26 +186,101 @@ test('overflow shrink retries down SHRINK_STEPS with a single summary call', asy
     config: wide,
     initialMessages: messages,
     toolHandlers: { read: async () => ({ text: 'ok' }) },
-    requestCompletion: async () => {
-      attempts += 1;
-      if (attempts < 3) {
+    requestCompletion: async ({ messages: request }) => {
+      sent.push(estimateMessagesTokens(request));
+      assert.ok(request.some((message) => message.role === 'user' && message.content === 'keep going'));
+      if (sent.length < 3) {
         const error = new Error('This model\'s maximum context length was exceeded');
         error.code = 'context_length_exceeded';
         throw error;
       }
       return { text: 'done', usage: { prompt_tokens: 1000 }, toolCalls: [] };
     },
-    generateSummary: async () => {
-      calls.push('summary');
+    generateSummary: async (prefix) => {
+      calls.push(prefix.length);
       return 'OVERFLOW_SUMMARY';
     },
+    onEvent: (event) => events.push(event),
   });
   assert.equal(result.text, 'done');
-  assert.equal(attempts, 3);
-  assert.equal(calls.length, 1);
+  assert.equal(sent.length, 3);
+  assert.ok(sent[0] > sent[1] && sent[1] > sent[2]);
+  assert.deepEqual(calls, [...new Set(calls)]);
+  assert.equal(events.filter((event) => event.type === 'compact:auto').length, 1);
   assert.ok(isContextOverflowError(Object.assign(new Error('maximum context length'), { code: 'context_length_exceeded' })));
   assert.deepEqual(SHRINK_STEPS.slice(0, 2), [0.85, 0.7]);
   assert.equal(result.messages.some((message) => String(message.content || '').includes('OVERFLOW_SUMMARY')), true);
+});
+
+test('a checkpoint covers what it removes and keeps the active user request verbatim', async () => {
+  const source = [
+    { role: 'user', content: 'old ' + 'a'.repeat(2800) },
+    { role: 'assistant', content: 'b'.repeat(2200) },
+    { role: 'user', content: 'constraint ' + 'c'.repeat(2500) },
+    { role: 'assistant', content: 'd'.repeat(1000) },
+    { role: 'user', content: 'current request ' + 'e'.repeat(1000) },
+  ];
+  let summarized;
+  const result = await compactInFlightMessages(source, { model: { max_context_tokens: 8000 } }, estimateMessagesTokens(source), {
+    force: true,
+    targetTokens: 500,
+    generateSummary: async (prefix) => {
+      summarized = prefix;
+      return 'summary '.repeat(350);
+    },
+  });
+
+  assert.equal(result.changed, true);
+  assert.equal(result.summaryCalls, 1);
+  assert.equal(result.messages[0].compaction.kind, 'summary');
+  assert.equal(result.messages.find((message) => message.content === source.at(-1).content)?.role, 'user');
+  assert.deepEqual(summarized, source.slice(0, result.boundaryIndex));
+  for (const message of source) {
+    assert.ok(summarized.includes(message) || result.messages.some((entry) => entry.content === message.content));
+  }
+});
+
+test('preflight keeps pending input in the projected prompt even when it exceeds the trigger', async () => {
+  const config = { model: { max_context_tokens: 8000 } };
+  const pending = 7500;
+  const source = [
+    { role: 'user', content: 'a'.repeat(5000) },
+    { role: 'assistant', content: 'b'.repeat(5000) },
+    { role: 'user', content: 'recent' },
+    { role: 'assistant', content: 'yes' },
+  ];
+  const result = await compactInFlightMessages(source, config, 0, {
+    extraTokens: pending,
+    generateSummary: async () => 'summary',
+  });
+  assert.ok(result.changed);
+  assert.equal(result.estimatedTokens, pending + estimateMessagesTokens(result.messages));
+  assert.ok(result.estimatedTokens > resolveCompactBudget(config).trigger);
+});
+
+test('an oversized or unchanged checkpoint never retries the rejected prompt', async () => {
+  const input = [
+    { role: 'user', content: 'current request' },
+    { role: 'assistant', content: 'x '.repeat(500) },
+  ];
+  const overflow = new Error('Gateway error 413: Request Entity Too Large');
+  let requests = 0;
+  const events = [];
+  await assert.rejects(runAgentLoop({
+    config: { memory: { enabled: false }, model: { max_context_tokens: 8000 } },
+    model: 'test-model',
+    initialMessages: input,
+    skipAnalysisNudge: true,
+    requestCompletion: async () => {
+      requests += 1;
+      throw overflow;
+    },
+    generateSummary: async () => 'too large '.repeat(3000),
+    onEvent: (event) => events.push(event),
+  }), (error) => error === overflow);
+  assert.equal(requests, 1);
+  assert.equal(events.filter((event) => event.type === 'compact:auto').length, 0);
+  assert.equal(events.filter((event) => event.type === 'compact:skipped').length, 1);
 });
 
 test('a long turn compacts at most twice and then stays under the target', async () => {

@@ -173,7 +173,8 @@ test('the agent loop compacts after a high-usage step and leaves a mid-turn mark
   assert.ok(events.findIndex((event) => event.type === 'compact:start') < events.findIndex((event) => event.type === 'compact:auto'));
   assert.ok(marker.estimatedTokens > 0);
   assert.ok(marker.estimatedTokens < 900);
+  assert.equal(Object.hasOwn(marker, 'messages'), false);
   assert.equal(seen[1][0], 'system stays');
-  assert.equal(seen[1].some((content) => content.includes('y'.repeat(200))), false);
+  assert.equal(seen[1].some((content) => content.startsWith('OLD_0_')), false);
   assert.equal(seen[1].some((content) => content.includes('LIVE_TOOL_RESULT')), true);
 });

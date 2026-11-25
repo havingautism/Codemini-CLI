@@ -2608,6 +2608,10 @@ export function AppProvider({ children }) {
           break;
         }
 
+        case "compact:skipped":
+          clearRuntimeActivityLater("runtime-compact", 0);
+          break;
+
         case "compact:start":
           upsertRuntimeActivity({
             key: "compact",
@@ -3115,6 +3119,7 @@ export function AppProvider({ children }) {
       addMessage,
       update,
       upsertRuntimeActivity,
+      clearRuntimeActivityLater,
       loadGitInfo,
       loadHistory,
       loadSessions,

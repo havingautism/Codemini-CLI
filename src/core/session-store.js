@@ -240,6 +240,10 @@ function sanitizeMessage(msg) {
         data: image.data,
       }));
   }
+  if (msg?.compaction?.kind === 'summary') out.compaction = { kind: 'summary' };
+  if (Number.isInteger(msg?.compact_source_index) && msg.compact_source_index >= 0) {
+    out.compact_source_index = msg.compact_source_index;
+  }
   if (msg?.model_context === true) out.model_context = true;
   if (typeof msg?.model_context_source === 'string' && msg.model_context_source.trim()) {
     out.model_context_source = msg.model_context_source.trim();
@@ -385,6 +389,9 @@ function sanitizeSession(session, fallbackId = '') {
     }
     if (typeof session?.compact?.mode === 'string' && session.compact.mode.trim()) {
       out.compact.mode = session.compact.mode.trim();
+    }
+    for (const key of ['estimatedTokens', 'estimatedAt']) {
+      if (Number.isFinite(session.compact[key])) out.compact[key] = session.compact[key];
     }
   }
 

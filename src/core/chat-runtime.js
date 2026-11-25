@@ -88,7 +88,10 @@ import {
   buildGradedTranscript,
   compactInFlightMessages,
   estimateMessagesTokens,
+  isContextOverflowError,
   measurementDeltaIndex,
+  resolveCompactBudget,
+  SHRINK_STEPS,
   parseCompactArgs,
   COMPACT_SUMMARY_PROMPT,
   COMPACT_START_SUMMARY,
@@ -334,17 +337,23 @@ export function mergeCurrentTurnModelText(primary = '', extra = '', label = 'Add
   return [base, `<${label}>`, addition, `</${label}>`].join('\n\n');
 }
 
+const COMPACT_ORIGIN = Symbol('compactOrigin');
+
 export function toOpenAIMessages(sessionMessages, options = {}) {
   const mapped = [];
   for (let index = 0; index < (sessionMessages || []).length; index += 1) {
     const msg = sessionMessages[index];
     if (!isModelVisibleMessage(msg)) continue;
+    const origin = options.trackCompaction
+      ? { [COMPACT_ORIGIN]: { message: msg, index: options.compacted ? msg.compact_source_index : index } }
+      : {};
     if (msg.role === 'tool') {
       mapped.push({
         role: 'tool',
         content: msg.content,
         tool_call_id: msg.tool_call_id,
-        ...(msg.tool_status ? { tool_status: msg.tool_status } : {})
+        ...(msg.tool_status ? { tool_status: msg.tool_status } : {}),
+        ...origin
       });
       continue;
     }
@@ -353,19 +362,31 @@ export function toOpenAIMessages(sessionMessages, options = {}) {
       content: modelContentForMessage(msg, index, options),
       ...(typeof msg.reasoning_content === 'string' && msg.reasoning_content ? { reasoning_content: msg.reasoning_content } : {}),
       ...(Array.isArray(msg.reasoning_details) && msg.reasoning_details.length > 0 ? { reasoning_details: msg.reasoning_details } : {}),
-      ...(msg.tool_calls ? { tool_calls: msg.tool_calls } : {})
+      ...(msg.tool_calls ? { tool_calls: msg.tool_calls } : {}),
+      ...(msg.model_context ? { model_context: true } : {}),
+      ...(msg.compaction?.kind === 'summary' ? { compaction: msg.compaction } : {}),
+      ...origin
     });
   }
   return mapped;
 }
 
-function translateCompactBoundaryToOriginal(sourceIsCompacted, compactMeta, compactBoundaryIndex) {
-  const boundary = Number(compactBoundaryIndex);
-  if (!Number.isFinite(boundary)) return undefined;
-  if (!sourceIsCompacted) return Math.max(0, boundary);
-  const previousBoundary = Number(compactMeta?.boundaryIndex);
-  if (!Number.isFinite(previousBoundary)) return Math.max(0, boundary);
-  return Math.max(0, previousBoundary + Math.max(0, boundary - 1));
+function sessionCompactionSource(session, view) {
+  return modelVisibleMessages((view ?? session.messages).map((message, index) => (
+    view ? message : { ...message, compact_source_index: index }
+  )));
+}
+
+function materializeCompactedMessage(message, origin) {
+  const { [COMPACT_ORIGIN]: _origin, usage: _usage, ...view } = message;
+  if (!origin) return view;
+  const { usage: _previousUsage, tool_calls: _previousCalls, ...stored } = origin.message;
+  return {
+    ...stored,
+    ...(message.role !== 'user' ? { content: message.content } : {}),
+    ...(message.tool_calls ? { tool_calls: message.tool_calls } : {}),
+    ...(Number.isInteger(origin.index) ? { compact_source_index: origin.index } : {}),
+  };
 }
 
 function slugify(input) {
@@ -4079,7 +4100,7 @@ function hasPostCompactActualUsage(messages = [], estimatedAt) {
     const usage = normalizeModelUsage(message.usage);
     if (!(usage?.inputTokens > 0)) continue;
     const at = Date.parse(message.at);
-    if (Number.isFinite(at) && at > compactAt) return true;
+    if (Number.isFinite(at) && at >= compactAt) return true;
   }
   return false;
 }
@@ -4414,32 +4435,52 @@ function createCompactSummaryGenerator(config, signal) {
     const effectiveConfig = latestConfig || config;
     const fastModel = resolveFastModel(effectiveConfig);
     if (!fastModel) throw new Error('No fast model');
-    const window = effectiveMaxContextTokens(effectiveConfig);
-    const transcript = buildGradedTranscript(olderMessages, {
-      maxChars: Math.min(120_000, Math.max(8_000, window * 4)),
+    const { window, ceiling } = resolveCompactBudget(effectiveConfig);
+    const prompt = appendStructuredOutputLanguageRule(COMPACT_SUMMARY_PROMPT, effectiveConfig, {
+      fields: 'the entire summary',
     });
-    const result = await createChatCompletion({
-      sdkProvider: effectiveConfig.sdk?.provider,
-      baseUrl: effectiveConfig.gateway.base_url,
-      apiKey: effectiveConfig.gateway.api_key,
-      model: fastModel,
-      messages: [
-        {
-          role: 'system',
-          content: appendStructuredOutputLanguageRule(COMPACT_SUMMARY_PROMPT, effectiveConfig, {
-            fields: 'the entire summary'
-          })
-        },
-        { role: 'user', content: transcript }
-      ],
-      tools: [],
-      timeoutMs: Math.min(Number(effectiveConfig.gateway?.timeout_ms || 30000), 60000),
-      maxRetries: 0,
-      signal
-    });
-    const text = result?.text?.trim();
-    if (!text) throw new Error('Empty summary');
-    return text;
+    const systemMessage = { role: 'system', content: prompt };
+    const fixedTokens = estimateMessagesTokens([systemMessage, { role: 'user', content: '' }]);
+    const historyBudget = Math.max(1, ceiling - fixedTokens);
+    const outputBudget = Math.max(1, Math.min(window - ceiling, Number(effectiveConfig.model?.max_output_tokens) || 4096));
+    let previousSize = Infinity;
+    let rejectedSize;
+    let overflow;
+    for (const ratio of [1, ...SHRINK_STEPS]) {
+      signal?.throwIfAborted();
+      const maxTokens = rejectedSize === undefined
+        ? historyBudget
+        : Math.max(0, Math.floor(rejectedSize * ratio) - fixedTokens);
+      const transcript = buildGradedTranscript(olderMessages, { maxTokens });
+      const messages = [systemMessage, { role: 'user', content: transcript }];
+      const size = estimateMessagesTokens(messages);
+      if (!transcript || size >= previousSize) continue;
+      previousSize = size;
+      try {
+        const result = await createChatCompletion({
+          sdkProvider: effectiveConfig.sdk?.provider,
+          baseUrl: effectiveConfig.gateway.base_url,
+          apiKey: effectiveConfig.gateway.api_key,
+          model: fastModel,
+          messages,
+          tools: [],
+          maxTokens: outputBudget,
+          payloadExtras: { max_tokens: outputBudget },
+          timeoutMs: Math.min(Number(effectiveConfig.gateway?.timeout_ms || 30000), 60000),
+          maxRetries: 0,
+          signal,
+        });
+        signal?.throwIfAborted();
+        const summary = result?.text?.trim();
+        if (!summary) throw new Error('Empty summary');
+        return summary;
+      } catch (error) {
+        if (signal?.aborted || !isContextOverflowError(error)) throw error;
+        rejectedSize ??= size;
+        overflow = error;
+      }
+    }
+    throw overflow || new Error('No context to summarize');
   };
 }
 
@@ -4764,14 +4805,16 @@ async function askModelInSession({
   let compacted = compactedInput;
   const modelInputText = typeof modelText === 'string' && modelText ? modelText : text;
   const expectedModelText = typeof modelText === 'string' && modelText && modelText !== text ? modelText : '';
-  const turnVisible = modelVisibleMessages(compacted ?? session.messages);
+  const turnVisible = persistSession ? sessionCompactionSource(session, compacted) : [];
   const selectedSkillNamesForUi = [...new Set(
     (Array.isArray(selectedSkillNames) ? selectedSkillNames : [])
       .map((name) => String(name || '').trim())
       .filter(Boolean)
   )];
 
+  let preflightStarted = false;
   const emitCompactStart = (duringTurn = false) => {
+    preflightStarted = true;
     if (!onAgentEvent) return;
     onAgentEvent({
       type: 'compact:start',
@@ -4817,8 +4860,13 @@ async function askModelInSession({
     const hasSystem = turnVisible.some((message) => message?.role === 'system');
     const overhead = hasSystem ? 0 : estimateBaselinePromptOverhead(config, executionMode);
     const measured = resolveLatestContextMeasurement(turnVisible, 0);
-    const pendingTokens = estimateMessagesTokens([{ role: 'user', content: String(modelInputText || '') }]);
-    const sourceIsCompacted = Boolean(compacted);
+    const last = session.messages.at(-1);
+    const alreadyInserted = last?.role === 'user' && String(last.content || '') === String(text);
+    const pendingTokens = text && !alreadyInserted ? estimateMessagesTokens([{
+      role: 'user',
+      content: [retrievedText, modelInputText].filter(Boolean).join('\n\n'),
+      model_images: modelImages,
+    }]) : 0;
     const inflight = await compactInFlightMessages(
       turnVisible,
       config,
@@ -4830,18 +4878,15 @@ async function askModelInSession({
         extraTokens: pendingTokens,
         measuredIndex: measured.source === 'actual' ? measurementDeltaIndex(turnVisible) : -1,
         measuredFresh: measured.source === 'actual',
+        signal,
       }
     );
     if (inflight.changed) {
-      compacted = inflight.messages.map((message) => ({ ...message, at: new Date().toISOString() }));
-      if (onCompactedUpdate) {
-        onCompactedUpdate(compacted, {
-          mode: inflight.mode,
-          ...(Number.isFinite(inflight.boundaryIndex)
-            ? { boundaryIndex: translateCompactBoundaryToOriginal(sourceIsCompacted, session.compact, inflight.boundaryIndex) }
-            : {}),
-        });
-      }
+      compacted = inflight.messages;
+      onCompactedUpdate?.(compacted, {
+        mode: inflight.mode,
+        ...(inflight.mode === 'summary' ? { boundaryIndex: inflight.boundaryMessage?.compact_source_index } : {}),
+      });
       emitCompactDone({
         mode: inflight.mode,
         threshold: inflight.threshold,
@@ -4852,6 +4897,8 @@ async function askModelInSession({
         summary: inflight.summary,
         summaryEn: inflight.summaryEn,
       });
+    } else if (preflightStarted) {
+      onAgentEvent?.({ type: 'compact:skipped' });
     }
   }
 
@@ -4945,7 +4992,7 @@ async function askModelInSession({
       const userMessage = stampedMessage('user', userContent, { ...modelExtra, ...imageExtra, ...selectedSkillExtra, ...memoryExtra });
       session.messages.push(userMessage);
       if (compacted) {
-        compacted.push({ ...userMessage });
+        compacted.push({ ...userMessage, compact_source_index: session.messages.length - 1 });
         if (onCompactedUpdate) onCompactedUpdate(compacted);
       }
     }
@@ -6088,7 +6135,11 @@ async function askModelInSession({
   const currentTurnUserIndex = initialMessagesOverride
     ? -1
     : findCurrentTurnUserIndex(modelSourceMessages, text, expectedModelText);
-  const baseInitialMessages = toOpenAIMessages(modelSourceMessages, { currentTurnUserIndex });
+  const baseInitialMessages = toOpenAIMessages(modelSourceMessages, {
+    currentTurnUserIndex,
+    trackCompaction: persistSession && !initialMessagesOverride,
+    compacted: Boolean(compacted),
+  });
   // Fork branches inject the parent's OpenAI-shaped message prefix verbatim so
   // the branch request reuses the parent's prompt prefix byte-for-byte.
   const initialMessagesForModel = initialMessagesOverride
@@ -6252,15 +6303,7 @@ async function askModelInSession({
   };
   const wrappedAgentEvent = (event) => {
     // Always accumulate messages in session (for token tracking), only save when persisting
-    if (event?.type === 'compact:auto') {
-      const estimatedTokens = recordCompactContextEstimate(session, {
-        messages: event.messages,
-        estimatedTokens: event.estimatedTokens,
-        config,
-        executionMode,
-      });
-      event.estimatedTokens = estimatedTokens;
-    } else if (event?.type === 'assistant:start') {
+    if (event?.type === 'assistant:start') {
       session.messages.push(stampedMessage('assistant', '', {
         ...(event.sdkProvider ? { sdk_provider: event.sdkProvider } : {}),
         ...(event.model ? { model: event.model } : {})
@@ -6342,6 +6385,10 @@ async function askModelInSession({
         }));
         if (persistSession) scheduleSessionSave();
       }
+      if (persistSession && event.assistantMessage) {
+        const index = activeAssistantIndex >= 0 ? activeAssistantIndex : session.messages.length - 1;
+        event.assistantMessage[COMPACT_ORIGIN] = { message: session.messages[index], index };
+      }
       activeAssistantIndex = -1;
     } else if (event?.type === 'tool:start') {
       if (activeAssistantIndex >= 0 && session.messages[activeAssistantIndex]) {
@@ -6400,7 +6447,11 @@ async function askModelInSession({
           ? { model_context_reason: String(event.message.model_context_reason) }
           : {}),
       }));
-      if (persistSession) scheduleSessionSave();
+      if (persistSession) {
+        const index = session.messages.length - 1;
+        event.message[COMPACT_ORIGIN] = { message: session.messages[index], index };
+        scheduleSessionSave();
+      }
     }
 
     if (harnessStore && harnessEventType(event?.type)) {
@@ -6525,6 +6576,35 @@ async function askModelInSession({
   };
 
   const sessionLenBeforeLoop = session.messages.length;
+  let acceptedCompaction = null;
+  const previousCompactEstimate = session.compact;
+  const restoreCompactEstimate = () => {
+    if (acceptedCompaction) session.compact = previousCompactEstimate;
+  };
+  const captureCompaction = (result) => {
+    recordCompactContextEstimate(session, { estimatedTokens: result.estimatedTokens, config, executionMode });
+    // Streaming can open the next assistant before the gateway accepts the checkpoint.
+    const nextIndex = activeAssistantIndex >= 0 ? activeAssistantIndex : session.messages.length;
+    const toolsById = new Map();
+    for (let index = sessionLenBeforeLoop; index < nextIndex; index += 1) {
+      const message = session.messages[index];
+      if (message.role === 'tool') toolsById.set(message.tool_call_id, { message, index });
+    }
+    const originOf = (message) => message?.[COMPACT_ORIGIN]
+      || (message?.role === 'tool' ? toolsById.get(message.tool_call_id) : undefined);
+    const boundary = result.boundaryMessage;
+    acceptedCompaction = {
+      view: result.messages.map((message) => materializeCompactedMessage(message, originOf(message))),
+      nextIndex,
+      meta: {
+        ...acceptedCompaction?.meta,
+        mode: result.mode,
+        ...(boundary || result.mode === 'summary' ? {
+          boundaryIndex: boundary ? originOf(boundary)?.index : nextIndex,
+        } : {}),
+      },
+    };
+  };
   const toolRuntime = createToolRuntime({
     definitions: filteredDefinitions,
     handlers: filteredHandlers,
@@ -6607,6 +6687,7 @@ async function askModelInSession({
       decisionController,
       episodeId: harnessEpisodeId,
       generateSummary: createCompactSummaryGenerator(config, signal),
+      onCompaction: persistSession && onCompactedUpdate ? captureCompaction : null,
       toolReliabilityStore,
       toolGuard: decisionController && harnessConfig.provider !== 'rules'
         ? async ({ toolName, args, step }) => {
@@ -6781,6 +6862,7 @@ async function askModelInSession({
       }
     });
   } catch (error) {
+    restoreCompactEstimate();
     finishHarnessEpisode(signal?.aborted ? 'aborted' : 'failed', error?.message || String(error));
     // A provider can abort its own request while our turn is still active.
     // Only cancellation of the turn itself can create a continuation session.
@@ -6794,19 +6876,20 @@ async function askModelInSession({
     throw error;
   }
   if (signal?.aborted || loopResult?.aborted) {
+    restoreCompactEstimate();
     finishHarnessEpisode('aborted', 'signal');
     await handleAbortAftermath();
     return { text: '', aborted: true };
   }
 
   if (persistSession) {
-    // Sync new messages to compacted view
-    if (compacted) {
-      const newMsgs = session.messages.slice(sessionLenBeforeLoop);
-      for (const msg of newMsgs) {
-        compacted.push({ ...msg });
+    const view = acceptedCompaction?.view ?? compacted;
+    if (view) {
+      const from = acceptedCompaction?.nextIndex ?? sessionLenBeforeLoop;
+      for (let index = from; index < session.messages.length; index += 1) {
+        view.push({ ...session.messages[index], compact_source_index: index });
       }
-      if (onCompactedUpdate) onCompactedUpdate(compacted);
+      onCompactedUpdate?.(view, acceptedCompaction?.meta);
     }
     session.model = model || config.model.name;
     if (rememberExecutionMode !== false) {
@@ -9784,7 +9867,7 @@ export async function createChatRuntime({
   const appendSessionMessage = (message) => {
     currentSession.messages.push(message);
     if (compactedForModel) {
-      compactedForModel.push({ ...message });
+      compactedForModel.push({ ...message, compact_source_index: currentSession.messages.length - 1 });
       setCompactedView(compactedForModel);
     }
   };
@@ -10292,20 +10375,24 @@ export async function createChatRuntime({
         const cargs = parseCompactArgs(args);
         if (cargs.restore) {
           setCompactedView(null);
+          await saveSession(currentSession);
           return { type: 'system', text: 'Context restored to full view' };
         }
-        const source = modelVisibleMessages(compactedForModel ?? currentSession.messages);
-        const beforeTokens = estimateMessagesTokens(source);
+        const source = sessionCompactionSource(currentSession, compactedForModel);
         const hasSystem = source.some((message) => message?.role === 'system');
+        const overhead = hasSystem ? 0 : estimateBaselinePromptOverhead(config, executionMode);
+        const beforeTokens = estimateMessagesTokens(source) + overhead;
+        let started = false;
         const result = await compactInFlightMessages(source, config, 0, {
           force: true,
           pruneOnly: cargs.micro === true,
           aggressive: (cargs.mode || compactState.mode) === 'aggressive',
           mode: cargs.mode || compactState.mode,
           generateSummary: cargs.micro ? null : createCompactSummaryGenerator(config, null),
-          overheadTokens: hasSystem ? 0 : estimateBaselinePromptOverhead(config, executionMode),
+          overheadTokens: overhead,
           onStart: () => {
             if (cargs.preview || typeof onAgentEvent !== 'function') return;
+            started = true;
             onAgentEvent({
               type: 'compact:start',
               duringTurn: false,
@@ -10314,10 +10401,16 @@ export async function createChatRuntime({
             });
           },
         });
-        if (!result.changed) return { type: 'system', text: 'Nothing to compact yet' };
+        if (!result.changed) {
+          if (started) onAgentEvent({ type: 'compact:skipped' });
+          return { type: 'system', text: 'Nothing to compact yet' };
+        }
         const report = `Compact ${cargs.preview ? 'preview' : 'applied'}: ${beforeTokens} -> ${result.estimatedTokens} tokens`;
         if (!cargs.preview) {
-          setCompactedView(result.messages.map((message) => ({ ...message, at: new Date().toISOString() })));
+          setCompactedView(result.messages, {
+            mode: result.mode,
+            ...(result.mode === 'summary' ? { boundaryIndex: result.boundaryMessage?.compact_source_index } : {}),
+          });
           recordCompactContextEstimate(currentSession, {
             messages: result.messages,
             estimatedTokens: result.estimatedTokens,
@@ -10337,7 +10430,6 @@ export async function createChatRuntime({
               estimatedTokens: result.estimatedTokens,
               summary: result.summary,
               summaryEn: result.summaryEn,
-              messages: result.messages,
             });
             return { type: 'noop' };
           }

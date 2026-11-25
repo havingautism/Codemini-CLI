@@ -386,6 +386,8 @@ export async function runOpenCodeTui({ runtime, sessionId, model, safeMode = tru
       setActivity(type === 'plan:step_done' ? 'tool' : 'thinking', event.title || copy.working);
     } else if (type === 'compact:start') {
       setActivity('thinking', copy.compacting);
+    } else if (type === 'compact:skipped') {
+      setActivity('thinking', copy.thinking);
     } else if (type === 'compact:auto') {
       const mode = event.mode === 'prune'
         ? copy.compactModePrune

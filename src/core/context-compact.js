@@ -91,7 +91,8 @@ export function estimateMessagesTokens(messages) {
   for (const message of messages || []) {
     if (!message || typeof message !== 'object') continue;
     total += 6;
-    total += estimateContentTokens(message.content);
+    total += estimateContentTokens(message.model_content || message.content);
+    if (Array.isArray(message.model_images)) total += message.model_images.length * IMAGE_TOKEN_ESTIMATE;
     if (typeof message.reasoning_content === 'string' && message.reasoning_content) {
       total += estimateTextTokens(message.reasoning_content);
     }
@@ -408,6 +409,7 @@ Include:
 - Any errors encountered and how they were resolved
 - Important constraints or conventions discovered
 
+If the transcript includes a previous checkpoint, carry forward requirements that still apply and update it with newer progress.
 Write in the same language as the conversation. Be concise but do not omit important details.`;
 
 /**
@@ -724,6 +726,7 @@ export function isContextOverflowError(error) {
   if (status === 413) return true;
   const nested = typeof error.error === 'string' ? error.error : error.error?.message;
   const msg = `${error.message || ''} ${nested || ''}`.toLowerCase();
+  if (/gateway error 413\b/.test(msg)) return true;
   return /context length|context window|maximum context|prompt is too long|too many tokens|max(?:imum)? context|context_length_exceeded|input is too long|exceeds the context|payload too large|request too large|token limit exceeded|reduce the length/.test(msg);
 }
 
@@ -895,14 +898,10 @@ function selectRecentStart(messages, keepTokens) {
     start -= 1;
   }
   start = expandRecentStartToToolBoundary(messages, start);
-  if (start === 0 && messages.length > 1) {
-    for (let index = messages.length - 1; index >= 0; index -= 1) {
-      if (messages[index]?.role === 'user') {
-        start = index;
-        break;
-      }
-    }
-    start = expandRecentStartToToolBoundary(messages, start);
+  if (start === 0) {
+    const anchor = messages.findLastIndex((message) => message?.role === 'user'
+      && !message.model_context && !isCompactionSummary(message));
+    if (anchor > 0) start = anchor;
   }
   return start;
 }
@@ -929,7 +928,10 @@ function renderTranscriptMessage(message, level) {
   if (!message || level >= 4) return '';
   if (level >= 3 && message.role !== 'user') return '';
   const lines = [];
-  const text = textFromContent(message.content).trim();
+  const text = textFromContent(message.model_content || message.content).trim();
+  if (isCompactionSummary(message) && level < 4) {
+    return `[Previous checkpoint]: ${level >= 3 ? clipTranscript(text) : text}`;
+  }
   if (message.role === 'user' || message.role === 'assistant') {
     const body = level >= 3 ? clipTranscript(text) : text;
     if (body) lines.push(`[${message.role === 'user' ? 'User' : 'Assistant'}]: ${body}`);
@@ -954,7 +956,7 @@ function renderTranscriptMessage(message, level) {
  * first (full → clipped outputs → outputs dropped → user text only → omitted),
  * matching opencode's graded summary fallback, instead of a hard 12k cut.
  */
-export function buildGradedTranscript(messages, { maxChars = 80_000 } = {}) {
+export function buildGradedTranscript(messages, { maxChars = 80_000, maxTokens = Infinity } = {}) {
   const source = Array.isArray(messages) ? messages : [];
   const groups = [];
   for (const message of source) {
@@ -962,49 +964,52 @@ export function buildGradedTranscript(messages, { maxChars = 80_000 } = {}) {
     if (message.role === 'user' || groups.length === 0) groups.push([message]);
     else groups[groups.length - 1].push(message);
   }
-  const renders = groups.map((group) => [0, 1, 2, 3, 4].map((level) => (
-    group.map((message) => renderTranscriptMessage(message, level)).filter(Boolean).join('\n')
-  )));
-  if (renders.length === 0) return '';
-  const chosen = renders.map(() => 0);
-  const size = () => chosen.reduce((sum, level, index) => sum + renders[index][level].length, 0);
+  const renders = groups.map((group) => [0, 1, 2, 3, 4].map((level) => {
+    const text = group.map((message) => renderTranscriptMessage(message, level)).filter(Boolean).join('\n');
+    return { text, chars: text.length + 2, tokens: estimateTextTokens(text) + 1 };
+  }));
+  if (!renders.length) return '';
+  const selected = renders.map((variants) => variants[0]);
+  let chars = selected.reduce((sum, item) => sum + item.chars, 0);
+  let tokens = selected.reduce((sum, item) => sum + item.tokens, 0);
   for (const level of [1, 2, 3, 4]) {
-    for (let index = 0; index < renders.length && size() > maxChars; index += 1) {
+    for (let index = 0; index < renders.length && (chars > maxChars || tokens > maxTokens); index += 1) {
       if (index === renders.length - 1 && level === 4) continue;
-      chosen[index] = level;
+      const next = renders[index][level];
+      chars += next.chars - selected[index].chars;
+      tokens += next.tokens - selected[index].tokens;
+      selected[index] = next;
     }
   }
-  const omitted = chosen.filter((level, index) => !renders[index][level]).length;
+  const omitted = selected.filter((item) => !item.text).length;
   const note = omitted ? `[${omitted} older exchanges omitted]\n\n` : '';
-  const text = note + renders.map((render, index) => render[chosen[index]]).filter(Boolean).join('\n\n');
-  return text.length <= maxChars ? text : text.slice(0, maxChars);
-}
-
-async function summarizeOnce(older, generateSummary, summaryCache) {
-  const cache = summaryCache && typeof summaryCache === 'object' ? summaryCache : null;
-  if (cache && cache.calls >= 1) return cache.text || buildLocalSummary(older);
-  if (cache) cache.calls = (cache.calls || 0) + 1;
-  let summary = null;
-  if (typeof generateSummary === 'function') {
-    try { summary = await generateSummary(older); } catch { summary = null; }
+  const text = note + selected.map((item) => item.text).filter(Boolean).join('\n\n');
+  if (text.length <= maxChars && estimateTextTokens(text) <= maxTokens) return text;
+  const limit = Math.min(maxChars, Math.floor(text.length * maxTokens / Math.max(1, estimateTextTokens(text))));
+  let shortened = limit > 0 ? text.slice(-limit) : '';
+  while (shortened.length > maxChars || estimateTextTokens(shortened) > maxTokens) {
+    shortened = shortened.slice(Math.max(1, Math.floor(shortened.length / 8)));
   }
-  if (!summary) summary = buildLocalSummary(older);
-  if (cache) cache.text = summary;
-  return summary;
+  return shortened;
 }
 
-function takeSummary(messages, summary, recentStart) {
-  const older = messages.slice(0, recentStart);
-  if (older.length === 0) return null;
-  const recent = stripUsage(sanitizeRecentMessagesForModel(messages.slice(recentStart)));
-  return {
-    messages: [{
-      role: 'assistant',
-      content: summary,
-      compaction: { kind: 'summary', suppress: true },
-    }, ...recent],
-    boundaryIndex: recentStart,
-  };
+async function summarizePrefix(older, generateSummary, summaries, boundaryIndex, signal) {
+  if (summaries.has(boundaryIndex)) return summaries.get(boundaryIndex);
+  let summary;
+  if (typeof generateSummary === 'function') {
+    try {
+      summary = await generateSummary(older);
+    } catch (error) {
+      if (signal?.aborted) throw error;
+    }
+  }
+  if (!summary) {
+    const previous = older.findLast(isCompactionSummary);
+    const local = buildLocalSummary(older.filter((message) => !isCompactionSummary(message)));
+    summary = previous ? `${clipTranscript(textFromContent(previous.content))}\n\n${local}` : local;
+  }
+  summaries.set(boundaryIndex, summary);
+  return summary;
 }
 
 function splitLeadingSystemMessages(messages = []) {
@@ -1039,7 +1044,7 @@ export async function compactInFlightMessages(messages, config = {}, inputTokens
     afterPct: 0,
     tokensSaved: 0,
     estimatedTokens: 0,
-    summaryCalls: opts.summaryCache?.calls || 0,
+    summaryCalls: opts.summaryCache?.size || 0,
   };
   const summaryGuarded = source.some((message) => isCompactionSummary(message));
   const measuredIndex = Number.isInteger(opts.measuredIndex) ? opts.measuredIndex : -1;
@@ -1070,15 +1075,12 @@ export async function compactInFlightMessages(messages, config = {}, inputTokens
     return unchanged;
   }
 
-  const ratio = positiveRatio(opts.calibrationRatio, 1);
   const overhead = Math.max(0, Number(opts.overheadTokens) || 0);
+  const extra = Math.max(0, Number(opts.extraTokens) || 0);
   const localOf = (nextBody) => estimateMessagesTokens([...system, ...nextBody]) + overhead;
-  const project = (beforeLocal, afterLocal) => {
-    if (!(beforeLocal > 0) || !(usage > 0)) return Math.round(afterLocal);
-    const scale = positiveRatio(usage / beforeLocal, 1);
-    return Math.round(afterLocal * scale);
-  };
   const beforeLocal = localOf(body);
+  const scale = beforeLocal > 0 ? positiveRatio((usage - extra) / beforeLocal, 1) : 1;
+  const project = (afterLocal) => Math.round(afterLocal * scale + extra);
 
   let started = false;
   const start = () => {
@@ -1088,18 +1090,15 @@ export async function compactInFlightMessages(messages, config = {}, inputTokens
   };
 
   let working = body;
+  let workingLocal = beforeLocal;
   let mode = '';
   let changed = false;
-  let tokensSaved = 0;
   let boundaryIndex;
   let projected = usage;
   let summaryText = '';
-  const summaryCache = opts.summaryCache && typeof opts.summaryCache === 'object'
-    ? opts.summaryCache
-    : { calls: 0, text: null };
-  summaryText = summaryCache.text || '';
+  const summaryCache = opts.summaryCache ?? new Map();
 
-  const microEnabled = config?.context?.microcompact_enabled !== false && opts.skipPrune !== true;
+  const microEnabled = opts.skipPrune !== true && (opts.pruneOnly === true || config?.context?.microcompact_enabled !== false);
   if (microEnabled) {
     const protectedTools = Array.isArray(config?.context?.prune_protected_tools)
       ? config.context.prune_protected_tools
@@ -1113,13 +1112,14 @@ export async function compactInFlightMessages(messages, config = {}, inputTokens
       protectedToolNames: protectedTools,
       inputClearMinTokens: finiteNumber(config?.context?.prune_input_min_tokens, 500, 0),
     });
-    if (pruned.changed) {
+    const prunedLocal = beforeLocal - pruned.tokensSaved;
+    if (pruned.changed && project(prunedLocal) < projected) {
       start();
       working = pruned.messages;
-      tokensSaved = pruned.tokensSaved;
+      workingLocal = prunedLocal;
       mode = 'prune';
       changed = true;
-      projected = project(beforeLocal, localOf(working));
+      projected = project(prunedLocal);
       if (opts.pruneOnly === true || projected <= target) {
         return finish();
       }
@@ -1132,42 +1132,36 @@ export async function compactInFlightMessages(messages, config = {}, inputTokens
   const aggressive = opts.aggressive === true
     || opts.mode === 'aggressive'
     || (budget.window > 0 && (usage / budget.window) * 100 >= hardPct);
-  let keep = resolveKeepTokens(budget, config, aggressive);
-  const summaryTarget = Math.min(target, Math.max(1, Number(opts.targetTokens) || target));
-  let guard = 0;
-  while (guard < 5) {
-    guard += 1;
-    const recentStart = selectRecentStart(working, keep);
-    const older = working.slice(0, recentStart);
-    if (older.length === 0) {
-      // The whole tail still fits in `keep`, but the provider usage is over
-      // the target. Shorten the verbatim tail until there is something to summarize.
-      const nextKeep = Math.floor(keep * 0.5);
-      if (nextKeep < 80 || nextKeep === keep) break;
-      keep = nextKeep;
-      continue;
-    }
-    if (!summaryText) {
-      start();
-      summaryText = await summarizeOnce(older, generateSummary, summaryCache);
-    } else if (summaryCache.calls < 1) {
-      summaryCache.calls = 1;
-      summaryCache.text = summaryText;
-    }
-    const taken = takeSummary(working, summaryText, recentStart);
-    if (!taken) break;
-    const nextProjected = project(beforeLocal, localOf(taken.messages));
+  const user = working.findLast((message) => message?.role === 'user'
+    && !message.model_context && !isCompactionSummary(message));
+  let keep = resolveKeepTokens({ ...budget, target: Math.max(1, target - extra) }, config, aggressive);
+  let recentStart = selectRecentStart(working, keep);
+  while (keep > 0 && (recentStart === 0 || (recentStart === 1 && body[0] === user))) {
+    keep = Math.floor(keep / 2);
+    recentStart = selectRecentStart(working, keep);
+  }
+  const older = body.slice(0, recentStart);
+  // Keep the active user request verbatim even when the tail starts inside that turn.
+  if (older.some((message) => message !== user)) {
     start();
-    working = taken.messages;
-    boundaryIndex = taken.boundaryIndex;
-    mode = 'summary';
-    changed = true;
-    tokensSaved = Math.max(0, beforeLocal - localOf(working));
-    projected = nextProjected;
-    if (projected <= summaryTarget) break;
-    const nextKeep = Math.floor(keep * 0.5);
-    if (nextKeep < 80 || nextKeep === keep) break;
-    keep = nextKeep;
+    summaryText = await summarizePrefix(older, generateSummary, summaryCache, recentStart, opts.signal);
+    opts.signal?.throwIfAborted();
+    const retainedUser = user && older.includes(user) ? [user] : [];
+    const summarized = [
+      { role: 'user', content: `<conversation-checkpoint>\n${summaryText}\n</conversation-checkpoint>`, compaction: { kind: 'summary' } },
+      ...retainedUser,
+      ...sanitizeRecentMessagesForModel(working.slice(recentStart)),
+    ];
+    const nextLocal = localOf(summarized);
+    const nextProjected = project(nextLocal);
+    if (nextLocal < workingLocal && nextProjected < projected) {
+      working = summarized;
+      workingLocal = nextLocal;
+      boundaryIndex = system.length + recentStart;
+      mode = 'summary';
+      changed = true;
+      projected = nextProjected;
+    }
   }
 
   if (!changed) return unchanged;
@@ -1189,11 +1183,12 @@ export async function compactInFlightMessages(messages, config = {}, inputTokens
       threshold: beforePct,
       beforePct,
       afterPct,
-      tokensSaved,
+      tokensSaved: beforeLocal - workingLocal,
       estimatedTokens: afterUsage,
       boundaryIndex,
+      boundaryMessage: source[boundaryIndex],
       summaryText: summaryText || '',
-      summaryCalls: summaryCache.calls || 0,
+      summaryCalls: summaryCache.size,
       summary: formatCompactDivider({ ...divider, language: 'zh' }),
       summaryEn: formatCompactDivider({ ...divider, language: 'en' }),
     };
