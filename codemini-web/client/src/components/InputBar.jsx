@@ -1905,8 +1905,8 @@ export function InputBar({
             style={{ height: "auto" }}
           />
         </div>
-        <div className="flex items-center gap-1.5 min-h-8 flex-wrap">
-          <div className="flex min-w-0 flex-1 basis-full sm:basis-auto items-center gap-1.5 overflow-x-auto pb-0.5 sm:flex-wrap sm:overflow-visible sm:pb-0">
+        <div className="flex items-end gap-1.5 min-h-8 flex-wrap">
+          <div className="flex min-w-0 flex-1 basis-full sm:basis-auto items-end gap-1.5 overflow-x-auto sm:flex-wrap sm:overflow-visible">
             <button
               type="button"
               className="border-0 bg-transparent text-(--text-secondary) min-w-8 h-8 rounded-md inline-flex items-center justify-center shrink-0 cursor-pointer transition-colors hover:bg-transparent hover:text-(--text-primary)"
@@ -2120,7 +2120,7 @@ export function InputBar({
 
             <SoulQuickSwitch disabled={inputLocked} mode={mode} />
           </div>
-          <div className="flex items-center gap-1.5 ml-auto shrink-0">
+          <div className="flex items-end gap-1.5 ml-auto shrink-0">
             {/* <button type="button" className="border-0 bg-transparent text-(--text-muted) w-auto px-2 h-[30px] rounded-lg inline-flex items-center justify-center gap-1 shrink-0 cursor-pointer text-[12px] whitespace-nowrap hover:bg-(--bg-hover) hover:text-(--text-primary)" title="模型">
               <span className={cn('truncate', !rs.model && 'opacity-50')}>{rs.model || '加载中'}</span>
               <CaretDown size={11} />

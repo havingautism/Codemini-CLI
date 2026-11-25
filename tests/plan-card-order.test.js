@@ -7,6 +7,8 @@ import {
 } from '../codemini-web/shared/transcript-segments.js';
 import {
   extractLatestTodoFromPlanSteps,
+  findLatestPinnedProcess,
+  isPinnedThinking,
   layoutAnswerProcessWithPlans,
 } from '../codemini-web/client/src/lib/answer-process.js';
 
@@ -336,4 +338,47 @@ test('subagent child tasks update replaces the initially assigned tasks card', (
     assignedTasks,
   );
   assert.equal(result.todoCard, childTasks);
+});
+
+test('latest thinking stays pinned and tool calls do not', () => {
+  const thinking = { type: 'thinking', text: 'look around', startedAt: 't0', isStreaming: false };
+  const firstTool = { id: 'read-1', name: 'read', status: 'done' };
+  const latestTool = { id: 'grep-1', name: 'grep', status: 'running' };
+  const pinned = findLatestPinnedProcess([
+    thinking,
+    { type: 'tools', cards: [firstTool, latestTool] },
+  ]);
+  assert.equal(pinned.kind, 'thinking');
+  assert.equal(isPinnedThinking(thinking, pinned), true);
+
+  const nextThought = { type: 'thinking', text: 'now check tests', startedAt: 't1', isStreaming: true };
+  const pinnedThought = findLatestPinnedProcess([
+    thinking,
+    { type: 'tools', cards: [firstTool, latestTool] },
+    nextThought,
+  ]);
+  assert.equal(pinnedThought.kind, 'thinking');
+  assert.equal(isPinnedThinking(nextThought, pinnedThought), true);
+  assert.equal(isPinnedThinking(thinking, pinnedThought), false);
+
+  const afterToolsAndAnswer = findLatestPinnedProcess([
+    thinking,
+    { type: 'tools', cards: [firstTool, latestTool] },
+    { type: 'text', text: 'done' },
+  ]);
+  assert.equal(isPinnedThinking(thinking, afterToolsAndAnswer), true);
+});
+
+test('plans and todos below a thought do not collapse it', () => {
+  const thinking = { type: 'thinking', text: 'look around', startedAt: 't0' };
+  const withPlan = findLatestPinnedProcess([
+    thinking,
+    { type: 'tools', cards: [{ id: 'plan-1', name: 'create_plan', status: 'running' }] },
+  ]);
+  assert.equal(isPinnedThinking(thinking, withPlan), true);
+  const withTodo = findLatestPinnedProcess([
+    thinking,
+    { type: 'tools', cards: [{ id: 'todo-1', name: 'tasks', status: 'done' }] },
+  ]);
+  assert.equal(isPinnedThinking(thinking, withTodo), true);
 });
