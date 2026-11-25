@@ -492,6 +492,8 @@ export class RuntimeBridge {
     if (['spec:pending_approval', 'reflect:pending_approval'].includes(event?.type)) {
       this.#busy = false;
       this.#broadcastRuntimeState();
+    } else if (event?.type === 'compact:auto') {
+      this.#broadcastRuntimeState();
     }
   }
 
@@ -1210,13 +1212,13 @@ export class RuntimeBridge {
         }
         break;
       }
+      case 'compact:start':
+        break;
       case 'compact:auto': {
         this.#addUiMessage({
           role: 'divider',
           dividerType: 'compact',
-          text: event.duringTurn
-            ? `本轮中已压缩 (${event.mode || ''}, ${event.threshold || ''}%)`
-            : `以上内容已压缩 (${event.mode || ''}, ${event.threshold || ''}%)`,
+          text: event.summary || '以上内容已压缩',
           timestamp: new Date().toISOString()
         });
         break;

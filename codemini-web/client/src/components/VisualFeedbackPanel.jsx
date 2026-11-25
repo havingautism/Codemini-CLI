@@ -129,10 +129,12 @@ export function VisualFeedbackPanel({ sessionId = "", projectCwd = "", disabled 
         <p className="mb-2 font-mono text-[12px] text-(--text-muted)">{status.url}</p>
       ) : null}
       {environment ? (
-        <p className={environment.ok ? "mb-2 text-(--accent-green)" : "mb-2 text-(--accent-red)"}>
-          {environment.ok ? t("visualFeedbackEnvOk") : t("visualFeedbackEnvBlocked")}
-          {envLabel(environment) ? ` (${envLabel(environment)})` : ""}
+        <p className={environment.ok ? "mb-2 text-(--accent-green)" : "mb-2 text-(--text-secondary)"}>
+          {environment.ok ? t("visualFeedbackEnvOk") : t("visualFeedbackCapabilityHint")}
+          {environment.ok && envLabel(environment) ? ` (${envLabel(environment)})` : ""}
         </p>
+      ) : openBrowser && (status?.limitedCapabilities || !environment) ? (
+        <p className="mb-2 text-(--text-secondary)">{t("visualFeedbackCapabilityHint")}</p>
       ) : null}
       {status?.loginUrl ? (
         <p className="mb-2 text-(--text-secondary)">

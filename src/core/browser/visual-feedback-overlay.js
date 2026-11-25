@@ -4,6 +4,104 @@ export const VISUAL_FEEDBACK_BINDING = '__codeminiVisualFeedback'
 export const VISUAL_FEEDBACK_MARKUP_LIMIT = 280
 export const VISUAL_FEEDBACK_CHILD_LABEL_LIMIT = 160
 export const VISUAL_FEEDBACK_ANCESTOR_NAME_LIMIT = 80
+export const VISUAL_FEEDBACK_STORAGE_KEY = 'codemini-visual-feedback-v2'
+export const VISUAL_FEEDBACK_STORAGE_KEY_V1 = 'codemini-visual-feedback-v1'
+// Hard cap on pending notes across all pages. Each note can attach a JPEG of
+// up to 180 KiB (VISUAL_FEEDBACK_SCREENSHOT.maxBytes) plus ~1–2 KiB of
+// markup, styles, and source text. 8 notes is a conservative batch: worst
+// case about 1.4 MB of image data and a large number of vision tokens,
+// while still covering a typical multi-page pass (login + home + settings).
+// There is no separate current-page cap; the total already bounds a
+// single-page batch. Never silently drop notes when the cap is reached.
+export const VISUAL_FEEDBACK_MAX_PENDING_NOTES = 8
+
+/**
+ * Grouping and persistence key for a Visual Feedback page.
+ *
+ * Built from origin + pathname + meaningful search. Search is included
+ * because query strings often identify a view (`?tab=`, `?id=`). Common
+ * tracking parameters (utm_*, gclid, fbclid, and similar click ids) are
+ * stripped, and the remaining params are sorted so equivalent URLs share
+ * a key. A hash is included only when it looks like a client route
+ * (`#/` or `#!`); ordinary scroll fragments are ignored.
+ */
+export function visualFeedbackPageKey(href) {
+  const raw = href == null ? '' : String(href)
+  if (!raw) return ''
+  let url
+  try {
+    const base = (typeof location !== 'undefined' && location && location.href) ? location.href : 'http://localhost/'
+    url = new URL(raw, base)
+  } catch {
+    return raw
+  }
+  const origin = url.origin && url.origin !== 'null' ? url.origin : ''
+  const pathname = url.pathname || '/'
+  const kept = []
+  for (const [name, value] of url.searchParams.entries()) {
+    const key = String(name || '')
+    if (/^utm_/i.test(key)) continue
+    if (/^(gclid|fbclid|msclkid|ttclid|dclid|wbraid|gbraid|yclid|mc_eid|mc_cid|_ga|_gl)$/i.test(key)) continue
+    kept.push([key, value])
+  }
+  kept.sort((a, b) => a[0].localeCompare(b[0]) || String(a[1]).localeCompare(String(b[1])))
+  const params = new URLSearchParams()
+  for (const [name, value] of kept) params.append(name, value)
+  const search = params.toString() ? `?${params.toString()}` : ''
+  const hash = String(url.hash || '')
+  const routeHash = /^(#\/|#!)/.test(hash) ? hash : ''
+  return `${origin}${pathname}${search}${routeHash}`
+}
+
+export function visualFeedbackPageLabel(href, title) {
+  const raw = href == null ? '' : String(href)
+  let path = raw
+  try {
+    const base = (typeof location !== 'undefined' && location && location.href) ? location.href : 'http://localhost/'
+    const url = new URL(raw || 'http://localhost/', base)
+    const hash = /^(#\/|#!)/.test(url.hash) ? url.hash : ''
+    path = `${url.pathname || '/'}${url.search || ''}${hash}`
+  } catch {
+    path = raw
+  }
+  const heading = String(title || '').trim()
+  return heading ? `${heading} · ${path}` : path
+}
+
+export function isVisualFeedbackNoteOnPage(note, href) {
+  if (!note || typeof note !== 'object') return false
+  const noteKey = note.pageKey || visualFeedbackPageKey(note.url || '')
+  const pageKey = visualFeedbackPageKey(href || '')
+  if (!noteKey) return true
+  if (!pageKey) return false
+  return noteKey === pageKey
+}
+
+export function groupVisualFeedbackNotesByPage(notes) {
+  const groups = []
+  const map = new Map()
+  const list = Array.isArray(notes) ? notes : []
+  for (const note of list) {
+    if (!note || typeof note !== 'object') continue
+    const key = note.pageKey || visualFeedbackPageKey(note.url || '') || '(unknown)'
+    let group = map.get(key)
+    if (!group) {
+      group = {
+        pageKey: key,
+        url: note.url || '',
+        title: note.title || '',
+        notes: [],
+      }
+      map.set(key, group)
+      groups.push(group)
+    } else {
+      if (!group.title && note.title) group.title = note.title
+      if (!group.url && note.url) group.url = note.url
+    }
+    group.notes.push(note)
+  }
+  return groups
+}
 
 const INTERACTIVE_TAGS = ['a', 'button', 'input', 'select', 'textarea', 'summary']
 const INTERACTIVE_ROLES = [
@@ -95,19 +193,25 @@ export function getVisualFeedbackInitScript(localeOrStrings = 'zh') {
     const VISUAL_FEEDBACK_MARKUP_LIMIT = ${VISUAL_FEEDBACK_MARKUP_LIMIT};
     const VISUAL_FEEDBACK_CHILD_LABEL_LIMIT = ${VISUAL_FEEDBACK_CHILD_LABEL_LIMIT};
     const VISUAL_FEEDBACK_ANCESTOR_NAME_LIMIT = ${VISUAL_FEEDBACK_ANCESTOR_NAME_LIMIT};
+    const VISUAL_FEEDBACK_MAX_PENDING_NOTES = ${VISUAL_FEEDBACK_MAX_PENDING_NOTES};
+    const VISUAL_FEEDBACK_STORAGE_KEY = ${JSON.stringify(VISUAL_FEEDBACK_STORAGE_KEY)};
+    const VISUAL_FEEDBACK_STORAGE_KEY_V1 = ${JSON.stringify(VISUAL_FEEDBACK_STORAGE_KEY_V1)};
     const INTERACTIVE_TAGS = ${JSON.stringify(INTERACTIVE_TAGS)};
     const INTERACTIVE_ROLES = ${JSON.stringify(INTERACTIVE_ROLES)};
     ${visualFeedbackOwnName.toString()}
     ${isVisualFeedbackInteractiveElement.toString()}
     ${visualFeedbackInteractiveAncestorName.toString()}
     ${visualFeedbackChildLabels.toString()}
+    ${visualFeedbackPageKey.toString()}
+    ${visualFeedbackPageLabel.toString()}
+    ${isVisualFeedbackNoteOnPage.toString()}
+    ${groupVisualFeedbackNotesByPage.toString()}
     (${installVisualFeedbackOverlay.toString()})(${JSON.stringify(strings)});
   })();`
 }
 
 function installVisualFeedbackOverlay(inputStrings) {
   const ROOT_ID = 'codemini-visual-feedback-root'
-  const STORAGE_KEY = 'codemini-visual-feedback-v1'
   const STYLE_PROPS = [
     'display', 'visibility', 'opacity', 'pointer-events', 'cursor',
     'position', 'z-index', 'overflow', 'width', 'height', 'color',
@@ -260,6 +364,9 @@ function installVisualFeedbackOverlay(inputStrings) {
   }
 
   function isNoteStale(note) {
+    // Off-page notes are hidden, not stale. Stale only applies when we are
+    // on the note's own page and one of its elements no longer matches.
+    if (!noteBelongsToCurrentPage(note)) return false
     const targets = noteTargets(note)
     if (!targets.length) return true
     return targets.some((expected) => isElementDescriptorStale(expected))
@@ -268,6 +375,7 @@ function installVisualFeedbackOverlay(inputStrings) {
   function refreshNoteStaleness() {
     let changed = false
     for (const note of state.notes) {
+      if (!noteBelongsToCurrentPage(note)) continue
       const stale = isNoteStale(note)
       if (Boolean(note.stale) !== stale) changed = true
       note.stale = stale
@@ -280,6 +388,8 @@ function installVisualFeedbackOverlay(inputStrings) {
     blocked: false,
     environment: { ok: false, strong: [], weak: [] },
     notes: [],
+    drafts: {},
+    pageKey: '',
     hover: null,
     draft: null,
     message: '',
@@ -287,6 +397,8 @@ function installVisualFeedbackOverlay(inputStrings) {
     statusKey: '',
     listOpen: false,
     expandedNoteId: '',
+    editingNoteId: '',
+    editingText: '',
     target: null,
     retargetStack: [],
     retargetLocked: false,
@@ -297,28 +409,184 @@ function installVisualFeedbackOverlay(inputStrings) {
     ignoreClick: false,
   }
 
-  function storageId() {
-    return `${STORAGE_KEY}:${location.origin}${location.pathname}`
+  function currentPageKey() {
+    return visualFeedbackPageKey(location.href)
+  }
+
+  function noteBelongsToCurrentPage(note) {
+    return isVisualFeedbackNoteOnPage(note, location.href)
+  }
+
+  function persistCurrentPageDraft() {
+    if (!state.drafts || typeof state.drafts !== 'object') state.drafts = {}
+    const key = currentPageKey()
+    if (state.draft) {
+      rememberDraftForm({ skipText: state.composing })
+      state.drafts[key] = {
+        id: state.draft.id,
+        kind: composerKindValue(state.draft.kind),
+        text: state.draft.text || '',
+        shared: Boolean(state.draft.shared),
+        element: state.draft.element || null,
+        elements: Array.isArray(state.draft.elements) ? state.draft.elements : undefined,
+        url: location.href,
+        title: document.title,
+      }
+    } else {
+      delete state.drafts[key]
+    }
+  }
+
+  function restoreDraftForPage(key) {
+    const saved = state.drafts && state.drafts[key]
+    state.draft = saved && typeof saved === 'object' ? { ...saved } : null
+  }
+
+  function flushOpenEdit() {
+    const area = liveEditField()
+    const id = state.editingNoteId || state.expandedNoteId
+    if (!id) return
+    const text = area ? area.value : state.editingText
+    if (text) commitNoteText(id, text)
+    if (area) state.editingText = area.value
+  }
+
+  function applySavedStore(saved) {
+    if (!saved || typeof saved !== 'object') return
+    if (Array.isArray(saved.notes)) state.notes = saved.notes
+    if (saved.mode === true) state.mode = true
+    if (saved.drafts && typeof saved.drafts === 'object') state.drafts = saved.drafts
+    if (saved.listOpen === true) state.listOpen = true
+    if (saved.expandedNoteId) state.expandedNoteId = String(saved.expandedNoteId)
+    if (saved.editingNoteId) state.editingNoteId = String(saved.editingNoteId)
+    if (typeof saved.editingText === 'string') state.editingText = saved.editingText
+  }
+
+  function migrateV1Keys() {
+    const prefix = `${VISUAL_FEEDBACK_STORAGE_KEY_V1}:`
+    const toRemove = []
+    try {
+      for (let i = 0; i < sessionStorage.length; i += 1) {
+        const key = sessionStorage.key(i)
+        if (key && key.startsWith(prefix)) toRemove.push(key)
+      }
+    } catch {
+      return
+    }
+    let migrated = false
+    for (const key of toRemove) {
+      try {
+        const saved = JSON.parse(sessionStorage.getItem(key) || '')
+        if (saved?.mode === true) state.mode = true
+        if (Array.isArray(saved?.notes)) {
+          const pagePart = key.slice(prefix.length)
+          for (const note of saved.notes) {
+            if (!note || typeof note !== 'object') continue
+            if (!note.pageKey) note.pageKey = visualFeedbackPageKey(note.url || pagePart)
+            if (!note.url && pagePart) note.url = pagePart
+            if (!state.notes.some((item) => String(item.id) === String(note.id))) {
+              state.notes.push(note)
+              migrated = true
+            }
+          }
+        }
+      } catch {
+        // Ignore damaged v1 entries.
+      }
+      try { sessionStorage.removeItem(key) } catch { /* ignore */ }
+    }
+    return migrated
   }
 
   function loadState() {
     try {
-      const raw = sessionStorage.getItem(storageId())
-      if (!raw) return
-      const saved = JSON.parse(raw)
-      if (Array.isArray(saved.notes)) state.notes = saved.notes
-      if (saved.mode === true) state.mode = true
+      const raw = sessionStorage.getItem(VISUAL_FEEDBACK_STORAGE_KEY)
+      if (raw) applySavedStore(JSON.parse(raw))
     } catch {
       // Ignore damaged session state.
     }
+    const migrated = migrateV1Keys()
+    state.pageKey = currentPageKey()
+    if (!state.draft) restoreDraftForPage(state.pageKey)
+    if (migrated) saveState()
   }
 
   function saveState() {
+    persistCurrentPageDraft()
     try {
-      sessionStorage.setItem(storageId(), JSON.stringify({ mode: state.mode, notes: state.notes }))
+      sessionStorage.setItem(VISUAL_FEEDBACK_STORAGE_KEY, JSON.stringify({
+        version: 2,
+        mode: state.mode,
+        notes: state.notes,
+        drafts: state.drafts,
+        listOpen: state.listOpen,
+        expandedNoteId: state.expandedNoteId,
+        editingNoteId: state.editingNoteId,
+        editingText: state.editingText,
+      }))
     } catch {
       // Private mode or quota.
     }
+  }
+
+  function clearStoredState() {
+    try { sessionStorage.removeItem(VISUAL_FEEDBACK_STORAGE_KEY) } catch { /* ignore */ }
+    try {
+      const prefix = `${VISUAL_FEEDBACK_STORAGE_KEY_V1}:`
+      const keys = []
+      for (let i = 0; i < sessionStorage.length; i += 1) {
+        const key = sessionStorage.key(i)
+        if (key && (key === VISUAL_FEEDBACK_STORAGE_KEY || key.startsWith(prefix))) keys.push(key)
+      }
+      for (const key of keys) sessionStorage.removeItem(key)
+    } catch {
+      // Private mode or quota.
+    }
+  }
+
+  function switchPage(nextKey) {
+    rememberDraftForm({ skipText: false })
+    flushOpenEdit()
+    persistCurrentPageDraft()
+    clearSelection()
+    state.hover = null
+    state.target = null
+    state.retargetStack = []
+    state.boxSelect = null
+    state.ignoreClick = false
+    state.pageKey = nextKey
+    restoreDraftForPage(nextKey)
+    if (state.expandedNoteId && !state.notes.some((item) => String(item.id) === String(state.expandedNoteId))) {
+      state.expandedNoteId = ''
+      clearEditingNote()
+    }
+  }
+
+  function pendingNoteLimitReached() {
+    return state.notes.length >= VISUAL_FEEDBACK_MAX_PENDING_NOTES
+  }
+
+  function rejectIfNoteLimit() {
+    if (!pendingNoteLimitReached()) return false
+    state.statusKey = 'visualFeedbackOverlayNoteLimit'
+    state.status = ''
+    render()
+    return true
+  }
+
+  function clearNoteLimitStatus() {
+    if (state.statusKey === 'visualFeedbackOverlayNoteLimit' && !pendingNoteLimitReached()) {
+      state.statusKey = ''
+      state.status = ''
+    }
+  }
+
+  function statusMessage() {
+    if (state.statusKey === 'visualFeedbackOverlayNoteLimit') {
+      return tx(state.statusKey, { count: VISUAL_FEEDBACK_MAX_PENDING_NOTES })
+    }
+    if (state.statusKey) return tx(state.statusKey)
+    return state.status || state.message || ''
   }
 
   function isOverlayEvent(event) {
@@ -364,7 +632,10 @@ function installVisualFeedbackOverlay(inputStrings) {
       .vf { position: fixed; z-index: 2147483646; pointer-events: none; display: flex; flex-direction: column; align-items: stretch; gap: 6px; width: min(420px, calc(100vw - 24px)); max-width: calc(100vw - 24px); font: 12px/1.35 ui-sans-serif, system-ui, -apple-system, sans-serif; color: #f5f5f4; }
       .toolbar, .tray { pointer-events: auto; box-sizing: border-box; background: rgba(22, 20, 19, 0.92); border: 1px solid rgba(255,255,255,0.12); box-shadow: 0 8px 24px rgba(0,0,0,0.25); backdrop-filter: blur(14px); }
       .toolbar { display: flex; align-items: center; gap: 2px; min-height: 40px; padding: 3px 4px 3px 8px; border-radius: 10px; }
-      .tray { padding: 8px 10px; border-radius: 10px; max-height: min(240px, 42vh); overflow: auto; }
+      .tray { padding: 8px 10px; border-radius: 10px; display: flex; flex-direction: column; gap: 8px; max-height: min(560px, 76vh); overflow: hidden; }
+      .composer-block { flex: none; }
+      .notes-list { overflow: auto; min-height: 0; max-height: min(360px, 50vh); }
+      .composer-block + .notes-list { border-top: 1px solid rgba(255,255,255,0.10); padding-top: 8px; }
       .brand { flex: 0 0 auto; font-weight: 600; font-size: 11px; letter-spacing: -0.01em; color: #c8c4be; padding: 0 8px 0 2px; white-space: nowrap; }
       .toolbar button, .tray button { font: inherit; border: 0; cursor: pointer; }
       .toolbar button { display: inline-flex; align-items: center; gap: 5px; height: 32px; padding: 0 8px; border-radius: 8px; background: transparent; color: #f5f5f4; font-weight: 550; white-space: nowrap; }
@@ -385,12 +656,22 @@ function installVisualFeedbackOverlay(inputStrings) {
       .notes .tick { flex: none; margin-top: 2px; display: flex; align-items: center; }
       .notes .tick input { width: 13px; height: 13px; margin: 0; accent-color: #f0b429; cursor: pointer; }
       .notes li:first-child { border-top: 0; }
+      .notes-group + .notes-group { margin-top: 8px; padding-top: 8px; border-top: 1px solid rgba(255,255,255,0.10); }
+      .notes-group-head { margin: 0 0 4px; color: #c8c4be; font-weight: 650; font-size: 11px; }
+      .notes-group-head .page-path { color: #b7c7ff; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px; font-weight: 500; word-break: break-all; }
+      .notes-group.is-current .notes-group-head { color: #f5f5f4; }
       .notes li.stale { opacity: 0.62; }
       .notes .excerpt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .notes li.is-open .excerpt { white-space: normal; }
       .notes .sel { color: #b7c7ff; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
       .notes .detail { margin: 4px 0 0; color: #d8d4ce; }
       .notes .stale-flag { color: #f0b429; font-size: 10px; font-weight: 650; }
+      .note-pins { display: flex; flex: none; flex-wrap: wrap; gap: 3px; margin-top: 1px; }
+      .note-pin { box-sizing: border-box; width: 18px; height: 18px; border-radius: 999px; background: #f0b429; color: #1a1614; font: 700 10px/18px ui-sans-serif, system-ui, sans-serif; text-align: center; }
+      .notes li.stale .note-pin { background: #8a7a55; color: #f5f0e8; }
+      .notes li.is-open:not(.stale) .note-pin { background: #fff; box-shadow: 0 0 0 2px #f0b429; }
+      .note-meta { margin: 2px 0 0; color: #c8c4be; font-size: 10px; font-weight: 650; }
+      .notes .edit-note { margin-top: 6px; min-height: 56px; }
       .note-main { min-width: 0; flex: 1; }
       .x { background: transparent; color: #f5f0e8; border: 0; padding: 0 4px; line-height: 1; }
       .composer { display: flex; flex-direction: column; gap: 6px; }
@@ -428,12 +709,121 @@ function installVisualFeedbackOverlay(inputStrings) {
     return '<svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.4" d="M3 8.5h7.5M8 5.5 11.5 8.5 8 11.5"/><path fill="none" stroke="currentColor" stroke-width="1.4" d="M13 3.5v9"/></svg>'
   }
 
+  let notesListSignature = ''
+
+  function notesListNode() {
+    return ui.shadow?.querySelector('[data-notes-list]') || null
+  }
+
+  function captureNotesListScroll() {
+    const list = notesListNode()
+    return list ? list.scrollTop : 0
+  }
+
+  function restoreNotesListScroll(scrollTop, options = {}) {
+    const list = notesListNode()
+    if (!list) return
+    if (options.opened && !options.added) {
+      list.scrollTop = 0
+      return
+    }
+    if (options.added) {
+      list.scrollTop = list.scrollHeight
+      return
+    }
+    list.scrollTop = scrollTop
+  }
+
+  function noteGroupNumbers(note) {
+    const index = state.notes.findIndex((item) => item === note || String(item.id) === String(note?.id || ''))
+    if (index < 0) return []
+    // On-page pins use the note's list index, and every element in a
+    // multi-element note shares that same group number.
+    return [index + 1]
+  }
+
+  function noteGroupBadges(note) {
+    return noteGroupNumbers(note).map((number) => (
+      `<span class="note-pin" data-group-index="${escapeHtml(String(number))}" aria-label="${escapeHtml(tx('visualFeedbackOverlayPin', { index: number }))}">${escapeHtml(String(number))}</span>`
+    )).join('')
+  }
+
+  function liveEditField() {
+    return ui.shadow?.getElementById('vf-edit-note') || null
+  }
+
+  function rememberEditText() {
+    const area = liveEditField()
+    if (area && state.editingNoteId) state.editingText = area.value
+  }
+
+  function preserveOpenEditNote() {
+    if (!state.editingNoteId && !state.expandedNoteId) return null
+    const area = liveEditField()
+    return area && area.isConnected ? area : null
+  }
+
+  function transplantLiveField(container, field, id) {
+    if (!container || !field) return
+    const placeholder = container.querySelector(`#${id}`)
+    if (placeholder && placeholder !== field) placeholder.replaceWith(field)
+  }
+
+  function commitNoteText(id, text) {
+    const key = String(id || '')
+    const note = state.notes.find((item) => String(item.id) === key)
+    if (!note) return false
+    const next = String(text || '').trim()
+    if (!next || next === noteText(note)) return false
+    note.text = next
+    return true
+  }
+
+  function editingTextFor(note) {
+    if (note && String(state.editingNoteId) === String(note.id) && typeof state.editingText === 'string') {
+      return state.editingText
+    }
+    return noteText(note)
+  }
+
+  function beginEditingNote(id) {
+    const note = state.notes.find((item) => String(item.id) === String(id || ''))
+    state.expandedNoteId = note ? String(note.id) : ''
+    state.editingNoteId = state.expandedNoteId
+    state.editingText = note ? noteText(note) : ''
+  }
+
+  function clearEditingNote() {
+    state.editingNoteId = ''
+    state.editingText = ''
+  }
+
+  function flushEditingNote() {
+    const area = liveEditField()
+    const id = state.editingNoteId || state.expandedNoteId
+    const text = area ? area.value : state.editingText
+    const changed = commitNoteText(id, text)
+    clearEditingNote()
+    return changed
+  }
+
   function render() {
     const host = ensureHost()
     if (!host || !ui.shadow) return
     const root = ui.shadow.querySelector('.vf')
     if (!root) return
-    const envOk = state.environment.ok === true && !state.blocked
+    rememberDraftForm({ skipText: state.composing })
+    const previousNotesScroll = captureNotesListScroll()
+    const previousSignature = notesListSignature
+    const openedList = state.listOpen && !previousSignature.startsWith('open:')
+    const previousIds = previousSignature.startsWith('open:') || previousSignature.startsWith('closed:')
+      ? previousSignature.slice(previousSignature.indexOf(':') + 1).split(',').filter(Boolean)
+      : []
+    const nextIds = state.notes.map((note) => String(note.id || '')).filter(Boolean)
+    const addedNotes = state.listOpen && nextIds.length > previousIds.length
+    notesListSignature = `${state.listOpen ? 'open' : 'closed'}:${nextIds.join(',')}`
+    const envOk = state.blocked !== true
+    const limited = state.environment?.ok !== true
     const count = state.notes.length
     const countLabel = count === 1
       ? tx('visualFeedbackOverlayNoteCountOne')
@@ -441,13 +831,15 @@ function installVisualFeedbackOverlay(inputStrings) {
     const badge = envOk
       ? `<span class="badge">${escapeHtml(tx('visualFeedbackOverlayEnvOk'))}</span>`
       : `<span class="badge warn">${escapeHtml(tx('visualFeedbackOverlayEnvBlocked'))}</span>`
-    const notes = state.notes.map((note) => {
+    const renderNoteRow = (note) => {
       const open = state.expandedNoteId === note.id
       const kind = note.kind === 'functional' ? tx('visualFeedbackOverlayFunctional') : tx('visualFeedbackOverlayVisual')
-      const stale = note.stale ? `<span class="stale-flag">${escapeHtml(tx('visualFeedbackOverlayStale'))}</span>` : ''
+      const onPage = noteBelongsToCurrentPage(note)
+      const showStale = onPage && note.stale
+      const stale = showStale ? `<span class="stale-flag">${escapeHtml(tx('visualFeedbackOverlayStale'))}</span>` : ''
       const targets = noteTargets(note)
       const shared = targets.length > 1
-      const sharedFlag = shared ? ` · ${escapeHtml(tx('visualFeedbackOverlaySharedCount', { count: targets.length }))}` : ''
+      const groupBadges = noteGroupBadges(note)
       const targetRows = shared
         ? `<ul class="notes selection">${targets.map((item) => `
             <li>
@@ -455,14 +847,24 @@ function installVisualFeedbackOverlay(inputStrings) {
               <div class="note-main"><div class="sel">${escapeHtml(item.selector || item.tag || '')}</div></div>
             </li>`).join('')}</ul>`
         : ''
+      const editor = open
+        ? `<textarea id="vf-edit-note" class="edit-note" data-edit-note="${escapeHtml(String(note.id || ''))}" placeholder="${escapeHtml(tx('visualFeedbackOverlayPlaceholder'))}" aria-label="${escapeHtml(tx('visualFeedbackOverlayEditNote'))}">${escapeHtml(editingTextFor(note))}</textarea>
+        <div class="row">
+          <button type="button" class="action" data-action="save-edit-note" data-edit-note="${escapeHtml(String(note.id || ''))}">${escapeHtml(tx('visualFeedbackOverlaySaveNote'))}</button>
+          <button type="button" class="ghost" data-action="cancel-edit-note" data-edit-note="${escapeHtml(String(note.id || ''))}">${escapeHtml(tx('visualFeedbackOverlayCancel'))}</button>
+        </div>`
+        : ''
       const detail = open
-        ? `${targetRows || `<div class="sel">${escapeHtml(noteSelector(note))}</div>`}<p class="detail">${escapeHtml(noteText(note) || tx('visualFeedbackOverlayNoText'))}</p>`
+        ? `${targetRows || `<div class="sel">${escapeHtml(noteSelector(note))}</div>`}${editor}`
         : (noteSelector(note) ? `<div class="sel">${escapeHtml(noteSelector(note))}</div>` : '')
+      const title = open ? '' : `<div class="excerpt">${escapeHtml(noteText(note) || tx('visualFeedbackOverlayNoText'))}</div>`
       return `
-      <li class="${note.stale ? 'stale' : ''}${open ? ' is-open' : ''}" data-note-id="${escapeHtml(String(note.id || ''))}" aria-label="${escapeHtml(noteLabel(note))}" aria-expanded="${open ? 'true' : 'false'}">
+      <li class="${showStale ? 'stale' : ''}${open ? ' is-open' : ''}" data-note-id="${escapeHtml(String(note.id || ''))}" data-group-indexes="${escapeHtml(noteGroupNumbers(note).join(','))}" aria-label="${escapeHtml(noteLabel(note))}" aria-expanded="${open ? 'true' : 'false'}">
         <label class="tick"><input type="checkbox" data-uncheck="${escapeHtml(String(note.id || ''))}" data-uncheck-kind="note" checked aria-label="${escapeHtml(tx('visualFeedbackOverlayUncheck'))}"></label>
+        ${groupBadges ? `<div class="note-pins">${groupBadges}</div>` : ''}
         <div class="note-main">
-          <div class="excerpt">${escapeHtml(noteText(note) || tx('visualFeedbackOverlayNoText'))}${note.stale || open || shared ? ` · ${escapeHtml(kind)}` : ''}${sharedFlag}</div>
+          ${title}
+          <div class="note-meta">${escapeHtml(kind)}</div>
           ${detail}
         </div>
         <div>
@@ -470,7 +872,22 @@ function installVisualFeedbackOverlay(inputStrings) {
           <button class="x" data-remove="${escapeHtml(String(note.id || ''))}" type="button" aria-label="${escapeHtml(tx('visualFeedbackOverlayRemoveNote'))}">×</button>
         </div>
       </li>`
-    }).join('')
+    }
+    const pageGroups = groupVisualFeedbackNotesByPage(state.notes)
+    const showPageGroups = pageGroups.length > 1 || (pageGroups.length === 1 && pageGroups[0].pageKey !== currentPageKey())
+    const notes = showPageGroups
+      ? pageGroups.map((group) => {
+          const current = group.pageKey === currentPageKey()
+          const heading = current
+            ? tx('visualFeedbackOverlayThisPage')
+            : (group.title || tx('visualFeedbackOverlayOtherPage'))
+          const path = visualFeedbackPageLabel(group.url || group.pageKey, '')
+          return `<div class="notes-group${current ? ' is-current' : ''}" data-page-key="${escapeHtml(group.pageKey)}">
+            <div class="notes-group-head">${escapeHtml(heading)}<div class="page-path">${escapeHtml(path)}</div></div>
+            <ul class="notes">${group.notes.map((note) => renderNoteRow(note)).join('')}</ul>
+          </div>`
+        }).join('')
+      : state.notes.map((note) => renderNoteRow(note)).join('')
     const selectionCount = state.selection.length
     const selectionItems = state.selection.map((item) => {
       const label = item.element?.selector || item.element?.tag || tx('visualFeedbackOverlayNoText')
@@ -510,19 +927,24 @@ function installVisualFeedbackOverlay(inputStrings) {
           <button type="button" class="ghost" data-action="cancel-note">${escapeHtml(tx('visualFeedbackOverlayCancel'))}</button>
         </div>
       </div>` : ''
-    const statusText = state.statusKey ? tx(state.statusKey) : (state.status || state.message || '')
+    const statusText = statusMessage()
+    const limitHtml = (state.statusKey === 'visualFeedbackOverlayNoteLimit' || pendingNoteLimitReached())
+      ? `<p class="err">${escapeHtml(tx('visualFeedbackOverlayNoteLimit', { count: VISUAL_FEEDBACK_MAX_PENDING_NOTES }))}</p>`
+      : ''
+    const composerBlock = (state.draft || selectionCount)
+      ? `<div class="composer-block">${state.draft ? composer : selectionBlock}</div>`
+      : ''
+    const notesListInner = showPageGroups
+      ? notes
+      : `<ul class="notes">${notes}</ul>`
+    const notesBlock = !state.listOpen
+      ? ''
+      : count
+        ? `<div class="notes-list" data-notes-list>${notesListInner}</div>`
+        : (composerBlock ? '' : `<div class="notes-list" data-notes-list><p class="empty">${escapeHtml(tx('visualFeedbackOverlayEmptyNotes'))}</p></div>`)
     let trayBody = ''
-    if (state.draft) trayBody = composer
-    else if (state.listOpen || selectionCount) {
-      const parts = []
-      if (selectionBlock) parts.push(selectionBlock)
-      if (state.listOpen) {
-        parts.push(count
-          ? `<ul class="notes">${notes}</ul>`
-          : (selectionCount ? '' : `<p class="empty">${escapeHtml(tx('visualFeedbackOverlayEmptyNotes'))}</p>`))
-      }
-      trayBody = parts.filter(Boolean).join('')
-    } else if (!envOk) trayBody = `<p class="err">${escapeHtml(tx('visualFeedbackOverlayBlocked'))}</p>`
+    if (composerBlock || notesBlock || limitHtml) trayBody = [limitHtml, composerBlock, notesBlock].filter(Boolean).join('')
+    else if (limited) trayBody = `<p class="status">${escapeHtml(tx('visualFeedbackCapabilityHint'))}</p>`
     else if (statusText) trayBody = `<p class="status">${escapeHtml(statusText)}</p>`
     const tray = trayBody ? `<div class="tray">${trayBody}</div>` : ''
     const lang = strings.locale === 'en' ? 'en' : 'zh-CN'
@@ -535,14 +957,19 @@ function installVisualFeedbackOverlay(inputStrings) {
         ${badge}
       </div>`
     const preservedNote = preserveOpenDraftNote()
+    const preservedEdit = preserveOpenEditNote()
+    if (preservedEdit && !state.composing) rememberEditText()
     if (preservedNote) {
-      if (!state.composing) rememberDraftText()
       patchOpenDraftChrome(root, tray, toolbarHtml, preservedNote)
+      transplantLiveField(root, preservedEdit, 'vf-edit-note')
     } else {
       root.innerHTML = `
       ${tray}
       ${toolbarHtml}`
+      transplantLiveField(root, preservedEdit, 'vf-edit-note')
     }
+    restoreComposerForm()
+    restoreNotesListScroll(previousNotesScroll, { added: addedNotes, opened: openedList })
     paintMarks()
     paintBox()
     positionOverlay()
@@ -581,10 +1008,6 @@ function installVisualFeedbackOverlay(inputStrings) {
     } else {
       const sel = currentTray.querySelector('.composer .sel')
       if (sel) sel.textContent = state.draft.element?.selector || ''
-      const visual = currentTray.querySelector('input[name="vf-kind"][value="visual"]')
-      const functional = currentTray.querySelector('input[name="vf-kind"][value="functional"]')
-      if (visual) visual.checked = state.draft.kind !== 'functional'
-      if (functional) functional.checked = state.draft.kind === 'functional'
       if (!state.composing) {
         preservedNote.setAttribute('placeholder', tx('visualFeedbackOverlayPlaceholder'))
       }
@@ -701,6 +1124,7 @@ function installVisualFeedbackOverlay(inputStrings) {
     const view = viewportBox()
     const notedNodes = new Set()
     for (const [index, note] of state.notes.entries()) {
+      if (!noteBelongsToCurrentPage(note)) continue
       for (const target of noteTargets(note)) {
         const element = elementFromDescriptor(target) || (target === note.element ? elementFromNote(note) : null)
         if (!element || isRootWrapper(element)) continue
@@ -878,7 +1302,9 @@ function installVisualFeedbackOverlay(inputStrings) {
     const removedElement = elementFromDescriptor(targets.find((item) => !wanted || String(item.selector || '') === wanted)) || elementFromNote(note)
     state.notes = state.notes.filter((item) => String(item.id) !== key)
     if (String(state.expandedNoteId) === key) state.expandedNoteId = ''
+    if (String(state.editingNoteId) === key) clearEditingNote()
     if (!state.notes.length) state.listOpen = false
+    clearNoteLimitStatus()
     retargetHighlightAfterRemoval(removedElement)
     sync()
   }
@@ -895,7 +1321,7 @@ function installVisualFeedbackOverlay(inputStrings) {
   }
 
   function syncSharedDraft() {
-    rememberDraftText()
+    rememberDraftForm()
     const count = state.selection.length
     if (count < 2) {
       if (state.draft?.shared) {
@@ -937,10 +1363,18 @@ function installVisualFeedbackOverlay(inputStrings) {
       highlightElement(element)
       return false
     }
-    const noted = state.notes.find((note) => noteTargets(note).some((target) => elementFromDescriptor(target) === element))
+    const noted = state.notes.find((note) => noteBelongsToCurrentPage(note) && noteTargets(note).some((target) => elementFromDescriptor(target) === element))
     if (noted) {
-      state.expandedNoteId = noted.id
+      let changed = false
+      if (String(state.editingNoteId) && String(state.editingNoteId) !== String(noted.id)) {
+        changed = flushEditingNote()
+      }
+      beginEditingNote(noted.id)
       state.listOpen = true
+      if (changed) {
+        saveState()
+        void post({ type: 'state', payload: snapshot() })
+      }
       highlightElement(element)
       return false
     }
@@ -1005,12 +1439,82 @@ function installVisualFeedbackOverlay(inputStrings) {
     box.style.height = `${Math.max(0, rect.height)}px`
   }
 
+
+  function clearNoteHovers() {
+    ui.shadow?.querySelectorAll('.hover.note-hover').forEach((node) => node.remove())
+  }
+
+  function noteElements(note) {
+    const seen = new Set()
+    const elements = []
+    for (const target of noteTargets(note)) {
+      const element = elementFromDescriptor(target) || (target === note?.element ? elementFromNote(note) : null)
+      if (!element || isRootWrapper(element) || seen.has(element)) continue
+      seen.add(element)
+      elements.push(element)
+    }
+    if (!elements.length) {
+      const fallback = elementFromNote(note)
+      if (fallback && !isRootWrapper(fallback)) elements.push(fallback)
+    }
+    return elements
+  }
+
+  function highlightNoteTargets(note) {
+    clearNoteHovers()
+    if (!noteBelongsToCurrentPage(note)) {
+      setHover(null)
+      return
+    }
+    const elements = noteElements(note)
+    if (!elements.length) {
+      setHover(null)
+      return
+    }
+    setHover(elements[0])
+    for (const element of elements.slice(1)) {
+      if (!ui.shadow) break
+      const box = document.createElement('div')
+      box.className = 'hover note-hover'
+      const rect = element.getBoundingClientRect()
+      box.style.left = `${rect.left}px`
+      box.style.top = `${rect.top}px`
+      box.style.width = `${Math.max(0, rect.width)}px`
+      box.style.height = `${Math.max(0, rect.height)}px`
+      ui.shadow.appendChild(box)
+    }
+  }
+
+  function restoreHoverAfterNote() {
+    clearNoteHovers()
+    if ((state.mode || state.draft) && state.hover && !isRootWrapper(state.hover)) setHover(state.hover)
+    else setHover(null)
+  }
+
+  function onPanelPointerOver(event) {
+    const target = eventPathTarget(event)
+    const row = target && typeof target.closest === 'function' ? target.closest('[data-note-id]') : null
+    if (!row) return
+    const note = state.notes.find((item) => String(item.id) === String(row.getAttribute('data-note-id')))
+    if (note) highlightNoteTargets(note)
+  }
+
+  function onPanelPointerOut(event) {
+    const target = eventPathTarget(event)
+    const row = target && typeof target.closest === 'function' ? target.closest('[data-note-id]') : null
+    if (!row) return
+    const next = event.relatedTarget
+    if (next && (next === row || (typeof row.contains === 'function' && row.contains(next)))) return
+    restoreHoverAfterNote()
+  }
+
   function setHover(element, options = {}) {
     if (!ui.hover) return
     if (!element || isRootWrapper(element)) {
       ui.hover.hidden = true
       ui.hover.classList.remove('is-retarget', 'label-inside')
       ui.hover.replaceChildren()
+      clearNoteHovers()
       return
     }
     const rect = element.getBoundingClientRect()
@@ -1037,12 +1541,6 @@ function installVisualFeedbackOverlay(inputStrings) {
   function refreshEnvironment() {
     const report = collectSignals()
     state.environment = { ...report, ok: report.strong.length > 0 }
-    if (!state.environment.ok) {
-      exitSelectMode()
-      state.blocked = true
-    } else {
-      state.blocked = false
-    }
     return state.environment
   }
 
@@ -1058,6 +1556,32 @@ function installVisualFeedbackOverlay(inputStrings) {
     void post({ type: 'state', payload: snapshot() })
   }
 
+  async function captureNoteMedia(id) {
+    const note = state.notes.find((item) => String(item.id) === String(id || ''))
+    if (!note || !noteBelongsToCurrentPage(note)) return
+    const result = await post({
+      type: 'enrich-note',
+      payload: {
+        note,
+        url: location.href,
+        title: document.title,
+        environment: state.environment,
+      },
+    })
+    if (!result?.ok || !result.note) return
+    const current = state.notes.find((item) => String(item.id) === String(id || ''))
+    if (!current) return
+    if (result.note.screenshot) current.screenshot = result.note.screenshot
+    if (result.note.groupScreenshot != null) current.groupScreenshot = result.note.groupScreenshot
+    if (Array.isArray(result.note.sourceLocations) && result.note.sourceLocations.length) {
+      current.sourceLocations = result.note.sourceLocations
+    }
+    if (result.note.element) current.element = result.note.element
+    if (Array.isArray(result.note.elements) && result.note.elements.length) current.elements = result.note.elements
+    saveState()
+    void post({ type: 'state', payload: snapshot() })
+  }
+
   function snapshot() {
     return {
       mode: state.mode,
@@ -1066,6 +1590,7 @@ function installVisualFeedbackOverlay(inputStrings) {
       notes: state.notes,
       url: location.href,
       title: document.title,
+      pageKey: currentPageKey(),
     }
   }
 
@@ -1121,9 +1646,26 @@ function installVisualFeedbackOverlay(inputStrings) {
     return null
   }
 
-  function rememberDraftText() {
-    const area = ui.shadow?.getElementById('vf-note')
-    if (area && state.draft) state.draft.text = area.value
+  function composerKindValue(value) {
+    return value === 'functional' ? 'functional' : 'visual'
+  }
+
+  function rememberDraftForm(options = {}) {
+    if (!state.draft) return
+    const area = liveNoteField()
+    if (area && options.skipText !== true) state.draft.text = area.value
+    const checked = ui.shadow?.querySelector('input[name="vf-kind"]:checked')
+    if (checked) state.draft.kind = composerKindValue(checked.value)
+  }
+
+  function restoreComposerForm() {
+    if (!state.draft) return
+    const root = ui.shadow
+    if (!root) return
+    const visual = root.querySelector('input[name="vf-kind"][value="visual"]')
+    const functional = root.querySelector('input[name="vf-kind"][value="functional"]')
+    if (visual) visual.checked = state.draft.kind !== 'functional'
+    if (functional) functional.checked = state.draft.kind === 'functional'
   }
 
   function applyRetarget(element) {
@@ -1132,7 +1674,7 @@ function installVisualFeedbackOverlay(inputStrings) {
     state.target = element
     state.hover = element
     state.retargetLocked = true
-    rememberDraftText()
+    rememberDraftForm()
     const desc = describeElement(element)
     if (state.draft) {
       if (state.draft.shared && Array.isArray(state.draft.elements)) {
@@ -1276,6 +1818,7 @@ function installVisualFeedbackOverlay(inputStrings) {
       return
     }
     if (state.draft?.shared && state.selection.length > 1) return
+    if (rejectIfNoteLimit()) return
     state.draft = { id: `n${Date.now()}`, kind: 'visual', text: '', element: describeElement(element) }
     state.target = element
     state.hover = element
@@ -1294,6 +1837,23 @@ function installVisualFeedbackOverlay(inputStrings) {
       paintBox()
       return
     }
+    if (event.key === 'Escape' && (state.editingNoteId || liveEditField())) {
+      event.preventDefault()
+      beginEditingNote(state.editingNoteId || state.expandedNoteId)
+      render()
+      return
+    }
+    if ((event.key === 'Enter') && (event.metaKey || event.ctrlKey) && liveEditField() && isTypingTarget(event)) {
+      event.preventDefault()
+      const id = state.editingNoteId || state.expandedNoteId
+      const text = String(liveEditField()?.value || '').trim()
+      if (!text || !commitNoteText(id, text)) return
+      beginEditingNote(id)
+      state.editingText = text
+      sync()
+      liveEditField()?.focus()
+      return
+    }
     if (event.key === 'Escape' && (state.mode || state.draft)) {
       event.preventDefault()
       state.draft = null
@@ -1309,7 +1869,8 @@ function installVisualFeedbackOverlay(inputStrings) {
     }
   }
 
-  function onScroll() {
+  function onScroll(event) {
+    if (event && isOverlayEvent(event)) return
     paintMarks()
     paintBox()
     if ((state.mode || state.draft) && state.hover && !isRootWrapper(state.hover)) setHover(state.hover)
@@ -1348,7 +1909,11 @@ function installVisualFeedbackOverlay(inputStrings) {
     const pinId = target.closest('[data-pin-id]')?.getAttribute('data-pin-id')
     if (pinId) {
       state.listOpen = true
-      state.expandedNoteId = pinId
+      let changed = false
+      if (String(state.editingNoteId) && String(state.editingNoteId) !== String(pinId)) {
+        changed = flushEditingNote()
+      }
+      beginEditingNote(pinId)
       const note = state.notes.find((item) => String(item.id) === String(pinId))
       if (note?.element?.selector) {
         const element = document.querySelector(note.element.selector)
@@ -1357,7 +1922,9 @@ function installVisualFeedbackOverlay(inputStrings) {
           setHover(note.stale ? null : element)
         }
       }
+      if (changed) saveState()
       render()
+      if (changed) void post({ type: 'state', payload: snapshot() })
       const row = ui.shadow?.querySelector(`[data-note-id="${CSS.escape(pinId)}"]`)
       row?.scrollIntoView?.({ block: 'nearest' })
       return
@@ -1382,6 +1949,7 @@ function installVisualFeedbackOverlay(inputStrings) {
       const item = state.selection.find((entry) => String(entry.id) === String(id))
       const element = (item && ui.selected.get(item.id)) || elementFromDescriptor(item?.element)
       if (element && !isRootWrapper(element)) {
+        if (rejectIfNoteLimit()) return
         state.draft = { id: `n${Date.now()}`, kind: 'visual', text: '', element: describeElement(element) }
         state.target = element
         state.hover = element
@@ -1393,16 +1961,30 @@ function installVisualFeedbackOverlay(inputStrings) {
     }
     const noteRow = target.closest('[data-note-id]')
     if (noteRow) {
-      const id = noteRow.getAttribute('data-note-id')
-      state.expandedNoteId = state.expandedNoteId === id ? '' : id
-      render()
-      return
+      // Leave Save/Cancel and other actions to the button handlers below.
+      if (target.closest('button, [data-action]')) {
+        // fall through
+      } else if (target.closest('textarea, input, label')) {
+        return
+      } else {
+        const id = noteRow.getAttribute('data-note-id')
+        if (state.expandedNoteId === id) {
+          flushEditingNote()
+          state.expandedNoteId = ''
+          clearEditingNote()
+          sync()
+        } else {
+          if (state.editingNoteId) flushEditingNote()
+          beginEditingNote(id)
+          sync()
+        }
+        return
+      }
     }
     const button = target.closest('button')
     if (!button) return
     const action = button.getAttribute('data-action')
     if (action === 'toggle') {
-      if (!state.environment.ok) return
       if (state.mode) exitSelectMode()
       else {
         state.mode = true
@@ -1414,8 +1996,12 @@ function installVisualFeedbackOverlay(inputStrings) {
     }
     if (action === 'toggle-list') {
       state.listOpen = !state.listOpen
-      if (!state.listOpen) state.expandedNoteId = ''
-      render()
+      if (!state.listOpen) {
+        flushEditingNote()
+        state.expandedNoteId = ''
+        clearEditingNote()
+      }
+      sync()
       return
     }
     if (action === 'retarget-parent' || action === 'retarget-child') {
@@ -1424,13 +2010,15 @@ function installVisualFeedbackOverlay(inputStrings) {
     }
     if (action === 'cancel-note') {
       state.draft = null
+      saveState()
       render()
       return
     }
     if (action === 'save-note') {
-      const text = String(ui.shadow.getElementById('vf-note')?.value || '').trim()
+      rememberDraftForm()
+      const text = String(state.draft?.text || ui.shadow.getElementById('vf-note')?.value || '').trim()
       if (!text || !state.draft) return
-      const kindInput = ui.shadow.querySelector('input[name="vf-kind"]:checked')
+      if (rejectIfNoteLimit()) return
       const fromSelection = state.draft.shared
         ? state.selection.map((item) => item.element).filter(Boolean)
         : []
@@ -1440,21 +2028,50 @@ function installVisualFeedbackOverlay(inputStrings) {
         if (!unique.some((item) => item.selector && item.selector === element.selector)) unique.push(element)
       }
       const shared = unique.length > 1
-      state.notes.push({
+      const note = {
         id: state.draft.id,
-        kind: kindInput?.value === 'functional' ? 'functional' : 'visual',
+        kind: composerKindValue(state.draft.kind),
         text,
         url: location.href,
+        title: document.title,
+        pageKey: currentPageKey(),
         shared,
         element: unique[0] || state.draft.element,
         elements: shared ? unique : undefined,
-      })
+      }
+      state.notes.push(note)
       state.draft = null
       clearSelection()
       state.listOpen = true
       state.statusKey = ''
       state.status = ''
+      clearNoteLimitStatus()
       sync()
+      void captureNoteMedia(note.id)
+      return
+    }
+    if (action === 'save-edit-note') {
+      const id = button.getAttribute('data-edit-note') || state.editingNoteId || state.expandedNoteId
+      const area = liveEditField()
+      const text = String(area?.value ?? state.editingText ?? '').trim()
+      if (!text) return
+      if (!commitNoteText(id, text)) {
+        beginEditingNote(id)
+        render()
+        liveEditField()?.focus()
+        return
+      }
+      beginEditingNote(id)
+      state.editingText = text
+      sync()
+      liveEditField()?.focus()
+      return
+    }
+    if (action === 'cancel-edit-note') {
+      const id = button.getAttribute('data-edit-note') || state.expandedNoteId
+      beginEditingNote(id)
+      render()
+      liveEditField()?.focus()
       return
     }
     if (action === 'submit') {
@@ -1470,11 +2087,13 @@ function installVisualFeedbackOverlay(inputStrings) {
     const result = await post({ type: 'submit', payload: snapshot() })
     if (result?.ok) {
       state.notes = []
+      state.drafts = {}
       state.draft = null
       state.mode = false
       state.hover = null
       state.listOpen = false
       state.expandedNoteId = ''
+      clearEditingNote()
       state.target = null
       state.retargetStack = []
       state.retargetLocked = false
@@ -1484,7 +2103,7 @@ function installVisualFeedbackOverlay(inputStrings) {
       state.ignoreClick = false
       state.statusKey = 'visualFeedbackOverlaySubmitted'
       state.status = ''
-      try { sessionStorage.removeItem(storageId()) } catch { /* ignore */ }
+      clearStoredState()
       setHover(null)
       render()
       // Push the empty snapshot so the host/panel do not keep a stale note count.
@@ -1508,19 +2127,32 @@ function installVisualFeedbackOverlay(inputStrings) {
     if (!root || root.__vfBound) return
     root.__vfBound = true
     root.addEventListener('click', onPanelClick)
+    root.addEventListener('pointerover', onPanelPointerOver)
+    root.addEventListener('pointerout', onPanelPointerOut)
     root.addEventListener('input', (event) => {
       const target = eventPathTarget(event)
       if (target && target.id === 'vf-note' && state.draft) state.draft.text = target.value
+      if (target && target.id === 'vf-edit-note' && state.editingNoteId) state.editingText = target.value
+    })
+    root.addEventListener('change', (event) => {
+      const target = eventPathTarget(event)
+      if (target && target.name === 'vf-kind' && state.draft) {
+        state.draft.kind = composerKindValue(target.value)
+      }
     })
     root.addEventListener('compositionstart', (event) => {
       const target = eventPathTarget(event)
-      if (target && target.id === 'vf-note') state.composing = true
+      if (target && (target.id === 'vf-note' || target.id === 'vf-edit-note')) state.composing = true
     })
     root.addEventListener('compositionend', (event) => {
       const target = eventPathTarget(event)
       if (target && target.id === 'vf-note') {
         state.composing = false
         if (state.draft) state.draft.text = target.value
+      }
+      if (target && target.id === 'vf-edit-note') {
+        state.composing = false
+        if (state.editingNoteId) state.editingText = target.value
       }
     })
     void host
@@ -1532,13 +2164,19 @@ function installVisualFeedbackOverlay(inputStrings) {
       ui.shadow = null
       ui.hover = null
     }
+    const nextKey = currentPageKey()
+    const pageChanged = Boolean(state.pageKey) && nextKey !== state.pageKey
+    if (pageChanged) switchPage(nextKey)
+    else if (!state.pageKey) state.pageKey = nextKey
     const host = ensureHost()
     if (!host) return null
     bindPanel(host)
     bindPage()
     watchDocument()
     if (refreshNoteStaleness()) saveState()
+    else if (pageChanged) saveState()
     render()
+    if (pageChanged) void post({ type: 'state', payload: snapshot() })
     return host
   }
 
@@ -1601,8 +2239,6 @@ function installVisualFeedbackOverlay(inputStrings) {
     },
     setEnvironment(report) {
       state.environment = report
-      state.blocked = report?.ok !== true
-      if (state.blocked) exitSelectMode()
       render()
     },
     snapshot,
@@ -1620,7 +2256,6 @@ function installVisualFeedbackOverlay(inputStrings) {
       paintMarks()
     },
     start() {
-      if (!state.environment.ok) return false
       state.mode = true
       sync()
       return true

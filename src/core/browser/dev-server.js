@@ -30,7 +30,7 @@ const CONFIG_FILES = Object.freeze([
 ])
 const FRONTEND_DIR_NAMES = new Set(['frontend', 'client', 'web', 'app', 'ui', 'www'])
 
-export const DEV_SERVER_USER_HINT = "Start your project's development server yourself, then enter the frontend URL. Visual Feedback only reuses a page that looks like a frontend dev server (HTML with sourcemaps, HMR, or a known dev client such as Vite, webpack, rsbuild, or Next). A listening port or a typed URL is not enough."
+export const DEV_SERVER_USER_HINT = "Start your project's development server yourself, then enter the frontend URL. Auto-discovery only reuses a page that looks like a frontend dev server (HTML with sourcemaps, HMR, or a known dev client such as Vite, webpack, rsbuild, or Next). A listening port is not enough."
 
 const DEV_JS_FILE_RE = /(?:^|[\\/\s])(?:scripts[\\/])?dev\.(js|ts|mjs|cjs)\b/i
 const PACKAGE_DEV_RUN_RE = /\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?dev\b/i
@@ -878,9 +878,15 @@ export async function findReusableDevServer({ workspaceRoot, preferredUrl, disco
   let preferredRejected = false
   if (preferred) {
     const probe = await probeHttp(preferred)
-    if (probe?.ok) {
+    if (isAcceptableManualPage(probe)) {
       const loginUrl = pickLoginOpenUrl([workspaceLogin, loginUrlFromListeners(listeners, workspaceRoot, { origin: probe.url || preferred })].filter(Boolean).join('\n'), { origin: probe.url || preferred })
-      return { url: probe.url || preferred, probe, reused: true, loginUrl: loginUrl || '' }
+      return {
+        url: probe.url || preferred,
+        probe,
+        reused: true,
+        loginUrl: loginUrl || '',
+        limitedCapabilities: probe.ok !== true,
+      }
     }
     preferredRejected = Boolean(probe || preferred)
   }
@@ -906,6 +912,98 @@ export async function findReusableDevServer({ workspaceRoot, preferredUrl, disco
     : null
 }
 
+
+export function resolveSpawnInvocation(command, {
+  platform = process.platform,
+  pathEnv = process.env.PATH,
+  pathExt = process.env.PATHEXT,
+  pathDelimiter,
+  cwd = '',
+  exists = existsSync,
+} = {}) {
+  const file = String(command?.[0] || '')
+  const args = Array.isArray(command) ? command.slice(1) : []
+  if (!file) return { file: '', args, shell: false }
+  if (platform !== 'win32') return { file, args, shell: false }
+
+  const pathImpl = path.win32
+  const delimiter = pathDelimiter || pathImpl.delimiter
+  const resolved = resolveWindowsCommand(file, {
+    pathEnv,
+    pathExt,
+    pathDelimiter: delimiter,
+    cwd,
+    exists,
+    pathImpl,
+  })
+  if (resolved) return { file: resolved, args, shell: false }
+  return { file, args, shell: true }
+}
+
+function resolveWindowsCommand(bin, { pathEnv, pathExt, pathDelimiter, cwd, exists, pathImpl }) {
+  const extList = String(pathExt || '.EXE;.CMD;.BAT;.COM').split(';').filter(Boolean)
+  const hasExt = Boolean(pathImpl.extname(bin))
+  const names = hasExt ? [bin] : [bin, ...extList.map((ext) => (ext.startsWith('.') ? bin + ext : `${bin}.${ext}`))]
+  if (pathImpl.isAbsolute(bin)) {
+    for (const name of names) {
+      if (exists(name)) return name
+    }
+    return null
+  }
+  const dirs = []
+  if (cwd) dirs.push(cwd)
+  for (const dir of String(pathEnv || '').split(pathDelimiter)) {
+    if (dir) dirs.push(dir)
+  }
+  for (const dir of dirs) {
+    for (const name of names) {
+      const candidate = pathImpl.join(dir, name)
+      if (exists(candidate)) return candidate
+      const extLower = candidate.replace(/(\.[^.\\]+)$/, (match) => match.toLowerCase())
+      if (extLower !== candidate && exists(extLower)) return extLower
+    }
+  }
+  return null
+}
+
+export function spawnProjectCommand(command, {
+  cwd,
+  env,
+  stdio = ['ignore', 'pipe', 'pipe'],
+  spawnImpl = spawn,
+  platform = process.platform,
+  pathEnv = process.env.PATH,
+  pathExt = process.env.PATHEXT,
+  pathDelimiter,
+  exists = existsSync,
+} = {}) {
+  const invocation = resolveSpawnInvocation(command, {
+    platform,
+    pathEnv,
+    pathExt,
+    pathDelimiter,
+    cwd,
+    exists,
+  })
+  const child = spawnImpl(invocation.file, invocation.args, {
+    cwd,
+    env,
+    stdio,
+    shell: invocation.shell,
+  })
+  const result = { child, invocation, error: null }
+  if (child && typeof child.on === 'function') {
+    child.on('error', (error) => {
+      result.error = error
+    })
+  }
+  return result
+}
+
+function isAcceptableManualPage(probe) {
+  return Boolean(probe && !isRejectedResponder(probe) && looksLikeHtml(probe))
+}
+
 async function stopSpawnedProcess(child) {
   if (!child || child.killed || child.exitCode != null) return
   await new Promise((resolve) => {
@@ -927,11 +1025,12 @@ async function stopSpawnedProcess(child) {
 }
 
 async function startOneDevServer(chosen, { timeoutMs, frontendPorts } = {}) {
-  const child = spawn(chosen.command[0], chosen.command.slice(1), {
+  const spawned = spawnProjectCommand(chosen.command, {
     cwd: chosen.cwd,
     env: { ...process.env, BROWSER: 'none', FORCE_COLOR: '0' },
     stdio: ['ignore', 'pipe', 'pipe'],
   })
+  const child = spawned.child
   let output = ''
   const logUrls = []
   const onData = (chunk) => {
@@ -946,6 +1045,9 @@ async function startOneDevServer(chosen, { timeoutMs, frontendPorts } = {}) {
 
   const started = Date.now()
   while (Date.now() - started < timeoutMs) {
+    if (spawned.error) {
+      throw devServerError('DEV_SERVER_SPAWN_FAILED', spawned.error.message || 'Failed to start the project command.')
+    }
     if (child.exitCode != null) {
       throw devServerError('DEV_SERVER_EXITED', 'The project command exited before a frontend dev server came up.')
     }
@@ -1017,6 +1119,7 @@ export async function ensureDevServer({ workspaceRoot, preferredUrl, startIfMiss
       child: null,
       probe: reused.probe,
       loginUrl: reused.loginUrl || '',
+      limitedCapabilities: reused.limitedCapabilities === true,
     }
   }
   if (!startIfMissing) {

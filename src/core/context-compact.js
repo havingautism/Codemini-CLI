@@ -3,6 +3,10 @@ import { summarizeToolResult } from './tool-result-store.js';
 
 const MICRO_CLEAR_MARKER = '[Old tool result cleared by micro-compact]';
 export const AGGRESSIVE_PRUNE_MARKER = '[Tool result pruned — summary only]';
+export const COMPACT_START_SUMMARY = '上下文压缩中';
+export const COMPACT_START_SUMMARY_EN = 'Compressing context';
+export const COMPACT_DONE_SUMMARY = '以上内容已压缩';
+export const COMPACT_DONE_SUMMARY_EN = 'Previous context compacted';
 
 function textFromContent(content) {
   if (typeof content === 'string') return content;
@@ -580,15 +584,17 @@ function splitLeadingSystemMessages(messages = []) {
  * Compress the live agent transcript between model calls.
  * The trigger is the previous request's real input tokens, the same figure
  * the context meter shows. Tool calls that are still waiting for results
- * stay untouched. A local summary is used so this does not make another
- * model request.
+ * stay untouched. Micro runs first; if occupancy is still at or above the
+ * trigger, macro follows in the same cycle (model summary, local fallback).
  */
-export async function compactInFlightMessages(messages, config = {}, inputTokens = 0) {
+export async function compactInFlightMessages(messages, config = {}, inputTokens = 0, options = {}) {
   const source = Array.isArray(messages) ? messages : [];
   const input = Number(inputTokens);
   const maxContextTokens = contextWindowTokens(config);
   const triggerPct = finiteNumber(config?.context?.preflight_trigger_pct, 60, 1);
   const hardPct = finiteNumber(config?.context?.hard_limit_pct, 98, 1);
+  const generateSummary = typeof options === 'function' ? options : options?.generateSummary;
+  const onStart = typeof options === 'object' && options ? options.onStart : null;
   const unchanged = { messages: source, changed: false, mode: '', threshold: 0, tokensSaved: 0 };
   if (!(input > 0) || !(maxContextTokens > 0)) return unchanged;
   const threshold = (input / maxContextTokens) * 100;
@@ -600,35 +606,54 @@ export async function compactInFlightMessages(messages, config = {}, inputTokens
     return unchanged;
   }
 
+  if (typeof onStart === 'function') onStart();
+
   const rounded = Math.round(threshold);
+  let working = body;
+  let tokensSaved = 0;
+  let mode = '';
+  let changed = false;
+
   const microEnabled = config?.context?.microcompact_enabled !== false;
   if (microEnabled) {
-    const micro = microCompactMessages(body, {
+    const micro = microCompactMessages(working, {
       keepRecent: finiteNumber(config?.context?.microcompact_keep_recent, 5, 1),
       enabled: true,
     });
     if (micro.changed) {
-      return {
-        messages: [...system, ...micro.messages],
-        changed: true,
-        mode: 'micro',
-        threshold: rounded,
-        tokensSaved: micro.tokensSaved,
-      };
+      working = micro.messages;
+      tokensSaved = micro.tokensSaved;
+      mode = 'micro';
+      changed = true;
     }
   }
 
-  const mode = threshold >= hardPct ? 'aggressive' : 'conservative';
-  const macro = await compactMessagesLocally(body, { mode, force: false });
-  if (!macro.changed) return unchanged;
-  const before = estimateMessagesTokens(body);
-  const after = estimateMessagesTokens(macro.compacted);
+  // Occupancy stays on the previous request's real input tokens, so a cycle
+  // that crossed the trigger also runs macro after micro.
+  const macroMode = threshold >= hardPct ? 'aggressive' : 'conservative';
+  const macro = await compactMessagesLocally(working, {
+    mode: macroMode,
+    force: true,
+    generateSummary: typeof generateSummary === 'function' ? generateSummary : null,
+  });
+  if (macro.changed) {
+    const before = estimateMessagesTokens(body);
+    const after = estimateMessagesTokens(macro.compacted);
+    working = macro.compacted;
+    tokensSaved = Math.max(0, before - after);
+    mode = macroMode;
+    changed = true;
+  }
+
+  if (!changed) return unchanged;
+  const compactedMessages = [...system, ...working];
   return {
-    messages: [...system, ...macro.compacted],
+    messages: compactedMessages,
     changed: true,
     mode,
     threshold: rounded,
-    tokensSaved: Math.max(0, before - after),
+    tokensSaved,
+    estimatedTokens: estimateMessagesTokens(compactedMessages),
   };
 }
 

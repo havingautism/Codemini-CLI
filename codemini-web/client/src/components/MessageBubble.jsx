@@ -2362,7 +2362,10 @@ export const MessageBubble = memo(function MessageBubble({
         rawMessageText || legacyText || t("crewWakeDivider"),
       );
     }
-    return renderDivider(legacyText || "以上内容已压缩");
+    if (message.dividerType === "compact") {
+      return renderDivider(t("compactDivider"));
+    }
+    return renderDivider(legacyText || t("compactDivider"));
   }
 
   if (role === "system") {

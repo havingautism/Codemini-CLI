@@ -40,9 +40,16 @@ import {
   VISUAL_FEEDBACK_ANCESTOR_NAME_LIMIT,
   VISUAL_FEEDBACK_CHILD_LABEL_LIMIT,
   VISUAL_FEEDBACK_MARKUP_LIMIT,
+  VISUAL_FEEDBACK_MAX_PENDING_NOTES,
   VISUAL_FEEDBACK_OVERLAY_KEYS,
   VISUAL_FEEDBACK_PROMPT,
   VISUAL_FEEDBACK_SCREENSHOT,
+  VISUAL_FEEDBACK_STORAGE_KEY,
+  VISUAL_FEEDBACK_STORAGE_KEY_V1,
+  groupVisualFeedbackNotesByPage,
+  isVisualFeedbackNoteOnPage,
+  visualFeedbackPageKey,
+  visualFeedbackPageLabel,
   computeScreenshotClip,
   encodeVisualFeedbackScreenshot,
   visualFeedbackScreenshotAttachments,
@@ -286,7 +293,7 @@ test('overlay init script is idempotent and persists mode across refresh', () =>
   assert.match(source, /pageshow/)
   assert.match(source, /popstate/)
   assert.match(source, /visualViewport/)
-  assert.match(source, /max-height: min\(240px, 42vh\)/)
+  assert.match(source, /max-height: min\((3[0-9]{2}|[4-9][0-9]{2})px,\s*5[0-9]vh\)/)
   assert.match(source, /function isNoteStale\(note\)/)
   assert.match(source, /function refreshNoteStaleness\(\)/)
   assert.match(source, /note\.stale/)
@@ -577,23 +584,28 @@ test('coding mode exposes browser tools during Visual Feedback and tool_search b
   }
 })
 
-test('successful submit clears notes, selection, and pathname sessionStorage', () => {
+test('successful submit clears notes, selection, and all-page sessionStorage', () => {
   const source = getVisualFeedbackInitScript()
   assert.match(source, /result\?\.ok/)
   assert.match(source, /state\.notes = \[\]/)
   assert.match(source, /state\.mode = false/)
-  assert.match(source, /sessionStorage\.removeItem\(storageId\(\)\)/)
+  assert.match(source, /function clearStoredState\(/)
+  assert.match(source, /VISUAL_FEEDBACK_STORAGE_KEY/)
   const submitAt = source.indexOf('async function submitNotes')
   const submit = source.slice(submitAt, source.indexOf('function bindPanel', submitAt))
   const okAt = submit.indexOf('if (result?.ok)')
   const okBlock = submit.slice(okAt, submit.indexOf('} else {', okAt))
   assert.match(okBlock, /state\.notes = \[\]/)
+  assert.match(okBlock, /state\.drafts = \{\}/)
   assert.match(okBlock, /state\.draft = null/)
   assert.match(okBlock, /state\.mode = false/)
-  assert.match(okBlock, /removeItem/)
+  assert.match(okBlock, /clearStoredState\(/)
   assert.match(okBlock, /type:\s*['"]state['"]/)
   assert.match(okBlock, /payload:\s*snapshot\(\)/)
   assert.doesNotMatch(okBlock, /^\s*sync\(\)/m)
+  const clear = extractOverlayFunction(source, 'clearStoredState')
+  assert.match(clear, /sessionStorage\.removeItem\(VISUAL_FEEDBACK_STORAGE_KEY\)/)
+  assert.match(clear, /VISUAL_FEEDBACK_STORAGE_KEY_V1/)
   assert.doesNotThrow(() => new Function(source))
 })
 
@@ -808,8 +820,10 @@ test('overlay pins sit on the element, stay inside the viewport, and stay clicka
   assert.match(source, /if \(!note\.stale\) \{/)
   assert.match(source, /querySelectorAll\('\.mark, \.pin, \.check-pin'\)/)
   assert.match(source, /state\.listOpen = true/)
-  assert.match(source, /state\.expandedNoteId = pinId/)
-  const scrollAt = source.indexOf('function onScroll()')
+  assert.match(source, /beginEditingNote\(pinId\)/)
+  const beginEdit = extractOverlayFunction(source, 'beginEditingNote')
+  assert.match(beginEdit, /state\.expandedNoteId/)
+  const scrollAt = source.indexOf('function onScroll(')
   const scroll = source.slice(scrollAt, source.indexOf('function bindPage', scrollAt))
   assert.match(scroll, /paintMarks\(\)/)
   assert.doesNotMatch(scroll, /if \(state\.mode\) paintMarks/)
@@ -977,7 +991,7 @@ test('IME composition and isComposing key events do not retarget or cancel the d
   assert.match(source, /compositionend/)
   assert.match(source, /state\.composing = true/)
   const keyAt = source.indexOf('function onKey(event)')
-  const onKey = source.slice(keyAt, source.indexOf('function onScroll()', keyAt))
+  const onKey = source.slice(keyAt, source.indexOf('function onScroll(', keyAt))
   assert.match(onKey, /if \(isImeComposing\(event\)\) return/)
   const escapeAt = onKey.indexOf("event.key === 'Escape'")
   assert.ok(escapeAt > onKey.indexOf('isImeComposing(event)'))
@@ -1056,7 +1070,7 @@ test('stopping select mode clears the hover highlight and label', () => {
   assert.ok(apiAt >= 0)
   const api = source.slice(apiAt)
   assert.match(api, /stop\(\)\s*\{[^}]*exitSelectMode\(/)
-  assert.match(api, /setEnvironment\([^)]*\)\s*\{[\s\S]*?exitSelectMode\(/)
+  assert.match(api, /setEnvironment\(/)
 
   const renderStart = source.indexOf('function render()')
   const render = source.slice(renderStart, source.indexOf('function liveNoteField()', renderStart))
@@ -1068,7 +1082,7 @@ test('stopping select mode clears the hover highlight and label', () => {
   assert.match(scroll, /setHover\(null\)/)
 
   const refresh = extractOverlayFunction(source, 'refreshEnvironment')
-  assert.match(refresh, /exitSelectMode\(/)
+  assert.match(refresh, /state\.environment/)
   assert.doesNotThrow(() => new Function(source))
 })
 
@@ -1582,14 +1596,421 @@ test('the Visual Feedback panel footer includes a short scope note beside the ex
   assert.match(panel, /visualFeedbackHint/);
   assert.match(panel, /visualFeedbackScopeHint/);
   assert.doesNotMatch(panel, /<dialog/);
-  assert.match(en.visualFeedbackScopeHint, /frontend dev server/);
+  assert.match(en.visualFeedbackScopeHint, /browser/i);
   assert.match(en.visualFeedbackScopeHint, /React or Vue/);
   assert.match(en.visualFeedbackScopeHint, /sourcemaps/);
-  assert.match(en.visualFeedbackScopeHint, /Production and preview pages are not supported/);
-  assert.match(zh.visualFeedbackScopeHint, /前端开发服务器/);
+  assert.match(en.visualFeedbackScopeHint, /still be opened|can still be used|without those signals/i);
+  assert.doesNotMatch(en.visualFeedbackScopeHint, /Production and preview pages are not supported/);
+  assert.match(zh.visualFeedbackScopeHint, /浏览器/);
   assert.match(zh.visualFeedbackScopeHint, /React\/Vue/);
   assert.match(zh.visualFeedbackScopeHint, /sourcemap/);
-  assert.match(zh.visualFeedbackScopeHint, /不支持生产或预览页面/);
-  assert.ok(en.visualFeedbackScopeHint.length < 280);
-  assert.ok(zh.visualFeedbackScopeHint.length < 160);
+  assert.match(zh.visualFeedbackScopeHint, /也可以进入|仍可进入|可以进入/);
+  assert.doesNotMatch(zh.visualFeedbackScopeHint, /不支持生产或预览页面/);
+  assert.ok(en.visualFeedbackScopeHint.length < 320);
+  assert.ok(zh.visualFeedbackScopeHint.length < 200);
+  assert.doesNotMatch(en.visualFeedbackDevServerHint, /typed URL is not enough/);
+  assert.doesNotMatch(zh.visualFeedbackDevServerHint, /手动输入的地址还不够/);
+  assert.match(en.visualFeedbackDevServerHint, /reachable typed URL|typed URL can still/i);
+  assert.match(zh.visualFeedbackDevServerHint, /手动填写的可达地址|可达地址可以进入/);
 });
+
+
+test('hovering an existing note highlights its selected element', () => {
+  const source = getVisualFeedbackInitScript()
+  assert.match(source, /function highlightNoteTargets\(/)
+  assert.match(source, /pointerover|mouseover/)
+  assert.match(source, /pointerout|mouseout|pointerleave|mouseleave/)
+  const highlight = extractOverlayFunction(source, 'highlightNoteTargets')
+  assert.match(highlight, /noteElements\(note\)/)
+  assert.match(highlight, /setHover\(/)
+  const elements = extractOverlayFunction(source, 'noteElements')
+  assert.match(elements, /noteTargets\(note\)/)
+  const bind = extractOverlayFunction(source, 'bindPanel')
+  assert.match(bind, /highlightNoteTargets|onNoteHover|pointerover/)
+  assert.match(bind, /pointerout|mouseout|pointerleave|mouseleave/)
+})
+
+test('the Visual Feedback status area hints when source mapping may be unavailable', () => {
+  const panel = readFileSync(new URL('../codemini-web/client/src/components/VisualFeedbackPanel.jsx', import.meta.url), 'utf8')
+  const host = readFileSync(new URL('../src/core/browser/visual-feedback.js', import.meta.url), 'utf8')
+  assert.match(panel, /visualFeedbackCapabilityHint/)
+  assert.match(en.visualFeedbackCapabilityHint, /source mapping|sourcemap|hot reload|HMR/i)
+  assert.match(zh.visualFeedbackCapabilityHint, /源码定位|热更新|sourcemap|HMR/)
+  assert.match(host, /limitedCapabilities/)
+  assert.doesNotMatch(host, /code: 'NOT_DEV_ENVIRONMENT'/)
+  const overlay = getVisualFeedbackInitScript()
+  const renderStart = overlay.indexOf('function render()')
+  const render = overlay.slice(renderStart, overlay.indexOf('function liveNoteField()', renderStart))
+  assert.match(render, /visualFeedbackCapabilityHint|limitedCapabilities/)
+  const toggleAt = overlay.indexOf("if (action === 'toggle')")
+  const toggle = overlay.slice(toggleAt, overlay.indexOf("if (action === 'toggle-list')", toggleAt))
+  assert.doesNotMatch(toggle, /if \(!state\.environment\.ok\) return/)
+})
+
+test('overlay splits the composer from the notes list and keeps list scroll across rerenders', () => {
+  const source = getVisualFeedbackInitScript()
+  assert.match(source, /data-notes-list/)
+  assert.match(source, /composer-block/)
+  assert.match(source, /function captureNotesListScroll\(/)
+  assert.match(source, /function restoreNotesListScroll\(/)
+  const renderStart = source.indexOf('function render()')
+  const render = source.slice(renderStart, source.indexOf('function liveNoteField()', renderStart))
+  assert.match(render, /captureNotesListScroll\(/)
+  assert.match(render, /restoreNotesListScroll\(/)
+  // Composer and existing notes can appear together; a draft no longer replaces the list.
+  assert.doesNotMatch(render, /if \(state\.draft\) trayBody = composer/)
+  assert.match(render, /composer-block/)
+  assert.match(render, /data-notes-list/)
+  assert.match(render, /state\.listOpen/)
+  const stylesAt = source.indexOf('function overlayStyles()')
+  const styles = source.slice(stylesAt, source.indexOf('function icon(', stylesAt))
+  assert.match(styles, /\.notes-list \{[^}]*overflow:\s*auto/)
+  assert.match(styles, /\.notes-list \{[^}]*max-height:\s*min\((3[0-9]{2}|[4-9][0-9]{2})px,\s*5[0-9]vh\)/)
+  assert.doesNotMatch(styles, /max-height:\s*min\(240px, 42vh\)/)
+  const restore = extractOverlayFunction(source, 'restoreNotesListScroll')
+  assert.match(restore, /scrollTop/)
+  assert.match(restore, /scrollHeight|added|opened/)
+  const capture = extractOverlayFunction(source, 'captureNotesListScroll')
+  assert.match(capture, /scrollTop/)
+  assert.doesNotThrow(() => new Function(source))
+})
+
+
+test('notes list mirrors on-page group badges, keeps tidy titles, and edits text in place', () => {
+  const source = getVisualFeedbackInitScript()
+  const renderStart = source.indexOf('function render()')
+  const render = source.slice(renderStart, source.indexOf('function liveNoteField()', renderStart))
+  const stylesAt = source.indexOf('function overlayStyles()')
+  const styles = source.slice(stylesAt, source.indexOf('function icon(', stylesAt))
+
+  assert.match(source, /function noteGroupNumbers\(/)
+  assert.match(source, /function commitNoteText\(/)
+  assert.match(source, /function beginEditingNote\(/)
+  assert.match(render, /noteGroupBadges\(|class="note-pin"/)
+  assert.match(render, /data-group-index/)
+  assert.match(render, /class="note-pins"/)
+  assert.match(render, /class="note-meta"/)
+  assert.match(styles, /\.note-pin \{/)
+  assert.match(styles, /background: #f0b429/)
+
+  // Title is the user's note text only; kind sits in secondary meta for every note.
+  assert.match(render, /class="excerpt">\$\{escapeHtml\(noteText\(note\)/)
+  assert.doesNotMatch(render, /sharedFlag/)
+  assert.doesNotMatch(render, /visualFeedbackOverlaySharedCount/)
+  assert.doesNotMatch(render, /excerpt\}\$\{note\.stale/)
+  assert.match(render, /class="note-meta">\$\{escapeHtml\(kind\)/)
+
+  // Expanding a note exposes an in-place editor for the annotation text.
+  assert.match(render, /id="vf-edit-note"/)
+  assert.match(render, /data-action="save-edit-note"/)
+  assert.match(render, /data-action="cancel-edit-note"/)
+  assert.match(render, /visualFeedbackOverlayEditNote/)
+  assert.match(render, /visualFeedbackOverlaySaveNote/)
+  assert.match(render, /preserveOpenEditNote/)
+  assert.match(render, /transplantLiveField/)
+
+  const commit = extractOverlayFunction(source, 'commitNoteText')
+  assert.match(commit, /note\.text = next/)
+  assert.doesNotMatch(commit, /note\.element\s*=/)
+  assert.doesNotMatch(commit, /note\.elements\s*=/)
+  assert.doesNotMatch(commit, /note\.kind\s*=/)
+
+  const groups = extractOverlayFunction(source, 'noteGroupNumbers')
+  assert.match(groups, /index \+ 1/)
+  assert.match(groups, /return \[index \+ 1\]/)
+
+  const click = extractOverlayFunction(source, 'onPanelClick')
+  assert.match(click, /save-edit-note/)
+  assert.match(click, /cancel-edit-note/)
+  assert.match(click, /beginEditingNote\(/)
+  assert.match(click, /flushEditingNote\(/)
+  // Typing in the editor or pressing Save/Cancel must not just collapse the row.
+  assert.match(click, /textarea, input, label/)
+  assert.match(click, /button, \[data-action\]/)
+
+  const enStrings = getVisualFeedbackOverlayStrings('en')
+  const zhStrings = getVisualFeedbackOverlayStrings('zh')
+  assert.equal(enStrings.visualFeedbackOverlaySaveNote, 'Save')
+  assert.equal(zhStrings.visualFeedbackOverlaySaveNote, '保存')
+  assert.equal(enStrings.visualFeedbackOverlayEditNote, 'Edit note')
+  assert.equal(zhStrings.visualFeedbackOverlayEditNote, '编辑备注')
+  assert.doesNotThrow(() => new Function(source))
+})
+
+test('composer kind and draft text survive overlay rerenders', () => {
+  const source = getVisualFeedbackInitScript()
+  assert.match(source, /function composerKindValue\(/)
+  assert.match(source, /function rememberDraftForm\(/)
+  assert.match(source, /function restoreComposerForm\(/)
+
+  const remember = extractOverlayFunction(source, 'rememberDraftForm')
+  assert.match(remember, /state\.draft\.text = area\.value/)
+  assert.match(remember, /skipText/)
+  assert.match(remember, /input\[name="vf-kind"\]:checked/)
+  assert.match(remember, /if \(checked\) state\.draft\.kind = composerKindValue\(/)
+
+  const restore = extractOverlayFunction(source, 'restoreComposerForm')
+  assert.match(restore, /visual\.checked = state\.draft\.kind !== 'functional'/)
+  assert.match(restore, /functional\.checked = state\.draft\.kind === 'functional'/)
+
+  const renderStart = source.indexOf('function render()')
+  const render = source.slice(renderStart, source.indexOf('function liveNoteField()', renderStart))
+  const rememberAt = render.indexOf('rememberDraftForm(')
+  const innerAt = render.indexOf('root.innerHTML')
+  const patchAt = render.indexOf('patchOpenDraftChrome(')
+  const restoreAt = render.indexOf('restoreComposerForm(')
+  assert.ok(rememberAt >= 0)
+  assert.ok(innerAt >= 0)
+  assert.ok(patchAt >= 0)
+  assert.ok(restoreAt >= 0)
+  assert.ok(rememberAt < innerAt, 'capture composer state before innerHTML rebuild')
+  assert.ok(rememberAt < patchAt, 'capture composer state before chrome patch')
+  assert.ok(restoreAt > innerAt, 'reapply composer state after innerHTML rebuild')
+  assert.ok(restoreAt > patchAt, 'reapply composer state after chrome patch')
+  assert.match(render, /rememberDraftForm\(\{ skipText: state\.composing \}\)/)
+
+  const bindAt = source.indexOf('function bindPanel(')
+  const bind = source.slice(bindAt, source.indexOf('function restoreOverlay(', bindAt))
+  assert.match(bind, /addEventListener\('change'/)
+  assert.match(bind, /target\.name === 'vf-kind'/)
+  assert.match(bind, /state\.draft\.kind = composerKindValue\(target\.value\)/)
+
+  const click = extractOverlayFunction(source, 'onPanelClick')
+  const saveAt = click.indexOf("action === 'save-note'")
+  assert.ok(saveAt >= 0)
+  const save = click.slice(saveAt, click.indexOf("action === 'save-edit-note'", saveAt))
+  assert.match(save, /rememberDraftForm\(/)
+  assert.match(save, /kind: composerKindValue\(state\.draft\.kind\)/)
+  assert.match(save, /if \(!text \|\| !state\.draft\) return/)
+
+  const commit = extractOverlayFunction(source, 'commitNoteText')
+  assert.doesNotMatch(commit, /note\.kind\s*=/)
+  assert.doesNotMatch(commit, /note\.element\s*=/)
+  assert.doesNotMatch(commit, /note\.elements\s*=/)
+
+  assert.doesNotThrow(() => new Function(source))
+})
+
+
+test('Visual Feedback page keys keep meaningful search and hash routes, not tracking params', () => {
+  assert.equal(
+    visualFeedbackPageKey('http://127.0.0.1:3000/login'),
+    'http://127.0.0.1:3000/login',
+  )
+  assert.equal(
+    visualFeedbackPageKey('http://127.0.0.1:3000/app?tab=settings&id=12'),
+    'http://127.0.0.1:3000/app?id=12&tab=settings',
+  )
+  assert.equal(
+    visualFeedbackPageKey('http://127.0.0.1:3000/app?utm_source=x&tab=settings&gclid=abc&fbclid=1'),
+    'http://127.0.0.1:3000/app?tab=settings',
+  )
+  assert.equal(
+    visualFeedbackPageKey('http://127.0.0.1:3000/app#section'),
+    'http://127.0.0.1:3000/app',
+  )
+  assert.equal(
+    visualFeedbackPageKey('http://127.0.0.1:3000/app#/settings'),
+    'http://127.0.0.1:3000/app#/settings',
+  )
+  assert.equal(
+    visualFeedbackPageKey('http://127.0.0.1:3000/app#!/users'),
+    'http://127.0.0.1:3000/app#!/users',
+  )
+  assert.equal(visualFeedbackPageLabel('http://127.0.0.1:3000/login', 'Login'), 'Login · /login')
+  assert.equal(isVisualFeedbackNoteOnPage({ url: 'http://127.0.0.1:3000/login' }, 'http://127.0.0.1:3000/'), false)
+  assert.equal(isVisualFeedbackNoteOnPage({ url: 'http://127.0.0.1:3000/login' }, 'http://127.0.0.1:3000/login?utm_source=x'), true)
+  assert.equal(isVisualFeedbackNoteOnPage({ element: { selector: '#a' } }, 'http://127.0.0.1:3000/'), true)
+  const groups = groupVisualFeedbackNotesByPage([
+    { id: 'a', url: 'http://127.0.0.1:3000/login', title: 'Login', text: 'one' },
+    { id: 'b', url: 'http://127.0.0.1:3000/', title: 'Home', text: 'two' },
+    { id: 'c', url: 'http://127.0.0.1:3000/login', text: 'three' },
+  ])
+  assert.equal(groups.length, 2)
+  assert.equal(groups[0].title, 'Login')
+  assert.equal(groups[0].notes.length, 2)
+  assert.equal(groups[1].notes.length, 1)
+  assert.equal(VISUAL_FEEDBACK_MAX_PENDING_NOTES, 8)
+  assert.equal(VISUAL_FEEDBACK_STORAGE_KEY, 'codemini-visual-feedback-v2')
+  assert.equal(VISUAL_FEEDBACK_STORAGE_KEY_V1, 'codemini-visual-feedback-v1')
+})
+
+test('visible and model messages group pending notes by page', () => {
+  const payload = {
+    url: 'http://127.0.0.1:3000/',
+    title: 'Home',
+    environment: { ok: true, strong: [{ id: 'vite-client' }] },
+    notes: [
+      {
+        kind: 'visual',
+        text: 'Email field is too narrow',
+        url: 'http://127.0.0.1:3000/login',
+        title: 'Login',
+        pageKey: 'http://127.0.0.1:3000/login',
+        element: { selector: '#login-email' },
+      },
+      {
+        kind: 'visual',
+        text: 'Hero is too tall',
+        url: 'http://127.0.0.1:3000/',
+        title: 'Home',
+        pageKey: 'http://127.0.0.1:3000/',
+        element: { selector: '#hero' },
+      },
+    ],
+  }
+  const visible = formatVisualFeedbackVisibleText(payload)
+  assert.match(visible, /2 notes across 2 pages/)
+  assert.match(visible, /http:\/\/127\.0\.0\.1:3000\/login/)
+  assert.match(visible, /1\. Email field is too narrow — #login-email/)
+  assert.match(visible, /2\. Hero is too tall — #hero/)
+  const message = formatVisualFeedbackMessage(payload)
+  assert.match(message.modelText, /Notes: 2 across 2 pages/)
+  assert.match(message.modelText, /# Page 1\. http:\/\/127\.0\.0\.1:3000\/login \(Login\)/)
+  assert.match(message.modelText, /# Page 2\. http:\/\/127\.0\.0\.1:3000\/ \(Home\)/)
+  assert.match(message.modelText, /Email field is too narrow/)
+  assert.match(message.modelText, /Hero is too tall/)
+})
+
+test('enrichment keeps annotation-time context for off-page notes and does not recapture them', async () => {
+  const captured = []
+  const payload = await enrichVisualFeedbackPayload(
+    { page: { url: () => 'http://127.0.0.1:5173/', title: async () => 'Home' } },
+    {
+      url: 'http://127.0.0.1:5173/',
+      title: 'Home',
+      environment: { ok: true, strong: [{ id: 'vite-client' }] },
+      notes: [
+        {
+          id: 'login-1',
+          pageKey: 'http://127.0.0.1:5173/login',
+          url: 'http://127.0.0.1:5173/login',
+          title: 'Login',
+          text: 'Wider field',
+          element: { selector: '#login-email' },
+          sourceLocations: [{ file: 'src/Login.tsx', line: 10 }],
+          screenshot: { mime: 'image/jpeg', data: 'TE9HSU4=', width: 80, height: 40 },
+        },
+        {
+          id: 'home-1',
+          pageKey: 'http://127.0.0.1:5173/',
+          url: 'http://127.0.0.1:5173/',
+          text: 'Hero too tall',
+          element: { selector: '#hero' },
+        },
+        {
+          id: 'login-2',
+          pageKey: 'http://127.0.0.1:5173/login',
+          url: 'http://127.0.0.1:5173/login',
+          text: 'Missing shot',
+          element: { selector: '#gone' },
+        },
+      ],
+    },
+    {
+      captureScreenshot: async (_session, note) => {
+        captured.push(note.element.selector)
+        return { mime: 'image/jpeg', data: 'SE9NRQ==', width: 90, height: 50 }
+      },
+    },
+  )
+  assert.deepEqual(captured, ['#hero'])
+  assert.equal(payload.notes[0].screenshot.data, 'TE9HSU4=')
+  assert.equal(payload.notes[0].sourceLocations[0].file, 'src/Login.tsx')
+  assert.equal(payload.notes[1].screenshot.data, 'SE9NRQ==')
+  assert.equal(payload.notes[2].screenshot.unavailable, true)
+  assert.equal(payload.notes[2].screenshot.reason, 'not-captured')
+  const message = formatVisualFeedbackMessage(payload)
+  assert.match(message.modelText, /Screenshot: attached \(80×40\)/)
+  assert.match(message.modelText, /Screenshot: unavailable \(not-captured\)/)
+})
+
+test('overlay collects notes across pages, shows current-page pins, and caps the batch', () => {
+  const source = getVisualFeedbackInitScript()
+  assert.match(source, /function visualFeedbackPageKey\(/)
+  assert.match(source, /function groupVisualFeedbackNotesByPage\(/)
+  assert.match(source, /function isVisualFeedbackNoteOnPage\(/)
+  assert.match(source, /VISUAL_FEEDBACK_MAX_PENDING_NOTES = 8/)
+  assert.match(source, /codemini-visual-feedback-v2/)
+
+  const stale = extractOverlayFunction(source, 'isNoteStale')
+  assert.match(stale, /noteBelongsToCurrentPage\(note\)/)
+  assert.match(stale, /return false/)
+  const refresh = extractOverlayFunction(source, 'refreshNoteStaleness')
+  assert.match(refresh, /if \(!noteBelongsToCurrentPage\(note\)\) continue/)
+
+  const paint = extractOverlayFunction(source, 'paintMarks')
+  assert.match(paint, /if \(!noteBelongsToCurrentPage\(note\)\) continue/)
+
+  const highlight = extractOverlayFunction(source, 'highlightNoteTargets')
+  assert.match(highlight, /if \(!noteBelongsToCurrentPage\(note\)\)/)
+
+  const add = extractOverlayFunction(source, 'addToSelection')
+  assert.match(add, /noteBelongsToCurrentPage\(note\)/)
+
+  const renderStart = source.indexOf('function render()')
+  const render = source.slice(renderStart, source.indexOf('function liveNoteField()', renderStart))
+  assert.match(render, /groupVisualFeedbackNotesByPage\(state\.notes\)/)
+  assert.match(render, /notes-group/)
+  assert.match(render, /visualFeedbackOverlayThisPage/)
+  assert.match(render, /showStale = onPage && note\.stale/)
+  assert.match(render, /visualFeedbackOverlayNoteLimit/)
+  assert.doesNotMatch(render, /const stale = note\.stale \?/)
+
+  const saveState = extractOverlayFunction(source, 'saveState')
+  assert.match(saveState, /persistCurrentPageDraft\(/)
+  assert.match(saveState, /drafts: state\.drafts/)
+  assert.match(saveState, /VISUAL_FEEDBACK_STORAGE_KEY/)
+
+  const load = extractOverlayFunction(source, 'loadState')
+  assert.match(load, /migrateV1Keys\(/)
+  assert.match(load, /restoreDraftForPage\(/)
+
+  const switchPage = extractOverlayFunction(source, 'switchPage')
+  assert.match(switchPage, /persistCurrentPageDraft\(/)
+  assert.match(switchPage, /restoreDraftForPage\(nextKey\)/)
+  assert.match(switchPage, /clearSelection\(/)
+  assert.match(switchPage, /flushOpenEdit\(/)
+
+  const restore = extractOverlayFunction(source, 'restoreOverlay')
+  assert.match(restore, /pageChanged/)
+  assert.match(restore, /switchPage\(nextKey\)/)
+
+  const click = extractOverlayFunction(source, 'onPanelClick')
+  const saveAt = click.indexOf("action === 'save-note'")
+  const save = click.slice(saveAt, click.indexOf("action === 'save-edit-note'", saveAt))
+  assert.match(save, /pageKey: currentPageKey\(\)/)
+  assert.match(save, /title: document\.title/)
+  assert.match(save, /rejectIfNoteLimit\(\)/)
+  assert.match(save, /captureNoteMedia\(note\.id\)/)
+  assert.match(save, /url: location\.href/)
+
+  const onClick = extractOverlayFunction(source, 'onClick')
+  assert.match(onClick, /rejectIfNoteLimit\(\)/)
+
+  const capture = extractOverlayFunction(source, 'captureNoteMedia')
+  assert.match(capture, /type:\s*['"]enrich-note['"]/)
+  assert.match(capture, /noteBelongsToCurrentPage\(note\)/)
+
+  const reject = extractOverlayFunction(source, 'rejectIfNoteLimit')
+  assert.match(reject, /pendingNoteLimitReached\(/)
+  assert.match(reject, /visualFeedbackOverlayNoteLimit/)
+  const reached = extractOverlayFunction(source, 'pendingNoteLimitReached')
+  assert.match(reached, /VISUAL_FEEDBACK_MAX_PENDING_NOTES/)
+  assert.doesNotMatch(source, /state\.notes\.length\s*=\s*VISUAL_FEEDBACK_MAX_PENDING_NOTES/)
+  assert.doesNotMatch(source, /notes\.splice\(/)
+  assert.doesNotMatch(source, /notes\.pop\(/)
+
+  const binding = readFileSync(new URL('../src/core/browser/visual-feedback.js', import.meta.url), 'utf8')
+  assert.match(binding, /type === 'enrich-note'/)
+  assert.match(binding, /PAGE_CHANGED/)
+  assert.match(binding, /isVisualFeedbackNoteOnPage\(note, currentUrl\)/)
+
+  const enStrings = getVisualFeedbackOverlayStrings('en')
+  const zhStrings = getVisualFeedbackOverlayStrings('zh')
+  assert.match(enStrings.visualFeedbackOverlayNoteLimit, /8|{{count}}/)
+  assert.equal(enStrings.visualFeedbackOverlayThisPage, 'This page')
+  assert.equal(zhStrings.visualFeedbackOverlayThisPage, '当前页面')
+  assert.match(zhStrings.visualFeedbackOverlayNoteLimit, /{{count}}/)
+  assert.doesNotThrow(() => new Function(source))
+})

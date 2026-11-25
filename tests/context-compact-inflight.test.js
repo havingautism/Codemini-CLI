@@ -49,35 +49,67 @@ test('in-flight compact waits until real input usage crosses the trigger', async
   assert.equal(below.messages, messages);
 });
 
-test('in-flight compact clears old tool results before summarizing the turn', async () => {
+test('in-flight compact runs micro then macro in one cycle when occupancy stays over the trigger', async () => {
   const messages = [
     { role: 'system', content: 'system stays' },
     { role: 'user', content: 'do the task' },
     ...Array.from({ length: 8 }, (_, index) => pair(`old-${index}`, `OLD_${index}_${'x'.repeat(800)}`)).flat(),
   ];
 
-  const micro = await compactInFlightMessages(messages, config, 900);
-  assert.equal(micro.changed, true);
-  assert.equal(micro.mode, 'micro');
-  assert.equal(micro.threshold, 90);
-  assert.equal(micro.messages[0].content, 'system stays');
-  assert.match(micro.messages.find((message) => message.tool_call_id === 'old-0').content, /Old tool result cleared/);
-  assert.match(micro.messages.find((message) => message.tool_call_id === 'old-7').content, /^OLD_7_/);
-  assertToolPairs(micro.messages);
+  const result = await compactInFlightMessages(messages, config, 900);
+  assert.equal(result.changed, true);
+  assert.equal(result.mode, 'conservative');
+  assert.equal(result.threshold, 90);
+  assert.equal(result.messages[0].content, 'system stays');
+  assert.match(result.messages[1].content, /Context Summary|OLD_/);
+  assert.match(result.messages.map((message) => message.content).join('\n'), /OLD_7_/);
+  assert.equal(result.messages.some((message) => message.tool_call_id === 'old-0' && /OLD_0_/.test(message.content)), false);
+  assertToolPairs(result.messages);
+});
 
-  const macro = await compactInFlightMessages(micro.messages, config, 900);
-  assert.equal(macro.mode, 'conservative');
-  assert.ok(macro.messages.length < micro.messages.length);
-  assert.equal(macro.messages[0].content, 'system stays');
-  assert.match(macro.messages[1].content, /Context Summary/);
-  assert.match(macro.messages.map((message) => message.content).join('\n'), /OLD_7_/);
-  assertToolPairs(macro.messages);
+test('in-flight macro uses a model summary and falls back locally when it fails', async () => {
+  const messages = [
+    { role: 'system', content: 'system stays' },
+    { role: 'user', content: 'do the task' },
+    ...Array.from({ length: 8 }, (_, index) => pair(`old-${index}`, `OLD_${index}_${'x'.repeat(800)}`)).flat(),
+  ];
+
+  const summarized = await compactInFlightMessages(messages, config, 900, {
+    generateSummary: async () => 'MODEL_SUMMARY of the older turn',
+  });
+  assert.equal(summarized.changed, true);
+  assert.equal(summarized.mode, 'conservative');
+  assert.match(summarized.messages[1].content, /MODEL_SUMMARY/);
+
+  const fallback = await compactInFlightMessages(messages, config, 900, {
+    generateSummary: async () => {
+      throw new Error('fast model failed');
+    },
+  });
+  assert.equal(fallback.changed, true);
+  assert.match(fallback.messages[1].content, /Context Summary/);
+});
+
+test('in-flight macro uses the hard limit to choose conservative vs aggressive keep', async () => {
+  const messages = [
+    { role: 'system', content: 'system stays' },
+    { role: 'user', content: 'do the task' },
+    ...Array.from({ length: 12 }, (_, index) => pair(`old-${index}`, `OLD_${index}_${'x'.repeat(400)}`)).flat(),
+  ];
+
+  const conservative = await compactInFlightMessages(messages, config, 900);
+  assert.equal(conservative.mode, 'conservative');
+
+  const aggressive = await compactInFlightMessages(messages, config, 990);
+  assert.equal(aggressive.mode, 'aggressive');
+  assert.ok(aggressive.messages.length <= conservative.messages.length);
 });
 
 test('in-flight compact does not split an assistant tool call from missing results', async () => {
   const messages = [
     { role: 'system', content: 'system stays' },
     { role: 'user', content: 'do the task' },
+    ...Array.from({ length: 8 }, (_, index) => pair(`old-${index}`, `OLD_${index}_${'x'.repeat(800)}`)).flat(),
     {
       role: 'assistant',
       content: '',
@@ -87,6 +119,7 @@ test('in-flight compact does not split an assistant tool call from missing resul
   const result = await compactInFlightMessages(messages, config, 990);
   assert.equal(result.changed, false);
   assert.equal(result.messages, messages);
+  assert.equal(result.messages.at(-1).tool_calls[0].id, 'open');
 });
 
 test('the agent loop compacts after a high-usage step and leaves a mid-turn marker', async () => {
@@ -121,12 +154,21 @@ test('the agent loop compacts after a high-usage step and leaves a mid-turn mark
 
   assert.equal(result.text, 'done');
   assert.equal(calls, 2);
+  const start = events.find((event) => event.type === 'compact:start');
+  assert.ok(start);
+  assert.equal(start.duringTurn, true);
+  assert.match(start.summary, /上下文压缩中/);
+  assert.match(start.summaryEn, /Compressing context/);
+  assert.doesNotMatch(start.summary, /micro|macro|conservative|aggressive|\d+%/i);
   assert.equal(events.filter((event) => event.type === 'compact:auto').length, 1);
   const marker = events.find((event) => event.type === 'compact:auto');
   assert.equal(marker.duringTurn, true);
-  assert.equal(marker.mode, 'micro');
+  assert.equal(marker.mode, 'conservative');
   assert.equal(marker.threshold, 90);
-  assert.match(marker.summary, /本轮中已压缩/);
+  assert.match(marker.summary, /以上内容已压缩/);
+  assert.doesNotMatch(marker.summary, /micro|macro|conservative|aggressive|\d+%/i);
+  assert.ok(marker.estimatedTokens > 0);
+  assert.ok(marker.estimatedTokens < 900);
   assert.equal(seen[1][0], 'system stays');
   assert.equal(seen[1].some((content) => content.includes('OLD_0_')), false);
   assert.equal(seen[1].some((content) => content.includes('LIVE_TOOL_RESULT')), true);

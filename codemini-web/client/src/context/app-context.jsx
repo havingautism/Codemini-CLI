@@ -1701,7 +1701,7 @@ export function AppProvider({ children }) {
               id: `msg-compact-divider-${Date.now()}`,
               role: "divider",
               dividerType: "compact",
-              text: `以上内容已压缩 (${compactMeta.mode || ""})`,
+              text: t("compactDivider"),
               timestamp: compactMeta.timestamp || new Date().toISOString(),
             });
             dividerInserted = true;
@@ -2608,21 +2608,26 @@ export function AppProvider({ children }) {
           break;
         }
 
+        case "compact:start":
+          upsertRuntimeActivity({
+            key: "compact",
+            status: "running",
+            emoji: "🧳",
+            label: t("runtimeActivityCompacting"),
+          });
+          break;
+
         case "compact:auto":
           upsertRuntimeActivity({
             key: "compact",
             status: "done",
             emoji: "🧳",
             label: t("runtimeActivityCompactDone"),
-            detail:
-              `${event.mode || "auto"} ${event.threshold ? `${event.threshold}%` : ""}`.trim(),
           });
           addMessage({
             role: "divider",
             dividerType: "compact",
-            text: event.duringTurn
-              ? `本轮中已压缩 (${event.mode || ""}, ${event.threshold || ""}%)`
-              : `以上内容已压缩 (${event.mode || ""}, ${event.threshold || ""}%)`,
+            text: t("compactDivider"),
             timestamp: new Date().toISOString(),
           });
           break;

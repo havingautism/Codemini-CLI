@@ -18,7 +18,14 @@ import { buildRunFailureMessage, getToolOutputSanitizeOptions, sanitizeTextForMo
 import { createToolRuntime, buildInvalidToolArgumentsResult } from './tool-runtime.js';
 import { createToolResultStore, summarizeToolResult } from './tool-result-store.js';
 import { rankToolDefinitions } from './harness/tool-reliability.js';
-import { applyAggressiveToolPruneBeta, compactInFlightMessages } from './context-compact.js';
+import {
+  applyAggressiveToolPruneBeta,
+  compactInFlightMessages,
+  COMPACT_START_SUMMARY,
+  COMPACT_START_SUMMARY_EN,
+  COMPACT_DONE_SUMMARY,
+  COMPACT_DONE_SUMMARY_EN,
+} from './context-compact.js';
 import { normalizeModelUsage } from './model-usage.js';
 import {
   markOutsideWorkspaceMutationApproved,
@@ -661,7 +668,8 @@ export async function runAgentLoop({
   toolGuard = null,
   completionReview = null,
   skillRoute = null,
-  contextSelector = null
+  contextSelector = null,
+  generateSummary = null,
 }) {
   const experienceTracker = config?.memory?.enabled === false || config?.memory?.experience?.enabled === false
     ? null
@@ -866,7 +874,15 @@ export async function runAgentLoop({
       if (Array.isArray(selected) && selected.length > 0) messages.splice(0, messages.length, ...selected);
     }
     if (lastInputTokens > 0 && !lastCompletionIncomplete) {
-      const inflight = await compactInFlightMessages(messages, config, lastInputTokens);
+      const inflight = await compactInFlightMessages(messages, config, lastInputTokens, {
+        generateSummary,
+        onStart: () => onEvent?.({
+          type: 'compact:start',
+          duringTurn: true,
+          summary: COMPACT_START_SUMMARY,
+          summaryEn: COMPACT_START_SUMMARY_EN,
+        }),
+      });
       if (inflight.changed) {
         messages.splice(0, messages.length, ...inflight.messages);
         onEvent?.({
@@ -875,7 +891,9 @@ export async function runAgentLoop({
           threshold: inflight.threshold,
           duringTurn: true,
           tokensSaved: inflight.tokensSaved,
-          summary: `本轮中已压缩 (${inflight.mode}, ${inflight.threshold}%)`,
+          estimatedTokens: inflight.estimatedTokens,
+          summary: COMPACT_DONE_SUMMARY,
+          summaryEn: COMPACT_DONE_SUMMARY_EN,
         });
       }
     }

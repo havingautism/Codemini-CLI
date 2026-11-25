@@ -91,7 +91,11 @@ import {
   microCompactMessages,
   parseCompactArgs,
   buildTranscriptForLLM,
-  COMPACT_SUMMARY_PROMPT
+  COMPACT_SUMMARY_PROMPT,
+  COMPACT_START_SUMMARY,
+  COMPACT_START_SUMMARY_EN,
+  COMPACT_DONE_SUMMARY,
+  COMPACT_DONE_SUMMARY_EN,
 } from './context-compact.js';
 import { getReplyLanguage, getReplyLanguageName, stripReplyLanguageDirective, buildSystemPromptWithReplyLanguage, appendStructuredOutputLanguageRule } from './reply-language.js';
 import { composeSystemPrompt } from './system-prompt-composer.js';
@@ -4062,6 +4066,45 @@ export function resolveLatestContextMeasurement(messages = [], fallbackOverhead 
   return { tokens: 0, source: 'estimated' };
 }
 
+export function estimateCompactedContextTokens(messages, config, executionMode) {
+  const visible = modelVisibleMessages(Array.isArray(messages) ? messages : []);
+  const overhead = visible.length > 0 ? estimateBaselinePromptOverhead(config, executionMode) : 0;
+  return estimateMessagesTokens(visible) + overhead;
+}
+
+function hasPostCompactActualUsage(messages = [], estimatedAt) {
+  if (!Number.isFinite(Number(estimatedAt)) || Number(estimatedAt) <= 0) return false;
+  const compactAt = Number(estimatedAt);
+  for (const message of Array.isArray(messages) ? messages : []) {
+    if (message?.role !== 'assistant') continue;
+    const usage = normalizeModelUsage(message.usage);
+    if (!(usage?.inputTokens > 0)) continue;
+    const at = Date.parse(message.at);
+    if (Number.isFinite(at) && at > compactAt) return true;
+  }
+  return false;
+}
+
+function recordCompactContextEstimate(session, { messages, estimatedTokens, config, executionMode } = {}) {
+  if (!session) return 0;
+  const raw = Number(estimatedTokens);
+  const messageTokens = Number.isFinite(raw) && raw >= 0
+    ? Math.round(raw)
+    : estimateMessagesTokens(modelVisibleMessages(Array.isArray(messages) ? messages : []));
+  const visible = modelVisibleMessages(Array.isArray(messages) ? messages : []);
+  const overhead = (visible.length > 0 || messageTokens > 0)
+    ? estimateBaselinePromptOverhead(config, executionMode)
+    : 0;
+  const tokens = messageTokens + overhead;
+  const estimatedAt = Date.now();
+  session.compact = {
+    ...(session.compact || {}),
+    estimatedTokens: tokens,
+    estimatedAt,
+  };
+  return tokens;
+}
+
 export function buildRuntimeStateSnapshot({ currentSession, config, model, executionMode, extraSession, workspaceRoot, alwaysSkillNames = [], crewState, crewWorkers = [], crewInFlightIds = [], crewDirtyCount = 0 } = {}) {
   const scheduledRun = getScheduledSessionInfo(currentSession?.id);
   const scheduledAttention = scheduledRun?.status === 'needs_attention'
@@ -4076,8 +4119,14 @@ export function buildRuntimeStateSnapshot({ currentSession, config, model, execu
     ? estimateBaselinePromptOverhead(config, executionMode)
     : 0;
   const contextMeasurement = resolveLatestContextMeasurement(activeMessages, baselineOverhead);
-  const currentContextTokens = contextMeasurement.tokens;
-  const contextUsageSource = contextMeasurement.source;
+  const compactEstimate = extraSession ? null : currentSession?.compact;
+  const estimatedTokens = Number(compactEstimate?.estimatedTokens);
+  const useCompactEstimate = Number.isFinite(estimatedTokens)
+    && estimatedTokens > 0
+    && Number.isFinite(Number(compactEstimate?.estimatedAt))
+    && !hasPostCompactActualUsage(activeMessages, compactEstimate.estimatedAt);
+  const currentContextTokens = useCompactEstimate ? estimatedTokens : contextMeasurement.tokens;
+  const contextUsageSource = useCompactEstimate ? 'estimated' : contextMeasurement.source;
   const maxContextTokens = effectiveMaxContextTokens(config);
   const contextUsagePct = maxContextTokens > 0 ? Math.min(100, Math.max(0, (currentContextTokens / maxContextTokens) * 100)) : 0;
   const planState = currentSession?.planState;
@@ -4722,6 +4771,35 @@ async function askModelInSession({
       .filter(Boolean)
   )];
 
+  const emitCompactStart = (duringTurn = false) => {
+    if (!onAgentEvent) return;
+    onAgentEvent({
+      type: 'compact:start',
+      duringTurn,
+      summary: COMPACT_START_SUMMARY,
+      summaryEn: COMPACT_START_SUMMARY_EN,
+    });
+  };
+  const emitCompactDone = ({ mode, threshold, tokensSaved = 0, duringTurn = false } = {}) => {
+    const estimatedTokens = recordCompactContextEstimate(session, {
+      messages: compacted,
+      config,
+      executionMode,
+    });
+    if (!onAgentEvent) return estimatedTokens;
+    onAgentEvent({
+      type: 'compact:auto',
+      mode,
+      threshold,
+      duringTurn,
+      tokensSaved,
+      estimatedTokens,
+      summary: COMPACT_DONE_SUMMARY,
+      summaryEn: COMPACT_DONE_SUMMARY_EN,
+    });
+    return estimatedTokens;
+  };
+
   if (persistSession && preflightPct >= triggerPct) {
     // `compacted` is still the original input here, so this equals turnVisible.
     const compactSource = turnVisible;
@@ -4729,23 +4807,27 @@ async function askModelInSession({
     const microEnabled = config.context?.microcompact_enabled !== false;
     const microKeep = Number(config.context?.microcompact_keep_recent || 5);
     let needsMacro = true;
+    let compactStarted = false;
+    const ensureCompactStart = () => {
+      if (compactStarted) return;
+      compactStarted = true;
+      emitCompactStart(false);
+    };
     if (microEnabled) {
       const micro = microCompactMessages(compactSource, { keepRecent: microKeep, enabled: true });
       if (micro.changed) {
+        ensureCompactStart();
         compacted = micro.messages.map((m) => ({ ...m, at: new Date().toISOString() }));
-        if (onCompactedUpdate) onCompactedUpdate(compacted);
+        if (onCompactedUpdate) onCompactedUpdate(compacted, { mode: 'micro' });
         const afterMicroTokens = estimateMessagesTokens(compacted);
         const afterMicroPct = (afterMicroTokens / maxContextTokens) * 100;
-        if (onAgentEvent) {
-          onAgentEvent({
-            type: 'compact:auto',
-            mode: 'micro',
-            threshold: Math.round(preflightPct),
-            tokensSaved: micro.tokensSaved
-          });
-        }
         if (afterMicroPct < triggerPct) {
           needsMacro = false;
+          emitCompactDone({
+            mode: 'micro',
+            threshold: Math.round(preflightPct),
+            tokensSaved: micro.tokensSaved,
+          });
         }
       }
     }
@@ -4754,8 +4836,10 @@ async function askModelInSession({
       // After micro-compaction `compacted` may be a new array; only recompute
       // the visible filter in that case, otherwise reuse the per-turn base.
       const macroSource = compacted ? modelVisibleMessages(compacted) : turnVisible;
+      const macroMode = preflightPct >= hardPct ? 'aggressive' : 'conservative';
+      ensureCompactStart();
       const auto = await compactMessagesLocally(macroSource, {
-        mode: preflightPct >= hardPct ? 'aggressive' : 'conservative',
+        mode: macroMode,
         force: true,
         generateSummary: createCompactSummaryGenerator(config, signal)
       });
@@ -4764,16 +4848,13 @@ async function askModelInSession({
         if (onCompactedUpdate) {
           onCompactedUpdate(compacted, {
             boundaryIndex: translateCompactBoundaryToOriginal(sourceIsCompacted, session.compact, auto.boundaryIndex),
-            mode: preflightPct >= hardPct ? 'aggressive' : 'conservative'
+            mode: macroMode
           });
         }
-        if (onAgentEvent) {
-          onAgentEvent({
-            type: 'compact:auto',
-            mode: preflightPct >= hardPct ? 'aggressive' : 'conservative',
-            threshold: Math.round(preflightPct)
-          });
-        }
+        emitCompactDone({
+          mode: macroMode,
+          threshold: Math.round(preflightPct),
+        });
       }
     }
   } else if (persistSession) {
@@ -4782,18 +4863,18 @@ async function askModelInSession({
     const measured = resolveLatestContextMeasurement(turnVisible, 0);
     const actualPct = measured.source === 'actual' ? (measured.tokens / maxContextTokens) * 100 : 0;
     if (actualPct >= triggerPct) {
-      const inflight = await compactInFlightMessages(turnVisible, config, measured.tokens);
+      const inflight = await compactInFlightMessages(turnVisible, config, measured.tokens, {
+        generateSummary: createCompactSummaryGenerator(config, signal),
+        onStart: () => emitCompactStart(false),
+      });
       if (inflight.changed) {
         compacted = inflight.messages.map((message) => ({ ...message, at: new Date().toISOString() }));
-        if (onCompactedUpdate) onCompactedUpdate(compacted);
-        if (onAgentEvent) {
-          onAgentEvent({
-            type: 'compact:auto',
-            mode: inflight.mode,
-            threshold: inflight.threshold,
-            summary: `以上内容已压缩 (${inflight.mode}, ${inflight.threshold}%)`,
-          });
-        }
+        if (onCompactedUpdate) onCompactedUpdate(compacted, { mode: inflight.mode });
+        emitCompactDone({
+          mode: inflight.mode,
+          threshold: inflight.threshold,
+          tokensSaved: inflight.tokensSaved,
+        });
       }
     }
   }
@@ -6195,7 +6276,15 @@ async function askModelInSession({
   };
   const wrappedAgentEvent = (event) => {
     // Always accumulate messages in session (for token tracking), only save when persisting
-    if (event?.type === 'assistant:start') {
+    if (event?.type === 'compact:auto') {
+      const estimatedTokens = recordCompactContextEstimate(session, {
+        messages: event.messages,
+        estimatedTokens: event.estimatedTokens,
+        config,
+        executionMode,
+      });
+      event.estimatedTokens = estimatedTokens;
+    } else if (event?.type === 'assistant:start') {
       session.messages.push(stampedMessage('assistant', '', {
         ...(event.sdkProvider ? { sdk_provider: event.sdkProvider } : {}),
         ...(event.model ? { model: event.model } : {})
@@ -6541,6 +6630,7 @@ async function askModelInSession({
       sessionId: session.id,
       decisionController,
       episodeId: harnessEpisodeId,
+      generateSummary: createCompactSummaryGenerator(config, signal),
       toolReliabilityStore,
       toolGuard: decisionController && harnessConfig.provider !== 'rules'
         ? async ({ toolName, args, step }) => {

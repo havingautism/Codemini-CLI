@@ -7,6 +7,7 @@ export const VISUAL_FEEDBACK_OVERLAY_KEYS = [
   'visualFeedbackOverlayEnvBlocked',
   'visualFeedbackOverlayHint',
   'visualFeedbackOverlayBlocked',
+  'visualFeedbackCapabilityHint',
   'visualFeedbackOverlayStart',
   'visualFeedbackOverlayStop',
   'visualFeedbackOverlaySubmit',
@@ -24,6 +25,8 @@ export const VISUAL_FEEDBACK_OVERLAY_KEYS = [
   'visualFeedbackOverlaySharedCount',
   'visualFeedbackOverlayPlaceholder',
   'visualFeedbackOverlayAddNote',
+  'visualFeedbackOverlayEditNote',
+  'visualFeedbackOverlaySaveNote',
   'visualFeedbackOverlayCancel',
   'visualFeedbackOverlaySelecting',
   'visualFeedbackOverlaySubmitting',
@@ -39,6 +42,9 @@ export const VISUAL_FEEDBACK_OVERLAY_KEYS = [
   'visualFeedbackOverlayParent',
   'visualFeedbackOverlayChild',
   'visualFeedbackOverlayRetargetHint',
+  'visualFeedbackOverlayThisPage',
+  'visualFeedbackOverlayOtherPage',
+  'visualFeedbackOverlayNoteLimit',
 ]
 
 export function normalizeVisualFeedbackLocale(locale) {
