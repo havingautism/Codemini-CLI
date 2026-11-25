@@ -186,6 +186,16 @@ export async function rebaseCrewMission({
     if (rebased.code !== 0) {
       const conflicted = splitNames((await tryGit(worktreePath, ['diff', '--name-only', '--diff-filter=U'])).stdout);
       await abortRebase(worktreePath);
+      if (!conflicted.length) {
+        return {
+          ok: false,
+          code: 'REBASE_FAILED',
+          error: `Could not rebase mission ${mission.id}: ${String(rebased.stderr || rebased.stdout || 'Git rebase failed.').trim()}`,
+          workerId: worker.id,
+          missionId: mission.id,
+          onto: baseHead,
+        };
+      }
       await patchCrewWorkerRecord(root, worker.id, {
         rebaseOnto: baseHead,
         reviewedCommit: '',
@@ -199,7 +209,7 @@ export async function rebaseCrewMission({
         workerId: worker.id,
         missionId: mission.id,
         onto: baseHead,
-        ...(conflicted.length ? { files: conflicted } : {}),
+        files: conflicted,
       };
     }
 

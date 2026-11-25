@@ -4,6 +4,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
+import { terminateChild } from '../shell.js'
 
 const DEV_SCRIPT_NAMES = Object.freeze(['dev', 'start', 'serve', 'develop', 'web', 'frontend'])
 const DEV_SCRIPT_RE = /\b(vite|next\s+dev|webpack(?:-dev-server)?|webpack\s+serve|nuxt\s+dev|astro\s+dev|remix\s+vite:dev|ng\s+serve|parcel|rsbuild(?:\s+dev)?|rspack(?:\s+dev)?|turbo\s+dev|react-scripts\s+start)\b/i
@@ -936,14 +937,28 @@ export function resolveSpawnInvocation(command, {
     exists,
     pathImpl,
   })
-  if (resolved) return { file: resolved, args, shell: false }
-  return { file, args, shell: true }
+  if (!resolved) return { file, args, shell: false }
+  if (!/\.(?:cmd|bat)$/i.test(resolved)) return { file: resolved, args, shell: false }
+
+  // Win32 cannot spawn a batch file directly. The launcher only needs literal script arguments.
+  if (/["%\r\n\0]/.test(resolved) || args.some((arg) => /["%!^&|<>()\r\n\0]/.test(arg))) {
+    throw devServerError('DEV_SERVER_SPAWN_FAILED', 'Invalid Windows batch launcher path or arguments.')
+  }
+  const quoted = [resolved, ...args].map((part) => `"${part}"`).join(' ')
+  return {
+    file: process.env.ComSpec || 'cmd.exe',
+    args: ['/d', '/v:off', '/s', '/c', `"${quoted}"`],
+    shell: false,
+    windowsVerbatimArguments: true,
+  }
 }
 
 function resolveWindowsCommand(bin, { pathEnv, pathExt, pathDelimiter, cwd, exists, pathImpl }) {
   const extList = String(pathExt || '.EXE;.CMD;.BAT;.COM').split(';').filter(Boolean)
   const hasExt = Boolean(pathImpl.extname(bin))
-  const names = hasExt ? [bin] : [bin, ...extList.map((ext) => (ext.startsWith('.') ? bin + ext : `${bin}.${ext}`))]
+  const extensions = extList.map((ext) => ext.startsWith('.') ? ext : `.${ext}`)
+    .filter((ext) => /^\.(?:exe|com|cmd|bat)$/i.test(ext))
+  const names = hasExt ? [bin] : extensions.map((ext) => bin + ext)
   if (pathImpl.isAbsolute(bin)) {
     for (const name of names) {
       if (exists(name)) return name
@@ -990,6 +1005,8 @@ export function spawnProjectCommand(command, {
     env,
     stdio,
     shell: invocation.shell,
+    ...(invocation.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
+    ...(platform === 'win32' ? { windowsHide: true } : {}),
   })
   const result = { child, invocation, error: null }
   if (child && typeof child.on === 'function') {
@@ -1004,23 +1021,20 @@ function isAcceptableManualPage(probe) {
   return Boolean(probe && !isRejectedResponder(probe) && looksLikeHtml(probe))
 }
 
-async function stopSpawnedProcess(child) {
-  if (!child || child.killed || child.exitCode != null) return
+export async function stopSpawnedProcess(child) {
+  if (!child || child.killed || child.exitCode != null || child.signalCode != null) return
   await new Promise((resolve) => {
     const timer = setTimeout(() => {
+      child.off('exit', onExit)
       try { child.kill('SIGKILL') } catch {}
       resolve()
     }, 1500)
-    child.once('exit', () => {
-      clearTimeout(timer)
-      resolve()
-    })
-    try {
-      child.kill('SIGTERM')
-    } catch {
+    function onExit() {
       clearTimeout(timer)
       resolve()
     }
+    child.once('exit', onExit)
+    terminateChild(child)
   })
 }
 

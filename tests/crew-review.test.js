@@ -58,6 +58,7 @@ async function initCleanGit(dir) {
   // Windows checkout conversion policy. Linked worktrees share this config.
   await git(dir, ['config', 'core.autocrlf', 'false']);
   await git(dir, ['config', 'core.eol', 'lf']);
+  if (process.platform === 'win32') await git(dir, ['config', 'core.longpaths', 'true']);
   await fs.writeFile(path.join(dir, '.gitignore'), '.codemini/\n');
   await fs.writeFile(path.join(dir, 'README.md'), 'hello\n');
   await git(dir, ['add', '.']);
@@ -946,19 +947,8 @@ async function rebaseNoahWorktree(worktreePath, onto) {
   assert.notEqual(rebase.code, 0);
   await fs.writeFile(path.join(worktreePath, 'README.md'), 'from-noah-rebased\n');
   await git(worktreePath, ['add', 'README.md']);
-  await runGit(['-c', 'core.editor=true', 'rebase', '--continue'], {
-    cwd: worktreePath,
-    allowFailure: false,
-    timeoutMs: 15_000,
-    env: {
-      ...process.env,
-      GIT_EDITOR: 'true',
-      GIT_AUTHOR_NAME: 'Codemini Test',
-      GIT_AUTHOR_EMAIL: 'crew@test.local',
-      GIT_COMMITTER_NAME: 'Codemini Test',
-      GIT_COMMITTER_EMAIL: 'crew@test.local',
-    },
-  });
+  await git(worktreePath, ['commit', '-C', 'REBASE_HEAD']);
+  await git(worktreePath, ['rebase', '--continue']);
 }
 
 test('runtime resumes a conflicted worker, then reviews and lands after rebase', async () => {

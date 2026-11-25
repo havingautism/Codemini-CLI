@@ -43,6 +43,7 @@ async function initCleanGit(dir) {
   await fs.mkdir(template, { recursive: true });
   await git(dir, ['init', `--template=${template}`]);
   await git(dir, ['config', 'core.autocrlf', 'false']);
+  if (process.platform === 'win32') await git(dir, ['config', 'core.longpaths', 'true']);
   await fs.writeFile(path.join(dir, '.gitignore'), '.codemini/\n');
   await fs.writeFile(path.join(dir, 'README.md'), 'hello\n');
   await git(dir, ['add', '.']);
@@ -462,6 +463,12 @@ test('crew_rebase preserves review when rebase is clean and scopes are disjoint'
     const blocked = await landCrewWorkers({ cwd: dir, base: 'main', missionId: noah.mission.id });
     assert.equal(blocked.code, 'REBASE_REQUIRED');
 
+    await git(dir, ['config', 'rebase.backend', 'invalid-test-backend']);
+    const failed = await rebaseCrewMission({ cwd: dir, base: 'main', missionId: noah.mission.id });
+    assert.equal(failed.code, 'REBASE_FAILED');
+    assert.match(failed.error, /invalid-test-backend/);
+    await git(dir, ['config', '--unset', 'rebase.backend']);
+
     const rebased = await rebaseCrewMission({ cwd: dir, base: 'main', missionId: noah.mission.id });
     assert.equal(rebased.ok, true, rebased.error);
     assert.equal(rebased.reviewKept, true);
@@ -542,19 +549,8 @@ test('two-worker merge conflict requires rebase onto the base tip', async () => 
     assert.notEqual(rebase.code, 0);
     await fs.writeFile(path.join(noah.worker.worktreePath, 'README.md'), 'from-noah\n');
     await git(noah.worker.worktreePath, ['add', 'README.md']);
-    await runGit(['-c', 'core.editor=true', 'rebase', '--continue'], {
-      cwd: noah.worker.worktreePath,
-      allowFailure: false,
-      timeoutMs: 15_000,
-      env: {
-        ...process.env,
-        GIT_EDITOR: 'true',
-        GIT_AUTHOR_NAME: 'Codemini Test',
-        GIT_AUTHOR_EMAIL: 'crew@test.local',
-        GIT_COMMITTER_NAME: 'Codemini Test',
-        GIT_COMMITTER_EMAIL: 'crew@test.local',
-      },
-    });
+    await git(noah.worker.worktreePath, ['commit', '-C', 'REBASE_HEAD']);
+    await git(noah.worker.worktreePath, ['rebase', '--continue']);
 
     await patchCrewWorkerRecord(dir, noah.worker.id, { landBase: '', rebaseOnto: '' });
     await markCleanReview(dir, noahRecord);
@@ -631,19 +627,8 @@ test('rebase conflict loops through resume, worker fix, review, and land', async
     assert.notEqual(rebase.code, 0);
     await fs.writeFile(path.join(noah.worker.worktreePath, 'README.md'), 'from-noah-rebased\n');
     await git(noah.worker.worktreePath, ['add', 'README.md']);
-    await runGit(['-c', 'core.editor=true', 'rebase', '--continue'], {
-      cwd: noah.worker.worktreePath,
-      allowFailure: false,
-      timeoutMs: 15_000,
-      env: {
-        ...process.env,
-        GIT_EDITOR: 'true',
-        GIT_AUTHOR_NAME: 'Codemini Test',
-        GIT_AUTHOR_EMAIL: 'crew@test.local',
-        GIT_COMMITTER_NAME: 'Codemini Test',
-        GIT_COMMITTER_EMAIL: 'crew@test.local',
-      },
-    });
+    await git(noah.worker.worktreePath, ['commit', '-C', 'REBASE_HEAD']);
+    await git(noah.worker.worktreePath, ['rebase', '--continue']);
 
     const reviewTarget = await resolveCrewReviewTarget({
       cwd: dir,

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Monitor } from "@/lib/icons";
+import { Badge } from "@/components/ui/badge";
 import {
   closeVisualFeedback,
   fetchVisualFeedbackStatus,
@@ -84,6 +85,9 @@ export function VisualFeedbackPanel({ sessionId = "", projectCwd = "", disabled 
       <div className="mb-3 flex items-center gap-2 text-(--text-primary)">
         <Monitor size={16} />
         <h2 className="text-[14px] font-semibold">{t("visualFeedbackTitle")}</h2>
+        <Badge variant="outline" className="h-4 rounded-md px-1 py-0 text-[9px] font-semibold uppercase leading-none tracking-wide text-(--text-muted)">
+          {t("visualFeedbackBeta")}
+        </Badge>
       </div>
       <p className="mb-4 leading-5 text-(--text-primary)">{t("visualFeedbackOpenHint")}</p>
       <div className="mb-4 flex flex-col gap-2">

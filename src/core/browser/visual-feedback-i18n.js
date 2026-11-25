@@ -3,6 +3,7 @@ import { zh } from '../../../codemini-web/client/i18n/zh.js'
 
 export const VISUAL_FEEDBACK_OVERLAY_KEYS = [
   'visualFeedbackOverlayTitle',
+  'visualFeedbackBeta',
   'visualFeedbackOverlayEnvOk',
   'visualFeedbackOverlayEnvBlocked',
   'visualFeedbackOverlayHint',

@@ -76,6 +76,8 @@ test('browser tool schemas compile and reject unknown fields, enums, and bounds'
   assert.throws(() => tools.validateArguments('browser_inspect', { action: 'screenshot', format: 'gif' }), ToolArgumentsError);
   assert.throws(() => tools.validateArguments('browser_inspect', { action: 'logs', limit: 0 }), ToolArgumentsError);
   assert.throws(() => tools.validateArguments('browser_diagnose', { action: 'click', selector: '#a', observe_ms: 10 }), ToolArgumentsError);
+  assert.doesNotThrow(() => tools.validateArguments('browser_inspect', { action: 'assert', expect: { state: 'text', selector: '#result', value: 'Saved' } }));
+  assert.throws(() => tools.validateArguments('browser_diagnose', { action: 'click', selector: '#a', expect: { state: 'ready' } }), ToolArgumentsError);
   assert.throws(() => tools.validateArguments('browser_inspect', { action: 'explain_style', role: 'button', name: 'Save', max_rules: 0 }), ToolArgumentsError);
   assert.throws(() => tools.validateArguments('browser_act', { action: 'close', force: true }), ToolArgumentsError);
   assert.equal(tools.deferredDefinitions().browser_inspect.function.parameters.required.includes('action'), true);
@@ -89,7 +91,7 @@ test('browser tool schemas compile and reject unknown fields, enums, and bounds'
   for (const foreign of ['observe_ms', 'incremental', 'format', 'max_rules', 'max_listeners']) {
     assert.equal(act.includes(foreign), false, foreign);
   }
-  assert.deepEqual(diagnose.sort(), ['action', 'name', 'observe_ms', 'ref', 'role', 'selector', 'timeout_ms']);
+  assert.deepEqual(diagnose.sort(), ['action', 'expect', 'name', 'observe_ms', 'ref', 'role', 'selector', 'timeout_ms']);
   assert.throws(() => tools.validateArguments('browser_inspect', { action: 'snapshot', url: 'https://example.com' }), ToolArgumentsError);
   assert.throws(() => tools.validateArguments('browser_diagnose', { action: 'click', ref: '@e1', expression: '1' }), ToolArgumentsError);
 });
@@ -116,6 +118,10 @@ test('target combinations return INVALID_TARGET before a browser launches', asyn
   assert.match(typed.error, /text/);
   const closed = await handlers.browser_inspect({ action: 'snapshot' });
   assert.equal(closed.code, 'BROWSER_NOT_OPEN');
+  const incomplete = await handlers.browser_inspect({ action: 'assert', expect: { state: 'text', selector: '#result' } });
+  assert.equal(incomplete.code, 'INVALID_ARGUMENTS');
+  const wrongPath = await handlers.browser_diagnose({ action: 'click', selector: '#save', expect: { state: 'url_path', value: '/plan?token=sample' } });
+  assert.equal(wrongPath.code, 'INVALID_ARGUMENTS');
   const blocked = await handlers.browser_act({ action: 'open', url: 'file:///etc/passwd' });
   assert.equal(blocked.code, 'UNSUPPORTED_URL');
   const remote = await handlers.browser_act({ action: 'navigate', url: 'https://example.com' });

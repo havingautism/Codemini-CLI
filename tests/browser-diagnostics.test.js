@@ -26,8 +26,47 @@ function inside(root, file) {
 }
 
 function startServer(root) {
+  let saved = false;
   const server = http.createServer((request, response) => {
     const url = new URL(request.url || '/', 'http://127.0.0.1');
+    if (url.pathname === '/plan' || url.pathname === '/plans/saved') {
+      response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      response.end(`<!doctype html><title>Plan</title>
+        <button id="save">保存</button><button id="fail">失败</button>
+        <p id="result">${saved ? '已保存的测试计划' : ''}</p><p id="error" hidden>保存失败</p>
+        <script>
+          document.querySelector('#save').onclick = async () => {
+            const response = await fetch('/api/plan?token=test-token', { method: 'POST', body: 'test-request-body' });
+            if (!response.ok) return;
+            await response.text();
+            document.querySelector('#result').textContent = '已保存的测试计划';
+            history.pushState({}, '', '/plans/saved');
+          };
+          document.querySelector('#fail').onclick = async () => {
+            await fetch('/api/error', { method: 'POST' });
+            try { await fetch('/api/disconnected', { method: 'POST' }); } catch {}
+            document.querySelector('#error').hidden = false;
+          };
+        </script>`);
+      return;
+    }
+    if (url.pathname === '/api/plan' && request.method === 'POST') {
+      setTimeout(() => {
+        saved = true;
+        response.writeHead(201);
+        response.end('test-response-body');
+      }, 250);
+      return;
+    }
+    if (url.pathname === '/api/error') {
+      response.writeHead(503);
+      response.end();
+      return;
+    }
+    if (url.pathname === '/api/disconnected') {
+      request.socket.destroy();
+      return;
+    }
     if (url.pathname === '/probe.json') {
       response.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
       response.end('{"ok":true}');
@@ -146,6 +185,49 @@ test('plain page diagnostics', { skip: !enabled, timeout: 180000 }, async () => 
         channel: opened.channel,
       }));
     }
+  });
+});
+
+test('diagnose a plan save and verify persistence after a fresh navigation', { skip: !enabled, timeout: 180000 }, async () => {
+  const plain = path.join(fixtureRoot, 'plain');
+  await withPage(plain, plain, async (handlers, opened, formatters) => {
+    const planUrl = new URL('/plan', opened.url).href;
+    const navigated = await handlers.browser_act({ action: 'navigate', url: planUrl });
+    assert.equal(navigated.ok, true, JSON.stringify(navigated));
+    const saved = await handlers.browser_diagnose({
+      action: 'click', selector: '#save', observe_ms: 100,
+      expect: { state: 'text', selector: '#result', value: '已保存的测试计划' },
+    });
+    assert.equal(saved.assertion?.ok, true, JSON.stringify(saved));
+    assert.match(formatters.browser_diagnose(saved), /expect text: passed/);
+    assert.deepEqual(saved.network.map(({ method, url, status, outcome }) => ({ method, url, status, outcome })), [
+      { method: 'POST', url: new URL('/api/plan', planUrl).href, status: 201, outcome: 'finished' },
+    ]);
+    assert.ok(saved.network[0].elapsed_ms > 0);
+    const logs = await handlers.browser_inspect({ action: 'logs', kind: 'network' });
+    assert.doesNotMatch(JSON.stringify([saved, logs]), /test-token|test-request-body|test-response-body/);
+    const route = await handlers.browser_inspect({ action: 'assert', expect: { state: 'url_path', value: '/plans/saved' } });
+    assert.equal(route.ok, true, JSON.stringify(route));
+    const refreshed = await handlers.browser_act({ action: 'navigate', url: new URL('/plans/saved', planUrl).href });
+    assert.equal(refreshed.ok, true, JSON.stringify(refreshed));
+    const persisted = await handlers.browser_inspect({
+      action: 'assert', expect: { state: 'text', selector: '#result', value: '已保存的测试计划' },
+    });
+    assert.equal(persisted.ok, true, JSON.stringify(persisted));
+    const missing = await handlers.browser_inspect({
+      action: 'assert', timeout_ms: 200, expect: { state: 'visible', selector: '#missing' },
+    });
+    assert.equal(missing.code, 'ASSERTION_FAILED');
+    assert.equal(missing.assertion?.reason, 'timeout');
+    const failed = await handlers.browser_diagnose({
+      action: 'click', selector: '#fail', observe_ms: 100, timeout_ms: 500,
+      expect: { state: 'hidden', selector: '#result' },
+    });
+    assert.equal(failed.click?.ok, true, JSON.stringify(failed));
+    assert.equal(failed.assertion?.ok, false, JSON.stringify(failed));
+    assert.ok(failed.network.some((entry) => entry.url.endsWith('/api/error') && entry.status === 503));
+    assert.ok(failed.network.some((entry) => entry.url.endsWith('/api/disconnected') && entry.outcome === 'failed'));
+    assert.match(formatters.browser_diagnose(failed), /HTTP 503/);
   });
 });
 

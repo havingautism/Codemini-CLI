@@ -636,7 +636,8 @@ function installVisualFeedbackOverlay(inputStrings) {
       .composer-block { flex: none; }
       .notes-list { overflow: auto; min-height: 0; max-height: min(360px, 50vh); }
       .composer-block + .notes-list { border-top: 1px solid rgba(255,255,255,0.10); padding-top: 8px; }
-      .brand { flex: 0 0 auto; font-weight: 600; font-size: 11px; letter-spacing: -0.01em; color: #c8c4be; padding: 0 8px 0 2px; white-space: nowrap; }
+      .brand { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 6px; font-weight: 600; font-size: 11px; letter-spacing: -0.01em; color: #c8c4be; padding: 0 8px 0 2px; white-space: nowrap; }
+      .beta { font-size: 9px; font-weight: 650; letter-spacing: 0.04em; text-transform: uppercase; line-height: 1; padding: 2px 4px; border-radius: 4px; color: #d6d1c8; background: rgba(255,255,255,0.08); box-shadow: inset 0 0 0 1px rgba(255,255,255,0.14); }
       .toolbar button, .tray button { font: inherit; border: 0; cursor: pointer; }
       .toolbar button { display: inline-flex; align-items: center; gap: 5px; height: 32px; padding: 0 8px; border-radius: 8px; background: transparent; color: #f5f5f4; font-weight: 550; white-space: nowrap; }
       .toolbar button:hover:not(:disabled) { background: rgba(255,255,255,0.08); }
@@ -949,8 +950,9 @@ function installVisualFeedbackOverlay(inputStrings) {
     const tray = trayBody ? `<div class="tray">${trayBody}</div>` : ''
     const lang = strings.locale === 'en' ? 'en' : 'zh-CN'
     root.setAttribute('lang', lang)
-    const toolbarHtml = `<div class="toolbar" role="toolbar" aria-label="${escapeHtml(tx('visualFeedbackOverlayTitle'))}">
-        <span class="brand">${escapeHtml(tx('visualFeedbackOverlayTitle'))}</span>
+    const overlayTitle = tx('visualFeedbackOverlayTitle')
+    const toolbarHtml = `<div class="toolbar" role="toolbar" aria-label="${escapeHtml(`${overlayTitle} ${tx('visualFeedbackBeta')}`)}">
+        <span class="brand">${escapeHtml(overlayTitle)}<span class="beta">${escapeHtml(tx('visualFeedbackBeta'))}</span></span>
         <button type="button" data-action="toggle" ${envOk ? '' : 'disabled'} aria-pressed="${state.mode ? 'true' : 'false'}">${icon('select')}${escapeHtml(state.mode ? tx('visualFeedbackOverlayStop') : tx('visualFeedbackOverlayStart'))}</button>
         <button type="button" data-action="toggle-list" aria-pressed="${state.listOpen ? 'true' : 'false'}">${icon('notes')}${escapeHtml(countLabel)}</button>
         <button type="button" class="primary" data-action="submit" ${count ? '' : 'disabled'}>${icon('submit')}${escapeHtml(tx('visualFeedbackOverlaySubmit', { count }))}</button>

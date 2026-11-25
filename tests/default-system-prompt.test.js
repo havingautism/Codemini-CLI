@@ -164,5 +164,5 @@ test('subagents receive web guidance without changing their stable prefix by rol
   assert.equal(explorer, coder);
   assert.match(explorer, /Within your allowed tool scope/);
   assert.match(explorer, /tool_search\(\{"query":"web_search"\}\)/);
-  assert.match(explorer, /prefer it over curl for reading web pages/);
+  assert.match(explorer, /web_fetch:[^\n]*prefer it over curl\b/);
 });

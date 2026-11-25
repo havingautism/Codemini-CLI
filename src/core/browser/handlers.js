@@ -7,7 +7,7 @@ import { browserError, browserOk, formatBrowserResult } from './result.js';
 import { describeTarget, resolvePageUrl, targetError, validateTarget } from './target.js';
 import { diffSnapshot } from './cascade.js';
 import { captureSnapshot } from './snapshot.js';
-import { backendForSelector, explainStyle, hitTest, listListeners, locateSource, probeClick } from './diagnostics.js';
+import { backendForSelector, explainStyle, hitTest, listListeners, locateSource, probeClick, waitForBrowserOutcome } from './diagnostics.js';
 import { isLibraryPath, parseStackFrames } from './sourcemap.js';
 
 function fail(tool, error) {
@@ -383,6 +383,34 @@ async function close(session) {
   });
 }
 
+function describeOutcome(assertion) {
+  return `expect ${assertion.state}: ${assertion.ok ? 'passed' : `failed (${assertion.reason})`} in ${assertion.elapsed_ms}ms`;
+}
+
+async function assertOutcome(session, args) {
+  return guard('browser_inspect', async () => {
+    const closed = requirePage(session, 'browser_inspect');
+    if (closed) return closed;
+    const timeout = pickInt(args.timeout_ms, BROWSER_LIMITS.actionTimeoutMs.default, BROWSER_LIMITS.actionTimeoutMs);
+    if (timeout.error) return browserError('browser_inspect', 'INVALID_ARGUMENTS', timeout.error);
+    const assertion = await waitForBrowserOutcome(session.page, args.expect, timeout.value);
+    const summary = describeOutcome(assertion);
+    return assertion.ok ? browserOk('browser_inspect', { summary, assertion })
+      : browserError('browser_inspect', 'ASSERTION_FAILED', summary, { assertion });
+  });
+}
+
+function summarizeNetwork(entries) {
+  const displayed = entries.slice(0, 5).map((entry) => {
+    const status = entry.status === undefined ? '' : ` HTTP ${entry.status}`;
+    const outcome = entry.outcome === 'finished' ? '' : ` ${entry.failure || entry.outcome}`;
+    const duration = entry.elapsed_ms === undefined ? '' : ` ${entry.elapsed_ms}ms`;
+    return `${entry.method} ${entry.url}${status}${outcome}${duration}`;
+  });
+  if (entries.length > displayed.length) displayed.push(`+${entries.length - displayed.length} more`);
+  return displayed.join(' | ') || '0';
+}
+
 async function diagnose(session, args = {}) {
   return guard('browser_diagnose_click', async () => {
     const parsed = parsedTarget('browser_diagnose_click', args);
@@ -414,24 +442,25 @@ async function diagnose(session, args = {}) {
         mutations: [],
       });
     }
-    const probe = await probeClick(session.page, found.locator, { timeout: timeout.value, observeMs: observe.value });
+    const probe = await probeClick(session.page, found.locator, {
+      timeout: timeout.value,
+      observeMs: observe.value,
+      expectation: args.expect,
+    });
     const lines = [
       `${describeTarget(found.target)}: ${probe.click.ok ? 'click ran' : `${probe.click.code} ${probe.click.error}`}`,
+      probe.assertion ? describeOutcome(probe.assertion) : '',
       hit ? `hit: ${hit.reason}${hit.top?.id ? ` top=#${hit.top.id}` : hit.top?.tag ? ` top=${hit.top.tag}` : ''}` : '',
       probe.exceptions.length ? `exceptions: ${probe.exceptions.map((item) => item.text).join(' | ')}` : 'exceptions: 0',
       probe.console.length ? `console: ${probe.console.map((item) => `${item.level} ${item.text}`).join(' | ')}` : 'console: 0',
-      probe.network.length ? `network: ${probe.network.map((item) => `${item.method} ${item.url}`).join(' | ')}` : 'network: 0',
+      `network: ${summarizeNetwork(probe.network)}`,
       probe.mutations.length ? `dom: ${probe.mutations.slice(0, 5).map((item) => `${item.type}${item.attribute ? ` ${item.attribute}` : ''} +${item.added}/-${item.removed}`).join('; ')}` : 'dom: 0',
     ].filter(Boolean);
     return browserOk('browser_diagnose_click', {
       summary: lines.join('\n'),
       target: found.target,
-      click: probe.click,
       hit,
-      console: probe.console,
-      exceptions: probe.exceptions,
-      network: probe.network,
-      mutations: probe.mutations,
+      ...probe,
     });
   });
 }
@@ -558,6 +587,7 @@ export function buildBrowserHandlers(session) {
       snapshot: () => snapshot(session, args),
       screenshot: () => screenshot(session, args),
       logs: () => logs(session, args),
+      assert: () => assertOutcome(session, args),
       explain_style: () => style(session, args),
       listeners: () => listeners(session, args),
       locate_source: () => locate(session, args),

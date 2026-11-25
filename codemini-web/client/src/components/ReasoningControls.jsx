@@ -458,7 +458,7 @@ export function ReasoningQuickControl({ enabled, auto = false, effort, disabled 
           disabled={disabled}
           title={t("reasoningQuickControl")}
         >
-          <Brain size={13} weight={reasoningEnabled ? "fill" : "regular"} />
+          <Brain size={14} weight={reasoningEnabled ? "fill" : "regular"} />
           <span className="truncate">{triggerLabel}</span>
         </button>
       </PopoverTrigger>

@@ -1,5 +1,5 @@
 import { locateSource } from './diagnostics.js'
-import { ensureDevServer, isLikelyAuthPage } from './dev-server.js'
+import { ensureDevServer, isLikelyAuthPage, stopSpawnedProcess } from './dev-server.js'
 import { probeDevEnvironment } from './environment.js'
 import { isGeneratedBundlePath, isLibraryPath, isOriginalSourcePath } from './sourcemap.js'
 import {
@@ -89,7 +89,7 @@ export function formatVisualFeedbackVerificationContract(notes = []) {
     '- After you make edits, run existing project tests if present, and verify the change in this same session.',
   ]
   if (hasFunctional) {
-    lines.push('- For functional notes that need a click or live check, click the element and inspect the resulting route, dialog, console, and network. Do not rely on screenshots alone.')
+    lines.push('- For functional notes, click the element with browser_diagnose and verify the business outcome with expect or browser_inspect assert.')
   }
   return lines.join('\n')
 }
@@ -628,7 +628,7 @@ export function createVisualFeedbackController({ getSession, workspaceRoot, onSu
       const session = await resolveSession().catch(() => null)
       if (session?.isOpen?.()) await session.dispose()
       if (stopDevServer && devServer && devServer.exitCode == null) {
-        devServer.kill('SIGTERM')
+        await stopSpawnedProcess(devServer)
       }
       lastOpen = null
       return { ok: true }

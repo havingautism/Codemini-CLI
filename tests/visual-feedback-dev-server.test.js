@@ -20,6 +20,7 @@ import {
   looksLikeNonHttpEntrypoint,
   packageManagerCommand,
   pickLoginOpenUrl,
+  stopSpawnedProcess,
 } from '../src/core/browser/dev-server.js';
 
 function viteHtml() {
@@ -432,9 +433,7 @@ server.listen(0, '127.0.0.1', () => {
       assert.ok(started.url);
       assert.match(started.url, /^http:\/\/127\.0\.0\.1:\d+/);
     } finally {
-      if (started?.child && started.child.exitCode == null) {
-        started.child.kill('SIGTERM');
-      }
+      await stopSpawnedProcess(started?.child);
     }
   });
 });
