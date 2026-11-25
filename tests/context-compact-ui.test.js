@@ -9,6 +9,7 @@ const zh = readFileSync(new URL('../codemini-web/client/i18n/zh.js', import.meta
 const loop = readFileSync(new URL('../src/core/agent-loop.js', import.meta.url), 'utf8');
 const runtime = readFileSync(new URL('../src/core/chat-runtime.js', import.meta.url), 'utf8');
 const bubble = readFileSync(new URL('../codemini-web/client/src/components/MessageBubble.jsx', import.meta.url), 'utf8');
+const tui = readFileSync(new URL('../src/tui/opencode-chat-app.js', import.meta.url), 'utf8');
 
 function sliceBetween(source, start, end) {
   const from = source.indexOf(start);
@@ -18,11 +19,13 @@ function sliceBetween(source, start, end) {
   return source.slice(from, to);
 }
 
-test('compact in-progress copy names the context for preflight and mid-turn', () => {
-  assert.match(en, /runtimeActivityCompacting:\s*"Compressing context"/);
-  assert.match(zh, /runtimeActivityCompacting:\s*"上下文压缩中"/);
-  assert.match(en, /compactDivider:\s*"Previous context compacted"/);
-  assert.match(zh, /compactDivider:\s*"以上内容已压缩"/);
+test('compact in-progress copy is the live auto-compact status', () => {
+  assert.match(en, /runtimeActivityCompacting:\s*"Auto-compacting…"/);
+  assert.match(zh, /runtimeActivityCompacting:\s*"自动压缩中…"/);
+  assert.match(en, /compactDividerLead:\s*"Context compacted"/);
+  assert.match(zh, /compactDividerLead:\s*"已压缩上下文"/);
+  assert.match(en, /compactModePrune:\s*"prune"/);
+  assert.match(zh, /compactModeSummary:\s*"摘要"/);
 
   const startCase = sliceBetween(app, 'case "compact:start"', 'case "compact:auto"');
   assert.match(startCase, /t\("runtimeActivityCompacting"\)/);
@@ -33,28 +36,29 @@ test('compact in-progress copy names the context for preflight and mid-turn', ()
   assert.match(loop, /COMPACT_START_SUMMARY/);
   assert.match(runtime, /emitCompactStart\(false\)/);
   assert.match(runtime, /onStart: \(\) => emitCompactStart\(false\)/);
+  assert.match(tui, /copy\.compacting/);
 });
 
-test('finished compact divider omits mode and percentage', () => {
+test('finished compact divider shows one before/after line with the mode', () => {
   const autoCase = sliceBetween(app, 'case "compact:auto"', 'case "compact:aggressive-prune"');
   assert.match(autoCase, /t\("runtimeActivityCompactDone"\)/);
-  assert.match(autoCase, /t\("compactDivider"\)/);
-  assert.doesNotMatch(autoCase, /event\.mode/);
-  assert.doesNotMatch(autoCase, /event\.threshold/);
+  assert.match(autoCase, /beforePct: event\.beforePct/);
+  assert.match(autoCase, /afterPct: event\.afterPct/);
+  assert.match(autoCase, /compactMode: event\.mode/);
   assert.doesNotMatch(autoCase, /以上内容已压缩 \(/);
 
   const bridgeCase = sliceBetween(bridge, "case 'compact:auto'", "case 'compact:aggressive-prune'");
-  assert.match(bridgeCase, /event\.summary \|\| '以上内容已压缩'/);
-  assert.doesNotMatch(bridgeCase, /event\.mode/);
-  assert.doesNotMatch(bridgeCase, /event\.threshold/);
+  assert.match(bridgeCase, /event\.summary \|\| '已压缩上下文'/);
+  assert.match(bridgeCase, /beforePct: event\.beforePct/);
   assert.doesNotMatch(bridgeCase, /duringTurn/);
 
-  assert.match(runtime, /summary: COMPACT_DONE_SUMMARY/);
+  assert.match(runtime, /summary: summary \|\| COMPACT_DONE_SUMMARY/);
   assert.doesNotMatch(runtime, /以上内容已压缩 \(\$\{inflight\.mode\}/);
-  assert.match(loop, /summary: COMPACT_DONE_SUMMARY/);
+  assert.match(loop, /summary: inflight\.summary/);
   assert.doesNotMatch(loop, /本轮中已压缩 \(\$\{inflight\.mode\}/);
-  assert.match(app, /text: t\("compactDivider"\)/);
-  assert.match(bubble, /t\("compactDivider"\)/);
+  assert.match(bubble, /t\("compactDividerLead"\)/);
+  assert.match(bubble, /compactModePrune/);
+  assert.match(bubble, /% → /);
 });
 
 test('compact completion immediately broadcasts runtime state for the CTX meter', () => {
@@ -62,4 +66,5 @@ test('compact completion immediately broadcasts runtime state for the CTX meter'
   assert.match(bridge, /#broadcastRuntimeState\(\)/);
   assert.match(runtime, /recordCompactContextEstimate/);
   assert.match(runtime, /useCompactEstimate/);
+  assert.match(runtime, /Number\.isFinite\(raw\) && raw >= 0/);
 });

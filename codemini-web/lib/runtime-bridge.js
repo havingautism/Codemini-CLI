@@ -1218,7 +1218,10 @@ export class RuntimeBridge {
         this.#addUiMessage({
           role: 'divider',
           dividerType: 'compact',
-          text: event.summary || '以上内容已压缩',
+          text: event.summary || '已压缩上下文',
+          beforePct: event.beforePct,
+          afterPct: event.afterPct,
+          compactMode: event.mode === 'prune' || event.mode === 'summary' ? event.mode : '',
           timestamp: new Date().toISOString()
         });
         break;

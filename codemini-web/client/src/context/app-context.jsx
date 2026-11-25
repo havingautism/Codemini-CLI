@@ -2608,6 +2608,10 @@ export function AppProvider({ children }) {
           break;
         }
 
+        case "compact:skipped":
+          clearRuntimeActivityLater("runtime-compact", 0);
+          break;
+
         case "compact:start":
           upsertRuntimeActivity({
             key: "compact",
@@ -2627,7 +2631,10 @@ export function AppProvider({ children }) {
           addMessage({
             role: "divider",
             dividerType: "compact",
-            text: t("compactDivider"),
+            text: event.summary || t("compactDivider"),
+            beforePct: event.beforePct,
+            afterPct: event.afterPct,
+            compactMode: event.mode === "prune" || event.mode === "summary" ? event.mode : "",
             timestamp: new Date().toISOString(),
           });
           break;
@@ -3112,6 +3119,7 @@ export function AppProvider({ children }) {
       addMessage,
       update,
       upsertRuntimeActivity,
+      clearRuntimeActivityLater,
       loadGitInfo,
       loadHistory,
       loadSessions,

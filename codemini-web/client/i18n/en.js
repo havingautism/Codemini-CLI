@@ -390,9 +390,12 @@ export const en = {
   runtimeActivityDreamRunning: "Dream is consolidating memory",
   runtimeActivityDreamDone: "Dream complete",
   runtimeActivityDreamError: "Dream failed",
-  runtimeActivityCompacting: "Compressing context",
+  runtimeActivityCompacting: "Auto-compacting…",
   runtimeActivityCompactDone: "Context compacted",
-  compactDivider: "Previous context compacted",
+  compactDivider: "Context compacted",
+  compactDividerLead: "Context compacted",
+  compactModePrune: "prune",
+  compactModeSummary: "summary",
   runtimeActivityAggressivePrune: "Aggressive prune (beta)",
   runtimeActivityCompactPreview: "Compact preview",
   runtimeActivityMicroCompactDone: "Micro-compact complete",
@@ -910,10 +913,10 @@ export const en = {
   contextMaxTokens: "Context Token Budget",
   preflightTrigger: "Preflight Trigger (%)",
   preflightTriggerHelp:
-    "When estimated context usage reaches this percentage, auto compaction runs before the next model call.",
+    "Auto-compact when usage reaches this percentage of the context window. 0 uses the automatic ceiling: the window minus the larger of 16k tokens and 15% of the window (or the model's output limit when that is larger).",
   hardLimit: "Hard Limit (%)",
   hardLimitHelp:
-    "At this usage percentage, compaction switches to aggressive mode to avoid overflowing the context window.",
+    "At this usage percentage, summary compaction keeps a shorter recent tail to avoid overflowing the context window.",
   toolResultMaxChars: "Tool Result Char Limit",
   toolResultMaxCharsHelp:
     "Tool outputs longer than this are truncated before being sent back to the model.",

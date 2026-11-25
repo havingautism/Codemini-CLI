@@ -190,9 +190,9 @@ export function buildSettingsFields() {
       path: "context.preflight_trigger_pct",
       control: "percent",
       label: t("preflightTrigger"),
-      placeholder: "60",
+      placeholder: "0",
       help: t("preflightTriggerHelp"),
-      min: 1,
+      min: 0,
       max: 100,
     },
     {
