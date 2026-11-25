@@ -1,4 +1,5 @@
 import { getTokenActivity, getSessionTokenUsage } from '../src/core/token-usage-store.js';
+import { isImmediateGoalControl } from '../src/core/goal-command.js';
 import { isScheduledSessionActive, getScheduledChangeState } from '../src/core/scheduled-task-store.js';
 import { createScheduledTaskNotifier } from './lib/scheduled-task-notifier.js';
 import { startScheduledWorker } from '../src/core/scheduled-worker-process.js';
@@ -741,6 +742,18 @@ function ensureAcceptedBridgeResult(result) {
   return result;
 }
 
+async function respondToGoalControl(res, bridge, text) {
+  if (!isImmediateGoalControl(text)) {
+    jsonResponse(res, { error: true, message: '此入口仅支持 /goal、/goal status 和 /goal pause。' }, 400);
+    return;
+  }
+  try {
+    jsonResponse(res, await bridge.handleGoalControl(text));
+  } catch (error) {
+    chatErrorResponse(res, error, 'INVALID_REQUEST');
+  }
+}
+
 export function createEventBroker({ getConnectionData = () => ({}) } = {}) {
   const clients = new Set();
   const publish = (event) => {
@@ -1378,6 +1391,12 @@ export function createWebRuntimeApi({
       return true;
 
   }));
+  runtimeRoutes.post("/api/chat/goal/control", nodeRoute(async (req, res) => {
+    const body = await readBody(req);
+    const bridge = await loadBridge(res, body?.sessionId);
+    if (bridge) await respondToGoalControl(res, bridge, body?.text);
+    return true;
+  }));
   runtimeRoutes.post("/api/chat/message", nodeRoute(async (req, res, url) => {
       const body = await readBody(req);
       const bridge = await loadBridge(res, body?.sessionId);
@@ -1928,6 +1947,12 @@ export function createWebRuntimeApi({
 
 export async function handleStructuredChatRequest(req, res, bridge) {
   const url = new URL(req.url, "http://localhost");
+
+  if (req.method === "POST" && url.pathname === "/api/chat/goal/control") {
+    const body = await readBody(req);
+    await respondToGoalControl(res, bridge, body?.text);
+    return true;
+  }
 
   if (req.method === "POST" && url.pathname === "/api/chat/message") {
     const body = await readBody(req);

@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { getSessionsDir } from './paths.js';
 import { normalizePlanState } from './plan-state.js';
+import { normalizeGoalState, pauseGoal } from './goal-state.js';
 import { normalizeSpecState } from './spec-state.js';
 import { normalizeTodos } from './todo-state.js';
 import { normalizeCrewState } from './crew-store.js';
@@ -11,9 +12,11 @@ import {
   deleteSessionFromSqlite,
   listSessionsFromSqlite,
   loadSessionFromSqlite,
+  readStoredGoalState,
   rememberSessionMessageRefs,
   saveSessionToSqlite,
-  sessionMessageWriteStart
+  sessionMessageWriteStart,
+  writeStoredGoalState
 } from './session-sqlite-store.js';
 
 const ALLOWED_ROLES = new Set(['system', 'user', 'assistant', 'tool']);
@@ -333,7 +336,7 @@ function sanitizeMessage(msg) {
   return out;
 }
 
-function sanitizeSession(session, fallbackId = '') {
+function sanitizeSession(session, fallbackId = '', { includeGoal = true } = {}) {
   const id = String(session?.id || fallbackId || '').trim();
   if (!id) throw new Error('Session id is required');
   const now = new Date().toISOString();
@@ -367,6 +370,8 @@ function sanitizeSession(session, fallbackId = '') {
     ? null
     : normalizePlanState(session?.planState);
   if (normalizedPlan) out.planState = normalizedPlan;
+  const goalState = includeGoal && normalizeGoalState(session?.goalState);
+  if (goalState) out.goalState = goalState;
   const normalizedSpec = normalizeSpecState(session?.specState) || legacySpecState;
   if (normalizedSpec) out.specState = normalizedSpec;
 
@@ -756,7 +761,7 @@ function cloneSessionMessages(messages = []) {
 }
 
 /** Copy completed history into a new session so a manual stop can continue without appending under the aborted turn. */
-export async function createContinuationSession(source, { messages = [], compactView = null } = {}) {
+export async function createContinuationSession(source, { messages = [], compactView = null, carryGoal = false } = {}) {
   const created = await createSession(source?.projectDir);
   if (source?.id) created.usageParent = { sessionId: source.id, through: created.createdAt };
   created.messages = cloneSessionMessages(messages);
@@ -766,6 +771,11 @@ export async function createContinuationSession(source, { messages = [], compact
   if (Array.isArray(source?.todos) && source.todos.length) created.todos = source.todos;
   if (source?.planState) created.planState = source.planState;
   if (source?.specState) created.specState = source.specState;
+  // 人工中止时续接原轮次。历史消息分叉默认不继承其后产生的目标与证据。
+  if (carryGoal) {
+    const goalState = normalizeGoalState(source?.goalState);
+    if (goalState) saveSessionGoal(created, pauseGoal(goalState, '运行已中止，进度已保留。'));
+  }
   if (typeof source?.lastSystemPrompt === 'string' && source.lastSystemPrompt) {
     created.lastSystemPrompt = source.lastSystemPrompt;
   }
@@ -808,10 +818,28 @@ export async function loadSession(sessionId) {
 export async function saveSession(session, { preserveUpdatedAt = '' } = {}) {
   const originals = Array.isArray(session?.messages) ? session.messages : [];
   const writeFrom = sessionMessageWriteStart(session?.id, originals);
-  const normalized = sanitizeSession(session);
+  // 目标有独立的版本写入路径。保存聊天记录时无需复制可能较长的证据历史。
+  const normalized = sanitizeSession(session, '', { includeGoal: false });
   normalized.updatedAt = String(preserveUpdatedAt || '').trim() || new Date().toISOString();
   saveSessionToSqlite(normalized, { writeFrom });
   rememberSessionMessageRefs(session.id, originals);
+}
+
+export function readSessionGoal(sessionId) {
+  return normalizeGoalState(readStoredGoalState(sessionId));
+}
+
+export function saveSessionGoal(session, next, { expected = session.goalState ?? null } = {}) {
+  const goalState = normalizeGoalState(next);
+  if (!goalState || !session.id) throw new Error('会话或目标状态无效，无法保存。');
+  goalState.version = (expected?.version ?? 0) + 1;
+  if (!writeStoredGoalState(session.id, goalState, expected)) {
+    const error = new Error('目标已被其他运行更新，请重新查看目标状态。');
+    error.code = 'GOAL_STATE_CONFLICT';
+    throw error;
+  }
+  session.goalState = goalState;
+  return goalState;
 }
 
 export async function resolveSession(sessionId) {

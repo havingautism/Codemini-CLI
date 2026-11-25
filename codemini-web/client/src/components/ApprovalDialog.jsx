@@ -230,7 +230,7 @@ function ApprovalBody({ variant, args, details }) {
   return <PreviewRow label={t('approvalFieldArguments')} value={parsed._raw || '-'} />;
 }
 
-export function ApprovalDialog({ request, open, onDecision }) {
+export function ApprovalDialog({ request, open, onDecision, onPauseGoal }) {
   const [submitting, setSubmitting] = useState(false);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [feedback, setFeedback] = useState('');
@@ -261,6 +261,7 @@ export function ApprovalDialog({ request, open, onDecision }) {
   const handleKeyDownCapture = (event) => {
     if (!hasApprovalShortcuts || submittingRef.current) return;
     if (event.defaultPrevented || event.repeat) return;
+    if (event.key === 'Enter' && event.target.closest?.('[data-goal-pause]')) return;
 
     if (event.key === 'Escape') {
       event.preventDefault();
@@ -337,6 +338,20 @@ export function ApprovalDialog({ request, open, onDecision }) {
             </div>
           )}
           <DialogFooter className="codemini-approval-footer gap-2">
+            {onPauseGoal && (
+              <Button type="button" data-goal-pause variant="ghost" disabled={submitting} onClick={async () => {
+                if (submittingRef.current) return;
+                submittingRef.current = true;
+                setSubmitting(true);
+                const result = await onPauseGoal();
+                if (result?.error) {
+                  submittingRef.current = false;
+                  setSubmitting(false);
+                }
+              }}>
+                暂停目标
+              </Button>
+            )}
             {feedbackOpen ? (
               <>
                 <Button variant="ghost" disabled={submitting} onClick={() => setFeedbackOpen(false)}>

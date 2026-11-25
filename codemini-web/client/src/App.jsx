@@ -833,6 +833,9 @@ function Shell() {
       <ApprovalDialog
         request={approvalRequest}
         open={!!approvalRequest}
+        onPauseGoal={approvalRequest?.goalControl
+          ? () => actions.submit('/goal pause', { sessionId: approvalRequest.sessionId || state.currentSessionId })
+          : undefined}
         onDecision={(id, actionName, payload) =>
           actions.approve(id, actionName, approvalRequest?.sessionId, payload)
         }

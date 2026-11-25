@@ -61,7 +61,9 @@ export function saveSessionToSqlite(session, { writeFrom = 0 } = {}) {
         project_dir = excluded.project_dir,
         model = excluded.model,
         mode = excluded.mode,
-        state_json = excluded.state_json,
+        state_json = CASE WHEN json_type(sessions.state_json, '$.goalState') = 'object'
+          THEN json_set(excluded.state_json, '$.goalState', json_extract(sessions.state_json, '$.goalState'))
+          ELSE json_remove(excluded.state_json, '$.goalState') END,
         message_count = excluded.message_count
     `).run(id, createdAt, updatedAt, title, projectDir, model, mode, stateJson, messages.length);
 
@@ -108,6 +110,21 @@ export function loadSessionFromSqlite(sessionId) {
     ...state,
     messages
   };
+}
+
+export function readStoredGoalState(sessionId) {
+  const row = getGlobalDatabase().prepare("SELECT state_json -> '$.goalState' AS goal FROM sessions WHERE id = ?").get(sessionId);
+  return parseJson(row?.goal, null);
+}
+
+export function writeStoredGoalState(sessionId, goalState, expected) {
+  // 只锁定目标字段。多个客户端从同一版本接手时，只有一个更新能够命中。
+  const result = getGlobalDatabase().prepare(`
+    UPDATE sessions SET state_json = json_set(state_json, '$.goalState', json(?)), updated_at = ?
+    WHERE id = ? AND json_extract(state_json, '$.goalState.id') IS ?
+      AND COALESCE(json_extract(state_json, '$.goalState.version'), 0) = ?
+  `).run(JSON.stringify(goalState), new Date().toISOString(), sessionId, expected?.id ?? null, expected?.version ?? 0);
+  return result.changes === 1;
 }
 
 export function listSessionsFromSqlite(limit = 30, { includeEmpty = false } = {}) {

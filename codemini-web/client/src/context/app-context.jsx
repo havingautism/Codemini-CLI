@@ -42,6 +42,7 @@ import {
   runSessionOperation,
 } from "../lib/session-state.js";
 import { isSessionTurnBusyResult } from "../lib/session-turn-busy.js";
+import { isImmediateGoalControl } from "../../../../src/core/goal-command.js";
 import { buildMcpToolDisplayLabels } from "../../../../src/core/mcp-tool-display.js";
 import { setMcpToolDisplayLabels } from "../../../../src/core/tool-display.js";
 import {
@@ -3553,6 +3554,35 @@ export function AppProvider({ children }) {
           ? { text: input, skillNames: [], attachmentIds: [], dismissedAlwaysSkills: [] }
           : input || {};
         const line = String(message.text || "");
+        if (isImmediateGoalControl(line)) {
+          let result;
+          try {
+            result = await api.submitGoalControl(sessionId, line);
+          } catch (error) {
+            result = { type: "error", error: true, text: error.message || "目标命令执行失败" };
+          }
+          const text = result.text || result.output;
+          if (text) {
+            const reply = {
+              id: `goal-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+              role: result.type === "error" ? "error" : "system",
+              text,
+              segments: [{ type: "text", text, isStreaming: false }],
+              timestamp: new Date().toISOString(),
+            };
+            setState((prev) => {
+              const visible = prev.currentSessionId === sessionId;
+              const history = visible ? prev.messages : prev.sessionMessagesById[sessionId] || [];
+              const messages = [...history, reply];
+              return {
+                ...prev,
+                ...(visible ? { messages } : {}),
+                sessionMessagesById: { ...prev.sessionMessagesById, [sessionId]: messages },
+              };
+            });
+          }
+          return result;
+        }
         if (
           !line.trim() &&
           !(message.attachmentIds || []).length &&

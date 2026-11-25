@@ -184,6 +184,14 @@ export async function submitMessage(sessionId, body = {}) {
   });
 }
 
+export async function submitGoalControl(sessionId, text) {
+  return readJsonOrThrow(await api('/api/chat/goal/control', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ sessionId, text }),
+  }));
+}
+
 export async function drainCrewPendingWakes(sessionId) {
   const res = await api('/api/chat/crew-wakes/drain', {
     method: 'POST',
