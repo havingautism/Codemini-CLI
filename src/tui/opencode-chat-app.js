@@ -392,6 +392,8 @@ export async function runOpenCodeTui({ runtime, sessionId, model, safeMode = tru
       }
       activePlan = plan;
       setActivity(type === 'plan:step_done' ? 'tool' : 'thinking', event.title || copy.working);
+    } else if (type === 'goal:verdict') {
+      transcript.addChild(createSystemMessage([event.name, event.summary].filter(Boolean).join(' · '), color.muted));
     } else if (type === 'goal:waiting') {
       setActivity('tool', [event.name, event.summary].filter(Boolean).join(' · '));
     } else if (type === 'compact:auto' || type === 'dream:auto' || type === 'dream:complete') {

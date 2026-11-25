@@ -6,6 +6,7 @@ import os from "node:os";
 import { execFileSync, spawn } from "node:child_process";
 import { createRequire } from "node:module";
 import { createHash } from "node:crypto";
+import { createGoalLogProgress } from "./goal-work.js";
 import { rgPath } from "@vscode/ripgrep";
 import net from "node:net";
 import {
@@ -2534,8 +2535,18 @@ async function startBackgroundTask(root, config, args, context = {}) {
 
   const finiteGoalCommand = goalOwned && !classifyCommandIntent(command).longRunning && !portProbe && !httpProbe;
   const output = { stdout: "", stderr: "" };
+  const progress = finiteGoalCommand ? createGoalLogProgress() : null;
+  if (progress) {
+    for (const stream of ["stdout", "stderr"]) {
+      task.child[stream].setEncoding("utf8");
+      task.child[stream].once("end", () => progress.write(stream, "\n"));
+    }
+  }
   const onOutput = (stream, chunk) => {
-    if (finiteGoalCommand) output[stream] = (output[stream] + chunk).slice(-65536);
+    if (progress) {
+      progress.write(stream, chunk);
+      output[stream] = (output[stream] + chunk).slice(-65536);
+    }
     appendRecentOutput(task, chunk);
     queueBackgroundTaskOutputWrite(task, chunk);
     if (matchesTaskStartupSuccess(task, chunk)) {
@@ -2564,10 +2575,14 @@ async function startBackgroundTask(root, config, args, context = {}) {
   }
   try {
     if (finiteGoalCommand) {
-      const finish = await context.watchGoalShell("后台命令 " + taskId, () => ({
-        cursor: task.recentLogs.at(-1)?.cursor || 0,
-        detail: `命令：${command.slice(0, 160)}。日志：${task.outputFile}`,
-      }));
+      const finish = await context.watchGoalShell("后台命令 " + taskId, () => {
+        const { progress: count, last } = progress.snapshot();
+        return {
+          cursor: task.recentLogs.at(-1)?.cursor || 0,
+          progress: count,
+          detail: `命令：${command.slice(0, 160)}。日志：${task.outputFile}` + (last ? `。最近进展：${last}` : ""),
+        };
+      });
       await Promise.race([task.closePromise, cancelled.promise]);
       await task.outputWrite;
       const ok = !context.signal?.aborted && task.status === "exited" && task.exitCode === 0;
@@ -7540,6 +7555,7 @@ export function getBuiltinTools({
       }
       return runCommand(workspaceRoot, config, args, { ...context, watchGoalShell });
     }, {
+      goalWorkingDirectory: workspaceRoot,
       prepareApproval: async (args) => {
         const evaluation = args?._evaluation || null;
         const risk = String(args?._risk || "").trim() ||

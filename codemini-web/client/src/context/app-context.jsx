@@ -79,6 +79,7 @@ import {
   removeEmptyAssistantPlaceholders,
   latestRetryableMessageId,
   updateSkillInSegments,
+  goalVerdictMessage,
 } from "../../../shared/transcript-segments.js";
 import { buildHookSegmentEvent } from "../../../shared/hook-ui.js";
 import { skillBadgesFromSessionMessage } from "../lib/user-skill-prompt.js";
@@ -2595,6 +2596,9 @@ export function AppProvider({ children }) {
           break;
         }
 
+        case "goal:verdict":
+          addMessage(goalVerdictMessage(event));
+          break;
         case "goal:waiting":
           upsertRuntimeActivity({
             key: `goal-wait-${event.sessionId}-${event.id}`,

@@ -1,4 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { goalResolutionHint, unresolvedGoalOperations } from './goal-operations.js';
+import { integerSequenceRange, reviewIntegerSequence } from './goal-count-verification.js';
 
 const statuses = new Set(['active', 'paused', 'exhausted', 'completed', 'failed']);
 const activePhases = new Set(['ready', 'executing', 'verifying']);
@@ -49,8 +51,11 @@ function normalizeDefinition(input) {
   const pending = input.criteriaPending;
   const { tokenBudget } = input;
   if (tokenBudget != null && (!Number.isSafeInteger(tokenBudget) || tokenBudget < 1)) throw new Error('Token 预算必须是正整数。');
+  const { maxWaitMs } = input;
+  if (maxWaitMs != null && (!Number.isSafeInteger(maxWaitMs) || maxWaitMs < 1)) throw new Error('等待上限必须是正整数毫秒。');
   return { objective, criteria, constraints, maxIterations,
     ...(tokenBudget != null ? { tokenBudget } : {}),
+    ...(maxWaitMs != null ? { maxWaitMs } : {}),
     ...(['infer', 'classify'].includes(pending) ? { criteriaPending: pending } : {}) };
 }
 
@@ -58,7 +63,7 @@ export function createGoalState(input) {
   return {
     id: randomUUID(), version: 0, ...normalizeDefinition(input), status: 'active', phase: 'ready',
     iteration: 0, resumePhase: null, reason: '', report: '', observations: [], verdicts: [], delegations: [],
-    tokensUsed: 0, unreportedRequests: 0, activeMs: 0,
+    tokensUsed: 0, unreportedRequests: 0, activeMs: 0, operations: [],
   };
 }
 
@@ -87,6 +92,7 @@ export function normalizeGoalState(value) {
     resumePhase: value.status === 'paused' && activePhases.has(value.resumePhase) ? value.resumePhase : null,
     reason: cleanText(value.reason), report: typeof value.report === 'string' ? value.report : '',
     observations: structuredClone(observations),
+    operations: structuredClone(Array.isArray(value.operations) ? value.operations : []),
     verdicts: structuredClone(Array.isArray(value.verdicts) ? value.verdicts : []),
     delegations: structuredClone(Array.isArray(value.delegations) ? value.delegations : []),
   };
@@ -137,7 +143,8 @@ export function resumeGoal(goal, { extraIterations = 0, extraTokens = 0 } = {}) 
   if (!Number.isSafeInteger(extraTokens) || extraTokens < 0) throw new Error('追加的 Token 预算必须为非负整数。');
   const tokenBudget = extraTokens ? (goal.tokenBudget ?? goal.tokensUsed) + extraTokens : goal.tokenBudget;
   if (tokenBudget != null && !Number.isSafeInteger(tokenBudget)) throw new Error('Token 预算超出有效范围。');
-  if (tokenBudget != null && goal.tokensUsed >= tokenBudget) {
+  const localReviewPending = goal.status === 'paused' && goal.resumePhase === 'verifying' && integerSequenceRange(goal);
+  if (tokenBudget != null && goal.tokensUsed >= tokenBudget && !localReviewPending) {
     const topUp = goal.status === 'exhausted' && extraIterations === 0 ? '+2 --add-tokens' : '--add-tokens';
     throw new Error(`Token 预算已耗尽，请用 /goal resume ${topUp} 10000 增加预算。`);
   }
@@ -192,7 +199,7 @@ function applicableEvidence(goal, criterionId, currentRevision, proposedChecks =
       if (check.criterionId === criterionId) for (const id of check.evidenceIds) bindings.add(id);
     }
   };
-  for (const verdict of goal.verdicts) collectReferences(verdict.checks);
+  for (const verdict of goal.verdicts || []) collectReferences(verdict.checks);
   collectReferences(proposedChecks);
   const boundChecks = new Set(goal.observations.filter(item =>
     item.checkKey && (item.criterionIds.includes(criterionId) || bindings.has(item.id))).map(item => item.checkKey));
@@ -227,7 +234,7 @@ function normalizeChecks(value) {
   }));
 }
 
-function groundedVerdict(goal, record) {
+export function groundedVerdict(goal, record) {
   if (!record.currentRevision) return false;
   const checks = new Map(record.checks.map(check => [check.criterionId, check.evidenceIds]));
   if (checks.size !== record.checks.length || record.checks.some(check => !goal.criteria.some(criterion => criterion.id === check.criterionId))) return false;
@@ -271,11 +278,18 @@ export function applyGoalVerdict(goal, input = {}) {
     observationCount: goal.observations.length, maxIterations: goal.maxIterations, report: goal.report,
     currentRevision: cleanText(input.currentRevision || input.revision),
     executorModel: cleanText(input.executorModel), gatekeeperModel: cleanText(input.gatekeeperModel),
+    verifierKind: input.verifierKind === 'integer_sequence' ? 'integer_sequence' : 'model',
     checks: normalizeChecks(input.checks),
   };
   let accepted = decision;
   let reason = record.reason;
-  if (decision !== 'pause' && (!record.executorModel || !record.gatekeeperModel ||
+  const local = record.verifierKind === 'integer_sequence';
+  const recount = local && reviewIntegerSequence(goal);
+  if (local && (!recount || record.currentRevision !== 'reply:' + goal.id || recount.decision !== decision ||
+      JSON.stringify(recount.checks) !== JSON.stringify(record.checks))) {
+    accepted = 'pause';
+    reason = '数列复核未能重现本轮验收结果。';
+  } else if (!local && decision !== 'pause' && (!record.executorModel || !record.gatekeeperModel ||
       record.executorModel.toLowerCase() === record.gatekeeperModel.toLowerCase())) {
     accepted = 'pause';
     reason = '独立验收模型不可用，请检查模型配置后继续验收。';
@@ -304,6 +318,25 @@ export function applyGoalVerdict(goal, input = {}) {
 export function renderGoalSummary(goal) {
   const progress = `目标${statusLabels[goal.status]}（轮次 ${goal.iteration}/${goal.maxIterations}）。${usageSummary(goal)}`;
   return goal.reason ? progress + '。' + excerpt(goal.reason, 200) : progress;
+}
+
+export function goalVerdictEvent(goal) {
+  const verdict = goal.verdicts.at(-1);
+  const name = `第 ${verdict.iteration} 轮验收 · ${goal.status === 'active' ? '继续执行' : statusLabels[goal.status]}`;
+  const observations = new Map(goal.observations.map(item => [item.id, item]));
+  const criteria = goal.criteria.map(({ id, text }) => {
+    const check = verdict.checks.find(entry => entry.criterionId === id);
+    const evidence = (check?.evidenceIds || []).map(ref => {
+      const item = observations.get(ref);
+      return { id: ref, summary: item ? excerpt(item.summary || item.source, 180) : '未找到该证据' };
+    });
+    return { id, text, evidence };
+  });
+  return {
+    type: 'goal:verdict', id: `goal-${goal.id}-verdict-${goal.verdicts.length}`,
+    name, summary: goal.reason || verdict.resultReason, criteria, usage: usageSummary(goal),
+    timestamp: new Date().toISOString(),
+  };
 }
 
 function usageSummary(goal) {
@@ -341,9 +374,14 @@ export function renderGoalContext(goal, { fullReport = false } = {}) {
     '验收标准：', ...priorities.map(({ criterion, label }) => `- [${criterion.id}] ${criterion.text}（${label}）`),
     goal.constraints && `约束：${goal.constraints}`,
     usageSummary(goal),
+    goal.maxWaitMs && `每个后台任务等待上限：${goal.maxWaitMs / 1000} 秒`,
     `轮次：${goal.iteration}/${goal.maxIterations}`, goal.reason && `上次结果：${goal.reason}`,
-    goal.status === 'paused' && `恢复阶段：${phaseLabels[goal.resumePhase] || '等待开始下一轮'}。使用 /goal resume 继续。`,
+    goal.status === 'paused' && `恢复阶段：${phaseLabels[goal.resumePhase] || '等待开始下一轮'}。${unresolvedGoalOperations(goal).length ? '须先核对未收到回执的操作。' : '使用 /goal resume 继续。'}`,
     goal.status === 'exhausted' && '如需继续，可用 /goal resume +2 增加两轮。',
+    ...unresolvedGoalOperations(goal).map(op => goal.status === 'active'
+      ? `操作 ${op.id}（${op.label || op.tool}）：正在等待工具回执。` : `操作回执待核对。${goalResolutionHint(op)}`),
+    ...goal.operations.filter(op => op.status !== 'pending').slice(-5).map(op =>
+      `操作 ${op.id}（${op.label || op.tool}，调用 ${op.callId}）：${op.status === 'confirmed' ? '用户已核实生效' : op.status === 'retry' ? '用户已允许重试' : op.summary}`),
     next?.text && !['completed', 'failed'].includes(goal.status) && `建议下一步：${next.text}`,
     goal.report && (fullReport ? goal.report : `最近执行报告：${excerpt(goal.report, 1200)}`),
     ...goal.delegations.slice(-8).map(item => `子任务 ${item.id}（${workerLabels[item.status] || item.status}）：${excerpt(item.name, 100)} ${excerpt(item.summary, 250)} ${excerpt(item.handoffPath, 180)}`.trimEnd()),

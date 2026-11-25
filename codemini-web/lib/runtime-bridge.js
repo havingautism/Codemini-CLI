@@ -9,6 +9,7 @@ import {
   finishThinkingSegments,
   finishStreamingTextSegments,
   normalizeUsage,
+  goalVerdictMessage,
   routingGraphFromEvent,
   memoryInjectFromEvent,
   settleIncompleteTranscriptMessage,
@@ -1211,6 +1212,10 @@ export class RuntimeBridge {
             this.#settleCreatePlanToolCard(undefined, 'completed');
           }
         }
+        break;
+      }
+      case 'goal:verdict': {
+        publishedMessageId = this.#addUiMessage(goalVerdictMessage(event));
         break;
       }
       case 'compact:auto': {

@@ -2300,6 +2300,26 @@ export const MessageBubble = memo(function MessageBubble({
   }
 
   if (role === "divider") {
+    if (message.dividerType === "goal-verdict") {
+      return (
+        <details data-message-id={message.id} className="mx-auto my-2 max-w-[860px] px-6 text-sm">
+          <summary className="cursor-pointer">{message.text}</summary>
+          <ul className="mt-2 space-y-2 pl-5 text-(--text-muted)">
+            {(message.criteria || []).map(item => (
+              <li key={item.id}>
+                <span>{item.text}</span>
+                {item.evidence.length ? (
+                  <ul className="list-disc pl-5">
+                    {item.evidence.map(ref => <li key={ref.id}>{ref.id} · {ref.summary}</li>)}
+                  </ul>
+                ) : <span> · 本轮未引用证据</span>}
+              </li>
+            ))}
+          </ul>
+          <p className="mt-2 pl-5 text-xs text-(--text-muted)">{message.usageText}</p>
+        </details>
+      );
+    }
     if (message.dividerType === "crew-wake") {
       return renderCrewWakeDivider(
         rawMessageText || legacyText || t("crewWakeDivider"),

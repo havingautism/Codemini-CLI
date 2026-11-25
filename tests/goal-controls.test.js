@@ -62,6 +62,41 @@ test('清除和编辑是控制命令，预算仅接受正安全整数', () => {
   assert.deepEqual(parseGoalCommand('/goal resume +2 --add-tokens 10000'), { action: 'resume', extraRounds: 2, extraTokens: 10000 });
 });
 
+test('等待上限在会话重开后仍约束新委派，限时暂停不消耗下一轮', async (t) => {
+  for (const [value, ms] of [['2秒', 2000], ['15分钟', 900000], ['1小时', 3600000]]) {
+    assert.equal(parseGoalCommand('/goal 构建 等待上限：' + value).maxWaitMs, ms);
+  }
+  for (const value of ['0秒', '-1秒', '30', '1.2分钟', '9007199254740992小时']) {
+    assert.equal(parseGoalCommand('/goal 构建 等待上限：' + value).action, 'error');
+  }
+  await withSession(async (session) => {
+    t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+    for (const resume of [false, true]) {
+      const ready = Promise.withResolvers();
+      const runner = makeRunner(resume ? await loadSession(session.id) : session, async (_prompt, _onEvent, { goalHooks, signal }) => {
+        if (resume) await goalHooks.started({ toolName: 'run_subagent', args: { name: '检查分片' }, callId: 'resumed-child' });
+        else await goalHooks.watchShell('后台命令 构建', () => ({ cursor: 0, progress: 0 }));
+        const interrupted = new Promise(resolve => signal.addEventListener('abort', resolve, { once: true }));
+        ready.resolve();
+        await interrupted;
+        return { type: 'assistant', aborted: true, text: '已中断' };
+      });
+      const run = runner.command(parseGoalCommand(resume ? '/goal resume' : '/goal 输出构建结果 等待上限：1秒'));
+      await ready.promise;
+      t.mock.timers.tick(999);
+      assert.equal(readSessionGoal(session.id).status, 'active');
+      t.mock.timers.tick(1);
+      await run;
+      const goal = readSessionGoal(session.id);
+      assert.equal(goal.maxWaitMs, 1000);
+      assert.equal(goal.iteration, 1);
+      assert.equal(goal.status, 'paused');
+      assert.match(goal.reason, /达到等待上限 1 秒/);
+      assert.match(goal.reason, resume ? /检查分片/ : /后台命令/);
+    }
+  });
+});
+
 test('运行中连续补充会取消旧执行，原调用按最终要求接续并废弃旧交接', async () => {
   await withSession(async (session) => {
     const first = Promise.withResolvers();

@@ -7,6 +7,7 @@ server.registerTool(
   'echo',
   {
     description: 'Echo a value for Codemini MCP integration tests',
+    annotations: { readOnlyHint: true },
     inputSchema: { value: z.string() },
   },
   async ({ value }) => ({ content: [{ type: 'text', text: `echo:${value}` }] }),

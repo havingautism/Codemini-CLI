@@ -105,7 +105,7 @@ test('设有预算且提供商未报告 Token 时保存提取结果并在下一�
   assert.match(paused.reason, /未报告/);
 });
 
-async function fixture(t, { approvalMode = 'auto', context = {}, shell } = {}) {
+async function fixture(t, { approvalMode = 'auto', context = {}, shell, fastModel = secondary } = {}) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-goal-e2e-'));
   const workspace = path.join(root, 'project');
   const globalDir = path.join(root, 'global');
@@ -127,7 +127,7 @@ async function fixture(t, { approvalMode = 'auto', context = {}, shell } = {}) {
   const config = {
     sdk: { provider: 'openai-compatible' },
     gateway: { base_url: 'http://goal.invalid/v1', api_key: 'test', timeout_ms: 5000, max_retries: 0 },
-    model: { name: primary, fast_name: secondary, reasoning_enabled: false },
+    model: { name: primary, fast_name: fastModel, reasoning_enabled: false },
     context: { project_context_enabled: false, project_instructions_enabled: false, preflight_trigger_pct: 95, microcompact_enabled: false, ...context },
     execution: { mode: 'normal', approval_mode: approvalMode },
     ...(shell ? { shell, sandbox: { mode: 'danger-full-access' } } : {}),
@@ -379,7 +379,7 @@ test('自然语言目标生成一次验收标准，重开会话后按原标准�
 });
 
 async function verifyCountingGoal(t, countCommand) {
-  const { workspace, open } = await fixture(t);
+  const { workspace, open } = await fixture(t, { fastModel: primary });
   const session = await createSession(workspace);
   session.title = '从一数到一百';
   const runtime = await open(session);
@@ -388,25 +388,15 @@ async function verifyCountingGoal(t, countCommand) {
   const userFiles = () => fs.readdir(workspace).then(names => names.filter(name => name !== '.codemini').sort());
   const before = await userFiles();
   let executions = 0;
-  const reviews = [];
   globalThis.fetch = async (_url, init) => {
     const body = JSON.parse(init.body);
-    const classification = classifyCriteria(body, 'reply');
-    if (classification) return classification;
-    const system = String(body.messages[0].content);
-    if (!body.tools?.length && system.includes('提取目标验收条件')) {
-      return reply(JSON.stringify({ criteria: [{ text: '回复中完整列出从 1 到 100 的连续整数', evidence: 'reply' }] }));
+    assert.doesNotMatch(body.messages[0].content, /提取目标验收条件|目标验收员/);
+    if (body.model === primary && body.stream) {
+      const instructions = JSON.stringify(body.messages);
+      assert.match(instructions, /仅输出从 1 到 100 的连续阿拉伯数字/);
+      if (executions) assert.match(instructions, /上次数列核对结果/);
+      return reply(++executions === 1 ? claim : answer);
     }
-    if (!body.tools?.length && system.includes('目标验收员')) {
-      const packet = JSON.parse(body.messages.at(-1).content);
-      const observation = packet.observations.findLast(item => item.source === 'reply');
-      reviews.push({ model: body.model, observation });
-      const complete = observation?.summary.includes(answer);
-      return reply(JSON.stringify({ decision: complete ? 'completed' : 'continue',
-        reason: complete ? '回复逐项列出了全部整数。' : '请在回复中列出每个整数。',
-        checks: [{ criterionId: packet.criteria[0].id, evidenceIds: complete ? [observation.id] : [] }] }));
-    }
-    if (body.model === primary && body.stream) return reply(++executions === 1 ? claim : answer);
     return Response.json({ choices: [{ message: { role: 'assistant', content: '从一数到一百' } }] });
   };
 
@@ -420,15 +410,38 @@ async function verifyCountingGoal(t, countCommand) {
   assert.equal(goal.report, answer);
   assert.ok(result.text.includes(answer), '用户能看到完整数列');
   assert.deepEqual(goal.verdicts.map(item => item.accepted), ['continue', 'completed']);
-  assert.deepEqual(reviews.map(item => item.model), [secondary, secondary]);
-  assert.ok(reviews[0].observation.summary.includes(claim));
-  assert.ok(reviews[1].observation.summary.includes(answer));
-  assert.deepEqual(goal.verdicts.at(-1).checks, [{ criterionId: goal.criteria[0].id, evidenceIds: [reviews[1].observation.id] }]);
+  assert.equal(executions, 2);
+  assert.ok(goal.verdicts.every(item => item.verifierKind === 'integer_sequence' && !item.gatekeeperModel));
+  const observations = goal.observations.filter(item => item.source === 'reply');
+  assert.deepEqual(observations.map(item => item.summary), [claim, answer]);
+  assert.deepEqual(goal.verdicts.at(-1).checks, [{ criterionId: goal.criteria[0].id, evidenceIds: [observations[1].id] }]);
   assert.deepEqual(toolCalls, []);
   assert.deepEqual(await userFiles(), before);
 }
 for (const command of ['/goal 从1数到100', '/goal 验收：从1数到100', '/goal 从1数到100 验收：在聊天中列出所有数字']) {
   test(`完整数列以聊天回复验收，仅声明完成仍需重做：${command}`, { timeout: 15000 }, t => verifyCountingGoal(t, command));
+}
+
+for (const usage of [{ prompt_tokens: 8, completion_tokens: 2, total_tokens: 10 }, undefined]) {
+  test('单模型计数在执行请求' + (usage ? '用尽预算' : '未报告用量') + '后仍能完成本地验收', async t => {
+    const { workspace, open } = await fixture(t, { fastModel: primary });
+    const session = await createSession(workspace);
+    session.title = '数列预算';
+    await saveSession(session);
+    const runtime = await open(session);
+    let requests = 0;
+    globalThis.fetch = async () => {
+      requests++;
+      return streaming({ content: '3、2、1' }, 'stop', usage);
+    };
+    await runtime.submitMessage({ text: '/goal 从3数到1 Token预算：10' });
+    const goal = (await loadSession(session.id)).goalState;
+    assert.equal(goal.status, 'completed', goal.reason);
+    assert.equal(requests, 1);
+    assert.equal(goal.tokensUsed, usage ? 10 : 0);
+    assert.equal(goal.unreportedRequests, usage ? 0 : 1);
+    assert.equal(goal.verdicts[0].verifierKind, 'integer_sequence');
+  });
 }
 
 test('普通聊天保持工具范围，禁止委派的目标在缺证时预算耗尽，追加预算后才会继续', { timeout: 15000 }, async (t) => {

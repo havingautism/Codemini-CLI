@@ -1,13 +1,16 @@
 import {
   applyGoalVerdict, beginGoalIteration, createGoalState, markGoalVerifying,
-  pauseGoal, recordGoalDelegation, recordGoalObservation, renderGoalContext, renderGoalSummary, resumeGoal, setInferredGoalCriteria,
+  goalVerdictEvent, pauseGoal, recordGoalDelegation, recordGoalObservation, renderGoalContext, renderGoalSummary, resumeGoal, setInferredGoalCriteria,
 } from './goal-state.js';
 import { createGoalEvidenceCollector, inferGoalCriteria, reviewGoal } from './goal-verification.js';
+import { integerSequenceRange } from './goal-count-verification.js';
 import { randomUUID } from 'node:crypto';
+import { sha256 } from './crypto-utils.js';
 import { watchGoalWork } from './goal-work.js';
 import { readSessionGoal, saveSessionGoal } from './session-store.js';
 import { withGoalUsageMeter } from './token-usage-context.js';
 import { normalizeModelUsage } from './model-usage.js';
+import { goalResolutionHint, resolveGoalOperation, unresolvedGoalOperations, withGoalOperations } from './goal-operations.js';
 
 const reply = (text) => ({ type: 'system', text, output: text });
 const localOwners = new Set();
@@ -22,6 +25,7 @@ function reviseGoal(previous, parsed) {
     constraints: steering ? previous.constraints : parsed.constraints,
     maxIterations: parsed.maxRounds ?? previous.maxIterations,
     tokenBudget: parsed.tokenBudget ?? previous.tokenBudget,
+    maxWaitMs: parsed.maxWaitMs ?? previous.maxWaitMs,
   });
   // 中断的这一轮按新要求重新执行。已用完的轮次、Token 和时间仍计在同一预算上。
   const phase = previous.status === 'paused' ? previous.resumePhase : previous.phase;
@@ -30,6 +34,7 @@ function reviseGoal(previous, parsed) {
   revised.tokensUsed = previous.tokensUsed;
   revised.unreportedRequests = previous.unreportedRequests;
   revised.activeMs = previous.activeMs;
+  revised.operations = previous.operations;
   return revised;
 }
 
@@ -53,7 +58,9 @@ function hasLiveOwner(goal) {
 export function recoverInterruptedGoal(session) {
   if (session.goalState?.status === 'active' && !hasLiveOwner(session.goalState)) {
     try {
-      saveSessionGoal(session, pauseGoal(session.goalState, '上次运行已中断，使用 /goal resume 核对现场并继续。'));
+      const missing = unresolvedGoalOperations(session.goalState).length > 0;
+      saveSessionGoal(session, pauseGoal(session.goalState, missing
+        ? '上次运行中断时仍有操作未收到回执，请核对后再恢复。' : '上次运行已中断，使用 /goal resume 核对现场并继续。'));
     } catch (error) {
       if (error.code !== 'GOAL_STATE_CONFLICT') throw error;
       session.goalState = readSessionGoal(session.id);
@@ -126,14 +133,16 @@ export function createGoalRunner({ getSession, execute, settings, workspaceRoot,
           : { ...goal, unreportedRequests: goal.unreportedRequests + 1 });
       },
     };
-    try { await withGoalUsageMeter(meter, () => runIterations(signal, onEvent, meter)); }
+    try {
+      await withGoalOperations({ current, save, stop, signal },
+        () => withGoalUsageMeter(meter, () => runIterations(signal, onEvent, meter)));
+    }
     finally { open = false; }
   }
 
   async function runIterations(signal, onEvent, meter) {
     let recovering = current().phase === 'executing';
     if (current().criteriaPending) {
-      meter.beforeRequest();
       const criteria = await inferGoalCriteria({ goal: current(), ...settings(), signal });
       if (signal.aborted) return;
       const resolved = setInferredGoalCriteria(current(), criteria);
@@ -144,7 +153,7 @@ export function createGoalRunner({ getSession, execute, settings, workspaceRoot,
       await save(replies.reduce(recordGoalObservation, resolved));
     }
     while (!signal.aborted && current().status === 'active') {
-      meter.beforeRequest();
+      if (current().phase !== 'verifying') meter.beforeRequest();
       if (current().phase === 'ready') await save(beginGoalIteration(current()));
       if (signal.aborted || current().status !== 'active') break;
       if (current().phase === 'executing') {
@@ -161,7 +170,7 @@ export function createGoalRunner({ getSession, execute, settings, workspaceRoot,
         const workers = new Map();
         const monitors = new AbortController();
         const watch = (id, name, inspect) => watchGoalWork({
-          signal: AbortSignal.any([signal, monitors.signal]), name, inspect, pause: stop,
+          signal: AbortSignal.any([signal, monitors.signal]), name, inspect, pause: stop, maxWaitMs: current().maxWaitMs,
           notifyInterrupted: () => onEvent?.({ type: 'goal:waiting', id, name, status: 'interrupted', summary: '等待已中断，恢复后将核对现场。' }),
           async report(status, summary, details) {
             if (signal.aborted || current()?.status !== 'active') return;
@@ -175,13 +184,17 @@ export function createGoalRunner({ getSession, execute, settings, workspaceRoot,
             parent?.shells.add(inspect);
             const finish = await watch('shell-' + randomUUID(), name, inspect);
             return async (...args) => {
-              parent?.shells.delete(inspect);
+              if (parent?.shells.delete(inspect)) parent.finishedShellProgress += inspect().progress;
               await finish(...args);
             };
           },
-          workerActivity(callId) {
+          workerActivity(callId, event) {
             const worker = workers.get(callId);
-            if (worker) worker.cursor++;
+            if (!worker) return;
+            worker.cursor++;
+            if (event?.type === 'tool:end') {
+              worker.completedTools.add(sha256(JSON.stringify([event.name, event.arguments])));
+            }
           },
           context: () => signal.aborted ? '' : renderGoalContext(current()),
           delegationId: (callId) => delegationIds.get(callId) || callId,
@@ -193,12 +206,16 @@ export function createGoalRunner({ getSession, execute, settings, workspaceRoot,
             // 部分提供商会在恢复后重用工具调用编号，已有交接必须保留。
             const id = current().delegations.some((item) => item.id === callId) ? randomUUID() : callId;
             delegationIds.set(callId, id);
-            const worker = { cursor: 0, shells: new Set() };
+            const worker = { cursor: 0, shells: new Set(), finishedShellProgress: 0, completedTools: new Set() };
             workers.set(callId, worker);
-            worker.finish = await watch(id, args.name || args.role || '子代理', () => ({
-              cursor: [worker.cursor, ...Array.from(worker.shells, inspect => inspect().cursor)].join('/'),
-              detail: String(args.prompt || '').slice(0, 150),
-            }));
+            worker.finish = await watch(id, args.name || args.role || '子代理', () => {
+              const shells = Array.from(worker.shells, inspect => inspect());
+              return {
+                cursor: [worker.cursor, ...shells.map(shell => shell.cursor)].join('/'),
+                progress: shells.reduce((sum, shell) => sum + shell.progress, worker.finishedShellProgress + worker.completedTools.size),
+                detail: String(args.prompt || '').slice(0, 150),
+              };
+            });
           },
           async result(event) {
             await accept(await collector.recordToolResult(event));
@@ -214,9 +231,15 @@ export function createGoalRunner({ getSession, execute, settings, workspaceRoot,
         const instruction = recovering
           ? '恢复目标。本轮曾中断，请先核对已有改动、子任务与证据，再继续未完成的工作。'
           : '执行目标：' + current().objective;
-        const guidance = current().criteria.some(item => item.evidence === 'reply')
+        const limits = integerSequenceRange(current());
+        let guidance = current().criteria.some(item => item.evidence === 'reply')
           ? '直接在回复中完整交付要求的文本。已有且仍有效的工具证据请沿用，不要重复已验证的外部操作；文件、行为或外部状态缺少证据时再针对性核对。'
           : '请取得与验收项直接相关的工具证据。';
+        if (limits) {
+          guidance = '仅输出从 ' + limits[0] + ' 到 ' + limits[1] + ' 的连续阿拉伯数字，包含两端，用顿号、逗号或换行分隔。不要加标题、解释、结束语或 Markdown。';
+          const previous = current().verdicts.at(-1);
+          if (previous?.verifierKind === 'integer_sequence') guidance += '\n上次数列核对结果：' + previous.resultReason;
+        }
         recovering = false;
         const executorModel = settings().model;
         let result;
@@ -237,10 +260,10 @@ export function createGoalRunner({ getSession, execute, settings, workspaceRoot,
         await save(markGoalVerifying(next, result.text, executorModel));
       }
       if (signal.aborted || current().phase !== 'verifying') break;
-      meter.beforeRequest();
       const verdict = await reviewGoal({ goal: current(), workspaceRoot, ...settings(), signal });
       if (signal.aborted || current().status !== 'active') break;
-      await save(applyGoalVerdict(current(), verdict));
+      save(applyGoalVerdict(current(), verdict));
+      onEvent?.(goalVerdictEvent(current()));
     }
   }
 
@@ -268,6 +291,17 @@ export function createGoalRunner({ getSession, execute, settings, workspaceRoot,
       if (parsed.action === 'pause') {
         await stop();
         return reply(describe());
+      }
+      if (parsed.action === 'resolve') {
+        if (controller) return reply('请等待当前工具执行结束后再核对操作。');
+        try {
+          save(resolveGoalOperation(current(), parsed.id, parsed.resolution));
+          return reply(describe());
+        } catch (error) { return reply(error.message); }
+      }
+      const pending = unresolvedGoalOperations(current());
+      if (pending.length && ['resume', 'clear', 'edit', 'steer'].includes(parsed.action)) {
+        return reply('有工具调用正在执行或回执尚未确认。' + pending.map(goalResolutionHint).join('\n'));
       }
       if (parsed.action === 'clear' || parsed.action === 'edit' || parsed.action === 'steer') {
         const previous = current();
@@ -319,7 +353,7 @@ export function createGoalRunner({ getSession, execute, settings, workspaceRoot,
           }
           next = createGoalState({ objective: parsed.objective, criteria: parsed.acceptance,
             constraints: parsed.constraints?.join('\n'), maxIterations: parsed.maxRounds,
-            criteriaPending: parsed.criteriaPending, tokenBudget: parsed.tokenBudget });
+            criteriaPending: parsed.criteriaPending, tokenBudget: parsed.tokenBudget, maxWaitMs: parsed.maxWaitMs });
         } else {
           if (!previous) return reply('当前会话没有可以恢复的目标。');
           if (!['paused', 'exhausted'].includes(previous.status)) return reply(describe());

@@ -5081,7 +5081,7 @@ async function askModelInSession({
             ? ''
             : `sub_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
           const workerEvent = goalHooks ? (event) => {
-            goalHooks.workerActivity(callId);
+            goalHooks.workerActivity(callId, event);
             onAgentEvent?.(event);
           } : onAgentEvent;
           const workerShell = goalHooks

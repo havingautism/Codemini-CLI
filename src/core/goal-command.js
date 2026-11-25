@@ -8,7 +8,7 @@ export const GOAL_COMMAND = Object.freeze({
 export const DEFAULT_GOAL_ROUNDS = 5;
 export const MAX_GOAL_ROUNDS = 100;
 
-const SECTION = /(?:^|[\s；;]+)(目标|验收条件|验收标准|验收|约束|轮数|token预算|令牌预算)\s*[:：]/giu;
+const SECTION = /(?:^|[\s；;]+)(目标|验收条件|验收标准|验收|约束|轮数|token预算|令牌预算|等待上限)\s*[:：]/giu;
 
 function parseRounds(value) {
   const text = String(value).trim();
@@ -31,7 +31,7 @@ export function isGoalSteeringInput(input) {
 }
 
 export function isImmediateGoalControl(text) {
-  return /^\/goal(?:\s+(?:status|pause|clear|edit(?:\s+[\s\S]+)?))?$/iu.test(String(text || '').trim());
+  return /^\/goal(?:\s+(?:status|pause|clear|(?:edit|resolve)(?:\s+[\s\S]+)?))?$/iu.test(String(text || '').trim());
 }
 
 function parseTokens(value) {
@@ -46,6 +46,11 @@ export function parseGoalCommand(text) {
   if (!body || /^status$/iu.test(body)) return { action: 'status' };
   if (/^pause$/iu.test(body)) return { action: 'pause' };
   if (/^clear$/iu.test(body)) return { action: 'clear' };
+  if (/^resolve(?:\s|$)/iu.test(body)) {
+    const match = /^resolve\s+([\da-f-]+)\s+(done|retry)$/iu.exec(body);
+    return match ? { action: 'resolve', id: match[1].toLowerCase(), resolution: match[2].toLowerCase() }
+      : { action: 'error', message: '请使用 /goal resolve 操作ID done 或 /goal resolve 操作ID retry。' };
+  }
   if (/^clear\s/iu.test(body)) return { action: 'error', message: '清除当前目标请使用 /goal clear。' };
   if (/^(?:status|pause)\s+(?:--?\S+|[+-]?\d+)$/iu.test(body)) {
     return { action: 'error', message: '查看或暂停目标可用 /goal status 或 /goal pause，无需追加参数。' };
@@ -72,6 +77,7 @@ export function parseGoalCommand(text) {
   const constraints = [];
   let maxRounds = editing ? undefined : DEFAULT_GOAL_ROUNDS;
   let tokenBudget;
+  let maxWaitMs;
   for (const [index, header] of headers.entries()) {
     const value = body.slice(header.index + header[0].length, headers[index + 1]?.index ?? body.length).trim();
     if (header[1] === '目标') objectiveParts.push(value);
@@ -82,6 +88,12 @@ export function parseGoalCommand(text) {
     } else if (/^(token预算|令牌预算)$/iu.test(header[1])) {
       tokenBudget = parseTokens(value);
       if (!tokenBudget) return { action: 'error', message: 'Token 预算须为正安全整数，例如「Token预算：20000」。' };
+    } else if (header[1] === '等待上限') {
+      const duration = /^(\d+)\s*(秒|分钟|小时)$/u.exec(value);
+      maxWaitMs = duration && Number(duration[1]) * { 秒: 1000, 分钟: 60000, 小时: 3600000 }[duration[2]];
+      if (!Number.isSafeInteger(maxWaitMs) || maxWaitMs < 1) {
+        return { action: 'error', message: '等待上限须为正整数并注明秒、分钟或小时，例如「等待上限：15分钟」。' };
+      }
     } else {
       const items = listItems(value);
       if (!items.length) return { action: 'error', message: '请填写验收条件，或直接输入 /goal 和目标描述。' };
@@ -99,6 +111,7 @@ export function parseGoalCommand(text) {
     constraints,
     ...(maxRounds !== undefined ? { maxRounds } : {}),
     ...(tokenBudget !== undefined ? { tokenBudget } : {}),
+    ...(maxWaitMs !== undefined ? { maxWaitMs } : {}),
     criteriaPending: acceptance.length ? 'classify' : 'infer',
   };
 }

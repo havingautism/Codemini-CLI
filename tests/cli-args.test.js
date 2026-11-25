@@ -46,6 +46,9 @@ test('终端在流式目标回复后显示验收状态，只收到工具事件�
   const result = { type: 'system', text: `${goalSummary}\n${answer}`, goalSummary };
 
   assert.equal(await render([delta], result), `${answer}\n${goalSummary}\n`);
+  const verdict = { type: 'goal:verdict', name: '第 1 轮验收 · 继续执行', summary: '缺少数字 2' };
+  assert.equal(await render([delta, verdict], result),
+    `${answer}\n[目标] ${verdict.name} - 缺少数字 2\n${goalSummary}\n`);
   assert.equal(await render([tool], result), `[tool:start] read\n${result.text}\n`);
   assert.equal(await render([], result), `${result.text}\n`);
   assert.equal(await render([delta, { type: 'assistant:start' }], result), `${answer}\n${result.text}\n`);

@@ -53,7 +53,7 @@ export async function submitAndPrint(runtime, line, { output: out = process.stdo
     typeof line === 'string' ? { text: line } : line,
     (event) => {
     if (event?.type === 'assistant:start') streamedAnswer = false;
-    if (event?.type === 'goal:waiting') {
+    if (event?.type === 'goal:waiting' || event?.type === 'goal:verdict') {
       writeActivity(event, '目标');
       return;
     }

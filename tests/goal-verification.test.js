@@ -6,6 +6,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { createGoalEvidenceCollector, inferGoalCriteria, reviewGoal } from '../src/core/goal-verification.js';
 import { runGit } from '../src/core/process-run.js';
+import { applyGoalVerdict } from '../src/core/goal-state.js';
+import { estimateMessagesTokens } from '../src/core/context-compact.js';
 
 async function workspace(t) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-goal-'));
@@ -34,6 +36,192 @@ const completed = (id) => ({
   decision: 'completed', reason: '已核对', checks: [{ criterionId: 'c1', evidenceIds: [id] }],
 });
 const nodePass = { code: 0, stdout: 'ok 1 - 计数\n# tests 1\n# suites 0\n# pass 1\n# fail 0\n# cancelled 0\n# skipped 0\n# todo 0' };
+
+function approvePacket(packet) {
+  return { text: JSON.stringify({ decision: 'completed', reason: '逐项核对',
+    checks: packet.criteria.map(c => ({ criterionId: c.id, evidenceIds: [
+      packet.observations.find(item => item.criterionIds.includes(c.id) && item.kind === 'pass')?.id,
+    ] })) }) };
+}
+
+test('短答可在 4k 上下文验收，缩小输出预算后仍能核对；放不下的原文不会被截断', async t => {
+  const { goal, config, review } = await workspace(t);
+  goal.objective = '用中文问好';
+  goal.criteria = [{ id: 'c1', text: '用中文问好', evidence: 'reply' }];
+  goal.iteration = 1;
+  const collector = createGoalEvidenceCollector({ workspaceRoot: null, goal });
+  for (const [context, text, expected] of [
+    [4096, '你好', 'completed'], [1800, '你好', 'completed'],
+    [64, '你好', 'pause'], [4096, '这是很长的实际正文。'.repeat(2000), 'pause'],
+  ]) {
+    goal.report = text;
+    goal.observations = await collector.recordReply(text);
+    let calls = 0;
+    const result = await review(async ({ messages, maxTokens }) => {
+      calls++;
+      assert.equal(JSON.parse(messages[1].content).observations[0].summary, text);
+      assert.ok(estimateMessagesTokens(messages) + maxTokens <= context);
+      if (context === 1800) assert.ok(maxTokens < 1500);
+      return { text: JSON.stringify(completed(goal.observations[0].id)) };
+    }, { config: { model: { ...config.model, max_context_tokens: context } } });
+    assert.equal(result.decision, expected, result.reason);
+    assert.equal(calls, expected === 'pause' ? 0 : 1);
+    if (expected === 'pause') assert.match(result.reason, /超出模型上下文/);
+  }
+});
+
+test('九名子代理的交接和对应原始证据都可供同一次验收核对', async t => {
+  const { goal, run, review } = await workspace(t);
+  goal.objective = '委派九名子代理分别完成并核对交付清单';
+  const [sample] = await run('node --test', nodePass);
+  goal.delegations = Array.from({ length: 9 }, (_, index) => ({ id: 'worker-' + index, status: 'completed',
+    handoffPath: 'handoff/' + index, summary: '交付清单第 ' + index + ' 项已核对', iteration: 1 }));
+  goal.observations = goal.delegations.map(({ id }) => ({ ...sample, id: '证据-' + id, toolCallId: id + '/run', checkKey: id }));
+  const result = await review(async ({ messages }) => {
+    const packet = JSON.parse(messages[1].content);
+    assert.deepEqual(packet.delegations.map(task => task.id), goal.delegations.map(task => task.id));
+    for (const task of packet.delegations) assert.deepEqual(task.observationIds, ['证据-' + task.id]);
+    return { text: JSON.stringify({ decision: 'completed', reason: '已核对九份交接及对应观测',
+      checks: [{ criterionId: 'c1', evidenceIds: packet.delegations.flatMap(task => task.observationIds) }] }) };
+  });
+  assert.equal(result.decision, 'completed', result.reason);
+  assert.equal(result.checks[0].evidenceIds.length, 9);
+});
+
+for (const count of [60, 61, 120]) {
+  test('按项分批保留 ' + count + ' 项的独有证据和原始目标', async t => {
+    const { goal, run, review } = await workspace(t);
+    const [sample] = await run('node --test', nodePass);
+    goal.criteria = Array.from({ length: count }, (_, index) => ({ id: 'c' + index, text: '验收第 ' + index + ' 项' }));
+    goal.observations = goal.criteria.map(({ id }) => ({ ...sample, criterionIds: [id], id: '证据' + id, checkKey: id }));
+    const batches = [];
+    const result = await review(async options => {
+      const packet = JSON.parse(options.messages[1].content);
+      assert.deepEqual(packet.allCriteria, goal.criteria);
+      assert.equal(packet.objective, goal.objective);
+      assert.ok(packet.observations.every(item => packet.criteria.some(c => item.criterionIds.includes(c.id))));
+      batches.push(packet.criteria.length);
+      return approvePacket(packet);
+    });
+    assert.ok(batches.length > 1);
+    assert.equal(result.decision, 'completed', result.reason);
+    assert.equal(result.checks.length, count);
+    assert.deepEqual(result.checks.map(check => check.criterionId), goal.criteria.map(c => c.id));
+  });
+}
+
+test('跨批的最后一项拒绝、伪造引用或工作区变化均阻止整体验收', async t => {
+  const { goal, run, review, root } = await workspace(t);
+  const [sample] = await run('node --test', nodePass);
+  goal.criteria = Array.from({ length: 24 }, (_, i) => ({ id: 'c' + i, text: '核对此项目' }));
+  goal.observations = goal.criteria.map(({ id }) => ({ ...sample, criterionIds: [id], id: 'ev-' + id, checkKey: id }));
+  for (const mode of ['拒绝', '跨批引用', '版本变化']) {
+    let batches = 0;
+    const result = await review(async options => {
+      const packet = JSON.parse(options.messages[1].content);
+      const result = approvePacket(packet);
+      if (++batches === 1) return result;
+      if (mode === '版本变化') await fs.writeFile(path.join(root, 'changed'), '新的工作区版本');
+      const verdict = JSON.parse(result.text);
+      if (mode === '拒绝') verdict.decision = 'continue';
+      if (mode === '跨批引用') verdict.checks[0].evidenceIds = ['ev-c0'];
+      return { text: JSON.stringify(verdict) };
+    });
+    assert.equal(batches, 2);
+    assert.equal(result.decision, 'continue', mode);
+  }
+});
+
+test('早期唯一证据经过大量无关记录及跨页筛选后仍可使用，后页反证阻止完成', async t => {
+  const { goal, run, review, config } = await workspace(t);
+  const [pass] = await run('node --test', nodePass);
+  const proof = { ...pass, criterionIds: [], id: '唯一证据' };
+  const noise = Array.from({ length: 120 }, (_, i) => ({ ...pass, criterionIds: [], id: '噪声' + i,
+    checkKey: '其他' + i, summary: '不相关的检查'.repeat(40) }));
+  const refutation = { ...pass, id: '反证', criterionIds: [], checkKey: '相反结果', kind: 'fail' };
+  for (const failed of [false, true]) {
+    goal.observations = [proof, ...noise, ...(failed ? [refutation] : [])];
+    const visits = [];
+    const result = await review(async options => {
+      const { observations } = JSON.parse(options.messages[1].content);
+      const ids = observations.map(item => item.id);
+      if (options.messages[0].content.includes('分页筛选')) {
+        visits.push(...ids);
+        return { text: JSON.stringify({ evidenceIds: ids.filter(id => id === proof.id),
+          counterevidenceIds: ids.filter(id => id === refutation.id) }) };
+      }
+      assert.deepEqual(ids, failed ? [proof.id, refutation.id] : [proof.id]);
+      // 即使终审模型粗心地只引用通过项，已识别的反证也不能被抹掉。
+      return { text: JSON.stringify(completed(proof.id)) };
+    }, { config: { model: { ...config.model, max_context_tokens: 12000 } } });
+    assert.deepEqual(visits, goal.observations.map(item => item.id));
+    assert.equal(result.decision, failed ? 'continue' : 'completed', result.reason);
+    if (failed) {
+      assert.deepEqual(result.checks[0].evidenceIds, [proof.id, refutation.id]);
+      goal.verdicts = [result];
+      const retried = await review(completed(proof.id), { config: { model: { ...config.model, max_context_tokens: 200000 } } });
+      assert.equal(retried.decision, 'continue', '已绑定的反证在下一轮仍有效');
+    }
+  }
+  // 明确绑定的旧失败在 60 条窗口之外仍能阻止同版本的误判。
+  goal.observations = [{ ...refutation, criterionIds: ['c1'] }, proof, ...noise];
+  const result = await review(completed(proof.id), { config: { model: { ...config.model, max_context_tokens: 200000 } } });
+  assert.equal(result.decision, 'continue');
+});
+
+test('单模型本地复核数列完整性、来源和状态机结果，附加要求仍需独立模型', async t => {
+  const { root, review } = await workspace(t);
+  const goal = { id: '计数', objective: '从1数到5，直到结束', constraints: '', iteration: 1, status: 'active', phase: 'verifying',
+    maxIterations: 3, criteria: [{ id: 'c1', text: '在聊天中列出所有数字', evidence: 'reply' }], observations: [], verdicts: [], delegations: [] };
+  const collector = createGoalEvidenceCollector({ workspaceRoot: root, goal });
+  const submit = () => review(() => assert.fail('本地验收不调用模型'), { goal, config: { model: { name: '单模型' } } });
+  for (const report of ['已经从1数到5。', '1、2、4、5', '1、2、3、3、4、5', '1、3、2、4、5', '1…5', '1、2、3、4、5、6', '1\n2\n3\n4\n5']) {
+    goal.report = report;
+    goal.observations = await collector.recordReply(report);
+    const result = await submit();
+    assert.equal(result.decision, report.includes('\n') ? 'completed' : 'continue', report);
+    assert.equal(result.verifierKind, 'integer_sequence');
+    assert.equal(applyGoalVerdict(goal, result).verdicts.at(-1).accepted, result.decision);
+  }
+  const valid = await submit();
+  goal.report = '这是伪造的完成声明';
+  assert.equal((await submit()).decision, 'continue');
+  assert.equal(applyGoalVerdict(goal, valid).status, 'paused');
+  goal.report = '1\n2\n3\n4\n5';
+  goal.constraints = '每个数写在同一行，并解释奇偶性';
+  assert.equal((await submit()).decision, 'pause');
+  assert.equal(applyGoalVerdict(goal, valid).status, 'paused');
+  goal.constraints = '';
+  goal.criteria[0].text += '，并解释每个数';
+  assert.equal((await submit()).decision, 'pause');
+  goal.criteria[0].text = '在聊天中列出所有数字';
+  goal.objective += '，并保存文件';
+  assert.equal((await submit()).decision, 'pause');
+});
+
+test('真实回复末尾的范围说明可以保留，说明中的数字不能补入或扩展数列', async t => {
+  const { root, review } = await workspace(t);
+  const goal = { id: '尾注', objective: '从1数到100，直到结束', iteration: 1,
+    criteria: [{ id: 'c1', text: '从1数到100', evidence: 'reply' }] };
+  const collector = createGoalEvidenceCollector({ workspaceRoot: root, goal });
+  const numbers = Array.from({ length: 100 }, (_, i) => String(i + 1));
+  const body = numbers.join('、');
+  for (const [text, accepted] of [
+    [body + '\n\n1→100 全数交付，结束。', true],
+    [numbers.slice(0, 50).join('、') + '\n \n' + numbers.slice(50).join('、'), true],
+    [numbers.slice(0, 50).join('、') + '\n\n' + numbers.slice(51).join('、'), false],
+    [body + '\n\n[c1] 交付：1 到 100 逐个列出，完整无缺漏。', true],
+    ['以下是从 1 到 100 的数列：\n' + numbers.join('\n') + '\n结束。', true],
+    [numbers.slice(0, -1).join('、') + '\n1→100 全数交付，结束。', false],
+    [numbers.slice(0, 50).join('、') + '\n后半段如下\n' + numbers.slice(50).join('、'), false],
+    [body + '\n101、102', false], [body + '\n另外算上101。', false],
+  ]) {
+    goal.report = text;
+    goal.observations = await collector.recordReply(text);
+    const result = await review(() => assert.fail('本地验收不调用模型'), { goal, config: { model: { name: '单模型' } } });
+    assert.equal(result.decision, accepted ? 'completed' : 'continue', result.reason);
+  }
+});
 
 test('相同失败的行耗时变化不产生新证据，失败信息实质改变会保留', async t => {
   const { run } = await workspace(t);
