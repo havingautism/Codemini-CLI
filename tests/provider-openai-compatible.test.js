@@ -5,6 +5,31 @@ import { createChatCompletion, createChatCompletionStream } from '../src/core/pr
 import { runAgentLoop } from '../src/core/agent-loop.js';
 import { createToolRuntime } from '../src/core/tool-runtime.js';
 
+test('DeepSeek native requests replay historical thinking when tools are present', async (t) => {
+  const originalFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+  const requests = [];
+  globalThis.fetch = async (_url, options) => {
+    requests.push(JSON.parse(options.body));
+    return Response.json({ choices: [{ message: { content: 'Done.' }, finish_reason: 'stop' }] });
+  };
+  const options = {
+    baseUrl: 'https://api.deepseek.com', apiKey: 'test', model: 'deepseek-v4-pro',
+    messages: [
+      { role: 'assistant', content: 'Earlier answer.', reasoning_content: 'Historical reasoning.' },
+      { role: 'user', content: 'Continue.' },
+    ],
+  };
+  await createChatCompletion(options);
+  await createChatCompletion({
+    ...options,
+    tools: [{ type: 'function', function: { name: 'read', parameters: { type: 'object' } } }],
+  });
+  assert.equal(requests[0].messages[0].reasoning_content, undefined);
+  assert.equal(requests[1].messages[0].reasoning_content, 'Historical reasoning.');
+  assert.equal(options.messages[0].reasoning_content, 'Historical reasoning.');
+});
+
 test('Kimi streaming completion returns usage nested on the final choice', async (t) => {
   const originalFetch = globalThis.fetch;
   t.after(() => {

@@ -95,6 +95,10 @@ export function estimateMessagesTokens(messages) {
     if (Array.isArray(message.model_images)) total += message.model_images.length * IMAGE_TOKEN_ESTIMATE;
     if (typeof message.reasoning_content === 'string' && message.reasoning_content) {
       total += estimateTextTokens(message.reasoning_content);
+    } else if (Array.isArray(message.reasoning_details)) {
+      for (const detail of message.reasoning_details) {
+        total += estimateTextTokens(detail?.thinking ?? detail?.text ?? detail?.summary);
+      }
     }
     if (Array.isArray(message.tool_calls)) {
       for (const call of message.tool_calls) {
@@ -783,7 +787,28 @@ function isPrunedToolContent(text) {
   const value = String(text || '');
   return value === MICRO_CLEAR_MARKER
     || value === PRUNE_OUTPUT_PLACEHOLDER
+    || value.startsWith(`${PRUNE_OUTPUT_PLACEHOLDER} `)
     || value.startsWith(AGGRESSIVE_PRUNE_MARKER);
+}
+
+function prunedToolReceipt(message, toolName) {
+  if (['error', 'blocked'].includes(message.tool_status)) return PRUNE_OUTPUT_PLACEHOLDER;
+  const changes = Array.isArray(message.tool_file_changes) && message.tool_file_changes.length
+    ? message.tool_file_changes
+    : [message.tool_file_change];
+  const paths = [...new Set(changes.map((change) => change?.path)
+    .filter((file) => typeof file === 'string' && /^[^\r\n]{1,180}$/.test(file)))];
+  if (paths.length) {
+    const extra = paths.length > 3 ? ` and ${paths.length - 3} more` : '';
+    return `${PRUNE_OUTPUT_PLACEHOLDER} Changed ${paths.slice(0, 3).join(', ')}${extra}.`;
+  }
+  if (toolName !== 'read' && toolName !== 'read_ast_node') return PRUNE_OUTPUT_PLACEHOLDER;
+  const header = textFromContent(message.content).split(/\r?\n/, 1)[0];
+  const match = header.match(/^\[File: (.{1,220}), lines (\d+)-(\d+)(?: of \d+|, AST selection ends at \d+)?(?:, truncated)?\]$/)
+    || header.match(/^\[AST: (.{1,220}) [\w.-]+ (\d+)-(\d+)(?:, matches \d+)?\]$/);
+  if (!match) return PRUNE_OUTPUT_PLACEHOLDER;
+  const [, file, start, end] = match;
+  return `${PRUNE_OUTPUT_PLACEHOLDER} Read ${file} L${start}-${end}.`;
 }
 
 function stripUsage(messages) {
@@ -889,7 +914,8 @@ export function pruneToolPayloads(messages, {
   const result = source.map((message, index) => {
     if (message?.role === 'tool' && clearSet.has(index)) {
       changed = true;
-      return { ...message, content: PRUNE_OUTPUT_PLACEHOLDER };
+      const toolName = toolCallNames.get(String(message.tool_call_id || '').trim());
+      return { ...message, content: prunedToolReceipt(message, toolName) };
     }
     if (!clearToolInputs || message?.role !== 'assistant' || !Array.isArray(message.tool_calls)) return message;
     let callChanged = false;

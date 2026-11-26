@@ -39,14 +39,6 @@ import {
 import { runAgentLoop } from './agent-loop.js';
 import { withTokenUsageSession, getTokenUsageSession } from './token-usage-context.js';
 import { resolveJevReviewConnection } from './jev-command-review.js';
-import { createDecisionController } from './harness/decision-controller.js';
-import { createHarnessSqliteStore } from './harness/audit/harness-sqlite-store.js';
-import { createToolReliabilityStore } from './harness/tool-reliability.js';
-import { TOOL_GUARD_QUESTIONS, resolveToolGuard } from './harness/tool-guard.js';
-import { COMPLETION_REVIEW_QUESTIONS, resolveCompletionReview } from './harness/completion-review.js';
-import { buildSkillCandidates } from './harness/skill-router.js';
-import { stableHash } from './harness/normalize.js';
-import { shouldActivateHarness } from './harness/rollout.js';
 import { createToolResultStore } from './tool-result-store.js';
 import { parseModelJsonObject } from './model-json.js';
 import { trimInline, normalizePath } from './string-utils.js';
@@ -353,6 +345,8 @@ export function toOpenAIMessages(sessionMessages, options = {}) {
         content: msg.content,
         tool_call_id: msg.tool_call_id,
         ...(msg.tool_status ? { tool_status: msg.tool_status } : {}),
+        ...(options.trackCompaction && msg.tool_file_change ? { tool_file_change: msg.tool_file_change } : {}),
+        ...(options.trackCompaction && msg.tool_file_changes?.length ? { tool_file_changes: msg.tool_file_changes } : {}),
         ...origin
       });
       continue;
@@ -362,6 +356,7 @@ export function toOpenAIMessages(sessionMessages, options = {}) {
       content: modelContentForMessage(msg, index, options),
       ...(typeof msg.reasoning_content === 'string' && msg.reasoning_content ? { reasoning_content: msg.reasoning_content } : {}),
       ...(Array.isArray(msg.reasoning_details) && msg.reasoning_details.length > 0 ? { reasoning_details: msg.reasoning_details } : {}),
+      ...(Array.isArray(msg.anthropic_content) ? { anthropic_content: msg.anthropic_content } : {}),
       ...(msg.tool_calls ? { tool_calls: msg.tool_calls } : {}),
       ...(msg.model_context ? { model_context: true } : {}),
       ...(msg.compaction?.kind === 'summary' ? { compaction: msg.compaction } : {}),
@@ -4967,10 +4962,21 @@ async function askModelInSession({
   const shouldGenerateTitle = text
     ? !session.messages.some((msg) => msg?.role === 'user')
     : false;
-  const projectContextPromise = (config.context?.project_context_enabled !== false
-    && !session.messages?.some((message) => message.role === 'user' && message.model_content))
-    ? buildProjectContextSnippet(workspaceRoot, modelInputText).catch(() => '')
-    : Promise.resolve('');
+  const projectContextPromise = (() => {
+    if (config.context?.project_context_enabled === false || initialMessagesOverride || !text) return '';
+    const previous = session.messages.findLast((message) => message.role === 'user'
+      && String(message.model_content || '').includes('<project_context>'));
+    if (!previous) {
+      return session.messages.some((message) => message.role === 'user' && message.model_content)
+        ? ''
+        : buildProjectContextSnippet(workspaceRoot, modelInputText).catch(() => '');
+    }
+    if (String(text).trim().length < 8) return '';
+    const previousContext = previous.model_content.match(/<project_context>\n([\s\S]*?)<\/project_context>/)?.[1] || '';
+    const previousPaths = [...previousContext.matchAll(/^  - (.+?)(?: :: .*)?$/gm)].map((match) => match[1]);
+    if (!previousPaths.length) return '';
+    return buildProjectContextSnippet(workspaceRoot, text, { previousPaths }).catch(() => '');
+  })();
   // Snapshot lengths before this turn appends anything. Compacted is often
   // shorter than session.messages, so abort cleanup must not reuse the session
   // index as a compacted index.
@@ -5028,7 +5034,7 @@ async function askModelInSession({
   }
 
   const projectContextGuidance =
-    'Use this project context as lightweight guidance and verify important details with fresh reads when needed.';
+    'These file matches are for this request. For a later topic, use search_code and verify important details with fresh reads.';
   const normalizedExecutionMode = normalizeExecutionMode(executionMode || config.execution?.mode || 'normal');
   const crewSessionMode = normalizedExecutionMode === 'crew';
   const executionShellContext = resolveShellContext(config, {
@@ -6274,49 +6280,6 @@ async function askModelInSession({
     }
     return false;
   };
-  const harnessConfig = toolConfig?.harness || {};
-  const harnessEpisodeId = `${session.id}:${turnStartMessageCount}`;
-  const harnessActive = shouldActivateHarness({
-    harness: harnessConfig,
-    sessionId: session.id,
-    projectDir: workspaceRoot,
-    riskTier: 'low',
-  });
-  let harnessStore = null;
-  let toolReliabilityStore = null;
-  const contextDecisionCache = new Map();
-  const contextDecisionLimit = 32;
-  if (harnessActive) {
-    try {
-      harnessStore = createHarnessSqliteStore();
-      toolReliabilityStore = createToolReliabilityStore();
-    } catch { harnessStore = null; toolReliabilityStore = null; }
-  }
-  if (harnessStore) {
-    try {
-      harnessStore.createEpisode({
-        id: harnessEpisodeId,
-        sessionId: session.id,
-        projectDir: workspaceRoot,
-        mode: harnessConfig.mode,
-        decisionMode: harnessConfig.decision_mode,
-        provider: harnessConfig.provider,
-        configHash: stableHash({ mode: harnessConfig.mode, provider: harnessConfig.provider }),
-      });
-    } catch { harnessStore = null; }
-  }
-  const harnessEventType = (type) => {
-    const value = String(type || '');
-    return new Set([
-      'step:start', 'step:end', 'assistant:response', 'tool:start', 'tool:end',
-      'tool:error', 'tool:blocked', 'tool:result', 'model:context', 'checkpoint',
-      'aborted', 'harness:decision', 'harness:route', 'harness:context'
-    ]).has(value) || value.startsWith('approval:');
-  };
-  const finishHarnessEpisode = (status, outcome = '') => {
-    if (!harnessStore) return;
-    try { harnessStore.finishEpisode(harnessEpisodeId, { status, outcome }); } catch { /* 审计失败不影响主任务 */ }
-  };
   const wrappedAgentEvent = (event) => {
     // Always accumulate messages in session (for token tracking), only save when persisting
     if (event?.type === 'assistant:start') {
@@ -6368,6 +6331,9 @@ async function askModelInSession({
         if (Array.isArray(event.assistantMessage?.reasoning_details) && event.assistantMessage.reasoning_details.length > 0) {
           current.reasoning_details = event.assistantMessage.reasoning_details;
         }
+        if (Array.isArray(event.assistantMessage?.anthropic_content)) {
+          current.anthropic_content = event.assistantMessage.anthropic_content;
+        }
         if (Array.isArray(event.assistantMessage?.tool_calls) && event.assistantMessage.tool_calls.length > 0) {
           current.tool_calls = event.assistantMessage.tool_calls;
         }
@@ -6393,6 +6359,9 @@ async function askModelInSession({
             : {}),
           ...(Array.isArray(assistantMessage.reasoning_details) && assistantMessage.reasoning_details.length > 0
             ? { reasoning_details: assistantMessage.reasoning_details }
+            : {}),
+          ...(Array.isArray(assistantMessage.anthropic_content)
+            ? { anthropic_content: assistantMessage.anthropic_content }
             : {}),
           ...(Array.isArray(assistantMessage.tool_calls) && assistantMessage.tool_calls.length > 0
             ? { tool_calls: assistantMessage.tool_calls }
@@ -6470,28 +6439,6 @@ async function askModelInSession({
       }
     }
 
-    if (harnessStore && harnessEventType(event?.type)) {
-      try {
-        harnessStore.appendEvent({
-          episodeId: harnessEpisodeId,
-          step: event?.step || 0,
-          type: event?.type,
-          source: event?.type === 'harness:decision' ? 'harness' : 'runtime',
-          parentId: event?.parentId || event?.toolCallId || '',
-          payload: event,
-        });
-      } catch { /* 审计失败不影响主任务 */ }
-    }
-    if (toolReliabilityStore && (event?.type === 'tool:end' || event?.type === 'tool:error')) {
-      try {
-        const failed = event.type === 'tool:error' || event.error === true || event.resultMeta?.ok === false;
-        toolReliabilityStore.record({
-          toolName: event.name,
-          ok: !failed,
-          error: event.summary || event.error || event.content || '',
-        });
-      } catch { /* 统计失败不影响主任务 */ }
-    }
     if (onAgentEvent) onAgentEvent(event);
   };
 
@@ -6640,38 +6587,6 @@ async function askModelInSession({
     },
   });
   let loopResult;
-  const decisionController = harnessActive
-      ? createDecisionController({
-        enabled: true,
-        mode: harnessConfig.mode,
-        provider: harnessConfig.provider,
-        decisionMode: harnessConfig.decision_mode,
-        providerConfig: {
-          timeoutMs: harnessConfig.timeout_ms,
-          jev: harnessConfig.providers?.jev ? {
-            enabled: harnessConfig.providers.jev.enabled,
-            baseUrl: harnessConfig.providers.jev.base_url,
-            apiKey: harnessConfig.providers.jev.api_key,
-            model: harnessConfig.providers.jev.model,
-          } : {},
-          laya: harnessConfig.providers?.laya ? {
-            enabled: harnessConfig.providers.laya.enabled,
-            baseUrl: harnessConfig.providers.laya.base_url,
-            model: harnessConfig.providers.laya.model,
-          } : {},
-          policy: harnessConfig.policy || {},
-        },
-        shadowProviders: [],
-        onDecision: (event) => wrappedAgentEvent({ type: 'harness:decision', ...event }),
-      })
-    : null;
-  if (decisionController?.orchestrate) {
-    await decisionController.orchestrate({
-      kind: 'task_route', episodeId: harnessEpisodeId, step: 0,
-      state: { objective: loopUserPrompt, stage: 'task_start', riskTier: 'low' },
-      candidates: ['proceed_fast', 'deep_review', 'split_task', 'ask_user', 'block'].map((id) => ({ id, type: 'route', allowed: true })),
-    }).then((event) => wrappedAgentEvent({ type: 'harness:route', stage: 'task_start', ...event })).catch(() => {});
-  }
   try {
     loopResult = await runAgentLoop({
       systemPrompt: skipSystemPromptInsert ? '' : effectiveSystemPrompt,
@@ -6701,78 +6616,8 @@ async function askModelInSession({
       onSkillLoaded,
       workspaceRoot,
       sessionId: session.id,
-      decisionController,
-      episodeId: harnessEpisodeId,
       generateSummary: createCompactSummaryGenerator(config, signal),
       onCompaction: persistSession && onCompactedUpdate ? captureCompaction : null,
-      toolReliabilityStore,
-      toolGuard: decisionController && harnessConfig.provider !== 'rules'
-        ? async ({ toolName, args, step }) => {
-          const event = await decisionController.evaluate({
-            episodeId: harnessEpisodeId,
-            step,
-            state: { stage: 'tool_guard', tool: toolName, argumentsSummary: Object.keys(args || {}), riskTier: 'low' },
-            questions: TOOL_GUARD_QUESTIONS,
-          });
-          if (!event?.decision?.answers?.some((answer) => answer.id === 'guard_action' && answer.abstain !== true)) {
-            return { action: 'allow', reason: 'provider_unavailable_fallback' };
-          }
-          return resolveToolGuard({ decision: event?.decision, hardGuard: event?.guards, thresholds: harnessConfig.policy || {} });
-        }
-        : null,
-      completionReview: decisionController && harnessConfig.provider !== 'rules'
-        ? async ({ objective, completedWork, step, assistantText }) => {
-          const event = await decisionController.evaluate({ episodeId: harnessEpisodeId, step, state: {
-            stage: 'completion_review', objective, completedWork, assistantText,
-            verificationPassed: session.messages.some((message) => message?.tool_status === 'done'),
-          }, questions: COMPLETION_REVIEW_QUESTIONS });
-          const choice = event?.decision?.answers?.find((answer) => answer.id === 'completion_status')?.choice;
-          const probability = event?.decision?.answers?.find((answer) => answer.id === 'completion_probability')?.pTrue;
-          if (!choice) return { choice: 'complete' };
-          return resolveCompletionReview({ choice, probability, deterministicVerified: Boolean(event?.state?.verificationPassed) });
-        }
-        : null,
-      skillRoute: decisionController && harnessConfig.provider !== 'rules'
-        ? async ({ skillName, args, step }) => {
-          const candidates = buildSkillCandidates([{ name: skillName, description: '当前模型请求的 Skill' }, { name: 'none', description: '不加载额外 Skill' }]);
-          const event = await decisionController.orchestrate({ kind: 'skill_route', episodeId: harnessEpisodeId, step, state: { stage: 'skill_route', requestedSkill: skillName }, candidates, questions: [{ id: 'selected_skill', type: 'choice', options: candidates.map((item) => item.id) }] });
-          wrappedAgentEvent({ type: 'harness:route', stage: 'skill_route', ...event });
-          return { choice: event.selected || skillName, reason: event.policy?.reason };
-        }
-        : null,
-      contextSelector: decisionController && harnessConfig.provider !== 'rules'
-        ? async ({ messages, step }) => {
-          // 系统消息和所有用户消息都是任务证据，不能因为它们不是最后一条
-          // 消息就被上下文概率判断删除；否则工具调用后会丢失原始需求。
-          const blocks = messages.map((message, index) => ({ id: `message-${index}`, score: message.role === 'system' || message.role === 'user' ? 1 : 0.4, required: message.role === 'system' || message.role === 'user', message }));
-          const optional = blocks.filter((block) => !block.required);
-          let newJudgements = 0;
-          const judged = await Promise.all(optional.map(async (block) => {
-            const cacheKey = stableHash({ role: block.message?.role || '', content: block.message?.content || '' });
-            const cached = contextDecisionCache.get(cacheKey);
-            if (cached) return { ...block, ...cached };
-            if (newJudgements >= contextDecisionLimit) {
-              const bounded = { keep: true, probability: null, reason: 'judgement_budget_keep' };
-              contextDecisionCache.set(cacheKey, bounded);
-              return { ...block, ...bounded };
-            }
-            newJudgements += 1;
-            const event = await decisionController.orchestrate({
-              kind: 'context_keep', episodeId: harnessEpisodeId, step,
-              state: { stage: 'context_keep', objective: loopUserPrompt, contextBlock: block.message.content },
-              candidates: [{ id: block.id, type: 'context', allowed: true }],
-              questions: [{ id: 'keep_context', type: 'noul', statement: 'This context block is still relevant to the current task and should be kept.' }],
-            });
-            const result = { keep: event.selected === true, probability: event.probability, reason: event.policy?.reason };
-            contextDecisionCache.set(cacheKey, result);
-            return { ...block, ...result };
-          }));
-          const decisions = blocks.filter((block) => block.required).map((block) => ({ id: block.id, kept: true, probability: 1, reason: 'required' })).concat(judged.map((block) => ({ id: block.id, kept: block.keep, probability: block.probability, reason: block.reason })));
-          wrappedAgentEvent({ type: 'harness:context', stage: 'context_keep', step, decisions });
-          const keep = new Set(decisions.filter((item) => item.kept).map((item) => item.id));
-          return messages.filter((_, index) => keep.has(`message-${index}`));
-        }
-        : null,
       onForkJoin: (candidates) => commitForkMemoryCandidates({
         candidates,
         sessionId: session.id,
@@ -6881,7 +6726,7 @@ async function askModelInSession({
     });
   } catch (error) {
     restoreCompactEstimate();
-    finishHarnessEpisode(signal?.aborted ? 'aborted' : 'failed', error?.message || String(error));
+
     // A provider can abort its own request while our turn is still active.
     // Only cancellation of the turn itself can create a continuation session.
     if (signal?.aborted) {
@@ -6895,7 +6740,7 @@ async function askModelInSession({
   }
   if (signal?.aborted || loopResult?.aborted) {
     restoreCompactEstimate();
-    finishHarnessEpisode('aborted', 'signal');
+
     await handleAbortAftermath();
     return { text: '', aborted: true };
   }
@@ -6931,7 +6776,7 @@ async function askModelInSession({
       });
     }
   }
-  finishHarnessEpisode('completed', loopResult.text || '');
+
   return { text: loopResult.text, aborted: !!loopResult.aborted };
 }
 
@@ -9226,7 +9071,7 @@ export async function createChatRuntime({
   const baseSystemPrompt = systemPrompt;
   const getBaseSystemPrompt = () =>
     typeof systemPromptFactory === 'function'
-      ? systemPromptFactory(config)
+      ? systemPromptFactory(config, { executionMode })
       : baseSystemPrompt;
   let executionMode = resolveRuntimeExecutionMode(config.execution?.mode || 'normal', config, currentSession);
   let crewState = normalizeCrewState(currentSession?.crew);
@@ -9636,14 +9481,15 @@ export async function createChatRuntime({
   let commandsReloadPromise = null;
   let skillIndexPromptCache = null;
   // Bootstrap memory is frozen on the session; turn recall stays in the user tail.
-  let baseSystemPromptMemo = { configRef: null, root: '', value: '' };
+  let baseSystemPromptMemo = { configRef: null, root: '', executionMode: '', value: '' };
   let turnMemorySnapshot = { retrievedText: '', inject: null };
   const getMemoizedBaseSystemPrompt = () => {
-    if (baseSystemPromptMemo.configRef === config && baseSystemPromptMemo.root === root) {
+    if (baseSystemPromptMemo.configRef === config && baseSystemPromptMemo.root === root
+      && baseSystemPromptMemo.executionMode === executionMode) {
       return baseSystemPromptMemo.value;
     }
     const value = getBaseSystemPrompt();
-    baseSystemPromptMemo = { configRef: config, root, value };
+    baseSystemPromptMemo = { configRef: config, root, executionMode, value };
     return value;
   };
   const getSessionMemoryBootstrap = async () => {

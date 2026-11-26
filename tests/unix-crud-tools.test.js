@@ -21,6 +21,24 @@ function exposedNames(bundle) {
   ]);
 }
 
+test('writes report bounded syntax warnings while keeping the file change successful', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-syntax-'));
+  t.after(async () => {
+    closeSqliteDatabasesForTests();
+    await fs.rm(root, { recursive: true, force: true });
+  });
+  const { handlers, formatters } = getBuiltinTools({
+    workspaceRoot: root, platform: 'win32', config: { sandbox: { enabled: false } },
+  });
+  const write = await handlers.write({ path: 'example.js', content: 'const value = ;\n' });
+  assert.equal(write.ok, true);
+  assert.equal(await fs.readFile(path.join(root, 'example.js'), 'utf8'), 'const value = ;\n');
+  assert.match(formatters.write(write), /Tree-sitter syntax warnings:\nexample\.js:1:\d+/);
+  const edit = await handlers.edit({ path: 'example.js', old_string: 'value = ;', new_string: 'value = 42;' });
+  assert.equal(edit.ok, true);
+  assert.doesNotMatch(formatters.edit(edit), /syntax warnings/);
+});
+
 test('shell tool name follows the configured shell instead of the host platform', () => {
   const bash = getBuiltinTools({
     workspaceRoot: process.cwd(),

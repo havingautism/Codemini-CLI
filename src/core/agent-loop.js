@@ -17,7 +17,6 @@ import { evaluateCrewParentCommand } from './crew-shell.js';
 import { buildRunFailureMessage, getToolOutputSanitizeOptions, sanitizeTextForModel } from './tool-output.js';
 import { createToolRuntime, buildInvalidToolArgumentsResult } from './tool-runtime.js';
 import { createToolResultStore, summarizeToolResult } from './tool-result-store.js';
-import { rankToolDefinitions } from './harness/tool-reliability.js';
 import {
   applyAggressiveToolPruneBeta,
   calibrationRatio,
@@ -669,7 +668,6 @@ export async function runAgentLoop({
   decisionController = null,
   episodeId = '',
   onDecision = null,
-  toolReliabilityStore = null,
   toolGuard = null,
   completionReview = null,
   skillRoute = null,
@@ -696,10 +694,6 @@ export async function runAgentLoop({
   });
   const activeToolResultStore = toolResultStore || createToolResultStore();
   const formatDisplayName = (toolName, args) => toolRuntime.displayName(toolName, args);
-  const toolDefinitionsForModel = () => rankToolDefinitions(
-    toolRuntime.definitions(),
-    toolReliabilityStore?.list?.() || [],
-  );
   const generatedSystem = systemPrompt ? { role: 'system', content: systemPrompt } : null;
   const messages = generatedSystem ? [generatedSystem] : [];
   if (Array.isArray(initialMessages) && initialMessages.length > 0) {
@@ -880,7 +874,7 @@ export async function runAgentLoop({
       const selected = await contextSelector({ messages, step }).catch(() => null);
       if (Array.isArray(selected) && selected.length > 0) messages.splice(0, messages.length, ...selected);
     }
-    const tools = toolDefinitionsForModel();
+    const tools = toolRuntime.definitions();
     const overheadTokens = estimateToolDefinitionsTokens(tools);
     const compactOptions = { generateSummary, overheadTokens, calibrationRatio: promptCalibration, signal };
     let announcedCompact = false;
@@ -1421,7 +1415,7 @@ export async function runAgentLoop({
         const lastAssistant = messages[messages.length - 1];
         stepForkPoint = {
           messages: structuredClone(messages.slice(0, -1)),
-          toolDefinitions: toolDefinitionsForModel(),
+          toolDefinitions: toolRuntime.definitions(),
           parentNote: String(lastAssistant?.content || '').trim().slice(0, 600),
         };
       }

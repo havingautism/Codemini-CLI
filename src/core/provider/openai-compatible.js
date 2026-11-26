@@ -120,7 +120,8 @@ function sanitizeGatewayMessages(messages) {
           tool_call_id: message.tool_call_id
         };
       }
-      const { compaction: _compaction, model_context: _modelContext, ...wireMessage } = message;
+      const { compaction: _compaction, model_context: _modelContext, anthropic_content: _anthropicContent, ...wireMessage } = message;
+      if (Array.isArray(_anthropicContent)) delete wireMessage.reasoning_details;
       if (!Array.isArray(message.tool_calls) || message.tool_calls.length === 0) {
         return wireMessage;
       }
@@ -137,13 +138,16 @@ function sanitizeGatewayMessages(messages) {
     });
 }
 
-function buildAssistantMessage({ text = '', toolCalls = [], content, reasoningContent = '' }) {
+function buildAssistantMessage({ text = '', toolCalls = [], content, reasoningContent = '', reasoningDetails = [] }) {
   const assistantMessage = {
     role: 'assistant',
     content: content ?? text
   };
   if (reasoningContent) {
     assistantMessage.reasoning_content = reasoningContent;
+  }
+  if (Array.isArray(reasoningDetails) && reasoningDetails.length) {
+    assistantMessage.reasoning_details = reasoningDetails;
   }
   if (Array.isArray(toolCalls) && toolCalls.length > 0) {
     assistantMessage.tool_calls = toolCalls.map((tc) => ({
@@ -156,6 +160,22 @@ function buildAssistantMessage({ text = '', toolCalls = [], content, reasoningCo
     }));
   }
   return assistantMessage;
+}
+
+function appendReasoningDetails(blocks, deltas) {
+  if (!Array.isArray(deltas)) return;
+  for (const [position, detail] of deltas.entries()) {
+    if (!detail || typeof detail !== 'object') continue;
+    const key = detail.index ?? detail.id ?? `${detail.type}:${position}`;
+    const previous = blocks.get(key) || {};
+    const next = { ...previous, ...detail };
+    for (const field of ['text', 'summary', 'signature', 'data']) {
+      if (typeof previous[field] === 'string' && typeof detail[field] === 'string') {
+        next[field] = previous[field] + detail[field];
+      }
+    }
+    blocks.set(key, next);
+  }
 }
 
 function sanitizeMiniMaxMessages(messages) {
@@ -195,7 +215,8 @@ function normalizeToolChoice(toolChoice) {
   return 'auto';
 }
 
-function buildPayload({ model, temperature, messages, tools, stream = false, toolChoice, payloadExtras, reasoningEffort }) {
+function buildPayload({ baseUrl, model, temperature, messages, tools, stream = false, toolChoice, payloadExtras, reasoningEffort }) {
+  const endpoint = URL.parse(baseUrl);
   const sanitizedMessages = sanitizeGatewayMessages(messages);
   const payload = {
     model,
@@ -215,11 +236,31 @@ function buildPayload({ model, temperature, messages, tools, stream = false, too
     payload.tool_choice = normalizeToolChoice(toolChoice);
   }
   if (isMiniMaxModel(model)) {
-    payload.extra_body = { reasoning_split: true };
+    if (/^api\.minimax(?:\.io|\.cn|i\.com)$/.test(endpoint?.hostname || '')
+      && /(?:^|\/)minimax-m3(?:[.-]|$)/i.test(model)) {
+      payload.reasoning_split = true;
+    } else {
+      payload.extra_body = { reasoning_split: true };
+    }
   }
-  Object.assign(payload, resolveOpenAICompatibleReasoning({ model, effort: reasoningEffort }));
+  Object.assign(payload, resolveOpenAICompatibleReasoning({ baseUrl, model, effort: reasoningEffort }));
   if (payloadExtras && typeof payloadExtras === 'object') {
     Object.assign(payload, payloadExtras);
+  }
+  if (endpoint?.protocol === 'https:' && endpoint.hostname === 'api.deepseek.com'
+    && !payload.tools && Array.isArray(payload.messages)
+    && !payload.messages.some((message) => message.prefix === true)) {
+    payload.messages = payload.messages.map((message) => {
+      const { reasoning_content: _reasoning, ...rest } = message;
+      return rest;
+    });
+  }
+  if (endpoint?.hostname === 'openrouter.ai' && Array.isArray(payload.messages)) {
+    payload.messages = payload.messages.map((message) => {
+      if (!message.reasoning_details?.length) return message;
+      const { reasoning_content: _reasoning, ...rest } = message;
+      return rest;
+    });
   }
   return payload;
 }
@@ -354,7 +395,7 @@ export async function createChatCompletion({
   maxRetries = 2,
   signal: externalSignal,
 }) {
-  const payload = buildPayload({ model, temperature, messages, tools, toolChoice, payloadExtras, reasoningEffort });
+  const payload = buildPayload({ baseUrl, model, temperature, messages, tools, toolChoice, payloadExtras, reasoningEffort });
   onPayloadPrepared?.(payload);
   const timeoutSignal = AbortSignal.timeout(timeoutMs);
   const signal = externalSignal ? AbortSignal.any([timeoutSignal, externalSignal]) : timeoutSignal;
@@ -368,7 +409,7 @@ export async function createChatCompletion({
   const message = data?.choices?.[0]?.message || {};
   const finishReason = String(data?.choices?.[0]?.finish_reason || '');
   const text = sanitizeMiniMaxText(model, extractTextContent(message.content));
-  const reasoningContent = extractReasoningContent(message.reasoning_content);
+  const reasoningContent = extractReasoningContent(message.reasoning_content ?? message.reasoning);
   const toolCalls = (message.tool_calls || []).map((tc) => ({
     id: tc.id,
     name: tc.function?.name,
@@ -398,7 +439,8 @@ export async function createChatCompletion({
       text,
       toolCalls,
       content: message.content ?? text,
-      reasoningContent
+      reasoningContent,
+      reasoningDetails: message.reasoning_details,
     })
   };
 }
@@ -437,7 +479,7 @@ export async function createChatCompletionStream({
     }
   }
   const url = buildChatCompletionsUrl(baseUrl);
-  const payload = buildPayload({ model, temperature, messages, tools, stream: true, toolChoice, payloadExtras, reasoningEffort });
+  const payload = buildPayload({ baseUrl, model, temperature, messages, tools, stream: true, toolChoice, payloadExtras, reasoningEffort });
   onPayloadPrepared?.(payload);
   const buildRequest = (bodyPayload) => ({
     method: 'POST',
@@ -462,6 +504,7 @@ export async function createChatCompletionStream({
   }
   let text = '';
   let reasoningContent = '';
+  const reasoningDetails = new Map();
   const toolCallsByIndex = new Map();
   let usage = null;
   let finishReason = '';
@@ -479,7 +522,8 @@ export async function createChatCompletionStream({
     const choice0 = chunk?.choices?.[0] || {};
     const delta = choice0?.delta || {};
     const content = delta.content;
-    const reasoningDelta = extractReasoningContent(delta.reasoning_content);
+    const reasoningDelta = extractReasoningContent(delta.reasoning_content ?? delta.reasoning);
+    appendReasoningDetails(reasoningDetails, delta.reasoning_details);
     if (reasoningDelta) {
       reasoningContent += reasoningDelta;
       if (onReasoningDelta) onReasoningDelta(reasoningDelta);
@@ -538,7 +582,8 @@ export async function createChatCompletionStream({
     assistantMessage: buildAssistantMessage({
       text: result.text,
       toolCalls: result.toolCalls,
-      reasoningContent
+      reasoningContent,
+      reasoningDetails: [...reasoningDetails.values()].sort((a, b) => (a.index ?? 0) - (b.index ?? 0)),
     })
   };
 }

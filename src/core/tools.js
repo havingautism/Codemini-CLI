@@ -58,6 +58,7 @@ import {
   queryAstGrep,
   readAstNode,
   resolveAstTarget,
+  findFileSyntaxErrors,
 } from "./ast.js";
 import {
   initializeProjectIndex,
@@ -2989,7 +2990,7 @@ async function validateEdit(root, args, config = {}) {
   ) {
     const probe = String(args?.old_text || args?.anchor_text || "");
     if (!probe)
-      throw new Error(`${kind} validation requires old_text or anchor_text`);
+      throw new Error(`${kind} validation requires old_string or anchor_text`);
     const occurrences = countTextOccurrences(content, probe);
     return {
       ok: occurrences === 1,
@@ -3340,9 +3341,9 @@ function findTrailingWhitespaceTolerantMatches(content, oldText) {
 }
 
 function buildOldTextNotFoundHint(content, oldText, relativePath, newText = "", baseLine = 1) {
-  const prefix = `old_text not found in ${relativePath || "file"}.`;
+  const prefix = `old_string not found in ${relativePath || "file"}.`;
   if (newText.trim().length >= 20 && content.includes(newText)) {
-    return `${prefix} new_text is already present; this edit may already be applied.`;
+    return `${prefix} new_string is already present; this edit may already be applied.`;
   }
   const key = (line) => normalizeProbeLine(line).trim();
   const wanted = splitLines(oldText).map(key).filter(Boolean);
@@ -3389,7 +3390,7 @@ async function replaceBlock(root, args, config = {}) {
 }
 
 async function replaceText(root, args, config = {}) {
-  if (args?.new_text == null && args?.new_string == null) throw new Error("replace_text requires new_text/new_string; use an empty string to delete");
+  if (args?.new_text == null && args?.new_string == null) throw new Error("replace_text requires new_string; use an empty string to delete");
   const relativePath = String(args?.path || "").trim();
   const oldText = String(args?.old_text ?? args?.old_string ?? "");
   const newText = String(args?.new_text ?? args?.new_string ?? "");
@@ -3397,7 +3398,7 @@ async function replaceText(root, args, config = {}) {
   const replaceAll = semanticBoolean(args?.replace_all);
   const state = await getFileState(root, relativePath, config);
   if (!oldText) {
-    throw new Error("replace_text requires old_text or old_string");
+    throw new Error("replace_text requires old_string");
   }
   const rangeStart = Number(args?.start_line || args?.line);
   const rangeEnd = Number(args?.end_line || args?.line);
@@ -3483,7 +3484,7 @@ async function replaceText(root, args, config = {}) {
   const lineHint =
     lineDetails.length > 0 ? `\n${lineDetails.join("\n")}\n` : " ";
   throw new Error(
-    `replace_text old_text not unique; found ${matchCount} occurrences:${lineHint}Use path:"${relativePath}:N-M" to narrow the range, set replace_all=true, or provide more unique old_text`,
+    `replace_text old_string not unique; found ${matchCount} occurrences:${lineHint}Use path:"${relativePath}:N-M" to narrow the range, set replace_all=true, or provide more unique old_string`,
   );
 }
 
@@ -3886,11 +3887,11 @@ async function editTarget(root, args, config = {}) {
     const missing = !file
       ? "file path"
       : edit.old_text != null && edit.new_text == null && edit.content == null
-        ? "new_text"
+        ? "new_string"
         : "edit operation";
     const hint = recentFile
-      ? ` If you meant the recently read file ${recentFile}, use edit with {path:"${recentFile}", old_text:"...", new_text:"..."} for a text replacement, or {path:"${recentFile}", new_content:"..."} for a full rewrite.`
-      : ' Use edit with {path:"path", old_text:"...", new_text:"..."} for a text replacement, or {path:"path", new_content:"..."} for a full rewrite.';
+      ? ` If you meant the recently read file ${recentFile}, use edit with {path:"${recentFile}", old_string:"...", new_string:"..."} for a text replacement, or {path:"${recentFile}", new_content:"..."} for a full rewrite.`
+      : ' Use edit with {path:"path", old_string:"...", new_string:"..."} for a text replacement, or {path:"path", new_content:"..."} for a full rewrite.';
     throw new Error(`edit requires ${missing}.${rawArgs}${hint}`);
   }
   if (astTarget) {
@@ -4209,6 +4210,17 @@ export function getBuiltinTools({
     });
     throw createFileConflict(relativePath);
   };
+  const addMutationSyntaxNotes = async (result, targets) => {
+    if (!result?.ok || config?.tools?.syntax_diagnostics === false) return result;
+    const diagnostics = [];
+    for (const { target, path: displayPath } of targets.slice(0, 8)) {
+      const errors = await findFileSyntaxErrors(target).catch(() => []);
+      for (const error of errors) diagnostics.push({ path: displayPath, ...error });
+      if (diagnostics.length >= 5) break;
+    }
+    if (diagnostics.length) result.syntax_diagnostics = diagnostics.slice(0, 5);
+    return result;
+  };
   const commitManagedMutation = async ({
     targets,
     operation,
@@ -4251,6 +4263,9 @@ export function getBuiltinTools({
     }
     const result = await mutate(prepared);
     for (const item of targets) await observeFile(item.target);
+    if (["edit", "write", "create", "commit_write"].includes(operation)) {
+      return addMutationSyntaxNotes(result, targets);
+    }
     return result;
   };
   const emitSystemTool = (event) => {
@@ -6632,6 +6647,8 @@ export function getBuiltinTools({
         if (result.ok || result.files.includes(target.path)) await observeFile(target.target);
       }
       await refreshProjectFiles(result?.files || []);
+      const changedPaths = new Set(result?.files || []);
+      await addMutationSyntaxNotes(result, observedTargets.filter(({ path: filePath }) => changedPaths.has(filePath)));
       return attachBackups(result, backups);
     },
     delete: Object.assign(
@@ -8003,11 +8020,13 @@ export function getBuiltinTools({
       ...buildSearchFormatters()
     }).map(([name, formatter]) => [
       name,
-      (result, args) =>
-        sanitizeTextForModel(
-          formatter(result, args),
-          getToolOutputSanitizeOptions(name),
-        ),
+      (result, args) => {
+        const output = formatter(result, args);
+        const notes = result?.syntax_diagnostics?.map(({ path, line, column, message }) =>
+          `${path}:${line}:${column} ${message}`);
+        const content = notes?.length ? [output, "Tree-sitter syntax warnings:", ...notes].join("\n") : output;
+        return sanitizeTextForModel(content, getToolOutputSanitizeOptions(name));
+      },
     ]),
   );
 

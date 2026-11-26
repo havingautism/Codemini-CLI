@@ -243,3 +243,33 @@ test('MiniMax M2 and unknown models receive no unsupported thinking controls', (
     {},
   );
 });
+
+test('native endpoint variants use the provider wire field and preserve gateway defaults', () => {
+  assert.deepEqual(resolveOpenAICompatibleReasoning({
+    baseUrl: 'https://api.deepseek.com', model: 'deepseek-flash', effort: 'low',
+  }), { thinking: { type: 'enabled' }, reasoning_effort: 'low' });
+  assert.deepEqual(resolveAnthropicReasoning({
+    baseUrl: 'https://api.deepseek.com/anthropic', model: 'deepseek-v4-pro', effort: 'xhigh',
+  }), { thinking: { type: 'enabled' }, output_config: { effort: 'max' } });
+  assert.deepEqual(resolveAnthropicReasoning({
+    baseUrl: 'https://api.moonshot.ai/anthropic', model: 'kimi-k3.1-pro', effort: 'medium',
+  }), { output_config: { effort: 'high' } });
+  assert.deepEqual(resolveOpenAICompatibleReasoning({
+    baseUrl: 'https://api.kimi.ai/coding/v1', model: 'kimi-for-coding', effort: 'xhigh',
+  }), { reasoning_effort: 'max' });
+  assert.deepEqual(resolveAnthropicReasoning({
+    baseUrl: 'https://api.kimi.com/coding', model: 'k3', effort: 'off',
+  }), { thinking: { type: 'disabled' } });
+  assert.deepEqual(resolveAnthropicReasoning({
+    baseUrl: 'https://example.ap-southeast-1.maas.aliyuncs.com/apps/anthropic', model: 'qwen4-max', effort: 'max',
+  }), { thinking: { type: 'enabled' }, output_config: { effort: 'xhigh' } });
+  assert.deepEqual(resolveOpenAICompatibleReasoning({
+    baseUrl: 'https://api.minimax.io/v1', model: 'MiniMax-M3.1-Flash', effort: 'off',
+  }), {});
+  assert.deepEqual(resolveOpenAICompatibleReasoning({
+    baseUrl: 'https://api.minimax.io/v1', model: 'MiniMax-M3.1-Flash', effort: 'xhigh',
+  }), { reasoning_effort: 'xhigh' });
+  assert.deepEqual(resolveOpenAICompatibleReasoning({
+    baseUrl: 'https://example.invalid', model: 'kimi-k3.1-pro', effort: 'max',
+  }), {});
+});

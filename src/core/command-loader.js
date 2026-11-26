@@ -10,6 +10,7 @@ import { readSkillRegistry } from './skill-registry.js';
 import { normalizeSkillContexts, skillIsEligible } from './skill-contexts.js';
 import { parseFrontmatter } from './frontmatter.js';
 import { isVmSandbox, resolveSandboxPolicy, toSandboxSkillPath } from './sandbox-policy.js';
+import { estimateTextTokens } from './context-compact.js';
 
 const SKILL_CATALOG_FILE = 'codemini.skills.json';
 const BUNDLED_SKILLS_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../templates/skills');
@@ -508,7 +509,22 @@ export async function buildSkillIndexPromptBlock(
 ) {
   const entries = (await buildSkillIndexDebugEntries(cwd, config, executionMode))
     .filter((entry) => options.modelInvocableOnly !== true || !entry.disableModelInvocation);
-  return formatSkillIndexPromptBlock(entries);
+  if (!entries.length) return '';
+  const header = '<available_skills>\nLoad an exact match with skill({name:"<name>"}).';
+  const fallback = '\nFind additional skills with skill({query:"<topic>"}).';
+  const footer = '\n</available_skills>';
+  const maxTokens = 900;
+  let prompt = header;
+  for (const entry of entries) {
+    const label = `- /${entry.name}`;
+    const detail = entry.promptLine.slice(label.length).replace(/\s+/g, ' ').slice(0, 120);
+    const candidate = `${prompt}\n${label}${detail}`;
+    if (estimateTextTokens(candidate + fallback + footer) > maxTokens) {
+      return prompt + fallback + footer;
+    }
+    prompt = candidate;
+  }
+  return prompt + footer;
 }
 
 function formatSkillIndexPromptBlock(entries = []) {

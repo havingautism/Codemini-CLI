@@ -214,6 +214,22 @@ test('prune keeps the recent token budget and only applies when savings clear th
   assert.equal(tiny.changed, false);
 });
 
+test('prune keeps a bounded receipt with the actual read range and changed paths', () => {
+  const messages = [
+    { role: 'assistant', tool_calls: [
+      { id: 'read-1', function: { name: 'read', arguments: '{"path":"src/tool.js"}' } },
+      { id: 'edit-1', function: { name: 'edit', arguments: '{}' } },
+    ] },
+    { role: 'tool', tool_call_id: 'read-1', content: '[File: src/tool.js, lines 40-75 of 420, truncated]\n' + 'x'.repeat(2000) },
+    { role: 'tool', tool_call_id: 'edit-1', content: 'y'.repeat(2000), tool_file_change: { path: 'src/tool.js' } },
+  ];
+  const options = { protectTokens: 0, minimumSavings: 1 };
+  const result = pruneToolPayloads(messages, options);
+  assert.match(result.messages[1].content, /Read src\/tool\.js L40-75/);
+  assert.match(result.messages[2].content, /Changed src\/tool\.js/);
+  assert.equal(pruneToolPayloads(result.messages, options).changed, false);
+});
+
 test('prune that cannot reach the target escalates to one summary', async () => {
   const calls = [];
   const tools = Array.from({ length: 8 }, (_, index) => pair(`t-${index}`, `BODY_${index}_${'x'.repeat(8000)}`)).flat();

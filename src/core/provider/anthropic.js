@@ -22,7 +22,7 @@ function cloneAnthropicContentBlock(block) {
   if (!block || typeof block !== 'object') return null;
   if (block.type === 'thinking') {
     const thinking = String(block.thinking || block.text || '');
-    if (!thinking) return null;
+    if (!thinking && !block.signature) return null;
     return {
       type: 'thinking',
       thinking,
@@ -62,15 +62,18 @@ function extractThinkingBlocks(message) {
     .filter(Boolean);
 }
 
-function buildAssistantMessage({ text = '', toolCalls = [], thinkingBlocks = [] }) {
+function buildAssistantMessage({ text = '', toolCalls = [], content = [] }) {
   const assistantMessage = {
     role: 'assistant',
     content: text
   };
-  const reasoningDetails = Array.isArray(thinkingBlocks)
-    ? thinkingBlocks.map(cloneAnthropicContentBlock).filter(Boolean)
-    : [];
+  const reasoningDetails = extractThinkingBlocks({ content });
   if (reasoningDetails.length > 0) assistantMessage.reasoning_details = reasoningDetails;
+  // Arguments live in tool_calls so compaction can remove them without a
+  // second copy in the saved native block sequence.
+  assistantMessage.anthropic_content = content.map((block) => block.type === 'tool_use'
+    ? { type: 'tool_use', id: block.id }
+    : block);
   if (Array.isArray(toolCalls) && toolCalls.length > 0) {
     assistantMessage.tool_calls = toolCalls.map((tc) => ({
       id: tc.id,
@@ -145,6 +148,27 @@ function normalizeMessages(messages) {
       continue;
     }
 
+    if (message.role === 'assistant' && Array.isArray(message.anthropic_content)) {
+      const calls = new Map((message.tool_calls || []).map((call) => [String(call.id), call]));
+      const content = [];
+      for (const block of message.anthropic_content) {
+        if (block.type !== 'tool_use') {
+          content.push(block);
+          continue;
+        }
+        const call = calls.get(String(block.id));
+        if (!call) continue;
+        content.push({
+          type: 'tool_use',
+          id: String(block.id),
+          name: call.function.name,
+          input: tryParseJsonObject(call.function.arguments),
+        });
+      }
+      if (content.length) out.push({ role: 'assistant', content });
+      continue;
+    }
+
     const contentBlocks = message.role === 'assistant' ? extractThinkingBlocks(message) : [];
     if (Array.isArray(message.content) && message.role === 'user') {
       for (const block of message.content) {
@@ -184,10 +208,9 @@ function normalizeMessages(messages) {
       }
     }
 
-    out.push({
-      role: message.role,
-      content: contentBlocks
-    });
+    if (message.role !== 'assistant' || contentBlocks.length) {
+      out.push({ role: message.role, content: contentBlocks });
+    }
   }
 
   return {
@@ -222,13 +245,23 @@ function normalizeToolChoice(toolChoice) {
     return { type: 'tool', name: String(toolChoice.function.name) };
   }
   if (toolChoice?.type === 'tool' && toolChoice?.name) return toolChoice;
+  if (toolChoice?.type === 'none') return toolChoice;
   if (toolChoice?.name) return { type: 'tool', name: String(toolChoice.name) };
   return { type: 'auto' };
 }
 
-function buildPayload({ model, temperature, messages, tools, stream = false, maxTokens = 16384, toolChoice, reasoningEffort }) {
+function supportsAutomaticCacheControl(baseUrl, model) {
+  const endpoint = URL.parse(baseUrl);
+  if (endpoint?.protocol !== 'https:') return false;
+  return endpoint.hostname === 'api.anthropic.com'
+    || (endpoint.hostname.endsWith('.maas.aliyuncs.com')
+      && endpoint.pathname.replace(/\/$/, '').endsWith('/apps/anthropic')
+      && model === 'qwen4-max');
+}
+
+function buildPayload({ baseUrl, model, temperature, messages, tools, stream = false, maxTokens = 16384, toolChoice, reasoningEffort }) {
   const normalized = normalizeMessages(messages);
-  const reasoning = resolveAnthropicReasoning({ model, effort: reasoningEffort, maxTokens });
+  const reasoning = resolveAnthropicReasoning({ baseUrl, model, effort: reasoningEffort, maxTokens });
   const payload = {
     model,
     max_tokens: maxTokens,
@@ -243,6 +276,9 @@ function buildPayload({ model, temperature, messages, tools, stream = false, max
   if (normalizedTools.length > 0) {
     payload.tools = normalizedTools;
     payload.tool_choice = normalizeToolChoice(toolChoice);
+    if (payload.tool_choice.type !== 'none' && supportsAutomaticCacheControl(baseUrl, model)) {
+      payload.cache_control = { type: 'ephemeral' };
+    }
   }
   return payload;
 }
@@ -260,10 +296,6 @@ function hasTrailingToolContext(messages) {
 
 function extractAssistantResult(data, messages) {
   const content = Array.isArray(data?.content) ? data.content : [];
-  const thinkingBlocks = content
-    .filter((block) => block?.type === 'thinking' || block?.type === 'redacted_thinking')
-    .map(cloneAnthropicContentBlock)
-    .filter(Boolean);
   const text = content
     .filter((block) => block?.type === 'text')
     .map((block) => block.text || '')
@@ -289,7 +321,7 @@ function extractAssistantResult(data, messages) {
         incomplete: true,
         finishReason,
         content,
-        assistantMessage: buildAssistantMessage({ text: '', toolCalls: [], thinkingBlocks })
+        assistantMessage: buildAssistantMessage({ content: [] })
       };
     }
     throw new Error('Anthropic gateway returned empty assistant response');
@@ -301,7 +333,7 @@ function extractAssistantResult(data, messages) {
     usage: data?.usage || null,
     finishReason,
     content,
-    assistantMessage: buildAssistantMessage({ text, toolCalls, thinkingBlocks })
+    assistantMessage: buildAssistantMessage({ text, toolCalls, content })
   };
 }
 
@@ -315,6 +347,32 @@ function createHeaders(apiKey) {
 
 function buildMessagesUrl(baseUrl) {
   return `${String(baseUrl || '').replace(/\/$/, '')}/v1/messages`;
+}
+
+async function sendMessagesRequest({ baseUrl, apiKey, payload, signal, maxRetries, onPayloadPrepared }) {
+  const url = buildMessagesUrl(baseUrl);
+  const headers = createHeaders(apiKey);
+  const send = (body, requestHeaders) => {
+    onPayloadPrepared?.(body);
+    return fetchWithRetry(url, {
+      method: 'POST', headers: requestHeaders, body: stringifyGatewayJson(body), signal,
+    }, { maxRetries });
+  };
+  const response = await send(payload, headers);
+  if (response.status !== 400 || URL.parse(url)?.origin !== 'https://api.anthropic.com'
+    || payload.thinking?.type === 'disabled') return response;
+  const error = await response.clone().text().catch(() => '');
+  if (!error.toLowerCase().includes('block is bound to a different conversation')) return response;
+  // Let Claude drop only blocks invalidated by an earlier edit to the prefix.
+  const thinking = {
+    type: 'adaptive',
+    ...payload.thinking,
+    block_binding: { prefix_mismatch_behavior: 'drop_block' },
+  };
+  return send({ ...payload, thinking }, {
+    ...headers,
+    'anthropic-beta': 'thinking-binding-controls-2026-08-01',
+  });
 }
 
 async function parseJsonResponse(response) {
@@ -342,7 +400,7 @@ function emptyToolCall(index) {
   };
 }
 
-function buildFinalStreamResult(text, toolCallsByIndex, usage, messages, thinkingBlocks = [], finishReason = '', messageStopped = false) {
+function buildFinalStreamResult(text, toolCallsByIndex, usage, messages, blocksByIndex, finishReason = '', messageStopped = false) {
   // A closed block alone is not authority to execute tools: EOF can precede
   // message completion. Gateways must also provide the Anthropic terminal events.
   const messageComplete = messageStopped && Boolean(finishReason.trim()) && !isCompletionTruncated(finishReason);
@@ -356,20 +414,17 @@ function buildFinalStreamResult(text, toolCallsByIndex, usage, messages, thinkin
     }))
     .filter((tc) => tc.name);
   const normalizedText = String(text || '').trim();
-  const content = [];
-  for (const block of thinkingBlocks) {
-    const cloned = cloneAnthropicContentBlock(block);
-    if (cloned) content.push(cloned);
-  }
-  if (text) content.push({ type: 'text', text });
-  for (const toolCall of toolCalls) {
-    content.push({
-      type: 'tool_use',
-      id: toolCall.id,
-      name: toolCall.name,
-      input: tryParseJsonObject(toolCall.arguments)
+  const contentByIndex = new Map(blocksByIndex);
+  let toolCallIndex = 0;
+  for (const [index, call] of [...toolCallsByIndex].sort((a, b) => a[0] - b[0])) {
+    if (!call.name) continue;
+    const toolCall = toolCalls[toolCallIndex++];
+    contentByIndex.set(index, {
+      type: 'tool_use', id: toolCall.id, name: toolCall.name, input: tryParseJsonObject(toolCall.arguments),
     });
   }
+  const content = [...contentByIndex].sort((a, b) => a[0] - b[0])
+    .map(([, block]) => cloneAnthropicContentBlock(block)).filter(Boolean);
 
   if (!normalizedText && toolCalls.length === 0) {
     if (hasTrailingToolContext(messages)) {
@@ -380,7 +435,7 @@ function buildFinalStreamResult(text, toolCallsByIndex, usage, messages, thinkin
         incomplete: true,
         finishReason: finishReason || '',
         content: [],
-        assistantMessage: buildAssistantMessage({ text: '', toolCalls: [], thinkingBlocks })
+        assistantMessage: buildAssistantMessage({})
       };
     }
     throw new Error('Anthropic gateway stream returned empty assistant response');
@@ -393,7 +448,7 @@ function buildFinalStreamResult(text, toolCallsByIndex, usage, messages, thinkin
     incomplete: false,
     finishReason: finishReason || '',
     content,
-    assistantMessage: buildAssistantMessage({ text, toolCalls, thinkingBlocks })
+    assistantMessage: buildAssistantMessage({ text, toolCalls, content })
   };
 }
 
@@ -412,18 +467,12 @@ export async function createChatCompletion({
   maxRetries = 2,
   signal: externalSignal
 }) {
-  const payload = buildPayload({ model, temperature, messages, tools, maxTokens, toolChoice, reasoningEffort });
-  onPayloadPrepared?.(payload);
+  const payload = buildPayload({ baseUrl, model, temperature, messages, tools, maxTokens, toolChoice, reasoningEffort });
   const timeoutSignal = AbortSignal.timeout(timeoutMs);
   const signal = externalSignal
     ? AbortSignal.any([timeoutSignal, externalSignal])
     : timeoutSignal;
-  const response = await fetchWithRetry(buildMessagesUrl(baseUrl), {
-    method: 'POST',
-    headers: createHeaders(apiKey),
-    body: stringifyGatewayJson(payload),
-    signal
-  }, { maxRetries });
+  const response = await sendMessagesRequest({ baseUrl, apiKey, payload, signal, maxRetries, onPayloadPrepared });
   const data = await parseJsonResponse(response);
   return extractAssistantResult(data, messages);
 }
@@ -466,14 +515,10 @@ export async function createChatCompletionStream({
     }
   }
   try {
-    const payload = buildPayload({ model, temperature, messages, tools, stream: true, maxTokens, toolChoice, reasoningEffort });
-    onPayloadPrepared?.(payload);
-    const response = await fetchWithRetry(buildMessagesUrl(baseUrl), {
-      method: 'POST',
-      headers: createHeaders(apiKey),
-      body: stringifyGatewayJson(payload),
-      signal: controller.signal
-    }, { maxRetries });
+    const payload = buildPayload({ baseUrl, model, temperature, messages, tools, stream: true, maxTokens, toolChoice, reasoningEffort });
+    const response = await sendMessagesRequest({
+      baseUrl, apiKey, payload, signal: controller.signal, maxRetries, onPayloadPrepared,
+    });
 
     if (!response.ok || !response.body) {
       const text = await response.text().catch(() => '');
@@ -485,7 +530,7 @@ export async function createChatCompletionStream({
     let finishReason = '';
     let messageStopped = false;
     const toolCallsByIndex = new Map();
-    const thinkingBlocksByIndex = new Map();
+    const blocksByIndex = new Map();
 
     for await (const chunk of iterateSseJsonEvents(response.body)) {
       if (chunk.done) continue;
@@ -527,7 +572,12 @@ export async function createChatCompletionStream({
         } else if (contentBlock.type === 'thinking' || contentBlock.type === 'redacted_thinking') {
           const current = cloneAnthropicContentBlock(contentBlock) || { type: contentBlock.type };
           if (current.type === 'thinking' && current.thinking == null) current.thinking = '';
-          thinkingBlocksByIndex.set(index, current);
+          blocksByIndex.set(index, current);
+        } else if (contentBlock.type === 'text') {
+          const initialText = String(contentBlock.text || '');
+          blocksByIndex.set(index, { type: 'text', text: initialText });
+          text += initialText;
+          if (initialText) onTextDelta?.(initialText);
         }
         continue;
       }
@@ -550,23 +600,26 @@ export async function createChatCompletionStream({
       const delta = chunk?.data?.delta || {};
       if (delta.type === 'text_delta' && delta.text) {
         text += delta.text;
+        const current = blocksByIndex.get(index) || { type: 'text', text: '' };
+        current.text += delta.text;
+        blocksByIndex.set(index, current);
         if (onTextDelta) onTextDelta(delta.text);
         continue;
       }
 
       if (delta.type === 'thinking_delta') {
-        const current = thinkingBlocksByIndex.get(index) || { type: 'thinking', thinking: '' };
+        const current = blocksByIndex.get(index) || { type: 'thinking', thinking: '' };
         const thinkingDelta = String(delta.thinking || '');
         current.thinking = `${current.thinking || ''}${thinkingDelta}`;
-        thinkingBlocksByIndex.set(index, current);
+        blocksByIndex.set(index, current);
         if (thinkingDelta && onReasoningDelta) onReasoningDelta(thinkingDelta);
         continue;
       }
 
       if (delta.type === 'signature_delta') {
-        const current = thinkingBlocksByIndex.get(index) || { type: 'thinking', thinking: '' };
+        const current = blocksByIndex.get(index) || { type: 'thinking', thinking: '' };
         current.signature = String(delta.signature || '');
-        thinkingBlocksByIndex.set(index, current);
+        blocksByIndex.set(index, current);
         continue;
       }
 
@@ -585,12 +638,7 @@ export async function createChatCompletionStream({
       }
     }
 
-    const thinkingBlocks = Array.from(thinkingBlocksByIndex.entries())
-      .sort((a, b) => a[0] - b[0])
-      .map(([, block]) => cloneAnthropicContentBlock(block))
-      .filter(Boolean);
-
-    return buildFinalStreamResult(text, toolCallsByIndex, usage, messages, thinkingBlocks, finishReason, messageStopped);
+    return buildFinalStreamResult(text, toolCallsByIndex, usage, messages, blocksByIndex, finishReason, messageStopped);
   } finally {
     timeoutSignal.removeEventListener('abort', onTimeoutAbort);
     if (externalSignal) externalSignal.removeEventListener('abort', onExternalAbort);

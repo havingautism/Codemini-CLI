@@ -45,7 +45,7 @@ for (const { platform, backend, sandbox } of environments) {
       assert.match(prompt, /Respond in Simplified Chinese/);
       if (command.commandPlatform === 'win32') {
         assert.match(prompt, /PowerShell coding guidelines/);
-        assert.match(prompt, /"old_text":/);
+        assert.match(prompt, /"old_string":/);
       } else {
         assert.match(prompt, /Bash coding guidelines/);
         assert.match(prompt, /"old_string":/);

@@ -67,7 +67,7 @@ test('Windows prompt follows sandbox state instead of the host platform alone', 
   assert.match(confined, /missing project dependencies/i);
   assert.match(confined, /timeouts/i);
   assert.match(confined, /Working directory: project root/);
-  assert.match(confined, /"file_path":"src\/auth\/service\.ts"/);
+  assert.match(confined, /"path":"src\/auth\/service\.ts"/);
   assert.match(confined, /old_string/);
   assert.doesNotMatch(confined, /apply_patch|begin_write/);
   assert.match(confined, /Use project-relative paths/i);
@@ -138,6 +138,14 @@ test('buildDefaultSystemPrompt includes compact natural-writing defaults', () =>
 test('buildDefaultSystemPrompt stays compact enough for layered turn context', () => {
   const prompt = buildDefaultSystemPrompt({}, { workspaceRoot: process.cwd() });
   assert.ok(prompt.length < 5000, `default prompt grew to ${prompt.length} characters`);
+});
+
+test('coding retains web discovery and concise writing guidance', () => {
+  const prompt = buildDefaultSystemPrompt({ execution: { mode: 'normal' } }, { executionMode: ' PLAN ' });
+  assert.match(prompt, /tool_search\(\{"query":"web_search"\}\)/);
+  assert.doesNotMatch(prompt, /Tool: web_search\(/);
+  assert.match(prompt, /# Natural writing\nLead with the result/);
+  assert.match(prompt, /Follow the user's requested format and terminology/);
 });
 
 test('web tool discovery and research preference reach CLI and Web UI default prompts', () => {

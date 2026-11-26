@@ -269,3 +269,89 @@ test('Anthropic tool results preserve explicit error status', async (t) => {
   assert.equal(resultBlock.type, 'tool_result');
   assert.equal(resultBlock.is_error, true);
 });
+
+test('Anthropic tool continuation replays signed empty thinking and original block order', async (t) => {
+  const originalFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+  const content = [
+    { type: 'text', text: 'Before.' },
+    { type: 'thinking', thinking: '', signature: 'opaque-signature' },
+    { type: 'text', text: 'After.' },
+    { type: 'tool_use', id: 'id-1', name: 'read', input: { path: 'demo.js' } },
+  ];
+  const events = content.flatMap((block, index) => [
+    { type: 'content_block_start', index, content_block: block },
+    { type: 'content_block_stop', index },
+  ]);
+  events.push({ type: 'message_delta', delta: { stop_reason: 'tool_use' } }, { type: 'message_stop' });
+  const stream = events.map((event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join('');
+  const requests = [];
+  globalThis.fetch = async (_url, options) => {
+    requests.push(JSON.parse(options.body));
+    if (requests.length === 1) return new Response(stream);
+    return Response.json({ content: [{ type: 'text', text: 'Done.' }] });
+  };
+  const request = {
+    baseUrl: 'https://api.anthropic.com', apiKey: 'test', model: 'claude-sonnet-5',
+    messages: [{ role: 'user', content: 'Inspect demo.js' }],
+    tools: [{ type: 'function', function: { name: 'read', parameters: { type: 'object' } } }],
+  };
+  const first = await createChatCompletionStream(request);
+  await createChatCompletion({
+    ...request,
+    messages: [...request.messages, first.assistantMessage,
+      { role: 'tool', tool_call_id: 'id-1', content: 'source' }],
+  });
+  assert.deepEqual(requests[1].messages[1].content, content);
+  assert.deepEqual(requests[0].cache_control, { type: 'ephemeral' });
+  assert.deepEqual(requests[1].cache_control, { type: 'ephemeral' });
+});
+
+test('Anthropic skips assistant messages whose tool call was dropped by compaction', async (t) => {
+  const originalFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+  let request;
+  globalThis.fetch = async (_url, options) => {
+    request = JSON.parse(options.body);
+    return Response.json({ content: [{ type: 'text', text: 'Done.' }] });
+  };
+  await createChatCompletion({
+    baseUrl: 'https://example.invalid', apiKey: 'test', model: 'test-model',
+    messages: [
+      { role: 'user', content: 'Start.' },
+      { role: 'assistant', content: '', anthropic_content: [{ type: 'tool_use', id: 'removed' }] },
+      { role: 'assistant', content: 'Kept.', anthropic_content: [
+        { type: 'tool_use', id: 'also-removed' }, { type: 'text', text: 'Kept.' },
+      ] },
+      { role: 'user', content: 'Continue.' },
+    ],
+  });
+  assert.deepEqual(request.messages.filter((message) => message.role === 'assistant'), [
+    { role: 'assistant', content: [{ type: 'text', text: 'Kept.' }] },
+  ]);
+});
+
+test('Claude retries a rejected thinking binding without rewriting conversation blocks', async (t) => {
+  const originalFetch = globalThis.fetch;
+  t.after(() => { globalThis.fetch = originalFetch; });
+  const requests = [];
+  globalThis.fetch = async (_url, options) => {
+    requests.push({ headers: options.headers, body: JSON.parse(options.body) });
+    if (requests.length === 1) {
+      return Response.json({ error: { message: 'The block is bound to a different conversation' } }, { status: 400 });
+    }
+    return Response.json({ content: [{ type: 'text', text: 'Recovered.' }] });
+  };
+  const result = await createChatCompletion({
+    baseUrl: 'https://api.anthropic.com', apiKey: 'test', model: 'claude-sonnet-5.5',
+    messages: [
+      { role: 'assistant', content: 'Earlier.', reasoning_details: [{ type: 'thinking', thinking: '', signature: 'opaque' }] },
+      { role: 'user', content: 'Continue.' },
+    ],
+  });
+  assert.equal(result.text, 'Recovered.');
+  assert.deepEqual(requests[1].body.messages, requests[0].body.messages);
+  assert.equal(requests[0].headers['anthropic-beta'], undefined);
+  assert.equal(requests[1].headers['anthropic-beta'], 'thinking-binding-controls-2026-08-01');
+  assert.equal(requests[1].body.thinking.block_binding.prefix_mismatch_behavior, 'drop_block');
+});
