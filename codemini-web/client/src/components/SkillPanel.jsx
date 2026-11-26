@@ -7,6 +7,7 @@ import {
   DotsThree,
   Download,
   Folder,
+  FolderOpen,
   ListBullets,
   MagnifyingGlass,
   PencilSimple,
@@ -60,6 +61,11 @@ import {
   skillsInSamePackage,
 } from "@/lib/skill-display.js";
 import * as api from "@/hooks/use-api";
+import {
+  bytesToBase64,
+  flattenSkillDrop,
+  skillDropEntryFromDom,
+} from "@/lib/skill-folder-drop.js";
 import { t } from "../../i18n/index.js";
 
 const FILTERS = ["all", "custom", "remote"];
@@ -808,6 +814,18 @@ function SkillDetailPane({
   );
 }
 
+function skillFolderErrorText(error) {
+  const code = error?.code;
+  if (code === "FOLDER_TOO_LARGE") return t("skillDropFolderTooLarge");
+  if (code === "FOLDER_EMPTY") return t("skillDropFolderEmpty");
+  if (code === "FOLDER_REQUIRED") return t("skillDropFolderOnly");
+  if (code === "PICKER_UNAVAILABLE") return t("skillPickFolderUnavailable");
+  if (code === "PICKER_FAILED" || code === "PICKER_TIMEOUT" || code === "NOT_A_DIRECTORY") {
+    return t("skillPickFolderFailed");
+  }
+  return error?.message || t("skillDropFolderFailed");
+}
+
 function InstallDialog({
   open,
   onOpenChange,
@@ -817,11 +835,118 @@ function InstallDialog({
   setInstallTarget,
   installing,
   installError,
+  setInstallError,
   onContinue,
 }) {
+  const [dragOver, setDragOver] = useState(false);
+  const [picking, setPicking] = useState(false);
+  const [reading, setReading] = useState(false);
+  const [localError, setLocalError] = useState("");
+  const [dropNote, setDropNote] = useState("");
+  const busy = installing || picking || reading;
+
+  useEffect(() => {
+    if (open) return;
+    setDragOver(false);
+    setPicking(false);
+    setReading(false);
+    setLocalError("");
+    setDropNote("");
+  }, [open]);
+
+  const applyFolderPath = (folderPath, note = "") => {
+    setInstallSource(folderPath);
+    setDropNote(note);
+    setLocalError("");
+    setInstallError?.("");
+  };
+
+  const stageDroppedFiles = async (dropped) => {
+    const staged = await api.stageSkillFolder(dropped.files.map((file) => ({
+      path: file.path,
+      data: bytesToBase64(file.data),
+    })));
+    const name = dropped.rootName || t("skillPackage");
+    applyFolderPath(staged.path, t("skillDropStaged").replace("{{name}}", name));
+  };
+
+  const chooseFolder = async () => {
+    if (busy) return;
+    setPicking(true);
+    setLocalError("");
+    try {
+      const result = await api.pickSkillFolder({ title: t("skillPickFolderTitle") });
+      if (!result?.cancelled && result?.path) applyFolderPath(result.path);
+    } catch (error) {
+      setLocalError(skillFolderErrorText(error));
+    } finally {
+      setPicking(false);
+    }
+  };
+
+  const dragHasFiles = (event) => [...(event.dataTransfer?.types || [])].includes("Files");
+
+  const handleDragEnter = (event) => {
+    if (!dragHasFiles(event)) return;
+    event.preventDefault();
+    setDragOver(true);
+  };
+
+  const handleDragOver = (event) => {
+    if (!dragHasFiles(event)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+  };
+
+  const handleDragLeave = (event) => {
+    if (event.currentTarget.contains(event.relatedTarget)) return;
+    setDragOver(false);
+  };
+
+  const handleDrop = async (event) => {
+    if (!dragHasFiles(event)) return;
+    event.preventDefault();
+    setDragOver(false);
+    if (busy) return;
+    const entries = [...(event.dataTransfer?.items || [])]
+      .filter((item) => item.kind === "file")
+      .map((item) => item.webkitGetAsEntry?.())
+      .filter(Boolean)
+      .map(skillDropEntryFromDom);
+    if (entries.length === 0) {
+      setLocalError(t("skillDropFolderOnly"));
+      return;
+    }
+    setReading(true);
+    setLocalError("");
+    try {
+      await stageDroppedFiles(await flattenSkillDrop(entries));
+    } catch (error) {
+      setLocalError(skillFolderErrorText(error));
+    } finally {
+      setReading(false);
+    }
+  };
+
+  const visibleError = localError || installError;
+  const dropHint = reading
+    ? t("skillDropFolderBusy")
+    : dragOver
+      ? t("skillDropFolderActive")
+      : t("skillDropFolderHint");
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex flex-col gap-4 overflow-hidden p-0 sm:max-w-[480px]">
+      <DialogContent
+        className={cn(
+          "flex flex-col gap-4 overflow-hidden p-0 sm:max-w-[480px]",
+          dragOver && "ring-2 ring-(--text-primary)",
+        )}
+        onDragEnter={handleDragEnter}
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
+      >
         <DialogHeader className="shrink-0 px-6">
           <DialogTitle>{t("installSkill")}</DialogTitle>
         </DialogHeader>
@@ -836,11 +961,40 @@ function InstallDialog({
             >
               <Input
                 value={installSource}
-                onChange={(e) => setInstallSource(e.target.value)}
+                onChange={(e) => {
+                  setInstallSource(e.target.value);
+                  setDropNote("");
+                }}
                 placeholder={t("skillInstallPlaceholder")}
                 className="h-9 text-[13px]"
               />
             </SettingsField>
+            <div
+              className={cn(
+                "flex items-center justify-between gap-3 rounded-lg border border-dashed px-3 py-2.5",
+                dragOver
+                  ? "border-(--text-primary) bg-(--bg-hover)"
+                  : "border-(--border-default) bg-(--bg-subtle)",
+              )}
+            >
+              <div className="min-w-0">
+                <div className="text-[12px] leading-5 text-(--text-secondary)">{dropHint}</div>
+                {dropNote ? (
+                  <div className="mt-0.5 truncate text-[11px] leading-4 text-(--text-muted)">{dropNote}</div>
+                ) : null}
+              </div>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="shrink-0"
+                onClick={chooseFolder}
+                disabled={busy}
+              >
+                <FolderOpen data-icon="inline-start" />
+                {picking ? t("skillPickFolderBusy") : t("skillPickFolder")}
+              </Button>
+            </div>
             <SettingsField id="skill-install-context" label={t("skillContext")}>
               <Select
                 value={installTarget || "global"}
@@ -865,15 +1019,15 @@ function InstallDialog({
               </Select>
             </SettingsField>
           </SettingsSection>
-          {installError && (
+          {visibleError && (
             <div className="text-[11px] text-(--accent-red)">
-              {installError}
+              {visibleError}
             </div>
           )}
           <div className="flex justify-end gap-2">
             <Button
               onClick={onContinue}
-              disabled={installing || !installSource.trim()}
+              disabled={busy || !installSource.trim()}
             >
               <Download data-icon="inline-start" />
               {installing ? t("skillDetecting") : t("skillDetectAndContinue")}
@@ -1947,6 +2101,7 @@ export function SkillPanel({ projectDirs = [] }) {
         setInstallTarget={setInstallTarget}
         installing={installing}
         installError={installError}
+        setInstallError={setInstallError}
         onContinue={handleInstallContinue}
       />
       <SkillPackageSelectDialog

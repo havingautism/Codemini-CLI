@@ -604,6 +604,22 @@ export async function createSkill({ name, description, content, contexts }) {
   return readJsonResponse(res);
 }
 
+export async function pickSkillFolder({ title = '' } = {}) {
+  return readJsonOrThrow(await api('/api/skills/pick-folder', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ title }),
+  }));
+}
+
+export async function stageSkillFolder(files) {
+  return readJsonOrThrow(await api('/api/skills/stage-folder', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ files }),
+  }));
+}
+
 export async function previewSkillSource(source) {
   const res = await api('/api/skills/preview', {
     method: 'POST',

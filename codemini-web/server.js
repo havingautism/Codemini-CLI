@@ -4,6 +4,8 @@ import { createScheduledTaskNotifier } from './lib/scheduled-task-notifier.js';
 import { startScheduledWorker } from '../src/core/scheduled-worker-process.js';
 import { registerScheduledTaskRoutes } from './lib/scheduled-task-api.js';
 import { createProjectFolder } from './lib/project-folder.js';
+import { pickSkillFolder } from './lib/skill-folder-picker.js';
+import { readLimitedJson, stageSkillFolder } from './lib/stage-skill-folder.js';
 import { decodeSessionCursor, getSessionGroupPage, getSessionSidebarSnapshot, searchSessionSidebar } from './lib/session-pages.js';
 import { validateWebConfigValue } from './shared/web-config-policy.js';
 import { DOCUMENT_EXTENSIONS, SCRAPBOOK_TEXT_EXTENSIONS } from './shared/document-formats.js';
@@ -4310,6 +4312,43 @@ async function main() {
       }
       return;
 
+  }));
+  routes.post("/api/skills/pick-folder", nodeRoute(async (req, res) => {
+      const { title } = await readBody(req);
+      try {
+        const picked = await pickSkillFolder({ title });
+        jsonResponse(res, {
+          ok: true,
+          cancelled: picked.cancelled === true,
+          path: picked.path || "",
+        });
+      } catch (err) {
+        jsonResponse(res, {
+          error: true,
+          code: err.code || "PICKER_FAILED",
+          message: err.message,
+        }, 500);
+      }
+  }));
+  routes.post("/api/skills/stage-folder", nodeRoute(async (req, res) => {
+      try {
+        const body = await readLimitedJson(req);
+        const staged = await stageSkillFolder(body.files);
+        jsonResponse(res, {
+          ok: true,
+          path: staged.path,
+          fileCount: staged.fileCount,
+        });
+      } catch (err) {
+        const status = err.code === "FOLDER_TOO_LARGE" || err.code === "INVALID_FOLDER" || err.code === "FOLDER_EMPTY"
+          ? 400
+          : 500;
+        jsonResponse(res, {
+          error: true,
+          code: err.code || "STAGE_FAILED",
+          message: err.message,
+        }, status);
+      }
   }));
   routes.post("/api/skills/preview", nodeRoute(async (req, res, url) => {
       const { source } = await readBody(req);

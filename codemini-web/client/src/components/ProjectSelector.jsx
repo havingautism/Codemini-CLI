@@ -119,7 +119,7 @@ export function ProjectSelector({ open, onOpenChange, onOpenProject, initialPath
   const parent = parentDirectory(data?.path || '');
   return (
     <Dialog open={open} onOpenChange={value => { if (!locked) onOpenChange(value); }}>
-      <DialogContent className="project-picker" onEscapeKeyDown={(event) => {
+      <DialogContent className="project-picker p-0" onEscapeKeyDown={(event) => {
         if (!creatingFormOpen) return;
         event.preventDefault();
         if (!creating) cancelFolder();
