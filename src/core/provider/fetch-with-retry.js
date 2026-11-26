@@ -1,6 +1,6 @@
 import { setTimeout as delay } from 'node:timers/promises';
 import tls from 'node:tls';
-import { Agent } from 'undici';
+import { Agent, Dispatcher1Wrapper } from 'undici';
 
 // Windows applications can trust local TLS inspection roots that Node's bundled CAs omit.
 // Keep Node's existing roots and add the Windows trust store without disabling verification.
@@ -13,10 +13,8 @@ if (process.platform === 'win32'
   }
 }
 
-// Node 26's built-in fetch negotiates HTTP/2 by default. Some gateways and
-// HTTPS inspection proxies reject larger chat requests with ERR_HTTP2_ERROR.
-// Keep the compatibility transport scoped to provider requests, with TLS checks.
-const providerDispatcher = new Agent({ allowH2: false });
+// 默认使用 HTTP/1.1，避免部分模型网关拒绝 HTTP/2。适配器兼容内置 fetch 的新旧回调接口。
+const providerDispatcher = new Dispatcher1Wrapper(new Agent({ allowH2: false }));
 
 export async function fetchWithRetry(url, init, { maxRetries = 2 } = {}) {
   const retries = Number.isFinite(Number(maxRetries)) ? Math.max(0, Math.min(10, Math.floor(Number(maxRetries)))) : 2;
