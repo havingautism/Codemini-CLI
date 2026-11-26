@@ -78,8 +78,8 @@ test('electron-builder config ships unsigned win and mac artifacts', () => {
 
 test('release tag check follows package.json', () => {
   const script = path.join(root, 'scripts', 'check-release-tag.js');
-  assert.equal(pkg.version, '0.10.6');
-  const match = spawnSync(process.execPath, [script, 'v0.10.6'], { encoding: 'utf8' });
+  assert.equal(pkg.version, '0.11.0');
+  const match = spawnSync(process.execPath, [script, 'v0.11.0'], { encoding: 'utf8' });
   assert.equal(match.status, 0, match.stderr);
   const mismatch = spawnSync(process.execPath, [script, 'v0.0.0-not-a-release'], { encoding: 'utf8' });
   assert.notEqual(mismatch.status, 0);
