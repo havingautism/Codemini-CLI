@@ -146,10 +146,12 @@ test('discovers and invokes tools from a real stdio MCP server', async () => {
   assert.equal(inspection.ok, true);
   assert.deepEqual(inspection.tools.map((tool) => tool.name), ['echo']);
   assert.equal(inspection.tools[0].enabled, true);
+  assert.equal(inspection.tools[0].annotations.readOnlyHint, true);
 
   const configured = { ...server, cachedTools: inspection.tools };
   const bundle = getMcpToolBundle({ mcp: { servers: [configured] } });
   const name = mcpToolName(configured, 'echo');
+  assert.equal(bundle.handlers[name].goalReadOnly, true);
   try {
     const result = await bundle.handlers[name]({ value: 'hello' });
     assert.equal(result.content[0].text, 'echo:hello');

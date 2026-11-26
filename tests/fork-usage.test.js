@@ -160,6 +160,10 @@ test('fork first request preserves the parent message prefix and frozen tool sch
       type: 'function',
       function: { name: 'fork_task', description: 'stable fork schema', parameters: { type: 'object', properties: {} } },
     },
+    {
+      type: 'function',
+      function: { name: 'update_goal_plan', description: '只允许父代理更新目标计划', parameters: { type: 'object', properties: {} } },
+    },
   ];
 
   await runForkTask({

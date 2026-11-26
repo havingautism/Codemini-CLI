@@ -42,6 +42,7 @@ import {
   runSessionOperation,
 } from "../lib/session-state.js";
 import { isSessionTurnBusyResult } from "../lib/session-turn-busy.js";
+import { isGoalSteeringInput, isImmediateGoalControl } from "../../../../src/core/goal-command.js";
 import { buildMcpToolDisplayLabels } from "../../../../src/core/mcp-tool-display.js";
 import { setMcpToolDisplayLabels } from "../../../../src/core/tool-display.js";
 import {
@@ -78,6 +79,7 @@ import {
   removeEmptyAssistantPlaceholders,
   latestRetryableMessageId,
   updateSkillInSegments,
+  goalVerdictMessage,
 } from "../../../shared/transcript-segments.js";
 import { buildHookSegmentEvent } from "../../../shared/hook-ui.js";
 import { skillBadgesFromSessionMessage } from "../lib/user-skill-prompt.js";
@@ -298,6 +300,7 @@ const initialState = {
   runtimeState: null,
   // 每次任务决策助手事件到达时递增，驱动轨迹面板实时刷新审计记录。
   harnessRevision: 0,
+  goalRevision: 0,
   currentSessionId: null,
   sessionRuntimeById: {},
   sessionMessagesById: {},
@@ -2108,6 +2111,9 @@ export function AppProvider({ children }) {
       switch (event.type) {
         case "connected":
           break;
+        case "goal:changed":
+          setState((prev) => ({ ...prev, goalRevision: prev.goalRevision + 1 }));
+          break;
 
         case "session:forked": {
           const previousId = String(
@@ -2594,6 +2600,17 @@ export function AppProvider({ children }) {
           break;
         }
 
+        case "goal:verdict":
+          addMessage(goalVerdictMessage(event));
+          break;
+        case "goal:waiting":
+          upsertRuntimeActivity({
+            key: `goal-wait-${event.sessionId}-${event.id}`,
+            label: event.name,
+            detail: event.summary,
+            status: event.status === "running" ? "running" : event.status === "failed" ? "error" : "done",
+          });
+          break;
         case "compact:auto":
           upsertRuntimeActivity({
             key: "compact",
@@ -3106,6 +3123,8 @@ export function AppProvider({ children }) {
     const batcher = createStreamEventBatcher({ handleEvent });
     sseBatcherRef.current = batcher;
     const es = new EventSource("/api/events");
+    // 重连后补读当前会话。服务端的 connected 消息可携带其他会话编号。
+    es.onopen = () => setState((prev) => ({ ...prev, goalRevision: prev.goalRevision + 1 }));
     es.onmessage = (e) => {
       try {
         batcher.push(JSON.parse(e.data));
@@ -3553,6 +3572,38 @@ export function AppProvider({ children }) {
           ? { text: input, skillNames: [], attachmentIds: [], dismissedAlwaysSkills: [] }
           : input || {};
         const line = String(message.text || "");
+        const isBusyNow = () => sessionOperationsRef.current.has(sessionId)
+          || isSessionBusyInState(stateRef.current, sessionId);
+        const plainSteering = isBusyNow() && !options.__queued && !options.retryMessageId && isGoalSteeringInput(message);
+        if (isImmediateGoalControl(line) || plainSteering) {
+          let result;
+          try {
+            result = await api.submitGoalControl(sessionId, line);
+          } catch (error) {
+            result = { type: "error", error: true, text: error.message || "目标命令执行失败" };
+          }
+          const text = result.text || result.output;
+          if (text) {
+            const reply = {
+              id: `goal-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+              role: result.type === "error" ? "error" : "system",
+              text,
+              segments: [{ type: "text", text, isStreaming: false }],
+              timestamp: new Date().toISOString(),
+            };
+            setState((prev) => {
+              const visible = prev.currentSessionId === sessionId;
+              const history = visible ? prev.messages : prev.sessionMessagesById[sessionId] || [];
+              const messages = [...history, reply];
+              return {
+                ...prev,
+                ...(visible ? { messages } : {}),
+                sessionMessagesById: { ...prev.sessionMessagesById, [sessionId]: messages },
+              };
+            });
+          }
+          if (result.goalControl !== false) return result;
+        }
         if (
           !line.trim() &&
           !(message.attachmentIds || []).length &&
@@ -3561,9 +3612,6 @@ export function AppProvider({ children }) {
         ) return;
         const queued = options.__queued === true;
         const priority = options.priority === true || message.priority === true;
-        const sessionBusy =
-          sessionOperationsRef.current.has(sessionId) ||
-          isSessionBusyInState(stateRef.current, sessionId);
         const enqueueComposer = (front = false) => {
           if (stateRef.current.currentView !== "chat" && !options.stayInView) {
             update({ currentView: "chat" });
@@ -3581,7 +3629,7 @@ export function AppProvider({ children }) {
         // While a turn is already running for this session, keep the prompt in
         // the composer queue (Cursor-style) instead of sending it into the
         // transcript. Enter appends; jump aborts the current turn and drains.
-        if (sessionBusy) {
+        if (isBusyNow()) {
           if (options.retryMessageId) return { type: "busy", sessionBusy: true };
           enqueueComposer(queued);
           return queued ? { type: "busy", sessionBusy: true } : undefined;

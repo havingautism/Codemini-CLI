@@ -38,6 +38,7 @@ import {
 } from './components/messages.js';
 import { ModeHome } from './components/mode-home.js';
 import { createTuiCopy } from './copy.js';
+import { isGoalSteeringInput, isImmediateGoalControl } from '../core/goal-command.js';
 import { parseCrewWakeHeadline } from '../core/crew-snapshot.js';
 import { cancelWorkerIdFromPayload } from '../core/crew-progress.js';
 import { color, editorTheme } from './theme.js';
@@ -144,6 +145,7 @@ export async function runOpenCodeTui({ runtime, sessionId, model, safeMode = tru
   let historyPicker = null;
   let settingsHandle = null;
   let approvalCancel = null;
+  let approvalGoalSignal = null;
   let resolveDone;
   const done = new Promise((resolve) => { resolveDone = resolve; });
 
@@ -173,26 +175,32 @@ export async function runOpenCodeTui({ runtime, sessionId, model, safeMode = tru
     })();
   };
 
-  const showApproval = (request) => new Promise((resolve) => {
+  const showApproval = (request, signal) => new Promise((resolve) => {
+    if (signal?.aborted) return resolve({ approved: false });
     let handle;
+    const cancel = () => finish(false);
     const finish = (approved) => {
       handle?.hide();
+      signal?.removeEventListener('abort', cancel);
       approvalCancel = null;
+      approvalGoalSignal = null;
       tui.setFocus(editor);
       resolve({ approved });
       requestRender();
     };
-    const dialog = new ApprovalDialog(request, finish, copy);
+    const dialog = new ApprovalDialog(request, finish, copy, Boolean(signal));
     handle = tui.showOverlay(dialog, { width: '72%', minWidth: 44, maxHeight: 10, anchor: 'center', margin: 2 });
-    approvalCancel = () => finish(false);
+    approvalGoalSignal = signal;
+    approvalCancel = cancel;
+    signal?.addEventListener('abort', cancel, { once: true });
     requestRender();
   });
   const enqueueApproval = (() => {
     let chain = Promise.resolve();
-    return (request) => {
+    return (request, { signal } = {}) => {
       const next = chain.then(
-        () => showApproval(request),
-        () => showApproval(request),
+        () => showApproval(request, signal),
+        () => showApproval(request, signal),
       );
       chain = next.then(() => undefined, () => undefined);
       return next;
@@ -384,6 +392,10 @@ export async function runOpenCodeTui({ runtime, sessionId, model, safeMode = tru
       }
       activePlan = plan;
       setActivity(type === 'plan:step_done' ? 'tool' : 'thinking', event.title || copy.working);
+    } else if (type === 'goal:verdict') {
+      transcript.addChild(createSystemMessage([event.name, event.summary].filter(Boolean).join(' · '), color.muted));
+    } else if (type === 'goal:waiting') {
+      setActivity('tool', [event.name, event.summary].filter(Boolean).join(' · '));
     } else if (type === 'compact:auto' || type === 'dream:auto' || type === 'dream:complete') {
       transcript.addChild(createSystemMessage(event.summary || type.replace(':', ' '), color.warning));
     }
@@ -464,6 +476,20 @@ export async function runOpenCodeTui({ runtime, sessionId, model, safeMode = tru
     if (!alreadyShown) {
       editor.addToHistory(value);
       editor.setText('');
+    }
+    if (busy && (isImmediateGoalControl(value) || (isGoalSteeringInput(value) && runtime.isGoalRunning?.()))) {
+      try {
+        const result = await runtime.submitGoalControl(value);
+        if (result?.goalControl !== false) {
+          appendResult(result);
+          requestRender();
+          return;
+        }
+      } catch (error) {
+        transcript.addChild(createSystemMessage(error?.message || '目标命令执行失败', color.error));
+        requestRender();
+        return;
+      }
     }
     if (command?.local) {
       if (command.local === 'help') showHelp();
@@ -776,6 +802,10 @@ export async function runOpenCodeTui({ runtime, sessionId, model, safeMode = tru
       return { consume: true };
     }
     if (phase !== 'chat') return undefined;
+    if (approvalGoalSignal && matchesKey(data, 'ctrl+c')) {
+      void submit('/goal pause');
+      return { consume: true };
+    }
     if (approvalCancel && (matchesKey(data, 'escape') || matchesKey(data, 'ctrl+c'))) {
       approvalCancel();
       return { consume: true };

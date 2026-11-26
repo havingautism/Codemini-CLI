@@ -209,9 +209,10 @@ export class Footer {
 }
 
 export class ApprovalDialog {
-  constructor(request, onDecision, copy) {
+  constructor(request, onDecision, copy, goalActive = false) {
     this.request = request;
     this.copy = copy;
+    this.goalActive = goalActive;
     this.list = new SelectList([
       { value: 'approve', label: copy.approve, description: copy.approveDescription },
       { value: 'reject', label: copy.reject, description: copy.rejectDescription }
@@ -235,6 +236,7 @@ export class ApprovalDialog {
     return modalFrame([
       fill(`${title}${tool ? `  ${color.muted(tool)}` : ''}`, innerWidth, color.overlayBg),
       fill(color.text(question), innerWidth, color.overlayBg),
+      ...(this.goalActive ? [fill(color.muted('Ctrl+C 暂停当前目标'), innerWidth, color.overlayBg)] : []),
       color.overlayBg(' '.repeat(innerWidth)),
       ...this.list.render(innerWidth).map((line) => fill(line, innerWidth, color.overlayBg, 0))
     ], width);

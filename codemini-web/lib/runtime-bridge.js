@@ -9,6 +9,7 @@ import {
   finishThinkingSegments,
   finishStreamingTextSegments,
   normalizeUsage,
+  goalVerdictMessage,
   routingGraphFromEvent,
   memoryInjectFromEvent,
   settleIncompleteTranscriptMessage,
@@ -406,6 +407,7 @@ export class RuntimeBridge {
     this.#onLifecycle = onLifecycle;
     this.#installApprovalHandler();
     this.#uiTranscriptSessionId = this.getSessionId();
+    runtime.setOnGoalChange?.((sessionId) => this.#publish({ type: 'goal:changed', sessionId }));
     runtime.setOnTitleUpdate?.((sessionId, title, metadata = {}) => {
       this.#publish({
         type: 'session:title',
@@ -422,21 +424,28 @@ export class RuntimeBridge {
   }
 
   #installApprovalHandler() {
-    this.#runtime.setRequestToolApproval((request) => {
+    this.#runtime.setRequestToolApproval((request, { signal } = {}) => {
+      if (signal?.aborted) return { approved: false, reason: '目标已暂停' };
       const { id, name, displayName, arguments: args, approvalDetails } = request;
       const pending = this.#approval.create(id);
-      const event = { type: 'approval:request', id, toolName: name, displayName, arguments: args, details: approvalDetails };
+      const event = { type: 'approval:request', id, toolName: name, displayName, arguments: args, details: approvalDetails,
+        ...(signal ? { goalControl: true } : {}) };
+      const cancel = () => this.resolveApproval(id, false, '目标已暂停');
+      signal?.addEventListener('abort', cancel, { once: true });
       this.#approvalRequests.set(id, event);
       this.#publish(event);
-      return pending;
+      return pending.finally(() => signal?.removeEventListener('abort', cancel));
     });
-    this.#runtime.setRequestUserInput?.((form) => {
+    this.#runtime.setRequestUserInput?.((form, { signal } = {}) => {
+      if (signal?.aborted) return { status: 'skipped', answers: {} };
       const id = `user-input-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       const request = { ...form, id };
       const pending = this.#userInput.create(id, form);
+      const cancel = () => this.handleUserInput(id, { status: 'skipped', answers: {} });
+      signal?.addEventListener('abort', cancel, { once: true });
       this.#publish({ type: 'user-input:request', request });
       this.#broadcastRuntimeState();
-      return pending;
+      return pending.finally(() => signal?.removeEventListener('abort', cancel));
     });
   }
 
@@ -1206,6 +1215,10 @@ export class RuntimeBridge {
         }
         break;
       }
+      case 'goal:verdict': {
+        publishedMessageId = this.#addUiMessage(goalVerdictMessage(event));
+        break;
+      }
       case 'compact:auto': {
         this.#addUiMessage({
           role: 'divider',
@@ -1625,6 +1638,10 @@ export class RuntimeBridge {
         retryPrompt: text
       }
     );
+  }
+
+  async handleGoalControl(text) {
+    return this.#runtime.submitGoalControl(text);
   }
 
   handleRetryMessage(messageId) {

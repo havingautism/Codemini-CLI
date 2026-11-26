@@ -191,9 +191,14 @@ test('start center exposes session history as a dedicated modal entry', async ()
 test('OpenCode-style TUI queues prompts while a turn is running', async () => {
   const terminal = new FakeTerminal();
   const calls = [];
+  const controls = [];
   let releaseFirst;
   const firstTurn = new Promise((resolve) => { releaseFirst = resolve; });
   const runtime = {
+    submitGoalControl: async (text) => {
+      controls.push(text);
+      return { type: 'system', text: '已处理目标命令' };
+    },
     getSessionMessages: () => [],
     getInputHistory: async () => [],
     getAvailableSkills: () => [],
@@ -219,13 +224,59 @@ test('OpenCode-style TUI queues prompts while a turn is running', async () => {
   await waitFor(() => calls.length === 1);
   for (const key of 'second') terminal.send(key);
   terminal.send('\r');
-  await new Promise((resolve) => setTimeout(resolve, 20));
+  for (const control of ['/goal', '/goal pause']) {
+    for (const key of control) terminal.send(key);
+    terminal.send('\r');
+  }
+  await waitFor(() => controls.length === 2);
+  assert.deepEqual(controls, ['/goal', '/goal pause']);
   assert.deepEqual(calls, ['first']);
 
   releaseFirst();
   await waitFor(() => calls.length === 2);
   assert.deepEqual(calls, ['first', 'second']);
   await waitFor(() => stripAnsi(terminal.output).includes('reply:second'));
+  terminal.send('\u0003');
+  terminal.send('\u0003');
+  await running;
+});
+
+test('目标审批弹窗支持 Ctrl+C 暂停，排队中的同目标审批随信号取消', async () => {
+  const terminal = new FakeTerminal();
+  const controller = new AbortController();
+  const decisions = [];
+  const controls = [];
+  let requestApproval;
+  const runtime = {
+    getSessionMessages: () => [],
+    getInputHistory: async () => [],
+    getAvailableSkills: () => [],
+    getRuntimeState: () => ({ model: 'test-model', workspaceRoot: process.cwd() }),
+    setRequestToolApproval(handler) { requestApproval = handler; },
+    setExecutionMode: async () => {},
+    async submitMessage() {
+      decisions.push(...await Promise.all(['a', 'b'].map((id) =>
+        requestApproval({ id, name: 'write' }, { signal: controller.signal }))));
+      return { type: 'system', text: '执行已停' };
+    },
+    async submitGoalControl(text) {
+      controls.push(text);
+      controller.abort();
+      return { type: 'system', text: '目标已暂停' };
+    },
+  };
+  const running = runOpenCodeTui({ runtime, terminal, sessionId: 'goal-approval', model: 'test-model' });
+  await waitFor(() => terminal.screenText().includes('New conversation'));
+  terminal.send('\r');
+  await waitFor(() => terminal.screenText().includes('test-model'));
+  for (const key of 'start') terminal.send(key);
+  terminal.send('\r');
+  await waitFor(() => terminal.screenText().includes('Ctrl+C 暂停当前目标'));
+  terminal.send('\u0003');
+  await waitFor(() => decisions.length === 2);
+  assert.deepEqual(controls, ['/goal pause']);
+  assert.ok(decisions.every((result) => result.approved === false));
+  await waitFor(() => !terminal.screenText().includes('Ctrl+C 暂停当前目标'));
   terminal.send('\u0003');
   terminal.send('\u0003');
   await running;
@@ -453,7 +504,7 @@ test('chat chrome keeps only the logo on top and runtime details at the bottom',
     copy: createTuiCopy('en')
   }).render(80).join('\n'));
   assert.match(crewDock, /Crew/);
-  assert.match(crewDock, /lena reviewing/);
+  assert.match(crewDock, /lena · reviewing/);
 
   const activity = new ActivityBar({ tui: { requestRender() {} }, copy: createTuiCopy('en') }).render(80).join('\n');
   assert.match(stripAnsi(activity), /● Ready.*\/ commands/);

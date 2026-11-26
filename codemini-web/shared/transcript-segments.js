@@ -20,6 +20,14 @@ const USAGE_KEYS = [
   "requests",
 ];
 
+export function goalVerdictMessage(event) {
+  return {
+    id: event.id, role: "divider", dividerType: "goal-verdict", timestamp: event.timestamp,
+    text: [event.name, event.summary].filter(Boolean).join(" · "),
+    criteria: event.criteria, usageText: event.usage,
+  };
+}
+
 export function normalizeUsage(usage) {
   if (!usage || typeof usage !== "object") return null;
   const out = {};

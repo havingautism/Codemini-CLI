@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import xterm from '@xterm/xterm';
 import {
   _resetTerminalSessionsForTests,
   buildPowerShellColorBootstrap,
@@ -220,11 +221,11 @@ test('web terminal preserves shell state between commands', async () => {
 test('rapid terminal resizes do not duplicate a hand-typed command', async () => {
   await withTempCwd(async (cwd) => {
     const shellDefault = process.platform === 'win32' ? 'powershell' : 'bash';
-    const marker = 'codemini_resize_marker';
+    const marker = 'resize.log';
     const command =
       process.platform === 'win32'
-        ? `$${marker} = 1`
-        : `${marker}=1`;
+        ? `Add-Content ${marker} ran`
+        : `echo ran >> ${marker}`;
 
     getTerminalSnapshot(cwd, shellDefault);
     for (let index = 0; index < 40; index += 1) {
@@ -247,22 +248,36 @@ test('rapid terminal resizes do not duplicate a hand-typed command', async () =>
       );
     }
 
-    let text = '';
+    // 这个标记只会出现在下一条命令的输出里，收到它就说明之前的输入已经处理完毕。
+    const barrier = process.platform === 'win32'
+      ? "Write-Output ('resize_' + 'done')"
+      : "printf 'resize_%s\\n' done";
+    writeTerminalInput(cwd, `${barrier}\r`, shellDefault);
+    let snapshot;
     for (let index = 0; index < 40; index += 1) {
-      text = stripAnsi(getTerminalSnapshot(cwd, shellDefault).data);
-      if (text.includes(marker)) {
-        await new Promise((resolve) => setTimeout(resolve, 150));
-        text = stripAnsi(getTerminalSnapshot(cwd, shellDefault).data);
-        break;
-      }
+      snapshot = getTerminalSnapshot(cwd, shellDefault);
+      if (stripAnsi(snapshot.data).includes('resize_done')) break;
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
+    assert.ok(stripAnsi(snapshot.data).includes('resize_done'), '终端未处理完缩放后的输入');
+    const runs = await fs.readFile(path.join(cwd, marker), 'utf8');
+    assert.deepEqual(runs.trim().split(/\r?\n/), ['ran'], '命令应当只执行一次');
 
-    assert.equal(
-      text.match(new RegExp(marker, 'g'))?.length || 0,
-      1,
-      'expected one terminal echo for one submitted command',
-    );
+    // ConPTY 可以回到行首重绘输入。用 Web 终端的渲染器还原实际显示，并拼接自动折行。
+    const terminal = new xterm.Terminal({ cols: snapshot.cols, rows: snapshot.rows, allowProposedApi: true });
+    try {
+      await new Promise((resolve) => terminal.write(snapshot.data, resolve));
+      const buffer = terminal.buffer.active;
+      let screen = '';
+      for (let index = 0; index < buffer.length; index += 1) {
+        const line = buffer.getLine(index);
+        if (!line.isWrapped) screen += '\n';
+        screen += line.translateToString(true);
+      }
+      assert.equal(screen.split(marker).length - 1, 1, '终端应当只显示一次提交的命令');
+    } finally {
+      terminal.dispose();
+    }
   });
 });
 

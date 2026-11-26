@@ -1,0 +1,448 @@
+import {
+  applyGoalVerdict, beginGoalIteration, createGoalState, markGoalVerifying,
+  getGoalRetryVerificationId, goalVerdictEvent, pauseGoal, recordGoalDelegation, recordGoalObservation, renderGoalContext, renderGoalSummary, resumeGoal, setInferredGoalCriteria,
+} from './goal-state.js';
+import { createGoalEvidenceCollector, inferGoalCriteria, reviewGoal } from './goal-verification.js';
+import { integerSequenceRange } from './goal-count-verification.js';
+import { randomUUID } from 'node:crypto';
+import { sha256 } from './crypto-utils.js';
+import { watchGoalWork } from './goal-work.js';
+import { readSessionGoal, saveSessionGoal } from './session-store.js';
+import { withGoalUsageMeter } from './token-usage-context.js';
+import { normalizeModelUsage } from './model-usage.js';
+import { goalResolutionHint, resolveGoalOperation, unresolvedGoalOperations, withGoalOperations } from './goal-operations.js';
+import { createGoalTaskRunner } from './goal-task-runner.js';
+import { finishGoalTask } from './goal-tasks.js';
+
+const reply = (text) => ({ type: 'system', text, output: text });
+const localOwners = new Set();
+
+function reviseGoal(previous, parsed) {
+  const steering = parsed.action === 'steer';
+  const objective = steering ? previous.objective + '\n用户补充（冲突时以本次要求为准）：' + parsed.text : parsed.objective;
+  const revised = createGoalState({
+    objective,
+    criteria: steering ? previous.criteria : parsed.acceptance,
+    criteriaPending: steering ? 'infer' : parsed.criteriaPending,
+    constraints: steering ? previous.constraints : parsed.constraints,
+    maxIterations: parsed.maxRounds ?? previous.maxIterations,
+    tokenBudget: parsed.tokenBudget ?? previous.tokenBudget,
+    maxWaitMs: parsed.maxWaitMs ?? previous.maxWaitMs,
+  });
+  // 中断的这一轮按新要求重新执行。已用完的轮次、Token 和时间仍计在同一预算上。
+  const phase = previous.status === 'paused' ? previous.resumePhase : previous.phase;
+  revised.iteration = previous.iteration - (['executing', 'verifying'].includes(phase) ? 1 : 0);
+  if (revised.maxIterations < revised.iteration) throw new Error('新的轮数预算不能小于已经用完的轮数。');
+  revised.tokensUsed = previous.tokensUsed;
+  revised.unreportedRequests = previous.unreportedRequests;
+  revised.activeMs = previous.activeMs;
+  revised.operations = previous.operations;
+  return revised;
+}
+
+export async function waitForGoalInput(observer, form, signal) {
+  const skipped = { status: 'skipped', answers: {} };
+  if (signal.aborted) return skipped;
+  const pending = Promise.withResolvers();
+  const cancel = () => pending.resolve(skipped);
+  signal.addEventListener('abort', cancel, { once: true });
+  try { return await Promise.race([observer(form, { signal }), pending.promise]); }
+  finally { signal.removeEventListener('abort', cancel); }
+}
+
+function hasLiveOwner(goal) {
+  if (!goal?.ownerPid || !goal.ownerToken) return false;
+  if (goal.ownerPid === process.pid) return localOwners.has(goal.ownerToken);
+  try { process.kill(goal.ownerPid, 0); return true; }
+  catch (error) { return error.code !== 'ESRCH'; }
+}
+
+export function recoverInterruptedGoal(session) {
+  if (session.goalState?.status === 'active' && !hasLiveOwner(session.goalState)) {
+    try {
+      const missing = unresolvedGoalOperations(session.goalState).length > 0;
+      saveSessionGoal(session, pauseGoal(session.goalState, missing
+        ? '上次运行中断时仍有操作未收到回执，请核对后再恢复。' : '上次运行已中断，使用 /goal resume 核对现场并继续。'));
+    } catch (error) {
+      if (error.code !== 'GOAL_STATE_CONFLICT') throw error;
+      session.goalState = readSessionGoal(session.id);
+    }
+  }
+}
+
+// 裁剪完成后生成请求副本，避免污染历史消息、摘要和工具调用配对。
+export function withGoalContext(messages, context) {
+  if (!context) return messages;
+  const index = messages.findLastIndex((item) => item.role === 'user');
+  if (index < 0) return [...messages, { role: 'user', content: context }];
+  const original = messages[index].content;
+  const content = Array.isArray(original)
+    ? [...original, { type: 'text', text: context }]
+    : String(original || '') + '\n\n' + context;
+  return messages.map((item, at) => at === index ? { ...item, content } : item);
+}
+
+// 每个会话只允许一个前台目标循环。工具仍通过普通聊天运行时执行。
+export function createGoalRunner({ getSession, execute, settings, workspaceRoot, busy, onGoalChange }) {
+  let controller;
+  let finished;
+  let ownerToken;
+  let activeSince;
+  let revisionPending = false;
+
+  const save = (next) => {
+    const session = getSession();
+    const previous = session.goalState;
+    if (next === previous) return;
+    const now = Math.floor(performance.now());
+    const elapsed = activeSince != null ? now - activeSince : 0;
+    // 只累计本进程实际持有目标的区间，重启后不计入离线等待。
+    next = { ...next, activeMs: next.activeMs + Math.max(0, elapsed) };
+    saveSessionGoal(session, next.status === 'active'
+      ? { ...next, ownerPid: process.pid, ownerToken } : next);
+    activeSince = next.status === 'active' ? now : undefined;
+    // 只在页面所依赖的状态改变后通知，单纯的用量更新无需重读整份任务记录。
+    if (!previous || ['id', 'status', 'tasks', 'delegations', 'observations', 'verdicts'].some(key => previous[key] !== next[key])) {
+      onGoalChange?.(session.id);
+    }
+  };
+  const current = () => getSession().goalState;
+  const describe = () => current() ? renderGoalContext({ ...current(),
+    activeMs: current().activeMs + (activeSince == null ? 0 : Math.floor(performance.now()) - activeSince) }) : '当前会话没有目标。';
+  const stop = (reason = '用户暂停了目标。') => {
+    if (!controller || current()?.status !== 'active') return false;
+    controller?.abort({ continueInPlace: true });
+    return save(pauseGoal(current(), reason));
+  };
+
+  async function drive(signal, onEvent, verificationOnly) {
+    const missingAtStart = current().unreportedRequests;
+    let open = true;
+    const meter = {
+      beforeRequest() {
+        if (!open || signal.aborted || current()?.status !== 'active') throw new Error('目标执行已结束。');
+        const goal = current();
+        if (goal.tokenBudget == null) return;
+        const reason = goal.tokensUsed >= goal.tokenBudget
+          ? 'Token 预算已耗尽，请用 /goal resume --add-tokens 10000 增加预算。'
+          : goal.unreportedRequests > missingAtStart
+            ? '提供商未报告本次消耗，无法核对 Token 预算。请检查用量配置后恢复。' : '';
+        if (reason) {
+          stop(reason);
+          throw new Error(reason);
+        }
+      },
+      finishRequest(usage) {
+        const goal = current();
+        if (!open || !goal) return;
+        const normalized = normalizeModelUsage(usage);
+        save(normalized ? { ...goal, tokensUsed: goal.tokensUsed + normalized.totalTokens }
+          : { ...goal, unreportedRequests: goal.unreportedRequests + 1 });
+      },
+    };
+    try {
+      await withGoalOperations({ current, save, stop, signal },
+        () => withGoalUsageMeter(meter, () => runIterations(signal, onEvent, meter, verificationOnly)));
+    }
+    finally { open = false; }
+  }
+
+  async function runIterations(signal, onEvent, meter, verificationOnly) {
+    let recovering = current().phase === 'executing';
+    const tasks = createGoalTaskRunner({ current, save, signal, workspaceRoot, settings });
+    if (current().criteriaPending) {
+      const criteria = await inferGoalCriteria({ goal: current(), ...settings(), signal });
+      if (signal.aborted) return;
+      const resolved = setInferredGoalCriteria(current(), criteria);
+      // 旧版在送审前已把本轮完整答复和工具观测落盘。补登记正文即可复核，无需重放原操作。
+      const replies = resolved.phase === 'verifying' && resolved.report && criteria.some(item => item.evidence === 'reply')
+        ? await createGoalEvidenceCollector({ workspaceRoot, goal: resolved }).recordReply(resolved.report) : [];
+      if (signal.aborted) return;
+      await save(replies.reduce(recordGoalObservation, resolved));
+    }
+    while (!signal.aborted && current().status === 'active') {
+      if (current().phase !== 'verifying') meter.beforeRequest();
+      if (current().phase === 'ready') await save(beginGoalIteration(current()));
+      if (signal.aborted || current().status !== 'active') break;
+      if (current().phase === 'executing') {
+        const collector = createGoalEvidenceCollector({ workspaceRoot, goal: current() });
+        const accept = async (observations) => {
+          if (signal.aborted || !observations?.length) return;
+          let next = current();
+          for (const observation of observations) next = recordGoalObservation(next, observation);
+          await save(next);
+        };
+        await accept(await collector.start());
+        if (recovering) await tasks.reviewPendingDeliveries();
+        if (signal.aborted) break;
+        const refreshBeforeClaim = async (id, plan) => {
+          if (!current()?.tasks?.some(task => ['delivered', 'verified'].includes(task.status))) return;
+          // 外部或当前轮次的写入可能发生在上一次验收之后，先同步现场再放行后继。
+          const observations = await collector.finish();
+          await accept(observations);
+          if (!signal.aborted) await tasks.reviewPendingDeliveries(id, plan);
+        };
+        const delegationIds = new Map();
+        const workers = new Map();
+        const monitors = new AbortController();
+        const watch = (id, name, inspect, taskId) => watchGoalWork({
+          signal: AbortSignal.any([signal, monitors.signal]), name, inspect, pause: stop, maxWaitMs: current().maxWaitMs,
+          notifyInterrupted: () => onEvent?.({ type: 'goal:waiting', id, name, status: 'interrupted', summary: '等待已中断，恢复后将核对现场。' }),
+          async report(status, summary, details) {
+            if (signal.aborted || current()?.status !== 'active') return;
+            let next = recordGoalDelegation(current(), { ...details, id, name, status, summary, goalTaskId: taskId });
+            // 交接和尝试结果一次落库，暂停或崩溃后仍能只重试验收。
+            if (taskId && (status === 'completed' || status === 'failed')) {
+              next = finishGoalTask(next, taskId, id, status === 'completed' ? 'delivered' : 'failed');
+            }
+            save(next);
+            onEvent?.({ type: 'goal:waiting', id, name, status, summary });
+          },
+        });
+        const hooks = {
+          async updatePlan(args) {
+            if (args?.main_task?.action === 'start') await refreshBeforeClaim(args.main_task.id, args.tasks);
+            return tasks.updatePlan(args);
+          },
+          workerModel: (callId, model) => tasks.workerModel(delegationIds.get(callId) || callId, model),
+          async watchShell(name, inspect, parentCallId) {
+            const parent = workers.get(parentCallId);
+            parent?.shells.add(inspect);
+            const finish = await watch('shell-' + randomUUID(), name, inspect);
+            return async (...args) => {
+              if (parent?.shells.delete(inspect)) parent.finishedShellProgress += inspect().progress;
+              await finish(...args);
+            };
+          },
+          workerActivity(callId, event) {
+            const worker = workers.get(callId);
+            if (!worker) return;
+            worker.cursor++;
+            if (event?.type === 'tool:end') {
+              worker.completedTools.add(sha256(JSON.stringify([event.name, event.arguments])));
+            }
+          },
+          context: () => signal.aborted ? '' : renderGoalContext(current()),
+          delegationId: (callId) => delegationIds.get(callId) || callId,
+          async started(event) {
+            await accept(await collector.beginTool(tasks.evidenceEvent(event)));
+            if (signal.aborted) throw new Error('目标已暂停。');
+            const { toolName, args, callId } = event;
+            if (toolName !== 'run_subagent') return;
+            if (args.goal_task_id) await refreshBeforeClaim(args.goal_task_id);
+            // 部分提供商会在恢复后重用工具调用编号，已有交接必须保留。
+            const id = current().delegations.some((item) => item.id === callId) ? randomUUID() : callId;
+            tasks.claimDelegation(args.goal_task_id, id);
+            delegationIds.set(callId, id);
+            const worker = { cursor: 0, shells: new Set(), finishedShellProgress: 0, completedTools: new Set() };
+            workers.set(callId, worker);
+            worker.finish = await watch(id, args.name || args.role || '子代理', () => {
+              const shells = Array.from(worker.shells, inspect => inspect());
+              return {
+                cursor: [worker.cursor, ...shells.map(shell => shell.cursor)].join('/'),
+                progress: shells.reduce((sum, shell) => sum + shell.progress, worker.finishedShellProgress + worker.completedTools.size),
+                detail: String(args.prompt || '').slice(0, 150),
+              };
+            }, args.goal_task_id);
+          },
+          async result(event) {
+            if (signal.aborted) return;
+            await accept(await collector.recordToolResult(tasks.evidenceEvent(event)));
+            if (signal.aborted) return;
+            if (event.toolName !== 'run_subagent') return;
+            const result = event.result || {};
+            const worker = workers.get(event.callId);
+            await worker?.finish?.(result.ok ? 'completed' : 'failed', result.message || result.error || result.text,
+              { handoffPath: result.handoffPath, workerId: result.workerId });
+            workers.delete(event.callId);
+            if (result.ok && event.args?.goal_task_id && !signal.aborted) {
+              await tasks.reviewDelivery(event.args.goal_task_id);
+            }
+          },
+        };
+        const instruction = recovering
+          ? '恢复目标。本轮曾中断，请先核对已有改动、子任务与证据，再继续未完成的工作。'
+          : '执行目标：' + current().objective;
+        const limits = integerSequenceRange(current());
+        let guidance = current().criteria.some(item => item.evidence === 'reply')
+          ? '直接在回复中完整交付要求的文本。已有且仍有效的工具证据请沿用，不要重复已验证的外部操作；文件、行为或外部状态缺少证据时再针对性核对。'
+          : '请取得与验收项直接相关的工具证据。';
+        if (limits) {
+          guidance = '仅输出从 ' + limits[0] + ' 到 ' + limits[1] + ' 的连续阿拉伯数字，包含两端，用顿号、逗号或换行分隔。不要加标题、解释、结束语或 Markdown。';
+          const previous = current().verdicts.at(-1);
+          if (previous?.verifierKind === 'integer_sequence') guidance += '\n上次数列核对结果：' + previous.resultReason;
+        } else {
+          guidance += '\n有多个可分别交付的步骤时，先用 update_goal_plan 保存简短任务计划并关联验收项；简单任务直接做。'
+            + '准备委派的步骤只登记计划，随后直接调用 run_subagent 并传入 goal_task_id，由子代理自动领取。独立任务可在允许委派时并行派发。'
+            + '只有主代理亲自执行的步骤才使用 main_task.start 和 main_task.deliver。'
+            + '根据已保存的任务状态继续：沿用仍然有效的验收和交接，优先处理就绪或中断的任务；需要改变做法时调整剩余计划。';
+        }
+        recovering = false;
+        const executorModel = settings().model;
+        let result;
+        try {
+          result = await execute(instruction + '\n' + guidance, onEvent, { goalHooks: hooks, signal });
+        } finally {
+          monitors.abort();
+        }
+        await accept(await collector.finish());
+        if (signal.aborted || current().status !== 'active') break;
+        if (result.aborted || result.workflowComplete || result.type !== 'assistant' || result.stopReason === 'incomplete_retries') {
+          await save(pauseGoal(current(), result.text || '执行中断，等待恢复。'));
+          break;
+        }
+        const observations = await collector.recordReply(result.text);
+        if (signal.aborted || current().status !== 'active') break;
+        const next = observations.reduce(recordGoalObservation, current());
+        await save(markGoalVerifying(next, result.text, executorModel));
+      }
+      if (signal.aborted || current().phase !== 'verifying') break;
+      const verdict = await reviewGoal({ goal: current(), workspaceRoot, ...settings(), signal });
+      if (signal.aborted || current().status !== 'active') break;
+      let reviewed = applyGoalVerdict(current(), verdict);
+      if (verificationOnly && reviewed.status === 'active') {
+        reviewed = pauseGoal(reviewed, reviewed.reason + ' 使用 /goal resume 继续执行。');
+      }
+      save(reviewed);
+      onEvent?.(goalVerdictEvent(current()));
+    }
+  }
+
+  return {
+    get running() { return Boolean(controller); },
+    get acceptingSteering() { return Boolean(controller && current()?.status === 'active'); },
+    stop,
+    async close() {
+      if (controller) {
+        await stop('会话关闭，目标进度已保存。');
+        await finished;
+      }
+    },
+    async command(parsed, onEvent) {
+      if (parsed.action === 'error') return reply(parsed.message);
+      if (!controller) {
+        const session = getSession();
+        session.goalState = readSessionGoal(session.id);
+        recoverInterruptedGoal(session);
+      }
+      if (parsed.action === 'status') return reply(describe());
+      if (!controller && current()?.status === 'active' && hasLiveOwner(current())) {
+        return reply('目标正在另一个运行时执行。请在启动它的会话中暂停。');
+      }
+      if (parsed.action === 'pause') {
+        await stop();
+        return reply(describe());
+      }
+      if (parsed.action === 'resolve') {
+        if (controller) return reply('请等待当前工具执行结束后再核对操作。');
+        try {
+          save(resolveGoalOperation(current(), parsed.id, parsed.resolution));
+          return reply(describe());
+        } catch (error) { return reply(error.message); }
+      }
+      const pending = unresolvedGoalOperations(current());
+      if (pending.length && ['resume', 'retry-verification', 'clear', 'edit', 'steer'].includes(parsed.action)) {
+        return reply('有工具调用正在执行或回执尚未确认。' + pending.map(goalResolutionHint).join('\n'));
+      }
+      if (parsed.action === 'clear' || parsed.action === 'edit' || parsed.action === 'steer') {
+        const previous = current();
+        if (parsed.action === 'steer' && (!controller || previous?.status !== 'active')) {
+          return { type: 'noop', goalControl: false };
+        }
+        if (!previous) return reply('当前会话没有目标。');
+        try {
+          if (parsed.action === 'clear') {
+            saveSessionGoal(getSession(), null);
+            onGoalChange?.(getSession().id);
+            revisionPending = false;
+            activeSince = undefined;
+            controller?.abort({ continueInPlace: true });
+            return reply('当前目标已清除。');
+          }
+          const active = Boolean(controller && previous.status === 'active');
+          const revised = reviseGoal(previous, parsed);
+          if (revised.iteration === revised.maxIterations) {
+            const reason = '已修改目标，原有轮数已用完。使用 /goal resume +2 增加两轮后继续。';
+            save({ ...revised, status: 'exhausted', phase: 'stopped', reason });
+            controller?.abort({ continueInPlace: true });
+            return reply(reason);
+          }
+          save(active ? revised : pauseGoal(revised, '已保存新目标，使用 /goal resume 开始执行。'));
+          if (active) {
+            revisionPending = true;
+            controller.abort({ continueInPlace: true });
+          }
+          const action = parsed.action === 'edit' ? '已修改目标' : '已将补充加入目标';
+          return reply(action + (active ? '，正在按新要求继续。' : '。使用 /goal resume 继续。'));
+        } catch (error) { return reply(error.message); }
+      }
+      if (controller?.signal.aborted && finished &&
+          (parsed.action === 'resume' || (parsed.action === 'create' && !current()))) {
+        await finished;
+        if (!controller) {
+          const session = getSession();
+          session.goalState = readSessionGoal(session.id);
+          recoverInterruptedGoal(session);
+        }
+      }
+      if (controller || busy()) return reply('当前会话正在执行任务，请先等待或暂停。');
+      const previous = current();
+      let next;
+      try {
+        if (parsed.action === 'create') {
+          if (previous && ['active', 'paused', 'exhausted'].includes(previous.status)) {
+            return reply('此会话已有可继续的目标。使用 /goal edit 修改、/goal clear 清除，或 /goal resume 恢复。');
+          }
+          next = createGoalState({ objective: parsed.objective, criteria: parsed.acceptance,
+            constraints: parsed.constraints?.join('\n'), maxIterations: parsed.maxRounds,
+            criteriaPending: parsed.criteriaPending, tokenBudget: parsed.tokenBudget, maxWaitMs: parsed.maxWaitMs });
+        } else {
+          if (!previous) return reply('当前会话没有可以恢复的目标。');
+          if (parsed.action === 'retry-verification') {
+            const retryId = getGoalRetryVerificationId(previous);
+            if (!retryId || (parsed.verdictId && parsed.verdictId !== retryId)) {
+              return reply('该验收重试已失效，请查看当前目标状态。');
+            }
+          }
+          if (!['paused', 'exhausted'].includes(previous.status)) return reply(describe());
+          next = resumeGoal(previous, { extraIterations: parsed.extraRounds, extraTokens: parsed.extraTokens });
+          if (!next.criteriaPending && next.criteria.some(item => !item.evidence)) next.criteriaPending = 'classify';
+        }
+      } catch (error) { return reply(error.message); }
+      controller = new AbortController();
+      ownerToken = randomUUID();
+      localOwners.add(ownerToken);
+      finished = (async () => {
+        try {
+          await save(next);
+        } catch (error) {
+          if (error.code !== 'GOAL_STATE_CONFLICT') throw error;
+          const session = getSession();
+          session.goalState = readSessionGoal(session.id);
+          return reply('目标状态已被其他运行更新。\n' + describe());
+        }
+        for (;;) {
+          const { signal } = controller;
+          try {
+            if (!signal.aborted) await drive(signal, onEvent, parsed.action === 'retry-verification' && current()?.id === previous?.id);
+          } catch (error) {
+            if (!signal.aborted && current()?.status === 'active') await save(pauseGoal(current(), '目标执行中断：' + error.message));
+          }
+          if (!revisionPending || current()?.status !== 'active') break;
+          revisionPending = false;
+          controller = new AbortController();
+        }
+        const goal = current();
+        if (!goal) return reply('当前目标已清除。');
+        const fullReport = goal.status === 'completed' && goal.criteria.some(item => item.evidence === 'reply');
+        return { ...reply(renderGoalContext(goal, { fullReport })), goalSummary: renderGoalSummary(goal) };
+      })();
+      try { return await finished; } finally {
+        localOwners.delete(ownerToken);
+        controller = null;
+        finished = null;
+        revisionPending = false;
+      }
+    },
+  };
+}

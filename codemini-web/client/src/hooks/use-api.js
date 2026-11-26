@@ -97,6 +97,10 @@ export async function fetchSessionTokenUsage(sessionId, signal) {
   return readJsonOrThrow(res);
 }
 
+export async function fetchSessionGoal(sessionId, signal) {
+  return readJsonOrThrow(await api(withSessionQuery('/api/goal', sessionId), { signal, cache: 'no-store' }));
+}
+
 export async function fetchState(sessionId) {
   const res = await api(withSessionQuery('/api/state', sessionId));
   return res.json();
@@ -182,6 +186,14 @@ export async function submitMessage(sessionId, body = {}) {
     headers: JSON_HEADERS,
     body: JSON.stringify({ sessionId, ...body })
   });
+}
+
+export async function submitGoalControl(sessionId, text) {
+  return readJsonOrThrow(await api('/api/chat/goal/control', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ sessionId, text }),
+  }));
 }
 
 export async function drainCrewPendingWakes(sessionId) {

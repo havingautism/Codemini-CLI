@@ -1,4 +1,6 @@
 import { getTokenActivity, getSessionTokenUsage } from '../src/core/token-usage-store.js';
+import { isGoalSteeringInput, isImmediateGoalControl } from '../src/core/goal-command.js';
+import { projectGoalPresentation } from '../src/core/goal-presentation.js';
 import { isScheduledSessionActive, getScheduledChangeState } from '../src/core/scheduled-task-store.js';
 import { createScheduledTaskNotifier } from './lib/scheduled-task-notifier.js';
 import { startScheduledWorker } from '../src/core/scheduled-worker-process.js';
@@ -40,6 +42,7 @@ import { createChatRuntime } from "../src/core/chat-runtime.js";
 import {
   createSession,
   loadSession,
+  readSessionGoal,
   listSessions,
   resolveSession,
   deleteSession,
@@ -741,6 +744,18 @@ function ensureAcceptedBridgeResult(result) {
   return result;
 }
 
+async function respondToGoalControl(res, bridge, text) {
+  if (typeof text !== 'string' || (!isImmediateGoalControl(text) && !isGoalSteeringInput(text))) {
+    jsonResponse(res, { error: true, message: '此入口接受查看、暂停、编辑、清除目标的命令，或对运行中目标的文字补充。' }, 400);
+    return;
+  }
+  try {
+    jsonResponse(res, await bridge.handleGoalControl(text));
+  } catch (error) {
+    chatErrorResponse(res, error, 'INVALID_REQUEST');
+  }
+}
+
 export function createEventBroker({ getConnectionData = () => ({}) } = {}) {
   const clients = new Set();
   const publish = (event) => {
@@ -1046,6 +1061,11 @@ export function createWebRuntimeApi({
     });
 
   const runtimeRoutes = createNodeRouter();
+  runtimeRoutes.get("/api/goal", nodeRoute(async (req, res, url) => {
+    const sessionId = requireSessionId(res, url.searchParams.get("sessionId"));
+    if (sessionId) jsonResponse(res, { goal: projectGoalPresentation(readSessionGoal(sessionId)) });
+    return true;
+  }));
   runtimeRoutes.get("/api/sessions/sidebar", nodeRoute(async (req, res) => {
     await listStoredSessions(1); // Preserve legacy-session import before SQLite pagination.
     const { active } = await loadActiveProjects();
@@ -1377,6 +1397,12 @@ export function createWebRuntimeApi({
       jsonResponse(res, { ok: true, spec });
       return true;
 
+  }));
+  runtimeRoutes.post("/api/chat/goal/control", nodeRoute(async (req, res) => {
+    const body = await readBody(req);
+    const bridge = await loadBridge(res, body?.sessionId);
+    if (bridge) await respondToGoalControl(res, bridge, body?.text);
+    return true;
   }));
   runtimeRoutes.post("/api/chat/message", nodeRoute(async (req, res, url) => {
       const body = await readBody(req);
@@ -1928,6 +1954,12 @@ export function createWebRuntimeApi({
 
 export async function handleStructuredChatRequest(req, res, bridge) {
   const url = new URL(req.url, "http://localhost");
+
+  if (req.method === "POST" && url.pathname === "/api/chat/goal/control") {
+    const body = await readBody(req);
+    await respondToGoalControl(res, bridge, body?.text);
+    return true;
+  }
 
   if (req.method === "POST" && url.pathname === "/api/chat/message") {
     const body = await readBody(req);

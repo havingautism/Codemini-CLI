@@ -650,6 +650,8 @@ export async function runAgentLoop({
   maxIncompleteRetries = config?.execution?.incomplete_retries ?? 3,
   getTasks = null,
   onForkJoin = null,
+  onToolStarted = null,
+  onRawToolResult = null,
   shouldContinueAfterText = null,
   workspaceRoot = config?.workspaceRoot || process.cwd(),
   sessionId = '',
@@ -1537,7 +1539,10 @@ export async function runAgentLoop({
       }
 
       let toolResult;
+      let admitted = false;
       try {
+        if (onToolStarted) await onToolStarted({ toolName, args: effectiveArgs, callId: call.id });
+        admitted = true;
         toolResult = await toolRuntime.execute(toolName, effectiveArgs, {
           rawArguments: call.arguments,
           toolCallId: call.id,
@@ -1552,6 +1557,7 @@ export async function runAgentLoop({
       } catch (error) {
         const durationMs = Date.now() - startedAt;
         const message = error instanceof Error ? error.message : String(error);
+        if (admitted && onRawToolResult) await onRawToolResult({ toolName, args: effectiveArgs, callId: call.id, result: { error: message } });
         const summary = trimInline(message, 120);
         if (onEvent) {
           onEvent({ type: 'tool:error', name: toolName, displayName, id: call.id, arguments: effectiveArgs, durationMs, summary });
@@ -1574,6 +1580,7 @@ export async function runAgentLoop({
         };
       }
 
+      if (onRawToolResult) await onRawToolResult({ toolName, args: effectiveArgs, callId: call.id, result: toolResult });
       const durationMs = Date.now() - startedAt;
       const runFailureMessage = resolveRunToolFailure(toolName, toolResult);
       if (runFailureMessage) {

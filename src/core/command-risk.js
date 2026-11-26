@@ -78,6 +78,32 @@ export function hasShellWriteSyntax(command) {
   return SHELL_WRITE_SYNTAX_PATTERNS.some((pattern) => pattern.test(String(command || '')));
 }
 
+// 自动恢复时只放行能够逐个识别的查询参数。审批的风险分级还允许更多语法，
+// 例如带脚本参数的只读前缀，因此不能直接作为重复执行的依据。
+const REPLAYABLE_GIT_FLAGS = {
+  status: new Set(['-s', '-b', '-sb', '-bs', '-u', '-uno', '-unormal', '-uall', '--short', '--branch',
+    '--porcelain', '--porcelain=v1', '--porcelain=v2', '--untracked-files=no', '--untracked-files=normal', '--untracked-files=all']),
+  diff: new Set(['--stat', '--shortstat', '--name-only', '--name-status', '--numstat', '--check', '--quiet',
+    '--exit-code', '--cached', '--staged', '--no-color', '--no-ext-diff', '--no-textconv']),
+  'ls-files': new Set(['--stage', '--cached', '--modified', '--deleted', '--others', '--exclude-standard']),
+};
+
+export function isReplayableShellQuery(args) {
+  if (args?.run_in_background || args?.runInBackground || args?.background ||
+      args?.port_probe || args?.portProbe || args?.http_probe || args?.httpProbe) return false;
+  const command = String(args?.command || '').trim();
+  if (!/^[A-Za-z0-9_./= \t-]+$/u.test(command)) return false;
+  if (/^(?:pwd|ls|dir|Get-Location|Get-ChildItem)$/iu.test(command)) return true;
+  const words = command.split(/[ \t]+/u);
+  if (words.shift() !== 'git') return false;
+  while (['--no-pager', '--no-optional-locks'].includes(words[0])) words.shift();
+  const verb = words.shift();
+  if (!Object.hasOwn(REPLAYABLE_GIT_FLAGS, verb)) return false;
+  const separator = words.indexOf('--');
+  const flags = separator === -1 ? words : words.slice(0, separator);
+  return flags.every(flag => REPLAYABLE_GIT_FLAGS[verb].has(flag));
+}
+
 /* ── 核心分类逻辑 ──────────────────────────────────────────────── */
 
 /**

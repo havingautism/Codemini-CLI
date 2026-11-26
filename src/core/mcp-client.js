@@ -65,6 +65,7 @@ function normalizeCachedTool(tool = {}) {
     name: String(tool.name || '').trim(),
     description: String(tool.description || '').trim(),
     enabled: tool.enabled !== false,
+    ...(tool.annotations?.readOnlyHint === true ? { annotations: { readOnlyHint: true } } : {}),
     inputSchema:
       tool.inputSchema && typeof tool.inputSchema === 'object'
         ? tool.inputSchema
@@ -234,6 +235,8 @@ export function getMcpToolBundle(config = {}) {
           `${server.name}.${tool.name}`,
         );
       };
+      // 只采用用户配置并启用的服务器在工具发现阶段提供的声明。对调用者参数不作推断。
+      handlers[name].goalReadOnly = tool.annotations?.readOnlyHint === true;
       formatters[name] = (result) => {
         if (!result || typeof result !== 'object') return String(result ?? '');
         const content = Array.isArray(result.content) ? result.content : [];

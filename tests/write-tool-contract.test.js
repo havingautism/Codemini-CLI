@@ -127,6 +127,42 @@ test('atomic failure leaves a pre-existing staging file intact', async (t) => {
   assert.equal(await fs.readFile(temporary, 'utf8'), 'another writer');
 });
 
+test('Windows 文件占用解除后用同一份临时文件完成原子替换', { skip: process.platform !== 'win32' }, async (t) => {
+  const { root } = await fixture(t);
+  const target = path.join(root, 'state.json');
+  const temporary = path.join(root, '.state.json.codemini-retry.tmp');
+  await fs.writeFile(target, '旧内容');
+  const rename = fs.rename;
+  let attempts = 0;
+  t.mock.method(fs, 'rename', async (source, destination) => {
+    attempts++;
+    assert.equal(source, temporary);
+    assert.equal(destination, target);
+    assert.equal(await fs.readFile(source, 'utf8'), '新内容');
+    assert.equal(await fs.readFile(target, 'utf8'), '旧内容');
+    if (attempts === 1) throw Object.assign(new Error('文件占用中'), { code: 'EPERM' });
+    return rename(source, destination);
+  });
+  await atomicWriteUtf8(target, '新内容', 'retry');
+  assert.equal(attempts, 2);
+  assert.equal(await fs.readFile(target, 'utf8'), '新内容');
+  await assert.rejects(fs.stat(temporary), { code: 'ENOENT' });
+});
+
+for (const code of ['EPERM', 'EXDEV']) {
+  test(`原子替换持续返回 ${code} 时保留原文件并清理临时文件`, async (t) => {
+    const { root } = await fixture(t);
+    const target = path.join(root, 'state.json');
+    await fs.writeFile(target, '旧内容');
+    const error = Object.assign(new Error('无法替换文件'), { code });
+    const rename = t.mock.method(fs, 'rename', async () => { throw error; });
+    await assert.rejects(atomicWriteUtf8(target, '新内容', 'failed'), error);
+    assert.equal(rename.mock.callCount(), process.platform === 'win32' && code === 'EPERM' ? 4 : 1);
+    assert.equal(await fs.readFile(target, 'utf8'), '旧内容');
+    await assert.rejects(fs.stat(path.join(root, '.state.json.codemini-failed.tmp')), { code: 'ENOENT' });
+  });
+}
+
 test('atomic replacement preserves POSIX executable permissions', { skip: process.platform === 'win32' }, async (t) => {
   const { root } = await fixture(t);
   const target = path.join(root, 'script.sh');

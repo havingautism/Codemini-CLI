@@ -17,6 +17,7 @@ import { useGitWorkspace } from "@/hooks/use-git-workspace.js";
 import { t } from "../i18n/index.js";
 import { Sidebar } from "@/components/Sidebar.jsx";
 import { ChatPanel } from "@/components/ChatPanel.jsx";
+import { SessionGoalPanel } from "@/components/SessionGoalPanel.jsx";
 import { InputBar } from "@/components/InputBar.jsx";
 import { createComposerDraftStore } from "@/lib/composer-drafts.js";
 import { StatusBar } from "@/components/StatusBar.jsx";
@@ -724,6 +725,10 @@ function Shell() {
               hidden={chatPageTab !== "conversation"}
               className="w-[calc(100%_-_32px)] max-w-[var(--composer-width)] sm:w-[calc(100%_-_48px)] mx-auto mb-3 sm:mb-5 shrink-0 z-30 bg-transparent relative"
             >
+              {chatPageTab === "conversation" && currentId && (
+                <SessionGoalPanel key={currentId} sessionId={currentId} revision={state.goalRevision}
+                  busy={state.busy} submit={actions.submit} />
+              )}
               <RuntimeActivityStrip
                 activities={state.runtimeActivities}
               />
@@ -833,6 +838,9 @@ function Shell() {
       <ApprovalDialog
         request={approvalRequest}
         open={!!approvalRequest}
+        onPauseGoal={approvalRequest?.goalControl
+          ? () => actions.submit('/goal pause', { sessionId: approvalRequest.sessionId || state.currentSessionId })
+          : undefined}
         onDecision={(id, actionName, payload) =>
           actions.approve(id, actionName, approvalRequest?.sessionId, payload)
         }

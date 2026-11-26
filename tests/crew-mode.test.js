@@ -158,7 +158,7 @@ function sseMockCrewComplete() {
   }]);
 }
 
-async function withRuntime({ mode = 'plan', gitRepo = true, firstCompletion, followUpCompletion, workerDelays = {}, crewMaxWorkers = 4 } = {}, task) {
+async function withRuntime({ mode = 'plan', gitRepo = true, firstCompletion, followUpCompletion, workerDelays = {}, workerResponseGate, crewMaxWorkers = 4 } = {}, task) {
   closeSqliteDatabasesForTests();
   const globalDir = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-crew-rt-'));
   const dir = path.join(globalDir, 'workspace');
@@ -190,7 +190,7 @@ async function withRuntime({ mode = 'plan', gitRepo = true, firstCompletion, fol
           && !/\nTask:|Previous shift handoff|You are reviewing Crew worker|<task>\s*\[crew\]/.test(lastUser)
           && !lastUser.trimStart().startsWith('[crew]');
         if (firstCompletion && isParentUserTurn && /使用子代理|使用并行任务/.test(lastUser)) {
-          res.end(firstCompletion);
+          res.end(typeof firstCompletion === 'function' ? firstCompletion(lastUser) : firstCompletion);
           return;
         }
         if (
@@ -217,6 +217,7 @@ async function withRuntime({ mode = 'plan', gitRepo = true, firstCompletion, fol
           return;
         }
         if (isCrewWorkerModelTurn(toolNames, isParentUserTurn)) {
+          if (workerResponseGate) await workerResponseGate;
           res.end(sseMockCrewComplete());
           return;
         }
@@ -534,8 +535,8 @@ test('crew worktrees isolate workers, skip dirty remove, and keep parent handoff
   });
 });
 
-const twoSubagentCompletion = sseToolCalls([
-  {
+const crewWorkerCalls = {
+  m1: {
     id: 'call-m1',
     name: 'run_subagent',
       arguments: JSON.stringify({
@@ -545,7 +546,7 @@ const twoSubagentCompletion = sseToolCalls([
       paths: ['frontend/**'],
     }),
   },
-  {
+  m2: {
     id: 'call-m2',
     name: 'run_subagent',
       arguments: JSON.stringify({
@@ -555,7 +556,8 @@ const twoSubagentCompletion = sseToolCalls([
       paths: ['backend/**'],
     }),
   },
-]);
+};
+const twoSubagentCompletion = sseToolCalls(Object.values(crewWorkerCalls));
 
 const forkTaskCompletion = sseToolCalls([
   {
@@ -933,49 +935,55 @@ test('cancel_worker aborts a running Crew worker and removes its worktree', asyn
   });
 });
 
-test('cancel_worker removes a queued Crew worker without starting it', async () => {
+async function checkQueuedWorkerCancellation(running, queued) {
+  const workerResponse = Promise.withResolvers();
+  const runningPrompt = JSON.parse(crewWorkerCalls[running].arguments).prompt;
+  const queuedPrompt = JSON.parse(crewWorkerCalls[queued].arguments).prompt;
   await withRuntime({
     mode: 'plan',
-    firstCompletion: twoSubagentCompletion,
+    firstCompletion: (text) => sseToolCalls([crewWorkerCalls[text.includes(`使用子代理执行 ${running}`) ? running : queued]]),
     followUpCompletion: {
       test: /取消工人/,
       sse: sseToolCalls([{
         id: 'call-cancel-queued',
         name: 'cancel_worker',
-        arguments: JSON.stringify({ worker_id: 'm2' }),
+        arguments: JSON.stringify({ worker_id: queued }),
       }]),
     },
     crewMaxWorkers: 1,
-    workerDelays: { 'Implement frontend in isolation': 2500, 'Implement backend in isolation': 2500 },
-  }, async ({ dir, runtime, session }) => {
+    workerResponseGate: workerResponse.promise,
+  }, async ({ dir, runtime, session, bodies }) => {
     await runtime.setCrewMode(true);
     await planBuildMissions(dir, [
       { title: 'Frontend', paths: ['frontend/**'] },
       { title: 'Backend', paths: ['backend/**'] },
     ]);
-    const dispatched = runtime.submitMessage({ text: '使用子代理分别实现 frontend 和 backend' });
-    let lastStatuses = {};
-    await waitForCondition(async () => {
-      const state = await readCrewStateFile(dir);
-      const workers = listCrewWorkersFromState(state);
-      lastStatuses = Object.fromEntries(
-        workers.map((worker) => [worker.name || worker.id, worker.runStatus]),
-      );
-      const statuses = workers.map((worker) => worker.runStatus);
-      return statuses.includes('running') && statuses.includes('queued');
-    }, 12_000).catch((error) => {
-      throw new Error(`${error.message} statuses=${JSON.stringify(lastStatuses)}`);
-    });
-    await dispatched;
-    await runtime.submitMessage({ text: '取消工人 m2' });
-    const cancelResult = session.messages.find((message) => message.tool_call_id === 'call-cancel-queued');
-    assert.ok(cancelResult, `missing cancel_worker result; ids=${session.messages.map((m) => m.tool_call_id).filter(Boolean).join(',')}`);
-    assert.match(String(cancelResult.content || ''), /Cancelled Crew worker "m2"/);
-    const workers = listCrewWorkersFromState(await readCrewStateFile(dir));
-    assert.equal(workers.some((item) => item.name === 'm2'), false);
-    assert.equal(workers.some((item) => item.name === 'm1'), true);
-    await waitForWorkerStatus(dir, 'm1', 'completed');
+    try {
+      await runtime.submitMessage({ text: `使用子代理执行 ${running}` });
+      await waitForCondition(() => bodies.some((body) => requestHasUserMarker(body, runningPrompt)));
+      await runtime.submitMessage({ text: `使用子代理执行 ${queued}` });
+      await waitForWorkerStatus(dir, queued, 'queued');
+      const workers = listCrewWorkersFromState(await readCrewStateFile(dir));
+      assert.equal(workers.find((worker) => worker.name === running)?.runStatus, 'running');
+
+      await runtime.submitMessage({ text: `取消工人 ${queued}` });
+      const cancelResult = session.messages.find((message) => message.tool_call_id === 'call-cancel-queued');
+      assert.ok(cancelResult, `未找到取消 ${queued} 的工具结果`);
+      assert.ok(String(cancelResult.content || '').includes(`Cancelled Crew worker "${queued}"`), String(cancelResult.content));
+      const remaining = listCrewWorkersFromState(await readCrewStateFile(dir));
+      assert.deepEqual(remaining.map((worker) => worker.name), [running]);
+    } finally {
+      workerResponse.resolve();
+    }
+    await runtime.waitForCrewIdle();
+    await waitForWorkerStatus(dir, running, 'completed');
+    assert.equal(bodies.some((body) => requestHasUserMarker(body, queuedPrompt)), false);
   });
+}
+
+test('cancel_worker removes a queued Crew worker without starting it', async (t) => {
+  await t.test('m1 运行时取消 m2', () => checkQueuedWorkerCancellation('m1', 'm2'));
+  await t.test('m2 运行时取消 m1', () => checkQueuedWorkerCancellation('m2', 'm1'));
 });
 
 test('cancel_worker removes an idle Crew worker after it finishes', async () => {

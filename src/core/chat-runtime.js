@@ -37,6 +37,8 @@ import {
   packageProfileArmEntry,
 } from './hook-profiles.js';
 import { runAgentLoop } from './agent-loop.js';
+import { GOAL_COMMAND, isGoalSteeringInput, isImmediateGoalControl, parseGoalCommand } from './goal-command.js';
+import { createGoalRunner, recoverInterruptedGoal, waitForGoalInput, withGoalContext } from './goal-runner.js';
 import { withTokenUsageSession, getTokenUsageSession } from './token-usage-context.js';
 import { resolveJevReviewConnection } from './jev-command-review.js';
 import { createDecisionController } from './harness/decision-controller.js';
@@ -61,7 +63,7 @@ import {
 } from './provider/index.js';
 import { isDangerousCommand, runShellCommand } from './shell.js';
 import { getBuiltinTools } from './tools.js';
-import { canonicalShellToolName, shellToolName, toolNameAllowed } from './shell-tool-name.js';
+import { canonicalShellToolName, isShellToolName, shellToolName, toolNameAllowed } from './shell-tool-name.js';
 import { createToolRuntime } from './tool-runtime.js';
 import { buildPromptRequestAudit } from './prompt-request-audit.js';
 import {
@@ -495,7 +497,7 @@ export const EXECUTION_MODE_TOOL_POLICY = {
     'read', 'search_code', 'grep', 'ast_grep', 'list', 'glob', 'ast_query', 'read_ast_node',
     'query_project_index', 'query_project_graph', 'tool_search', 'skill', 'web_fetch', 'web_search',
     'save_memory',
-    'tasks',
+    'tasks', 'update_goal_plan',
     'edit', 'write', 'begin_write', 'write_chunk', 'commit_write', 'abort_write', 'apply_patch', 'delete', 'run',
     'run_subagent', 'fork_task', 'land_workers', 'cancel_worker', 'crew_status', 'crew_send', 'crew_inbox', 'request_user_input'
   ]
@@ -635,7 +637,7 @@ ROLE_TOOL_POLICY.crew_survey = ROLE_TOOL_POLICY.survey;
 ROLE_TOOL_POLICY.crew_reviewer = ROLE_TOOL_POLICY.reviewer;
 
 /** Subagents must never spawn nested agents / workflow orchestrators. */
-export const SUBAGENT_FORBIDDEN_TOOLS = ['run_subagent', 'fork_task', 'land_workers', 'cancel_worker', 'create_plan', 'create_spec'];
+export const SUBAGENT_FORBIDDEN_TOOLS = ['run_subagent', 'fork_task', 'land_workers', 'cancel_worker', 'create_plan', 'create_spec', 'update_goal_plan'];
 
 /**
  * Fork branches keep the parent's full tool schemas for prefix-cache reuse,
@@ -644,7 +646,7 @@ export const SUBAGENT_FORBIDDEN_TOOLS = ['run_subagent', 'fork_task', 'land_work
  * state while sibling branches are running.
  */
 export const FORK_FORBIDDEN_TOOLS = [
-  'fork_task', 'run_subagent', 'land_workers', 'cancel_worker', 'request_user_input', 'update_plan', 'create_plan', 'create_spec',
+  'fork_task', 'run_subagent', 'land_workers', 'cancel_worker', 'request_user_input', 'update_plan', 'update_goal_plan', 'create_plan', 'create_spec',
 ];
 
 const WINDOWS_STAGED_WRITE_TOOLS = [
@@ -4078,6 +4080,7 @@ export function buildRuntimeStateSnapshot({ currentSession, config, model, execu
   const shellContext = resolveShellContext(config, { cwd: workspaceRoot });
   const snapshot = {
     workspaceRoot,
+    ...(currentSession?.goalState ? { goalState: currentSession.goalState } : {}),
     projectIsGit: Boolean(config?.runtime?.project_is_git),
     sessionId: currentSession?.id || '',
     sessionTitle: currentSession?.title || '',
@@ -4659,6 +4662,11 @@ async function askModelInSession({
   requestUserInput,
   skipAnalysisNudge = false,
   shouldContinueAfterText = null,
+  goalHooks = null,
+  watchGoalShell = goalHooks?.watchShell,
+  allowGoalDelegation = false,
+  onToolStarted = null,
+  onRawToolResult = null,
   compactedForModel: compactedInput = null,
   onCompactedUpdate = null,
   changeTracker = null,
@@ -4767,7 +4775,7 @@ async function askModelInSession({
   let saveResolver = null;
   let savePromise = null;
   const scheduleSessionSave = () => {
-    if (!persistSession) return;
+    if (!persistSession || signal?.aborted) return;
     if (saveTimer) return;
     savePromise = new Promise((resolve) => {
       saveResolver = resolve;
@@ -4798,10 +4806,8 @@ async function askModelInSession({
     }
     if (savePromise) await savePromise;
   };
+  const flushOnAbort = () => { void flushScheduledSave().catch(() => {}); };
   if (persistSession && signal) {
-    const flushOnAbort = () => {
-      void flushScheduledSave().catch(() => {});
-    };
     if (signal.aborted) {
       flushOnAbort();
     } else {
@@ -4974,6 +4980,7 @@ async function askModelInSession({
     config: toolConfig,
     sessionId: session.id,
     onSystemEvent: onAgentEvent,
+    watchGoalShell,
     requestUserInput,
     toolResultStore,
     crewActive: Boolean(crewState),
@@ -5013,11 +5020,12 @@ async function askModelInSession({
       scheduleSessionSave();
     },
     getPlanState: () => normalizePlanState(session.planState),
+    onGoalPlanUpdate: goalHooks?.updatePlan,
     onPlanStateUpdate: (planState) => {
       session.planState = normalizePlanState(planState);
       scheduleSessionSave();
     },
-    onRunSubAgent: usesEngineeringRuntime(normalizedExecutionMode)
+    onRunSubAgent: (goalHooks ? allowGoalDelegation : usesEngineeringRuntime(normalizedExecutionMode))
       ? async ({
           prompt,
           tasks = [],
@@ -5029,6 +5037,7 @@ async function askModelInSession({
           toolCallId = '',
           orchestrationId = '',
           taskId = '',
+          goalTaskId = '',
           dependsOn = [],
           tools = null,
           paths = null,
@@ -5043,7 +5052,9 @@ async function askModelInSession({
           }
           const effectivePrompt = taskPrompt || 'Complete the assigned tasks.';
           const handoff = String(context || '').trim();
-          const declaredGoal = String(goal || '').trim();
+          const declaredGoal = [
+            String(goal || '').trim(), goalTaskId && `本次受派的目标任务编号：${goalTaskId}`, goalHooks?.context(),
+          ].filter(Boolean).join('\n\n');
           const reviewTarget = String(review || '').trim();
           const resumeTarget = String(resume || '').trim();
           const rosterWorkers = listCrewWorkersFromState(crewState);
@@ -5073,6 +5084,13 @@ async function askModelInSession({
           const subagentId = crewState
             ? ''
             : `sub_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+          const workerEvent = goalHooks ? (event) => {
+            goalHooks.workerActivity(callId, event);
+            onAgentEvent?.(event);
+          } : onAgentEvent;
+          const workerShell = goalHooks
+            ? (name, inspect) => goalHooks.watchShell(name, inspect, callId)
+            : watchGoalShell;
           const emit = (evt) => {
             const tagged = {
               ...evt,
@@ -5118,6 +5136,9 @@ async function askModelInSession({
             crewSession: Boolean(crewState),
           });
           const stepModel = resolveSubAgentModel(config, model);
+          const runWorkerTask = goalHooks?.workerModel
+            ? options => runSubAgentTask({ ...options, onModelSelected: selected => goalHooks.workerModel(callId, selected) })
+            : runSubAgentTask;
           const stepSdkProvider = config.sdk?.provider || '';
           emit({
             type: 'plan:step_start',
@@ -5530,7 +5551,7 @@ async function askModelInSession({
                   additional: workerTask,
                 });
                 return runCrewWorkerJob({
-                runSubAgentTask,
+                runSubAgentTask: runWorkerTask,
                 subAgentRunFailed,
                 compactSubAgentResultForParent,
                 collectPlanImplementationFileChanges,
@@ -5555,7 +5576,8 @@ async function askModelInSession({
                 config: toolConfig,
                 stepModel,
                 systemPrompt,
-                onAgentEvent,
+                onAgentEvent: workerEvent,
+                watchGoalShell: workerShell,
                 requestToolApproval,
                 resolvedTools,
                 toolAllowList,
@@ -5606,10 +5628,22 @@ async function askModelInSession({
                   if (crewJobRegistry?.get(jobId) === job) crewJobRegistry.delete(jobId);
                 })
                 .catch(() => {});
+              if (goalHooks) {
+                // 目标验收等待自己派出的工作；用户暂停时一并通知该工作。
+                const stopWorker = () => jobController.abort(signal.reason);
+                signal.addEventListener('abort', stopWorker, { once: true });
+                if (signal.aborted) stopWorker();
+                try {
+                  return { ...runningResult, ...await workerJob, workflowComplete: false };
+                } finally {
+                  signal.removeEventListener('abort', stopWorker);
+                }
+              }
               return runningResult;
             }
             const reviewBox = { verdict: null };
-            const output = await runSubAgentTask({
+            const parentDelegationId = goalHooks?.delegationId?.(callId) || callId;
+            const output = await runWorkerTask({
               role: taskRole,
               task: workerTask,
               initialTasks: assignedTasks,
@@ -5630,12 +5664,19 @@ async function askModelInSession({
                 : config,
               model: stepModel,
               systemPrompt,
-              onAgentEvent,
+              onAgentEvent: workerEvent,
+              watchGoalShell: workerShell,
               requestToolApproval,
               signal,
               changeTracker: workerChangeTracker,
               backupManager: workerBackupManager,
               parentToolCallId: callId,
+              onToolStarted: goalHooks && sameFsPath(workerWorkspaceRoot, workspaceRoot)
+                ? (event) => goalHooks.started({ ...event, parentDelegationId, callId: parentDelegationId + '/' + event.callId })
+                : null,
+              onRawToolResult: goalHooks && sameFsPath(workerWorkspaceRoot, workspaceRoot)
+                ? (event) => goalHooks.result({ ...event, parentDelegationId, callId: parentDelegationId + '/' + event.callId })
+                : null,
               tools: reviewingWorkerId
                 ? [...resolvedTools, 'submit_crew_review']
                 : (crewState ? resolvedTools : toolAllowList),
@@ -5661,7 +5702,7 @@ async function askModelInSession({
               : await saveSubAgentHandoff({
                   workspaceRoot,
                   sessionId: session.id,
-                  handoffId: callId,
+                  handoffId: parentDelegationId,
                   name: persona,
                   task: taskPrompt,
                   summary,
@@ -5851,6 +5892,7 @@ async function askModelInSession({
               parentNote: String(forkPoint.parentNote || '').trim(),
               forkPointMessages: forkPoint.messages,
               toolDefinitions: forkPoint.toolDefinitions,
+              watchGoalShell,
               systemPrompt: effectiveSystemPrompt,
               config,
               model,
@@ -6366,6 +6408,7 @@ async function askModelInSession({
     const discarded = await discardAbortedTurnMessages();
     if (!persistSession || !discarded) return null;
     const continuation = await createContinuationSession(session, {
+      carryGoal: Boolean(session.goalState),
       messages: (session.messages || []).slice(0, turnStartMessageCount),
       compactView: compacted ? compacted.slice(0, turnStartCompactedCount) : null
     });
@@ -6418,7 +6461,14 @@ async function askModelInSession({
 
   const sessionLenBeforeLoop = session.messages.length;
   const toolRuntime = createToolRuntime({
-    definitions: filteredDefinitions,
+    definitions: (goalHooks || onRawToolResult) ? filteredDefinitions.map((definition) => {
+      const fn = definition.function;
+      if (!fn || (fn.name !== 'read' && !isShellToolName(fn.name))) return definition;
+      return { ...definition, function: { ...fn, parameters: { ...fn.parameters, properties: {
+        ...fn.parameters.properties,
+        criterion_ids: { type: 'array', items: { type: 'string' }, description: '本次验证针对的目标验收项编号，例如 c1；仅标注直接相关的项目。' },
+      } } } };
+    }) : filteredDefinitions,
     handlers: filteredHandlers,
     formatters,
     deferredDefinitions: nonDuplicateFilteredDeferred,
@@ -6475,6 +6525,8 @@ async function askModelInSession({
       toolRuntime,
       initialMessages: initialMessagesForModel,
       onEvent: wrappedAgentEvent,
+      onToolStarted: goalHooks?.started || onToolStarted,
+      onRawToolResult: goalHooks?.result || onRawToolResult,
       executionMode: normalizedExecutionMode,
       approvalMode: config.execution?.approval_mode || 'auto',
       projectIsGit: resolveApprovalProjectIsGit({
@@ -6513,7 +6565,7 @@ async function askModelInSession({
           return resolveToolGuard({ decision: event?.decision, hardGuard: event?.guards, thresholds: harnessConfig.policy || {} });
         }
         : null,
-      completionReview: decisionController && harnessConfig.provider !== 'rules'
+      completionReview: !goalHooks && decisionController && harnessConfig.provider !== 'rules'
         ? async ({ objective, completedWork, step, assistantText }) => {
           const event = await decisionController.evaluate({ episodeId: harnessEpisodeId, step, state: {
             stage: 'completion_review', objective, completedWork, assistantText,
@@ -6614,7 +6666,7 @@ async function askModelInSession({
             baseUrl: config.gateway.base_url,
             apiKey: config.gateway.api_key,
             model: selectedModel,
-            messages,
+            messages: withGoalContext(messages, goalHooks?.context()),
             tools,
             reasoningEffort: resolveConfiguredReasoningEffort({
               enabled: config.model?.reasoning_enabled,
@@ -6683,6 +6735,8 @@ async function askModelInSession({
       });
     }
     throw error;
+  } finally {
+    signal?.removeEventListener('abort', flushOnAbort);
   }
   if (signal?.aborted || loopResult?.aborted) {
     finishHarnessEpisode('aborted', 'signal');
@@ -6722,7 +6776,9 @@ async function askModelInSession({
     }
   }
   finishHarnessEpisode('completed', loopResult.text || '');
-  return { text: loopResult.text, aborted: !!loopResult.aborted };
+  return { text: loopResult.text, aborted: !!loopResult.aborted,
+    ...(loopResult.stopReason ? { stopReason: loopResult.stopReason } : {}),
+    ...(loopResult.workflowComplete ? { workflowComplete: true } : {}) };
 }
 
 function sameFsPath(left, right) {
@@ -6771,11 +6827,15 @@ export async function runSubAgentTask({
   extraRolePrompt = '',
   signal,
   onSessionActive,
+  onModelSelected,
   planFileContext = '',
   changeTracker = null,
   backupManager = null,
   parentToolCallId = '',
   tools = null,
+  onToolStarted = null,
+  onRawToolResult = null,
+  watchGoalShell,
   onUsage = null,
   projectIsGit = Boolean(config?.runtime?.project_is_git),
   workspaceRoot = process.cwd(),
@@ -6787,7 +6847,7 @@ export async function runSubAgentTask({
     messages: [],
     todos: assignedTasks,
   };
-  const subAgentModel = resolveSubAgentModel(config, model);
+  const subAgentModel = resolveSubAgentModel(config, model) || config.model?.name;
   const rolePrompt = getSubAgentRolePrompt(role);
   const cleanContextRole = role === 'reviewer' || role === 'tester';
   const copyParent = inheritParentContext === true && !cleanContextRole;
@@ -6925,6 +6985,7 @@ export async function runSubAgentTask({
     includeSoul: false,
     includeMemory: false
   });
+  if (onModelSelected) await onModelSelected(subAgentModel);
   const subResult = await askModel({
     text: scopedTask,
     session: subSession,
@@ -6941,6 +7002,9 @@ export async function runSubAgentTask({
     model: subAgentModel,
     systemPrompt: subSystemPrompt,
     onAgentEvent: wrappedOnAgentEvent,
+    watchGoalShell,
+    onToolStarted,
+    onRawToolResult,
     requestToolApproval,
     persistSession: false,
     executionMode: 'normal',
@@ -7016,6 +7080,7 @@ export async function runForkTask({
   parentNote = '',
   forkPointMessages = [],
   toolDefinitions = [],
+  watchGoalShell,
   systemPrompt,
   config,
   model,
@@ -7070,6 +7135,7 @@ export async function runForkTask({
   const result = await askModel({
     text: taskInstruction,
     session: branchSession,
+    watchGoalShell,
     config: withCandidateMemoryWrites(config, {
       branchId: branchSession.id,
       agentRole,
@@ -8954,7 +9020,8 @@ export async function createChatRuntime({
   if (session && typeof session === 'object') session.projectDir = root;
   let requestToolApprovalObserver = typeof requestToolApproval === 'function' ? requestToolApproval : null;
   const approvalRequestState = { current: null, byId: new Map() };
-  const activeRequestToolApproval = async (request) => {
+  const activeRequestToolApproval = async (request, { signal } = {}) => {
+    if (signal?.aborted) return { approved: false, reason: '目标已暂停。' };
     let resolveStructuredApproval;
     const structuredDecision = new Promise((resolve) => {
       resolveStructuredApproval = resolve;
@@ -8963,12 +9030,15 @@ export async function createChatRuntime({
     const id = String(request?.id || '');
     if (id) approvalRequestState.byId.set(id, pending);
     if (!approvalRequestState.current) approvalRequestState.current = pending;
+    const cancel = () => resolveStructuredApproval({ approved: false, reason: '目标已暂停。' });
+    signal?.addEventListener('abort', cancel, { once: true });
     try {
       const observerDecision = requestToolApprovalObserver
-        ? Promise.resolve(requestToolApprovalObserver(request))
+        ? Promise.resolve(requestToolApprovalObserver(request, { signal }))
         : new Promise(() => {});
       return await Promise.race([structuredDecision, observerDecision]);
     } finally {
+      signal?.removeEventListener('abort', cancel);
       if (id) approvalRequestState.byId.delete(id);
       if (approvalRequestState.current && String(approvalRequestState.current.id || '') === id) {
         syncApprovalCurrent(approvalRequestState);
@@ -9003,6 +9073,7 @@ export async function createChatRuntime({
     });
   }
   let currentSession = session;
+  recoverInterruptedGoal(currentSession);
   const titleCoordinator = createSessionTitleTaskCoordinator();
   let config = initialConfig;
   const scheduledRun = getScheduledSessionInfo(currentSession?.id);
@@ -9034,6 +9105,8 @@ export async function createChatRuntime({
   };
   const crewWorkersInFlight = new Set();
   let activeTurnCount = 0;
+  let goalRunner;
+  let goalChangeListener;
   let crewEventSink = null;
   let crewWakeExternalSubmit = null;
   let lastCrewProgress = { workers: [], inFlightIds: [] };
@@ -9098,7 +9171,7 @@ export async function createChatRuntime({
   const crewWakeBridge = { submit: async () => {} };
   const crewCoordinator = createCrewCoordinator({
     inFlightWorkers: crewWorkersInFlight,
-    isTurnActive: () => activeTurnCount > 0,
+    isTurnActive: () => activeTurnCount > 0 || Boolean(goalRunner?.running),
     submitWake: (text, item) => crewWakeBridge.submit(text, item),
     onWakeQueued: (item) => {
       crewEventSink?.({
@@ -9898,8 +9971,8 @@ export async function createChatRuntime({
     activeTurnCount += 1;
     try {
     // 每次提交创建新的 AbortController，替代旧的
-    activeAbortController = new AbortController();
-    const { signal } = activeAbortController;
+    if (!options.signal) activeAbortController = new AbortController();
+    const signal = options.signal || activeAbortController.signal;
     const inputText = String(line || '');
     const activeReplySystemPrompt = await buildActiveSystemPrompt({
       includeSkillIndex: true,
@@ -10269,7 +10342,10 @@ export async function createChatRuntime({
     const isCrewMode = turnMode === 'crew';
     const memoryRoute = classifyMemoryRoute(expandedText);
     const crewActive = isCrewMode && Boolean(normalizeCrewState(crewState));
-    const codingPolicy = createCodingTurnPolicy({ text: expandedText, crewActive });
+    const policyText = options.goalHooks
+      ? [currentSession.goalState.objective, currentSession.goalState.constraints].join('\n')
+      : expandedText;
+    const codingPolicy = createCodingTurnPolicy({ text: policyText, crewActive });
 
     // Refresh workspace + package profiles every turn so installs/toggles take
     // effect without restarting the runtime. SessionStart only re-fires for
@@ -10377,8 +10453,11 @@ export async function createChatRuntime({
       systemPrompt: activeReplySystemPrompt,
       turnRoutingContext,
       onAgentEvent,
-      requestToolApproval: activeRequestToolApproval,
-      requestUserInput: activeRequestUserInput,
+      goalHooks: options.goalHooks,
+      allowGoalDelegation: Boolean(options.goalHooks && codingPolicy.allowSubagent),
+      requestToolApproval: options.goalHooks ? (request) => activeRequestToolApproval(request, { signal }) : activeRequestToolApproval,
+      requestUserInput: options.goalHooks && activeRequestUserInput
+        ? (form) => waitForGoalInput(activeRequestUserInput, form, signal) : activeRequestUserInput,
       executionMode,
       allowedTools: codingRouteAllowedTools,
       signal,
@@ -10409,8 +10488,8 @@ export async function createChatRuntime({
       rememberExecutionMode: options?.crewWake !== true,
     });
     syncExecutionModeWithSession();
-    void captureUserPromptForDream(expandedText);
-    return { type: 'assistant', text: result.text, aborted: !!result.aborted };
+    if (!options.goalHooks) void captureUserPromptForDream(expandedText);
+    return { type: 'assistant', ...result };
     } finally {
       activeTurnCount -= 1;
       endMemoryActivity();
@@ -10421,6 +10500,20 @@ export async function createChatRuntime({
         void crewCoordinator.drainPendingWakes();
       }
     }
+  };
+  goalRunner = createGoalRunner({
+    workspaceRoot: root,
+    onGoalChange: sessionId => goalChangeListener?.(sessionId),
+    getSession: () => currentSession,
+    execute: executeSubmissionTurn,
+    settings: () => ({ config, model }),
+    busy: () => activeTurnCount > 0,
+  });
+  const submitGoalControl = (raw) => {
+    if (isImmediateGoalControl(raw)) return goalRunner.command(parseGoalCommand(raw));
+    if (typeof raw !== 'string' || !isGoalSteeringInput(raw)) throw new Error('请输入目标控制命令或对运行中目标的文字补充。');
+    if (!goalRunner.acceptingSteering) return { type: 'noop', goalControl: false };
+    return goalRunner.command({ action: 'steer', text: raw.trim() });
   };
   crewWakeBridge.submit = (wakeText, item) => {
     void markCrewEventsDeliveredForWake(root, wakeText).catch(() => null);
@@ -10487,7 +10580,8 @@ export async function createChatRuntime({
         ...(scope ? { scope } : {}),
       };
     })
-    .filter((command) => command.name)
+    .filter((command) => command.name && command.name !== GOAL_COMMAND.name)
+    .concat(GOAL_COMMAND)
     .sort((a, b) => a.name.localeCompare(b.name));
 
   const submitMessage = async (submission, onAgentEvent) => {
@@ -10495,6 +10589,12 @@ export async function createChatRuntime({
     try {
     let normalized = normalizeChatSubmission(submission);
     const displayText = normalized.text;
+    const goalCommand = parseGoalCommand(displayText);
+    if (goalCommand) return await goalRunner.command(goalCommand, onAgentEvent);
+    if (goalRunner.running) {
+      if (goalRunner.acceptingSteering && isGoalSteeringInput(submission)) return submitGoalControl(displayText);
+      return { type: 'system', text: '当前目标仍在运行。要另外执行命令或发送附件，请先暂停目标。' };
+    }
     await reloadCommandsAndSkills();
     const invocation = parseSlashCommandInvocation(normalized.text);
     const invoked = invocation ? commands.get(invocation.name) : null;
@@ -10624,7 +10724,10 @@ export async function createChatRuntime({
   return {
     submit,
     submitMessage,
+    submitGoalControl,
+    isGoalRunning: () => goalRunner.acceptingSteering,
     retryMessage: async ({ userTurnIndex }, onAgentEvent) => {
+      if (goalRunner.running) throw new Error('目标正在运行，请先暂停再重试历史消息。');
       if (activeTurnCount > 0) throw new Error('A request is already in progress');
       const retry = prepareRetryTurn(currentSession.messages, userTurnIndex);
       currentSession.messages = retry.messages;
@@ -10638,7 +10741,7 @@ export async function createChatRuntime({
         selectedSkillNames: retry.user.selected_skill_names || [],
       });
     },
-    isTurnActive: () => activeTurnCount > 0,
+    isTurnActive: () => activeTurnCount > 0 || goalRunner.running,
     drainCrewPendingWakes: () => crewCoordinator.drainPendingWakes(),
     refreshCrewProgress: () => refreshCrewProgress(),
     cancelCrewWorker: (args) => cancelCrewWorker(args),
@@ -10660,6 +10763,10 @@ export async function createChatRuntime({
     dispatchAction,
     getSession: () => currentSession,
     abort: (options = {}) => {
+      if (goalRunner.running) {
+        void goalRunner.stop();
+        return true;
+      }
       if (activeAbortController && !activeAbortController.signal.aborted) {
         if (options?.continueInPlace === true) {
           activeAbortController.abort({ continueInPlace: true });
@@ -10814,6 +10921,7 @@ export async function createChatRuntime({
       activeRequestUserInput = typeof handler === 'function' ? handler : null;
       return true;
     },
+    setOnGoalChange: (listener) => { goalChangeListener = listener; },
     setOnTitleUpdate: (cb) => {
       onTitleUpdateCallback = typeof cb === 'function' ? cb : null;
       titleCoordinator.setOnTitleUpdate(onTitleUpdateCallback);
@@ -10892,6 +11000,7 @@ export async function createChatRuntime({
       return { filePath };
     },
     dispose: async () => {
+      await goalRunner.close();
       await titleCoordinator.dispose();
       onTitleUpdateCallback = null;
       onTitleStatusCallback = null;

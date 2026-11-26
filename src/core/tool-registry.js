@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { dispatchGoalTool } from './goal-operations.js';
 
 const DEFAULT_CONCURRENT_TOOLS = new Set([
   'read', 'search_code', 'grep', 'ast_grep', 'glob', 'list',
@@ -227,7 +228,7 @@ export class ToolRegistry {
       throw new Error(`Unknown tool: "${name}"`);
     }
     this.validateArguments(name, args);
-    return spec.handler(args, Object.freeze({ ...context }));
+    return dispatchGoalTool(spec, args, Object.freeze({ ...context }));
   }
 }
 

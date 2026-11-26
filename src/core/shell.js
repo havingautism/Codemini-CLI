@@ -197,7 +197,7 @@ function collectDescendantPids(rootPid, seen = new Set()) {
   return descendants;
 }
 
-export function terminateChild(child, signal = 'SIGTERM') {
+export function terminateChild(child, signal = 'SIGTERM', { goalOwned = false } = {}) {
   if (!child) return;
   if (child.sandboxProcess) {
     child.kill(signal);
@@ -205,12 +205,20 @@ export function terminateChild(child, signal = 'SIGTERM') {
   }
   const pid = Number(child.pid);
   if (process.platform === 'win32' && Number.isInteger(pid) && pid > 0) {
-    try {
-      spawn('taskkill', ['/pid', String(pid), '/T', '/F'], {
-        stdio: 'ignore',
-        windowsHide: true,
-      }).unref();
-    } catch {}
+    const options = { stdio: 'ignore', windowsHide: true };
+    const fallback = () => {
+      if (child.exitCode != null || child.signalCode != null) return;
+      spawn('taskkill', ['/pid', String(pid), '/T', '/F'], options).on('error', () => {}).unref();
+    };
+    const shell = goalOwned ? resolveWindowsPowerShell() : '';
+    if (/pwsh\.exe$/i.test(shell)) {
+      // 使用进程树句柄终止子孙进程。启动时间检查可避免误杀已经复用此 PID 的其他进程。
+      const command = `$p = Get-Process -Id ${pid} -ErrorAction SilentlyContinue; if ($p -and ([DateTimeOffset]$p.StartTime).ToUnixTimeMilliseconds() -le ${Date.now()}) { try { $p.Kill($true) } catch { exit 1 } }`;
+      const helper = spawn(shell, ['-NoProfile', '-NonInteractive', '-Command', command], options);
+      helper.once('error', fallback);
+      helper.once('exit', code => { if (code) fallback(); });
+      helper.unref();
+    } else fallback();
     return;
   }
   if (process.platform !== 'win32' && Number.isInteger(pid) && pid > 0) {

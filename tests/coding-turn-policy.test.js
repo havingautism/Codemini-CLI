@@ -3,6 +3,17 @@ import assert from 'node:assert/strict';
 import { createCodingTurnPolicy, isCodingTurnToolAllowed, buildCodingTurnPolicyBlock } from '../src/core/coding-turn-policy.js';
 import { applyCrewParentToolPolicy, EXECUTION_MODE_TOOL_POLICY } from '../src/core/chat-runtime.js';
 
+test('区分分别委派、禁止委派，以及禁止范围内的举例', () => {
+  for (const text of ['不要更改文件，分别委派一名只读子代理', '这部分分别请两个子代理核对']) {
+    assert.equal(createCodingTurnPolicy({ text }).allowSubagent, true, text);
+  }
+  for (const text of ['请别委派子代理', '不要让任何助手，包括子代理，参与审查', '这部分别委派给子代理，主代理自己做', '这部分不要分别委派']) {
+    assert.equal(createCodingTurnPolicy({ text }).allowSubagent, false, text);
+  }
+  assert.equal(createCodingTurnPolicy({ text: '分别并行执行两个分支任务' }).allowFork, true);
+  assert.equal(createCodingTurnPolicy({ text: '这部分别并行' }).allowFork, false);
+});
+
 test('ordinary coding leaves planning and delegation available without permitting memory writes', () => {
   for (const text of ['继续', '改一个按钮文案', '解释刚才的结果', '修复多个文件并验证']) {
     const policy = createCodingTurnPolicy({ text });

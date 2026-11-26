@@ -13,6 +13,7 @@ This repo is Codemini CLI, a local-first coding agent with a CLI, Web UI, projec
 
 - CLI command dispatch: start in `src/cli.js`, then `src/commands/`.
 - Chat/session runtime behavior: start in `src/core/chat-runtime.js`.
+- 会话目标 `/goal` 的执行、状态转移和验收分别见 `src/core/goal-runner.js`、`src/core/goal-state.js`、`src/core/goal-verification.js`。持久任务计划见 `src/core/goal-tasks.js` 和 `src/core/goal-task-runner.js`。命令用法见 `docs/agents/goal.md`。
 - Scheduled tasks: `src/core/scheduled-task-store.js`, `src/core/scheduled-worker.js`; see `docs/agents/scheduled-tasks.md`.
 - System prompt composition: start in `src/core/system-prompt-composer.js` and `src/core/default-system-prompt.js`.
 - Project map and file index behavior: start in `src/core/project-index.js`.
