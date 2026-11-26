@@ -9591,16 +9591,6 @@ export async function createChatRuntime({
     await refreshCrewProgressCache();
     await refreshCrewGitInspect();
   }
-  let compactState = null;
-  const normalizeCompactThreshold = (value, fallback = 60) => {
-    const num = Number(value);
-    if (!Number.isFinite(num)) return fallback;
-    return Math.min(95, Math.max(50, num));
-  };
-  const syncCompactStateFromConfig = () => {
-    if (!compactState) return;
-    compactState.threshold = normalizeCompactThreshold(config.context?.preflight_trigger_pct, 60);
-  };
   const syncRuntimeFromConfig = async ({ model: nextModel } = {}) => {
     const previousMode = executionMode;
     const previouslyArmed = new Set(
@@ -9610,7 +9600,6 @@ export async function createChatRuntime({
     );
     executionMode = resolveRuntimeExecutionMode(config.execution?.mode || 'normal', config, currentSession);
     if (normalizeExecutionMode(executionMode) !== 'crew') await deactivateCrew();
-    syncCompactStateFromConfig();
 
     const resolvedModel = String(nextModel || '').trim();
     if (resolvedModel) {
@@ -9858,12 +9847,6 @@ export async function createChatRuntime({
   };
   config = attachRuntimeState(config);
 
-  compactState = {
-    backupMessages: null,
-    autoEnabled: true,
-    threshold: normalizeCompactThreshold(config.context?.preflight_trigger_pct, 60),
-    mode: 'conservative'
-  };
   let compactedForModel = currentSession.compact?.view || null;
   const setCompactedView = (view, meta = {}) => {
     compactedForModel = view;
@@ -10391,6 +10374,19 @@ export async function createChatRuntime({
       if (name === CHAT_ACTIONS.COMPACT) {
         const args = Array.isArray(payload.args) ? payload.args : [];
         const cargs = parseCompactArgs(args);
+        if (cargs.auto === 'on' || cargs.auto === 'off') {
+          const enabled = cargs.auto === 'on';
+          config.context = { ...(config.context || {}), auto_compact: enabled };
+          await setConfigValue('context.auto_compact', enabled);
+          const onlyToggle = !cargs.preview && !cargs.restore && !cargs.micro
+            && cargs.mode === 'default' && cargs.threshold === undefined;
+          if (onlyToggle) {
+            return {
+              type: 'system',
+              text: enabled ? 'Automatic compaction enabled' : 'Automatic compaction disabled',
+            };
+          }
+        }
         if (cargs.restore) {
           setCompactedView(null);
           await saveSession(currentSession);
@@ -10404,8 +10400,9 @@ export async function createChatRuntime({
         const result = await compactInFlightMessages(source, config, 0, {
           force: true,
           pruneOnly: cargs.micro === true,
-          aggressive: (cargs.mode || compactState.mode) === 'aggressive',
-          mode: cargs.mode || compactState.mode,
+          manual: true,
+          aggressive: cargs.mode === 'aggressive',
+          mode: cargs.mode,
           generateSummary: cargs.micro ? null : createCompactSummaryGenerator(config, null),
           overheadTokens: overhead,
           onStart: ({ beforePct }) => {

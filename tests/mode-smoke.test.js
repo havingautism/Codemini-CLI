@@ -80,7 +80,7 @@ async function withSmokeRuntime(mode, task, { gitRepo = false } = {}) {
         sdk: { provider: 'openai-compatible' },
         gateway: { base_url: `http://127.0.0.1:${port}/v1`, api_key: 'test', max_retries: 0 },
         model: { name: 'test-model', reasoning_enabled: false, reasoning_effort: 'off' },
-        context: { project_context_enabled: false, project_instructions_enabled: false, preflight_trigger_pct: 99 },
+        context: { project_context_enabled: false, project_instructions_enabled: false },
         execution: { mode, approval_mode: 'auto' },
         crew: { max_workers: 4 },
         memory: {

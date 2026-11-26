@@ -22,6 +22,7 @@ import {
   applyAggressiveToolPruneBeta,
   calibrationRatio,
   compactInFlightMessages,
+  isAutoCompactEnabled,
   COMPACT_START_SUMMARY,
   COMPACT_START_SUMMARY_EN,
   estimateMessagesTokens,
@@ -907,7 +908,7 @@ export async function runAgentLoop({
       && measuredPrefix.every((message, index) => messages[index] === message);
     const measuredTokens = measurementMatches ? lastInputTokens : 0;
     const measuredIndex = measurementMatches ? measuredPrefix.length : -1;
-    if (step > 1 && !lastCompletionIncomplete) {
+    if (step > 1 && !lastCompletionIncomplete && isAutoCompactEnabled(config)) {
       const inflight = await compactInFlightMessages(messages, config, measuredTokens, {
         ...compactOptions,
         measuredIndex,
@@ -932,6 +933,9 @@ export async function runAgentLoop({
           break;
         } catch (error) {
           if (signal?.aborted || !isContextOverflowError(error)) throw error;
+          // Follow opencode: overflow recovery is automatic compaction, so it
+          // stays off when context.auto_compact is false. Manual /compact still works.
+          if (!isAutoCompactEnabled(config)) throw error;
           if (!retrySource) {
             // All retry targets and candidates come from the first rejected request.
             retrySource = messages.slice();

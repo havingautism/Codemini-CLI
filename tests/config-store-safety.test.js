@@ -191,3 +191,50 @@ test('read-modify-write config updates cannot cross directories during an enviro
     } finally { fs.readFile = read; }
   });
 });
+
+test('legacy preflight_trigger_pct is dropped on load and save, and auto_compact defaults on', async () => {
+  await withConfigDir(async ({ configPath }) => {
+    await fs.writeFile(configPath, JSON.stringify({
+      context: { preflight_trigger_pct: 60, buffer: '20%' },
+    }), 'utf8');
+    const config = await loadConfig();
+    assert.equal(Object.hasOwn(config.context, 'preflight_trigger_pct'), false);
+    assert.equal(config.context.auto_compact, true);
+    assert.equal(config.context.buffer, '20%');
+    await saveConfig(config);
+    const saved = JSON.parse(await fs.readFile(configPath, 'utf8'));
+    assert.equal(Object.hasOwn(saved.context, 'preflight_trigger_pct'), false);
+    assert.equal(saved.context.auto_compact, true);
+    assert.equal(saved.context.buffer, '20%');
+  });
+});
+
+test('saveConfig strips a legacy preflight_trigger_pct even when the in-memory object still has it', async () => {
+  await withConfigDir(async ({ configPath }) => {
+    const config = await loadConfig();
+    config.context.preflight_trigger_pct = 60;
+    config.context.auto_compact = false;
+    config.context.buffer = 20000;
+    await saveConfig(config);
+    const saved = JSON.parse(await fs.readFile(configPath, 'utf8'));
+    assert.equal(Object.hasOwn(saved.context, 'preflight_trigger_pct'), false);
+    assert.equal(saved.context.auto_compact, false);
+    assert.equal(saved.context.buffer, 20000);
+    const reloaded = await loadConfig();
+    assert.equal(Object.hasOwn(reloaded.context, 'preflight_trigger_pct'), false);
+    assert.equal(reloaded.context.auto_compact, false);
+    assert.equal(reloaded.context.buffer, 20000);
+  });
+});
+
+test('invalid context.buffer values are dropped during normalization', async () => {
+  await withConfigDir(async ({ configPath }) => {
+    await fs.writeFile(configPath, JSON.stringify({
+      context: { buffer: '0%', auto_compact: 'no' },
+    }), 'utf8');
+    const config = await loadConfig();
+    assert.equal(Object.hasOwn(config.context, 'buffer'), false);
+    // Non-false values stay on (same as other boolean flags in this file).
+    assert.equal(config.context.auto_compact, true);
+  });
+});

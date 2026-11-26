@@ -7,10 +7,8 @@ const config = {
   memory: { enabled: false },
   model: { max_context_tokens: 1000 },
   context: {
-    preflight_trigger_pct: 60,
     hard_limit_pct: 98,
     microcompact_enabled: true,
-    microcompact_keep_recent: 1,
   },
 };
 
