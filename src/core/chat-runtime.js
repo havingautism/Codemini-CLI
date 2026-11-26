@@ -9106,6 +9106,7 @@ export async function createChatRuntime({
   const crewWorkersInFlight = new Set();
   let activeTurnCount = 0;
   let goalRunner;
+  let goalChangeListener;
   let crewEventSink = null;
   let crewWakeExternalSubmit = null;
   let lastCrewProgress = { workers: [], inFlightIds: [] };
@@ -10502,6 +10503,7 @@ export async function createChatRuntime({
   };
   goalRunner = createGoalRunner({
     workspaceRoot: root,
+    onGoalChange: sessionId => goalChangeListener?.(sessionId),
     getSession: () => currentSession,
     execute: executeSubmissionTurn,
     settings: () => ({ config, model }),
@@ -10919,6 +10921,7 @@ export async function createChatRuntime({
       activeRequestUserInput = typeof handler === 'function' ? handler : null;
       return true;
     },
+    setOnGoalChange: (listener) => { goalChangeListener = listener; },
     setOnTitleUpdate: (cb) => {
       onTitleUpdateCallback = typeof cb === 'function' ? cb : null;
       titleCoordinator.setOnTitleUpdate(onTitleUpdateCallback);

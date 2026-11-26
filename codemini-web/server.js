@@ -1,5 +1,6 @@
 import { getTokenActivity, getSessionTokenUsage } from '../src/core/token-usage-store.js';
 import { isGoalSteeringInput, isImmediateGoalControl } from '../src/core/goal-command.js';
+import { projectGoalPresentation } from '../src/core/goal-presentation.js';
 import { isScheduledSessionActive, getScheduledChangeState } from '../src/core/scheduled-task-store.js';
 import { createScheduledTaskNotifier } from './lib/scheduled-task-notifier.js';
 import { startScheduledWorker } from '../src/core/scheduled-worker-process.js';
@@ -41,6 +42,7 @@ import { createChatRuntime } from "../src/core/chat-runtime.js";
 import {
   createSession,
   loadSession,
+  readSessionGoal,
   listSessions,
   resolveSession,
   deleteSession,
@@ -1059,6 +1061,11 @@ export function createWebRuntimeApi({
     });
 
   const runtimeRoutes = createNodeRouter();
+  runtimeRoutes.get("/api/goal", nodeRoute(async (req, res, url) => {
+    const sessionId = requireSessionId(res, url.searchParams.get("sessionId"));
+    if (sessionId) jsonResponse(res, { goal: projectGoalPresentation(readSessionGoal(sessionId)) });
+    return true;
+  }));
   runtimeRoutes.get("/api/sessions/sidebar", nodeRoute(async (req, res) => {
     await listStoredSessions(1); // Preserve legacy-session import before SQLite pagination.
     const { active } = await loadActiveProjects();

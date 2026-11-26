@@ -90,6 +90,7 @@ export function normalizeGoalState(value) {
     ...(value.stall?.key && Number.isSafeInteger(value.stall.count) && value.stall.count > 0
       ? { stall: { key: value.stall.key, count: value.stall.count } } : {}),
     ...(cleanText(value.executorModel) ? { executorModel: cleanText(value.executorModel) } : {}),
+    ...(getGoalRetryVerificationId(value) ? { retryVerificationId: value.retryVerificationId } : {}),
     resumePhase: value.status === 'paused' && activePhases.has(value.resumePhase) ? value.resumePhase : null,
     reason: cleanText(value.reason), report: typeof value.report === 'string' ? value.report : '',
     observations: structuredClone(observations),
@@ -152,7 +153,7 @@ export function resumeGoal(goal, { extraIterations = 0, extraTokens = 0 } = {}) 
   }
   if (goal.status === 'exhausted' && extraIterations === 0) throw new Error('轮次预算已耗尽，请指定增加的轮次。');
   const phase = goal.status === 'paused' && activePhases.has(goal.resumePhase) ? goal.resumePhase : 'ready';
-  const { stall, ...resumed } = goal;
+  const { stall, retryVerificationId, ...resumed } = goal;
   return { ...resumed, status: 'active', phase, resumePhase: null, maxIterations, reason: '',
     ...(tokenBudget != null ? { tokenBudget } : {}) };
 }
@@ -187,6 +188,8 @@ export function recordGoalObservation(goal, input) {
     id, iteration: goal.iteration, kind: input.kind, criterionIds, source: cleanText(input.source),
     revision: cleanText(input.revision), summary: cleanText(input.summary).slice(0, 4000),
     toolCallId: cleanText(input.toolCallId), checkKey: cleanText(input.checkKey),
+    ...(cleanText(input.attemptId) ? { attemptId: cleanText(input.attemptId) } : {}),
+    ...(cleanText(input.revalidatedFrom) ? { revalidatedFrom: cleanText(input.revalidatedFrom) } : {}),
     artifactPath: cleanText(input.artifactPath), artifactHash: cleanText(input.artifactHash),
   };
   if (Number.isSafeInteger(input.exitCode)) observation.exitCode = input.exitCode;
@@ -337,6 +340,7 @@ export function applyGoalVerdict(goal, input = {}) {
     currentRevision: cleanText(input.currentRevision || input.revision),
     executorModel: cleanText(input.executorModel), gatekeeperModel: cleanText(input.gatekeeperModel),
     verifierKind: input.verifierKind === 'integer_sequence' ? 'integer_sequence' : 'model',
+    ...(input.failureKind === 'timeout' && decision === 'pause' ? { failureKind: 'timeout' } : {}),
     checks: normalizeChecks(input.checks),
   };
   let accepted = decision;
@@ -366,7 +370,10 @@ export function applyGoalVerdict(goal, input = {}) {
       result = verifyGoalTask(result, task.id, { ...record, checks });
     }
   }
-  if (accepted === 'pause') return pauseGoal(result, reason || '验收已暂停。');
+  if (accepted === 'pause') {
+    const paused = pauseGoal(result, reason || '验收已暂停。');
+    return record.failureKind === 'timeout' ? { ...paused, retryVerificationId: verdictEventId(paused) } : paused;
+  }
   if (accepted === 'completed' || accepted === 'unreachable') {
     return stopGoal(result, accepted === 'completed' ? 'completed' : 'failed', reason);
   }
@@ -388,6 +395,16 @@ export function renderGoalSummary(goal) {
   return goal.reason ? progress + '。' + excerpt(goal.reason, 200) : progress;
 }
 
+function verdictEventId(goal) {
+  return `goal-${goal.id}-verdict-${goal.verdicts.length}`;
+}
+
+export function getGoalRetryVerificationId(goal) {
+  if (goal?.status !== 'paused' || goal.resumePhase !== 'verifying' ||
+      !goal.retryVerificationId || !Array.isArray(goal.verdicts) || goal.verdicts.at(-1)?.failureKind !== 'timeout') return null;
+  return goal.retryVerificationId === verdictEventId(goal) ? goal.retryVerificationId : null;
+}
+
 export function goalVerdictEvent(goal) {
   const verdict = goal.verdicts.at(-1);
   const name = `第 ${verdict.iteration} 轮验收 · ${goal.status === 'active' ? '继续执行' : statusLabels[goal.status]}`;
@@ -401,7 +418,8 @@ export function goalVerdictEvent(goal) {
     return { id, text, evidence };
   });
   return {
-    type: 'goal:verdict', id: `goal-${goal.id}-verdict-${goal.verdicts.length}`,
+    type: 'goal:verdict', id: verdictEventId(goal),
+    ...(getGoalRetryVerificationId(goal) ? { retryVerificationId: goal.retryVerificationId } : {}),
     name, summary: goal.reason || verdict.resultReason, criteria, usage: usageSummary(goal),
     timestamp: new Date().toISOString(),
   };
@@ -446,6 +464,7 @@ export function renderGoalContext(goal, { fullReport = false } = {}) {
     goal.maxWaitMs && `每个后台任务等待上限：${goal.maxWaitMs / 1000} 秒`,
     `轮次：${goal.iteration}/${goal.maxIterations}`, goal.reason && `上次结果：${goal.reason}`,
     goal.status === 'paused' && `恢复阶段：${phaseLabels[goal.resumePhase] || '等待开始下一轮'}。${unresolvedGoalOperations(goal).length ? '须先核对未收到回执的操作。' : '使用 /goal resume 继续。'}`,
+    getGoalRetryVerificationId(goal) && '要仅重试本次验收，使用 /goal retry-verification。',
     goal.status === 'exhausted' && '如需继续，可用 /goal resume +2 增加两轮。',
     ...unresolvedGoalOperations(goal).map(op => goal.status === 'active'
       ? `操作 ${op.id}（${op.label || op.tool}）：正在等待工具回执。` : `操作回执待核对。${goalResolutionHint(op)}`),

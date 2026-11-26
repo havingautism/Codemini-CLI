@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import { createServer } from 'node:http';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -8,6 +9,7 @@ import { createGoalEvidenceCollector, inferGoalCriteria, reviewGoal } from '../s
 import { runGit } from '../src/core/process-run.js';
 import { applyGoalVerdict } from '../src/core/goal-state.js';
 import { estimateMessagesTokens } from '../src/core/context-compact.js';
+import { createChatCompletionStream } from '../src/core/provider/openai-compatible.js';
 
 async function workspace(t) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-goal-'));
@@ -36,6 +38,28 @@ const completed = (id) => ({
   decision: 'completed', reason: '已核对', checks: [{ criterionId: 'c1', evidenceIds: [id] }],
 });
 const nodePass = { code: 0, stdout: 'ok 1 - 计数\n# tests 1\n# suites 0\n# pass 1\n# fail 0\n# cancelled 0\n# skipped 0\n# todo 0' };
+
+test('真实网关响应流停在半途时可重试验收，主动暂停及普通网关错误不显示重试', async t => {
+  const { config, run, review } = await workspace(t);
+  await run('node --test', nodePass);
+  let streamed = false;
+  const gateway = createServer((_req, res) => {
+    res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+    res.write(': 已收到请求\n\n');
+    streamed = true;
+  });
+  await new Promise(resolve => gateway.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => { gateway.close(resolve); gateway.closeAllConnections(); }));
+  const result = await review(createChatCompletionStream, { config: { ...config,
+    gateway: { base_url: 'http://127.0.0.1:' + gateway.address().port, timeout_ms: 700, max_retries: 0 } } });
+  assert.ok(streamed);
+  assert.equal(result.decision, 'pause');
+  assert.equal(result.failureKind, 'timeout');
+  const auth = await review(() => { throw new Error('Gateway error 401: 权限不足'); });
+  assert.equal(auth.failureKind, undefined);
+  const cancel = await review(() => { throw new Error('请求已取消'); }, { signal: AbortSignal.abort() });
+  assert.equal(cancel.failureKind, undefined);
+});
 
 function approvePacket(packet) {
   return { text: JSON.stringify({ decision: 'completed', reason: '逐项核对',

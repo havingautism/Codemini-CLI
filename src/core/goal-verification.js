@@ -282,7 +282,8 @@ export function createGoalEvidenceCollector({ workspaceRoot, goal }) {
       for (const item of prior) {
         if (item.kind !== 'observation' || !item.artifactPath || !item.artifactHash) continue;
         if (!await currentArtifacts(workspaceRoot, [item]).catch(() => false)) continue;
-        const rebound = { ...item, revision, id: 'ev-' + hash(JSON.stringify([epoch, item.id])).slice(0, 32) };
+        const rebound = { ...item, revision, revalidatedFrom: item.id,
+          id: 'ev-' + hash(JSON.stringify([epoch, item.id])).slice(0, 32) };
         observations.push(rebound);
         previous.set(bindingKey(rebound), rebound);
       }
@@ -291,15 +292,15 @@ export function createGoalEvidenceCollector({ workspaceRoot, goal }) {
   };
   return {
     start: () => enqueue(refresh),
-    beginTool: ({ toolName, args, callId, criterionIds }) => enqueue(async () => {
+    beginTool: ({ toolName, args, callId, criterionIds, attemptId }) => enqueue(async () => {
       if (!workspaceIds.length) return [];
       const shell = isShellToolName(toolName) && runsCheck(args?.command);
       if (!shell && toolName !== 'read') return [];
       // 供应商可在后续模型响应中复用调用编号。真正开始新调用后再允许登记一次结果。
       processed.delete(callId);
-      if (!shell) return [];
-      const observations = await refresh();
-      started.set(callId, { revision, ids: criterionIds ?? args?.criterion_ids });
+      const observations = shell ? await refresh() : [];
+      // 同批工具可能在主代理交付或换领任务后才返回，归属以发出的那一刻为准。
+      started.set(callId, { revision, ids: criterionIds ?? args?.criterion_ids, attemptId });
       return observations;
     }),
     recordToolResult: ({ toolName, args, result, callId, criterionIds }) => enqueue(async () => {
@@ -307,28 +308,29 @@ export function createGoalEvidenceCollector({ workspaceRoot, goal }) {
       const shell = isShellToolName(toolName);
       if ((!shell && toolName !== 'read') || (shell && !runsCheck(args?.command)) || (callId && processed.has(callId))) return [];
       const observations = await refresh();
+      const start = started.get(callId);
+      started.delete(callId);
       let data = shell ? shellEvidence(args, result) : await readEvidence(workspaceRoot, result).catch(() => null);
       if (!data) return observations;
-      const start = started.get(callId);
       if ((shell && start?.revision !== revision) || !revision) {
         if (data.kind !== 'environment_error') {
           data = { ...data, kind: 'environment_error', summary: '无法确认此观测覆盖当前工作区版本。\n' + data.summary };
         }
       }
-      started.delete(callId);
       if (callId) processed.add(callId);
       const source = shell ? 'run' : 'read';
-      const requested = criterionIds ?? args?.criterion_ids ?? start?.ids;
+      const requested = start ? start.ids : criterionIds ?? args?.criterion_ids;
       if (requested != null && (!Array.isArray(requested) || requested.some(id => !workspaceIds.includes(id)))) return observations;
       const bindings = Array.isArray(requested) ? workspaceIds.filter((id) => requested.includes(id)) : workspaceIds.length === 1 ? workspaceIds : [];
       const key = bindingKey({ ...data, criterionIds: bindings });
       const prior = previous.get(key);
       const sameOutput = shell ? data.kind === 'pass' || diagnosticText(prior?.summary) === diagnosticText(data.summary)
         : prior?.summary === data.summary;
-      if (prior?.revision === revision && prior.kind === data.kind && (prior.artifactHash || '') === (data.artifactHash || '')
+      if ((!start?.attemptId || start.attemptId === prior?.attemptId) && prior?.revision === revision && prior.kind === data.kind && (prior.artifactHash || '') === (data.artifactHash || '')
         && prior.exitCode === (Number.isInteger(data.exitCode) ? data.exitCode : undefined) && sameOutput) return observations;
       const id = 'ev-' + hash(JSON.stringify([epoch, prior?.id, revision, key, data.kind, data.artifactHash, data.exitCode, data.summary])).slice(0, 32);
       const item = { ...data, id, source, revision, criterionIds: bindings, toolCallId: String(callId || '') };
+      if (start?.attemptId) item.attemptId = start.attemptId;
       if (!Number.isInteger(item.exitCode)) delete item.exitCode;
       previous.set(key, item);
       return [...observations, item];
@@ -507,19 +509,38 @@ export async function reviewGoal({ goal, workspaceRoot, config, model, signal, r
       return verdict('continue', '当前版本仍有未解决的反证，或验收结论缺少与标准对应的证据。');
     }
     return result;
-  } catch {
-    return verdict('pause', signal?.aborted ? '验收已中止。' : '无法完成独立验收，请检查验收模型或证据可用性。');
+  } catch (error) {
+    if (signal?.aborted) return verdict('pause', '验收已中止。');
+    if (error?.name === 'TimeoutError') {
+      return { ...verdict('pause', '独立验收模型请求超时。'), failureKind: 'timeout' };
+    }
+    return verdict('pause', '无法完成独立验收，请检查验收模型或证据可用性。');
   }
 
   async function ask(packet, instructions) {
     if (signal?.aborted) throw new Error('验收已中止。');
     const request = reviewRequest(packet, instructions, contextTokens);
     if (!request) throw new Error('验收请求超出模型上下文。');
-    const response = await requestCompletion({
-      sdkProvider: config?.sdk?.provider, baseUrl: config?.gateway?.base_url, apiKey: config?.gateway?.api_key,
-      model: gatekeeperModel, tools: [], signal, timeoutMs: config?.gateway?.timeout_ms || 60000,
-      maxRetries: Math.min(2, config?.gateway?.max_retries ?? 2), ...request,
-    });
+    const timeoutMs = config?.gateway?.timeout_ms || 60000;
+    const deadline = AbortSignal.timeout(timeoutMs);
+    // 流在收到响应头后也可能超时；部分 SDK 此时只会抛出普通中断错误。
+    const requestSignal = signal ? AbortSignal.any([signal, deadline]) : deadline;
+    let response;
+    try {
+      response = await requestCompletion({
+        sdkProvider: config?.sdk?.provider, baseUrl: config?.gateway?.base_url, apiKey: config?.gateway?.api_key,
+        model: gatekeeperModel, tools: [], signal: requestSignal, timeoutMs,
+        maxRetries: Math.min(2, config?.gateway?.max_retries ?? 2), ...request,
+      });
+      deadline.throwIfAborted();
+    } catch (error) {
+      const code = error?.cause?.code || error?.code;
+      if (deadline.aborted || ['ETIMEDOUT', 'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT'].includes(code) ||
+          /^Gateway (?:error (?:408|504)\b|request timed out after \d+ms)/iu.test(error?.message || '')) {
+        throw new DOMException('独立验收模型请求超时。', 'TimeoutError');
+      }
+      throw error;
+    }
     if (signal?.aborted || response?.incomplete || response?.toolCalls?.length) throw new Error('验收模型未返回完整判定。');
     return JSON.parse(String(response?.text || '').trim());
   }

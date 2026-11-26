@@ -45,6 +45,11 @@ export function parseGoalCommand(text) {
   let body = (invocation[1] || '').trim();
   if (!body || /^status$/iu.test(body)) return { action: 'status' };
   if (/^pause$/iu.test(body)) return { action: 'pause' };
+  if (/^retry-verification(?:\s|$)/iu.test(body)) {
+    const match = /^retry-verification(?:\s+(goal-[\da-f-]+-verdict-[1-9]\d*))?$/iu.exec(body);
+    if (!match) return { action: 'error', message: '重试本次超时验收请使用 /goal retry-verification。' };
+    return { action: 'retry-verification', ...(match[1] ? { verdictId: match[1] } : {}) };
+  }
   if (/^clear$/iu.test(body)) return { action: 'clear' };
   if (/^resolve(?:\s|$)/iu.test(body)) {
     const match = /^resolve\s+([\da-f-]+)\s+(done|retry)$/iu.exec(body);

@@ -202,6 +202,7 @@ test('并发子任务跨三次压缩和 SQLite 重开，已验收任务不重派
       assert.equal(attempt.reviews.at(-1).gatekeeperModel, 'parent');
       const artifact = done.observations.find(o => o.id === finalReview[index].evidenceIds[0]);
       assert.ok(artifact.toolCallId.startsWith(callId + '/'));
+      assert.equal(artifact.attemptId, callId);
       assert.deepEqual(artifact.criterionIds, tasks[index].criterion_ids);
       assert.ok(done.tasks[index].verification.checks.some(check => check.evidenceIds.includes(artifact.id)));
     }

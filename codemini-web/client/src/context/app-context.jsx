@@ -300,6 +300,7 @@ const initialState = {
   runtimeState: null,
   // 每次任务决策助手事件到达时递增，驱动轨迹面板实时刷新审计记录。
   harnessRevision: 0,
+  goalRevision: 0,
   currentSessionId: null,
   sessionRuntimeById: {},
   sessionMessagesById: {},
@@ -2110,6 +2111,9 @@ export function AppProvider({ children }) {
       switch (event.type) {
         case "connected":
           break;
+        case "goal:changed":
+          setState((prev) => ({ ...prev, goalRevision: prev.goalRevision + 1 }));
+          break;
 
         case "session:forked": {
           const previousId = String(
@@ -3119,6 +3123,8 @@ export function AppProvider({ children }) {
     const batcher = createStreamEventBatcher({ handleEvent });
     sseBatcherRef.current = batcher;
     const es = new EventSource("/api/events");
+    // 重连后补读当前会话。服务端的 connected 消息可携带其他会话编号。
+    es.onopen = () => setState((prev) => ({ ...prev, goalRevision: prev.goalRevision + 1 }));
     es.onmessage = (e) => {
       try {
         batcher.push(JSON.parse(e.data));

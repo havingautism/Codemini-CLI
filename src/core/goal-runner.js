@@ -1,6 +1,6 @@
 import {
   applyGoalVerdict, beginGoalIteration, createGoalState, markGoalVerifying,
-  goalVerdictEvent, pauseGoal, recordGoalDelegation, recordGoalObservation, renderGoalContext, renderGoalSummary, resumeGoal, setInferredGoalCriteria,
+  getGoalRetryVerificationId, goalVerdictEvent, pauseGoal, recordGoalDelegation, recordGoalObservation, renderGoalContext, renderGoalSummary, resumeGoal, setInferredGoalCriteria,
 } from './goal-state.js';
 import { createGoalEvidenceCollector, inferGoalCriteria, reviewGoal } from './goal-verification.js';
 import { integerSequenceRange } from './goal-count-verification.js';
@@ -83,7 +83,7 @@ export function withGoalContext(messages, context) {
 }
 
 // 每个会话只允许一个前台目标循环。工具仍通过普通聊天运行时执行。
-export function createGoalRunner({ getSession, execute, settings, workspaceRoot, busy }) {
+export function createGoalRunner({ getSession, execute, settings, workspaceRoot, busy, onGoalChange }) {
   let controller;
   let finished;
   let ownerToken;
@@ -92,7 +92,8 @@ export function createGoalRunner({ getSession, execute, settings, workspaceRoot,
 
   const save = (next) => {
     const session = getSession();
-    if (next === session.goalState) return;
+    const previous = session.goalState;
+    if (next === previous) return;
     const now = Math.floor(performance.now());
     const elapsed = activeSince != null ? now - activeSince : 0;
     // 只累计本进程实际持有目标的区间，重启后不计入离线等待。
@@ -100,6 +101,10 @@ export function createGoalRunner({ getSession, execute, settings, workspaceRoot,
     saveSessionGoal(session, next.status === 'active'
       ? { ...next, ownerPid: process.pid, ownerToken } : next);
     activeSince = next.status === 'active' ? now : undefined;
+    // 只在页面所依赖的状态改变后通知，单纯的用量更新无需重读整份任务记录。
+    if (!previous || ['id', 'status', 'tasks', 'delegations', 'observations', 'verdicts'].some(key => previous[key] !== next[key])) {
+      onGoalChange?.(session.id);
+    }
   };
   const current = () => getSession().goalState;
   const describe = () => current() ? renderGoalContext({ ...current(),
@@ -110,7 +115,7 @@ export function createGoalRunner({ getSession, execute, settings, workspaceRoot,
     return save(pauseGoal(current(), reason));
   };
 
-  async function drive(signal, onEvent) {
+  async function drive(signal, onEvent, verificationOnly) {
     const missingAtStart = current().unreportedRequests;
     let open = true;
     const meter = {
@@ -137,12 +142,12 @@ export function createGoalRunner({ getSession, execute, settings, workspaceRoot,
     };
     try {
       await withGoalOperations({ current, save, stop, signal },
-        () => withGoalUsageMeter(meter, () => runIterations(signal, onEvent, meter)));
+        () => withGoalUsageMeter(meter, () => runIterations(signal, onEvent, meter, verificationOnly)));
     }
     finally { open = false; }
   }
 
-  async function runIterations(signal, onEvent, meter) {
+  async function runIterations(signal, onEvent, meter, verificationOnly) {
     let recovering = current().phase === 'executing';
     const tasks = createGoalTaskRunner({ current, save, signal, workspaceRoot, settings });
     if (current().criteriaPending) {
@@ -294,7 +299,11 @@ export function createGoalRunner({ getSession, execute, settings, workspaceRoot,
       if (signal.aborted || current().phase !== 'verifying') break;
       const verdict = await reviewGoal({ goal: current(), workspaceRoot, ...settings(), signal });
       if (signal.aborted || current().status !== 'active') break;
-      save(applyGoalVerdict(current(), verdict));
+      let reviewed = applyGoalVerdict(current(), verdict);
+      if (verificationOnly && reviewed.status === 'active') {
+        reviewed = pauseGoal(reviewed, reviewed.reason + ' 使用 /goal resume 继续执行。');
+      }
+      save(reviewed);
       onEvent?.(goalVerdictEvent(current()));
     }
   }
@@ -332,7 +341,7 @@ export function createGoalRunner({ getSession, execute, settings, workspaceRoot,
         } catch (error) { return reply(error.message); }
       }
       const pending = unresolvedGoalOperations(current());
-      if (pending.length && ['resume', 'clear', 'edit', 'steer'].includes(parsed.action)) {
+      if (pending.length && ['resume', 'retry-verification', 'clear', 'edit', 'steer'].includes(parsed.action)) {
         return reply('有工具调用正在执行或回执尚未确认。' + pending.map(goalResolutionHint).join('\n'));
       }
       if (parsed.action === 'clear' || parsed.action === 'edit' || parsed.action === 'steer') {
@@ -344,6 +353,7 @@ export function createGoalRunner({ getSession, execute, settings, workspaceRoot,
         try {
           if (parsed.action === 'clear') {
             saveSessionGoal(getSession(), null);
+            onGoalChange?.(getSession().id);
             revisionPending = false;
             activeSince = undefined;
             controller?.abort({ continueInPlace: true });
@@ -388,6 +398,12 @@ export function createGoalRunner({ getSession, execute, settings, workspaceRoot,
             criteriaPending: parsed.criteriaPending, tokenBudget: parsed.tokenBudget, maxWaitMs: parsed.maxWaitMs });
         } else {
           if (!previous) return reply('当前会话没有可以恢复的目标。');
+          if (parsed.action === 'retry-verification') {
+            const retryId = getGoalRetryVerificationId(previous);
+            if (!retryId || (parsed.verdictId && parsed.verdictId !== retryId)) {
+              return reply('该验收重试已失效，请查看当前目标状态。');
+            }
+          }
           if (!['paused', 'exhausted'].includes(previous.status)) return reply(describe());
           next = resumeGoal(previous, { extraIterations: parsed.extraRounds, extraTokens: parsed.extraTokens });
           if (!next.criteriaPending && next.criteria.some(item => !item.evidence)) next.criteriaPending = 'classify';
@@ -408,7 +424,7 @@ export function createGoalRunner({ getSession, execute, settings, workspaceRoot,
         for (;;) {
           const { signal } = controller;
           try {
-            if (!signal.aborted) await drive(signal, onEvent);
+            if (!signal.aborted) await drive(signal, onEvent, parsed.action === 'retry-verification' && current()?.id === previous?.id);
           } catch (error) {
             if (!signal.aborted && current()?.status === 'active') await save(pauseGoal(current(), '目标执行中断：' + error.message));
           }

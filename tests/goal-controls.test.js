@@ -113,6 +113,84 @@ test('清除和编辑是控制命令，预算仅接受正安全整数', () => {
   assert.deepEqual(parseGoalCommand('/goal resume +2 --add-tokens 10000'), { action: 'resume', extraRounds: 2, extraTokens: 10000 });
 });
 
+test('总验收超时后重开会话，旧按钮或重复点击不会重新执行或再次委派', async () => {
+  await withSession(async session => {
+    let executions = 0;
+    const events = [];
+    const started = Promise.withResolvers();
+    const allowReview = Promise.withResolvers();
+    const execute = async (_prompt, _onEvent, { goalHooks }) => {
+      executions++;
+      await goalHooks.updatePlan({ tasks: [{ id: 'check', title: '检查正文', criterion_ids: ['c1'] }] });
+      const event = { toolName: 'run_subagent', callId: 'check-attempt', args: { goal_task_id: 'check' } };
+      await goalHooks.started(event);
+      await goalHooks.result({ ...event, result: { ok: true, message: '已提交正文。' } });
+      return { type: 'assistant', text: '这是已保存的正文。' };
+    };
+    const first = makeRunner(session, execute, () => { throw new Error('Gateway request timed out after 90000ms'); });
+    await first.command(parseGoalCommand('/goal 撰写正文'), event => events.push(event));
+    const paused = (await loadSession(session.id)).goalState;
+    const timeout = events.find(event => event.type === 'goal:verdict');
+    assert.equal(paused.status, 'paused');
+    assert.equal(paused.resumePhase, 'verifying');
+    assert.equal(paused.retryVerificationId, timeout.id);
+    assert.equal(timeout.retryVerificationId, timeout.id);
+    assert.equal(paused.verdicts.at(-1).failureKind, 'timeout');
+    const click = parseGoalCommand('/goal retry-verification ' + timeout.id);
+    const stale = { ...click, verdictId: timeout.id + '0' };
+    const second = makeRunner(await loadSession(session.id), execute, async packet => {
+      started.resolve();
+      await allowReview.promise;
+      return { text: JSON.stringify({ decision: 'completed', reason: '已核对正文。',
+        checks: [{ criterionId: 'c1', evidenceIds: [packet.observations.at(-1).id] }] }) };
+    });
+    assert.match((await second.command(stale)).text, /失效/);
+    const retry = second.command(click);
+    await started.promise;
+    assert.match((await second.command(click)).text, /正在执行/);
+    allowReview.resolve();
+    await retry;
+    assert.match((await second.command(click)).text, /失效/);
+    const done = readSessionGoal(session.id);
+    assert.equal(done.status, 'completed');
+    assert.equal(done.iteration, paused.iteration);
+    assert.equal(done.retryVerificationId, undefined);
+    assert.equal(done.verdicts.length, 2);
+    assert.equal(executions, 1);
+    assert.equal(done.tasks[0].attempts.length, 1);
+    assert.deepEqual(done.delegations, paused.delegations);
+    assert.deepEqual(done.observations, paused.observations);
+  });
+});
+
+test('仅重试验收遇到证据不足会停在下一轮前，再次超时产生新重试编号', async () => {
+  await withSession(async session => {
+    let reviews = 0;
+    let executions = 0;
+    const runner = makeRunner(session, () => {
+      executions++;
+      return { type: 'assistant', text: '初稿。' };
+    }, () => {
+      if (++reviews < 3) throw new DOMException('请求超时。', 'TimeoutError');
+      return { text: JSON.stringify({ decision: 'continue', checks: [], reason: '须补写示例。' }) };
+    });
+    await runner.command(parseGoalCommand('/goal 撰写正文'));
+    const oldId = session.goalState.retryVerificationId;
+    await runner.command(parseGoalCommand('/goal retry-verification'));
+    assert.notEqual(session.goalState.retryVerificationId, oldId);
+    assert.match((await runner.command(parseGoalCommand('/goal retry-verification ' + oldId))).text, /失效/);
+    await runner.command(parseGoalCommand('/goal retry-verification'));
+    const goal = readSessionGoal(session.id);
+    assert.equal(goal.status, 'paused');
+    assert.equal(goal.resumePhase, 'ready');
+    assert.equal(goal.retryVerificationId, undefined);
+    assert.equal(goal.iteration, 1);
+    assert.equal(executions, 1);
+    assert.equal(reviews, 3);
+    assert.match(goal.reason, /补写示例/);
+  });
+});
+
 test('等待上限在会话重开后仍约束新委派，限时暂停不消耗下一轮', async (t) => {
   for (const [value, ms] of [['2秒', 2000], ['15分钟', 900000], ['1小时', 3600000]]) {
     assert.equal(parseGoalCommand('/goal 构建 等待上限：' + value).maxWaitMs, ms);

@@ -99,14 +99,16 @@ export function createGoalTaskRunner({ current, save, signal, workspaceRoot, set
     },
 
     evidenceEvent(event) {
-      if (event.criterionIds != null || event.args?.criterion_ids != null) return event;
       const task = current()?.tasks?.find(item => {
         const attempt = item.attempts.at(-1);
         if (item.status !== 'running' || !attempt) return false;
         return event.parentDelegationId ? attempt.id === event.parentDelegationId : attempt.owner === 'main';
       });
-      const ids = task?.criterionIds.filter(id => current().criteria.some(item => item.id === id && item.evidence !== 'reply'));
-      return ids?.length ? { ...event, criterionIds: ids } : event;
+      if (!task) return event;
+      const tagged = { ...event, attemptId: task.attempts.at(-1).id };
+      if (event.criterionIds != null || event.args?.criterion_ids != null) return tagged;
+      const ids = task.criterionIds.filter(id => current().criteria.some(item => item.id === id && item.evidence !== 'reply'));
+      return ids.length ? { ...tagged, criterionIds: ids } : tagged;
     },
   };
 }

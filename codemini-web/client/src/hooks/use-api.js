@@ -97,6 +97,10 @@ export async function fetchSessionTokenUsage(sessionId, signal) {
   return readJsonOrThrow(res);
 }
 
+export async function fetchSessionGoal(sessionId, signal) {
+  return readJsonOrThrow(await api(withSessionQuery('/api/goal', sessionId), { signal, cache: 'no-store' }));
+}
+
 export async function fetchState(sessionId) {
   const res = await api(withSessionQuery('/api/state', sessionId));
   return res.json();

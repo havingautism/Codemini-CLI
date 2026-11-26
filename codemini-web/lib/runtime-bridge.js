@@ -407,6 +407,7 @@ export class RuntimeBridge {
     this.#onLifecycle = onLifecycle;
     this.#installApprovalHandler();
     this.#uiTranscriptSessionId = this.getSessionId();
+    runtime.setOnGoalChange?.((sessionId) => this.#publish({ type: 'goal:changed', sessionId }));
     runtime.setOnTitleUpdate?.((sessionId, title, metadata = {}) => {
       this.#publish({
         type: 'session:title',
