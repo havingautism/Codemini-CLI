@@ -11,6 +11,7 @@ import { rememberMemory } from '../src/core/memory-store.js';
 import { closeSqliteDatabasesForTests } from '../src/core/sqlite-database.js';
 import { createSession, loadSession } from '../src/core/session-store.js';
 import { buildDefaultSystemPrompt } from '../src/core/default-system-prompt.js';
+import { saveConfig } from '../src/core/config-store.js';
 
 async function withRuntime(task, mode = 'normal', indexed = false, fullPrompt = false) {
   closeSqliteDatabasesForTests();
@@ -38,7 +39,7 @@ async function withRuntime(task, mode = 'normal', indexed = false, fullPrompt = 
       sdk: { provider: 'openai-compatible' },
       gateway: { base_url: `http://127.0.0.1:${port}/v1`, api_key: 'test', max_retries: 0 },
       model: { name: 'test-model', reasoning_enabled: false, reasoning_effort: 'off' },
-      context: { project_context_enabled: false, project_instructions_enabled: false, preflight_trigger_pct: 99 },
+      context: { project_context_enabled: false, project_instructions_enabled: false },
       execution: { mode, approval_mode: 'auto' },
       memory: {
         enabled: true,
@@ -54,6 +55,7 @@ async function withRuntime(task, mode = 'normal', indexed = false, fullPrompt = 
     if (indexed) {
       await fs.writeFile(path.join(dir, 'package.json'), JSON.stringify({ name: 'fixture', type: 'module' }));
       await fs.writeFile(path.join(dir, 'index.js'), 'export const example = 1;');
+      await fs.writeFile(path.join(dir, 'sandbox-policy.js'), 'export const sandbox = true;');
       await initializeProjectIndex(dir);
     }
     if (fullPrompt) {
@@ -64,6 +66,9 @@ async function withRuntime(task, mode = 'normal', indexed = false, fullPrompt = 
     const runtime = await createChatRuntime({
       session, config, model: 'test-model', workspaceRoot: dir,
       systemPrompt: fullPrompt ? buildDefaultSystemPrompt(config, { workspaceRoot: dir }) : 'stable',
+      systemPromptFactory: fullPrompt
+        ? (nextConfig, { executionMode }) => buildDefaultSystemPrompt(nextConfig, { workspaceRoot: dir, executionMode })
+        : undefined,
     });
     await task({
       dir,
@@ -109,6 +114,25 @@ for (const mode of ['normal', 'plan']) {
     }, mode, false, true);
   });
 }
+
+test('base system prompt follows mode switches within one chat', async () => {
+  await withRuntime(async ({ bodies, runtime, config }) => {
+    await saveConfig(config);
+    const send = async (text) => {
+      const nextRequest = bodies.length;
+      await runtime.submitMessage({ text });
+      const request = bodies.slice(nextRequest).find((body) => body.stream);
+      return request.messages.find((message) => message.role === 'system').content;
+    };
+    assert.match(await send('daily request'), /Tool: web_search\(/);
+    assert.equal(await runtime.setExecutionMode('plan'), true);
+    const coding = await send('coding request');
+    assert.doesNotMatch(coding, /Tool: web_search\(/);
+    assert.match(coding, /# Natural writing\nLead with the result/);
+    assert.equal(await runtime.setExecutionMode('normal'), true);
+    assert.match(await send('daily again'), /Tool: web_search\(/);
+  }, 'normal', false, true);
+});
 
 test('bootstrap memory stays byte-identical for the lifetime of a session', async () => {
   await withRuntime(async ({ dir, bodies, runtime, config }) => {
@@ -208,7 +232,7 @@ test('request auditing is opt-in and normal usage remains available', async () =
   });
 });
 
-test('project navigation is injected once and preserved in history', async () => {
+test('project navigation refreshes for a new indexed file and preserves earlier messages', async () => {
   await withRuntime(async ({ runtime, config, dir, bodies }) => {
     config.context.project_context_enabled = true;
     await runtime.submitMessage({ text: 'inspect index.js' });
@@ -218,5 +242,10 @@ test('project navigation is injected once and preserved in history', async () =>
     const users = bodies[1].messages.filter((message) => message.role === 'user');
     assert.equal(users[0].content, first.content);
     assert.doesNotMatch(users.at(-1).content, /<project_context>/);
+    await runtime.submitMessage({ text: 'inspect sandbox-policy.js' });
+    const refreshed = bodies.findLast((body) => body.messages.filter((message) => message.role === 'user').length === 3);
+    const refreshedUsers = refreshed.messages.filter((message) => message.role === 'user');
+    assert.equal(refreshedUsers[0].content, first.content);
+    assert.match(refreshedUsers[2].content, /<project_context>\n- relevant_files:\n  - sandbox-policy\.js/);
   }, 'normal', true);
 });

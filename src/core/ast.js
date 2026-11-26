@@ -277,6 +277,47 @@ async function parseContent(content, language) {
   return { parser, tree, loadedLanguage };
 }
 
+export async function findFileSyntaxErrors(filePath) {
+  const language = EXTENSION_LANGUAGE_MAP[path.extname(filePath).toLowerCase()];
+  if (!LANGUAGE_WASM_PATHS[language]) return [];
+  const maxBytes = 128 * 1024;
+  const stat = await fs.lstat(filePath);
+  if (!stat.isFile() || stat.size > maxBytes) return [];
+  const file = await fs.open(filePath, 'r');
+  let content;
+  try {
+    const buffer = Buffer.alloc(stat.size + 1);
+    const { bytesRead } = await file.read(buffer, 0, buffer.length, 0);
+    if (bytesRead !== stat.size || buffer.subarray(0, bytesRead).includes(0)) return [];
+    content = buffer.subarray(0, bytesRead).toString('utf8');
+  } finally {
+    await file.close();
+  }
+  const parsed = await parseContent(content, language);
+  try {
+    const pending = [parsed.tree.rootNode];
+    const errors = [];
+    while (pending.length && errors.length < 3) {
+      const node = pending.pop();
+      if (node.isError || node.isMissing) {
+        errors.push({
+          line: node.startPosition.row + 1,
+          column: node.startPosition.column + 1,
+          message: node.isMissing ? `Missing ${node.type}` : 'Unexpected syntax',
+        });
+      } else if (node.hasError) {
+        for (let index = node.childCount - 1; index >= 0; index--) {
+          const child = node.child(index);
+          if (child?.hasError || child?.isMissing) pending.push(child);
+        }
+      }
+    }
+    return errors;
+  } finally {
+    deleteParsed(parsed);
+  }
+}
+
 async function parseFile(root, relativePath, explicitLanguage = '') {
   const target = path.resolve(root, relativePath);
   const content = await fs.readFile(target, 'utf8');

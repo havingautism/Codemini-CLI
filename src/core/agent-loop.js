@@ -17,11 +17,11 @@ import { evaluateCrewParentCommand } from './crew-shell.js';
 import { buildRunFailureMessage, getToolOutputSanitizeOptions, sanitizeTextForModel } from './tool-output.js';
 import { createToolRuntime, buildInvalidToolArgumentsResult } from './tool-runtime.js';
 import { createToolResultStore, summarizeToolResult } from './tool-result-store.js';
-import { rankToolDefinitions } from './harness/tool-reliability.js';
 import {
   applyAggressiveToolPruneBeta,
   calibrationRatio,
   compactInFlightMessages,
+  isAutoCompactEnabled,
   COMPACT_START_SUMMARY,
   COMPACT_START_SUMMARY_EN,
   estimateMessagesTokens,
@@ -668,7 +668,6 @@ export async function runAgentLoop({
   decisionController = null,
   episodeId = '',
   onDecision = null,
-  toolReliabilityStore = null,
   toolGuard = null,
   completionReview = null,
   skillRoute = null,
@@ -695,10 +694,6 @@ export async function runAgentLoop({
   });
   const activeToolResultStore = toolResultStore || createToolResultStore();
   const formatDisplayName = (toolName, args) => toolRuntime.displayName(toolName, args);
-  const toolDefinitionsForModel = () => rankToolDefinitions(
-    toolRuntime.definitions(),
-    toolReliabilityStore?.list?.() || [],
-  );
   const generatedSystem = systemPrompt ? { role: 'system', content: systemPrompt } : null;
   const messages = generatedSystem ? [generatedSystem] : [];
   if (Array.isArray(initialMessages) && initialMessages.length > 0) {
@@ -879,7 +874,7 @@ export async function runAgentLoop({
       const selected = await contextSelector({ messages, step }).catch(() => null);
       if (Array.isArray(selected) && selected.length > 0) messages.splice(0, messages.length, ...selected);
     }
-    const tools = toolDefinitionsForModel();
+    const tools = toolRuntime.definitions();
     const overheadTokens = estimateToolDefinitionsTokens(tools);
     const compactOptions = { generateSummary, overheadTokens, calibrationRatio: promptCalibration, signal };
     let announcedCompact = false;
@@ -907,7 +902,7 @@ export async function runAgentLoop({
       && measuredPrefix.every((message, index) => messages[index] === message);
     const measuredTokens = measurementMatches ? lastInputTokens : 0;
     const measuredIndex = measurementMatches ? measuredPrefix.length : -1;
-    if (step > 1 && !lastCompletionIncomplete) {
+    if (step > 1 && !lastCompletionIncomplete && isAutoCompactEnabled(config)) {
       const inflight = await compactInFlightMessages(messages, config, measuredTokens, {
         ...compactOptions,
         measuredIndex,
@@ -932,6 +927,9 @@ export async function runAgentLoop({
           break;
         } catch (error) {
           if (signal?.aborted || !isContextOverflowError(error)) throw error;
+          // Follow opencode: overflow recovery is automatic compaction, so it
+          // stays off when context.auto_compact is false. Manual /compact still works.
+          if (!isAutoCompactEnabled(config)) throw error;
           if (!retrySource) {
             // All retry targets and candidates come from the first rejected request.
             retrySource = messages.slice();
@@ -1417,7 +1415,7 @@ export async function runAgentLoop({
         const lastAssistant = messages[messages.length - 1];
         stepForkPoint = {
           messages: structuredClone(messages.slice(0, -1)),
-          toolDefinitions: toolDefinitionsForModel(),
+          toolDefinitions: toolRuntime.definitions(),
           parentNote: String(lastAssistant?.content || '').trim().slice(0, 600),
         };
       }

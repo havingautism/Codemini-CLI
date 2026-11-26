@@ -4,8 +4,11 @@ import { createScheduledTaskNotifier } from './lib/scheduled-task-notifier.js';
 import { startScheduledWorker } from '../src/core/scheduled-worker-process.js';
 import { registerScheduledTaskRoutes } from './lib/scheduled-task-api.js';
 import { createProjectFolder } from './lib/project-folder.js';
+import { pickSkillFolder } from './lib/skill-folder-picker.js';
+import { readLimitedJson, stageSkillFolder } from './lib/stage-skill-folder.js';
 import { decodeSessionCursor, getSessionGroupPage, getSessionSidebarSnapshot, searchSessionSidebar } from './lib/session-pages.js';
-import { validateWebConfigValue } from './shared/web-config-policy.js';
+import { modelConnectionChanged, validateModelConnection, validatePresetConnection, validateWebConfigValue } from './shared/web-config-policy.js';
+import gatewayCatalog from './shared/gateway-provider-catalog.json' with { type: 'json' };
 import { DOCUMENT_EXTENSIONS, SCRAPBOOK_TEXT_EXTENSIONS } from './shared/document-formats.js';
 import { createWebSecurity, publicConfig, isSecretConfigKey, assertConfigPath, assertWebConfigWritable } from './lib/web-security.js';
 import fs from "node:fs/promises";
@@ -27,6 +30,7 @@ import {
   loadConfig,
   saveConfig,
   setConfigValue,
+  setConfigValues,
   getConfigValue,
 } from "../src/core/config-store.js";
 import { resolveSandboxAvailability } from "../src/core/sandbox-policy.js";
@@ -2854,8 +2858,9 @@ export async function buildRuntimeForSession({ sessionId, model, projectDir }) {
     config,
     model: model || config.model?.name,
     systemPrompt,
-    systemPromptFactory: (nextConfig) => buildDefaultSystemPrompt(nextConfig, {
+    systemPromptFactory: (nextConfig, { executionMode }) => buildDefaultSystemPrompt(nextConfig, {
       workspaceRoot: sessionProjectDir,
+      executionMode,
       extraPrompts: isGeneral ? [getGeneralChatSystemPromptBlock()] : [],
     }),
     workspaceRoot: sessionProjectDir,
@@ -3886,6 +3891,25 @@ async function main() {
       return;
 
   }));
+  routes.post("/api/config/model-connection", nodeRoute(async (req, res) => {
+    const values = await readBody(req);
+    let entries;
+    try {
+      entries = validateModelConnection(values);
+      const current = await loadConfig();
+      validatePresetConnection(current, values, gatewayCatalog.providers);
+      if (current.gateway?.api_key && modelConnectionChanged(current, values) && !Object.hasOwn(values, "gateway.api_key")) {
+        throw new Error("Enter an API key for the new connection or remove the saved key before changing the endpoint.");
+      }
+    } catch (error) {
+      jsonResponse(res, { error: true, message: error.message }, 400);
+      return;
+    }
+    await setConfigValues(entries);
+    const config = await loadConfig();
+    await pool.reloadConfig(Object.hasOwn(values, "model.name") ? { model: config.model?.name } : {});
+    jsonResponse(res, { ok: true, config: publicConfig(config) });
+  }));
   routes.post("/api/config/set", nodeRoute(async (req, res, url) => {
       const { key, value } = await readBody(req);
       if (!key) {
@@ -4310,6 +4334,43 @@ async function main() {
       }
       return;
 
+  }));
+  routes.post("/api/skills/pick-folder", nodeRoute(async (req, res) => {
+      const { title } = await readBody(req);
+      try {
+        const picked = await pickSkillFolder({ title });
+        jsonResponse(res, {
+          ok: true,
+          cancelled: picked.cancelled === true,
+          path: picked.path || "",
+        });
+      } catch (err) {
+        jsonResponse(res, {
+          error: true,
+          code: err.code || "PICKER_FAILED",
+          message: err.message,
+        }, 500);
+      }
+  }));
+  routes.post("/api/skills/stage-folder", nodeRoute(async (req, res) => {
+      try {
+        const body = await readLimitedJson(req);
+        const staged = await stageSkillFolder(body.files);
+        jsonResponse(res, {
+          ok: true,
+          path: staged.path,
+          fileCount: staged.fileCount,
+        });
+      } catch (err) {
+        const status = err.code === "FOLDER_TOO_LARGE" || err.code === "INVALID_FOLDER" || err.code === "FOLDER_EMPTY"
+          ? 400
+          : 500;
+        jsonResponse(res, {
+          error: true,
+          code: err.code || "STAGE_FAILED",
+          message: err.message,
+        }, status);
+      }
   }));
   routes.post("/api/skills/preview", nodeRoute(async (req, res, url) => {
       const { source } = await readBody(req);

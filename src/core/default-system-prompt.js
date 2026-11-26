@@ -27,19 +27,14 @@ function getToolFewShotBlock(config = {}, cwd = process.cwd(), platform = proces
   const authServicePath = toolPath('src', 'auth', 'service.ts');
   const notesPath = toolPath('notes.txt');
   const isWin = shellContext.commandPlatform === 'win32';
-  const editExample = isWin
-    ? `Tool: edit({"path":${authServicePath},"old_text":"loginUser","new_text":"signInUser"})`
-    : `Tool: edit({"file_path":${authServicePath},"old_string":"loginUser","new_string":"signInUser"})`;
-  const readExample = isWin
-    ? `Tool: read({"path":${authServicePath}})`
-    : `Tool: read({"file_path":${authServicePath}})`;
-  const newFileExample = isWin
-    ? `Tool: write({"path":${notesPath},"content":"todo\\n"})`
-    : `Tool: write({"file_path":${notesPath},"content":"todo\\n"})`;
+  const filePathArg = platform === 'win32' ? 'path' : 'file_path';
+  const editExample = `Tool: edit({"${filePathArg}":${authServicePath},"old_string":"loginUser","new_string":"signInUser"})`;
+  const readExample = `Tool: read({"${filePathArg}":${authServicePath}})`;
+  const newFileExample = `Tool: write({"${filePathArg}":${notesPath},"content":"todo\\n"})`;
   const discoveryHint = isWin
     ? `Tool: tool_search({"query":"glob"})
 Tool: glob({"pattern":"src/**/*.ts"})`
-    : `glob and grep are always available on Linux/mac. Example:
+    : `Use glob and grep directly when available. Example:
 Tool: glob({"pattern":"src/**/*.ts"})
 Tool: grep({"pattern":"loginUser","path":"src"})`;
   const patchToolHint = isWin
@@ -129,7 +124,11 @@ function getMarkdownImageBlock() {
   return 'This UI renders Markdown images. When you have a public image URL, embed it with `![description](url)`. Never claim you cannot display images. If no direct URL exists, share the page link instead.';
 }
 
-function getNaturalWritingBlock() {
+function getNaturalWritingBlock(coding) {
+  if (coding) {
+    return `# Natural writing
+Lead with the result in the user's language. Preserve facts, uncertainty, citations, code, and constraints. Follow the user's requested format and terminology.`;
+  }
   return `# Natural writing
 Write plainly in the user's language. Lead with the result; avoid filler and unnecessary structure.
 Preserve facts, uncertainty, citations, code, numbers, and constraints. Never invent details.
@@ -147,12 +146,14 @@ export function buildDefaultSystemPrompt(config = {}, options = {}) {
   const cwd = resolvePromptCwd(options);
   const platform = options.platform || process.platform;
   const shellContext = resolveShellContext(config, { cwd, platform });
+  const executionMode = String(options.executionMode ?? config.execution?.mode ?? '').trim().toLowerCase();
+  const coding = ['plan', 'code', 'coding', 'spec', 'crew'].includes(executionMode);
   return [
     getShellSystemPrompt(shellContext.shell, shellContext.commandPlatform),
     getToolFewShotBlock(config, cwd, platform),
     getWebToolGuidance(config),
-    getSearchFewShotBlock(config),
-    getNaturalWritingBlock(),
+    coding ? '' : getSearchFewShotBlock(config),
+    getNaturalWritingBlock(coding),
     getMarkdownImageBlock(),
     getEnvBlock(cwd, config, platform),
     ...normalizePromptBlocks(options.extraPrompts)

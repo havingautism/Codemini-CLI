@@ -422,6 +422,14 @@ export async function setConfig(key, value) {
   return result;
 }
 
+export async function setModelConnection(values) {
+  return readJsonOrThrow(await api('/api/config/model-connection', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify(values),
+  }));
+}
+
 export async function fetchWebuiActiveProjects() {
   const res = await api('/api/webui/active-projects');
   return res.json();
@@ -602,6 +610,22 @@ export async function createSkill({ name, description, content, contexts }) {
     body: JSON.stringify({ name, description, content, contexts })
   });
   return readJsonResponse(res);
+}
+
+export async function pickSkillFolder({ title = '' } = {}) {
+  return readJsonOrThrow(await api('/api/skills/pick-folder', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ title }),
+  }));
+}
+
+export async function stageSkillFolder(files) {
+  return readJsonOrThrow(await api('/api/skills/stage-folder', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ files }),
+  }));
 }
 
 export async function previewSkillSource(source) {

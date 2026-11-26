@@ -72,6 +72,22 @@ test('settings show new limits and security status with matching defaults and ra
     assert.equal(fields.find(f => f.path === 'sandbox.network').onValue, 'allow-all');
     assert.equal(fields.find(f => f.path === 'policy.allowed_paths').control, 'textarea');
     assert.ok(fields.some(f => f.path === 'model.fast_name'));
+    const autoCompact = fields.find(f => f.path === 'context.auto_compact');
+    assert.equal(autoCompact?.tab, 'context');
+    assert.equal(autoCompact?.control, 'switch');
+    assert.ok(autoCompact.help.length > 20);
+    assert.notEqual(autoCompact.label, autoCompact.path);
+    const buffer = fields.find(f => f.path === 'context.buffer');
+    assert.equal(buffer?.control, 'input');
+    assert.equal(buffer?.placeholder, '15%');
+    assert.ok(buffer.help.length > 20);
+    const keep = fields.find(f => f.path === 'context.summary_keep_tokens');
+    assert.equal(keep?.control, 'number');
+    assert.equal(keep?.placeholder, '15000');
+    assert.ok(fields.some(f => f.path === 'context.microcompact_enabled'));
+    for (const key of ['context.preflight_trigger_pct', 'context.hard_limit_pct', 'context.microcompact_keep_recent']) {
+      assert.equal(fields.some(f => f.path === key), false, key);
+    }
     for (const key of ['memory_enabled', 'skill_enabled', 'mode', 'confidence_threshold', 'max_candidates']) {
       const field = fields.find(f => f.path === `harness.distillation.${key}`);
       assert.equal(field?.tab, 'decision');

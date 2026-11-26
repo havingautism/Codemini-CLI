@@ -16,7 +16,6 @@ const wide = {
   memory: { enabled: false },
   model: { max_context_tokens: 100_000 },
   context: {
-    preflight_trigger_pct: 0,
     hard_limit_pct: 98,
     microcompact_enabled: true,
     prune_minimum: 20_000,
@@ -89,23 +88,112 @@ test('usage is the last provider input plus a calibrated delta, and overhead is 
   assert.equal(twice, once);
 });
 
-test('ceiling reserves max(16k, 15% of the window) and a configured percent still wins', () => {
-  const automatic = resolveCompactBudget({ model: { max_context_tokens: 200_000 }, context: { preflight_trigger_pct: 0 } });
+test('ceiling reserves max(16k, 15% of the window) and a legacy preflight percent is ignored', () => {
+  const automatic = resolveCompactBudget({ model: { max_context_tokens: 200_000 }, context: {} });
   assert.equal(automatic.ceiling, 200_000 - 30_000);
   assert.equal(automatic.trigger, automatic.ceiling);
   assert.ok(automatic.target < automatic.trigger * 0.7);
 
   const outputLimited = resolveCompactBudget({
     model: { max_context_tokens: 200_000, max_output_tokens: 64_000 },
-    context: { preflight_trigger_pct: 0 },
+    context: {},
   });
   assert.equal(outputLimited.ceiling, 200_000 - 64_000);
 
   const configured = resolveCompactBudget({
-    model: { max_context_tokens: 1000 },
+    model: { max_context_tokens: 200_000 },
     context: { preflight_trigger_pct: 60 },
   });
-  assert.equal(configured.trigger, 600);
+  assert.equal(configured.trigger, automatic.ceiling);
+  assert.equal(configured.trigger, 200_000 - 30_000);
+});
+
+test('buffer accepts a percentage or a token count, and ignores a buffer as large as the window', () => {
+  const percent = resolveCompactBudget({
+    model: { max_context_tokens: 200_000 },
+    context: { buffer: '20%' },
+  });
+  assert.equal(percent.trigger, 200_000 - 40_000);
+
+  const decimal = resolveCompactBudget({
+    model: { max_context_tokens: 128_000 },
+    context: { buffer: '12.5%' },
+  });
+  assert.equal(decimal.trigger, 128_000 - 16_000);
+
+  const tokens = resolveCompactBudget({
+    model: { max_context_tokens: 200_000 },
+    context: { buffer: 20_000 },
+  });
+  assert.equal(tokens.trigger, 200_000 - 20_000);
+
+  const asString = resolveCompactBudget({
+    model: { max_context_tokens: 200_000 },
+    context: { buffer: '20000' },
+  });
+  assert.equal(asString.trigger, 200_000 - 20_000);
+
+  const ignored = resolveCompactBudget({
+    model: { max_context_tokens: 200_000 },
+    context: { buffer: 200_000 },
+  });
+  assert.equal(ignored.trigger, 200_000 - 30_000);
+
+  const outputWins = resolveCompactBudget({
+    model: { max_context_tokens: 200_000, max_output_tokens: 64_000 },
+    context: { buffer: '15%' },
+  });
+  assert.equal(outputWins.trigger, 200_000 - 64_000);
+});
+
+test('auto_compact=false skips automatic compaction and overflow recovery, not a forced manual compact', async () => {
+  const config = {
+    memory: { enabled: false },
+    model: { max_context_tokens: 1000 },
+    context: { auto_compact: false, microcompact_enabled: true },
+  };
+  const messages = [
+    { role: 'system', content: 'system stays' },
+    { role: 'user', content: 'do the task' },
+    ...Array.from({ length: 8 }, (_, index) => pair(`old-${index}`, `OLD_${index}_${'x'.repeat(800)}`)).flat(),
+  ];
+  const auto = await compactInFlightMessages(messages, config, 900);
+  assert.equal(auto.changed, false);
+  assert.equal(auto.skipped, 'auto-off');
+  assert.equal(auto.messages, messages);
+
+  const overflow = await compactInFlightMessages(messages, config, 900, { force: true });
+  assert.equal(overflow.changed, false);
+  assert.equal(overflow.skipped, 'auto-off');
+
+  const manual = await compactInFlightMessages(messages, config, 900, {
+    force: true,
+    manual: true,
+    generateSummary: async () => 'MANUAL_SUMMARY',
+  });
+  assert.equal(manual.changed, true);
+  assert.match(manual.messages.find((message) => message.compaction?.kind === 'summary').content, /MANUAL_SUMMARY/);
+
+  const overflowError = new Error('Gateway error 413: Request Entity Too Large');
+  let requests = 0;
+  const events = [];
+  await assert.rejects(runAgentLoop({
+    config: { ...config, model: { max_context_tokens: 8000 } },
+    model: 'test-model',
+    initialMessages: [
+      { role: 'user', content: 'current request' },
+      { role: 'assistant', content: 'x '.repeat(500) },
+    ],
+    skipAnalysisNudge: true,
+    requestCompletion: async () => {
+      requests += 1;
+      throw overflowError;
+    },
+    generateSummary: async () => 'summary',
+    onEvent: (event) => events.push(event),
+  }), (error) => error === overflowError);
+  assert.equal(requests, 1);
+  assert.equal(events.filter((event) => event.type === 'compact:auto' || event.type === 'compact:start').length, 0);
 });
 
 test('prune keeps the recent token budget and only applies when savings clear the minimum', () => {
@@ -124,6 +212,22 @@ test('prune keeps the recent token budget and only applies when savings clear th
 
   const tiny = pruneToolPayloads(messages, { protectTurns: 2, protectTokens: 4_000, minimumSavings: 1_000_000 });
   assert.equal(tiny.changed, false);
+});
+
+test('prune keeps a bounded receipt with the actual read range and changed paths', () => {
+  const messages = [
+    { role: 'assistant', tool_calls: [
+      { id: 'read-1', function: { name: 'read', arguments: '{"path":"src/tool.js"}' } },
+      { id: 'edit-1', function: { name: 'edit', arguments: '{}' } },
+    ] },
+    { role: 'tool', tool_call_id: 'read-1', content: '[File: src/tool.js, lines 40-75 of 420, truncated]\n' + 'x'.repeat(2000) },
+    { role: 'tool', tool_call_id: 'edit-1', content: 'y'.repeat(2000), tool_file_change: { path: 'src/tool.js' } },
+  ];
+  const options = { protectTokens: 0, minimumSavings: 1 };
+  const result = pruneToolPayloads(messages, options);
+  assert.match(result.messages[1].content, /Read src\/tool\.js L40-75/);
+  assert.match(result.messages[2].content, /Changed src\/tool\.js/);
+  assert.equal(pruneToolPayloads(result.messages, options).changed, false);
 });
 
 test('prune that cannot reach the target escalates to one summary', async () => {

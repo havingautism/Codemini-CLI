@@ -753,6 +753,18 @@ export const en = {
   saveChanges: "Save Changes",
   gateway: "Gateway",
   baseUrl: "Base URL",
+  gatewayPreset: "Provider preset",
+  gatewayPresetHelp: "Choose a provider to fill in the protocol and endpoint and see suggested model IDs.",
+  gatewayPresetCustom: "Custom connection",
+  gatewayPresetSearch: "Search providers",
+  gatewayPresetEmpty: "No matching providers",
+  gatewayPresetUnsupported: "Requires dedicated integration",
+  gatewayPresetKeyRequired: "Enter the new connection’s API key or remove the saved key before switching.",
+  gatewayPresetModelRequired: "Select or enter a model ID for this connection.",
+  gatewayPresetLocked: "Presets fix the endpoint and protocol. Choose Custom connection to edit them.",
+  gatewayChooseModel: "Choose a model from the catalog",
+  gatewayModelSearch: "Search model IDs",
+  gatewayModelEmpty: "No matching models",
   baseUrlHelp:
     "OpenAI-compatible API endpoint. Include the /v1 suffix if your provider requires it (e.g. http://127.0.0.1:8000/v1).",
   apiKey: "API Key",
@@ -913,21 +925,21 @@ export const en = {
   storageOpenFailed: "Unable to open the target folder",
   context: "Context",
   contextMaxTokens: "Context Token Budget",
-  preflightTrigger: "Preflight Trigger (%)",
-  preflightTriggerHelp:
-    "Auto-compact when usage reaches this percentage of the context window. 0 uses the automatic ceiling: the window minus the larger of 16k tokens and 15% of the window (or the model's output limit when that is larger).",
-  hardLimit: "Hard Limit (%)",
-  hardLimitHelp:
-    "At this usage percentage, summary compaction keeps a shorter recent tail to avoid overflowing the context window.",
+  autoCompact: "Auto-Compact",
+  autoCompactHelp:
+    "Automatically compact when the session nears the context ceiling, and recover once if a provider rejects a request as too long. Manual /compact still works when this is off.",
+  contextBuffer: "Context Buffer",
+  contextBufferHelp:
+    "Room kept free below the model window before automatic compaction. Use a share such as 15% (default, and at least 16k) or a token count such as 20000. Larger values compact earlier. Leave empty to use the default ceiling.",
+  summaryKeepTokens: "Summary Keep Tokens",
+  summaryKeepTokensHelp:
+    "Approximate recent conversation kept beside the summary after compaction. Larger values preserve more detail but leave less room for new work.",
   toolResultMaxChars: "Tool Result Char Limit",
   toolResultMaxCharsHelp:
     "Tool outputs longer than this are truncated before being sent back to the model.",
   microcompactEnabled: "Micro-Compact",
   microcompactEnabledHelp:
     "Lightweight compaction that clears older tool result bodies while keeping recent ones intact.",
-  microcompactKeepRecent: "Micro Keep Recent",
-  microcompactKeepRecentHelp:
-    "How many of the most recent tool results to keep intact during micro-compact.",
   aggressiveToolPruneBeta: "Aggressive Tool Prune (Beta)",
   aggressiveToolPruneBetaHelp:
     "Experimental: before each model call, replace older tool result bodies with structured summaries while keeping only the most recent steps intact (parallel tool calls within a step are grouped together). May reduce token use on long tasks with minimal impact on reasoning quality. Recommended for models with strong reasoning ability.",
@@ -1449,6 +1461,19 @@ export const en = {
   skillInstallSource: "Source",
   skillInstallHint:
     "Install a skill package from a GitHub repo, URL, or local folder into global or project scope.",
+  skillPickFolder: "Choose folder",
+  skillPickFolderTitle: "Choose a skill folder",
+  skillPickFolderBusy: "Waiting for a folder…",
+  skillPickFolderFailed: "Couldn't open the system folder picker",
+  skillPickFolderUnavailable: "This system has no folder picker. Paste a path above, or drop a folder here",
+  skillDropFolderHint: "Drop a skill folder here, or choose one on this computer",
+  skillDropFolderActive: "Release to use this folder",
+  skillDropFolderOnly: "Drop a folder, or a file set that includes SKILL.md",
+  skillDropFolderEmpty: "That folder has no files to install",
+  skillDropFolderTooLarge: "That folder is too large. Use Choose folder to keep the original path",
+  skillDropFolderBusy: "Reading folder…",
+  skillDropFolderFailed: "Couldn't read that folder",
+  skillDropStaged: "Copied \"{{name}}\". The browser can't see the original dropped path",
   skillBrowseSection: "Browse Skills",
   skillScope: "Install Scope",
   skillContext: "Context",

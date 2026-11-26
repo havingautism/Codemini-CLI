@@ -5,6 +5,55 @@ export const WEB_CONFIG_INTEGER_LIMITS = Object.freeze({
   'harness.distillation.max_candidates': Object.freeze({ min: 1, max: 16 }),
 });
 
+export const MODEL_CONNECTION_KEYS = Object.freeze([
+  'sdk.provider', 'gateway.preset', 'gateway.base_url', 'gateway.api_key', 'model.name', 'model.fast_name',
+]);
+
+const cleanModelEndpoint = (value) => String(value || '').trim().replace(/\/+$/, '');
+
+export function modelConnectionChanged(config, changes) {
+  return ('gateway.base_url' in changes && cleanModelEndpoint(changes['gateway.base_url']) !== cleanModelEndpoint(config?.gateway?.base_url))
+    || ('sdk.provider' in changes && changes['sdk.provider'] !== config?.sdk?.provider);
+}
+
+export function validatePresetConnection(config, values, providers) {
+  const selected = values['gateway.preset'];
+  const presetId = selected ?? config?.gateway?.preset;
+  if (!presetId || presetId === 'custom') return;
+  const preset = providers.find(({ id }) => id === presetId);
+  if (!preset?.baseUrl) {
+    if (selected !== undefined) throw new Error('This provider preset has no supported endpoint');
+    return;
+  }
+  const priorUrl = cleanModelEndpoint(config?.gateway?.base_url);
+  if (selected === undefined && (priorUrl !== preset.baseUrl || config?.sdk?.provider !== preset.protocol)) return;
+  const endpoint = cleanModelEndpoint(values['gateway.base_url'] ?? priorUrl);
+  const protocol = values['sdk.provider'] ?? config?.sdk?.provider;
+  if (endpoint !== preset.baseUrl || protocol !== preset.protocol) {
+    throw new Error('Choose Custom connection before editing the preset endpoint or protocol');
+  }
+}
+
+export function validateModelConnection(values) {
+  const entries = Object.entries(values || {});
+  if (!entries.length || entries.some(([key, value]) =>
+    !MODEL_CONNECTION_KEYS.includes(key) || typeof value !== 'string')) {
+    throw new Error('Invalid model connection settings');
+  }
+  if ('sdk.provider' in values && !['anthropic', 'openai-compatible'].includes(values['sdk.provider'])) {
+    throw new Error('Invalid model connection protocol');
+  }
+  if ('gateway.base_url' in values) {
+    const endpoint = URL.parse(values['gateway.base_url']);
+    if (!endpoint || !['https:', 'http:'].includes(endpoint.protocol)
+      || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) {
+      throw new Error('Enter an HTTP or HTTPS base URL without credentials, query parameters, or a fragment');
+    }
+  }
+  if ('model.name' in values && !values['model.name'].trim()) throw new Error('Enter a model ID');
+  return entries;
+}
+
 const WEB_CONFIG_SWITCHES = Object.freeze({
   'sandbox.network': Object.freeze({ values: Object.freeze(['none', 'allow-all']) }),
   'webui.terminal_enabled': Object.freeze({ type: 'boolean' }),

@@ -95,6 +95,10 @@ export function estimateMessagesTokens(messages) {
     if (Array.isArray(message.model_images)) total += message.model_images.length * IMAGE_TOKEN_ESTIMATE;
     if (typeof message.reasoning_content === 'string' && message.reasoning_content) {
       total += estimateTextTokens(message.reasoning_content);
+    } else if (Array.isArray(message.reasoning_details)) {
+      for (const detail of message.reasoning_details) {
+        total += estimateTextTokens(detail?.thinking ?? detail?.text ?? detail?.summary);
+      }
     }
     if (Array.isArray(message.tool_calls)) {
       for (const call of message.tool_calls) {
@@ -660,11 +664,41 @@ export function calibrationRatio(measuredTokens, estimatedTokens) {
 }
 
 /**
+ * Parse `context.buffer`: a share such as "15%" or "12.5%" (1%–99%), or a
+ * token count. Invalid values, and a count at least as large as the window,
+ * are ignored so the reserve fallback can apply. Matches opencode.
+ */
+export function parseContextBuffer(buffer, window) {
+  if (buffer == null || buffer === '') return null;
+  const size = Number(window);
+  let tokens;
+  if (typeof buffer === 'string') {
+    const raw = buffer.trim();
+    const percent = raw.match(/^([1-9]\d?(?:\.\d+)?)%$/);
+    if (percent) tokens = Math.round((size * Number.parseFloat(percent[1])) / 100);
+    else if (/^\d+$/.test(raw)) tokens = Number(raw);
+    else return null;
+  } else {
+    tokens = Number(buffer);
+    if (!Number.isFinite(tokens) || tokens < 0) return null;
+    tokens = Math.round(tokens);
+  }
+  if (!(size > 0) || !Number.isFinite(tokens) || !(tokens < size)) return null;
+  return tokens;
+}
+
+export function isAutoCompactEnabled(config = {}) {
+  return config?.context?.auto_compact !== false;
+}
+
+/**
  * Room kept free below the window before auto-compact, matching opencode
  * `calculateCeiling`: max(RESERVE_MIN, RESERVE_SHARE of the window) when the
- * window can spare RESERVE_MIN, otherwise the share only. A configured output
- * limit replaces that reserve when it is larger and still leaves room.
- * `context.reserve_share` and `context.reserve_min` override the defaults.
+ * window can spare RESERVE_MIN, otherwise the share only. A configured
+ * `context.buffer` ("15%" or a token count) overrides that default. A
+ * configured output limit replaces the reserve when it is larger and still
+ * leaves room. `context.reserve_share` and `context.reserve_min` override
+ * the defaults when buffer is unset or ignored.
  */
 export function calculateReserve(window, config = {}) {
   const size = Number(window);
@@ -673,8 +707,9 @@ export function calculateReserve(window, config = {}) {
   const min = finiteNumber(config?.context?.reserve_min, RESERVE_MIN, 0);
   const shareReserve = Math.floor(size * share);
   const minReserve = size >= 2 * min ? min : 0;
+  const fromBuffer = parseContextBuffer(config?.context?.buffer, size);
+  let reserve = fromBuffer != null ? fromBuffer : Math.max(shareReserve, minReserve);
   const output = finiteNumber(config?.model?.max_output_tokens, 0, 0);
-  let reserve = Math.max(shareReserve, minReserve);
   if (output > reserve && output < size) reserve = output;
   if (!(reserve < size)) {
     reserve = shareReserve > 0 && shareReserve < size ? shareReserve : Math.floor(size * RESERVE_SHARE);
@@ -689,18 +724,15 @@ export function calculateCeiling(window, config = {}) {
 }
 
 /**
- * Trigger tokens. A positive `context.preflight_trigger_pct` still wins, so
- * existing configs and tests keep their threshold. `0` / unset uses the ceiling.
- * Target sits at `compact_target_ratio` (default 60%) of the trigger so a
- * compact does not immediately fire again.
+ * Trigger tokens are the opencode ceiling (window minus buffer / reserve).
+ * Legacy `context.preflight_trigger_pct` is ignored. Target sits at
+ * `compact_target_ratio` (default 60%) of the trigger so a compact does not
+ * immediately fire again.
  */
 export function resolveCompactBudget(config = {}) {
   const window = contextWindowTokens(config);
   const ceiling = calculateCeiling(window, config);
-  const pct = Number(config?.context?.preflight_trigger_pct);
-  const trigger = window > 0 && Number.isFinite(pct) && pct > 0
-    ? Math.max(1, Math.floor(window * pct / 100))
-    : ceiling;
+  const trigger = ceiling;
   const ratio = Math.min(0.95, finiteNumber(config?.context?.compact_target_ratio, 0.6, 0.05));
   const targetPct = Number(config?.context?.compact_target_pct);
   const fromPct = window > 0 && Number.isFinite(targetPct) && targetPct > 0
@@ -755,7 +787,28 @@ function isPrunedToolContent(text) {
   const value = String(text || '');
   return value === MICRO_CLEAR_MARKER
     || value === PRUNE_OUTPUT_PLACEHOLDER
+    || value.startsWith(`${PRUNE_OUTPUT_PLACEHOLDER} `)
     || value.startsWith(AGGRESSIVE_PRUNE_MARKER);
+}
+
+function prunedToolReceipt(message, toolName) {
+  if (['error', 'blocked'].includes(message.tool_status)) return PRUNE_OUTPUT_PLACEHOLDER;
+  const changes = Array.isArray(message.tool_file_changes) && message.tool_file_changes.length
+    ? message.tool_file_changes
+    : [message.tool_file_change];
+  const paths = [...new Set(changes.map((change) => change?.path)
+    .filter((file) => typeof file === 'string' && /^[^\r\n]{1,180}$/.test(file)))];
+  if (paths.length) {
+    const extra = paths.length > 3 ? ` and ${paths.length - 3} more` : '';
+    return `${PRUNE_OUTPUT_PLACEHOLDER} Changed ${paths.slice(0, 3).join(', ')}${extra}.`;
+  }
+  if (toolName !== 'read' && toolName !== 'read_ast_node') return PRUNE_OUTPUT_PLACEHOLDER;
+  const header = textFromContent(message.content).split(/\r?\n/, 1)[0];
+  const match = header.match(/^\[File: (.{1,220}), lines (\d+)-(\d+)(?: of \d+|, AST selection ends at \d+)?(?:, truncated)?\]$/)
+    || header.match(/^\[AST: (.{1,220}) [\w.-]+ (\d+)-(\d+)(?:, matches \d+)?\]$/);
+  if (!match) return PRUNE_OUTPUT_PLACEHOLDER;
+  const [, file, start, end] = match;
+  return `${PRUNE_OUTPUT_PLACEHOLDER} Read ${file} L${start}-${end}.`;
 }
 
 function stripUsage(messages) {
@@ -861,7 +914,8 @@ export function pruneToolPayloads(messages, {
   const result = source.map((message, index) => {
     if (message?.role === 'tool' && clearSet.has(index)) {
       changed = true;
-      return { ...message, content: PRUNE_OUTPUT_PLACEHOLDER };
+      const toolName = toolCallNames.get(String(message.tool_call_id || '').trim());
+      return { ...message, content: prunedToolReceipt(message, toolName) };
     }
     if (!clearToolInputs || message?.role !== 'assistant' || !Array.isArray(message.tool_calls)) return message;
     let callChanged = false;
@@ -1067,6 +1121,11 @@ export async function compactInFlightMessages(messages, config = {}, inputTokens
   const target = Number.isFinite(Number(opts.targetTokens)) && Number(opts.targetTokens) > 0
     ? Math.floor(Number(opts.targetTokens))
     : budget.target;
+  // Manual /compact always runs. Auto and overflow recovery follow
+  // opencode: both are skipped when compaction.auto / context.auto_compact is off.
+  if (opts.manual !== true && !isAutoCompactEnabled(config)) {
+    return { ...unchanged, skipped: 'auto-off' };
+  }
   if (!force && (!(usage > 0) || usage < budget.trigger)) return unchanged;
 
   const { system, body } = splitLeadingSystemMessages(source);

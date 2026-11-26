@@ -29,12 +29,14 @@ function isClaudeModel(model) {
 }
 
 function isClaudeAlwaysThinkingModel(model) {
-  return /^claude-(?:fable|mythos)(?:-|$)/i.test(model);
+  return /^claude-(?:fable|mythos)(?:-|$)/i.test(model)
+    || /^claude-opus-5[.-]5(?:-|$)/i.test(model);
 }
 
 function isClaudeAdaptiveModel(model) {
   if (isClaudeAlwaysThinkingModel(model)) return true;
   if (/^claude-sonnet-[5-9](?:-|$)/i.test(model)) return true;
+  if (/^claude-haiku-5[.-]5(?:-|$)/i.test(model)) return true;
   const match = model.match(/^claude-(?:opus|sonnet)-(\d+)[.-](\d+)(?:[.-]|$)/i);
   if (!match) return false;
   const major = Number(match[1]);
@@ -159,6 +161,45 @@ function enabledType(effort) {
   return { thinking: { type: effort === 'off' ? 'disabled' : 'enabled' } };
 }
 
+// Native endpoints can expose controls that a compatible gateway does not.
+function resolveNativeReasoning(baseUrl, model, effort, messagesApi = false) {
+  const endpoint = URL.parse(baseUrl);
+  if (endpoint?.protocol !== 'https:') return null;
+  const { hostname } = endpoint;
+  const depth = effort === 'low' ? 'low' : ['xhigh', 'max'].includes(effort) ? 'max' : 'high';
+  const effortField = (value) => messagesApi ? { output_config: { effort: value } } : { reasoning_effort: value };
+  if (hostname === 'api.deepseek.com' && (isDeepSeekToggleModel(model) || model === 'deepseek-flash')) {
+    return { ...enabledType(effort), ...(effort === 'off' ? {} : effortField(depth)) };
+  }
+  if (/^api\.moonshot\.(?:ai|cn)$/.test(hostname) && /^kimi-k3(?:[.-]|$)/.test(model)) {
+    return effort === 'off' ? {} : effortField(depth);
+  }
+  if (/^api\.kimi\.(?:ai|com)$/.test(hostname) && /^\/coding(?:\/|$)/.test(endpoint.pathname)
+    && /^(?:kimi-for-coding|k3(?:-256k|\.1-pro)?)$/.test(model)) {
+    return effort === 'off' ? enabledType('off') : effortField(depth);
+  }
+  if (/^api\.minimax(?:\.io|\.cn|i\.com)$/.test(hostname)) {
+    if (model === 'minimax-m3.1-flash') {
+      return effort === 'off' ? {} : effortField(effort);
+    }
+    if (model === 'minimax-m3') {
+      return { thinking: { type: effort === 'off' ? 'disabled' : 'adaptive' } };
+    }
+  }
+  if ((hostname.endsWith('.maas.aliyuncs.com') || /^dashscope(?:-[a-z]+)?\.aliyuncs\.com$/.test(hostname))
+    && model === 'qwen4-max') {
+    if (messagesApi && effort === 'off') return enabledType('off');
+    const qwenEffort = depth === 'max' ? 'xhigh' : depth;
+    return messagesApi
+      ? { thinking: { type: 'enabled' }, ...effortField(qwenEffort) }
+      : effort === 'off' ? { enable_thinking: false } : { enable_thinking: true, ...effortField(qwenEffort) };
+  }
+  if (!messagesApi && (hostname === 'api.z.ai' || hostname === 'open.bigmodel.cn') && /^glm-5\.3(?:-|$)/.test(model)) {
+    return effort === 'off' ? {} : { thinking: { type: 'enabled' }, reasoning_effort: depth };
+  }
+  return null;
+}
+
 function resolveOpenAIEffort(model, effort) {
   if (!isOpenAIReasoningModel(model)) return {};
   if (isOpenAIHighOnlyModel(model)) {
@@ -173,10 +214,12 @@ function resolveOpenAIEffort(model, effort) {
   return { reasoning_effort: mapEffortToCeiling(effort, openAIEffortCeiling(model)) };
 }
 
-export function resolveOpenAICompatibleReasoning({ model, effort } = {}) {
+export function resolveOpenAICompatibleReasoning({ baseUrl, model, effort } = {}) {
   const normalizedModel = normalizeModelName(model);
   const normalizedEffort = normalizeResolvedReasoningEffort(effort);
   if (normalizedEffort === 'auto') return {};
+  const native = resolveNativeReasoning(baseUrl, normalizedModel, normalizedEffort);
+  if (native) return native;
 
   const openai = resolveOpenAIEffort(normalizedModel, normalizedEffort);
   if (Object.keys(openai).length > 0) return openai;
@@ -225,10 +268,12 @@ function manualThinkingBudget(effort, maxTokens) {
   return Math.min(requested, outputLimit - 1);
 }
 
-export function resolveAnthropicReasoning({ model, effort, maxTokens = 4096 } = {}) {
+export function resolveAnthropicReasoning({ baseUrl, model, effort, maxTokens = 4096 } = {}) {
   const normalizedModel = normalizeModelName(model);
   const normalizedEffort = normalizeResolvedReasoningEffort(effort);
   if (normalizedEffort === 'auto') return {};
+  const native = resolveNativeReasoning(baseUrl, normalizedModel, normalizedEffort, true);
+  if (native) return native;
 
   if (isClaudeAdaptiveModel(normalizedModel)) {
     if (normalizedEffort === 'off') {

@@ -31,7 +31,22 @@
   box-shadow: var(--focus-shadow);
 }
 
-:root[data-theme] :is(.codemini-input-shell, .scrapbook-picker-search-shell, .action-skill-palette-search-shell) :is(input, textarea):not([type="checkbox"]):not([type="radio"]):focus {
+/* A shell is the only surface. Hover and focus stay on that shell. */
+:is(
+  .project-picker-address,
+  .project-picker-search,
+  .codemini-sidebar-search-field,
+  .codemini-input-shell,
+  .scrapbook-picker-search-shell,
+  .action-skill-palette-search-shell
+) :is(input, textarea):not([type="checkbox"]):not([type="radio"]):is(:hover, :focus, :focus-visible) {
+  background: transparent;
+  background-color: transparent;
+  border-color: transparent;
+  box-shadow: none;
+}
+
+:root[data-theme] :is(.codemini-input-shell, .scrapbook-picker-search-shell, .action-skill-palette-search-shell, .project-picker-address, .project-picker-search, .codemini-sidebar-search-field) :is(input, textarea):not([type="checkbox"]):not([type="radio"]):focus {
   outline: none;
   box-shadow: none;
 }

@@ -51,15 +51,3 @@ function withProbability(row) {
     failureRate: (failures + timeouts + permissionErrors) / Math.max(1, total),
   };
 }
-
-export function rankToolDefinitions(definitions = [], stats = []) {
-  const byName = new Map((Array.isArray(stats) ? stats : []).map((row) => [String(row.tool_name), row]));
-  return (Array.isArray(definitions) ? definitions : []).map((definition) => {
-    const name = definition?.function?.name || definition?.name;
-    const stat = byName.get(String(name || ''));
-    if (!stat || !definition?.function) return definition;
-    const note = `\n[任务决策助手：历史可靠性 ${Math.round(stat.reliability * 100)}%，成功 ${stat.successes} 次，失败 ${stat.failures + stat.timeouts + stat.permission_errors} 次${stat.last_error ? `；最近原因：${stat.last_error}` : ''}]`;
-    return { ...definition, function: { ...definition.function, description: `${definition.function.description || ''}${note}` } };
-  });
-}
-

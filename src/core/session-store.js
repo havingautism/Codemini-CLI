@@ -301,6 +301,11 @@ function sanitizeMessage(msg) {
       .filter((detail) => detail && typeof detail === 'object')
       .map((detail) => ({ ...detail }));
   }
+  if (msg?.role === 'assistant' && Array.isArray(msg.anthropic_content)) {
+    out.anthropic_content = msg.anthropic_content
+      .filter((block) => block && typeof block === 'object')
+      .map((block) => ({ ...block }));
+  }
 
   if (Array.isArray(msg?.tool_calls)) {
     const toolCalls = msg.tool_calls.map(sanitizeToolCall).filter(Boolean);

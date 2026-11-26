@@ -307,7 +307,7 @@ test('a real runtime submission attaches completed usage to its current session'
       sdk: { provider: 'openai-compatible' },
       gateway: { base_url: 'https://example.test/v1', api_key: 'test', timeout_ms: 5000, max_retries: 0 },
       model: { name: 'test-model', reasoning_enabled: false },
-      context: { project_context_enabled: false, project_instructions_enabled: false, preflight_trigger_pct: 95, microcompact_enabled: false },
+      context: { project_context_enabled: false, project_instructions_enabled: false, microcompact_enabled: false },
       execution: { mode: 'normal', approval_mode: 'auto' },
       memory: { enabled: false, background_review: { enabled: false } },
       ui: { language: 'en', reply_language: 'en' }, soul: { preset: 'default' },

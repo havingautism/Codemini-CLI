@@ -801,7 +801,7 @@ export async function refreshIndexedFile(cwd = process.cwd(), relativePath = '')
   return result.files[0] || null;
 }
 
-export async function buildProjectContextSnippet(cwd = process.cwd(), userText = '') {
+export async function buildProjectContextSnippet(cwd = process.cwd(), userText = '', { previousPaths = [] } = {}) {
   const indexedRoot = await findNearestIndexedProjectRoot(cwd, cwd);
   if (!indexedRoot) return '';
 
@@ -821,7 +821,7 @@ export async function buildProjectContextSnippet(cwd = process.cwd(), userText =
 
   const tokens = tokenizeQuery(userText);
   const tokenKey = [...tokens].sort().join(',');
-  const contextCacheKey = `${indexedRoot}:${fileIndex.updatedAt}:${tokenKey}`;
+  const contextCacheKey = `${indexedRoot}:${fileIndex.updatedAt}:${tokenKey}:${JSON.stringify(previousPaths)}`;
   if (projectContextCache.has(contextCacheKey)) {
     return projectContextCache.get(contextCacheKey);
   }
@@ -839,6 +839,14 @@ export async function buildProjectContextSnippet(cwd = process.cwd(), userText =
     if (score > 0) scored.push({ entry, score });
   }
   scored.sort((left, right) => right.score - left.score || String(left.entry.file).localeCompare(String(right.entry.file)));
+  if (previousPaths.length) {
+    const topPaths = scored.filter(({ score }) => score >= 5).slice(0, 3).map(({ entry }) => entry.file);
+    const known = new Set(previousPaths);
+    if (!topPaths.length || known.has(topPaths[0])) return '';
+    const snippet = ['- relevant_files:', ...topPaths.map((file) => `  - ${file}`)].join('\n');
+    projectContextCache.set(contextCacheKey, snippet);
+    return snippet;
+  }
   const selected = scored.slice(0, PROJECT_CONTEXT_MAX_FILES).map((item) => item.entry);
   if (selected.length > 0) {
     lines.push('- relevant_files:');

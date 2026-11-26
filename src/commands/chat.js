@@ -137,7 +137,7 @@ export async function handleChat(args) {
       systemPrompt: parsed.system || buildDefaultSystemPrompt(config, { workspaceRoot }),
       systemPromptFactory: parsed.system
         ? null
-        : (nextConfig) => buildDefaultSystemPrompt(nextConfig, { workspaceRoot }),
+        : (nextConfig, { executionMode }) => buildDefaultSystemPrompt(nextConfig, { workspaceRoot, executionMode }),
       workspaceRoot,
     });
 

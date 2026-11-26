@@ -43,8 +43,9 @@ const DEFAULT_CONFIG = {
   },
   context: {
     max_tokens: 32000,
-    // 0 keeps the opencode ceiling: window minus max(16k, 15% of the window).
-    preflight_trigger_pct: 0,
+    auto_compact: true,
+    // Unset buffer uses reserve_share / reserve_min (opencode ceiling:
+    // window minus max(16k, 15% of the window)).
     hard_limit_pct: 98,
     reserve_share: 0.15,
     reserve_min: 16000,
@@ -88,6 +89,7 @@ const DEFAULT_CONFIG = {
   },
   tools: {
     max_parallel_calls: 10,
+    syntax_diagnostics: true,
     write_chunk_max_chars: 12000,
     staged_write_max_chars: 4194304
   },
@@ -314,6 +316,39 @@ function normalizedNumber(value, fallback, minimum = 0, { integer = false } = {}
   return integer ? Math.floor(bounded) : bounded;
 }
 
+let warnedLegacyPreflightTrigger = false;
+
+function warnLegacyPreflightTrigger(value) {
+  if (warnedLegacyPreflightTrigger) return;
+  warnedLegacyPreflightTrigger = true;
+  console.warn(
+    `[codemini] context.preflight_trigger_pct (${value}) is deprecated and ignored; `
+    + 'auto-compact now uses the context ceiling (window minus buffer, or max(16k, 15% of the window)).'
+  );
+}
+
+function dropDeprecatedPreflightTrigger(context, { warn = false } = {}) {
+  if (!context || !Object.prototype.hasOwnProperty.call(context, 'preflight_trigger_pct')) return;
+  const legacy = Number(context.preflight_trigger_pct);
+  if (warn && Number.isFinite(legacy) && legacy > 0) warnLegacyPreflightTrigger(legacy);
+  delete context.preflight_trigger_pct;
+}
+
+/** Keep a valid opencode-style buffer ("15%" or a token count); otherwise unset. */
+function normalizeContextBuffer(value) {
+  if (value == null) return undefined;
+  if (typeof value === 'string') {
+    const raw = value.trim();
+    if (!raw) return undefined;
+    if (/^([1-9]\d?(?:\.\d+)?)%$/.test(raw)) return raw;
+    if (/^\d+$/.test(raw)) return Number(raw);
+    return undefined;
+  }
+  const tokens = Number(value);
+  if (!Number.isFinite(tokens) || tokens < 0) return undefined;
+  return Math.round(tokens);
+}
+
 function normalizePolicyLists(config) {
   const next = structuredClone(config);
   next.sdk = next.sdk || {};
@@ -443,6 +478,11 @@ function normalizePolicyLists(config) {
   next.memory.background_review.max_input_chars = Math.max(2000, Number(next.memory.background_review.max_input_chars || 12000));
   next.memory.background_review.lease_ms = Math.max(30000, Number(next.memory.background_review.lease_ms || 120000));
   next.context = next.context || {};
+  dropDeprecatedPreflightTrigger(next.context, { warn: true });
+  next.context.auto_compact = next.context.auto_compact !== false;
+  const buffer = normalizeContextBuffer(next.context.buffer);
+  if (buffer === undefined) delete next.context.buffer;
+  else next.context.buffer = buffer;
   next.context.prompt_budget_audit = next.context.prompt_budget_audit === true;
   next.context.prompt_request_audit = next.context.prompt_request_audit === true;
   next.context.aggressive_tool_prune_beta = next.context.aggressive_tool_prune_beta === true;
@@ -690,17 +730,23 @@ export async function saveConfig(config) {
 }
 
 async function saveConfigAtPath(configPath, config) {
+  const toWrite = structuredClone(config);
+  if (toWrite?.context) dropDeprecatedPreflightTrigger(toWrite.context, { warn: true });
   await backupValidConfig(configPath);
-  await atomicWriteUtf8(configPath, `${JSON.stringify(config, null, 2)}\n`);
-  cachedConfig = normalizePolicyLists(structuredClone(config));
+  await atomicWriteUtf8(configPath, `${JSON.stringify(toWrite, null, 2)}\n`);
+  cachedConfig = normalizePolicyLists(structuredClone(toWrite));
   const stat = await fs.stat(configPath).catch(() => null);
   cachedConfigStat = stat ? { path: configPath, mtime: stat.mtimeMs, size: stat.size } : null;
 }
 
 export async function setConfigValue(keyPath, value) {
+  return setConfigValues([[keyPath, value]]);
+}
+
+export async function setConfigValues(entries) {
   const configPath = getConfigFilePath();
   const config = await loadConfigAtPath(configPath);
-  setNested(config, keyPath, value);
+  for (const [keyPath, value] of entries) setNested(config, keyPath, value);
   await saveConfigAtPath(configPath, normalizePolicyLists(config));
 }
 

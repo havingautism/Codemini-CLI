@@ -2,7 +2,9 @@ import { SettingsSecretField } from '@/components/settings/SettingsSecretField.j
 import { hasConfiguredSecret, secretSettingWrite } from '@/lib/secret-settings.js';
 import { getDecisionProviderStatus } from '@/lib/decision-provider-status.js';
 import { TASK_DECISION_ASSISTANT_AVAILABLE } from '@core/harness/availability.js';
-import { isWebConfigReadOnly, validateWebConfigValue } from '../../../shared/web-config-policy.js';
+import {
+  isWebConfigReadOnly, MODEL_CONNECTION_KEYS, modelConnectionChanged, validateModelConnection, validateWebConfigValue,
+} from '../../../shared/web-config-policy.js';
 import { useState, useEffect, useMemo } from "react";
 import {
   Dialog,
@@ -43,6 +45,7 @@ import { SettingsPercentField } from "@/components/settings/SettingsPercentField
 import { SettingsStorage } from "@/components/settings/SettingsStorage.jsx";
 import { ConfirmDialog } from "@/components/ConfirmDialog.jsx";
 import { SettingsAppearance } from "@/components/settings/SettingsAppearance.jsx";
+import { findGatewayPreset, GatewayModelField, GatewayPresetField } from "@/components/settings/GatewayPresetField.jsx";
 import { applyAppearance, readAppearance } from "@/lib/ui-appearance.js";
 
 function sandboxFieldNote(sandboxMode, availability) {
@@ -249,6 +252,28 @@ export function ConfigDialog({
     }
     return String(value ?? "");
   };
+  const gatewayPreset = findGatewayPreset(getValue("gateway.preset"), getValue("sdk.provider"), getValue("gateway.base_url"));
+  const lockedGatewayPreset = gatewayPreset?.id === getValue("gateway.preset") ? gatewayPreset : null;
+  const setGatewayPreset = (preset) => {
+    if (!preset) {
+      handleChange("gateway.preset", "custom");
+      return;
+    }
+    setChanges((prev) => {
+      const next = { ...prev };
+      const values = { "gateway.preset": preset.id, "gateway.base_url": preset.baseUrl, "sdk.provider": preset.protocol };
+      if (modelConnectionChanged({ gateway: { base_url: getValue("gateway.base_url") }, sdk: { provider: getValue("sdk.provider") } }, values)) {
+        delete next["gateway.api_key"];
+        if (!preset.models?.includes(getValue("model.name"))) values["model.name"] = "";
+        if (!preset.models?.includes(getValue("model.fast_name"))) values["model.fast_name"] = "";
+      }
+      for (const [path, value] of Object.entries(values)) {
+        if (isSameAsBaseline(path, value, config, fieldsByPath)) delete next[path];
+        else next[path] = value;
+      }
+      return next;
+    });
+  };
 
   const getBooleanValue = (path) => {
     const field = fieldsByPath.get(path);
@@ -297,10 +322,13 @@ export function ConfigDialog({
   );
   const hasChanges = hasConfigChanges || hasAppearanceChanges;
   const shouldShowField = (field) =>
-    typeof field.visibleWhen !== "function" || field.visibleWhen({ getValue });
+    !(field.path === "sdk.provider" && lockedGatewayPreset?.protocol) &&
+    !(field.path === "gateway.base_url" && lockedGatewayPreset?.baseUrl) &&
+    (typeof field.visibleWhen !== "function" || field.visibleWhen({ getValue }));
 
   const tabHasChanges = (tabId) =>
     (tabId === "appearance" && hasAppearanceChanges) ||
+    (tabId === "connection" && MODEL_CONNECTION_KEYS.some((path) => path in changes)) ||
     SETTINGS_FIELDS.some(
       (field) =>
         field.tab === tabId &&
@@ -320,7 +348,26 @@ export function ConfigDialog({
       const pendingChanges = hasConfigChanges && !decisionProviderStatus.ready && getBooleanValue("harness.enabled")
         ? { ...changes, "harness.enabled": false }
         : changes;
+      const connection = {};
+      for (const path of MODEL_CONNECTION_KEYS) {
+        if (!(path in pendingChanges)) continue;
+        const value = path === "gateway.api_key"
+          ? secretSettingWrite(pendingChanges[path])
+          : String(pendingChanges[path] ?? "").trim();
+        if (value !== undefined) connection[path] = value;
+      }
+      if (Object.keys(connection).length) {
+        if (hasConfiguredSecret(config, "gateway.api_key") && modelConnectionChanged(config, connection)
+          && !("gateway.api_key" in connection)) {
+          throw new Error(t("gatewayPresetKeyRequired"));
+        }
+        if (connection["model.name"] === "") throw new Error(t("gatewayPresetModelRequired"));
+        validateModelConnection(connection);
+        const result = await api.setModelConnection(connection);
+        if (result?.config) savedConfig = result.config;
+      }
       for (const [path, value] of Object.entries(pendingChanges)) {
+        if (MODEL_CONNECTION_KEYS.includes(path)) continue;
         let normalizedValue = value;
         if (path === "model.reasoning_enabled") {
           normalizedValue = value === true || value === "true";
@@ -458,6 +505,7 @@ export function ConfigDialog({
           idPrefix={idPrefix}
           value={value}
           options={getSettingsOptions(field.optionsKey)}
+          disabled={disabled || (field.path === "sdk.provider" && Boolean(lockedGatewayPreset))}
           onValueChange={(next) => handleChange(field.path, next)}
         />
       );
@@ -491,6 +539,20 @@ export function ConfigDialog({
       );
     }
 
+    const hasModelChoices = Boolean(gatewayPreset?.models?.length
+      && ["model.name", "model.fast_name"].includes(field.path));
+    if (hasModelChoices) {
+      return (
+        <GatewayModelField
+          id={field.path}
+          value={value}
+          models={gatewayPreset.models}
+          placeholder={field.placeholder || ""}
+          disabled={disabled}
+          onChange={(next) => handleChange(field.path, next)}
+        />
+      );
+    }
     return (
       <Input
         id={field.path}
@@ -500,6 +562,7 @@ export function ConfigDialog({
         max={field.max}
         step={field.step}
         disabled={disabled}
+        readOnly={field.path === "gateway.base_url" && Boolean(lockedGatewayPreset)}
         onChange={(e) => handleChange(field.path, e.target.value)}
         placeholder={field.type === "password" ? "Enter a new key to replace the stored key" : field.placeholder || ""}
       />
@@ -524,6 +587,10 @@ export function ConfigDialog({
         label={field.label}
         help={field.help}
         description={(() => {
+          if (field.path === "gateway.base_url" && lockedGatewayPreset) return t("gatewayPresetLocked");
+          if (field.path === "gateway.api_key" && hasConfiguredSecret(config, field.path) && modelConnectionChanged(config, changes)) {
+            return t("gatewayPresetKeyRequired");
+          }
           if (field.path === "shell.default") return sandboxFieldNote(sandboxMode, availability) || undefined;
           if (field.path !== "sandbox.mode") return undefined;
           if (availability?.confineAvailable === false && sandboxMode !== "danger-full-access") {
@@ -560,6 +627,11 @@ export function ConfigDialog({
 
     return (
       <SettingsSection>
+        {tabId === "connection" && (
+          <SettingsField id="model-gateway-preset" label={t("gatewayPreset")} help={t("gatewayPresetHelp")}>
+            <GatewayPresetField id="model-gateway-preset" value={lockedGatewayPreset} disabled={saving || !config} onSelect={setGatewayPreset} />
+          </SettingsField>
+        )}
         {fields.map(renderField)}
 
         {tabId === "model" && (

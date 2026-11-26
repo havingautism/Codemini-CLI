@@ -14,6 +14,7 @@ import {
   Camera,
   CaretDown,
   CaretUp,
+  Check,
   CircleNotch,
   FileText,
   Folder,
@@ -176,6 +177,83 @@ function formatCrewDirtyWarning(count = 1) {
   return t("crewDirtyWarning").replace("{count}", String(count || 1));
 }
 
+const COMPACT_POPOVER_HEADER_CLASS =
+  "px-2 pt-0.5 pb-1 text-[11px] font-medium text-(--text-muted)";
+const COMPACT_POPOVER_ITEM_CLASS =
+  "flex-none min-h-0 gap-2 rounded-md px-2 py-1.5 data-[state=on]:shadow-none";
+
+function CompactOptionSection({
+  title,
+  notice,
+  options,
+  value,
+  onSelect,
+  disabled,
+  error,
+}) {
+  return (
+    <div className="flex min-w-0 flex-col">
+      <div className={COMPACT_POPOVER_HEADER_CLASS}>{title}</div>
+      {notice ? (
+        <div className="mx-1 mb-1 rounded-md bg-amber-500/10 px-2 py-1 text-[11px] leading-[1.35] text-amber-700 dark:text-amber-400">
+          {notice}
+        </div>
+      ) : null}
+      <ToggleGroup
+        type="single"
+        value={value}
+        onValueChange={onSelect}
+        disabled={disabled}
+        size="auto"
+        className="flex w-full flex-col items-stretch gap-0.5"
+      >
+        {options.map((opt) => {
+          const Icon = opt.icon;
+          const selected = opt.value === value;
+          return (
+            <ToggleGroupItem
+              key={opt.value}
+              value={opt.value}
+              className={COMPACT_POPOVER_ITEM_CLASS}
+            >
+              <span className="flex h-4 w-4 shrink-0 items-center justify-center">
+                <Icon data-icon="inline-start" size={14} />
+              </span>
+              <span className="min-w-0 flex-1 overflow-hidden">
+                <span className="flex items-center gap-1.5">
+                  <span className="min-w-0 flex-1 truncate text-[12px] leading-4">
+                    {opt.label}
+                  </span>
+                  {selected ? (
+                    <Check
+                      size={13}
+                      aria-hidden="true"
+                      className="shrink-0 text-(--text-primary)"
+                    />
+                  ) : null}
+                </span>
+                {opt.description ? (
+                  <span className="mt-px block wrap-break-word text-[11px] font-normal leading-[1.35] text-(--text-muted)">
+                    {opt.description}
+                  </span>
+                ) : null}
+              </span>
+            </ToggleGroupItem>
+          );
+        })}
+      </ToggleGroup>
+      {error ? (
+        <div
+          role="alert"
+          className="px-2 pt-1 text-[11px] leading-snug text-(--accent-red)"
+        >
+          {error}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function ModeSelector({
   sessionId,
   current,
@@ -314,101 +392,29 @@ function ModeSelector({
         side="top"
         align="start"
         sideOffset={6}
-        className="w-72 max-w-[calc(100vw-32px)] p-2"
+        className="w-68 max-w-[calc(100vw-32px)] p-1.5"
       >
-        <div className="px-0.5 pb-1.5 text-[11px] font-medium text-muted-foreground">
-          {t("executionMode")}
-        </div>
-        <ToggleGroup
-          type="single"
+        <CompactOptionSection
+          title={t("executionMode")}
+          options={MODE_OPTIONS}
           value={selectedValue}
-          onValueChange={handleSelect}
+          onSelect={handleSelect}
           disabled={disabled || switching}
-          size="auto"
-          className="flex w-full flex-col items-stretch gap-0.5"
-        >
-          {MODE_OPTIONS.map((opt) => {
-            const Icon = opt.icon;
-            return (
-              <ToggleGroupItem
-                key={opt.value}
-                value={opt.value}
-                className="gap-2 rounded-md data-[state=on]:shadow-none"
-              >
-                <Icon data-icon="inline-start" className="mt-0.5" />
-                <span className="min-w-0 flex-1 overflow-hidden">
-                  <span className="block truncate">{opt.label}</span>
-                  <span className="block wrap-break-word text-[11px] font-normal leading-snug text-muted-foreground">
-                    {opt.description}
-                  </span>
-                </span>
-              </ToggleGroupItem>
-            );
-          })}
-        </ToggleGroup>
+        />
         {crewError ? (
-          <div className="flex items-center gap-1.5 px-0.5 pt-1.5 text-[11px] leading-snug text-destructive">
+          <div className="flex items-center gap-1.5 px-2 pt-1 text-[11px] leading-snug text-destructive">
             <GitLogo size={13} className="shrink-0" />
             <span>{crewError}</span>
           </div>
         ) : null}
         {crewNotice || dirtyWarning ? (
-          <div className="flex items-center gap-1.5 px-0.5 pt-1.5 text-[11px] leading-snug text-amber-600 dark:text-amber-400">
+          <div className="flex items-center gap-1.5 px-2 pt-1 text-[11px] leading-snug text-amber-600 dark:text-amber-400">
             <GitLogo size={13} className="shrink-0" />
             <span>{crewNotice || dirtyWarning}</span>
           </div>
         ) : null}
       </PopoverContent>
     </Popover>
-  );
-}
-
-function AccessChoiceColumn({ title, notice, options, value, onSelect, disabled, error }) {
-  return (
-    <div className="flex min-w-0 flex-1 flex-col">
-      <div className="px-1 pb-1.5 text-[11px] font-medium text-muted-foreground">
-        {title}
-      </div>
-      {notice ? (
-        <div className="px-1 pb-1.5 text-[11px] leading-snug text-amber-700 dark:text-amber-400">
-          {notice}
-        </div>
-      ) : null}
-      <div className="flex min-h-0 flex-1 flex-col rounded-[10px] bg-(--bg-secondary) p-1">
-        <ToggleGroup
-          type="single"
-          value={value}
-          onValueChange={onSelect}
-          disabled={disabled}
-          size="auto"
-          className="flex h-full w-full flex-1 flex-col items-stretch gap-0.5"
-        >
-          {options.map((opt) => {
-            const Icon = opt.icon;
-            return (
-              <ToggleGroupItem
-                key={opt.value}
-                value={opt.value}
-                className="h-auto flex-1 gap-2 rounded-md data-[state=on]:shadow-none"
-              >
-                <Icon data-icon="inline-start" className="mt-0.5" />
-                <span className="min-w-0 flex-1 overflow-hidden">
-                  <span className="block truncate">{opt.label}</span>
-                  <span className="block min-h-[3lh] wrap-break-word text-[11px] font-normal leading-snug text-muted-foreground">
-                    {opt.description}
-                  </span>
-                </span>
-              </ToggleGroupItem>
-            );
-          })}
-        </ToggleGroup>
-      </div>
-      {error ? (
-        <div role="alert" className="px-1 pt-1.5 text-[11px] text-(--accent-red)">
-          {error}
-        </div>
-      ) : null}
-    </div>
   );
 }
 
@@ -518,14 +524,11 @@ function AccessShuttle({
         side="top"
         align="start"
         sideOffset={6}
-        className={cn(
-          "max-w-[calc(100vw-32px)] p-2",
-          both ? "w-[36rem]" : "w-72",
-        )}
+        className="w-[19.5rem] max-w-[calc(100vw-32px)] max-h-[calc(100vh-8rem)] overflow-y-auto p-1.5"
       >
-        <div className={cn("flex items-stretch", both && "gap-2")}>
+        <div className="flex flex-col">
           {showSandbox ? (
-            <AccessChoiceColumn
+            <CompactOptionSection
               title={t("sandboxMode")}
               notice={sandboxNotice}
               options={sandboxOptions}
@@ -535,8 +538,9 @@ function AccessShuttle({
               error={error}
             />
           ) : null}
+          {both ? <Separator className="my-1.5 bg-(--border-default)" /> : null}
           {showApproval ? (
-            <AccessChoiceColumn
+            <CompactOptionSection
               title={t("approvalMode")}
               options={approvalOptions}
               value={approvalMode}
