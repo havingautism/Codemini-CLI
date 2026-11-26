@@ -422,6 +422,14 @@ export async function setConfig(key, value) {
   return result;
 }
 
+export async function setModelConnection(values) {
+  return readJsonOrThrow(await api('/api/config/model-connection', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify(values),
+  }));
+}
+
 export async function fetchWebuiActiveProjects() {
   const res = await api('/api/webui/active-projects');
   return res.json();

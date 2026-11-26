@@ -740,9 +740,13 @@ async function saveConfigAtPath(configPath, config) {
 }
 
 export async function setConfigValue(keyPath, value) {
+  return setConfigValues([[keyPath, value]]);
+}
+
+export async function setConfigValues(entries) {
   const configPath = getConfigFilePath();
   const config = await loadConfigAtPath(configPath);
-  setNested(config, keyPath, value);
+  for (const [keyPath, value] of entries) setNested(config, keyPath, value);
   await saveConfigAtPath(configPath, normalizePolicyLists(config));
 }
 

@@ -6,6 +6,7 @@ import {
 import { normalizeFinishReason } from './completion-status.js';
 import { stringifyGatewayJson } from './json-body.js';
 import { iterateSseJsonEvents } from '../sse.js';
+import { gatewaySessionHeaders } from './gateway-session-headers.js';
 
 function extractTextContent(content) {
   if (typeof content === 'string') return content;
@@ -401,7 +402,7 @@ export async function createChatCompletion({
   const signal = externalSignal ? AbortSignal.any([timeoutSignal, externalSignal]) : timeoutSignal;
   const response = await fetchWithRetry(buildChatCompletionsUrl(baseUrl), {
     method: 'POST',
-    headers: createHeaders(apiKey),
+    headers: { ...createHeaders(apiKey), ...gatewaySessionHeaders(baseUrl) },
     body: stringifyGatewayJson(payload),
     signal
   }, { maxRetries });
@@ -481,9 +482,10 @@ export async function createChatCompletionStream({
   const url = buildChatCompletionsUrl(baseUrl);
   const payload = buildPayload({ baseUrl, model, temperature, messages, tools, stream: true, toolChoice, payloadExtras, reasoningEffort });
   onPayloadPrepared?.(payload);
+  const headers = { ...createHeaders(apiKey), ...gatewaySessionHeaders(baseUrl) };
   const buildRequest = (bodyPayload) => ({
     method: 'POST',
-    headers: createHeaders(apiKey),
+    headers,
     body: stringifyGatewayJson(bodyPayload),
     signal: controller.signal
   });

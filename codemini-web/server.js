@@ -7,7 +7,8 @@ import { createProjectFolder } from './lib/project-folder.js';
 import { pickSkillFolder } from './lib/skill-folder-picker.js';
 import { readLimitedJson, stageSkillFolder } from './lib/stage-skill-folder.js';
 import { decodeSessionCursor, getSessionGroupPage, getSessionSidebarSnapshot, searchSessionSidebar } from './lib/session-pages.js';
-import { validateWebConfigValue } from './shared/web-config-policy.js';
+import { modelConnectionChanged, validateModelConnection, validatePresetConnection, validateWebConfigValue } from './shared/web-config-policy.js';
+import gatewayCatalog from './shared/gateway-provider-catalog.json' with { type: 'json' };
 import { DOCUMENT_EXTENSIONS, SCRAPBOOK_TEXT_EXTENSIONS } from './shared/document-formats.js';
 import { createWebSecurity, publicConfig, isSecretConfigKey, assertConfigPath, assertWebConfigWritable } from './lib/web-security.js';
 import fs from "node:fs/promises";
@@ -29,6 +30,7 @@ import {
   loadConfig,
   saveConfig,
   setConfigValue,
+  setConfigValues,
   getConfigValue,
 } from "../src/core/config-store.js";
 import { resolveSandboxAvailability } from "../src/core/sandbox-policy.js";
@@ -3888,6 +3890,25 @@ async function main() {
       jsonResponse(res, publicConfig(config));
       return;
 
+  }));
+  routes.post("/api/config/model-connection", nodeRoute(async (req, res) => {
+    const values = await readBody(req);
+    let entries;
+    try {
+      entries = validateModelConnection(values);
+      const current = await loadConfig();
+      validatePresetConnection(current, values, gatewayCatalog.providers);
+      if (current.gateway?.api_key && modelConnectionChanged(current, values) && !Object.hasOwn(values, "gateway.api_key")) {
+        throw new Error("Enter an API key for the new connection or remove the saved key before changing the endpoint.");
+      }
+    } catch (error) {
+      jsonResponse(res, { error: true, message: error.message }, 400);
+      return;
+    }
+    await setConfigValues(entries);
+    const config = await loadConfig();
+    await pool.reloadConfig(Object.hasOwn(values, "model.name") ? { model: config.model?.name } : {});
+    jsonResponse(res, { ok: true, config: publicConfig(config) });
   }));
   routes.post("/api/config/set", nodeRoute(async (req, res, url) => {
       const { key, value } = await readBody(req);

@@ -3,6 +3,7 @@ import { resolveAnthropicReasoning } from './reasoning-effort.js';
 import { isCompletionTruncated } from './completion-status.js';
 import { stringifyGatewayJson } from './json-body.js';
 import { iterateSseJsonEvents } from '../sse.js';
+import { gatewaySessionHeaders } from './gateway-session-headers.js';
 
 function extractTextContent(content) {
   if (typeof content === 'string') return content;
@@ -351,7 +352,7 @@ function buildMessagesUrl(baseUrl) {
 
 async function sendMessagesRequest({ baseUrl, apiKey, payload, signal, maxRetries, onPayloadPrepared }) {
   const url = buildMessagesUrl(baseUrl);
-  const headers = createHeaders(apiKey);
+  const headers = { ...createHeaders(apiKey), ...gatewaySessionHeaders(baseUrl) };
   const send = (body, requestHeaders) => {
     onPayloadPrepared?.(body);
     return fetchWithRetry(url, {
