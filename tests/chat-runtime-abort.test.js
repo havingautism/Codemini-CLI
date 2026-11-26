@@ -89,7 +89,6 @@ function baseConfig(port) {
     context: {
       project_context_enabled: false,
       project_instructions_enabled: false,
-      preflight_trigger_pct: 95,
       microcompact_enabled: false
     },
     execution: { mode: 'normal', approval_mode: 'auto' },
@@ -105,7 +104,6 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 test('overflow recovery persists the compact view and forwards only UI metadata', async () => {
   await withGlobalDir(async (dir) => {
     const config = baseConfig(0);
-    config.context.preflight_trigger_pct = 99;
     config.model.max_context_tokens = 32000;
     config.model.fast_name = 'compact-model';
     await saveConfig(config);

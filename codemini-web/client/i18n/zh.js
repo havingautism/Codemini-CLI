@@ -907,18 +907,20 @@ export const zh = {
   storageOpenFailed: "无法打开目标文件夹",
   context: "上下文",
   contextMaxTokens: "上下文 Token 预算",
-  preflightTrigger: "预压缩阈值 (%)",
-  preflightTriggerHelp:
-    "上下文占用达到该百分比时自动压缩。0 表示使用自动上限：窗口减去 16k 与窗口 15% 中的较大值（若模型输出上限更大，则用输出上限）。",
-  hardLimit: "硬压缩阈值 (%)",
-  hardLimitHelp: "达到该占用比例时，摘要压缩只保留更短的最近对话，避免超出上下文窗口。",
+  autoCompact: "自动压缩",
+  autoCompactHelp:
+    "会话接近上下文上限时自动压缩；如果服务商因过长拒绝请求，也会尝试恢复一次。关闭后仍可手动使用 /compact。",
+  contextBuffer: "上下文预留",
+  contextBufferHelp:
+    "自动压缩前在模型窗口中留出的空位。可填 15%（默认，且至少 16k）或 token 数（如 20000）。值越大越早压缩。留空则使用默认上限。",
+  summaryKeepTokens: "摘要保留 Tokens",
+  summaryKeepTokensHelp:
+    "压缩后与摘要一起原样保留的最近对话大约多少 token。值越大细节越多，但留给后续工作的空间更少。",
   toolResultMaxChars: "工具结果字符上限",
   toolResultMaxCharsHelp: "超过此长度的工具输出会在送回模型前被截断。",
   microcompactEnabled: "微压缩",
   microcompactEnabledHelp:
     "轻量压缩：清除较早的工具结果正文，保留最近若干条完整结果。",
-  microcompactKeepRecent: "微压缩保留数",
-  microcompactKeepRecentHelp: "微压缩时保留最近几条完整工具结果不被清除。",
   aggressiveToolPruneBeta: "激进工具结果压缩 (Beta)",
   aggressiveToolPruneBetaHelp:
     "实验性功能：每次调用模型前，将较早轮次的工具结果正文替换为结构化摘要，仅保留最近若干轮完整结果（同一轮并行调用视为一组）。长任务可显著节省 token，推理质量影响通常较小。建议推理能力强的模型使用。",

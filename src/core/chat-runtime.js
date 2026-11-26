@@ -4131,6 +4131,22 @@ export function recordCompactContextEstimate(session, { messages, estimatedToken
   return tokens;
 }
 
+// The compact view is only rewritten at turn end; messages streamed in the
+// current turn live in session.messages after the view's last source index.
+export function contextMeterMessages(session) {
+  const messages = Array.isArray(session?.messages) ? session.messages : [];
+  const view = session?.compact?.view;
+  if (!Array.isArray(view) || view.length === 0) return messages;
+  let lastSourceIndex = -1;
+  for (const message of view) {
+    if (Number.isInteger(message?.compact_source_index)) {
+      lastSourceIndex = Math.max(lastSourceIndex, message.compact_source_index);
+    }
+  }
+  if (lastSourceIndex < 0 || lastSourceIndex >= messages.length - 1) return view;
+  return [...view, ...messages.slice(lastSourceIndex + 1)];
+}
+
 export function buildRuntimeStateSnapshot({ currentSession, config, model, executionMode, extraSession, workspaceRoot, alwaysSkillNames = [], crewState, crewWorkers = [], crewInFlightIds = [], crewDirtyCount = 0 } = {}) {
   const scheduledRun = getScheduledSessionInfo(currentSession?.id);
   const scheduledAttention = scheduledRun?.status === 'needs_attention'
@@ -4138,9 +4154,7 @@ export function buildRuntimeStateSnapshot({ currentSession, config, model, execu
     ? { reason: scheduledRun.error, taskName: scheduledRun.task.name } : null;
   const activeMessages = extraSession
     ? extraSession.messages || []
-    : Array.isArray(currentSession?.compact?.view) && currentSession.compact.view.length > 0
-      ? currentSession.compact.view
-      : currentSession?.messages || [];
+    : contextMeterMessages(currentSession);
   const baselineOverhead = activeMessages.length > 0
     ? estimateBaselinePromptOverhead(config, executionMode)
     : 0;
@@ -9577,16 +9591,6 @@ export async function createChatRuntime({
     await refreshCrewProgressCache();
     await refreshCrewGitInspect();
   }
-  let compactState = null;
-  const normalizeCompactThreshold = (value, fallback = 60) => {
-    const num = Number(value);
-    if (!Number.isFinite(num)) return fallback;
-    return Math.min(95, Math.max(50, num));
-  };
-  const syncCompactStateFromConfig = () => {
-    if (!compactState) return;
-    compactState.threshold = normalizeCompactThreshold(config.context?.preflight_trigger_pct, 60);
-  };
   const syncRuntimeFromConfig = async ({ model: nextModel } = {}) => {
     const previousMode = executionMode;
     const previouslyArmed = new Set(
@@ -9596,7 +9600,6 @@ export async function createChatRuntime({
     );
     executionMode = resolveRuntimeExecutionMode(config.execution?.mode || 'normal', config, currentSession);
     if (normalizeExecutionMode(executionMode) !== 'crew') await deactivateCrew();
-    syncCompactStateFromConfig();
 
     const resolvedModel = String(nextModel || '').trim();
     if (resolvedModel) {
@@ -9844,12 +9847,6 @@ export async function createChatRuntime({
   };
   config = attachRuntimeState(config);
 
-  compactState = {
-    backupMessages: null,
-    autoEnabled: true,
-    threshold: normalizeCompactThreshold(config.context?.preflight_trigger_pct, 60),
-    mode: 'conservative'
-  };
   let compactedForModel = currentSession.compact?.view || null;
   const setCompactedView = (view, meta = {}) => {
     compactedForModel = view;
@@ -10377,6 +10374,19 @@ export async function createChatRuntime({
       if (name === CHAT_ACTIONS.COMPACT) {
         const args = Array.isArray(payload.args) ? payload.args : [];
         const cargs = parseCompactArgs(args);
+        if (cargs.auto === 'on' || cargs.auto === 'off') {
+          const enabled = cargs.auto === 'on';
+          config.context = { ...(config.context || {}), auto_compact: enabled };
+          await setConfigValue('context.auto_compact', enabled);
+          const onlyToggle = !cargs.preview && !cargs.restore && !cargs.micro
+            && cargs.mode === 'default' && cargs.threshold === undefined;
+          if (onlyToggle) {
+            return {
+              type: 'system',
+              text: enabled ? 'Automatic compaction enabled' : 'Automatic compaction disabled',
+            };
+          }
+        }
         if (cargs.restore) {
           setCompactedView(null);
           await saveSession(currentSession);
@@ -10390,8 +10400,9 @@ export async function createChatRuntime({
         const result = await compactInFlightMessages(source, config, 0, {
           force: true,
           pruneOnly: cargs.micro === true,
-          aggressive: (cargs.mode || compactState.mode) === 'aggressive',
-          mode: cargs.mode || compactState.mode,
+          manual: true,
+          aggressive: cargs.mode === 'aggressive',
+          mode: cargs.mode,
           generateSummary: cargs.micro ? null : createCompactSummaryGenerator(config, null),
           overheadTokens: overhead,
           onStart: ({ beforePct }) => {
