@@ -492,7 +492,8 @@ export class RuntimeBridge {
     if (['spec:pending_approval', 'reflect:pending_approval'].includes(event?.type)) {
       this.#busy = false;
       this.#broadcastRuntimeState();
-    } else if (event?.type === 'compact:auto') {
+    } else if (event?.type === 'compact:auto' || event?.type === 'assistant:response') {
+      // assistant:response carries the provider usage that drives the CTX meter.
       this.#broadcastRuntimeState();
     }
   }

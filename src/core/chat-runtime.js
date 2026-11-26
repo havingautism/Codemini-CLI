@@ -4131,6 +4131,22 @@ export function recordCompactContextEstimate(session, { messages, estimatedToken
   return tokens;
 }
 
+// The compact view is only rewritten at turn end; messages streamed in the
+// current turn live in session.messages after the view's last source index.
+export function contextMeterMessages(session) {
+  const messages = Array.isArray(session?.messages) ? session.messages : [];
+  const view = session?.compact?.view;
+  if (!Array.isArray(view) || view.length === 0) return messages;
+  let lastSourceIndex = -1;
+  for (const message of view) {
+    if (Number.isInteger(message?.compact_source_index)) {
+      lastSourceIndex = Math.max(lastSourceIndex, message.compact_source_index);
+    }
+  }
+  if (lastSourceIndex < 0 || lastSourceIndex >= messages.length - 1) return view;
+  return [...view, ...messages.slice(lastSourceIndex + 1)];
+}
+
 export function buildRuntimeStateSnapshot({ currentSession, config, model, executionMode, extraSession, workspaceRoot, alwaysSkillNames = [], crewState, crewWorkers = [], crewInFlightIds = [], crewDirtyCount = 0 } = {}) {
   const scheduledRun = getScheduledSessionInfo(currentSession?.id);
   const scheduledAttention = scheduledRun?.status === 'needs_attention'
@@ -4138,9 +4154,7 @@ export function buildRuntimeStateSnapshot({ currentSession, config, model, execu
     ? { reason: scheduledRun.error, taskName: scheduledRun.task.name } : null;
   const activeMessages = extraSession
     ? extraSession.messages || []
-    : Array.isArray(currentSession?.compact?.view) && currentSession.compact.view.length > 0
-      ? currentSession.compact.view
-      : currentSession?.messages || [];
+    : contextMeterMessages(currentSession);
   const baselineOverhead = activeMessages.length > 0
     ? estimateBaselinePromptOverhead(config, executionMode)
     : 0;
