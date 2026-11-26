@@ -158,7 +158,7 @@ function sseMockCrewComplete() {
   }]);
 }
 
-async function withRuntime({ mode = 'plan', gitRepo = true, firstCompletion, followUpCompletion, workerDelays = {}, crewMaxWorkers = 4 } = {}, task) {
+async function withRuntime({ mode = 'plan', gitRepo = true, firstCompletion, followUpCompletion, workerDelays = {}, workerResponseGate, crewMaxWorkers = 4 } = {}, task) {
   closeSqliteDatabasesForTests();
   const globalDir = await fs.mkdtemp(path.join(os.tmpdir(), 'codemini-crew-rt-'));
   const dir = path.join(globalDir, 'workspace');
@@ -217,6 +217,7 @@ async function withRuntime({ mode = 'plan', gitRepo = true, firstCompletion, fol
           return;
         }
         if (isCrewWorkerModelTurn(toolNames, isParentUserTurn)) {
+          if (workerResponseGate) await workerResponseGate;
           res.end(sseMockCrewComplete());
           return;
         }
@@ -934,6 +935,7 @@ test('cancel_worker aborts a running Crew worker and removes its worktree', asyn
 });
 
 test('cancel_worker removes a queued Crew worker without starting it', async () => {
+  const workerResponse = Promise.withResolvers();
   await withRuntime({
     mode: 'plan',
     firstCompletion: twoSubagentCompletion,
@@ -946,35 +948,31 @@ test('cancel_worker removes a queued Crew worker without starting it', async () 
       }]),
     },
     crewMaxWorkers: 1,
-    workerDelays: { 'Implement frontend in isolation': 2500, 'Implement backend in isolation': 2500 },
-  }, async ({ dir, runtime, session }) => {
+    workerResponseGate: workerResponse.promise,
+  }, async ({ dir, runtime, session, bodies }) => {
     await runtime.setCrewMode(true);
     await planBuildMissions(dir, [
       { title: 'Frontend', paths: ['frontend/**'] },
       { title: 'Backend', paths: ['backend/**'] },
     ]);
-    const dispatched = runtime.submitMessage({ text: '使用子代理分别实现 frontend 和 backend' });
-    let lastStatuses = {};
-    await waitForCondition(async () => {
-      const state = await readCrewStateFile(dir);
-      const workers = listCrewWorkersFromState(state);
-      lastStatuses = Object.fromEntries(
-        workers.map((worker) => [worker.name || worker.id, worker.runStatus]),
-      );
-      const statuses = workers.map((worker) => worker.runStatus);
-      return statuses.includes('running') && statuses.includes('queued');
-    }, 12_000).catch((error) => {
-      throw new Error(`${error.message} statuses=${JSON.stringify(lastStatuses)}`);
-    });
-    await dispatched;
-    await runtime.submitMessage({ text: '取消工人 m2' });
-    const cancelResult = session.messages.find((message) => message.tool_call_id === 'call-cancel-queued');
-    assert.ok(cancelResult, `missing cancel_worker result; ids=${session.messages.map((m) => m.tool_call_id).filter(Boolean).join(',')}`);
-    assert.match(String(cancelResult.content || ''), /Cancelled Crew worker "m2"/);
-    const workers = listCrewWorkersFromState(await readCrewStateFile(dir));
-    assert.equal(workers.some((item) => item.name === 'm2'), false);
-    assert.equal(workers.some((item) => item.name === 'm1'), true);
+    try {
+      await runtime.submitMessage({ text: '使用子代理分别实现 frontend 和 backend' });
+      await waitForWorkerStatus(dir, 'm2', 'queued');
+      const workers = listCrewWorkersFromState(await readCrewStateFile(dir));
+      assert.equal(workers.find((worker) => worker.name === 'm1')?.runStatus, 'running');
+
+      await runtime.submitMessage({ text: '取消工人 m2' });
+      const cancelResult = session.messages.find((message) => message.tool_call_id === 'call-cancel-queued');
+      assert.ok(cancelResult, '未找到取消 m2 的工具结果');
+      assert.match(String(cancelResult.content || ''), /Cancelled Crew worker "m2"/);
+      const remaining = listCrewWorkersFromState(await readCrewStateFile(dir));
+      assert.deepEqual(remaining.map((worker) => worker.name), ['m1']);
+    } finally {
+      workerResponse.resolve();
+    }
+    await runtime.waitForCrewIdle();
     await waitForWorkerStatus(dir, 'm1', 'completed');
+    assert.equal(bodies.some((body) => requestHasUserMarker(body, 'Implement backend in isolation')), false);
   });
 });
 

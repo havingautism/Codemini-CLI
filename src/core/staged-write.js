@@ -1,10 +1,12 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
+import { setTimeout as delay } from 'node:timers/promises';
 
 export const DEFAULT_WRITE_CHUNK_MAX_CHARS = 12_000;
 export const DEFAULT_STAGED_WRITE_MAX_CHARS = 4 * 1024 * 1024;
 export const STAGED_WRITE_TTL_MS = 30 * 60 * 1000;
+const WINDOWS_RENAME_RETRY_DELAYS_MS = [25, 75, 150];
 
 function normalizeExpectedSha256(value) {
   return String(value || '').trim().toLowerCase().replace(/^sha256:/, '');
@@ -202,6 +204,20 @@ export function createStagedWriteStore({
   return { begin, append, prepareCommit, finish, abort, clear };
 }
 
+async function publishByRename(temporaryPath, target) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await fs.rename(temporaryPath, target);
+    } catch (error) {
+      // Windows 读者可能短暂占用目标文件，保留同一临时文件才能继续原子替换。
+      const wait = WINDOWS_RENAME_RETRY_DELAYS_MS[attempt];
+      if (process.platform !== 'win32' || wait === undefined ||
+          !['EPERM', 'EBUSY', 'EACCES'].includes(error.code)) throw error;
+      await delay(wait);
+    }
+  }
+}
+
 export async function atomicWriteUtf8(target, content, writeId = '', { createOnly = false, mode } = {}) {
   const directory = path.dirname(target);
   const baseName = path.basename(target);
@@ -226,7 +242,7 @@ export async function atomicWriteUtf8(target, content, writeId = '', { createOnl
     // A no-replace publication prevents a concurrent creator from being
     // overwritten between the caller's preflight and this commit point.
     if (createOnly) await fs.link(temporaryPath, target);
-    else await fs.rename(temporaryPath, target);
+    else await publishByRename(temporaryPath, target);
   } finally {
     await handle?.close().catch(() => {});
     if (created) await fs.rm(temporaryPath, { force: true }).catch(() => {});
